@@ -167,7 +167,7 @@ def test_current_evidence_of_another_revision_or_missing_stamp_is_unavailable(ba
         "sequence": 1,
     }
     outcomes = _current_outcomes(
-        baseline.record, goal, current, baseline.worktree, DEFAULT_RESOLVERS
+        baseline.record, goal, current, [current], baseline.worktree, DEFAULT_RESOLVERS
     )
     assert outcomes == ({}, "current evidence is from another Goal revision")
     # Current evidence without a contents stamp can never have been seen failing.

@@ -55,7 +55,7 @@ GONE_BRANCH = "goal/gone-20261001T000000Z"
 
 @pytest.fixture(autouse=True)
 def _frozen_baseline_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("booley.mcp.sim_baseline_jobs.schedule_sim_baselines", lambda *_a: None)
+    monkeypatch.setattr("booley.mcp.sim_baseline_jobs.schedule_goal_baselines", lambda *_a: None)
 
 
 def finish_environment(layout: SimpleNamespace) -> FinishEnvironment:

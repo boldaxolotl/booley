@@ -6,8 +6,6 @@ import pytest
 
 from booley.config.settings import (
     _PROVIDER_TIER_MODELS,
-    MODEL_MAP,
-    STEP_TIERS,
     SandboxConfig,
     _parse_sandbox_config,
 )
@@ -17,26 +15,6 @@ from booley.runtime._retry import (
     API_RETRY_MAX_BACKOFF_S,
     MAX_API_RETRIES,
 )
-
-# Derived, not hardcoded: a second copy of the model list only ever rots out of
-# sync at the next model launch. The invariant worth testing is that MODEL_MAP
-# names models some provider actually offers.
-KNOWN_CLAUDE_MODELS = set(_PROVIDER_TIER_MODELS["claude"].values())
-KNOWN_CODEX_MODELS = set(_PROVIDER_TIER_MODELS["codex"].values())
-ALL_KNOWN_MODELS = KNOWN_CLAUDE_MODELS | KNOWN_CODEX_MODELS
-
-
-class TestModelMap:
-    def test_not_empty(self):
-        assert len(MODEL_MAP) > 0
-
-    def test_default_values_from_known_set(self):
-        for _key, val in MODEL_MAP.items():
-            assert val in ALL_KNOWN_MODELS
-
-    @pytest.mark.parametrize("key", ["developer", "recovery"])
-    def test_key_entries_exist(self, key):
-        assert key in MODEL_MAP
 
 
 class TestProviderTierModels:
@@ -49,10 +27,6 @@ class TestProviderTierModels:
         tiers = _PROVIDER_TIER_MODELS[provider]
         for t in ("heavy", "standard", "light"):
             assert t in tiers
-
-    def test_step_tiers_cover_model_map(self):
-        for key in MODEL_MAP:
-            assert key in STEP_TIERS
 
 
 class TestAPIResilience:

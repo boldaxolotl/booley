@@ -21,7 +21,7 @@ import pytest
 from booley.bwave import cli as bwave_cli
 from booley.flows.base import BuiltinFlow
 from booley.flows.builtin_cli import build_parser
-from booley.flows.cli_selection import human_parser
+from booley.flows.endpoint_cli import human_endpoint_parser
 from booley.flows.sim import campaign_retention
 from booley.harness.booley import _build_parser, _load_mcp_tool_class
 from booley.mcp.registry import discover_mcp_tools
@@ -56,19 +56,7 @@ class ExceptionRule:
 
 ALLOWLIST = (
     ExceptionRule(
-        "docs/user/DOCTOR.md",
-        "qualify; legacy health verdict details unavailable.",
-        "Current deep-status diagnostic literal for unknown persisted health details.",
-        1,
-    ),
-    ExceptionRule(
-        "docs/user/CONFIG.md",
-        "Doctor and `booley init` report retired or deprecated settings with the exact fix.",
-        "The single general pointer to user-visible migration diagnostics.",
-        2,
-    ),
-    ExceptionRule(
-        "docs/user/CONFIG.md",
+        "docs/user/FLOW-SIM.md",
         "legacy-per-test",
         "A supported literal value selecting per-test build access.",
         3,
@@ -192,7 +180,7 @@ def cli_help() -> dict[str, str]:
         parser = (
             build_parser(endpoint, human=True)
             if isinstance(endpoint, BuiltinFlow)
-            else human_parser(endpoint._parser, durations=True)
+            else human_endpoint_parser(endpoint, durations=True)
         )
         rendered.update(parser_help(parser, f"booley {info.kind} {info.name}"))
     rendered.update(parser_help(bwave_cli._build_parser(), "bwave"))

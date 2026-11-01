@@ -18,6 +18,7 @@ from booley.flows.progress_lifecycle import (
     supersede_progress,
     validate_progress_shape,
 )
+from tests.conftest import symlink_or_skip
 
 
 def test_normal_completion_publishes_once() -> None:
@@ -186,12 +187,37 @@ def test_repair_after_reap_ignores_missing_and_terminal_progress(tmp_path: Path)
 def test_repair_after_reap_treats_lookup_error_as_best_effort(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fail_lookup(*_args: object) -> None:
+    def fail_lookup(*_args: object, **_kwargs: object) -> None:
         raise OSError("report root disappeared")
 
     monkeypatch.setattr(progress_module, "read_progress_for_run", fail_lookup)
 
     assert not repair_progress_after_reap((tmp_path,), "sim", "run-1")
+
+
+def test_progress_reader_follows_only_the_booley_dir_entry(tmp_path: Path) -> None:
+    real = tmp_path / "real-booley-dir"
+    entry = tmp_path / "project" / ".booley"
+    entry.parent.mkdir()
+    real.mkdir()  # the pin needs an existing target
+    symlink_or_skip(entry, real)
+    reports = entry / "runtime" / "flow-reports"
+    path = real / "runtime" / "flow-reports" / "sim" / "1" / "progress.json"
+    _write_progress(path)
+
+    found = read_progress_for_run((reports,), "sim", "run-1", booley_dir=entry)
+    assert found is not None
+    assert found[1]["run_id"] == "run-1"
+    assert repair_progress_after_reap((reports,), "sim", "run-1", booley_dir=entry)
+    assert json.loads(path.read_text(encoding="utf-8"))["phase"] == "aborted"
+
+    # A link below the entry stays refused even when the entry is named.
+    elsewhere = tmp_path / "elsewhere"
+    _write_progress(elsewhere / "sim" / "1" / "progress.json", run_id="run-2")
+    linked_reports = entry / "linked-reports"
+    symlink_or_skip(linked_reports, elsewhere)
+    assert read_progress_for_run((linked_reports,), "sim", "run-2", booley_dir=entry) is None
+    assert not repair_progress_after_reap((linked_reports,), "sim", "run-2", booley_dir=entry)
 
 
 def test_supervisor_repair_cannot_overwrite_concurrent_resume_supersession(
@@ -294,7 +320,7 @@ def test_supersede_ignores_nonresumable_phase_and_write_failure(
     document["phase"] = "running"
     path.write_text(json.dumps(document), encoding="utf-8")
 
-    def fail_replace(*_args: object) -> None:
+    def fail_replace(*_args: object, **_kwargs: object) -> None:
         raise OSError("disk unavailable")
 
     monkeypatch.setattr(progress_module, "_replace_if_unchanged", fail_replace)
@@ -324,99 +350,134 @@ def test_containing_root_skips_unrelated_roots_and_rejects_outside_path(
         progress_module._containing_root(progress, (tmp_path / "unrelated",))
 
 
-def test_read_progress_optional_validator_guards_endpoint_and_candidate(tmp_path):
-    from booley.flows.progress_lifecycle import read_progress_document, read_progress_for_run
-
-    root = tmp_path / "reports"
-    path = root / "sim/1/progress.json"
-    path.parent.mkdir(parents=True)
-    path.write_text(
-        json.dumps(
-            progress_document(
-                flow="sim",
-                run_id="one",
-                phase="complete",
-                targets=[],
-                completed_targets=[],
-                detail={},
-            )
-        )
-    )
-    checked = []
-
-    def validate(candidate):
-        checked.append(candidate)
-
-    assert read_progress_for_run((root,), "sim", "one", trusted_path_validator=validate)[0] == path
-    assert root / "sim" in checked and path in checked
-
-    def deny_candidate(candidate):
-        if candidate == path:
-            raise OSError("denied checkpoint")
-
-    assert (
-        read_progress_for_run((root,), "sim", "one", trusted_path_validator=deny_candidate) is None
-    )
-
-    def deny(candidate):
-        raise OSError(f"denied {candidate}")
-
-    assert read_progress_for_run((root,), "sim", "one", trusted_path_validator=deny) is None
-    assert read_progress_document(path, (root,), trusted_path_validator=deny) is None
-    with pytest.raises(OSError, match="denied"):
-        read_progress_document(path, (root,), trusted_path_validator=deny, raise_io_errors=True)
-
-
 def test_default_progress_reader_refuses_links_above_report_root(tmp_path):
-    from booley.flows.progress_lifecycle import read_progress_document
-
     real = tmp_path / "real"
     path = real / "project/reports/sim/1/progress.json"
-    path.parent.mkdir(parents=True)
-    path.write_text(
-        json.dumps(
-            progress_document(
-                flow="sim",
-                run_id="one",
-                phase="complete",
-                targets=[],
-                completed_targets=[],
-                detail={},
-            )
-        )
-    )
+    _write_progress(path, run_id="one")
     alias = tmp_path / "alias"
     alias.symlink_to(real, target_is_directory=True)
-    assert (
-        read_progress_document(
-            alias / "project/reports/sim/1/progress.json", (alias / "project/reports",)
-        )
-        is None
+    assert read_progress_for_run((alias / "project/reports",), "sim", "one") is None
+
+
+@pytest.mark.parametrize("linked", ["entry", "below"])
+def test_coverage_supersede_follows_only_the_booley_dir_entry(tmp_path: Path, linked: str) -> None:
+    real = tmp_path / "real-booley-dir"
+    entry = tmp_path / "project" / ".booley"
+    entry.parent.mkdir()
+    real.mkdir()
+    symlink_or_skip(entry, real, target_is_directory=True)
+    reports = real / "flow-reports"
+    if linked == "below":
+        (tmp_path / "elsewhere").mkdir()
+        symlink_or_skip(reports, tmp_path / "elsewhere", target_is_directory=True)
+    path = entry / "flow-reports" / "sim" / "1" / "progress.json"
+    _write_progress(path)
+
+    superseded = supersede_progress(
+        path, new_invocation=2, new_run_id="resume-run", booley_dir=entry
+    )
+
+    phase = json.loads(path.read_text(encoding="utf-8"))["phase"]
+    assert (superseded, phase) == (
+        (True, "superseded") if linked == "entry" else (False, "running")
     )
 
 
-def test_trusted_progress_open_refuses_nonregular_file_and_final_link(tmp_path):
-    from booley.flows.progress_lifecycle import read_progress_document
+def test_progress_write_survives_transient_replace_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.progress_lifecycle import write_progress_json
+    from tests.sharing_error_support import hold_replaces
 
-    root = tmp_path / "reports"
-    directory = root / "sim/1"
-    directory.mkdir(parents=True)
-    document = directory / "valid.json"
-    document.write_text(
-        json.dumps(
-            progress_document(
-                flow="sim",
-                run_id="one",
-                phase="complete",
-                targets=[],
-                completed_targets=[],
-                detail={},
-            )
-        )
-    )
-    link = directory / "progress.json"
-    link.symlink_to(document)
-    assert read_progress_document(link, (root,), trusted_path_validator=lambda _: None) is None
-    assert (
-        read_progress_document(directory, (root,), trusted_path_validator=lambda _: None) is None
-    )
+    path = tmp_path / "sim" / "1" / "progress.json"
+    document = _write_progress(path)
+    attempts = hold_replaces(monkeypatch, {path: 1})
+    write_progress_json(path, {**document, "phase": "complete", "complete": True})
+    assert json.loads(path.read_text(encoding="utf-8"))["phase"] == "complete"
+    assert attempts[path] == 2
+
+
+def test_progress_write_retries_before_raising_lasting_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.progress_lifecycle import write_progress_json
+    from tests.sharing_error_support import hold_replaces
+
+    path = tmp_path / "sim" / "1" / "progress.json"
+    document = _write_progress(path)
+    attempts = hold_replaces(monkeypatch, {path: 100})
+    with pytest.raises(PermissionError):
+        write_progress_json(path, document)
+    assert attempts[path] > 1
+
+
+def _flaky_progress_open(monkeypatch: pytest.MonkeyPatch, failures: int) -> list[int]:
+    from tests.sharing_error_support import flaky, no_retry_delay
+
+    no_retry_delay(monkeypatch)
+    opener, calls = flaky(progress_module.open_regular_nofollow, failures)
+    monkeypatch.setattr(progress_module, "open_regular_nofollow", opener)
+    return calls
+
+
+def test_progress_read_survives_transient_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "sim" / "1" / "progress.json"
+    _write_progress(path)
+    calls = _flaky_progress_open(monkeypatch, 1)
+    found = read_progress_for_run((tmp_path,), "sim", "run-1")
+    assert found is not None
+    assert found[0] == path
+    assert calls == [2]
+
+
+def test_progress_read_raises_lasting_sharing_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_progress(tmp_path / "sim" / "1" / "progress.json")
+    calls = _flaky_progress_open(monkeypatch, 100)
+    with pytest.raises(PermissionError):
+        read_progress_for_run((tmp_path,), "sim", "run-1")
+    assert calls[0] > 1
+
+
+def test_progress_read_keeps_posix_permission_error_as_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+
+    _write_progress(tmp_path / "sim" / "1" / "progress.json")
+    monkeypatch.setattr("sys.platform", "linux")
+
+    def deny(*_args: object, **_kwargs: object) -> int:
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(progress_module, "open_regular_nofollow", deny)
+    assert read_progress_for_run((tmp_path,), "sim", "run-1") is None
+
+
+def test_held_checkpoint_of_another_run_does_not_hide_this_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from tests.sharing_error_support import no_retry_delay, sharing_error
+
+    mine = tmp_path / "sim" / "1" / "progress.json"
+    held = tmp_path / "sim" / "2" / "progress.json"
+    _write_progress(mine)
+    _write_progress(held, run_id="other")
+    os.utime(held, (mine.stat().st_atime + 10, mine.stat().st_mtime + 10))  # newest first
+    no_retry_delay(monkeypatch)
+    real_open = progress_module.open_regular_nofollow
+
+    def open_unless_held(path: Path, **kwargs: object) -> int:
+        if Path(path) == held:
+            raise sharing_error()
+        return real_open(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(progress_module, "open_regular_nofollow", open_unless_held)
+    found = read_progress_for_run((tmp_path,), "sim", "run-1")
+    assert found is not None
+    assert found[0] == mine

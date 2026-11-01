@@ -1,18 +1,7 @@
 # Supported EDA tools
 
-## Read this first
-
-This doc assumes a few Booley terms: **Booley Flow** (Booley's deterministic
-end-to-end orchestration), **Target** (a named FuseSoC `.core` build target),
-and **EDA provisioning** (where an approved tool installation comes from). If any are new, consult the
-glossary in [GLOSSARY.md](../GLOSSARY.md); the [README](../../README.md) and
-[SETUP.md](SETUP.md) give the wider picture. Everything below is the detail
-layer on top of that vocabulary.
-
-The single source of truth for which EDA tools Booley drives, with which
-provisioning source, trace support, and requirements. When README,
-SETUP, or ROADMAP need to state "what's supported," they link here rather than
-keeping their own drifting lists.
+Terms such as **Booley Flow**, **Target**, and **EDA provisioning** are
+defined in the [glossary](../GLOSSARY.md).
 
 **Source language: SystemVerilog/Verilog only.** VHDL is not supported in any
 flow — there is no GHDL/NVC Booley Flow, no VHDL lint or synthesis path, and a mixed
@@ -36,13 +25,9 @@ Two axes govern every flow:
   select a host command, path, arbitrary mount, license destination, or
   execution location.
 
-For every host-provisioned EDA tool, the built-in policy owns one canonical
-container path. The administrator may register different host installation
-paths, but every approved installation of a given tool is mounted at that same
-read-only destination inside the Sandbox. Neither the Project nor the
-Installation Registration can configure the destination. This gives wrappers,
-Flows, Doctor checks, and future image changes one stable tool layout instead
-of making container paths part of Project configuration.
+Every approved installation of a tool mounts at the same fixed read-only path
+in the Sandbox (Vivado: `/opt/booley-eda/vivado`); neither the Project nor the
+registration can change it.
 
 ## Built-in flows
 
@@ -67,9 +52,7 @@ the Sandbox.
 The FPGA Flow's portable `compact`, `balanced`, and `max_frequency` profiles
 were characterized on this exact lane. They map to supported Vivado run
 strategies; `balanced` preserves the vendor defaults without patching generated
-Tcl. The reproducible compatibility results are preserved in the checked-in
-[Vivado characterization fixture](../../tests/fixtures/vivado_profile_characterization/evidence.json).
-These names express optimization intent, not guaranteed QoR, and FPGA power is
+Tcl. These names express optimization intent, not guaranteed QoR, and FPGA power is
 not currently a normalized metric.
 
 The Project requests host provisioning under `[eda.vivado]`; the administrator
@@ -81,29 +64,19 @@ supported for Booley and EDA tools already provisioned in its Linux Docker
 image; a native Windows EDA installation cannot be mounted into a Linux
 container and executed there.
 
-The optional fixed-destination FlexNet relay is experimental. Its synthetic
-forwarding, isolation, failure, and cleanup tests pass, but an
-administrator-approved paid-seat checkout, accounting, concurrency, and return
-matrix was not available. Do not treat floating-license behavior or its SLA as
-validated until that site evidence exists.
+The FlexNet relay is experimental: it has not been validated against real
+paid-seat checkouts. Don't rely on floating-license behavior yet.
 
-The base sandbox image pins **cocotb 2.x**, but the cocotb run-half — the run
-stage of the simulate flow that Booley drives after FuseSoC builds the sim —
-also speaks the **cocotb 1.x** selection dialect (`TESTCASE` instead of
-`COCOTB_TEST_FILTER`, auto-detected via `cocotb-config --version`). So a project
-that pins a 1.x stack still routes `sim` through the built-in flow.
-
-Dialect compatibility does not guarantee that every historical cocotb release
-works with the image's current simulator. If simulation stalls at time zero,
-see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#simulation-stalls-at-time-zero-without-results).
+The image ships **cocotb 2.x**; a Project that pins **cocotb 1.x** still works
+(Booley detects it and uses `TESTCASE`). If simulation stalls at time zero, see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#simulation-stalls-at-time-zero-without-results).
 
 A test that needs a non-RTL build step before it can run (a per-case
 firmware compile, vector staging) declares it as
 `[flows.sim].pre_run_commands`
-([CONFIG.md](CONFIG.md#pre-sim-commands-flowssimpre_run_commands)) —
+([FLOW-SIM.md](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands)) —
 the project's own Makefile runs inside the Sandbox, and Booley keeps the
-same Flow contract above it. A simulator outside this matrix is out of scope
-for Goal Mode; widening the matrix is the sanctioned extension axis.
+same Flow contract above it. Simulators outside this matrix are not supported.
 
 > **`synth` is a PPA estimate, not tape-out.** It's a fast
 > power/performance/area estimate to optimize RTL against, whatever
@@ -152,11 +125,9 @@ processing cheap.
 
 ## Versions in the sandbox image
 
-Everything below is pinned in `src/booley/data/docker/Dockerfile.base` (the
-image digest and `ARG` lines are the source of truth). This table is what a
-fresh `booley-sandbox` build gives you; a project image may add to it, and `[sandbox].pip_requirements`
-may override the Python rows (see
-[CONFIG.md](CONFIG.md#python-dependencies-sandboxpip_requirements)).
+Versions in a fresh `booley-sandbox` image. A project image may add to it, and
+`[sandbox].pip_requirements` may override the Python rows (see
+[SANDBOX.md](SANDBOX.md#python-dependencies-sandboxpip_requirements)).
 
 | Component | Version |
 |---|---|
@@ -172,10 +143,6 @@ may override the Python rows (see
 | cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.3 |
 | Liberty / PDK | NangateOpenCellLibrary (typical CCS), fetched and SHA-256 verified by `booley bootstrap`, mounted read-only at `/opt/pdk/cell/lib` |
 
-Verilator 5.052 includes the nested-shift compiler fix required for native
-coverage. The image includes LZ4 development headers for native FST model
-builds and retains the system allocator.
-
 Check what your image actually has rather than trusting the table after an
 upgrade:
 
@@ -186,18 +153,12 @@ booley session enter -- python -m pip list        # the Python side
 ```
 
 The RISC-V variant (`booley-sandbox-riscv`) adds xPack RISC-V GCC `15.2.0-1`
-and a tested official-master Spike snapshot at
+and upstream Spike at master snapshot
 `609dbe0b9994154833039209fa37151e7c05e9d4` (`1.1.1-dev`) on top of these.
-Upstream has no maintained stable release suitable for Ubuntu 26.04, so Booley
-refreshes this exact official-master pin once per Booley release, after its
-image and RISC-V acceptance gates pass; see
-[ADR 0069](../adr/0069-follow-tested-spike-master-snapshots.md). This is
-upstream Spike, not lowRISC's `ibex-cosim` fork that Ibex's UVM co-simulation
-needs. See also [CONFIG.md](CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv).
+This is upstream Spike, not lowRISC's `ibex-cosim` fork that Ibex's UVM co-simulation
+needs. See also [SANDBOX.md](SANDBOX.md#risc-v-toolchain-image-booley-sandbox-riscv).
 
-Future commercial EDA integrations require their own built-in provisioning,
-licensing, Doctor, security, and full-Flow evidence before they can join this
-matrix. Planned integrations live in
+Planned commercial tools: see
 [ROADMAP.md](../internals/ROADMAP.md#commercial-eda-tools).
 
 ### Native coverage capabilities

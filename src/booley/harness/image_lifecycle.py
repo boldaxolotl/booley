@@ -30,7 +30,28 @@ from booley.runtime.docker_capacity import (
     DockerCacheEvidence,
     ensure_docker_build_capacity,
 )
+from booley.runtime.guarded_write import SymlinkTargetError, replace_regular_file
 from booley.runtime.image_build_contracts import source_image_build_contracts
+from booley.runtime.image_lifecycle import (
+    BASE_IMAGE,
+    FLAVOR_RECIPES,
+    ArtifactPolicy,
+    ArtifactSource,
+    BuildPort,
+    DockerPort,
+    HostImageScope,
+    ImageLifecycleError,
+    ImageNode,
+    ImageRole,
+    ImageScope,
+    Intent,
+    LifecyclePlan,
+    LifecycleResult,
+    PlanAction,
+    PreparedConvergence,
+    ProjectImageScope,
+    Status,
+)
 from booley.runtime.paths import docker_data_dir
 from booley.runtime.project_resources import own_tag_snapshot, record_superseded_images
 from booley.runtime.version_attribution import VersionOrigin
@@ -39,28 +60,6 @@ if TYPE_CHECKING:
     from booley.harness.setup.common import InitContext
 
 logger = logging.getLogger(__name__)
-
-BASE_IMAGE = runtime_lifecycle.BASE_IMAGE
-FLAVOR_RECIPES = runtime_lifecycle.FLAVOR_RECIPES
-RISCV_SUBSTRATE_IMAGE = runtime_lifecycle.RISCV_SUBSTRATE_IMAGE
-BuildPort = runtime_lifecycle.BuildPort
-ArtifactSource = runtime_lifecycle.ArtifactSource
-ArtifactPolicy = runtime_lifecycle.ArtifactPolicy
-DockerPort = runtime_lifecycle.DockerPort
-HostImageScope = runtime_lifecycle.HostImageScope
-ImageCleanup = runtime_lifecycle.ImageCleanup
-ImageLifecycleError = runtime_lifecycle.ImageLifecycleError
-InstalledImageContractError = runtime_lifecycle.InstalledImageContractError
-ImageNode = runtime_lifecycle.ImageNode
-ImageScope = runtime_lifecycle.ImageScope
-Intent = runtime_lifecycle.Intent
-LifecycleResult = runtime_lifecycle.LifecycleResult
-ProjectImageScope = runtime_lifecycle.ProjectImageScope
-Status = runtime_lifecycle.Status
-ImageRole = runtime_lifecycle.ImageRole
-LifecyclePlan = runtime_lifecycle.LifecyclePlan
-PreparedConvergence = runtime_lifecycle.PreparedConvergence
-PlanAction = runtime_lifecycle.PlanAction
 
 
 class _LegacyBuildAdapter:
@@ -96,11 +95,6 @@ class _LegacyBuildAdapter:
     def _pull_release(self, node: ImageNode) -> str:
         from booley.harness.setup.docker_image import _try_pull_image, remote_tag
 
-        shipped = node.reference == BASE_IMAGE or node.reference in FLAVOR_RECIPES
-        if not shipped:
-            raise ImageLifecycleError(
-                f"no published Sandbox Image source exists for {node.reference}"
-            )
         if not _try_pull_image(node.payload.version, node.reference, adopt=False):
             raise ImageLifecycleError(
                 f"could not pull current packaged Sandbox Image {node.reference}"
@@ -110,8 +104,6 @@ class _LegacyBuildAdapter:
     def _build_local(self, node: ImageNode, *, force: bool) -> None:
         from booley.harness.setup.common import InitContext
 
-        if node.reference != BASE_IMAGE:
-            raise ImageLifecycleError("Project images require the transaction planner")
         context = InitContext(
             project_root=self.project_root,
             force=force,
@@ -264,13 +256,8 @@ class _IncrementalBuildAdapter:
             self._verify_manual_ancestry(candidate_reference, parent_id)
         return candidate_reference
 
-    @staticmethod
-    def _verify_manual_ancestry(candidate: str, parent_id: str | None) -> None:
-        parent = project_image.inspect_layout_image(parent_id or "")
-        child = project_image.inspect_layout_image(candidate)
-        layers = parent.get("RootFS", {}).get("Layers", [])
-        actual = child.get("RootFS", {}).get("Layers", [])
-        if not layers or actual[: len(layers)] != layers:
+    def _verify_manual_ancestry(self, candidate: str, parent_id: str | None) -> None:
+        if not runtime_lifecycle.descends_from(self.docker, parent_id, candidate):
             raise ImageLifecycleError(
                 "manual Project recipe final image does not descend from the verified selected parent"
             )
@@ -284,7 +271,7 @@ class _IncrementalBuildAdapter:
             raise ImageLifecycleError(
                 "Booley Directory layout parent is unavailable; run init or refresh"
             )
-        parent = self._validated_layout_parent(node, parent_id)
+        user = self._validated_layout_user(node, parent_id)
         tag = f"127.0.0.1:1/booley-lifecycle-{os.getpid()}-{uuid4().hex}-layout-parent:candidate"
         self.docker.tag(parent_id, tag)
         try:
@@ -293,15 +280,20 @@ class _IncrementalBuildAdapter:
                     raise ImageLifecycleError(
                         "Booley Directory layout parent tag changed before build"
                     )
-                spec, matching = self._layout_build_spec(node, candidate, parent, tag, directory)
+                spec, matching = self._layout_build_spec(
+                    node, candidate, parent_id, user, tag, directory
+                )
                 result = docker_image._docker_build_image(context, spec)
                 if result != 0 or self.docker.image_id(tag) != parent_id:
                     raise ImageLifecycleError(
                         "local-only Booley Directory layout build failed or parent was substituted"
                     )
-                project_image.verify_layout_image(
-                    parent, project_image.inspect_layout_image(candidate)
-                )
+                child_id = self.docker.image_id(candidate)
+                if child_id is None:
+                    raise ImageLifecycleError(
+                        "local-only Booley Directory layout build produced no image"
+                    )
+                project_image.verify_layout_parent_identity(child_id, parent_id, "docker")
                 if matching:
                     self._next_request_index += 1
         except RuntimeError as exc:
@@ -316,10 +308,10 @@ class _IncrementalBuildAdapter:
         except (ImageLifecycleError, OSError) as exc:
             context.record("layout_parent_cleanup", "warn", str(exc))
 
-    def _validated_layout_parent(self, node: ImageNode, parent_id: str) -> dict:
+    def _validated_layout_user(self, node: ImageNode, parent_id: str) -> str:
         try:
             parent = project_image.inspect_layout_image(parent_id)
-            project_image.layout_image_user(parent)
+            user = project_image.layout_image_user(parent)
         except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(str(exc)) from exc
         if parent.get("Id") != parent_id:
@@ -335,13 +327,11 @@ class _IncrementalBuildAdapter:
                 "Booley Directory layout parent has no matching wheel identity"
             )
         self._wheel_sha256 = wheel_sha
-        return parent
+        return user
 
-    def _layout_build_spec(self, node, candidate, parent, tag, directory):
+    def _layout_build_spec(self, node, candidate, parent_id, user, tag, directory):
         from booley.harness.setup import docker_image
 
-        parent_id = parent["Id"]
-        user = project_image.layout_image_user(parent)
         current = _capacity_request(node, output_tag=candidate)
         index = self._next_request_index
         matching = (
@@ -392,7 +382,10 @@ class _IncrementalBuildAdapter:
         for name, body in node.generated_files:
             target = docker_dir / name
             if project_image.is_managed_generated_file(target):
-                target.write_text(body, encoding="utf-8")
+                try:
+                    replace_regular_file(target, body.encode("utf-8"))
+                except SymlinkTargetError as exc:
+                    raise ImageLifecycleError(str(exc)) from exc
 
     def _build_role(
         self,

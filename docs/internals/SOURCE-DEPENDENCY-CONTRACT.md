@@ -46,7 +46,7 @@ adapters; D32 prevents Runtime from depending on those script owners, while D34 
 the shared owner independent of Runtime, Harness, and Dev Support.
 
 Feedback owns report rendering from an explicit `Environment` value. Harness resolves
-the optional Doctor `deep` observation at report, export, and Project Setup cleanup
+the optional Doctor `deep` observation at report and export
 composition roots, validates it as a boolean, and passes one environment through each
 logical operation. Missing or invalid observations remain `not recorded`. D33 forbids
 Feedback from importing Harness in any static import location.
@@ -113,11 +113,10 @@ and isolated diagnostics.
 
 The implementation owns record scan and projection limits, newest-record
 selection, conservative process/slot states, exact report/progress lookup,
-available artifact paths, endpoint cache capacity, and successful refresh
-generations. Callers do not construct a cache or coordinate `configure_project`,
-`begin`, `prepare_endpoints`, reads and `complete`. A failed observation does not
-commit its touch generation. Observation never polls, repairs, reaps or writes a
-Job; run identity includes its retained root.
+available artifact paths, and the parsed files retained from the last successful
+refresh. Callers do not construct or coordinate a cache. A failed observation
+leaves the committed parses intact. Observation never polls, repairs, reaps or
+writes a Job; run identity includes its retained root.
 
 `harness.dashboard.jobs.JobReader` owns the higher-level composition. It selects
 roots from the same Goal enumeration that supplied the Dashboard's Goal rows:
@@ -146,23 +145,19 @@ observation package independent of Targets; D5/D6 already protect Runtime from
 MCP, Specialists and Harness. No composition exemption or cycle expansion is
 needed. Runtime still consumes `targets.flow_names` through `shared_infra`.
 
-The observer reuses the released read-only progress functions from
-`flows.progress_lifecycle`. That owner also contains publication, repair,
-supersession, locking and coverage-origin validation. Moving it wholesale would
-relocate unrelated behavior; choosing a shared lower-level progress owner needs
-its own investigation. Thus Runtime's Flow dependency remains explicit in this
-slice, including the existing complete exact-progress fallback past the parsed
-artifact-history limit.
+The observer reuses progress shape validation from `flows.progress_lifecycle`.
+That owner also contains publication, repair, supersession, locking and
+coverage-origin validation. Moving it wholesale would relocate unrelated
+behavior; choosing a shared lower-level progress owner needs its own
+investigation. Runtime's Flow dependency remains explicit. Exact progress past
+the parsed artifact-history limit uses the artifact cache's generation reuse,
+with overflow candidates visited newest first on a progress miss.
 
 The former internal `runtime.job_snapshot` module is replaced by the observation
 facade and Dashboard composition. All in-repository consumers migrate together;
 CLI/MCP behavior, persisted record/report layouts and schemas remain unchanged.
-`runtime.job_artifacts.JobArtifactCache` remains a compatibility import for
-standalone cache callers. This compatibility surface exports the class only;
-module-level limits, type aliases and reader helpers are private implementation
-details under `job_observation._artifacts`. The standalone regression suite
-constructs its caches through the compatibility import; fault injection targets
-the implementation module. Dashboard code uses only the observer interface.
+The artifact cache is private to `job_observation._artifacts`; its tests use the
+owning module. Dashboard code uses only the observer interface.
 
 One historical presentation residue remains: the observer's scan-limit diagnostic
 retains the exact Dashboard wording about older interactive sessions being
@@ -398,7 +393,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D27 | Prefix `booley.targets` | Prefixes `booley.flows`, `booley.runtime` | Forbid | Target inspection uses shared build identity without Flow execution or Runtime. |
 | D28 | Prefix `booley.fusesoc` | Prefix `booley.runtime` | Forbid | FuseSoC provenance consumes pure Scope matching without Runtime or Git execution. |
 | D29 | Prefix `booley.bwave` | Prefix `booley.flows` | Forbid | B-Wave owns reusable waveform mechanics without Flow execution or Simulation evidence policy. |
-| D31 | Prefix `booley` | Exact modules `booley.flows.sim.campaign.store`, `booley.flows.sim.campaign.inspection` | Forbid, subject only to C10-C13 | Simulation Campaign durable storage is private implementation behind the public Campaign interface. |
+| D31 | Prefix `booley` | Exact modules `booley.flows.sim.campaign.store`, `booley.flows.sim.campaign.inspection` | Forbid, subject only to C10, C12-C13 | Simulation Campaign durable storage is private implementation behind the public Campaign interface. |
 | D32 | Prefix `booley.runtime` | Prefix `booley.dev_support` | Forbid | Packaged execution consumes commit policy through its shared owner; development commands do not own Runtime behavior. |
 | D33 | Prefix `booley.feedback` | Prefix `booley.harness` | Forbid | Feedback consumes resolved environment observations and owns report rendering without command or Ticket Mode composition. |
 | D34 | Prefix `booley.commit_policy` | Prefixes `booley.runtime`, `booley.harness`, `booley.dev_support` | Forbid | Shared commit policy stays independent of execution composition and script adapters. |
@@ -424,7 +419,7 @@ type-only positions. A companion AST ownership gate rejects static access to
 `CampaignStore`, `CampaignRecovery`, `WorkItemRecovery`, and
 `SharedBuildRecovery` through any Campaign module outside the exact store owners.
 Tests, arbitrary dynamic-name access, and dynamic-import expressions remain
-outside this production static gate. A live-edge ratchet requires every C10-C13
+outside this production static gate. A live-edge ratchet requires every C10, C12-C13
 permission to correspond to a current exact production edge.
 
 ## Criterion evidence ownership
@@ -455,7 +450,7 @@ codec, an intent whose envelope names a different identity than its lookup
 key is rejected.
 
 Coverage Campaign persistence and queries remain Simulation Flow responsibilities.
-`flows.sim.coverage_campaign_store` owns V1/V2 loading, summary access, and complete
+`flows.sim.coverage_campaign_store` owns V5 loading and complete
 point-store validation. `flows.sim.coverage_evidence` owns bounded evidence queries
 and retrieval accounting; MCP exposes the interface and the Coverage Analyst
 composes its session. See [ADR 0062](../adr/0062-split-coverage-campaign-summary-from-point-storage.md)
@@ -494,7 +489,6 @@ named rule and gives no source module a blanket exemption.
 | C2 | D4 | `booley.mcp.server -> booley.specialists.specialist` | The MCP server classifies and composes Specialist endpoints. |
 | C8 | D6 | `booley.runtime.incontainer_register -> booley.harness.incontainer_register` | The former module path remains an exact compatibility entry point. |
 | C10 | D31 | `booley.flows.sim.campaign.coordinator -> booley.flows.sim.campaign.store` | Campaign execution composes durable transaction, recovery, and publication. |
-| C11 | D31 | `booley.flows.sim.campaign.child_protocol -> booley.flows.sim.campaign.store` | Campaign-owned child linkage validates and publishes durable Campaign paths. |
 | C12 | D31 | `booley.flows.sim.campaign.inspection -> booley.flows.sim.campaign.store` | Public read capabilities inspect storage through the private Campaign store. |
 | C13 | D31 | `booley.flows.sim.campaign -> booley.flows.sim.campaign.inspection` | The Campaign package facade publishes the storage-backed read capabilities. |
 

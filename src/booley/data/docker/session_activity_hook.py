@@ -46,6 +46,8 @@ EVENT_STATES = {
     "Notification": WAITING_USER,
 }
 END_EVENT = "SessionEnd"
+# What SessionEnd leaves behind: the same signal file, marked as ended.
+ENDED = "ended"
 # The only Claude Code notifications that mean "waiting for the user".
 WAITING_NOTIFICATIONS = frozenset({"idle_prompt", "permission_prompt", "elicitation_dialog"})
 CLIENT_COMMAND = "claude"
@@ -141,9 +143,16 @@ def _codex_key(payload: Mapping[str, object]) -> str | None:
 
 
 def _chat_aliases(project: Path) -> dict[str, str]:
-    """Validate the same session-map contract as runtime.handles.HandleStore."""
+    """Validate the session-map contract of runtime.handles.HandleStore, but stricter.
+
+    Only the Booley Directory entry itself (*project*) may be a link, as in the host
+    store: the Sandbox ``BOOLEY_DIR=/booley-project`` is an image symlink to
+    ``/work/.booley``, and a host ``.booley`` may be a link. Links above or below
+    that entry stay refused. This file runs as ``python3 -I -S`` without Booley
+    imports, so the rule of ``booley.core.booley_dir_links`` is inlined.
+    """
     path = project / "runtime/sessions/handles/map.json"
-    if any(part.is_symlink() for part in (path, *path.parents)):
+    if any(part.is_symlink() for part in (path, *path.parents) if part != project):
         raise ValueError("handle map is redirected")
     with path.open("rb") as stream:
         raw = stream.read(16 * 1024 * 1024 + 1)
@@ -263,7 +272,7 @@ def record(
         if part.is_symlink():
             raise OSError(f"session activity storage is redirected: {part}")
     if event == END_EVENT:
-        (root / _signal_filename(key)).unlink(missing_ok=True)
+        _write(root, key, ENDED, "", now)
         return True
     state = EVENT_STATES[event]
     tool = payload.get("tool_name")

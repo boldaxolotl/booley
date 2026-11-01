@@ -9,7 +9,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote
 
+from booley.core.booley_dir import resolve_checkout_booley_dir
+from booley.core.booley_dir_links import is_booley_dir_entry
+from booley.core.booley_layout import BooleyLayoutError
+from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.runtime.file_lock import nonblocking_file_lock
+from booley.runtime.filesystem_utils import replace_file
 
 
 def target_report_directory(invocation: Path, selector: str) -> Path:
@@ -27,7 +32,7 @@ def write_campaign_json(path: Path, document: dict[str, object]) -> None:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        Path(temporary).replace(path)
+        replace_file(Path(temporary), path)
         _fsync_directory(path.parent)
     finally:
         Path(temporary).unlink(missing_ok=True)
@@ -64,11 +69,35 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def simulation_booley_dir(project_root: Path) -> Path | None:
+    """Return the checkout's lexical Booley Directory entry, or ``None`` without one.
+
+    This is the derivation a Simulation place that knows its Project Root uses to learn
+    which single symlinked component (#2191) it may follow; retention, which has no
+    Project Root, goes through ``invocation_booley_dir``. A checkout with no Booley
+    Directory, or a layout the resolver refuses, has no entry to follow.
+    """
+    try:
+        return resolve_checkout_booley_dir(project_root)
+    except (FileNotFoundError, BooleyLayoutError, SourceCheckoutProjectError):
+        return None
+
+
+def report_link_ancestor(path: Path, booley_dir: Path | None = None) -> Path | None:
+    """Return the first of *path* and its parents that is a link other than the entry."""
+    for candidate in (path, *path.parents):
+        if is_report_link(candidate) and not is_booley_dir_entry(candidate, booley_dir):
+            return candidate
+    return None
+
+
 @contextmanager
-def campaign_invocation_lock(invocation: Path) -> Iterator[None]:
+def campaign_invocation_lock(
+    invocation: Path, *, booley_dir: Path | None = None
+) -> Iterator[None]:
     """Exclude pruning and execution; OS ownership ends automatically on interruption."""
     lock = invocation.with_name(f".invocation-{invocation.name}.lock")
-    if any(is_report_link(path) for path in (lock, *lock.parents)):
+    if report_link_ancestor(lock, booley_dir) is not None:
         raise ValueError("Invocation lock paths must not contain symlinks")
     with lock.open("a+", encoding="utf-8") as handle, nonblocking_file_lock(handle):
         yield

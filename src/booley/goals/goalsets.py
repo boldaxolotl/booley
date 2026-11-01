@@ -240,7 +240,8 @@ def seed_goalsets(booley_dir: Path, *, dry_run: bool) -> list[tuple[Path, WriteO
 
     Writes are create-only: an existing file is :attr:`WriteOutcome.SKIPPED`
     and left untouched, because the Project owns it. ``default.md`` is never
-    written. Under *dry_run* nothing is created, not even the directory, and
+    written. A symlinked path is :attr:`WriteOutcome.REFUSED` and left untouched.
+    Under *dry_run* nothing is created, not even the directory, and
     each result is the outcome a real run would have.
     """
     goalsets_dir = booley_dir / GOALSETS_DIR

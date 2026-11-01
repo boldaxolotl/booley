@@ -25,7 +25,6 @@ from booley.flows.sim.request import SimRequest
 from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 from tests.flows.sim import test_campaign_resume_diagnostics as resume_support
 from tests.flows.sim.test_campaign_flow_planning import _planning_fixture
-from tests.flows.sim.test_campaign_manifest_codec import _manifest as _v1_manifest
 
 _V4 = "booley.simulation-campaign-manifest/v4"
 
@@ -183,16 +182,9 @@ def _refinalized(document: dict):
         (lambda item: item["test_runs"].clear(), "nonempty and uniquely named"),
         (lambda item: item["test_runs"].append(copy.deepcopy(item["test_runs"][0])), "uniquely"),
         (lambda item: item["test_runs"][0].update(name="count+soak@43"), "disagrees with its own"),
-        (lambda item: item["test_runs"][0].update(args=["+iters=1"]), "disagrees with its own"),
         (lambda item: item["test_runs"][0].update(seed=0), "out of range"),
         (lambda item: item["test_runs"][0].update(extra=1), "must hold exactly"),
         (lambda item: item["test_runs"][0].pop("env"), "must hold exactly"),
-        (
-            lambda item: item["test_runs"].__setitem__(
-                0, test_run_document(build_test_run("reset", seed=42))
-            ),
-            "disagree with selection",
-        ),
         (
             lambda item: item["test_runs"].append(test_run_document(_OTHER_SEED)),
             "ordinary work item requires one Test Run",
@@ -214,32 +206,6 @@ def test_cocotb_batch_refuses_test_runs_that_differ_in_seed(tmp_path: Path):
     document["work_items"][0]["test_runs"][1] = test_run_document(build_test_run("count", seed=2))
     with pytest.raises(SimulationCampaignIntegrityError, match="share seed and environment"):
         _refinalized(document)
-
-
-def test_a_manifest_before_v4_may_not_carry_test_runs(tmp_path: Path):
-    document = _v4_document(tmp_path)
-    document["$schema"] = "booley.simulation-campaign-manifest/v3"
-    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
-        _refinalized(document)
-
-
-def test_a_manifest_before_v4_still_decodes_for_reports():
-    manifest = finalize_manifest({k: v for k, v in _v1_manifest().items() if k != "fingerprints"})
-    decoded = decode_simulation_campaign_manifest(encode_simulation_campaign_manifest(manifest))
-    assert decoded.document["$schema"] == "booley.simulation-campaign-manifest/v1"
-    assert all("test_runs" not in item for item in decoded.document["work_items"])
-    assert _work_item_test_runs(decoded.document["work_items"][0]) is None
-
-
-def test_resuming_a_manifest_before_v4_fails_closed():
-    manifest = finalize_manifest({k: v for k, v in _v1_manifest().items() if k != "fingerprints"})
-    with pytest.raises(SimulationCampaignIntegrityError) as excinfo:
-        _manifest_run_groups(manifest)
-    assert str(excinfo.value) == (
-        "this Simulation Campaign manifest predates recorded Test Runs "
-        "(booley.simulation-campaign-manifest/v1) and cannot be resumed; "
-        "start a new Simulation Campaign"
-    )
 
 
 @pytest.mark.parametrize(
@@ -356,7 +322,6 @@ def test_tests_an_unfiltered_cocotb_batch_discovered_carry_its_seed():
         "found_b",
         "found_a",
     ]
-    assert observation_test_runs({}, observed) is None
 
 
 def test_an_observation_without_a_test_run_in_its_work_item_is_refused():
@@ -446,7 +411,7 @@ def _result_document(tmp_path: Path) -> dict:
     return json.loads(encode_simulation_result(results[0]))
 
 
-def test_result_v3_round_trips_and_previous_versions_still_decode(tmp_path: Path):
+def test_result_v3_round_trips(tmp_path: Path):
     from booley.flows.sim.campaign.codec import (
         canonical_json_bytes,
         decode_simulation_result,
@@ -456,16 +421,6 @@ def test_result_v3_round_trips_and_previous_versions_still_decode(tmp_path: Path
     document = _result_document(tmp_path)
     raw = canonical_json_bytes(document)
     assert encode_simulation_result(decode_simulation_result(raw)) == raw
-
-    for version in ("v2", "v1"):
-        older = copy.deepcopy(document)
-        older["$schema"] = f"booley.simulation-result/{version}"
-        for observation in older["observations"]:
-            del observation["test_run"]
-        decoded = decode_simulation_result(canonical_json_bytes(older))
-        # v1 is read as v2; neither names Test Runs.
-        assert decoded.document["$schema"] == "booley.simulation-result/v2"
-        assert all("test_run" not in item for item in decoded.document["observations"])
 
 
 @pytest.mark.parametrize(
@@ -490,23 +445,3 @@ def test_result_v3_refusals(tmp_path: Path, alter, message):
     alter(document)
     with pytest.raises(SimulationCampaignIntegrityError, match=message):
         decode_simulation_result(canonical_json_bytes(document))
-
-
-def test_a_v2_result_may_not_name_test_runs(tmp_path: Path):
-    from booley.flows.sim.campaign.codec import canonical_json_bytes, decode_simulation_result
-
-    document = _result_document(tmp_path)
-    document["$schema"] = "booley.simulation-result/v2"
-    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
-        decode_simulation_result(canonical_json_bytes(document))
-
-
-def test_a_result_naming_a_test_run_its_work_item_does_not_record_is_refused(tmp_path: Path):
-    from booley.flows.sim.campaign.store import _validate_result_test_runs
-
-    plan = _hdl_plan(tmp_path, ((_SOAK,),))
-    item = plan.manifest.document["work_items"][0]
-    _validate_result_test_runs(item, ({"test": "count", "test_run": "count+soak@42"},))
-    _validate_result_test_runs(item, ({"test": "count"},))  # a result before v3
-    with pytest.raises(SimulationCampaignIntegrityError, match="does not record"):
-        _validate_result_test_runs(item, ({"test": "count", "test_run": "count+soak@43"},))

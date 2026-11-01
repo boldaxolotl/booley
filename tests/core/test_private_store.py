@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from pathlib import Path
@@ -224,3 +225,63 @@ def test_failed_write_propagates_and_cleans_temporary_file(store, monkeypatch, f
     expected = {"new": True} if failure == "directory_fsync" else {"old": True}
     assert store.read_json("record.json") == expected
     assert sorted(p.name for p in store.root.iterdir()) == ["record.json"]
+
+
+def _json_record(store) -> Path:
+    store.ensure_directory()
+    store.atomic_write_text("record.json", '{"value": 1}')
+    return store.root / "record.json"
+
+
+def test_read_json_survives_transient_sharing_error(store, monkeypatch):
+    from tests.sharing_error_support import hold_os_opens
+
+    record = _json_record(store)
+    attempts = hold_os_opens(monkeypatch, {record: 1})
+    assert store.read_json("record.json") == {"value": 1}
+    assert attempts[record] == 2
+
+
+def test_read_json_retries_before_raising_lasting_sharing_error(store, monkeypatch):
+    from tests.sharing_error_support import hold_os_opens
+
+    record = _json_record(store)
+    attempts = hold_os_opens(monkeypatch, {record: 1000})
+    with pytest.raises(PermissionError) as lasting:
+        store.read_json("record.json")
+    assert lasting.value.winerror == 32  # type: ignore[attr-defined]
+    assert attempts[record] > 1
+
+
+def test_atomic_write_survives_transient_replace_sharing_error(store, monkeypatch):
+    from tests.sharing_error_support import hold_replaces
+
+    record = _json_record(store)
+    attempts = hold_replaces(monkeypatch, {record: 1})
+    store.atomic_write_text("record.json", '{"value": 2}')
+    assert store.read_json("record.json") == {"value": 2}
+    assert attempts[record] == 2
+
+
+def test_atomic_write_retries_before_raising_lasting_sharing_error(store, monkeypatch):
+    from tests.sharing_error_support import hold_replaces
+
+    record = _json_record(store)
+    attempts = hold_replaces(monkeypatch, {record: 1000})
+    with pytest.raises(PermissionError):
+        store.atomic_write_text("record.json", '{"value": 2}')
+    assert attempts[record] > 1
+    assert store.read_json("record.json") == {"value": 1}
+
+
+def test_read_json_keeps_missing_and_corrupt_errors(store, monkeypatch):
+    from tests.sharing_error_support import hold_os_opens
+
+    record = _json_record(store)
+    attempts = hold_os_opens(monkeypatch, {record: 0, store.root / "gone.json": 0})
+    with pytest.raises(FileNotFoundError):
+        store.read_json("gone.json")
+    record.write_text("not json", encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
+        store.read_json("record.json")
+    assert attempts == {record: 1, store.root / "gone.json": 1}

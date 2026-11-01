@@ -1,6 +1,6 @@
 # Booley Dashboard replaces the Console
 
-Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health, see Amendments)
+Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health; amended 2026-10-26: readability and navigation redesign; amended 2026-10-29: Jobs list columns; amended 2026-10-29: session end and tool-call registration, see Amendments)
 
 The Console showed one Ticket execution at a time. Goal Mode (ADR 0067)
 removes Ticket execution and runs several agent sessions, often unattended,
@@ -296,6 +296,20 @@ cannot identify every session or remain meaningful across Dashboard restarts.
   disposes only terminals it owns, with no terminal-name-based cleanup. Output
   channel diagnostics distinguish policy opt-outs and startup failures.
 
+## Amendments (2026-10-27, GitHub Codespaces attach)
+
+- **Codespaces is a Sandbox remote.** VS Code reports `env.remoteName` as
+  `codespaces` in a GitHub Codespace, whose workspace extension host runs in the
+  Codespace container. The workspace extension treats it like the Dev Containers
+  remotes (`dev-container`, `attached-container`): trust, the attach protocol,
+  the automatic-task preference, one opened folder, a Git Project Root and
+  `booley dashboard --attach-policy` gate the same fixed terminal. Other remote
+  kinds stay ineligible (#2255).
+- **Skips before policy are visible.** An ineligible remote kind, an untrusted
+  window and a disabled attach protocol each write one reason line to the
+  **Booley Dashboard** Output channel. A local window, with no remote, stays
+  quiet.
+
 ## Amendments (2026-10-15, Codex chat tab identity)
 
 - **Marked Codex launches are an exception to thread identity.** The earlier
@@ -334,3 +348,55 @@ earlier “Health only when attention is needed” and “Hide the healthy Docto
 rules.
 Independent upgrade-review notices and non-consuming, read-only snapshot rules
 remain unchanged; full findings stay in the existing Doctor presentations.
+
+## Amendments (2026-10-26)
+
+### 2026-10-26: Readability and navigation redesign
+
+Field use showed the overview was hard to scan: each session was one long `·`-joined line, the activity a human acts on sat at its end, and eight footer shortcuts competed for attention. This amendment supersedes the navigation rules above (stable `1`–`9` shortcuts, `?` help, the `j`, `r`, `a`, `s` and `u` keys, the visible shortcut footer), the Recent filter name, adaptive Goal columns, the session-scoped Jobs shortcuts and the `· stale` Doctor suffix.
+
+- **Two windows.** Sessions, the first window, and Jobs. Each keeps its own position, so switching away and back returns to the same detail and row. Results are not a separate concept: a finished Job is a Job.
+- **Arrows, Enter and Esc only.** ↑↓ move, Enter opens the selected row, Esc goes back and does nothing at a window's top level. ←→ switch windows from any depth. ↑ on the first row focuses a top bar holding the window tabs, the Jobs filters and Help; there ←→ choose, Enter applies, and ↓ or Esc return to the list. `q` still quits but is not displayed. The footer shows only the keys that apply where the cursor is.
+- **Sessions are grouped by what needs the human.** Needs you holds sessions waiting for user input or holding a pending Goal-change proposal; Working holds working and waiting-for-tool-call sessions; Unknown, dim, holds the rest. Inside a group the longest time in the current state comes first, and the cursor follows the selected session as rows move. A Standalone Jobs group appears only while one runs. Rows are aligned columns: handle, mode (with the Goal summary), branch, work directory, start age, and the activity or running-Job summary. As the terminal narrows, start age, then work directory, then branch are dropped; long values are truncated with `…`. Absent values show a dim `—`. Waiting times are plain text.
+- **Window tabs carry counts.** The Sessions tab counts sessions that need the human; the Jobs tab counts unfinished Jobs.
+- **Preview on wide terminals.** At 120 columns or wider, the highlighted session's orientation, Goal summary and running Jobs appear beside the list. Narrower terminals hide the preview.
+- **Session detail.** Goals use one column, still grouped by status. Only the session's unfinished Jobs are listed there; its finished Jobs are reached through the Jobs window's owner filter.
+- **Jobs filters.** Running (queued or running), Finished (newest 50) and All. The owner filter cycles All, each session handle, and Standalone, and the Jobs window always opens on All. An empty list says why it is empty and which filter shows something.
+- **Doctor freshness.** A due result reads ` · recheck due`, in the attention color, instead of ` · stale`.
+
+## Amendments (2026-10-29)
+
+### 2026-10-29: Jobs list columns (#1516)
+
+Job rows were one long `·`-joined line that overflowed the list beside the detail pane. This amendment supersedes the **Job list** rule above, including its rule that running rows show CPU and memory.
+
+- **Columns.** A Job row is aligned columns: Job, Target, Session, State, Result, Crit, Elapsed. A Flow-typed Job's handle names its Flow, so there is no Flow column; other Jobs show a generic handle and the detail names the endpoint. Result is the Flow-result word shared with Job detail (a dim `…` while the Job is unfinished). Crit is `✓` or `✗` from the Criterion line, blank when there is none. Absent Target or Session shows a dim `—`.
+- **Moved to detail.** Stage, exit code, session connection and running CPU and memory appear only in the selected Job's detail.
+- **Fit.** Typical rows fit beside the detail pane at 120 columns with no horizontal scroll; Job, Session, State, Crit and Elapsed keep their natural width, so unusually wide cells in them can still overflow. Target is cut with `…` first, down to six characters; then a long Result word is cut with `…`. The detail shows the full values.
+
+### 2026-10-29: Handle pruning (#1550)
+
+Neither handle map ever shrank, so each grew toward its 16 MiB bound, past which no new handle could be allocated. This amendment supersedes five rules of the 2026-10-14 amendments: "separate monotonic counters", "This separate map survives presence pruning", "Numbers are never recycled; inline Jobs retain allocations after their transient records are removed", "Historical records without allocations keep `S?` / `J-TYPE?`", and "The 16 MiB bound prevents allocation from recycling handles through a reset".
+
+- **Pruning.** A top-level Booley MCP server prunes both maps once at start, in a background thread, after startup reconciliation. Nested Specialist servers do not prune. A prune that cannot get a map's writer lock within 1 s, or hits any error, logs `Handle pruning skipped` and the server continues; a corrupt map is left unchanged and still refused by load.
+- **Job entries.** An entry expires when every record for its run ID is terminal and its `ended_at` (`started_at` for reconciled records without one) is more than 24 h old. An entry with a running record, an unreadable record or a malformed record never expires. An entry with no record at all (synchronous runs delete theirs) expires once the submit stamp in its run ID is more than 24 h old, or at once when the ID has no stamp.
+- **Session entries.** An entry, with all its aliases, expires unless a registry row exists for the entry or one of its aliases, a kept Job names the entry or an alias as its owner, or the entry or an alias is a `pid:` process key (a `booley chat` tab) whose process is not proven dead (the registry's own rule: only dead, reused or zombie processes are).
+- **Numbering.** A map left with no entries restarts at 1. Otherwise its counter keeps counting above every remaining number, so a number still in use is never handed out again; numbers freed by pruning can be.
+- **Dashboard.** An expired Job whose handle was pruned shows its run ID, and its owner shows the owner's session key when that session has no handle. `?` stays reserved for live Jobs and Sessions without a handle.
+- **Doctor.** `handles.map-size` warns when a map exceeds 75% of the bound.
+
+### 2026-10-29: Session end and tool-call registration (#2394)
+
+A `tools/list` request created a `worktree:` fallback row for a tab that had made no tool call, and `SessionEnd` removed only the activity signal, so the row stayed until `quiet_after`. This amendment supersedes three rules above.
+
+- **Rows come from tool calls.** Supersedes 2026-10-06 "a row is upserted on every Booley call under its key and removed when its identity is dead". A row is created or refreshed only by a Booley tool call; `tools/list` and every other request write no row and never change `last_call_at`. A tab that has made no tool call is not listed. A row is also removed once its session has ended.
+- **`SessionEnd` leaves an end marker.** Supersedes 2026-10-11 Event mapping "`SessionEnd` removes the signal". The hook replaces the session's signal with an end marker: the same file and layout, with `state: "ended"`. A marker is not activity; the Dashboard shows unknown activity for it. A row whose key has a marker newer than its `last_call_at` (strictly, at one-second resolution) is hidden at once, whatever its kind, and registry maintenance deletes it. A later tool call moves `last_call_at` past the marker and shows the session again. A missing, unreadable, symlinked, oversized, malformed or foreign marker, a wrong schema, another state, a non-canonical time, or a time more than 5 s in the future is ignored, and the row follows `quiet_after` and process liveness as before.
+- **Markers are removed with their row.** Supersedes 2026-10-11 Freshness "Registry maintenance removes a signal once its session has no row and the signal is older than the quiet threshold" for end markers: maintenance removes a marker as soon as its session has no row, after re-examining it as for any signal.
+
+Consequences:
+
+- Ending is revocable. Any later hook event of the same key overwrites the marker, so a row that maintenance has not yet pruned follows the ordinary rules again. A row already pruned (one maintenance pass, at most 60 s) returns only with the next Booley tool call, with a new start time and an empty call history. This includes a Claude Code `/clear`, which fires `SessionEnd` in a process that survives.
+- Without a usable `CLAUDE_PID`, a Claude Code tab's hooks find no row before its first tool call, so they record nothing until then. With `CLAUDE_PID` they record as before, and its `SessionEnd` marker is removed by the next maintenance pass.
+- A `worktree:` fallback row created by a real tool call cannot be ended by a hook and still waits out `quiet_after`.
+- Doctor's `goals.quiet-session` check does not read markers. Once maintenance prunes an ended row, it can warn within about a minute of `SessionEnd` instead of after `quiet_after`; the warning already says it is not evidence of abandonment.
+- Accepted inaccuracies: a tool call still in flight when `SessionEnd` fires moves `last_call_at` past the marker when it completes, and a still-running earlier hook (`Stop`) that finishes after `SessionEnd` replaces the marker. In both cases the row waits out `quiet_after`. A full activity store (`MAX_SIGNALS`) drops a `SessionEnd` for a key with no signal, which falls back the same way.

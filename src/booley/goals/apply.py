@@ -32,6 +32,7 @@ from booley.goals.changes import (
 )
 from booley.goals.derivation import CoverageEvaluation, Derivation, derive_changes
 from booley.goals.entry import EntryEnvironment
+from booley.goals.input_identity import main_booley_dir_entry
 from booley.goals.model import GoalRecord, GoalSpec, GoalState, RecordedGoal
 from booley.goals.paths import record_paths
 from booley.goals.proposals import (
@@ -224,10 +225,11 @@ def recover_locked(lock: RecordLock, env: ChangeEnvironment, *, abandoning: bool
         if (
             view.state not in {"approved", "rejected"}
             or view.decision is None
-            or view.decision.transaction_id is None
             or view.resolved_at is not None
         ):
             continue
+        # list_proposals refuses a decided proposal without a transaction authority.
+        assert view.decision.transaction_id is not None
         path = transaction_path(lock.record_dir, view.decision.transaction_id)
         transaction = ApplyTransaction.from_json(json.loads(path.read_bytes()))
         with _waiver_lock(view.proposal, env):
@@ -235,7 +237,9 @@ def recover_locked(lock: RecordLock, env: ChangeEnvironment, *, abandoning: bool
     unresolved = read_change_log(lock.record_dir / "changes.jsonl").interrupted
     if unresolved:
         raise ProposalError(
-            "interrupted legacy Goal apply has no captured transaction; restore/reconcile it explicitly"
+            "Change Log intent names no prepared Goal apply: "
+            + ", ".join(entry.id for entry in unresolved),
+            path=lock.record_dir / "changes.jsonl",
         )
 
 
@@ -493,14 +497,15 @@ def _drive(
     lock: RecordLock, view: ProposalView, transaction: ApplyTransaction, env: ChangeEnvironment
 ) -> ProposalView:
     _validate_transaction(view, transaction, env)
+    entry = main_booley_dir_entry(Path(env.store.load(lock.goal_id).worktree_path))
     existing = _existing_entry(lock, transaction.entry)
     for effect in transaction.effects:
-        effect.require_expected()
+        effect.require_expected(booley_dir=entry)
     if transaction.entry is not None and existing == "absent":
         append_intent(lock, transaction.entry)
         env.checkpoint("intent")
     for index, effect in enumerate(transaction.effects):
-        effect.apply()
+        effect.apply(booley_dir=entry)
         env.checkpoint(f"effect:{effect.label}:{index}")
     if transaction.entry is None:
         return finalize(lock, view, rejected=True)
@@ -524,7 +529,7 @@ def _validate_transaction(
         or transaction.decision != view.decision
     ):
         raise ProposalError("saved transaction does not bind this exact proposal decision")
-    if view.transaction_digest is None or view.transaction_digest != digest(transaction.to_json()):
+    if view.transaction_digest != digest(transaction.to_json()):
         raise ProposalError(
             "recovery conflict: captured transaction differs from durable decision authority; restore the exact prepared transaction before retrying"
         )

@@ -55,14 +55,22 @@ only):
 - **Repo not yet scaffolded** (no `.core`, no RTL): run
   `booley init --scaffold <name>` on the host with the flags matching the
   answers (`--sim-eda-tool`, `--tb-style`, `--lint-eda-tool`, `--asic`/`--no-asic`,
-  `--synth-mode logical|physical`, `--fpga-part`). Omit `--synth-mode` when
-  ASIC is disabled: an explicit mode with `--no-asic` is rejected.
+  `--synth-mode logical|physical`, `--fpga-part`), plus `--stealth` when the user
+  confirmed Yes/hidden in the grill (it writes `enabled = true` and puts the
+  scaffold cores under `.booley/cores/`); unattended setup omits it, since
+  row 20 keeps `enabled = false` there. Omit `--synth-mode` when
+  ASIC is disabled: an explicit mode with `--no-asic` is rejected. After a
+  `--stealth` scaffold, commit `.booley/` in its own repository before the
+  Doctor gate, or `project.core-file-untracked` blocks it.
 - **Already scaffolded** (populated `.booley/` and a `.core`): don't
   re-ask what the scaffold already fixed — read the choices from the config,
   confirm them in the grill message as `pre-set`, and record them in SETUP-PLAN.
   Read `flow_options.synth_mode`; missing mode means the physical default.
   A request that differs from existing choices needs the existing plan/confirmation
   and Target-edit process: record the deviation, never destructively re-scaffold.
+  A hidden answer on an open scaffold is such a deviation: plan the Doctor-WARN
+  move of the scaffold cores under `.booley/cores/` (user-confirmed, because it
+  removes tracked files).
 - **Repo has existing RTL/`.core` but isn't scaffolded**: it's a port — run
   the normal plan phase instead of guessing.
 
@@ -98,6 +106,6 @@ The scaffold is a runnable counter starter. Record each extra request in SETUP-P
 After Doctor, run **Step 6 §2 (write the report), §3 (walk through it), and §5
 (close out)** per the shared **Delivered Flow results** contract in SKILL.md;
 triage and export keep Step 6's existing consent requirements. Then run **Step 7**
-for bounded cleanup using the run manifest and retained report evidence. The final
+for cleanup, removing the run's scratch root. The final
 summary reuses the report's evidence rows, including unverified checks and
 deviations.

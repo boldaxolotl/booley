@@ -101,9 +101,7 @@ def prepare_execution(
     endpoint: EndpointState,
 ) -> PreparedExecution | EndpointOutcome:
     """Adapt CLI arguments into one prepared execution request."""
-    reset = getattr(endpoint, "reset_report_metadata", None)
-    if callable(reset):
-        reset()
+    endpoint.reset_report_metadata()
     endpoint._report_criteria = ReportCriteria()
     endpoint.reset_evidence_discard()
     endpoint._stdout_witness = None
@@ -117,12 +115,11 @@ def prepare_execution(
         return early_outcome
     endpoint.read_state()
     endpoint._default_target_args()
-    flow = getattr(endpoint, "flow", None)
     if (selection_error := _prepare_target_and_binding(endpoint)) is not None:
         return selection_error
     simulation: object | None = None
-    if endpoint.name == "sim" and hasattr(flow, "prepare_simulation_endpoint"):
-        simulation = flow.prepare_simulation_endpoint()
+    if endpoint.name == "sim" and hasattr(endpoint, "prepare_simulation_endpoint"):
+        simulation = endpoint.prepare_simulation_endpoint()
         if isinstance(simulation, EndpointOutcome):
             endpoint._publish_console_report(simulation)
             endpoint._report_criteria.project(simulation)
@@ -134,9 +131,9 @@ def prepare_execution(
 
 def _prepare_target_and_binding(endpoint: EndpointState) -> EndpointOutcome | None:
     """Resolve omission before binding while preserving explicit rejection order."""
-    flow = getattr(endpoint, "flow", None)
+    prepares_target = hasattr(endpoint, "prepare_target_endpoint")
     implicit_target = (
-        flow is not None
+        prepares_target
         and not endpoint.args.target
         and not getattr(endpoint.args, "resume_from", None)
     )
@@ -152,7 +149,7 @@ def _prepare_target_and_binding(endpoint: EndpointState) -> EndpointOutcome | No
             endpoint._publish_console_report(binding_error)
             endpoint._report_criteria.project(binding_error)
             return binding_error
-    if not implicit_target and hasattr(endpoint, "prepare_target_endpoint"):
+    if not implicit_target and prepares_target:
         target_error = endpoint.prepare_target_endpoint()
         if target_error is not None:
             endpoint.write_report(target_error)
@@ -235,17 +232,14 @@ def invoke_endpoint(
     sys.stdout = witness  # type: ignore[assignment]
     try:
         try:
-            flow = getattr(endpoint, "flow", None)
-            if prepared.simulation is not None and hasattr(flow, "run_prepared_simulation"):
-                raw = flow.run_prepared_simulation(prepared.simulation, admission)
+            if prepared.simulation is not None and hasattr(endpoint, "run_prepared_simulation"):
+                result = endpoint.run_prepared_simulation(prepared.simulation, admission)
             else:
-                raw = endpoint._run()
-            result = endpoint._adapt_outcome(raw)
+                result = endpoint._run()
         except Exception as exc:  # noqa: BLE001 — normalize the endpoint plugin boundary
             result = _exception_outcome(endpoint, prepared, exc)
     finally:
         sys.stdout = witness.wrapped
-    result = endpoint._adapt_outcome(result)
     endpoint._finalize_result(result)
     return result
 
@@ -259,11 +253,10 @@ def finish_execution(
     acceptance_recorded: bool,
 ) -> ExecutionResult:
     """Publish completion, persisting only after acceptance succeeds."""
-    final_outcome = endpoint._adapt_outcome(outcome)
-    report_discarded_evidence(endpoint, final_outcome)
-    project(endpoint, final_outcome)
+    report_discarded_evidence(endpoint, outcome)
+    project(endpoint, outcome)
     exit_code = endpoint._finish_main(
-        final_outcome,
+        outcome,
         prepared.display_target,
         outcome.display_label or prepared.display_label,
         started=started,
@@ -271,4 +264,4 @@ def finish_execution(
         dry_run=prepared.dry_run,
         non_persisting_dry_run=prepared.non_persisting_dry_run,
     )
-    return ExecutionResult(exit_code=exit_code, outcome=final_outcome)
+    return ExecutionResult(exit_code=exit_code, outcome=outcome)

@@ -225,23 +225,6 @@ def remove_license(name: str) -> None:
         del state.licenses[name]
 
 
-def _add_grant_for_identity(
-    project_root: str,
-    kind: str,
-    *,
-    installation: str | None = None,
-    license_profile: str | None = None,
-) -> ProjectGrant:
-    """Authorize an exact canonical Project Root for installation/license use."""
-    with _prepare_add_grant(
-        project_root,
-        kind,
-        installation=installation,
-        license_profile=license_profile,
-    ) as commit:
-        return commit()
-
-
 @contextlib.contextmanager
 def _prepare_add_grant(
     project_root: str,
@@ -252,15 +235,15 @@ def _prepare_add_grant(
 ) -> Iterator[Callable[[], ProjectGrant]]:
     """Validate under the EDA's lock, then expose one non-failing commit step."""
     project = Path(project_root)
-    if not project.is_absolute() or str(project.resolve()) != project_root:
-        raise AuthorityError("grant mutation requires a canonical Project identity")
-    _validate_new_grant_project(project)
     if kind != VIVADO_KIND:
         raise AuthorityError(f"unsupported EDA grant kind: {kind!r}")
     if installation is None and license_profile is None:
         raise AuthorityError("a grant requires an installation, a License Profile, or both")
     grant = ProjectGrant(str(project), kind, installation, license_profile)
     with _locked_state() as state:
+        if not project.is_absolute() or str(project.resolve()) != project_root:
+            raise AuthorityError("grant mutation requires a canonical Project identity")
+        _validate_new_grant_project(project)
         _validate_grant_refs(grant, state)
         _validate_grant_boundaries(grant, state)
         if installation is not None:
@@ -273,28 +256,6 @@ def _prepare_add_grant(
             return grant
 
         yield commit
-
-
-def _add_grant(
-    project_root: Path,
-    kind: str,
-    *,
-    installation: str | None = None,
-    license_profile: str | None = None,
-) -> ProjectGrant:
-    """Private test/setup entry point; production mutation uses the coordinator."""
-    return _add_grant_for_identity(
-        grant_project_identity(project_root),
-        kind,
-        installation=installation,
-        license_profile=license_profile,
-    )
-
-
-def _revoke_grant_for_identity(project_root: str, kind: str) -> ProjectGrant:
-    """Remove one exact Project grant from EDA authority."""
-    with _prepare_revoke_grant(project_root, kind) as commit:
-        return commit()
 
 
 @contextlib.contextmanager
@@ -322,14 +283,6 @@ def _prepare_revoke_grant(
         yield commit
 
 
-def _revoke_grant(project_root: Path, kind: str) -> ProjectGrant:
-    """Private test/setup entry point; production mutation uses the coordinator."""
-    return _revoke_grant_for_identity(
-        revoke_project_identity(project_root, kind),
-        kind,
-    )
-
-
 def revoke_project_identity(project_root: Path, kind: str) -> str:
     """Resolve the stored canonical identity used by a grant revocation."""
     return _revoke_project_identity(project_root, kind, load_state())
@@ -337,9 +290,7 @@ def revoke_project_identity(project_root: Path, kind: str) -> str:
 
 def grant_project_identity(project_root: Path) -> str:
     """Resolve the canonical identity used by a new exact Project grant."""
-    project = _canonical_project(project_root)
-    _validate_new_grant_project(project)
-    return str(project)
+    return str(_canonical_project(project_root))
 
 
 def resolve_grant(project_root: Path, kind: str) -> ProjectGrant:
@@ -351,17 +302,6 @@ def resolve_grant(project_root: Path, kind: str) -> ProjectGrant:
         raise AuthorityError(f"Project {project} has no exact {kind} grant")
     _validate_grant_refs(matches[0], state)
     return matches[0]
-
-
-def resolve_installation(project_root: Path) -> Installation:
-    """Resolve the grant-selected, non-drifted installation for one Project."""
-    grant = resolve_grant(project_root, VIVADO_KIND)
-    if grant.installation is None:
-        raise AuthorityError("Project grant does not authorize a Vivado installation")
-    state = load_state(allow_missing=False)
-    record = state.installations[grant.installation]
-    _revalidate_installation(record, project_root)
-    return record
 
 
 def resolve_license(project_root: Path, kind: str = VIVADO_KIND) -> LicenseProfile | None:

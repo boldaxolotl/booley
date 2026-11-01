@@ -7,7 +7,12 @@ import pytest
 
 from tests.architecture.booley_contract import BOOLEY_SOURCE_DEPENDENCY_CONTRACT
 from tests.architecture.contract import evaluate_contract, format_problems
-from tests.architecture.import_graph import analyze_imports
+from tests.architecture.import_graph import (
+    SourceModule,
+    SourceTreeAnalysis,
+    analyze_imports,
+    analyze_source_tree,
+)
 
 _SOURCE_ROOT = Path(__file__).parents[2] / "src" / "booley"
 
@@ -18,23 +23,37 @@ _CAMPAIGN_STORAGE_OWNERS = frozenset(
     {
         "booley.flows.sim.campaign.store",
         "booley.flows.sim.campaign.coordinator",
-        "booley.flows.sim.campaign.child_protocol",
         "booley.flows.sim.campaign.inspection",
     }
 )
 _CAMPAIGN_PREFIX = "booley.flows.sim.campaign"
+_CAMPAIGN_SCAN = "campaign-storage-types"
+_TARGET_SCAN = "target-mechanics"
 
 
-def test_production_source_dependencies_obey_approved_contract() -> None:
-    dependencies = analyze_imports(_SOURCE_ROOT)
+@pytest.fixture(scope="module")
+def production_source() -> SourceTreeAnalysis:
+    """The production tree, parsed once for every whole-source assertion in this module."""
+    return analyze_source_tree(
+        _SOURCE_ROOT,
+        {_CAMPAIGN_SCAN: _campaign_storage_scan, _TARGET_SCAN: _target_mechanics_scan},
+    )
+
+
+def test_production_source_dependencies_obey_approved_contract(
+    production_source: SourceTreeAnalysis,
+) -> None:
+    dependencies = production_source.dependencies
 
     problems = evaluate_contract(dependencies, BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
 
     assert not problems, "Source dependency contract failures:\n" + format_problems(problems)
 
 
-def test_job_and_report_owners_have_no_dependency_path_to_mcp_adapter() -> None:
-    dependencies = analyze_imports(_SOURCE_ROOT)
+def test_job_and_report_owners_have_no_dependency_path_to_mcp_adapter(
+    production_source: SourceTreeAnalysis,
+) -> None:
+    dependencies = production_source.dependencies
     edges: dict[str, set[str]] = {}
     for dependency in dependencies:
         edges.setdefault(dependency.source, set()).add(dependency.target)
@@ -54,8 +73,10 @@ def test_job_and_report_owners_have_no_dependency_path_to_mcp_adapter() -> None:
             pending.extend(edges.get(module, set()) - visited)
 
 
-def test_every_campaign_storage_permission_is_a_current_exact_edge() -> None:
-    dependencies = analyze_imports(_SOURCE_ROOT)
+def test_every_campaign_storage_permission_is_a_current_exact_edge(
+    production_source: SourceTreeAnalysis,
+) -> None:
+    dependencies = production_source.dependencies
     edges = {(item.source, item.target) for item in dependencies}
     permissions = tuple(
         item for item in BOOLEY_SOURCE_DEPENDENCY_CONTRACT.permissions if item.rule == "D31"
@@ -65,23 +86,29 @@ def test_every_campaign_storage_permission_is_a_current_exact_edge() -> None:
     assert all((item.source, item.target) in edges for item in permissions)
 
 
-def test_campaign_storage_types_do_not_escape_their_exact_owners() -> None:
-    violations: list[str] = []
-    for path in sorted(_SOURCE_ROOT.rglob("*.py")):
-        module = _source_module(path)
-        violations.extend(_campaign_storage_violations_for_source(path, module))
+def test_campaign_storage_types_do_not_escape_their_exact_owners(
+    production_source: SourceTreeAnalysis,
+) -> None:
+    violations = list(production_source.findings(_CAMPAIGN_SCAN))
 
     assert not violations, "Campaign storage types escaped their owners:\n" + "\n".join(violations)
 
 
-def _campaign_storage_violations_for_source(path: Path, module: str) -> list[str]:
+def _campaign_storage_scan(module: SourceModule, tree: ast.Module) -> list[str]:
+    return _campaign_storage_violations_for_source(tree, module.name, module.is_package)
+
+
+def _campaign_storage_violations_for_source(
+    tree: ast.Module, module: str, is_package: bool
+) -> list[str]:
     if module in _CAMPAIGN_STORAGE_OWNERS:
         return []
-    return _campaign_storage_type_violations(path, module)
+    return _campaign_storage_type_violations(tree, module, is_package)
 
 
-def _campaign_storage_type_violations(path: Path, module: str) -> list[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+def _campaign_storage_type_violations(
+    tree: ast.Module, module: str, is_package: bool
+) -> list[str]:
     aliases: dict[str, str] = {"booley": "booley"}
     violations: list[str] = []
     for node in ast.walk(tree):
@@ -91,7 +118,7 @@ def _campaign_storage_type_violations(path: Path, module: str) -> list[str]:
                     bound = alias.asname or alias.name.split(".", maxsplit=1)[0]
                     aliases[bound] = alias.name if alias.asname else bound
         elif isinstance(node, ast.ImportFrom):
-            imported_from = _resolved_import_from(module, path.name == "__init__.py", node)
+            imported_from = _resolved_import_from(module, is_package, node)
             if imported_from is None or not imported_from.startswith(_CAMPAIGN_PREFIX):
                 continue
             for alias in node.names:
@@ -128,19 +155,6 @@ def _resolved_import_from(module: str, is_package: bool, node: ast.ImportFrom) -
     return ".".join(base)
 
 
-def _source_module(path: Path) -> str:
-    relative = path.relative_to(_SOURCE_ROOT)
-    suffix = (
-        relative.parent.parts
-        if path.name == "__init__.py"
-        else (
-            *relative.parent.parts,
-            path.stem,
-        )
-    )
-    return ".".join(("booley", *suffix))
-
-
 @pytest.mark.parametrize(
     "source",
     [
@@ -158,21 +172,22 @@ def _source_module(path: Path) -> str:
         "    from booley.flows.sim.campaign.coordinator import WorkItemRecovery\n",
     ],
 )
-def test_campaign_storage_type_gate_resolves_static_escape_forms(
-    tmp_path: Path, source: str
-) -> None:
-    path = tmp_path / "rogue.py"
-    path.write_text(source)
+def test_campaign_storage_type_gate_resolves_static_escape_forms(source: str) -> None:
+    assert _campaign_storage_type_violations(ast.parse(source), "booley.flows.sim.rogue", False)
 
-    assert _campaign_storage_type_violations(path, "booley.flows.sim.rogue")
+
+def test_campaign_storage_type_gate_resolves_package_relative_imports() -> None:
+    tree = ast.parse("from .campaign.coordinator import CampaignStore\n")
+
+    assert _campaign_storage_type_violations(tree, "booley.flows.sim", True)
+    assert not _campaign_storage_type_violations(tree, "booley.flows.sim", False)
 
 
 @pytest.mark.parametrize("owner", sorted(_CAMPAIGN_STORAGE_OWNERS))
-def test_campaign_storage_type_gate_allows_exact_owners(tmp_path: Path, owner: str) -> None:
-    path = tmp_path / "owner.py"
-    path.write_text("from booley.flows.sim.campaign.store import CampaignStore\n")
+def test_campaign_storage_type_gate_allows_exact_owners(owner: str) -> None:
+    tree = ast.parse("from booley.flows.sim.campaign.store import CampaignStore\n")
 
-    violations = _campaign_storage_violations_for_source(path, owner)
+    violations = _campaign_storage_violations_for_source(tree, owner, False)
 
     assert violations == []
 
@@ -233,8 +248,14 @@ _TARGET_ADAPTER_PATHS = frozenset(
 )
 
 
-def _target_mechanics_violations(path: Path, relative: str) -> list[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+def _target_mechanics_scan(module: SourceModule, tree: ast.Module) -> list[str]:
+    relative = module.path.relative_to(_SOURCE_ROOT.resolve()).as_posix()
+    if relative in _TARGET_ADAPTER_PATHS:
+        return []
+    return _target_mechanics_violations(tree, relative)
+
+
+def _target_mechanics_violations(tree: ast.Module, relative: str) -> list[str]:
     module_aliases: set[str] = set()
     violations: list[str] = []
     for node in ast.walk(tree):
@@ -276,14 +297,11 @@ def _dotted_name(node: ast.AST) -> str:
     return ""
 
 
-def test_only_target_adapters_use_low_level_target_mechanics() -> None:
+def test_only_target_adapters_use_low_level_target_mechanics(
+    production_source: SourceTreeAnalysis,
+) -> None:
     """Keep discovery/selection behind TargetCatalog and the FuseSoC adapter."""
-    violations: list[str] = []
-    for path in sorted(_SOURCE_ROOT.rglob("*.py")):
-        relative = path.relative_to(_SOURCE_ROOT).as_posix()
-        if relative in _TARGET_ADAPTER_PATHS:
-            continue
-        violations.extend(_target_mechanics_violations(path, relative))
+    violations = list(production_source.findings(_TARGET_SCAN))
 
     assert not violations, "Low-level Target mechanics escaped their adapters:\n" + "\n".join(
         violations
@@ -312,11 +330,8 @@ def test_only_target_adapters_use_low_level_target_mechanics() -> None:
         "from booley.targets.selection import resolve as choose\nchoose({}, 'sim')\n",
     ],
 )
-def test_low_level_target_gate_resolves_import_aliases(tmp_path: Path, source: str) -> None:
-    path = tmp_path / "consumer.py"
-    path.write_text(source, encoding="utf-8")
-
-    assert _target_mechanics_violations(path, "consumer.py")
+def test_low_level_target_gate_resolves_import_aliases(source: str) -> None:
+    assert _target_mechanics_violations(ast.parse(source), "consumer.py")
 
 
 @pytest.mark.parametrize(
@@ -464,9 +479,11 @@ def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
     assert f"booley.harness.{target}" in report
 
 
-def test_shared_health_has_no_transitive_command_or_sdk_dependency() -> None:
+def test_shared_health_has_no_transitive_command_or_sdk_dependency(
+    production_source: SourceTreeAnalysis,
+) -> None:
     edges: dict[str, set[str]] = {}
-    for item in analyze_imports(_SOURCE_ROOT):
+    for item in production_source.dependencies:
         edges.setdefault(item.source, set()).add(item.target)
     pending = {
         "booley.audit.health",
@@ -486,12 +503,14 @@ def test_shared_health_has_no_transitive_command_or_sdk_dependency() -> None:
         pending.update(edges.get(current, set()) - visited)
 
 
-def test_health_consumers_reach_shared_health_without_the_doctor_worker() -> None:
+def test_health_consumers_reach_shared_health_without_the_doctor_worker(
+    production_source: SourceTreeAnalysis,
+) -> None:
     consumers = {"booley.mcp.server", "booley.harness.dashboard.model"}
     shared = {"booley.runtime.health", "booley.runtime.health_presentation"}
     worker = "booley.harness.auto_doctor"
     targets: dict[str, set[str]] = {consumer: set() for consumer in consumers}
-    for edge in analyze_imports(_SOURCE_ROOT):
+    for edge in production_source.dependencies:
         if edge.source in consumers:
             targets[edge.source].add(edge.target)
     for consumer, imported in targets.items():

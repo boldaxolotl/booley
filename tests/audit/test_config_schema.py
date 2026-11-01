@@ -409,7 +409,12 @@ def test_legacy_notifications_are_ignored_with_nonblocking_warning(legacy):
 
 @pytest.mark.parametrize(
     "key, value",
-    [("max_sessions", 2), ("idle_timeout_seconds", 600), ("egress_allowlist", ["foo.test"])],
+    [
+        ("max_sessions", 2),
+        ("idle_timeout_seconds", 600),
+        ("egress_allowlist", ["foo.test"]),
+        ("egress", "unproxied"),
+    ],
 )
 def test_project_sandbox_rejects_host_policy_with_migration(key: str, value: object) -> None:
     audit = project_schema.audit_sandbox_table({"sandbox": {"memory": "8g", key: value}})

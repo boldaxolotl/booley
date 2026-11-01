@@ -13,24 +13,26 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
 from booley.core.boundary import BoundaryError
-from booley.criteria.state import DevelopmentState
-from booley.evidence.acceptance import PairedProjectBaseline, ResolvedFlowAcceptance
-from booley.flows import execution
+from booley.evidence.acceptance import PairedProjectBaseline
+from booley.flows import execution, job_resources
 from booley.flows.cli_arguments import BuiltinArguments
-from booley.flows.cli_help import CliHelp, SurfaceHelp
+from booley.flows.cli_help import SurfaceHelp
+from booley.flows.cli_selection import CliInvocation
 from booley.flows.display import format_flow_display_label
 from booley.flows.endpoint_context import EndpointContext
-from booley.flows.execution_persistence import FlowExecutionAdapter
+from booley.flows.endpoint_state import EndpointState
+from booley.flows.execution_persistence import FlowExecutionAdapter, StandaloneFlowExecution
 from booley.flows.invocation import resolve_timeout_ms
+from booley.flows.job_resources import JobResourceMonitor
 from booley.flows.request import FlowRequest
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
@@ -38,6 +40,9 @@ from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome, Execu
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.targets.catalog import PreparedTargetSelection
 from booley.targets.domain import TARGET_AWARE_FLOWS, FuseSocError, TargetHandle
+
+if TYPE_CHECKING:
+    from booley.flows.terminal_progress import TerminalProgress
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +71,6 @@ class SubprocessResult:
     oom_kill_delta: int = 0
 
 
-_CGROUP_MEMORY_EVENT_PATHS = (Path("/sys/fs/cgroup/memory.events"),)
-
-
 def _prepare_supervised_command(cmd: list[str], env: dict[str, str]):
     from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
     from booley.runtime.supervised_execution import (
@@ -84,24 +86,6 @@ def _prepare_supervised_command(cmd: list[str], env: dict[str, str]):
 def _finish_supervised_process(scope, proc) -> None:
     if scope is not None and proc is not None:
         scope.processes.unregister(proc)
-
-
-def _cgroup_oom_kill_count() -> int | None:
-    """Return this cgroup's cumulative OOM-kill count when available."""
-    for path in _CGROUP_MEMORY_EVENT_PATHS:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        for line in text.splitlines():
-            key, _, raw = line.partition(" ")
-            if key != "oom_kill":
-                continue
-            try:
-                return int(raw)
-            except ValueError:
-                break
-    return None
 
 
 def _popen_kwargs_with_lease() -> dict[str, Any]:
@@ -139,96 +123,10 @@ def _start_local_process(cmd, cwd, env, scope):
         raise
 
 
-def _linux_process_tree_rss_bytes(root_pid: int) -> int | None:
-    """Best-effort aggregate RSS for *root_pid* and its descendants.
-
-    The synthesis boundary's direct child is ``make`` while the memory lives
-    in yosys/ABC/OpenROAD grandchildren, so sampling only the root process
-    produces a dangerously reassuring number.  Linux exposes the descendant
-    PIDs through ``task/<pid>/children`` without an optional psutil dependency.
-    """
-    if not Path("/proc").is_dir():
-        return None
-    pending = [root_pid]
-    seen: set[int] = set()
-    total_kib = 0
-    measured = False
-    while pending:
-        pid = pending.pop()
-        if pid in seen:
-            continue
-        seen.add(pid)
-        try:
-            children = Path(f"/proc/{pid}/task/{pid}/children").read_text(encoding="utf-8")
-            pending.extend(int(tok) for tok in children.split())
-        except (OSError, ValueError):
-            pass
-        try:
-            status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
-        except OSError:
-            continue
-        for line in status.splitlines():
-            if line.startswith("VmRSS:"):
-                try:
-                    total_kib += int(line.split()[1])
-                    measured = True
-                except (IndexError, ValueError):
-                    pass
-                break
-    return total_kib * 1024 if measured else None
-
-
-class _ProcessTreeMemoryMonitor:
-    """Small sampler used around long-running local mechanical commands."""
-
-    def __init__(self, pid: int, *, interval_s: float = 0.25) -> None:
-        self._pid = pid
-        self._interval_s = interval_s
-        self._stop = threading.Event()
-        self._peak_bytes: int | None = None
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def start(self) -> None:
-        self._sample()
-        self._thread.start()
-
-    def finish(self) -> float | None:
-        self._sample()
-        self._stop.set()
-        self._thread.join(timeout=2)
-        return self._peak_bytes / (1024 * 1024) if self._peak_bytes is not None else None
-
-    def _sample(self) -> None:
-        rss = _linux_process_tree_rss_bytes(self._pid)
-        if rss is not None and (self._peak_bytes is None or rss > self._peak_bytes):
-            self._peak_bytes = rss
-
-    def _run(self) -> None:
-        while not self._stop.wait(self._interval_s):
-            self._sample()
-
-
-def _process_resource_evidence(
-    scope: Any,
-    proc: subprocess.Popen,
-    monitor: _ProcessTreeMemoryMonitor,
-    oom_before: int | None,
-) -> tuple[float | None, int]:
-    _finish_supervised_process(scope, proc)
-    peak_rss_mb = monitor.finish()
-    oom_after = _cgroup_oom_kill_count()
-    oom_delta = (
-        max(0, oom_after - oom_before) if oom_before is not None and oom_after is not None else 0
-    )
-    return peak_rss_mb, oom_delta
-
-
 def _communicate_local_process(
     cmd: list[str],
     proc: subprocess.Popen,
     scope: Any,
-    monitor: _ProcessTreeMemoryMonitor,
-    oom_before: int | None,
     started: float,
     timeout: int,
 ) -> SubprocessResult:
@@ -242,37 +140,26 @@ def _communicate_local_process(
             logger.warning("Command timed out after %.1fs: %s", elapsed, " ".join(cmd))
             kill_process_tree(proc)
             stdout, stderr = _drain_after_kill(proc)
-            peak_rss_mb, oom_kill_delta = _process_resource_evidence(
-                scope, proc, monitor, oom_before
-            )
+            _finish_supervised_process(scope, proc)
             return SubprocessResult(
-                returncode=-1,
-                stdout=stdout,
-                stderr=stderr,
-                timed_out=True,
-                duration_s=elapsed,
-                peak_rss_mb=peak_rss_mb,
-                oom_kill_delta=oom_kill_delta,
+                returncode=-1, stdout=stdout, stderr=stderr, timed_out=True, duration_s=elapsed
             )
         except BaseException:
             logger.warning("Interrupted; killing the process tree of: %s", " ".join(cmd))
             kill_process_tree(proc)
-            monitor.finish()
             _finish_supervised_process(scope, proc)
             raise
         elapsed = time.monotonic() - started
-        peak_rss_mb, oom_kill_delta = _process_resource_evidence(scope, proc, monitor, oom_before)
+        _finish_supervised_process(scope, proc)
         return SubprocessResult(
             returncode=proc.returncode,
             stdout=_decode_output(stdout),
             stderr=_decode_output(stderr),
             duration_s=elapsed,
-            peak_rss_mb=peak_rss_mb,
-            oom_kill_delta=oom_kill_delta,
         )
 
 
-def _observe_local_process(proc, observer, scope, monitor, oom_before, started, timeout):
+def _observe_local_process(proc, observer, scope, started, timeout):
     from booley.flows.observed_process import communicate_observed
 
     result = SubprocessResult()
@@ -290,9 +177,7 @@ def _observe_local_process(proc, observer, scope, monitor, oom_before, started, 
         result.stderr = stderr
         result.timed_out = timed_out
     finally:
-        peak, oom = _process_resource_evidence(scope, proc, monitor, oom_before)
-    result.peak_rss_mb = peak
-    result.oom_kill_delta = oom
+        _finish_supervised_process(scope, proc)
     return result
 
 
@@ -319,11 +204,10 @@ class FlowMechanics:
             execution.flow_enabled(self.name, Path(self.args.work_dir))
         except execution.FlowConfigError as exc:
             return EndpointOutcome(exit_code=EXIT_ERROR, report_text=str(exc))
-        execution_state = getattr(self, "context", self)
-        resolved = execution_state.execution_adapter.validate_and_resolve(self.args)
+        resolved = self.execution_adapter.validate_and_resolve(self.args)
         if isinstance(resolved, EndpointOutcome):
             return resolved
-        execution_state.flow_acceptance = resolved
+        self.flow_acceptance = resolved
         return None
 
     def _run(self) -> EndpointOutcome:
@@ -356,8 +240,14 @@ class FlowMechanics:
         """Return working directory for subprocess."""
         return self.args.work_dir
 
-    def _execute_local(self, cmd: list[str], *, timeout: int | None = None) -> SubprocessResult:
-        """Run locally and reap the whole process tree on timeout or interruption."""
+    def _execute_local(
+        self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
+    ) -> SubprocessResult:
+        """Run locally and reap the whole process tree on timeout or interruption.
+
+        *cwd* defaults to :meth:`_get_cwd`; a caller running another checkout
+        (a Cycle Count baseline) names that checkout.
+        """
         import sys as _sys
 
         # python3 is not on PATH on Windows; use the running interpreter.
@@ -365,7 +255,7 @@ class FlowMechanics:
             cmd = [_sys.executable, *cmd[1:]]
 
         timeout = self._get_timeout() if timeout is None else timeout
-        cwd = self._get_cwd()
+        cwd = self._get_cwd() if cwd is None else cwd
         env = {**os.environ, **self._extra_subprocess_env()}
         try:
             cache_root = resolve_checkout_booley_dir(cwd) / ".runtime" / "python-artifacts"
@@ -380,38 +270,58 @@ class FlowMechanics:
         from booley.flows.terminal_progress import current_progress
 
         observer = current_progress()
-        if observer is not None:
-            observer.begin_command()
-            if cmd[:3] == ["python3", "-m", "booley.flows.sim"] or (
-                len(cmd) > 2 and cmd[1] == "-m" and cmd[2].startswith("booley.flows.sim.")
-            ):
-                env["PYTHONUNBUFFERED"] = "1"
+        is_sim_module = cmd[:3] == ["python3", "-m", "booley.flows.sim"] or (
+            len(cmd) > 2 and cmd[1] == "-m" and cmd[2].startswith("booley.flows.sim.")
+        )
+        if observer is not None and is_sim_module:
+            env["PYTHONUNBUFFERED"] = "1"
+        flow = getattr(self, "name", type(self).__name__)
+        label = job_resources.current_label() or job_resources.ResourceLabel(
+            getattr(self, "_selected_target", None) or "", flow
+        )
+        monitor = JobResourceMonitor(label.split)
+        env.update(monitor.temp_env())
+        try:
+            result = self._run_measured(cmd, cwd, env, scope, observer, monitor, timeout)
+        finally:
+            measurement = monitor.finish()  # also when interrupted, so its thread stops
+            shutil.rmtree(monitor.tmp_dir, ignore_errors=True)
+        if result is None:
+            return SubprocessResult(returncode=-1)
+        result.peak_rss_mb = measurement.peak_rss_mb
+        result.oom_kill_delta = measurement.oom_kill_delta or 0
+        job_resources.record_command(flow, label, self._resource_flags(), measurement, result)
+        return result
+
+    def _run_measured(self, cmd, cwd, env, scope, observer, monitor, timeout):
+        """Run one command under *monitor*; ``None`` when it could not start."""
         start = time.monotonic()
-        oom_before = _cgroup_oom_kill_count()
         proc = _start_local_process(cmd, cwd, env, scope)
         if proc is None:
-            if observer is not None:
-                observer.end_command()
-            return SubprocessResult(returncode=-1)
-        memory_monitor = _ProcessTreeMemoryMonitor(proc.pid)
-        memory_monitor.start()
+            return None
         if observer is not None:
-            return _observe_local_process(
-                proc, observer, scope, memory_monitor, oom_before, start, timeout
-            )
-        return _communicate_local_process(
-            cmd, proc, scope, memory_monitor, oom_before, start, timeout
-        )
+            # Only a spawned tool counts as started in the progress record.
+            observer.begin_command()
+        monitor.start(proc.pid)
+        if observer is not None:
+            return _observe_local_process(proc, observer, scope, start, timeout)
+        return _communicate_local_process(cmd, proc, scope, start, timeout)
 
-    def _execute(self, cmd: list[str], *, timeout: int | None = None) -> SubprocessResult:
+    def _resource_flags(self) -> tuple[str, ...]:
+        """Instrumentation flags that key this Flow's resource history."""
+        return ()
+
+    def _execute(
+        self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
+    ) -> SubprocessResult:
         """Run a subprocess locally (inside the Sandbox, ADR 0028)."""
         logger.info(
             "Running: %s (timeout=%ds, cwd=%s)",
             " ".join(cmd),
             self._get_timeout() if timeout is None else timeout,
-            self._get_cwd(),
+            self._get_cwd() if cwd is None else cwd,
         )
-        return self._execute_local(cmd, timeout=timeout)
+        return self._execute_local(cmd, timeout=timeout, cwd=cwd)
 
     def _extra_subprocess_env(self) -> dict[str, str]:
         """Return environment overrides for subprocess-backed EDA tools."""
@@ -455,10 +365,17 @@ class FlowMechanics:
         cmd: list[str],
         *,
         timeout: int | None = None,
+        cwd: Path | None = None,
     ) -> SubprocessResult:
-        """Run a boundary command locally inside the Sandbox."""
+        """Run a boundary command locally inside the Sandbox, in *cwd* when given."""
         dispatched = time.time()
-        result = self._execute(cmd) if timeout is None else self._execute(cmd, timeout=timeout)
+        # Pass only what was given: test doubles of _execute take just the command.
+        options: dict[str, Any] = {}
+        if timeout is not None:
+            options["timeout"] = timeout
+        if cwd is not None:
+            options["cwd"] = cwd
+        result = self._execute(cmd, **options)
         result.dispatched_unix = dispatched
         return result
 
@@ -490,24 +407,19 @@ class BooleyFlow(FlowMechanics, EndpointContext):
 RequestT = TypeVar("RequestT", bound=FlowRequest)
 
 
-class BuiltinFlow(FlowMechanics, Generic[RequestT]):
-    """Invocation seam shared only by Booley's four shipped Flows."""
+class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
+    """Invocation seam shared only by Booley's four shipped Flows.
+
+    The Flow is the single owner of its per-invocation state; every entry point
+    starts an invocation through ``_start_invocation``.
+    """
 
     request_type: ClassVar[type[FlowRequest]] = FlowRequest
     argument_adapter: ClassVar[type[BuiltinArguments]] = BuiltinArguments
+    # The in-process caller's explicit CLI origin and outer Project; None reads the env marker.
+    _cli_invocation: CliInvocation | None = None
 
-    name: str = ""
-    description: str = ""
-    # Human `--help` wording; ``description`` stays the agent-facing tool text.
-    cli_help: ClassVar[CliHelp | None] = None
-    code_modifying: bool = False
-    modifies_category: str | None = None
-    config_aware: bool = True
-    accepts_target: bool = True
     target_required: bool = False
-    announce_success_report: bool = False
-    satisfies: ClassVar[list[str]] = []
-    satisfies_args: ClassVar[dict[str, str]] = {}
     target_help: str = SurfaceHelp(
         "FuseSoC .core Target name(s) this run applies to. The CLI flag may be "
         "repeated or its value comma-separated; MCP accepts one comma-separated string. "
@@ -523,46 +435,46 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
     )
 
     def __init__(self) -> None:
-        from booley.flows.execution_persistence import StandaloneFlowExecution
-        from booley.flows.flow_session import FlowSession
+        self._start_invocation(StandaloneFlowExecution())
 
-        self.context = FlowSession(self, StandaloneFlowExecution())
+    def _start_invocation(
+        self, adapter: FlowExecutionAdapter, request: FlowRequest | None = None
+    ) -> None:
+        """Start one invocation: fresh EndpointState fields, adapter, request and Flow extras."""
+        EndpointState.__init__(self)  # new invocation id, display identity, Criteria ledger, ...
+        self.configure_flow_execution(adapter)
+        self._args = request
+        self.terminal_progress: TerminalProgress | None = None
+        self.publication_resources = contextlib.ExitStack()
+        # Baseline worktrees held open in `publication_resources`, by revision; each
+        # revision is materialized once per invocation and shared (#1959).
+        self.baseline_worktrees: dict[str, Path] = {}
+        self._simulation_campaign_outcomes: tuple[Any, ...] = ()
+        self._simulation_acceptance_outcomes: tuple[Any, ...] = ()
+        self.reset_report_metadata()
+        job_resources.clear_label()  # a stage label must not outlive its invocation
 
     @property
     def args(self) -> RequestT:
-        return cast(RequestT, self.context.args)
+        return cast(RequestT, super().args)
 
-    @property
-    def state(self) -> DevelopmentState:
-        return self.context.state
+    def reset_report_metadata(self) -> None:
+        """Clear invocation-local metadata before admission gates."""
+        super().reset_report_metadata()
+        self.cycle_report_json: str | None = None
+        self._automatic_target_notice = ""
+        self._automatic_target_notice_published = False
+        self._prepared_target_selection = None
+        self.begin_invocation()
 
-    def set_criterion(
-        self,
-        key: str,
-        met: bool,
-        *,
-        detail: dict[str, Any] | None = None,
-        source_target: str | None = None,
-    ) -> None:
-        self.context.set_criterion(key, met, detail=detail, source_target=source_target)
+    def _finalize_result(self, result: EndpointOutcome) -> None:
+        result.cycle_report_json = self.cycle_report_json or "{}"
+        super()._finalize_result(result)
 
-    def reserve_invocation_dir(self) -> Path | None:
-        return self.context.reserve_invocation_dir()
-
-    def emit_progress(self, line: str) -> None:
-        self.context.emit_progress(line)
-
-    def emit_completion(self, line: str, *, repeats_at_end: bool = False) -> None:
-        self.context.emit_completion(line, repeats_at_end=repeats_at_end)
-
-    def _requested_targets(self) -> list[str]:
-        return self.context._requested_targets()
-
-    def _flow_enabled(self) -> bool:
-        return self.context._flow_enabled()
-
-    def _resolve_job_class(self) -> str | None:
-        return None
+    def execute_prepared(self) -> ExecutionResult:
+        """Keep invocation resources alive through final report publication."""
+        with self.publication_resources:
+            return super().execute_prepared()
 
     def prepare_target_endpoint(self) -> EndpointOutcome | None:
         """Resolve the complete Target selection before admission."""
@@ -587,11 +499,12 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
                 report_text=f"{self.name} Target selection failed: {exc}",
             )
         self._prepared_target_selection = selection
+        self.set_report_targets([handle.selector for handle in selection.handles])
         if selection.automatic:
             from booley.flows.endpoint_reporting import automatic_target_notice
 
             self.args.target = selection.target_arg
-            self.context._automatic_target_notice = automatic_target_notice(
+            self._automatic_target_notice = automatic_target_notice(
                 self.name, selection.target_arg
             )
         return None
@@ -612,52 +525,20 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
         return self._selected_target_selection().handles
 
     @property
-    def _eda_tool(self) -> str | None:
-        return self.context._eda_tool
-
-    @_eda_tool.setter
-    def _eda_tool(self, value: str | None) -> None:
-        self.context._eda_tool = value
-
-    @property
-    def _args(self) -> FlowRequest | None:
-        return self.context._args
-
-    @_args.setter
-    def _args(self, value: FlowRequest) -> None:
-        self.context._args = value
-
-    @property
-    def _state(self) -> DevelopmentState | None:
-        return self.context._state
-
-    @_state.setter
-    def _state(self, value: DevelopmentState) -> None:
-        self.context._state = value
-
-    @property
-    def _flow_acceptance(self) -> ResolvedFlowAcceptance:
-        return self.context.flow_acceptance
-
-    @property
     def _paired_project_baseline(self) -> PairedProjectBaseline:
-        return self.context.flow_acceptance.paired_project
-
-    def read_state(self) -> DevelopmentState:
-        return self.context.read_state()
+        return self.flow_acceptance.paired_project
 
     def parse_args(self, argv: list[str] | None = None) -> RequestT:
         from booley.flows.builtin_cli import parse_request
 
-        self.context._args = parse_request(self, argv)
-        self.begin_invocation()
+        self._start_invocation(self.execution_adapter, parse_request(self, argv))
         return self.args
 
     def begin_invocation(self) -> None:
         """Drop whatever this Flow object kept from an earlier invocation.
 
-        Called wherever a new invocation starts: a new session, a newly
-        parsed request, and the preparation of a session's execution. A Flow
+        Called wherever a new invocation starts: a new Flow, a newly
+        parsed request, and the preparation of its execution. A Flow
         that keeps per-invocation state overrides this to start it afresh, so
         one Flow object never answers a request from another request's state.
         """
@@ -668,19 +549,16 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
         *,
         adapter: FlowExecutionAdapter | None = None,
     ) -> ExecutionResult:
-        """Execute typed input through a fresh, transport-independent session."""
+        """Execute typed input through a fresh, transport-independent invocation."""
         from dataclasses import replace
 
         from booley.flows.endpoint_cli import apply_environment
-        from booley.flows.execution_persistence import StandaloneFlowExecution
-        from booley.flows.flow_session import FlowSession
 
         if not isinstance(request, self.request_type):
             raise TypeError(f"{self.name} requires {self.request_type.__name__}")
-        self.context = FlowSession(self, adapter or StandaloneFlowExecution())
-        self.context._args = replace(request)
-        apply_environment(self.context._args, self.endpoint_kind)
-        return self.context.execute_prepared()
+        self._start_invocation(adapter or StandaloneFlowExecution(), replace(request))
+        apply_environment(self._args, self.endpoint_kind)
+        return self.execute_prepared()
 
     def execute_cli(
         self,

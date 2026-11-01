@@ -7,7 +7,6 @@ import importlib.metadata
 import os
 import re
 import shlex
-import shutil
 import time
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -25,7 +24,7 @@ from booley.config.tests_toml_rules import (
     validate_env_table,
 )
 from booley.core.booley_dir import BOOLEY_DIR_NAME
-from booley.core.build_paths import work_root_for
+from booley.core.booley_dir_links import lexical_booley_path
 from booley.flows import artifacts as flow_artifacts
 from booley.flows import edam as edam_layer
 from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
@@ -61,6 +60,7 @@ from booley.flows.sim.build_session import (
     snapshot_generation_files,
     verify_existing_build_inputs,
 )
+from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
     literal_run_cwd_problem,
@@ -295,16 +295,6 @@ def _adapter_shell_command(attempt: _Attempt) -> tuple[str, str, str]:
     return "sh", "-c", f"{exports}{invocation}"
 
 
-@dataclass(frozen=True)
-class _BuildPolicy:
-    variant: str
-    fresh_root_label: str | None
-
-
-class _BuildRootResetError(RuntimeError):
-    """A fresh Simulation build root could not be reset safely."""
-
-
 class SimulationArtifactPersistenceError(RuntimeError):
     """A completed attempt could not preserve its required run evidence."""
 
@@ -404,8 +394,13 @@ class PreparedOrdinaryGroup:
         identities: set[Path] = set()
         root = self._attempt.prepared.build_root.resolve()
         project_root = self._handle.project_root.resolve()
+        # The Booley Directory entry spelled under the resolved root, so sources that
+        # physically sit behind a symlinked entry stay project-relative (#2191).
+        entry = simulation_booley_dir(self._handle.project_root)
+        booley_dir = None if entry is None else entry.parent.resolve() / entry.name
         for item in self._attempt.prepared.resolved.files:
             source = item.absolute(root)
+            source = lexical_booley_path(booley_dir, source)
             try:
                 is_packaged_dump = _is_packaged_dump_source(self._attempt, source, project_root)
                 if not source.is_file() or not (
@@ -775,9 +770,7 @@ class SimulationExecution:
         self._invoke = invoke
         self._options = options
         self._artifact_root = artifact_root
-        self._reset_build_roots: set[Path] = set()
         self._build_session: SimulationBuildSession | None = None
-        self._fresh_generation: Path | None = None
         self._pre_sim_firings: list[PreSimEvidence] = []
 
     @contextmanager
@@ -820,8 +813,7 @@ class SimulationExecution:
         sources_before = project_compile_surface(compile_surface)
         source_declarations = _source_declarations(handle)
         announce_unit("configure", target=handle.selector)
-        policy = _build_policy(self._options.trace)
-        with SimulationBuildSession(handle, policy.variant) as session:
+        with SimulationBuildSession(handle, _build_variant(self._options.trace)) as session:
             self._build_session = session
             group: PreparedOrdinaryGroup | None = None
             try:
@@ -845,7 +837,6 @@ class SimulationExecution:
                 if group is not None:
                     group._release_lease()
                 self._build_session = None
-                self._fresh_generation = None
 
     def run(
         self,
@@ -874,7 +865,6 @@ class SimulationExecution:
     ) -> SimulationTargetOutcome:
         """Execute the selected Target and return immutable normalized evidence."""
         started = time.monotonic()
-        self._reset_build_roots.clear()
         self._pre_sim_firings.clear()
         run_cwd_problem = literal_run_cwd_problem(handle.project_root)
         if run_cwd_problem is not None:
@@ -904,7 +894,6 @@ class SimulationExecution:
             )
         except (
             SimulationBuildSlotError,
-            _BuildRootResetError,
             SimulationBuildPreparationError,
             PreSimScopeStoppedError,
         ) as exc:
@@ -914,8 +903,6 @@ class SimulationExecution:
     def _group_exception_outcome(self, handle, error, started) -> SimulationTargetOutcome:
         if isinstance(error, SimulationBuildSlotError):
             outcome = _build_slot_failure(handle, error, started)
-        elif isinstance(error, _BuildRootResetError):
-            outcome = _build_root_failure(handle, error, started)
         elif isinstance(error, PreSimScopeStoppedError):
             failure = SimulationInfrastructureFailure(
                 "build", "Simulation execution scope stopped", detail=str(error)
@@ -933,7 +920,7 @@ class SimulationExecution:
         planned_runs: tuple[tuple[TestRun, ...], ...] | None = None,
     ) -> list[SimulationTargetOutcome]:
         """Hold the Target lease through every group and artifact capture."""
-        with SimulationBuildSession(handle, _build_policy(self._options.trace).variant) as session:
+        with SimulationBuildSession(handle, _build_variant(self._options.trace)) as session:
             self._build_session = session
             try:
                 return self._run_planned_groups(handle, groups, planned_runs=planned_runs)
@@ -1107,9 +1094,9 @@ class SimulationExecution:
         candidate always builds. *generation_before* is the generation's
         :func:`snapshot_generation_files` from before the Pre-Sim Commands ran.
         """
-        session = self._build_session
-        if session is None or self._fresh_generation != attempt.prepared.work_root:
+        if attempt.reused:
             return attempt
+        session = self._leased_session()
         hooks = snapshot_generation_files(attempt.prepared) != generation_before
         inputs = session.capture_inputs(attempt.prepared)
         key = session.reusable_key(attempt.prepared, inputs, hooks=hooks)
@@ -1130,7 +1117,6 @@ class SimulationExecution:
             prepared_override=(selected, TraceMode(attempt.work.trace_mode)),
             test_runs=attempt.test_runs,
         )
-        self._fresh_generation = None
         session.discard_candidate(candidate)
         try:
             _require_attempt_log(handle, reused)
@@ -1209,37 +1195,11 @@ class SimulationExecution:
         )
         if attempt.reused:
             return self._execute_reused_adapter(handle, attempt)
-        if self._build_session is not None:
-            if self._fresh_generation != attempt.prepared.work_root:
-                raise SimulationBuildSlotError("prepared build escaped its leased generation")
-            return self._execute_fresh_adapter(handle, attempt)
-        request = AdapterAttemptRequest(
-            _adapter_command(
-                attempt.prepared,
-                attempt.identity,
-                attempt.work,
-                attempt.simulator_environment,
-            ),
-            attempt.wrapper_timeout_s,
-            attempt.identity,
-            attempt.prepared.build_root,
-        )
-        run_cwd = Path(attempt.work.run_cwd)
-        if not run_cwd.is_absolute():
-            run_cwd = handle.project_root / run_cwd
-        with materialize_runtime_inputs(
-            attempt.prepared.build_root,
-            run_cwd,
-            attempt.work.runtime_inputs,
-        ):
-            return self._observed_adapter(handle, attempt, request)
+        return self._execute_fresh_adapter(handle, attempt, self._leased_session())
 
     def _execute_reused_adapter(
         self, handle: TargetHandle, attempt: _Attempt
     ) -> AdapterAttemptOutcome:
-        session = self._build_session
-        if session is None or session.try_reuse(attempt.prepared, attempt.cache_key) is None:
-            raise SimulationBuildSlotError("cached Simulation image lost authorization")
         run_cwd = Path(attempt.work.run_cwd)
         if not run_cwd.is_absolute():
             run_cwd = handle.project_root / run_cwd
@@ -1252,17 +1212,12 @@ class SimulationExecution:
         with materialize_runtime_inputs(
             attempt.prepared.build_root, run_cwd, attempt.work.runtime_inputs
         ):
-            if session.try_reuse(attempt.prepared, attempt.cache_key) is None:
-                raise SimulationBuildSlotError("cached Simulation image changed before launch")
             return self._observed_adapter(handle, attempt, request)
 
     def _execute_fresh_adapter(
-        self, handle: TargetHandle, attempt: _Attempt
+        self, handle: TargetHandle, attempt: _Attempt, session: SimulationBuildSession
     ) -> AdapterAttemptOutcome:
-        """Authenticate compilation and its image before dispatching the adapter."""
-        session = self._build_session
-        if session is None:
-            raise SimulationBuildSlotError("fresh build lost its slot lease")
+        """Record compilation and its image before dispatching the adapter."""
         run_cwd = Path(attempt.work.run_cwd)
         if not run_cwd.is_absolute():
             run_cwd = handle.project_root / run_cwd
@@ -1321,13 +1276,7 @@ class SimulationExecution:
         prepared, trace_mode = prepared_override or self._prepare_build(handle)
         adapter = "cocotb" if prepared.resolved.cocotb_module else prepared.eda_tool
         configured_run_cwd = _configured_run_cwd(handle.project_root)
-        identity = _adapter_identity(
-            handle,
-            prepared,
-            test_names,
-            adapter,
-            campaign_build=self._build_session is not None,
-        )
+        identity = _adapter_identity(handle, prepared, test_names, adapter)
         work = prepare_simulation_work(
             handle,
             prepared,
@@ -1371,26 +1320,14 @@ class SimulationExecution:
 
     def _prepare_build(self, handle: TargetHandle) -> tuple[PreparedSimulationBuild, TraceMode]:
         announce_unit("configure", target=handle.selector)
-        policy = _build_policy(self._options.trace)
-        session = self._build_session
-        build_root = (
-            session.new_generation()
-            if session is not None
-            else work_root_for(
-                handle.project_root,
-                "sim",
-                handle.selector,
-                variant=policy.variant,
-            )
-        )
-        if session is None:
-            self._reset_build_root(build_root, policy)
+        variant = _build_variant(self._options.trace)
+        build_root = self._leased_session().new_generation()
         overlay = _trace_overlay(handle) if self._options.trace else None
         try:
             prepared = prepare_simulation_build(
                 handle,
-                variant=policy.variant,
-                **({"build_root": build_root} if session is not None else {}),
+                variant=variant,
+                build_root=build_root,
                 resolution_vlnv=overlay.vlnv if overlay is not None else None,
                 environment=simulation_target_environment(handle),
             )
@@ -1400,9 +1337,6 @@ class SimulationExecution:
                     overlay.mode,
                 )
             mode = overlay.mode if overlay is not None else TraceMode.VCD_FIFO
-            if session is not None and prepared.work_root != build_root:
-                raise SimulationBuildSlotError("FuseSoC preparation escaped its leased generation")
-            self._fresh_generation = build_root if session is not None else None
             return prepared, mode
         finally:
             if overlay is not None:
@@ -1508,8 +1442,7 @@ class SimulationExecution:
     ) -> tuple[str, ...]:
         root = handle.project_root
         announce_unit("configure", target=handle.selector)
-        policy = _build_policy(self._options.trace)
-        build_root = preview_generation_root(handle, policy.variant)
+        build_root = preview_generation_root(handle, _build_variant(self._options.trace))
         setup = simulation_setup_command(
             handle,
             build_root=build_root,
@@ -1536,22 +1469,9 @@ class SimulationExecution:
         timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
         return max(1, timeout_ms // 1000)
 
-    def _reset_build_root(self, build_root: Path, policy: _BuildPolicy) -> None:
-        if policy.fresh_root_label is None:
-            return
-        key = build_root.resolve()
-        if key in self._reset_build_roots:
-            return
-        try:
-            shutil.rmtree(build_root)
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            raise _BuildRootResetError(
-                f"could not reset {policy.fresh_root_label} Simulation build root "
-                f"{build_root}: {exc}"
-            ) from exc
-        self._reset_build_roots.add(key)
+    def _leased_session(self) -> SimulationBuildSession:
+        assert self._build_session is not None, "Simulation execution needs a leased build session"
+        return self._build_session
 
 
 def _adapter_attempt_error(attempt: AdapterAttemptOutcome, build: BuildOutcome) -> str | None:
@@ -1577,13 +1497,11 @@ def _adapter_attempt_error(attempt: AdapterAttemptOutcome, build: BuildOutcome) 
     return None
 
 
-def _build_policy(trace: bool) -> _BuildPolicy:
+def _build_variant(trace: bool) -> str:
     variants = ["trace"] if trace else []
-    doctor_bad = selftest_overlay.bad_selftest_requested(os.environ)
-    if doctor_bad:
+    if selftest_overlay.bad_selftest_requested(os.environ):
         variants.append("doctor-selftest-bad")
-    fresh_root_label = "traced" if trace else "Doctor bad" if doctor_bad else None
-    return _BuildPolicy("-".join(variants), fresh_root_label)
+    return "-".join(variants)
 
 
 def _trace_overlay(handle: TargetHandle) -> Any:
@@ -1650,7 +1568,7 @@ def _observed_test_run(name: str, handle: TargetHandle, runs: tuple[TestRun, ...
 def simulation_target_environment(handle: TargetHandle) -> dict[str, str]:
     """Return the resolved project environment for one Simulation Target."""
     sections = load_test_configuration_field(handle.project_root, "env")
-    environment = dict(lookup_target_section(sections, handle.selector) or {})
+    environment = dict(lookup_target_section(sections, handle.identity) or {})
     return {str(name): str(value) for name, value in environment.items()}
 
 
@@ -1679,6 +1597,7 @@ def target_test_plan(
     return load_target_test_plan(
         handle.project_root,
         handle.selector,
+        identity=handle.identity,
         adapter=adapter,
         target_plusargs=plusarg_parameter_names(parameters),
     )
@@ -2129,11 +2048,9 @@ def _adapter_identity(
     prepared: PreparedSimulationBuild,
     test_names: tuple[str, ...],
     adapter: str,
-    *,
-    campaign_build: bool,
 ) -> AdapterTransportIdentity:
     token = new_attempt_token()
-    result_name = f".a-{token[:24]}.json" if campaign_build else f".booley-adapter-{token}.json"
+    result_name = f".a-{token[:24]}.json"
     return AdapterTransportIdentity(
         adapter=adapter,
         attempt_token=token,
@@ -2151,38 +2068,11 @@ def _adapter_invocation(work: PreparedSimulationWork) -> tuple[str, ...]:
         raise SimulationBuildPreparationError(str(exc)) from exc
 
 
-def _adapter_command(
-    prepared: PreparedSimulationBuild,
-    identity: AdapterTransportIdentity,
-    work: PreparedSimulationWork,
-    environment: tuple[tuple[str, str], ...],
-) -> tuple[str, ...]:
-    """Render the combined build+run command; finalizes cache storage, so call at launch."""
-    script = simulation_build_script(
-        prepared,
-        identity.attempt_token,
-        run_line=shlex.join(_adapter_invocation(work)),
-        run_environment=dict(_launch_environment(environment, work)),
-    )
-    return ("sh", "-c", script)
-
-
 def _build_slot_failure(
     handle: TargetHandle, exc: SimulationBuildSlotError, started: float
 ) -> SimulationTargetOutcome:
     failure = SimulationInfrastructureFailure(
         "build", "Simulation build provenance failed", detail=str(exc)
-    )
-    return _setup_infrastructure_failure(handle, failure, started)
-
-
-def _build_root_failure(
-    handle: TargetHandle, exc: _BuildRootResetError, started: float
-) -> SimulationTargetOutcome:
-    failure = SimulationInfrastructureFailure(
-        "build",
-        "Simulation build root could not be reset",
-        detail=str(exc),
     )
     return _setup_infrastructure_failure(handle, failure, started)
 

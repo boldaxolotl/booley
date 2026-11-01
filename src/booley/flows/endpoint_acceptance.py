@@ -78,9 +78,6 @@ def set_criterion(
 
 def _record_acceptance_changes(endpoint: EndpointState, changes: list[CriterionChange]) -> None:
     """Append normalized strict-Ticket outcomes before mutable state is saved."""
-    from booley.runtime.execution_lease import validate_recording
-
-    validate_recording(getattr(endpoint.args, "work_dir", None))
     if not changes or not endpoint.state.strict_criteria:
         return
     endpoint._acceptance_recorder.record_changes(
@@ -451,7 +448,7 @@ def record_acceptance(
 def _record_final_acceptance(endpoint: EndpointState, outcome: EndpointOutcome) -> None:
     campaign_outcomes = getattr(endpoint, "_simulation_campaign_outcomes", ())
     if campaign_outcomes:
-        handler = getattr(getattr(endpoint, "flow", None), "record_campaign_acceptance", None)
+        handler = getattr(endpoint, "record_campaign_acceptance", None)
         if not callable(handler):
             raise RuntimeError("campaign outcomes have no Flow-owned acceptance handler")
         try:
@@ -462,12 +459,11 @@ def _record_final_acceptance(endpoint: EndpointState, outcome: EndpointOutcome) 
             _retain_partial_campaign_acceptance(endpoint, outcome, campaign_outcomes)
             raise
         return
-    result = endpoint._adapt_outcome(outcome)
     if endpoint._state is not None and endpoint._state._file_path is not None:
         endpoint.state.work_dir = str(Path(endpoint.args.work_dir).resolve())
-        endpoint._pre_save_hook(result)
+        endpoint._pre_save_hook(outcome)
     reset_keys: list[str] = []
-    if result.exit_code == EXIT_SUCCESS and endpoint.code_modifying:
+    if outcome.exit_code == EXIT_SUCCESS and endpoint.code_modifying:
         reset_keys = endpoint.invalidate_dependent_criteria()
         endpoint._record_acceptance_changes(
             [
@@ -482,7 +478,7 @@ def _record_final_acceptance(endpoint: EndpointState, outcome: EndpointOutcome) 
                 for key in reset_keys
             ]
         )
-    criteria_set = [result.criterion_key] if result.criterion_key else []
+    criteria_set = [outcome.criterion_key] if outcome.criterion_key else []
     criteria_set.extend(f"~{key}" for key in reset_keys)
     endpoint._pending_criteria_set = tuple(criteria_set)
 
@@ -493,9 +489,7 @@ def _retain_partial_campaign_acceptance(
     campaign_outcomes: tuple[object, ...],
 ) -> None:
     """Expose durable per-Target acceptance completed before projection failed."""
-    flow = getattr(endpoint, "flow", endpoint)
-    context = getattr(flow, "context", flow)
-    accepted = tuple(getattr(context, "_simulation_acceptance_outcomes", ()))
+    accepted = tuple(getattr(endpoint, "_simulation_acceptance_outcomes", ()))
     entries: list[dict[str, object]] = []
     for campaign, disposition in zip(campaign_outcomes, accepted, strict=False):
         target = getattr(campaign, "target", {})

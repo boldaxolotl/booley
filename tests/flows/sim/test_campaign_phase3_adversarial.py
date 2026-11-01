@@ -26,7 +26,10 @@ from booley.flows.sim.campaign.run_directory import (
     cleanup_interrupted_run_directory,
     expand_run_directory,
 )
-from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
+from booley.flows.sim.campaign.serial_execution import (
+    OrdinaryHdlSerialExecutor,
+    _capture_private_image,
+)
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import (
     SimulationArtifactEvidence,
@@ -362,85 +365,25 @@ def test_shared_recovery_rejects_bundle_transplants(tmp_path: Path, case: str) -
         completed.store.recover_shared_build(variant, 1)
 
 
-def _rewrite_result_snapshot_reference(completed: _Completed) -> None:
-    result_path = completed.store.work_item_directory(completed.item_id) / "result.json"
-    result = _read(result_path)
-    snapshot_path = completed.attempt_dir / result["executable_snapshot"]["manifest"]["path"]
-    _refresh_reference(result["executable_snapshot"]["manifest"], snapshot_path)
-    _write(result_path, result)
-
-
 @pytest.mark.parametrize(
     "case",
     [
-        "campaign",
-        "manifest",
-        "workload",
-        "work_item",
-        "attempt",
-        "build_result",
-        "bundle",
-        "inventory",
-        "artifact_remove",
-        "artifact_add",
-        "artifact_reorder",
-    ],
-)
-def test_scan_rejects_complete_snapshot_identity_mutations(tmp_path: Path, case: str) -> None:
-    completed = _completed(tmp_path)
-    path = completed.attempt_dir / "snapshot/snapshot.json"
-    snapshot = _read(path)
-    if case == "campaign":
-        snapshot["campaign_id"] = str(uuid.uuid4())
-    elif case in {"manifest", "workload"}:
-        snapshot[f"{case}_sha256"] = _BAD_DIGEST
-    elif case == "work_item":
-        snapshot["work_item_id"] = "item:9999:" + "e" * 16
-    elif case == "attempt":
-        snapshot["attempt_id"] = str(uuid.uuid4())
-    elif case == "build_result":
-        snapshot["build_result"]["owner"] = str(uuid.uuid4())
-    elif case == "bundle":
-        snapshot["bundle_id"] = str(uuid.uuid4())
-    elif case == "inventory":
-        snapshot["inventory_sha256"] = _BAD_DIGEST
-    elif case == "artifact_remove":
-        snapshot["artifacts"] = []
-    elif case == "artifact_add":
-        snapshot["artifacts"].append(dict(snapshot["artifacts"][0]))
-    else:
-        snapshot["artifacts"].reverse()
-    _write(path, snapshot)
-    _rewrite_result_snapshot_reference(completed)
-    with pytest.raises(SimulationCampaignIntegrityError):
-        completed.store.scan()
-
-
-@pytest.mark.parametrize(
-    "case",
-    [
-        "campaign",
         "manifest",
         "workload",
         "work_item",
         "attempt",
         "ordinal",
-        "invocation",
         "build_owner",
-        "build_digest",
-        "build_sharing",
-        "bundle",
         "snapshot_pre",
         "snapshot_post",
     ],
 )
 def test_scan_rejects_complete_result_identity_mutations(tmp_path: Path, case: str) -> None:
+    """The scan still binds a complete result to its manifest, item and final attempt."""
     completed = _completed(tmp_path)
     path = completed.store.work_item_directory(completed.item_id) / "result.json"
     result = _read(path)
-    if case == "campaign":
-        result["campaign_id"] = str(uuid.uuid4())
-    elif case in {"manifest", "workload"}:
+    if case in {"manifest", "workload"}:
         result[f"{case}_sha256"] = _BAD_DIGEST
     elif case == "work_item":
         result["work_item_id"] = "item:9999:" + "e" * 16
@@ -448,16 +391,8 @@ def test_scan_rejects_complete_result_identity_mutations(tmp_path: Path, case: s
         result["attempt_id"] = str(uuid.uuid4())
     elif case == "ordinal":
         result["attempt_ordinal"] += 1
-    elif case == "invocation":
-        result["producer_invocation_id"] += 1
     elif case == "build_owner":
         result["build_result"]["owner"] = str(uuid.uuid4())
-    elif case == "build_digest":
-        result["build_result"]["sha256"] = _BAD_DIGEST
-    elif case == "build_sharing":
-        result["build_result"]["sharing"] = "private_work_item"
-    elif case == "bundle":
-        result["bundle_id"] = str(uuid.uuid4())
     elif case == "snapshot_pre":
         result["executable_snapshot"]["pre_launch_sha256"] = _BAD_DIGEST
     else:
@@ -501,7 +436,9 @@ def _compatibility_manifest():
 
 def _normalized_result(result: object) -> dict[str, object]:
     document = json.loads(result.canonical_bytes())  # type: ignore[attr-defined]
-    document["observations"][0]["test"] = "selected"
+    observation = document["observations"][0]
+    assert observation["test_run"] == observation["test"]
+    observation["test"] = observation["test_run"] = "selected"
     return {
         "state": document["state"],
         "grade": document["grade"],
@@ -553,7 +490,9 @@ def _run_identity() -> dict[str, str]:
 
 def test_stale_owned_run_tree_is_cleaned_only_for_exact_owner(tmp_path: Path) -> None:
     identity = _run_identity()
-    run = RunDirectory(tmp_path / "run", str(tmp_path / "run"), True, tmp_path / "run.lock")
+    run = RunDirectory(
+        tmp_path / "run", str(tmp_path / "run"), True, tmp_path / "run.lock", tmp_path
+    )
     with claimed_run_directory(run, identity=identity) as directory:
         (directory / "nested").mkdir()
         (directory / "nested/output.log").write_text("stale", encoding="utf-8")
@@ -570,7 +509,9 @@ def test_stale_run_cleanup_preserves_unmarked_or_mismatched_tree(
     tmp_path: Path, marker: str
 ) -> None:
     identity = _run_identity()
-    run = RunDirectory(tmp_path / "run", str(tmp_path / "run"), True, tmp_path / "run.lock")
+    run = RunDirectory(
+        tmp_path / "run", str(tmp_path / "run"), True, tmp_path / "run.lock", tmp_path
+    )
     run.path.mkdir()
     payload = run.path / "preserve.log"
     payload.write_text("mine", encoding="utf-8")
@@ -616,3 +557,27 @@ def test_canonical_collision_keys_are_stable_across_threads(tmp_path: Path) -> N
         thread.join()
     assert first.collision_key == alias.collision_key
     assert keys == [first.collision_key, first.collision_key]
+
+
+@pytest.mark.parametrize(
+    "declared",
+    ["../image/in.hex", "/abs/in.hex", "\\abs\\in.hex", "C:in.hex", "a/../in.hex", ""],
+)
+def test_private_image_capture_refuses_an_unsafe_runtime_input_path(
+    tmp_path: Path, declared: str
+) -> None:
+    """A resumed prerequisite manifest is not re-planned; capture must not copy outside."""
+    source_root = tmp_path / "image"
+    source_root.mkdir()
+    (source_root / "sim.bin").write_bytes(b"x")
+    (source_root / "in.hex").write_bytes(b"y")
+    destination = tmp_path / "private"
+    with pytest.raises(SimulationCampaignIntegrityError, match="invalid runtime input path"):
+        _capture_private_image(
+            (source_root / "sim.bin",),
+            source_root,
+            destination,
+            ({"source_artifact_path": declared},),  # type: ignore[arg-type]
+        )
+    assert not (tmp_path / "in.hex").exists()
+    assert sorted(path.name for path in destination.iterdir()) == []

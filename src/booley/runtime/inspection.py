@@ -9,15 +9,18 @@ must independently validate authority; a diagnostic report grants no authority.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
+from booley.config import agent_app
 from booley.config.eda import EdaConfig
 from booley.core.boundary import require_dict
 from booley.eda.provisioning.licensing.flexnet_docker import (
@@ -34,18 +37,21 @@ from booley.eda.provisioning.policies.vivado import (
 from booley.runtime import (
     auth_token,
     image_identity,
-    project_image,
     runtime_context,
+    sandbox_layout,
     session_runtime,
+    vaporview,
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import session_issuance as runtime_spec
+from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 from booley.runtime.devcontainer import (
     devcontainer_path,
     spec_mounts_token_seed,
     spec_state_is_persisted,
 )
+from booley.runtime.filesystem_utils import read_file_bytes
 
 
 @dataclass(frozen=True)
@@ -60,6 +66,14 @@ class RuntimeInspectionRequest:
     fpga_enabled: bool = False
     expected_cache_mount: str | None = None
     booley_dir: Path | None = None
+
+    @functools.cached_property
+    def remedy(self) -> str:
+        """Host workflow for this inspection, selected once on first use.
+
+        One request is one inspection: callers build a fresh request per run.
+        """
+        return session_runtime.sandbox_remedy(self.project_root)
 
 
 @dataclass(frozen=True)
@@ -136,7 +150,7 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
         return
     try:
         spec = require_dict(
-            json.loads(path.read_text(encoding="utf-8")), field="devcontainer.json"
+            json.loads(read_file_bytes(path).decode("utf-8")), field="devcontainer.json"
         )
     except (OSError, ValueError) as exc:
         report.fail(f"{path} does not parse: {exc}", "re-run booley init")
@@ -152,6 +166,8 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
         return
     if not _preview_terminal_current(request, spec, report):
         return
+    if not _retired_entries_absent(request, spec, report):
+        return
     if seed_currency is not None:
         report.pass_("devcontainer.json present and structurally current")
 
@@ -160,17 +176,25 @@ def _provider_persistence_current(
     request: RuntimeInspectionRequest, spec: dict, report: Findings
 ) -> bool:
     spec_app = dc.spec_agent_app(spec)
-    if (
-        request.declared_provider is not None
-        and spec_app is not None
-        and spec_app != request.declared_provider
-    ):
+    pinned = request.declared_provider
+    if pinned is not None and spec_app == agent_app.AUTO_APP:
+        # "auto" resolves per start; a Sandbox without the pinned app's
+        # credential registers the other app while Specialists keep the pin.
+        _spec_warning(
+            request,
+            report,
+            f"devcontainer.json BOOLEY_AGENT_APP 'auto' may resolve to an app other than "
+            f"[agent] provider '{pinned}': without that app's credential the session "
+            f"registers the other app while Specialists still use '{pinned}'; remove "
+            f"[agent] provider or set BOOLEY_AGENT_APP to '{pinned}'",
+        )
+    elif pinned is not None and spec_app is not None and spec_app != pinned:
         report.fail(
             f"devcontainer.json BOOLEY_AGENT_APP '{spec_app}' != [agent] provider "
             f"'{request.declared_provider}': the Booley MCP entry is registered for "
             f"'{spec_app}', so a '{request.declared_provider}' session sees no Booley "
             f"MCP tools, and '{request.declared_provider}' home-state is not persisted",
-            _spec_remedy(request),
+            request.remedy,
         )
         return False
     if spec_state_is_persisted(spec) is False:
@@ -187,26 +211,14 @@ def _provider_persistence_current(
 
 def _image_current(request: RuntimeInspectionRequest, spec: dict, report: Findings) -> bool:
     spec_image = spec.get("image")
-    immutable_spec = isinstance(spec_image, str) and re.fullmatch(
-        r"sha256:[0-9a-f]{64}", spec_image
-    )
     if not isinstance(spec_image, str) or spec_image == request.image:
         return True
-    if immutable_spec and project_image.is_managed_sandbox_image(
-        request.project_root, request.image
-    ):
-        comparison = idk.compare_issued_selection(
-            spec_image,
-            request.image,
-            executable=request.docker_exe or "docker",
-            project_root=request.project_root,
-        )
-    elif immutable_spec:
-        comparison = idk.compare_issued_reference(
-            spec_image, request.image, executable=request.docker_exe or "docker"
-        )
-    else:
-        comparison = image_identity.Comparison(image_identity.Status.MISMATCH)
+    comparison = idk.compare_issued_image(
+        spec_image,
+        request.image,
+        project_root=request.project_root,
+        executable=request.docker_exe or "docker",
+    )
     if comparison.status is image_identity.Status.UNKNOWN:
         report.note(
             "devcontainer.json has an immutable image pin, but [sandbox].image "
@@ -288,17 +300,35 @@ def _viewer_extensions_current(
         _spec_warning(
             request,
             report,
-            "devcontainer.json predates the Waveform Viewer (ADR 0035) or its "
-            "WCP auto-start patch: VaporView/WCP settings or the postAttach "
-            "manifest patch are missing, so in-container `bwave gui` finds no "
-            "running viewer",
+            "devcontainer.json predates the current Waveform Viewer (ADR 0078) "
+            "setup: the VaporView extension entry is missing or is not exactly the "
+            f"image-bundled {vaporview.BUNDLED_VSIX}, or the Booley Sandbox Integration extension that hosts the "
+            "Viewer Bridge, the waveform color settings, or the postAttach patch "
+            "are missing, so in-container `bwave gui` finds no usable viewer",
         )
         return False
     if not dc.spec_installs_hdl_highlight(spec):
-        report.note(
-            "devcontainer.json predates the Verilog/SystemVerilog + Tcl "
-            "highlighting extensions: RTL and SDC/XDC constraints render as "
-            "plain text in attached VS Code windows; " + _spec_remedy(request)
+        _spec_warning(
+            request,
+            report,
+            "devcontainer.json's Verilog/SystemVerilog highlighting extension "
+            f"entry is missing or is not exactly the image-bundled {dc.HDL_VSIX}: "
+            "RTL renders as plain text in attached VS Code windows",
+        )
+        return False
+    return True
+
+
+def _retired_entries_absent(
+    request: RuntimeInspectionRequest, spec: dict, report: Findings
+) -> bool:
+    retired = dc.spec_retired_vscode_entries(spec)
+    if retired:
+        _spec_warning(
+            request,
+            report,
+            "devcontainer.json still lists VS Code entries Booley no longer "
+            f"installs ({', '.join(retired)})",
         )
         return False
     return True
@@ -311,7 +341,8 @@ def _preview_terminal_current(
         _spec_warning(
             request,
             report,
-            "devcontainer.json lacks the collision-safe Live Preview setup: "
+            "devcontainer.json lacks the collision-safe Live Preview setup (the "
+            f"extension entry must be exactly the image-bundled {dc.LIVE_PREVIEW_VSIX}): "
             "rendered review HTML may open as a blank preview",
         )
         return False
@@ -319,21 +350,15 @@ def _preview_terminal_current(
         report.note(
             "devcontainer.json predates the Python terminal activation fix: a "
             "synced Python extension can inject a delayed `source .venv/bin/activate` "
-            "into new terminals; " + _spec_remedy(request)
+            "into new terminals; " + request.remedy
         )
         return False
     return True
 
 
-def _spec_remedy(request: RuntimeInspectionRequest) -> str:
-    from booley.runtime.session_runtime import sandbox_remedy
-
-    return sandbox_remedy(request.project_root)
-
-
 def _spec_warning(request: RuntimeInspectionRequest, report: Findings, message: str) -> None:
     report.warn(
-        message + "; " + _spec_remedy(request),
+        message + "; " + request.remedy,
         check_id="interactive.devcontainer-drift",
         subject=str(devcontainer_path(request.project_root)),
     )
@@ -349,13 +374,13 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
     path = devcontainer_path(request.project_root)
     try:
         spec = require_dict(
-            json.loads(path.read_text(encoding="utf-8")), field="devcontainer.json"
+            json.loads(read_file_bytes(path).decode("utf-8")), field="devcontainer.json"
         )
         issuance = runtime_spec.validate(request.project_root, spec, path)
     except (OSError, ValueError, runtime_spec.RuntimeSpecError) as exc:
         report.fail(
             f"Sandbox host issuance is invalid: {exc}",
-            _spec_remedy(request),
+            request.remedy,
         )
         return
     report.pass_(f"Sandbox spec has valid host issuance ({issuance.spec_sha256[:12]})")
@@ -363,12 +388,7 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
     if not request.docker_exe:
         report.skip("live issued Sandbox labels/topology - container runtime unavailable")
         return
-    _check_runtime_booley_version(
-        request.docker_exe,
-        issuance.image,
-        report,
-        project_root=request.project_root,
-    )
+    _check_runtime_booley_version(request, request.docker_exe, issuance.image, report)
     _inspect_live_runtime(request, spec, issuance, report)
 
 
@@ -376,7 +396,10 @@ def _inspect_current_runtime(request: RuntimeInspectionRequest, report: Findings
     from booley.config.eda import PROVISIONING_HOST
 
     vivado = request.eda.get("vivado") if request.eda is not None else None
-    if not _check_runtime_isolation(report):
+    # Identity and host-authority surfaces are independent: a wrong Booley
+    # Directory must not hide an exposed Docker socket, credential or SSH key.
+    _check_booley_dir_identity(request.project_root, report)
+    if not _check_host_authority_isolation(report):
         return
     mounted = Path("/opt/booley-eda/vivado").is_dir()
     if (
@@ -455,12 +478,7 @@ def _inspect_live_runtime(
         report.pass_("live Sandbox state matches the current host issuance")
     else:
         report.pass_("no stale live Sandbox resources for this Project")
-    _check_issued_license_relay(
-        request.project_root,
-        containers,
-        issuance,
-        report,
-    )
+    _check_issued_license_relay(request, containers, issuance, report)
 
 
 def _list_issued_containers(
@@ -489,51 +507,122 @@ def _list_issued_containers(
 
 
 def _check_runtime_booley_version(
-    docker_exe: str,
-    image: str,
-    report: Findings,
-    *,
-    project_root: Path | None = None,
+    request: RuntimeInspectionRequest, docker_exe: str, image: str, report: Findings
 ) -> None:
     """Require comparable host and issued-image Booley identities to agree."""
     result = idk.compare_issued_build(image, executable=docker_exe)
     if result.status is image_identity.Status.MISMATCH:
         report.fail(
             f"host and issued Sandbox Image contain different Booley code ({result.detail})",
-            session_runtime.sandbox_remedy(project_root)
-            if project_root is not None
-            else "on the host run `booley session refresh`",
+            request.remedy,
         )
         return
     if result.status is image_identity.Status.MATCH:
         report.pass_("host and issued Sandbox Image use the same Booley code")
 
 
-def _check_runtime_isolation(report: Findings) -> bool:
-    """Enforce authority absence and fixed Booley Directory identity in every runtime."""
-    if os.environ.get("BOOLEY_DIR") != "/booley-project":
-        report.fail(
-            "Sandbox Booley Directory identity differs from /booley-project",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
-        )
+def _accepted_booley_dir(value: str, project_root: Path) -> bool:
+    """Return whether ``value`` is an accepted in-Sandbox ``BOOLEY_DIR`` spelling (ADR 0073).
+
+    Accepted spellings are the image alias ``/booley-project`` and the ``.booley``
+    entry directly under the inspected Project Root, either one resolving to an
+    existing directory. The entry may be a symlink; only its parent is resolved,
+    so the comparison tolerates aliased Project Root spellings. Paths alone
+    decide: ambient platform variables such as ``CODESPACES`` are spoofable
+    (ADR 0077) and never widen the rule.
+    """
+    selected = Path(value)
+    if value == sandbox_layout.BOOLEY_DIR_TARGET:
+        # Compared as text: a POSIX alias is not "absolute" to a Windows-flavoured Path.
+        return selected.is_dir()
+    if not selected.is_absolute() or not selected.is_dir():
+        return False  # relative spellings depend on cwd; dangling entries are not directories
+    if selected.name != BOOLEY_DIR_NAME:
         return False
-    required = Path("/booley-project")
+    try:
+        return selected.parent.resolve(strict=True) == project_root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False  # unresolvable parent or Project Root cannot prove identity
+
+
+def _check_booley_dir_identity(project_root: Path, report: Findings) -> None:
+    """Report whether ``BOOLEY_DIR`` names an accepted Sandbox Booley Directory."""
+    value = os.environ.get("BOOLEY_DIR", "")
+    if _accepted_booley_dir(value, project_root):
+        report.pass_(f"Sandbox Booley Directory identity verified ({value})")
+        return
+    expected = project_root / BOOLEY_DIR_NAME
+    report.fail(
+        f"Sandbox Booley Directory identity is not accepted: BOOLEY_DIR={value or '<unset>'} "
+        f"is neither {sandbox_layout.BOOLEY_DIR_TARGET} nor {expected}",
+        f"set BOOLEY_DIR to {expected} (an existing directory or a symlink to one), "
+        "or open the Project through an issued Sandbox",
+    )
+
+
+def _check_host_authority_isolation(report: Findings) -> bool:
+    """Enforce host-authority absence (Docker socket, EDA config, SSH) in every runtime."""
     forbidden = (
         Path("/var/run/docker.sock"),
         Path("/run/docker.sock"),
-        Path("/root/.ssh"),
-        Path("/home/agent/.ssh"),
         Path("/root/.config/booley/eda"),
         Path("/home/agent/.config/booley/eda"),
     )
-    if not required.is_dir() or any(_runtime_path_exposed(path) for path in forbidden):
+    if any(_runtime_path_exposed(path) for path in forbidden):
         report.fail(
             "Sandbox exposes a forbidden host-authority surface",
             session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return False
-    report.pass_("Sandbox Booley Directory and host-authority isolation verified")
+    for ssh_dir in (Path("/root/.ssh"), Path("/home/agent/.ssh")):
+        entry = _ssh_authority_entry(ssh_dir)
+        if entry is not None:
+            report.fail(
+                f"Sandbox exposes a forbidden host-authority surface: {entry}",
+                session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            )
+            return False
+    report.pass_("Sandbox host-authority isolation verified")
     return True
+
+
+def _ssh_authority_entry(ssh_dir: Path) -> Path | None:
+    """Return the first SSH entry granting outbound authority, or None.
+
+    Inbound-only access (a real directory that is empty or holds just a
+    regular ``authorized_keys``) is not host authority. All checks use lstat
+    semantics so a symlink never stands in for a permitted file or directory.
+    A mounted ``.ssh`` or ``authorized_keys`` is host authority: a host file
+    bound in looks like a plain file, and a writable one lets a Sandbox
+    process add its own key to log into the host.
+    """
+    try:
+        mode = ssh_dir.lstat().st_mode
+    except (FileNotFoundError, PermissionError):
+        return None  # absent or agent-inaccessible path: isolated
+    if not stat.S_ISDIR(mode):
+        return ssh_dir  # symlink (even dangling) or non-directory
+    try:
+        mount_points = _runtime_mount_points()
+        if str(ssh_dir) in mount_points:
+            return ssh_dir  # mounted in from outside the Sandbox
+        for entry in sorted(ssh_dir.iterdir()):
+            if (
+                entry.name != "authorized_keys"
+                or not stat.S_ISREG(entry.lstat().st_mode)
+                or str(entry) in mount_points
+            ):
+                return entry
+    except OSError:
+        return ssh_dir  # unlistable directory or unreadable mountinfo: fail closed
+    return None
+
+
+def _runtime_mount_points() -> frozenset[str]:
+    """Return this process's mount points; raise OSError when mountinfo is unreadable."""
+    mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    fields = (line.split(" - ", 1)[0].split() for line in mountinfo.splitlines())
+    return frozenset(parts[4] for parts in fields if len(parts) > 4)
 
 
 def _runtime_path_exposed(path: Path) -> bool:
@@ -545,9 +634,13 @@ def _runtime_path_exposed(path: Path) -> bool:
 
 
 def _check_issued_license_relay(
-    project_root: Path, containers: list[str], issuance: runtime_spec.Issuance, report: Findings
+    request: RuntimeInspectionRequest,
+    containers: list[str],
+    issuance: runtime_spec.Issuance,
+    report: Findings,
 ) -> None:
     """Validate exact live relay bytes, endpoints, aliases, and hardening."""
+    project_root = request.project_root
     try:
         profile = runtime_spec.requested_license(project_root)
     except runtime_spec.RuntimeSpecError as exc:
@@ -561,7 +654,7 @@ def _check_issued_license_relay(
     if not isinstance(image_id, str):
         report.fail(
             "issued License Profile lacks an immutable relay image",
-            session_runtime.sandbox_remedy(project_root),
+            request.remedy,
         )
         return
     relay = resources_for_session(str(project_root.resolve()))

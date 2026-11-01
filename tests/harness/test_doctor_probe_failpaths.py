@@ -32,7 +32,9 @@ from booley.runtime import agent_config as runtime_agent_config
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 from tests.diagnostic_helpers import (
     _record_environment,
+    _require_doctor_warning,
 )
+from tests.target_test_support import write_two_core_sim_project
 
 
 class _Rec:
@@ -51,6 +53,7 @@ class _Rec:
         self.events.append(("pass", m))
 
     def w(self, m: str, fix: str = "") -> None:
+        _require_doctor_warning(m)
         self.events.append(("warn", m))
 
     def n(self, m: str) -> None:
@@ -300,6 +303,36 @@ class TestAuditTestsTomlTargets:
         doctor._audit_tests_toml_targets(project, sections, rec.f)
         assert rec.events == []
 
+    @staticmethod
+    def _two_core_catalog() -> SimpleNamespace:
+        handles = tuple(
+            SimpleNamespace(name="sim", identity=f"vendor:{v}:{n}:1.0#sim")
+            for v, n in (("a", "x"), ("b", "y"))
+        )
+        return SimpleNamespace(list=lambda: handles)
+
+    def test_two_keys_for_one_target_fail_naming_both(self, tmp_path, monkeypatch):
+        catalog = self._two_core_catalog()
+        monkeypatch.setattr(
+            doctor.TargetCatalog, "build", classmethod(lambda _cls, _root: catalog)
+        )
+        rec = _Rec()
+        sections = {"y#sim": {}, "vendor:b:y#sim": {}, "x#sim": {}}
+        doctor._audit_tests_toml_targets(_mk_audit(tmp_path), sections, rec.f)
+        assert len(rec.fails()) == 1
+        assert "[vendor:b:y#sim] and [y#sim]" in rec.fails()[0]
+
+    def test_qualified_key_naming_no_target_fails(self, tmp_path, monkeypatch):
+        catalog = self._two_core_catalog()
+        monkeypatch.setattr(
+            doctor.TargetCatalog, "build", classmethod(lambda _cls, _root: catalog)
+        )
+        rec = _Rec()
+        # `sim` is a declared Target name, but no `ghost` core declares it.
+        doctor._audit_tests_toml_targets(_mk_audit(tmp_path), {"vendor:z:ghost#sim": {}}, rec.f)
+        assert len(rec.fails()) == 1
+        assert "[vendor:z:ghost#sim]" in rec.fails()[0]
+
     def test_fusesoc_error_returns_silently(self, tmp_path, monkeypatch):
         # Documenting CURRENT behavior: enumeration failure emits nothing here
         # (the structural audit already reported it).
@@ -315,6 +348,16 @@ class TestAuditTestsTomlTargets:
         rec = _Rec()
         doctor._audit_tests_toml_targets(project, {"sim_ghost": {}}, rec.f)
         assert rec.events == []
+
+
+def test_first_smoke_test_reads_the_selected_cores_section(tmp_path):
+    write_two_core_sim_project(
+        tmp_path,
+        '["vendor:a:x#sim"]\ntests = ["a_first"]\n["vendor:b:y#sim"]\ntests = ["b_first"]\n',
+    )
+    project = _mk_audit(tmp_path)
+    assert doctor._first_smoke_test(project, "y#sim") == "b_first"
+    assert doctor._first_smoke_test(project, "x#sim") == "a_first"
 
 
 # ---------------------------------------------------------------------------

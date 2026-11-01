@@ -21,9 +21,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from booley.core.boundary import BoundaryError
 from booley.feedback import redact as redact_mod
 from booley.feedback import render
 from booley.feedback.findings import (
@@ -44,6 +45,9 @@ from booley.feedback.findings import (
     select_unique,
 )
 from booley.feedback.storage import feedback_storage_dir
+
+#: Renders ``feedback list`` rows (given the whole log for its totals) as text.
+ListView = Callable[[FindingsLog, Sequence[Finding]], str]
 
 
 def add_subparser(sub: argparse._SubParsersAction) -> None:
@@ -427,7 +431,7 @@ def _cmd_triage(args: argparse.Namespace, booley_dir: Path) -> int:
     return 0
 
 
-def _cmd_list(args: argparse.Namespace, booley_dir: Path) -> int:
+def _cmd_list(args: argparse.Namespace, booley_dir: Path, list_view: ListView) -> int:
     log = read_log(booley_dir)
     entries = log.entries
     if args.kind:
@@ -440,27 +444,7 @@ def _cmd_list(args: argparse.Namespace, booley_dir: Path) -> int:
     if not entries:
         print(f"Nothing logged yet ({log.path}).")
         return 0
-    for entry in entries:
-        if entry.kind == "win":
-            print(f"{entry.id:6} ✅ win        {entry.title}")
-            continue
-        if entry.filed.strip():
-            flag = f"  [filed: {entry.filed.strip()}]"
-        elif entry.is_filable() or entry.bucket in ("project", "unknown"):
-            flag = ""
-        else:
-            flag = "  [needs evidence]"
-        print(f"{entry.id:6} {entry.marker} {entry.bucket:9} {entry.title}{flag}")
-    counts = log.counts()
-    # Bugs, friction, impressions and wins counted apart: the severity markers
-    # describe bugs only, so folding the others into that total makes the
-    # numbers not add up.
-    print(
-        f"\n{len(log.bugs)} finding(s): "
-        f"🔴 {counts['blocker']}  🟡 {counts['workaround']}  🔵 {counts['note']}"
-        f"   |   💬 {len(log.friction)} friction   |   📣 {len(log.impressions)} impression(s)"
-        f"   |   {len(log.wins)} win(s)"
-    )
+    print(list_view(log, entries))
     if log.corrupt_lines:
         print(f"⚠️  {log.corrupt_lines} unparseable line(s) skipped", file=sys.stderr)
     return 0
@@ -601,7 +585,6 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace, Path, Path], int]] = {
     "win": lambda args, _root, pdir: _cmd_win(args, pdir),
     "triage": lambda args, _root, pdir: _cmd_triage(args, pdir),
     "filed": lambda args, _root, pdir: _cmd_filed(args, pdir),
-    "list": lambda args, _root, pdir: _cmd_list(args, pdir),
     "redact": _cmd_redact,
 }
 
@@ -609,6 +592,12 @@ _ENVIRONMENT_HANDLERS = {
     "report": _cmd_report,
     "export": _cmd_export,
 }
+
+
+def _report_boundary_error(exc: BoundaryError) -> int:
+    """Print a malformed ``booley.toml`` value as a plain error; exit status 2."""
+    print(f"Error: {exc}", file=sys.stderr)
+    return 2
 
 
 def requires_environment(args: argparse.Namespace) -> bool:
@@ -621,13 +610,17 @@ def run(
     project_root: Path,
     *,
     env: render.Environment | None = None,
+    list_view: ListView,
 ) -> int:
     """Dispatch ``booley feedback <subcommand>``."""
     command = getattr(args, "feedback_command", None)
-    handler = _HANDLERS.get(command)
+    # ``list`` prints through the view the harness injects: the palette and table
+    # renderer live there, and this package may not import them.
+    handlers = {**_HANDLERS, "list": lambda a, _root, pdir: _cmd_list(a, pdir, list_view)}
+    handler = handlers.get(command)
     environment_handler = _ENVIRONMENT_HANDLERS.get(command)
     if handler is None and environment_handler is None:
-        commands = [*_HANDLERS, *_ENVIRONMENT_HANDLERS]
+        commands = [*handlers, *_ENVIRONMENT_HANDLERS]
         print(
             f"Usage: booley feedback {{{'|'.join(commands)}}}\n       booley feedback --help",
             file=sys.stderr,
@@ -635,10 +628,15 @@ def run(
         return 2
     booley_dir = feedback_storage_dir(project_root)
     if environment_handler is not None:
-        return environment_handler(args, project_root, booley_dir, env=env)
+        try:
+            return environment_handler(args, project_root, booley_dir, env=env)
+        except BoundaryError as exc:
+            return _report_boundary_error(exc)
     assert handler is not None
     try:
         return handler(args, project_root, booley_dir)
+    except BoundaryError as exc:
+        return _report_boundary_error(exc)
     except (FindingsLockTimeoutError, CorruptFindingsLogError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2

@@ -24,6 +24,7 @@ from booley.flows.sim import build_reuse
 from booley.flows.sim.build_session import simulation_build_slot
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
+from tests.conftest import symlink_or_skip
 from tests.flows.sim.test_verilator_build_reuse_engine import (
     _edit_keeping_mtime,
     _select,
@@ -207,3 +208,37 @@ def test_flow_sim_legacy_pre_sim_change_to_generation_forces_build(
     assert _current_generation(flow_project) == retained
     _assert_hit(_flow_sim(flow_project, reports, "third"))
     assert len(_generations(flow_project)) == 2
+
+
+def test_symlinked_booley_directory_runs_and_reuses_build(
+    flow_project: Path, tmp_path: Path
+) -> None:
+    """A Project whose ``.booley`` is a symlink runs like the plain layout (#2191).
+
+    Reports land in the default ``<entry>/flow-reports`` and the second
+    identical run still reuses the retained image, so every link-sensitive
+    Simulation place (lock, run log, Campaign store, build reference) is crossed.
+    """
+    entry = flow_project / ".booley"
+    external = tmp_path / "external-booley"
+    entry.rename(external)
+    symlink_or_skip(entry, external, target_is_directory=True)
+    reports = entry / "flow-reports"
+    builds = []
+    for _ in range(2):
+        before = _report_runs(reports)
+        result = SimulateFlow().execute(
+            SimRequest(target="sim", work_dir=flow_project, test=("first",), timeout_ms=30_000)
+        )
+        assert result.exit_code == 0, result.outcome.report_text
+        (run,) = _report_runs(reports) - before
+        assert (run / "report.json").is_file()
+        progress = json.loads((run / "progress.json").read_text(encoding="utf-8"))
+        assert progress["phase"] == "complete"
+        (document,) = run.glob("targets/sim/campaign/**/evidence/build-execution.json")
+        builds.append(json.loads(document.read_text(encoding="utf-8"))["build"])
+    _assert_built(builds[0], "missing provenance")
+    _assert_hit(builds[1])
+    # The attempt log is written through the entry link by the run itself.
+    (log,) = run.glob("**/run.log")
+    assert log.read_text(encoding="utf-8").startswith("[BOOLEY RUN_LOG]")

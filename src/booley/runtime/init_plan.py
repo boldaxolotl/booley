@@ -11,6 +11,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
+from booley.core.booley_dir_links import lexical_booley_path
+from booley.core.booley_layout import BOOLEY_DIR_NAME
+
 
 class Ownership(Enum):
     """Why an initialization target may or may not be changed."""
@@ -171,6 +174,8 @@ def plan_init_filesystem(
     seen: set[Path] = set()
     for target in request.targets:
         path = target.path.parent.resolve(strict=False) / target.path.name
+        # A symlinked ``.booley`` entry resolves outside the root; keep its lexical name.
+        path = lexical_booley_path(root / BOOLEY_DIR_NAME, path)
         if path in seen:
             raise ValueError(f"duplicate initialization target: {path}")
         seen.add(path)

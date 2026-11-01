@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from booley.config.settings import InteractiveConfig
-from booley.runtime.devcontainer import EGRESS_NETWORK, PROXY_PORT
+from booley.runtime.devcontainer import EGRESS_NETWORK, PROXY_PORT, UNPROXIED_NETWORK
 
 if TYPE_CHECKING:
     from booley.runtime.image_identity import Comparison, ImageMetadata
@@ -32,6 +32,8 @@ PROXY_CONTAINER = "booley-proxy"
 PROXY_IMAGE = "booley-egress-proxy"
 REAPER_CONTAINER = "booley-reaper"
 REAPER_IMAGE = "booley-reaper"
+# Refresh and rebuild park the replaced Session as ``<name>`` + this suffix.
+REFRESH_BACKUP_SUFFIX = "-pre-refresh"
 
 PROXY_ROLE_LABEL = "booley.role=egress-proxy"
 REAPER_ROLE_LABEL = "booley.role=reaper"
@@ -179,7 +181,7 @@ def inspect_image_metadata(
     *,
     executable: str = "docker",
 ) -> ImageMetadata | None:
-    """Return bounded labels/environment for exactly *reference*, or ``None``."""
+    """Return labels/environment for exactly *reference*, or ``None``."""
     from booley.runtime.image_identity import decode_image_metadata
 
     try:
@@ -187,8 +189,6 @@ def inspect_image_metadata(
     except (subprocess.SubprocessError, FileNotFoundError):
         return None
     if result.returncode != 0:
-        return None
-    if len(result.stdout) > 1_048_576:
         return None
     try:
         document = json.loads(result.stdout)
@@ -212,6 +212,23 @@ def compare_issued_build(image: str, *, executable: str = "docker") -> Compariso
     if expected is None or observed is None:
         return Comparison(Status.UNKNOWN)
     return compare_build_identity(expected, build_identity(observed))
+
+
+def compare_issued_image(
+    spec_image: str, configured: str, *, project_root: Path, executable: str = "docker"
+) -> Comparison:
+    """Compare issued selection using managed provenance or external exact IDs."""
+    from booley.runtime import project_image
+    from booley.runtime.image_identity import Comparison, Status
+    from booley.runtime.image_provenance import is_local_image_id
+
+    if not is_local_image_id(spec_image):
+        return Comparison(Status.MISMATCH)
+    if project_image.is_managed_sandbox_image(project_root, configured):
+        return compare_issued_selection(
+            spec_image, configured, project_root=project_root, executable=executable
+        )
+    return compare_issued_reference(spec_image, configured, executable=executable)
 
 
 def compare_issued_selection(
@@ -455,6 +472,29 @@ def ensure_egress_network(name: str = EGRESS_NETWORK) -> bool:
     )
     if result.returncode != 0:
         raise RuntimeError(f"failed to create network {name}: {result.stderr.strip()}")
+    return True
+
+
+def ensure_unproxied_network() -> bool:
+    """Create the routed bridge every unproxied Sandbox joins, if missing.
+
+    Returns True if the network was created, False if it already existed.
+    Callers hold the host lifecycle lock, so no create race is handled here.
+    Raises :class:`RuntimeError` if creation fails or a network of that name
+    is ``--internal`` and so cannot route outside Docker.
+    """
+    if network_exists(UNPROXIED_NETWORK):
+        if not network_is_internal(UNPROXIED_NETWORK):
+            return False
+        raise RuntimeError(
+            f"network {UNPROXIED_NETWORK} cannot route outside Docker; remove it when no "
+            f"container uses it (`docker network rm {UNPROXIED_NETWORK}`) and start again"
+        )
+    result = _run_docker(["network", "create", "--driver", "bridge", UNPROXIED_NETWORK])
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"failed to create network {UNPROXIED_NETWORK}: {result.stderr.strip()}"
+        )
     return True
 
 

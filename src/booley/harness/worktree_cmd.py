@@ -2,12 +2,14 @@
 
 The command wraps the packaged ``worktree_create.sh`` with its default
 ``refuse`` policy, so an existing destination (possibly an active worktree
-holding someone's work) is never deleted. The worktree lands where Ticket
-setup puts its worktrees, ``.booley/worktrees/<name>``, on a detached
+holding someone's work) is never deleted. The worktree lands at
+``.booley/worktrees/<name>``, on a detached
 HEAD at the workspace's current commit unless the name uses the
 ``<branch>--<description>`` convention to check out an existing branch.
 A Versioned Booley Directory gets a Paired Checkout on ``booley-worktree/<name>``
 at its clean HEAD; a non-versioned Booley Directory gets a Snapshot.
+Selected git submodules (and the Paired Checkout's) are then populated offline
+from the main checkout; any failure rolls the whole creation back.
 """
 
 from __future__ import annotations
@@ -30,15 +32,20 @@ from booley.runtime.project_worktree_pairing import (
     project_pairing_source,
     remove_creation_lock,
     rollback_outer_worktree,
+    rollback_project_pairing,
     validate_project_pairing,
     worktree_removal_instructions,
+)
+from booley.runtime.submodule_materialization import (
+    SubmoduleMaterializationError,
+    materialize_worktree_submodules,
 )
 
 # Same single-path-component rule the script enforces; checking it at the
 # CLI boundary gives an argparse error before any process starts.
 _WORKTREE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
-# Matches the Ticket setup budget for the same script.
+# Bounds the script so a wedged Git call cannot hang the CLI.
 _CREATE_TIMEOUT_S = 300
 
 
@@ -70,6 +77,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
             "(live run and session state stays behind). The outer worktree starts on a "
             "detached HEAD at the current commit; a "
             "<branch>--<description> name checks out that existing branch instead. "
+            "Selected git submodules are populated offline from the main checkout. "
             "An existing destination is refused and left untouched. Prints the "
             "worktree path."
         ),
@@ -138,6 +146,7 @@ def _run_current(args: argparse.Namespace, project_root: Path) -> int:
     """Create the outer and paired checkouts atomically; print removal instructions."""
     worktree = worktree_path(project_root, args.name)
     created = False
+    paired_created = False
     source = None
     try:
         source = project_pairing_source(project_root)
@@ -145,9 +154,13 @@ def _run_current(args: argparse.Namespace, project_root: Path) -> int:
         _create_outer(args.name, project_root, paired_project=source is not None)
         created = True
         paired = pair_project_worktree(project_root, worktree, args.name, source=source)
+        paired_created = paired
+        _populate_submodules(worktree)
     except BaseException as exc:
         if created:
-            _rollback_creation(project_root, worktree, args.name, exc)
+            _rollback_creation(
+                project_root, worktree, args.name, exc, source if paired_created else None
+            )
         if not isinstance(exc, (WorktreeCreationError, ProjectPairingError, OSError)):
             raise
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -157,13 +170,31 @@ def _run_current(args: argparse.Namespace, project_root: Path) -> int:
             )
         return 1
     print(worktree)
-    if paired:
-        print(worktree_removal_instructions(project_root, worktree, args.name), file=sys.stderr)
+    print(
+        worktree_removal_instructions(project_root, worktree, args.name, paired=paired),
+        file=sys.stderr,
+    )
     return 0
 
 
-def _rollback_creation(root: Path, worktree: Path, name: str, failure: BaseException) -> None:
+def _populate_submodules(worktree: Path) -> None:
     try:
+        materialize_worktree_submodules(worktree)
+    except SubmoduleMaterializationError as exc:
+        raise WorktreeCreationError(f"Submodule setup failed offline: {exc}") from exc
+
+
+def _rollback_creation(
+    root: Path,
+    worktree: Path,
+    name: str,
+    failure: BaseException,
+    paired_source: Path | None = None,
+) -> None:
+    """Undo creation: the Paired Checkout and its branch first, then the outer worktree."""
+    try:
+        if paired_source is not None:
+            rollback_project_pairing(paired_source, worktree, name)
         rollback_outer_worktree(root, worktree)
         remove_creation_lock(root, name)
     except (OSError, ProjectPairingError) as cleanup:

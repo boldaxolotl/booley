@@ -15,6 +15,7 @@ from typing import Protocol, cast
 
 from booley.flows.test_runs import (
     TestRun,
+    TestRunNameError,
     discovered_test_run,
     rerun_command,
     test_run_document,
@@ -24,6 +25,7 @@ from booley.flows.test_runs import (
 from .codec import (
     SimulationCampaignIntegrityError,
     SimulationCampaignManifest,
+    UnsupportedSimulationCampaignFormatError,
     decode_simulation_campaign_manifest,
 )
 from .planning import manifest_digest
@@ -102,9 +104,13 @@ def _recorded_test_runs(manifest_path: Path) -> dict[tuple[object, str], TestRun
     """Every Test Run the manifest at *manifest_path* records; none if unreadable."""
     try:
         manifest = decode_simulation_campaign_manifest(manifest_path.read_bytes())
-    except (OSError, SimulationCampaignIntegrityError):
+    except (OSError, SimulationCampaignIntegrityError, UnsupportedSimulationCampaignFormatError):
         return {}
-    return _manifest_test_runs(manifest)
+    try:
+        return _manifest_test_runs(manifest)
+    except TestRunNameError:
+        # Decode trusts stored fingerprints; a hand-edited one surfaces here.
+        return {}
 
 
 def _manifest_test_runs(manifest: SimulationCampaignManifest) -> dict[tuple[object, str], TestRun]:

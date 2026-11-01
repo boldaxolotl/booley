@@ -11,7 +11,6 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from string import Formatter
 from typing import TypeAlias, TypeVar, cast
 
 from booley.core.boundary import (
@@ -74,6 +73,39 @@ class SimulationCampaignIntegrityError(ValueError):
     """An authoritative campaign value violates its exact contract."""
 
 
+class UnsupportedSimulationCampaignFormatError(ValueError):
+    """A record Booley 0.3.0 wrote.
+
+    Deliberately not an integrity error: the storage is intact, only too old, so no
+    integrity catch may report it as corrupt. Callers that know the invocation
+    directory bind it with :meth:`located` so the message can name it.
+    """
+
+    def __init__(self, label: str, schema: str, invocation: Path | None = None) -> None:
+        where = (
+            f"the Simulation invocation directory {invocation}"
+            if invocation is not None
+            else "its Simulation invocation directory"
+        )
+        super().__init__(
+            f"{label} {schema} was written by Booley 0.3.0 and is no longer supported; "
+            f"delete {where} by hand"
+        )
+        self.label = label
+        self.schema = schema
+
+    def located(self, invocation: Path) -> UnsupportedSimulationCampaignFormatError:
+        """The same refusal naming the invocation directory to delete."""
+        return UnsupportedSimulationCampaignFormatError(self.label, self.schema, invocation)
+
+
+def raise_if_retired(document: Mapping[str, object]) -> None:
+    """Refuse a document in a format Booley 0.3.0 wrote, before any other check."""
+    schema = document.get("$schema")
+    if isinstance(schema, str) and schema in _RETIRED_SCHEMAS:
+        raise UnsupportedSimulationCampaignFormatError(_RETIRED_SCHEMAS[schema], schema)
+
+
 def _thaw(value: FrozenJson) -> object:
     if isinstance(value, Mapping):
         return {key: _thaw(item) for key, item in value.items()}
@@ -98,30 +130,24 @@ def canonical_json_bytes(value: object) -> bytes:
     return text.encode("utf-8") + b"\n"
 
 
-_MANIFEST_V1_SCHEMA = "booley.simulation-campaign-manifest/v1"
-# v2 = v1 plus the required ``workload.no_waivers: true`` (raw coverage, #992).  v1 is
-# immutable; v3 additionally permits explicit declared source identities in disclosures.
-_MANIFEST_V2_SCHEMA = "booley.simulation-campaign-manifest/v2"
-MANIFEST_V3_SCHEMA = "booley.simulation-campaign-manifest/v3"
-# v4 = v3 plus the required ``test_runs`` of every work item: the concrete
-# Test Runs (Test Variant, seed, declared arguments and environment) the item
-# executes (ADR 0072). It is the only version written; v1-v3 stay readable.
-_MANIFEST_V4_SCHEMA = "booley.simulation-campaign-manifest/v4"
-MANIFEST_SCHEMA = _MANIFEST_V4_SCHEMA
-_MANIFEST_SCHEMAS = frozenset(
-    {_MANIFEST_V1_SCHEMA, _MANIFEST_V2_SCHEMA, MANIFEST_V3_SCHEMA, _MANIFEST_V4_SCHEMA}
-)
-# Versions whose workload may carry ``no_waivers`` and whose disclosures may
-# declare source identities without the v1/v2 restrictions.
-_OPEN_GRAMMAR_SCHEMAS = frozenset({MANIFEST_V3_SCHEMA, _MANIFEST_V4_SCHEMA})
+# v4 = the exact work-item shape with the required ``test_runs`` of every work
+# item: the concrete Test Runs (Test Variant, seed, declared arguments and
+# environment) the item executes (ADR 0072), an optional ``no_waivers`` and
+# explicit declared source identities in disclosures. It is the only version
+# written and read.
+MANIFEST_SCHEMA = "booley.simulation-campaign-manifest/v4"
 
-RESULT_V2_SCHEMA = "booley.simulation-result/v2"
-# v3 = v2 plus the required ``test_run`` of every observation: the resolved
-# name of the Test Run it observed (ADR 0072). Observations are then unique by
-# Test Run instead of by Test. A result of a work item that records Test Runs
-# is written as v3; v1 and v2 stay readable.
+# v3 = the required ``test_run`` of every observation: the resolved name of the
+# Test Run it observed (ADR 0072). Observations are unique by Test Run.
 RESULT_SCHEMA = "booley.simulation-result/v3"
-_RESULT_SCHEMAS = frozenset({RESULT_V2_SCHEMA, RESULT_SCHEMA})
+
+# Formats Booley 0.3.0 wrote. They are recognised only to be refused.
+_RETIRED_SCHEMAS = {
+    "booley.simulation-campaign-manifest/v1": "Simulation Campaign manifest",
+    "booley.simulation-campaign-manifest/v2": "Simulation Campaign manifest",
+    "booley.simulation-result/v2": "Simulation Result",
+    "booley.simulation-projection/v2": "Simulation projection",
+}
 
 _MANIFEST_FIELDS = frozenset(
     {
@@ -248,13 +274,25 @@ _SNAPSHOT_FIELDS = frozenset(
     }
 )
 
+_FINGERPRINT_FIELDS = frozenset(
+    {
+        "workload_sha256",
+        "target_recipe_sha256",
+        "source_closures_sha256",
+        "required_suite_sha256",
+        "planning_disclosures_sha256",
+        "prerequisites_sha256",
+        "work_items_sha256",
+    }
+)
+
 T = TypeVar("T", bound=SimulationCampaignDocument)
 
 
 def _decode(
     raw: bytes,
     *,
-    schema: str | frozenset[str],
+    schema: str,
     fields: frozenset[str],
     limit: int,
     value_type: type[T],
@@ -269,14 +307,14 @@ def _decode(
         document = require_dict(value, field="document")
     except BoundaryError as exc:
         raise SimulationCampaignIntegrityError(str(exc)) from exc
+    raise_if_retired(document)
     if set(document) != fields:
         missing = sorted(fields - set(document))
         unknown = sorted(set(document) - fields)
         raise SimulationCampaignIntegrityError(
             f"document must have exact fields; missing={missing}, unknown={unknown}"
         )
-    allowed = frozenset({schema}) if isinstance(schema, str) else schema
-    if document.get("$schema") not in allowed:
+    if document.get("$schema") != schema:
         raise SimulationCampaignIntegrityError(f"unsupported $schema {document.get('$schema')!r}")
     try:
         _validate_json(document)
@@ -388,21 +426,6 @@ def _bounded_canonical_value(value: object, field: str, limit: int) -> None:
         raise SimulationCampaignIntegrityError(f"{field} exceeds {limit}-byte ceiling")
 
 
-def _validate_bounded_json_strings(value: object, field: str) -> None:
-    """Apply the ordinary-string ceiling recursively to a JSON value."""
-    if isinstance(value, str):
-        _bounded_string(value, field, allow_empty=True)
-        return
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            _validate_bounded_json_strings(item, f"{field}[{index}]")
-        return
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            _bounded_string(key, f"{field} key", allow_empty=True)
-            _validate_bounded_json_strings(item, f"{field}.{key}")
-
-
 def _bounded_string_list(
     value: object,
     field: str,
@@ -471,10 +494,7 @@ def _validate_simulation_attempt(value: Mapping[str, object]) -> None:
     )
     if run_directory["kind"] not in {"literal", "templated"}:
         raise SimulationCampaignIntegrityError("invalid run directory kind")
-    configured = _bounded_string(
-        run_directory["configured"], "run_directory.configured", allow_empty=True
-    )
-    _validate_configured_run_kind(configured, cast(str, run_directory["kind"]))
+    _bounded_string(run_directory["configured"], "run_directory.configured", allow_empty=True)
     _validate_run_directory_path(run_directory["resolved"], "run_directory.resolved")
     _validate_run_directory_path(run_directory["collision_key"], "run_directory.collision_key")
     require_bool_value(run_directory["owned"], field="run_directory.owned")
@@ -488,10 +508,10 @@ def _validate_simulation_attempt(value: Mapping[str, object]) -> None:
 
 def _validate_child_identity(value: Mapping[str, object]) -> None:
     child_id, child_digest = value["child_execution_id"], value["child_entry_sha256"]
-    if (child_id is None) != (child_digest is None):
-        raise SimulationCampaignIntegrityError(
-            "child execution fields must both be null or present"
-        )
+    # The digest is part of the attempt grammar; current attempts name the lane
+    # execution with a null digest. A digest without a lane identity is invalid.
+    if child_digest is not None and child_id is None:
+        raise SimulationCampaignIntegrityError("child_entry_sha256 requires a child_execution_id")
     if child_id is not None:
         parsed_child_id = _bounded_string(child_id, "child_execution_id")
         if not _EXECUTION_ID_RE.fullmatch(parsed_child_id):
@@ -577,11 +597,7 @@ def _validate_simulation_result(value: Mapping[str, object]) -> None:
         raise SimulationCampaignIntegrityError("invalid strict grade")
     _validate_result_state(value, build_result)
     _validate_runtime_inputs(value["runtime_inputs"], blocked=state == "blocked_by_build")
-    observations = _validate_observations(
-        value["observations"],
-        cast(str, state),
-        names_test_runs=value["$schema"] == RESULT_SCHEMA,
-    )
+    observations = _validate_observations(value["observations"], cast(str, state))
     _validate_result_grade(value["grade"], observations)
     _validate_diagnostics(value["diagnostics"])
     _validate_evidence_list(value["evidence"], "evidence")
@@ -864,19 +880,17 @@ def _validate_runtime_inputs(value: object, *, blocked: bool) -> None:
         raise SimulationCampaignIntegrityError("runtime input identities must be unique")
 
 
-def _validate_observations(
-    value: object, state: str, *, names_test_runs: bool = False
-) -> list[Mapping[str, object]]:
+def _validate_observations(value: object, state: str) -> list[Mapping[str, object]]:
     observations = _exact_list(value, "observations", MAX_OBSERVATIONS)
     if not observations:
         raise SimulationCampaignIntegrityError("result observations must be nonempty")
     tests: list[object] = []
     decoded: list[Mapping[str, object]] = []
     for index, item in enumerate(observations):
-        observation = _validate_observation(item, index, names_test_runs=names_test_runs)
-        # A v3 result is unique by Test Run: one Test may be observed under
+        observation = _validate_observation(item, index)
+        # A result is unique by Test Run: one Test may be observed under
         # several Test Variants or seeds.
-        tests.append(observation["test_run"] if names_test_runs else observation["test"])
+        tests.append(observation["test_run"])
         decoded.append(observation)
         if state == "completed" and observation["execution"] != "completed":
             raise SimulationCampaignIntegrityError(
@@ -947,16 +961,11 @@ OBSERVATION_FIELDS = frozenset(
 _OBSERVATION_FIELDS = set(OBSERVATION_FIELDS)
 
 
-def _validate_observation(
-    value: object, index: int, *, names_test_runs: bool = False
-) -> Mapping[str, object]:
+def _validate_observation(value: object, index: int) -> Mapping[str, object]:
     observation = _exact_object(
-        value,
-        ({"test_run"} if names_test_runs else set()) | _OBSERVATION_FIELDS,
-        f"observations[{index}]",
+        value, {"test_run"} | _OBSERVATION_FIELDS, f"observations[{index}]"
     )
-    if names_test_runs:
-        _bounded_string(observation["test_run"], f"observations[{index}].test_run")
+    _bounded_string(observation["test_run"], f"observations[{index}].test_run")
     if observation["execution"] not in OBSERVATION_EXECUTIONS:
         raise SimulationCampaignIntegrityError("observation execution is invalid")
     if observation["failure_class"] not in {None, "design", "infrastructure"}:
@@ -1021,7 +1030,6 @@ def _validate_diagnostics(value: object) -> None:
 
 
 def _validate_manifest(value: Mapping[str, object]) -> None:
-    schema = cast(str, value["$schema"])
     origin = _exact_object(value["origin"], {"execution_id", "invocation_id"}, "origin")
     execution_id = origin["execution_id"]
     parsed_execution_id = _bounded_string(execution_id, "origin.execution_id", allow_empty=True)
@@ -1030,16 +1038,50 @@ def _validate_manifest(value: Mapping[str, object]) -> None:
             "origin.execution_id must be empty or 32 lowercase hex"
         )
     _require_positive_int(origin["invocation_id"], "origin.invocation_id")
-    target = _validate_target(value["target"], "target")
-    workload = _validate_workload(value["workload"], schema)
-    suite = _validate_required_suite(value["required_suite"])
-    variants = _validate_variants(value["build_variants"], workload)
-    disclosures = _validate_disclosures(value["planning_disclosures"], schema)
-    prerequisites = _validate_prerequisites(value["prerequisites"])
-    items = _validate_work_items(value["work_items"], target, suite, variants, schema)
-    _validate_manifest_fingerprints(
-        value, target, workload, suite, variants, disclosures, prerequisites, items
+    _validate_target(value["target"], "target")
+    _read_workload(value["workload"])
+    _read_required_suite(value["required_suite"])
+    _read_build_variant_ids(value["build_variants"])
+    _validate_prerequisites(value["prerequisites"])
+    _validate_work_items(value["work_items"])
+    fingerprints = _exact_object(value["fingerprints"], set(_FINGERPRINT_FIELDS), "fingerprints")
+    for key, digest in fingerprints.items():
+        _require_digest(digest, f"fingerprints.{key}")
+
+
+def _read_workload(value: object) -> None:
+    """Read the workload members manifest readers use; planning proved the rest."""
+    workload = require_dict(value, field="workload")
+    require_bool_value(workload.get("trace"), field="workload.trace")
+    require_bool_value(workload.get("coverage"), field="workload.coverage")
+    eda = require_dict(workload.get("eda"), field="workload.eda")
+    for key in ("kind", "version"):
+        require_str_value(eda.get(key), field=f"workload.eda.{key}")
+    require_str_value(
+        workload.get("adapter_contract_version"), field="workload.adapter_contract_version"
     )
+    run_cwd = require_dict(workload.get("run_cwd"), field="workload.run_cwd")
+    for key in ("configured", "kind"):
+        require_str_value(run_cwd.get(key), field=f"workload.run_cwd.{key}")
+
+
+def _read_required_suite(value: object) -> None:
+    """Read the required-suite members resume and acceptance use."""
+    suite = require_dict(value, field="required_suite")
+    require_bool_value(suite.get("default_invocation"), field="required_suite.default_invocation")
+    _bounded_string_list(
+        suite.get("names"),
+        "required_suite.names",
+        count_limit=MAX_OBSERVATIONS,
+        byte_limit=MAX_OBSERVATION_TEST_BYTES,
+    )
+
+
+def _read_build_variant_ids(value: object) -> None:
+    """Read the build-variant IDs inspection and retention use."""
+    for index, item in enumerate(_exact_list(value, "build_variants", MAX_WORK_ITEMS)):
+        variant = require_dict(item, field=f"build_variants[{index}]")
+        _require_variant_id(variant.get("build_variant_id"))
 
 
 def _validate_target(value: object, field: str) -> Mapping[str, object]:
@@ -1056,320 +1098,15 @@ def _validate_target(value: object, field: str) -> Mapping[str, object]:
     return target
 
 
-def _validate_workload(value: object, schema: str) -> Mapping[str, object]:
-    # v2 adds exactly one member, ``no_waivers``; the v1 grammar never changes.
-    extra = (
-        {"no_waivers"}
-        if (
-            schema == _MANIFEST_V2_SCHEMA
-            or (
-                schema in _OPEN_GRAMMAR_SCHEMAS
-                and isinstance(value, Mapping)
-                and "no_waivers" in value
-            )
-        )
-        else set()
-    )
-    workload = _exact_object(
-        value,
-        extra
-        | {
-            "mode",
-            "trace",
-            "coverage",
-            "eda",
-            "planner_contract_version",
-            "adapter_contract_version",
-            "pre_sim_build_access",
-            "run_cwd",
-            "runtime_inputs",
-            "source_recipe",
-            "build_recipe",
-        },
-        "workload",
-    )
-    if workload["mode"] != "simulate":
-        raise SimulationCampaignIntegrityError("workload mode/trace/coverage is invalid")
-    require_bool_value(workload["trace"], field="workload.trace")
-    require_bool_value(workload["coverage"], field="workload.coverage")
-    if extra and (workload["no_waivers"] is not True or workload["coverage"] is not True):
-        raise SimulationCampaignIntegrityError("workload no_waivers is invalid")
-    _validate_eda(workload["eda"])
-    _bounded_string(workload["planner_contract_version"], "planner_contract_version")
-    _bounded_string(workload["adapter_contract_version"], "adapter_contract_version")
-    _validate_run_cwd(workload["run_cwd"])
-    _validate_runtime_declarations(workload["runtime_inputs"])
-    _validate_source_recipe(workload["source_recipe"])
-    _validate_build_recipe(workload["build_recipe"])
-    if workload["pre_sim_build_access"] not in {"immutable", "legacy-per-test"}:
-        raise SimulationCampaignIntegrityError("pre_sim_build_access is invalid")
-    return workload
+def _validate_prerequisites(value: object) -> None:
+    """Validate prerequisite links: unique by work item, consistent per campaign.
 
-
-def _validate_eda(value: object) -> None:
-    eda = _exact_object(value, {"kind", "version"}, "eda")
-    for key, item in eda.items():
-        _bounded_string(item, f"eda.{key}")
-
-
-def _validate_run_cwd(value: object) -> None:
-    run_cwd = _exact_object(value, {"configured", "kind", "placeholders"}, "run_cwd")
-    if run_cwd["kind"] not in {"literal", "templated"}:
-        raise SimulationCampaignIntegrityError("run_cwd.kind is invalid")
-    placeholders = _bounded_string_list(
-        run_cwd["placeholders"],
-        "run_cwd.placeholders",
-        count_limit=4,
-        byte_limit=MAX_STRING_BYTES,
-        unique=True,
-    )
-    if set(placeholders) - {
-        "campaign",
-        "target",
-        "test",
-        "attempt",
-    }:
-        raise SimulationCampaignIntegrityError("run_cwd placeholders are invalid")
-    configured = _bounded_string(run_cwd["configured"], "run_cwd.configured", allow_empty=True)
-    parsed = _validate_configured_run_kind(configured, cast(str, run_cwd["kind"]))
-    if placeholders != parsed:
-        raise SimulationCampaignIntegrityError(
-            "run_cwd placeholders/kind disagree with configured value"
-        )
-
-
-def _validate_configured_run_kind(configured: str, kind: str) -> list[str]:
-    placeholders = _parse_run_placeholders(configured)
-    if (kind == "literal") != (not placeholders):
-        raise SimulationCampaignIntegrityError(
-            "run-directory kind disagrees with configured value"
-        )
-    return placeholders
-
-
-def _parse_run_placeholders(configured: str) -> list[str]:
-    allowed = {"campaign", "target", "test", "attempt"}
-    ordered: list[str] = []
-    try:
-        parts = Formatter().parse(configured)
-        for _, field_name, format_spec, conversion in parts:
-            if field_name is None:
-                continue
-            if field_name not in allowed:
-                raise SimulationCampaignIntegrityError(
-                    f"unknown run-directory placeholder {field_name!r}"
-                )
-            if conversion is not None or format_spec:
-                raise SimulationCampaignIntegrityError(
-                    "run-directory placeholders cannot use conversion or format specs"
-                )
-            if field_name not in ordered:
-                ordered.append(field_name)
-    except ValueError as exc:
-        raise SimulationCampaignIntegrityError("invalid run-directory format string") from exc
-    return ordered
-
-
-def _validate_runtime_declarations(value: object) -> None:
-    declarations = _exact_list(value, "runtime_inputs", MAX_EVIDENCE_REFS)
-    ids: list[object] = []
-    destinations: list[object] = []
-    for index, item in enumerate(declarations):
-        declaration = _exact_object(
-            item,
-            {"declaration_id", "source_artifact_path", "destination"},
-            f"runtime_inputs[{index}]",
-        )
-        source = validate_relative_path(cast(str, declaration["source_artifact_path"]))
-        destination = validate_relative_path(cast(str, declaration["destination"]))
-        expected = _digest({"source_artifact_path": source, "destination": destination})
-        if declaration["declaration_id"] != expected:
-            raise SimulationCampaignIntegrityError("runtime declaration digest disagrees")
-        ids.append(expected)
-        destinations.append(destination)
-    if len(set(ids)) != len(ids) or len(set(destinations)) != len(destinations):
-        raise SimulationCampaignIntegrityError("runtime declarations must be unique")
-
-
-def _validate_source_recipe(value: object) -> None:
-    recipe = _exact_object(
-        value, {"sources", "parameters", "defines", "pre_sim_commands"}, "source_recipe"
-    )
-    _validate_source_entries(recipe["sources"], "source_recipe.sources")
-    parameters = _exact_list(recipe["parameters"], "parameters", 10_000)
-    names: list[object] = []
-    for index, item in enumerate(parameters):
-        parameter = _exact_object(item, {"name", "value"}, f"parameters[{index}]")
-        _bounded_string(parameter["name"], f"parameters[{index}].name")
-        _validate_bounded_json_strings(parameter["value"], f"parameters[{index}].value")
-        names.append(parameter["name"])
-    if len(set(names)) != len(names):
-        raise SimulationCampaignIntegrityError("parameter names must be unique")
-    _bounded_string_list(
-        recipe["defines"], "defines", count_limit=10_000, byte_limit=MAX_STRING_BYTES
-    )
-    _bounded_string_list(
-        recipe["pre_sim_commands"],
-        "pre_sim_commands",
-        count_limit=10_000,
-        byte_limit=MAX_COMMAND_BYTES,
-    )
-
-
-def _validate_source_entries(
-    value: object, field: str, *, source_mapping: bool = False
-) -> list[Mapping[str, object]]:
-    entries = _exact_list(value, field, MAX_LIST_ITEMS)
-    decoded: list[Mapping[str, object]] = []
-    for index, item in enumerate(entries):
-        extra = (
-            {"source_path"}
-            if source_mapping and isinstance(item, Mapping) and "source_path" in item
-            else set()
-        )
-        entry = _exact_object(
-            item, {"path", "bytes", "sha256", "kind"} | extra, f"{field}[{index}]"
-        )
-        if extra:
-            validate_relative_path(cast(str, entry["source_path"]))
-        validate_relative_path(cast(str, entry["path"]))
-        _require_nonnegative_int(entry["bytes"], f"{field}.bytes")
-        _require_digest(entry["sha256"], f"{field}.sha256")
-        if entry["kind"] not in {"rtl", "testbench", "constraint", "user", "generated_input"}:
-            raise SimulationCampaignIntegrityError(f"{field}.kind is invalid")
-        decoded.append(entry)
-    return decoded
-
-
-def _validate_build_recipe(value: object) -> None:
-    recipe = _exact_object(
-        value, {"eda_tool", "toplevel", "arguments", "command_model_sha256"}, "build_recipe"
-    )
-    _bounded_string(recipe["eda_tool"], "build EDA tool")
-    _bounded_string(recipe["toplevel"], "build toplevel")
-    _bounded_string_list(
-        recipe["arguments"],
-        "build arguments",
-        count_limit=10_000,
-        byte_limit=MAX_COMMAND_BYTES,
-    )
-    _require_digest(recipe["command_model_sha256"], "command_model_sha256")
-
-
-def _validate_required_suite(value: object) -> Mapping[str, object]:
-    suite = _exact_object(
-        value,
-        {"names", "default_invocation", "source_path", "source_bytes", "source_sha256"},
-        "required_suite",
-    )
-    names = _bounded_string_list(
-        suite["names"],
-        "required_suite.names",
-        count_limit=MAX_OBSERVATIONS,
-        byte_limit=MAX_OBSERVATION_TEST_BYTES,
-        unique=True,
-    )
-    require_bool_value(suite["default_invocation"], field="default_invocation")
-    _require_nonnegative_int(suite["source_bytes"], "required_suite.source_bytes")
-    _require_digest(suite["source_sha256"], "required_suite.source_sha256")
-    source_path = _bounded_string(
-        suite["source_path"], "required_suite.source_path", allow_empty=True
-    )
-    if source_path:
-        validate_relative_path(source_path)
-    elif not suite["default_invocation"]:
-        raise SimulationCampaignIntegrityError("catalog-backed required suite needs a source path")
-    if suite["default_invocation"] and names:
-        raise SimulationCampaignIntegrityError("default required suite cannot name tests")
-    if suite["default_invocation"] and (
-        suite["source_path"] != ""
-        or suite["source_bytes"] != 0
-        or suite["source_sha256"] != _digest_bytes(b"")
-    ):
-        raise SimulationCampaignIntegrityError(
-            "default required suite must authenticate empty source"
-        )
-    return suite
-
-
-def _validate_variants(
-    value: object, workload: Mapping[str, object]
-) -> list[Mapping[str, object]]:
-    variants = _exact_list(value, "build_variants", MAX_WORK_ITEMS)
-    decoded: list[Mapping[str, object]] = []
-    for index, item in enumerate(variants):
-        variant = _exact_object(
-            item,
-            {"build_variant_id", "kind", "sharing_eligible", "source_closure", "recipe_sha256"},
-            f"build_variants[{index}]",
-        )
-        _validate_variant(variant, workload)
-        decoded.append(variant)
-    ids = [item["build_variant_id"] for item in decoded]
-    if len(set(ids)) != len(ids):
-        raise SimulationCampaignIntegrityError("build variant IDs must be unique")
-    return decoded
-
-
-def _validate_variant(variant: Mapping[str, object], workload: Mapping[str, object]) -> None:
-    if variant["kind"] not in {"candidate", "trace", "coverage"}:
-        raise SimulationCampaignIntegrityError("build variant kind is invalid")
-    require_bool_value(variant["sharing_eligible"], field="sharing_eligible")
-    _validate_source_entries(variant["source_closure"], "source_closure")
-    recipe = {
-        "kind": variant["kind"],
-        "source_closure": variant["source_closure"],
-        "source_recipe": workload["source_recipe"],
-        "build_recipe": workload["build_recipe"],
-        "eda": workload["eda"],
-        "trace": workload["trace"],
-        "coverage": workload["coverage"],
-    }
-    expected = _digest(recipe)
-    if variant["recipe_sha256"] != expected or variant["build_variant_id"] != (
-        f"variant:{expected.removeprefix('sha256:')}"
-    ):
-        raise SimulationCampaignIntegrityError("build variant recipe digest/ID disagrees")
-
-
-def _validate_disclosures(value: object, schema: str) -> list[Mapping[str, object]]:
-    disclosures = _exact_list(value, "planning_disclosures", MAX_WORK_ITEMS)
-    decoded: list[Mapping[str, object]] = []
-    for index, item in enumerate(disclosures):
-        disclosure = _exact_object(
-            item,
-            {"planner", "scratch_inputs", "generated_files", "tool_provenance", "cleanup"},
-            f"planning_disclosures[{index}]",
-        )
-        _bounded_string(disclosure["planner"], f"planning_disclosures[{index}].planner")
-        _validate_source_entries(
-            disclosure["scratch_inputs"],
-            "scratch_inputs",
-            source_mapping=schema in _OPEN_GRAMMAR_SCHEMAS,
-        )
-        _validate_source_entries(
-            disclosure["generated_files"],
-            "generated_files",
-            source_mapping=schema in _OPEN_GRAMMAR_SCHEMAS,
-        )
-        provenance = _exact_object(
-            disclosure["tool_provenance"],
-            {"kind", "version", "contract_version"},
-            "planning tool_provenance",
-        )
-        for key, entry in provenance.items():
-            _bounded_string(entry, f"planning tool_provenance.{key}")
-        cleanup = _exact_object(disclosure["cleanup"], {"removed"}, "cleanup")
-        if require_bool_value(cleanup["removed"], field="cleanup.removed") is not True:
-            raise SimulationCampaignIntegrityError("planning scratch must be removed")
-        decoded.append(disclosure)
-    return decoded
-
-
-def _validate_prerequisites(value: object) -> list[Mapping[str, object]]:
+    Several relative Cycle Count Goals of one Target link several work items
+    of the same baseline campaign, so a campaign may appear more than once.
+    """
     prerequisites = _exact_list(value, "prerequisites", MAX_WORK_ITEMS)
-    decoded: list[Mapping[str, object]] = []
-    identities: list[tuple[object, object, object]] = []
+    identities: list[tuple[object, object]] = []
+    campaigns: dict[object, tuple[object, object]] = {}
     for index, item in enumerate(prerequisites):
         prerequisite = _exact_object(
             item,
@@ -1403,64 +1140,40 @@ def _validate_prerequisites(value: object) -> list[Mapping[str, object]]:
             )
         if manifest["owner"] != prerequisite["campaign_id"]:
             raise SimulationCampaignIntegrityError("prerequisite manifest owner disagrees")
-        identities.append(
-            (prerequisite["campaign_id"], target["project_identity"], target["revision"])
-        )
-        decoded.append(prerequisite)
+        campaign = (manifest, target)
+        if campaigns.setdefault(prerequisite["campaign_id"], campaign) != campaign:
+            raise SimulationCampaignIntegrityError(
+                "prerequisites of the same campaign must name the same manifest and Target"
+            )
+        identities.append((prerequisite["campaign_id"], prerequisite["work_item_id"]))
     if len(set(identities)) != len(identities):
         raise SimulationCampaignIntegrityError("prerequisite identities must be unique")
-    return decoded
 
 
-def _validate_work_items(
-    value: object,
-    target: Mapping[str, object],
-    suite: Mapping[str, object],
-    variants: list[Mapping[str, object]],
-    schema: str = _MANIFEST_V1_SCHEMA,
-) -> list[Mapping[str, object]]:
+def _validate_work_items(value: object) -> None:
     items = _exact_list(value, "work_items", MAX_WORK_ITEMS)
-    variant_ids = {variant["build_variant_id"] for variant in variants}
     decoded_items: list[Mapping[str, object]] = []
     for ordinal, item in enumerate(items):
-        decoded = _decode_work_item(item, ordinal, schema)
-        if decoded["target"] != target or decoded["build_variant_id"] not in variant_ids:
-            raise SimulationCampaignIntegrityError("work item target/build variant disagrees")
-        if decoded["role"] != target["role"] or decoded["revision"] != target["revision"]:
-            raise SimulationCampaignIntegrityError("work item role/revision disagrees with target")
-        selection = cast(Mapping[str, object], decoded["selection"])
-        if selection["kind"] == "default" and not suite["default_invocation"]:
-            raise SimulationCampaignIntegrityError("default work item requires an unnamed target")
-        identity_input = {
-            key: entry
-            for key, entry in decoded.items()
-            if key not in {"fingerprint_sha256", "work_item_id"}
-        }
-        expected = _digest(identity_input)
-        expected_id = f"item:{ordinal:04d}:{expected.removeprefix('sha256:')[:16]}"
-        if decoded["fingerprint_sha256"] != expected or decoded["work_item_id"] != expected_id:
-            raise SimulationCampaignIntegrityError("work item fingerprint/ID disagrees")
+        decoded = _decode_work_item(item, ordinal)
+        _require_work_item_id(decoded["work_item_id"])
+        _require_digest(decoded["fingerprint_sha256"], "work item fingerprint_sha256")
+        _require_variant_id(decoded["build_variant_id"])
         decoded_items.append(decoded)
     observation_count = sum(_planned_observation_count(item) for item in decoded_items)
     if observation_count > MAX_OBSERVATIONS:
         raise SimulationCampaignIntegrityError("planned observations exceed campaign ceiling")
-    return decoded_items
 
 
 def _planned_observation_count(item: Mapping[str, object]) -> int:
-    """How many observations a work item is planned to produce."""
-    if "test_runs" in item:
-        return len(cast(tuple[object, ...], item["test_runs"]))
-    selection = cast(Mapping[str, object], item["selection"])
-    names = cast(tuple[object, ...], selection["names"])
-    return len(names) or (1 if selection["kind"] == "default" else 0)
+    """How many observations a work item is planned to produce: one per Test Run."""
+    return len(cast(tuple[object, ...], item["test_runs"]))
 
 
 def _validate_work_item_test_runs(item: Mapping[str, object]) -> None:
-    """Bind a v4 work item's Test Runs to its selection, kind and each other."""
+    """Check a work item's Test Runs are well formed, named uniquely and fit its kind."""
     entries = _exact_list(item["test_runs"], "test_runs", MAX_OBSERVATIONS)
     try:
-        runs = [test_run_from_document(entry) for entry in entries]
+        runs = [test_run_from_document(entry, trust_fingerprint=True) for entry in entries]
     except ValueError as exc:
         raise SimulationCampaignIntegrityError(f"work item test_runs: {exc}") from exc
     names = [run.name for run in runs]
@@ -1469,13 +1182,7 @@ def _validate_work_item_test_runs(item: Mapping[str, object]) -> None:
             "work item test_runs must be nonempty and uniquely named"
         )
     selection = cast(Mapping[str, object], item["selection"])
-    selected = list(cast(tuple[str, ...], selection["names"]))
-    if list(dict.fromkeys(run.test for run in runs if run.test is not None)) != selected:
-        raise SimulationCampaignIntegrityError("work item test_runs disagree with selection")
-    if not selected and [run.test for run in runs] != [None]:
-        raise SimulationCampaignIntegrityError(
-            "an unnamed work item requires exactly the unnamed Test Run"
-        )
+    selected = cast(tuple[str, ...], selection["names"])
     kind = item["kind"]
     if kind == "ordinary_hdl" and len(runs) != 1:
         raise SimulationCampaignIntegrityError("ordinary work item requires one Test Run")
@@ -1488,13 +1195,11 @@ def _validate_work_item_test_runs(item: Mapping[str, object]) -> None:
         )
 
 
-def _decode_work_item(
-    value: object, ordinal: int, schema: str = _MANIFEST_V1_SCHEMA
-) -> Mapping[str, object]:
+def _decode_work_item(value: object, ordinal: int) -> Mapping[str, object]:
     item = _exact_object(
         value,
-        ({"test_runs"} if schema == _MANIFEST_V4_SCHEMA else set())
-        | {
+        {
+            "test_runs",
             "work_item_id",
             "ordinal",
             "kind",
@@ -1521,8 +1226,7 @@ def _decode_work_item(
     _bounded_string_list(
         item["arguments"], "arguments", count_limit=10_000, byte_limit=MAX_COMMAND_BYTES
     )
-    if schema == _MANIFEST_V4_SCHEMA:
-        _validate_work_item_test_runs(item)
+    _validate_work_item_test_runs(item)
     return item
 
 
@@ -1557,10 +1261,9 @@ def _validate_work_item_run_directory(value: object) -> None:
     )
     if run_directory["kind"] not in {"literal", "templated"}:
         raise SimulationCampaignIntegrityError("work item run-directory kind is invalid")
-    configured = _bounded_string(
+    _bounded_string(
         run_directory["configured"], "work item run_directory.configured", allow_empty=True
     )
-    _validate_configured_run_kind(configured, cast(str, run_directory["kind"]))
     _validate_run_directory_path(
         run_directory["collision_template"],
         "work item run_directory.collision_template",
@@ -1576,91 +1279,8 @@ def _validate_run_directory_path(value: object, field: str) -> str:
     return text
 
 
-def _validate_manifest_fingerprints(
-    manifest: Mapping[str, object],
-    target: Mapping[str, object],
-    workload: Mapping[str, object],
-    suite: Mapping[str, object],
-    variants: list[Mapping[str, object]],
-    disclosures: list[Mapping[str, object]],
-    prerequisites: list[Mapping[str, object]],
-    items: list[Mapping[str, object]],
-) -> None:
-    fingerprints = _exact_object(
-        manifest["fingerprints"],
-        {
-            "workload_sha256",
-            "target_recipe_sha256",
-            "source_closures_sha256",
-            "required_suite_sha256",
-            "planning_disclosures_sha256",
-            "prerequisites_sha256",
-            "work_items_sha256",
-        },
-        "fingerprints",
-    )
-    expected = _manifest_component_digests(
-        manifest, target, workload, suite, variants, disclosures, prerequisites, items
-    )
-    for key, digest in expected.items():
-        if fingerprints[key] != digest:
-            raise SimulationCampaignIntegrityError(f"fingerprints.{key} disagrees")
-
-
-def _manifest_component_digests(
-    manifest: Mapping[str, object],
-    target: Mapping[str, object],
-    workload: Mapping[str, object],
-    suite: Mapping[str, object],
-    variants: list[Mapping[str, object]],
-    disclosures: list[Mapping[str, object]],
-    prerequisites: list[Mapping[str, object]],
-    items: list[Mapping[str, object]],
-) -> dict[str, str]:
-    expected = {
-        "target_recipe_sha256": _digest(
-            {
-                "target": target,
-                "source_recipe": workload["source_recipe"],
-                "build_recipe": workload["build_recipe"],
-            }
-        ),
-        "source_closures_sha256": _digest(
-            [
-                {
-                    "build_variant_id": item["build_variant_id"],
-                    "source_closure": item["source_closure"],
-                }
-                for item in variants
-            ]
-        ),
-        "required_suite_sha256": _digest(suite),
-        "planning_disclosures_sha256": _digest(disclosures),
-        "prerequisites_sha256": _digest(prerequisites),
-        "work_items_sha256": _digest(items),
-    }
-    virtual = {
-        key: manifest[key]
-        for key in (
-            "target",
-            "workload",
-            "required_suite",
-            "build_variants",
-            "planning_disclosures",
-            "prerequisites",
-            "work_items",
-        )
-    }
-    expected["workload_sha256"] = _digest(virtual)
-    return expected
-
-
 def _digest(value: object) -> str:
-    return _digest_bytes(canonical_json_bytes(value)[:-1])
-
-
-def _digest_bytes(value: bytes) -> str:
-    return "sha256:" + hashlib.sha256(value).hexdigest()
+    return "sha256:" + hashlib.sha256(canonical_json_bytes(value)[:-1]).hexdigest()
 
 
 def _validate_evidence_ref(value: object, field: str) -> Mapping[str, object]:
@@ -1689,7 +1309,7 @@ _DOCUMENT_SPECS: dict[
     tuple[str, frozenset[str], int, Callable[[Mapping[str, object]], None]],
 ] = {
     SimulationCampaignManifest: (
-        _MANIFEST_V1_SCHEMA,
+        MANIFEST_SCHEMA,
         _MANIFEST_FIELDS,
         MANIFEST_MAX_BYTES,
         _validate_manifest,
@@ -1713,7 +1333,7 @@ _DOCUMENT_SPECS: dict[
         _validate_build_result,
     ),
     SimulationResult: (
-        RESULT_V2_SCHEMA,
+        RESULT_SCHEMA,
         _RESULT_FIELDS,
         RECORD_MAX_BYTES,
         _validate_simulation_result,
@@ -1732,20 +1352,11 @@ _DOCUMENT_SPECS: dict[
     ),
 }
 _DOCUMENT_VALIDATORS = {spec[0]: spec[3] for spec in _DOCUMENT_SPECS.values()}
-_DOCUMENT_VALIDATORS[_MANIFEST_V2_SCHEMA] = _validate_manifest
-_DOCUMENT_VALIDATORS[MANIFEST_V3_SCHEMA] = _validate_manifest
-_DOCUMENT_VALIDATORS[_MANIFEST_V4_SCHEMA] = _validate_manifest
-_DOCUMENT_VALIDATORS[RESULT_SCHEMA] = _validate_simulation_result
 
 
 def _decode_registered(raw: bytes, value_type: type[T]) -> T:
     schema, fields, limit, _ = _DOCUMENT_SPECS[value_type]
-    allowed: str | frozenset[str] = schema
-    if value_type is SimulationCampaignManifest:
-        allowed = _MANIFEST_SCHEMAS
-    elif value_type is SimulationResult:
-        allowed = _RESULT_SCHEMAS
-    return _decode(raw, schema=allowed, fields=fields, limit=limit, value_type=value_type)
+    return _decode(raw, schema=schema, fields=fields, limit=limit, value_type=value_type)
 
 
 def decode_simulation_campaign_manifest(raw: bytes) -> SimulationCampaignManifest:
@@ -1768,13 +1379,6 @@ decode_build_result = decode_bundle_build_result
 
 
 def decode_simulation_result(raw: bytes) -> SimulationResult:
-    try:
-        document = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError):
-        document = None
-    if isinstance(document, dict) and document.get("$schema") == "booley.simulation-result/v1":
-        document["$schema"] = RESULT_V2_SCHEMA
-        raw = canonical_json_bytes(document)
     return _decode_registered(raw, SimulationResult)
 
 
@@ -1792,9 +1396,7 @@ def _encode_checked(
 ) -> bytes:
     if type(value) is not expected_type:
         raise SimulationCampaignIntegrityError(f"expected {expected_type.__name__}")
-    raw = canonical_json_bytes(value.document)
-    _decode_registered(raw, expected_type)
-    return raw
+    return canonical_json_bytes(value.document)
 
 
 def encode_simulation_campaign_manifest(value: SimulationCampaignManifest) -> bytes:
@@ -1826,7 +1428,7 @@ def encode_executable_snapshot(value: ExecutableSnapshot) -> bytes:
 
 
 def encode_simulation_campaign_document(value: SimulationCampaignDocument) -> bytes:
-    """Validate and canonically encode any Phase-1 campaign document value."""
+    """Canonically encode any Phase-1 campaign document value."""
     value_type = type(value)
     if value_type not in _DOCUMENT_SPECS:
         raise SimulationCampaignIntegrityError(

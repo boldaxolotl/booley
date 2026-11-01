@@ -365,6 +365,26 @@ class TestScriptProvenance:
             assert _kinds(violations) == {kind}
             assert str(outside.resolve()) in violations[0].message
 
+    def test_script_under_symlinked_booley_directory_is_project_relative(
+        self, tmp_path: Path
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        store = tmp_path / "store"
+        (store / "cores").mkdir(parents=True)
+        (store / "cores" / "gen.py").write_text("# generated\n", encoding="utf-8")
+        symlink_or_skip(project / ".booley", store, target_is_directory=True)
+        core = project / ".booley" / "cores" / "x.core"
+        doc = _doc(_GEN_CORE.format(script="gen.py"))
+
+        violations = validate_core(
+            doc, core_file=core, project_root=project, scope=[".booley/cores/gen.py"]
+        )
+
+        assert _kinds(violations) == {"in_scope_script"}
+        assert ".booley/cores/gen.py" in violations[0].message
+        assert str(store) not in violations[0].message
+
     def test_out_of_scope_script_passes(self, tmp_path: Path):
         core = _write_core_with_script(
             tmp_path, "scripts/gen.py", _GEN_CORE.format(script="scripts/gen.py")

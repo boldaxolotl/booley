@@ -91,7 +91,7 @@ transactional waivers, canonical persistence, exact pruning, and the report-driv
 Coverage Analyst. The Analyst is exposed with an exact `coverage.json` input;
 it explains evidence and proposes advisory candidates without evaluating Criteria.
 V3 Campaign persistence keeps overall and deterministic per-source-file statistics
-in the manifest and lossless points in an integrity-linked compressed point store.
+in the manifest and lossless points in a compressed point store whose identity the manifest records.
 V1 and V2 Campaigns are rejected at the schema boundary and must be recollected.
 The Coverage Analyst still receives every validated point. A deterministic, disclosed bounded
 evidence packet or query-driven Analyst remains future work; V3 does not silently sample evidence.
@@ -101,6 +101,15 @@ Simulation collection controls and the Coverage Criterion are public alongside
 the Analyst. The [release gate](coverage-release-gate.md) records cross-mode and
 real-tool verification status. Native FSM and covergroup records
 remain unscored evidence in V1. B-Wave has no coverage measurement role.
+
+## Deterministic Mutation Testing
+
+**Planned.** Today the [Mutation Tester](../user/FEATURES.md#mutation-testing)
+is an LLM Specialist: it proposes the mutations, and Booley applies, compiles,
+and runs each one. That is a temporary design. Mutation testing will become
+fully deterministic, with no LLM involved: the same RTL and configuration
+always produce the same mutations, so kill rates are reproducible, comparable
+across runs, and free of LLM cost.
 
 ## Continuous Integration (`booley ci`)
 
@@ -143,7 +152,7 @@ depending on the Ticket Board or Harness lifecycle.
 
 The sandbox image contains the EDA stack, so a hosted workflow needs no setup
 and takes only a handful of lines. Slow Targets can run nightly. [Stealth
-mode](../user/CONFIG.md#stealth-mode-stealth) keeps scheduling, structured results, and
+mode](../user/STEALTH.md#stealth-mode) keeps scheduling, structured results, and
 history in `.booley/`, with no hosted checks or files in the RTL
 repository. Execution and reporting differ; Criteria, baselines, and regression
 limits stay the same.

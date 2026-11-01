@@ -1,6 +1,10 @@
 """Tests for the Flow-neutral durable run-log interface."""
 
+import pytest
+
 from booley.flows import run_log
+from tests.conftest import symlink_or_skip
+from tests.fusesoc_test_support import symlinked_booley_dir
 
 # ---------------------------------------------------------------------------
 # write_run_log
@@ -239,3 +243,134 @@ def test_identity_checks_only_through_owning_root(tmp_path):
     identity = run_log.RunLogIdentity.create(work, "sim", "attempt", (owner,))
     assert "previous run" not in identity.path.read_text(encoding="utf-8")
     assert identity.pointer(work, "attempt", owner)["live"] is True
+
+
+@pytest.mark.parametrize("linked", ["entry", "below"])
+def test_run_log_identity_follows_only_the_booley_dir_entry(tmp_path, linked):
+    """#2191: the run log crosses the Booley Directory link, never a link below it."""
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / ".booley"
+    symlinked_booley_dir(project, tmp_path / "external")
+    if linked == "below":
+        # A link below the entry (.runtime) stays refused.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        symlink_or_skip(entry / ".runtime", outside, target_is_directory=True)
+    work = entry / ".runtime" / "attempt"
+    work.mkdir(parents=True, exist_ok=True)
+
+    if linked == "below":
+        with pytest.raises(OSError, match="symbolic link"):
+            run_log.RunLogIdentity.create(work, "sim", "attempt", (project,), booley_dir=entry)
+        return
+    identity = run_log.RunLogIdentity.create(work, "sim", "attempt", (project,), booley_dir=entry)
+    # Appending changes the fingerprint, so pointer() re-opens through the entry.
+    with identity.path.open("a", encoding="utf-8") as stream:
+        stream.write("output\n")
+    assert identity.pointer(work, "attempt", project) is not None
+
+
+def _started_log(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    run_log.begin_run_log(work, flow="lint", target="lint_top")
+    return work, work / "run.log"
+
+
+def _live_identity(tmp_path):
+    """A sim run-log identity whose fingerprint has changed, so pointer() re-reads."""
+    owner = tmp_path / "owner"
+    work = owner / "work"
+    work.mkdir(parents=True)
+    identity = run_log.RunLogIdentity.create(work, "sim", "attempt", (owner,))
+    with identity.path.open("a", encoding="utf-8") as stream:
+        stream.write("output\n")
+    return identity, work, owner
+
+
+def test_run_log_write_survives_transient_replace_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_replaces
+
+    work, log = _started_log(tmp_path)
+    attempts = hold_replaces(monkeypatch, {log: 1})
+    run_log.write_run_log(work, "output\n")
+    assert attempts[log] == 2
+    content = log.read_text(encoding="utf-8")
+    assert content.startswith(run_log.RUN_LOG_HEADER_PREFIX)
+    assert content.endswith("output\n")
+
+
+def test_run_log_write_retries_before_raising_lasting_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_replaces
+
+    work, log = _started_log(tmp_path)
+    attempts = hold_replaces(monkeypatch, {log: 100})
+    with pytest.raises(PermissionError):
+        run_log.write_run_log(work, "output\n")
+    assert attempts[log] > 1
+
+
+def test_run_log_header_read_survives_transient_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    work, log = _started_log(tmp_path)
+    attempts = hold_opens(monkeypatch, {log: 1})
+    header = run_log.read_run_log_header(work)
+    assert header is not None
+    assert header["flow"] == "lint"
+    assert attempts[log] == 2
+
+
+def test_run_log_header_read_raises_lasting_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    work, log = _started_log(tmp_path)
+    hold_opens(monkeypatch, {log: 100})
+    with pytest.raises(PermissionError):
+        run_log.read_run_log_header(work)
+    # The writer must not silently drop the ownership header either.
+    with pytest.raises(PermissionError):
+        run_log.write_run_log(work, "output\n")
+
+
+def test_run_log_head_keeps_posix_permission_error_as_empty(tmp_path, monkeypatch):
+    import errno
+    import sys
+    from pathlib import Path
+
+    work, _log = _started_log(tmp_path)
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def deny(path, *args, **kwargs):
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(Path, "open", deny)
+    assert run_log.read_run_log_header(work) is None
+
+
+def test_run_log_pointer_survives_transient_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import flaky, no_retry_delay
+
+    identity, work, owner = _live_identity(tmp_path)
+    no_retry_delay(monkeypatch)
+    opener, calls = flaky(run_log.open_regular_nofollow, 1)
+    monkeypatch.setattr(run_log, "open_regular_nofollow", opener)
+    pointer = identity.pointer(work, "attempt", owner)
+    assert pointer is not None
+    assert pointer["live"] is True
+    assert calls == [2]
+
+
+def test_run_log_pointer_raises_lasting_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import flaky, no_retry_delay
+
+    identity, work, owner = _live_identity(tmp_path)
+    stale = identity.fingerprint
+    no_retry_delay(monkeypatch)
+    opener, calls = flaky(run_log.open_regular_nofollow, 100)
+    monkeypatch.setattr(run_log, "open_regular_nofollow", opener)
+    with pytest.raises(PermissionError):
+        identity.pointer(work, "attempt", owner)
+    assert calls[0] > 1
+    assert identity.fingerprint == stale

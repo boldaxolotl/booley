@@ -43,6 +43,7 @@ from booley.core.boundary import (
     require_str,
 )
 from booley.runtime.display_identity import DisplayScope
+from booley.runtime.filesystem_utils import read_file_bytes, replace_file
 from booley.runtime.timefmt import parse_timestamp
 
 logger = logging.getLogger(__name__)
@@ -97,9 +98,6 @@ class JobRecord:
     # Presentation scope of the submitting MCP server. Nested Specialist jobs
     # are real Jobs but must not replace the Developer Agent's heartbeat text.
     display_scope: DisplayScope = DisplayScope.DEVELOPER
-    # Optional durable parent operation. Detached work keeps the same lease so
-    # its later evidence cannot escape the review execution that admitted it.
-    lease_id: str | None = None
     # When the child was first observed actually RUNNING (holding its slot),
     # stamped by the supervising server. ``started_at`` is submit time; with
     # queued admission (ADR 0028) the two can differ by the whole queue wait,
@@ -160,14 +158,15 @@ def _record_path(run_id: str, root: Path | None) -> Path | None:
     return (root / f"{run_id}.json") if root is not None else None
 
 
-def write_record(rec: JobRecord, root: Path | None) -> None:
-    """Persist (or overwrite) a job record. Best-effort — never raises.
+def write_record_strict(rec: JobRecord, root: Path | None) -> None:
+    """Persist (or overwrite) a job record, raising ``OSError`` when it cannot land.
 
     Atomic (tmp + rename): the reader may be a *different* process — a
     restarted server resolving a poll across the host/sandbox boundary — and a
     half-written record would make it report "Unknown run_id" for a job that is
     fine. The tmp name carries our PID so two processes writing the same
-    run_id cannot collide on the tmp file itself.
+    run_id cannot collide on the tmp file itself. The rename retries the
+    transient Windows sharing errors a concurrent reader causes.
     """
     path = _record_path(rec.run_id, root)
     if path is None:
@@ -176,22 +175,39 @@ def write_record(rec: JobRecord, root: Path | None) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(json.dumps(rec.to_dict()) + "\n", encoding="utf-8")
-        tmp.replace(path)
+        replace_file(tmp, path)
     except OSError:
-        logger.debug("Failed to write job record %s", rec.run_id, exc_info=True)
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)  # don't leave a stray tmp behind
+        raise
+
+
+def write_record(rec: JobRecord, root: Path | None) -> None:
+    """Best-effort :func:`write_record_strict`: a failed write is logged, never raised."""
+    try:
+        write_record_strict(rec, root)
+    except OSError:
+        logger.debug("Failed to write job record %s", rec.run_id, exc_info=True)
 
 
 def read_record(run_id: str, root: Path | None) -> JobRecord | None:
-    """Load a job record by run-id, or None if absent/unreadable."""
+    """Load a job record by run-id.
+
+    ``None`` means the record is absent or its content is malformed. A record
+    that exists but cannot be read (after the Windows sharing-error retries)
+    raises ``OSError``: an unreadable record is not an absent one.
+    """
     path = _record_path(run_id, root)
-    if path is None or not path.is_file():
+    if path is None:
         return None
     try:
-        data = require_dict(json.loads(path.read_text(encoding="utf-8")), field="Job record")
+        raw = read_file_bytes(path)
+    except FileNotFoundError:
+        return None
+    try:
+        data = require_dict(json.loads(raw.decode("utf-8")), field="Job record")
         return JobRecord.from_dict(data)
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+    except (json.JSONDecodeError, TypeError, ValueError):
         logger.warning("Malformed job record at %s", path, exc_info=True)
         return None
 
@@ -214,7 +230,11 @@ def list_records(root: Path | None) -> list[JobRecord]:
         return []
     out: list[JobRecord] = []
     for path in records_root.glob("*.json"):
-        rec = read_record(path.stem, records_root)
+        try:
+            rec = read_record(path.stem, records_root)
+        except OSError as exc:
+            logger.warning("Skipping unreadable job record %s: %s", path, exc)
+            continue
         if rec is not None:
             out.append(rec)
     return out
@@ -256,8 +276,6 @@ def _validate_record(record: JobRecord, *, now: float | None = None) -> None:
     if record.exit_code is not None:
         require_int(record.exit_code, field="Job exit code")
     DisplayScope.parse(record.display_scope)
-    if record.lease_id is not None:
-        require_str({"lease_id": record.lease_id}, "lease_id")
     started_at = parse_stamp(record.started_at)
     if started_at is None:
         raise BoundaryError("Job started_at must be an RFC 3339 timestamp")
@@ -281,12 +299,12 @@ def strict_records(root: Path | None) -> list[JobRecord]:
     records: list[JobRecord] = []
     malformed: list[str] = []
     for path in root.glob("*.json"):
-        record = read_record(path.stem, root)
         try:
+            record = read_record(path.stem, root)
             if record is None:
                 raise BoundaryError("record is unreadable")
             _validate_record(record)
-        except (BoundaryError, JobRecordError, TypeError, ValueError) as exc:
+        except (BoundaryError, JobRecordError, OSError, TypeError, ValueError) as exc:
             malformed.append(f"{path.name}: {exc}")
         else:
             records.append(record)

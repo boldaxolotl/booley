@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 from booley.targets.domain import AmbiguousTargetError, TargetRef, UnknownTargetError
 
@@ -21,6 +21,11 @@ def split_selector(token: str) -> tuple[str | None, str]:
     return qualifier or None, name
 
 
+def selector_target_name(selector: str) -> str:
+    """Return the Target name of a bare or ``vlnv#name`` selector."""
+    return split_selector(selector)[1]
+
+
 def vlnv_matches(query: str, vlnv: str) -> bool:
     """Return whether *query* is a segment suffix of *vlnv*'s identity."""
     key_segments = vlnv_key(vlnv).split(":")
@@ -28,6 +33,64 @@ def vlnv_matches(query: str, vlnv: str) -> bool:
     return len(query_segments) <= len(key_segments) and (
         key_segments[-len(query_segments) :] == query_segments
     )
+
+
+def selectors_name_distinct_cores(first: str, second: str) -> bool:
+    """Whether two selectors provably name different cores, without a catalog.
+
+    Both must be qualified, and neither qualifier may be a segment suffix of the
+    other: two suffix patterns can match one core only when one contains the
+    other. Unqualified selectors and version-only differences stay unproven.
+    """
+    first_qualifier = split_selector(first)[0]
+    second_qualifier = split_selector(second)[0]
+    if first_qualifier is None or second_qualifier is None:
+        return False
+    return not (
+        vlnv_matches(first_qualifier, second_qualifier)
+        or vlnv_matches(second_qualifier, first_qualifier)
+    )
+
+
+class TargetSectionConflictError(ValueError):
+    """Two or more tests.toml section keys name the same Target."""
+
+
+def section_key_names(key: str, identity: str) -> bool:
+    """Whether the qualified section *key* (``q#name``) names Target *identity*.
+
+    The names must be equal and the qualifier must match the identity's VLNV the
+    way ``--target`` does (any segment suffix, version ignored). A bare key names
+    no identity here: it serves by Target name only.
+    """
+    qualifier, name = split_selector(key)
+    vlnv, _, identity_name = identity.rpartition("#")
+    return (
+        qualifier is not None
+        and bool(vlnv)
+        and name == identity_name
+        and (vlnv_matches(qualifier, vlnv))
+    )
+
+
+def target_section_key(keys: Iterable[str], identity: str) -> str | None:
+    """The tests.toml key that owns the section of Target *identity*, or None.
+
+    A qualified key naming *identity* wins over the bare key equal to the
+    Target's name; key order never matters. Several qualified keys naming
+    *identity* raise ``TargetSectionConflictError`` naming every one.
+    """
+    key_list = list(keys)
+    named = sorted(key for key in key_list if section_key_names(key, identity))
+    if len(named) > 1:
+        listed = " and ".join(f"[{key}]" for key in named)
+        raise TargetSectionConflictError(
+            f"tests.toml sections {listed} both name Target {identity!r}; keep one"
+        )
+    if named:
+        return named[0]
+    name = identity.rpartition("#")[2]
+    return name if name in key_list else None
 
 
 def resolve(
@@ -77,4 +140,13 @@ def minimal_selector(ref: TargetRef, declaring: Sequence[TargetRef]) -> str:
     return f"{ref.vlnv}#{ref.name}"
 
 
-__all__ = ["minimal_selector", "resolve", "split_selector", "vlnv_key", "vlnv_matches"]
+__all__ = [
+    "TargetSectionConflictError",
+    "minimal_selector",
+    "resolve",
+    "section_key_names",
+    "split_selector",
+    "target_section_key",
+    "vlnv_key",
+    "vlnv_matches",
+]

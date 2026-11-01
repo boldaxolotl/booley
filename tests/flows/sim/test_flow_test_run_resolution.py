@@ -12,10 +12,11 @@ from booley.criteria.presentation import CriterionPresentation
 from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.frozen_test_runs import FrozenTestRuns, GoalTestRuns, SeedGroup
 from booley.flows.sim.execution import DefaultSelection, SelectedTestRuns
-from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.flow import SimulateFlow, _resolve_sim_campaign_work_units
 from booley.flows.target_test_plan import build_target_test_plan
 from booley.flows.test_runs import UnseededTargetError, build_test_run, test_run_document
-from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
+from tests.target_test_support import write_two_core_sim_project
 
 _TESTS = {
     "sim": {
@@ -110,7 +111,7 @@ class _GoalAdapter(StandaloneFlowExecution):
 
 def _goal_flow(tmp_path, monkeypatch, frozen: FrozenTestRuns, *argv: str) -> SimulateFlow:
     flow = _flow(tmp_path, monkeypatch, *argv)
-    flow.context.configure_flow_execution(_GoalAdapter(frozen))
+    flow.configure_flow_execution(_GoalAdapter(frozen))
     return flow
 
 
@@ -142,7 +143,7 @@ def test_target_run_under_a_target_goal_runs_its_frozen_test_runs(tmp_path, monk
     # ``reset`` was not frozen and runs as its current default.
     assert _names(flow) == ["stress+soak@5", "reset@1"]
     assert flow._test_runs.fresh_seed_selectors == {}
-    assert flow.context.execution_adapter.reads == 1  # read once per invocation
+    assert flow.execution_adapter.reads == 1  # read once per invocation
 
 
 def test_frozen_run_whose_variant_is_gone_or_skipped_does_not_run(tmp_path, monkeypatch):
@@ -361,7 +362,7 @@ def test_every_published_manifest_is_registered_with_the_goal_run_before_it_runs
 
     flow = _flow(tmp_path, monkeypatch)
     registry = Registry()
-    flow.context.configure_flow_execution(registry)
+    flow.configure_flow_execution(registry)
     published: list[Path] = []
     publish = flow._manifest_publisher(published)
     publish(manifest)
@@ -370,7 +371,7 @@ def test_every_published_manifest_is_registered_with_the_goal_run_before_it_runs
 
     diagnostic = _flow(tmp_path, monkeypatch, "--diagnostic")
     silent = Registry()
-    diagnostic.context.configure_flow_execution(silent)
+    diagnostic.configure_flow_execution(silent)
     diagnostic._manifest_publisher([])(manifest)
     assert silent.campaigns == []
     # Outside Goal Mode nothing wants to know.
@@ -433,7 +434,7 @@ def test_a_coverage_campaign_collected_on_its_own_is_registered_before_it_runs(
     target = SimpleNamespace(handle=SimpleNamespace(selector="sim", identity="lib:ip:core#sim"))
     flow = _flow(tmp_path, monkeypatch)
     registry = Registry()
-    flow.context.configure_flow_execution(registry)
+    flow.configure_flow_execution(registry)
     flow._register_coverage_campaign(target, tmp_path / "reports" / "sim" / "1")
     (started,) = registry.campaigns
     assert started.manifest_path == tmp_path / "reports/sim/1/targets/sim/coverage.json"
@@ -441,7 +442,7 @@ def test_a_coverage_campaign_collected_on_its_own_is_registered_before_it_runs(
 
     diagnostic = _flow(tmp_path, monkeypatch, "--diagnostic")
     silent = Registry()
-    diagnostic.context.configure_flow_execution(silent)
+    diagnostic.configure_flow_execution(silent)
     diagnostic._register_coverage_campaign(target, tmp_path / "reports" / "sim" / "2")
     assert silent.campaigns == []
 
@@ -474,3 +475,18 @@ def test_a_diagnostic_run_names_the_goals_whose_frozen_runs_it_ran(tmp_path, mon
         report_text="sim: ran", detail={"campaigns": {"sim": {"test_runs": [other]}}}
     )
     assert flow._with_diagnostic_test_run_note(plain).report_text == "sim: ran"
+
+
+def test_two_keys_for_one_target_refuse_the_run_naming_both(tmp_path):
+    write_two_core_sim_project(
+        tmp_path, '["y#sim"]\ntests = ["one"]\n["vendor:b:y#sim"]\ntests = ["two"]\n'
+    )
+    flow = SimulateFlow()
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "y#sim"])
+
+    refusal = flow._validate_test_plans(["y#sim"])
+
+    assert refusal is not None and refusal.exit_code == EXIT_ERROR
+    assert "[vendor:b:y#sim] and [y#sim]" in refusal.report_text
+    # The watchdog sizing preflight must not raise: the child Flow reports the refusal.
+    assert _resolve_sim_campaign_work_units(tmp_path, "y#sim") == 1

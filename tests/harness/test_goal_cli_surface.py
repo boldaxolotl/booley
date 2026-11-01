@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from booley.harness import booley as cli
+from tests.harness.booley_dir_support import select_booley_dir
 
 
 def test_goal_surface_matches_catalogs():
@@ -28,11 +29,11 @@ def test_goal_status_flags_are_mutually_exclusive(capsys):
     assert "not allowed with argument" in capsys.readouterr().err
 
 
-def test_goal_abandon_refuses_without_occupying_record(tmp_path, monkeypatch, capsys):
-    monkeypatch.chdir(tmp_path)
+def test_goal_abandon_refuses_without_occupying_record(request, tmp_path, monkeypatch, capsys):
+    select_booley_dir(request, monkeypatch, tmp_path)
     args = cli._build_parser().parse_args(["goal", "abandon"])
     assert cli._EARLY_COMMANDS["goal"](args, tmp_path) == 2
-    assert "Goal" in capsys.readouterr().err
+    assert capsys.readouterr().err == "ERROR: abandon must run inside a Goal worktree\n"
 
 
 @pytest.mark.parametrize("command", ["run", "board"])
@@ -102,8 +103,8 @@ def test_retired_command_after_attached_or_zero_arity_options(
 def test_required_global_value_is_not_a_command(nargs):
     parser = cli._global_options_parser()
     parser.add_argument("--extra", nargs=nargs)
-    assert cli._argv_command(["--extra", "board"], parser) is None
-    assert cli._argv_command(["--extra", "board", "goal", "status"], parser) == "goal"
+    assert cli._argv_command_index(["--extra", "board"], parser) is None
+    assert cli._argv_command_index(["--extra", "board", "goal", "status"], parser) == 2
 
 
 @pytest.mark.parametrize("flag", ["--version", "-h", "--help"])
@@ -151,13 +152,13 @@ def test_goal_help_describes_both_selection_cases(command, capsys):
     assert "when this worktree hosts none" in text
 
 
-def test_usage_status_describes_both_selection_cases():
+def test_goal_mode_guide_status_describes_both_selection_cases():
     from pathlib import Path
 
-    usage = Path(__file__).parents[2] / "docs/user/USAGE.md"
+    guide = Path(__file__).parents[2] / "docs/user/GOAL-MODE.md"
     paragraph = next(
         paragraph
-        for paragraph in usage.read_text().split("\n\n")
+        for paragraph in guide.read_text(encoding="utf-8").split("\n\n")
         if paragraph.startswith("For scripted inspection, `booley goal status`")
     )
     text = " ".join(paragraph.split())

@@ -159,10 +159,11 @@ Try:
   `version`, `schema`, `docs` list/search/show, `skill`, legacy translation, a pattern miss, an
   ambiguous name, a bounded output limit.
 - Viewer (VS Code only): open a scoped `bwave gui` with clock, PFC request, packet start, XGMII,
-  statistics, start/end markers and cursor; read back over WCP and screenshot. Append keeps rows; a
-  small max-signals cap holds; a dropped signal warns with the discrepancy; no clock → none added;
-  no WCP → scoped request fails, bare GUI falls back to the editor; restore → exact view. From that
-  client call status, targets, a Flow and a Specialist, and read the MCP schemas.
+  statistics, start/end markers and cursor; check the printed readback and screenshot. Append keeps
+  rows; a small max-signals cap holds; a dropped signal warns with the discrepancy; no clock → none
+  added; no attached window → scoped request fails, bare GUI falls back to the editor; restore →
+  exact view. From that client call status, targets, a Flow and a Specialist, and read the MCP
+  schemas.
 Look for: exit 0 with wrong values, ignored options, off-by-one markers, dropped signals.
 
 ### 7. isolation — Sandbox security boundary (~15 min)

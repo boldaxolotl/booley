@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import io
 import json
 import os
 import re
@@ -69,6 +70,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.conftest import symlink_or_skip
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
@@ -1262,7 +1264,7 @@ class TestDeltaComputation:
 
 class TestFormatting:
     def test_fmt_area_with_value(self):
-        assert "KGe" in AsicSynthesizeFlow._fmt_area(8.2)
+        assert "kGE" in AsicSynthesizeFlow._fmt_area(8.2)
         assert "8.2" in AsicSynthesizeFlow._fmt_area(8.2)
 
     def test_fmt_area_none(self):
@@ -1287,25 +1289,38 @@ class TestFormatting:
     def test_fmt_delta_none(self):
         assert AsicSynthesizeFlow._fmt_delta(None) == ""
 
-    def test_qor_line_surfaces_numbers(self):
+    def test_detail_note_surfaces_unlisted_numbers(self):
+        cur = SynthMetrics(
+            area_kge=8.2,
+            cells=12345,
+            per_clock={"clk": make_clock_timing("clk", 2.0, 0.75, 0.1)},
+            wns_ns=0.25,
+            reg2reg_fmax_mhz=410.0,
+        )
+        note = AsicSynthesizeFlow._format_detail_note("lite", cur)
+        assert note == "  lite: 12,345 cells, hold slack +0.100 ns, reg2reg Fmax 410 MHz"
+
+    def test_detail_note_falls_back_to_reg2reg_slack(self):
+        cur = SynthMetrics(reg2reg_slack_ns=-0.5)
+        assert AsicSynthesizeFlow._format_detail_note("k", cur) == "  k: reg2reg slack -0.500 ns"
+
+    def test_detail_note_is_none_without_metrics(self):
+        assert AsicSynthesizeFlow._format_detail_note("k", SynthMetrics()) is None
+
+    def test_table_row_surfaces_numbers(self, flow_and_state):
+        flow, _ = flow_and_state
         cur = SynthMetrics(
             area_kge=8.2,
             cells=12345,
             per_clock={"clk": make_clock_timing("clk", 2.0, 0.75, 0.1)},
             wns_ns=0.25,
         )
-        line = AsicSynthesizeFlow._format_qor_line("lite", cur)
-        assert "QoR" in line
-        assert "12,345 cells" in line
-        assert "8.2 kGE" in line
-        assert "1,250 ps" in line
-        assert "Fmax 800 MHz" in line
-        assert "setup slack +0.250 ns" in line
-        assert "hold slack +0.100 ns" in line
-        # Single-clock design: the timing-worst clock is shown untagged.
-        assert "[clk]" not in line
+        row = flow._summary_row("lite", cur, None, False)
+        assert row[:6] == ["lite", "8.2 kGE", "1,250 ps", "800 MHz", "+0.250 ns", "0.0s"]
+        assert row[6] == "PASS"
 
-    def test_qor_line_tags_worst_clock_when_multiclock(self):
+    def test_table_row_tags_worst_clock_when_multiclock(self, flow_and_state):
+        flow, _ = flow_and_state
         cur = SynthMetrics(
             cells=10,
             per_clock={
@@ -1313,19 +1328,20 @@ class TestFormatting:
                 "slow": make_clock_timing("slow", 4.0, 0.0, 0.1),  # 4000 ps (worst)
             },
         )
-        line = AsicSynthesizeFlow._format_qor_line("lite", cur)
-        # The worst (lowest-Fmax) clock is 'slow'; its name tags the numbers.
-        assert "4,000 ps [slow]" in line
-        assert "Fmax 250 MHz [slow]" in line
+        row = flow._summary_row("lite", cur, None, False)
+        # The worst (lowest-Fmax) clock is 'slow'; its name tags the Fmax.
+        assert row[2] == "4,000 ps"
+        assert row[3] == "250 MHz [slow]"
 
-    def test_qor_line_negative_slack_shows_sign(self):
-        cur = SynthMetrics(cells=10, wns_ns=-1.5)
-        assert "setup slack -1.500 ns" in AsicSynthesizeFlow._format_qor_line("k", cur)
+    def test_table_row_negative_slack_shows_sign(self, flow_and_state):
+        flow, _ = flow_and_state
+        row = flow._summary_row("k", SynthMetrics(cells=10, wns_ns=-1.5), None, False)
+        assert "-1.500 ns" in row
 
-    def test_qor_line_labels_logical_frequency_as_estimated(self):
+    def test_logical_frequency_is_labelled_as_estimated(self):
         cur = SynthMetrics(cells=10, synth_mode="logical", estimated_fmax_mhz=2950.25)
-        line = AsicSynthesizeFlow._format_qor_line("k", cur)
-        assert "estimated Fmax 2950 MHz" in line
+        note = AsicSynthesizeFlow._format_detail_note("k", cur)
+        assert "estimated Fmax 2950 MHz" in note
 
 
 # ===========================================================================
@@ -1605,9 +1621,9 @@ class TestSingleConfigRun:
 
         assert result.exit_code == EXIT_SUCCESS
         assert "RESULT: PASS" in result.report_text
-        assert "KGe" in result.report_text
+        assert "kGE" in result.report_text
         # QoR numbers must be surfaced on a passing run, not buried in files.
-        assert "QoR" in result.report_text
+        assert "Area" in result.report_text
         assert "12,345 cells" in result.report_text
 
         # Verify criterion was set
@@ -2420,9 +2436,9 @@ class TestFileBasedInterpretation:
         assert result.exit_code == EXIT_SUCCESS
         # period 4 ns, wns 2 ns -> crit path 2000 ps -> Fmax 500 MHz, derived
         # at interpret time from the log file (not from process stdout).
-        assert "crit path 2,000 ps" in result.report_text
-        assert "Fmax 500 MHz" in result.report_text
-        assert "slack +2.000 ns" in result.report_text
+        assert "2,000 ps" in result.report_text
+        assert "500 MHz" in result.report_text
+        assert "+2.000 ns" in result.report_text
 
     def test_physical_all_na_clock_row_is_incomplete(self, flow_and_state, tmp_path: Path):
         """A clock label without numeric setup/hold evidence cannot complete PPA."""
@@ -2581,7 +2597,7 @@ class TestBaselineFlow:
 
         assert result.exit_code == EXIT_SUCCESS
         assert "baseline: abc1234" in result.report_text
-        assert "delta" in result.report_text
+        assert "Δ" in result.report_text
         assert "PASS" in result.report_text
         assert [(unit.role, unit.selector) for unit in flow._flow_plan.work_units] == [
             ("baseline", "lite"),
@@ -2689,7 +2705,7 @@ class TestBaselineFlow:
             result = flow._run()
 
         assert result.exit_code == EXIT_ERROR
-        assert "[synth] baseline lite: ERROR" in result.report_text
+        assert "baseline lite: ERROR" in result.report_text
         assert "FuseSoC could not resolve submodule source" in result.report_text
         assert calls == ["synth_before", "lite"]
         report = json.loads((flow.args.report_dir / "synth_lite.json").read_text(encoding="utf-8"))
@@ -2911,6 +2927,45 @@ class TestBuildSynthCmd:
 
         with pytest.raises(BoundaryError, match="escapes the selected checkout"):
             self._append_sdc_args(flow, resolved, tmp_path)
+
+    def test_sta_sdc_follows_symlinked_booley_dir_entry(self, flow_and_state, tmp_path: Path):
+        """A stealth core's SDC under a linked entry is named through the entry."""
+        flow, _ = flow_and_state
+        root = tmp_path / "project"
+        data = tmp_path / "booley-data"
+        elsewhere = tmp_path / "elsewhere"
+        for directory in (root, data / "cores", elsewhere):
+            directory.mkdir(parents=True)
+        symlink_or_skip(root / ".booley", data)
+        symlink_or_skip(data / "linked", elsewhere)
+        for sdc in (data / "cores" / "top.sdc", elsewhere / "top.sdc"):
+            sdc.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
+
+        def resolved_with(sdc: Path) -> fusesoc_registry.ResolvedTarget:
+            return dataclasses.replace(
+                _fake_synth_resolved(root),
+                files=(fusesoc_registry.ResolvedFile(name=str(sdc), file_type="SDC"),),
+            )
+
+        cmd: list[str] = []
+        flow._append_sta_constraint_args(
+            cmd,
+            resolved_with(root / ".booley" / "cores" / "top.sdc"),
+            "lite",
+            root,
+            SynthMode.PHYSICAL,
+        )
+        assert cmd == ["--sta-sdc", ".booley/cores/top.sdc"]
+
+        # A link below the entry still leaves the selected checkout.
+        with pytest.raises(BoundaryError, match="escapes the selected checkout"):
+            flow._append_sta_constraint_args(
+                [],
+                resolved_with(root / ".booley" / "linked" / "top.sdc"),
+                "lite",
+                root,
+                SynthMode.PHYSICAL,
+            )
 
     def test_sdc_must_exist(self, flow_and_state, tmp_path: Path):
         flow, _ = flow_and_state
@@ -4070,9 +4125,7 @@ class TestTruncationResilientOutput:
         assert log_file.is_file()
         assert "Number of cells: 12345" in log_file.read_text(encoding="utf-8")
         # The report points at the persisted log, project-relative.
-        assert (
-            "[synth] lite: log: reports/synth/1/artifacts/synth_lite/run.log" in result.report_text
-        )
+        assert "lite: log: reports/synth/1/artifacts/synth_lite/run.log" in result.report_text
 
     def test_synth_log_written_on_fail(self, flow_and_state, tmp_path: Path):
         flow, _ = flow_and_state
@@ -4095,9 +4148,7 @@ class TestTruncationResilientOutput:
         # Full captured output (stdout AND stderr) is persisted.
         assert "Yosys died before stat output" in text
         assert "ERROR: frontend rejected converted Verilog" in text
-        assert (
-            "[synth] lite: log: reports/synth/1/artifacts/synth_lite/run.log" in result.report_text
-        )
+        assert "lite: log: reports/synth/1/artifacts/synth_lite/run.log" in result.report_text
 
     def test_command_echo_demoted_to_debug(
         self,
@@ -5544,3 +5595,257 @@ def test_earlier_loop_report_survives_representative_saturation(
     if not huge:
         assert "\\feedback" in result.report_text
     assert result.detail["implementation"]["results"]["lite"]["status"]["grade"] == "warn"
+
+
+@pytest.mark.parametrize("targets", ["lite", "lite,full"])
+def test_invocation_report_records_tools_by_target(flow_and_state, tmp_path, targets):
+    flow, _state = flow_and_state
+    flow.parse_args(
+        [
+            "--target",
+            targets,
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    flow.read_state()  # parse_args starts a new invocation
+    with patch.object(
+        flow,
+        "_execute",
+        return_value=SubprocessResult(returncode=0, stdout="Number of cells: 100\n"),
+    ):
+        result = flow._run()
+    path = flow.write_report(result)
+    report = json.loads(path.read_bytes())
+    expected = (
+        {"eda_tool": "yosys"}
+        if targets == "lite"
+        else {"eda_tools": {"lite": "yosys", "full": "yosys"}}
+    )
+    assert {key: report[key] for key in ("eda_tool", "eda_tools") if key in report} == expected
+
+
+# ===========================================================================
+# Per-Target summary table (#2428)
+# ===========================================================================
+
+_GREEN = "\x1b[32m"
+_RED = "\x1b[31m"
+_AMBER = "\x1b[38;5;208m"
+
+
+class _TtyOut(io.StringIO):
+    """In-memory stdout that claims to be a terminal (never read from the host)."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+class TestSummaryTable:
+    @staticmethod
+    def _force_color(monkeypatch: pytest.MonkeyPatch) -> None:
+        from booley.harness import colors
+
+        monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+
+    @staticmethod
+    def _tty(monkeypatch: pytest.MonkeyPatch) -> _TtyOut:
+        out = _TtyOut()
+        monkeypatch.setattr("sys.stdout", out)
+        return out
+
+    @staticmethod
+    def _passing(**overrides) -> SynthMetrics:
+        fields = {
+            "area_kge": 45.2,
+            "cells": 12345,
+            "wns_ns": 0.12,
+            "elapsed_s": 61.0,
+            "returncode": 0,
+            "per_clock": {"clk": make_clock_timing("clk", 4.0, 0.9, 0.01)},
+        }
+        fields.update(overrides)
+        return SynthMetrics(**fields)
+
+    @staticmethod
+    def _table(report_text: str) -> tuple[str, list[str]]:
+        """Return the header line and the lines under its rule up to the first blank."""
+        lines = report_text.splitlines()
+        starts = [i for i, line in enumerate(lines) if line.lstrip().startswith("Target ")]
+        assert starts, f"no table header in:\n{report_text}"
+        header = lines[starts[0]]
+        assert set(lines[starts[0] + 1].replace(" ", "")) == {"─"}, "no rule under the header"
+        rows: list[str] = []
+        for line in lines[starts[0] + 2 :]:
+            if not line.strip():
+                break
+            rows.append(line)
+        return header, rows
+
+    def test_targets_share_one_aligned_table(self, flow_and_state):
+        flow, _ = flow_and_state
+        long_name = "a_very_long_target_name_" * 3
+        result = flow._aggregate_results(
+            ["lite", long_name],
+            {"lite": self._passing(), long_name: self._passing(area_kge=9.0)},
+            {},
+            None,
+        )
+        header, rows = self._table(result.report_text)
+        assert len(rows) == 2
+        area_col = header.index("Area")
+        assert rows[0][area_col:].startswith("45.2 kGE")
+        assert rows[1][area_col:].startswith("9.0 kGE")
+        name_cell = rows[1][:area_col].strip()
+        assert len(name_cell) <= 40 and name_cell.endswith("…")
+        assert "Time" in header and "Status" in header
+        assert "Δ" not in header, "no baseline, no delta columns"
+
+    def test_missing_metrics_show_dash_and_failure_status(self, flow_and_state, monkeypatch):
+        flow, _ = flow_and_state
+        self._force_color(monkeypatch)
+        out = self._tty(monkeypatch)
+        infra = SynthMetrics(returncode=2, termination="infrastructure_error", infra_error="boom")
+        result = flow._aggregate_results(
+            ["lite", "full"], {"lite": SynthMetrics(returncode=1), "full": infra}, {}, None
+        )
+        _, rows = self._table(result.report_text)
+        assert "—" in rows[0] and "FAIL (rc=1, no metrics)" in rows[0]
+        assert rows[1].rstrip().endswith("ERROR") and "—" in rows[1]
+        printed = out.getvalue()
+        assert f"{_RED}FAIL (rc=1, no metrics)\x1b[0m" in printed
+        assert f"{_RED}ERROR\x1b[0m" in printed
+
+    def test_tty_print_is_colored_and_record_is_plain(self, flow_and_state, monkeypatch):
+        flow, _ = flow_and_state
+        self._force_color(monkeypatch)
+        out = self._tty(monkeypatch)
+        result = flow._aggregate_results(["lite"], {"lite": self._passing()}, {}, None)
+        printed = out.getvalue()
+        assert f"{_GREEN}PASS\x1b[0m" in printed
+        assert "\x1b" not in result.report_text
+        from booley.harness.colors import strip_ansi
+
+        assert strip_ansi(printed) == result.report_text + "\n"
+
+    def test_tty_report_is_shown_once(self, flow_and_state, monkeypatch, capsys):
+        from booley.flows.endpoint_reporting import _publish_console_report, _StdoutWitness
+
+        flow, _ = flow_and_state
+        self._force_color(monkeypatch)
+        sink = _TtyOut()
+        witness = _StdoutWitness(sink)
+        monkeypatch.setattr("sys.stdout", witness)
+        result = flow._aggregate_results(["lite"], {"lite": self._passing()}, {}, None)
+        endpoint = SimpleNamespace(
+            _console_publication_requested=True,
+            _stdout_witness=witness,
+            _human_report=None,
+            endpoint_kind="flow",
+            announce_success_report=False,
+        )
+        _publish_console_report(endpoint, result)
+        printed = sink.getvalue()
+        assert f"{_GREEN}PASS\x1b[0m" in printed
+        assert printed.count("RESULT: PASS") == 1
+        assert capsys.readouterr().err == ""
+
+    def test_record_keeps_every_metric(self, flow_and_state, monkeypatch, capsys):
+        flow, _ = flow_and_state
+        self._force_color(monkeypatch)  # colour on, stdout a pipe: agents get plain text
+        flow.args.baseline = "abc1234"
+        current = self._passing(
+            area_kge=45.2,
+            cells=12345,
+            wns_ns=0.12,
+            reg2reg_fmax_mhz=400.0,
+            log_path="reports/synth/1/artifacts/synth_lite/run.log",
+            per_clock={
+                "fast": make_clock_timing("fast", 2.0, 0.5, 0.1),
+                "slow": make_clock_timing("slow", 4.0, 0.9, 0.02),
+            },
+        )
+        baseline = self._passing(
+            area_kge=44.0, per_clock={"slow": make_clock_timing("slow", 4.0, 0.95, 0.02)}
+        )
+        result = flow._aggregate_results(
+            ["lite"], {"lite": current}, {"lite": baseline}, "abc1234"
+        )
+        text = result.report_text
+        assert "\x1b" not in capsys.readouterr().out
+        assert "\x1b" not in text
+        header, rows = self._table(text)
+        for column in ("Target", "Area", "Crit path", "Fmax", "Setup slack", "Time", "Status"):
+            assert column in header
+        assert header.count("Δ") == 2
+        area_delta_col = header.index("Δ")
+        crit_delta_col = header.index("Δ", area_delta_col + 1)
+        assert rows[0][area_delta_col:].startswith("+2.7%")
+        assert rows[0][crit_delta_col:].startswith("+1.6%")
+        for token in (
+            "baseline: abc1234",
+            "45.2 kGE",
+            "+2.7%",
+            "3,100 ps",
+            "323 MHz [slow]",
+            "+0.120 ns",
+            "61.0s",
+            "PASS",
+        ):
+            assert token in rows[0] or token in text, token
+        for token in (
+            "12,345 cells",
+            "hold slack +0.020 ns",
+            "reg2reg Fmax 400 MHz",
+            "reports/synth/1/artifacts/synth_lite/run.log",
+        ):
+            assert token in text, token
+
+    def test_fatal_timing_violation_fails_the_status_cell(self, flow_and_state):
+        flow, _ = flow_and_state
+        flow._timing_violation_is_fatal = True
+        result = flow._aggregate_results(
+            ["lite", "ok"],
+            {"lite": self._passing(wns_ns=-0.2), "ok": self._passing()},
+            {},
+            None,
+        )
+        _, rows = self._table(result.report_text)
+        assert rows[0].rstrip().endswith("FAIL (timing)")
+        assert rows[1].rstrip().endswith("PASS")
+        assert "RESULT: FAIL" in result.report_text
+
+    def test_area_unit_is_kge_everywhere(self, flow_and_state):
+        flow, _ = flow_and_state
+        metrics = self._passing()
+        for line in (
+            flow._format_config_line("lite", metrics, None),
+            flow._format_config_line("lite", metrics, None, human=True),
+            flow._format_config_line("lite", metrics, None, human=True).record_text,
+            flow._aggregate_results(["lite"], {"lite": metrics}, {}, None).report_text,
+        ):
+            assert "kGE" in line and "KGe" not in line
+
+    def test_notes_follow_the_table_without_flow_prefix(self, flow_and_state, monkeypatch):
+        flow, _ = flow_and_state
+        self._force_color(monkeypatch)
+        out = self._tty(monkeypatch)
+        metrics = self._passing(
+            latches=2,
+            log_path="reports/synth/1/artifacts/synth_lite/run.log",
+        )
+        result = flow._aggregate_results(["lite"], {"lite": metrics}, {}, None)
+        lines = result.report_text.splitlines()
+        assert not [line for line in lines if line.lstrip().startswith("[synth]")]
+        _, rows = self._table(result.report_text)
+        table_end = lines.index(rows[-1])
+        result_at = max(i for i, line in enumerate(lines) if line.startswith("RESULT:"))
+        notes = lines[table_end + 1 : result_at]
+        assert any("lite: CRITICAL --" in line for line in notes)
+        assert any(
+            line.strip() == "lite: log: reports/synth/1/artifacts/synth_lite/run.log"
+            for line in notes
+        )
+        assert f"{_RED}CRITICAL\x1b[0m" in out.getvalue()

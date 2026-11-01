@@ -36,7 +36,15 @@ bar reports the span as a delta and the human reads the duration off the screen
 instead of subtracting ruler numbers.
 
 `--cursor T` moves the START (main) marker somewhere else inside the range; END
-stays put.
+stays put. Without `--time`, `--cursor T` places only the main marker and
+scrolls it into view. Without `--signals` or `--group`, `--time` and `--cursor`
+keep the rows already on screen and only move the time window and markers.
+A `--time` end past the trace is clamped to the trace end (with a note on
+stderr); a start or `--cursor` at or past the end is an error.
+
+VaporView can move a marker but cannot remove one, so `gui` sets and verifies
+only the markers it was asked for. Any other marker stays where it is: for
+example, `--cursor` after a `--time` view leaves that view's END marker.
 
 Both take the same time tokens as `-t`, including marker names — so a marker set
 during the query can bound the view:
@@ -69,15 +77,18 @@ is never duplicated merely to satisfy overlapping selectors.
 In replace mode the requested groups become the new view. With `--append`, a
 same-name group is extended and a new name creates another group. Existing
 collapse state and signal formatting are preserved. `gui` reads the hierarchy
-back from VaporView before reporting success. Replace mode stages additions,
-commits one exact ordered tree, and restores the previous tree if the commit or
-readback fails. Missing grouped-layout support or any mismatch in membership,
-placement, order, radix, or color is an error, never a silently altered view.
+back from VaporView before reporting success. It commits one exact ordered
+tree, and restores the previous view if the commit or readback fails. Any
+mismatch in membership, placement, order, radix, color, or marker position is
+an error, never a silently altered view. The one exception is radix on a 1-bit
+signal: VaporView always draws it as a waveform, so a radix applies only to
+vectors.
 
 ## Top-level rows: `--signals`
 
-Repeatable, and takes the same globs as `-s`, plus the presentation suffixes
-described below. Combined
+Repeatable, and takes the same globs as `-s`, including globs relative to the
+common scope that an unfiltered `bwave list` prints (`dut.*` finds
+`TOP.tb.dut.*`), plus the presentation suffixes described below. Combined
 `--signals` and `--group` expansion is capped at 64 signals (`--max-signals`)
 and **errors** past the cap — narrow the glob, don't raise the cap. Use this for
 the few signals that intentionally belong at the top level; prefer named groups
@@ -98,9 +109,8 @@ bwave gui @dut \
 ```
 
 An explicit suffix updates an already displayed row under `--append`; omitted
-properties preserve its current presentation. The CLI applies these properties
-through VaporView's recursive layout and reads them back before reporting
-success.
+properties preserve its current presentation. The CLI reads these properties
+back from the viewer before reporting success.
 
 The signal list `gui` prints is read back from the viewer, so it is what the
 human actually sees. A signal missing from the viewer's netlist is dropped and
@@ -108,16 +118,20 @@ named in a `WARNING` on stderr — tell the human what did not make it onto the
 screen instead of claiming the full view. The trace itself is fine;
 `signal` / `find` / `value` still answer for that signal.
 
+A `--signals` glob that matches nothing in the trace is named in a `WARNING`
+too, while the other globs still show. When every `--signals` glob misses, or a
+`--group` glob matches nothing, the command fails before the view changes; the
+`--signals` error carries `did you mean '<full-path glob>'?` when the glob
+matches below another scope.
+
 ## Transport
 
-A scoped `gui` drives the VaporView viewer in the user's VS Code window over its
-WCP control server, and **hard-errors if that server is off** — surface the setup
-hint to the human; it never silently degrades.
-
-Groups and explicit radix/color require Booley's VaporView compatibility patch. If the CLI reports that
-`set_signal_layout` or `get_signal_layout` is missing, run
-`python -m booley.runtime.incontainer_vaporview`, reload the VS Code window, and
-retry.
+A scoped `gui` drives VaporView in the user's VS Code window through the Viewer
+Bridge that the Booley Sandbox Integration extension runs in every attached
+window, and **hard-errors when no window answers** — surface the setup hint to the human; it
+never silently degrades. A command typed in a window's terminal targets that
+window; otherwise `gui` picks the window already showing the trace, then the
+most recently focused one, and errors when it cannot tell.
 
 A bare `bwave gui [@alias]` just opens the trace, falling back to the editor CLI
-if the control server is unreachable.
+when no window answers.

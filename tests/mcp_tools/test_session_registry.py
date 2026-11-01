@@ -41,6 +41,28 @@ def test_opaque_contained_keys(registry, key):
     assert registry.snapshot().rows[0].attribution.key == key
 
 
+def test_registry_reads_and_writes_under_a_symlinked_booley_directory(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    booley_dir = tmp_path / "project" / ".booley"
+    booley_dir.parent.mkdir()
+    symlink_or_skip(booley_dir, store, target_is_directory=True)
+    registry = SessionRegistry(booley_dir, quiet_after=60, proc_root=tmp_path / "proc")
+
+    registry.upsert(facts(), "tool", "completed", now=100)
+
+    snapshot = registry.snapshot()
+    assert len(snapshot.rows) == 1 and not snapshot.diagnostics and not snapshot.unavailable
+    assert (store / "runtime").is_dir()
+
+    # A link below the Booley Directory is still refused.
+    moved = tmp_path / "moved"
+    (store / "runtime/sessions").rename(moved)
+    symlink_or_skip(store / "runtime/sessions", moved, target_is_directory=True)
+    refused = registry.snapshot()
+    assert refused.unavailable and "symlink" in refused.diagnostics[0]
+
+
 def test_monotonic_times_started_and_bounded_metadata(registry):
     registry.upsert(facts(), "tool", "completed", now=100)
     registry.upsert(facts(), "tool", "completed", now=90)
@@ -763,3 +785,163 @@ async def test_claude_peer_recovery_keeps_shared_worktree_presence_separate(
         assert (labels[fallback.key], labels[peer.key]) == ("S1", "S2")
     finally:
         observer.close()
+
+
+def test_omitted_work_dir_records_the_server_cwd_and_reads_its_live_branch(tmp_path, monkeypatch):
+    """Presentation-only default checkout; identity stays unattributed to a worktree."""
+    git = tmp_path / ".git"
+    git.mkdir()
+    (git / "HEAD").write_text("ref: refs/heads/booley\n")
+    nested = tmp_path / "rtl"
+    nested.mkdir()
+    monkeypatch.chdir(nested)
+    facts = session_registry.resolve_attribution(None, metadata={}, client_name="")
+    assert facts.default_work_dir == str(nested)
+    assert (facts.work_dir, facts.worktree_key, facts.branch) == ("", "", "")
+    shown = session_registry.canonical_attribution(facts)
+    assert (shown.default_work_dir, shown.branch) == (str(tmp_path.resolve()), "booley")
+    assert (shown.work_dir, shown.worktree_key, shown.key) == ("", "", facts.key)
+    (git / "HEAD").write_text("0123456789abcdef0123456789abcdef01234567\n")
+    assert session_registry.canonical_attribution(facts).branch == ""
+
+    # An explicit work_dir never records a default.
+    explicit = session_registry.resolve_attribution(tmp_path, metadata={}, client_name="")
+    assert explicit.default_work_dir == ""
+    # The field round-trips through the durable row.
+    row = session_registry.SessionRow(facts, "2026-10-26T12:00:00Z", "2026-10-26T12:00:00Z")
+    assert session_registry._parse_row(row.payload()).attribution == facts
+
+
+def test_deleted_server_cwd_records_no_default_checkout(monkeypatch):
+    """A vanished cwd leaves the default unknown instead of failing attribution."""
+
+    def deleted_cwd():
+        raise FileNotFoundError("cwd removed")
+
+    monkeypatch.setattr(session_registry.Path, "cwd", deleted_cwd)
+    facts = session_registry.resolve_attribution(None, metadata={}, client_name="")
+    assert facts.default_work_dir == ""
+    assert session_registry.canonical_attribution(facts) == facts
+
+
+def test_registry_row_read_survives_transient_sharing_error(registry, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    registry.upsert(facts(), "tool", "completed", now=100)
+    row_path = registry.path(facts().key)
+    attempts = hold_opens(monkeypatch, {row_path: 1})
+    snapshot = registry.snapshot()
+    assert [row.attribution.key for row in snapshot.rows] == [facts().key]
+    assert not snapshot.unavailable
+    assert attempts[row_path] == 2
+
+
+def test_lasting_registry_row_sharing_error_is_diagnosed_not_absent(registry, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    registry.upsert(facts(), "tool", "completed", now=100)
+    row_path = registry.path(facts().key)
+    attempts = hold_opens(monkeypatch, {row_path: 100})
+    snapshot = registry.snapshot()
+    assert snapshot.unavailable
+    assert "partially unavailable" in snapshot.diagnostics[0]
+    assert attempts[row_path] > 1
+
+
+def test_process_rows_hide_on_process_exit_and_on_session_end(registry, monkeypatch):
+    from tests.conftest import write_activity_signal
+
+    observed = {"state": ProcessState.DEAD}
+    monkeypatch.setattr(
+        session_registry,
+        "observe_process",
+        lambda *_a, **_k: ProcessObservation(observed["state"]),
+    )
+    registry.upsert(facts("pid:one", "process"), "tool", "completed", now=100)
+    # No regression: a Claude Code tab's process row disappears when its process exits.
+    assert registry.visible_snapshot(now=110, scope=SCOPE).rows == ()
+    observed["state"] = ProcessState.RUNNING
+    assert [
+        row.attribution.key for row in registry.visible_snapshot(now=110, scope=SCOPE).rows
+    ] == ["pid:one"]
+    # A live tab whose session ended is hidden too, and maintenance removes it.
+    write_activity_signal(registry.booley_dir, "pid:one", "ended", "1970-01-01T00:01:50Z")
+    assert registry.visible_snapshot(now=120, scope=SCOPE).rows == ()
+    assert registry.prune(now=120, namespace=SCOPE) == 1
+
+
+def test_tool_call_after_session_end_shows_the_row_again(registry):
+    from booley.runtime.session_activity import UNKNOWN, ActivityStore, observed_activity
+    from tests.conftest import write_activity_signal
+
+    registry.upsert(facts(), "sim", "completed", now=100)
+    write_activity_signal(registry.booley_dir, "codex:one", "ended", "1970-01-01T00:01:50Z")
+    assert registry.visible_snapshot(now=120, scope=SCOPE).rows == ()
+    registry.upsert(facts(), "sim", "completed", now=130)
+    rows = registry.visible_snapshot(now=131, scope=SCOPE).rows
+    assert [row.attribution.key for row in rows] == ["codex:one"]
+    # The end marker is never reported as the returning session's activity.
+    store = ActivityStore(registry.booley_dir)
+    assert observed_activity(store.read("codex:one"), now=131).state == UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_maintenance_prunes_an_ended_row_and_its_marker_together(monkeypatch, registry):
+    from booley.mcp import session_observer
+    from booley.runtime.session_activity import WORKING, ActivityStore
+    from tests.conftest import write_activity_signal
+
+    store = ActivityStore(registry.booley_dir)
+    for key in ("codex:ended", "codex:open"):
+        registry.upsert(facts(key), "sim", "completed", now=190)
+    marker = write_activity_signal(
+        registry.booley_dir, "codex:ended", "ended", "1970-01-01T00:03:15Z"
+    )
+    write_activity_signal(registry.booley_dir, "codex:open", WORKING, "1970-01-01T00:03:15Z")
+    observer = SessionObserver(now=lambda: 200, budget=1)
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+    monkeypatch.setattr(session_observer, "namespace", lambda: SCOPE)
+    monkeypatch.setattr(
+        session_observer, "registered_worktree_presence", lambda _: lambda _facts: True
+    )
+    await observer.maintain()
+    assert [row.attribution.key for row in registry.snapshot().rows] == ["codex:open"]
+    assert not marker.exists()
+    assert store.read("codex:open") is not None
+
+
+def _marker(key="codex:one", **changes):
+    return json.dumps(
+        {"schema": 1, "key": key, "state": "ended", "at": "1970-01-01T00:01:50Z"} | changes
+    ).encode()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param(b"{", id="not-json"),
+        pytest.param(_marker(key="codex:other"), id="foreign-key"),
+        pytest.param(_marker(schema=2), id="future-schema"),
+        pytest.param(_marker(at="1970-01-01T00:01:50+00:00"), id="noncanonical-time"),
+        pytest.param(_marker(at="2999-01-01T00:00:00Z"), id="future-time"),
+        pytest.param(_marker(state="working"), id="activity-signal"),
+        pytest.param(b" " * 4096 + _marker(), id="oversized"),
+    ],
+)
+def test_unusable_end_marker_leaves_the_row_to_quiet_after(registry, payload):
+    from booley.runtime.session_activity import ActivityStore
+
+    registry.upsert(facts(), "sim", "completed", now=100)
+    path = ActivityStore(registry.booley_dir).path("codex:one")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if payload is not None:
+        path.write_bytes(payload)
+    assert [
+        row.attribution.key for row in registry.visible_snapshot(now=159, scope=SCOPE).rows
+    ] == ["codex:one"]
+    assert registry.prune(now=159, namespace=SCOPE) == 0
+    assert registry.visible_snapshot(now=160, scope=SCOPE).rows == ()
+    # Control: the reader does consult markers, so a valid one hides the same row.
+    path.write_bytes(_marker())
+    assert registry.visible_snapshot(now=120, scope=SCOPE).rows == ()

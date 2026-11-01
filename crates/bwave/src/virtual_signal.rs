@@ -2,7 +2,7 @@
 //! Syntax: a Verilog subset documented in the bundled B-Wave reference.
 
 use crate::format::{hex_slice, hex_to_u128, parse_verilog_literal, slice_bits, values_match};
-use crate::signal::{compile_patterns, match_signal};
+use crate::signal::{common_scope_prefix, compile_patterns, match_signal};
 
 // -- AST (parsed from --virtual "name = expr") --------------------------------
 
@@ -645,7 +645,7 @@ fn resolve_signal_pattern(
     pattern: &str,
     signal_names: &[String],
 ) -> Result<usize, String> {
-    let matchers = compile_patterns(&[pattern.to_string()])
+    let matchers = compile_patterns(&[pattern.to_string()], &common_scope_prefix(signal_names))
         .map_err(|e| format!("virtual '{}': bad pattern '{}': {}", virt_name, pattern, e))?;
     let matches: Vec<usize> = signal_names
         .iter()
@@ -697,7 +697,7 @@ fn try_literal_indexed_match(
     // each signal whose name literally ends in `[N]`. We strip the bracket
     // suffix from the candidate before matching so the pattern need not include
     // brackets (which would be eaten by `strip_bit_select`).
-    let matchers = compile_patterns(&[pattern.to_string()])
+    let matchers = compile_patterns(&[pattern.to_string()], &common_scope_prefix(signal_names))
         .map_err(|e| format!("virtual '{}': bad pattern '{}': {}", virt_name, pattern, e))?;
 
     let hits: Vec<usize> = signal_names
@@ -705,12 +705,10 @@ fn try_literal_indexed_match(
         .enumerate()
         .filter_map(|(i, n)| {
             let prefix = n.strip_suffix(&bracket)?;
-            for (orig, stripped) in &matchers {
-                if orig.is_match(prefix) || stripped.is_match(prefix) {
-                    return Some(i);
-                }
-            }
-            None
+            matchers
+                .iter()
+                .any(|pattern| pattern.is_match_unstripped(prefix))
+                .then_some(i)
         })
         .collect();
 

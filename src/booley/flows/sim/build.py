@@ -21,7 +21,6 @@ from booley.flows.eda_failures import classify_eda_failure
 from booley.flows.parameter_transport import normalize_resolved_parameters
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.booley_dir import resolve_booley_dir
-from booley.runtime.compiler_cache import read_issued_identity
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInspection
 from booley.targets.parameter_integrity import (
@@ -40,7 +39,6 @@ from .compiler_cache import (
     compose_environment,
     execution_environment,
     resolve_policy,
-    validate_make_assignments,
 )
 
 if TYPE_CHECKING:
@@ -198,7 +196,7 @@ def _prepare_simulation_build(
     build_environment = dict(environment or {})
     if eda_tool == "verilator":
         cache_policy, build_environment = _verilator_cache_environment(
-            root, inspection, build_environment, Path(resolved.build_root)
+            root, build_environment, Path(resolved.build_root)
         )
         core_closure = capture_core_closure(resolved.edam_path, root)
     _stage_doctor_overlay(root, resolved.build_root)
@@ -225,13 +223,11 @@ def _prepare_simulation_build(
 
 def _verilator_cache_environment(
     root: Path,
-    inspection: TargetInspection,
     environment: Mapping[str, str],
     build_root: Path,
 ) -> tuple[CompilerCachePolicy, dict[str, str]]:
     """Resolve the compiler-cache policy and its managed build environment."""
-    validate_make_assignments(inspection, {**os.environ, **environment})
-    policy = resolve_policy(root, issued=read_issued_identity(os.environ))
+    policy = resolve_policy(root, os.environ)
     return policy, compose_environment(
         policy, environment, ambient=os.environ, build_root=build_root
     )
@@ -343,20 +339,14 @@ def build_stage_script(
 
 def simulation_build_environment(prepared: PreparedSimulationBuild) -> dict[str, str]:
     """Return the build's variables for execution now; may create cache storage."""
-    return execution_environment(
-        prepared.compiler_cache,
-        prepared.environment,
-        ambient=os.environ,
-        build_root=prepared.build_root,
-    )
+    if prepared.compiler_cache is None:
+        return dict(prepared.environment)
+    return execution_environment(prepared.compiler_cache, prepared.environment, ambient=os.environ)
 
 
 def simulation_build_script(
     prepared: PreparedSimulationBuild,
     token: str,
-    *,
-    run_line: str = "",
-    run_environment: Mapping[str, str] | None = None,
 ) -> str:
     """Render one build to execute now; finalizes compiler-cache availability.
 
@@ -366,8 +356,6 @@ def simulation_build_script(
         prepared.make_argv,
         token,
         build_environment=simulation_build_environment(prepared),
-        environment=run_environment,
-        run_line=run_line,
     )
 
 

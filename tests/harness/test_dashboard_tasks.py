@@ -268,6 +268,23 @@ def test_symlink_and_ancestor_conflicts(project, tmp_path, conflict):
     assert (target / "tasks.json").read_bytes() == b'{"tasks":[]}'
 
 
+def test_task_reconciles_under_a_symlinked_booley_directory(project, tmp_path):
+    store = tmp_path / "store"
+    project.data.rmdir()
+    store.mkdir()
+    symlink_or_skip(project.data, store, target_is_directory=True)
+
+    assert tasks.inspect(project.root, project.data).pending
+    assert tasks.reconcile(project.root, project.data).applied
+    assert (store / "runtime/dashboard-task.json").is_file()
+    assert not tasks.inspect(project.root, project.data).pending
+
+    # A link below the Booley Directory is still refused.
+    (store / "runtime").rename(store / "moved")
+    symlink_or_skip(store / "runtime", store / "moved", target_is_directory=True)
+    assert tasks.inspect(project.root, project.data).diagnostics
+
+
 def test_compare_and_swap_preserves_intervening_user_edit(project):
     transaction = tasks.TaskTransaction(tasks.inspect(project.root, project.data))
     project.file.parent.mkdir()
@@ -322,8 +339,7 @@ def test_spec_builder_pure_automatic_tasks_setting(tmp_path):
     assert list(tmp_path.iterdir()) == before
 
 
-@pytest.mark.parametrize("requirements", [None, SimpleNamespace()])
-def test_both_issuance_success_paths_and_failure_rollback(project, monkeypatch, requirements):
+def test_issuance_success_path_reconciles_dashboard_tasks(project, monkeypatch):
     prepared = session_issuance.PreparedSessionSpec(
         {"image": "sha256:fixture"},
         "digest",
@@ -338,12 +354,34 @@ def test_both_issuance_success_paths_and_failure_rollback(project, monkeypatch, 
         assert project.file.exists() == tasks.enabled(project.data)
         return SimpleNamespace()
 
-    monkeypatch.setattr(session_issuance, "_issue_document", issued)
     monkeypatch.setattr(session_issuance, "_issue_document_with_requirements", issued)
+    requirements = SimpleNamespace()
     session_issuance._persist_prepared(project.root, prepared, requirements=requirements)
     assert project.file.exists()
     (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     session_issuance._persist_prepared(project.root, prepared, requirements=requirements)
+    assert not project.file.exists()
+
+
+def test_symlinked_devcontainer_spec_is_refused_before_issuance(project, tmp_path):
+    prepared = session_issuance.PreparedSessionSpec(
+        {"image": "sha256:fixture"},
+        "digest",
+        session_issuance.SessionSpecInputs(project.data, (), (), None, None),
+        None,
+    )
+    destination = tmp_path / "outside-devcontainer.json"
+    destination.write_bytes(b"{}\n")
+    spec_path = devcontainer.devcontainer_path(project.root)
+    spec_path.parent.mkdir()
+    symlink_or_skip(spec_path, destination)
+    planted_target = spec_path.readlink()
+
+    with pytest.raises(session_issuance.RuntimeSpecError, match="symlinked"):
+        session_issuance._persist_prepared(project.root, prepared, requirements=SimpleNamespace())
+
+    assert destination.read_bytes() == b"{}\n"
+    assert spec_path.readlink() == planted_target
     assert not project.file.exists()
 
 
@@ -365,6 +403,7 @@ def test_issuance_failure_after_task_publication_restores_previous_files(
     before = {path: path.read_bytes() if path.exists() else None for path in paths}
     monkeypatch.setattr(session_issuance, "_current_keeper_id", lambda _: None)
     monkeypatch.setattr(session_issuance, "_restore_keeper", lambda *_: None)
+    monkeypatch.setattr(session_issuance, "authorized_project_data_source", lambda _: project.data)
 
     def fail(*_args):
         assert project.file.exists()
@@ -373,9 +412,9 @@ def test_issuance_failure_after_task_publication_restores_previous_files(
         )
         raise session_issuance.RuntimeSpecError("fixture issuance failure")
 
-    monkeypatch.setattr(session_issuance, "_issue_document", fail)
+    monkeypatch.setattr(session_issuance, "_issue_document_with_requirements", fail)
     with pytest.raises(session_issuance.RuntimeSpecError, match="fixture issuance failure"):
-        session_issuance._persist_prepared(project.root, prepared)
+        session_issuance._persist_prepared(project.root, prepared, requirements=SimpleNamespace())
     assert {path: path.read_bytes() if path.exists() else None for path in paths} == before
 
 
@@ -697,8 +736,8 @@ def test_init_tracked_task_notice_is_one_informational_line(
     init_cmd._step_interactive(ctx)
     output = capsys.readouterr().out
     assert output.count(notice) == 1
-    assert "[!!]" not in output
-    assert ctx.results[-1].status == "skip"
+    assert "  !  " not in output
+    assert ctx.results[-1].status == "current"
 
 
 @pytest.mark.parametrize(

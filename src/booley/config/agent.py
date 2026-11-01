@@ -9,6 +9,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
+from booley.config.gateway import GATEWAY_AUTH, GatewayModelPin, gateway_model_pin_from_env
 from booley.config.jobs import SlotCaps, parse_caps
 from booley.config.sandbox import SANDBOX_IMAGE, project_sandbox_image
 from booley.core.config_paths import resolve_toml
@@ -38,7 +39,11 @@ _VALID_PROVIDERS = ("codex", "claude")
 #                  credential, so nothing is scrubbed; the backend health
 #                  check fails loud when the key is absent instead of letting
 #                  agents silently fall back to (and bill) the subscription.
+#
+# ``gateway`` is an environment-only hand-off (``BOOLEY_PRIMARY_AUTH=gateway`` plus
+# BOOLEY_GATEWAY_URL / BOOLEY_GATEWAY_TOKEN) inside a Sandbox, not a toml value.
 _VALID_AUTH_MODES = ("auto", "subscription", "api_key")
+_ENV_AUTH_MODES = (*_VALID_AUTH_MODES, GATEWAY_AUTH)
 _DEFAULT_AUTH = "auto"
 
 # The three capability tiers every provider maps to concrete models.
@@ -46,13 +51,9 @@ MODEL_TIERS = ("heavy", "standard", "light")
 _MODEL_TIERS = MODEL_TIERS
 
 # [models.roles] vocabulary: the agents whose model may be pinned by name.
-# Two kinds of role live here and they resolve through different call paths:
-#
-#   * harness steps (``developer``, ``recovery``) — keys of config.STEP_TIERS,
-#     resolved by the Runtime composition root.
-#   * specialists (``reviewer``, ``mutation_tester``, …) — each runs as its own
-#     `python -m booley.dev_support.<name>` subprocess and re-reads booley.toml, so
-#     the role key must equal the specialist's ``Specialist.name``.
+# Each role is a Specialist (``reviewer``, ``mutation_tester``, …) that runs as its
+# own `python -m booley.dev_support.<name>` subprocess and re-reads booley.toml, so
+# the role key must equal the Specialist's ``Specialist.name``.
 #
 # The list is explicit rather than derived from the MCP endpoint registry: importing
 # the registry here would drag the whole endpoint packages into the config layer,
@@ -61,15 +62,16 @@ _MODEL_TIERS = MODEL_TIERS
 # without extending this set, so it cannot drift silently.
 KNOWN_ROLES = frozenset(
     {
-        "developer",
-        "recovery",
-        "triage_report",
         "reviewer",
         "mutation_tester",
         "coverage_analyst",
     }
 )
 _KNOWN_ROLES = KNOWN_ROLES
+
+# Former harness-step pins that no agent call reads. Refused (not ignored) so a
+# leftover pin cannot silently do nothing.
+RETIRED_ROLES = frozenset({"developer", "recovery", "triage_report"})
 
 
 class BackendConfigError(RuntimeError):
@@ -79,6 +81,17 @@ class BackendConfigError(RuntimeError):
     for (the old codex default surfaced as a mystery 401 from an
     unauthenticated Codex call).
     """
+
+
+class RetiredRoleError(BackendConfigError):
+    """A ``[models.roles]`` pin names a role no agent call reads any more."""
+
+    def __init__(self, role: str) -> None:
+        self.role = role
+        super().__init__(
+            f"booley.toml [models.roles] {role!r} is a retired role that no agent call reads; "
+            f"remove the {role} pin from [models.roles]."
+        )
 
 
 def _inside_container() -> bool:
@@ -142,12 +155,16 @@ class AgentSettings:
 
     tier_models: Mapping[str, str] = field(default_factory=lambda: dict(_DEFAULT_TIER_MODELS))
     # [models.roles]: role name -> tier name or literal model id. Empty = every
-    # role takes its step/floor tier, which is the pre-knob behavior.
+    # role takes its floor tier, which is the pre-knob behavior.
     role_models: Mapping[str, str] = field(default_factory=dict)
     auth: str = _DEFAULT_AUTH
     provider: str = _DEFAULT_PROVIDER
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     jobs: SlotCaps = field(default_factory=SlotCaps)
+    # Gateway-only pins (BOOLEY_GATEWAY_MODEL / _EFFORT): override every tier,
+    # role pin and floor / every tier effort. None = no pin.
+    model_pin: str | None = None
+    effort_pin: str | None = None
 
     def __post_init__(self) -> None:
         """Freeze caller-owned mappings as part of the validated value object."""
@@ -155,6 +172,8 @@ class AgentSettings:
         object.__setattr__(self, "role_models", MappingProxyType(dict(self.role_models)))
 
     def model_for_tier(self, tier: str) -> str:
+        if self.model_pin:
+            return self.model_pin
         return self.tier_models.get(tier, self.tier_models["standard"])
 
     def model_for_role(self, role: str, tier: str) -> str:
@@ -169,6 +188,8 @@ class AgentSettings:
         floor: the floor guards Booley's own tier defaults, not a choice the
         user wrote down.
         """
+        if self.model_pin:
+            return self.model_pin
         pinned = self.role_models.get(role)
         if pinned is None:
             return self.model_for_tier(tier)
@@ -176,6 +197,8 @@ class AgentSettings:
 
     def effort_for_tier(self, tier: str) -> str | None:
         """Resolve reasoning effort for a tier. None = use provider default."""
+        if self.effort_pin:
+            return self.effort_pin
         provider_effort = _PROVIDER_TIER_EFFORT.get(self.provider, {})
         return provider_effort.get(tier)
 
@@ -197,6 +220,13 @@ def _resolve_tier_models(provider: str, overrides: dict[str, str] | None) -> dic
     return tiers
 
 
+def _gateway_pin(auth: str, provider: str) -> GatewayModelPin:
+    """The env model/effort pin; empty unless the gateway policy drives Codex."""
+    if auth == GATEWAY_AUTH and provider == "codex":
+        return gateway_model_pin_from_env()
+    return GatewayModelPin()
+
+
 def _build_agent_settings(
     provider: str,
     auth: str,
@@ -204,11 +234,14 @@ def _build_agent_settings(
     role_models: dict[str, str] | None = None,
 ) -> AgentSettings:
     """Assemble validated settings for a resolved provider and auth mode."""
+    pin = _gateway_pin(auth, provider)
     return AgentSettings(
         tier_models=_resolve_tier_models(provider, tier_overrides),
         role_models=dict(role_models or {}),
         provider=provider,
         auth=auth,
+        model_pin=pin.model,
+        effort_pin=pin.effort,
     )
 
 
@@ -244,7 +277,9 @@ def _resolve_lazy_provider(project: _ProjectAgentConfig | None) -> str:
         logger.info("Resolved provider=%s from project booley.toml", project.provider)
         return project.provider
 
-    app_provider = os.environ.get("BOOLEY_AGENT_APP")
+    from booley.config import agent_app
+
+    app_provider = agent_app.resolved_app(os.environ.get("BOOLEY_AGENT_APP"))
     if app_provider in _VALID_PROVIDERS:
         logger.info(
             "Resolved provider=%s from BOOLEY_AGENT_APP (no developer "
@@ -261,14 +296,13 @@ def _resolve_lazy_provider(project: _ProjectAgentConfig | None) -> str:
 
 def _lazy_agent_settings() -> AgentSettings:
     """Resolve settings from environment, Project configuration, and defaults."""
-    import os
 
     # Specialists load Project pins lazily when no parent developer configured
     # this process. Provider precedence remains hand-off, Project, app, default.
     project = _project_config_from_env()
     auth = (
         _env_auth()
-        if os.environ.get("BOOLEY_PRIMARY_AUTH") is not None
+        if env_auth_handoff() is not None
         else (project.auth if project else None) or _DEFAULT_AUTH
     )
 
@@ -439,8 +473,14 @@ def load_agent_settings(project_root: Path, *, booley_dir: Path | None = None) -
         booley_dir=booley_dir,
     )
     if provider is None:
-        provider = _DEFAULT_PROVIDER
+        from booley.config import agent_app
 
+        provider = agent_app.resolved_app(_DEFAULT_PROVIDER)
+    if gateway_handoff_active():
+        # Env-only policy: it has no toml home, so it overrides the toml value.
+        auth = GATEWAY_AUTH
+
+    pin = _gateway_pin(auth, provider)
     _agent_settings = AgentSettings(
         tier_models=_resolve_tier_models(provider, tier_overrides),
         role_models=role_models,
@@ -448,6 +488,8 @@ def load_agent_settings(project_root: Path, *, booley_dir: Path | None = None) -
         provider=provider,
         sandbox=sandbox_cfg,
         jobs=jobs_cfg,
+        model_pin=pin.model,
+        effort_pin=pin.effort,
     )
 
     return _agent_settings
@@ -550,18 +592,49 @@ def parse_auth(agent_section: Mapping[str, Any]) -> str | None:
 _parse_auth = parse_auth
 
 
+def env_auth_handoff() -> str | None:
+    """The normalized ``BOOLEY_PRIMARY_AUTH`` hand-off, or ``None`` when unset/blank.
+
+    The single consumer-side reader of the variable (the registrar's resolver
+    alone reads the raw value, once per start, to publish it), so a Specialist subprocess, the MCP
+    server, Doctor and ``booley auth --status`` cannot disagree about spellings
+    such as ``"gateway "``. Validity is judged by :func:`_env_auth`.
+
+    Under ``BOOLEY_AGENT_APP=auto`` the value is the policy the registrar
+    published for this start, and an unresolved or out-of-Sandbox ``auto``
+    raises :class:`~booley.config.agent_app.AgentAppError` (a
+    ``BackendConfigError``).
+    """
+    import os
+
+    from booley.config import agent_app
+
+    choice = agent_app.auto_choice()
+    raw = choice.policy if choice else os.environ.get("BOOLEY_PRIMARY_AUTH")
+    return (raw or "").strip().lower() or None
+
+
+def gateway_handoff_active() -> bool:
+    """Whether ``BOOLEY_PRIMARY_AUTH=gateway`` is in force.
+
+    Honored only inside a container: a Booley-issued Sandbox always takes its
+    policy from ``booley.toml`` and never receives BOOLEY_GATEWAY_*, so an
+    export on the host must not silently change what a host-side run bills.
+    """
+    return env_auth_handoff() == GATEWAY_AUTH and _inside_container()
+
+
 def _env_auth() -> str:
     """The auth mode from ``BOOLEY_PRIMARY_AUTH``, warning-and-defaulting on junk.
 
     The env var is a harness hand-off, not user config, so an unknown value is
     degraded to the default with a warning rather than raised (mirrors how
     ``_lazy_agent_settings`` treats an unknown ``BOOLEY_PRIMARY_PROVIDER``).
+    ``gateway`` on a host (outside a container) is treated as unknown.
     """
-    import os
-
-    raw = os.environ.get("BOOLEY_PRIMARY_AUTH", _DEFAULT_AUTH)
-    if raw not in _VALID_AUTH_MODES:
-        logger.warning("Unknown BOOLEY_PRIMARY_AUTH %r; using %s", raw, _DEFAULT_AUTH)
+    raw = env_auth_handoff() or _DEFAULT_AUTH
+    if raw not in _ENV_AUTH_MODES or (raw == GATEWAY_AUTH and not _inside_container()):
+        logger.warning("Ignoring BOOLEY_PRIMARY_AUTH %r; using %s", raw, _DEFAULT_AUTH)
         return _DEFAULT_AUTH
     return raw
 
@@ -575,11 +648,13 @@ def resolve_auth_policy() -> str:
     hand-off into containers) beats the project's booley.toml; absent both,
     ``auto``. Never raises: an invalid toml value degrades to ``auto`` with a
     warning here — the loud ``BackendConfigError`` belongs to the config-load
-    path, not to a reporting/forwarding helper.
+    path, not to a reporting/forwarding helper. The one exception is
+    ``BOOLEY_AGENT_APP=auto`` outside a Sandbox or before the registrar
+    resolved it, which raises ``AgentAppError``.
     """
     import os
 
-    if os.environ.get("BOOLEY_PRIMARY_AUTH"):
+    if env_auth_handoff():
         return _env_auth()
 
     booley_dir = os.environ.get("BOOLEY_DIR")
@@ -628,7 +703,8 @@ def parse_role_models(models_section: Mapping[str, Any]) -> dict[str, str]:
 
     An unknown role key raises ``BackendConfigError``. Silently ignoring it is
     the one failure mode this knob must not have: the user pins a model, the
-    run bills a different one, and nothing says so.
+    run bills a different one, and nothing says so. A retired role raises
+    ``RetiredRoleError`` for the same reason: nothing reads that pin.
     """
     roles_section = models_section.get("roles", {})
     if not roles_section:
@@ -641,6 +717,8 @@ def parse_role_models(models_section: Mapping[str, Any]) -> dict[str, str]:
 
     role_models: dict[str, str] = {}
     for role, value in roles_section.items():
+        if role in RETIRED_ROLES:
+            raise RetiredRoleError(role)
         if role not in _KNOWN_ROLES:
             raise BackendConfigError(
                 f"booley.toml [models.roles] has an unknown role {role!r}; "

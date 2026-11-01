@@ -25,9 +25,11 @@ from booley.flows.sim.trace_recipe import (
 )
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.core_projection import (
+    lexical_stealth_path,
     native_cores_ignored,
     projected_core_path,
     projection_enabled,
+    stealth_core_relative,
 )
 from booley.fusesoc.fusesoc_registry import (
     read_core,
@@ -102,6 +104,7 @@ def _inject_dump_module(
         try:
             injected.write_text(content, encoding="utf-8")
         except OSError as exc:
+            _unlink_quietly((injected,))  # a partial write must not linger
             raise FuseSocError(f"could not supply trace dump module {injected}: {exc}") from exc
         declared_path = injected.name
     filesets = overlay_doc.setdefault("filesets", {})
@@ -228,13 +231,18 @@ class TraceOverlay:
 
     def cleanup(self) -> None:
         """Remove the overlay ``.core`` and any supplied files (idempotent)."""
-        for path in (self.core_file, *self.extra_files):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError as exc:
-                logger.debug("trace overlay cleanup failed for %s: %s", path, exc)
+        _unlink_quietly((self.core_file, *self.extra_files))
+
+
+def _unlink_quietly(paths: Sequence[Path]) -> None:
+    """Best-effort removal of overlay files; a missing file is already clean."""
+    for path in paths:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.debug("trace overlay cleanup failed for %s: %s", path, exc)
 
 
 def _inject_runtime_dump_trace(
@@ -287,6 +295,18 @@ def _write_overlay_core_file(overlay_path: Path, overlay_doc: dict) -> None:
         raise FuseSocError(f"could not write trace overlay {overlay_path}: {exc}") from exc
 
 
+def _rebase_injected_dump_to_root(
+    overlay_doc: dict,
+    project_root: Path | str,
+    injected: Path,
+) -> None:
+    """Declare *injected* relative to the Project Root, where the projection lives."""
+    files = overlay_doc["filesets"][_INJECTED_DUMP_FILESET]["files"]
+    attrs = next(iter(files[0].values()))
+    relative = lexical_stealth_path(project_root, injected).relative_to(Path(project_root))
+    overlay_doc["filesets"][_INJECTED_DUMP_FILESET]["files"] = [{relative.as_posix(): attrs}]
+
+
 def write_trace_overlay(
     handle: TargetHandle,
     *,
@@ -328,7 +348,22 @@ def write_trace_overlay(
     The catalog handle is validated before any file is written. Raises
     :class:`FuseSocError` if the handle is stale or does not describe a
     Verilator/Icarus sim Target, or if the supplied dump module cannot be written.
+    A failed call removes every file it wrote, so nothing is left in the Project.
     """
+    written: list[Path] = []
+    try:
+        return _write_trace_overlay(handle, trace_depth, written)
+    except BaseException:
+        _unlink_quietly(written)
+        raise
+
+
+def _write_trace_overlay(
+    handle: TargetHandle,
+    trace_depth: int,
+    written: list[Path],
+) -> TraceOverlay:
+    """Build and write the overlay, recording each created file in *written*."""
     project_root = require_current_target_handle(handle)
     target = handle.name
     flow = handle.flow
@@ -371,19 +406,27 @@ def write_trace_overlay(
             flow_options,
             project_root,
         )
+        if injected is not None:
+            written.append(injected)
 
+    # Only stealth cores (under `.booley/cores/`) get a root-level projection.
+    # A repository-native core keeps its overlay beside it, where FuseSoC
+    # already discovers it and resolves its relative fileset paths.
+    projects_overlay = (
+        projection_enabled(project_root)
+        and stealth_core_relative(project_root, handle.core_file) is not None
+    )
     projected_overlay: Path | None = None
-    if projection_enabled(project_root) and injected is not None:
-        entry = overlay_doc["filesets"][_INJECTED_DUMP_FILESET]["files"][0]
-        attrs = next(iter(entry.values()))
-        relative = injected.relative_to(Path(project_root)).as_posix()
-        overlay_doc["filesets"][_INJECTED_DUMP_FILESET]["files"] = [{relative: attrs}]
+    if projects_overlay and injected is not None:
+        _rebase_injected_dump_to_root(overlay_doc, project_root, injected)
 
     overlay_path = handle.core_file.with_name(
         f"{handle.core_file.stem}{TRACE_OVERLAY_MARKER}{handle.core_file.suffix}"
     )
+    # Recorded before writing: opening the file creates it even if the write fails.
+    written.append(overlay_path)
     _write_overlay_core_file(overlay_path, overlay_doc)
-    if projection_enabled(project_root):
+    if projects_overlay:
         projected_overlay = projected_core_path(project_root, overlay_path)
     return TraceOverlay(
         core_file=overlay_path,

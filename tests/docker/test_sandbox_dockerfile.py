@@ -7,7 +7,9 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -276,16 +278,14 @@ def test_runtime_contract_and_setup_agree_that_rust_is_not_installed() -> None:
     assert "Node.js, Rust" not in setup
 
 
-def test_readme_uses_current_slim_image_storage_guidance() -> None:
-    readme = Path("README.md").read_text(encoding="utf-8")
+def test_install_requirements_use_current_slim_image_storage_guidance() -> None:
+    guide = Path("docs/user/INSTALL.md").read_text(encoding="utf-8")
+    requirements = guide.split("## Requirements", 1)[1].split("\n## ", 1)[0]
 
-    assert "15 GB of Docker storage" not in readme
-    assert "21 GB" not in readme
-    assert "about **4 GB** free for the image" in readme
-    assert "(**6 GB** with the RISC-V toolchain)" in readme
-    assert "On the measured containerd store" not in readme
-    assert "1.58/2.02 GB" not in readme
-    assert "2.82/4.48 GB" not in readme
+    assert "15 GB of Docker storage" not in guide
+    assert "21 GB" not in guide
+    assert "about **4 GB** free for the image" in requirements
+    assert "(**6 GB** with the RISC-V toolchain)" in requirements
 
 
 def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None:
@@ -381,6 +381,9 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
     for checksum_arg in (
         "SV2V_SHA256",
         "VERIBLE_SHA256",
+        "VAPORVIEW_SHA256",
+        "VERILOGHDL_SHA256",
+        "LIVE_PREVIEW_SHA256",
         "NODE_SHA256",
     ):
         assert f"ARG {checksum_arg}=" in dockerfile
@@ -402,6 +405,170 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
     assert '"@openai/codex": "0.160.0"' in lock
     assert lock.count('"integrity": "sha512-') == 16
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
+
+
+def _base_build_arg(dockerfile: str, name: str) -> str:
+    """Return the default of one ``ARG name=value`` line in the base recipe."""
+    match = re.search(rf"^ARG {name}=(\S+)$", dockerfile, re.MULTILINE)
+    assert match, f"Dockerfile.base declares no default for {name}"
+    return match.group(1)
+
+
+def test_bundled_vaporview_vsix_stays_in_lockstep_with_the_verified_build() -> None:
+    """The image bundles exactly the build the spec installs and Booley patches."""
+    from booley.runtime import vaporview
+
+    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+    version = _base_build_arg(dockerfile, "VAPORVIEW_VERSION")
+    sha256 = _base_build_arg(dockerfile, "VAPORVIEW_SHA256")
+
+    assert version == vaporview.VERIFIED_VERSION
+    assert re.fullmatch(r"[0-9a-f]{64}", sha256)
+    region = dockerfile[dockerfile.index("ARG VAPORVIEW_VERSION=") :]
+    region = region[: region.index("\n\n")]
+    install_target = '"/usr/local/libexec/booley/vaporview-${VAPORVIEW_VERSION}.vsix"'
+    assert f"install -m 0644 /tmp/vaporview.vsix {install_target}" in region
+    assert install_target.strip('"').replace("${VAPORVIEW_VERSION}", version) == (
+        vaporview.BUNDLED_VSIX
+    )
+    # Verified before it is installed, fetched over HTTPS only.
+    assert region.index("sha256sum -c -") < region.index("install -m 0644 /tmp/vaporview.vsix")
+    assert "curl --proto '=https' --tlsv1.2 -fsSL" in region
+    # GPL-3.0: the license and the corresponding-source pointer ship beside it.
+    assert "/usr/local/share/booley/licenses/vaporview/LICENSE.txt" in region
+    assert "/usr/local/share/booley/licenses/vaporview/SOURCE.txt" in region
+    assert "https://github.com/Lramseyer/vaporview" in region
+    assert re.search(r"^ARG VAPORVIEW_SOURCE_COMMIT=[0-9a-f]{40}$", region, re.MULTILINE)
+
+
+def _bundled_vsix_install_targets(dockerfile: str) -> set[str]:
+    """Every VSIX path the base recipe installs, with ``ARG`` defaults substituted."""
+    defaults = dict(re.findall(r"^ARG (\w+)=(\S+)$", dockerfile, re.MULTILINE))
+    targets = set()
+    for target in re.findall(r'install -m 0644 /tmp/\S+\.vsix "([^"]+)"', dockerfile):
+        targets.add(re.sub(r"\$\{(\w+)\}", lambda match: defaults[match.group(1)], target))
+    return targets
+
+
+def test_every_spec_extension_is_bundled_in_the_base_image() -> None:
+    """No generated entry is a gallery ID: an egress-locked Sandbox cannot resolve one.
+
+    Every entry must be a VSIX the image installs at exactly that path (so an
+    image version that differs from its Python constant fails here) or the
+    dashboard extension, which the wheel build supplies.
+    """
+    from booley.runtime import devcontainer
+    from booley.runtime.dashboard_extension import VSIX_PATH
+
+    bundled = _bundled_vsix_install_targets(_BASE_DOCKERFILE.read_text(encoding="utf-8"))
+    for app in devcontainer.SUPPORTED_APPS:
+        extensions = devcontainer.build_devcontainer_spec(app)["customizations"]["vscode"][
+            "extensions"
+        ]
+        assert [entry for entry in extensions if entry not in bundled | {VSIX_PATH}] == []
+
+
+# name -> (ARG prefix, third-party notice member in the VSIX, notice file name shipped)
+_MIT_VSIXES = {
+    "veriloghdl": ("VERILOGHDL", "extension/THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"),
+    "live-server": (
+        "LIVE_PREVIEW",
+        "extension/out/extension.js.LICENSE.txt",
+        "extension.js.LICENSE.txt",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", _MIT_VSIXES)
+def test_bundled_mit_vsix_is_verified_before_install(name: str) -> None:
+    """Checksum, MIT license and notices are all checked before the VSIX is installed."""
+    prefix, notice_member, notice_file = _MIT_VSIXES[name]
+    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+    _base_build_arg(dockerfile, f"{prefix}_VERSION")
+    assert re.fullmatch(r"[0-9a-f]{64}", _base_build_arg(dockerfile, f"{prefix}_SHA256"))
+    assert re.fullmatch(r"[0-9a-f]{40}", _base_build_arg(dockerfile, f"{prefix}_SOURCE_COMMIT"))
+    region = dockerfile[dockerfile.index(f"ARG {prefix}_VERSION=") :]
+    region = region[: region.index("\n\n")]
+    install = f'install -m 0644 /tmp/{name}.vsix "/usr/local/libexec/booley/{name}-${{{prefix}_VERSION}}.vsix"'
+    assert install in region
+    assert "curl --proto '=https' --tlsv1.2 -fsSL" in region
+    for check in (
+        "sha256sum -c -",
+        f"unzip -p /tmp/{name}.vsix {notice_member}",
+        'grep -q "MIT License"',
+        'grep -q "Permission is hereby granted, free of charge"',
+    ):
+        assert region.index(check) < region.index(install), check
+    licenses = f"/usr/local/share/booley/licenses/{name}"
+    for shipped in ("LICENSE.txt", notice_file, "SOURCE.txt"):
+        assert f"{licenses}/{shipped}" in region
+
+
+def _mit_vsix_fixture(path: Path, *, license_text: str, notice: bool) -> str:
+    """Write a minimal VSIX zip; return its SHA-256."""
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("extension/LICENSE.txt", license_text)
+        if notice:
+            archive.writestr("extension/THIRD_PARTY_NOTICES.md", "notices")
+            archive.writestr("extension/out/extension.js.LICENSE.txt", "notices")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+_MIT_TEXT = "MIT License\n\nPermission is hereby granted, free of charge, to any person"
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("unzip") is None,
+    reason="bundling requires a POSIX shell, sha256sum and unzip",
+)
+@pytest.mark.parametrize("name", _MIT_VSIXES)
+@pytest.mark.parametrize("case", ["good", "checksum", "license", "missing-notice"])
+def test_bundled_vsix_install_rejects_bad_payload(tmp_path: Path, name: str, case: str) -> None:
+    """The shipped RUN body installs a good VSIX and refuses every bad payload."""
+    prefix, _notice_member, notice_file = _MIT_VSIXES[name]
+    instructions = logical_instructions(_BASE_DOCKERFILE.read_text(encoding="utf-8"))
+    environment = os.environ.copy()
+    for instruction in instructions:
+        if instruction.keyword == "ARG" and "=" in instruction.value:
+            key, value = instruction.value.split("=", 1)
+            environment[key] = value
+    fixture = tmp_path / "fixture.vsix"
+    digest = _mit_vsix_fixture(
+        fixture,
+        license_text="GNU GENERAL PUBLIC LICENSE" if case == "license" else _MIT_TEXT,
+        notice=case != "missing-notice",
+    )
+    environment[f"{prefix}_SHA256"] = "0" * 64 if case == "checksum" else digest
+    environment["FIXTURE"] = str(fixture)
+    body = next(
+        (
+            item.value
+            for item in instructions
+            if item.keyword == "RUN" and f"/tmp/{name}.vsix" in item.value
+        ),
+        None,
+    )
+    assert body is not None, f"Dockerfile.base never bundles {name}"
+    root = tmp_path / "root"
+    body = body.replace("/tmp/", f"{tmp_path}/").replace("/usr/local", str(root / "usr/local"))
+    # Substitute the network download only; run the shipped verification commands.
+    curl = 'curl() { for arg; do if [ "$arg" = "-o" ]; then shift; break; fi; shift; done; cp "$FIXTURE" "$1"; }; '
+    result = subprocess.run(
+        ["sh", "-c", curl + body],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    installed = list((root / "usr/local/libexec/booley").glob("*.vsix"))
+    assert (result.returncode == 0) == (case == "good"), result.stderr
+    assert bool(installed) == (case == "good")
+    if case == "good":
+        licenses = root / "usr/local/share/booley/licenses" / name
+        assert (licenses / "LICENSE.txt").read_text() == _MIT_TEXT
+        assert (licenses / notice_file).read_text() == "notices"
+        assert "MIT" in (licenses / "SOURCE.txt").read_text()
 
 
 def test_linux_agent_cli_native_artifacts_are_required_dependencies() -> None:

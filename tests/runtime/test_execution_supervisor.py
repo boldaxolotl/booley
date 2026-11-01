@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -36,7 +37,15 @@ from booley.runtime.execution_records import (
     write_attachment_heartbeat,
 )
 
-_EXECUTION_ID = ExecutionId("a" * 32)
+
+def _unique_execution_id() -> ExecutionId:
+    """A per-test execution ID.
+
+    Supervised commands carry their ID in the environment, and runtime recovery
+    signals every host process carrying it, so a shared literal would let one
+    xdist worker's recovery kill another worker's command.
+    """
+    return ExecutionId(uuid.uuid4().hex)
 
 
 def _heartbeat_generations(path: Path) -> list[int]:
@@ -90,7 +99,8 @@ def _start_supervisor_with_test_heartbeat(
 def _run_command(tmp_path: Path, command: list[str], *, path: str | None = None):
     data = tmp_path / ".booley"
     data.mkdir()
-    paths = execution_paths(_EXECUTION_ID, booley_dir=data)
+    execution_id = _unique_execution_id()
+    paths = execution_paths(execution_id, booley_dir=data)
     write_attachment_heartbeat(paths, generation=1)
     env = runtime_env(data)
     if path is not None:
@@ -102,7 +112,7 @@ def _run_command(tmp_path: Path, command: list[str], *, path: str | None = None)
             "booley.runtime.execution_supervisor",
             "run",
             "--execution-id",
-            _EXECUTION_ID,
+            execution_id,
             "--",
             *command,
         ],
@@ -159,7 +169,7 @@ def test_signal_exit_status_is_preserved(tmp_path: Path) -> None:
 
 
 def test_force_cancellation_is_monotonic(tmp_path: Path) -> None:
-    paths = execution_paths(_EXECUTION_ID, booley_dir=tmp_path)
+    paths = execution_paths(_unique_execution_id(), booley_dir=tmp_path)
     request_cancellation(paths, force=True)
     request_cancellation(paths, force=False)
 
@@ -170,7 +180,7 @@ def test_force_cancellation_is_monotonic(tmp_path: Path) -> None:
 def test_cancellation_before_start_never_launches_the_command(tmp_path: Path) -> None:
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
-    execution_id = ExecutionId("d" * 32)
+    execution_id = _unique_execution_id()
     paths = execution_paths(execution_id, booley_dir=booley_dir)
     marker = tmp_path / "command-started"
     write_attachment_heartbeat(paths, generation=1)
@@ -204,7 +214,7 @@ def test_cancellation_before_start_never_launches_the_command(tmp_path: Path) ->
 def test_boolean_protocol_signal_does_not_become_signal_one(tmp_path: Path) -> None:
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
-    execution_id = ExecutionId("e" * 32)
+    execution_id = _unique_execution_id()
     paths = execution_paths(execution_id, booley_dir=booley_dir)
     write_attachment_heartbeat(paths, generation=1)
     atomic_write_json(
@@ -244,11 +254,12 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
     """Cancellation remains scoped and complete across a descendant's setsid()."""
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
-    paths = execution_paths(_EXECUTION_ID, booley_dir=booley_dir)
+    execution_id = _unique_execution_id()
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
     write_attachment_heartbeat(paths, generation=1)
     descendant_pid_file = tmp_path / "descendant.pid"
     supervisor = start_supervisor_with_detached_descendant(
-        booley_dir, _EXECUTION_ID, descendant_pid_file
+        booley_dir, execution_id, descendant_pid_file
     )
     descendant_pid: int | None = None
     try:
@@ -265,7 +276,7 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
                 "booley.runtime.execution_supervisor",
                 "cancel",
                 "--execution-id",
-                _EXECUTION_ID,
+                execution_id,
             ],
             capture_output=True,
             text=True,
@@ -294,7 +305,7 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
 def test_supervisor_refreshes_reaper_heartbeat_until_normal_exit(tmp_path: Path) -> None:
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
-    execution_id = ExecutionId("f" * 32)
+    execution_id = _unique_execution_id()
     paths = execution_paths(execution_id, booley_dir=booley_dir)
     heartbeat_path = tmp_path / "reaper-heartbeat"
     write_attachment_heartbeat(paths, generation=1)
@@ -323,7 +334,7 @@ def test_supervisor_refreshes_reaper_heartbeat_until_normal_exit(tmp_path: Path)
 def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Path) -> None:
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
-    execution_id = ExecutionId("1" * 32)
+    execution_id = _unique_execution_id()
     paths = execution_paths(execution_id, booley_dir=booley_dir)
     heartbeat_path = tmp_path / "reaper-heartbeat"
     child_starting = tmp_path / "child-starting"
@@ -368,7 +379,7 @@ def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Pat
 def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
-    execution_id = ExecutionId("b" * 32)
+    execution_id = _unique_execution_id()
     paths = execution_paths(execution_id, booley_dir=booley_dir)
     write_attachment_heartbeat(paths, generation=1)
     supervisor = subprocess.Popen(
@@ -406,7 +417,7 @@ def test_tty_child_owns_the_foreground_process_group(tmp_path: Path) -> None:
         return
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
-    execution_id = ExecutionId("c" * 32)
+    execution_id = _unique_execution_id()
     paths = execution_paths(execution_id, booley_dir=booley_dir)
     write_attachment_heartbeat(paths, generation=1)
     child_check = (

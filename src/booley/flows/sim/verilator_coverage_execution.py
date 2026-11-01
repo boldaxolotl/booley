@@ -93,8 +93,6 @@ from .verilator_coverage import (
     VerilatorCollectorIdentity,
     collect,
 )
-from .verilator_declaration_build import capture_build_declarations
-from .verilator_declarations import DeclarationInventory
 
 _PROVENANCE_PATH = Path("/usr/local/share/verilator/BOOLEY-SOURCE.txt")
 _VERSION_RE = re.compile(r"\bVerilator (?P<version>[0-9]+\.[0-9]+)\b")
@@ -160,7 +158,6 @@ class VerilatorCoverageExecution:
         if identity is None:
             return SimulationBuildResult(False, version_output, infrastructure_error=True)
         try:
-            inspection = TargetCatalog.build(self._handle.project_root).inspect(self._handle)
             compile_surface = resolve_target_compile_surface(self._handle)
             sources_before = project_compile_surface(compile_surface)
             with SimulationBuildSession(self._handle, request.variant.name) as session:
@@ -172,18 +169,10 @@ class VerilatorCoverageExecution:
                     raise SimulationBuildSlotError(
                         "Project compile inputs changed during coverage preparation"
                     )
-                if prepared.work_root != candidate:
-                    raise SimulationBuildSlotError(
-                        "coverage preparation escaped its leased generation"
-                    )
                 inputs = session.capture_inputs(prepared)
                 prepared, result = self._reuse_or_build(session, prepared, inputs, identity)
                 if result.success:
                     self._build_variant = request.variant.name
-                    result = replace(
-                        result,
-                        declarations=self._declarations(prepared, inspection, identity, inputs),
-                    )
                 return result
         except SimulationBuildSlotError as exc:
             self._prepared = None
@@ -210,20 +199,6 @@ class VerilatorCoverageExecution:
         announce_unit("coverage: verified build reuse", target=self._handle.selector)
         reason = f"verified Simulation build reuse ({session.cache_decision})"
         return retained, SimulationBuildResult(True, reason, identity)
-
-    def _declarations(
-        self,
-        prepared: PreparedSimulationBuild,
-        inspection: TargetInspection,
-        identity: VerilatorCollectorIdentity,
-        inputs: Mapping[str, str],
-    ) -> DeclarationInventory:
-        return capture_build_declarations(
-            prepared,
-            inspection,
-            compiler=(identity.tag, identity.commit),
-            build_inputs=inputs,
-        )
 
     def _prepare_build(
         self, request: SimulationBuildRequest, *, build_root: Path | None = None
@@ -314,17 +289,12 @@ class VerilatorCoverageExecution:
         try:
             if self._snapshot_bound:
                 return self._run_prepared(request, prepared)
-            with SimulationBuildSession(self._handle, variant) as session:
-                session.verify_image(prepared)
-                return self._run_prepared(
-                    request,
-                    prepared,
-                    verify_image=lambda: session.verify_image(prepared),
-                )
+            with SimulationBuildSession(self._handle, variant):
+                return self._run_prepared(request, prepared)
         except SimulationBuildSlotError as exc:
             return SimulationRunResult(
                 "inconclusive",
-                f"coverage image verification failed: {exc}",
+                f"coverage build slot unavailable: {exc}",
                 infrastructure_error=True,
             )
 
@@ -336,8 +306,6 @@ class VerilatorCoverageExecution:
         self,
         request: SimulationRunRequest,
         prepared: PreparedSimulationBuild,
-        *,
-        verify_image: Callable[[], None] | None = None,
     ) -> SimulationRunResult:
         _prepare_artifact_directories(request)
         token = new_attempt_token()
@@ -357,13 +325,7 @@ class VerilatorCoverageExecution:
         if pre_sim is not None and sink is not None:
             sink(pre_sim)
         try:
-            _verify_pre_sim_state(
-                prepared,
-                request,
-                self._artifact_paths,
-                before,
-                verify_image=verify_image,
-            )
+            _verify_pre_sim_state(prepared, request, self._artifact_paths, before)
         except SimulationBuildSlotError as exc:
             return SimulationRunResult(
                 "inconclusive",
@@ -742,8 +704,6 @@ def _verify_pre_sim_state(
     request: SimulationRunRequest,
     artifact_paths: tuple[Path, ...],
     before: _PreSimSnapshot,
-    *,
-    verify_image: Callable[[], None] | None,
 ) -> None:
     verify_existing_build_inputs(prepared, before.build_inputs)
     if (
@@ -751,8 +711,6 @@ def _verify_pre_sim_state(
         != before.compile_hashes
     ):
         raise SimulationBuildSlotError("Project compile inputs changed during Pre-Sim Commands")
-    if verify_image is not None:
-        verify_image()
     if _image_identity(prepared.build_root, artifact_paths) != before.image:
         raise SimulationBuildSlotError("coverage image changed during Pre-Sim Commands")
     if snapshot_artifact(request.raw_path) != before.raw:

@@ -1,7 +1,7 @@
 """Canonical Booley Flow and Specialist references, rendered from the registry.
 
 Single source of truth: :func:`booley.mcp.registry.discover_mcp_tools`. The
-``booley cheat`` CLI renders this block live, while ``docs/user/USAGE.md`` embeds a
+``booley cheat`` CLI renders this block live, while ``docs/user/CLI-REFERENCE.md`` embeds a
 committed copy between the ``<!-- BEGIN GENERATED: flows -->`` /
 ``<!-- END GENERATED: flows -->`` markers that a pytest keeps byte-identical to
 this renderer. The cheatsheet gives Specialists their own flag-addressable
@@ -11,7 +11,7 @@ from this one place.
 Regenerate the committed doc blocks with::
 
     python -m booley.dev_support.flow_specialist_reference \\
-        docs/user/USAGE.md src/booley/data/cheatsheet.md
+        docs/user/CLI-REFERENCE.md src/booley/data/cheatsheet.md
 """
 
 from __future__ import annotations
@@ -51,8 +51,10 @@ _BASELINE_CONTROL = "`--baseline <ref>` compares metrics against a git revision"
 # Docs render: user docs link to the full per-Flow reference instead of
 # repeating the control summaries that `booley cheat` carries.
 _FLOW_REFERENCE_POINTER = (
-    "Every Flow's options and results are in "
-    "[FLOW_REFERENCE.md](FLOW_REFERENCE.md), and its report files in "
+    "Shared Flow options and results are in "
+    "[FLOW_REFERENCE.md](FLOW_REFERENCE.md), each Flow's own in "
+    "[FLOW-SIM.md](FLOW-SIM.md), [FLOW-LINT.md](FLOW-LINT.md), "
+    "[FLOW-SYNTH.md](FLOW-SYNTH.md), and [FLOW-FPGA.md](FLOW-FPGA.md), and report files in "
     "[FLOW_REPORTS.md](../internals/FLOW_REPORTS.md); `booley flow <name> --help` "
     "prints the options too."
 )
@@ -163,8 +165,8 @@ def render_flow_reference(
             Flows execute inside the Sandbox.
         key_controls: When true, append the common and per-Flow control
             summaries (used by ``booley cheat``, which is read in the Sandbox).
-            When false, link to FLOW_REFERENCE.md instead, for the user docs
-            that sit next to it.
+            When false, link to FLOW_REFERENCE.md and the per-Flow pages
+            instead, for the user docs that sit next to them.
     """
     endpoints = discover_mcp_tools(project_mcp_tools_dir=project_mcp_tools_dir)
     flows = sorted(
@@ -338,8 +340,7 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         "`--model`, `--max-turns`, and `--timeout` are CLI-only controls.",
         "",
         "For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. "
-        "The supported module alternative is `python -m booley.specialists.reviewer` "
-        "with the same flags. Common options are `-C/--project PATH`, `--report-dir`, "
+        "Common options are `-C/--project PATH`, `--report-dir`, "
         "`--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive "
         "seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). "
         "Model-call minimum budgets apply; seconds-only providers round up. "

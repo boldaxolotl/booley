@@ -20,7 +20,9 @@ from pathlib import Path, PurePosixPath
 from booley.config.agent import SANDBOX_IMAGE
 from booley.core.project_identity import project_name_id
 from booley.runtime import auth_token
+from booley.runtime import vaporview as _vaporview
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
+from booley.runtime.guarded_write import replace_regular_file
 from booley.runtime.incontainer_git_identity import (
     GitIdentity,
     GitIdentityError,
@@ -29,7 +31,6 @@ from booley.runtime.incontainer_git_identity import (
 )
 from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
-from booley.runtime.vaporview import EXTENSION_ID as _VAPORVIEW_EXTENSION
 from booley.runtime.vaporview import PRESENTATION_COLOR_SETTINGS
 
 # --- Supported agent apps (mirrors the init wizard's app selection) ---
@@ -49,6 +50,10 @@ EGRESS_NETWORK = "booley-egress-v2"
 PROXY_HOST = "booley-proxy"
 PROXY_PORT = 8080
 PROXY_URL = f"http://{PROXY_HOST}:{PROXY_PORT}"
+# The routed user-defined network every Sandbox joins under host
+# ``[sandbox] egress = "unproxied"``. User-defined so it can sit next to the
+# internal license network, which Docker's default ``bridge`` cannot.
+UNPROXIED_NETWORK = "booley-unproxied-v1"
 
 # Label the idle reaper (WS2) matches to find/own Sandboxes.
 INTERACTIVE_ROLE_LABEL = "booley.role=interactive"
@@ -79,41 +84,41 @@ BOOLEY_DIR_BASENAME = ".booley"
 # absolute host path instead of relying on env-var indirection here.
 DEFAULT_BOOLEY_DIR_SOURCE = "${localWorkspaceFolder}/.booley"
 
-# VS Code Marketplace extension IDs for the supported agent apps. Listed under
-# ``customizations`` so VS Code installs them container-side; update if the
-# published identifiers change.
-_APP_EXTENSION = {
-    # Canonical Marketplace IDs (publisher.name); verified against the
-    # VS Code Marketplace / official docs (2026-06).
-    APP_CLAUDE: "Anthropic.claude-code",
-    APP_CODEX: "openai.chatgpt",
-}
-
-# Waveform Viewer (ADR 0035): VaporView is installed for every app so
-# `bwave gui` and the agent's scoped-view WCP calls work in the attached
-# window.
-# VaporView WCP has no named red color. `bwave gui` maps its stable
-# red/blue/green interface to the extension's configured custom palette.
+# Waveform Viewer (ADR 0078): VaporView is installed for every app so
+# `bwave gui` works in the attached window, driven through the Booley
+# extension's Viewer Bridge. VaporView has no named red color; `bwave gui`
+# maps its stable red/blue/green interface to the extension's custom palette.
 _VAPORVIEW_PRESENTATION_SETTINGS = PRESENTATION_COLOR_SETTINGS
 # Verilog/SystemVerilog syntax highlighting: without an HDL grammar the
 # attached window renders every .v/.sv file as plain text. mshr-h's extension
 # ships the TextMate grammar (plus ctags-based navigation) and keeps linting
 # OFF by default, so it adds highlighting without competing with Booley's own
 # lint flow. Installed for every app — reading RTL isn't tied to which agent
-# is attached.
-_HDL_EXTENSION = "mshr-h.veriloghdl"
+# is attached. Like VaporView it is the pinned VSIX bundled in the Sandbox
+# Image and installed by path: an egress-locked Sandbox cannot reach a gallery,
+# and VS Code pins a VSIX install so auto-update leaves it there.
+# ``Dockerfile.base`` carries the same version (tests enforce the lockstep).
+_HDL_VERSION = "1.29.0"
+HDL_VSIX = f"/usr/local/libexec/booley/veriloghdl-{_HDL_VERSION}.vsix"
+# The Marketplace ID older specs listed; Doctor flags a spec that still does.
+_HDL_GALLERY_ID = "mshr-h.veriloghdl"
 
-# Tcl syntax highlighting: constraint files (SDC/XDC, ADR 0029/0031) are Tcl,
-# and synth/impl flows are driven by Tcl scripts. The grammar alone doesn't
-# claim the .sdc/.xdc suffixes, so _HIGHLIGHT_FILE_ASSOCIATIONS maps them to
-# the tcl language id.
-_TCL_EXTENSION = "bitwisecook.tcl"
+# VS Code entries older Booley specs installed and no current spec carries:
+# the Claude Code / Codex agent extensions (the agent CLI is the only agent
+# surface), the Tcl grammar, and the *.sdc/*.xdc -> tcl associations (the HDL
+# extension claims those suffixes itself). Doctor flags a spec still listing them.
+_RETIRED_AGENT_EXTENSIONS = ("Anthropic.claude-code", "openai.chatgpt")
+_RETIRED_EXTENSIONS = ("bitwisecook.tcl", *_RETIRED_AGENT_EXTENSIONS)
+_RETIRED_FILE_ASSOCIATIONS = {"*.sdc": "tcl", "*.xdc": "tcl"}
 
 # Microsoft's Live Preview hosts static HTML and renders it in an embedded
 # VS Code tab. Installed for every app so human-facing reports (including the
 # review HTML under the separately mounted Booley Directory) are viewable
-# without a browser in the sandbox.
-_LIVE_PREVIEW_EXTENSION = "ms-vscode.live-server"
+# without a browser in the sandbox. Bundled in the Sandbox Image and installed
+# by path, like the HDL extension above.
+_LIVE_PREVIEW_VERSION = "0.4.20"
+LIVE_PREVIEW_VSIX = f"/usr/local/libexec/booley/live-server-{_LIVE_PREVIEW_VERSION}.vsix"
+_LIVE_PREVIEW_GALLERY_ID = "ms-vscode.live-server"
 
 # Live Preview exposes its in-container HTTP/WebSocket servers through VS
 # Code's remote-port tunnel. VS Code's long-lived local process can retain a
@@ -127,10 +132,6 @@ _LIVE_PREVIEW_SETTINGS = {
     "livePreview.portNumber": _LIVE_PREVIEW_SEED_PORT,
 }
 
-# files.associations entries that route constraint suffixes to the Tcl grammar
-# above; emitted into the spec's VS Code settings for every app.
-_HIGHLIGHT_FILE_ASSOCIATIONS = {"*.sdc": "tcl", "*.xdc": "tcl"}
-
 # The Sandbox installs the framework and its Python dependencies system-wide;
 # a workspace ``.venv`` belongs to the host and is neither needed nor reliably
 # usable in the container.  VS Code's Python Environments extension otherwise
@@ -143,11 +144,6 @@ _PYTHON_TERMINAL_SETTINGS = {
     "python-envs.terminal.autoActivationType": "off",
     "python.terminal.activateEnvironment": False,
 }
-
-# VaporView's WCP control port, pinned because bwave's WCP client discovers
-# the server at a fixed port (bwave/wcp.py WCP_DEFAULT_PORT must agree;
-# 0 = auto-assign would break discovery).
-_VAPORVIEW_WCP_PORT = 54322
 
 # Where each app reads its auth token inside the container (agent user's home).
 _APP_AUTH_TARGET = {
@@ -171,8 +167,8 @@ _APP_STATE_DIR = {
 # (see ``_APP_STATE_DIR``), so the state volume does NOT cover it and it is
 # reborn empty on every container (re)create. A fresh config re-rolls the
 # stableID and drops the cached grants, so gated models silently vanish from
-# the in-container ``/model`` picker even when the CLI, extension, and
-# credentials all match the host. We seed the container's copy from the host's
+# the in-container ``/model`` picker even when the CLI and
+# credentials match the host. We seed the container's copy from the host's
 # config (read-only bind + copy) so the grants carry over;
 # ``incontainer_register`` then merges the container-local ``mcpServers.booley``
 # entry on top (``upsert_claude`` preserves existing keys). Only Claude keeps
@@ -251,21 +247,17 @@ def mcp_post_start_command() -> str:
 
 
 def vaporview_patch_command() -> str:
-    """Shell command for ``postAttachCommand``: make VaporView's WCP server
-    auto-start on window load.
+    """Shell command for ``postAttachCommand``: apply Booley's residual VaporView patch.
 
-    Runs on *attach* (not create/start) because it must edit the VaporView
-    extension's manifest, which VS Code installs container-side only once an extension
-    attaches — by postCreate/postStart it isn't on disk yet. The patcher relaxes
-    the ``vaporview.wcp.enabled``/``.port`` setting scope so the spec's
-    Machine-settings values are honored, and makes the extension activate
-    eagerly so its own auto-start runs without an open waveform tab; without
-    both, ``wcp.enabled: true`` is inert and the server never binds until a human
-    runs the palette command. If installation outlasts the short attach wait,
-    the patcher leaves a singleton watcher until the configured extension
-    arrives, including patching VS Code's staging copy before publication.
-    Idempotent and never fails the hook. See
-    :mod:`booley.runtime.incontainer_vaporview` for the full rationale.
+    Runs on *attach* (not create/start) because it edits the installed
+    VaporView extension, which VS Code installs container-side only once a
+    window attaches — by postCreate/postStart it isn't on disk yet. The
+    patcher skips VaporView's remote desktop-theme lookup and makes the custom
+    palette slots behind `bwave gui` colors honor the spec's Machine settings.
+    If installation outlasts the short attach wait, it leaves a singleton
+    watcher until the configured extension arrives, including patching VS
+    Code's staging copy before publication. Idempotent and never fails the
+    hook. See :mod:`booley.runtime.incontainer_vaporview` for the rationale.
     """
     return "python -m booley.runtime.incontainer_vaporview"
 
@@ -284,11 +276,6 @@ def _post_attach_has(spec: dict, command: str) -> bool:
     """Whether *command* is one complete step in the generated attach hook."""
     value = spec.get("postAttachCommand")
     return isinstance(value, str) and command in (part.strip() for part in value.split("&&"))
-
-
-def _vscode_extension_for_app(app: str) -> str | None:
-    """Return the VS Code extension ID for *app*, or ``None`` for ``"none"``."""
-    return _APP_EXTENSION.get(app)
 
 
 def _auth_target_for_app(app: str) -> str | None:
@@ -446,84 +433,128 @@ def spec_mounts_token_seed(spec: dict) -> bool | None:
 
 
 def spec_installs_vaporview(spec: dict) -> bool:
-    """Whether *spec* installs VaporView and wires its WCP control server.
+    """Whether *spec* installs VaporView and the Booley bridge that drives it.
 
-    The Waveform Viewer (ADR 0035) reaches an attached VS Code window only
-    through the generated spec: the ``lramseyer.vaporview`` extension install,
-    the WCP and semantic waveform-color settings, AND the
-    ``postAttachCommand`` manifest patch that actually makes the WCP server
-    auto-start (the setting alone is inert — it is application-scoped, so the
-    container's Machine settings are ignored, and the extension activates
-    lazily). A spec seeded before any of these landed leaves every scoped
-    ``bwave gui`` failing with "WCP server not running" — even after an image
-    rebuild, which never touches the spec. ``booley doctor`` reads this to
-    surface the drift.
+    The Waveform Viewer (ADR 0078) reaches an attached VS Code window only
+    through the generated spec: the image-bundled VaporView VSIX install,
+    the image-local Booley Sandbox Integration extension that hosts the Viewer Bridge, the
+    semantic waveform-color settings, AND the ``postAttachCommand`` patch
+    that makes those colors effective. A spec seeded before any of these
+    landed leaves scoped ``bwave gui`` without a usable viewer — even after an
+    image rebuild, which never touches the spec. ``booley doctor`` reads this
+    to surface the drift.
 
-    Returns ``True`` only when the extension is listed, the WCP server is
-    enabled on the port bwave's client expects, its presentation palette is
-    intact, AND the auto-start patch is wired; any miss means a stale or
-    hand-edited spec that a re-seed would fix.
+    Returns ``True`` only when VaporView is listed exactly once, as the
+    bundled ``vaporview.BUNDLED_VSIX`` path (any gallery ID is drift: an
+    egress-locked Sandbox cannot install it), the Booley Sandbox Integration extension is listed, the
+    presentation palette is intact, AND the patch is wired; any miss means a
+    stale or hand-edited spec that a refresh would fix.
     """
+    from booley.runtime.dashboard_extension import VSIX_PATH
+
     customizations = spec.get("customizations")
     vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
     if not isinstance(vscode, dict):
         return False
     extensions = vscode.get("extensions")
-    if not (isinstance(extensions, list) and _VAPORVIEW_EXTENSION in extensions):
+    if not isinstance(extensions, list) or VSIX_PATH not in extensions:
+        return False
+    # Exactly one VaporView entry, the bundled VSIX: a gallery entry (pinned or
+    # not) never installs in an egress-locked Sandbox, and another VSIX path
+    # names a build Booley has not verified.
+    requested = [entry for entry in extensions if _vaporview.is_vaporview_entry(entry)]
+    if requested != [_vaporview.BUNDLED_VSIX]:
         return False
     settings = vscode.get("settings")
     if not isinstance(settings, dict):
         return False
-    if not (
-        settings.get("vaporview.wcp.enabled") is True
-        and settings.get("vaporview.wcp.port") == _VAPORVIEW_WCP_PORT
-        and all(
-            settings.get(key) == value for key, value in _VAPORVIEW_PRESENTATION_SETTINGS.items()
-        )
+    if not all(
+        settings.get(key) == value for key, value in _VAPORVIEW_PRESENTATION_SETTINGS.items()
     ):
         return False
-    # The auto-start patch runs from postAttachCommand; without it the settings
-    # above never take effect (see vaporview_patch_command).
     return _post_attach_has(spec, vaporview_patch_command())
 
 
-def spec_installs_hdl_highlight(spec: dict) -> bool:
-    """Whether *spec* installs the RTL + constraints highlighting extensions.
+def _installs_only_bundled(extensions: list, gallery_id: str, vsix: str) -> bool:
+    """Whether *extensions* requests an extension exactly once, as the bundled *vsix*.
 
-    Like VaporView, the grammars reach an attached window only through the
-    generated spec's ``customizations`` — never via the sandbox image — so a
-    spec seeded before they landed renders RTL and SDC/XDC constraints as
-    plain text until a re-seed. Requires the Verilog/SystemVerilog and Tcl
-    extensions AND the ``files.associations`` entries that route the
-    constraint suffixes to the Tcl grammar (the extension alone doesn't claim
-    them). ``booley doctor`` reads this to surface the drift.
+    Counts the entries that equal *vsix* or name the extension's *gallery_id*
+    (any ``@version``, any case). A gallery ID is drift: an egress-locked
+    Sandbox cannot install it. A stale bundled path left from an earlier image
+    version is drift too, since it leaves the current *vsix* unrequested.
+    """
+    requested = [
+        entry
+        for entry in extensions
+        if isinstance(entry, str)
+        and (entry == vsix or entry.lower().partition("@")[0] == gallery_id)
+    ]
+    return requested == [vsix]
+
+
+def spec_installs_hdl_highlight(spec: dict) -> bool:
+    """Whether *spec* installs the Verilog/SystemVerilog highlighting extension.
+
+    The grammar reaches an attached window only through the generated spec's
+    ``customizations``, as the VSIX bundled in the Sandbox Image
+    (:data:`HDL_VSIX`). A spec that lacks it, or that lists the gallery ID
+    instead, renders RTL as plain text until a re-seed.
+    The extension also claims the ``.sdc``/``.xdc`` suffixes (checked against
+    mshr-h.veriloghdl 1.29.0, 2026-10), so nothing else is required.
+    ``booley doctor`` reads this to surface the drift.
     """
     customizations = spec.get("customizations")
     vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
     if not isinstance(vscode, dict):
         return False
     extensions = vscode.get("extensions")
-    if not (
-        isinstance(extensions, list)
-        and _HDL_EXTENSION in extensions
-        and _TCL_EXTENSION in extensions
-    ):
-        return False
-    settings = vscode.get("settings")
-    associations = settings.get("files.associations") if isinstance(settings, dict) else None
-    if not isinstance(associations, dict):
-        return False
-    return all(
-        associations.get(pattern) == lang for pattern, lang in _HIGHLIGHT_FILE_ASSOCIATIONS.items()
+    return isinstance(extensions, list) and _installs_only_bundled(
+        extensions, _HDL_GALLERY_ID, HDL_VSIX
     )
+
+
+def spec_retired_vscode_entries(spec: dict) -> list[str]:
+    """Name the retired VS Code entries *spec* still carries, in a stable order.
+
+    Lists each retired extension ID in ``extensions``, each retired
+    ``files.associations`` pattern still routed to Tcl, and each retired agent
+    extension still pinned in ``remote.extensionKind``. A spec
+    with unexpected shapes reports nothing for the malformed part, like the
+    sibling ``spec_*`` detectors. ``booley doctor`` reads this to surface specs
+    written before those entries were dropped.
+    """
+    customizations = spec.get("customizations")
+    vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
+    if not isinstance(vscode, dict):
+        return []
+    found: list[str] = []
+    extensions = vscode.get("extensions")
+    if isinstance(extensions, list):
+        found += [ext for ext in _RETIRED_EXTENSIONS if ext in extensions]
+    settings = vscode.get("settings")
+    if not isinstance(settings, dict):
+        return found
+    associations = settings.get("files.associations")
+    if isinstance(associations, dict):
+        found += [
+            f"files.associations {pattern}"
+            for pattern, lang in _RETIRED_FILE_ASSOCIATIONS.items()
+            if associations.get(pattern) == lang
+        ]
+    pin = settings.get("remote.extensionKind")
+    if isinstance(pin, dict):
+        found += [f"remote.extensionKind {ext}" for ext in _RETIRED_AGENT_EXTENSIONS if ext in pin]
+    return found
 
 
 def spec_installs_live_preview(spec: dict) -> bool:
     """Whether *spec* installs and safely configures the HTML report viewer.
 
-    Live Preview is delivered by VS Code from the devcontainer spec, not by the
-    Sandbox Image. Restored remote-port tunnels can retain Live Preview's
-    default ports without a live server, producing a blank embedded preview.
+    Live Preview is the VSIX bundled in the Sandbox Image and installed by
+    path from the devcontainer spec (:data:`LIVE_PREVIEW_VSIX`); a gallery ID
+    is drift, since an egress-locked Sandbox cannot install it. Restored
+    remote-port tunnels can retain Live Preview's default ports without a
+    live server, producing a blank embedded preview.
     The health check uses this detector to identify projects whose spec either
     predates rendered HTML reports or still restores stale forwarded ports.
     """
@@ -535,7 +566,7 @@ def spec_installs_live_preview(spec: dict) -> bool:
     settings = vscode.get("settings")
     return (
         isinstance(extensions, list)
-        and _LIVE_PREVIEW_EXTENSION in extensions
+        and _installs_only_bundled(extensions, _LIVE_PREVIEW_GALLERY_ID, LIVE_PREVIEW_VSIX)
         and isinstance(settings, dict)
         and all(settings.get(key) == value for key, value in _LIVE_PREVIEW_SETTINGS.items())
         and _post_attach_has(spec, live_preview_port_command())
@@ -725,15 +756,22 @@ def _build_remote_env(
     app: str,
     forward_oauth_token: bool,
     local_timezone: str,
+    egress: str,
 ) -> dict[str, str]:
     """Build the ``remoteEnv`` dict for :func:`build_devcontainer_spec`."""
-    remote_env = {
-        # Egress is forced through the dual-homed proxy on the --internal network.
-        "HTTP_PROXY": PROXY_URL,
-        "HTTPS_PROXY": PROXY_URL,
-        "http_proxy": PROXY_URL,
-        "https_proxy": PROXY_URL,
-        "NO_PROXY": "localhost,127.0.0.1",
+    remote_env = (
+        {
+            # Egress is forced through the dual-homed proxy on the --internal network.
+            "HTTP_PROXY": PROXY_URL,
+            "HTTPS_PROXY": PROXY_URL,
+            "http_proxy": PROXY_URL,
+            "https_proxy": PROXY_URL,
+            "NO_PROXY": "localhost,127.0.0.1",
+        }
+        if egress == "proxy"
+        else {}
+    )
+    remote_env |= {
         # Container-side MCP runs in interactive mode and finds config here.
         "BOOLEY_MCP_MODE": "interactive",
         "BOOLEY_DIR": BOOLEY_DIR_TARGET,
@@ -757,7 +795,7 @@ def _build_remote_env(
     return remote_env
 
 
-def _build_run_args(memory: str) -> list[str]:
+def _build_run_args(memory: str, egress: str) -> list[str]:
     """Build the ``runArgs`` list for :func:`build_devcontainer_spec`."""
     # --network wires egress; the label lets the reaper own this container.
     # --cap-drop ALL + no-new-privileges + a pids ceiling harden the runtime where
@@ -768,7 +806,7 @@ def _build_run_args(memory: str) -> list[str]:
     run_args = [
         "--init",
         "--network",
-        EGRESS_NETWORK,
+        EGRESS_NETWORK if egress == "proxy" else UNPROXIED_NETWORK,
         "--label",
         INTERACTIVE_ROLE_LABEL,
         "--cap-drop",
@@ -793,7 +831,7 @@ def _build_post_create_command(
 ) -> str | None:
     """Build the ``postCreateCommand`` string for :func:`build_devcontainer_spec`.
 
-    Runs once during creation, BEFORE the agent extension starts its first
+    Runs once during creation, BEFORE the agent CLI starts its first
     session — Claude Code reads ~/.claude.json only at session start, so both
     the config seed and MCP registration land before anything reads it. The
     seed MUST precede the registrar: incontainer_register's upsert_claude
@@ -926,12 +964,13 @@ def build_devcontainer_spec(
     mask_source: str = "",
     local_timezone: str = "",
     dashboard: bool = False,
+    egress: str = "proxy",
 ) -> dict:
     """Build the ``devcontainer.json`` dict for an Interactive Mode session.
 
     Args:
-        app: one of :data:`SUPPORTED_APPS`; selects the agent extension and the
-            auth-token target. ``"none"`` installs no agent extension.
+        app: one of :data:`SUPPORTED_APPS`; selects the auth-token target, seeds
+            and state volume. ``"none"`` configures no agent.
         image: the prebuilt Sandbox Image (``booley-sandbox`` by default; the
             published ref can be substituted by the caller).
         booley_dir_source: host-side mount source for ``.booley``.
@@ -992,6 +1031,12 @@ def build_devcontainer_spec(
         local_timezone: host IANA timezone name (or fixed ``+HH:MM`` fallback)
             passed into the runtime so human-visible timestamps use the user's
             local time rather than the container image's UTC default.
+        egress: host ``[sandbox] egress`` mode. ``"proxy"`` (the default)
+            joins :data:`EGRESS_NETWORK` with the proxy environment and leaves
+            the spec byte-identical to before the setting existed;
+            ``"unproxied"`` joins :data:`UNPROXIED_NETWORK`, sets no proxy
+            environment, and declares ``BOOLEY_EGRESS=unproxied`` in
+            ``containerEnv`` so bare ``docker exec`` calls see it too.
 
     The spec uses only Booley's fixed ``initializeCommand``.  It validates the
     host-issued spec and, when licensed EDA is granted, prepares the fixed relay
@@ -1032,10 +1077,10 @@ def build_devcontainer_spec(
     )
     mounts = _policy_state_mounts(app, project_id, mounts, credential_plan)
     identity_env = _git_environment(booley_dir_source, fixed_container_env)
-    remote_env = _build_remote_env(app, forward_oauth_token, local_timezone)
+    remote_env = _build_remote_env(app, forward_oauth_token, local_timezone, egress)
     _policy_remote_environment(remote_env, credential_plan)
     remote_env.update(identity_env)
-    run_args = _build_run_args(memory)
+    run_args = _build_run_args(memory, egress)
 
     spec: dict = {
         "name": f"Booley Interactive ({app})",
@@ -1069,6 +1114,8 @@ def build_devcontainer_spec(
         **identity_env,
         COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
     }
+    if egress == "unproxied":
+        spec["containerEnv"]["BOOLEY_EGRESS"] = "unproxied"
 
     seed_source = _creds_seed_target_for_app(app)
     post_create = _build_post_create_command(
@@ -1089,47 +1136,38 @@ def build_devcontainer_spec(
     if post_start:
         spec["postStartCommand"] = post_start
 
-    # The Waveform Viewer (ADR 0035, VaporView) rides along for every app —
+    # The Waveform Viewer (ADR 0078, VaporView) rides along for every app —
     # including "none": viewing a trace isn't tied to which app is attached —
     # so the customizations block is unconditional now.
-    extension = _vscode_extension_for_app(app)
     vscode: dict = {
-        "extensions": ([extension] if extension else [])
-        + [
-            _VAPORVIEW_EXTENSION,
-            _HDL_EXTENSION,
-            _TCL_EXTENSION,
-            _LIVE_PREVIEW_EXTENSION,
+        "extensions": [
+            # Builds bundled in the image, installed by path: the egress-locked
+            # Sandbox cannot reach a gallery, and VS Code pins a VSIX install
+            # so auto-update leaves it there.
+            _vaporview.BUNDLED_VSIX,
+            HDL_VSIX,
+            LIVE_PREVIEW_VSIX,
         ],
-        # VaporView's own manifest already declares extensionKind
-        # ["workspace"], so it is not pinned here.
         "settings": {
-            "vaporview.wcp.enabled": True,
-            "vaporview.wcp.port": _VAPORVIEW_WCP_PORT,
             **_VAPORVIEW_PRESENTATION_SETTINGS,
-            "files.associations": dict(_HIGHLIGHT_FILE_ASSOCIATIONS),
             **_LIVE_PREVIEW_SETTINGS,
             **_PYTHON_TERMINAL_SETTINGS,
         },
     }
     from booley.runtime.dashboard_extension import VSIX_PATH
 
-    if dashboard:
-        vscode["extensions"].append(VSIX_PATH)
+    # The image-local Booley Sandbox Integration extension hosts the `bwave gui` Viewer Bridge, so
+    # every Sandbox installs it; the attach protocol alone decides whether it
+    # also opens the Dashboard terminal.
+    vscode["extensions"].append(VSIX_PATH)
     vscode["settings"]["booley.dashboard.attachProtocol"] = 1 if dashboard else 0
-    if extension:
-        # Pin the agent extension workspace-side (reinforces the
-        # container-install above; enforcement is client-side).
-        vscode["settings"]["remote.extensionKind"] = {extension: ["workspace"]}
     spec["customizations"] = {"vscode": vscode}
 
-    # VaporView's WCP server does not auto-start from the settings above alone
-    # (the setting is application-scoped, so the container's Machine settings
-    # are ignored, and the extension activates lazily). The post-attach patcher
-    # fixes both in the installed manifest — attach is the first lifecycle point
-    # where that manifest exists on disk. Unconditional: viewing traces is not
+    # The residual VaporView patch (theme lookup, palette scope) edits the
+    # installed extension, so it runs at attach, the first lifecycle point
+    # where that extension exists on disk. Unconditional: viewing traces is not
     # tied to which agent app is attached, and the hook only fires when a UI
-    # client attaches, so headless Sandboxs skip it for free.
+    # client attaches, so headless Sandboxes skip it for free.
     spec["postAttachCommand"] = post_attach_command()
 
     return spec
@@ -1150,9 +1188,9 @@ def write_devcontainer(folder: Path, spec: dict) -> Path:
 
     Overwrites Booley's own generated spec (it is regenerated, treated read-only
     within a session). Refusing a *tracked* ``.devcontainer/`` is the caller's
-    job (``booley init`` / ``booley doctor``), not this writer's.
+    job (``booley init`` / ``booley doctor``), not this writer's. The write is
+    atomic and raises ``SymlinkTargetError`` for a symlinked spec file.
     """
     path = devcontainer_path(folder)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_devcontainer_json(spec), encoding="utf-8")
+    replace_regular_file(path, render_devcontainer_json(spec).encode("utf-8"))
     return path

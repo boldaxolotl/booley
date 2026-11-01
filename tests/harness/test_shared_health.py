@@ -296,7 +296,7 @@ def test_stale_observation_reaches_doctor_mcp_and_dashboard(project, monkeypatch
     # MCP retains full findings; the Dashboard shows compact counts and freshness.
     assert "Health: " + message in server._format_status_card([])
     assert tuple(line.text for line in dashboard.health_lines(root, directory)) == (
-        "Doctor: 1 FAIL · stale",
+        "Doctor: 1 FAIL · recheck due",
     )
     assert not (health.state_dir(directory) / "announcements.json").exists()
 
@@ -327,6 +327,12 @@ def test_dashboard_compact_line_preserves_verbose_brief(tmp_path, monkeypatch):
             "Doctor: 1 FAIL · 1 WARN",
         ),
         (clean, f"Automatic Doctor is clean. Full report: {transcript}", "Doctor: OK"),
+        # A due result keeps the verbose brief unchanged; only the compact line gains the marker.
+        (
+            replace(mixed, due="expired"),
+            f"Automatic Doctor found 1 FAIL, 1 WARN: broken machinery; review needed. Full report: {transcript}",
+            "Doctor: 1 FAIL · 1 WARN · recheck due",
+        ),
     ):
         monkeypatch.setattr(health, "read_health", lambda _, observed=snapshot: observed)
         assert health_presentation.brief_message(snapshot) == brief
@@ -335,3 +341,38 @@ def test_dashboard_compact_line_preserves_verbose_brief(tmp_path, monkeypatch):
         assert texts == (compact,), (
             "Dashboard compact format must preserve the separate verbose brief"
         )
+
+
+def test_report_read_survives_transient_sharing_error(project, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    root, directory = project
+    _write(root, directory, _result(Severity.WARN))
+    path = health.report_path(directory)
+    attempts = hold_opens(monkeypatch, {path: 1})
+    assert health.load_report(root) is not None
+    assert attempts[path] == 2
+
+
+def test_lasting_report_sharing_error_retries_before_reporting_unavailable(project, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    root, directory = project
+    _write(root, directory, _result(Severity.WARN))
+    path = health.report_path(directory)
+    attempts = hold_opens(monkeypatch, {path: 1000})
+    assert health.load_report(root) is None
+    assert attempts[path] > 1
+
+
+def test_upgrade_review_fingerprint_survives_transient_sharing_error(project, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    root, directory = project
+    review = directory / "runtime" / "upgrade_review.json"
+    review.parent.mkdir(exist_ok=True)
+    review.write_text('{"schema": 1, "reviewed_through": "1.0.0"}', encoding="utf-8")
+    _write(root, directory, _result(Severity.WARN))
+    attempts = hold_opens(monkeypatch, {review: 1})
+    assert health.read_health(root, now=NOW).due is None
+    assert attempts[review] == 2

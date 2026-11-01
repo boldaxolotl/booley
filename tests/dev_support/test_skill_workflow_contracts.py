@@ -109,6 +109,21 @@ def test_setup_grills_one_dependency_frontier_per_round():
     assert "one question at a time" not in contract.lower()
 
 
+def test_setup_greenfield_passes_stealth_request():
+    greenfield = _compact_skill_text("booley-setup", "steps/new-greenfield.md")
+    plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
+
+    # The hidden git-history answer reaches the scaffold command.
+    assert "`--stealth` when the user confirmed Yes/hidden" in greenfield
+    # Unattended setup keeps stealth off, so it must not pass the flag.
+    assert "unattended setup omits it" in greenfield
+    assert "`.booley/cores/`" in greenfield
+    # Step 0 no longer leaves scaffold-authored root cores in place when hidden.
+    assert "scaffold-authored root cores" in plan
+    assert "`.booley/cores/`" in plan
+    assert "stealth.scaffold-core-tracked" in plan
+
+
 def test_setup_preserves_upstream_verdict_sources_when_adapter_is_sufficient():
     plan = " ".join(_skill_text("booley-setup", "steps/0-plan.md").split()).replace("*", "")
     project_config = " ".join(
@@ -138,7 +153,6 @@ def test_setup_requires_explicit_memory_dispositions_and_synth_only_surrogates()
         assert required in plan
     for required in (
         "project-owned replacement seam",
-        "never create a universal write-to-read data path",
         "ordinary Verilog/SystemVerilog source",
         "paramtype: vlogdefine",
         "Do not introduce a manifest or custom file type",
@@ -156,13 +170,96 @@ def test_setup_requires_explicit_memory_dispositions_and_synth_only_surrogates()
     assert "flow_options.memory_contract" not in combined
 
 
+def _setup_config_step_text() -> str:
+    """Compact the setup Project Configuration step, dropping Markdown emphasis and code ticks."""
+    text = _skill_text("booley-setup", "steps/2-project-config.md")
+    return " ".join(text.replace("*", "").replace("`", "").split())
+
+
+def test_setup_surrogates_keep_registered_dependence_on_every_write_input():
+    project_config = _setup_config_step_text()
+
+    for banned in (
+        "universal write-to-read data path",
+        "independent retained scalar/packed state",
+    ):
+        assert banned not in project_config
+    for required in (
+        "through registers only",
+        "write data, address, write enables, and byte-enables",
+        "combining it bit-wise",
+        "never through a reduction across bits",
+        "Never create a combinational write-to-read arc",
+        "unpacked depth-by-width array",
+        "reset and zeroize behavior",
+    ):
+        assert required in project_config
+
+
+def test_setup_surrogate_validation_runs_no_pruning_probe():
+    project_config = _setup_config_step_text()
+
+    for required in (
+        "no-pruning probe",
+        "logical mode",
+        "no liberty",
+        "black box",
+        "standalone cost",
+        "flop counts match exactly",
+        "within \u00b12%",
+        "fix it and re-run",
+        "only from the address or from constants",
+        "not booley flow synth",
+        "--blackboxed-module <module>",
+        "primary guard",
+    ):
+        assert required in project_config
+    # Standalone cost is measured first; the plan-invalidation sentence must not govern probe failures.
+    assert (
+        project_config.index("does not scale with the original memory depth")
+        < project_config.index("invalidates the plan")
+        < project_config.index("no-pruning probe")
+    )
+
+
+def test_surrogate_reference_docs_state_registered_data_dependence():
+    root = Path(__file__).resolve().parents[2]
+    synth = " ".join((root / "docs/user/FLOW-SYNTH.md").read_text(encoding="utf-8").split())
+    for required in (
+        "through registers only",
+        "no combinational write-to-read arc",
+        "no-pruning probe",
+    ):
+        assert required in synth
+    template = (skills_dir() / "booley-setup" / "CORE_TEMPLATE.yaml").read_text(encoding="utf-8")
+    comments = " ".join(
+        line.strip().lstrip("#") for line in template.splitlines() if line.strip().startswith("#")
+    )
+    comments = " ".join(comments.split())
+    assert "through registers only" in comments
+    assert "no combinational write-to-read arc" in comments
+
+
+def test_shared_glossary_defines_memory_timing_surrogate():
+    root = Path(__file__).resolve().parents[2]
+    glossary = (root / "docs/GLOSSARY.md").read_text(encoding="utf-8")
+    active = " ".join(glossary.split("## Retired and ambiguous terminology", 1)[0].split())
+    for required in (
+        "**Memory Timing Surrogate**:",
+        "synth-only define",
+        "data dependence",
+        "_Avoid_: RAM stub, fake RAM",
+    ):
+        assert required in active
+
+
 def test_heal_has_bounded_doctor_repair_and_verification_loop():
     skill = _skill_text("booley-heal")
 
     for required in (
         "zero `FAIL` findings",
         "zero active `WARN` findings",
-        "Doctor's `fix:` hint",
+        "Doctor's `→` fix hint",
         "from booley.runtime.paths import troubleshooting_path",
         "booley doctor --deep",
         "after 12 remediation passes",
@@ -188,6 +285,24 @@ def test_heal_has_bounded_doctor_repair_and_verification_loop():
     positions = [normalized.index(step) for step in ordered_steps]
     assert positions == sorted(positions)
     assert "instead of rerunning the whole deep matrix after each edit" in skill
+
+
+def test_doctor_readers_use_glyph_vocabulary():
+    root = Path(__file__).resolve().parents[2]
+    skills = (
+        root / "src/booley/data/skills/booley-setup/steps/4-doctor.md",
+        root / "src/booley/data/skills/booley-heal/SKILL.md",
+    )
+    user_docs = (root / "docs/user/DOCTOR.md", root / "docs/user/SETUP.md")
+    stale = ("[XX]", "[!!]", "[ii]", "[--]", "`fix:`", "`[sim.trace-unavailable:")
+    for reader in (*skills, *user_docs):
+        text = reader.read_text(encoding="utf-8")
+        assert not [marker for marker in stale if marker in text], reader.name
+    for reader in skills:
+        text = reader.read_text(encoding="utf-8")
+        assert "`→`" in text, reader.name
+        assert "`✗`" in text, reader.name
+        assert "`WARN` becomes `WAIVED`" not in text, reader.name
 
 
 def test_setup_reserves_deep_doctor_for_one_final_gate():
@@ -541,7 +656,7 @@ def _setup_row_sections() -> dict[str, str]:
 def test_setup_plan_rows_have_plain_label_and_explanation():
     template = _skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md")
     rows = _decision_rows(template)
-    assert set(rows) == {*(str(i) for i in range(1, 24)), "10a"}
+    assert set(rows) == {*(str(i) for i in range(1, 22)), "23", "10a"}
     for row in rows.values():
         assert len(row) == 9
         assert all(row[1:4]), f"missing label, explanation, or internal key: {row}"

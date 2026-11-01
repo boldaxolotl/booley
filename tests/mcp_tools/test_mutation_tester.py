@@ -25,7 +25,7 @@ from booley.flows.sim.backends.cocotb import _parse_args as parse_cocotb_run_arg
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.target_tests import NoRunnableTestsError
 from booley.fusesoc import fusesoc_registry
-from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.specialists.mutation_tester import (
     MutationResult,
     MutationRunPlan,
@@ -43,6 +43,7 @@ from booley.specialists.mutation_tester import (
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
 from tests.conftest import require_symlinks, symlink_or_skip
+from tests.target_test_support import write_two_core_sim_project
 
 # The parameters the fake ``.core`` Target declares; a test may add plusargs.
 _TARGET_PARAMETERS: dict[str, Any] = {}
@@ -215,6 +216,7 @@ def test_creator_provider_failure_has_durable_debug_traceback(
 
 def test_run_rejects_target_with_every_test_skipped(tmp_path: Path, monkeypatch) -> None:
     endpoint = _make_endpoint(tmp_path, monkeypatch)
+    _patch_resolve_target(monkeypatch)
     with (
         patch.object(endpoint, "_validate_scope_against_target", return_value=None),
         patch.object(endpoint, "_validate_target_runner"),
@@ -228,6 +230,115 @@ def test_run_rejects_target_with_every_test_skipped(tmp_path: Path, monkeypatch)
 
     assert result.exit_code == EXIT_ERROR
     assert "no runnable tests" in result.report_text
+
+
+def test_two_keys_for_one_target_refuse_naming_both(tmp_path: Path, monkeypatch) -> None:
+    write_two_core_sim_project(
+        tmp_path, '["y#sim"]\ntests = ["one"]\n["vendor:b:y#sim"]\ntests = ["two"]\n'
+    )
+    endpoint = _make_endpoint(tmp_path, monkeypatch, target="y#sim")
+
+    result = endpoint._apply_campaign_defaults()
+
+    assert result is not None and result.exit_code == EXIT_ERROR
+    assert "[vendor:b:y#sim] and [y#sim]" in result.report_text
+
+
+_SETTINGS = {"scope": ["x.v"], "total": 7, "min_detected": 5}
+_CORE_A_FIRST = "vendor:a:x:1.0#first"
+_TWO_CORE_TESTS = (
+    f'["{_CORE_A_FIRST}"]\ntests = ["one"]\n["vendor:b:y:1.0#first"]\ntests = ["one"]\n'
+)
+
+
+def _two_core_endpoint(
+    tmp_path: Path,
+    monkeypatch,
+    criteria: dict[str, dict[str, Any]],
+    *,
+    target: str = _CORE_A_FIRST,
+    scope: str = "x.v",
+    strict: bool = False,
+) -> MutationTesterSpecialist:
+    """Endpoint on a two-core Project (both declare ``first``) holding *criteria*."""
+    write_two_core_sim_project(tmp_path, _TWO_CORE_TESTS, target="first")
+    endpoint = _make_endpoint(tmp_path, monkeypatch, target=target, scope=scope, count=None)
+    endpoint.state.init_criteria(
+        dict.fromkeys(criteria, False), criterion_params=criteria, strict=strict
+    )
+    return endpoint
+
+
+@pytest.mark.parametrize("scope", ["x.v", ""], ids=["explicit-scope", "criterion-scope"])
+def test_qualified_target_applies_criterion_settings(
+    tmp_path: Path, monkeypatch, scope: str
+) -> None:
+    """``--target vlnv#name`` reads the Target-name criterion, not a core-bound sibling."""
+    endpoint = _two_core_endpoint(
+        tmp_path,
+        monkeypatch,
+        {
+            "mutation_score_first": dict(_SETTINGS),
+            "mutation_score_otherfirst": {
+                "target": "vendor:b:y:1.0#first",
+                "scope": ["y.v"],
+                "total": 3,
+            },
+        },
+        scope=scope,
+    )
+
+    assert endpoint._apply_campaign_defaults() is None
+    assert (endpoint.args.scope, endpoint.args.count, endpoint.args.min_detected) == (
+        "x.v",
+        7,
+        5,
+    )
+
+
+@pytest.mark.parametrize("case", ["exact-key", "other-core-binding"])
+def test_qualified_target_criterion_resolution_guards(
+    tmp_path: Path, monkeypatch, case: str
+) -> None:
+    """The exact spelling still wins; a criterion bound to another core is skipped."""
+    if case == "exact-key":
+        endpoint = _two_core_endpoint(
+            tmp_path,
+            monkeypatch,
+            {
+                f"mutation_score_{_CORE_A_FIRST}": {"target": "same", **_SETTINGS},
+                "mutation_score_first": {"scope": ["x.v"], "total": 3},
+            },
+            strict=True,
+        )
+        expected = ("x.v", 7, 5)
+    else:
+        endpoint = _two_core_endpoint(
+            tmp_path,
+            monkeypatch,
+            {"mutation_score_first": {"target": _CORE_A_FIRST, **_SETTINGS}},
+            target="vendor:b:y:1.0#first",
+            scope="y.v",
+            strict=True,
+        )
+        expected = ("y.v", 10, None)
+
+    assert endpoint._apply_campaign_defaults() is None
+    assert (endpoint.args.scope, endpoint.args.count, endpoint.args.min_detected) == expected
+
+
+def test_qualified_target_missing_scope_names_target_criterion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The missing-scope error names the Target-name criterion, not the raw selector."""
+    endpoint = _two_core_endpoint(
+        tmp_path, monkeypatch, {"mutation_score_first": {"total": 7}}, scope=""
+    )
+
+    result = endpoint._apply_campaign_defaults()
+
+    assert result is not None and result.exit_code == EXIT_FAILURE
+    assert "mutation_score_first must declare scope" in result.report_text
 
 
 def _sample_creator_json(specs: list[MutationSpec]) -> str:
@@ -761,6 +872,7 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
             toplevel="tb",
             eda_tool=eda_tool,
             configured_eda_tool=eda_tool,
+            files=(),
         )
         return PreparedSimulationBuild(
             target=handle.selector,
@@ -874,7 +986,7 @@ def test_elab_uses_shared_preparer_and_its_exact_command(tmp_path: Path, monkeyp
     prepared = PreparedSimulationBuild(
         target="default",
         target_identity=handle.identity,
-        resolved=SimpleNamespace(build_root=build_dir / "nested"),
+        resolved=SimpleNamespace(build_root=build_dir / "nested", files=()),
         work_root=build_dir,
         build_root=build_dir / "nested",
         eda_tool="verilator",
@@ -971,7 +1083,7 @@ def test_mutant_build_uses_managed_compiler_cache(tmp_path: Path, monkeypatch):
         return PreparedSimulationBuild(
             target=handle.selector,
             target_identity=handle.identity,
-            resolved=SimpleNamespace(build_root=Path(build_root), toplevel="tb"),
+            resolved=SimpleNamespace(build_root=Path(build_root), toplevel="tb", files=()),
             work_root=Path(build_root),
             build_root=Path(build_root),
             eda_tool="verilator",
@@ -1196,6 +1308,7 @@ def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch
 def test_target_suite_accepts_vlnv_qualified_target(tmp_path: Path, monkeypatch):
     _write_tests_toml(tmp_path, '[default]\ntests = ["test_a", "test_b"]\n')
     endpoint = _make_endpoint(tmp_path, monkeypatch)
+    _patch_resolve_target(monkeypatch)
     assert endpoint._target_test_suite("lib:ip:core#default").tests == (
         "test_a",
         "test_b",
@@ -1760,6 +1873,7 @@ def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str | Non
                 {
                     "selector": target,
                     "name": target,
+                    "identity": f"::{target}:0#{target}",
                     "vlnv": f"::{target}:0",
                     "project_root": Path(work_dir),
                     "cocotb_module": module,
@@ -2176,3 +2290,68 @@ def test_creator_boundary_uses_exact_tb_files_in_shared_directory(tmp_path):
     prompt = endpoint._build_creator_prompt()
     assert "shared/main.cpp" in prompt
     assert "testbench source/include directory" not in prompt
+
+
+@pytest.mark.parametrize("cocotb", [False, True])
+@pytest.mark.parametrize("cached", [False, True])
+def test_mutation_report_records_resolved_simulator(tmp_path, monkeypatch, cocotb, cached):
+    import json
+
+    tool = "verilator"
+
+    _patch_cocotb_target(monkeypatch, module="tb_test" if cocotb else None, eda_tool=tool)
+    endpoint = _make_endpoint(tmp_path, monkeypatch, target="default")
+    build = tmp_path / "build"
+    build.mkdir()
+    if cached:
+        (build / ".booley_edalize_eda_tool").write_text(tool)
+    if cached:
+        monkeypatch.setattr(
+            endpoint,
+            "_pinned_build",
+            lambda *_args: SimpleNamespace(rel=".", runtime_inputs=()),
+        )
+        monkeypatch.setattr(
+            endpoint,
+            "_pinned_sim_command",
+            lambda *_args, **_kwargs: ([tool], SimpleNamespace(environment={})),
+        )
+        monkeypatch.setattr(
+            "booley.specialists.mutation_tester._target_environment", lambda *_args: {}
+        )
+        monkeypatch.setattr(
+            "booley.specialists.mutation_tester.launch_environment", lambda *_args: {}
+        )
+    else:
+        prepared = SimpleNamespace(
+            eda_tool=tool,
+            build_root=build,
+            make_argv=("fake-build",),
+            resolved=SimpleNamespace(files=()),
+        )
+        monkeypatch.setattr(endpoint, "_resolve_elab_target", lambda *_args: (object(), prepared))
+        monkeypatch.setattr(
+            "booley.specialists.mutation_tester.simulation_build_environment", lambda *_args: {}
+        )
+    monkeypatch.setattr(
+        "booley.specialists.mutation_tester.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    if cached:
+        endpoint._run_sim_pinned("default", tmp_path, build, "tb")
+    else:
+        endpoint._run_elab("default", tmp_path, build)
+    path = endpoint.write_report(McpToolResult(report_text="mutation result"))
+    assert json.loads(path.read_bytes()).get("eda_tool") == tool
+
+
+def test_mutation_preflight_alone_does_not_report_eda_tool(tmp_path, monkeypatch):
+    import json
+
+    _patch_cocotb_target(monkeypatch, module="tb_test", eda_tool="verilator")
+    endpoint = _make_endpoint(tmp_path, monkeypatch, target="default")
+    endpoint.cocotb_target("default", tmp_path)
+    endpoint._validate_target_runner("default", tmp_path)
+    report = json.loads(endpoint.write_report(McpToolResult()).read_bytes())
+    assert "eda_tool" not in report
+    assert "eda_tools" not in report

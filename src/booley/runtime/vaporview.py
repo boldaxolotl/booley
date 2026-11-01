@@ -9,13 +9,21 @@ from collections.abc import Callable, Iterable
 from enum import Enum
 from pathlib import Path
 
+from booley.core.boundary import as_dict
+from booley.runtime import vscode_server
+
 EXTENSION_ID = "lramseyer.vaporview"
-VERIFIED_VERSION = "1.5.4"
-RELEASES_URL = "https://github.com/Lramseyer/vaporview/releases"
+VERIFIED_VERSION = "1.6.0"
+# The Sandbox Image bundles this exact official build (Dockerfile.base keeps its
+# VAPORVIEW_VERSION in lockstep with VERIFIED_VERSION) and the generated spec
+# installs it by path. A gallery ID cannot work there: an egress-locked Sandbox
+# relays gallery installs to the client, which cannot resolve a versioned ID.
+# VS Code records a VSIX install as pinned, so auto-update never replaces it.
+BUNDLED_VSIX = f"/usr/local/libexec/booley/vaporview-{VERIFIED_VERSION}.vsix"
 EDITOR_PROBE_TIMEOUT_SECONDS = 30
 
-# Stable human-facing colors backed by VaporView custom palette slots. The
-# extension's named WCP colors omit red and its theme-derived indices are not
+# Stable human-facing colors backed by VaporView custom palette slots. Its
+# built-in palette has no red and its theme-derived indices are not
 # deterministic, so every adapter consumes these settings and indices from one
 # source of truth.
 PRESENTATION_COLORS = {
@@ -45,14 +53,113 @@ def session_home() -> Path:
 
 
 def find_manifests(home: Path) -> list[Path]:
-    """Return installed VaporView manifests from the VS Code remote registry."""
-    root = home / ".vscode-server" / "extensions"
-    return sorted(root.glob(f"{EXTENSION_ID}-*/package.json"))
+    """Return installed VaporView manifests from every VS Code server root."""
+    return [
+        manifest
+        for root in vscode_server.extension_dirs(home)
+        for manifest in sorted(root.glob(f"{EXTENSION_ID}-*/package.json"))
+    ]
+
+
+def installed_versions(home: Path) -> list[str] | None:
+    """Return the sorted versions of every live VaporView install, or None if unknown.
+
+    Each extension root's ``extensions.json`` is VS Code's own registry and is
+    authoritative: after a downgrade the replaced build's directory stays on
+    disk, unmarked, until the next VS Code start. Roots without that file fall
+    back to the directories VS Code has not marked obsolete. Any unreadable
+    registry or manifest makes the answer unknown rather than partial, as does
+    a home with no VS Code server root at all.
+    """
+    roots = vscode_server.extension_dirs(home)
+    if not roots:
+        return None
+    versions: set[str] = set()
+    for root in roots:
+        root_versions = _registry_versions(root)
+        if root_versions is None:
+            return None
+        versions |= root_versions
+    return sorted(versions)
+
+
+def _registry_versions(root: Path) -> set[str] | None:
+    """Collect live VaporView versions from one extension root."""
+    try:
+        source = (root / "extensions.json").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _directory_versions(root)
+    except OSError:
+        return None
+    try:
+        entries = json.loads(source)
+    except ValueError:
+        return None
+    if not isinstance(entries, list):
+        return None
+    versions: set[str] = set()
+    for entry in entries:
+        fields = as_dict(entry, default={})
+        identifier = as_dict(fields.get("identifier"), default={})
+        ext_id = identifier.get("id")
+        if not isinstance(ext_id, str) or ext_id.lower() != EXTENSION_ID:
+            continue
+        version = fields.get("version")
+        if not isinstance(version, str):
+            return None
+        versions.add(version)
+    return versions
+
+
+def _directory_versions(root: Path) -> set[str] | None:
+    """Collect VaporView manifest versions from non-obsolete extension directories."""
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return None
+    obsolete = _obsolete_extensions(root)
+    if obsolete is None:
+        return None
+    versions: set[str] = set()
+    for entry in entries:
+        name = entry.name.lower()
+        if not name.startswith(f"{EXTENSION_ID}-") or name in obsolete:
+            continue
+        try:
+            payload = json.loads((entry / "package.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        version = payload.get("version") if isinstance(payload, dict) else None
+        if not isinstance(version, str):
+            return None
+        versions.add(version)
+    return versions
+
+
+def is_vaporview_entry(entry: object) -> bool:
+    """Whether a devcontainer ``extensions`` entry requests VaporView in any form.
+
+    Matches a gallery ID at any version (``lramseyer.vaporview``,
+    ``lramseyer.vaporview@1.6.0``) and a bundled VSIX path for any version, so
+    drift detection can insist that :data:`BUNDLED_VSIX` is the only one.
+    """
+    if not isinstance(entry, str):
+        return False
+    if entry.lower().partition("@")[0] == EXTENSION_ID:
+        return True
+    name = entry.rpartition("/")[2].lower()
+    # Any VSIX file name mentioning VaporView, including Marketplace-style
+    # ``lramseyer.vaporview-1.6.0.vsix``.
+    return "vaporview" in name and name.endswith(".vsix")
 
 
 def probe_home(home: Path) -> ExtensionState:
-    """Inspect a VS Code remote extension registry without guessing on I/O failure."""
-    root = home / ".vscode-server" / "extensions"
+    """Inspect every VS Code server root's registry; disagreeing roots are unknown."""
+    return aggregate_states(_probe_registry(root) for root in vscode_server.extension_dirs(home))
+
+
+def _probe_registry(root: Path) -> ExtensionState:
+    """Inspect one extension registry without guessing on I/O failure."""
     try:
         entries = list(root.iterdir())
     except OSError:
@@ -139,17 +246,16 @@ def aggregate_states(states: Iterable[ExtensionState]) -> ExtensionState:
 
 
 def install_guidance(*, editor: str = "code") -> str:
-    """Explain online and offline installation into the attached remote window."""
+    """Explain installing the image-bundled build into the attached remote window."""
     return (
-        "Install it in the attached remote window:\n"
-        f"  {editor} --install-extension {EXTENSION_ID}\n"
-        "If the container cannot reach the Marketplace, download "
-        f"vaporview-{VERIFIED_VERSION}.vsix from the official releases page on a "
-        f'networked host ({RELEASES_URL}), then run "Extensions: Install from VSIX..." in '
-        "the attached remote window. Booley's attach watcher patches a late install "
-        'automatically; afterward run "Developer: Reload Window". Verify in the remote '
-        "terminal with:\n"
+        "Install the build bundled in the Sandbox Image from the attached remote "
+        "window's terminal (no network needed):\n"
+        f"  {editor} --install-extension {BUNDLED_VSIX}\n"
+        "Booley's attach watcher patches a late install automatically; afterward run "
+        '"Developer: Reload Window". Verify in the remote terminal with:\n'
         f"  {editor} --list-extensions --show-versions\n"
-        f"which must list {EXTENSION_ID}@{VERIFIED_VERSION}. A host CLI without the remote "
-        "window selected may install locally instead of into the container."
+        f"which must list {EXTENSION_ID}@{VERIFIED_VERSION}. If {BUNDLED_VSIX} is "
+        "missing, the Sandbox Image predates it: refresh the Sandbox. A host CLI "
+        "without the remote window selected may install locally instead of into "
+        "the container."
     )

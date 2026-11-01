@@ -32,6 +32,7 @@ from booley.flows.sim.campaign import (
 )
 from booley.flows.sim.campaign.codec import (
     RECORD_MAX_BYTES,
+    RESULT_SCHEMA,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
@@ -49,8 +50,6 @@ from booley.flows.sim.campaign.coordinator import (
     SimulationCampaignCancellationError,
     WorkExecutionRequest,
     _acceptance_ready,
-    _prerequisite_facts,
-    collected_result_facts,
 )
 from booley.flows.sim.campaign.facts import AcceptanceFacts
 from booley.flows.sim.campaign.model import SimulationResult, create_simulation_campaign_plan
@@ -60,15 +59,13 @@ from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
+from booley.runtime.booley_dir import reset_cache
 from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR, EndpointOutcome
-from booley.runtime.execution_records import ExecutionId, atomic_write_json, execution_paths
+from booley.runtime.execution_records import ExecutionId
 from tests.criteria.ledger_support import FixtureRecorder
-from tests.flows.sim.test_campaign_codec_golden import _simulation_result
 from tests.flows.sim.test_campaign_phase3_adversarial import _completed
 from tests.flows.sim.test_campaign_phase3_integrity import _admission, _manifest_for
-from tests.flows.sim.test_campaign_phase5_adversarial import _retain_v3_before_reference
-from tests.flows.sim.test_coverage_invocation import project
-from tests.flows.sim.test_coverage_transaction import NativeExecution
+from tests.fusesoc_test_support import symlinked_booley_dir
 
 _STAMP = "2026-09-22T00:00:00Z"
 
@@ -145,7 +142,7 @@ class _NoEdaExecutor:
                 "owned": False,
             },
             "child_execution_id": request.child_execution_id,
-            "child_entry_sha256": request.child_entry_sha256,
+            "child_entry_sha256": None,
             "pre_sim_build_access": workload["pre_sim_build_access"],
             "policy": {"timeout_seconds": None, "no_kill": False, "diagnostic": False},
             "started_at": _STAMP,
@@ -223,8 +220,9 @@ class _NoEdaExecutor:
             "detail": {"reason": "synthetic no-EDA build failure"},
             "cycle_count": None,
         }
+        observation["test_run"] = request.work_item["test_runs"][0]["name"]
         document = {
-            "$schema": "booley.simulation-result/v1",
+            "$schema": RESULT_SCHEMA,
             **common,
             "attempt_id": request.attempt_id,
             "attempt_ordinal": request.attempt_ordinal,
@@ -567,21 +565,6 @@ def test_campaign_previews_expose_the_complete_public_contract(tmp_path: Path) -
     assert resumed.manifest == manifest.document
 
 
-def test_resume_inspection_rejects_manifest_replaced_after_validation(tmp_path: Path) -> None:
-    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "campaign")
-    store.publish_manifest(_manifest_for(("smoke",)))
-    validated = _resume_request(store, tmp_path).validated
-
-    store.manifest_path.unlink()
-    store.publish_manifest(_manifest_for(("replacement",)))
-
-    with pytest.raises(
-        SimulationCampaignIntegrityError,
-        match="changed after resume validation",
-    ):
-        SimulationCampaign().inspect_resume(validated)
-
-
 @pytest.mark.parametrize("cancelled", [False, True])
 def test_resume_endpoint_refreshes_recovery_after_failure(
     tmp_path: Path,
@@ -600,7 +583,7 @@ def test_resume_endpoint_refreshes_recovery_after_failure(
     invocation = tmp_path / "reports" / "sim" / "2"
     invocation.mkdir(parents=True)
     flow = SimulateFlow()
-    flow.context._args = SimpleNamespace(report_dir=tmp_path / "reports", work_dir=project)
+    flow._args = SimpleNamespace(report_dir=tmp_path / "reports", work_dir=project)
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: invocation)
 
     def fail_after_attempt(*_args: object) -> None:
@@ -610,7 +593,7 @@ def test_resume_endpoint_refreshes_recovery_after_failure(
         raise OSError("failed")
 
     monkeypatch.setattr(flow, "_execute_validated_resume", fail_after_attempt)
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._execute_campaign_resume(validated, _admission(), observed)
 
     assert result.exit_code == (EXIT_CANCELLED if cancelled else EXIT_ERROR)
@@ -646,6 +629,7 @@ def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> Non
     assert first_executor.calls == 1
     assert first_outcome.recovery.pending == ()
 
+    manifest_bytes = store.manifest_path.read_bytes()
     second_executor = _NoEdaExecutor()
     second_outcome = SimulationCampaign(second_executor).run(
         ResumeCampaignRunRequest(
@@ -653,7 +637,7 @@ def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> Non
             preview_request.current_plan,
             project,
             None,
-            CampaignPolicy(),
+            CampaignPolicy(timeout_seconds=42, build_timeout_seconds=17, result_verbosity="full"),
             tmp_path / "reports" / "sim" / "3",
             _admission(),
         )
@@ -661,6 +645,8 @@ def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> Non
 
     assert second_executor.calls == 0
     assert second_outcome.recovery.completed == first_outcome.recovery.completed
+
+    assert store.manifest_path.read_bytes() == manifest_bytes
 
 
 def test_acceptance_readiness_requires_strict_superset_grade() -> None:
@@ -694,7 +680,7 @@ def test_acceptance_readiness_requires_strict_superset_grade() -> None:
 
 
 def _acceptance_endpoint(state, recorder, invocation):
-    endpoint = SimulateFlow().context
+    endpoint = SimulateFlow()
     endpoint.configure_flow_execution(recorder)
     endpoint._args = SimRequest(target="sim", report_dir=invocation.parents[1])
     endpoint._state = state
@@ -725,54 +711,6 @@ def test_acceptance_result_reference_hashes_exact_stored_bytes(tmp_path: Path) -
     raw = (invocation / reference["path"]).read_bytes()  # type: ignore[index]
     assert raw.endswith(b"\n")
     assert reference["sha256"] == "sha256:" + hashlib.sha256(raw).hexdigest()  # type: ignore[index]
-
-
-def test_migrated_v1_result_references_hash_original_stored_bytes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    invocation = tmp_path / "reports/sim/1"
-    store_root = invocation / "targets/sim/campaign"
-    result_path = store_root / "work-items/0001/result.json"
-    result_path.parent.mkdir(parents=True)
-    document = json.loads(_simulation_result("completed", schema=1))
-    document["observations"][0]["cycle_count"] = 12
-    raw = canonical_json_bytes(document)
-    result_path.write_bytes(raw)
-    migrated = decode_simulation_result(raw)
-    store = SimpleNamespace(
-        root=store_root,
-        work_item_directory=lambda _work_item_id: result_path.parent,
-    )
-    recovered = SimpleNamespace(work_item_id="item:0000:0123456789abcdef", result=migrated)
-    recovery = SimpleNamespace(items=(recovered,))
-    item = {"role": "functional", "revision": "current", "target": "sim"}
-
-    consumed, _observations = collected_result_facts(
-        store, recovery, {recovered.work_item_id: item}
-    )
-    assert consumed[0]["result"]["bytes"] == len(raw)
-    assert consumed[0]["result"]["sha256"] == _digest(raw)
-
-    entry = {
-        "manifest": {"path": "targets/base/campaign/manifest.json"},
-        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-        "target": "base",
-        "work_item_id": recovered.work_item_id,
-    }
-    manifest = SimpleNamespace(document={"prerequisites": (entry,)})
-    monkeypatch.setattr("booley.flows.sim.campaign.coordinator.CampaignStore", lambda _root: store)
-    monkeypatch.setattr(
-        "booley.flows.sim.campaign.coordinator._authenticate_prerequisite_manifest",
-        lambda *_args: (manifest, "smoke", None),
-    )
-    monkeypatch.setattr(
-        "booley.flows.sim.campaign.coordinator._selected_prerequisite_result",
-        lambda *_args: recovered,
-    )
-
-    prerequisite = _prerequisite_facts(store, manifest, names_test_runs=False)[0]["result"]
-    assert prerequisite["bytes"] == len(raw)
-    assert prerequisite["sha256"] == _digest(raw)
 
 
 def _ledger_bytes(log_dir: Path) -> dict[Path, bytes]:
@@ -939,19 +877,25 @@ def test_named_campaign_acceptance_persists_criterion_and_timeline(
 
 
 def _retained_invocation(
-    tmp_path: Path, *, reports: Path | None = None
+    tmp_path: Path,
+    *,
+    reports: Path | None = None,
+    booley_dir: Path | None = None,
 ) -> tuple[Path, Path, CampaignStore]:
     source = tmp_path / "source"
     source.mkdir()
     (source / ".booley").mkdir()
-    complete = _completed(source)
+    source_store = _completed(source).store
     project_data = tmp_path / "project-data"
     reports = reports or project_data / ".runtime" / "flow-reports"
     invocation = reports / "sim" / "1"
     target = invocation / "targets" / "sim"
     target.mkdir(parents=True)
-    shutil.move(str(complete.store.root), target / "campaign")
-    store = CampaignStore(target / "campaign")
+    shutil.move(str(source_store.root), target / "campaign")
+    # Reports under a symlinked Booley Directory entry need the store to follow it (#2191).
+    store = CampaignStore(
+        target / "campaign", **({"booley_dir": booley_dir} if booley_dir else {})
+    )
     store.regenerate_summary()
     manifest = store.load_manifest().document
     manifest_target = manifest["target"]
@@ -987,124 +931,148 @@ def _retained_invocation(
     return reports, project_data, store
 
 
-def _publish_retired_child(
-    project_data: Path, store: CampaignStore, *, digit: str = "1"
-) -> ExecutionId:
-    execution_id = ExecutionId(digit * 32)
-    attempt_id = f"{digit * 8}-{digit * 4}-4{digit * 3}-8{digit * 3}-{digit * 12}"
-    entry = {
-        "$schema": "booley.simulation-campaign-child-entry/v1",
-        "child_execution_id": execution_id,
-        "parent_execution_id": "2" * 32,
-        "campaign_id": str(store.load_manifest().document["campaign_id"]),
-        "manifest_path": str(store.manifest_path.resolve()),
-        "manifest_sha256": store.manifest_sha256(),
-        "work_item_id": "item:0000:0000000000000000",
-        "attempt_id": attempt_id,
-        "attempt_ordinal": 1,
-        "attempt_relative_path": "work-items/0001-0000000000000000/attempts/0001-" + attempt_id,
-        "runtime_context_sha256": "sha256:" + "4" * 64,
-    }
-    entry_raw = canonical_json_bytes(entry)
-    terminal = {
-        "schema_version": 1,
-        "state": "terminal",
-        "runtime_identity": None,
-        "supervisor": None,
-        "leader": None,
-        "exit_code": 0,
-        "tree_terminal": True,
-        "terminal_cause": "completed",
-        "updated_at": "2026-09-22T00:00:00Z",
-    }
-    terminal_raw = canonical_json_bytes(terminal)
-    retirement = {
-        "$schema": "booley.simulation-campaign-child-retirement/v1",
-        "child_execution_id": execution_id,
-        "entry_sha256": "sha256:" + hashlib.sha256(entry_raw).hexdigest(),
-        "execution_terminal_sha256": "sha256:" + hashlib.sha256(terminal_raw).hexdigest(),
-        "lease_id": None,
-        "token_absent": True,
-        "terminal_cause": "completed",
-    }
-    retirement_raw = canonical_json_bytes(retirement)
-    project_children = project_data / ".runtime" / "campaign-child-executions"
-    campaign_children = store.root / "child-executions"
-    for root in (project_children, campaign_children):
-        (root / "entries").mkdir(parents=True, exist_ok=True)
-        (root / "retired").mkdir(parents=True, exist_ok=True)
-        (root / "entries" / f"{execution_id}.json").write_bytes(entry_raw)
-        (root / "retired" / f"{execution_id}.json").write_bytes(retirement_raw)
-    atomic_write_json(execution_paths(execution_id, booley_dir=project_data).record, terminal)
-    return execution_id
-
-
-def test_complete_campaign_pruning_releases_exact_project_child_pair(
-    tmp_path: Path,
+@pytest.mark.parametrize("layout", ["runtime", "flow-reports", "below"])
+def test_prune_follows_only_the_booley_dir_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str
 ) -> None:
-    reports, project_data, store = _retained_invocation(tmp_path)
-    execution_id = _publish_retired_child(project_data, store)
+    """#2191: pruning follows a symlinked ``.booley`` entry and refuses a link below it."""
+    project = tmp_path / "project"
+    project.mkdir()
+    external = symlinked_booley_dir(project, tmp_path / "external-booley")
+    entry = project / ".booley"
+    if layout == "below":
+        # Reports live physically elsewhere; ``.runtime`` below the entry is the link.
+        real_runtime = tmp_path / "real-runtime"
+        real_runtime.mkdir()
+        (external / ".runtime").symlink_to(real_runtime, target_is_directory=True)
+        reports, _unused, _store = _retained_invocation(
+            tmp_path, reports=real_runtime / "flow-reports"
+        )
+        reports = entry / ".runtime" / "flow-reports"
+    else:
+        reports_dir = (
+            entry / ".runtime" / "flow-reports" if layout == "runtime" else entry / "flow-reports"
+        )
+        reports, _unused, _store = _retained_invocation(
+            tmp_path, reports=reports_dir, booley_dir=entry
+        )
+    if layout == "flow-reports":
+        # The retention CLI runs from the Project; ownership inference reads the cwd.
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
+        monkeypatch.chdir(project)
+        reset_cache()
 
+    if layout == "below":
+        with pytest.raises((CampaignRetentionError, SimulationCampaignIntegrityError)):
+            prune_invocation(reports, 1)
+        assert (reports / "sim/1").is_dir()
+        return
     prune_invocation(reports, 1)
 
-    project_children = project_data / ".runtime" / "campaign-child-executions"
-    assert not (project_children / "entries" / f"{execution_id}.json").exists()
-    assert not (project_children / "retired" / f"{execution_id}.json").exists()
-    assert list((reports / "sim" / ".pruned-1").iterdir()) == []
+    assert (reports / "sim" / ".pruned-1").is_dir()
 
 
-def test_detached_copy_pruning_never_releases_project_child_pair(tmp_path: Path) -> None:
-    reports, project_data, store = _retained_invocation(tmp_path)
-    execution_id = _publish_retired_child(project_data, store)
-    detached_reports = tmp_path / "copy-project/.runtime/flow-reports"
-    detached = detached_reports / "sim" / "1"
-    detached.parent.mkdir(parents=True)
-    shutil.copytree(reports / "sim" / "1", detached)
+def _interrupt_latest_attempt(
+    tmp_path: Path, reports: Path, store: CampaignStore, lane_id: str | None = None
+) -> tuple[Path, dict[str, object]]:
+    """Turn the retained Campaign's only item into an interrupted one with an owned run directory.
 
-    prune_invocation(detached_reports, 1, project_data=project_data)
+    Returns the owned run directory and the rewritten attempt document. With ``lane_id`` the
+    attempt names that lane execution (a Campaign written by the current release).
+    """
+    from booley.flows.sim.campaign.run_directory import expand_run_directory
 
-    project_children = project_data / ".runtime" / "campaign-child-executions"
-    assert (project_children / "entries" / f"{execution_id}.json").is_file()
-    assert (project_children / "retired" / f"{execution_id}.json").is_file()
-    prune_invocation(reports, 1)
-    assert not (project_children / "entries" / f"{execution_id}.json").exists()
-    assert not (project_children / "retired" / f"{execution_id}.json").exists()
-
-
-def test_detached_copy_pruning_never_recovers_producer_resources(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.flows.sim import campaign_retention
-
-    reports, project_data, store = _retained_invocation(tmp_path)
-    _publish_retired_child(project_data, store)
-    detached_reports = tmp_path / "copy-project/.runtime/flow-reports"
-    (detached_reports / "sim").mkdir(parents=True)
-    shutil.copytree(reports / "sim" / "1", detached_reports / "sim" / "1")
-    recovered: list[tuple[Path, Path | None]] = []
-    monkeypatch.setattr(
-        campaign_retention,
-        "recover_retained_campaign_resources",
-        lambda status, resolved: recovered.append((status.manifest_path, resolved)),
+    status = inspect_retained_campaign(store.manifest_path)
+    work_item_id = status.completed[0]
+    (store.work_item_directory(work_item_id) / "result.json").unlink()
+    store.summary_path.unlink()
+    (store.root.parent / "simulation.json").unlink()
+    progress_path = reports / "sim/1/progress.json"
+    progress = json.loads(progress_path.read_text())
+    progress.update(completed_targets=[], pending_targets=["sim"], complete=False, phase="running")
+    progress_path.write_text(json.dumps(progress))
+    attempt_path = next(
+        (store.work_item_directory(work_item_id) / "attempts").glob("*/attempt.json")
     )
+    document = json.loads(attempt_path.read_bytes())
+    project_root = tmp_path / "checkout"
+    project_root.mkdir()
+    run = expand_run_directory(
+        "work/{campaign}/{test}/{attempt}",
+        project_root=project_root,
+        campaign_id=document["campaign_id"],
+        target_key="sim",
+        work_item_key=store.work_item_directory(work_item_id).name,
+        attempt_key=attempt_path.parent.name,
+    )
+    document["run_directory"] = {
+        "kind": "templated",
+        "configured": "work/{campaign}/{test}/{attempt}",
+        "resolved": str(run.path),
+        "collision_key": run.collision_key,
+        "owned": True,
+    }
+    document["child_execution_id"] = lane_id
+    document["child_entry_sha256"] = None
+    attempt_path.chmod(0o600)
+    attempt_path.write_bytes(canonical_json_bytes(document))
+    run.path.mkdir(parents=True)
+    (run.path / ".booley-simulation-attempt.json").write_bytes(
+        canonical_json_bytes(
+            {
+                "campaign_id": document["campaign_id"],
+                "work_item_id": work_item_id,
+                "attempt_id": document["attempt_id"],
+            }
+        )
+    )
+    return run.path, document
 
-    prune_invocation(detached_reports, 1, project_data=project_data)
-    assert recovered == []
+
+def test_full_pruning_cleans_interrupted_owned_run_directory(tmp_path: Path) -> None:
+    reports, _project_data, store = _retained_invocation(tmp_path)
+    run_path, _document = _interrupt_latest_attempt(tmp_path, reports, store)
 
     prune_invocation(reports, 1)
-    assert recovered == [(store.manifest_path, project_data)]
+
+    assert not run_path.exists()
+    assert not (reports / "sim/1").exists()
 
 
-def test_canonical_recovery_rejects_disagreeing_project_data(tmp_path: Path) -> None:
+@pytest.mark.parametrize("recovered", [True, False], ids=["recovered", "incomplete"])
+def test_full_pruning_recovers_interrupted_lane_before_run_directory_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recovered: bool
+) -> None:
+    """Pruning cancels the lane a crashed Campaign left behind, or keeps everything."""
+    from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
+
     reports, project_data, store = _retained_invocation(tmp_path)
-    _publish_retired_child(project_data, store)
-    other = tmp_path / "other-project"
-    other.mkdir()
+    # Unique: real recovery signals every host process carrying this ID (xdist workers too).
+    lane = ExecutionId(uuid.uuid4().hex)
+    run_path, document = _interrupt_latest_attempt(tmp_path, reports, store, str(lane))
+    registry = ChildExecutionRegistry.from_project_data(store.load_manifest(), project_data)
+    registry.prepare(
+        lane,
+        work_item_id=str(document["work_item_id"]),
+        attempt_id=str(document["attempt_id"]),
+        attempt_ordinal=int(document["attempt_ordinal"]),  # type: ignore[call-overload]
+        attempt_directory=store.root,
+        parent_execution_id=ExecutionId("a" * 32),
+    )
+    assert not registry.is_terminal(lane)
+    if not recovered:
+        monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _self, _id: False)
 
-    with pytest.raises(CampaignRetentionError, match="disagrees with the canonical"):
-        prune_invocation(reports, 1, project_data=other)
-
-    assert (reports / "sim" / "1").is_dir()
+    if recovered:
+        prune_invocation(reports, 1)
+        assert registry.is_terminal(lane)
+        assert not run_path.exists()
+        assert not (reports / "sim/1").exists()
+    else:
+        with pytest.raises(CampaignRetentionError, match="recovery is incomplete"):
+            prune_invocation(reports, 1)
+        assert run_path.exists()
+        assert (reports / "sim/1").exists()
 
 
 @pytest.mark.usefixtures("mandatory_file_locks")
@@ -1137,36 +1105,6 @@ def test_full_pruning_accepts_authenticated_abandoned_campaign(tmp_path: Path, s
 
     prune_invocation(reports, 1)
 
-    assert not (reports / "sim/1").exists()
-    assert list((reports / "sim/.pruned-1").iterdir()) == []
-
-
-def test_full_pruning_authenticates_and_removes_retained_valid_v3_coverage(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    _retain_v3_before_reference(monkeypatch)
-    project(tmp_path)
-    data = tmp_path / ".booley"
-    data.mkdir()
-    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
-    reports = tmp_path / "reports"
-    result = SimulateFlow(
-        coverage_execution=lambda _handle, _options, _commands, _access: NativeExecution()
-    ).execute(
-        SimRequest(
-            target="sim_0",
-            work_dir=tmp_path,
-            coverage=True,
-            report_dir=reports,
-        )
-    )
-    nested = next(reports.rglob("coverage-campaign/coverage.json"))
-    assert json.loads(nested.read_text())["$schema"] == "booley.coverage-campaign/v3"
-
-    prune_invocation(reports, 1)
-
-    assert result.exit_code == 0
     assert not (reports / "sim/1").exists()
     assert list((reports / "sim/.pruned-1").iterdir()) == []
 
@@ -1240,7 +1178,7 @@ def test_simulation_reservation_locks_before_directory_publication(
 ) -> None:
     reports = tmp_path / "reports"
     flow = SimulateFlow()
-    flow.context._args = SimRequest(report_dir=reports)
+    flow._args = SimRequest(report_dir=reports)
     mkdir = type(reports).mkdir
     observed = False
 
@@ -1253,7 +1191,7 @@ def test_simulation_reservation_locks_before_directory_publication(
         mkdir(path, *args, **kwargs)
 
     monkeypatch.setattr(type(reports), "mkdir", inspect_before_publish)
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         assert flow.reserve_invocation_dir() == reports / "sim/1"
 
     assert observed
@@ -1267,7 +1205,7 @@ def test_simulation_reservation_skips_contended_and_raced_numbers(
     reports = tmp_path / "reports"
     (reports / "sim").mkdir(parents=True)
     flow = SimulateFlow()
-    flow.context._args = SimRequest(report_dir=reports)
+    flow._args = SimRequest(report_dir=reports)
     mkdir = type(reports).mkdir
 
     def lose_race_for_two(path: Path, *args: object, **kwargs: object) -> None:
@@ -1277,7 +1215,7 @@ def test_simulation_reservation_skips_contended_and_raced_numbers(
         mkdir(path, *args, **kwargs)
 
     monkeypatch.setattr(type(reports), "mkdir", lose_race_for_two)
-    with campaign_invocation_lock(reports / "sim/1"), flow.context.publication_resources:
+    with campaign_invocation_lock(reports / "sim/1"), flow.publication_resources:
         assert flow.reserve_invocation_dir() == reports / "sim/3"
         # The raced number's producer lock was released, not leaked.
         with campaign_invocation_lock(reports / "sim/2"):
@@ -1293,7 +1231,7 @@ def test_simulation_reservation_releases_its_lock_when_publication_fails(
     reports = tmp_path / "reports"
     (reports / "sim").mkdir(parents=True)
     flow = SimulateFlow()
-    flow.context._args = SimRequest(report_dir=reports)
+    flow._args = SimRequest(report_dir=reports)
     mkdir = type(reports).mkdir
 
     def disk_full_for_one(path: Path, *args: object, **kwargs: object) -> None:
@@ -1303,7 +1241,7 @@ def test_simulation_reservation_releases_its_lock_when_publication_fails(
 
     monkeypatch.setattr(type(reports), "mkdir", disk_full_for_one)
     with (
-        flow.context.publication_resources,
+        flow.publication_resources,
         pytest.raises(OSError, match="No space left") as raised,
     ):
         flow.reserve_invocation_dir()
@@ -1319,10 +1257,10 @@ def test_simulation_reservation_stops_at_the_invocation_ceiling(tmp_path: Path) 
     reports = tmp_path / "reports"
     (reports / "sim" / "1000000").mkdir(parents=True)
     flow = SimulateFlow()
-    flow.context._args = SimRequest(report_dir=reports)
+    flow._args = SimRequest(report_dir=reports)
 
     with (
-        flow.context.publication_resources,
+        flow.publication_resources,
         pytest.raises(RuntimeError, match="reservation ceiling exceeded"),
     ):
         flow.reserve_invocation_dir()
@@ -1346,25 +1284,6 @@ def test_complete_campaign_pruning_rejects_unrecognized_campaign_file(
     assert (reports / "sim" / "1").is_dir()
 
 
-@pytest.mark.parametrize("defect", ["substituted", "missing"])
-def test_pruning_rejects_invalid_project_child_pair(tmp_path: Path, defect: str) -> None:
-    reports, project_data, store = _retained_invocation(tmp_path)
-    execution_id = _publish_retired_child(project_data, store)
-    project_entry = (
-        project_data / ".runtime/campaign-child-executions/entries" / f"{execution_id}.json"
-    )
-    if defect == "substituted":
-        project_entry.write_bytes(b"{}\n")
-    else:
-        project_entry.unlink()
-
-    with pytest.raises(CampaignRetentionError, match=r"invalid schema|disagrees|disappeared"):
-        prune_invocation(reports, 1)
-
-    assert (reports / "sim" / "1").is_dir()
-    assert project_entry.is_file() is (defect == "substituted")
-
-
 def test_pruning_rejects_complete_results_before_acceptance_projection(
     tmp_path: Path,
 ) -> None:
@@ -1378,99 +1297,6 @@ def test_pruning_rejects_complete_results_before_acceptance_projection(
         prune_invocation(reports, 1)
 
     assert store.manifest_path.is_file()
-
-
-@pytest.mark.parametrize(
-    ("registry", "defect"),
-    [
-        ("entries", "missing"),
-        ("retired", "missing"),
-        ("released", "extra"),
-        ("entries", "extra"),
-        ("retired", "extra"),
-    ],
-)
-def test_pruning_rejects_campaign_child_inventory_disagreement(
-    tmp_path: Path, registry: str, defect: str
-) -> None:
-    reports, project_data, store = _retained_invocation(tmp_path)
-    execution_id = _publish_retired_child(project_data, store)
-    directory = store.root / "child-executions" / registry
-    directory.mkdir(exist_ok=True)
-    path = directory / f"{execution_id}.json"
-    if defect == "missing":
-        path.unlink()
-    else:
-        (directory / f"{'9' * 32}.json").write_bytes(b"{}\n")
-
-    with pytest.raises(
-        CampaignRetentionError,
-        match=r"inventories disagree|unknown work item|invalid schema",
-    ):
-        prune_invocation(reports, 1)
-
-    assert (reports / "sim" / "1").is_dir()
-
-
-def test_pruning_ignores_project_entry_missing_from_selected_campaign_mirror(
-    tmp_path: Path,
-) -> None:
-    reports, project_data, store = _retained_invocation(tmp_path)
-    _publish_retired_child(project_data, store)
-    orphan = _publish_retired_child(project_data, store, digit="5")
-    campaign = store.root / "child-executions"
-    (campaign / "entries" / f"{orphan}.json").unlink()
-    (campaign / "retired" / f"{orphan}.json").unlink()
-
-    prune_invocation(reports, 1)
-
-    assert not (reports / "sim/1").exists()
-    assert (
-        project_data / ".runtime/campaign-child-executions/entries" / f"{orphan}.json"
-    ).is_file()
-
-
-def test_pruning_ignores_an_unrelated_malformed_project_child_entry(tmp_path: Path) -> None:
-    reports, project_data, store = _retained_invocation(tmp_path)
-    _publish_retired_child(project_data, store)
-    unrelated = project_data / ".runtime/campaign-child-executions/entries/unrelated.json"
-    unrelated.write_text("not json", encoding="utf-8")
-
-    prune_invocation(reports, 1)
-
-    assert unrelated.read_text(encoding="utf-8") == "not json"
-    assert not (reports / "sim/1").exists()
-
-
-@pytest.mark.parametrize("defect", ["noncanonical", "hardlink", "oversize"])
-def test_pruning_rejects_unsafe_campaign_child_record(tmp_path: Path, defect: str) -> None:
-    reports, project_data, store = _retained_invocation(tmp_path)
-    execution_id = _publish_retired_child(project_data, store)
-    entry = store.root / "child-executions/entries" / f"{execution_id}.json"
-    raw = entry.read_bytes()
-    if defect == "noncanonical":
-        entry.write_text(json.dumps(json.loads(raw), indent=2), encoding="utf-8")
-    elif defect == "oversize":
-        entry.write_bytes(b"{" + b" " * (1024 * 1024) + b"}\n")
-    else:
-        source = tmp_path / "hardlink-source"
-        entry.rename(source)
-        os.link(source, entry)
-
-    with pytest.raises(CampaignRetentionError, match=r"canonical|regular|size ceiling"):
-        prune_invocation(reports, 1)
-
-
-def test_pruning_rejects_terminal_schema_extras(tmp_path: Path) -> None:
-    reports, project_data, store = _retained_invocation(tmp_path)
-    execution_id = _publish_retired_child(project_data, store)
-    terminal = execution_paths(execution_id, booley_dir=project_data).record
-    document = json.loads(terminal.read_bytes())
-    document["unexpected"] = True
-    atomic_write_json(terminal, document)
-
-    with pytest.raises(CampaignRetentionError, match="tree-terminal proof"):
-        prune_invocation(reports, 1)
 
 
 @pytest.mark.parametrize("previous", [True, False, None])
@@ -1512,3 +1338,54 @@ def test_infrastructure_abort_preserves_simulation_criterion(
     before = state.to_dict()
     assert SimulationAcceptanceCoordinator._derive_changes(outcome, state) == []
     assert state.to_dict() == before
+
+
+@pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
+def test_summary_reader_rejects_corrupt_record(tmp_path, error):
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(_manifest_for(("smoke",)))
+    store.regenerate_summary()
+    document = dict(store.load_summary())
+    if error == "schema":
+        document["$schema"] = "unknown"
+    elif error == "missing":
+        del document["complete"]
+    store.summary_path.write_bytes(
+        b"{" if error == "truncated" else canonical_json_bytes(document)
+    )
+    with pytest.raises(SimulationCampaignIntegrityError):
+        store.load_summary()
+
+
+def test_resume_inspection_scans_the_validated_manifest_without_rereading(
+    tmp_path: Path,
+) -> None:
+    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "campaign")
+    store.publish_manifest(_manifest_for(("smoke",)))
+    validated = _resume_request(store, tmp_path).validated
+    store.manifest_path.unlink()
+
+    status = SimulationCampaign().inspect_resume(validated)
+
+    assert status.manifest_sha256 == validated.sha256
+
+
+def test_foreign_attempt_result_fails_closed_at_the_read_boundary(tmp_path: Path) -> None:
+    class _ForeignAttemptExecutor(_NoEdaExecutor):
+        def execute(self, request: WorkExecutionRequest) -> SimulationResult:
+            result = super().execute(request)
+            return SimulationResult({**result.document, "attempt_id": str(uuid.uuid4())})
+
+    project = tmp_path / "project"
+    (project / ".booley").mkdir(parents=True)
+    request = NewCampaignRunRequest(
+        plan=create_simulation_campaign_plan(_manifest_for(("smoke",))),
+        project_root=project,
+        report_root=None,
+        policy=CampaignPolicy(),
+        invocation_directory=tmp_path / "reports" / "sim" / "1",
+        admission=_admission(),
+    )
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="final published attempt"):
+        SimulationCampaign(_ForeignAttemptExecutor()).run(request)

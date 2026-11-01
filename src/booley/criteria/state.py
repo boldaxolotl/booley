@@ -45,6 +45,7 @@ from booley.evidence.fields import (
     RECIPE_FINGERPRINT_PARAM,
     RECIPE_SNAPSHOT_DETAIL,
     RECIPE_SNAPSHOT_PARAM,
+    UNJUDGED_REASONS,
 )
 from booley.evidence.recipe import (
     InvalidRecipeSnapshotError,
@@ -398,6 +399,30 @@ class StateFileReader(Protocol):
         ...
 
 
+@runtime_checkable
+class JudgedEvidenceProjection(Protocol):
+    """Optional strategy capability: ``save`` reprojects judged evidence.
+
+    A state saved through such a strategy takes ``ever_failed`` from the
+    judged ledger verdict alone (:func:`observed_failure`), so
+    ``DevelopmentState.set_criterion`` leaves the latch to that projection
+    instead of latching a producer's raw claim.
+    """
+
+    def projects_judged_evidence(self) -> None:
+        """Marker: this strategy's ``save`` latches ``ever_failed`` from judged rows."""
+        ...
+
+
+def observed_failure(met: bool, reason: object) -> bool:
+    """Whether a verdict is an observed failure: unmet, and not merely unjudged.
+
+    A Goal verdict recorded unmet because its Test Runs are pending or its
+    metric was not measured judged nothing; it must not latch ``ever_failed``.
+    """
+    return not met and reason not in UNJUDGED_REASONS
+
+
 class AtomicStateFile:
     """Default strategy: stamp ``last_updated`` and atomically replace the state file."""
 
@@ -603,7 +628,6 @@ class DevelopmentState:
             "strict_criteria": self.strict_criteria,
             "criteria": {k: v.to_dict() for k, v in self.criteria.items()},
             "category_map": self.category_map,
-            "all_mandatory_met": self.all_mandatory_met(),
             "timeline": self.timeline,
             "acceptance_transactions": self.acceptance_transactions,
             "authorized_zero_mandatory_basis_id": self.authorized_zero_mandatory_basis_id,
@@ -648,6 +672,19 @@ class DevelopmentState:
             self.flow_key_aliases.update(flow_key_aliases)
         if strict is not None:
             self.strict_criteria = strict
+
+    def _latch_follows_judged_evidence(self) -> bool:
+        """Whether ``ever_failed`` comes from the judged ledger verdict, not the producer.
+
+        True for a file-backed strict state saved through a persistence that
+        reprojects judged evidence: its changes are always recorded and judged
+        before the save, and the reprojection latches from the judged row.
+        """
+        return (
+            self.file_path is not None
+            and self.strict_criteria
+            and isinstance(self._persistence, JudgedEvidenceProjection)
+        )
 
     def set_criterion(
         self,
@@ -696,7 +733,7 @@ class DevelopmentState:
 
         if self.strict_criteria:
             logger.error(
-                "Rejecting undeclared criterion %r for basis-bound Ticket %r",
+                "Rejecting undeclared criterion %r for Goal Mode %r",
                 key,
                 self.slug,
             )
@@ -775,7 +812,7 @@ class DevelopmentState:
         entry.stale = False
         if met:
             entry.ever_met = True
-        else:
+        elif not self._latch_follows_judged_evidence():
             # Only Flow-reported verdicts reach here; init_criteria builds
             # entries directly, so an un-run criterion never latches this.
             entry.ever_failed = True

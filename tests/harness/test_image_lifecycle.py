@@ -13,11 +13,14 @@ import pytest
 import booley
 from booley.harness import image_lifecycle as harness_lifecycle
 from booley.runtime import image_lifecycle as lifecycle
+from booley.runtime import project_image
 from booley.runtime.docker_capacity import (
     BuildEstimateClass,
     DockerBuildPlan,
     DockerBuildRequest,
 )
+from tests.conftest import symlink_or_skip
+from tests.harness.booley_dir_support import select_booley_dir
 
 _ACTUAL_ALIAS_PROBE = lifecycle.project_image.project_data_alias_capable
 
@@ -86,6 +89,11 @@ class FakeDocker:
         self.images[target] = source_record
 
     def remove_tag(self, image: str) -> None:
+        parents = {
+            labels.get(lifecycle.LABEL_PARENT_ARTIFACT) for _id, labels in self.images.values()
+        }
+        if image in self.used_image_ids or image in parents:
+            raise lifecycle.ImageLifecycleError(f"conflict: unable to delete {image}")
         self.mutations.append(("remove_tag", image))
         self.images.pop(image, None)
 
@@ -745,32 +753,6 @@ def test_validate_rejects_candidates_changed_after_preparation(
         lifecycle.validate(prepared, docker=docker)
 
 
-def test_validate_names_every_changed_image_input(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = _project(tmp_path)
-    docker = FakeDocker({})
-    _wire(monkeypatch, docker)
-    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
-    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
-    prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
-    changed_snapshot = lifecycle.InputSnapshot(
-        ((*planned.input_snapshot.identities[0][:3], "changed-input"),)
-    )
-    monkeypatch.setattr(
-        lifecycle,
-        "plan",
-        lambda *_args, **_kwargs: replace(planned, input_snapshot=changed_snapshot),
-    )
-
-    with pytest.raises(lifecycle.ImageLifecycleError, match="inputs changed") as caught:
-        lifecycle.validate(prepared, docker=docker)
-
-    message = str(caught.value)
-    assert ".parent_compatibility_key" in message
-    assert "changed-input" in message
-
-
 def test_incremental_adapter_build_inputs_cover_each_image_role(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -877,11 +859,11 @@ def test_incremental_adapter_prepare_rejects_missing_parent_and_missing_candidat
     adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, docker, verbose=False)
     node = _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE)
 
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="prepared parent"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="prepared parent"):
         adapter.prepare(node, candidate_reference="candidate", parent_reference="parent")
 
     monkeypatch.setattr(adapter, "_build_role", lambda *_args: None)
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="produced no image"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="produced no image"):
         adapter.prepare(node, candidate_reference="candidate", parent_reference=None)
 
 
@@ -905,7 +887,7 @@ def test_incremental_adapter_prepare_handles_release_and_build_failures(
         context.record("docker_image", "err", "build failed")
 
     monkeypatch.setattr(adapter, "_build_role", fail_build)
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="build failed"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="build failed"):
         adapter.prepare(
             _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE),
             candidate_reference="candidate",
@@ -994,7 +976,7 @@ def test_incremental_adapter_rejects_ambiguous_wheel_output(
     adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, FakeDocker({}), verbose=False)
     node = _incremental_node(tmp_path, lifecycle.ImageRole.WHEEL_OVERLAY, source="wheel")
     monkeypatch.setattr(docker_image, "_docker_build_wheel", lambda *_args, **_kwargs: True)
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="exactly one wheel"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="exactly one wheel"):
         adapter._role_build_inputs(SimpleNamespace(), node, root, "parent")
 
 
@@ -1012,7 +994,7 @@ def test_incremental_adapter_rejects_wheel_source_drift(
     monkeypatch.setattr(
         harness_lifecycle, "wheel_embedded_source_fingerprint", lambda _wheel: "actual"
     )
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="source fingerprint"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="source fingerprint"):
         adapter._role_build_inputs(SimpleNamespace(), node, root, "parent")
 
 
@@ -1123,9 +1105,9 @@ def test_incremental_adapter_release_pull_and_project_recipe_paths(
     )
     assert adapter._pull_complete_release(release).startswith("remote:booley-sandbox")
     monkeypatch.setattr(docker_image, "_try_pull_image", lambda *_args, **_kwargs: False)
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="could not pull"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="could not pull"):
         adapter._pull_complete_release(release)
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="no complete"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="no complete"):
         adapter._pull_complete_release(
             _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE)
         )
@@ -1135,6 +1117,30 @@ def test_incremental_adapter_release_pull_and_project_recipe_paths(
     project = replace(project, generated_files=(("Dockerfile", "generated recipe"),))
     adapter._materialize_managed_project_recipe(project)
     assert (tmp_path / "docker/Dockerfile").read_text() == "generated recipe"
+
+
+def test_recipe_write_never_follows_a_planted_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, FakeDocker({}), verbose=False)
+    project = replace(
+        _incremental_node(tmp_path, lifecycle.ImageRole.PROJECT_SUBSTRATE),
+        generated_files=(("Dockerfile", "generated recipe"),),
+    )
+    monkeypatch.setattr(harness_lifecycle, "resolve_checkout_booley_dir", lambda _root: tmp_path)
+    destination = tmp_path / "outside-recipe"
+    destination.write_text("user file", encoding="utf-8")
+    (tmp_path / "docker").mkdir()
+    symlink_or_skip(tmp_path / "docker/Dockerfile", destination)
+    planted_target = (tmp_path / "docker/Dockerfile").readlink()
+    # Model the race: the link appears after the ownership check has passed.
+    monkeypatch.setattr(project_image, "is_managed_generated_file", lambda _path: True)
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="symlink"):
+        adapter._materialize_managed_project_recipe(project)
+
+    assert destination.read_text(encoding="utf-8") == "user file"
+    assert (tmp_path / "docker/Dockerfile").readlink() == planted_target
 
 
 def test_incremental_adapter_handles_noop_build_and_unsupported_role(
@@ -1151,7 +1157,7 @@ def test_incremental_adapter_handles_noop_build_and_unsupported_role(
     monkeypatch.setattr(docker_image, "_docker_build_image", lambda *_args: None)
     adapter._build_role(context, node, "candidate", None, None)
     unsupported = SimpleNamespace(role="unsupported")
-    with pytest.raises(harness_lifecycle.ImageLifecycleError, match="unsupported image role"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="unsupported image role"):
         harness_lifecycle._IncrementalBuildAdapter._role_build_inputs(
             adapter, context, unsupported, tmp_path, None
         )
@@ -2964,9 +2970,22 @@ def test_mutation_reports_failed_rollback_with_recovery_tag(tmp_path: Path) -> N
         )
 
 
+def test_failed_mutation_untags_base_without_prior_image(tmp_path: Path) -> None:
+    node = lifecycle._base_node(lifecycle.PayloadProvenance("1", "0.2.6", "payload"))
+    docker = FakeDocker({})
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="build failed"):
+        lifecycle._mutate(
+            tmp_path, (node,), lifecycle.Intent.ENSURE, docker, FailingBuilder(docker)
+        )
+
+    assert docker.image_id(node.reference) is None
+
+
 def test_incremental_adapter_prepare_and_policy_helpers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
+    select_booley_dir(request, monkeypatch, tmp_path)
     docker = FakeDocker({"candidate": ("sha256:candidate", {})})
     adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, docker, verbose=False)
     node = _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE)
@@ -3009,17 +3028,33 @@ def test_runtime_identity_and_ancestry_edge_guards(
     assert lifecycle._node_ancestry_reason(child, docker).code == "parent-changed"
 
 
-def test_external_layout_late_parent_graph_preserves_terminal_identity_and_reuses(
-    tmp_path, monkeypatch
-):
+def _unexpected_call(*_args, **_kwargs):
+    raise AssertionError("adoption must reuse the prepared result")
+
+
+@pytest.fixture
+def external_layout(tmp_path, monkeypatch):
+    """An alias-capable Project whose switchable Booley Directory is external."""
+    dirs = {"external": tmp_path / "external", "other": tmp_path / "other"}
     root = _project(tmp_path)
-    external = tmp_path / "external"
-    external.mkdir()
-    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
-    docker = FakeDocker({})
-    _wire(monkeypatch, docker)
-    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    dirs["internal"] = root / "inner"
+    for directory in dirs.values():
+        directory.mkdir()
+    layout = SimpleNamespace(
+        root=root, docker=FakeDocker({}), dirs=dirs, directory=dirs["external"]
+    )
+    monkeypatch.setattr(
+        "booley.runtime.booley_dir.resolve_booley_dir", lambda _r: layout.directory
+    )
+    _wire(monkeypatch, layout.docker)
     monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", lambda _image: True)
+    return layout
+
+
+def test_external_layout_late_parent_graph_preserves_terminal_identity_and_reuses(
+    external_layout, monkeypatch
+):
+    root, docker = external_layout.root, external_layout.docker
     initial = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
     assert initial.nodes[-1].role is lifecycle.ImageRole.WHEEL_OVERLAY
     builder = TransactionBuilder(docker)
@@ -3033,8 +3068,11 @@ def test_external_layout_late_parent_graph_preserves_terminal_identity_and_reuse
     assert terminal.reference != lifecycle.BASE_IMAGE
     assert builder.built[-1][1] == prepared.candidates[-2].image_id
     assert prepared.candidates[-1].wheel_sha256 == prepared.candidates[-2].wheel_sha256
-    lifecycle.validate(prepared, docker=docker)
-    committed = lifecycle.commit(prepared, docker=docker)
+    with monkeypatch.context() as late:  # adoption reuses the prepared result, not a new plan
+        late.setattr(lifecycle.project_image, "project_data_alias_capable", _unexpected_call)
+        late.setattr(lifecycle, "_plan_steps", _unexpected_call)
+        lifecycle.validate(prepared, docker=docker)
+        committed = lifecycle.commit(prepared, docker=docker)
     assert committed.selected_reference == terminal.reference
     assert committed.wheel_sha256 == "e" * 64
     repeated = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
@@ -3047,41 +3085,92 @@ def test_external_layout_late_parent_graph_preserves_terminal_identity_and_reuse
     assert replay.candidates[-1].image_id == committed.selected_id
 
 
+def test_layout_preparation_reuses_planned_topology(external_layout):
+    docker = external_layout.docker
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(external_layout.root), docker=docker)
+    external_layout.directory = external_layout.dirs["other"]
+    prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
+    with pytest.raises(lifecycle.ImageLifecycleError, match="Booley Directory topology"):
+        lifecycle.validate(prepared, docker=docker)
+    parent_id = prepared.candidates[-2].image_id
+    assert prepared.plan.nodes[-1].reference == planned.layout_topology.identity(parent_id)[0]
+
+
+_ADOPTION_CHANGES = [
+    pytest.param(change, alias, id=change + ("" if alias else "-no-alias"))
+    for change in ("to-external", "to-internal", "directory", "recipe")
+    for alias in (True, False)
+] + [pytest.param(change, True, id=change) for change in ("parent-rebound", "candidate-rebound")]
+
+
+_SWITCHED_DIRECTORY = {"to-external": "external", "to-internal": "internal", "directory": "other"}
+
+
+@pytest.mark.parametrize(("change", "alias"), _ADOPTION_CHANGES)
+def test_layout_adoption_rejects_changed_mutable_inputs(
+    external_layout, monkeypatch, tmp_path, change, alias
+):
+    docker, dirs = external_layout.docker, external_layout.dirs
+    monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", lambda _i: alias)
+    external_layout.directory = dirs["internal" if change == "to-external" else "external"]
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(external_layout.root), docker=docker)
+    prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
+    managed = {n.reference: docker.image_id(n.reference) for n in prepared.plan.nodes}
+    rebound = None
+    if change in ("parent-rebound", "candidate-rebound"):
+        rebound = prepared.candidates[-2 if change == "parent-rebound" else -1].candidate_reference
+        docker.images[rebound] = ("sha256:rebound", docker.images[rebound][1])
+    elif change == "recipe":
+        (tmp_path / "recipe").write_text("different recipe")
+        monkeypatch.setattr(project_image, "layout_recipe", lambda: tmp_path / "recipe")
+    else:
+        external_layout.directory = dirs[_SWITCHED_DIRECTORY[change]]
+    for adopt in (lifecycle.validate, lifecycle.commit):
+        with pytest.raises(lifecycle.ImageLifecycleError):
+            adopt(prepared, docker=docker)
+    assert {ref: docker.image_id(ref) for ref in managed} == managed
+    if rebound:
+        assert docker.image_id(rebound) == "sha256:rebound"  # abort preserves foreign rebinding
+    else:
+        assert not any(ref.startswith("booley-lifecycle-") for ref in docker.images)
+
+
 def test_layout_identity_changes_for_parent_topology_recipe_and_project(tmp_path, monkeypatch):
     root = _project(tmp_path)
-    external = tmp_path / "external"
-    external.mkdir()
-    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
-    parent = _incremental_node(tmp_path, lifecycle.ImageRole.WHEEL_OVERLAY, source="wheel")
-    first = lifecycle._layout_node(root, parent, "sha256:" + "a" * 64)
-    changed_parent = lifecycle._layout_node(root, parent, "sha256:" + "b" * 64)
-    assert changed_parent.reference != first.reference
-    monkeypatch.setattr(
-        "booley.runtime.booley_dir.resolve_booley_dir", lambda _root: tmp_path / "different"
-    )
-    assert lifecycle._layout_node(root, parent, "sha256:" + "a" * 64).reference != first.reference
-    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
-    assert (
-        lifecycle._layout_node(tmp_path / "other-project", parent, "sha256:" + "a" * 64).reference
-        != first.reference
-    )
-    monkeypatch.setattr(lifecycle, "resolve_recipe_fingerprint", lambda *_args: "different-recipe")
-    assert lifecycle._layout_node(root, parent, "sha256:" + "a" * 64).reference != first.reference
+    selected = {"dir": tmp_path / "external"}
+    selected["dir"].mkdir()
+    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _r: selected["dir"])
+    parent = "sha256:" + "a" * 64
+
+    def identity(project=root, parent_id=parent):
+        return project_image.layout_topology(project).identity(parent_id)
+
+    first = identity()
+    assert identity(parent_id="sha256:" + "b" * 64) != first
+    assert identity(tmp_path / "other-project") != first
+    other_dir = tmp_path / "different"
+    other_dir.mkdir()
+    selected["dir"] = other_dir
+    assert identity() != first
+    selected["dir"] = tmp_path / "external"
+    recipe = tmp_path / "recipe"
+    recipe.write_text("different recipe")
+    monkeypatch.setattr(project_image, "layout_recipe", lambda: recipe)
+    assert identity() != first
+    inner = root / "inner"
+    inner.mkdir()
+    (tmp_path / "alias").symlink_to(inner)
+    for internal in (inner, tmp_path / "alias"):
+        selected["dir"] = internal
+        assert project_image.layout_topology(root) is None
 
 
 def test_release_layout_child_retains_verified_parent_policy_and_zero_build_check(
-    tmp_path, monkeypatch
+    external_layout, monkeypatch
 ):
-    root = _project(tmp_path)
-    external = tmp_path / "external"
-    external.mkdir()
-    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
-    monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", lambda _image: True)
-    docker = FakeDocker({})
-    _wire(monkeypatch, docker)
+    root, docker = external_layout.root, external_layout.docker
     contracts = lifecycle.ImageBuildContracts("a" * 64, "b" * 64)
     monkeypatch.setattr(lifecycle, "_expected_image_build_contracts", lambda: contracts)
-    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
     parent = lifecycle._complete_release_node(lifecycle.BASE_IMAGE, contracts)
     _stage_registry_candidate(
         docker, parent, parent.reference, label_overrides={lifecycle.LABEL_WHEEL_SHA256: "f" * 64}
@@ -3125,7 +3214,7 @@ def test_obsolete_layout_cleanup_is_project_scoped_and_retains_running_artifacts
     assert prefix != other_prefix
     selected, obsolete, active, foreign = (
         prefix + "1" * 16,
-        prefix + "2" * 16,
+        prefix + "2" * 16 + ":latest",  # Docker reports the implicit tag
         prefix + "3" * 16,
         other_prefix + "2" * 16,
     )
@@ -3261,22 +3350,15 @@ def test_layout_probe_rejects_nonzero_and_unknown_output(monkeypatch):
 
 
 def test_release_project_overlay_retains_wheel_identity_through_layout_convergence(
-    tmp_path, monkeypatch
+    external_layout, monkeypatch
 ):
-    root = _project(tmp_path)
+    root, docker = external_layout.root, external_layout.docker
     (root / "requirements.txt").write_text("cocotb\n")
     (root / ".booley/booley.toml").write_text(
         '[sandbox]\npip_requirements = ["requirements.txt"]\n'
     )
-    external = tmp_path / "external"
-    external.mkdir()
-    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
-    docker = FakeDocker({})
-    _wire(monkeypatch, docker)
     contracts = lifecycle.ImageBuildContracts("a" * 64, "b" * 64)
     monkeypatch.setattr(lifecycle, "_expected_image_build_contracts", lambda: contracts)
-    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
-    monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", lambda _image: True)
     parent = lifecycle._complete_release_node(lifecycle.BASE_IMAGE, contracts)
     _stage_registry_candidate(
         docker, parent, parent.reference, label_overrides={lifecycle.LABEL_WHEEL_SHA256: "f" * 64}
@@ -3304,14 +3386,9 @@ def test_release_project_overlay_retains_wheel_identity_through_layout_convergen
 
 
 def test_prepared_parent_losing_alias_can_validate_and_commit_without_obsolete_layout(
-    tmp_path, monkeypatch
+    external_layout, monkeypatch
 ):
-    root = _project(tmp_path)
-    external = tmp_path / "external"
-    external.mkdir()
-    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
-    docker = FakeDocker({})
-    _wire(monkeypatch, docker)
+    root, docker = external_layout.root, external_layout.docker
     monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "old-wheel")
     original = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
     _install_planned_graph(docker, original.nodes)
@@ -3357,26 +3434,6 @@ def test_cleanup_failure_after_adoption_is_diagnostic_and_abort_is_idempotent(
     assert docker.mutations == before
 
 
-def test_orphaned_layout_parent_tag_is_transactional_and_removed(tmp_path):
-    tag = "127.0.0.1:1/booley-lifecycle-" + "a" * 32 + "-layout-parent:candidate"
-    docker = FakeDocker({tag: ("parent-id", {})})
-    lifecycle._discard_orphaned_candidates(docker)
-    assert tag in docker.images
-
-
-class _LegacyLayoutFixtureBuilder:
-    def __init__(self, builder):
-        self.builder = builder
-
-    def build(self, node, *, force, source):
-        assert node.role is lifecycle.ImageRole.PROJECT_DATA_LAYOUT
-        return self.builder.prepare(
-            node,
-            candidate_reference="booley-lifecycle-layout:candidate",
-            parent_reference=node.parent,
-        )
-
-
 def test_real_project_overlay_build_labels_inherit_prepared_release_wheel(tmp_path, monkeypatch):
     from booley.harness.setup import docker_image
 
@@ -3409,61 +3466,18 @@ def test_real_project_overlay_build_labels_inherit_prepared_release_wheel(tmp_pa
         adapter._build_role(SimpleNamespace(), node, "candidate", "release", parent_id)
 
 
-def test_layout_cleanup_matches_real_latest_inventory_and_preserves_selected(tmp_path):
-    root = tmp_path / "project"
-    prefix = lifecycle.project_image.project_layout_prefix(root)
-    selected, obsolete = prefix + "1" * 16, prefix + "2" * 16
-    labels = {
-        lifecycle.LABEL_SCHEMA: lifecycle.PROVENANCE_SCHEMA,
-        lifecycle.LABEL_ARTIFACT_ROLE: lifecycle.ImageRole.PROJECT_DATA_LAYOUT.value,
-        lifecycle.LABEL_EFFECTIVE_INPUTS: "2" * 64,
-    }
-    docker = FakeDocker(
-        {selected + ":latest": ("selected", {}), obsolete + ":latest": ("old", labels)}
-    )
-    checked = lifecycle._reconcile_layout_tag_cleanup(
-        root, selected, lifecycle.Intent.CHECK, docker
-    )
-    assert checked.pending == (obsolete + ":latest",)
-    cleaned = lifecycle._reconcile_layout_tag_cleanup(
-        root, selected, lifecycle.Intent.ENSURE, docker
-    )
-    assert cleaned.removed == (obsolete + ":latest",)
-    assert selected + ":latest" in docker.images
-
-
-def test_live_layout_parent_tag_is_not_discarded_by_another_convergence(tmp_path):
-    import os
-
-    tag = f"127.0.0.1:1/booley-lifecycle-{os.getpid()}-" + "a" * 32 + "-layout-parent:candidate"
-    docker = FakeDocker({tag: ("parent-id", {})})
-    lifecycle._discard_orphaned_candidates(docker)
-    assert tag in docker.images
-    assert docker.mutations == []
-
-
-def test_layout_parent_cleanup_requires_safe_platform_process_proof(monkeypatch):
-    tag = "127.0.0.1:1/booley-lifecycle-123-" + "a" * 32 + "-layout-parent:candidate"
-
-    def forbidden(*_args):
-        raise AssertionError("non-POSIX cleanup must not signal a process")
-
-    monkeypatch.setattr(lifecycle, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setattr("booley.runtime.pid.is_pid_alive", forbidden)
-    assert lifecycle._active_layout_parent(tag)
-
-    calls = []
-
-    def absent(pid):
-        calls.append(pid)
-        return False
-
-    monkeypatch.setattr(lifecycle, "os", SimpleNamespace(name="posix"))
-    monkeypatch.setattr("booley.runtime.pid.is_pid_alive", absent)
-    docker = FakeDocker({tag: ("parent-id", {})})
-    lifecycle._discard_orphaned_candidates(docker)
-    assert tag in docker.images
-    assert calls == []
+@pytest.mark.parametrize("shape", ["layout-parent", "layout"])
+def test_layout_candidate_tags_are_not_recorded_or_discarded(tmp_path, monkeypatch, shape):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    image = "sha256:" + "a" * 64
+    live = f"booley-lifecycle-{'a' * 32}-{shape}:candidate"
+    recorded = "booley-lifecycle-recorded:candidate"
+    docker = FakeDocker({live: (image, {}), recorded: (image, {})})
+    lifecycle.OwnedImages(tmp_path).record({recorded: image})
+    lifecycle._discard_orphaned_candidates(docker, tmp_path)
+    assert docker.image_id(live) == image
+    assert docker.image_id(recorded) is None
+    assert docker.mutations == [("remove_tag", recorded)]
 
 
 def test_init_reports_layout_probe_failure_without_traceback(tmp_path, monkeypatch):
@@ -3488,45 +3502,6 @@ def test_init_reports_layout_probe_failure_without_traceback(tmp_path, monkeypat
     assert "cannot probe Booley Directory layout" in ctx.results[-1].detail
 
 
-def test_layout_parent_inspection_failure_uses_lifecycle_error_boundary(tmp_path, monkeypatch):
-    parent_id = "sha256:" + "a" * 64
-    docker = FakeDocker({"parent": (parent_id, {})})
-    adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, docker, verbose=False)
-
-    def unavailable(*_args, **_kwargs):
-        raise RuntimeError("Docker inspection unavailable")
-
-    monkeypatch.setattr(lifecycle.project_image, "inspect_layout_image", unavailable)
-    node = _incremental_node(tmp_path, lifecycle.ImageRole.PROJECT_DATA_LAYOUT, source="wheel")
-    with pytest.raises(lifecycle.ImageLifecycleError, match="inspection unavailable"):
-        adapter.prepare(node, candidate_reference="candidate", parent_reference="parent")
-    assert docker.mutations == []
-
-
-@pytest.mark.parametrize("operation", ["_image_history", "_probe_layout_directory"])
-def test_layout_history_and_directory_transport_failure_are_controlled(monkeypatch, operation):
-    def unavailable(*_args, **_kwargs):
-        raise subprocess.CalledProcessError(1, "docker")
-
-    monkeypatch.setattr(lifecycle.project_image.subprocess, "run", unavailable)
-    with pytest.raises(RuntimeError, match="cannot verify Booley Directory layout"):
-        getattr(lifecycle.project_image, operation)(
-            "image", "docker"
-        ) if operation == "_image_history" else getattr(lifecycle.project_image, operation)(
-            "image"
-        )
-
-
-def test_live_legacy_layout_candidate_is_not_discarded(monkeypatch):
-    import os
-
-    tag = f"booley-lifecycle-{os.getpid()}-" + "a" * 32 + "-layout:candidate"
-    docker = FakeDocker({tag: ("candidate-id", {})})
-    lifecycle._discard_orphaned_candidates(docker)
-    assert tag in docker.images
-    assert docker.mutations == []
-
-
 def test_layout_verification_missing_identity_is_a_controlled_error(monkeypatch):
     from tests.runtime.test_image_identity import _layout_inspections
 
@@ -3535,17 +3510,6 @@ def test_layout_verification_missing_identity_is_a_controlled_error(monkeypatch)
     records[child_id]["Id"] = None
     with pytest.raises(RuntimeError, match="immutable identity is missing"):
         lifecycle.project_image.verify_layout_image(records[parent_id], records[child_id])
-
-
-def test_layout_verification_missing_trusted_recipe_is_a_controlled_error(tmp_path, monkeypatch):
-    monkeypatch.setattr("booley.runtime.paths.docker_data_dir", lambda: tmp_path)
-    monkeypatch.setattr(
-        lifecycle.project_image,
-        "_image_history",
-        lambda ref, _exe: ["base"] if ref == "parent" else ["RUN /bin/sh -c anything", "base"],
-    )
-    with pytest.raises(RuntimeError, match="recipe is unavailable or malformed"):
-        lifecycle.project_image._verify_layout_history("parent", "child", "docker")
 
 
 @pytest.mark.parametrize("rootfs", [None, [], "malformed"])
@@ -3751,8 +3715,8 @@ def _layout_builder_probe(
         lambda image: parent if image == parent_id else {"Id": image},
     )
 
-    def verify(actual_parent, candidate) -> None:
-        probe.verified.append((actual_parent, candidate))
+    def verify(candidate_id, parent_image_id, executable) -> None:
+        probe.verified.append((candidate_id, parent_image_id, executable))
         if failure == "verify":
             raise RuntimeError("candidate changed runtime configuration")
 
@@ -3761,7 +3725,7 @@ def _layout_builder_probe(
         "_docker_build_image",
         lambda context, spec: _layout_build_probe(probe, context, spec),
     )
-    monkeypatch.setattr(lifecycle.project_image, "verify_layout_image", verify)
+    monkeypatch.setattr(lifecycle.project_image, "verify_layout_parent_identity", verify)
     return probe
 
 
@@ -3781,7 +3745,7 @@ def test_layout_builder_pins_parent_and_cleans_temporary_reference(
             == "candidate"
         )
         assert adapter._next_request_index == 1
-        assert probe.verified == [(probe.parent, {"Id": "candidate"})]
+        assert probe.verified == [("candidate-id", probe.parent["Id"], "docker")]
     assert probe.docker.image_id("parent") == probe.parent["Id"]
     assert not probe.specs[0].context.exists()
     temporary = [name for name in probe.docker.images if "layout-parent:candidate" in name]
@@ -3792,7 +3756,7 @@ def test_layout_builder_pins_parent_and_cleans_temporary_reference(
         assert warning.detail == "cleanup refused"
 
 
-@pytest.mark.parametrize("failure", ["missing", "identity", "wheel", "user"])
+@pytest.mark.parametrize("failure", ["missing", "identity", "wheel", "user", "inspect-error"])
 def test_layout_builder_rejects_untrusted_parent_before_tagging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
@@ -3810,21 +3774,43 @@ def test_layout_builder_rejects_untrusted_parent_before_tagging(
         labels.pop(lifecycle.LABEL_WHEEL_SHA256)
     elif failure == "user":
         parent["Config"]["User"] = "root;exit"
-    else:
+    elif failure == "missing":
         docker.images.clear()
-    monkeypatch.setattr(lifecycle.project_image, "inspect_layout_image", lambda _image: parent)
+
+    def inspect(_image):
+        if failure == "inspect-error":
+            raise RuntimeError("Docker inspection unavailable")
+        return parent
+
+    monkeypatch.setattr(lifecycle.project_image, "inspect_layout_image", inspect)
     adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, docker, verbose=False)
-    with pytest.raises(lifecycle.ImageLifecycleError):
+    expected = "inspection unavailable" if failure == "inspect-error" else None
+    with pytest.raises(lifecycle.ImageLifecycleError, match=expected):
         adapter.prepare(node, candidate_reference="candidate", parent_reference="parent")
     assert docker.mutations == []
     assert docker.image_id("candidate") is None
 
 
-@pytest.mark.parametrize("failure", ["absent", "tag-substitution"])
+@pytest.mark.parametrize("failure", ["absent", "tag-substitution", "missing-child"])
 def test_layout_builder_refuses_parent_before_docker_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     probe = _layout_builder_probe(tmp_path, monkeypatch, None)
+    if failure == "missing-child":
+        from booley.harness.setup import docker_image
+
+        monkeypatch.setattr(
+            docker_image,
+            "_docker_build_image",
+            lambda _context, _spec: 0,
+        )
+        with pytest.raises(lifecycle.ImageLifecycleError, match="produced no image"):
+            probe.adapter.prepare(
+                probe.node, candidate_reference="candidate", parent_reference="parent"
+            )
+        assert probe.verified == []
+        assert not [name for name in probe.docker.images if "layout-parent:candidate" in name]
+        return
     parent_reference = None if failure == "absent" else "parent"
     if failure == "tag-substitution":
         tag = probe.docker.tag
@@ -3970,8 +3956,8 @@ def test_owned_image_cleanup_preserves_foreign_references(tmp_path, monkeypatch)
     docker = FakeDocker(
         {"candidate": ("sha256:" + "a" * 64, {}), "foreign": ("sha256:" + "a" * 64, {})}
     )
-    lifecycle.record_owned_images(
-        tmp_path, "transaction", {"candidate": "sha256:" + "a" * 64}, ("sha256:" + "a" * 64,)
+    lifecycle.OwnedImages(tmp_path).record(
+        {"candidate": "sha256:" + "a" * 64}, ("sha256:" + "a" * 64,)
     )
     docker.remove_tag("candidate")
     assert lifecycle.cleanup_owned_images(tmp_path, docker=docker)
@@ -4009,14 +3995,38 @@ def test_owned_gc_defers_every_live_consumer(tmp_path, monkeypatch, consumer):
             raise lifecycle.ImageLifecycleError("image is being used by a running container")
 
         monkeypatch.setattr(docker, "remove_tag", conflict)
-    lifecycle.record_owned_images(tmp_path, "transaction", {}, (image,))
+    lifecycle.OwnedImages(tmp_path).record({}, (image,))
     assert lifecycle.cleanup_owned_images(tmp_path, docker=docker)
     assert ("remove_tag", image) not in docker.mutations
-    assert (
-        lifecycle._owned_store()
-        .root.joinpath(lifecycle._owned_prefix(tmp_path) + "transaction.json")
-        .exists()
-    )
+    assert lifecycle.OwnedImages(tmp_path).ids == [image]
+
+
+@pytest.mark.parametrize("unrelated", [0, 40])
+def test_owned_gc_docker_calls_do_not_scale_with_unrelated_inventory(
+    tmp_path, monkeypatch, unrelated
+):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    owned, tagged = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    foreign = [f"sha256:{index:064x}" for index in range(unrelated)]
+    docker = FakeDocker({owned: (owned, {}), "user:alias": (tagged, {})})
+    docker.images.update({f"other-{image[-8:]}:latest": (image, {}) for image in foreign})
+    docker.used_image_ids = frozenset(foreign)
+    calls = []
+    for name in ("image_id", "label", "image_layers", "repo_digests", "container_image_ids"):
+        monkeypatch.setattr(docker, name, lambda *_args, name=name: calls.append(name) or ())
+    for name in ("image_ids", "image_references", "remove_tag"):
+        method = getattr(docker, name)
+        monkeypatch.setattr(
+            docker,
+            name,
+            lambda *args, name=name, method=method: calls.append(name) or method(*args),
+        )
+    assert lifecycle.cleanup_owned_images(tmp_path / "unrecorded", docker=docker) == ()
+    assert calls == []
+    lifecycle.OwnedImages(tmp_path).record({}, (owned, tagged))
+    retained = lifecycle.cleanup_owned_images(tmp_path, docker=docker)
+    assert retained == (f"{tagged}: retained (tag/keeper)",)
+    assert calls == ["image_ids", "image_references", "remove_tag"]
 
 
 def test_owned_gc_retries_record_in_fresh_process(tmp_path, monkeypatch):
@@ -4024,22 +4034,20 @@ def test_owned_gc_retries_record_in_fresh_process(tmp_path, monkeypatch):
     import sys
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    image = "sha256:" + "a" * 64
-    lifecycle.record_owned_images(tmp_path, "transaction", {}, (image,))
+    image, second = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    lifecycle.OwnedImages(tmp_path).record({}, (image,))
+    lifecycle.OwnedImages(tmp_path).record({}, (second,))  # a later refresh adds, never replaces
     code = """
 from pathlib import Path
 from booley.runtime import image_lifecycle as lifecycle, session_refresh
-class Docker:
-    def image_ids(self): return frozenset({IMAGE})
+class Docker:  # only the two inventories and exact-ID removal exist
+    def image_ids(self): return frozenset({IMAGE, SECOND})
     def image_references(self): return ()
-    def repo_digests(self, image): return ()
-    def container_image_ids(self): return frozenset()
-    def image_layers(self, image): return (image,)
     def remove_tag(self, image): print("deleted", image)
 assert session_refresh.pending_refresh_projects() == ()
 assert lifecycle.cleanup_owned_images(Path(PROJECT), docker=Docker()) == ()
 """
-    code = "IMAGE=" + repr(image) + "\nPROJECT=" + repr(str(tmp_path)) + "\n" + code
+    code = f"IMAGE={image!r}\nSECOND={second!r}\nPROJECT={str(tmp_path)!r}\n" + code
     result = subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,
@@ -4049,14 +4057,14 @@ assert lifecycle.cleanup_owned_images(Path(PROJECT), docker=Docker()) == ()
         env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[2] / "src")},
     )
     assert result.returncode == 0, result.stderr
-    assert "deleted " + image in result.stdout
+    assert "deleted " + image in result.stdout and "deleted " + second in result.stdout
     assert list(lifecycle._owned_store().root.glob("*.json")) == []
 
 
 def test_candidate_identity_conflict_refuses_all_cleanup_before_mutation():
     first, second = "sha256:" + "a" * 64, "sha256:" + "b" * 64
     docker = FakeDocker({"ours": (first, {}), "reassigned": (second, {})})
-    with pytest.raises(lifecycle.ImageLifecycleError, match="changed before abort"):
+    with pytest.raises(lifecycle.ImageLifecycleError, match="changed before cleanup"):
         lifecycle._discard_candidate_references(
             ["ours", "reassigned"], docker, {"ours": first, "reassigned": first}
         )
@@ -4068,18 +4076,12 @@ def test_cached_candidate_bytes_are_not_new_transaction_ownership(tmp_path, monk
     image = "sha256:" + "a" * 64
     docker = FakeDocker({"preexisting": (image, {})})
 
-    class Cached:
-        def prepare(self, _node, *, candidate_reference, parent_reference):
-            docker.tag(image, candidate_reference)
-            return candidate_reference
-
-    builder = lifecycle._OwnedBuild(tmp_path, "transaction", docker, Cached())
     reference = "booley-lifecycle-transaction:candidate"
-    builder.prepare(None, candidate_reference=reference, parent_reference=None)
-    _root, refs, owned = lifecycle._read_owned_record(
-        lifecycle._owned_store(), lifecycle._owned_prefix(tmp_path) + "transaction.json"
-    )
-    assert refs == {reference: image} and owned == ()
+    before = docker.image_ids()
+    docker.tag(image, reference)  # a cached build reuses preexisting bytes
+    lifecycle.OwnedImages(tmp_path).acquire(docker, before, [reference])
+    record = lifecycle.OwnedImages(tmp_path)
+    assert record.refs == {reference: image} and record.ids == []
     docker.remove_tag(reference)
     assert lifecycle.cleanup_owned_images(tmp_path, docker=docker) == ()
     assert ("remove_tag", image) not in docker.mutations
@@ -4115,7 +4117,7 @@ def test_recorded_orphan_cleanup_checks_identity_and_preserves_foreign_alias(
     docker = FakeDocker(
         {candidate: (foreign if reassigned else image, {}), "foreign": (image, {})}
     )
-    lifecycle.record_owned_images(tmp_path, "recorded", {candidate: image, "foreign": image}, ())
+    lifecycle.OwnedImages(tmp_path).record({candidate: image, "foreign": image})
     if reassigned:
         with pytest.raises(lifecycle.ImageLifecycleError, match="changed before cleanup"):
             lifecycle._discard_orphaned_candidates(docker, tmp_path)
@@ -4127,15 +4129,13 @@ def test_recorded_orphan_cleanup_checks_identity_and_preserves_foreign_alias(
         assert docker.mutations == [("remove_tag", candidate)]
 
 
-@pytest.mark.parametrize(
-    "transaction,identity", [("../escape", "sha256:" + "a" * 64), ("valid", "sha256:short")]
-)
+@pytest.mark.parametrize("identity", ["sha256:short", "../escape"])
 def test_acquisition_proof_rejects_invalid_identity_before_persistence(
-    tmp_path, monkeypatch, transaction, identity
+    tmp_path, monkeypatch, identity
 ):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     with pytest.raises(lifecycle.ImageLifecycleError):
-        lifecycle.record_owned_images(tmp_path, transaction, {}, (identity,))
+        lifecycle.OwnedImages(tmp_path).record({}, (identity,))
     assert not lifecycle._owned_store().root.exists()
 
 
@@ -4144,11 +4144,10 @@ def test_acquisition_proof_rejects_invalid_identity_before_persistence(
     [
         ("version", 2),
         ("project_root", "relative"),
-        ("transaction", "another"),
         ("owned_ids", [123]),
-        ("references", {"candidate": 123}),
+        ("candidate_refs", {"candidate": 123}),
         ("owned_ids", ["sha256:short"]),
-        ("references", []),
+        ("candidate_refs", []),
     ],
 )
 def test_corrupt_ownership_record_cannot_authorize_deletion(tmp_path, monkeypatch, field, value):
@@ -4156,9 +4155,9 @@ def test_corrupt_ownership_record_cannot_authorize_deletion(tmp_path, monkeypatc
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     image = "sha256:" + "a" * 64
-    lifecycle.record_owned_images(tmp_path, "transaction", {}, (image,))
+    lifecycle.OwnedImages(tmp_path).record({}, (image,))
     store = lifecycle._owned_store()
-    name = lifecycle._owned_prefix(tmp_path) + "transaction.json"
+    name = lifecycle.OwnedImages(tmp_path).name
     record = store.read_json(name)
     record[field] = value
     store.atomic_write_text(name, json.dumps(record))
@@ -4174,11 +4173,9 @@ def test_registry_digest_and_already_deleted_owned_images_are_safe(tmp_path, mon
     image, absent = "sha256:" + "a" * 64, "sha256:" + "b" * 64
     docker = FakeDocker({image: (image, {})})
     docker.registry_identities[image] = ("registry.example/image@sha256:" + "a" * 64,)
-    lifecycle.record_owned_images(tmp_path, "transaction", {}, (image, absent))
-    retained = lifecycle.cleanup_owned_images(tmp_path, docker=docker)
-    assert len(retained) == 1 and "registry digest" in retained[0]
-    assert docker.mutations == []
-    docker.registry_identities.clear()
+    lifecycle.OwnedImages(tmp_path).record({}, (image, absent))
+    assert lifecycle.cleanup_owned_images(tmp_path, docker=docker) == ()
+    assert docker.mutations == [("remove_tag", image)]
     assert lifecycle.cleanup_owned_images(tmp_path, docker=docker) == ()
 
 
@@ -4203,6 +4200,49 @@ def test_failed_candidate_construction_releases_only_recorded_tags(tmp_path, mon
     assert list(lifecycle._owned_store().root.glob("*.json")) == []
 
 
+def test_prepare_records_built_images_and_candidate_refs_for_later_cleanup(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+
+    prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
+
+    record = lifecycle.OwnedImages(root)
+    built = {
+        image.candidate_reference: image.image_id
+        for image in prepared.candidates
+        if lifecycle._candidate_reference_is_transactional(image.candidate_reference)
+    }
+    assert built and built.items() <= record.refs.items()
+    assert set(built.values()) <= set(record.ids)
+
+
+def test_prepare_records_alias_candidate_of_a_reused_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    first = lifecycle.prepare(
+        lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker),
+        docker=docker,
+        builder=TransactionBuilder(docker),
+    )
+    for image in first.candidates:  # adopt: managed tags now carry the built bytes
+        docker.images[image.reference] = docker.images[image.candidate_reference]
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    last = planned.steps[-1]
+    docker.images["alias-source"] = docker.images[last.reference]
+    steps = (*planned.steps[:-1], replace(last, source_reference="alias-source"))
+    reused = lifecycle.prepare(
+        replace(planned, steps=steps), docker=docker, builder=TransactionBuilder(docker)
+    )
+
+    alias = reused.candidates[-1].candidate_reference
+    assert alias and lifecycle.OwnedImages(root).refs[alias] == docker.image_id("alias-source")
+
+
 @pytest.mark.parametrize("response", ["valid", "malformed", "failed", "timeout"])
 def test_docker_inventory_requires_complete_exact_id_evidence(monkeypatch, response):
     image = "sha256:" + "a" * 64
@@ -4223,3 +4263,36 @@ def test_docker_inventory_requires_complete_exact_id_evidence(monkeypatch, respo
     else:
         with pytest.raises(lifecycle.ImageLifecycleError, match="cannot inventory"):
             lifecycle._DockerCli().image_ids()
+
+
+def _empty_ownership_record(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    owned = lifecycle.OwnedImages(tmp_path)
+    owned.store.ensure_directory()
+    record = {"version": 1, "owned_ids": [], "candidate_refs": {}}
+    owned.store.atomic_write_text(owned.name, json.dumps(record))
+    return lifecycle.OwnedImages(tmp_path), owned.store.root / owned.name
+
+
+def test_empty_ownership_removal_survives_transient_unlink_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_unlinks
+
+    owned, record = _empty_ownership_record(tmp_path, monkeypatch)
+    attempts = hold_unlinks(monkeypatch, {record: 1})
+    owned.record({})
+    assert attempts[record] == 2
+    assert not record.exists()
+
+
+def test_empty_ownership_removal_retries_before_raising_lasting_sharing_error(
+    tmp_path, monkeypatch
+):
+    from tests.sharing_error_support import hold_unlinks
+
+    owned, record = _empty_ownership_record(tmp_path, monkeypatch)
+    attempts = hold_unlinks(monkeypatch, {record: 99})
+    with pytest.raises(PermissionError):
+        owned.record({})
+    assert attempts[record] > 1

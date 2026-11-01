@@ -177,9 +177,8 @@ Try:
   bytes/time/RSS.
 - Corrupt copies with `../../shared/coverage/faults/campaign.py <mode> <copy>/coverage.json --owned <root>`
   (Target reference; the script rebinds it), then run the Analyst CLI on that reference → rejected before
-  the model: v1, v2, missing/changed points, truncated gzip, trailing data, point count, sizes, digest,
-  unsafe/absolute path, symlink, invalid final record, duplicate point, wrong rollup/source
-  rollup/evaluation, invalid-overall-score, invalid-source-score, resource ceiling.
+  the model: v1, v2, v3, missing points, truncated gzip, trailing data, symlink, invalid final record,
+  duplicate point, wrong rollup/evaluation, resource ceiling (over-ceiling decompression).
 - Publication faults with `../../shared/coverage/faults/filesystem.py` (table in RUNBOOK.md): fail `link …/coverage.json`, `rename
   …/simulation.json` and terminal `progress.json`; shared
   abort across three Targets; `--gate interrupt` then reap the producer → no complete claim, lock released;
@@ -196,10 +195,12 @@ Try:
 - `python -m booley.flows.sim.campaign_retention --reports-root <r> --invocation N --native-target <t>`
   → only that payload gone, normalized evidence byte-identical, pruned Campaign still analyzable; repeat is
   safe. `--full` → empty `.pruned-N` tombstone, analysis now fails cleanly, next run skips N.
-- Rejections before deletion (rc2, sentinels unchanged) for native and full: ambiguous/unknown Target,
-  invalid number, unsafe path, symlink, changed native, unknown payload, unexplained missing native,
-  tampered points.
-- Interrupt a prune with `../../shared/coverage/faults/filesystem.py --operation unlink` under `.native-pruned/` or `.pruned-N/` →
+- Native rejections before deletion (rc2, sentinels unchanged): ambiguous/unknown Target, invalid
+  number, unsafe path, symlink, wrong invocation, unexplained missing native on the first attempt,
+  malformed or invalid points.
+- Full rejections before deletion (rc2, sentinels unchanged): ambiguous/unknown Target, invalid
+  number, unsafe path, symlink, unknown payload/unrecognized content, malformed or invalid points.
+- Interrupt a prune with `../../shared/coverage/faults/filesystem.py --operation unlink` under `native/` (after the pruning sidecar) or `.pruned-N/` →
   retry same selection completes; prune an active invocation → rc2, lock untouched; reap producer → prune
   succeeds.
 - Follow `../../shared/coverage/simulation-campaign/RUNBOOK.md`: interrupt `sim_toggle half --coverage`
@@ -217,7 +218,7 @@ Depends on: baseline.retention.
 ### 7. cov-goal — TB gap closure and separate waiver decisions (~65 min)
 Intent: only fresh strict coverage evidence meets a Goal; an approval cannot replace collection.
 Depends on: area 1's working collection; read
-`docs/user/FLOW_REFERENCE.md#coverage-waivers-at-review` before proposals.
+`docs/user/COVERAGE.md#coverage-waivers-at-review` before proposals.
 Try:
 - Before entry, install `../../shared/coverage/goals/tests.toml` (`sim_generated`
   = `[gap]` only), copy `../../shared/coverage/goals/close-test-gap.md` to

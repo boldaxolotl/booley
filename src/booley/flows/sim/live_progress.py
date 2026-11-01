@@ -11,11 +11,21 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from booley.flows.job_resources import label_commands
 from booley.flows.progress_lifecycle import TERMINAL_PHASES, write_progress_json
 from booley.flows.run_log import RunLogIdentity, current_run_token
+from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
-_STAGES = frozenset({"preparing", "pre_sim", "building", "executing", "postprocessing"})
+# Each lifecycle stage, and the Job resource history phase of the commands it runs.
+_RESOURCE_PHASES = {
+    "preparing": "sim_prepare",
+    "pre_sim": "sim_pre_run",
+    "building": "sim_build",
+    "executing": "sim_run",
+    "postprocessing": "sim_postprocess",
+}
+_STAGES = frozenset(_RESOURCE_PHASES)
 
 
 @dataclass(frozen=True)
@@ -93,7 +103,12 @@ class LiveProgressSink:
                 value["revision"] = scope.revision
             log = self._logs.get(scope.key)
             if root is not None and log is not None and log.target == scope.target:
-                pointer = log.pointer(root, token, self.project_root)
+                try:
+                    pointer = log.pointer(root, token, self.project_root)
+                except OSError as error:
+                    # Omit the pointer for this update and record why.
+                    pointer = None
+                    self._record_error(error)
                 if pointer is not None:
                     value["log"] = pointer
             self._active[scope.key] = value
@@ -207,6 +222,7 @@ def observe_stage(
     """Publish one real lifecycle transition, never infer a verdict."""
     if stage not in _STAGES:
         raise ValueError(f"invalid Simulation observation stage: {stage}")
+    label_commands(target, _RESOURCE_PHASES[stage], tests=tests)
     sink = _sink.get()
     if sink is None:
         return
@@ -236,7 +252,9 @@ def prepare_attempt_log(
     if scope is not None and scope.ephemeral_root is not None:
         allowed.append(scope.ephemeral_root)
     try:
-        return RunLogIdentity.create(root, target, token, tuple(allowed))
+        return RunLogIdentity.create(
+            root, target, token, tuple(allowed), booley_dir=simulation_booley_dir(project)
+        )
     except OSError as error:
         if required:
             raise

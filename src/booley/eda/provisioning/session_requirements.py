@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager, nullcontext
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from booley.config.eda import PROVISIONING_HOST, EdaConfig, EdaConfigError
@@ -29,14 +29,6 @@ class SessionRequirementsError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class ExpectedEdaIdentity:
-    """Persisted EDA identity fields relevant to current-authority validation."""
-
-    installation: str | None
-    license_profile: str | None
-
-
-@dataclass(frozen=True, slots=True)
 class SessionEdaRequirements:
     """Immutable EDA facts that Runtime maps into its own specification."""
 
@@ -50,44 +42,16 @@ class SessionEdaRequirements:
     relay_image_id: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class SessionBuildRequirements:
-    """Detached value inputs allowed to cross into Runtime spec construction."""
-
-    trusted_mounts: tuple[tuple[str, str], ...]
-    container_environment: tuple[tuple[str, str], ...]
-    installation_name: str | None
-    license_profile_name: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class SessionRequirementsSnapshot:
-    """Detached EDA facts used for Runtime preparation and revalidation."""
-
-    build: SessionBuildRequirements
-    runtime: SessionEdaRequirements
-
-
-def build_requirements(
-    project_root: Path,
-    *,
-    vivado_enabled: bool,
-) -> SessionBuildRequirements:
-    """Resolve value-only EDA inputs for a prospective Sandbox specification."""
-    with lease_build_requirements(project_root, vivado_enabled=vivado_enabled) as leased:
-        return leased.build
-
-
 def inspect_build_requirements(
     project_root: Path,
     *,
     vivado_enabled: bool,
-) -> SessionRequirementsSnapshot:
+) -> SessionEdaRequirements:
     """Resolve prospective Runtime inputs without creating authority state."""
     project = project_root.resolve(strict=True)
     config = _load_vivado_config(project)
     if config is None or not vivado_enabled:
-        return _requirements_snapshot(project, None, None)
+        return _requirements(project, None, None)
     try:
         installation, profile = authority.resolve_for_inspection(
             project,
@@ -95,28 +59,37 @@ def inspect_build_requirements(
         )
     except authority.AuthorityError as exc:
         raise SessionRequirementsError(str(exc)) from exc
-    return _requirements_snapshot(project, installation, profile)
+    return _requirements(project, installation, profile)
 
 
 @contextmanager
-def lease_build_requirements(
+def lease_requirements(
     project_root: Path,
     *,
     vivado_enabled: bool,
-) -> Iterator[SessionRequirementsSnapshot]:
-    """Hold one coherent EDA snapshot through Runtime spec persistence."""
+    prior_eda: bool = False,
+) -> Iterator[SessionEdaRequirements]:
+    """Hold one coherent EDA authority snapshot through Runtime persistence.
+
+    The authority store opens only for an enabled Vivado Flow or when the caller
+    reports that the prior issuance named EDA identity; otherwise the requirements
+    are empty and the store is left alone.
+    """
     project = project_root.resolve(strict=True)
     config = _load_vivado_config(project)
-    if config is None or not vivado_enabled:
-        yield _requirements_snapshot(project, None, None)
+    active = config is not None and vivado_enabled
+    if not active and not prior_eda:
+        yield _requirements(project, None, None)
         return
-    host_provisioning = config.provisioning == PROVISIONING_HOST
+    host_provisioning = (
+        config is not None and vivado_enabled and config.provisioning == PROVISIONING_HOST
+    )
     try:
         with authority.resolve_for_issuance(project, host_provisioning) as (
             installation,
             profile,
         ):
-            yield _requirements_snapshot(project, installation, profile)
+            yield _requirements(project, installation, profile)
     except authority.AuthorityError as exc:
         raise SessionRequirementsError(str(exc)) from exc
 
@@ -128,71 +101,25 @@ def _load_vivado_config(project: Path) -> EdaConfig | None:
         raise SessionRequirementsError(str(exc)) from exc
 
 
-def _requirements_snapshot(
-    project: Path,
-    installation: authority.Installation | None,
-    profile: authority.LicenseProfile | None,
-) -> SessionRequirementsSnapshot:
-    runtime = _requirements(project, installation, profile, include_relay_identity=False)
-    return SessionRequirementsSnapshot(_build_values(installation, profile), runtime)
+def with_relay_identity(requirements: SessionEdaRequirements) -> SessionEdaRequirements:
+    """Add the immutable relay image ID to licensed requirements; never builds or pulls."""
+    if requirements.license_profile is None:
+        return requirements
+    return replace(requirements, relay_image_id=_relay_image_id())
 
 
 def prepare_runtime_dependencies(
-    project_root: Path,
-    leased: SessionRequirementsSnapshot,
+    requirements: SessionEdaRequirements,
     *,
     force_relay: bool = False,
 ) -> SessionEdaRequirements:
-    """Prepare mutable dependencies after a caller validates one leased snapshot."""
-    installation = leased.runtime.installation
-    profile = leased.runtime.license_profile
+    """Prepare mutable dependencies after a caller validates one leased value."""
     try:
-        if profile is not None:
+        if requirements.license_profile is not None:
             ensure_relay_image(force=force_relay)
     except RelayDockerError as exc:
         raise SessionRequirementsError(str(exc)) from exc
-    return _requirements(
-        project_root,
-        installation,
-        profile,
-        include_relay_identity=profile is not None,
-    )
-
-
-def _build_values(
-    installation: authority.Installation | None,
-    profile: authority.LicenseProfile | None,
-) -> SessionBuildRequirements:
-    return SessionBuildRequirements(
-        trusted_mounts=(
-            ((installation.source, CONTAINER_TARGET),) if installation is not None else ()
-        ),
-        container_environment=(
-            (("XILINXD_LICENSE_FILE", f"{profile.lmgrd_port}@booley-license-xilinx"),)
-            if profile is not None
-            else ()
-        ),
-        installation_name=installation.name if installation else None,
-        license_profile_name=profile.name if profile else None,
-    )
-
-
-def requested_host_installation(
-    project_root: Path,
-    *,
-    vivado_enabled: bool,
-) -> tuple[EdaConfig | None, authority.Installation | None]:
-    """Resolve the Grant-selected installation for an active host Vivado Flow."""
-    try:
-        config = load_eda_config(project_root).get("vivado")
-    except EdaConfigError as exc:
-        raise SessionRequirementsError(str(exc)) from exc
-    if not _host_vivado_requested(config, vivado_enabled):
-        return config, None
-    try:
-        return config, authority.resolve_installation(project_root)
-    except authority.AuthorityError as exc:
-        raise SessionRequirementsError(str(exc)) from exc
+    return with_relay_identity(requirements)
 
 
 def requested_license(
@@ -210,72 +137,16 @@ def requested_license(
         if profile is None or profile.name != expected_name:
             raise SessionRequirementsError("Project licence grant differs from the issued Sandbox")
         return profile
-    try:
-        config = load_eda_config(project).get("vivado")
-    except EdaConfigError as exc:
-        raise SessionRequirementsError(str(exc)) from exc
-    if config is None or not vivado_enabled:
+    if _load_vivado_config(project) is None or not vivado_enabled:
         return None
     return _optional_license(project)
-
-
-def resolve_for_session(
-    project_root: Path,
-    *,
-    vivado_enabled: bool,
-    license_marker: bool,
-    expected: ExpectedEdaIdentity | None = None,
-    include_relay_identity: bool,
-) -> AbstractContextManager[SessionEdaRequirements]:
-    """Lease one coherent EDA authority snapshot for Sandbox issuance."""
-    try:
-        config = load_eda_config(project_root).get("vivado")
-    except EdaConfigError as exc:
-        raise SessionRequirementsError(str(exc)) from exc
-    host_provisioning = _host_vivado_requested(config, vivado_enabled)
-    eda_requested = host_provisioning or (config is not None and vivado_enabled)
-    prior_eda = expected is not None and (
-        expected.installation is not None or expected.license_profile is not None
-    )
-    if not eda_requested and not license_marker and not prior_eda:
-        return nullcontext(_requirements(project_root, None, None, include_relay_identity=False))
-    return _authority_lease(
-        project_root,
-        host_provisioning=host_provisioning,
-        include_relay_identity=include_relay_identity,
-    )
-
-
-@contextmanager
-def _authority_lease(
-    project_root: Path,
-    *,
-    host_provisioning: bool,
-    include_relay_identity: bool,
-) -> Iterator[SessionEdaRequirements]:
-    try:
-        with authority.resolve_for_issuance(project_root, host_provisioning) as (
-            installation,
-            profile,
-        ):
-            yield _requirements(
-                project_root,
-                installation,
-                profile,
-                include_relay_identity=include_relay_identity,
-            )
-    except authority.AuthorityError as exc:
-        raise SessionRequirementsError(str(exc)) from exc
 
 
 def _requirements(
     project_root: Path,
     installation: authority.Installation | None,
     profile: authority.LicenseProfile | None,
-    *,
-    include_relay_identity: bool,
 ) -> SessionEdaRequirements:
-    relay_image = _relay_image_id() if profile is not None and include_relay_identity else None
     return SessionEdaRequirements(
         installation=installation,
         license_profile=profile,
@@ -294,7 +165,7 @@ def _requirements(
         ),
         policy_revision=POLICY_REVISION,
         wrapper_sha256=wrapper_sha256() if installation is not None else None,
-        relay_image_id=relay_image,
+        relay_image_id=None,
     )
 
 
@@ -315,10 +186,6 @@ def validate_image_observations(root: Path) -> None:
         raise SessionRequirementsError("cannot inspect Sandbox locale archive") from exc
     if b"en_US" not in locale_archive:
         raise SessionRequirementsError("Sandbox Image lacks the required en_US.UTF-8 locale")
-
-
-def _host_vivado_requested(config: EdaConfig | None, vivado_enabled: bool) -> bool:
-    return bool(config is not None and config.provisioning == PROVISIONING_HOST and vivado_enabled)
 
 
 def _optional_license(project: Path) -> authority.LicenseProfile | None:

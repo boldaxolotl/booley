@@ -335,7 +335,46 @@ def test_embedded_symlink_probe_does_not_hide_physical_inputs(project):
     (root / ".gitignore").write_text("control/booley.toml\n")
     result = pt.inspect_project_trackability(root, selected)
     assert any(group.paths == ("control/booley.toml",) for group in result.ignored)
-    assert any("symlink ancestor" in error for error in result.errors)
+    # The target is inside the RTL checkout: its inputs are reported there, probe included.
+    assert not result.errors
+
+
+@pytest.mark.parametrize("layout", ["embedded", "separate", "unversioned"])
+def test_doctor_inspects_symlinked_booley_dir_in_target_owner(project, tmp_path, layout):
+    """Doctor follows the linked entry and reports against the checkout owning its target."""
+    from booley.harness import doctor
+
+    root, selected = project
+    if layout == "embedded":
+        target = root / "control"
+        (root / ".gitignore").write_text("control/goals/history/\n")
+    else:
+        target = tmp_path / "booley-repo"
+    selected.rename(target)
+    selected.symlink_to(target, target_is_directory=True)
+    if layout == "separate":
+        git(target, "init", "-q", "-b", "main")
+        (target / ".gitignore").write_text("goals/history/\n")
+    (target / "goals/history").mkdir(parents=True)
+    (target / "goals/history/old.md").write_text("summary")
+    reset_cache()
+
+    reporter = doctor._Reporter.create()
+    doctor._check_goal_history_ignored(root, selected, reporter.pass_, reporter.warn_)
+    doctor._check_project_trackability(root, selected, reporter.warn_)
+    findings = reporter.findings or []
+    ids = [finding.check_id for finding in findings]
+
+    if layout == "embedded":
+        # The outer policy check is the one owner of the Goal-history probe.
+        assert ids == ["goals.history-ignored"]
+        assert "control/goals/history/doctor-probe.md" in findings[0].message
+    elif layout == "separate":
+        assert ids == ["project.inputs-ignored"]
+        assert "Booley repository" in findings[0].message
+    else:
+        assert ids == ["project.trackability-inspection"]
+        assert "no owning Git checkout" in findings[0].message
 
 
 def test_embedded_ticket_history_is_not_deduplicated_with_goal_probe(project):

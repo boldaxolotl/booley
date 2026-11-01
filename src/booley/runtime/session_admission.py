@@ -23,16 +23,19 @@ from booley.config.host_config import (
 )
 from booley.core.boundary import (
     BoundaryError,
+    as_str_list,
     require_bool_value,
     require_dict,
     require_list,
     require_str,
     require_str_value,
 )
+from booley.core.egress_modes import declared_egress
 from booley.core.private_store import PrivateStore
 from booley.core.project_identity import matches_project_label
 from booley.core.user_paths import config_dir
 from booley.runtime import devcontainer as dc
+from booley.runtime.filesystem_utils import unlink_file
 from booley.runtime.platform_paths import host_path_from_docker_mount
 from booley.runtime.timefmt import format_age, parse_timestamp, rfc3339_from_datetime
 
@@ -45,6 +48,9 @@ _PROJECT_LISTING_FORMAT = (
     '{{.ID}}\t{{.Names}}\t{{.Label "devcontainer.local_folder"}}'
     '\t{{.Label "booley.project-id"}}\t{{.Label "booley.role"}}'
 )
+# Roles a Project Sandbox (or its licensed relay) can carry. Any other role
+# names a Booley host sidecar such as ``reaper`` or ``egress-proxy``.
+_SANDBOX_ROLES = frozenset({"interactive", "license-relay"})
 logger = logging.getLogger(__name__)
 
 
@@ -75,6 +81,8 @@ class Sandbox:
     running: bool
     vscode: bool
     observed_root: str | None = None
+    # Egress mode declared by the container's BOOLEY_EGRESS environment entry.
+    egress: str = "proxy"
 
 
 def _run(argv: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
@@ -145,7 +153,7 @@ def clear_vscode_claim(project_root: Path) -> bool:
     existed = path.exists()
     if existed:
         _load_claim(path)
-        path.unlink()
+        unlink_file(path)
     return existed
 
 
@@ -190,6 +198,8 @@ def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[S
             container_id, name, folder, project_id, role = fields
             if not (folder or project_id or role or name == local_name):
                 continue
+            if _host_sidecar_listing(folder, project_id, role, name, local_name):
+                continue
             if _foreign_listing(folder, project_id, name, root, local_name):
                 continue
             if (
@@ -215,6 +225,26 @@ def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[S
         raise AdmissionError(f"cannot inspect Project Sandboxes safely: {exc}") from exc
 
 
+def running_sandboxes(*, run: Run = _run) -> tuple[Sandbox, ...]:
+    """Read the host-wide running Booley Sandbox inventory that admission uses."""
+    try:
+        return _inventory(run)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise AdmissionError(f"cannot inspect Booley Sandboxes safely: {exc}") from exc
+
+
+def recreate_remedy(item: Sandbox) -> str:
+    """Name the host steps that recreate one Sandbox from a freshly issued spec."""
+    seed = _command(["booley", "init", "--seed", "--project", item.project_root])
+    if item.vscode:
+        return (
+            f"recreate it: run `{seed}`, then use Dev Containers: Rebuild Container "
+            "in its VS Code window"
+        )
+    down = _command(["booley", "session", "down", "--project", item.project_root])
+    return f"recreate it: run `{down}`, `{seed}`, then start the Sandbox again"
+
+
 def _noninteractive_relay(container_id: str, name: str, run: Run) -> bool:
     """Exclude a relay only after proving it has no interactive workspace bind."""
     result = run(
@@ -238,6 +268,24 @@ def _noninteractive_relay(container_id: str, name: str, run: Run) -> bool:
         )
     except (BoundaryError, ValueError) as exc:
         raise AdmissionError(f"cannot inspect possible Sandbox {name}") from exc
+
+
+def _host_sidecar_listing(
+    folder: str, project_id: str, role: str, name: str, local_name: str
+) -> bool:
+    """Skip a Booley host sidecar that carries no Sandbox identity at all.
+
+    The reaper and egress proxy have no workspace mount, so inspecting them as
+    Sandboxes would abort the whole inventory. Rows with an empty or Sandbox
+    role, any Project label, or the local Sandbox name stay fail-closed.
+    """
+    return (
+        bool(role)
+        and role not in _SANDBOX_ROLES
+        and not folder
+        and not project_id
+        and name != local_name
+    )
 
 
 def _foreign_listing(folder: str, project_id: str, name: str, root: str, local_name: str) -> bool:
@@ -384,7 +432,23 @@ def _inspect(container_id: str, listed_name: str, run: Run, *, exact_id: bool = 
         running,
         _FOLDER_LABEL in labels,
         labels.get(_FOLDER_LABEL),
+        _container_egress(config.get("Env")),
     )
+
+
+def _container_egress(raw_env: object) -> str:
+    """Return the egress mode a container's ``Config.Env`` declares.
+
+    Docker reports a null ``Env`` for a container without environment entries,
+    which declares ``proxy``. A repeated ``BOOLEY_EGRESS`` entry resolves to the
+    last one, as Docker's own last-wins environment does. The environment only
+    classifies the mode; Sandbox ownership is still proven by the labels.
+    """
+    prefix = "BOOLEY_EGRESS="
+    values = [
+        entry.removeprefix(prefix) for entry in as_str_list(raw_env) if entry.startswith(prefix)
+    ]
+    return declared_egress(values[-1] if values else None)
 
 
 def _labels(raw: object) -> dict[str, str]:
@@ -477,7 +541,7 @@ def _reconcile_claims(
         else:
             remaining.append(claim)
     for claim in consumed:
-        (_store().root / _claim_filename(claim.project_root)).unlink()
+        unlink_file(_store().root / _claim_filename(claim.project_root))
     return tuple(remaining), tuple(diagnostics)
 
 

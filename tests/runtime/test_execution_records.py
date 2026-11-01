@@ -5,18 +5,22 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
+from tests.sharing_error_support import hold_opens, no_retry_delay, sharing_error
 
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionId,
     atomic_write_json,
-    campaign_child_entry_manifests,
+    child_context_matches,
     execution_paths,
     gc_terminal_executions,
     read_attachment_heartbeat,
+    read_json,
+    request_cancellation,
     verify_inherited_execution_id,
     write_attachment_heartbeat,
 )
@@ -29,41 +33,6 @@ from booley.runtime.pid import (
     ProcessIdentity,
     ProcessObservation,
 )
-
-
-def test_campaign_child_entry_manifest_rejects_display_form_parent_identity(
-    tmp_path: Path,
-) -> None:
-    child_id = "e" * 32
-    entries = tmp_path / "entries"
-    entries.mkdir()
-    entry = {
-        "$schema": "booley.simulation-campaign-child-entry/v1",
-        "child_execution_id": child_id,
-        "parent_execution_id": "sim-20260925T153819Z-1",
-        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-        "manifest_path": str((tmp_path / "manifest.json").resolve()),
-        "manifest_sha256": "sha256:" + "1" * 64,
-        "work_item_id": "item:0000:0123456789abcdef",
-        "attempt_id": "550e8400-e29b-41d4-a716-446655440001",
-        "attempt_ordinal": 1,
-        "attempt_relative_path": "items/item/attempts/0001-attempt",
-        "runtime_context_sha256": "sha256:" + "2" * 64,
-    }
-    (entries / f"{child_id}.json").write_text(
-        json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="invalid schema"):
-        campaign_child_entry_manifests(tmp_path)
-
-    entry["parent_execution_id"] = "a" * 32
-    (entries / f"{child_id}.json").write_text(
-        json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
-    assert campaign_child_entry_manifests(tmp_path) == (Path(entry["manifest_path"]),)
 
 
 def test_atomic_write_json_fsyncs_file_then_rename_then_parent(
@@ -316,3 +285,213 @@ def test_gc_keeps_slot_referenced_and_nonterminal_execution_records(tmp_path: Pa
     assert not execution_paths(unreferenced, booley_dir=tmp_path).root.exists()
     assert execution_paths(referenced, booley_dir=tmp_path).root.exists()
     assert running_paths.root.exists()
+
+
+def _unreadable_slot(tmp_path: Path, monkeypatch, execution_id: str) -> Path:
+    """A slot entry that exists but cannot be opened (Windows scanner, sharing error)."""
+    slot = tmp_path / "runtime" / "jobs" / "slots" / "heavy" / "holder.json"
+    slot.parent.mkdir(parents=True)
+    slot.write_text(json.dumps({"execution_id": execution_id}), encoding="utf-8")
+    original_open = Path.open
+
+    def locked_open(path, *args, **kwargs):
+        if path == slot:
+            raise PermissionError(13, "held by a scanner")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", locked_open)
+    return slot
+
+
+def test_gc_keeps_records_pinned_by_unreadable_slot_entry(tmp_path: Path, monkeypatch) -> None:
+    # An unreadable entry may pin any record, so the pass removes nothing (#1905).
+    pinned = "a" * 32
+    _old_terminal(tmp_path, pinned)
+    _unreadable_slot(tmp_path, monkeypatch, pinned)
+
+    assert gc_terminal_executions(tmp_path, now=1_000_000, retention_seconds=10) == []
+    assert execution_paths(pinned, booley_dir=tmp_path).root.exists()
+
+
+# --- Windows sharing errors on protocol reads (#2187) -------------------------------
+
+_EXEC_ID = "d" * 32
+
+
+def _protocol_paths(tmp_path: Path):
+    paths = execution_paths(_EXEC_ID, booley_dir=tmp_path)
+    paths.root.mkdir(parents=True)
+    return paths
+
+
+def _child_context(tmp_path: Path):
+    """A valid child context sidecar."""
+    paths = _protocol_paths(tmp_path)
+    context = {
+        "$schema": "booley.supervised-child-context/v1",
+        "child_execution_id": _EXEC_ID,
+        "parent_execution_id": "sim-20260925T153819Z-1",
+        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "manifest_sha256": "sha256:" + "1" * 64,
+        "work_item_id": "item:0000:0123456789abcdef",
+        "attempt_id": "550e8400-e29b-41d4-a716-446655440001",
+        "attempt_ordinal": 1,
+    }
+    paths.context.write_bytes(json.dumps(context).encode())
+    return paths
+
+
+def _leftover_child_entry(booley_dir: Path, execution_id: str) -> Path:
+    """The Project-local child entry Booley 0.3.0 left behind; nothing reads it any more."""
+    entries = booley_dir / ".runtime" / "campaign-child-executions" / "entries"
+    entries.mkdir(parents=True, exist_ok=True)
+    entry = entries / f"{execution_id}.json"
+    entry.write_text(
+        json.dumps({"runtime_context_sha256": "sha256:" + "0" * 64}), encoding="utf-8"
+    )
+    return entry
+
+
+def test_context_check_ignores_a_leftover_project_child_entry(tmp_path: Path) -> None:
+    paths = _child_context(tmp_path)
+    _leftover_child_entry(tmp_path, _EXEC_ID)
+    assert child_context_matches(paths, _EXEC_ID) is True  # the entry does not bind the digest
+    paths.context.unlink()
+    assert child_context_matches(paths, _EXEC_ID) is True  # no sidecar: nothing to refuse
+
+
+def test_terminal_gc_ignores_a_leftover_unretired_child_entry(tmp_path: Path) -> None:
+    stale = "a" * 32
+    _old_terminal(tmp_path, stale)
+    _leftover_child_entry(tmp_path, stale)
+
+    assert gc_terminal_executions(tmp_path, now=1_000_000, retention_seconds=10) == [stale]
+
+
+def _heartbeat(tmp_path: Path):
+    paths = _protocol_paths(tmp_path)
+    write_attachment_heartbeat(paths, generation=7)
+    return paths
+
+
+def _record(tmp_path: Path):
+    paths = _protocol_paths(tmp_path)
+    paths.record.write_text(json.dumps({"state": "running"}), encoding="utf-8")
+    return paths
+
+
+def test_record_read_survives_transient_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _record(tmp_path)
+    hold_opens(monkeypatch, {paths.record: 1})
+    assert read_json(paths.record) == {"state": "running"}
+
+
+def test_context_read_survives_transient_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _child_context(tmp_path)
+    hold_opens(monkeypatch, {paths.context: 1})
+    assert child_context_matches(paths, _EXEC_ID) is True
+
+
+def test_heartbeat_read_survives_transient_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _heartbeat(tmp_path)
+    hold_opens(monkeypatch, {paths.heartbeat: 1})
+    assert read_attachment_heartbeat(paths) == 7
+
+
+def test_record_read_raises_lasting_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _record(tmp_path)
+    attempts = hold_opens(monkeypatch, {paths.record: 5})
+    with pytest.raises(PermissionError):
+        read_json(paths.record)
+    assert attempts[paths.record] > 1
+
+
+def test_context_read_raises_lasting_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _child_context(tmp_path)
+    hold_opens(monkeypatch, {paths.context: 5})
+    with pytest.raises(PermissionError):
+        child_context_matches(paths, _EXEC_ID)
+
+
+def test_heartbeat_read_raises_lasting_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _heartbeat(tmp_path)
+    hold_opens(monkeypatch, {paths.heartbeat: 5})
+    with pytest.raises(PermissionError):
+        read_attachment_heartbeat(paths)
+
+
+def _hold_heartbeat_replace(monkeypatch, failures: int) -> None:
+    no_retry_delay(monkeypatch)
+    real_replace = Path.replace
+    remaining = [failures]
+
+    def replace_with_holds(self, target):
+        if "attachment-heartbeat" in str(target) and remaining[0] > 0:
+            remaining[0] -= 1
+            raise sharing_error()
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", replace_with_holds)
+
+
+def test_heartbeat_write_retries_transient_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _heartbeat(tmp_path)
+    _hold_heartbeat_replace(monkeypatch, 1)
+    write_attachment_heartbeat(paths, generation=8)
+    assert read_attachment_heartbeat(paths) == 8
+
+
+def test_heartbeat_write_survives_lasting_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    paths = _heartbeat(tmp_path)
+    _hold_heartbeat_replace(monkeypatch, 99)
+    write_attachment_heartbeat(paths, generation=8)  # exhausted retries do not fail the run
+    assert read_attachment_heartbeat(paths) == 7
+    assert [p.name for p in paths.root.iterdir()] == ["attachment-heartbeat"]
+
+
+def test_missing_protocol_files_read_as_absent(tmp_path: Path) -> None:
+    paths = _protocol_paths(tmp_path)
+    assert read_json(paths.record) is None
+    assert read_attachment_heartbeat(paths) is None
+
+
+def test_corrupt_protocol_files_read_as_absent(tmp_path: Path) -> None:
+    paths = _protocol_paths(tmp_path)
+    paths.record.write_bytes(b"\xff{not json")
+    paths.heartbeat.write_bytes(b"abc")
+    assert read_json(paths.record) is None
+    assert read_attachment_heartbeat(paths) is None
+
+
+def test_posix_unreadable_protocol_file_reads_as_absent(tmp_path: Path, monkeypatch) -> None:
+    paths = _record(tmp_path)
+    no_retry_delay(monkeypatch)
+    real_open = Path.open
+
+    def denied(path, *args, **kwargs):
+        if path == paths.record:
+            raise PermissionError(13, "Permission denied")  # POSIX EACCES: no winerror
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied)
+    # Pin POSIX: on Windows a bare EACCES is a transient C-runtime sharing error.
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert read_json(paths.record) is None
+
+
+def test_gc_keeps_record_whose_read_outlasts_sharing_budget(tmp_path: Path, monkeypatch) -> None:
+    _old_terminal(tmp_path, _EXEC_ID)
+    paths = execution_paths(_EXEC_ID, booley_dir=tmp_path)
+    hold_opens(monkeypatch, {paths.record: 99})
+    gc_terminal_executions(tmp_path)
+    assert paths.record.exists()
+
+
+def test_cancellation_request_is_rewritten_when_the_cancel_read_stays_held(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = _protocol_paths(tmp_path)
+    atomic_write_json(paths.cancel, {"force": False, "reason": "old", "signum": 2})
+    hold_opens(monkeypatch, {paths.cancel: 2})  # the whole retry budget
+    request_cancellation(paths, reason="again")  # a held read must not abort the loop
+    assert json.loads(paths.cancel.read_bytes())["reason"] == "again"

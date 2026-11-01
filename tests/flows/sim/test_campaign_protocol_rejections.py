@@ -1,139 +1,71 @@
 from __future__ import annotations
 
-import json
 import threading
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from booley.flows.sim.campaign import child_protocol
-from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError, canonical_json_bytes
+from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
 from booley.flows.sim.campaign.store import CampaignStore
-from booley.runtime.execution_records import ExecutionId
+from booley.runtime.execution_records import ExecutionId, execution_paths
 from tests.flows.sim.test_campaign_phase3 import _two_item_manifest
+from tests.fusesoc_test_support import symlinked_booley_dir
 
 
-def _entry(execution_id: str = "e" * 32) -> dict[str, object]:
-    return {
-        "$schema": child_protocol._ENTRY_SCHEMA,
-        "child_execution_id": execution_id,
-        "parent_execution_id": "a" * 32,
-        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-        "manifest_path": "/project/manifest.json",
-        "manifest_sha256": "sha256:" + "1" * 64,
-        "work_item_id": "item:0000:0123456789abcdef",
-        "attempt_id": "550e8400-e29b-41d4-a716-446655440001",
-        "attempt_ordinal": 1,
-        "attempt_relative_path": "items/item/attempts/0001-attempt",
-        "runtime_context_sha256": "sha256:" + "2" * 64,
-    }
+@pytest.mark.parametrize("layout", ["entry", "below", "unvalidated"])
+def test_child_records_publish_and_verify_through_the_booley_dir_entry(
+    tmp_path: Path, layout: str
+) -> None:
+    """#2191: the symlinked ``.booley`` entry is followed; a link below it is refused.
 
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("child_execution_id", "bad"),
-        ("attempt_ordinal", False),
-        ("attempt_ordinal", 0),
-        ("manifest_sha256", "bad"),
-        ("runtime_context_sha256", 1),
-        ("parent_execution_id", ""),
-        ("campaign_id", 1),
-    ],
-)
-def test_child_entry_rejects_invalid_fields(tmp_path: Path, field: str, value: object) -> None:
-    entry = _entry()
-    entry[field] = value
-    with pytest.raises(SimulationCampaignIntegrityError):
-        child_protocol._validate_entry(tmp_path / f"{'e' * 32}.json", entry)
-
-
-def test_child_entry_rejects_schema_and_filename_mismatches(tmp_path: Path) -> None:
-    entry = _entry()
-    entry["extra"] = True
-    with pytest.raises(SimulationCampaignIntegrityError, match="schema"):
-        child_protocol._validate_entry(tmp_path / f"{'e' * 32}.json", entry)
-
-    with pytest.raises(SimulationCampaignIntegrityError, match="filename"):
-        child_protocol._validate_entry(tmp_path / f"{'f' * 32}.json", _entry())
-
-
-def test_child_recovery_rejects_display_form_parent_identity(tmp_path: Path) -> None:
+    ``unvalidated`` is recovery handed a linked project-data path no caller proved to be the
+    configured entry: it must stay refused.
+    """
     manifest = _two_item_manifest()
+    # The Campaign store is plain: only the Project-local child records cross the entry.
     store = CampaignStore(tmp_path / "campaign")
     store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley").mkdir()
-    registry = child_protocol.ChildExecutionRegistry(store, manifest, project)
+    external = symlinked_booley_dir(project, tmp_path / "external-booley")
+    if layout == "below":
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (external / ".runtime").symlink_to(elsewhere, target_is_directory=True)
+    if layout == "unvalidated":
+        registry = child_protocol.ChildExecutionRegistry.from_project_data(
+            manifest, project / ".booley"
+        )
+    else:
+        registry = child_protocol.ChildExecutionRegistry(manifest, project)
     item = manifest.document["work_items"][0]
     attempt_id = "550e8400-e29b-41d4-a716-446655440001"
     ordinal, attempt = store.allocate_attempt_directory(str(item["work_item_id"]), attempt_id)
-    prepared = registry.prepare(
-        ExecutionId("e" * 32),
-        work_item_id=str(item["work_item_id"]),
-        attempt_id=attempt_id,
-        attempt_ordinal=ordinal,
-        attempt_directory=attempt,
-        parent_execution_id=ExecutionId("a" * 32),
-    )
-    for path in (prepared.project_entry, prepared.campaign_entry):
-        entry = json.loads(path.read_text())
-        entry["parent_execution_id"] = "sim-20260925T153819Z-1"
-        path.chmod(0o600)
-        path.write_bytes(canonical_json_bytes(entry))
-
-    with pytest.raises(
-        SimulationCampaignIntegrityError,
-        match="child entry parent execution identity is invalid",
-    ):
-        registry.recover_unretired(None)
-
-
-@pytest.mark.parametrize("value", [r"items\attempt", "/absolute", "../escape", "a/../b"])
-def test_child_attempt_path_must_be_canonical_and_contained(value: str) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
-        child_protocol._safe_relative_path(value)
-
-
-def test_child_retirement_rejects_invalid_json_and_identity() -> None:
-    execution_id = ExecutionId("e" * 32)
-    digest = "sha256:" + "1" * 64
-    with pytest.raises(SimulationCampaignIntegrityError, match="invalid JSON"):
-        child_protocol._validate_retirement(b"{", execution_id, digest, digest)
-
-    retirement = {
-        "$schema": child_protocol._RETIREMENT_SCHEMA,
-        "child_execution_id": str(execution_id),
-        "entry_sha256": digest,
-        "execution_terminal_sha256": "sha256:" + "2" * 64,
-        "lease_id": None,
-        "token_absent": True,
-        "terminal_cause": "completed",
+    fields = {
+        "work_item_id": str(item["work_item_id"]),
+        "attempt_id": attempt_id,
+        "attempt_ordinal": ordinal,
+        "attempt_directory": attempt,
+        "parent_execution_id": ExecutionId("a" * 32),
     }
-    with pytest.raises(SimulationCampaignIntegrityError, match="terminal digest"):
-        child_protocol._validate_retirement(
-            canonical_json_bytes(retirement), execution_id, digest, digest
-        )
 
-    retirement["execution_terminal_sha256"] = digest
-    retirement["token_absent"] = False
-    with pytest.raises(SimulationCampaignIntegrityError, match="identity"):
-        child_protocol._validate_retirement(
-            canonical_json_bytes(retirement), execution_id, digest, digest
-        )
+    # Unique: recovery signals every host process carrying this ID (xdist workers too).
+    execution_id = ExecutionId(uuid.uuid4().hex)
 
+    def cycle() -> None:
+        # Publish, then verify the identical records (second prepare).
+        registry.prepare(execution_id, **fields)
+        registry.prepare(execution_id, **fields)
 
-def test_protocol_record_rejects_invalid_and_noncanonical_json(tmp_path: Path) -> None:
-    path = tmp_path / "record.json"
-    path.write_bytes(b"{")
-    with pytest.raises(SimulationCampaignIntegrityError, match="invalid JSON"):
-        child_protocol._read_protocol_record(path, "record")
-
-    path.write_text(json.dumps({"value": 1}), encoding="utf-8")
-    with pytest.raises(SimulationCampaignIntegrityError, match="not canonical"):
-        child_protocol._read_protocol_record(path, "record")
+    if layout != "entry":
+        with pytest.raises(SimulationCampaignIntegrityError, match="link"):
+            cycle()
+        return
+    cycle()
+    assert execution_paths(execution_id, booley_dir=external).context.is_file()
 
 
 def test_publish_rejects_conflicting_existing_record(tmp_path: Path) -> None:
@@ -154,19 +86,14 @@ def test_protocol_record_size_limit_is_enforced(tmp_path: Path, monkeypatch) -> 
 def _registry(tmp_path: Path) -> child_protocol.ChildExecutionRegistry:
     registry = object.__new__(child_protocol.ChildExecutionRegistry)
     registry._project_data_root = tmp_path
+    registry._booley_dir = None
     registry._record_locks = {}
     registry._record_locks_gate = threading.Lock()
     return registry
 
 
 def _prepared(tmp_path: Path) -> child_protocol.PreparedChild:
-    return child_protocol.PreparedChild(
-        ExecutionId("e" * 32),
-        "sha256:" + "1" * 64,
-        tmp_path / "project.json",
-        tmp_path / "campaign.json",
-        tmp_path / "context.json",
-    )
+    return child_protocol.PreparedChild(ExecutionId("e" * 32), tmp_path / "context.json")
 
 
 @pytest.mark.parametrize("record", [None, {"state": "running", "tree_terminal": False}])
@@ -184,24 +111,6 @@ def test_mark_terminal_requires_a_recoverable_or_terminal_record(
         registry.mark_terminal(_prepared(tmp_path), "failed")
 
 
-def test_retire_requires_token_absence_and_terminal_proof(tmp_path: Path, monkeypatch) -> None:
-    registry = _registry(tmp_path)
-    monkeypatch.setattr(
-        child_protocol,
-        "execution_paths",
-        lambda *_args, **_kwargs: SimpleNamespace(record=tmp_path / "record"),
-    )
-    with pytest.raises(SimulationCampaignIntegrityError, match="token remains"):
-        registry.retire(
-            _prepared(tmp_path), lease_id=None, terminal_cause="failed", token_absent=False
-        )
-    monkeypatch.setattr(child_protocol, "read_json", lambda _path: None)
-    with pytest.raises(SimulationCampaignIntegrityError, match="tree-terminal"):
-        registry.retire(
-            _prepared(tmp_path), lease_id=None, terminal_cause="failed", token_absent=True
-        )
-
-
 def test_cancel_reports_timeout(tmp_path: Path, monkeypatch) -> None:
     registry = _registry(tmp_path)
     monkeypatch.setattr(
@@ -216,226 +125,69 @@ def test_cancel_reports_timeout(tmp_path: Path, monkeypatch) -> None:
     assert registry.cancel(ExecutionId("e" * 32)) is False
 
 
-def test_release_matching_token_rejects_duplicates_and_stale_files(tmp_path: Path) -> None:
-    execution_id = ExecutionId("e" * 32)
-    token = SimpleNamespace(execution_id=execution_id, lease_id="lease", path=tmp_path / "token")
+def _lane_registry(tmp_path: Path):
+    """A real registry over a stored Campaign, plus one prepared (waiting) lane."""
+    manifest = _two_item_manifest()
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(manifest)
+    project = tmp_path / "project"
+    (project / ".booley").mkdir(parents=True)
+    registry = child_protocol.ChildExecutionRegistry(manifest, project)
+    item = manifest.document["work_items"][0]
+    attempt_id = "550e8400-e29b-41d4-a716-446655440001"
+    ordinal, attempt = store.allocate_attempt_directory(str(item["work_item_id"]), attempt_id)
 
-    class Store:
-        def __init__(self, values):
-            self.values = values
-
-        def snapshot(self, _kind):
-            return self.values, ()
-
-        def release(self, selected):
-            assert selected is token
-
-    with pytest.raises(SimulationCampaignIntegrityError, match="duplicate"):
-        child_protocol.ChildExecutionRegistry._release_matching_token(
-            Store((token, token)), execution_id
-        )
-    token.path.write_text("present", encoding="utf-8")
-    with pytest.raises(SimulationCampaignIntegrityError, match="remains"):
-        child_protocol.ChildExecutionRegistry._release_matching_token(
-            Store((token,)), execution_id
+    def prepare(execution_id: str) -> child_protocol.PreparedChild:
+        return registry.prepare(
+            ExecutionId(execution_id),
+            work_item_id=str(item["work_item_id"]),
+            attempt_id=attempt_id,
+            attempt_ordinal=ordinal,
+            attempt_directory=attempt,
+            parent_execution_id=ExecutionId("a" * 32),
         )
 
-
-def test_token_absence_checks_managed_and_unmanaged_claims(tmp_path: Path, monkeypatch) -> None:
-    execution_id = ExecutionId("e" * 32)
-    token = SimpleNamespace(execution_id=execution_id)
-    registry = _registry(tmp_path)
-    store = SimpleNamespace(snapshot=lambda _kind: ((token,), ()))
-    with pytest.raises(SimulationCampaignIntegrityError, match="slot claim remains"):
-        registry._assert_token_absent(store, execution_id)
-
-    token_path = tmp_path / "runtime" / "jobs" / "slots" / "heavy" / "token.json"
-    token_path.parent.mkdir(parents=True)
-    token_path.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(child_protocol, "read_json", lambda _path: {"execution_id": execution_id})
-    with pytest.raises(SimulationCampaignIntegrityError, match="cannot be reconciled"):
-        registry._assert_no_unmanaged_token(execution_id)
+    return registry, prepare
 
 
-def test_cocotb_infrastructure_source_requires_independent_guard() -> None:
-    from booley.flows.sim.campaign.store import _validate_cocotb_source
+def test_recover_lane_finishes_a_waiting_lane(tmp_path: Path) -> None:
+    registry, prepare = _lane_registry(tmp_path)
+    # Unique: real recovery signals every host process carrying this ID (xdist workers too).
+    lane = prepare(uuid.uuid4().hex)
+    assert not registry.is_terminal(lane.execution_id)
 
-    observation = {
-        "test": "smoke",
-        "execution": "aborted",
-        "failure_class": "infrastructure",
-        "functional": "not_observed",
-        "assertions": "not_observed",
-        "detail": {"reason": "guard", "termination": "disk_budget"},
-    }
-    source = [{"test": "smoke", "verdict": "fail", "detail": "guard"}]
-    _validate_cocotb_source(source, (observation,), infrastructure_tests=frozenset({"smoke"}))
-    with pytest.raises(SimulationCampaignIntegrityError, match="disagrees"):
-        _validate_cocotb_source(source, (observation,))
+    registry.recover_lane(lane.execution_id)
+
+    assert registry.is_terminal(lane.execution_id)
+    registry.recover_lane(lane.execution_id)  # already terminal: nothing to do
 
 
-def test_cocotb_completed_source_still_rejects_forged_abort() -> None:
-    from booley.flows.sim.campaign.store import _validate_cocotb_source
+def test_recover_lane_fails_closed_when_cancel_fails(tmp_path: Path, monkeypatch) -> None:
+    registry, prepare = _lane_registry(tmp_path)
+    cancelled: list[ExecutionId] = []
 
-    observation = {
-        "test": "smoke",
-        "execution": "aborted",
-        "failure_class": "infrastructure",
-        "functional": "not_observed",
-        "assertions": "not_observed",
-        "detail": {"reason": "guard"},
-    }
-    source = [{"test": "smoke", "verdict": "pass", "detail": "guard"}]
-    with pytest.raises(SimulationCampaignIntegrityError, match="disagrees"):
-        _validate_cocotb_source(source, (observation,), infrastructure_tests=frozenset({"smoke"}))
+    def failing_cancel(execution_id: ExecutionId) -> bool:
+        cancelled.append(execution_id)
+        return False
+
+    monkeypatch.setattr(registry, "cancel", failing_cancel)
+    registry.recover_lane(ExecutionId("d" * 32))  # no record: the lane never started
+    assert cancelled == []
+
+    lane = prepare("e" * 32)
+    with pytest.raises(SimulationCampaignIntegrityError, match="recovery is incomplete"):
+        registry.recover_lane(lane.execution_id)
+    assert cancelled == [lane.execution_id]
 
 
-@pytest.mark.parametrize("mutation", [None, "owner", "selection", "digest", "no_evidence"])
-def test_missing_cocotb_transport_requires_authenticated_process_failure(
-    tmp_path: Path, mutation: str | None
+def test_recover_lane_treats_an_unreadable_record_as_indeterminate(
+    tmp_path: Path, monkeypatch
 ) -> None:
-    from booley.flows.sim.campaign.codec import decode_simulation_result
-    from booley.flows.sim.campaign.store import _validate_result_selection
-    from tests.flows.sim.test_campaign_codec_golden import _simulation_result
+    registry, prepare = _lane_registry(tmp_path)
+    lane = prepare("f" * 32)
+    paths = execution_paths(lane.execution_id, booley_dir=tmp_path / "project" / ".booley")
+    paths.record.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(registry, "cancel", lambda execution_id: False)
 
-    document = json.loads(_simulation_result("aborted"))
-    document["observations"][0]["detail"] = {
-        "reason": "spawn failed",
-        "termination": "adapter_protocol",
-        "code": "adapter_protocol",
-    }
-    payload = {
-        "$schema": "booley.simulation-infrastructure-failure/v1",
-        "attempt_id": document["attempt_id"],
-        "work_item_id": document["work_item_id"],
-        "selected_tests": ["smoke"],
-        "source": "process",
-        "code": "adapter_protocol",
-        "termination": "adapter_protocol",
-    }
-    if mutation == "selection":
-        payload["selected_tests"] = ["other"]
-    raw = canonical_json_bytes(payload)
-    (tmp_path / "failure.json").write_bytes(raw)
-    import hashlib
-
-    reference = {
-        "kind": "simulation_infrastructure_failure",
-        "path": "failure.json",
-        "bytes": len(raw),
-        "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
-        "owner": document["attempt_id"],
-    }
-    if mutation == "owner":
-        reference["owner"] = "550e8400-e29b-41d4-a716-446655440002"
-    if mutation == "digest":
-        reference["sha256"] = "sha256:" + "0" * 64
-    document["evidence"] = [] if mutation == "no_evidence" else [reference]
-    result = decode_simulation_result(canonical_json_bytes(document))
-    item = {"kind": "cocotb_batch", "selection": {"kind": "named", "names": ("smoke",)}}
-    if mutation is None:
-        _validate_result_selection(item, result, tmp_path)
-    else:
-        with pytest.raises(SimulationCampaignIntegrityError):
-            _validate_result_selection(item, result, tmp_path)
-
-
-@pytest.mark.parametrize("failure_kind", ["infrastructure", "design"])
-def test_missing_cocotb_transport_requires_real_adapter_guard(
-    tmp_path: Path, failure_kind: str
-) -> None:
-    import hashlib
-
-    from booley.flows.sim.adapter_transport import (
-        AdapterResult,
-        AdapterTestResult,
-        AdapterTransportIdentity,
-        write_adapter_result,
-    )
-    from booley.flows.sim.campaign.codec import decode_simulation_result
-    from booley.flows.sim.campaign.store import _validate_result_selection
-    from tests.flows.sim.test_campaign_codec_golden import _simulation_result
-
-    document = json.loads(_simulation_result("aborted"))
-    path = tmp_path / "adapter.json"
-    identity = AdapterTransportIdentity("cocotb", "token", "target", ("smoke",), path)
-    termination = "disk_budget" if failure_kind == "infrastructure" else "missing_input"
-    document["observations"][0]["detail"] = {"reason": "guard", "termination": termination}
-    if failure_kind == "design":
-        termination = "timeout"
-        failure_kind = "timeout"
-    verdict = "timeout" if termination == "timeout" else "fail"
-    write_adapter_result(
-        identity,
-        AdapterResult(
-            passed=False,
-            inconclusive=False,
-            sva_errors=0,
-            tests=("smoke",),
-            simulator_returncode=0,
-            termination=termination,
-            failure_kind=failure_kind,
-            detail="guard",
-            test_results=(
-                AdapterTestResult("smoke", verdict, 0.0, "guard", termination, failure_kind),
-            ),
-        ),
-    )
-    raw = path.read_bytes()
-    document["evidence"] = [
-        {
-            "kind": "simulation_adapter_result",
-            "path": "adapter.json",
-            "owner": document["attempt_id"],
-            "bytes": len(raw),
-            "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
-        }
-    ]
-    result = decode_simulation_result(canonical_json_bytes(document))
-    item = {"kind": "cocotb_batch", "selection": {"kind": "named", "names": ("smoke",)}}
-    if failure_kind == "infrastructure":
-        _validate_result_selection(item, result, tmp_path)
-    else:
-        with pytest.raises(SimulationCampaignIntegrityError, match="authenticated transport"):
-            _validate_result_selection(item, result, tmp_path)
-
-
-@pytest.mark.parametrize("count", [1, 129])
-def test_cocotb_guard_source_reconciles_bounded_unicode_detail(count: int) -> None:
-    from booley.flows.sim.campaign.store import _validate_cocotb_source
-
-    full_detail = "watchdog: " + "界" * 400
-    limit = 16 if count > 128 else 768
-    bounded = full_detail.encode("utf-8")[-limit:].decode("utf-8", errors="ignore")
-    observations = tuple(
-        {
-            "test": f"test_{i}",
-            "execution": "aborted",
-            "failure_class": "infrastructure",
-            "functional": "not_observed",
-            "assertions": "not_observed",
-            "detail": {"reason": bounded},
-        }
-        for i in range(count)
-    )
-    source = [
-        {"test": item["test"], "verdict": "fail", "detail": full_detail} for item in observations
-    ]
-    guards = frozenset(item["test"] for item in observations)
-    _validate_cocotb_source(source, observations, infrastructure_tests=guards)
-    observations[0]["detail"]["reason"] = "unrelated"
-    with pytest.raises(SimulationCampaignIntegrityError, match="disagrees"):
-        _validate_cocotb_source(source, observations, infrastructure_tests=guards)
-
-
-def test_unfiltered_cocotb_infrastructure_abort_requires_provenance(tmp_path: Path) -> None:
-    from booley.flows.sim.campaign.codec import decode_simulation_result
-    from booley.flows.sim.campaign.store import _validate_result_selection
-    from tests.flows.sim.test_campaign_codec_golden import _simulation_result
-
-    document = json.loads(_simulation_result("aborted"))
-    document["observations"][0]["test"] = None
-    result = decode_simulation_result(canonical_json_bytes(document))
-    item = {"kind": "cocotb_batch", "selection": {"kind": "unfiltered", "names": ()}}
-    with pytest.raises(SimulationCampaignIntegrityError, match="authenticated"):
-        _validate_result_selection(item, result, tmp_path)
+    with pytest.raises(SimulationCampaignIntegrityError, match="recovery is incomplete"):
+        registry.recover_lane(lane.execution_id)

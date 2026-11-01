@@ -325,7 +325,7 @@ def unsupported_eda_tool_boundary(eda_tool: str) -> str:
     return (
         f"EDA tool {eda_tool!r} is outside Booley's built-in matrix "
         f"({', '.join(sorted(EDA_TOOL_CRITERION_FAMILIES))}): it contributes "
-        "no sim/lint/synth criteria, so non-FPGA Targets cannot run RTL tickets "
+        "no sim/lint/synth criteria, so non-FPGA Targets that declare it get no RTL Criteria "
         "(ADR 0039 §5). Widening the matrix (edalize wiring → output parser "
         "→ criteria-map row → doctor probe) is the supported extension axis; "
         "a Custom Flow adds new analyses with its own criterion families but "

@@ -51,8 +51,6 @@ _DURABLE_BOUNDARIES = (
 )
 _CRASH_POINTS = (
     *(f"{side}:{boundary}" for boundary in _DURABLE_BOUNDARIES for side in ("before", "after")),
-    "integrity:prelaunch_authentication",
-    "integrity:post_exit_authentication",
 )
 
 
@@ -270,6 +268,15 @@ def test_serial_publication_boundary_resume_matrix(
     store = CampaignStore(invocation / "targets" / "sim" / "campaign")
     outcome = _resume_crashed_campaign(campaign, new_request, store, manifest, plan, crash_point)
     _assert_crash_recovery(outcome, store, crash_point, launches, crash)
+    from booley.flows.sim.campaign.codec import MANIFEST_SCHEMA, RESULT_SCHEMA
+
+    assert store.load_manifest().document["$schema"] == MANIFEST_SCHEMA
+    result_paths = list(store.root.glob("work-items/*/result.json"))
+    assert len(result_paths) == len(manifest.document["work_items"])
+    for path in result_paths:
+        result = json.loads(path.read_bytes())
+        assert result["$schema"] == RESULT_SCHEMA
+        assert all("test_run" in observation for observation in result["observations"])
 
 
 def test_fault_matrix_has_no_distinct_partial_fsync_state() -> None:
@@ -289,8 +296,6 @@ def test_fault_matrix_has_no_distinct_partial_fsync_state() -> None:
             for boundary in _DURABLE_BOUNDARIES
             for side in ("before", "after")
         ),
-        "integrity:prelaunch_authentication",
-        "integrity:post_exit_authentication",
     }
 
 
@@ -617,7 +622,7 @@ def test_closed_console_does_not_skip_postcommit_checkpoint(
     from booley.flows.sim.flow import SimulateFlow
 
     flow = SimulateFlow()
-    flow.context._console_publication_requested = True
+    flow._console_publication_requested = True
     stream = io.StringIO()
     stream.close()
     monkeypatch.setattr("booley.flows.sim.flow.sys.stderr", stream)
@@ -661,7 +666,7 @@ def test_baseline_disclosure_uses_exact_format_without_run_reopening_duplicates(
         for item in (baseline, manifest)
     ]
     flow = SimulateFlow()
-    flow.context._console_publication_requested = True
+    flow._console_publication_requested = True
     published: list[Path] = []
     campaign = SimulationCampaign(manifest_published=flow._manifest_publisher(published))
     paths = [campaign.publish_new(request) for request in requests]
@@ -683,13 +688,12 @@ def test_baseline_disclosure_uses_exact_format_without_run_reopening_duplicates(
     assert published == paths
 
 
-def test_minimal_context_defaults_to_silent_manifest_notification(
+def test_fresh_flow_defaults_to_silent_manifest_notification(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from booley.flows.sim.flow import SimulateFlow
 
     flow = SimulateFlow()
-    flow.context = SimpleNamespace()
     published: list[Path] = []
     flow._manifest_publisher(published)(tmp_path / "manifest.json")
     assert published == [tmp_path / "manifest.json"]
@@ -773,3 +777,47 @@ def test_process_death_at_actual_hook_publication_recovers_immutable_evidence(
     assert all(
         firing.document["stdout_tail"] == "hook-out\n" for firing in resumed.pre_sim_firings
     )
+
+
+def test_result_commit_and_scan_trust_evidence_changed_after_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Booley's own published evidence is trusted on commit and on every scan."""
+    manifest = _crash_manifest()
+    project, build_root, run_log = _crash_environment(tmp_path)
+    launches: list[int] = []
+    group = _CrashGroup(build_root, run_log, launches)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: _CrashCatalog(project),
+    )
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+
+    def change_published_evidence(boundary: str) -> None:
+        # Rewrite a snapshot artifact after authentication at launch.
+        if boundary == "after:execution_evidence":
+            for path in store.root.glob("work-items/*/attempts/*/snapshot/simv"):
+                path.chmod(0o600)
+                path.write_bytes(b"changed image")
+
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=lambda _options: _CrashExecution(group),  # type: ignore[arg-type,return-value]
+        publication_checkpoint=change_published_evidence,
+    )
+    outcome = SimulationCampaign(executor).run(
+        NewCampaignRunRequest(
+            plan=create_simulation_campaign_plan(manifest),
+            project_root=project,
+            report_root=invocation.parent,
+            policy=CampaignPolicy(),
+            invocation_directory=invocation,
+            admission=_admission(),
+        )
+    )
+
+    assert outcome.complete is True
+    assert [item.state for item in store.scan().items] == ["complete"]

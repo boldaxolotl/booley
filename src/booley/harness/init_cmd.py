@@ -50,6 +50,7 @@ from pathlib import Path
 from booley import __version__
 from booley.commit_policy import stealth_enabled
 from booley.config.host_config import retired_project_policy_message
+from booley.core.booley_dir_pin import BooleyDirPinError, EntryPin
 from booley.core.boundary import as_dict, as_str, require_dict
 from booley.core.config_paths import resolve_toml
 from booley.fusesoc.core_projection import (
@@ -75,15 +76,7 @@ from booley.harness.bootstrap import (
     parse_git_version,
     reconcile_bootstrap,
 )
-from booley.harness.colors import accent, bold_amber, bold_chrome, green, red, yellow
-from booley.harness.image_lifecycle import (
-    ImageLifecycleError,
-    InstalledImageContractError,
-    LifecycleResult,
-    ProjectImageScope,
-)
-from booley.harness.image_lifecycle import Intent as ImageLifecycleIntent
-from booley.harness.image_lifecycle import Status as ImageLifecycleStatus
+from booley.harness.colors import bold_amber, green, red, yellow
 from booley.harness.image_lifecycle import reconcile as reconcile_images
 from booley.harness.setup import interactive as interactive_init
 from booley.harness.setup.common import (
@@ -92,8 +85,10 @@ from booley.harness.setup.common import (
     WriteOutcome,
     banner,
     configure_progress_output,
+    current,
     err,
     guarded_write,
+    hint,
     info,
     ok,
     skip,
@@ -121,11 +116,8 @@ from booley.harness.setup.docker_image import (
     source_fingerprint_mismatch,
 )
 from booley.harness.setup.git_hooks import (
-    _PROJECT_HOOK_SCRIPTS,
-    _build_commit_msg_hook_body,
     _step_git_hooks,
     _step_line_endings,
-    _step_project_git_hooks,
     _step_worktree_link_policy,
     _step_worktree_prune_guard,
 )
@@ -139,9 +131,13 @@ from booley.harness.setup.line_endings import (
     sample_worktree_cleanliness,
 )
 from booley.harness.setup.plan import InitPlan, InitPlanBlockedError, InitPreconditionError
+from booley.harness.setup.project_git_hook_reconcile import (
+    step_project_git_hooks as _step_project_git_hooks,
+)
 from booley.harness.setup.project_origin import read_project_origin
 from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills
+from booley.harness.terminal_status import LineStatus, section_header, status_line
 from booley.projects.inventory import ProjectInventoryError, remember_project
 from booley.runtime import auth_token, doctor_stamp, project_repositories
 from booley.runtime import devcontainer as dc
@@ -156,7 +152,20 @@ from booley.runtime.booley_dir import (
 )
 from booley.runtime.checkout_role import is_booley_qa_skill_path
 from booley.runtime.docker_capacity import DockerCapacityError
+from booley.runtime.docs_links import docs_url
 from booley.runtime.git import add_git_excludes
+from booley.runtime.guarded_write import SymlinkTargetError, replace_regular_file
+from booley.runtime.image_lifecycle import (
+    ImageLifecycleError,
+    ImageRole,
+    InstalledImageContractError,
+    LifecycleResult,
+    PlanAction,
+    PreparedConvergence,
+    ProjectImageScope,
+)
+from booley.runtime.image_lifecycle import Intent as ImageLifecycleIntent
+from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
 from booley.runtime.paths import skills_dir
 from booley.runtime.platform_paths import IS_WINDOWS, docker_mount_path
 from booley.runtime.project_gitignore import (
@@ -187,7 +196,7 @@ MIN_PY = (3, 11)
 # Config templates
 # ---------------------------------------------------------------------------
 
-BOOLEY_TOML_SKELETON = """\
+BOOLEY_TOML_SKELETON = f"""\
 # booley.toml - project-level config for Booley.
 #
 # Intentionally left empty by `booley init`.
@@ -199,7 +208,8 @@ BOOLEY_TOML_SKELETON = """\
 # shell lines run inside the Sandbox immediately before each sim run, under
 # the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_TEST_NAMES,
 # BOOLEY_TEST_RUN_NAME, BOOLEY_TEST_VARIANT, BOOLEY_TEST_SEED,
-# BOOLEY_RUN_CWD, BOOLEY_BUILD_ROOT, ...; see docs/user/CONFIG.md):
+# BOOLEY_RUN_CWD, BOOLEY_BUILD_ROOT, ...). Reference:
+# {docs_url("FLOW-SIM.md", "pre-sim-commands-flowssimpre_run_commands")}
 #
 # [flows.sim]
 # pre_run_commands = ["make -C tests build_case CASE=$BOOLEY_TEST_NAME"]
@@ -263,6 +273,11 @@ def _backfill_project_gitignore(booley_dir: Path, ctx: InitContext) -> None:
     """
     gitignore = booley_dir / ".gitignore"
 
+    if gitignore.is_symlink():
+        warn(f"refusing symlinked {gitignore}; ignore patterns not reconciled")
+        ctx.record("booley_dir", "warn", "refuse symlinked .gitignore")
+        return
+
     if not gitignore.exists():
         if ctx.check_only:
             warn(f"would add {gitignore.name} (covers {', '.join(PROJECT_GITIGNORE_PATTERNS)})")
@@ -293,7 +308,7 @@ def _backfill_project_gitignore(booley_dir: Path, ctx: InitContext) -> None:
         + "\n# Added by booley init — transient Booley state.\n"
         + "".join(f"{p}\n" for p in missing)
     )
-    gitignore.write_text(existing + addition, encoding="utf-8", newline="\n")
+    replace_regular_file(gitignore, (existing + addition).encode("utf-8"))
     ok(f"added {len(missing)} missing ignore pattern(s) to {gitignore}: {', '.join(missing)}")
 
 
@@ -323,6 +338,11 @@ def _backfill_fusesoc_ignore(booley_dir: Path, ctx: InitContext) -> None:
     """
     marker = booley_dir / "FUSESOC_IGNORE"
     outcome = guarded_write(marker, FUSESOC_IGNORE_BODY, dry_run=ctx.check_only, newline="\n")
+    if outcome is WriteOutcome.REFUSED:
+        # Without the marker FuseSoC would scan worktree .core copies and could build stale RTL.
+        warn(f"refusing symlinked {marker}; FuseSoC may scan worktree cores")
+        ctx.record("booley_dir", "warn", "refuse symlinked FUSESOC_IGNORE")
+        return
     if outcome is not WriteOutcome.WRITTEN:
         return
     if ctx.check_only:
@@ -360,7 +380,7 @@ def _step_booley_dir(ctx: InitContext) -> None:
             else:
                 target.chmod(0o700)
                 ok(f"secured Booley Directory permissions on {target} to 0700")
-        skip(f"Booley Directory found at {target}")
+        current(f"Booley Directory found at {target}")
         _backfill_config_skeletons(target, ctx)
         _backfill_project_gitignore(target, ctx)
         _backfill_fusesoc_ignore(target, ctx)
@@ -368,7 +388,7 @@ def _step_booley_dir(ctx: InitContext) -> None:
         if permissions_pending:
             ctx.record("booley_dir", "warn", "permissions need 0700")
         elif not any(r.name == "booley_dir" and r.status == "warn" for r in ctx.results):
-            ctx.record("booley_dir", "skip", "already present")
+            ctx.record("booley_dir", "current", "already present")
         return
 
     if ctx.check_only:
@@ -406,8 +426,9 @@ def _init_project_git_repo(target: Path, ctx: InitContext) -> None:
     fresh stealth setup was versioned *nowhere* until the user ran `git init` by
     hand. Do it for them, guarded:
 
-    - only in stealth mode (the default; a ``--scaffold`` demo opts out with
-      ``[stealth] enabled = false`` and is throwaway), and
+    - only in stealth mode (the default; an open ``--scaffold`` demo writes
+      ``[stealth] enabled = false`` and is throwaway, ``--scaffold --stealth``
+      keeps it on), and
     - only when ``target`` is not already its own git work tree (idempotent,
       never touches an existing repo).
 
@@ -469,11 +490,15 @@ def _step_core_projections(ctx: InitContext) -> None:
             warn(f"would reconcile projected cores: {', '.join(issues)}")
             ctx.record("core_projections", "warn", f"{len(issues)} change(s)")
         else:
-            skip("stealth core projections already reconciled")
-            ctx.record("core_projections", "skip", "current")
+            current("stealth core projections already reconciled")
+            ctx.record("core_projections", "current", "current")
         return
 
-    add_git_excludes(ctx.project_root, [PROJECTED_CORE_GLOB])
+    # Explicit Stealth also hides the Booley Directory itself, so the hidden
+    # footprint holds even when the Interactive step returns early (offline).
+    add_git_excludes(
+        ctx.project_root, [PROJECTED_CORE_GLOB, ".booley"] if enabled else [PROJECTED_CORE_GLOB]
+    )
     try:
         result = reconcile_projected_cores(ctx.project_root)
     except (CoreProjectionError, OSError) as exc:
@@ -500,8 +525,8 @@ def _step_goalsets(ctx: InitContext) -> None:
     outcomes = seed_goalsets(booley_dir_for_init(ctx.project_root), dry_run=ctx.check_only)
     added = sum(outcome is WriteOutcome.WRITTEN for _, outcome in outcomes)
     if not added:
-        skip("Goalsets already present")
-        ctx.record("goalsets", "skip", "already present")
+        current("Goalsets already present")
+        ctx.record("goalsets", "current", "already present")
     elif ctx.check_only:
         warn(f"{added} missing Goalsets (would create)")
         ctx.record("goalsets", "warn", f"{added} files missing")
@@ -673,6 +698,11 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
         skip(f"using existing [agent] {selection.provider}/{selection.auth}")
         ctx.record("agent_config", "skip", f"{selection.provider}/{selection.auth}")
         return True
+    if path.is_symlink():
+        # Same verdict for a dry run and a real run: a link is never written through.
+        err(f"cannot persist agent selection: refusing symlinked {path}")
+        ctx.record("agent_config", "err", "symlinked booley.toml")
+        return False
     if ctx.check_only:
         warn(f"would record [agent] {selection.provider}/{selection.auth} in {path}")
         ctx.record("agent_config", "warn", f"{selection.provider}/{selection.auth}")
@@ -683,7 +713,12 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
         return False
     content = path.read_text(encoding="utf-8") if path.is_file() else ""
     updated = _insert_agent_fields(content, fields)
-    path.write_text(updated, encoding="utf-8", newline="\n")
+    try:
+        replace_regular_file(path, updated.encode("utf-8"))
+    except SymlinkTargetError:
+        err(f"cannot persist agent selection: refusing symlinked {path}")
+        ctx.record("agent_config", "err", "symlinked booley.toml")
+        return False
     ok(f"recorded [agent] {selection.provider}/{selection.auth} in {path}")
     ctx.record("agent_config", "ok", f"{selection.provider}/{selection.auth}")
     return True
@@ -711,7 +746,7 @@ def _check_provider_creds(provider: str, auth_mode: str, policy: str = "auto") -
         return
     ok(f"using {effective.source}")
     for loser in effective.overridden:
-        info(f"{loser} is present but NOT used — {effective.source} takes precedence")
+        hint(f"{loser} is present but not used; the line above wins")
 
 
 def _step_auth(
@@ -900,8 +935,8 @@ def _step_image_lifecycle(
         ok("reconciled Sandbox Images: " + ", ".join(result.changed_images))
         ctx.record("docker_image", "ok", f"selected {result.selected_reference}")
     elif not result.cleanup.removed:
-        skip(f"Sandbox Image {result.selected_reference} is current")
-        ctx.record("docker_image", "skip", "current")
+        current(f"Sandbox Image {result.selected_reference} is current")
+        ctx.record("docker_image", "current", "current")
     return result
 
 
@@ -910,55 +945,22 @@ def _step_image_lifecycle(
 # ---------------------------------------------------------------------------
 
 
-def inspect_refreshable_runtime_image(
-    project_root: Path, *, verbose: bool = False
-) -> LifecycleResult:
+def inspect_refreshable_runtime_image(project_root: Path) -> None:
     """Reject a user-managed Sandbox Image before refresh causes downtime."""
-    del verbose
     lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
-    if lifecycle_plan.nodes[0].role is image_lifecycle.ImageRole.EXTERNAL:
+    if lifecycle_plan.nodes[0].role is ImageRole.EXTERNAL:
         raise RuntimeError(
             "the selected Sandbox Image cannot use managed refresh: it is externally managed. "
             "Rebuild/pull it explicitly, then on the host run `booley session down`, "
             "`booley init --seed`, and `booley session up`."
         )
-    stale = tuple(
-        step
-        for step in lifecycle_plan.steps
-        if step.action is not image_lifecycle.PlanAction.REUSE
-    )
-    docker = image_lifecycle._docker_adapter()
-    return LifecycleResult(
-        lifecycle_plan.selected_reference,
-        docker.image_id(lifecycle_plan.selected_reference),
-        ImageLifecycleStatus.STALE if stale else ImageLifecycleStatus.CURRENT,
-        diagnostics=tuple(step.reason for step in stale),
-        payload_fingerprint=lifecycle_plan.nodes[-1].wheel_source_fingerprint,
-        wheel_source_fingerprint=lifecycle_plan.nodes[-1].wheel_source_fingerprint,
-    )
-
-
-def refresh_runtime_image(
-    project_root: Path,
-    *,
-    verbose: bool = False,
-    inspection: LifecycleResult | None = None,
-) -> LifecycleResult:
-    """Converge the selected Sandbox Image without forcing compatible ancestors."""
-    del inspection
-    prepared = prepare_runtime_image(project_root, verbose=verbose)
-    try:
-        return commit_runtime_image(prepared)
-    except BaseException:
-        abort_runtime_image(prepared)
-        raise
 
 
 def prepare_runtime_image(
     project_root: Path,
     *,
     verbose: bool = False,
-) -> image_lifecycle.PreparedConvergence:
+) -> PreparedConvergence:
     """Build and verify refresh candidates without changing managed tags."""
     lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
     info("Refresh plan:")
@@ -973,20 +975,20 @@ def prepare_runtime_image(
 
 
 def commit_runtime_image(
-    prepared: image_lifecycle.PreparedConvergence,
+    prepared: PreparedConvergence,
 ) -> LifecycleResult:
     """Adopt prepared image candidates after refresh state is journaled."""
     return image_lifecycle.commit(prepared)
 
 
 def validate_runtime_image(
-    prepared: image_lifecycle.PreparedConvergence,
+    prepared: PreparedConvergence,
 ) -> None:
     """Revalidate prepared image inputs before parking the live Sandbox."""
     image_lifecycle.validate(prepared)
 
 
-def abort_runtime_image(prepared: image_lifecycle.PreparedConvergence) -> None:
+def abort_runtime_image(prepared: PreparedConvergence) -> None:
     """Discard prepared refresh candidates."""
     image_lifecycle.abort(prepared)
 
@@ -1280,6 +1282,7 @@ class _InteractiveSpecSources:
             mask_paths=list(self.mask_paths),
             mask_source=docker_mount_path(_mask_source_dir()) if self.mask_paths else "",
             local_timezone=self.timezone,
+            egress=inputs.egress,
         )
 
 
@@ -1321,8 +1324,8 @@ def _report_interactive_state(
         warn(detail)
         ctx.record("interactive", "warn", detail)
         return
-    skip("Interactive Mode specification, issuance, and exclusions are current")
-    ctx.record("interactive", "skip", "current")
+    current("Interactive Mode specification, issuance, and exclusions are current")
+    ctx.record("interactive", "current", "current")
 
 
 def _report_interactive_changes(
@@ -1331,8 +1334,8 @@ def _report_interactive_changes(
     changes: interactive_init.InteractiveInitChanges,
 ) -> None:
     if not changes.changed:
-        skip("Interactive Mode specification, issuance, and exclusions are current")
-        ctx.record("interactive", "skip", "current")
+        current("Interactive Mode specification, issuance, and exclusions are current")
+        ctx.record("interactive", "current", "current")
         return
     if changes.issued:
         path = dc.devcontainer_path(ctx.project_root)
@@ -1799,7 +1802,7 @@ def _print_incomplete_advisory(failed: list[str]) -> None:
     info("The remaining steps still ran (every step is idempotent), but this project")
     info("is NOT ready for the booley-setup skill yet.")
     print()
-    info("  * Fix the [XX] step(s) reported in the summary below")
+    info("  * Fix the failed step(s) reported in the summary below")
     info("  * Re-run `booley init` — completed steps are no-ops on a second pass")
     info("  * Only then start the booley-setup skill (Step 0, the plan phase)")
 
@@ -1878,7 +1881,7 @@ def _step_project_trackability(ctx: InitContext) -> None:
     inspection = inspect_project_trackability(ctx.project_root, selected)
     for group in inspection.ignored:
         warn(group.message)
-        info(f"  fix: {FIX}")
+        hint(FIX)
     for error in inspection.errors:
         warn(error)
     problems = len(inspection.ignored) + len(inspection.errors)
@@ -1924,14 +1927,21 @@ def _print_check_verdict(ctx: InitContext) -> None:
         print(green("Checked initialization: nothing pending"))
 
 
+_SUMMARY_STATUS = {
+    "ok": LineStatus.PASS,
+    "current": LineStatus.CURRENT,
+    "skip": LineStatus.SKIP,
+    "warn": LineStatus.WARN,
+    "err": LineStatus.FAIL,
+}
+
+
 def _print_summary(ctx: InitContext) -> int:
     banner("Summary")
     exit_code = 0
-    _STATUS_FN = {"ok": green, "skip": accent, "warn": yellow, "err": red}
     for r in ctx.results:
-        glyph = {"ok": "[OK]", "skip": "[--]", "warn": "[!!]", "err": "[XX]"}[r.status]
         suffix = f" — {r.detail}" if r.detail else ""
-        print(f"  {_STATUS_FN[r.status](glyph)} {r.name}{suffix}")
+        print(status_line(_SUMMARY_STATUS[r.status], f"{r.name}{suffix}"))
         if r.status == "err":
             exit_code = 2
         elif r.status == "warn" and ctx.check_only and exit_code == 0:
@@ -2079,7 +2089,7 @@ def _run_seed(ctx: InitContext, selection: AgentSelection) -> int:
             )
         return _print_summary(ctx)
     if not ctx.check_only and sys.stdout.isatty():
-        print(bold_chrome(f"  Seeding Interactive Mode for {ctx.project_root}"))
+        print(section_header(f"Seeding Interactive Mode for {ctx.project_root}"))
         print()
     if "BOOLEY_DIR" not in os.environ and not (ctx.project_root / ".booley").is_dir():
         _step_interactive(ctx, agent_app=selection.provider)
@@ -2094,7 +2104,7 @@ def _print_init_banner(ctx: InitContext) -> None:
     if ctx.check_only or not sys.stdout.isatty():
         return
     print(BOOLEY_MASCOT)
-    print(bold_chrome("  Booley project setup"))
+    print(section_header("Booley project setup"))
     print()
     info(f"Project Root  : {ctx.project_root}")
     info(f"version       : {__version__}")
@@ -2212,8 +2222,8 @@ def _record_bootstrap(ctx: InitContext, result: BootstrapResult) -> None:
             ok(f"{finding.resource}: {finding.detail}")
             ctx.record(name, "ok", finding.detail)
         elif ctx.verbose:
-            skip(f"{finding.resource}: {finding.detail}")
-            ctx.record(name, "skip", finding.detail)
+            current(f"{finding.resource}: {finding.detail}")
+            ctx.record(name, "current", finding.detail)
 
 
 def _project_config_migration_preflight(ctx: InitContext, path: Path) -> bool:
@@ -2411,6 +2421,91 @@ def _project_checkout_ready(ctx: InitContext) -> bool:
     return True
 
 
+def _confirm_repin(old_target: str, new_target: str) -> bool:
+    """Ask whether to accept a retargeted entry; no answer means no."""
+    from booley.harness.setup.scaffold import _ask_yes_no
+
+    return _ask_yes_no(
+        f"Booley Directory entry was pinned to {old_target}; now {new_target}. Re-pin?",
+        default=False,
+    )
+
+
+def _reconcile_booley_dir_pin(ctx: InitContext, args: argparse.Namespace) -> bool:
+    """Pin (or, on explicit consent, re-pin) a symlinked ``.booley`` entry.
+
+    Only full init writes a pin. ``--seed`` and ``--check-only`` refuse an
+    unpinned or mismatched entry, since every later step would follow the link.
+    Returns False when init must stop.
+    """
+    from booley.core.booley_dir_pin import current_target, entry_needs_pin, require_pinned_entry
+    from booley.core.booley_layout import BOOLEY_DIR_NAME
+
+    root = ctx.project_root
+    if not entry_needs_pin(root):
+        return True
+    try:
+        require_pinned_entry(root)
+        return True
+    except BooleyDirPinError as exc:
+        refusal = exc
+    try:
+        current = current_target(root / BOOLEY_DIR_NAME)
+    except (OSError, RuntimeError) as exc:
+        err(str(exc))
+        ctx.record("booley_dir_pin", "err", str(exc))
+        return False
+    if getattr(args, "seed", False) or ctx.check_only:
+        err(str(refusal))
+        ctx.record("booley_dir_pin", "err", refusal.remedy)
+        return False
+    return _write_pin_with_consent(ctx, args, current, refusal)
+
+
+def _write_pin_with_consent(
+    ctx: InitContext, args: argparse.Namespace, current: EntryPin, refusal: BooleyDirPinError
+) -> bool:
+    """Write the pin for *current*; replacing an existing or unreadable pin needs consent."""
+    from booley.core.booley_dir_pin import read_pin, write_pin
+    from booley.core.booley_layout import BOOLEY_DIR_NAME
+
+    root = ctx.project_root
+    # An unreadable pin counts as an existing pin: replacing it needs the same consent.
+    try:
+        pinned = read_pin(root)
+        old_target = pinned.target if pinned is not None else ""
+    except BooleyDirPinError:
+        old_target = "an unreadable pin"
+    has_pin = bool(old_target)
+    if has_pin and not (
+        getattr(args, "repin_booley_dir", False)
+        or (ctx.interactive and _confirm_repin(old_target, current.target))
+    ):
+        outcome = (
+            "re-pin declined"
+            if ctx.interactive
+            else "a non-interactive run needs --repin-booley-dir"
+        )
+        err(f"{refusal.detail}; {outcome}")
+        ctx.record("booley_dir_pin", "err", "pin unchanged; pass --repin-booley-dir to re-pin")
+        return False
+    try:
+        write_pin(root, current)
+    except (OSError, BooleyDirPinError) as exc:
+        err(str(exc))
+        ctx.record("booley_dir_pin", "err", str(exc))
+        return False
+    if not has_pin:
+        ok(f"pinned {BOOLEY_DIR_NAME} -> {current.target}")
+    else:
+        ok(
+            f"re-pinned {BOOLEY_DIR_NAME}: {old_target} -> {current.target}; "
+            "restart a running Sandbox with `booley session refresh`"
+        )
+    ctx.record("booley_dir_pin", "ok", current.target)
+    return True
+
+
 def _run_init_unlocked(
     args: argparse.Namespace,
     project_root: Path,
@@ -2420,7 +2515,7 @@ def _run_init_unlocked(
     ctx = _init_context(args, project_root)
     _print_init_banner(ctx)
 
-    if not _project_checkout_ready(ctx):
+    if not _project_checkout_ready(ctx) or not _reconcile_booley_dir_pin(ctx, args):
         return _print_summary(ctx)
 
     bootstrap_result = _reconcile_init_bootstrap(ctx, args)
@@ -2565,18 +2660,17 @@ def _auth_reseed_dependencies(project_root: Path) -> bool:
             return False
     plan = image_lifecycle.plan(ProjectImageScope(project_root), intent=ImageLifecycleIntent.CHECK)
     host_roles = {
-        image_lifecycle.ImageRole.RUNTIME_BASE,
-        image_lifecycle.ImageRole.STANDARD_SUBSTRATE,
-        image_lifecycle.ImageRole.RISCV_SUBSTRATE,
+        ImageRole.RUNTIME_BASE,
+        ImageRole.STANDARD_SUBSTRATE,
+        ImageRole.RISCV_SUBSTRATE,
     }
     host_stale = any(
-        step.role in host_roles and step.action is not image_lifecycle.PlanAction.REUSE
-        for step in plan.steps
+        step.role in host_roles and step.action is not PlanAction.REUSE for step in plan.steps
     )
     if host_stale or any(f.state is host_sidecars.SidecarState.PENDING for f in sidecars.findings):
         err("Host capabilities need `booley bootstrap`; then retry `booley init --seed`.")
         return False
-    if any(step.action is not image_lifecycle.PlanAction.REUSE for step in plan.steps):
+    if any(step.action is not PlanAction.REUSE for step in plan.steps):
         err("Project Sandbox Image is not current; run `booley init`, then retry auth.")
         return False
     return True

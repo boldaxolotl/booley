@@ -11,7 +11,6 @@ import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import ClassVar, cast
 
 from claude_agent_sdk import ClaudeSDKError
@@ -47,6 +46,7 @@ from booley.runtime.exception_diagnostics import (
     provider_exception_message,
     write_exception_diagnostic,
 )
+from booley.runtime.owned_scratch import owned_tempdir
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 from .coverage_analysis import (
@@ -176,7 +176,7 @@ class CoverageAnalystSpecialist(Specialist):
             self._evidence_sources = None
 
     def _analyze_text(self, prompt: str) -> object:
-        with TemporaryDirectory(prefix="booley-coverage-analysis-") as directory:
+        with owned_tempdir("booley-coverage-analysis-") as directory:
             campaign = getattr(self, "_evidence_campaign_path", None)
             if campaign is None:
                 raise CoverageAnalysisError("Coverage evidence session is unavailable")
@@ -348,11 +348,11 @@ class CoverageAnalystSpecialist(Specialist):
 
 def coverage_analyst(campaign: Path, instruction: str = "") -> CoverageAnalysisReport:
     """Analyze an exact canonical Campaign using the configured Specialist role."""
-    from booley.flows.cli_selection import invocation_context
+    from booley.flows.cli_selection import CliInvocation
 
     specialist = CoverageAnalystSpecialist()
-    with invocation_context(transport=True):
-        specialist.parse_args(["--campaign", str(campaign)])
+    specialist._cli_invocation = CliInvocation(transport=True)
+    specialist.parse_args(["--campaign", str(campaign)])
     return specialist.coverage_analyst(campaign, instruction)
 
 
@@ -365,7 +365,7 @@ def analyze_coverage_campaign(
     invocation_id = str(campaign.invocation["id"])
     if not invocation_id.isdecimal():
         raise CoverageAnalysisError("Campaign invocation id must be numeric")
-    with TemporaryDirectory(prefix="booley-coverage-campaign-") as directory:
+    with owned_tempdir("booley-coverage-campaign-") as directory:
         root = Path(directory)
         invocation_dir = root / "reports" / "sim" / invocation_id
         target_dir = target_report_directory(invocation_dir, campaign.target.selector)
@@ -385,17 +385,17 @@ def analyze_coverage_campaign(
         )
         loaded = read_coverage_campaign(paths.campaign)
         specialist = CoverageAnalystSpecialist()
-        from booley.flows.cli_selection import invocation_context
+        from booley.flows.cli_selection import CliInvocation
 
-        with invocation_context(transport=True):
-            specialist.parse_args(["--work-dir", str(root), "--campaign", str(paths.campaign)])
-            return specialist._analyze_bound(
-                loaded.campaign,
-                sources,
-                instruction,
-                paths.campaign,
-                summary=loaded.summary,
-            )
+        specialist._cli_invocation = CliInvocation(transport=True)
+        specialist.parse_args(["--work-dir", str(root), "--campaign", str(paths.campaign)])
+        return specialist._analyze_bound(
+            loaded.campaign,
+            sources,
+            instruction,
+            paths.campaign,
+            summary=loaded.summary,
+        )
 
 
 if __name__ == "__main__":

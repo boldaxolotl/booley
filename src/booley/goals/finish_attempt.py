@@ -17,8 +17,8 @@ from booley.goals.proposals import digest, encode
 from booley.review.goal_package import (
     GoalCompletionPackage,
 )
-from booley.review.goal_presentation_v1 import render_goal_briefing as legacy_briefing
 
+_ATTEMPT_SCHEMA = "booley.goal-finish-attempt/v3"
 _ATTEMPT_FIELDS = set(
     {
         "schema",
@@ -37,6 +37,8 @@ _ATTEMPT_FIELDS = set(
         "worktree",
         "branch",
         "running_jobs",
+        "private_capture",
+        "presentation",
     }
 )
 
@@ -50,17 +52,7 @@ def validate_attempt(frozen: dict[str, Any], operation: LifecycleOperation) -> N
             or record.finish_attempt_digest != "sha256:" + digest(frozen)
         ):
             raise ValueError("attempt differs from the durable finishing fence")
-        version = frozen.get("schema")
-        fields = (
-            _ATTEMPT_FIELDS
-            if version == "booley.goal-finish-attempt/v1"
-            else _ATTEMPT_FIELDS | {"private_capture", "presentation"}
-        )
-        if set(frozen) != fields or version not in {
-            "booley.goal-finish-attempt/v1",
-            "booley.goal-finish-attempt/v2",
-            "booley.goal-finish-attempt/v3",
-        }:
+        if frozen.get("schema") != _ATTEMPT_SCHEMA or set(frozen) != _ATTEMPT_FIELDS:
             raise ValueError("unknown finish attempt schema/fields")
         if (
             frozen["operation_id"] != operation.request.operation_id
@@ -72,30 +64,12 @@ def validate_attempt(frozen: dict[str, Any], operation: LifecycleOperation) -> N
             raise ValueError("attempt revision must be nonnegative")
         if frozen["destination_before"] != "absent" or frozen["mode"] != "100644":
             raise ValueError("invalid publication destination/mode")
-        from booley.runtime.booley_dir_migration import (
-            historical_publication_paths,
-            historical_skip_note,
-            is_archived_record,
-        )
-
-        archived = record.state.value in {
-            "finished",
-            "abandoned",
-            "failed",
-        } and is_archived_record(operation.store.booley_dir, record.id)
-        if archived and frozen["path"] in historical_publication_paths(
-            record.id, operation.request.operation_id
-        ):
-            pass  # Exact historical confinement is validated by the migration boundary.
-        else:
-            _validate_path(frozen["path"], record.id, operation.request.operation_id)
+        _validate_path(frozen["path"], record.id, operation.request.operation_id)
         _validate_package(frozen, operation, record)
-        if version in {"booley.goal-finish-attempt/v2", "booley.goal-finish-attempt/v3"}:
-            validate_capture(frozen["private_capture"], frozen["package"]["input_proof"])
-            validate_presentation(operation, frozen)
+        validate_capture(frozen["private_capture"], frozen["package"]["input_proof"])
+        validate_presentation(operation, frozen)
         skip = frozen["skip_publication"]
-        historical_skip: set[str] = {historical_skip_note()} if archived else set()
-        if skip not in historical_skip | {
+        if skip not in {
             None,
             "summary kept local; Stealth publication is skipped",
             "summary kept local; `.booley` is git-excluded",
@@ -139,10 +113,7 @@ def _validate_package(
     if frozen["package_digest"] != digest(facts):
         raise ValueError("package digest differs from the frozen package")
     content = bytes.fromhex(require_str_value(frozen["summary_hex"], field="summary_hex"))
-    if (
-        frozen["schema"] == "booley.goal-finish-attempt/v1"
-        and content != legacy_briefing(package).encode("utf-8")
-    ) or frozen["summary_digest"] != hashlib.sha256(content).hexdigest():
+    if frozen["summary_digest"] != hashlib.sha256(content).hexdigest():
         raise ValueError("summary differs from the frozen package")
     for name in ("authority_digest", "package_digest", "summary_digest"):
         text = require_str_value(frozen[name], field=name)
@@ -165,12 +136,8 @@ def _validate_inputs(frozen: dict[str, Any], record: GoalRecord, facts: dict[str
     }:
         raise ValueError("invalid participant input schema")
     roots = parse_bindings(inputs["roots"])
-    if record.input_paths is not None:
-        require_bindings({key: record.input_paths[key] for key in roots}, roots)
-    if (
-        record.input_topology_digest is not None
-        and record.input_topology_digest != "sha256:" + inputs["topology"]
-    ):
+    require_bindings({key: record.input_paths[key] for key in roots}, roots)
+    if record.input_topology_digest != "sha256:" + inputs["topology"]:
         raise ValueError("frozen participant topology differs from entry authority")
     for key in ("rtl", "project", "project_repository"):
         role = "paired" if key == "project_repository" else key

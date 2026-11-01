@@ -28,7 +28,13 @@ from booley.mcp.endpoint_process import (
     _run_subprocess,
     write_synthetic_endpoint_end,
 )
-from booley.mcp.job_results import _KNOWN_JOB_ROOTS, JobRepository, LocatedJob, job_binding
+from booley.mcp.job_results import (
+    _KNOWN_JOB_ROOTS,
+    JobRepository,
+    LocatedJob,
+    job_binding,
+    read_record_or_none,
+)
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots
 from booley.runtime.display_identity import DisplayIdentity, DisplayScope
@@ -128,7 +134,7 @@ class JobLifecycle:
     def _read_run(self, run_id: str) -> jobrec.JobRecord | None:
         """Read *run_id*'s record where it is written: the pinned root, else ``_locate_job``."""
         if run_id in self._job_roots:
-            return jobrec.read_record(run_id, root=self._job_roots[run_id])
+            return read_record_or_none(run_id, self._job_roots[run_id])
         return self._repository.record(run_id)
 
     def _next_run_id(self, endpoint: str) -> str:
@@ -143,15 +149,12 @@ class JobLifecycle:
         cmd: list[str],
         timeout: int,
     ) -> jobrec.JobRecord:
-        from booley.runtime.execution_lease import current_lease_id
-
         return jobrec.JobRecord(
             run_id=run_id,
             endpoint=name,
             started_at=utc_now_rfc3339(),
             timeout_s=timeout,
             argv=cmd,
-            lease_id=current_lease_id(),
             display_scope=DisplayScope.current(),
         )
 
@@ -197,6 +200,16 @@ class JobLifecycle:
         rec.run_started_at = utc_now_rfc3339()
         jobrec.write_record(rec, root=self._write_root(rec))
 
+    def _repair_progress(self, rec: jobrec.JobRecord) -> None:
+        """Terminalize the Job's checkpoint, following the Booley Directory entry."""
+        located = self._repository.locate(rec.run_id)
+        repair_progress_after_reap(
+            self._repository.report_dirs(located),
+            rec.endpoint,
+            rec.run_id,
+            booley_dir=self._repository.report_booley_dir(located),
+        )
+
     def _record_terminal(
         self,
         rec: jobrec.JobRecord,
@@ -204,11 +217,7 @@ class JobLifecycle:
         *,
         timed_out: bool,
     ) -> None:
-        repair_progress_after_reap(
-            self._repository.report_dirs(self._repository.locate(rec.run_id)),
-            rec.endpoint,
-            rec.run_id,
-        )
+        self._repair_progress(rec)
         rec.status = jobrec.terminal_status(exit_code, timed_out)
         rec.exit_code = exit_code
         rec.ended_at = utc_now_rfc3339()
@@ -338,11 +347,7 @@ class JobLifecycle:
             self._lifetime.mark_mcp_endpoint_end()
 
     def _record_user_cancellation(self, rec: jobrec.JobRecord) -> None:
-        repair_progress_after_reap(
-            self._repository.report_dirs(self._repository.locate(rec.run_id)),
-            rec.endpoint,
-            rec.run_id,
-        )
+        self._repair_progress(rec)
         rec.status = jobrec.STATUS_CANCELLED
         rec.exit_code = 130
         rec.ended_at = utc_now_rfc3339()
@@ -517,7 +522,11 @@ class JobLifecycle:
 
     def _complete_poll(self, state: JobPoll) -> JobPoll:
         if state.status == "finished":
-            return replace(state, result=self.terminal_result(state.run_id))
+            try:
+                return replace(state, result=self.terminal_result(state.run_id))
+            except jobrec.JobRecordError as exc:
+                # Name the Job so the caller can poll for its verdict once readable.
+                raise jobrec.JobRecordError(f"Job {state.run_id} finished: {exc}") from exc
         return state
 
     def reconcile_orphaned(self) -> None:
@@ -531,7 +540,12 @@ class JobLifecycle:
             for root in self._repository.roots()
             for rec in jobrec.list_records(root=root)
         ):
-            self._reconcile_one(located)
+            try:
+                self._reconcile_one(located)
+            except jobrec.JobRecordError as exc:
+                # A held report must not mark a finished Job FAILED: leave it
+                # RUNNING for the next poll or server start.
+                logger.warning("Left job %s unreconciled: %s", located.record.run_id, exc)
 
     def _reconcile_one(self, located: LocatedJob) -> None:
         rec = located.record
@@ -548,11 +562,7 @@ class JobLifecycle:
             rec.status = jobrec.STATUS_FAILED
             if rec.exit_code is None:
                 rec.exit_code = 2
-        repair_progress_after_reap(
-            self._repository.report_dirs(self._repository.locate(rec.run_id)),
-            rec.endpoint,
-            rec.run_id,
-        )
+        self._repair_progress(rec)
         jobrec.write_record(rec, root=located.root)
         logger.info("Reconciled orphaned job %s from prior session", rec.run_id)
 
@@ -599,11 +609,18 @@ async def _poll_disk_status(
 def _poll_view(
     run_id: str, status: Literal["running", "finished"], tracked: bool, repository: JobRepository
 ) -> JobPoll:
+    progress = None
+    if status == "running":
+        try:
+            progress = repository.progress(run_id)
+        except jobrec.JobRecordError as exc:
+            # Advisory: the handoff reads progress again and reports it unavailable.
+            logger.warning("Progress for job %s unreadable: %s", run_id, exc)
     return JobPoll(
         run_id,
         status,
         tracked,
         record=repository.record(run_id),
         phase=repository.phase(run_id),
-        progress=repository.progress(run_id) if status == "running" else None,
+        progress=progress,
     )

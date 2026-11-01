@@ -1,6 +1,5 @@
 """Mutation fixtures must preserve state outside the declared disposable copy."""
 
-import gzip
 import hashlib
 import importlib.util
 import json
@@ -39,30 +38,7 @@ def _reference(target: Path, nested: Path) -> Path:
     return reference
 
 
-def _owned_campaign(tmp_path: Path) -> tuple[Path, Path]:
-    owned = tmp_path / "owned"
-    owned.mkdir()
-    (owned / ".qa-coverage-fault-copy").touch()
-    manifest = owned / NESTED
-    manifest.parent.mkdir(parents=True)
-    (manifest.parent / "coverage-points.jsonl.gz").write_bytes(b"points")
-    manifest.write_text(
-        json.dumps(
-            {
-                "$schema": "booley.coverage-campaign/v4",
-                "collection": {"status": "complete"},
-                "scoring": {"status": "valid", "reason": None},
-                "rollups": [{"metric": "line"}],
-                "source_rollups": [{"source": "rtl/a.sv", "rollups": []}],
-            }
-        )
-    )
-    return owned, manifest
-
-
-@pytest.mark.parametrize(
-    "mode", ["changed-points", "truncated-gzip", "duplicate-point", "symlink"]
-)
+@pytest.mark.parametrize("mode", ["truncated-gzip", "duplicate-point", "symlink"])
 @pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
 def test_linked_point_store_cannot_mutate_outside_sentinel(tmp_path, mode, link_kind):
     owned = tmp_path / "owned"
@@ -88,143 +64,82 @@ def test_linked_point_store_cannot_mutate_outside_sentinel(tmp_path, mode, link_
     assert manifest.read_text() == "{}"
 
 
-@pytest.mark.parametrize(
-    ("mode", "retained", "cleared"),
-    [
-        ("invalid-overall-score", "rollups", "source_rollups"),
-        ("invalid-source-score", "source_rollups", "rollups"),
-    ],
-)
-def test_invalid_scoring_fault_retains_exact_smuggled_inventory(
-    tmp_path: Path, mode: str, retained: str, cleared: str
-) -> None:
-    owned, manifest = _owned_campaign(tmp_path)
-
-    faults.mutate(_reference(owned, manifest), owned, mode)
-
-    document = json.loads(manifest.read_text())
-    assert document["scoring"] == {"status": "invalid", "reason": "collector_error"}
-    assert document["collection"]["status"] == "collector_error"
-    assert document[retained]
-    assert document[cleared] == []
-
-
-@pytest.mark.parametrize("mode", ["duplicate-point", "invalid-final-record"])
-def test_point_rewrite_is_canonical_and_rebinds_reference(tmp_path: Path, mode: str) -> None:
-    """Rewritten points must pass Booley's canonical-line check to reach content validation."""
-    owned = tmp_path / "owned"
-    manifest = owned / NESTED
-    manifest.parent.mkdir(parents=True)
-    (owned / ".qa-coverage-fault-copy").touch()
-    records = [
-        {"$schema": "booley.coverage-points/v1", "campaign_id": "c"},
-        {"id": "p1", "hits_by_run": {"run:001:half": 1}, "label": "ünïcode"},
-    ]
-    raw = b"".join(faults.canonical(row) for row in records)
-    compressed = gzip.compress(raw, mtime=0)
-    (manifest.parent / "coverage-points.jsonl.gz").write_bytes(compressed)
-    manifest.write_text(
-        json.dumps({"point_store": {"path": "coverage-points.jsonl.gz", "point_count": 1}})
-    )
-    reference = _reference(owned, manifest)
-
-    faults.mutate(reference, owned, mode)
-
-    lines = gzip.decompress((manifest.parent / "coverage-points.jsonl.gz").read_bytes())
-    for line in lines.splitlines(keepends=True):
-        compact = json.dumps(
-            json.loads(line), ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-        assert line == compact.encode() + b"\n"
-    bound = json.loads(reference.read_text())["coverage_campaign"]
-    nested = manifest.read_bytes()
-    assert bound["bytes"] == len(nested)
-    assert bound["sha256"] == "sha256:" + hashlib.sha256(nested).hexdigest()
-
-
 def test_mutate_refuses_a_nested_manifest_instead_of_the_reference(tmp_path: Path) -> None:
     owned = tmp_path / "owned"
     owned.mkdir()
     (owned / ".qa-coverage-fault-copy").touch()
     manifest = owned / "coverage.json"
-    manifest.write_text(json.dumps({"$schema": "booley.coverage-campaign/v4"}))
+    manifest.write_text(json.dumps({"$schema": "booley.coverage-campaign/v5"}))
     with pytest.raises(ValueError, match=r"Target coverage\.json"):
-        faults.mutate(manifest, owned, "point-count")
+        faults.mutate(manifest, owned, "wrong-evaluation")
 
 
 def _product_reference(owned: Path, mode: str) -> Path:
     from tests.flows.sim.test_coverage_campaign_reference import _nested_campaign
     from tests.flows.sim.test_coverage_campaign_reference import _reference as product_reference
-    from tests.flows.sim.test_coverage_campaign_store import _two_source_line_campaign
 
-    from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
     from booley.flows.sim.coverage_reference import publish_coverage_campaign_reference
 
     target = owned / "targets/sim_counter"
     manifest = _nested_campaign(target)
-    if mode == "wrong-source-rollup":
-        manifest.unlink()
-        (manifest.parent / "coverage-points.jsonl.gz").unlink()
-        publish_coverage_campaign(manifest.parent, _two_source_line_campaign())
     reference = target / "coverage.json"
     publish_coverage_campaign_reference(reference, product_reference(target, manifest))
     (owned / ".qa-coverage-fault-copy").touch()
     return reference
 
 
-@pytest.mark.parametrize(
-    ("mode", "expected_codes"),
-    [
-        ("duplicate-point", {"COV_POINT_ID_DUPLICATE"}),
-        ("invalid-final-record", {"COV_POINT_RUN_UNKNOWN", "COV_POINT_HIT_NONPOSITIVE"}),
-        ("missing-points", {"COV_PATH_UNSAFE"}),
-        ("changed-points", {"COV_POINT_INTEGRITY"}),
-        ("truncated-gzip", {"COV_POINT_FORMAT"}),
-        ("trailing-data", {"COV_POINT_FORMAT"}),
-        ("point-count", {"COV_POINT_COUNT_MISMATCH"}),
-        ("compressed-size", {"COV_POINT_INTEGRITY"}),
-        ("uncompressed-size", {"COV_POINT_INTEGRITY"}),
-        ("point-digest", {"COV_POINT_INTEGRITY"}),
-        ("unsafe-relative-path", {"COV_POINT_PATH"}),
-        ("absolute-path", {"COV_POINT_PATH"}),
-        ("symlink", {"COV_PATH_UNSAFE"}),
-        ("wrong-rollup", {"COV_SOURCE_ROLLUP_MISMATCH"}),
-        ("wrong-source-rollup", {"COV_SOURCE_ROLLUP_MISMATCH"}),
-        ("wrong-evaluation", {"COV_EVALUATION_MISMATCH"}),
-        ("resource-ceiling", {"COV_POINT_LIMIT"}),
-        ("v1", {"COV_SCHEMA_VERSION_UNSUPPORTED"}),
-        ("v2", {"COV_SCHEMA_VERSION_UNSUPPORTED"}),
-        ("invalid-overall-score", {"COV_INVALID_SCORING_SUMMARY"}),
-        ("invalid-source-score", {"COV_INVALID_SCORING_SUMMARY"}),
-    ],
-)
-def test_fault_reaches_product_content_validation(
-    tmp_path: Path, mode: str, expected_codes: set[str]
-) -> None:
+_PRODUCT_FAULTS = {
+    "duplicate-point": {"COV_POINT_ID_DUPLICATE"},
+    "invalid-final-record": {"COV_POINT_RUN_UNKNOWN", "COV_POINT_HIT_NONPOSITIVE"},
+    "missing-points": {"COV_PATH_UNSAFE"},
+    "truncated-gzip": {"COV_POINT_FORMAT"},
+    "trailing-data": {"COV_POINT_FORMAT"},
+    "symlink": {"COV_PATH_UNSAFE"},
+    "wrong-rollup": {"COV_ROLLUP_MISMATCH"},
+    "wrong-evaluation": {"COV_EVALUATION_MISMATCH"},
+    "v1": {"COV_SCHEMA_VERSION_UNSUPPORTED"},
+    "v2": {"COV_SCHEMA_VERSION_UNSUPPORTED"},
+    "v3": {"COV_SCHEMA_VERSION_UNSUPPORTED"},
+    "resource-ceiling": {"COV_POINT_LIMIT"},
+}
+
+
+def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -> None:
     from tests.conftest import require_symlinks
 
+    from booley.flows.sim import coverage_campaign_store as store
     from booley.flows.sim.coverage_campaign import CoverageCampaignValidationError
     from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
     from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
 
-    if mode == "symlink":
-        require_symlinks(tmp_path)
-    owned = tmp_path / "owned"
-    reference = _product_reference(owned, mode)
-    resolve_coverage_campaign_reference(reference)
-
-    faults.mutate(reference, owned, mode)
-
-    with pytest.raises((CoverageCampaignValidationError, CoverageCampaignStoreError)) as caught:
+    # One node, every mode; resource-ceiling is last because it patches the ceiling.
+    for mode, expected_codes in _PRODUCT_FAULTS.items():
+        if mode == "symlink":
+            try:
+                require_symlinks(tmp_path)
+            except pytest.skip.Exception:
+                continue  # only this mode needs symlinks; keep the others running
+        owned = tmp_path / mode
+        reference = _product_reference(owned, mode)
         resolve_coverage_campaign_reference(reference)
-    error = caught.value
-    codes = (
-        {finding.code for finding in error.findings}
-        if isinstance(error, CoverageCampaignValidationError)
-        else {error.code}
-    )
-    assert expected_codes <= codes
-    assert "COV_POINT_CANONICAL" not in codes
+        if mode == "resource-ceiling":
+            assert faults.POINT_CEILING_BYTES == store.MAX_UNCOMPRESSED_BYTES
+            monkeypatch.setattr(store, "MAX_UNCOMPRESSED_BYTES", 4096)
+            monkeypatch.setattr(faults, "POINT_CEILING_BYTES", 4096)
+
+        faults.mutate(reference, owned, mode)
+
+        with pytest.raises(
+            (CoverageCampaignValidationError, CoverageCampaignStoreError)
+        ) as caught:
+            resolve_coverage_campaign_reference(reference)
+        error = caught.value
+        codes = (
+            {finding.code for finding in error.findings}
+            if isinstance(error, CoverageCampaignValidationError)
+            else {error.code}
+        )
+        assert expected_codes <= codes
 
 
 @pytest.mark.parametrize("link_kind", ["symlink", "hardlink", "outside"])
@@ -253,7 +168,7 @@ def test_nested_manifest_cannot_mutate_borrowed_file(tmp_path: Path, link_kind: 
     before = reference.read_bytes()
 
     with pytest.raises(ValueError, match="mutation destination"):
-        faults.mutate(reference, owned, "point-count")
+        faults.mutate(reference, owned, "wrong-evaluation")
 
     assert sentinel.read_text() == '{"preserve": true}'
     assert reference.read_bytes() == before

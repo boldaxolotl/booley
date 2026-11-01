@@ -13,8 +13,8 @@ from booley.flows.test_runs import build_test_run, test_run_document
 from booley.runtime.endpoint_execution import EXIT_FAILURE, EXIT_SUCCESS
 from tests.flows.sim.test_flow import (
     _FLOW_ENABLED,
+    _canned_build_session,  # noqa: F401 -- autouse fixture
     _make_flow,
-    _use_legacy_build_transport_for_canned_flow_tests,  # noqa: F401 -- autouse fixture
 )
 
 _TESTS = {
@@ -59,7 +59,7 @@ def _run(tmp_path: Path, *argv: str, failing: str = ""):
         patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]}),
         patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
         patch.object(flow, "_execute", side_effect=execute),
-        flow.context.publication_resources,
+        flow.publication_resources,
     ):
         result = flow._run()
     report = json.loads((tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text())
@@ -220,7 +220,7 @@ def test_direct_run_at_a_target_default_seed_other_than_one_prints_no_rows(tmp_p
                 returncode=0, stdout="[SIM_RESULT] PASSED\n", duration_s=0.1
             ),
         ),
-        flow.context.publication_resources,
+        flow.publication_resources,
     ):
         result = flow._run()
 

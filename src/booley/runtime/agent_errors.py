@@ -27,6 +27,13 @@ CONTEXT_EXHAUSTION_PATTERNS = [
     re.compile(r"exceeds.*context.*window", re.IGNORECASE),
 ]
 
+# The gateway (or provider) rejected the credential: Codex reports
+# "unexpected status 401 Unauthorized". 403 is a policy decision, not expiry.
+AUTH_FAILURE_PATTERNS = [
+    re.compile(r"\b401\b"),
+    re.compile(r"unauthori[sz]ed", re.IGNORECASE),
+]
+
 
 def is_usage_limit(text: str) -> bool:
     """Return whether *text* matches a usage or subscription limit."""
@@ -36,6 +43,11 @@ def is_usage_limit(text: str) -> bool:
 def is_context_exhausted(text: str) -> bool:
     """Return whether *text* indicates context-window exhaustion."""
     return any(pattern.search(text) for pattern in CONTEXT_EXHAUSTION_PATTERNS)
+
+
+def is_auth_failure(text: str) -> bool:
+    """Return whether *text* reports a rejected credential (HTTP 401)."""
+    return any(pattern.search(text) for pattern in AUTH_FAILURE_PATTERNS)
 
 
 class TransientAPIError(Exception):
@@ -56,6 +68,10 @@ class AgentProviderError(RuntimeError):
     def __init__(self, message: str, provider: str) -> None:
         self.provider = provider
         super().__init__(message)
+
+
+class AgentAuthError(AgentProviderError):
+    """The provider rejected the credential (HTTP 401); a fresh token may fix it."""
 
 
 class UsageLimitError(Exception):

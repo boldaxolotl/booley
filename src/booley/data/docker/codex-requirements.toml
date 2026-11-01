@@ -3,6 +3,10 @@
 # when Codex runs with danger-full-access inside the outer Docker sandbox.
 allowed_web_search_modes = []
 
+# The CLIs are pinned in a root-owned npm prefix; an offered upgrade could
+# never install.
+check_for_update_on_startup = false
+
 # Report session lifecycle events to the Booley Dashboard (ADR 0068). Hooks
 # declared here are managed: they run without per-user hook trust. The command
 # prints nothing and always exits 0, so it can never block or alter a turn.

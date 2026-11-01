@@ -54,6 +54,7 @@ class GoalFlowExecution:
     ) -> None:
         self._binding = binding
         self._resolvers = resolvers
+        self._campaign_reader = campaign_reader
         self._recorder = GoalEvidenceRecorder(
             binding,
             resolvers=resolvers,
@@ -83,10 +84,10 @@ class GoalFlowExecution:
             return CriterionPresentation(UNAVAILABLE_GOAL, "", "", "", "")
         return goal_presentation(goal, entry).criterion()
 
-    def candidate_store_paths(self) -> tuple[str, Path, Path]:
+    def candidate_store_paths(self) -> tuple[Path, Path]:
         """Neutral Specialist paths selected from the validated admission binding."""
         paths = record_paths(self._binding.booley_dir, self._binding.record_id)
-        return self._binding.record_id, paths.runtime_dir / "flow-reports", paths.root
+        return paths.runtime_dir / "flow-reports", paths.root
 
     @property
     def binding(self) -> GoalRunBinding:
@@ -211,7 +212,11 @@ class GoalFlowExecution:
             # Goal writers hold this same record lock: the entry and evidence
             # identity checked by status belong to one stable disk snapshot.
             view = build_status(
-                store, record, work_dir=self._binding.worktree_root, resolvers=self._resolvers
+                store,
+                record,
+                work_dir=self._binding.worktree_root,
+                resolvers=self._resolvers,
+                campaign_reader=self._campaign_reader,
             )
             return any(item.key == key and item.status == "met" for item in view.goals)
 

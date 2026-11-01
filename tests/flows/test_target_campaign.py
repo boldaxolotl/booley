@@ -28,6 +28,7 @@ def test_resolves_typed_criteria_scope_and_test_suite() -> None:
             "coverage_toggle_sim": _entry(scope=["rtl/dut.sv"], min_pct=90),
             "coverage_fsm_sim": _entry(scope=["rtl/dut.sv"], min_pct=80),
         },
+        identity="sim",
         test_names={"sim": ["smoke", "corner"]},
         test_skips={"sim": ["corner"]},
     )
@@ -39,9 +40,25 @@ def test_resolves_typed_criteria_scope_and_test_suite() -> None:
     assert campaign.suite.skipped == ("corner",)
 
 
+def test_qualified_target_resolves_target_name_criteria() -> None:
+    """A ``vlnv#name`` selector reads the criterion keyed by the Target name."""
+    campaign = resolve_target_campaign(
+        "acme:lib:dut:1#sim",
+        ("mutation_score",),
+        {"mutation_score_sim": _entry(scope=["rtl/dut.sv"], total=7)},
+        explicit_scope="rtl/dut.sv",
+        identity="acme:lib:dut:1#sim",
+        test_names={"acme:lib:dut:1#sim": ["smoke"]},
+    )
+
+    assert campaign.params_for("mutation_score").get("total") == 7
+
+
 def test_rejects_missing_and_conflicting_criterion_scope() -> None:
     with pytest.raises(CampaignScopeError, match="missing"):
-        resolve_target_campaign("sim", ("mutation_score",), {}, test_names={}, test_skips={})
+        resolve_target_campaign(
+            "sim", ("mutation_score",), {}, identity="sim", test_names={}, test_skips={}
+        )
 
     criteria = {
         "coverage_toggle_sim": _entry(scope=["rtl/a.sv"]),
@@ -52,6 +69,7 @@ def test_rejects_missing_and_conflicting_criterion_scope() -> None:
             "sim",
             ("coverage_toggle", "coverage_fsm"),
             criteria,
+            identity="sim",
             test_names={},
             test_skips={},
         )
@@ -65,6 +83,7 @@ def test_explicit_scope_overrides_criterion_scope() -> None:
             "coverage_toggle_sim": _entry(scope=["rtl/a.sv"]),
             "coverage_fsm_sim": _entry(scope=["rtl/b.sv"]),
         },
+        identity="sim",
         explicit_scope="rtl/selected.sv",
         test_names={},
         test_skips={},
@@ -78,6 +97,7 @@ def test_executes_individual_units_through_injected_behavior() -> None:
         "sim",
         ("mutation_score",),
         {"mutation_score_sim": _entry(scope=["rtl/dut.sv"])},
+        identity="sim",
         test_names={"sim": ["reset", "corner"]},
         test_skips={},
     )
@@ -92,6 +112,7 @@ def test_batched_unit_describes_all_selected_tests() -> None:
         "sim",
         ("mutation_score",),
         {"mutation_score_sim": _entry(scope=["rtl/dut.sv"])},
+        identity="sim",
         test_names={"sim": ["reset", "corner"]},
         test_skips={},
     )
@@ -109,6 +130,7 @@ def test_all_skipped_campaign_is_rejected() -> None:
             "sim",
             ("mutation_score",),
             {"mutation_score_sim": _entry(scope=["rtl/dut.sv"])},
+            identity="sim",
             test_names={"sim": ["reset", "corner"]},
             test_skips={"sim": ["reset", "corner"]},
         )
@@ -140,6 +162,7 @@ def test_campaign_domain_does_not_import_presentation_layers() -> None:
 def test_batched_campaign_launches_one_process_per_given_batch():
     campaign = describe_target_campaign(
         "sim_noc",
+        identity="sim_noc",
         test_names={"sim_noc": ["reset", "corner", "soak"]},
         test_skips={},
     )

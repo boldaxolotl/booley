@@ -35,10 +35,13 @@ def _facts() -> dict[str, object]:
 
 
 def test_acceptance_facts_reject_noncanonical_wrong_shape_and_schema() -> None:
+    facts.decode_acceptance_facts(canonical_json_bytes(_facts()))
+    missing = _facts()
+    del missing["campaign_id"]
     with pytest.raises(SimulationCampaignIntegrityError, match="valid JSON"):
         facts.decode_acceptance_facts(b"{")
     with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
-        facts.decode_acceptance_facts(b"{}\n")
+        facts.decode_acceptance_facts(canonical_json_bytes(missing))
     with pytest.raises(SimulationCampaignIntegrityError, match="not canonical"):
         facts.decode_acceptance_facts(canonical_json_bytes(_facts()).rstrip())
     value = _facts()

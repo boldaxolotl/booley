@@ -17,7 +17,6 @@ from booley.goals.model import GoalRecord
 from booley.goals.paths import record_paths
 from booley.goals.proposals import ProposalError
 from booley.goals.status import build_status
-from booley.goals.test_run_evidence import LEDGER_DETAIL_KEY
 from tests.goals.conftest import (
     SIM_KEY,
     enter_goals,
@@ -26,7 +25,7 @@ from tests.goals.conftest import (
     write_tests_toml,
 )
 from tests.goals.test_proposals import approve
-from tests.goals.test_test_run_evidence import _record
+from tests.goals.test_test_run_evidence import _contributors, _outcomes, _record
 
 # Each test enters Goal Mode in a real Git layout; Windows needs the headroom (#1202).
 pytestmark = pytest.mark.timeout(120)
@@ -131,11 +130,11 @@ def test_an_approved_n_change_restarts_the_outcomes(layout: SimpleNamespace) -> 
 
     _change(layout, env, "retarget", SEEDS_KEY, _goal("smoke@x3"))
     layout.record = env.store.load(layout.record.id)
-    detail = _record(layout, "run-2", rows, key=SEEDS_KEY)
+    _record(layout, "run-2", rows, key=SEEDS_KEY)
     # The failure was recorded under the previous revision: it is not folded.
-    outcomes = [run["outcome"] for run in detail[LEDGER_DETAIL_KEY]["runs"]]
+    outcomes = list(_outcomes(layout, SEEDS_KEY).values())
     assert outcomes == ["passed", "passed", "missing"]
-    assert detail[LEDGER_DETAIL_KEY]["source_evidence"] == []
+    assert _contributors(layout, SEEDS_KEY) == []
 
 
 def test_adding_a_test_goal_and_pinning_a_seed_freeze_the_new_goal(
@@ -185,7 +184,9 @@ def test_a_seeded_goal_cannot_be_added_to_an_unseeded_target(
     monkeypatch.setattr(
         loading,
         "load_checkout_target_test_plan",
-        lambda work_dir, target: loading.load_target_test_plan(work_dir, target, adapter="icarus"),
+        lambda work_dir, target: loading.load_target_test_plan(
+            work_dir, target, identity=target, adapter="icarus"
+        ),
     )
     view = create_proposal(
         env,
@@ -279,3 +280,93 @@ def test_a_transaction_prepared_for_a_decision_that_was_never_saved_is_collected
     assert approve(layout, env, view.proposal.id).state == "applied"
     (kept,) = applies.glob("*.json")
     assert kept != orphan  # the decision that was made owns the only transaction left
+
+
+def test_approved_change_omits_old_ledger_and_preserves_sibling_history(layout):
+    from booley.criteria.state import DevelopmentState
+    from booley.goals.recorder import GoalEvidenceRecorder
+    from tests.goals.conftest import bind
+    from tests.goals.test_proposals import CYCLE_ARG, CYCLE_KEY, proposal
+    from tests.goals.test_test_run_evidence import A, B, _evidence_file, _status
+
+    env = _mode(layout, CYCLE_ARG, TARGET, tests_toml=b'[top]\ntests = ["a", "b", "smoke"]\n')
+    _record(layout, "first", [run_row(A)])
+    recorder = GoalEvidenceRecorder(bind(layout, "group"))
+    state = DevelopmentState.load(
+        record_paths(layout.control, layout.record.id).state_file, recorder.state_persistence()
+    )
+    changes = state.set_criterion(
+        CYCLE_KEY,
+        False,
+        detail={
+            "cycles": 100,
+            "test": "smoke",
+            "cycle_observation": "observed",
+            "test_runs": [run_row()],
+        },
+    )
+    changes += state.set_criterion(SIM_KEY, True, detail={"test_runs": [run_row(B), run_row()]})
+    recorder.record_changes(state, changes, invocation_id="group", producer="sim")
+    state.save()
+    import json
+
+    from tests.goals.test_proposals import observations
+
+    for row in observations(layout):
+        row["detail"]["test_run_ledger"] = "obsolete"
+        _evidence_file(layout, row["sequence"]).write_text(json.dumps(row), encoding="utf-8")
+    approved = proposal(layout, env)
+    approve(layout, env, approved.proposal.id)
+    rows = observations(layout)
+    assert all(
+        "test_run_ledger" not in row["detail"]
+        for row in rows
+        if "goal_derivation" in row["detail"]
+    )
+    assert _status(layout).status == "met"
+    assert 1 in _contributors(layout)
+    approve(layout, env, proposal(layout, env, maximum=300).proposal.id)
+    assert 1 in _contributors(layout)
+    assert _status(layout).status == "met"
+
+
+def test_relaxation_does_not_carry_aggregate_across_revisions(layout):
+    from tests.goals.test_test_run_evidence import _status
+
+    env = _mode(layout, _goal("smoke@x3"))
+    first, second, third = _seeds(layout.record, SEEDS_KEY)
+    _record(
+        layout,
+        "first",
+        [run_row(build_test_run("smoke", seed=seed)) for seed in (first, second)],
+        key=SEEDS_KEY,
+    )
+    _record(layout, "last", [run_row(build_test_run("smoke", seed=third))], key=SEEDS_KEY)
+    assert _status(layout, SEEDS_KEY).status == "met"
+    _change(layout, env, "relax", SEEDS_KEY, _goal("smoke@x2"))
+    status = _status(layout, SEEDS_KEY)
+    assert status.status == "unmet"
+    assert status.reason.startswith("goal-test-run-incomplete:")
+
+
+@pytest.mark.parametrize("kind", ["retarget-same", "add"])
+def test_a_goal_change_cannot_freeze_a_skipped_test(layout: SimpleNamespace, kind: str) -> None:
+    env = _mode(layout, TARGET, _goal("smoke"), tests_toml=b'[top]\ntests = ["smoke", "b"]\n')
+    write_tests_toml(layout, b'[top]\ntests = ["smoke", "b"]\nskip = ["smoke"]\n')
+    # A Goal on the whole Target still retargets: its suite freezes again without the Test.
+    refrozen = _change(layout, env, "retarget", SIM_KEY, TARGET)
+    assert [run.name for run in refrozen.test_run_resolution(SIM_KEY).test_runs] == ["b@1"]
+    key = "sim_pass_top_run_736d6f6b65_d"
+    arguments: dict[str, Any] = (
+        {"kind": "retarget", "goal_key": key, "after": _goal("smoke")}
+        if kind == "retarget-same"
+        else {"kind": "add", "after": _goal("smoke@7")}
+    )
+    view = create_proposal(
+        env,
+        layout.record.id,
+        {**arguments, "rationale": "the human asked for this change"},
+        session_key="test-session",
+    )
+    with pytest.raises(ProposalError, match="Test 'smoke' of Target 'top' is skipped"):
+        approve(layout, env, view.proposal.id)

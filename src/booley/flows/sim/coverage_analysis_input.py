@@ -8,15 +8,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from booley.core.booley_dir_links import lexical_booley_path
+from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.core.boundary import BoundaryError, require_dict
 from booley.flows.sim.campaign import (
-    ProjectionTrust,
     SimulationProjection,
     decode_simulation_projection,
     resolve_artifact_reference,
 )
-from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES
-from booley.flows.sim.campaign_reports import is_report_link, target_report_directory
+from booley.flows.sim.campaign.codec import (
+    MANIFEST_MAX_BYTES,
+    UnsupportedSimulationCampaignFormatError,
+)
+from booley.flows.sim.campaign_reports import report_link_ancestor, target_report_directory
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     FrozenJson,
@@ -33,6 +37,7 @@ from booley.flows.sim.coverage_reference import (
     authenticate_coverage_campaign_owner,
     resolve_coverage_campaign_reference,
 )
+from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
@@ -84,6 +89,8 @@ def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
             authenticated = authenticate_coverage_campaign_owner(resolved)
             _reference_projection(path, projection, resolved, authenticated)
         return loaded
+    except UnsupportedSimulationCampaignFormatError as exc:
+        raise CoverageAnalysisError(str(exc)) from exc
     except (OSError, ValueError, BoundaryError) as exc:
         raise CoverageAnalysisError(
             f"Cannot analyze Campaign at {path}: {exc}. Use an exact retained, completed Target Campaign; fully pruned invocations cannot be analyzed."
@@ -91,7 +98,11 @@ def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
 
 
 def _safe_path(path: Path) -> None:
-    if ".." in path.parts or any(is_report_link(item) for item in (path, *path.parents)):
+    # A symlinked .booley entry is followed; every other link is refused.
+    if (
+        ".." in path.parts
+        or report_link_ancestor(path, crossed_booley_dir_entry(path)) is not None
+    ):
         raise CoverageAnalysisError(
             "Campaign and source paths must not contain links or traversal"
         )
@@ -103,10 +114,13 @@ def _projection(
     path: Path, campaign: CoverageCampaign, *, coverage_expected: bool
 ) -> SimulationProjection:
     _safe_path(path)
-    projection = decode_simulation_projection(
-        require_dict(json.loads(path.read_text(encoding="utf-8"))),
-        coverage_expected=coverage_expected,
-    )
+    try:
+        projection = decode_simulation_projection(
+            require_dict(json.loads(path.read_text(encoding="utf-8"))),
+            coverage_expected=coverage_expected,
+        )
+    except UnsupportedSimulationCampaignFormatError as exc:
+        raise exc.located(path.parents[2]) from None
     expected = {
         "flow": "sim",
         "target": campaign.target.selector,
@@ -129,34 +143,35 @@ def _reference_projection(
 ) -> None:
     """Authenticate a Simulation projection through local Simulation Campaign bytes.
 
-    The legacy absolute manifest and summary strings are compatibility hints.
     Authority comes from the locally supplied Coverage reference, its enclosing
     authenticated Simulation Campaign, and the projection's Target/verdict fields.
     """
     expected_manifest = (public_path.parent / "campaign" / "manifest.json").absolute()
     document = projection.document
     owner = str(resolved.reference.document["simulation_campaign_id"])
-    if projection.trust is ProjectionTrust.AUTHENTICATED:
-        if document.get("campaign_id") != owner:
-            raise CoverageAnalysisError("Simulation Campaign projection owner disagrees")
-        manifest_artifact = resolve_artifact_reference(
-            document.get("campaign_manifest"),
-            bases={"origin_target": public_path.parent},
-            allowed_bases={"origin_target"},
-            expected_kind="simulation_campaign_manifest",
-            expected_owner=owner,
-            maximum=MANIFEST_MAX_BYTES,
-        )
-        coverage_artifact = resolve_artifact_reference(
-            document.get("coverage_campaign"),
-            bases={"origin_target": public_path.parent},
-            allowed_bases={"origin_target"},
-            expected_kind="coverage_campaign_reference",
-            expected_owner=owner,
-            maximum=MAX_REFERENCE_BYTES,
-        )
-        if manifest_artifact.path != expected_manifest or coverage_artifact.path != public_path:
-            raise CoverageAnalysisError("Simulation Campaign projection pointers disagree")
+    if document.get("campaign_id") != owner:
+        raise CoverageAnalysisError("Simulation Campaign projection owner disagrees")
+    entry = crossed_booley_dir_entry(public_path)
+    manifest_artifact = resolve_artifact_reference(
+        document.get("campaign_manifest"),
+        bases={"origin_target": public_path.parent},
+        allowed_bases={"origin_target"},
+        expected_kind="simulation_campaign_manifest",
+        expected_owner=owner,
+        maximum=MANIFEST_MAX_BYTES,
+        booley_dir=entry,
+    )
+    coverage_artifact = resolve_artifact_reference(
+        document.get("coverage_campaign"),
+        bases={"origin_target": public_path.parent},
+        allowed_bases={"origin_target"},
+        expected_kind="coverage_campaign_reference",
+        expected_owner=owner,
+        maximum=MAX_REFERENCE_BYTES,
+        booley_dir=entry,
+    )
+    if manifest_artifact.path != expected_manifest or coverage_artifact.path != public_path:
+        raise CoverageAnalysisError("Simulation Campaign projection pointers disagree")
     _safe_path(expected_manifest)
     manifest = authenticated.manifest
     reference = resolved.reference.document
@@ -198,12 +213,17 @@ def coverage_sources(
         inspection = catalog.inspect(handle)
         expected = {"rtl": [], "testbench": []}
         files = {}
+        root = project_root.resolve()
         for item in sorted(inspection.inputs, key=lambda item: item.path):
             path = project_root / item.path
             if path.suffix.lower() in {".fst", ".vcd"}:
                 return None
             _safe_path(path)
-            if not path.resolve().is_relative_to(project_root.resolve()):
+            # An input behind a symlinked Booley Directory entry counts as inside
+            # when spelled through the entry; _safe_path refused every other link.
+            if not lexical_booley_path(root / BOOLEY_DIR_NAME, path.resolve()).is_relative_to(
+                root
+            ):
                 return None
             category = "testbench" if "tb" in item.tags else "rtl"
             data = path.read_bytes()

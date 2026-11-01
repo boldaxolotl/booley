@@ -32,14 +32,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from booley.harness import init_cmd
-from booley.harness.image_lifecycle import LifecycleResult
-from booley.harness.image_lifecycle import Status as ImageLifecycleStatus
 from booley.harness.setup import interactive as interactive_init
 from booley.harness.setup.common import InitContext
 from booley.runtime import project_image as pi
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.image_lifecycle import LifecycleResult
+from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
+from tests.conftest import symlink_or_skip
 
 HAND_EDIT = "# HAND EDIT — must survive re-init\n"
 
@@ -391,7 +392,7 @@ class TestFullInitRerun:
         apart from a step that silently failed."""
         assert _run_full_init(repo) in (0, 2)
 
-        numbers = re.findall(r"=== Step (\S+) —", capsys.readouterr().out)
+        numbers = re.findall(r"^Step (\S+) —", capsys.readouterr().out, re.MULTILINE)
 
         assert numbers, "init emitted no step banners"
         assert numbers == [str(n) for n in range(1, len(numbers) + 1)]
@@ -969,7 +970,7 @@ def test_booley_dir_check_reports_all_backfills_and_converges(repo, capsys):
     ctx = InitContext(project_root=repo, check_only=True)
     init_cmd._step_booley_dir(ctx)
     assert "would" not in capsys.readouterr().out
-    assert [(r.status, r.detail) for r in ctx.results] == [("skip", "already present")]
+    assert [(r.status, r.detail) for r in ctx.results] == [("current", "already present")]
 
 
 def test_booley_dir_check_correct_permissions_keeps_skip(repo, capsys):
@@ -1158,7 +1159,9 @@ def test_seed_image_inspection_preserves_sequential_headings(repo, monkeypatch, 
     for force, check in ((False, False), (True, False), (False, True), (True, True)):
         ctx = InitContext(project_root=repo, force=force, check_only=check)
         init_cmd._run_seed(ctx, init_cmd.AgentSelection("claude", "subscription"))
-        numbers = [int(n) for n in re.findall(r"=== Step (\d+)", capsys.readouterr().out)]
+        numbers = [
+            int(n) for n in re.findall(r"^Step (\d+)", capsys.readouterr().out, re.MULTILINE)
+        ]
         assert numbers == list(range(1, len(numbers) + 1)), "seed headings must be sequential"
 
 
@@ -1331,5 +1334,21 @@ def test_init_mode_headings_are_sequential(repo, monkeypatch, capsys):
         args.force = force
         args.check_only = check
         assert init_cmd.run_init(args, repo) == 0
-        numbers = [int(n) for n in re.findall(r"=== Step (\d+)", capsys.readouterr().out)]
+        numbers = [
+            int(n) for n in re.findall(r"^Step (\d+)", capsys.readouterr().out, re.MULTILINE)
+        ]
         assert numbers == list(range(1, len(numbers) + 1))
+
+
+def test_refused_fusesoc_ignore_marker_warns(tmp_path, capsys):
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    destination = tmp_path / "outside-marker"
+    symlink_or_skip(booley_dir / "FUSESOC_IGNORE", destination)
+    ctx = InitContext(project_root=tmp_path)
+
+    init_cmd._backfill_fusesoc_ignore(booley_dir, ctx)
+
+    assert not destination.exists()
+    assert "refusing symlinked" in capsys.readouterr().out
+    assert (ctx.results[-1].name, ctx.results[-1].status) == ("booley_dir", "warn")

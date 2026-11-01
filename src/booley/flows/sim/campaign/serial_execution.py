@@ -7,6 +7,7 @@ and captures the engine-authorized private image as attempt-owned evidence.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import stat
@@ -55,7 +56,9 @@ from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.flows.sim.live_progress import attempt_scope
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputBinding,
+    RuntimeInputError,
     materialize_campaign_runtime_inputs,
+    safe_runtime_relative,
 )
 from booley.flows.test_runs import TestRun, test_run_from_document
 from booley.runtime.supervised_execution import current_supervised_execution
@@ -66,7 +69,6 @@ from .codec import (
     MAX_DETAIL_BYTES,
     RECORD_MAX_BYTES,
     RESULT_SCHEMA,
-    RESULT_V2_SCHEMA,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
@@ -486,10 +488,15 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             request.policy,
             trace=cast(bool, workload["trace"]),
         )
+        # Build and launch commands name paths relative to the campaign's own
+        # checkout (a Cycle Count baseline's is not the invocation's), so they run there.
         execution = (
             self._execution_factory(options)
             if self._execution_factory
-            else (SimulationExecution(invoke=self._invoke, options=options))
+            else SimulationExecution(
+                invoke=functools.partial(self._invoke, cwd=request.project_root),
+                options=options,
+            )
         )
         return _GroupInputs(
             handle,
@@ -520,7 +527,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             None,
             True,
             commands=_frozen_hook_commands(request),
-            test_runs=_work_item_test_runs(request.work_item) or (),
+            test_runs=_work_item_test_runs(request.work_item),
         )
         if pre_sim is not None:
             publish_pre_sim_firing(request, pre_sim, checkpoint=self._publication_checkpoint)
@@ -685,7 +692,7 @@ def _immutable_hook_failure(
         run_cwd,
         False,
         commands=_frozen_hook_commands(request),
-        test_runs=_work_item_test_runs(request.work_item) or (),
+        test_runs=_work_item_test_runs(request.work_item),
     )
     if pre_sim is not None:
         publish_pre_sim_firing(request, pre_sim, checkpoint=checkpoint)
@@ -741,7 +748,7 @@ def _attempt(request: WorkExecutionRequest) -> tuple[SimulationAttempt, RunDirec
             "owned": run.owned,
         },
         "child_execution_id": request.child_execution_id,
-        "child_entry_sha256": request.child_entry_sha256,
+        "child_entry_sha256": None,
         "pre_sim_build_access": workload["pre_sim_build_access"],
         "policy": {
             "timeout_seconds": (
@@ -866,18 +873,16 @@ def _fresh_shared_failure(
     )
 
 
-def _work_item_test_runs(work_item: Mapping[str, object]) -> tuple[TestRun, ...] | None:
-    """The concrete Test Runs a work item froze, or ``None`` before manifest v4.
+def _work_item_test_runs(work_item: Mapping[str, object]) -> tuple[TestRun, ...]:
+    """The concrete Test Runs a work item froze.
 
     The manifest codec already validated every record, so a decode failure
     here means the record was altered after validation.
     """
-    documents = work_item.get("test_runs")
-    if documents is None:
-        return None
     try:
         return tuple(
-            test_run_from_document(entry) for entry in cast(tuple[object, ...], documents)
+            test_run_from_document(entry)
+            for entry in cast(tuple[object, ...], work_item["test_runs"])
         )
     except ValueError as exc:
         raise SimulationCampaignIntegrityError(f"work item Test Runs are invalid: {exc}") from exc
@@ -1427,10 +1432,8 @@ def _launch_snapshot(
     snapshot = _create_snapshot(request, build_directory, build_result, bundle, snapshot_root)
     publication_checkpoint("after:snapshot_manifest")
     pre_launch = authenticate_executable_snapshot(snapshot, snapshot_root)
-    publication_checkpoint("integrity:prelaunch_authentication")
     outcome = group.launch_snapshot(snapshot_root, run_cwd)  # type: ignore[attr-defined]
     post_exit = authenticate_executable_snapshot(snapshot, snapshot_root)
-    publication_checkpoint("integrity:post_exit_authentication")
     return _snapshot_result(
         request,
         build_directory,
@@ -1531,20 +1534,13 @@ def _create_snapshot(
 
 def _named_observations(
     work_item: Mapping[str, object], observations: list[dict[str, object]]
-) -> tuple[str, list[dict[str, object]]]:
-    """The result schema and the observations, each naming the Test Run it observed.
-
-    A work item of a manifest that records no Test Runs keeps the earlier
-    result schema and its observations as they are.
-    """
+) -> list[dict[str, object]]:
+    """The observations, each naming the Test Run it observed."""
     bound = observation_test_runs(work_item, observations)
-    if bound is None:
-        return RESULT_V2_SCHEMA, observations
-    named = [
+    return [
         {**observation, "test_run": name}
         for observation, (name, _fingerprint) in zip(observations, bound, strict=True)
     ]
-    return RESULT_SCHEMA, named
 
 
 def _result(
@@ -1561,9 +1557,9 @@ def _result(
     runtime_inputs: list[dict[str, object]] | None = None,
     diagnostics: tuple[str, ...] = (),
 ) -> SimulationResult:
-    schema, observations = _named_observations(request.work_item, observations)
+    observations = _named_observations(request.work_item, observations)
     document = {
-        "$schema": schema,
+        "$schema": RESULT_SCHEMA,
         **_common(request),
         "attempt_id": request.attempt_id,
         "attempt_ordinal": request.attempt_ordinal,
@@ -1846,7 +1842,13 @@ def _capture_private_image(
         executable_assigned |= kind == "simulator_executable"
         sources.append((source, kind))
     for declaration in runtime_declarations:
-        sources.append((source_root / declaration["source_artifact_path"], "runtime_input"))
+        # A resumed prerequisite manifest is not re-planned, so refuse a path
+        # that could copy outside the private image before touching the disk.
+        try:
+            relative = safe_runtime_relative(declaration["source_artifact_path"])
+        except RuntimeInputError as exc:
+            raise SimulationCampaignIntegrityError(str(exc)) from exc
+        sources.append((source_root / relative, "runtime_input"))
     if not executable_assigned:
         raise SimulationCampaignIntegrityError("private image has no simulator executable")
     records = []

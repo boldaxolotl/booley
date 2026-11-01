@@ -235,6 +235,32 @@ def test_missing_read_and_symlink_refusal(tmp_path):
     assert external.read_text() == "{}"
 
 
+def test_handles_follow_a_symlinked_booley_directory(tmp_path):
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    booley_dir = tmp_path / "project" / ".booley"
+    booley_dir.parent.mkdir()
+    symlink_or_skip(booley_dir, store_dir, target_is_directory=True)
+
+    assert handles.reserve_session_handle(booley_dir, "codex:one") == "S1"
+    handles.register_job(booley_dir, "run-1", "sim", "codex:two")
+
+    assert handles.HandleStore(booley_dir).snapshot() == (
+        {"codex:one": "S1", "codex:two": "S2"},
+        (),
+    )
+    assert handles.HandleStore(booley_dir, jobs=True).snapshot() == ({"run-1": "J-SIM1"}, ())
+    assert (store_dir / "runtime/sessions/handles/map.json").is_file()
+    assert (store_dir / "runtime/job-handles/map.json").is_file()
+
+    # A link below the Booley Directory is still refused.
+    moved = store_dir / "moved"
+    (store_dir / "runtime/job-handles").rename(moved)
+    symlink_or_skip(store_dir / "runtime/job-handles", moved, target_is_directory=True)
+    labels, diagnostics = handles.HandleStore(booley_dir, jobs=True).snapshot()
+    assert labels == {} and "symlink" in diagnostics[0]
+
+
 @pytest.mark.parametrize(
     "payload",
     ["[" * 50000 + "0" + "]" * 50000, "x" * (16 * 1024 * 1024 + 1)],
@@ -325,6 +351,8 @@ def test_baseline_allocates_before_launch_and_broken_maps_do_not_block_it(
         "jobs_root": str(tmp_path / "jobs"),
         "record": {"worktree_path": "/work", "session_key": "codex:one"},
     }
+    # The scheduler publishes the Job record (and its handle) before launching.
+    sim_baseline_jobs._publish_job_record(tmp_path / "request.json", request)
     sim_baseline_jobs.launch_baseline(tmp_path / "request.json", request)
     assert len(launched) == 1
     assert job_records.read_record("baseline-one", tmp_path / "jobs") is not None
@@ -510,3 +538,67 @@ def test_maintenance_prunes_without_allocating_historical_handles(tmp_path_facto
         assert not handles.HandleStore(tmp_path, jobs=True).path.exists(), broken
         assert (root / "old.json").read_bytes() == before, broken
         assert store.path.read_text() == "broken" if broken else not store.path.exists(), broken
+
+
+def _saved_handle_store(tmp_path):
+    store = handles.HandleStore(tmp_path)
+    with handles.session_writer(tmp_path):
+        state = store.load()
+        state.reserve("codex:one", "S")
+        store.save(state)
+    return store
+
+
+def test_handle_map_read_survives_transient_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    store = _saved_handle_store(tmp_path)
+    attempts = hold_opens(monkeypatch, {store.path: 1})
+    assert store.load().labels() == {"codex:one": "S1"}
+    assert attempts[store.path] == 2
+
+
+def test_lasting_handle_map_sharing_error_is_a_snapshot_diagnostic(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    store = _saved_handle_store(tmp_path)
+    attempts = hold_opens(monkeypatch, {store.path: 99})
+    labels, diagnostics = store.snapshot()
+    assert labels == {}
+    assert "handles unavailable" in diagnostics[0]
+    assert attempts[store.path] > 1
+
+
+def test_dashboard_names_expired_unallocated_job_by_run_id(tmp_path, monkeypatch):
+    from booley.harness.dashboard import app
+    from booley.harness.dashboard.model import DashboardReader
+    from booley.runtime.timefmt import rfc3339_from_epoch
+
+    now = 1_800_000_000.0
+    root = tmp_path / ".interactive_logs/old/.runtime/jobs"
+    for run_id, ended_ago in [
+        ("sim-expired", 2 * 86400),
+        ("sim-recent", 3600),
+        ("sim-running", None),
+    ]:
+        running = ended_ago is None
+        age = 3 * 86400 if running else ended_ago
+        record = job_records.JobRecord(
+            run_id,
+            "sim",
+            rfc3339_from_epoch(now - age - 10),
+            60,
+            status=job_records.STATUS_RUNNING if running else job_records.STATUS_DONE,
+            ended_at=None if running else rfc3339_from_epoch(now - age),
+            session_key="codex:gone",
+        )
+        job_records.write_record(record, root)
+    monkeypatch.setattr("booley.harness.dashboard.model.namespace", lambda: "fixture")
+    monkeypatch.setattr("booley.harness.dashboard.model.time.time", lambda: now)
+    views = {j.record.run_id: j for j in DashboardReader(tmp_path, tmp_path).read().jobs.jobs}
+    expired, recent = views["sim-expired"], views["sim-recent"]
+    assert app._job_label(expired) == "sim-expired"
+    assert app._owner_handle(expired, {}) == "codex:gone"
+    assert app._job_label(recent) == "J-SIM?"
+    assert app._owner_handle(recent, {}) == "S?"
+    assert app._job_label(views["sim-running"]) == "J-SIM?"

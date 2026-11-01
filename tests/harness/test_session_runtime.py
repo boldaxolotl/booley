@@ -42,15 +42,14 @@ from booley.runtime.session_admission import (
 from booley.runtime.session_admission import (
     vscode_sandboxes as real_vscode_sandboxes,
 )
+from tests.harness.booley_dir_support import select_booley_dir
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 
 
 @pytest.fixture(autouse=True)
 def _isolate_session_admission(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    from booley.runtime import sandbox_artifact, session_admission
+    from booley.runtime import session_admission
 
-    monkeypatch.setattr(sandbox_artifact, "launch_vscode_observer", lambda *_args: None)
-    monkeypatch.setattr(sandbox_artifact, "publish_receipt", lambda *_args: True)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setattr(session_admission, "admit_start", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(session_admission, "claim_vscode_start", lambda *_args, **_kwargs: False)
@@ -2098,6 +2097,21 @@ class TestUp:
 
         assert "replacement succeeded" in caplog.text
 
+    def test_refresh_to_unproxied_spec_needs_no_egress_network(self, wired):
+        workspace, _run = wired
+        _write_spec(workspace, _spec(egress="unproxied"))
+        name = sr.session_container_name(workspace)
+        exists = iter([False, False, False])
+        with (
+            patch.object(sr.idk, "network_exists", return_value=False),
+            patch.object(sr.idk, "ensure_unproxied_network", return_value=False) as ensure,
+            patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
+            patch.object(sr.idk, "container_running", return_value=False),
+            patch.object(sr, "verify_refreshed_session"),
+        ):
+            assert sr.up(workspace, rebuild=True, expected_image_id="sha256:fresh") == name
+        ensure.assert_called_once_with()
+
     def test_licensed_refresh_fails_before_parking_existing_runtime(self, wired):
         workspace, run = wired
         with (
@@ -2721,6 +2735,18 @@ class TestPreflight:
         with pytest.raises(sr.SessionError, match="run `booley init`"):
             sr.up(workspace)
 
+    def test_unproxied_spec_ensures_routed_network_without_egress_network(self, wired):
+        workspace, _run = wired
+        _write_spec(workspace, _spec(egress="unproxied"))
+        with (
+            patch.object(sr.idk, "network_exists", return_value=False),
+            patch.object(sr.idk, "ensure_unproxied_network", return_value=True) as ensure,
+            patch.object(sr.idk, "container_exists", return_value=False),
+            patch.object(sr.idk, "container_running", return_value=False),
+        ):
+            assert sr.up(workspace) == sr.session_container_name(workspace)
+        ensure.assert_called_once_with()
+
 
 class TestImageDriftWarning:
     """F-6: [sandbox].image changed after init leaves the untracked spec frozen
@@ -2739,6 +2765,32 @@ class TestImageDriftWarning:
             patch.object(sr.idk, "container_running", return_value=True),
         ):
             sr.up(workspace)
+
+    def test_image_comparison_uses_shared_dispatch(self, workspace, monkeypatch):
+        assert callable(getattr(sr.idk, "compare_issued_image", None)), (
+            "shared image dispatch is missing"
+        )
+        calls = []
+        monkeypatch.setattr(sr.project_image, "project_sandbox_image", lambda root: "configured")
+
+        def compare(*args, **kwargs):
+            calls.append((args, kwargs))
+            return sr.image_identity.Comparison(sr.image_identity.Status.MATCH)
+
+        monkeypatch.setattr(sr.idk, "compare_issued_image", compare)
+        sr._warn_on_image_drift({"image": "issued-tag"}, workspace)
+        assert calls == [(("issued-tag", "configured"), {"project_root": workspace})]
+
+    def test_equivalent_image_emits_one_debug_note(self, workspace, caplog, monkeypatch):
+        self.test_same_source_tag_move_is_silent(workspace, caplog, monkeypatch)
+        notes = [
+            record
+            for record in caplog.records
+            if "moved to an equivalent Sandbox Image" in record.message
+        ]
+        assert len(notes) == 1
+        assert notes[0].levelname == "DEBUG"
+        assert not any(record.levelname == "WARNING" for record in caplog.records)
 
     def test_spec_vs_toml_drift_warns_and_names_the_fix(self, wired, caplog, monkeypatch):
         from booley.runtime.booley_dir import reset_cache
@@ -3598,11 +3650,8 @@ class TestSessionRefresh:
         from booley.harness.booley import _build_parser
         from booley.runtime import session_refresh
 
-        pending = issuance_invalidation.prepare(
-            str(workspace.resolve()),
-            cleanup_resources=False,
-        )
-        issuance_invalidation.cancel(pending)
+        issuance_invalidation.prepare(str(workspace.resolve()))
+        issuance_invalidation.cancel(str(workspace.resolve()))
         booley_config = tmp_path / "xdg" / "booley"
         booley_config.chmod(0o755)
         monkeypatch.setattr(booley, "_report_upgrade_before_session", lambda _root: None)
@@ -3703,73 +3752,6 @@ class TestSessionRefresh:
             assert booley._cmd_session(args, tmp_path) == 2
 
         refresh.assert_called_once_with(tmp_path, verbose=False)
-
-    def test_refresh_prepares_then_commits_selected_graph(self, tmp_path: Path, monkeypatch):
-        from booley.harness import init_cmd
-        from booley.runtime.image_lifecycle import (
-            LifecycleResult,
-            Status,
-        )
-
-        expected = LifecycleResult(
-            "booley-sandbox-riscv",
-            "sha256:fresh",
-            Status.CHANGED,
-            changed_images=("booley-sandbox", "booley-sandbox-riscv"),
-        )
-        prepared = object()
-        calls = []
-        monkeypatch.setattr(
-            init_cmd,
-            "prepare_runtime_image",
-            lambda root, *, verbose=False: calls.append(("prepare", root, verbose)) or prepared,
-        )
-        monkeypatch.setattr(
-            init_cmd,
-            "commit_runtime_image",
-            lambda value: calls.append(("commit", value)) or expected,
-        )
-        monkeypatch.setattr(
-            init_cmd, "abort_runtime_image", lambda value: calls.append(("abort", value))
-        )
-
-        assert init_cmd.refresh_runtime_image(tmp_path, verbose=True) is expected
-        assert calls == [
-            ("prepare", tmp_path, True),
-            ("commit", prepared),
-        ]
-
-    def test_refresh_aborts_prepared_candidates_when_commit_fails(
-        self, tmp_path: Path, monkeypatch
-    ):
-        from booley.harness import init_cmd
-
-        prepared = object()
-        aborted = []
-        monkeypatch.setattr(init_cmd, "prepare_runtime_image", lambda *_args, **_kwargs: prepared)
-        monkeypatch.setattr(
-            init_cmd,
-            "commit_runtime_image",
-            lambda _value: (_ for _ in ()).throw(RuntimeError("commit failed")),
-        )
-        monkeypatch.setattr(init_cmd, "abort_runtime_image", aborted.append)
-
-        with pytest.raises(RuntimeError, match="commit failed"):
-            init_cmd.refresh_runtime_image(tmp_path)
-        assert aborted == [prepared]
-
-    def test_refresh_refuses_user_managed_image(self, tmp_path: Path, monkeypatch):
-        from booley.harness import init_cmd
-
-        monkeypatch.setattr(
-            init_cmd,
-            "prepare_runtime_image",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                RuntimeError("user-managed Sandbox Image")
-            ),
-        )
-        with pytest.raises(RuntimeError, match="user-managed"):
-            init_cmd.refresh_runtime_image(tmp_path)
 
     def test_spec_snapshot_restores_issuance_and_keeper(self, tmp_path: Path, monkeypatch):
         from booley.harness import init_cmd
@@ -4057,9 +4039,11 @@ def test_canonical_pin_checks_immutable_image_and_rejects_alias_mask(
 
 
 @pytest.mark.parametrize("vscode", [False, True])
-@pytest.mark.parametrize("drift", [None, "missing", "changed"])
+@pytest.mark.parametrize("drift", [None, "missing", "changed", "pre-image-identity"])
 def test_container_resume_requires_issued_git_environment(tmp_path, monkeypatch, vscode, drift):
     spec = dc.build_devcontainer_spec(dc.APP_NONE, image="sha256:test")
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
+    runtime_spec.pin_image(spec)
     labels = {"devcontainer.local_folder": str(tmp_path)} if vscode else {}
     sections = (spec["containerEnv"],) if vscode else (spec["containerEnv"], spec["remoteEnv"])
     environment = {key: value for section in sections for key, value in section.items()}
@@ -4067,6 +4051,8 @@ def test_container_resume_requires_issued_git_environment(tmp_path, monkeypatch,
         environment.pop("GIT_CONFIG_VALUE_0")
     elif drift == "changed":
         environment["GIT_CONFIG_VALUE_0"] = "Human"
+    elif drift == "pre-image-identity":
+        environment.pop("BOOLEY_SANDBOX_IMAGE_ID", None)
     state = {
         "Image": "sha256:test",
         "Config": {
@@ -4093,6 +4079,48 @@ def test_container_resume_requires_issued_git_environment(tmp_path, monkeypatch,
     ) is (drift is None)
 
 
+@pytest.mark.parametrize(
+    "network_constant, matches",
+    [
+        pytest.param("UNPROXIED_NETWORK", True, id="unproxied-on-routed-network"),
+        pytest.param("EGRESS_NETWORK", False, id="unproxied-on-egress-network"),
+    ],
+)
+def test_container_resume_matches_issued_egress_topology(
+    tmp_path, monkeypatch, network_constant, matches
+):
+    spec = dc.build_devcontainer_spec(dc.APP_NONE, image="sha256:test", egress="unproxied")
+    network = getattr(dc, network_constant)
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
+    runtime_spec.pin_image(spec)
+    environment = {**spec["remoteEnv"], **spec["containerEnv"]}
+    state = {
+        "Image": "sha256:test",
+        "Config": {
+            "Image": "sha256:test",
+            "User": "agent",
+            "WorkingDir": "/work",
+            "Env": [f"{key}={value}" for key, value in environment.items()],
+        },
+        "HostConfig": {"Memory": 0},
+        "NetworkSettings": {"Networks": {network: {}}},
+    }
+    monkeypatch.setattr(runtime_spec, "labels", lambda _stamp: ())
+    monkeypatch.setattr(sr, "_session_hardening_matches", lambda *_args: True)
+    monkeypatch.setattr(sr, "_mounts_match_spec", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        sr,
+        "_docker_stdout",
+        lambda argv: json.dumps({}) if "--format" in argv else json.dumps([state]),
+    )
+    assert (
+        sr._container_matches_issuance(
+            "test", SimpleNamespace(image_id="sha256:test"), spec=spec, workspace=tmp_path
+        )
+        is matches
+    )
+
+
 def test_docker_run_carries_literal_identity_and_cleanup_hooks(tmp_path):
     spec = dc.build_devcontainer_spec(dc.APP_NONE)
     argv = sr.docker_run_argv(spec, tmp_path, "test")
@@ -4114,6 +4142,56 @@ def test_startup_preserves_identity_drift_diagnostic(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_spec, "validate", refuse)
     with pytest.raises(sr.SessionError, match=r"\[agent.git\].*refresh and recreate"):
         sr._validate_up_request(tmp_path, None)
+
+
+def test_startup_egress_drift_names_init_seed(tmp_path, monkeypatch):
+    monkeypatch.setattr(sr, "_load_spec", lambda _root: {})
+
+    def refuse(*_args):
+        raise runtime_spec.EgressDriftError(
+            "Sandbox spec egress mode 'proxy' differs from host [sandbox] egress = 'unproxied'"
+        )
+
+    monkeypatch.setattr(runtime_spec, "validate", refuse)
+    with pytest.raises(sr.SessionError) as raised:
+        sr._validate_up_request(tmp_path, None)
+    message = str(raised.value)
+    assert "egress = 'unproxied'" in message
+    assert "`booley init --seed`" in message
+    assert "`booley session down`" in message
+
+
+def test_vscode_prepare_names_init_seed_for_egress_drift(tmp_path, monkeypatch):
+    authenticated = SimpleNamespace(project_root=str(tmp_path), project_data_source=str(tmp_path))
+    monkeypatch.setattr(runtime_spec, "authenticate", lambda *_args: authenticated)
+    monkeypatch.setattr(sr, "_quiesce_legacy_vscode_container", lambda *_args: None)
+
+    def refuse(*_args):
+        raise runtime_spec.EgressDriftError("Sandbox spec egress mode differs from host policy")
+
+    monkeypatch.setattr(runtime_spec, "validate", refuse)
+    with pytest.raises(sr.SessionError) as raised:
+        sr._authenticate_quiesce_validate(tmp_path, {})
+    message = str(raised.value)
+    assert "`booley init --seed`" in message
+    assert "Rebuild Container" in message
+    assert "session refresh" not in message
+
+
+def test_startup_host_config_error_names_file_without_teardown(tmp_path, monkeypatch):
+    from booley.config.host_config import host_config_path
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    config = host_config_path()
+    config.parent.mkdir(parents=True)
+    config.write_text('[sandbox]\negress = "proxied"\n', encoding="utf-8")
+    monkeypatch.setattr(sr, "_load_spec", lambda _root: {})
+    with pytest.raises(sr.SessionError) as raised:
+        sr._validate_up_request(tmp_path, None)
+    message = str(raised.value)
+    assert str(config) in message
+    assert "sandbox.egress" in message
+    assert "session down" not in message
 
 
 def test_mismatched_editor_stop_remove_down_releases_capacity(tmp_path, monkeypatch):
@@ -4768,27 +4846,34 @@ def test_project_sandbox_resolution_ignores_noninteractive_resources(
         ("external", "rebuild/pull"),
         ("vscode", "stop the Sandbox in VS Code"),
         ("runtime", "booley session up --rebuild"),
+        ("inside", "on the host"),
     ],
+    ids=["managed", "licensed", "withdrawn", "external", "vscode", "runtime", "inside"],
 )
 def test_drift_remedy_has_one_state_appropriate_workflow(tmp_path, monkeypatch, state, expected):
     from types import SimpleNamespace
 
     from booley.runtime import runtime_context, session_issuance, session_runtime
 
-    monkeypatch.setattr(session_runtime, "_authenticated_recovery_available", lambda _root: True)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: state == "inside")
+    loads, probes = [], []
 
     def issuance(_root):
+        loads.append(_root)
         if state == "withdrawn":
             raise session_issuance.IssuanceUnavailableError("withdrawn")
         return SimpleNamespace(license_profile="site" if state == "licensed" else None)
 
+    def vscode_owner(_root):
+        probes.append(_root)
+        return "editor" if state == "vscode" else None
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("remedy selection must not authenticate issuance a second time")
+
     monkeypatch.setattr(session_issuance, "load_issued_snapshot", issuance)
-    monkeypatch.setattr(
-        session_runtime,
-        "strict_conflicting_vscode_session",
-        lambda _root: "editor" if state == "vscode" else None,
-    )
+    monkeypatch.setattr(session_issuance, "load_recovery_snapshot", forbidden)
+    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", vscode_owner)
     monkeypatch.setattr(
         session_runtime.project_image, "project_sandbox_image", lambda _root: "selected"
     )
@@ -4799,39 +4884,19 @@ def test_drift_remedy_has_one_state_appropriate_workflow(tmp_path, monkeypatch, 
     )
     remedy = session_runtime.sandbox_remedy(tmp_path, runtime_only=state == "runtime")
     assert expected in remedy
+    if state in {"managed", "licensed", "vscode", "inside"}:
+        assert remedy.count("booley session refresh") == (state in {"managed", "licensed"})
     if state in {"managed", "licensed"}:
-        assert remedy.count("booley session refresh") == 1
         assert "init --seed" not in remedy
-
-
-def test_vscode_drift_remedy_preserves_editor_ownership(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from booley.runtime import runtime_context, session_issuance
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(
-        session_issuance,
-        "load_issued_snapshot",
-        lambda _root: SimpleNamespace(license_profile=None),
+    if state == "vscode":
+        assert "booley init --force" in remedy and "Dev Containers: Rebuild Container" in remedy
+    if state == "inside":
+        assert "booley doctor" in remedy
+    expected_loads = 0 if state == "inside" else 1
+    assert (len(loads), len(probes)) == (
+        expected_loads,
+        0 if state in {"inside", "withdrawn"} else 1,
     )
-    monkeypatch.setattr(sr, "strict_conflicting_vscode_session", lambda _root: "editor")
-    monkeypatch.setattr(sr.project_image, "project_sandbox_image", lambda _root: "selected")
-    monkeypatch.setattr(sr.project_image, "is_managed_sandbox_image", lambda *_args: True)
-    remedy = sr.sandbox_remedy(tmp_path)
-    assert "booley init --force" in remedy
-    assert "Dev Containers: Rebuild Container" in remedy
-    assert "booley session refresh" not in remedy
-
-
-def test_inside_sandbox_remedy_requires_host_observation(tmp_path, monkeypatch):
-    from booley.runtime import runtime_context
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    remedy = sr.sandbox_remedy(tmp_path)
-    assert "on the host" in remedy
-    assert "booley doctor" in remedy
-    assert "booley session refresh" not in remedy
 
 
 @pytest.mark.parametrize(
@@ -4882,9 +4947,11 @@ def test_project_sandbox_resolution_revalidation_fails_closed(
 @pytest.mark.parametrize("owner", ["editor", "headless"])
 @pytest.mark.parametrize("command", [None, ["hostname"]])
 def test_enter_preserves_container_credentials_without_literal_placeholder_overrides(
-    workspace, project_sandbox_resolution, monkeypatch, owner, command
+    workspace, tmp_path, request, project_sandbox_resolution, monkeypatch, owner, command
 ):
     from booley.runtime import auth_token, runtime_attachment
+
+    select_booley_dir(request, monkeypatch, tmp_path)
 
     fixture = project_sandbox_resolution
     for key in auth_token.CREDENTIAL_ENV_KEYS:
@@ -5208,3 +5275,30 @@ def test_session_owner_selection_routes(tmp_path, monkeypatch, route):
         ]
     assert _linked_cli(monkeypatch, argv) == 0
     assert selected == [root]
+
+
+def _write_spec_file(workspace: Path) -> Path:
+    path = dc.devcontainer_path(workspace)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"image": "x"}', encoding="utf-8")
+    return path
+
+
+def test_spec_read_survives_transient_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    path = _write_spec_file(tmp_path)
+    attempts = hold_opens(monkeypatch, {path: 1})
+    assert sr._load_spec(tmp_path) == {"image": "x"}
+    assert attempts[path] == 2
+
+
+def test_lasting_spec_sharing_error_is_a_session_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    path = _write_spec_file(tmp_path)
+    attempts = hold_opens(monkeypatch, {path: 99})
+    with pytest.raises(sr.SessionError, match="could not read") as caught:
+        sr._load_spec(tmp_path)
+    assert caught.value.__cause__.winerror == 32
+    assert attempts[path] > 1

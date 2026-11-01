@@ -6,9 +6,10 @@ from pathlib import Path
 import pytest
 
 from booley.flows.sim import campaign_reports
-from booley.flows.sim.test_run_invocation import TestRunInvocation
 from booley.mcp.job_results import _read_report_json
+from tests.conftest import symlink_or_skip
 from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
+from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
 
 __all__ = ["flow_project", "project_alias"]
@@ -192,7 +193,6 @@ def test_cycle_card_preserves_complete_reason_strings(reason, monkeypatch):
     monkeypatch.setattr(flow, "_coverage_report_suffix", lambda _campaign: "coverage")
     monkeypatch.setattr(flow, "_waiver_block_hint_lines", lambda _campaign: ["coverage hint"])
     monkeypatch.setattr(flow, "source_gap_report_lines", lambda _campaign: [])
-    monkeypatch.setattr(flow, "_coverage_pre_sim_lines", lambda *_args: [])
 
     outcome = SimpleNamespace(
         target={"selector": "sim"},
@@ -207,51 +207,6 @@ def test_cycle_card_preserves_complete_reason_strings(reason, monkeypatch):
     rendered = flow._campaign_report_lines([outcome])[0]
     assert f"\n  {reason}\n  y\n  one: cycles=7\ncoverage hint" in rendered
     assert resolved == [True]
-
-
-def test_endpoint_cycle_budget_includes_pre_sim_hook_lines(monkeypatch):
-    from types import SimpleNamespace
-
-    from booley.flows.sim import flow
-
-    manifest = Path("/manifest.json")
-    pointer_bytes = len(f"  manifest: {manifest.resolve()}\n".encode())
-    budget = 200 + pointer_bytes
-    monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", str(budget))
-    monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", str(budget))
-    hooks = ["pre-sim " + "h" * 130]
-    calls = []
-    monkeypatch.setattr(
-        flow, "_campaign_pre_sim_report_lines", lambda *_args: calls.append(True) or hooks
-    )
-    for symbol in (
-        "_resolved_coverage_campaigns",
-        "_campaign_structured_details",
-        "_campaign_pre_sim_details",
-        "_campaign_build_infrastructure_detail",
-    ):
-        monkeypatch.setattr(flow, symbol, lambda *_args: {})
-    monkeypatch.setattr(flow, "_coverage_compatibility_targets", lambda *_args: [])
-    owner = SimpleNamespace(
-        context=SimpleNamespace(_reserved_invocation_dir=None),
-        _campaign_completed_display_label=lambda _outcomes: None,
-        _report_destination=lambda: None,
-        _test_runs=TestRunInvocation(),
-    )
-    outcome = SimpleNamespace(
-        target={"selector": "sim"},
-        aggregate_grade="pass",
-        coverage_reference=None,
-        manifest_path=manifest,
-        observations=[{"test": "test" * 30, "cycle_count": None, "detail": {}}],
-    )
-    baseline = flow.SimulateFlow._campaign_endpoint_outcome(owner, [outcome]).report_text
-    assert baseline.endswith(hooks[0]) and len(baseline.encode()) < budget
-    outcome.observations = [{"test": "test" * 30, "cycle_count": 7, "detail": {}}]
-    rendered = flow.SimulateFlow._campaign_endpoint_outcome(owner, [outcome]).report_text
-    assert rendered.endswith(hooks[0]) and len(rendered.encode()) <= budget
-    assert rendered == baseline
-    assert calls == [True, True]
 
 
 @pytest.mark.parametrize("failure", [None, "retention", "supersede"])
@@ -285,81 +240,48 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
     progress = json.loads((resumed / "sim/1/progress.json").read_text())
     assert "cycle_counts" not in json.dumps(progress)
     if failure:
-        assert flow.context._simulation_campaign_outcomes == ()
+        assert flow._simulation_campaign_outcomes == ()
     else:
         campaign = report["detail"]["campaigns"]["sim_0"]
         assert all(item["cycle_count"] is None for item in campaign["observations"])
         assert campaign["artifacts"]["simulation"]["path_base"] == "external_origin_target"
 
 
-def test_count_metadata_keeps_full_rows_outside_preview_and_recomputes():
-    from types import SimpleNamespace
-
-    from booley.flows.sim.flow import SimulateFlow, _campaign_observation_preview
-
-    observations = [
-        {
-            "test": None if index == 0 else str(index),
-            "cycle_count": index,
-            "execution": "completed",
-            "failure_class": None,
-            "functional": "pass",
-            "assertions": "clean",
-            "assertion_count": 0,
-            "detail": {},
-        }
-        for index in range(40)
-    ]
-    flow = SimulateFlow()
-    flow.context._simulation_report_outcomes = (
-        SimpleNamespace(target={"selector": "sim"}, observations=observations),
-    )
-    assert len(flow.persisted_cycle_counts()["sim"]) == 40
-    assert flow.persisted_cycle_counts()["sim"][0]["test"] is None
-    preview = _campaign_observation_preview(observations)
-    assert len(preview["observations"]) == 32
-    assert preview["observations"][31]["cycle_count"] == 31
-    assert "cycle_counts" not in preview
-    flow.context._simulation_report_outcomes = ()
-    assert flow.persisted_cycle_counts() == {}
-
-
-def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, capsys):
-    import time
-    from types import SimpleNamespace
+def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeypatch):
+    from dataclasses import replace
 
     from booley.flows.endpoint_reporting import write_report
     from booley.flows.sim.campaign_retention import _read_object
-    from booley.flows.sim.flow import SimulateFlow
+    from booley.flows.sim.flow import SimulateFlow, _campaign_observation_preview
+    from booley.flows.sim.request import SimRequest
     from booley.mcp.server import _structured_from_report
-    from booley.runtime.endpoint_execution import EndpointOutcome
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _public_cycle_campaign
 
-    flow = SimulateFlow()
-    name = '\\"é' * 100
-    observations = [{"test": name + str(index), "cycle_count": index} for index in range(2000)]
-    flow.context._simulation_report_outcomes = tuple(
-        SimpleNamespace(target={"selector": selector}, observations=observations)
-        for selector in ("one", "two")
+    campaign = _public_cycle_campaign(tmp_path, monkeypatch)
+    observations = tuple(
+        dict(
+            campaign.observations[0], test=None if i == 0 else '\\"é' * 100 + str(i), cycle_count=i
+        )
+        for i in range(2000)
     )
-    context = flow.context
-    flow._args = SimpleNamespace(report_dir=tmp_path, slug="")
-    context._start_time = time.monotonic()
-    start = time.monotonic()
-    with context.publication_resources:
-        path = write_report(context, EndpointOutcome())
-    raw = path.read_bytes()
+    outcomes = [
+        replace(campaign, target={"selector": name}, observations=observations)
+        for name in ("one", "two")
+    ]
+    flow = SimulateFlow()
+    flow._args = SimRequest(target="one,two", report_dir=tmp_path / "large", work_dir=tmp_path)
+    result = flow._campaign_endpoint_outcome(outcomes)
+    with flow.publication_resources:
+        path = write_report(flow, result)
     report = _read_report_json(path)
-    assert _read_object(path) == report
-    assert report == json.loads((tmp_path / "sim.json").read_bytes())
-    assert sum(len(rows) for rows in report["cycle_counts"].values()) == 4000
+    assert _read_object(path) == report == json.loads((tmp_path / "large/sim.json").read_bytes())
+    assert sum(map(len, report["cycle_counts"].values())) == 4000
+    assert report["cycle_counts"]["one"][0] == {"test": None, "cycle_count": 0}
     assert len(json.dumps(_structured_from_report(report)).encode()) < 65536
     assert "cycle_counts" not in report["detail"]
-    print(
-        f"4000 count rows: {len(raw)} persisted bytes; writer/readers {time.monotonic() - start:.4f}s"
-    )
-    observation = capsys.readouterr().out
-    with capsys.disabled():
-        print(observation.strip())
+    preview = _campaign_observation_preview(observations[:40])
+    assert len(preview["observations"]) == 32 and preview["observations"][-1]["cycle_count"] == 31
+    assert "cycle_counts" not in preview
 
 
 def _resume_hook_campaign(tmp_path, monkeypatch, interrupted, *, external=False):
@@ -400,22 +322,29 @@ def _resume_hook_campaign(tmp_path, monkeypatch, interrupted, *, external=False)
     return original, resumed, counters, invocation
 
 
+@pytest.mark.timeout(120)  # the external resume case runs a second full Campaign
+@pytest.mark.parametrize("external", [False, True])
 @pytest.mark.parametrize("interrupted", [False, True])
 def test_resume_separates_historical_hooks_from_real_new_firings(
-    tmp_path, monkeypatch, interrupted
+    tmp_path, monkeypatch, interrupted, external
 ):
     from types import SimpleNamespace
 
     from booley.flows.sim.flow import SimulateFlow
 
     original, resumed, counters, invocation = _resume_hook_campaign(
-        tmp_path, monkeypatch, interrupted
+        tmp_path, monkeypatch, interrupted, external=external
     )
+    if external:  # an external invocation reuses the number of the producing one
+        assert original.producer_invocation_directory.name == invocation.name == "1"
+        assert original.producer_invocation_directory != invocation
     expected_runs = int(interrupted)
-    assert counters == {"compile": expected_runs, "durable_reuse": 0, "launch": expected_runs}
+    assert counters["launch"] == expected_runs
+    if not external:  # an external invocation reuses the durable build instead
+        assert counters == {"compile": expected_runs, "durable_reuse": 0, "launch": expected_runs}
     assert len(resumed.pre_sim_firings) == 1 + expected_runs
     flow = SimulateFlow()
-    flow.context._reserved_invocation_dir = invocation
+    flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
     result = flow._campaign_endpoint_outcome([resumed])
     assert len(result.detail["pre_sim_lines"]) == expected_runs
@@ -433,11 +362,11 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
     tmp_path, monkeypatch
 ):
     from booley.flows.sim.campaign import ArtifactReferenceError, resolve_report_artifact_reference
-    from booley.flows.sim.flow import _campaign_pre_sim_details
+    from booley.flows.sim.flow import _campaign_hook_inputs, _pre_sim_projection
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
     invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
-    detail = _campaign_pre_sim_details([outcome], invocation)
+    detail = _pre_sim_projection(*_campaign_hook_inputs([outcome], invocation), invocation)[0]
     reference = detail["pre_sim_runs"][0]["reference"]
     owner = outcome.pre_sim_firings[0].document["attempt_id"]
     options = {
@@ -448,7 +377,9 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
     resolved = resolve_report_artifact_reference(invocation / "report.json", reference, **options)
     assert resolved.path == outcome.pre_sim_firings[0].path
     destination = tmp_path / "external/reports/2"
-    external = _campaign_pre_sim_details([outcome], destination)["pre_sim_runs"][0]["reference"]
+    external = _pre_sim_projection(*_campaign_hook_inputs([outcome], destination), destination)[0][
+        "pre_sim_runs"
+    ][0]["reference"]
     assert external["path_base"] == "external_origin_target"
     with pytest.raises(ArtifactReferenceError):
         resolve_report_artifact_reference(destination / "report.json", external, **options)
@@ -459,32 +390,6 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
         **options,
     )
     assert resolved.path == outcome.pre_sim_firings[0].path
-
-
-# Windows CI observed 34 s; budget = 3x the slowest run, rounded up to 30 s.
-@pytest.mark.timeout(120)
-@pytest.mark.parametrize("interrupted", [False, True])
-def test_external_resume_number_collision_reports_only_actual_new_firings(
-    tmp_path, monkeypatch, interrupted
-):
-    from types import SimpleNamespace
-
-    from booley.flows.sim.flow import SimulateFlow
-
-    original, resumed, counters, invocation = _resume_hook_campaign(
-        tmp_path, monkeypatch, interrupted, external=True
-    )
-    assert original.producer_invocation_directory.name == invocation.name == "1"
-    assert original.producer_invocation_directory != invocation
-    flow = SimulateFlow()
-    flow.context._reserved_invocation_dir = invocation
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    result = flow._campaign_endpoint_outcome([resumed])
-    assert counters["launch"] == int(interrupted)
-    assert len(result.detail["pre_sim_lines"]) == int(interrupted)
-    assert result.detail["pre_sim_current"] == int(interrupted)
-    assert result.detail["pre_sim_historical"] == 1
-    assert result.report_text.count("pre_run_commands") == int(interrupted)
 
 
 def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counters):
@@ -503,7 +408,7 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
     validated = ValidatedResumeManifest(node, (), (_handle(tmp_path / "project"),))
     invocation.mkdir(parents=True, exist_ok=True)
     flow = SimulateFlow()
-    flow.context._reserved_invocation_dir = invocation
+    flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(
         target=["sim"],
         result_verbosity="brief",
@@ -527,25 +432,18 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
     return flow, PreparedSimulationEndpoint((), validated, ("sim",), {})
 
 
-@pytest.mark.parametrize("interrupted", [False, True])
-def test_production_resume_override_preserves_external_current_identity(
-    tmp_path, monkeypatch, interrupted
-):
-    from tests.flows.sim.test_campaign_phase3_integrity import _admission
-
+def _third_invocation_resume(tmp_path, monkeypatch, *, interrupted=False):
+    """Resume an externally resumed Campaign again from a third invocation."""
     original, _prior, _counters, _invocation = _resume_hook_campaign(
         tmp_path, monkeypatch, False, external=True
     )
     if interrupted:
         (original.pre_sim_firings[0].path.parents[3] / "result.json").unlink()
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
-    invocation = tmp_path / "third/reports/1"
-    flow, prepared = _production_resume_flow(tmp_path, monkeypatch, original, invocation, counters)
-    result = flow.run_prepared_simulation(prepared, _admission())
-    assert counters["launch"] == int(interrupted)
-    assert result.detail["pre_sim_current"] == int(interrupted)
-    assert len(result.detail["pre_sim_lines"]) == int(interrupted)
-    assert result.detail["pre_sim_historical"] == 1
+    flow, prepared = _production_resume_flow(
+        tmp_path, monkeypatch, original, tmp_path / "third/reports/1", counters
+    )
+    return original, flow, prepared, counters
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -554,13 +452,7 @@ def test_production_resume_corruption_uses_campaign_integrity_outcome(
 ):
     from tests.flows.sim.test_campaign_phase3_integrity import _admission
 
-    original, _prior, _counters, _invocation = _resume_hook_campaign(
-        tmp_path, monkeypatch, False, external=True
-    )
-    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
-    flow, prepared = _production_resume_flow(
-        tmp_path, monkeypatch, original, tmp_path / "third/reports/1", counters
-    )
+    original, flow, prepared, counters = _third_invocation_resume(tmp_path, monkeypatch)
     flow._args.dry_run = dry_run
     (original.pre_sim_firings[0].path.parents[3] / "result.json").write_text("{}")
     result = flow.run_prepared_simulation(prepared, _admission())
@@ -644,15 +536,10 @@ def test_production_postscan_corruption_preserves_authenticated_current_evidence
 ):
     from tests.flows.sim.test_campaign_phase3_integrity import _admission
 
-    original, _prior, _counters, _invocation = _resume_hook_campaign(
-        tmp_path, monkeypatch, False, external=True
+    original, flow, prepared, counters = _third_invocation_resume(
+        tmp_path, monkeypatch, interrupted=True
     )
     result_path = original.pre_sim_firings[0].path.parents[3] / "result.json"
-    result_path.unlink()
-    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
-    flow, prepared = _production_resume_flow(
-        tmp_path, monkeypatch, original, tmp_path / "third/reports/1", counters
-    )
     project = flow._campaign_endpoint_outcome
 
     def corrupt_after_authenticated_projection(outcomes):
@@ -739,7 +626,7 @@ def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
     baseline_root, candidate_root = tmp_path / "baseline", tmp_path / "candidate"
     baseline_root.mkdir()
     candidate_root.mkdir()
-    flow.context._reserved_invocation_dir = invocation
+    flow._reserved_invocation_dir = invocation
     flow._current_published_pre_sim_keys = set()
 
     def baseline_role(document):
@@ -791,12 +678,39 @@ def test_retained_current_baseline_uses_actual_flow_publication_authority(tmp_pa
     assert all(record["terminal"] is False for record in result.detail["pre_sim_runs"])
 
 
+def test_published_hook_collection_scans_each_campaign_once(tmp_path, monkeypatch):
+    from collections import Counter
+    from types import SimpleNamespace
+
+    from booley.flows.sim.campaign.store import CampaignStore
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    flow = SimulateFlow()
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    candidate = _current_observed_hook_dag(tmp_path, monkeypatch, flow)
+    scans = Counter()
+    inspect = CampaignStore.inspect_pre_sim_firings
+
+    def counted(store, manifest=None):
+        scans[store.manifest_path] += 1
+        return inspect(store, manifest)
+
+    monkeypatch.setattr(CampaignStore, "inspect_pre_sim_firings", counted)
+    result = flow._attach_published_pre_sim(
+        EndpointOutcome(report_text=""), candidate.manifest_path
+    )
+    assert result.detail["pre_sim_total"] == result.detail["pre_sim_current"] == 2
+    assert set(result.detail["pre_sim_roles"]) == {"candidate", "cycle_count_baseline"}
+    assert sorted(scans.values()) == [1, 1], "each Campaign is scanned once"
+
+
 def _published_hook_budget_boundary(flow, candidate, roomy):
     from booley.flows.sim import flow as module
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     baseline = EndpointOutcome(
-        report_text="\n".join(module._campaign_base_report_lines([candidate], {}))
+        report_text="\n".join(module._campaign_report_lines([candidate], {}, None))
     )
     baseline = flow._attach_published_pre_sim(baseline)
     line = module._cycle_display_line(candidate.observations[0], 10000)
@@ -805,9 +719,7 @@ def _published_hook_budget_boundary(flow, candidate, roomy):
     assert len(baseline.report_text.encode()) + 2 <= budget
     assert not roomy or budget // 4 >= allowance
     if roomy:
-        candidate_hooks = module._campaign_pre_sim_report_lines(
-            [candidate], flow.context._reserved_invocation_dir
-        )
+        candidate_hooks = flow._campaign_endpoint_outcome([candidate]).detail["pre_sim_lines"]
         assert allowance < len("\n".join(candidate_hooks).encode()) + 1
     return {"baseline": baseline, "budget": budget, "candidate": candidate}
 
@@ -829,9 +741,9 @@ def _published_hook_budget_run(tmp_path, monkeypatch, *, roomy=False, corrupt=Fa
         reads = []
         reader = campaign.read_invocation_pre_sim_firings
 
-        def read(invocation):
+        def read(invocation, *args, **kwargs):
             reads.append(invocation)
-            return reader(invocation)
+            return reader(invocation, *args, **kwargs)
 
         monkeypatch.setattr(campaign, "read_invocation_pre_sim_firings", read)
         if corrupt:
@@ -839,7 +751,7 @@ def _published_hook_budget_run(tmp_path, monkeypatch, *, roomy=False, corrupt=Fa
                 f for f in candidate.pre_sim_firings if f.document["role"] == "candidate"
             )
             (firing.path.parents[3] / "result.json").write_text("{}")
-            flow.context._pending_criteria_set = ("before-final-integrity",)
+            flow._pending_criteria_set = ("before-final-integrity",)
         result = flow._campaign_endpoint_outcome([candidate])
         assert reads == []
         evidence["reads"] = reads
@@ -859,7 +771,7 @@ def test_final_published_baseline_hooks_bound_cycle_text(tmp_path, monkeypatch, 
     assert result.detail["pre_sim_current"] == 2
     assert len(flow._current_published_pre_sim_keys) == 2
     assert len(result.detail["pre_sim_lines"]) == 2
-    assert evidence["reads"] == [flow.context._reserved_invocation_dir]
+    assert evidence["reads"] == [flow._reserved_invocation_dir]
     assert result.report_text.count("pre_run_commands") == 2
     assert result.report_text.count("Candidate:") == 1
     assert result.report_text.count("Cycle Count baseline:") == 1
@@ -874,86 +786,44 @@ def test_final_published_baseline_hooks_bound_cycle_text(tmp_path, monkeypatch, 
 
 
 def test_missing_published_hook_key_suppresses_optional_budget(tmp_path, monkeypatch):
-    from booley.flows.sim import flow as module
+    from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
 
-    flow = module.SimulateFlow()
+    flow = SimulateFlow()
     candidate = _current_observed_hook_dag(tmp_path, monkeypatch, flow)
-    keys = frozenset((*flow._current_published_pre_sim_keys, ("missing", "key", "id", 1)))
-    before = candidate.pre_sim_firings
-    budget = module._campaign_published_hook_lines(
-        [candidate], flow.context._reserved_invocation_dir, keys
-    )
-    blocks = module._campaign_base_report_lines([candidate], {})
-    assert budget is None
-    assert module._campaign_report_lines([candidate], {}, budget, blocks=blocks) is blocks
-    assert not any("cycles=" in block or "integrity" in block for block in blocks)
-    assert candidate.pre_sim_firings is before
     flow._args = SimRequest(target="sim")
-    flow._current_published_pre_sim_keys = set(keys)
+    flow._current_published_pre_sim_keys.add(("missing", "key", "id", 1))
+    before = candidate.pre_sim_firings
     result = flow._campaign_endpoint_outcome([candidate])
     assert "cycles=" not in result.report_text and "integrity" not in result.report_text
-    assert flow.context._simulation_campaign_outcomes == (candidate,)
-    assert flow.context._simulation_report_outcomes == (candidate,)
+    assert candidate.pre_sim_firings is before
+    assert flow._simulation_campaign_outcomes == (candidate,)
 
 
-def test_initialized_empty_hook_authority_keeps_authenticated_counts(tmp_path, monkeypatch):
+@pytest.mark.parametrize("count", [None, 0, 1234])
+def test_initialized_empty_hook_authority_keeps_authenticated_counts(tmp_path, monkeypatch, count):
+    from dataclasses import replace
+
     from booley.flows.sim import campaign
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _public_cycle_campaign
 
     outcome = _public_cycle_campaign(tmp_path, monkeypatch)
+    outcome = replace(outcome, observations=(dict(outcome.observations[0], cycle_count=count),))
     flow = SimulateFlow()
     flow._args = SimRequest(target="sim")
-    flow.context._reserved_invocation_dir = outcome.producer_invocation_directory
+    flow._reserved_invocation_dir = outcome.producer_invocation_directory
     flow._current_published_pre_sim_keys = set()
 
-    def unexpected_read(*_args):
+    def unexpected_read(*_args, **_kwargs):
         raise AssertionError("endpoint must not scan hook storage")
 
     monkeypatch.setattr(campaign, "read_invocation_pre_sim_firings", unexpected_read)
     result = flow._campaign_endpoint_outcome([outcome])
-    assert "smoke: cycles=1234" in result.report_text
+    assert ("cycles=" in result.report_text) is (count is not None)
+    assert "cycle counts omitted" not in result.report_text
     assert result.detail["pre_sim_current"] == 0
-
-
-def test_authenticated_no_counts_skips_published_hook_probe(tmp_path, monkeypatch):
-    from dataclasses import replace
-
-    from booley.flows.sim import flow as module
-    from booley.flows.sim.request import SimRequest
-    from tests.flows.sim import test_campaign_phase3 as fixtures
-    from tests.flows.sim.test_endpoint_campaign_lifecycle import _public_cycle_campaign
-
-    original = fixtures._shared_outcome
-
-    def nullable(*args):
-        outcome = original(*args)
-        return replace(outcome, tests=tuple(replace(test, cycles=None) for test in outcome.tests))
-
-    monkeypatch.setattr(fixtures, "_shared_outcome", nullable)
-    outcome = _public_cycle_campaign(tmp_path, monkeypatch)
-    flow = module.SimulateFlow()
-    flow._args = SimRequest(target="sim")
-    flow.context._reserved_invocation_dir = outcome.producer_invocation_directory
-    flow._current_published_pre_sim_keys = set()
-    formatter = module._campaign_pre_sim_report_lines
-    calls = []
-
-    def format_hooks(*args):
-        calls.append(True)
-        return formatter(*args)
-
-    def unexpected_probe(*_args):
-        raise AssertionError("no-count path must not probe")
-
-    monkeypatch.setattr(module, "_campaign_published_hook_lines", unexpected_probe)
-    monkeypatch.setattr(module, "_campaign_pre_sim_report_lines", format_hooks)
-    result = flow._campaign_endpoint_outcome([outcome])
-    assert all(item["cycle_count"] is None for item in outcome.observations)
-    assert result.report_text == "\n".join(module._campaign_base_report_lines([outcome], {}))
-    assert calls == [True]
 
 
 def test_corruption_before_endpoint_keeps_final_integrity_policy(tmp_path, monkeypatch):
@@ -964,52 +834,10 @@ def test_corruption_before_endpoint_keeps_final_integrity_policy(tmp_path, monke
     assert "integrity" not in evidence["endpoint_text"]
     assert result.exit_code == 2 and result.criterion_met is False
     assert "Simulation Campaign integrity failure:" in result.report_text
-    assert flow.context._simulation_campaign_outcomes == ()
-    assert flow.context._pending_criteria_set == ()
+    assert flow._simulation_campaign_outcomes == ()
+    assert flow._pending_criteria_set == ()
     assert result.detail["pre_sim_current"] == 2
     assert all(record["terminal"] is False for record in result.detail["pre_sim_runs"])
-
-
-@pytest.mark.parametrize("fault", ["base", "structured"])
-def test_original_renderer_and_detail_errors_precede_hook_probe(tmp_path, monkeypatch, fault):
-    from types import SimpleNamespace
-
-    from booley.flows.sim import flow as module
-
-    events = []
-
-    def base(*_args, report_path=None, default_seeds=None):
-        events.append("base")
-        if fault == "base":
-            raise KeyError("original base")
-        return ["baseline"]
-
-    def structured(*_args):
-        events.append("structured")
-        raise ValueError("original structured")
-
-    def probe(*_args):
-        raise AssertionError("late probe must not outrank original errors")
-
-    monkeypatch.setattr(module, "_campaign_base_report_lines", base)
-    monkeypatch.setattr(module, "_campaign_structured_details", structured)
-    monkeypatch.setattr(module, "_campaign_published_hook_lines", probe)
-    owner = SimpleNamespace(
-        context=SimpleNamespace(_reserved_invocation_dir=tmp_path),
-        _current_published_pre_sim_keys=set(),
-        _report_destination=lambda: None,
-        _test_runs=TestRunInvocation(),
-    )
-    outcome = SimpleNamespace(
-        target={"selector": "sim"},
-        aggregate_grade="pass",
-        coverage_reference=None,
-        observations=[{"test": "alpha", "cycle_count": 17, "detail": {}}],
-    )
-    expected = KeyError if fault == "base" else ValueError
-    with pytest.raises(expected, match="original " + fault):
-        module.SimulateFlow._campaign_endpoint_outcome(owner, [outcome])
-    assert events == (["base"] if fault == "base" else ["base", "structured"])
 
 
 @pytest.mark.parametrize("interrupted", [False, True])
@@ -1021,30 +849,24 @@ def test_resume_count_budget_uses_only_actual_current_hook_keys(
     from tests.flows.sim.test_campaign_phase3_integrity import _admission
 
     _add_observed_cycles(monkeypatch)
-    original, _prior, _counters, _invocation = _resume_hook_campaign(
-        tmp_path, monkeypatch, False, external=True
+    original, flow, prepared, counters = _third_invocation_resume(
+        tmp_path, monkeypatch, interrupted=interrupted
     )
-    if interrupted:
-        (original.pre_sim_firings[0].path.parents[3] / "result.json").unlink()
-    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
-    flow, prepared = _production_resume_flow(
-        tmp_path, monkeypatch, original, tmp_path / "third/reports/1", counters
-    )
-    probe = module._campaign_published_hook_lines
+    probe = module._campaign_report_lines
     calls = []
 
-    def inspect(outcomes, invocation, published_keys):
+    def inspect(outcomes, coverage_campaigns, trailing_lines, **kwargs):
         assert outcomes[0].manifest_path == original.manifest_path
-        lines = probe(outcomes, invocation, published_keys)
-        calls.append((published_keys, lines))
-        return lines
+        calls.append((frozenset(flow._current_published_pre_sim_keys), trailing_lines))
+        return probe(outcomes, coverage_campaigns, trailing_lines, **kwargs)
 
-    monkeypatch.setattr(module, "_campaign_published_hook_lines", inspect)
+    monkeypatch.setattr(module, "_campaign_report_lines", inspect)
     result = flow.run_prepared_simulation(prepared, _admission())
     assert counters["launch"] == int(interrupted)
     assert result.report_text.count("cycles=17") == 1
     assert result.detail["pre_sim_current"] == int(interrupted)
     assert result.detail["pre_sim_historical"] == 1
+    assert len(result.detail["pre_sim_lines"]) == int(interrupted)
     assert len(calls) == 1
     keys, lines = calls[0]
     assert keys == frozenset(flow._current_published_pre_sim_keys)
@@ -1055,7 +877,7 @@ def test_resume_count_budget_uses_only_actual_current_hook_keys(
 def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     tmp_path, monkeypatch
 ):
-    from booley.flows.sim.campaign import SimulationCampaign, SimulationCampaignIntegrityError
+    from booley.flows.sim.campaign import SimulationCampaignIntegrityError, reread_pre_sim_firings
     from tests.conftest import require_symlinks, symlink_or_skip
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
@@ -1078,7 +900,7 @@ def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     symlink_or_skip(directory, copy, target_is_directory=True)
     assert firing.path.read_bytes() == sidecar_bytes
     with pytest.raises(SimulationCampaignIntegrityError):
-        SimulationCampaign.reauthenticate_pre_sim_firings((firing,))
+        reread_pre_sim_firings((firing,))
 
 
 @pytest.mark.parametrize("defect", ["root", "descendant", "lock", "target_link"])
@@ -1143,6 +965,242 @@ def test_alias_normalization_precedes_simulation_preparation(
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
-    assert flow.context.args.report_dir == data / (
-        "flow-reports" if selection == "default" else "reports"
+    assert flow.args.report_dir == data / ("flow-reports" if selection == "default" else "reports")
+
+
+@pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
+def test_projection_rejects_corrupt_record(tmp_path, error):
+    from booley.flows.sim.acceptance import _campaign_projection
+    from booley.flows.sim.campaign import decode_simulation_projection
+    from booley.flows.sim.campaign_retention import _read_object
+    from tests.flows.sim.test_test_run_evidence_rows import _RESET, _outcome
+
+    document = json.loads(
+        json.dumps({**_campaign_projection(_outcome(tmp_path, _RESET)), "complete": True})
     )
+    path = tmp_path / "simulation.json"
+    path.write_text(json.dumps(document))
+    decode_simulation_projection(_read_object(path), coverage_expected=False)
+    if error == "schema":
+        document["$schema"] = "unknown"
+    elif error == "missing":
+        del document["complete"]
+    path.write_text("{" if error == "truncated" else json.dumps(document))
+    with pytest.raises(ValueError):
+        decode_simulation_projection(_read_object(path), coverage_expected=False)
+
+
+def _two_firing_store(tmp_path):
+    """Run a coverage Campaign whose one attempt holds two failed Pre-Sim firings."""
+    from booley.flows.sim.execution.contract import PreSimEvidence
+    from booley.flows.sim.verilator_coverage import SimulationRunResult
+    from tests.flows.sim.test_campaign_phase5_adversarial import _run_coverage_campaign
+    from tests.flows.sim.test_coverage_transaction import NativeExecution
+
+    class Hooks(NativeExecution):
+        def run(self, request):
+            evidence = PreSimEvidence(
+                ("prepare-vectors",),
+                (request.test.name,),
+                "failed",
+                0.2,
+                "vector generator rejected input",
+                returncode=1,
+            )
+            return SimulationRunResult("elab_error", evidence.detail, evidence)
+
+    outcome, store = _run_coverage_campaign(
+        tmp_path, Hooks(), pre_sim_commands=("prepare-vectors",)
+    )
+    firings = store.read_pre_sim_firings()
+    assert len(firings) == 2 and outcome.complete
+    return firings
+
+
+def test_prior_firing_reauthentication_reads_each_attempt_once(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign import reread_pre_sim_firings
+    from tests.flows.sim.test_campaign_phase3_integrity import _observe_pre_sim_reads
+
+    firings = _two_firing_store(tmp_path)
+    accesses, decodes = _observe_pre_sim_reads(monkeypatch)
+    reread_pre_sim_firings(firings)
+    assert decodes == {(f.key[2], f.key[3]): 1 for f in firings}, (
+        "each sidecar must be decoded once"
+    )
+    assert accesses == {f.path: 1 for f in firings}, "each sidecar must have one byte access"
+
+
+def test_prior_firing_reread_returns_only_prior_firings(tmp_path):
+    from booley.flows.sim.campaign import reread_pre_sim_firings
+
+    first, second = _two_firing_store(tmp_path)
+    assert first.path.parent == second.path.parent
+    fresh = reread_pre_sim_firings((first,))
+    assert [(f.key, f.path, f.terminal) for f in fresh] == [(first.key, first.path, False)]
+
+
+def test_shared_collection_bound_counts_distinct_prerequisite_references(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.flows.sim.campaign import (
+        SimulationCampaignIntegrityError,
+        read_invocation_pre_sim_firings,
+        store,
+    )
+    from booley.flows.sim.flow import SimulateFlow
+
+    flow = SimulateFlow()
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    candidate = _current_observed_hook_dag(tmp_path, monkeypatch, flow)
+    invocation = candidate.manifest_path.parents[3]
+    # Three roots reach one baseline reference: only distinct references count.
+    monkeypatch.setattr(store, "_PRE_SIM_DAG_BOUND", 1)
+    assert len(read_invocation_pre_sim_firings(invocation, candidate.manifest_path)) == 2
+    monkeypatch.setattr(store, "_PRE_SIM_DAG_BOUND", 0)
+    with pytest.raises(SimulationCampaignIntegrityError, match="exceeds DAG bound"):
+        read_invocation_pre_sim_firings(invocation, candidate.manifest_path)
+
+
+def test_campaign_card_renders_each_target_once(monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.flows.sim import flow
+
+    calls = []
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "12000")
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "12000")
+    monkeypatch.setattr(
+        flow, "_campaign_test_run_lines", lambda selector, *args: calls.append(selector) or []
+    )
+    outcomes = [
+        SimpleNamespace(
+            target={"selector": name},
+            manifest_path=Path("/manifest.json"),
+            aggregate_grade="pass",
+            observations=[{"test": "smoke", "cycle_count": 0, "detail": {}}],
+        )
+        for name in ("one", "two")
+    ]
+    text = "\n".join(flow._campaign_report_lines(outcomes))
+    assert text.count("smoke: cycles=0") == 2
+    assert calls == ["one", "two"]
+
+
+@pytest.mark.parametrize("linked", ["entry", "below", "above"])
+def test_invocation_lock_follows_only_the_booley_dir_entry(tmp_path, linked):
+    """#2191: the lock crosses the Booley Directory link, never a link below or above it."""
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / ".booley"
+    symlinked_booley_dir(project, tmp_path / "external")
+    if linked == "below":
+        # A link below the entry (flow-reports) stays refused.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        symlink_or_skip(entry / "flow-reports", outside, target_is_directory=True)
+    invocation = entry / "flow-reports" / "sim" / "1"
+    invocation.parent.mkdir(parents=True, exist_ok=True)
+    if linked == "above":
+        # The entry itself is exempt, but a link above it (the Project reached by alias) is not.
+        alias = tmp_path / "alias"
+        symlink_or_skip(alias, project, target_is_directory=True)
+        entry = alias / ".booley"
+        invocation = entry / "flow-reports" / "sim" / "1"
+
+    if linked != "entry":
+        with (
+            pytest.raises(ValueError, match="must not contain symlinks"),
+            campaign_reports.campaign_invocation_lock(invocation, booley_dir=entry),
+        ):
+            pass
+        return
+    with campaign_reports.campaign_invocation_lock(invocation, booley_dir=entry):
+        assert (invocation.parent / ".invocation-1.lock").exists()
+
+
+def test_invocation_booley_dir_ignores_a_refused_layout_beside_a_custom_root(
+    tmp_path: Path,
+) -> None:
+    """#2191: probing a custom report root's parent never raises a layout error."""
+    from booley.flows.sim.campaign_retention import invocation_booley_dir
+
+    project = tmp_path / "project"
+    (project / "out" / "flow-reports" / "sim" / "1").mkdir(parents=True)
+    # A regular file where the Booley Directory belongs is a layout the resolver refuses.
+    (project / ".booley").write_text("", encoding="utf-8")
+
+    assert invocation_booley_dir(project / "out" / "flow-reports" / "sim" / "1") is None
+
+
+@pytest.mark.parametrize(
+    "reports_name",
+    [
+        "flow-reports",
+        ".runtime/flow-reports",
+        "tmp/doctor/flow-reports",
+        ".interactive_logs/session-1/.runtime/flow-reports",
+        "goals/demo-20261027T000000Z/.runtime/flow-reports",
+        "custom",
+        "tmp/flow-reports",
+        ".interactive_logs/flow-reports",
+        ".interactive_logs/a/b/.runtime/flow-reports",
+        "goals/flow-reports",
+        "other/run-1/.runtime/flow-reports",
+    ],
+)
+def test_host_run_reserves_through_the_entry_only_for_a_derivable_report_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reports_name: str
+) -> None:
+    """#2191: a custom report root under a linked entry is refused at the lock, not later.
+
+    Booley-owned roots are derivable: the default ones, deep Doctor's own
+    ``tmp/doctor/flow-reports``, and the per-run runtime roots of Interactive Mode
+    MCP sessions (``.interactive_logs/<session>/.runtime/flow-reports``) and Goal
+    Records (``goals/<goal-id>/.runtime/flow-reports``). A Codespace links
+    ``/work/.booley``.
+    """
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.runtime.booley_dir import reset_cache
+
+    project = tmp_path / "project"
+    project.mkdir()
+    symlinked_booley_dir(project, tmp_path / "external")
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.chdir(project)
+    reset_cache()
+    report_dir = project / ".booley" / reports_name
+
+    flow = SimulateFlow()
+    if reports_name in {
+        "custom",
+        "tmp/flow-reports",
+        ".interactive_logs/flow-reports",
+        ".interactive_logs/a/b/.runtime/flow-reports",
+        "goals/flow-reports",
+        "other/run-1/.runtime/flow-reports",
+    }:
+        with pytest.raises(ValueError, match="must not contain symlinks"):
+            flow._next_invocation_dir(report_dir)
+        return
+    with flow.publication_resources:
+        assert flow._next_invocation_dir(report_dir) == report_dir / "sim" / "1"
+
+
+def test_campaign_json_write_survives_transient_replace_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_replaces
+
+    path = tmp_path / "simulation.json"
+    attempts = hold_replaces(monkeypatch, {path: 1})
+    campaign_reports.write_campaign_json(path, {"passed": True})
+    assert json.loads(path.read_text(encoding="utf-8")) == {"passed": True}
+    assert attempts[path] == 2
+
+
+def test_campaign_json_write_retries_before_raising_lasting_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_replaces
+
+    path = tmp_path / "simulation.json"
+    attempts = hold_replaces(monkeypatch, {path: 100})
+    with pytest.raises(PermissionError):
+        campaign_reports.write_campaign_json(path, {"passed": True})
+    assert attempts[path] > 1

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 
+from booley.config.project_config import TargetFieldMap, lookup_target_section
 from booley.flows.test_runs import TestRun
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
@@ -21,6 +22,7 @@ from .coverage_campaign import (
 )
 from .coverage_policy import CoverageCriterion
 from .coverage_provenance import coverage_digest, coverage_source_closure
+from .coverage_source_gaps import rtl_module_candidates
 from .coverage_waivers import CoverageRepositoryRoots, CoverageWaiverConfig
 from .verilator_coverage import CoverageCollectionRequest, coverage_request_finding
 from .verilator_coverage_execution import prepare_coverage_collection
@@ -46,6 +48,13 @@ class CoverageInvocationRequest:
     diagnostic: bool = False
 
 
+def _keep_keys(fields, copy):
+    """*copy* of a tests.toml field map that keeps its section keys (one section per Target)."""
+    kept = TargetFieldMap(copy(fields))
+    kept.section_keys = getattr(fields, "section_keys", frozenset(fields))
+    return kept
+
+
 @dataclass(frozen=True)
 class CoverageProjectContext:
     """Explicit repository roots and snapshotted registered test declarations."""
@@ -60,13 +69,13 @@ class CoverageProjectContext:
     criterion_names: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "test_names", immutable_mapping(self.test_names))
+        object.__setattr__(self, "test_names", _keep_keys(self.test_names, immutable_mapping))
         object.__setattr__(self, "criteria", MappingProxyType(dict(self.criteria)))
         object.__setattr__(self, "criterion_names", MappingProxyType(dict(self.criterion_names)))
         object.__setattr__(
             self,
             "skipped_tests",
-            MappingProxyType({key: tuple(value) for key, value in self.skipped_tests.items()}),
+            _keep_keys(self.skipped_tests, lambda f: {key: tuple(v) for key, v in f.items()}),
         )
 
 
@@ -92,6 +101,8 @@ class CoverageTargetPlan:
     waiver_config: CoverageWaiverConfig | None = None
     roots: CoverageRepositoryRoots | None = None
     known_targets: tuple[DurableTargetIdentity, ...] = ()
+    #: Sorted module-bearing RTL paths from the Preflight lexical scan.
+    rtl_candidates: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -115,9 +126,7 @@ def _suite(
     context: CoverageProjectContext,
     runs: tuple[TestRun, ...] | None = None,
 ):
-    declared = tuple(
-        context.test_names.get(handle.selector, context.test_names.get(handle.name, ()))
-    )
+    declared = tuple(lookup_target_section(context.test_names, handle.identity) or ())
     matched = [
         (key, policy)
         for key, policy in context.criteria.items()
@@ -127,9 +136,7 @@ def _suite(
         raise ValueError("Target binds more than one Coverage Criterion")
     key, criterion = matched[0] if matched else ("", None)
     required = criterion.tests if criterion and criterion.tests is not None else declared
-    skipped = set(
-        context.skipped_tests.get(handle.selector, context.skipped_tests.get(handle.name, ()))
-    )
+    skipped = set(lookup_target_section(context.skipped_tests, handle.identity) or ())
     # Selection never consults the Coverage Criterion: its test list is required
     # evidence, compared with what ran by evaluate_coverage_campaign (suite mismatch).
     if runs is not None:
@@ -163,11 +170,7 @@ def _collection_recipe(
     handle: TargetHandle, inspection, closure, trace: bool
 ) -> dict[str, object]:
     """What decides a Target's coverage collection, for its recipe fingerprint."""
-    from .verilator_declarations import DECLARATION_CONTRACT, DECLARATION_OPTIONS
-
     return {
-        "declaration_contract": DECLARATION_CONTRACT,
-        "declaration_options": DECLARATION_OPTIONS,
         "identity": handle.identity,
         "options": inspection.flow_options,
         "parameters": inspection.parameters,
@@ -223,6 +226,7 @@ def _prepare_target(
         known_targets=tuple(DurableTargetIdentity(item.identity) for item in catalog.list()),
         collection_request=collection,
         source_closure=freeze_coverage_mapping(closure),
+        rtl_candidates=rtl_module_candidates(inspection),
         recipe_fingerprint=coverage_digest(recipe),
         target_fingerprint=coverage_digest(
             {"core": handle.core_file.read_text(), "identity": handle.identity}

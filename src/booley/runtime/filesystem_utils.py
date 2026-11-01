@@ -7,61 +7,28 @@ import os
 import shutil
 import stat
 import sys
-import time
-from collections.abc import Callable
 from pathlib import Path
 
-from booley.runtime.compiler_cache import COMPILER_CACHE_SEGMENTS
-
-logger = logging.getLogger(__name__)
-
-
-BOOLEY_COPY_EXCLUDES = (
-    ".git",
-    ".venv",
-    "worktrees",
-    "tmp",
-    "target",
-    ".pytest_cache",
-    ".ruff_cache",
-    "__pycache__",
-    "*.pyc",
+from booley.core.sharing_retry import (
+    is_transient_read_error,
+    is_transient_sharing_error,
+    open_with_sharing_retry,
+    read_file_bytes,
+    replace_file,
+    unlink_file,
 )
 
-# Windows refuses to rename onto a file that another handle holds open without
-# FILE_SHARE_DELETE, which is how Python's open() opens files. A reader polling
-# a protocol file therefore makes a concurrent atomic replace fail transiently.
-_WINDOWS_TRANSIENT_REPLACE_ERRORS = frozenset({5, 32})  # ACCESS_DENIED, SHARING_VIOLATION
-_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.25, 0.25)
+__all__ = [
+    "is_transient_read_error",
+    "is_transient_sharing_error",
+    "open_with_sharing_retry",
+    "read_file_bytes",
+    "replace_file",
+    "safe_rmtree",
+    "unlink_file",
+]
 
-
-def _is_transient_windows_replace_error(exc: PermissionError) -> bool:
-    return getattr(exc, "winerror", None) in _WINDOWS_TRANSIENT_REPLACE_ERRORS
-
-
-def replace_file(
-    source: Path,
-    destination: Path,
-    *,
-    sleep: Callable[[float], None] = time.sleep,
-) -> None:
-    """Atomically replace ``destination`` with ``source``, tolerating Windows readers.
-
-    Retries only the transient Windows sharing errors, with a bounded backoff
-    of about 1.1 s in total; every other error, and the last transient one,
-    propagates unchanged. POSIX renames never hit this path.
-    """
-    for delay in _REPLACE_RETRY_DELAYS_SECONDS:
-        try:
-            source.replace(destination)
-        except PermissionError as exc:
-            if not _is_transient_windows_replace_error(exc):
-                raise
-            logger.debug("Retrying replace of %s after %s", destination, exc)
-            sleep(delay)
-        else:
-            return
-    source.replace(destination)
+logger = logging.getLogger(__name__)
 
 
 def _strip_windows_reparse_points(root: Path) -> None:
@@ -99,28 +66,9 @@ def safe_rmtree(path: str | Path, *, protect_git_root: bool = True) -> None:
         _strip_windows_reparse_points(root)
 
     def _on_error(func, failed_path, _exc_info):
-        Path(failed_path).chmod(stat.S_IWRITE)
+        # chmod follows links: never alter the target of a symlink we remove.
+        if not Path(failed_path).is_symlink():
+            Path(failed_path).chmod(stat.S_IWRITE)
         func(failed_path)
 
     shutil.rmtree(root, onerror=_on_error)
-
-
-def copy_booley_tree(src: Path, dst: Path) -> None:
-    """Copy a .booley tree using the canonical infrastructure exclusions."""
-    if dst.exists():
-        # Worktree copies may contain a stale .git/ from prior runs;
-        # safe to remove since this is a copy, not the real repo.
-        safe_rmtree(dst, protect_git_root=False)
-    standard_ignore = shutil.ignore_patterns(*BOOLEY_COPY_EXCLUDES)
-    # Legacy trees nest Booley Directory under ``project/``. Skip the shared
-    # compiler cache's top directory there, keeping its runtime neighbors.
-    cache_parent = src.joinpath("project", *COMPILER_CACHE_SEGMENTS[:-2])
-    cache_top = COMPILER_CACHE_SEGMENTS[-2]
-
-    def ignore(directory: str, names: list[str]) -> set[str]:
-        excluded = set(standard_ignore(directory, names))
-        if Path(directory) == cache_parent:
-            excluded.add(cache_top)
-        return excluded
-
-    shutil.copytree(src, dst, ignore=ignore)

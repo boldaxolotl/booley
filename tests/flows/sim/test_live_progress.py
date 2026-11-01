@@ -43,7 +43,7 @@ def test_authenticated_build_publishes_execution_before_blocking_invoker(tmp_pat
 
     def invoke(command, *, timeout):
         del timeout
-        document = json.loads(path.read_text())
+        document = json.loads(path.read_text(encoding="utf-8"))
         observations.append(document)
         assert document["complete"] is False
         assert document["pending_targets"] == ["sim"]
@@ -86,7 +86,7 @@ def test_authenticated_build_publishes_execution_before_blocking_invoker(tmp_pat
         )
         attempt = execution._prepare_attempt(handle, ())
         box["attempt"] = attempt
-        result = execution._execute_fresh_adapter(handle, attempt)
+        result = execution._execute_fresh_adapter(handle, attempt, session)
     assert result.result is not None
     assert len(observations) == 2
 
@@ -636,6 +636,7 @@ def test_unchanged_log_is_not_reopened_on_stage_update(tmp_path, monkeypatch):
         patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
     ):
         _checkpoint(path)
+        execution._build_session = MagicMock(**{"new_generation.return_value": prepared.work_root})
         attempt = execution._prepare_attempt(handle, ())
         root, token = prepared.build_root, attempt.identity.attempt_token
         observe_stage("sim", "building", evidence_root=root, attempt_token=token)
@@ -701,3 +702,49 @@ def test_scope_exit_during_log_observation_preserves_progress(tmp_path, monkeypa
             assert reading.wait(5)
         observed.result(timeout=5)
         assert "active" not in json.loads(path.read_text())
+
+
+def _observe_pointer_after_log_growth(tmp_path, monkeypatch, failures):
+    """Run one observation whose log pointer must re-read the grown run log."""
+    from booley.flows import run_log
+    from booley.flows.sim.live_progress import prepare_attempt_log
+    from tests.sharing_error_support import flaky, no_retry_delay
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
+    path = tmp_path / "progress.json"
+    root = tmp_path / "current"
+    root.mkdir()
+    sink = LiveProgressSink(path, tmp_path, "current-run")
+    opener, calls = flaky(run_log.open_regular_nofollow, failures)
+    with install_progress(sink), attempt_scope("sim"):
+        _checkpoint(path)
+        observe_stage(
+            "sim",
+            "preparing",
+            evidence_root=root,
+            attempt_token="owned",
+            log=prepare_attempt_log(root, "sim", "owned", tmp_path),
+        )
+        with (root / "run.log").open("a", encoding="utf-8") as stream:
+            stream.write("output\n")
+        no_retry_delay(monkeypatch)
+        monkeypatch.setattr(run_log, "open_regular_nofollow", opener)
+        observe_stage("sim", "executing", evidence_root=root, attempt_token="owned")
+        document = json.loads(path.read_text())
+    return document, calls
+
+
+def test_transient_log_pointer_sharing_error_keeps_the_pointer(tmp_path, monkeypatch):
+    document, calls = _observe_pointer_after_log_growth(tmp_path, monkeypatch, 1)
+    assert document["active"][0]["log"]["live"] is True
+    assert calls == [2]
+    assert "observation_health" not in document
+
+
+def test_lasting_log_pointer_sharing_error_is_recorded_as_observation_health(
+    tmp_path, monkeypatch
+):
+    document, calls = _observe_pointer_after_log_growth(tmp_path, monkeypatch, 100)
+    assert calls[0] > 1
+    assert "log" not in document["active"][0]
+    assert document["observation_health"]["error"].startswith("PermissionError: ")

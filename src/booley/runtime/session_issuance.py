@@ -14,13 +14,15 @@ import sys
 import sysconfig
 import tempfile
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
-from booley.config.eda import EdaConfig
 from booley.config.flow_enablement import FlowConfigError, flow_enabled
+from booley.config.host_config import HostConfigError, load_host_policy
+from booley.core.booley_dir_links import is_booley_dir_entry
+from booley.core.booley_dir_pin import BooleyDirPinError, require_pinned_entry
 from booley.core.boundary import (
     BoundaryError,
     require_dict,
@@ -29,6 +31,7 @@ from booley.core.boundary import (
     require_str,
 )
 from booley.core.differences import format_differences
+from booley.core.egress_modes import declared_egress
 from booley.core.private_store import PrivateStore
 from booley.core.project_identity import project_label_id
 from booley.core.user_paths import config_dir
@@ -39,8 +42,15 @@ from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPIL
 from booley.runtime.devcontainer import (
     BOOLEY_DIR_TARGET,
     EGRESS_NETWORK,
+    UNPROXIED_NETWORK,
     devcontainer_path,
     render_devcontainer_json,
+)
+from booley.runtime.filesystem_utils import (
+    open_with_sharing_retry,
+    read_file_bytes,
+    replace_file,
+    unlink_file,
 )
 from booley.runtime.incontainer_git_identity import (
     GitIdentity,
@@ -107,14 +117,21 @@ _FIXED_RUN_ARGS = (
     "--pids-limit",
     "4096",
 )
+# Host ``[sandbox] egress = "unproxied"``: the routed network takes the slot.
+_UNPROXIED_RUN_ARGS = tuple(
+    UNPROXIED_NETWORK if item == EGRESS_NETWORK else item for item in _FIXED_RUN_ARGS
+)
 _AGENT_APPS = frozenset({"claude", "codex", "none"})
+# Proxy environment: required and fixed under host egress "proxy", absent unproxied.
+_PROXY_REMOTE_ENV = {
+    "HTTP_PROXY": "http://booley-proxy:8080",
+    "HTTPS_PROXY": "http://booley-proxy:8080",
+    "http_proxy": "http://booley-proxy:8080",
+    "https_proxy": "http://booley-proxy:8080",
+    "NO_PROXY": "localhost,127.0.0.1",
+}
 _REQUIRED_REMOTE_ENV = frozenset(
     {
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "NO_PROXY",
         "BOOLEY_MCP_MODE",
         "BOOLEY_DIR",
         COMPILER_CACHE_ROOT_ENV,
@@ -123,6 +140,7 @@ _REQUIRED_REMOTE_ENV = frozenset(
 )
 _ALLOWED_REMOTE_ENV = (
     _REQUIRED_REMOTE_ENV
+    | set(_PROXY_REMOTE_ENV)
     | set(git_identity_environment(GitIdentity("Dev", "dev@localhost")))
     | {
         "ANTHROPIC_API_KEY",
@@ -134,15 +152,14 @@ _ALLOWED_REMOTE_ENV = (
     }
 )
 _FIXED_REMOTE_ENV = {
-    "HTTP_PROXY": "http://booley-proxy:8080",
-    "HTTPS_PROXY": "http://booley-proxy:8080",
-    "http_proxy": "http://booley-proxy:8080",
-    "https_proxy": "http://booley-proxy:8080",
-    "NO_PROXY": "localhost,127.0.0.1",
     "BOOLEY_MCP_MODE": "interactive",
     "BOOLEY_DIR": BOOLEY_DIR_TARGET,
     COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
 }
+
+
+#: Issued container environment that names the pinned Sandbox Image for deep Doctor.
+SANDBOX_IMAGE_ID_ENV = "BOOLEY_SANDBOX_IMAGE_ID"
 
 
 class RuntimeSpecError(RuntimeError):
@@ -151,6 +168,18 @@ class RuntimeSpecError(RuntimeError):
 
 class IssuanceUnavailableError(RuntimeSpecError):
     """The host cannot authenticate a predecessor for managed refresh."""
+
+
+class HostPolicyError(RuntimeSpecError):
+    """The host config.toml carrying the Sandbox Policy is invalid."""
+
+    def __init__(self, error: HostConfigError) -> None:
+        super().__init__(str(error))
+        self.path = error.path
+
+
+class EgressDriftError(RuntimeSpecError):
+    """A Sandbox spec was issued for the other host ``[sandbox] egress`` mode."""
 
 
 @dataclass(frozen=True)
@@ -183,6 +212,7 @@ class SessionSpecInputs:
     fixed_container_environment: tuple[tuple[str, str], ...]
     installation_name: str | None
     license_profile_name: str | None
+    egress: str = "proxy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,8 +329,8 @@ def stamp_path_for_identity(project_root: str) -> Path:
 
 def invalidate_project(project_root: str) -> None:
     """Remove the host-issued stamp for an already-canonical Project identity."""
-    stamp_path_for_identity(project_root).unlink(missing_ok=True)
-    _legacy_stamp_path(project_root).unlink(missing_ok=True)
+    unlink_file(stamp_path_for_identity(project_root), missing_ok=True)
+    unlink_file(_legacy_stamp_path(project_root), missing_ok=True)
 
 
 def _stamp_store() -> PrivateStore:
@@ -433,16 +463,18 @@ def pin_image(spec: dict[str, Any], *, expected_image_id: str | None = None) -> 
                 "reconciled Sandbox Image ID no longer resolves to the same artifact"
             )
     spec["image"] = image_id
+    spec.setdefault("containerEnv", {})[SANDBOX_IMAGE_ID_ENV] = image_id
     return image_id
 
 
+@contextlib.contextmanager
 def _issuance_requirements(
     project_root: Path,
     spec: dict[str, Any],
     prior: Issuance | None = None,
     *,
     include_relay_identity: bool,
-):
+) -> Iterator[eda_requirements.SessionEdaRequirements]:
     """Resolve EDA authority only when the runtime has an active consumer.
 
     A Project without an active Vivado Flow requests neither a host install nor
@@ -454,28 +486,28 @@ def _issuance_requirements(
     except BoundaryError as exc:
         raise RuntimeSpecError(f"devcontainer.json {exc}") from exc
     license_marker = "XILINXD_LICENSE_FILE" in container_env
-    expected = (
-        eda_requirements.ExpectedEdaIdentity(prior.installation, prior.license_profile)
-        if prior is not None
-        else None
+    prior_eda = license_marker or (
+        prior is not None and (prior.installation is not None or prior.license_profile is not None)
     )
-    return eda_requirements.resolve_for_session(
+    with eda_requirements.lease_requirements(
         project_root,
         vivado_enabled=flow_enabled("fpga", project_root),
-        license_marker=license_marker,
-        expected=expected,
-        include_relay_identity=include_relay_identity,
-    )
+        prior_eda=prior_eda,
+    ) as leased:
+        yield eda_requirements.with_relay_identity(leased) if include_relay_identity else leased
 
 
 def seal(project_root: Path, spec: dict[str, Any]) -> str:
     """Add host-derived networks and issuance labels to a generated spec.
 
     Docker 29 accepts repeated ``--network`` flags for user-defined networks,
-    which lets VS Code create a licensed runtime atomically on both the normal
-    restricted egress network and its pre-created private license network.
+    which lets VS Code create a licensed runtime atomically on both its egress
+    network (the restricted egress network under host ``[sandbox] egress =
+    "proxy"``, the routed unproxied network otherwise) and its pre-created
+    private license network.
     """
     project = project_root.resolve(strict=True)
+    egress = _host_egress_mode()
     project_data_path = authorized_project_data_source(project)
     _pin_initialize_command(project, spec)
     _pin_project_data_mount(
@@ -487,7 +519,7 @@ def seal(project_root: Path, spec: dict[str, Any]) -> str:
     _pin_devcontainer_mount(spec, project)
     try:
         with _issuance_requirements(project, spec, include_relay_identity=False) as requirements:
-            return _seal_with_requirements(project, spec, project_data_path, requirements)
+            return _seal_with_requirements(project, spec, project_data_path, requirements, egress)
     except (
         FlowConfigError,
         authority.AuthorityError,
@@ -501,6 +533,7 @@ def _seal_with_requirements(
     spec: dict[str, Any],
     project_data_path: Path,
     requirements: eda_requirements.SessionEdaRequirements,
+    egress: str,
 ) -> str:
     _pin_git_identity(spec, project_data_path)
     run_args = spec.get("runArgs")
@@ -521,21 +554,8 @@ def _seal_with_requirements(
     )
     for label in labels(provisional):
         run_args += ["--label", label]
-    _validate_generated_spec(project, spec, requirements, provisional)
+    _validate_generated_spec(project, spec, requirements, provisional, egress)
     return digest
-
-
-def requested_host_installation(
-    project_root: Path,
-) -> tuple[EdaConfig | None, authority.Installation | None]:
-    """Resolve the grant-selected installation for a host-provisioned Project."""
-    try:
-        return eda_requirements.requested_host_installation(
-            project_root,
-            vivado_enabled=flow_enabled("fpga", project_root),
-        )
-    except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
-        raise RuntimeSpecError(str(exc)) from exc
 
 
 def requested_license(
@@ -602,11 +622,11 @@ def inspect_prepared(project_root: Path, prepared: PreparedSessionSpec) -> Issua
 def _prepare_spec(
     project: Path,
     build_spec: SpecBuilder,
-    requirements: eda_requirements.SessionRequirementsSnapshot,
+    requirements: eda_requirements.SessionEdaRequirements,
     *,
     expected_image_id: str | None,
 ) -> PreparedSessionSpec:
-    inputs = _session_spec_inputs(project, requirements.build)
+    inputs = _session_spec_inputs(project, requirements)
     project_data_path = inputs.project_data_source
     spec = build_spec(inputs)
     if not isinstance(spec, dict):
@@ -620,7 +640,7 @@ def _prepare_spec(
         project_data_path,
     )
     _pin_devcontainer_mount(spec, project)
-    digest = _seal_with_requirements(project, spec, project_data_path, requirements.runtime)
+    digest = _seal_with_requirements(project, spec, project_data_path, requirements, inputs.egress)
     # The Booley Directory layout is derived from the sealed spec (and the pinned
     # image's alias capability), so it belongs to the prospective issuance, not
     # to the host inputs: issue_prepared re-derives the issuance and compares
@@ -629,7 +649,7 @@ def _prepare_spec(
         project,
         spec,
         digest,
-        requirements.runtime,
+        requirements,
         project_data_path,
     )
     return PreparedSessionSpec(spec, digest, inputs, prospective)
@@ -654,29 +674,48 @@ def _prospective_issuance(
 
 def _session_spec_inputs(
     project: Path,
-    requirements: eda_requirements.SessionBuildRequirements,
+    requirements: eda_requirements.SessionEdaRequirements,
 ) -> SessionSpecInputs:
+    installation = requirements.installation
+    license_environment = (
+        {"XILINXD_LICENSE_FILE": requirements.license_environment}
+        if requirements.license_environment is not None
+        else {}
+    )
     return SessionSpecInputs(
         project_data_source=authorized_project_data_source(project),
-        trusted_eda_mounts=requirements.trusted_mounts,
+        trusted_eda_mounts=(
+            ((installation.source, CONTAINER_TARGET),) if installation is not None else ()
+        ),
         fixed_container_environment=tuple(
             sorted(
                 {
-                    **dict(requirements.container_environment),
+                    **license_environment,
                     COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
                     **_project_identity_environment(authorized_project_data_source(project)),
                 }.items()
             )
         ),
-        installation_name=requirements.installation_name,
-        license_profile_name=requirements.license_profile_name,
+        installation_name=installation.name if installation else None,
+        license_profile_name=(
+            requirements.license_profile.name if requirements.license_profile else None
+        ),
+        egress=_host_egress_mode(),
     )
+
+
+def _host_egress_mode() -> str:
+    """Return host ``[sandbox] egress``; an invalid host config refuses issuance."""
+    try:
+        return load_host_policy().egress
+    except HostConfigError as exc:
+        raise HostPolicyError(exc) from exc
 
 
 def _revalidate_prepared(
     project: Path,
     prepared: PreparedSessionSpec,
-    leased: eda_requirements.SessionRequirementsSnapshot,
+    leased: eda_requirements.SessionEdaRequirements,
     current_builder: Callable[[], SpecBuilder] | None,
 ) -> None:
     if current_builder is not None:
@@ -685,7 +724,7 @@ def _revalidate_prepared(
         )
         if current != prepared:
             raise RuntimeSpecError("Sandbox inputs changed after specification preparation")
-    current_inputs = _session_spec_inputs(project, leased.build)
+    current_inputs = _session_spec_inputs(project, leased)
     if prepared.inputs != current_inputs:
         raise RuntimeSpecError(
             "Sandbox authority changed after its specification was prepared: "
@@ -695,7 +734,7 @@ def _revalidate_prepared(
         project,
         prepared.spec,
         prepared.digest,
-        leased.runtime,
+        leased,
         prepared.inputs.project_data_source,
     )
     if prepared.prospective_issuance != prospective:
@@ -721,13 +760,12 @@ def issue_prepared(
     if prepared.digest != _spec_digest(prepared.spec):
         raise RuntimeSpecError("prepared Sandbox specification digest is inconsistent")
     try:
-        with eda_requirements.lease_build_requirements(
+        with eda_requirements.lease_requirements(
             project,
             vivado_enabled=flow_enabled("fpga", project),
         ) as leased:
             _revalidate_prepared(project, prepared, leased, current_builder)
             requirements = eda_requirements.prepare_runtime_dependencies(
-                project,
                 leased,
                 force_relay=force_dependencies,
             )
@@ -741,50 +779,32 @@ def issue_prepared(
         raise RuntimeSpecError(str(exc)) from exc
 
 
-def issue(
-    project_root: Path,
-    prepared_or_spec: PreparedSessionSpec | SpecBuilder | dict[str, Any],
-    spec_path: Path | None = None,
-    *,
-    expected_image_id: str | None = None,
-    force_dependencies: bool = False,
-) -> Issuance:
-    """Issue a prepared/built spec, retaining the legacy document call shape."""
-    if callable(prepared_or_spec):
-        project = project_root.resolve(strict=True)
-        try:
-            with eda_requirements.lease_build_requirements(
+def issue(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
+    """Validate trusted inputs and atomically issue the exact generated spec."""
+    project = project_root.resolve(strict=True)
+    project_data_source = str(authorized_project_data_source(project))
+    try:
+        with _issuance_requirements(project, spec, include_relay_identity=True) as requirements:
+            return _issue_document_with_requirements(
                 project,
-                vivado_enabled=flow_enabled("fpga", project),
-            ) as leased:
-                prepared = _prepare_spec(
-                    project,
-                    prepared_or_spec,
-                    leased,
-                    expected_image_id=expected_image_id,
-                )
-                requirements = eda_requirements.prepare_runtime_dependencies(
-                    project,
-                    leased,
-                    force_relay=force_dependencies,
-                )
-                return _persist_prepared(project, prepared, requirements=requirements)
-        except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
-            raise RuntimeSpecError(str(exc)) from exc
-    if isinstance(prepared_or_spec, PreparedSessionSpec):
-        if spec_path is not None:
-            raise TypeError("spec_path is not accepted with a prepared Sandbox spec")
-        return _persist_prepared(project_root, prepared_or_spec)
-    if spec_path is None:
-        raise TypeError("spec_path is required when issuing a spec dictionary")
-    return _issue_document(project_root, prepared_or_spec, spec_path)
+                spec,
+                spec_path,
+                requirements,
+                project_data_source,
+            )
+    except (
+        FlowConfigError,
+        authority.AuthorityError,
+        eda_requirements.SessionRequirementsError,
+    ) as exc:
+        raise _runtime_authority_error(spec, exc) from exc
 
 
 def _persist_prepared(
     project_root: Path,
     prepared: PreparedSessionSpec,
     *,
-    requirements: eda_requirements.SessionEdaRequirements | None = None,
+    requirements: eda_requirements.SessionEdaRequirements,
     reconcile_dashboard: bool = True,
 ) -> Issuance:
     """Persist and issue one prepared spec, restoring its predecessor on failure."""
@@ -792,6 +812,9 @@ def _persist_prepared(
 
     project = project_root.resolve(strict=True)
     path = devcontainer.devcontainer_path(project)
+    if path.is_symlink():
+        # Checked before the snapshot so rollback never replaces or unlinks the link.
+        raise RuntimeSpecError(f"refusing to write through symlinked {path}")
     previous = path.read_bytes() if path.is_file() else None
     previous_mode = stat.S_IMODE(path.stat().st_mode) if previous is not None else 0o644
     stamp_paths = (stamp_path_for_identity(str(project)), _legacy_stamp_path(str(project)))
@@ -813,8 +836,6 @@ def _persist_prepared(
             task_transaction = dashboard_tasks.reconcile(
                 project, prepared.inputs.project_data_source
             )
-        if requirements is None:
-            return _issue_document(project, prepared.spec, written)
         return _issue_document_with_requirements(
             project,
             prepared.spec,
@@ -840,7 +861,7 @@ def _file_snapshot(path: Path, *, default_mode: int) -> tuple[bytes | None, int]
 
 def _restore_file(path: Path, content: bytes | None, mode: int) -> None:
     if content is None:
-        path.unlink(missing_ok=True)
+        unlink_file(path, missing_ok=True)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -852,7 +873,7 @@ def _restore_file(path: Path, content: bytes | None, mode: int) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        temp_path.replace(path)
+        replace_file(temp_path, path)
     finally:
         temp_path.unlink(missing_ok=True)
 
@@ -887,27 +908,6 @@ def _restore_keeper(project: Path, image_id: str | None) -> None:
         )
 
 
-def _issue_document(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
-    """Validate trusted inputs and atomically issue the exact generated spec."""
-    project = project_root.resolve(strict=True)
-    project_data_source = str(authorized_project_data_source(project))
-    try:
-        with _issuance_requirements(project, spec, include_relay_identity=True) as requirements:
-            return _issue_document_with_requirements(
-                project,
-                spec,
-                spec_path,
-                requirements,
-                project_data_source,
-            )
-    except (
-        FlowConfigError,
-        authority.AuthorityError,
-        eda_requirements.SessionRequirementsError,
-    ) as exc:
-        raise _runtime_authority_error(spec, exc) from exc
-
-
 def _issue_document_with_requirements(
     project: Path,
     spec: dict[str, Any],
@@ -924,7 +924,7 @@ def _issue_document_with_requirements(
         file_sha256=_file_sha256(spec_path),
         project_data_source=project_data_source,
     )
-    _validate_generated_spec(project, spec, requirements, issuance)
+    _validate_generated_spec(project, spec, requirements, issuance, _host_egress_mode())
     _validate_bind_sources(spec["mounts"])
     image = _require_string(spec, "image")
     image_id = _resolve_image_id(image)
@@ -936,7 +936,7 @@ def _issue_document_with_requirements(
         _validate_image_contract(image_id)
     _retain_issued_image(issuance)
     _write_stamp(stamp_path(project), issuance)
-    _legacy_stamp_path(str(project)).unlink(missing_ok=True)
+    unlink_file(_legacy_stamp_path(str(project)), missing_ok=True)
     return issuance
 
 
@@ -959,7 +959,9 @@ def _validate_image_identity(project: Path, spec: dict[str, Any], stamp: Issuanc
         raise RuntimeSpecError("issued Sandbox Image keeper points at different bytes")
 
 
-def _validate_grant_identity(stamp: Issuance, requirements: Any) -> None:
+def _validate_grant_identity(
+    stamp: Issuance, requirements: eda_requirements.SessionEdaRequirements
+) -> None:
     expected = {
         "installation": requirements.installation.name if requirements.installation else None,
         "license_profile": (
@@ -986,12 +988,13 @@ def _validate_grant_identity(stamp: Issuance, requirements: Any) -> None:
 def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
     """Validate every authority-bearing field against the current host issuance."""
     project = project_root.resolve(strict=True)
+    egress = _host_egress_mode()
     stamp = authenticate(project, spec, spec_path)
     try:
         with _issuance_requirements(
             project, spec, stamp, include_relay_identity=True
         ) as requirements:
-            _validate_generated_spec(project, spec, requirements, stamp)
+            _validate_generated_spec(project, spec, requirements, stamp, egress)
             _validate_bind_sources(spec["mounts"])
             _validate_image_identity(project, spec, stamp)
             _validate_grant_identity(stamp, requirements)
@@ -1145,10 +1148,12 @@ def _validate_generated_spec(
     spec: dict[str, Any],
     requirements: eda_requirements.SessionEdaRequirements,
     issuance: Issuance,
+    egress: str,
 ) -> None:
     unknown = set(spec) - _ALLOWED_TOP_LEVEL_KEYS
     if unknown or any(key in spec for key in _ESCAPE_KEYS - {"workspaceFolder"}):
         raise RuntimeSpecError("devcontainer.json contains an unsupported escape surface")
+    _validate_egress_mode(spec, egress)
     app = _validate_spec_identity(spec)
     expected_workspace = "source=${localWorkspaceFolder},target=/work,type=bind"
     if spec.get("workspaceMount") != expected_workspace:
@@ -1159,6 +1164,26 @@ def _validate_generated_spec(
     if spec.get("updateRemoteUserUID") is not False:
         raise RuntimeSpecError("devcontainer.json immutable user policy has drifted")
     _validate_lifecycle(spec)
+    _validate_issued_mounts(project, spec, requirements, issuance, app)
+    assert issuance.project_data_source is not None
+    _validate_git_identity_environment(spec, Path(issuance.project_data_source))
+    _validate_environment(spec, requirements.license_environment, egress)
+    _validate_run_args(
+        spec.get("runArgs"),
+        expected_labels=labels(issuance),
+        private_network=requirements.private_network,
+        egress=egress,
+    )
+
+
+def _validate_issued_mounts(
+    project: Path,
+    spec: dict[str, Any],
+    requirements: eda_requirements.SessionEdaRequirements,
+    issuance: Issuance,
+    app: str,
+) -> None:
+    """Check every mount against the host issuance and its EDA authorization."""
     mounts = spec.get("mounts")
     if not isinstance(mounts, list) or any(not isinstance(item, str) for item in mounts):
         raise RuntimeSpecError("devcontainer.json mounts must be a list of strings")
@@ -1181,14 +1206,18 @@ def _validate_generated_spec(
         raise RuntimeSpecError("devcontainer.json exposes Vivado without host authorization")
     _validate_overlaps(mounts)
     _validate_mount_surfaces(mounts, project_data_workspace_target)
-    assert issuance.project_data_source is not None
-    _validate_git_identity_environment(spec, Path(issuance.project_data_source))
-    _validate_environment(spec, requirements.license_environment)
-    _validate_run_args(
-        spec.get("runArgs"),
-        expected_labels=labels(issuance),
-        private_network=requirements.private_network,
+
+
+def _validate_egress_mode(spec: dict[str, Any], egress: str) -> None:
+    """Refuse a spec issued for the other host egress mode before any shape check."""
+    container = spec.get("containerEnv")
+    actual = declared_egress(
+        container.get("BOOLEY_EGRESS") if isinstance(container, dict) else None
     )
+    if actual != egress:
+        raise EgressDriftError(
+            f"Sandbox spec egress mode '{actual}' differs from host [sandbox] egress = '{egress}'"
+        )
 
 
 def _validate_run_args(
@@ -1196,6 +1225,7 @@ def _validate_run_args(
     *,
     expected_labels: tuple[str, ...],
     private_network: str | None,
+    egress: str,
 ) -> None:
     if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
         raise RuntimeSpecError("devcontainer.json runArgs must be a string list")
@@ -1208,12 +1238,13 @@ def _validate_run_args(
     }
     if any(item in forbidden for item in raw):
         raise RuntimeSpecError("devcontainer.json requests forbidden host authority")
-    cursor = len(_FIXED_RUN_ARGS)
-    if tuple(raw[:cursor]) != _FIXED_RUN_ARGS:
+    fixed = _FIXED_RUN_ARGS if egress == "proxy" else _UNPROXIED_RUN_ARGS
+    cursor = len(fixed)
+    if tuple(raw[:cursor]) != fixed:
         raise RuntimeSpecError(
             "devcontainer.json run arguments differ from fixed runtime hardening: "
             + format_differences(
-                {"fixed_hardening": _FIXED_RUN_ARGS},
+                {"fixed_hardening": fixed},
                 {"fixed_hardening": tuple(raw[:cursor])},
             )
         )
@@ -1277,10 +1308,14 @@ def _environment_sections(spec: dict[str, Any]) -> tuple[dict[str, Any], dict[st
     return container, remote
 
 
-def _validate_remote_environment(remote: dict[str, Any]) -> None:
-    if not _REQUIRED_REMOTE_ENV.issubset(remote):
-        expected_presence = dict.fromkeys(sorted(_REQUIRED_REMOTE_ENV), "present")
-        actual_presence = {key: "present" for key in sorted(_REQUIRED_REMOTE_ENV) if key in remote}
+def _validate_remote_environment(remote: dict[str, Any], egress: str) -> None:
+    proxy_env = _PROXY_REMOTE_ENV if egress == "proxy" else {}
+    required = _REQUIRED_REMOTE_ENV | set(proxy_env)
+    allowed_remote = _ALLOWED_REMOTE_ENV - (set(_PROXY_REMOTE_ENV) - set(proxy_env))
+    fixed_remote = {**proxy_env, **_FIXED_REMOTE_ENV}
+    if not required.issubset(remote):
+        expected_presence = dict.fromkeys(sorted(required), "present")
+        actual_presence = {key: "present" for key in sorted(required) if key in remote}
         raise RuntimeSpecError(
             "devcontainer.json is missing fixed Sandbox environment: "
             + format_differences(expected_presence, actual_presence)
@@ -1289,20 +1324,20 @@ def _validate_remote_environment(remote: dict[str, Any]) -> None:
         not isinstance(key, str) or not isinstance(value, str) for key, value in remote.items()
     ):
         raise RuntimeSpecError("devcontainer.json environment must contain strings only")
-    if set(remote) - _ALLOWED_REMOTE_ENV:
+    if set(remote) - allowed_remote:
         raise RuntimeSpecError(
             "devcontainer.json contains unsupported Sandbox environment: "
             + format_differences(
                 {"unsupported_environment_keys": []},
-                {"unsupported_environment_keys": sorted(set(remote) - _ALLOWED_REMOTE_ENV)},
+                {"unsupported_environment_keys": sorted(set(remote) - allowed_remote)},
             )
         )
-    if any(remote.get(key) != value for key, value in _FIXED_REMOTE_ENV.items()):
+    if any(remote.get(key) != value for key, value in fixed_remote.items()):
         raise RuntimeSpecError(
             "devcontainer.json fixed Sandbox environment has drifted: "
             + format_differences(
-                _FIXED_REMOTE_ENV,
-                {key: remote.get(key) for key in _FIXED_REMOTE_ENV},
+                fixed_remote,
+                {key: remote.get(key) for key in fixed_remote},
             )
         )
     app = remote.get("BOOLEY_AGENT_APP")
@@ -1377,19 +1412,27 @@ def _validate_credential_seed_sources(spec: dict[str, Any], app: str, policy: st
                 raise RuntimeSpecError(str(exc)) from exc
 
 
-def _validate_environment(spec: dict[str, Any], license_environment: str | None) -> None:
+def _validate_environment(
+    spec: dict[str, Any], license_environment: str | None, egress: str
+) -> None:
     container, remote = _environment_sections(spec)
     # Checked before the exact key set so a Sandbox issued before the shared
     # compiler cache gets the actionable refresh hint, not a generic key diff.
     issued_roots = (container.get(COMPILER_CACHE_ROOT_ENV), remote.get(COMPILER_CACHE_ROOT_ENV))
     if issued_roots != (ISSUED_COMPILER_CACHE_ROOT, ISSUED_COMPILER_CACHE_ROOT):
         raise RuntimeSpecError("Compiler-cache root differs from fixed Sandbox policy")
+    if container.get(SANDBOX_IMAGE_ID_ENV) != spec.get("image"):
+        raise RuntimeSpecError("Sandbox Image identity environment differs from the pinned image")
     allowed_container = {
         COMPILER_CACHE_ROOT_ENV,
+        SANDBOX_IMAGE_ID_ENV,
         *git_identity_environment(GitIdentity("Dev", "dev@localhost")),
     }
     if license_environment is not None:
         allowed_container.add("XILINXD_LICENSE_FILE")
+    if egress == "unproxied":
+        # Its value was already checked by _validate_egress_mode.
+        allowed_container.add("BOOLEY_EGRESS")
     if set(container) != allowed_container:
         raise RuntimeSpecError(
             "devcontainer.json contains unsupported container environment: "
@@ -1398,7 +1441,7 @@ def _validate_environment(spec: dict[str, Any], license_environment: str | None)
                 {"container_environment_keys": sorted(container)},
             )
         )
-    _validate_remote_environment(remote)
+    _validate_remote_environment(remote, egress)
     expected = license_environment
     actual = container.get("XILINXD_LICENSE_FILE")
     if actual != expected:
@@ -1528,14 +1571,18 @@ def _validate_project_data_source(
         raise RuntimeSpecError("BOOLEY_DIR must be an absolute host path")
     if any(char == "," or ord(char) < 32 for char in str(candidate)):
         raise RuntimeSpecError("Booley Directory path contains unsafe Docker mount grammar")
-    if any(part.is_symlink() for part in (candidate, *candidate.parents)):
+    # Only the default entry ``<project>/.booley`` itself may be a link; a link
+    # above it or any other linked spelling (e.g. a symlinked BOOLEY_DIR) is refused.
+    is_link = candidate.is_symlink()
+    linked = is_link and is_booley_dir_entry(candidate, project / ".booley")
+    if (is_link and not linked) or any(p.is_symlink() for p in candidate.parents):
         raise RuntimeSpecError(
             "Booley Directory mount source or its ancestry must not be a symlink"
         )
     try:
         source = candidate.resolve(strict=True)
         info = source.stat()
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:  # Python < 3.13 reports a link loop as RuntimeError
         raise RuntimeSpecError(
             f"Booley Directory mount source is unavailable: {candidate}: {exc}"
         ) from exc
@@ -1547,15 +1594,34 @@ def _validate_project_data_source(
     overlaps = (
         source == project or source in project.parents or (project in source.parents and not local)
     )
+    source_label = "symlink target" if linked else "mount source"
     if broad or overlaps:
         raise RuntimeSpecError(
-            f"Booley Directory mount source is too broad or overlaps the Project: {source}"
+            f"Booley Directory {source_label} is too broad or overlaps the Project: {source}"
         )
     if os.name != "nt" and info.st_uid != os.getuid():
         raise RuntimeSpecError(
             f"Booley Directory mount source is not owned by the host user: {source}"
         )
-    return source
+    # The marker must be a regular file: a link below the entry is never followed.
+    marker = source / "booley.toml"
+    if linked and (marker.is_symlink() or not marker.is_file()):
+        raise RuntimeSpecError(
+            f"Booley Directory symlink target is not a Booley Directory (no booley.toml): {source}"
+        )
+    if linked:
+        _require_host_pin(project)
+    # Keep the entry spelling for a link so the mount pin and the /work/.booley
+    # shadow match the real-directory layout exactly.
+    return candidate if linked else source
+
+
+def _require_host_pin(project: Path) -> None:
+    """Refuse a linked entry whose target the host never pinned (or that moved)."""
+    try:
+        require_pinned_entry(project)
+    except BooleyDirPinError as exc:
+        raise RuntimeSpecError(str(exc)) from exc
 
 
 def _pin_project_data_mount(
@@ -2036,7 +2102,7 @@ def _require_string(spec: dict[str, Any], key: str) -> str:
 
 def _file_sha256(path: Path) -> str:
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        return hashlib.sha256(read_file_bytes(path)).hexdigest()
     except OSError as exc:
         raise RuntimeSpecError(f"cannot hash generated Sandbox spec: {exc}") from exc
 
@@ -2053,7 +2119,7 @@ def _load_stamp(path: Path) -> Issuance:
             flags |= os.O_CLOEXEC
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
-        descriptor = os.open(path, flags)
+        descriptor = open_with_sharing_retry(lambda: os.open(path, flags), path)
         try:
             info = os.fstat(descriptor)
             with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
@@ -2103,7 +2169,7 @@ def _write_stamp(path: Path, issuance: Issuance) -> None:
             handle.write(json.dumps(asdict(issuance), indent=2, sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
-        temp_path.replace(path)
+        replace_file(temp_path, path)
         # Windows does not permit opening a directory as a regular file
         # handle. The file itself was flushed above; the extra directory
         # durability barrier is available only on POSIX hosts.

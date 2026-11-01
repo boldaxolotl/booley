@@ -11,6 +11,7 @@ from booley.runtime.job_records import STATUS_RUNNING, JobRecordError, strict_re
 from booley.runtime.job_slots import JOB_CLASSES, SlotStore
 from booley.runtime.pid import DEAD, REUSED, ZOMBIE, is_pid_alive, observe_process
 from booley.runtime.safe_storage import refuse_symlinks
+from booley.runtime.session_paths import project_job_roots
 
 
 def _require_dead(identity: ProcessIdentity | None, pid: int | None, label: str) -> None:
@@ -38,17 +39,8 @@ def _slots(directory: Path) -> None:
 
 
 def _jobs(directory: Path) -> None:
-    roots = {directory / ".runtime/jobs"}
-    for pattern in (
-        "goals/*/.runtime/jobs",
-        "logs/*/.runtime/jobs",
-        "logs/.runtime/jobs",
-        ".interactive_logs/*/.runtime/jobs",
-        "runtime/sessions/*/.runtime/jobs",
-    ):
-        roots.update(directory.glob(pattern))
     try:
-        for root in roots:
+        for root in project_job_roots(directory):
             refuse_symlinks(root)
             for record in strict_records(root):
                 identity = ProcessIdentity.from_payload(record.process_identity)

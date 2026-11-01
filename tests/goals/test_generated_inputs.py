@@ -8,7 +8,11 @@ from uuid import uuid4
 import pytest
 
 from booley.criteria.state import DevelopmentState
-from booley.flows.sim.campaign.codec import encode_simulation_campaign_manifest
+from booley.flows.sim.campaign.codec import (
+    MANIFEST_SCHEMA,
+    canonical_json_bytes,
+    encode_simulation_campaign_manifest,
+)
 from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
 from booley.goals.entry import EntryEnvironment
 from booley.goals.finish import finish_goal
@@ -24,6 +28,16 @@ from tests.goals.test_finish import Crash, request
 # The measured Windows Reviewer baseline is 27.768s (windows-test-timings.json);
 # its 3x/30s-rounded minimum is 90s, above CI's unannotated 60s default.
 pytestmark = pytest.mark.timeout(120)
+
+
+def _as_0_3_0_manifest(raw: bytes) -> tuple[bytes, str]:
+    """What Booley 0.3.0 wrote: manifest v1 with no recorded Test Runs, and its digest."""
+    document = json.loads(raw)
+    document["$schema"] = "booley.simulation-campaign-manifest/v1"
+    for item in document["work_items"]:
+        del item["test_runs"]
+    raw = canonical_json_bytes(document)
+    return raw, "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
 
 
 def classified(
@@ -46,6 +60,7 @@ def classified(
     goals=None,
     criterion=LINT_KEY,
     criterion_detail=None,
+    retired_manifest=False,
 ):
     layout.record = enter_goals(layout, goals or [{"family": "LINT", "target": "top"}])
     relative = (
@@ -103,19 +118,20 @@ def classified(
                 + ("0" * 64 if wrong_hash else hashlib.sha256(source.read_bytes()).hexdigest()),
             }
         ],
-        "tool_provenance": {"kind": "fusesoc", "version": "2", "contract_version": "1"},
+        "tool_provenance": {
+            "kind": "fusesoc",
+            "version": "2",
+            "contract_version": "2" if source_metadata else "1",
+        },
         "cleanup": {"removed": True},
     }
     if real_producer:
         disclosure = _real_disclosure(layout)
     if disclosure_override is not None:
         disclosure = disclosure_override
-    source_metadata = source_metadata or disclosure["tool_provenance"]["contract_version"] == "2"
     manifest = finalize_manifest(
         {
-            "$schema": "booley.simulation-campaign-manifest/v3"
-            if source_metadata
-            else "booley.simulation-campaign-manifest/v1",
+            "$schema": MANIFEST_SCHEMA,
             "campaign_id": str(uuid4()),
             "created_at": "2026-10-07T10:00:00Z",
             "origin": {"execution_id": ("c" if foreign_origin else "b") * 32, "invocation_id": 7},
@@ -131,11 +147,13 @@ def classified(
     paths = record_paths(layout.control, layout.record.id)
     path = paths.runtime_dir / "flow-reports/sim/7/targets/top/campaign/manifest.json"
     path.parent.mkdir(parents=True)
-    path.write_bytes(encode_simulation_campaign_manifest(manifest))
+    raw = encode_simulation_campaign_manifest(manifest)
+    digest = manifest_digest(manifest)
+    if retired_manifest:
+        raw, digest = _as_0_3_0_manifest(raw)
+    path.write_bytes(raw)
     facts = campaign_facts()
-    facts.update(
-        campaign_id=manifest.document["campaign_id"], manifest_sha256=manifest_digest(manifest)
-    )
+    facts.update(campaign_id=manifest.document["campaign_id"], manifest_sha256=digest)
     recorder = GoalEvidenceRecorder(bind(layout))
     state = DevelopmentState.load(paths.state_file, recorder.state_persistence())
     shadow = DevelopmentState.from_json_object(state.to_dict())
@@ -324,12 +342,11 @@ def test_copyto_protected_destination_refuses_finish(layout, destination):
 @pytest.mark.parametrize("case", ["legacy-renamed", "v3-unmapped", "traversal"])
 def test_copyto_unproven_source_refuses_finish(layout, case):
     if case == "traversal":
-        from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
-
-        with pytest.raises(SimulationCampaignIntegrityError):
-            classified(
-                layout, copyto="dhry.hex", source_metadata=True, source_override="../escape.hex"
-            )
+        classified(
+            layout, copyto="dhry.hex", source_metadata=True, source_override="../escape.hex"
+        )
+        with pytest.raises(LifecycleError, match="escapes the selected worktree"):
+            finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
         return
     classified(
         layout,
@@ -450,7 +467,7 @@ def test_entirely_ambiguous_producer_cannot_authorize_destination_decoy(layout, 
     # even matching bytes cannot establish the absent source association.
     source, manifest, _ = classified(layout, copyto=destination, disclosure_override=disclosure)
     assert source.read_bytes() == staged.read_bytes()
-    assert json.loads(manifest.read_bytes())["$schema"] == "booley.simulation-campaign-manifest/v3"
+    assert json.loads(manifest.read_bytes())["$schema"] == MANIFEST_SCHEMA
     with pytest.raises(LifecycleError, match="no committed representation"):
         finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
 
@@ -468,6 +485,17 @@ def test_new_producer_contract_never_uses_legacy_staged_fallback(layout):
     producer["planning_disclosures"][0]["tool_provenance"]["contract_version"] = "2"
     row = {"detail": {"_source_fingerprint": {"target": "top"}}}
     assert _disclosed_inputs(layout.worktree, producer, row, {}) == []
+
+
+def test_finish_refuses_a_0_3_0_producer_manifest_naming_its_invocation(layout):
+    classified(layout, copyto="dhrystone/dhry.hex", retired_manifest=True)
+    with pytest.raises(LifecycleError) as excinfo:
+        finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
+    message = str(excinfo.value)
+    assert "written by Booley 0.3.0 and is no longer supported" in message
+    assert "booley.simulation-campaign-manifest/v1" in message
+    assert "delete the Simulation invocation directory" in message
+    assert "/flow-reports/sim/7 by hand" in message.replace("\\", "/")
 
 
 def _prepare_target_less_generated_record(
@@ -547,8 +575,9 @@ def test_target_less_review_finishes_without_unused_target_producer(layout, monk
         completion_environment(EntryEnvironment(layout.control)),
     )
     assert result["status"] == "finished"
-    from booley.review.goal_package import GoalCompletionPackage, render_goal_briefing
-    from booley.review.goal_presentation_v1 import render_goal_html
+    from booley.goals.finish import render_goal_briefing
+    from booley.goals.finish_presentation import render_goal_html
+    from booley.review.goal_package import GoalCompletionPackage
 
     payload = Path(result["package"]).read_text()
     package = GoalCompletionPackage.from_json(json.loads(payload))
@@ -618,3 +647,23 @@ def test_ignored_consumed_project_snapshot_keeps_its_independent_completion_proo
         row["classification"] == "ProjectSnapshot" and row["path"].endswith("tests.toml")
         for row in observations
     )
+
+
+def test_accumulated_campaign_keeps_generated_input_authority(layout):
+    from booley.mcp.goal_generated_inputs import generated_inputs
+    from tests.goals.conftest import SIM_KEY, passing_sim, run_row
+    from tests.goals.test_test_run_evidence import _record
+
+    _source, _manifest, transaction = classified(
+        layout,
+        goals=[{"family": "SIM", "target": "top"}],
+        criterion=SIM_KEY,
+        criterion_detail=passing_sim(),
+    )
+    state = DevelopmentState.load(record_paths(layout.control, layout.record.id).state_file)
+    before = generated_inputs(layout.control, layout.record, state, layout.worktree)
+    assert len(before) == 1
+    _record(layout, "later", [run_row()])
+    state = DevelopmentState.load(record_paths(layout.control, layout.record.id).state_file)
+    assert generated_inputs(layout.control, layout.record, state, layout.worktree) == before
+    assert transaction.transaction_id in state.acceptance_transactions

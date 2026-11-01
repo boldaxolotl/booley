@@ -10,9 +10,9 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, cast, overload
 
-from booley.evidence.fields import ACCEPTANCE_FACTS_SCHEMA_V1
 from booley.flows.endpoint_admission import AdmissionContext
-from booley.flows.sim.campaign_reports import target_report_directory
+from booley.flows.sim.campaign_reports import simulation_booley_dir, target_report_directory
+from booley.flows.sim.coverage_campaign import CoverageCampaignValidationError
 from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
 from booley.flows.sim.coverage_reference import (
     CoverageCampaignReference,
@@ -21,6 +21,7 @@ from booley.flows.sim.coverage_reference import (
     publish_coverage_campaign_reference,
 )
 from booley.flows.sim.execution.contract import PreSimScopeStoppedError, SimulationOptions
+from booley.runtime.execution_records import ExecutionId
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
 
@@ -28,7 +29,6 @@ from .capacity import HeavyCapacity, HeavyCapacityError
 from .child_protocol import ChildExecutionRegistry
 from .codec import (
     SimulationCampaignIntegrityError,
-    encode_simulation_campaign_manifest,
 )
 from .facts import ACCEPTANCE_FACTS_SCHEMA, AcceptanceFacts
 from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
@@ -50,7 +50,7 @@ from .run_directory import (
     restore_run_directory,
 )
 from .scheduler import BoundedCampaignScheduler, ScheduledAttempt
-from .store import CampaignRecovery, CampaignStore, WorkItemRecovery
+from .store import CampaignRecovery, CampaignStore, collect_pre_sim_firings
 from .test_run_binding import observation_test_runs
 
 
@@ -94,27 +94,22 @@ class SimulationCampaignCancellationError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class CampaignFailureContext:
-    """Exact completed attempt available when later Campaign publication fails."""
+class CampaignPublicationFailure:
+    """Facts the coordinator already holds when publication fails after a Simulation result."""
 
-    target_root: Path
-    campaign_id: str
-    target_identity: str
+    target_root: Path  # holds the public coverage.json reference
     target_selector: str
-    work_item_id: str
-    attempt_id: str
-    attempt_ordinal: int
-    producer_invocation_id: int
-    result: SimulationResult
-    coverage_reference: CoverageCampaignReference | None = None
+    observations: tuple[Mapping[str, object], ...]
+    nested_campaign: Path | None = None  # coverage workloads only
+    coverage_reference: CoverageCampaignReference | None = None  # only once published
 
 
 class CampaignPublicationError(RuntimeError):
     """A publication failed after a Simulation result became available."""
 
-    def __init__(self, message: str, context: CampaignFailureContext) -> None:
+    def __init__(self, message: str, failure: CampaignPublicationFailure) -> None:
         super().__init__(message)
-        self.context = context
+        self.failure = failure
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,7 +202,6 @@ class WorkExecutionRequest:
     project_root: Path
     target_handle: TargetHandle | None = None
     child_execution_id: str | None = None
-    child_entry_sha256: str | None = None
     pre_sim_firing_published: Callable[[tuple[str, str, str, int]], None] | None = None
     pre_sim_decoder: PreSimFiringDecoder = field(init=False, repr=False, compare=False)
 
@@ -246,19 +240,16 @@ class CampaignOutcome:
 
 
 def _coverage_attempt_directory(
-    store: CampaignStore, recovered: WorkItemRecovery
-) -> tuple[SimulationResult, Path]:
-    result = recovered.result
-    assert result is not None
-    attempt = store.latest_attempt(recovered.work_item_id)
+    store: CampaignStore, work_item_id: str, result: SimulationResult
+) -> Path:
+    attempt = store.latest_attempt(work_item_id)
     result_document = result.document
     if attempt is None or attempt.document["attempt_id"] != result_document["attempt_id"]:
         raise SimulationCampaignIntegrityError(
             "coverage aggregate result has no matching Simulation Attempt"
         )
-    directory = store.work_item_directory(recovered.work_item_id) / "attempts"
-    name = f"{result_document['attempt_ordinal']:04d}-{result_document['attempt_id']}"
-    return result, directory / name
+    directory = store.work_item_directory(work_item_id) / "attempts"
+    return directory / f"{result_document['attempt_ordinal']:04d}-{result_document['attempt_id']}"
 
 
 class SimulationCampaign:
@@ -308,15 +299,9 @@ class SimulationCampaign:
     def _inspect_resume(
         validated: ValidatedResumeManifest,
     ) -> tuple[CampaignRecovery, CampaignRecoveryStatus]:
-        store = CampaignStore(validated.path.parent)
+        store = CampaignStore(validated.path.parent, booley_dir=validated.booley_dir)
         recovery = store.scan_validated(validated.manifest, validated.sha256)
         return recovery, _recovery_status(validated.path, validated.sha256, recovery)
-
-    @staticmethod
-    def reauthenticate_pre_sim_firings(firings: tuple[PreSimFiring, ...]) -> None:
-        """Retain reporting evidence only after fresh owner and sidecar validation."""
-        for firing in firings:
-            CampaignStore(firing.manifest_path.parent).reauthenticate_pre_sim_firing(firing)
 
     @staticmethod
     def preflight(request: NewCampaignRunRequest) -> None:
@@ -358,7 +343,9 @@ class SimulationCampaign:
             manifest = request.plan.manifest
             authenticated_manifest_sha256 = None
         else:
-            store = CampaignStore(request.validated.path.parent)
+            store = CampaignStore(
+                request.validated.path.parent, booley_dir=request.validated.booley_dir
+            )
             verify_workload(request.validated.manifest, request.current_plan.manifest)
             manifest = request.validated.manifest
             authenticated_manifest_sha256 = request.validated.sha256
@@ -373,26 +360,44 @@ class SimulationCampaign:
     ) -> CampaignOutcome:
         self._raise_if_cancelled(request)
         self._preflight_owner(store, manifest, authenticated_sha256, request)
-        self._run_prerequisites(store, manifest, request, set())
+        owner = cast(str, manifest.document["campaign_id"])
+        self._run_prerequisites(store, manifest, request, frozenset({owner}), set())
         recovery = _scan_recovery(store, manifest, authenticated_sha256)
         self._run_pending(store, manifest, recovery, request)
         self._raise_if_cancelled(request)
-        current = _scan_recovery(store, manifest, authenticated_sha256)
-        failure_context = _campaign_failure_context(store, manifest, current)
-        published: list[CoverageCampaignReference] = []
+        target = cast(Mapping[str, str], manifest.document["target"])
+        coverage = cast(Mapping[str, object], manifest.document["workload"])["coverage"] is True
+        failure: CampaignPublicationFailure | None = None
+        reference: CoverageCampaignReference | None = None
         try:
+            if coverage:
+                # The one scan that feeds both the reference and any publication failure.
+                work_item_id, result = _committed_coverage_result(
+                    store, manifest, authenticated_sha256
+                )
+                failure = CampaignPublicationFailure(
+                    store.root.parent,
+                    target["selector"],
+                    cast(tuple[Mapping[str, object], ...], result.document["observations"]),
+                )
+                nested = (
+                    _coverage_attempt_directory(store, work_item_id, result)
+                    / "coverage-campaign/coverage.json"
+                )
+                failure = replace(failure, nested_campaign=nested)
             self._publication_checkpoint("before:summary_replace")
             summary = _regenerate_summary(store, manifest, authenticated_sha256)
             self._publication_checkpoint("after:summary_replace")
-            reference = self._publish_coverage_reference(
-                store, manifest, authenticated_sha256, published.append
-            )
+            if failure is not None:
+                reference = self._publish_coverage_reference(
+                    store, manifest, work_item_id, result, nested
+                )
+                self._publication_checkpoint("after:coverage_reference")
         except (OSError, ValueError, RuntimeError) as exc:
-            if failure_context is None:
+            if failure is None:
                 raise
-            reference = published[0] if published else None
             raise CampaignPublicationError(
-                str(exc), replace(failure_context, coverage_reference=reference)
+                str(exc), replace(failure, coverage_reference=reference)
             ) from exc
         final = _scan_recovery(store, manifest, authenticated_sha256)
         return _outcome(store, manifest, summary, final, reference)
@@ -400,21 +405,17 @@ class SimulationCampaign:
     @staticmethod
     def _raise_if_cancelled(request: CampaignRunRequest) -> None:
         if request.admission.cancellation():
-            raise SimulationCampaignCancellationError("Simulation Campaign cancelled")
+            cause = request.admission.cancellation_cause() or "cancellation requested"
+            raise SimulationCampaignCancellationError(f"Simulation Campaign cancelled: {cause}")
 
     def _publish_coverage_reference(
         self,
         store: CampaignStore,
         manifest: SimulationCampaignManifest,
-        authenticated_manifest_sha256: str | None,
-        record_published: Callable[[CoverageCampaignReference], None] | None = None,
-    ) -> CoverageCampaignReference | None:
-        workload = cast(Mapping[str, object], manifest.document["workload"])
-        if workload["coverage"] is not True:
-            return None
-        work_item_id, result, nested_path = _coverage_reference_source(
-            store, manifest, authenticated_manifest_sha256
-        )
+        work_item_id: str,
+        result: SimulationResult,
+        nested_path: Path,
+    ) -> CoverageCampaignReference:
         result_document = result.document
         target = cast(Mapping[str, str], manifest.document["target"])
         origin = cast(Mapping[str, object], manifest.document["origin"])
@@ -431,18 +432,12 @@ class SimulationCampaign:
                 origin_target_directory=store.root.parent,
                 coverage_campaign_path=nested_path,
             )
-        except CoverageCampaignStoreError as exc:
+        except (CoverageCampaignStoreError, CoverageCampaignValidationError) as exc:
             raise SimulationCampaignIntegrityError(
                 "nested Coverage Campaign cannot be authenticated"
             ) from exc
         self._publication_checkpoint("before:coverage_reference")
-        published_reference = publish_coverage_campaign_reference(
-            store.root.parent / "coverage.json", reference
-        )
-        if record_published is not None:
-            record_published(published_reference)
-        self._publication_checkpoint("after:coverage_reference")
-        return published_reference
+        return publish_coverage_campaign_reference(store.root.parent / "coverage.json", reference)
 
     def publish_new(self, request: NewCampaignRunRequest) -> Path:
         """Atomically publish one planned manifest without starting work."""
@@ -479,7 +474,9 @@ class SimulationCampaign:
             return  # _run_pending performs the same check for the sole campaign.
         recovery = _scan_recovery(store, manifest, authenticated_sha256)
         self._preflight_incomplete(manifest, recovery, request)
-        self._preflight_prerequisites(store, manifest, request, set())
+        self._preflight_prerequisites(
+            store, manifest, request, {cast(str, manifest.document["campaign_id"])}
+        )
 
     @staticmethod
     def _preflight_incomplete(
@@ -506,24 +503,18 @@ class SimulationCampaign:
         request: CampaignRunRequest,
         visited: set[str],
     ) -> None:
-        """Walk the prerequisite tree read-only, mirroring ``_run_prerequisites``."""
-        entries = cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"])
+        """Walk the prerequisite tree read-only, mirroring ``_run_prerequisites``.
+
+        Each campaign is checked once; ``_run_prerequisites`` rejects cycles.
+        """
         invocation = owner_store.root.parents[2]
-        for entry in entries:
+        for entry in cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"]):
             campaign_id = cast(str, entry["campaign_id"])
             if campaign_id in visited:
-                return  # cycles are rejected by _run_prerequisites itself
+                continue
             visited.add(campaign_id)
-            reference = cast(Mapping[str, object], entry["manifest"])
-            node = (
-                request.validated.prerequisite_for(reference)
-                if isinstance(request, ResumeCampaignRunRequest)
-                else None
-            )
-            path = node.path if node is not None else invocation / cast(str, reference["path"])
-            store = CampaignStore(path.parent)
-            prerequisite = node.manifest if node is not None else store.load_manifest()
-            self._preflight_incomplete(prerequisite, store.scan(), request)
+            store, prerequisite = _prerequisite_campaign(entry, invocation, request)
+            self._preflight_incomplete(prerequisite, store.scan(prerequisite), request)
             self._preflight_prerequisites(store, prerequisite, request, visited)
 
     def _run_prerequisites(
@@ -531,32 +522,37 @@ class SimulationCampaign:
         owner_store: CampaignStore,
         manifest: SimulationCampaignManifest,
         request: CampaignRunRequest,
-        visited: set[str],
+        ancestors: frozenset[str],
+        finished: set[str],
     ) -> None:
-        entries = cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"])
+        """Run every prerequisite campaign once, then require each linked result.
+
+        Several entries may link work items of one campaign (one per relative
+        Cycle Count Test), so a campaign is a cycle only when it is its own
+        ancestor; a campaign already *finished* by a sibling is not rerun.
+        """
         invocation = owner_store.root.parents[2]
-        for entry in entries:
+        for entry in cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"]):
             campaign_id = cast(str, entry["campaign_id"])
-            if campaign_id in visited:
+            if campaign_id in ancestors:
                 raise SimulationCampaignIntegrityError("cyclic prerequisite campaign")
-            visited.add(campaign_id)
-            reference = cast(Mapping[str, object], entry["manifest"])
-            node = (
-                request.validated.prerequisite_for(reference)
-                if isinstance(request, ResumeCampaignRunRequest)
-                else None
-            )
-            path = node.path if node is not None else invocation / cast(str, reference["path"])
-            prerequisite_store = CampaignStore(path.parent)
-            prerequisite = (
-                node.manifest if node is not None else prerequisite_store.load_manifest()
-            )
-            with prerequisite_store.mutation_lock():
-                self._run_prerequisites(prerequisite_store, prerequisite, request, visited)
-                recovery = prerequisite_store.scan()
-                self._run_pending(prerequisite_store, prerequisite, recovery, request)
-                prerequisite_store.regenerate_summary()
-            selected = prerequisite_store.scan()
+            prerequisite_store, prerequisite = _prerequisite_campaign(entry, invocation, request)
+            if campaign_id not in finished:
+                with prerequisite_store.mutation_lock():
+                    self._run_prerequisites(
+                        prerequisite_store,
+                        prerequisite,
+                        request,
+                        ancestors | {campaign_id},
+                        finished,
+                    )
+                    recovery = prerequisite_store.scan(prerequisite)
+                    self._run_pending(prerequisite_store, prerequisite, recovery, request)
+                    prerequisite_store.regenerate_summary_validated(
+                        prerequisite, manifest_digest(prerequisite)
+                    )
+                finished.add(campaign_id)
+            selected = prerequisite_store.scan(prerequisite)
             match = next(
                 (item for item in selected.items if item.work_item_id == entry["work_item_id"]),
                 None,
@@ -579,9 +575,8 @@ class SimulationCampaign:
             else None
         )
         project_root = binding.project_root if binding is not None else request.project_root
-        registry = ChildExecutionRegistry(store, manifest, project_root)
-        registry.recover_unretired(request.admission.slot_store)
-        self._cleanup_interrupted_runs(store, recovery, project_root)
+        registry = ChildExecutionRegistry(manifest, project_root)
+        self._cleanup_interrupted_runs(store, recovery, project_root, registry)
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         by_id = {cast(str, item["work_item_id"]): item for item in items}
         invocation = _invocation_number(request.invocation_directory)
@@ -610,17 +605,11 @@ class SimulationCampaign:
             capacity,
             registry,
             allocate=lambda item: self._allocate_scheduled(store, manifest, project_root, item),
-            execute=lambda attempt, child_id, child_digest: self._execute_scheduled(
-                store,
-                manifest,
-                attempt,
-                invocation,
-                request,
-                child_id,
-                child_digest,
+            execute=lambda attempt, child_id: self._execute_scheduled(
+                store, manifest, attempt, invocation, request, child_id
             ),
-            prepare_child=lambda attempt, child_id, child_digest: self._prepare_child(
-                store, manifest, attempt, invocation, request, child_id, child_digest
+            prepare_child=lambda attempt, child_id: self._prepare_child(
+                store, manifest, attempt, invocation, request, child_id
             ),
         )
 
@@ -632,7 +621,6 @@ class SimulationCampaign:
         invocation: int,
         request: CampaignRunRequest,
         child_execution_id: str,
-        child_entry_sha256: str,
     ) -> None:
         executor = self._executor
         if executor is None or not hasattr(executor, "prepare_attempt"):
@@ -647,14 +635,17 @@ class SimulationCampaign:
                 invocation,
                 request,
                 child_execution_id,
-                child_entry_sha256,
             )
         )
 
     @staticmethod
     def _cleanup_interrupted_runs(
-        store: CampaignStore, recovery: CampaignRecovery, project_root: Path
+        store: CampaignStore,
+        recovery: CampaignRecovery,
+        project_root: Path,
+        registry: ChildExecutionRegistry,
     ) -> None:
+        """Cancel each interrupted lane, then remove its attempt's run directory."""
         for recovered in recovery.items:
             if recovered.state != "interrupted":
                 continue
@@ -662,6 +653,10 @@ class SimulationCampaign:
             if attempt is None:
                 continue
             document = attempt.document
+            lane_id = document.get("child_execution_id")
+            if lane_id is not None:
+                # Fail closed: never delete a run directory a live lane may still use.
+                registry.recover_lane(ExecutionId(cast(str, lane_id)))
             run = restore_run_directory(
                 cast(Mapping[str, object], document["run_directory"]),
                 project_root=project_root,
@@ -698,7 +693,6 @@ class SimulationCampaign:
         invocation: int,
         request: CampaignRunRequest,
         child_execution_id: str | None,
-        child_entry_sha256: str | None,
     ) -> None:
         work_item = attempt.item
         work_item_id = cast(str, work_item["work_item_id"])
@@ -712,33 +706,25 @@ class SimulationCampaign:
                     invocation,
                     request,
                     child_execution_id,
-                    child_entry_sha256,
                 )
             )
         except PreSimScopeStoppedError as signal:
             raise HeavyCapacityError(str(signal)) from signal
-        scope = current_supervised_execution()
-        if scope is not None and scope.cancelled():
-            raise HeavyCapacityError(
-                f"child execution cancelled before result publication: {scope.execution_id}"
-            )
-        _validate_scheduled_result(result, attempt, work_item_id)
+        raise_if_cancelled_before_publication()
         try:
             self._publish_scheduled_result(store, attempt, work_item_id, result)
         except (OSError, ValueError, RuntimeError) as exc:
             target = cast(Mapping[str, str], manifest.document["target"])
-            context = CampaignFailureContext(
+            coverage = cast(Mapping[str, object], manifest.document["workload"])["coverage"]
+            failure = CampaignPublicationFailure(
                 store.root.parent,
-                cast(str, manifest.document["campaign_id"]),
-                f"{target['vlnv']}#{target['name']}",
                 target["selector"],
-                work_item_id,
-                attempt.attempt_id,
-                attempt.ordinal,
-                invocation,
-                result,
+                cast(tuple[Mapping[str, object], ...], result.document["observations"]),
+                attempt.directory / "coverage-campaign/coverage.json"
+                if coverage is True
+                else None,
             )
-            raise CampaignPublicationError(str(exc), context) from exc
+            raise CampaignPublicationError(str(exc), failure) from exc
 
     @staticmethod
     def _work_execution_request(
@@ -748,7 +734,6 @@ class SimulationCampaign:
         invocation,
         request,
         child_execution_id,
-        child_entry_sha256,
     ) -> WorkExecutionRequest:
         binding = (
             request.validated.binding_for(manifest)
@@ -768,7 +753,6 @@ class SimulationCampaign:
             binding.project_root if binding is not None else request.project_root,
             binding.handle if binding is not None else None,
             child_execution_id,
-            child_entry_sha256,
             request.pre_sim_firing_published,
         )
 
@@ -780,10 +764,18 @@ class SimulationCampaign:
         result: SimulationResult,
     ) -> None:
         with self._publication_gate:
-            store.verify_result_evidence(attempt.directory, result)
             self._publication_checkpoint("before:simulation_result")
             store.publish_result(work_item_id, result)
             self._publication_checkpoint("after:simulation_result")
+
+
+def raise_if_cancelled_before_publication() -> None:
+    """Refuse to publish a result produced under a cancelled supervised scope."""
+    scope = current_supervised_execution()
+    if scope is not None and scope.cancelled():
+        raise HeavyCapacityError(
+            f"execution cancelled before result publication: {scope.describe_cancellation()}"
+        )
 
 
 def _invocation_number(directory: Path) -> int:
@@ -795,47 +787,20 @@ def _invocation_number(directory: Path) -> int:
         ) from exc
 
 
-def _campaign_failure_context(
-    store: CampaignStore,
-    manifest: SimulationCampaignManifest,
-    recovery: CampaignRecovery,
-) -> CampaignFailureContext | None:
-    workload = cast(Mapping[str, object], manifest.document["workload"])
-    completed = [item for item in recovery.items if item.result is not None]
-    if workload.get("coverage") is not True or len(completed) != 1:
-        return None
-    recovered = completed[0]
-    result = recovered.result
-    assert result is not None
-    document = result.document
-    target = cast(Mapping[str, str], manifest.document["target"])
-    return CampaignFailureContext(
-        store.root.parent,
-        cast(str, manifest.document["campaign_id"]),
-        f"{target['vlnv']}#{target['name']}",
-        target["selector"],
-        recovered.work_item_id,
-        cast(str, document["attempt_id"]),
-        cast(int, document["attempt_ordinal"]),
-        cast(int, document["producer_invocation_id"]),
-        result,
-    )
-
-
-def _coverage_reference_source(
+def _committed_coverage_result(
     store: CampaignStore,
     manifest: SimulationCampaignManifest,
     authenticated_manifest_sha256: str | None,
-) -> tuple[str, SimulationResult, Path]:
+) -> tuple[str, SimulationResult]:
     recovery = _scan_recovery(store, manifest, authenticated_manifest_sha256)
     completed = [item for item in recovery.items if item.result is not None]
     if len(completed) != 1:
         raise SimulationCampaignIntegrityError(
             "coverage aggregate must have one committed Simulation result"
         )
-    recovered = completed[0]
-    result, attempt_directory = _coverage_attempt_directory(store, recovered)
-    return recovered.work_item_id, result, attempt_directory / "coverage-campaign/coverage.json"
+    result = completed[0].result
+    assert result is not None
+    return completed[0].work_item_id, result
 
 
 def _scheduled_collision_key(
@@ -858,21 +823,6 @@ def _scheduled_collision_key(
         attempt_key=f"{ordinal:04d}-{attempt_id}",
     )
     return run.collision_key
-
-
-def _validate_scheduled_result(
-    result: SimulationResult, attempt: ScheduledAttempt, work_item_id: str
-) -> None:
-    document = result.document
-    identity = (
-        document["attempt_id"],
-        document["attempt_ordinal"],
-        document["work_item_id"],
-    )
-    if identity != (attempt.attempt_id, attempt.ordinal, work_item_id):
-        raise SimulationCampaignIntegrityError(
-            "serial executor returned a result for another attempt"
-        )
 
 
 def _new_preview(request: NewCampaignPreviewRequest) -> NewCampaignPreview:
@@ -900,7 +850,7 @@ def _new_store(request: NewCampaignRunRequest) -> CampaignStore:
     if target["role"] == "cycle_count_baseline":
         selector = f"{selector}@baseline-{target['revision'][:12]}"
     directory = target_report_directory(request.invocation_directory, selector) / "campaign"
-    return CampaignStore(directory)
+    return CampaignStore(directory, booley_dir=simulation_booley_dir(request.project_root))
 
 
 def _required_variants(
@@ -936,7 +886,7 @@ def _outcome(
         facts,
         _acceptance_ready(manifest, observations, complete, grade),
         _recovery_status(store.manifest_path, manifest_digest(manifest), recovery),
-        pre_sim_firings=store.collect_pre_sim_firings(),
+        pre_sim_firings=collect_pre_sim_firings(store.manifest_path, booley_dir=store.booley_dir),
     )
 
 
@@ -971,7 +921,7 @@ def _scan_recovery(
     authenticated_manifest_sha256: str | None,
 ) -> CampaignRecovery:
     if authenticated_manifest_sha256 is None:
-        return store.scan()
+        return store.scan(manifest)
     return store.scan_validated(manifest, authenticated_manifest_sha256)
 
 
@@ -981,7 +931,7 @@ def _regenerate_summary(
     authenticated_manifest_sha256: str | None,
 ) -> Mapping[str, object]:
     if authenticated_manifest_sha256 is None:
-        return store.regenerate_summary()
+        return store.regenerate_summary_validated(manifest, manifest_digest(manifest))
     return store.regenerate_summary_validated(manifest, authenticated_manifest_sha256)
 
 
@@ -1016,12 +966,9 @@ def _acceptance_facts(
     by_id = {item["work_item_id"]: item for item in items}
     consumed, observations = collected_result_facts(store, recovery, by_id)
     suite = cast(Mapping[str, object], manifest.document["required_suite"])
-    names_test_runs = all("test_runs" in item for item in items)
     facts = AcceptanceFacts(
         {
-            "$schema": (
-                ACCEPTANCE_FACTS_SCHEMA if names_test_runs else ACCEPTANCE_FACTS_SCHEMA_V1
-            ),
+            "$schema": ACCEPTANCE_FACTS_SCHEMA,
             "campaign_id": manifest.document["campaign_id"],
             "manifest_sha256": manifest_digest(manifest),
             "origin": manifest.document["origin"],
@@ -1031,7 +978,7 @@ def _acceptance_facts(
                 "default_invocation": suite["default_invocation"],
                 "source_sha256": suite["source_sha256"],
             },
-            "prerequisites": _prerequisite_facts(store, manifest, names_test_runs=names_test_runs),
+            "prerequisites": _prerequisite_facts(store, manifest),
             "consumed_results": consumed,
             "observations": observations,
             "coverage_reference": _coverage_acceptance_reference(
@@ -1129,28 +1076,48 @@ def _observation_facts(
             "result_sha256": result_sha256,
             **dict(observation),
         }
-        if bound is not None:
-            fact |= {"test_run": bound[index][0], "test_run_fingerprint": bound[index][1]}
+        fact |= {"test_run": bound[index][0], "test_run_fingerprint": bound[index][1]}
         facts.append(fact)
     return facts
+
+
+def _prerequisite_campaign(
+    entry: Mapping[str, object], invocation: Path, request: CampaignRunRequest
+) -> tuple[CampaignStore, SimulationCampaignManifest]:
+    """Open the campaign one prerequisite *entry* links, authenticated on resume."""
+    reference = cast(Mapping[str, object], entry["manifest"])
+    node = (
+        request.validated.prerequisite_for(reference)
+        if isinstance(request, ResumeCampaignRunRequest)
+        else None
+    )
+    path = node.path if node is not None else invocation / cast(str, reference["path"])
+    booley_dir = (
+        request.validated.booley_dir
+        if isinstance(request, ResumeCampaignRunRequest)
+        else simulation_booley_dir(request.project_root)
+    )
+    store = CampaignStore(path.parent, booley_dir=booley_dir)
+    return store, node.manifest if node is not None else store.load_manifest()
 
 
 def _prerequisite_facts(
     owner_store: CampaignStore,
     manifest: SimulationCampaignManifest,
-    *,
-    names_test_runs: bool,
 ) -> list[dict[str, object]]:
     facts: list[dict[str, object]] = []
     entries = cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"])
     invocation = owner_store.root.parents[2]
     for entry in entries:
         manifest_reference = cast(Mapping[str, object], entry["manifest"])
-        store = CampaignStore((invocation / cast(str, manifest_reference["path"])).parent)
-        _linked, expected_test, baseline_run = _authenticate_prerequisite_manifest(
+        store = CampaignStore(
+            (invocation / cast(str, manifest_reference["path"])).parent,
+            booley_dir=owner_store.booley_dir,
+        )
+        linked, expected_test, baseline_run = _authenticate_prerequisite_manifest(
             store, entry, manifest_reference
         )
-        selected = _selected_prerequisite_result(store, entry)
+        selected = _selected_prerequisite_result(store.scan(linked), entry)
         result_path = store.work_item_directory(selected.work_item_id) / "result.json"
         raw = result_path.read_bytes()
         digest = "sha256:" + hashlib.sha256(raw).hexdigest()
@@ -1179,27 +1146,15 @@ def _prerequisite_facts(
                     "test": observation["test"],
                     "cycle_count": observation["cycle_count"],
                     "unit": "cycles",
-                    **_baseline_test_run_facts(baseline_run, names_test_runs=names_test_runs),
+                    **_baseline_test_run_facts(baseline_run),
                 },
             }
         )
     return facts
 
 
-def _baseline_test_run_facts(
-    run: Mapping[str, object] | None, *, names_test_runs: bool
-) -> dict[str, object]:
-    """Name the Test Run a baseline observed, so facts show both revisions ran it.
-
-    Facts that name Test Runs need the baseline's too: a baseline campaign
-    that recorded none cannot be compared and is refused.
-    """
-    if not names_test_runs:
-        return {}
-    if run is None:
-        raise SimulationCampaignIntegrityError(
-            "Cycle Count prerequisite records no Test Run to compare"
-        )
+def _baseline_test_run_facts(run: Mapping[str, object]) -> dict[str, object]:
+    """Name the Test Run a baseline observed, so facts show both revisions ran it."""
     return {"test_run": run["name"], "test_run_fingerprint": run["fingerprint"]}
 
 
@@ -1207,10 +1162,9 @@ def _authenticate_prerequisite_manifest(
     store: CampaignStore,
     entry: Mapping[str, object],
     reference: Mapping[str, object],
-) -> tuple[SimulationCampaignManifest, str, Mapping[str, object] | None]:
+) -> tuple[SimulationCampaignManifest, str, Mapping[str, object]]:
     linked = store.load_manifest()
-    raw = encode_simulation_campaign_manifest(linked)
-    if len(raw) != reference["bytes"] or manifest_digest(linked) != reference["sha256"]:
+    if manifest_digest(linked) != reference["sha256"]:
         raise SimulationCampaignIntegrityError(
             "Cycle Count prerequisite manifest reference is unauthenticated"
         )
@@ -1233,17 +1187,17 @@ def _authenticate_prerequisite_manifest(
         raise SimulationCampaignIntegrityError(
             "Cycle Count prerequisite must select exactly one test"
         )
-    runs = cast("tuple[Mapping[str, object], ...] | None", selected.get("test_runs"))
-    if runs is not None and len(runs) != 1:
+    runs = cast("tuple[Mapping[str, object], ...]", selected["test_runs"])
+    if len(runs) != 1:
         raise SimulationCampaignIntegrityError(
             "Cycle Count prerequisite must run exactly one Test Run"
         )
-    return linked, names[0], runs[0] if runs else None
+    return linked, names[0], runs[0]
 
 
-def _selected_prerequisite_result(store: CampaignStore, entry: Mapping[str, object]):
+def _selected_prerequisite_result(recovery: CampaignRecovery, entry: Mapping[str, object]):
     selected = next(
-        (item for item in store.scan().items if item.work_item_id == entry["work_item_id"]),
+        (item for item in recovery.items if item.work_item_id == entry["work_item_id"]),
         None,
     )
     if selected is None or selected.result is None:

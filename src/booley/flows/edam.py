@@ -43,6 +43,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import IO, Any
 
+from booley.core.booley_dir_links import lexical_booley_path
+from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.flows.target_parameters import ParameterValue
 from booley.runtime.file_lock import (
     LockContentionError,
@@ -179,7 +181,9 @@ def _confined_path(
     """
     resolved = Path(path).resolve()
     root = Path(workspace_root).resolve()
-    if not resolved.is_relative_to(root):
+    # A file behind a symlinked Booley Directory entry (a Codespace's /work/.booley)
+    # counts as inside when named through the entry; any other link out is refused.
+    if not lexical_booley_path(root / BOOLEY_DIR_NAME, resolved).is_relative_to(root):
         raise EdamSecurityError(f"file {resolved} is outside the workspace root {root}")
     if relative_to is not None:
         # This relative name lands in a .vc/Makefile consumed inside the Linux

@@ -6,7 +6,8 @@ horizontally:
 - Python 3.14 runs the complete suite on Windows in ten duration-balanced
   shards.
 - Python 3.13 runs complete branch coverage on Ubuntu in three shards.
-- Python 3.11 and 3.14 run the complete suite on Ubuntu.
+- Python 3.11 and 3.14 run the complete suite on Ubuntu, each in two
+  duration-balanced shards.
 - Python 3.11 and 3.13 run focused installation, import, path, subprocess, and
   API compatibility checks on Windows.
 
@@ -20,7 +21,8 @@ combination before merge.
 `.github/scripts/ci_pytest_shard.py` collects the eligible tests on every
 runner. Historical timings influence balance only: a new or unknown test is
 always assigned to a shard. The `test` job owns compatibility execution, with
-`test-verify` checking the exact node-ID sets from its ten Windows shards. The
+`test-verify` checking the exact node-ID sets from its ten Windows shards and
+from each sharded Linux group. The
 independent `coverage-shards` job owns coverage execution; `coverage` verifies
 its three exact shard selections before combining their raw data and enforcing
 the global and changed-line thresholds. `ci-required` waits for and validates
@@ -30,13 +32,25 @@ collected differently by two shards.
 The checked-in Windows timing model contains the slow observations from a
 recent set of `main` runs. Each stored weight is the median of available
 observations for a currently eligible test whose median exceeds the
-conservative one-second default. Every shard emits fresh exact-node timing
-evidence for future model refreshes. Stale entries are harmless and missing or
-unobserved tests use the default weight.
+conservative one-second default. Every shard, and each Ubuntu complete-suite
+leg of a manual one-shard run, emits fresh exact-node timing evidence for future model refreshes. Stale
+entries are harmless and missing or unobserved tests use the default weight.
 
 The timing evidence also separates the slowest worker's collection time from
 controller and execution wall time. GitHub job-step timestamps supply runner
 setup and package-install time around those pytest phases.
+
+Each timing file also carries `test_phases`: node ID to the `setup`, `call`,
+and `teardown` seconds pytest reported for that test. Nothing is zero-filled, so
+a skipped test or one that errors in setup lists only the phases it reached and
+is absent from `tests`. `tests` stays call-only, and shard balance and the model
+refresh read only `tests`: setup is dominated by module and session fixtures
+charged to whichever test first triggers them on each xdist worker, so it is not
+a stable per-test weight and would move with scheduling. The Ubuntu
+complete-suite legs publish the file as `pytest-timing-<leg label>` on every
+outcome, including failed test runs. On a sharded manual
+Ubuntu run, the Ubuntu timing files, `test_phases` included, are in the
+`shard-linux-<python>-<index>` artifacts instead.
 
 ## Windows shard-count experiment
 
@@ -60,21 +74,76 @@ October 9, 2026 to ten. See [the experiment record](windows-shard-experiment.md)
 for the raw comparison, the changes, and the post-change validation
 requirement.
 
+## Test-cost profile
+
+[The test-cost profile](test-cost-profile.md) ranks test families and fixture
+phases per platform from ten complete `main` runs (SHAs `0c4b5acbe..4fe5edfe7`,
+October 22-23, 2026). It lists setup, call, and teardown medians and ranges,
+keeps summed test time, job elapsed time, required-gate elapsed time, and runner
+minutes as separate quantities, states its sampling limitations, and proposes
+optimization candidates with the integration coverage each must keep.
+
+## Ubuntu shard-count and scheduler experiment
+
+Manual `Tests` workflow runs accept three dispatch inputs for the Ubuntu legs:
+
+- `linux_shard_count` (1, 2, or 3; default 2). One keeps a complete-suite job
+  per Python version. Two or three shard each of Python 3.11 and 3.14 into group
+  `linux-<python>`, balanced by `linux-test-timings.json`, a model of measured
+  call-time medians for tests above one second; any other test weighs its
+  `default_seconds`. The measurement behind the model and the shard and
+  scheduler comparison are in [linux-shard-experiment.md](linux-shard-experiment.md).
+- `linux_scheduler` (`loadscope` or `worksteal`; default `loadscope`). It sets
+  `--dist` for the Ubuntu legs only. Windows keeps its work-stealing scheduler.
+- `linux_shard_benchmark` selects the same required jobs as an ordinary Python
+  source change. It works only on `workflow_dispatch`, cannot be combined with a
+  RISC-V measurement arm, and may be combined with `windows_shard_benchmark`.
+
+A non-default count or scheduler is rejected outside `workflow_dispatch`, so
+pull requests, pushes, and reusable-workflow calls run two Ubuntu shards per
+Python version with `loadscope`. The maintainer adopted that default from the
+experiment's recommendation (arm C); its sustained behavior over ordinary
+validations is tracked separately from the controlled samples. When Ubuntu is
+sharded, `test-verify` also verifies each Linux group with the selected count,
+using the same exact-union check as the Windows shards.
+
 ## Exhaustive recovery policy
 
-Every code pull request retains representative before/after, repository-role,
-and first/last checkpoint recovery cases. The full interruption permutation
-set runs when Ticket Board code or tests, shared Git infrastructure, test
-configuration, dependency configuration, or CI orchestration changes. Unknown
-paths fail safe to the exhaustive set. Main pushes and the full scheduled
-matrix also run every recovery permutation.
+No pytest marker or change-classifier category selects recovery tests.
+`pyproject.toml` registers only the `string_parameter_eda`, `native_bwave`, and
+`slow` markers, and every complete-suite run uses `-m "not native_bwave"`.
+Whenever a pull request runs the `test` job, its Ubuntu 3.11 and 3.14 shards
+together run every Goal recovery and authority permutation, and its Windows 3.14
+shards together run the same set except POSIX-only cases; the `coverage-shards`
+jobs use the same mark expression. The Windows 3.11 and 3.13 compatibility legs
+run a fixed focused subset. The change classifier (`required_jobs` in
+`.github/scripts/ci_changes.py`) selects the `test` job for any path classified
+`python_source`, `python_tests`, `workflow`, `packaging`, or `release`, and for
+unclassified paths. README, website and documentation-only changes run
+`docs-check` instead: `git diff --check` plus the content tests that
+`.github/scripts/ci_docs_tests.py` derives from the files that read
+documentation. They add `package-artifacts` when `README.md` changed, and
+`site-build` and `lint` for `website/` and `docs/user/`. `main` pushes select
+every job, and the weekly `full-python-matrix.yml` workflow runs the same mark
+expression.
 
 Goal and review code select standard and RISC-V image validation. Goal tests
 (`tests/goals/`) select standard image validation only. The RISC-V prefixes are
 `.github/actions/prepare-picorv32-demo/`, `demo/`, `src/booley/goals/`,
 `src/booley/review/`, `src/booley/evidence/`, and
-`tests/fixtures/goal_mode_smoke/`. These paths do not independently select
-exhaustive Ticket Board recovery permutations.
+`tests/fixtures/goal_mode_smoke/`.
+
+## Expensive test inventory
+
+[The expensive test inventory](expensive-test-inventory.md) is a measured
+record of costly repository-wide scans, duplicate scenarios, and recovery
+permutation families, from 20 successful `main` push runs between
+`17a2f1800` and `4fe5edfe7` (October 21 to 23, 2026). Its dispositions are
+proposals; each approved one is implemented by its own issue with its own
+before/after measurement. The path-triggered recovery selection that the
+previous section once described was removed with the Ticket Board in
+`1460ad065`; the record describes that mechanism as it was and proposes how a
+tier would restore it.
 
 ## Performance telemetry
 
@@ -89,8 +158,7 @@ considering job runtime alone.
 ### Smoke diagnostic evidence
 
 `bwave-smoke` always attempts to publish `junit-coverage-release-*` (JUnit XML
-and incremental `test-timings.jsonl`), `bwave-smoke-phase-records-*` (raw phase
-records), and `openroad-runtime-*` (logs, scripts, Yosys check reports, and placement
+and incremental `test-timings.jsonl`) and `openroad-runtime-*` (logs, scripts, Yosys check reports, and placement
 run directories, including partial evidence from failed probes).
 Successful OpenROAD probes still fail if required evidence cannot be exported.
 These artifacts have 14-day retention. Missing evidence warns when a producer never started or was terminated before writing it.
@@ -102,67 +170,20 @@ an interrupted test may have only setup evidence. Completed-test timings survive
 process termination even when pytest cannot finish its JUnit XML. Runner loss
 or a hard job timeout can still prevent the upload steps from running.
 
-The upload contract tests cover explicit JUnit, diagnostic, and phase-record
+The upload contract tests cover explicit JUnit and diagnostic
 outputs in `test.yml`, including timeout diagnostics, shard manifests and timings,
-composite-action input gates, container mounts, and publication after producers.
+complete-suite phase timings, composite-action input gates, container mounts,
+and publication after producers.
 CI-metrics publication also runs after collection failures, retaining any
 completed telemetry file.
 Caches, temporary test projects, and build products are not diagnostic outputs.
 
-### RISC-V image phase measurements
+### RISC-V on-demand builds
 
-When `riscv_image` is selected, `bwave-smoke` retains `riscv-image-evidence-*`
-with a `phases.json` summary, independent records for every native parallel
-lane, distinct raw BuildKit progress logs and metadata for the RISC-V substrate
-and wheel overlay, and the candidate/parent image inspections. The summary
-records the run and attempt, candidate SHA, UTC boundaries, elapsed seconds,
-outcome, cache observations, parallel completion order, the RISC-V lane's
-completion gap after the latest-finishing other lane, and the post-group Ibex
-duration. Raw progress is BuildKit's `rawjson` stream: one SolveStatus snapshot
-per line, with vertices merged by digest and statuses merged by vertex and ID.
-The outer `exporting to image` vertex includes layer export, image metadata, and
-naming, so it remains part of construction/export. Transfer/load is separated
-only when BuildKit exposes a distinct daemon import, layer-load, or unpack
-interval. Otherwise transfer/load is explicitly `unavailable`, the command
-duration remains attributed to the combined construction/export/transfer/load
-operation, and the sample is not complete.
-The summary's `run.tooling` holds the lane's tooling source record (see
-"RISC-V tooling stage"), so every run says whether it reused the published
-tooling image. A registry hit adds an optional `riscv_tooling_compat` phase for
-the compatibility check.
-
-Use the `Tests` workflow's `riscv_measurement` dispatch input for controlled
-samples. Main and manual runs otherwise skip the RISC-V lane unless the last
-commit changed its inputs. `cold` forces the lane and builds the tooling stage
-locally instead of asking the registry (for example `gh workflow run test.yml
---ref <branch> -f riscv_measurement=cold`); `automatic` keeps path gating and
-registry reuse. Both arms use the hosted runner's own Docker and image store,
-so a pair differs only in its tooling source. The input cannot be set on pull
-requests. ADR 0070 retired the Phase-1 `baseline` and `warm` arms and their
-containerd image store.
-
-#568 claims sustained savings only from two cohorts, reported on the issue:
-
-- **Controlled pairs (attribution).** On one temporary measurement branch at
-  one SHA, alternate `automatic` (registry) and `cold` (local) dispatches with
-  the same pinned published stable base. Pin `PUBLISHED_BASE` to an immutable
-  digest, because `:main` moves on every stable-base merge, and avoid `main`,
-  where `tests-${{ github.ref }}` concurrency cancels dispatches. Collect at
-  least three complete registry runs and two complete local runs.
-- **Sustained cohort (at least 20 runs).** Count automatic `pull_request` and
-  `push` runs only when `riscv_image` was selected, the stable base was the
-  published one (`runtime-base.build == false`), the job set, Docker version,
-  storage driver (from the image-size environment evidence), and platform
-  match, the job succeeded, and `run.tooling.source` is `registry`. Report
-  local-base runs, misses, and compatibility fallbacks separately, with the
-  hit rate over all RISC-V-lane runs.
-
-Compare the sustained cohort with automatic classic-store runs from the 30 days
-before the consumer change, using only aggregate totals: RISC-V lane,
-`bwave-smoke` critical path, required gate, queue time, and runner minutes.
-Classic-store phase evidence has no transfer attribution, so report medians and
-ranges for both cohorts and state that the controlled pairs bound the
-cross-period difference without proving it.
+The `Tests` workflow's `riscv_measurement` dispatch input accepts `cold` and `automatic`.
+`cold` forces the RISC-V lane and builds tooling locally: `gh workflow run test.yml --ref <branch> -f riscv_measurement=cold`.
+`automatic` retains path gating and registry reuse; main and manual runs otherwise select the lane only when the last commit changed its inputs.
+The input cannot be set on pull requests.
 
 ### RISC-V tooling stage
 
@@ -206,7 +227,7 @@ record** `riscv-image-evidence/tooling-source.json`:
 | --- | --- | --- |
 | `registry` | The key's tag exists with matching labels | Builds `Dockerfile.riscv` with `--build-context riscv-tooling=docker-image://<repository>@<digest>`, then runs the compatibility check |
 | `local` | The tag is absent, the registry errors, the lookup exceeds 120 s, or the arm is `cold` | Builds the stage from source; the record's `reason` says why |
-| `local-compat-fallback` | A registry hit whose composed candidate failed to build or failed the compatibility check | Moves the rejected attempt's evidence to `registry-attempt/`, then builds the stage from source |
+| `local-compat-fallback` | A registry hit whose composed candidate failed to build or failed the compatibility check | Builds the stage from source; any compatibility log remains at the evidence root |
 
 A tag with the wrong labels fails the job: that is an integrity failure, not a
 miss. Only the label-verified digest reaches BuildKit. The compatibility check
@@ -219,8 +240,11 @@ published image has drifted from the runtime base; republish it by editing
 the stage, which mints a new key. Local and release builds always build the
 stage from source.
 
-The `bwave-smoke` duration budget follows the recorded source. Registry hits
-and local builds (including fallbacks) each get their own budget, derived from
-measured runs of that source, so a slow hit cannot hide behind the
-local-build ceiling. A lane that stopped before writing its record is judged
-against the local budget.
+The `bwave-smoke` duration budget times the test phase only: its clock starts
+after the standard candidate image and its wheel overlay are built, so runner
+and cache-network build speed cannot fail it. The RISC-V lane builds its image
+inside the validation group, so that build stays on the clock, and the budget
+follows the recorded source. Registry hits and local builds (including
+fallbacks) each get their own budget, derived from measured runs of that
+source, so a slow hit cannot hide behind the local-build ceiling. A lane that
+stopped before writing its record is judged against the local budget.

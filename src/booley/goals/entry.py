@@ -8,7 +8,9 @@ Order (each numbered step is a durable boundary; :func:`rollback_entering`
 undoes whatever the boundaries reached):
 
 0. Outside any lock: validate the arguments, require ``work_dir`` to be the
-   root of a linked worktree (never the main checkout), translate the Goals.
+   root of a linked worktree (never the main checkout), populate any missing
+   selected submodules offline (Targets may come from cores inside them),
+   translate the Goals.
 1. Take the worktree lock. Roll back an ``entering`` occupant; refuse an
    ``active`` or ``finishing`` one.
 2. Under the lock: read HEAD and its branch, refuse a dirty tree, check the
@@ -57,7 +59,6 @@ from booley.criteria.thresholds import has_relative_threshold
 from booley.evidence.acceptance import PairedProjectBaseline
 from booley.flows.baseline_pins import (
     BaselinePinError,
-    PinWording,
     SnapshotBuilder,
     freeze_recipe_family,
     pin_cycle_count_baselines,
@@ -103,9 +104,14 @@ from booley.goals.test_run_resolution import TestRunResolution
 from booley.goals.translate import GoalTranslationError, Translation, translate_goals
 from booley.runtime.atomic_files import fsync_directory
 from booley.runtime.git import is_linked_worktree
+from booley.runtime.git_facts import repository_facts
 from booley.runtime.project_repositories import (
     RepositoryCheckoutError,
     paired_project_repository,
+)
+from booley.runtime.submodule_materialization import (
+    SubmoduleMaterializationError,
+    materialize_worktree_submodules,
 )
 from booley.runtime.timefmt import compact_utc_now, utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
@@ -113,8 +119,6 @@ from booley.targets.domain import FuseSocError, UnknownTargetError
 
 GOAL_BRANCH_PREFIX = "goal/"
 DEFAULT_GOALSET = "default"
-# How pinning errors name a Goal Mode (they name a Ticket on the Ticket path).
-GOAL_PIN_WORDING = PinWording(work_item="the Goal Mode", entry_point="Goal entry")
 # Per-Target Goal families whose thresholds may compare against a baseline Target.
 _BASELINE_FAMILIES = frozenset({GoalFamily.SYNTH, GoalFamily.FPGA, GoalFamily.CYCLE_COUNT})
 
@@ -282,6 +286,7 @@ def _enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResul
     work_dir = _require_linked_worktree_root(request.work_dir)
     booley_dir = env.booley_dir.absolute()
     _refuse_worktree_copy(booley_dir, work_dir)
+    _populate_submodules(work_dir)
     plans = TargetPlans(work_dir)
     translation = _translate(request.goals, plans, work_dir)
     checkout = GoalCheckout(work_dir)
@@ -328,6 +333,7 @@ class _EntryPlan:
     warnings: tuple[str, ...] = ()
 
 
+@repository_facts()
 def _plan_entry(
     request: EntryRequest,
     checkout: GoalCheckout,
@@ -458,6 +464,14 @@ def _refuse_worktree_copy(booley_dir: Path, work_dir: Path) -> None:
         f"the Worktree Booley Directory {booley_dir} cannot own Goal Records; they "
         "must live in the Main Booley Directory"
     )
+
+
+def _populate_submodules(work_dir: Path) -> None:
+    """Fill absent or empty selected submodules; a populated one is left as it is."""
+    try:
+        materialize_worktree_submodules(work_dir, missing_only=True)
+    except SubmoduleMaterializationError as exc:
+        raise GoalEntryError(f"Submodule setup failed offline: {exc}") from exc
 
 
 def _translate(goals: Sequence[GoalArg], plans: TargetPlans, work_dir: Path) -> Translation:
@@ -665,6 +679,7 @@ def _revalidate_before_activation(
             raise GoalEntryError("the Paired Checkout moved while entering Goal Mode")
         _require_clean(paired, "the Paired Checkout")
     assert record.protected_digest is not None  # saved at step 6
+    assert record.protected_head_digest is not None  # saved together with it
     try:
         violations = protected_input_violations(
             record.protected_paths,
@@ -704,7 +719,7 @@ def pin_goal_baselines(
     )
     expanded = dict.fromkeys(params, True)
     try:
-        pin_cycle_count_baselines(ctx, params, wording=GOAL_PIN_WORDING)
+        pin_cycle_count_baselines(ctx, params)
         for family in env.recipe_families:
             freeze_recipe_family(
                 ctx,
@@ -713,7 +728,6 @@ def pin_goal_baselines(
                 prefix=family.prefix,
                 flow_label=family.flow_label,
                 snapshot_builder=family.snapshot_builder,
-                wording=GOAL_PIN_WORDING,
                 paired_project=paired,
             )
     except BaselinePinError as exc:

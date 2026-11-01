@@ -16,7 +16,7 @@ import pytest
 from booley.flows.base import BuiltinFlow
 from booley.flows.builtin_cli import build_cli_parser, build_parser
 from booley.flows.cli_help import FlowHelpFormatter, shared_help
-from booley.flows.cli_selection import invocation_context, normalize_endpoint_args
+from booley.flows.cli_selection import CliInvocation, normalize_endpoint_args
 from booley.flows.endpoint_cli import normalize_target_arg
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.registry import discover_mcp_tools
@@ -59,8 +59,7 @@ HIDDEN = {"--work-dir", "--timeout-ms", "--elab-only", "--build-only", "--standa
 @pytest.mark.parametrize("cli", [False, True])
 def test_complete_grouped_help(flow_type: type[BuiltinFlow], cli: bool) -> None:
     flow = flow_type()
-    with invocation_context():
-        parser = build_cli_parser(flow) if cli else build_parser(flow, human=True)
+    parser = build_cli_parser(flow, CliInvocation()) if cli else build_parser(flow, human=True)
     groups = (
         shared_help(flow.name, target_required=flow.target_required)
         + flow.argument_adapter.help_groups
@@ -150,8 +149,7 @@ def test_projection_isolation(flow_type: type[BuiltinFlow], human_first: bool) -
             assert flow_schema(flow) == expected
     assert parsers[0].format_help() == parsers[2].format_help()
     assert parsers[1].format_help() == parsers[3].format_help()
-    with invocation_context(transport=True):
-        transport = build_cli_parser(flow)
+    transport = build_cli_parser(flow, CliInvocation(transport=True))
     assert "--work-dir" in transport._option_string_actions
     assert "--project" not in transport._option_string_actions
     assert transport.parse_args(["--target", "example", "-q"])._console_quiet

@@ -21,7 +21,7 @@ from booley.flows.execution_persistence import AcceptanceRecorder, CandidateStor
 from booley.flows.sim import waiver_candidates as store
 from booley.flows.sim.coverage_campaign import CoverageCampaign
 from booley.flows.sim.coverage_campaign_store import (
-    POINT_STORE_CAMPAIGN_SCHEMAS,
+    CAMPAIGN_SCHEMA_V5,
     CoverageCampaignSummary,
 )
 from booley.flows.sim.coverage_provisional import (
@@ -36,7 +36,6 @@ from booley.runtime.sandbox_layout import canonical_project_alias_path
 class GoalCandidateContext:
     """Where one Goal Record's candidates live and how Campaign paths are anchored."""
 
-    slug: str
     flow_reports_root: Path
     record_dir: Path
 
@@ -54,9 +53,9 @@ def _binding(
     campaign_path: Path,
     flow_reports_root: Path,
 ) -> store.CampaignBinding:
-    if summary is None or summary.source_schema not in POINT_STORE_CAMPAIGN_SCHEMAS:
-        raise ValueError("only point-store Campaigns (V3 and later) can bind Waiver Candidates")
-    assert summary.point_store is not None  # every point-store version carries a point store
+    if summary is None or summary.source_schema != CAMPAIGN_SCHEMA_V5:
+        raise ValueError("only point-store Campaigns (storage v5) can bind Waiver Candidates")
+    assert summary.point_store is not None  # a v5 Campaign always carries a point store
     try:
         relative = canonical_project_alias_path(campaign_path.absolute()).relative_to(
             canonical_project_alias_path(flow_reports_root.absolute())
@@ -141,13 +140,12 @@ def record_goal_candidates(
         binding = _binding(campaign, summary, campaign_path, context.flow_reports_root)
         outcome = store.record_proposals(
             context.record_dir,
-            context.slug,
             binding,
             _proposals(screened, campaign),
             invocation_id=invocation_id,
             now=now or datetime.now(UTC),
         )
-        record = store.load(context.record_dir, context.slug)
+        record = store.load(context.record_dir)
         verdicts = _provisional_block(campaign, binding, record)
     except (
         OSError,

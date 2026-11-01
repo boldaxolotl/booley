@@ -30,8 +30,7 @@ from booley.runtime.agent_errors import (
 from booley.specialists.coverage_analysis import CoverageAnalysisError
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from tests.flows.sim.coverage_campaign_test_support import (
-    corrupt_v3_campaign_with_duplicate_negative_point,
-    rewrite_manifest_as_older_schema,
+    corrupt_campaign_with_duplicate_negative_point,
 )
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
@@ -77,9 +76,9 @@ class Model:
         )
 
 
-def test_cli_reports_invalid_v3_findings_before_calling_model(tmp_path: Path) -> None:
+def test_cli_reports_invalid_findings_before_calling_model(tmp_path: Path) -> None:
     path = persist_campaign(tmp_path)
-    corrupt_v3_campaign_with_duplicate_negative_point(path)
+    corrupt_campaign_with_duplicate_negative_point(path)
     model = Model()
 
     outcome = CoverageAnalystSpecialist(model=model).execute_cli(
@@ -96,10 +95,10 @@ def test_cli_reports_invalid_v3_findings_before_calling_model(tmp_path: Path) ->
     assert outcome.outcome.detail == {}
 
 
-def test_cli_invalid_v3_report_is_bounded_and_control_safe(tmp_path: Path) -> None:
+def test_cli_invalid_report_is_bounded_and_control_safe(tmp_path: Path) -> None:
     path = persist_campaign(tmp_path)
     run_id = "run:bad\n\t\x1b[31m" + "x" * 2_000
-    corrupt_v3_campaign_with_duplicate_negative_point(path, run_id=run_id)
+    corrupt_campaign_with_duplicate_negative_point(path, run_id=run_id)
     model = Model()
 
     outcome = CoverageAnalystSpecialist(model=model).execute_cli(
@@ -230,23 +229,6 @@ def test_persisted_current_analysis_does_not_encode_the_complete_campaign(tmp_pa
     )
 
     assert result.exit_code == 0
-
-
-def test_retained_v3_analysis_uses_bounded_evidence_envelope(tmp_path: Path) -> None:
-    path = persist_campaign(tmp_path)
-    manifest = json.loads(path.read_text())
-    rewrite_manifest_as_older_schema(manifest, 3)
-    path.write_text(json.dumps(manifest))
-    model = Model()
-
-    result = CoverageAnalystSpecialist(model=model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
-    )
-
-    assert result.exit_code == 0
-    assert model.calls[0].nested_mcp_tools == ["coverage_evidence"]
-    prompt = json.loads(model.calls[0].prompt)
-    assert prompt["campaign_reference"]["storage_schema"] == "booley.coverage-campaign/v3"
 
 
 def test_persisted_collector_error_rejects_before_provider_and_evidence_session(
@@ -928,3 +910,96 @@ def test_image_alias_analyst_traversal_uses_domain_error(project_alias) -> None:
     analyst = CoverageAnalystSpecialist()
     with pytest.raises(CoverageAnalysisError, match="traversal"):
         analyst.coverage_analyst(alias / "child/../coverage.json")
+
+
+@pytest.mark.parametrize("linked", ["worktree", "below"])
+def test_analysis_follows_only_the_booley_dir_entry(tmp_path, monkeypatch, linked):
+    """A Goal worktree below a symlinked ``.booley`` entry keeps verified sources (#2192)."""
+    from tests.conftest import symlink_or_skip
+    from tests.fusesoc_test_support import symlinked_booley_dir
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    worktrees = symlinked_booley_dir(project, tmp_path / "external-booley") / "worktrees"
+    if linked == "below":
+        (tmp_path / "elsewhere").mkdir()
+        symlink_or_skip(worktrees, tmp_path / "elsewhere", target_is_directory=True)
+        worktrees = tmp_path / "elsewhere"
+    # Build the Goal worktree through its physical spelling; analyze it lexically.
+    physical = worktrees / "goal-x"
+    (physical / ".booley").mkdir(parents=True)
+    path = project / ".booley/worktrees/goal-x" / source_project(physical).relative_to(physical)
+    worktree = project / ".booley/worktrees/goal-x"
+    model = Model()
+    analyst = CoverageAnalystSpecialist(model=model)
+    analyst.parse_args(["--project", str(worktree), "--campaign", str(path)])
+
+    if linked == "below":
+        with pytest.raises(CoverageAnalysisError, match="links or traversal"):
+            analyst.coverage_analyst(path)
+        return
+    assert analyst.coverage_analyst(path).to_dict()["source_access"] == "verified"
+
+
+@pytest.mark.parametrize("linked", ["entry", "below", "above"])
+def test_source_inspection_accepts_inputs_under_a_linked_entry(tmp_path, monkeypatch, linked):
+    """Stealth-disabled source inspection reads inputs behind a linked ``.booley`` (#2250).
+
+    Only the exact entry is followed: a link below it, or a link above the
+    Project Root, still degrades to report-only analysis.
+    """
+    from booley.flows.sim.coverage_analysis_input import coverage_sources, read_coverage_campaign
+    from booley.runtime.booley_dir import reset_cache
+    from tests.conftest import symlink_or_skip
+    from tests.fusesoc_test_support import symlinked_booley_dir
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    data = symlinked_booley_dir(project, tmp_path / "external-booley")
+    path = source_project(project)
+    # Move the testbench behind the entry and point the core and closure at it.
+    tb_home = data
+    if linked == "below":
+        tb_home = tmp_path / "elsewhere"
+        tb_home.mkdir()
+        symlink_or_skip(data / "tb", tb_home / "tb", target_is_directory=True)
+    (tb_home / "tb").mkdir(exist_ok=True)
+    (project / "tb/counter_tb.sv").rename(tb_home / "tb/counter_tb.sv")
+    core = project / "counter.core"
+    core.write_text(core.read_text().replace("[tb/counter_tb.sv]", "[.booley/tb/counter_tb.sv]"))
+    _rebind_source_digests(path, project)
+    reset_cache()
+    work_dir = project
+    if linked == "above":
+        work_dir = tmp_path / "alias"
+        symlink_or_skip(work_dir, project, target_is_directory=True)
+
+    sources = coverage_sources(read_coverage_campaign(path).campaign, work_dir)
+
+    if linked != "entry":
+        assert sources is None
+        return
+    assert sources is not None
+    assert sorted(sources.files) == [".booley/tb/counter_tb.sv", "rtl/counter.sv"]
+
+
+def _rebind_source_digests(path: Path, root: Path) -> None:
+    """Rewrite the Campaign closure for a testbench moved under ``.booley``."""
+    from booley.flows.sim.coverage_provenance import content_digest, coverage_digest
+
+    document = json.loads(path.read_text())
+    document["source_closure"]["testbench"] = [
+        {
+            "path": ".booley/tb/counter_tb.sv",
+            "sha256": content_digest((root / ".booley/tb/counter_tb.sv").read_bytes()),
+        }
+    ]
+    document["fingerprints"]["testbench_sources"] = coverage_digest(
+        document["source_closure"]["testbench"]
+    )
+    document["fingerprints"]["target_definition"] = coverage_digest(
+        {"core": (root / "counter.core").read_text(), "identity": document["target"]["identity"]}
+    )
+    path.write_text(json.dumps(document))

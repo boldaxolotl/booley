@@ -18,6 +18,7 @@ import pytest
 from booley.fusesoc import selftest_overlay
 from booley.harness import doctor
 from booley.runtime import runtime_context
+from tests.diagnostic_helpers import _require_doctor_warning
 
 
 class _Rec:
@@ -27,7 +28,8 @@ class _Rec:
     def p(self, msg):
         self.events.append(("pass", msg))
 
-    def w(self, msg):
+    def w(self, msg, fix: str = ""):
+        _require_doctor_warning(msg)
         self.events.append(("warn", msg))
 
     def s(self, msg):
@@ -128,7 +130,7 @@ def _simulation_failure_report(target="sim_core", test="hello_world", variant=No
 def _write_sim_bad_report(cmd, *, project=None):
     # Host transports render container paths; use the owning Project when supplied.
     root = (
-        project.booley_dir / doctor._DOCTOR_TMP / "flow-reports"
+        project.booley_dir / doctor.DOCTOR_TMP_DIR / "flow-reports"
         if project
         else Path(cmd[cmd.index("--report-dir") + 1])
     )

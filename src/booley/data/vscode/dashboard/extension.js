@@ -7,7 +7,9 @@ const path = require('node:path');
 
 const BOOLEY = '/usr/local/bin/booley';
 const PROTOCOL = 'booley.dashboard.attachProtocol';
-const REMOTES = new Set(['dev-container', 'attached-container']);
+// VS Code remote names whose workspace extension host runs inside the Sandbox;
+// GitHub Codespaces reports `codespaces`.
+const REMOTES = new Set(['dev-container', 'attached-container', 'codespaces']);
 
 function policy(root, signal) {
     return new Promise((resolve, reject) => {
@@ -51,9 +53,20 @@ class AttachController {
     }
 
     eligibleRoot() {
-        if (this.disposed || !vscode.workspace.isTrusted ||
-            !REMOTES.has(vscode.env.remoteName) ||
-            vscode.workspace.getConfiguration().get(PROTOCOL) !== 1) {
+        if (this.disposed) { return undefined; }
+        const remote = vscode.env.remoteName;
+        // A local window (no remote) is never a Sandbox; stay quiet there.
+        if (remote === undefined || remote === null) { return undefined; }
+        if (!REMOTES.has(remote)) {
+            this.output.appendLine(`Dashboard auto-open skipped: remote '${remote}' is not a Sandbox remote.`);
+            return undefined;
+        }
+        if (!vscode.workspace.isTrusted) {
+            this.output.appendLine('Dashboard auto-open waits for workspace trust; this window is untrusted.');
+            return undefined;
+        }
+        if (vscode.workspace.getConfiguration().get(PROTOCOL) !== 1) {
+            this.output.appendLine('Dashboard auto-open skipped: the attach protocol is not enabled.');
             return undefined;
         }
         const permission = vscode.workspace.getConfiguration('task').inspect('allowAutomaticTasks');
@@ -136,4 +149,23 @@ class AttachController {
     }
 }
 
-exports.activate = context => { void new AttachController(context).open(); };
+// The `bwave gui` Viewer Bridge runs in every window, independent of the
+// Dashboard attach policy; a failure is logged and never blocks the Dashboard.
+function startBridge(context) {
+    let bridge;
+    try {
+        bridge = Promise.resolve(require('./vaporview_bridge').start(context));
+    } catch (error) {
+        bridge = Promise.reject(error);
+    }
+    bridge.catch(error => {
+        const output = vscode.window.createOutputChannel('Booley VaporView Bridge');
+        context.subscriptions.push(output);
+        output.appendLine(`Viewer Bridge failed to start: ${error.message}`);
+    });
+}
+
+exports.activate = context => {
+    startBridge(context);
+    void new AttachController(context).open();
+};

@@ -15,21 +15,8 @@ Every MCP tool:
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass
-
-from booley.flows.endpoint_cli import _report_dir_arg  # noqa: F401 — compatibility export
 from booley.flows.endpoint_context import EndpointContext
-from booley.flows.endpoint_diff import _classify_files  # noqa: F401 — compatibility export
-from booley.flows.endpoint_events import (  # noqa: F401 — compatibility exports
-    _emit_criteria_update,
-    _endpoint_end_event,
-    _endpoint_progress_event,
-    _endpoint_start_event,
-    _write_display_event,
-)
-from booley.flows.endpoint_reporting import _StdoutWitness  # noqa: F401 — compatibility export
-from booley.runtime.endpoint_execution import (  # noqa: F401 — compatibility exports
+from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EXIT_FAILURE,
     EXIT_SUCCESS,
@@ -37,49 +24,12 @@ from booley.runtime.endpoint_execution import (  # noqa: F401 — compatibility 
 )
 
 from .call_context import binding_from_environment
-from .diff_classify import (
-    _RTL_DIRS,  # noqa: F401 — re-exported so tests can patch booley.dev_support.base._RTL_DIRS
-    _TB_DIRS,  # noqa: F401 — re-exported so tests can patch booley.dev_support.base._TB_DIRS
-    read_source_dirs_from_toml,  # noqa: F401 — public API re-export; base itself never calls it
-)
-from .events import (
-    _specialist_thinking_event,  # noqa: F401 — re-exported for specialist.py
-)
 from .flow_execution_selection import select_flow_execution
-from .run_lock import (
-    _as_pid,  # noqa: F401 — re-exported for booley.dev_support.base importers/tests
-    _scan_endpoint_events,  # noqa: F401 — re-exported for booley.dev_support.base importers/tests
-)
 
-logger = logging.getLogger(__name__)
+__all__ = ["EXIT_ERROR", "EXIT_FAILURE", "EXIT_SUCCESS", "McpTool", "McpToolResult"]
 
-
-@dataclass
-class McpToolResult(EndpointOutcome):
-    """Source-compatible result name for Project-local endpoint extensions."""
-
-
-def _as_mcp_tool_result(outcome: EndpointOutcome) -> McpToolResult:
-    """Promote a neutral outcome before invoking compatibility hooks."""
-    if isinstance(outcome, McpToolResult):
-        return outcome
-    return McpToolResult(
-        exit_code=outcome.exit_code,
-        criterion_key=outcome.criterion_key,
-        criterion_met=outcome.criterion_met,
-        detail=outcome.detail,
-        report_text=outcome.report_text,
-        input_tokens=outcome.input_tokens,
-        output_tokens=outcome.output_tokens,
-        cached_tokens=outcome.cached_tokens,
-        cache_create_tokens=outcome.cache_create_tokens,
-        cost_usd=outcome.cost_usd,
-        lines_added=outcome.lines_added,
-        lines_removed=outcome.lines_removed,
-        display_lines=outcome.display_lines,
-        display_label=outcome.display_label,
-        summary=outcome.summary,
-    )
+# Source-compatible result name for Project-local endpoint extensions.
+McpToolResult = EndpointOutcome
 
 
 class McpTool(EndpointContext):
@@ -89,9 +39,3 @@ class McpTool(EndpointContext):
         super().__init__()
         selection = select_flow_execution(binding=binding_from_environment())
         self._acceptance_recorder = selection.acceptance_recorder()
-
-    def _adapt_outcome(self, outcome: EndpointOutcome) -> McpToolResult:
-        return _as_mcp_tool_result(outcome)
-
-
-# Historical imports used by Project-local endpoints.

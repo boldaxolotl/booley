@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from booley.flows.synth.backends import configure as run_yosys_syn
 from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.backends.yosys import core as syn_core
 from booley.flows.synth.timing import StaTimingConfig
+from tests.conftest import symlink_or_skip
 
 # Boundary Command Contract parameter regex (ADR 0037 §5).
 _BOUNDARY_COMMAND_RE = re.compile(r"^make [^;&|<>$()\n\r\t\f\v\\\x60]*$")
@@ -193,6 +195,31 @@ class TestConfigureSynthesis:
         assert "read_verilog {sta_dut.v}" in sta_tcl
         assert "read_sdc {" in sta_tcl
         assert "constraints/dut.sdc}" in sta_tcl
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Win32 folds '..' lexically before following links; recipes run in the Linux Sandbox",
+    )
+    def test_paths_reach_sources_from_a_build_dir_behind_a_linked_entry(self, tmp_path: Path):
+        """A Codespace links ``/work/.booley``; ``..`` from the build dir is walked physically."""
+        work = tmp_path / "work"
+        data = tmp_path / "workspaces" / "repo"
+        work.mkdir()
+        data.mkdir(parents=True)
+        symlink_or_skip(work / ".booley", data)
+        source = work / "rtl" / "dut.v"
+        source.parent.mkdir()
+        source.write_text("module dut; endmodule\n", encoding="utf-8")
+        build_dir = work / ".booley" / ".runtime" / "edalize" / "synth" / "t" / "synth"
+        build_dir.mkdir(parents=True)
+
+        rel = syn_make._rel(source, build_dir)
+        # The kernel resolves the result from the physical build dir, as make -C does.
+        assert (build_dir.resolve() / rel).resolve() == source.resolve()
+        # Without a crossed link the lexical spelling is kept unchanged.
+        plain = tmp_path / "plain" / "build"
+        plain.mkdir(parents=True)
+        assert syn_make._rel(source, plain) == os.path.relpath(source, plain).replace("\\", "/")
 
     def test_boundary_command_passes_contract_regex(self, tmp_path: Path):
         import os

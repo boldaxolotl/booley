@@ -223,7 +223,9 @@ def test_execution_launches_the_test_run_with_its_variant_and_seed(
 ) -> None:
     _declare_variants(tmp_path)
     execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
-    run = load_target_test_plan(tmp_path, "sim", adapter="verilator").run("wrap", "soak", 7)
+    run = load_target_test_plan(tmp_path, "sim", identity="sim", adapter="verilator").run(
+        "wrap", "soak", 7
+    )
     _build_coverage(execution, target)
 
     result = execution.run(
@@ -260,7 +262,7 @@ def test_prepare_collection_keeps_several_test_runs_of_one_test(tmp_path: Path) 
     _write_target(tmp_path)
     _declare_variants(tmp_path)
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
-    plan = load_target_test_plan(tmp_path, "sim", adapter="verilator")
+    plan = load_target_test_plan(tmp_path, "sim", identity="sim", adapter="verilator")
     runs = (plan.run("wrap", "soak", 7), plan.run("wrap"))
 
     request = prepare_coverage_collection(
@@ -632,20 +634,6 @@ def test_build_reports_collector_provenance_mismatch(tmp_path: Path, monkeypatch
         build.output
     )
     assert f"expected {PINNED_VERILATOR.tag} @ {PINNED_VERILATOR.commit}" in build.output
-
-
-def test_coverage_image_changed_after_build_cannot_launch(tmp_path: Path, monkeypatch) -> None:
-    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
-    build = _build_coverage(execution, target)
-    assert build.success
-    image = captured["prepare"]["build_root"] / "Vcounter_tb"
-    image.write_text("changed image", encoding="utf-8")
-
-    result = execution.run(_run_request(target, raw_path))
-
-    assert result.verdict == "inconclusive"
-    assert "image changed" in result.output
-    assert "run_script" not in captured
 
 
 def _execution_fixture(
@@ -1044,6 +1032,9 @@ def _coverage_build_failure_request(tmp_path: Path):
     item = document["work_items"][0]
     item["kind"] = "coverage_aggregate"
     item["selection"] = {"kind": "named", "names": ["wrap"]}
+    from tests.flows.sim.test_campaign_manifest_codec import _selection_test_runs
+
+    item["test_runs"] = _selection_test_runs(("wrap",))
     document["required_suite"]["names"] = ["wrap"]
     document["required_suite"]["default_invocation"] = False
     document["required_suite"]["source_path"] = "tests.toml"

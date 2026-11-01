@@ -22,8 +22,9 @@ from .coverage_campaign import (
 )
 from .coverage_campaign_store import POINT_STORE_NAME, publish_coverage_campaign
 from .coverage_invocation import CoverageTargetPlan
-from .coverage_policy import evaluate_coverage_campaign
+from .coverage_policy import evaluate_coverage_campaign, threshold_number
 from .coverage_provenance import coverage_digest, validate_coverage_sources
+from .coverage_report import coverage_metrics
 from .coverage_source_gaps import source_gap_findings
 from .coverage_waivers import CoverageWaiverValidationError, load_approved_waiver_set
 from .execution.contract import PreSimStatus, pre_sim_failure_message
@@ -80,10 +81,7 @@ def _campaign(plan: CoverageTargetPlan, result: CoverageCollectionResult) -> Cov
             *result.findings,
             *(
                 source_gap_findings(
-                    result.build.declarations,
-                    plan.source_closure,
-                    result.native_sources,
-                    result.native_source_diagnostics,
+                    plan.rtl_candidates, plan.source_closure, result.native_sources
                 )
                 if scoreable and result.native_format.compatibility == "compatible"
                 else ()
@@ -188,9 +186,6 @@ def _execute_coverage_transaction(
         _start_target(root)
         result = collect(replace(plan.collection_request, artifact_root=root), execution)
         validate_coverage_sources(plan)
-        from .coverage_declaration_artifact import publish_declaration_evidence
-
-        result = publish_declaration_evidence(root, result)
         campaign = _evaluate(plan, _campaign(plan, result))
         outcome = _publish(
             plan,
@@ -283,6 +278,12 @@ def _evaluate(plan: CoverageTargetPlan, campaign: CoverageCampaign) -> CoverageC
         evaluation: dict[str, object] = dict(campaign.evaluation)
         evaluation.update(
             status="blocked",
+            thresholds={
+                item.metric: threshold_number(item.minimum_percent)
+                for item in plan.criterion.thresholds
+            }
+            if plan.criterion is not None
+            else {},
             diagnostics=[
                 {"code": finding.code, "pointer": finding.pointer, "message": finding.message}
                 for finding in exc.findings
@@ -325,6 +326,8 @@ def _transaction_error(
             if campaign.collection["status"] != "collector_error":
                 detail["collection"] = campaign.collection["status"]
             detail["evaluation"] = campaign.evaluation["status"]
+    if campaign_published and campaign is not None:
+        detail["coverage_metrics"] = coverage_metrics(campaign)
     return CoverageTargetOutcome(
         plan.handle.selector,
         2,
@@ -410,6 +413,7 @@ def _simulation_projection(
         "collection": _public_collection_status(campaign, result),
         "evaluation": campaign.evaluation["status"],
         "coverage_campaign": "coverage.json",
+        "coverage_metrics": coverage_metrics(campaign),
     }
     infrastructure_error = next(
         (finding.message for finding in result.findings if finding.severity == "error"), ""

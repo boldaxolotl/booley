@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
 from booley import __version__
+from booley.core.booley_layout import BOOLEY_DIR_NAME, INTERACTIVE_LOGS_DIR_NAME
 from booley.core.boundary import BoundaryError, require_finite_number
 from booley.flows.endpoint_events import (
     _endpoint_end_event,
@@ -71,6 +72,7 @@ from booley.mcp import (
     call_context,
     catalog,
     endpoint_process,
+    handle_pruning,
     job_lifecycle,
     job_results,
 )
@@ -110,6 +112,7 @@ from booley.mcp.tool_changes import ChangingToolsServer, ToolChanges
 from booley.runtime import job_records as jobrec
 from booley.runtime import pid, runtime_context
 from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.bootstrap_mode import should_run_outer_bookkeeping
 from booley.runtime.build_metadata import format_status_line
 from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.endpoint_execution import EndpointOutcome
@@ -121,6 +124,7 @@ from booley.runtime.mcp_config import (
     HTTP_PORT_ENV,
     http_port,
 )
+from booley.runtime.owned_scratch import sweep_stale_scratch
 from booley.runtime.session_paths import logs_runtime_dir
 from booley.runtime.timefmt import format_human_datetime
 
@@ -231,7 +235,7 @@ class _McpLifetime:
         now: Callable[[], float] = time.monotonic,
         heartbeat_path: str | None = None,
     ) -> None:
-        self.sessions = SessionObserver()
+        self.sessions = SessionObserver(writes=should_run_outer_bookkeeping())
         self.idle_timeout_seconds = idle_timeout_seconds
         self.max_age_seconds = max_age_seconds
         self._now = now
@@ -790,7 +794,10 @@ def _dispatch_report(arguments: dict[str, Any]) -> McpToolContent:
         context = resolve_call_context(arguments)
     except (GoalBindingError, GoalStoreError) as exc:
         return _error_result(str(exc))
-    report = _latest_report(endpoint, context=context)
+    try:
+        report = _latest_report(endpoint, context=context)
+    except jobrec.JobRecordError as exc:
+        return _error_result(str(exc))
     content = [
         TextContent(type="text", text=_format_report_card(report, endpoint, context=context))
     ]
@@ -965,6 +972,15 @@ def _format_job_running_poll(run_id: str) -> str:
 
 def _running_progress(run_id: str) -> dict[str, Any] | None:
     return _MCP_JOB_REPOSITORY.progress(run_id)
+
+
+def _running_handoff_content(text: str, run_id: str) -> McpToolContent:
+    """Running handoff text plus progress; an unreadable checkpoint is noted, not fatal."""
+    try:
+        progress = _running_progress(run_id)
+    except jobrec.JobRecordError as exc:
+        return [TextContent(type="text", text=f"{text}\nProgress unavailable: {exc}")]
+    return _with_structured_report([TextContent(type="text", text=text)], progress)
 
 
 def _running_poll_content(run_id: str) -> McpToolContent:
@@ -1238,19 +1254,17 @@ async def _dispatch_async_job(
         submission = await jobs.submit_and_wait(
             name, cmd, mcp_tool_timeout, context=context, wait_seconds=_job_inline_wait_seconds()
         )
+        state = submission.poll
+        if state.status != "running" or (submission.attached and not state.tracked):
+            return _render_job_poll(state, jobs)
     except jobrec.JobRecordError as exc:
         return _error_result(str(exc))
-    state = submission.poll
-    if state.status != "running" or (submission.attached and not state.tracked):
-        return _render_job_poll(state, jobs)
     text = (
         _format_job_attached(name, state.run_id)
         if submission.attached
         else _format_job_running(name, state.run_id)
     )
-    return _with_structured_report(
-        [TextContent(type="text", text=text)], _running_progress(state.run_id)
-    )
+    return _running_handoff_content(text, state.run_id)
 
 
 def _find_attachable_job(
@@ -1266,10 +1280,7 @@ async def _attach_to_job(name: str, run_id: str, jobs: _JobManager) -> McpToolCo
     )
     if state.status != "running" or not state.tracked:
         return _render_job_poll(state, jobs)
-    return _with_structured_report(
-        [TextContent(type="text", text=_format_job_attached(name, run_id))],
-        _running_progress(run_id),
-    )
+    return _running_handoff_content(_format_job_attached(name, run_id), run_id)
 
 
 def _validate_work_dir(value: Any) -> str | None:
@@ -1429,13 +1440,22 @@ async def _dispatch_booley_mcp_tool(
     skip_report = bool(arguments.get("dry_run")) and bool(
         mcp_tool_def.get("non_persisting_dry_run")
     )
-    report = (
-        None
-        if skip_report
-        else (_latest_report(context=context) if context.binding else _try_read_report())
-    )
+    report_note = ""
+    try:
+        report = (
+            None
+            if skip_report
+            else (_latest_report(context=context) if context.binding else _try_read_report())
+        )
+    except jobrec.JobRecordError as exc:
+        # The run finished: keep its verdict and say the report was unreadable.
+        report = None
+        report_note = f"\nReport unavailable: {exc}"
     content = [
-        TextContent(type="text", text=_format_mcp_tool_result(exit_code, stdout, stderr, report))
+        TextContent(
+            type="text",
+            text=_format_mcp_tool_result(exit_code, stdout, stderr, report) + report_note,
+        )
     ]
     rendered = _with_structured_report(content, report)
     return _goal_warning_result(
@@ -1842,7 +1862,8 @@ def build_mcp_probe_payload() -> dict[str, Any]:
         "tools": [tool.name for tool in application.list_tools()],
         "errors": discovery_errors,
         "logs_dir": logs_dir,
-        "logs_dir_ok": "/.booley/.interactive_logs/" in logs_dir.replace("\\", "/"),
+        "logs_dir_ok": f"/{BOOLEY_DIR_NAME}/{INTERACTIVE_LOGS_DIR_NAME}/"
+        in logs_dir.replace("\\", "/"),
     }
 
 
@@ -1989,8 +2010,7 @@ async def _resolve_observed_request_context(
         request=context.request if context is not None else None,
         tool=params.name,
     )
-    if params.name != "tools/list":
-        facts = await observer.resolved(facts)
+    facts = await observer.resolved(facts)
     keys, warning = await observer.shared(facts)
     return replace(
         request, attribution=facts, other_session_keys=keys, presentation_warning=warning
@@ -2028,10 +2048,6 @@ def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Se
         lifetime.mark_activity()
         if application.live_catalog is not None:
             await application.live_catalog.refresh()
-        request = await _observed_request_context(
-            _ctx, CallToolRequestParams(name="tools/list", meta=_ctx.meta), lifetime.sessions
-        )
-        await lifetime.sessions.record(request.attribution, "tools/list", "completed")
         return ListToolsResult(tools=[_sdk_tool(tool) for tool in application.list_tools()])
 
     async def handle_call_tool(
@@ -2136,7 +2152,7 @@ def _maybe_configure_interactive_logs_dir() -> None:
     if not booley_dir.is_dir():
         return
     session_id = _interactive_session_id()
-    logs_dir = booley_dir / ".interactive_logs" / session_id
+    logs_dir = booley_dir / INTERACTIVE_LOGS_DIR_NAME / session_id
     logs_dir.mkdir(parents=True, exist_ok=True)
     os.environ["BOOLEY_LOGS_DIR"] = str(logs_dir)
     logger.info(
@@ -2176,6 +2192,7 @@ async def _main() -> None:
     _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env()
     server, _ = _build_server(lifetime)
+    handle_pruning.prune_at_start()
     async with stdio_server() as (read_stream, write_stream):
         run_task = asyncio.create_task(
             server.run(
@@ -2224,6 +2241,7 @@ def _run_http(port: int) -> None:
     _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env(self_exit=False)
     server, _ = _build_server(lifetime)
+    handle_pruning.prune_at_start()
     app = _streamable_http_app(server)
     app = SessionMaintenanceApp(app, lifetime.sessions)
     logger.info("Interactive MCP server (HTTP) on %s:%d", _HTTP_HOST, port)
@@ -2265,8 +2283,15 @@ def main() -> None:
     # runtime.mcp_config), so a config that doesn't forward the proxy vars
     # leaves this server — and every endpoint subprocess under it — with no
     # egress path. Self-heal here so the whole endpoint subprocess tree inherits it.
-    if runtime_context.ensure_proxy_env():
-        logger.debug("proxy env was absent in-container — defaulted to booley-proxy")
+    try:
+        if runtime_context.ensure_proxy_env():
+            logger.debug("proxy env was absent in-container — defaulted to booley-proxy")
+    except runtime_context.EgressModeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    # Reclaim scratch (agent homes, Specialist workspaces) left by killed runs.
+    sweep_stale_scratch()
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(

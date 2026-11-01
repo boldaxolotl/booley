@@ -1,12 +1,16 @@
 """Retention exercised against actual canonical Campaigns and filesystem paths."""
 
 import json
+import os
 import re
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+import booley
 from booley.flows.sim.coverage_campaign import DurableTargetIdentity
 from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_invocation import (
@@ -20,6 +24,18 @@ from tests.flows.sim.test_coverage_transaction import NativeExecution
 from tests.runtime.test_sandbox_layout import project_alias
 
 __all__ = ["project_alias"]
+
+
+def _run_retention_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
+    """Run the maintenance CLI in a subprocess that imports this checkout's Booley."""
+    return subprocess.run(
+        [sys.executable, "-m", "booley.flows.sim.campaign_retention", *arguments],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={**os.environ, "PYTHONPATH": str(Path(booley.__file__).parent.parent)},
+        check=False,
+    )
 
 
 def campaign(tmp_path):
@@ -314,34 +330,13 @@ def test_native_pruning_points_empty_abandoned_reservation_at_full_pruning(tmp_p
 
 
 def test_maintenance_cli_translates_active_invocation_contention(tmp_path):
-    import os
-    import subprocess
-    import sys
-    from pathlib import Path
-
-    import booley
     from booley.flows.sim.campaign_reports import campaign_invocation_lock
 
     campaign(tmp_path)
     invocation = tmp_path / "reports/sim/1"
-    command = [
-        sys.executable,
-        "-m",
-        "booley.flows.sim.campaign_retention",
-        "--reports-root",
-        str(tmp_path / "reports"),
-        "--invocation",
-        "1",
-        "--full",
-    ]
     with campaign_invocation_lock(invocation):
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            env={**os.environ, "PYTHONPATH": str(Path(booley.__file__).parent.parent)},
-            check=False,
+        result = _run_retention_cli(
+            "--reports-root", str(tmp_path / "reports"), "--invocation", "1", "--full"
         )
 
     assert result.returncode == 2
@@ -351,9 +346,7 @@ def test_maintenance_cli_translates_active_invocation_contention(tmp_path):
     assert not (tmp_path / "reports/sim/.pruned-1").exists()
 
 
-@pytest.mark.parametrize(
-    "defect", ["symlink", "unknown", "changed", "ambiguous_target", "wrong_invocation"]
-)
+@pytest.mark.parametrize("defect", ["symlink", "ambiguous_target", "wrong_invocation", "missing"])
 def test_native_pruning_validates_every_path_before_deleting(tmp_path, defect):
     from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_native_payload
 
@@ -362,10 +355,8 @@ def test_native_pruning_validates_every_path_before_deleting(tmp_path, defect):
     native = root / "native"
     if defect == "symlink":
         (native / "link").symlink_to(tmp_path / "outside")
-    elif defect == "unknown":
-        (native / "unknown.dat").write_text("do not delete")
-    elif defect == "changed":
-        (native / "merged/coverage.dat").write_text("changed after collection")
+    elif defect == "missing":
+        (native / "merged/coverage.dat").unlink()
     elif defect == "ambiguous_target":
         progress = tmp_path / "reports/sim/1/progress.json"
         document = json.loads(progress.read_text())
@@ -381,7 +372,7 @@ def test_native_pruning_validates_every_path_before_deleting(tmp_path, defect):
     assert not (root / "availability.json").exists()
 
 
-@pytest.mark.parametrize("boundary", ["journal", "rename", "delete", "completion"])
+@pytest.mark.parametrize("boundary", ["journal", "delete", "completion"])
 def test_native_pruning_is_retryable_at_each_filesystem_boundary(tmp_path, monkeypatch, boundary):
     import shutil
 
@@ -390,7 +381,9 @@ def test_native_pruning_is_retryable_at_each_filesystem_boundary(tmp_path, monke
     outcome = campaign(tmp_path)
     root = outcome.campaign_path.parent
     original = outcome.campaign_path.read_bytes()
-    replace_file, rename, rmtree = type(root).replace, type(root).rename, shutil.rmtree
+    replace_file, rmtree = type(root).replace, shutil.rmtree
+    # Booley never recorded this file; it must disappear with the native directory.
+    (root / "native/unknown.dat").write_text("unrecorded native file")
     writes = 0
 
     def fail_replace(source, destination):
@@ -403,21 +396,16 @@ def test_native_pruning_is_retryable_at_each_filesystem_boundary(tmp_path, monke
                 raise OSError("injected journal failure")
         return replace_file(source, destination)
 
-    def fail_rename(source, destination):
-        if boundary == "rename":
-            raise OSError("injected rename failure")
-        return rename(source, destination)
-
     def fail_delete(path, *args, **kwargs):
         if boundary == "delete":
-            # Model interruption after deleting a subset of quarantined files.
-            next(path.rglob("*.dat")).unlink()
+            # Model interruption after deleting a recorded native file; the retry
+            # must not re-run the missing-payload check.
+            (path / "raw/001-reset@1.dat").unlink()
             raise OSError("injected cleanup failure")
         return rmtree(path, *args, **kwargs)
 
     with monkeypatch.context() as patch:
         patch.setattr(type(root), "replace", fail_replace)
-        patch.setattr(type(root), "rename", fail_rename)
         patch.setattr(shutil, "rmtree", fail_delete)
         with pytest.raises(OSError):
             prune_native_payload(tmp_path / "reports", 1, "sim_0")
@@ -426,7 +414,6 @@ def test_native_pruning_is_retryable_at_each_filesystem_boundary(tmp_path, monke
         assert json.loads((root / "availability.json").read_text())["status"] == "pruning"
     prune_native_payload(tmp_path / "reports", 1, "sim_0")
     assert not (root / "native").exists()
-    assert not (root / ".native-pruned").exists()
     assert json.loads((root / "availability.json").read_text())["status"] == "pruned"
 
 
@@ -447,6 +434,34 @@ def test_full_pruning_can_retry_partial_cleanup(tmp_path, monkeypatch):
             prune_invocation(tmp_path / "reports", 1)
     assert not (tmp_path / "reports/sim/1").exists()
     prune_invocation(tmp_path / "reports", 1)
+    assert list((tmp_path / "reports/sim/.pruned-1").iterdir()) == []
+
+
+def test_full_pruning_finishes_journaled_quarantine_without_comparing_contents(tmp_path):
+    from booley.flows.sim.campaign_retention import prune_invocation
+
+    quarantine = tmp_path / "reports/sim/.pruned-1"
+    quarantine.mkdir(parents=True)
+    (quarantine / ".prune.json").write_text("{}")
+    (quarantine / "leftover.dat").write_text("half-deleted invocation")
+
+    prune_invocation(tmp_path / "reports", 1)
+
+    assert list(quarantine.iterdir()) == []
+
+
+def test_full_pruning_accepts_existing_availability_sidecar(tmp_path):
+    from booley.flows.sim.campaign_retention import prune_invocation, prune_native_payload
+
+    outcome = campaign(tmp_path)
+    sidecar = prune_native_payload(tmp_path / "reports", 1, "sim_0")
+    document = json.loads(sidecar.read_text())
+    document["status"] = "invented"
+    sidecar.write_text(json.dumps(document))
+
+    prune_invocation(tmp_path / "reports", 1)
+
+    assert not outcome.campaign_path.exists()
     assert list((tmp_path / "reports/sim/.pruned-1").iterdir()) == []
 
 
@@ -488,68 +503,16 @@ def test_full_pruning_detects_legacy_copied_projection_dependency(tmp_path):
     assert projection.is_file()
 
 
-@pytest.mark.parametrize("defect", ["missing", "unidentified_quarantine", "changed_sidecar"])
-def test_native_pruning_does_not_adopt_unexplained_retention_state(tmp_path, defect):
-    from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_native_payload
-
-    outcome = campaign(tmp_path)
-    root = outcome.campaign_path.parent
-    if defect == "missing":
-        (root / "native/raw/001-reset@1.dat").unlink()
-    elif defect == "unidentified_quarantine":
-        (root / "native").rename(root / ".native-pruned")
-    else:
-        prune_native_payload(tmp_path / "reports", 1, "sim_0")
-        path = root / "availability.json"
-        content = json.loads(path.read_text())
-        content["status"] = "invented"
-        path.write_text(json.dumps(content))
-    with pytest.raises(CampaignRetentionError):
-        prune_native_payload(tmp_path / "reports", 1, "sim_0")
-
-
 def test_maintenance_cli_requires_exact_selection_and_executes_both_modes(tmp_path):
-    import os
-    import subprocess
-    import sys
-    from pathlib import Path
-
-    import booley
-
     outcome = campaign(tmp_path)
-    command = [
-        sys.executable,
-        "-m",
-        "booley.flows.sim.campaign_retention",
-        "--reports-root",
-        str(tmp_path / "reports"),
-        "--invocation",
-        "1",
-    ]
-    environment = {**os.environ, "PYTHONPATH": str(Path(booley.__file__).parent.parent)}
-    rejected = subprocess.run(
-        command, capture_output=True, text=True, timeout=15, env=environment, check=False
-    )
+    base = ("--reports-root", str(tmp_path / "reports"), "--invocation", "1")
+    rejected = _run_retention_cli(*base)
     assert rejected.returncode == 2
     assert outcome.campaign_path.is_file()
-    native = subprocess.run(
-        [*command, "--native-target", "sim_0"],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        env=environment,
-        check=False,
-    )
+    native = _run_retention_cli(*base, "--native-target", "sim_0")
     assert native.returncode == 0, native.stderr
     assert outcome.campaign_path.is_file()
-    full = subprocess.run(
-        [*command, "--full"],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        env=environment,
-        check=False,
-    )
+    full = _run_retention_cli(*base, "--full")
     assert full.returncode == 0, full.stderr
     assert not outcome.campaign_path.exists()
 
@@ -564,13 +527,6 @@ def test_maintenance_cli_requires_exact_selection_and_executes_both_modes(tmp_pa
     ],
 )
 def test_full_pruning_refuses_only_unrecognized_content(tmp_path, defect, relative, expected_code):
-    import os
-    import subprocess
-    import sys
-    from pathlib import Path
-
-    import booley
-
     campaign(tmp_path)
     invocation = tmp_path / "reports/sim/1"
     selected = invocation / relative
@@ -581,22 +537,8 @@ def test_full_pruning_refuses_only_unrecognized_content(tmp_path, defect, relati
     else:
         selected.parent.mkdir(parents=True, exist_ok=True)
         selected.write_text("do not delete", encoding="utf-8")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "booley.flows.sim.campaign_retention",
-            "--reports-root",
-            str(tmp_path / "reports"),
-            "--invocation",
-            "1",
-            "--full",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        env={**os.environ, "PYTHONPATH": str(Path(booley.__file__).parent.parent)},
-        check=False,
+    result = _run_retention_cli(
+        "--reports-root", str(tmp_path / "reports"), "--invocation", "1", "--full"
     )
 
     assert result.returncode == expected_code, result.stderr
@@ -609,52 +551,23 @@ def test_full_pruning_refuses_only_unrecognized_content(tmp_path, defect, relati
 
 
 def test_maintenance_cli_help_scopes_project_data_to_nonstandard_full_pruning():
-    import os
-    import subprocess
-    import sys
-    from pathlib import Path
-
-    environment = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[3] / "src")}
-    result = subprocess.run(
-        [sys.executable, "-m", "booley.flows.sim.campaign_retention", "--help"],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        env=environment,
-        check=False,
-    )
+    result = _run_retention_cli("--help")
     assert result.returncode == 0
     help_text = " ".join(result.stdout.split()).replace("--reports- root", "--reports-root")
-    assert "verify canonical ownership for --full" in help_text
-    assert "not required for --native-target" in help_text
+    assert "needed by --full only when an interrupted lane" in help_text
+    assert "not used by --native-target" in help_text
     assert "--include-dependents" in help_text
 
 
 def test_maintenance_cli_rejects_include_dependents_with_native_target(tmp_path):
-    import os
-    import subprocess
-    import sys
-    from pathlib import Path
-
-    environment = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[3] / "src")}
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "booley.flows.sim.campaign_retention",
-            "--reports-root",
-            str(tmp_path / "reports"),
-            "--invocation",
-            "1",
-            "--native-target",
-            "sim_0",
-            "--include-dependents",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        env=environment,
-        check=False,
+    result = _run_retention_cli(
+        "--reports-root",
+        str(tmp_path / "reports"),
+        "--invocation",
+        "1",
+        "--native-target",
+        "sim_0",
+        "--include-dependents",
     )
     assert result.returncode == 2
     assert "only valid with --full" in result.stderr
@@ -884,17 +797,14 @@ def test_native_pruning_preserves_complete_source_gap_queries(tmp_path):
     from booley.flows.sim.campaign_retention import prune_native_payload
     from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
     from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
-    from tests.flows.sim.test_coverage_transaction import _gap_plan
+    from tests.flows.sim.test_coverage_transaction import NativeExecution, gap_plan
 
-    plan, execution = _gap_plan(tmp_path)
+    plan, execution = gap_plan(tmp_path), NativeExecution()
     progress = CoverageProgress(plan.invocation_dir, ("sim_0",))
     outcome = run_coverage_target(plan, execution, progress)
     progress.checkpoint(complete=True)
     assert outcome.exit_code == 0
-    inventory = outcome.campaign_path.parent / "declarations/inventory.json"
-    original = inventory.read_bytes()
     prune_native_payload(tmp_path / "reports", 1, "sim_0")
-    assert inventory.read_bytes() == original
     loaded = load_coverage_campaign(outcome.campaign_path)
     assert CoverageEvidenceSession(loaded.campaign, None).query({"view": "zero_point_sources"})[
         "paths"
@@ -961,3 +871,139 @@ def test_prune_canonicalizes_explicit_project_data(project_alias, monkeypatch) -
     )
     retention.prune_invocation(data / "reports", 1, project_data=alias)
     assert received == [data]
+
+
+def test_retention_owns_a_shared_build_compiled_by_a_later_invocation(tmp_path: Path) -> None:
+    from booley.flows.sim.campaign.inspection import (
+        authenticate_retained_campaign_inventory,
+        inspect_retained_campaign,
+    )
+    from booley.flows.sim.campaign.store import CampaignStore
+    from tests.flows.sim.test_campaign_phase3_integrity import _executor, _manifest_for, _request
+
+    manifest = _manifest_for(("alpha", "beta"))
+    project = tmp_path / "project"
+    project.mkdir()
+    build_root = tmp_path / "engine-build"
+    build_root.mkdir()
+    (build_root / "simv").write_bytes(b"image")
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(manifest)
+    items = manifest.document["work_items"]
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
+    for item, invocation in ((items[0], 1), (items[1], 2)):
+        result = _executor(build_root, counters).execute(
+            _request(store, manifest, item, project, invocation=invocation)
+        )
+        store.publish_result(item["work_item_id"], result)  # type: ignore[index]
+
+    status = inspect_retained_campaign(store.manifest_path)
+    owned = {*status.retention_files, *authenticate_retained_campaign_inventory(status)}
+    produced = {
+        path.absolute() for path in (store.root / "build-variants").rglob("*") if path.is_file()
+    }
+    assert counters["compile"] == 2
+    assert produced <= owned
+
+
+def test_retention_read_survives_transient_sharing_error(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign_retention import _read_object
+    from tests.sharing_error_support import hold_opens
+
+    path = tmp_path / "progress.json"
+    path.write_text(json.dumps({"phase": "complete"}), encoding="utf-8")
+    attempts = hold_opens(monkeypatch, {path: 1})
+    assert _read_object(path) == {"phase": "complete"}
+    assert attempts[path] == 2
+
+
+def test_retention_read_retries_before_raising_lasting_sharing_error(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign_retention import _read_object
+    from tests.sharing_error_support import hold_opens
+
+    path = tmp_path / "progress.json"
+    path.write_text("{}", encoding="utf-8")
+    attempts = hold_opens(monkeypatch, {path: 100})
+    with pytest.raises(PermissionError):
+        _read_object(path)
+    assert attempts[path] > 1
+
+
+def test_dependency_scan_fails_closed_on_lasting_sharing_error(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign_retention import (
+        CampaignRetentionError,
+        _projection_references_origin,
+        _report_references_campaign,
+        _report_references_origin,
+    )
+    from tests.sharing_error_support import hold_opens
+
+    campaign_id = "01234567-89ab-4def-8123-456789abcdef"
+    report = tmp_path / "report.json"
+    report.write_text("{}", encoding="utf-8")
+    projection = tmp_path / "simulation.json"
+    projection.write_text("{}", encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"campaign_id": campaign_id}), encoding="utf-8")
+    hold_opens(monkeypatch, {report: 100, projection: 100, manifest: 100})
+    for scan in (
+        lambda: _report_references_campaign(report, manifest, campaign_id),
+        lambda: _projection_references_origin(projection, (manifest,)),
+        lambda: _report_references_origin(report, (manifest,)),
+    ):
+        with pytest.raises(CampaignRetentionError, match="cannot read") as refused:
+            scan()
+        assert isinstance(refused.value.__cause__, PermissionError)
+
+
+def test_dependency_scan_keeps_unreadable_non_transient_as_not_dependent(tmp_path, monkeypatch):
+    import errno
+
+    from booley.flows.sim.campaign_retention import (
+        _projection_references_origin,
+        _report_references_campaign,
+        _report_references_origin,
+    )
+
+    campaign_id = "01234567-89ab-4def-8123-456789abcdef"
+    report = tmp_path / "report.json"
+    report.write_text("{}", encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"campaign_id": campaign_id}), encoding="utf-8")
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def deny(path, *args, **kwargs):
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(Path, "open", deny)
+    assert not _report_references_campaign(report, manifest, campaign_id)
+    assert not _projection_references_origin(report, (manifest,))
+    assert not _report_references_origin(report, (manifest,))
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        pytest.param(("--native-target", "sim_0"), id="native"),
+        pytest.param(("--full",), id="full"),
+    ],
+)
+def test_pruning_a_coverage_campaign_written_by_booley_0_3_0_names_its_directory(
+    tmp_path, selection
+):
+    from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_v4
+
+    outcome = campaign(tmp_path)
+    manifest = json.loads(outcome.campaign_path.read_text(encoding="utf-8"))
+    rewrite_manifest_as_v4(manifest)
+    outcome.campaign_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    pruned = _run_retention_cli(
+        "--reports-root", str(tmp_path / "reports"), "--invocation", "1", *selection
+    )
+
+    assert pruned.returncode == 2
+    assert "COV_SCHEMA_VERSION_UNSUPPORTED" in pruned.stderr
+    assert str(outcome.campaign_path.parent) in pruned.stderr
+    assert "Traceback" not in pruned.stderr
+    assert outcome.campaign_path.is_file()

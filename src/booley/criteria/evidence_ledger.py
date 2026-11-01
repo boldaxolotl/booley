@@ -48,7 +48,7 @@ from typing import Any, Literal, Protocol, cast
 from uuid import UUID
 
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
-from booley.criteria.state import CriterionChange, DevelopmentState
+from booley.criteria.state import CriterionChange, DevelopmentState, observed_failure
 from booley.evidence.fields import ACCEPTANCE_FACTS_SCHEMAS
 from booley.runtime.atomic_files import WriteOnceConflictError, atomic_write_once
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -1065,7 +1065,7 @@ def apply_observation(state: DevelopmentState, payload: Mapping[str, Any]) -> No
     entry.params = deepcopy(payload.get("params") or {})
     entry.detail = deepcopy(payload.get("detail") or {})
     entry.ever_met = entry.ever_met or met
-    entry.ever_failed = entry.ever_failed or not met
+    entry.ever_failed = entry.ever_failed or observed_failure(met, payload.get("reason"))
     if entry.params.get("from_state") == "fail":
         transition = {
             "met": met,

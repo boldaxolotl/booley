@@ -1,14 +1,17 @@
 """Sandbox detection and entry-point guards.
 
-Booley workflows execute inside the per-project Sandbox.  This
-stdlib-only module sits at the bottom of the import graph so every entry point
-can detect that runtime and restore its fixed egress proxy environment.
+Booley workflows execute inside the per-project Sandbox.  This module
+depends only on the stdlib and ``booley.core``, so it sits at the bottom of the
+import graph and every entry point can detect that runtime and restore its
+fixed egress proxy environment.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+
+from booley.core.egress_modes import EGRESS_MODES
 
 
 def inside_session_runtime() -> bool:
@@ -22,9 +25,36 @@ _PROXY_URL = "http://booley-proxy:8080"
 _PROXY_ENV_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
 
 
+class EgressModeError(ValueError):
+    """``BOOLEY_EGRESS`` names no Sandbox egress mode."""
+
+
+def egress_mode() -> str:
+    """Return the Sandbox egress mode declared by ``BOOLEY_EGRESS``.
+
+    Unset means ``proxy``. The variable is a declaration, not the isolation
+    boundary: it only decides whether Booley forces its proxy environment.
+    """
+    declared = os.environ.get("BOOLEY_EGRESS")
+    if declared is None:
+        return "proxy"
+    if declared not in EGRESS_MODES:
+        raise EgressModeError(
+            f"BOOLEY_EGRESS={declared!r} is not a Sandbox egress mode; set it to "
+            "`proxy` (the default when unset) or `unproxied`"
+        )
+    return declared
+
+
 def ensure_proxy_env() -> bool:
-    """Restore the fixed proxy environment for bare ``docker exec`` calls."""
+    """Restore the fixed proxy environment for bare ``docker exec`` calls.
+
+    Raises :class:`EgressModeError` for an invalid ``BOOLEY_EGRESS``; an
+    ``unproxied`` Sandbox keeps whatever proxy environment it was given.
+    """
     if os.environ.get("BOOLEY_CONTAINER") != "1":
+        return False
+    if egress_mode() == "unproxied":
         return False
     if any(os.environ.get(var) for var in _PROXY_ENV_VARS):
         return False

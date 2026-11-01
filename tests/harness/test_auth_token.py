@@ -288,15 +288,26 @@ class TestAuthStatusReport:
         assert rc == 0  # a refreshing login is usable despite its rotation warning
         assert any("claude" in m and "refreshing" in m for m in sink["warn"])
 
-    def test_overridden_subscription_is_named(self, isolated_home, monkeypatch):
+    def test_overridden_source_is_a_hint_under_its_line(self, isolated_home, monkeypatch, capsys):
+        from booley.harness import auth_cmd, colors
+
         creds = isolated_home / ".claude" / ".credentials.json"
         creds.parent.mkdir(parents=True)
         creds.write_text("{}", encoding="utf-8")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
+        monkeypatch.setattr(colors, "COLORS_ENABLED", False)
 
-        _rc, sink = self._run(monkeypatch)
+        auth_cmd._report_status()
 
-        assert any(".credentials.json" in m and "NOT used" in m for m in sink["info"])
+        lines = capsys.readouterr().out.splitlines()
+        row = next(
+            (i for i, line in enumerate(lines) if line.startswith("  \u2713  claude:")), None
+        )
+        assert row is not None
+        assert lines[row + 1].startswith("     \u2192 ")
+        assert lines[row + 1].endswith(
+            ".credentials.json is present but not used; the line above wins"
+        )
 
 
 class TestInjection:
@@ -696,11 +707,8 @@ class TestClaudeMintLocation:
     ) -> None:
         project = home / "rtl"
         project.mkdir()
-        pending = issuance_invalidation.prepare(
-            str(project.resolve()),
-            cleanup_resources=False,
-        )
-        issuance_invalidation.cancel(pending)
+        issuance_invalidation.prepare(str(project.resolve()))
+        issuance_invalidation.cancel(str(project.resolve()))
         booley_config = home / "config" / "booley"
         booley_config.chmod(0o755)
         args = SimpleNamespace(
@@ -900,23 +908,32 @@ def test_plan_repr_never_contains_credential(isolated_home, monkeypatch):
     }
 
 
-def test_codex_auth_refresh_preserves_complete_copy_on_interruption(tmp_path, monkeypatch):
-    import shutil
+def test_codex_auth_link_replaces_legacy_copy_atomically(tmp_path, monkeypatch):
+    from tests.conftest import require_symlinks
 
+    require_symlinks(tmp_path)
     source = tmp_path / "source.json"
     destination = tmp_path / "auth.json"
     source.write_text('{"OPENAI_API_KEY":"NEW_SYNTHETIC"}')
     previous = b'{"OPENAI_API_KEY":"OLD_SYNTHETIC"}'
     destination.write_bytes(previous)
 
-    def interrupted_copy(source, target, *args, **kwargs):
-        Path(target).write_text('{"OPENAI_API_KEY":')
-        raise OSError("synthetic interrupted copy")
+    def interrupted_replace(self, target):
+        raise OSError("synthetic interrupted replace")
 
-    monkeypatch.setattr(shutil, "copyfile", interrupted_copy)
-    with pytest.raises(OSError, match="interrupted"):
-        auth_token.copy_codex_auth(source, destination)
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, "replace", interrupted_replace)
+        with pytest.raises(OSError, match="interrupted"):
+            auth_token.link_codex_auth(source, destination)
+    # An interrupted relink keeps the previous entry and leaves no stray link.
     assert destination.read_bytes() == previous
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["auth.json", "source.json"]
+
+    auth_token.link_codex_auth(source, destination)
+    assert destination.is_symlink()
+    assert destination.resolve() == source.resolve()
+    # A second call with the link in place changes nothing.
+    auth_token.link_codex_auth(source, destination)
     assert sorted(path.name for path in tmp_path.iterdir()) == ["auth.json", "source.json"]
 
 
@@ -1162,13 +1179,14 @@ def _auth_interactive_ports(monkeypatch):
 def _auth_reseed_boundaries(project, monkeypatch):
     from booley.harness import bootstrap, host_sidecars, image_lifecycle, init_cmd
     from booley.runtime import session_issuance
+    from booley.runtime.image_lifecycle import Intent, LifecycleResult, Status
 
     bootstrap_calls = []
     captured = []
 
     def full_bootstrap(*args, **kwargs):
         bootstrap_calls.append(True)
-        return bootstrap.BootstrapResult(image_lifecycle.Intent.CHECK, ())
+        return bootstrap.BootstrapResult(Intent.CHECK, ())
 
     monkeypatch.setattr(bootstrap, "reconcile_bootstrap", full_bootstrap)
     monkeypatch.setattr(init_cmd, "reconcile_bootstrap", full_bootstrap)
@@ -1179,9 +1197,7 @@ def _auth_reseed_boundaries(project, monkeypatch):
     monkeypatch.setattr(
         image_lifecycle,
         "reconcile_planned",
-        lambda *a, **k: image_lifecycle.LifecycleResult(
-            "synthetic-image", "sha256:" + "a" * 64, image_lifecycle.Status.CURRENT
-        ),
+        lambda *a, **k: LifecycleResult("synthetic-image", "sha256:" + "a" * 64, Status.CURRENT),
     )
     pdk = project.parent / "pdk"
     pdk.mkdir()

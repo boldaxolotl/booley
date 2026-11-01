@@ -16,6 +16,7 @@ from booley.mcp import (
 )
 from booley.runtime import job_records
 from booley.runtime.pid import ProcessIdentity
+from tests.goals.conftest import INPUT_PATHS
 
 
 def snapshot_jobs(
@@ -56,7 +57,8 @@ def test_exact_run_report_never_latest_foreign_and_missing_artifacts(tmp_path):
     assert "Flow result: PASSED" in job_detail(view)
     assert "Design verdict:" not in job_detail(view)
     assert str(exact) in job_detail(view)
-    assert "Peak memory:" not in job_detail(view)
+    assert "Peak memory" not in job_detail(view)
+    assert "CPU:" not in job_detail(view)
 
 
 def test_artifact_bound_keeps_newest_report_and_complete_exact_progress(tmp_path, monkeypatch):
@@ -88,11 +90,13 @@ def test_artifact_bound_keeps_newest_report_and_complete_exact_progress(tmp_path
             path.write_bytes(json.dumps(data).encode())
             os.utime(path, (100 + index, 100 + index))
     before = files(tmp_path)
-    cache = job_artifacts.JobArtifactCache()
+    cache = job_artifacts.JobArtifactCache(tmp_path)
+    cache.begin()
     for run, kind in (("3", "report"), ("3", "progress"), ("0", "progress")):
         found = cache.find(root, "sim", run, kind)
         assert found is not None
         assert found[0]["run_id"] == run
+    cache.complete()
     assert cache.diagnostics
     assert files(tmp_path) == before
 
@@ -165,6 +169,8 @@ def test_retained_goal_roots_are_discovered_without_current_sessions(tmp_path):
             "refs/heads/main",
             "a" * 40,
             "2026-10-08T10:00:00Z",
+            input_topology_digest="sha256:" + "e" * 64,
+            input_paths=INPUT_PATHS,
             revision=1,
         )
         paths = record_paths(tmp_path, record.id)
@@ -530,6 +536,8 @@ def test_dashboard_goal_rows_and_job_history_share_one_enumeration(tmp_path, mon
         "refs/heads/main",
         "a" * 40,
         "2026-10-08T10:00:00Z",
+        input_topology_digest="sha256:" + "e" * 64,
+        input_paths=INPUT_PATHS,
         revision=1,
     )
     paths = record_paths(tmp_path, record.id)
@@ -574,3 +582,129 @@ def test_bounded_scan_examines_current_work_before_older_interactive_sessions(tm
     ]
     history = [tmp_path / f".interactive_logs/{index}/.runtime/jobs" for index in (2, 1, 0)]
     assert list(roots) == [current, *goal_roots, *history]
+
+
+def test_job_completed_between_refreshes_keeps_recorded_figures(tmp_path, monkeypatch):
+    from booley.harness.dashboard.model import DashboardReader
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import completed_campaign_report
+
+    root = tmp_path / ".interactive_logs/test/.runtime/jobs"
+    reader = DashboardReader(tmp_path, tmp_path)
+    assert not reader.read().jobs.jobs
+    monkeypatch.setenv("BOOLEY_RUN_ID", "one")
+    report = completed_campaign_report(tmp_path, monkeypatch, reports=root.parent / "flow-reports")
+    job_records.write_record(rec(status="done", exit_code=0), root)
+    # The exact-run report must win over a foreign last-writer-wins flat copy.
+    (root.parent / "flow-reports/sim.json").write_text(
+        json.dumps({"run_id": "foreign", "eda_tool": "wrong"})
+    )
+    for current in (reader, DashboardReader(tmp_path, tmp_path)):
+        snapshot = current.read()
+        assert len(snapshot.jobs.jobs) == 1
+        view = snapshot.jobs.jobs[0]
+        assert view.report == report
+        rendered = job_detail(view)
+        assert "EDA tool: icarus" in rendered
+        assert "CPU time: 4.5s" in rendered
+        assert "Peak memory (largest process): 256 MiB" in rendered
+        assert "CPU:" not in rendered
+
+
+@pytest.mark.parametrize("state", ["completed", "failed", "cancelled", "orphaned"])
+def test_terminal_job_uses_recorded_resources_and_tool(tmp_path, state):
+    from booley.harness.dashboard.jobs import JobView
+
+    view = JobView(
+        tmp_path,
+        rec(status="done"),
+        state,
+        report={
+            "flow": "sim",
+            "eda_tool": "verilator",
+            "resources": {
+                "cpu_user_s": 2,
+                "cpu_sys_s": 1,
+                "peak_rss_mb": 32,
+            },
+        },
+    )
+    rendered = job_detail(view)
+    assert "CPU time: 3s" in rendered
+    assert "Peak memory (largest process): 32 MiB" in rendered
+    assert "Memory:" not in rendered
+
+
+def test_no_eda_specialist_hides_tool(tmp_path):
+    from dataclasses import replace
+
+    from booley.harness.dashboard.jobs import JobView
+
+    view = JobView(
+        tmp_path,
+        replace(rec(status="done"), endpoint="reviewer"),
+        "completed",
+        report={"mcp_tool": "reviewer"},
+    )
+    assert "EDA tool" not in job_detail(view)
+    assert "resources" not in job_detail(view)
+
+
+@pytest.mark.parametrize("state", ["completed", "orphaned"])
+def test_terminal_job_without_report_explains_missing_resources(tmp_path, state):
+    from booley.harness.dashboard.jobs import JobView
+
+    text = job_detail(JobView(tmp_path, rec(status="done"), state))
+    assert "resources not recorded (no report)" in text
+    assert "EDA tool: not recorded by this Flow" in text
+
+
+def test_terminal_flow_without_tool_explains_missing_record(tmp_path):
+    from booley.harness.dashboard.jobs import JobView
+
+    view = JobView(tmp_path, rec(status="done"), "completed", report={"flow": "project_flow"})
+    assert "EDA tool: not recorded by this Flow" in job_detail(view)
+
+
+@pytest.mark.parametrize(
+    "resources",
+    [[], {"cpu_user_s": 10**400, "cpu_sys_s": 1, "peak_rss_mb": 32}],
+)
+def test_invalid_recorded_resources_are_unavailable(tmp_path, resources):
+    from booley.harness.dashboard.jobs import JobView
+
+    view = JobView(
+        tmp_path, rec(status="done"), "completed", report={"flow": "sim", "resources": resources}
+    )
+    assert "CPU time" not in job_detail(view)
+    assert "Peak memory" not in job_detail(view)
+
+
+@pytest.mark.parametrize(
+    "tools", [{"z": None, "a": "verilator"}, {"z": "icarus", "a": "Verilator"}]
+)
+def test_terminal_job_sorts_target_tool_associations(tmp_path, tools):
+    from booley.harness.dashboard.jobs import JobView
+
+    text = job_detail(
+        JobView(
+            tmp_path, rec(status="done"), "completed", report={"flow": "sim", "eda_tools": tools}
+        )
+    )
+    assert text.index("a: ") < text.index("z: ")
+    if tools["z"] is None:
+        assert "z: not recorded by this Flow" in text
+
+
+def test_zero_resource_measurements_are_recorded(tmp_path):
+    from booley.harness.dashboard.jobs import JobView
+
+    text = job_detail(
+        JobView(
+            tmp_path,
+            rec(status="done"),
+            "completed",
+            report={"resources": {"cpu_user_s": 0, "cpu_sys_s": 0, "peak_rss_mb": 0}},
+        )
+    )
+    assert "CPU time: 0s" in text
+    assert "Peak memory (largest process): 0 MiB" in text

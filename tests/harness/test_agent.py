@@ -31,7 +31,8 @@ def test_agent_notice_names_role_and_purpose_on_stderr(capsys):
     announce_agent_dispatch(SimpleNamespace(label="triage-report"))
     output = capsys.readouterr()
     assert output.out == ""
-    assert "triage-report agent to prepare a review package" in output.err
+    assert "triage-report Specialist to perform the requested Specialist analysis" in output.err
+    assert "Ticket" not in output.err
 
 
 def test_doctor_probe_notice_names_provider_authorization_not_developer_agent(capsys):
@@ -838,3 +839,191 @@ class TestCallAgent:
         assert len(lines) >= 2
         data = json.loads(lines[-1])
         assert data["content"][0]["text"] == "working on it"
+
+    # --- Start notice: printed only once the backend confirms its start ---
+
+    @staticmethod
+    def _assistant_with_usage():
+        """Build the assistant message a started Claude stream yields first."""
+        message = _assistant_message()
+        message.usage = {"input_tokens": 1, "output_tokens": 1}
+        return message
+
+    @staticmethod
+    def _use_codex_backend():
+        """Switch the class fixture's Claude backend to a real Codex backend."""
+        from booley.config.agent import AgentSettings
+        from booley.runtime.agent_backend import CodexBackend
+        from booley.runtime.agent_config import BackendConfig, set_backend_config
+
+        set_backend_config(BackendConfig(settings=AgentSettings(), active_backend=CodexBackend()))
+
+    @staticmethod
+    def _codex_process(*, returncode: int, stdout: bytes = b"", stderr: bytes = b""):
+        """Build a finished fake Codex child whose pipes replay the given bytes."""
+        process = MagicMock()
+        process.returncode = returncode
+        process.stdin = MagicMock()
+        process.stdin.drain = AsyncMock()
+        process.stdin.wait_closed = AsyncMock()
+        process.stdout = asyncio.StreamReader()
+        process.stdout.feed_data(stdout)
+        process.stdout.feed_eof()
+        process.stderr = asyncio.StreamReader()
+        process.stderr.feed_data(stderr)
+        process.stderr.feed_eof()
+
+        async def finish():
+            # Let the stderr drain task read its bytes before the child "exits".
+            await asyncio.sleep(0.01)
+            return returncode
+
+        process.wait = finish
+        return process
+
+    @pytest.mark.asyncio
+    async def test_missing_codex_cli_prints_no_start_notice(self, tmp_path: Path, capsys):
+        self._use_codex_backend()
+        params = AgentCallParams(prompt="task", model="gpt-5", cwd=tmp_path, label="reviewer")
+
+        with (
+            patch("booley.runtime._codex_backend.shutil.which", return_value=None),
+            pytest.raises(Exception, match="Codex CLI not found on PATH"),
+        ):
+            await call_agent(params)
+
+        assert "Booley is starting" not in capsys.readouterr().err, (
+            "missing CLI must not announce startup"
+        )
+
+    @pytest.mark.asyncio
+    @patch("booley.runtime._claude_backend.query", new_callable=MagicMock)
+    async def test_claude_failure_before_first_message_prints_no_start_notice(
+        self, mock_query, capsys
+    ):
+        async def failing_stream(**_kwargs):
+            # The SDK's CLINotFoundError text; a stand-in keeps this stub-SDK safe.
+            raise RuntimeError("Claude Code not found")
+            yield  # pragma: no cover - makes this an async generator
+
+        mock_query.side_effect = failing_stream
+
+        with pytest.raises(RuntimeError, match="Claude Code not found"):
+            await call_agent(
+                AgentCallParams(
+                    prompt="task", model="claude-sonnet-4-6", cwd="/tmp", timeout_seconds=60
+                )
+            )
+
+        assert "Booley is starting" not in capsys.readouterr().err, (
+            "failed start must not announce startup"
+        )
+
+    @pytest.mark.asyncio
+    @patch("booley.runtime._claude_backend.anyio.sleep", new_callable=AsyncMock)
+    @patch("booley.runtime._claude_backend.query", new_callable=MagicMock)
+    async def test_start_notice_printed_once_after_retried_claude_start(
+        self, mock_query, _sleep, capsys
+    ):
+        attempts = 0
+
+        async def flaky_stream(**_kwargs):
+            nonlocal attempts
+            attempts += 1
+            yield self._assistant_with_usage()
+            if attempts == 1:
+                raise ConnectionError("ECONNRESET")
+            result = _result_message()
+            result.result = "recovered"
+            result.structured_output = None
+            result.total_cost_usd = 0.01
+            result.usage = None
+            yield result
+
+        mock_query.side_effect = flaky_stream
+
+        result = await call_agent(
+            AgentCallParams(
+                prompt="task",
+                model="claude-sonnet-4-6",
+                cwd="/tmp",
+                timeout_seconds=60,
+                label="reviewer",
+            )
+        )
+
+        assert result.output == "recovered"
+        assert attempts == 2
+        assert capsys.readouterr().err.count("Booley is starting the reviewer Specialist") == 1
+
+    @pytest.mark.asyncio
+    async def test_start_notice_printed_once_after_retried_codex_start(
+        self, tmp_path: Path, capsys
+    ):
+        self._use_codex_backend()
+        message = {"type": "item.completed", "item": {"type": "agent_message", "text": "done"}}
+        processes = [
+            self._codex_process(returncode=1, stderr=b"503 Service Unavailable"),
+            self._codex_process(returncode=0, stdout=json.dumps(message).encode() + b"\n"),
+        ]
+        spawn = AsyncMock(side_effect=[(process, tmp_path) for process in processes])
+
+        with (
+            patch("booley.runtime._codex_backend.shutil.which", return_value="/usr/bin/codex"),
+            patch("booley.runtime._codex_backend._codex_spawn", spawn),
+            patch("booley.runtime._codex_backend.anyio.sleep", new_callable=AsyncMock),
+        ):
+            result = await call_agent(
+                AgentCallParams(prompt="task", model="gpt-5", cwd=tmp_path, label="reviewer")
+            )
+
+        assert result.output == "done"
+        assert spawn.await_count == 2
+        assert capsys.readouterr().err.count("Booley is starting the reviewer Specialist") == 1
+
+    @pytest.mark.asyncio
+    async def test_codex_spawn_failure_prints_no_start_notice(self, tmp_path: Path, capsys):
+        from booley.runtime.agent_errors import AgentAuthError
+
+        self._use_codex_backend()
+        params = AgentCallParams(prompt="task", model="gpt-5", cwd=tmp_path, label="reviewer")
+
+        with (
+            patch("booley.runtime._codex_backend.shutil.which", return_value="/usr/bin/codex"),
+            patch(
+                "booley.runtime._codex_backend._codex_spawn",
+                new_callable=AsyncMock,
+                side_effect=AgentAuthError("no credential", provider="codex"),
+            ),
+            pytest.raises(AgentAuthError),
+        ):
+            await call_agent(params)
+
+        assert "Booley is starting" not in capsys.readouterr().err
+
+    @pytest.mark.asyncio
+    @patch("booley.runtime._claude_backend.query", new_callable=MagicMock)
+    async def test_broken_stderr_does_not_abort_started_agent(self, mock_query, capsys):
+        import errno
+
+        result = _result_message()
+        result.result = "finished"
+        result.structured_output = None
+        result.total_cost_usd = 0.01
+        result.usage = None
+        mock_query.side_effect = lambda **_kwargs: _AsyncIter(
+            [self._assistant_with_usage(), result]
+        )
+
+        with patch(
+            "booley.runtime.agent.announce_agent_dispatch",
+            side_effect=OSError(errno.EPIPE, "Broken pipe"),
+        ):
+            outcome = await call_agent(
+                AgentCallParams(
+                    prompt="task", model="claude-sonnet-4-6", cwd="/tmp", timeout_seconds=60
+                )
+            )
+
+        assert outcome.output == "finished"
+        assert mock_query.call_count == 1

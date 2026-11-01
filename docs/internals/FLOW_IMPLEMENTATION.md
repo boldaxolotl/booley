@@ -13,10 +13,12 @@ The documentation is split at the public-interface seam:
 | Document | Owns |
 |---|---|
 | **This document** | The implementation and evidence contracts of the built-in `sim`, `lint`, `synth`, and `fpga` Booley Flows |
-| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | How to run those built-in Flows and interpret their verdicts and Criteria |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md)) | How to run those built-in Flows and interpret their verdicts and Criteria |
 | [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON schemas, and Campaign file layouts of those built-in Flows |
 | [MCP-TOOLS.md](MCP-TOOLS.md) | The generic MCP tool framework: discovery, lifecycle, base classes, result routing, and Custom Flows |
-| [CONFIG.md](../user/CONFIG.md) | The project configuration surface: exact keys, defaults, examples, `.core` design description, and `tests.toml` |
+| [CONFIG.md](../user/CONFIG.md) | The Project-wide `booley.toml` surface: exact keys, defaults, and examples; each Flow page owns its `[flows.*]` keys |
+| [TARGETS.md](../user/TARGETS.md) | The `.core` design description and Targets |
+| [TESTS.md](../user/TESTS.md) | `tests.toml`: Tests, Test Variants, and seeds |
 | [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
 
 Public behavior is mentioned only where an implementation invariant needs
@@ -72,8 +74,9 @@ Configuration is split across three files by **owner and concern**:
 | `.booley/tests.toml` | Booley | Verification intent: per-Target test lists and the run-time test selector (e.g. a `+test_id=` plusarg template; a plusarg is a `+name=value` simulator argument) |
 | `.booley/booley.toml` | Booley | Project metadata, source dirs, per-Flow policy, and approved EDA provisioning requests |
 
-[CONFIG.md](../user/CONFIG.md) owns the exact schemas, defaults, and configuration
-examples for all three. The table is repeated here only because ownership of an
+[TARGETS.md](../user/TARGETS.md) owns the exact schemas, defaults, and
+examples for the `.core` and `tests.toml`; [CONFIG.md](../user/CONFIG.md) and the
+per-Flow pages own them for `booley.toml`. The table is repeated here only because ownership of an
 input determines which layer may interpret it.
 
 Every Flow command executes inside the Sandbox. Most EDA binaries ship
@@ -195,8 +198,8 @@ A Project adds files to this set with `[project].protected_inputs`, read from
 the Goal worktree's effective configuration and resolved against the worktree
 root. For declared files, Goal entry also stores a versioned per-file capture of
 path, contents, type, and executable bit, separately for the working tree and
-HEAD, so a violation can name the file. Without declarations the stored digest
-is unchanged. See [Additional Protected Inputs](../user/CONFIG.md#additional-protected-inputs-projectprotected_inputs).
+HEAD, so a violation can name the file. The digest uses one format whether or
+not the Project declares files. See [Additional Protected Inputs](../user/CONFIG.md#additional-protected-inputs-projectprotected_inputs).
 Run admission and publication bind evidence to the Goal Record, specification
 revisions, source fingerprints, and Target surface. Approved coverage-policy
 changes use the Goal proposal-and-approval transaction described below.
@@ -294,9 +297,9 @@ active-Project cache.
 
 `[flows.sim]` holds execution and verdict policy; `tests.toml` holds the
 per-Target test list and run-time selector; the FuseSoC Target holds the build
-inputs and simulator choice. [CONFIG.md](../user/CONFIG.md#simulation--passfail-sentinels-flowssim)
+inputs and simulator choice. [FLOW-SIM.md](../user/FLOW-SIM.md#simulation--passfail-sentinels-flowssim)
 owns the exact simulation keys and defaults, while its
-[design-description section](../user/CONFIG.md#design-description-core-and-tests-teststoml)
+[design-description section](../user/TARGETS.md#design-description-core)
 owns the `tests.toml` schema.
 
 The CLI selectors `--test` (repeatable exact include), `--tests-file`, `--trace`
@@ -486,7 +489,7 @@ never "Verilator-clean".
 
 The Target selects the linter and owns its rules and waivers. `[flows.lint]`
 holds execution policy, including whether warnings affect the process exit.
-[CONFIG.md](../user/CONFIG.md#lint-flowslint) owns the exact keys and defaults.
+[FLOW-LINT.md](../user/FLOW-LINT.md#configuration-flowslint) owns the exact keys and defaults.
 
 Lint *policy*, which rules fire and what is waived, is design description,
 not Booley config, so it lives on the Target. For Verilator, that is a `.vlt`
@@ -586,7 +589,7 @@ The `.core` Target owns the persistent recipe and timing inputs: frontend,
 profile, flattening, synthesis mode, backend overrides, source files, SDC, and
 toplevel. `[flows.synth]` owns execution and verdict policy such as the default
 Target, timeout, and intentional-latch allowance.
-[CONFIG.md](../user/CONFIG.md#asic-synthesis-flowssynth) owns the exact keys, defaults,
+[FLOW-SYNTH.md](../user/FLOW-SYNTH.md#configuration-flowssynth) owns the exact keys, defaults,
 and examples.
 
 `ppa_profile` and `synth_mode` are the main synthesis controls. The built-in
@@ -594,7 +597,7 @@ backend translates the profile to Yosys and OpenROAD settings; backend-specific
 knobs live under `advanced_settings_yosys` and `advanced_settings_openroad`.
 Per-call profile and expert overrides are resolved before command generation;
 their precedence and profile contents are part of the
-[configuration reference](../user/CONFIG.md#asic-synthesis-flowssynth).
+[configuration reference](../user/FLOW-SYNTH.md#configuration-flowssynth).
 
 Timing intent lives in the Target's SDC fileset (below), not in config scalars.
 
@@ -604,7 +607,7 @@ Timing constraints are **design intent** (clock period, I/O delays,
 false/multicycle paths), so they live on the FuseSoC Target as a `file_type:
 SDC` fileset, source-controlled and per-target like the RTL, symmetric with how
 FPGA XDC is a Target fileset. The configuration shape and example live in
-[CONFIG.md](../user/CONFIG.md#asic-synthesis-flowssynth).
+[FLOW-SYNTH.md](../user/FLOW-SYNTH.md#configuration-flowssynth).
 
 A physical Target with **no** SDC fileset is a **hard error**, not a silent
 default: the run fails before EDA execution, naming the Target and the fix,
@@ -778,7 +781,7 @@ timing is met.
 The selected Target owns FPGA build intent: device part, portable PPA profile,
 out-of-context choice,
 sources, XDC, toplevel, and compile-time defines. `[flows.fpga]` owns execution
-policy; every invocation still names its Target. [CONFIG.md](../user/CONFIG.md#fpga-implementation-flowsfpga)
+policy; every invocation still names its Target. [FLOW-FPGA.md](../user/FLOW-FPGA.md#configuration-flowsfpga)
 owns the exact keys, defaults, and examples.
 
 The Target's `fpga` name axis is the drivability discriminator. Its declared
@@ -833,7 +836,7 @@ fileset.
 The source is a `file_type: xdc` fileset in the `.core`:
 source-controlled and per-target. Multiple XDC files are supported; the
 configuration shape and example live in
-[CONFIG.md](../user/CONFIG.md#fpga-implementation-flowsfpga).
+[FLOW-FPGA.md](../user/FLOW-FPGA.md#configuration-flowsfpga).
 
 The `file_type: xdc` fileset is the **sole** source: a Target with no such
 fileset is a hard error naming the Target and the fix. XDC is mandatory, and
@@ -846,7 +849,7 @@ single global Flow section from silently applying the wrong device to another
 Target.
 
 The public controls and baseline behavior are documented in
-[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md#fpga). The implementation receives
+[FLOW-FPGA.md](../user/FLOW-FPGA.md#fpga-implementation-fpga). The implementation receives
 those already-validated arguments from the common Flow interface.
 
 All build-time inputs come from the Target, not the Flow policy section: the
@@ -934,7 +937,7 @@ period is unknown.
 Timing thresholds (`fpga_impl_ok`) gate on these per-clock values. A **flat**
 `critical_path_ps_max` / `fmax_mhz_min` gates the timing-worst clock, so every
 clock must pass, while a **clock-scoped** `clk_i.fmax_mhz_min` gates just
-clock `clk_i` (see [USAGE.md](../user/USAGE.md#threshold-parameters)).
+clock `clk_i` (see [GOAL-MODE.md](../user/GOAL-MODE.md#threshold-parameters)).
 
 ### Verdict semantics
 
@@ -1048,8 +1051,8 @@ without inline Coverage Points. The
 [Flow reports reference](FLOW_REPORTS.md#coverage-campaign-files) defines
 scoring and retained diagnostic evidence. Source rollups cover line, branch,
 expression, and toggle with overall eligibility and waiver policy;
-they never aggregate by instance hierarchy. The manifest integrity-binds the
-compressed JSON Lines point store. Manifest summary/deep readers validate the current Campaign manifest at the
+they never aggregate by instance hierarchy. The manifest records the identity of the
+compressed JSON Lines point store. Manifest readers validate the current Campaign manifest at the
 resolved nested path; the Target reference is a separate schema. The Coverage
 Analyst requires the canonical Target-level reference and matching completed
 `simulation.json`; it resolves and authenticates the nested manifest internally
@@ -1071,13 +1074,14 @@ exact completed Target Campaign without publishing policy evidence.
 
 The point store is flushed and committed without replacement before
 `coverage.json`; the manifest is published last as the Campaign commit marker.
-Deep readers validate its path, schema, byte counts, point count, digest, every
-point, scoring/collection state, valid rollups, and evaluation before accepting
-point-dependent evidence. Summary readers validate rollup ordering and arithmetic,
-reconcile valid overall/source rollups, and require empty invalid rollups. Criteria
+Deep readers open the canonical store without following links, gunzip it once under the
+uncompressed ceiling, check the header schema, then hand the manifest and points
+to the Campaign codec once. The codec validates every point, collection state,
+overall rollups (empty when collection is not complete), and evaluation before
+point-dependent evidence is accepted. Per-source rollups and scoring are
+writer-derived manifest content that readers do not re-derive. Criteria
 blocks on collection before denominator/metric work. Contract failures expose
-stable `COV_*` error codes. Summary readers validate manifest-local facts without
-opening point storage. Campaign and Simulation publication precede Criterion evidence. Coverage
+stable `COV_*` error codes. Campaign and Simulation publication precede Criterion evidence. Coverage
 observations use transaction-qualified ledger sequence directories. Their
 transaction identity is included in `acceptance_transactions` in the same atomic
 bound evidence-state save as the updated Criteria. Acceptance readers ignore evidence
@@ -1097,6 +1101,26 @@ the durable collection and evaluation truths as well as the simulation verdict;
 they do not turn a committed evaluation into `blocked`. Report paths are usable
 only when their publication succeeded. No later stage runs after an earlier
 publication failure, except for an observational error checkpoint.
+
+The Simulation Campaign coordinator builds this failed-Target detail from facts
+it already holds. Its publication error carries the Target root and selector,
+the result's observations, the nested Coverage Campaign path for a
+coverage workload, and the public Coverage Campaign reference only after its
+publication. The Flow loads that nested Campaign once for collection and
+evaluation, reporting `collector_error` as `infrastructure_error`, and does not
+re-hash attempt evidence, re-check the Target identity, or re-authenticate the
+reference. As the one exception to retaining committed truths, when that nested
+Campaign cannot be loaded, the detail reports `infrastructure_error` and the
+prepared evaluation.
+
+If retaining a completed coverage outcome fails while resolving its public
+reference, fresh and resumed runs keep `simulation`, `passed`, and tests from
+that outcome's in-memory observations. They report `collection:
+infrastructure_error` and `evaluation: blocked` when evaluation was requested
+(`not_requested` otherwise), without attaching a coverage reference. The Flow
+does not resolve or owner-authenticate that reference again on this failure
+path. This retention failure is distinct from a publication failure after the
+nested Coverage Campaign commit described above.
 
 All Simulation progress producers normalize a failed terminal publication onto
 the result already assembled from durable Target or Campaign outcomes. They do
@@ -1129,16 +1153,23 @@ root explicitly; callers obtain Booley Directory roots through
 
 - `prune_native_payload(reports_root, invocation, target)` requires an exact
   positive invocation number and one exact manifest Target selector. It validates
-  the complete Campaign pair and Simulation identities, every native path and recorded digest,
-  and the full deletion set before mutation. Symlinks, unknown payloads, changed
-  databases, unexplained missing databases, and ambiguous selections are errors.
+  the complete Campaign pair and Simulation identities and link safety before
+  mutation. Symlinks, unsafe paths, ambiguous or unknown Targets, a wrong
+  invocation, and a recorded native payload that is missing on the first attempt
+  are errors. Native files are not re-hashed, and unrecorded files under `native/`
+  are removed with it.
 - `prune_invocation(reports_root, invocation)` validates every existing Target
   and compares every file with the authenticated invocation, Campaign, and
   artifact inventory before atomically moving that invocation to `.pruned-N` and
-  removing its contents. Unknown files are named and refused without mutation;
+  removing its contents. An interrupted `.pruned-N` is finished whenever it holds
+  `.prune.json`; without that journal it is refused. Unknown files are named and
+  refused without mutation;
   changed or missing recorded native payloads are accepted because full pruning
-  removes the entire invocation. Terminal attempts use only their exact
-  authenticated inventory; nonterminal attempts retain directory-level ownership
+  removes the entire invocation. A terminal attempt owns its records, the files its
+  result names, and its `private-build/`, `snapshot/` and used shared-build trees;
+  unknown-file refusal inside it applies to its records and its exact-listed
+  directories (`evidence/`, `runtime-inputs/`, `pre-sim/`), not to those build
+  trees. Nonterminal attempts retain directory-level ownership
   only for producer-private partial outputs that cannot acquire a terminal manifest.
   Interrupted attempts may be removed after their process releases the lock.
   Authenticated pending/interrupted Campaigns, missing
@@ -1153,10 +1184,9 @@ Native pruning first deep-validates the Campaign pair, then writes Target-local
 `availability.json` with schema `booley.coverage-availability/v1`, the Campaign
 identity and manifest digest, and
 native artifact IDs, paths, and digests. Status `pruning` means cleanup is pending
-and native availability must not be assumed. Renaming `native/` to
-`.native-pruned/` removes all native databases from their canonical paths in one
-operation; cleanup then removes that quarantine and records `pruned`. Retrying
-the same exact selection completes interrupted cleanup. Campaign manifest and point-store bytes,
+and native availability must not be assumed. Cleanup then deletes `native/` and
+records `pruned`. Retrying the same exact selection completes interrupted cleanup
+and trusts the existing sidecar. Campaign manifest and point-store bytes,
 Simulation bytes, and hook evidence never change. Normalized Campaign evidence
 remains analyzable after native pruning; full pruning prevents re-analysis.
 
@@ -1167,18 +1197,20 @@ python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --i
 python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --full
 ```
 
-Full pruning releases matching retired child-execution index entries before it
-removes the invocation. When authenticated surviving external resources exist,
-it first performs bounded recovery/cancellation of exact Campaign-mirrored orphan
-process trees, proves them terminal, reconciles their heavy-slot tokens, publishes
-retirement mirrors, and marker-authenticates cleanup of owned templated run
-directories. It does not require or inspect the Booley Directory when no such resource
-survives. Literal run directories are untouched.
+Current Campaigns write no child records: each parallel lane has only its
+execution record and context sidecar, and its attempt names the lane's execution
+ID. Before removing an interrupted attempt's run directory, resume and full
+pruning cancel that lane execution and fail closed unless it is tree-terminal.
+Full pruning also marker-authenticates cleanup of owned templated run directories.
+Recovering one
+invocation requires the Booley Directory only when such a resource survives;
+`--include-dependents` requires it for every interrupted dependent Campaign. It does not
+require or inspect the Booley Directory otherwise. Literal run directories are untouched.
 The Booley Directory root is inferred only when the report
 root is exactly `<booley-directory>/.runtime/flow-reports`. A nonstandard report
 root therefore requires `--project-data <resolved-booley-directory>` for `--full`
-when Campaign child records exist. Native-only pruning does not inspect or
-release those records and does not require the option.
+when an interrupted lane or owned run directory must be recovered. Native-only pruning
+does not require the option.
 
 Selection, locking, validation, and filesystem failures exit 2. Both operations
 are retryable for their exact selections. Do not manually remove journals,
@@ -1194,7 +1226,7 @@ rewritten by retention, and a Campaign lock never recreates a renamed Campaign r
 ### Coverage Analysis after Simulation
 
 The Coverage Analyst consumes the exact retained Target `coverage.json`, deep-loads
-its integrity-linked point store, rejects collector-error or incompatible
+its point store, rejects collector-error or incompatible
 collection before provider invocation, and checks its
 matching completed Simulation projection. It is a separate advisory invocation;
 it never calls Simulation or publishes Criterion evidence. Phase 5's native
@@ -1204,45 +1236,21 @@ Analyst's versioned output and capability-isolated, budgeted evidence boundary a
 validation commands are recorded in [coverage-release-gate.md](coverage-release-gate.md).
 
 
-### Producing-build RTL source advisories
+### RTL source advisories
 
-Coverage overlays canonically add `--dumpi-tree-json 1 --dumpi-V3Global 9` to
-all Verilator coverage harness variants. Ordinary simulation, lint and synthesis
-do not enable these switches. The declaration contract/options participate in
-both coverage recipe fingerprints and the Simulation Campaign command model.
-The adapter allocates a fresh generation and reduces its unique early cells tree
-and matching metadata while holding the build lease; it does not compile again.
+Preflight scans the Target's inputs with `booley.core.hdl.declares_module`
+(`rtl_module_candidates` in `coverage_source_gaps.py`) and stores the sorted
+module-bearing, non-include, non-`tb` Verilog paths on `CoverageTargetPlan`.
+No dump switch is added to coverage builds, and the scan does not preprocess.
 
-`verilator_declarations.py` owns immutable declaration facts and the pinned JSON
-boundary. `verilator_declaration_build.py` verifies authored/staged EDAM aliases
-and source hashes. Both declarations and all parsed native records use the same
-exact alias resolver for advisory source presence, leaving existing scored point
-identities and dispositions unchanged. Unknown metric classes still establish
-presence. Unresolved records suppress accusations globally for that Target.
-The decoder limits each raw file to 32 MiB, nesting to 128, and declarations/file
-IDs to 100,000; the dump search also limits entries to 100,000.
-
-No authoritative physical map exists for authored `line locations. The pinned
-preprocessor lexer recognizes literal `line; token joins and continued macros can
-construct tokens. A conservative byte trigger joins continued source lines and
-rejects possible `line text, backtick token joins, and continuations that form
-the identifier `line` in every mapped physical HDL input/include and compiler
-options, including decoys or inactive text. Ordinary multiline macros do not
-disable discovery. Compiler
-file IDs not accounted for by these inputs make discovery incomplete as well.
-This trigger never interprets RTL or assigns physical locations. This trades
-potential false incomplete status for avoiding incorrect file-level accusations.
-Large real-design dump overhead remains unmeasured.
-
-`SimulationBuildResult` forwards the inventory through `CoverageBuildEvidence`
-and `_CapturingExecution`. The collector preserves sorted native source presence
-before metric filtering; publication records it with the compact inventory.
-`coverage_source_gaps.py` compares complete compatible observations only and
-constructs validated source-closure pointers. The store checks compact artifact
-digests/ownership and validates new advisory publication against its inventory.
-Resume consumes published evidence instead of rereading present-day Project RTL.
+The collector preserves sorted native source presence: every record of every
+type, including unknown ones, is mapped through the same `_match_source` that
+assigns point sources, before metric filtering. `source_gap_findings` warns for
+each candidate that is not present. `validate_coverage_sources` before and after
+collection is the only integrity check. Resume consumes published findings
+instead of rereading present-day Project RTL.
 
 The Analyst `zero_point_sources` view uses normal byte budgets, stable cursors,
 and source-count audit accounting with an empty `point_ids` list. Point-bearing
 views retain their existing returned-count invariant. Minimal overviews retain
-discovery status, total source count, and the paginated-query hint.
+the total source count and the paginated-query hint.

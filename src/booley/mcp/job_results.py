@@ -20,6 +20,7 @@ from booley.goals.paths import record_paths
 from booley.mcp.call_context import CallContext, container_jobs_root, project_goal_store
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots
+from booley.runtime.filesystem_utils import is_transient_read_error, read_file_bytes
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.session_paths import logs_runtime_dir
 
@@ -41,15 +42,30 @@ def job_roots(*, container_root: Callable[[], Path | None] | None = None) -> tup
     store = project_goal_store()
     if store is None:
         return tuple(root for root in roots if root is not None)
-    from booley.goals.sim_baseline_store import baseline_jobs_dir
+    from booley.goals.sim_baseline_store import BASELINE_FAMILIES, baseline_jobs_dir
 
-    baseline = baseline_jobs_dir(store.booley_dir)
-    if baseline.is_dir():
-        roots.append(baseline)
+    for family in BASELINE_FAMILIES:
+        baseline = baseline_jobs_dir(store.booley_dir, family)
+        if baseline.is_dir():
+            roots.append(baseline)
     roots.extend(
         record_paths(store.booley_dir, rec.id).jobs_dir for rec in store.list_records().records
     )
     return tuple(dict.fromkeys(root for root in roots if root is not None))
+
+
+def read_record_or_none(run_id: str, root: Path | None) -> jobrec.JobRecord | None:
+    """Read a record for a by-id lookup; a record unreadable after retries counts as not found.
+
+    Terminal, cancel and reconcile writes resolve their root through this
+    lookup, so a held record must not make it raise. Best effort: a Job whose
+    root cannot be resolved because its record is held still skips that write.
+    """
+    try:
+        return jobrec.read_record(run_id, root=root)
+    except OSError as exc:
+        logger.warning("Job record %s unreadable under %s: %s", run_id, root, exc)
+        return None
 
 
 def _locate_job(run_id: str, *, roots: tuple[Path, ...] | None = None) -> LocatedJob | None:
@@ -60,7 +76,7 @@ def _locate_job(run_id: str, *, roots: tuple[Path, ...] | None = None) -> Locate
     found = [
         LocatedJob(rec, root)
         for root in search_roots
-        if (rec := jobrec.read_record(run_id, root=root)) is not None
+        if (rec := read_record_or_none(run_id, root)) is not None
     ]
     if len(found) > 1:
         raise jobrec.JobRecordError(f"Ambiguous run_id {run_id!r}: present in multiple job roots")
@@ -137,21 +153,36 @@ def _report_for_run_id(
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
+    unreadable: jobrec.JobRecordError | None = None
     for path in numbered:
-        report = _read_report_json(path)
+        try:
+            report = _read_report_json(path)
+        except jobrec.JobRecordError as exc:
+            # A held report of another run must not hide this run's report.
+            unreadable = unreadable or exc
+            continue
         if report is not None and report.get("run_id") == run_id:
             return report
+    if unreadable is not None:
+        raise unreadable
     return None
 
 
 def _progress_for_run_id(
-    endpoint: str, run_id: str, *, report_dirs: tuple[Path, ...] | None = None
+    endpoint: str,
+    run_id: str,
+    *,
+    report_dirs: tuple[Path, ...] | None = None,
+    booley_dir: Path | None = None,
 ) -> dict[str, Any] | None:
     """Newest run-scoped checkpoint when a killed matrix has no final report."""
     reports = _endpoint_report_dirs(_locate_job(run_id)) if report_dirs is None else report_dirs
     if not reports:
         return None
-    found = read_progress_for_run(reports, endpoint, run_id)
+    try:
+        found = read_progress_for_run(reports, endpoint, run_id, booley_dir=booley_dir)
+    except OSError as exc:
+        raise jobrec.JobRecordError(f"Job progress for {run_id} unreadable: {exc}") from exc
     if found is None:
         return None
     _path, report = found
@@ -247,13 +278,19 @@ def _endpoint_report_dirs(
 
 
 def _read_report_json(path: Path) -> dict[str, Any] | None:
-    """Parse a report.json, logging (not raising) on malformed/unreadable."""
+    """Parse a report.json, logging (not raising) on malformed/unreadable.
+
+    A Windows sharing error that outlasts the retry budget is not "absent":
+    it raises ``JobRecordError`` so callers can report the report as unreadable.
+    """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(read_file_bytes(path).decode("utf-8"))
     except json.JSONDecodeError as e:
         logger.warning("Malformed report.json at %s: %s", path, e)
         return None
     except OSError as e:
+        if is_transient_read_error(e):
+            raise jobrec.JobRecordError(f"Job report {path} unreadable: {e}") from e
         logger.warning("Failed to read report.json at %s: %s", path, e)
         return None
 
@@ -428,9 +465,27 @@ class JobRepository:
             endpoint, run_id, report_dirs=self.report_dirs(self.locate(run_id))
         )
 
+    def report_booley_dir(self, located: LocatedJob | None) -> Path | None:
+        """The Booley Directory entry the Job's report roots live under, if any.
+
+        A Goal-bound Job's own directory, otherwise the session's. Jobs located
+        under another root fall into the session branch, so a linked entry there
+        stays refused (fail closed), as it was before the entry was followed.
+        """
+        if located is not None and located.record.binding is not None:
+            binding = job_binding(located.record)
+            assert binding is not None
+            return binding.booley_dir
+        store = project_goal_store()
+        return None if store is None else store.booley_dir
+
     def progress_for_run(self, endpoint: str, run_id: str) -> dict[str, Any] | None:
+        located = self.locate(run_id)
         return _progress_for_run_id(
-            endpoint, run_id, report_dirs=self.report_dirs(self.locate(run_id))
+            endpoint,
+            run_id,
+            report_dirs=self.report_dirs(located),
+            booley_dir=self.report_booley_dir(located),
         )
 
     def report(self, rec: jobrec.JobRecord | None) -> tuple[dict[str, Any] | None, bool]:

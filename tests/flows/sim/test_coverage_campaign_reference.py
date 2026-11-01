@@ -18,8 +18,6 @@ from booley.flows.sim.coverage_campaign import (
     decode_coverage_campaign,
 )
 from booley.flows.sim.coverage_campaign_store import (
-    CAMPAIGN_SCHEMA_V3,
-    CoverageCampaignStoreError,
     publish_coverage_campaign,
 )
 from booley.flows.sim.coverage_reference import (
@@ -34,8 +32,7 @@ from booley.flows.sim.coverage_reference import (
     resolve_persisted_coverage_campaign_reference,
 )
 from tests.flows.sim.coverage_campaign_test_support import (
-    corrupt_v3_campaign_with_duplicate_negative_point,
-    rewrite_manifest_as_older_schema,
+    corrupt_campaign_with_duplicate_negative_point,
 )
 from tests.flows.sim.test_coverage_campaign import _valid_document
 from tests.runtime.test_sandbox_layout import project_alias
@@ -217,6 +214,7 @@ def test_reference_codec_round_trips_exact_canonical_immutable_document(tmp_path
         (("coverage_campaign", "sha256"), "sha256:" + "0" * 63),
         (("coverage_campaign", "campaign_id"), ""),
         (("coverage_campaign", "schema"), "booley.coverage-campaign/v2"),
+        (("coverage_campaign", "schema"), "booley.coverage-campaign/v4"),
     ],
 )
 def test_reference_codec_rejects_boundary_and_identity_substitutions(
@@ -349,7 +347,7 @@ def test_resolver_propagates_nested_campaign_validation_findings(tmp_path: Path)
     target = tmp_path / "targets" / _TARGET_SELECTOR
     nested = _nested_campaign(target)
     reference = _reference(target, nested)
-    corrupt_v3_campaign_with_duplicate_negative_point(nested)
+    corrupt_campaign_with_duplicate_negative_point(nested)
     nested_bytes = nested.read_bytes()
     reference = decode_coverage_campaign_reference(
         _rewrite_reference(reference, ("coverage_campaign", "bytes"), len(nested_bytes))
@@ -372,30 +370,16 @@ def test_resolver_propagates_nested_campaign_validation_findings(tmp_path: Path)
     assert "COV_POINT_HIT_NONPOSITIVE at /points/1/hits_by_run/run:reset" in message
 
 
-def test_reference_authenticates_retained_valid_v3_nested_campaign(tmp_path: Path) -> None:
+def test_reference_rejects_score_bearing_invalid_nested_campaign(tmp_path: Path) -> None:
     target = tmp_path / "targets" / _TARGET_SELECTOR
     nested = _nested_campaign(target)
     manifest = json.loads(nested.read_text())
-    rewrite_manifest_as_older_schema(manifest, 3)
-    nested.write_text(json.dumps(manifest))
-    path = target / "coverage.json"
-    publish_coverage_campaign_reference(path, _reference(target, nested))
-
-    resolved = resolve_coverage_campaign_reference(path)
-
-    assert resolved.loaded.summary.source_schema == CAMPAIGN_SCHEMA_V3
-
-
-def test_reference_rejects_score_bearing_invalid_v3_nested_campaign(tmp_path: Path) -> None:
-    target = tmp_path / "targets" / _TARGET_SELECTOR
-    nested = _nested_campaign(target)
-    manifest = json.loads(nested.read_text())
-    rewrite_manifest_as_older_schema(manifest, 3)
     manifest["collection"]["status"] = "collector_error"
     manifest["normalization"]["status"] = "partial"
+    manifest["scoring"] = {"status": "invalid", "reason": "collector_error"}
     nested.write_text(json.dumps(manifest))
 
-    with pytest.raises(CoverageCampaignStoreError, match="Invalid scoring state"):
+    with pytest.raises(CoverageCampaignValidationError, match="COV_INVALID_SCORING_ROLLUPS"):
         _reference(target, nested)
 
 
@@ -514,3 +498,46 @@ def test_image_alias_public_and_persisted_references(project_alias):
     (target / "linked").symlink_to(target, target_is_directory=True)
     with pytest.raises((ValueError, OSError), match=r"link|regular"):
         resolve_coverage_campaign_reference(alias / "linked" / public.relative_to(target))
+
+
+@pytest.mark.parametrize("linked", ["entry", "below"])
+def test_reference_follows_only_the_booley_dir_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, linked: str
+) -> None:
+    """Build, publish, verify and resolve cross the symlinked ``.booley`` entry only (#2192)."""
+    from tests.conftest import symlink_or_skip
+    from tests.fusesoc_test_support import symlinked_booley_dir
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    physical_reports = symlinked_booley_dir(project, tmp_path / "external-booley") / "flow-reports"
+    if linked == "below":
+        (tmp_path / "elsewhere").mkdir()
+        symlink_or_skip(physical_reports, tmp_path / "elsewhere", target_is_directory=True)
+        physical_reports = tmp_path / "elsewhere"
+    relative = Path("sim/1/targets") / _TARGET_SELECTOR
+    # The nested Campaign is published through the physical spelling so only the
+    # reference readers see the entry.
+    physical_nested = _nested_campaign(physical_reports / relative)
+    reports = project / ".booley" / "flow-reports"
+    target = reports / relative
+    nested = target / physical_nested.relative_to(physical_reports / relative)
+    public_path = target / "coverage.json"
+
+    if linked == "below":
+        physical_value = _reference(physical_reports / relative, physical_nested)
+        publish_coverage_campaign_reference(
+            physical_reports / relative / "coverage.json", physical_value
+        )
+        with pytest.raises(CoverageCampaignReferenceError):
+            resolve_coverage_campaign_reference(public_path)
+        return
+    value = _reference(target, nested)
+    assert publish_coverage_campaign_reference(public_path, value) == value
+    assert publish_coverage_campaign_reference(public_path, value) == value
+    assert resolve_coverage_campaign_reference(public_path).campaign_path == nested
+    persisted = resolve_persisted_coverage_campaign_reference(
+        reports, _persisted_reference(reports, public_path, value)
+    )
+    assert persisted.reference_path == public_path

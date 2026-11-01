@@ -21,22 +21,18 @@ __all__ = ["observation_test_runs"]
 
 def observation_test_runs(
     item: Mapping[str, object], observations: Sequence[Mapping[str, object]]
-) -> tuple[tuple[str, str], ...] | None:
+) -> tuple[tuple[str, str], ...]:
     """The ``(name, fingerprint)`` of the Test Run each observation observed.
 
     The n-th observation of a Test is the n-th Test Run of that Test in the
     work item; an observation without a Test is the item as a whole and takes
     its first Test Run. A Test that an unfiltered Cocotb batch discovered ran
     under the batch's unnamed invocation and is named with its seed.
-    ``None`` for a work item of a manifest before v4.
 
     Raises :class:`SimulationCampaignIntegrityError` when an observation has
     no Test Run in its work item.
     """
-    documents = item.get("test_runs")
-    if documents is None:
-        return None
-    runs = cast(tuple[Mapping[str, object], ...], documents)
+    runs = cast(tuple[Mapping[str, object], ...], item["test_runs"])
     unnamed = runs[0] if len(runs) == 1 and runs[0]["test"] is None else None
     taken: dict[object, int] = {}
     bound: list[tuple[str, str]] = []

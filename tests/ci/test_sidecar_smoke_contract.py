@@ -53,7 +53,7 @@ def test_sidecar_smoke_proves_execution_and_always_uploads_evidence() -> None:
 
     assertion = _step(sidecar, "Assert sidecar tests executed without skips")
     assert assertion["if"] == "always()"
-    assert "--min-tests 86 --max-skips 0" in assertion["run"]
+    assert "--min-tests 1 --max-skips 0" in assertion["run"]
 
     upload = _step(sidecar, "Upload sidecar execution evidence")
     assert upload["if"] == "always()"

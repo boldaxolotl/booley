@@ -28,7 +28,7 @@ from booley.audit import (
 )
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
-from booley.harness import developer_probe, doctor, host_diagnostics
+from booley.harness import colors, developer_probe, doctor, host_diagnostics
 from booley.harness.setup import readiness
 from booley.runtime import (
     auth_token,
@@ -45,7 +45,9 @@ from booley.targets.catalog import TargetCatalog
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
     _Rec,
+    _require_doctor_warning,
 )
+from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.harness import test_session_runtime as resolution_fixtures
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
@@ -389,9 +391,9 @@ def test_doctor_default_runs_tool_dry_runs_and_notes_missing_guidance(
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
-    output = capsys.readouterr().out
+    output = colors.strip_ansi(capsys.readouterr().out)
     assert rc == 0
-    assert "NOTE  project guidance file missing" in output
+    assert "  ·  project guidance file missing" in output
     tool_calls = [call for call in calls if "booley.flows.sim" in call]
     assert tool_calls
     assert tool_calls[0][:2] == ["doc" + "ker", "exec"]
@@ -412,11 +414,8 @@ def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     config_root = tmp_path / "config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
-    pending = issuance_invalidation.prepare(
-        str(tmp_path.resolve()),
-        cleanup_resources=False,
-    )
-    issuance_invalidation.cancel(pending)
+    issuance_invalidation.prepare(str(tmp_path.resolve()))
+    issuance_invalidation.cancel(str(tmp_path.resolve()))
     booley_config = config_root / "booley"
     booley_config.chmod(0o755)
     monkeypatch.setattr(doctor.session_runtime, "up", real_up)
@@ -425,7 +424,7 @@ def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
 
     captured = capsys.readouterr()
     assert result == 1
-    assert "FAIL" in captured.out
+    assert "  ✗  " in captured.out
     assert "could not enter the Sandbox" in captured.out
     assert str(booley_config) in captured.out
     assert "0755" in captured.out
@@ -501,7 +500,9 @@ permanent = true
 
     assert rc == 0
     output = capsys.readouterr().out
-    assert ("PASS  " not in output) is concise
+    # A pass row is "  ✓  <message>"; the counts table's "✓ passed" row always prints.
+    pass_row = "  ✓  devcontainer.json present and structurally current"
+    assert (pass_row not in colors.strip_ansi(output)) is concise
     stamp = doctor_stamp.load_stamp(booley_dir)
     assert stamp is not None, output
     assert stamp["fingerprint"] == doctor_stamp.compute_fingerprint(booley_dir, tmp_path)
@@ -582,9 +583,10 @@ def test_doctor_fails_and_does_not_stamp_agent_app_drift(
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
-    output = capsys.readouterr().out
+    output = colors.strip_ansi(capsys.readouterr().out)
     assert rc == 1
-    assert "FAIL  devcontainer.json BOOLEY_AGENT_APP 'claude'" in output
+    assert "  ✗  devcontainer.json BOOLEY_AGENT_APP 'claude'" in output
+    assert re.search(r"^  ✗ failed +1$", output, re.M)
     assert "[agent] provider 'codex'" in output
     assert doctor_stamp.load_stamp(booley_dir) is None
 
@@ -864,14 +866,15 @@ def test_doctor_deep_surfaces_synthesis_warning_verdict(
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=True), tmp_path)
 
-    output = capsys.readouterr().out
+    output = colors.strip_ansi(capsys.readouterr().out)
     assert rc == 0
-    assert "WARN  synth deep check [synth_fast] returned a WARN verdict" in output
-    # Issue #885: a flushed RUN line precedes the long check, and the summary
-    # states agent spend (the probe SKIPs host-side, so none).
-    run_line = "RUN   synth deep check [synth_fast] (real EDA run; timeout"
+    warn_row = "  !  synth deep check [synth_fast] returned a WARN verdict"
+    assert warn_row in output
+    # Issue #885: a flushed running-step line precedes the long check, and the
+    # summary states agent spend (the probe SKIPs host-side, so none).
+    run_line = "  ▸  synth deep check [synth_fast] (real EDA run; timeout"
     assert run_line in output
-    assert output.index(run_line) < output.index("WARN  synth deep check [synth_fast]")
+    assert output.index(run_line) < output.index(warn_row)
     assert "Agent-backed checks: no agent call ran (0 tokens, $0.00)." in output
     assert doctor_stamp.load_stamp(booley_dir) is None
 
@@ -1329,8 +1332,8 @@ def test_core_resolve_announces_before_container_run(
     doctor._run_core_resolve_checks(project, "docker", rec.p, rec.s, rec.f)
 
     assert (
-        "RUN   .core resolvability of 1 Target(s) in the Sandbox "
-        "(FuseSoC configure; timeout 10m 00s)" in printed_before_run[0]
+        "  ▸  .core resolvability of 1 Target(s) in the Sandbox "
+        "(FuseSoC configure; timeout 10m 00s)" in colors.strip_ansi(printed_before_run[0])
     )
 
 
@@ -1614,6 +1617,11 @@ def test_flow_command_passes_internal_selftest_kind_into_session(tmp_path, monke
 def _tests_toml_project_audit(tmp_path, tests_toml_text: str) -> doctor.ProjectAudit:
     booley_dir = _write_project(tmp_path)
     (booley_dir / "tests.toml").write_text(tests_toml_text, encoding="utf-8")
+    (tmp_path / "c910.core").write_text(
+        "CAPI=2:\nname: acme:ip:c910:0\ntargets:\n  sim_core:\n    flow: sim\n"
+        "    flow_options: {tool: verilator}\n",
+        encoding="utf-8",
+    )
     return doctor.ProjectAudit(
         project_root=tmp_path,
         booley_dir=booley_dir,
@@ -2328,6 +2336,38 @@ class TestCoreAudit:
         rec = _audit(tmp_path)
         assert any("project has no .core" in m for m in rec.fails())
 
+    @pytest.mark.parametrize(
+        "shape",
+        ["{A: 1}", "[A, B=2]", "A", ""],
+        ids=["map", "list", "string", "null"],
+    )
+    def test_flow_options_defines_fails_with_vlogdefine_hint(self, tmp_path: Path, shape: str):
+        # No Flow applies Target `flow_options.defines`; the key must FAIL by
+        # presence (even null) and point at `vlogdefine` parameters.
+        core = _CLEAN_SIM_CORE.replace(
+            "      tool: verilator\n",
+            f"      tool: verilator\n      defines: {shape}\n",
+        )
+        (tmp_path / "design.core").write_text(core, encoding="utf-8")
+        failures: list[tuple[str, str]] = []
+        project = doctor.ProjectAudit(
+            project_root=tmp_path,
+            booley_dir=tmp_path / ".booley",
+            booley_toml={},
+            configs_toml={"x": {}},
+            first_target="x",
+        )
+        (tmp_path / ".booley").mkdir()
+        rec = _Rec()
+        doctor._run_core_audit(
+            project, rec.p, rec.w, rec.s, lambda msg, fix="": failures.append((msg, fix))
+        )
+        matches = [item for item in failures if "flow_options.defines" in item[0]]
+        assert len(matches) == 1
+        message, fix = matches[0]
+        assert "::demo:0#sim" in message
+        assert "vlogdefine" in fix
+
     def test_clean_core_passes(self, tmp_path: Path):
         (tmp_path / "design.core").write_text(_CLEAN_SIM_CORE, encoding="utf-8")
         rec = _audit(tmp_path)
@@ -2780,12 +2820,12 @@ targets:
 # =============================================================
 
 
-class TestWcpServerCheck:
-    """_check_wcp_server probes the live VaporView WCP port, not just the spec.
+class TestViewerBridgeCheck:
+    """_check_viewer_bridge asks the attached window's bridge, not just the spec.
 
     The gap it exists to close: a devcontainer.json that asks for the viewer
-    correctly (so every static check passes) still leaves the server dark on the
-    first window of a fresh container, and only `bwave gui` ever finds out.
+    correctly (so every static check passes) can still have no window running
+    the Booley bridge or VaporView, and only `bwave gui` would find out.
     """
 
     @staticmethod
@@ -2800,6 +2840,8 @@ class TestWcpServerCheck:
             first_target="x",
         )
 
+    _HEALTHY: tuple[dict, ...] = ({"vaporview": "1.6.0", "error": None},)
+
     def _run(
         self,
         tmp_path,
@@ -2807,19 +2849,30 @@ class TestWcpServerCheck:
         *,
         docker="docker",
         container="vsc-proj-abc-uid",
-        listening: bool | None = True,
+        bridges=_HEALTHY,
         attached: bool | None = True,
         in_container: bool = False,
         probe=None,
         extension_state=None,
         extension_probe=None,
+        version_calls: list | None = None,
     ) -> _Rec:
         from booley.runtime import runtime_context
         from booley.runtime.vaporview import ExtensionState
 
+        # The version line is covered by TestVaporviewVersionCheck; here it only
+        # records how it was invoked so the bridge assertions stay focused.
+        monkeypatch.setattr(
+            doctor,
+            "_check_vaporview_version",
+            lambda argv, where, *_: (version_calls if version_calls is not None else []).append(
+                (argv, where)
+            ),
+        )
+
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: in_container)
         monkeypatch.setattr(session_runtime, "vscode_session_container", lambda root: container)
-        monkeypatch.setattr(doctor, "_wcp_port_listening", probe or (lambda argv, port: listening))
+        monkeypatch.setattr(doctor, "_viewer_bridges", probe or (lambda argv: bridges))
         monkeypatch.setattr(doctor, "_vscode_extension_host_running", lambda argv: attached)
         monkeypatch.setattr(
             doctor,
@@ -2831,58 +2884,66 @@ class TestWcpServerCheck:
         def fail(message, fix=""):
             rec.events.append(("fail", f"{message}\n{fix}"))
 
-        doctor._check_wcp_server(self._project(tmp_path), docker, rec.p, rec.s, fail)
+        doctor._check_viewer_bridge(self._project(tmp_path), docker, rec.p, rec.s, fail)
         return rec
 
-    def test_passes_when_port_answers(self, tmp_path, monkeypatch):
+    def test_passes_when_a_bridge_reports_vaporview(self, tmp_path, monkeypatch):
         rec = self._run(tmp_path, monkeypatch)
         assert rec.kinds() == {"pass"}
 
-    def test_fails_when_port_is_dark(self, tmp_path, monkeypatch):
-        rec = self._run(tmp_path, monkeypatch, listening=False)
+    def test_names_several_windows(self, tmp_path, monkeypatch):
+        rec = self._run(tmp_path, monkeypatch, bridges=list(self._HEALTHY) * 2)
+        assert any("(2 windows)" in m for lvl, m in rec.events if lvl == "pass")
+
+    def test_fails_when_no_window_answers(self, tmp_path, monkeypatch):
+        rec = self._run(tmp_path, monkeypatch, bridges=[])
         assert rec.kinds() == {"fail"}
         failure = next(m for lvl, m in rec.events if lvl == "fail")
         # The fix nobody guesses: reload, not rebuild.
         assert "Reload Window" in failure
-        assert "do not run 'WCP: Start Server'" in failure
+        assert "refresh the Sandbox" in failure
         assert "vsc-proj-abc-uid" in failure
 
-    def test_dark_port_with_missing_extension_leads_with_install(self, tmp_path, monkeypatch):
+    def test_window_without_vaporview_fails_with_its_reason(self, tmp_path, monkeypatch):
         from booley.runtime.vaporview import ExtensionState
 
         rec = self._run(
             tmp_path,
             monkeypatch,
-            listening=False,
+            bridges=[*self._HEALTHY, {"vaporview": None, "error": "VaporView is not installed"}],
             extension_state=ExtensionState.MISSING,
         )
 
         failure = next(m for lvl, m in rec.events if lvl == "fail")
-        assert "VaporView extension is not installed" in failure
-        assert "Install from VSIX" in failure
-        assert "postAttach VaporView patch only takes effect" not in failure
+        assert "1 of 2 window(s)" in failure
+        assert "VaporView is not installed" in failure
+        assert "--install-extension /usr/local/libexec/booley/vaporview-" in failure
 
-    def test_dark_port_with_unknown_extension_state_reports_uncertainty(
+    def test_dark_bridge_with_missing_extension_leads_with_install(self, tmp_path, monkeypatch):
+        from booley.runtime.vaporview import ExtensionState
+
+        rec = self._run(tmp_path, monkeypatch, bridges=[], extension_state=ExtensionState.MISSING)
+
+        failure = next(m for lvl, m in rec.events if lvl == "fail")
+        assert "VaporView extension is not installed" in failure
+        assert "--install-extension /usr/local/libexec/booley/vaporview-" in failure
+        assert "starts its viewer bridge" not in failure
+
+    def test_dark_bridge_with_unknown_extension_state_reports_uncertainty(
         self, tmp_path, monkeypatch
     ):
         from booley.runtime.vaporview import ExtensionState
 
-        rec = self._run(
-            tmp_path,
-            monkeypatch,
-            listening=False,
-            extension_state=ExtensionState.UNKNOWN,
-        )
+        rec = self._run(tmp_path, monkeypatch, bridges=[], extension_state=ExtensionState.UNKNOWN)
 
         failure = next(m for lvl, m in rec.events if lvl == "fail")
         assert "could not determine whether VaporView is installed" in failure
         assert "VaporView extension is not installed" not in failure
 
-    def test_listening_port_does_not_probe_extension_state(self, tmp_path, monkeypatch):
+    def test_healthy_bridge_does_not_probe_extension_state(self, tmp_path, monkeypatch):
         rec = self._run(
             tmp_path,
             monkeypatch,
-            listening=True,
             extension_probe=lambda argv: pytest.fail("extension state must not be probed"),
         )
 
@@ -2894,32 +2955,185 @@ class TestWcpServerCheck:
 
     def test_skips_without_vscode_container(self, tmp_path, monkeypatch):
         # A headless `booley session up` container has no extension host and so
-        # no WCP server by design — never a finding.
+        # no bridge by design — never a finding.
         rec = self._run(tmp_path, monkeypatch, container=None)
         assert rec.kinds() == {"skip"}
         assert any("no VS Code devcontainer" in m for _, m in rec.events)
 
     def test_skips_when_devcontainer_has_no_attached_extension_host(self, tmp_path, monkeypatch):
-        rec = self._run(tmp_path, monkeypatch, attached=False, listening=False)
+        rec = self._run(tmp_path, monkeypatch, attached=False, bridges=[])
         assert rec.kinds() == {"skip"}
         assert any("no VS Code extension host attached" in m for _, m in rec.events)
 
     def test_skips_when_probe_cannot_run(self, tmp_path, monkeypatch):
-        rec = self._run(tmp_path, monkeypatch, listening=None)
+        rec = self._run(tmp_path, monkeypatch, bridges=None)
         assert rec.kinds() == {"skip"}
 
-    def test_in_container_probes_loopback_without_docker(self, tmp_path, monkeypatch):
+    def test_in_container_probes_its_own_sockets_without_docker(self, tmp_path, monkeypatch):
         """Inside the sandbox there is no docker and no container name to find —
-        the probe must still run, against the same socket `bwave gui` dials."""
+        the probe must still run, against the sockets `bwave gui` uses."""
         seen: list[list[str]] = []
 
-        def probe(argv, port):
+        def probe(argv):
             seen.append(argv)
-            return False
+            return []
 
         rec = self._run(tmp_path, monkeypatch, docker=None, in_container=True, probe=probe)
         assert seen == [[]]  # no `docker exec` prefix
         assert rec.kinds() == {"fail"}
+
+    def test_version_check_runs_in_the_attached_container(self, tmp_path, monkeypatch):
+        calls: list = []
+        self._run(tmp_path, monkeypatch, version_calls=calls)
+        assert calls == [(["docker", "exec", "vsc-proj-abc-uid"], " in 'vsc-proj-abc-uid'")]
+
+    def test_version_check_runs_locally_in_container(self, tmp_path, monkeypatch):
+        calls: list = []
+        self._run(tmp_path, monkeypatch, docker=None, in_container=True, version_calls=calls)
+        assert calls == [([], "")]
+
+    def test_version_check_skipped_without_extension_host(self, tmp_path, monkeypatch):
+        calls: list = []
+        self._run(tmp_path, monkeypatch, attached=False, version_calls=calls)
+        assert calls == []
+
+
+class TestVaporviewVersionCheck:
+    """_check_vaporview_version names both versions when the build is not the verified one."""
+
+    def _run(self, monkeypatch, versions):
+        monkeypatch.setattr(doctor, "_vaporview_installed_versions", lambda argv: versions)
+        rec = _Rec()
+
+        def fail(message, fix=""):
+            rec.events.append(("fail", f"{message}\n{fix}"))
+
+        doctor._check_vaporview_version(["docker", "exec", "c"], " in 'c'", rec.p, rec.s, fail)
+        return rec
+
+    def test_verified_version_passes(self, monkeypatch):
+        from booley.runtime import vaporview
+
+        rec = self._run(monkeypatch, [vaporview.VERIFIED_VERSION])
+        assert rec.kinds() == {"pass"}
+
+    def test_other_version_fails_with_both_versions_and_remedy(self, monkeypatch):
+        from booley.runtime import vaporview
+
+        rec = self._run(monkeypatch, ["9.9.9"])
+        assert rec.kinds() == {"fail"}
+        failure = next(m for lvl, m in rec.events if lvl == "fail")
+        assert "VaporView 9.9.9 is installed in 'c'" in failure
+        assert f"verifies only {vaporview.VERIFIED_VERSION}" in failure
+        assert f"code --install-extension {vaporview.BUNDLED_VSIX}" in failure
+        assert "Reload Window" in failure
+
+    def test_verified_alongside_other_still_fails(self, monkeypatch):
+        from booley.runtime import vaporview
+
+        rec = self._run(monkeypatch, [vaporview.VERIFIED_VERSION, "9.9.9"])
+        assert rec.kinds() == {"fail"}
+
+    @pytest.mark.parametrize("versions", [None, []], ids=["unknown", "not-installed"])
+    def test_unknown_or_absent_skips(self, monkeypatch, versions):
+        rec = self._run(monkeypatch, versions)
+        assert rec.kinds() == {"skip"}
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "expected"),
+    [
+        (0, '["1.5.4"]\n', ["1.5.4"]),
+        (0, "[]\n", []),
+        (4, "", None),
+        (1, "Traceback (ImportError)", None),
+        (0, "not json", None),
+        (0, "[1]", None),
+    ],
+)
+def test_vaporview_versions_probe_parses_output(monkeypatch, returncode, stdout, expected):
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+
+    assert doctor._vaporview_installed_versions(["docker", "exec", "s"]) == expected
+    assert seen == [
+        ["docker", "exec", "s", "python3", "-c", doctor._VAPORVIEW_VERSIONS_PROBE_SOURCE]
+    ]
+
+
+def _run_extension_host_probe(monkeypatch, tmp_path, cmdlines):
+    """Execute the real probe source against fake /proc cmdline files; return its exit code."""
+    import pathlib
+
+    fakes = []
+    for index, cmdline in enumerate(cmdlines):
+        path = tmp_path / str(index) / "cmdline"
+        if cmdline is not None:  # None = a process that exits between glob and read
+            path.parent.mkdir()
+            path.write_bytes(cmdline)
+        fakes.append(path)
+    real_glob = pathlib.Path.glob
+
+    def glob(self, pattern, *args, **kwargs):
+        if self == pathlib.Path("/proc"):
+            return iter(fakes)
+        return real_glob(self, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "glob", glob)
+    with pytest.raises(SystemExit) as exited:
+        exec(compile(doctor._VSCODE_EXTENSION_HOST_PROBE_SOURCE, "<probe>", "exec"), {})
+    return exited.value.code
+
+
+_EXTENSION_HOST_CMDLINE = b"/vscode/node\x00/vscode/out/bootstrap-fork\x00--type=extensionHost\x00"
+
+
+@pytest.mark.parametrize(
+    ("cmdlines", "expected"),
+    [
+        ([b"/usr/bin/sleep\x00100\x00", None, _EXTENSION_HOST_CMDLINE], 0),
+        ([b"/vscode/out/bootstrap-fork\x00--type=ptyHost\x00", None], 3),
+        ([], 3),
+    ],
+)
+def test_extension_host_probe_source_runs_and_reports_attachment(
+    monkeypatch, tmp_path, cmdlines, expected
+):
+    # The probe runs as `python3 -c` in the Sandbox, so execute the real source:
+    # a syntax error used to exit 1, which read as "no window attached".
+    assert _run_extension_host_probe(monkeypatch, tmp_path, cmdlines) == expected
+
+
+@pytest.mark.parametrize(
+    ("returncode", "expected"),
+    [(0, True), (3, False), (1, None), (2, None)],
+)
+def test_extension_host_probe_exit_codes(monkeypatch, returncode, expected):
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, returncode, stdout="", stderr="")
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+
+    assert doctor._vscode_extension_host_running(["docker", "exec", "s"]) is expected
+    assert seen == [
+        ["docker", "exec", "s", "python3", "-c", doctor._VSCODE_EXTENSION_HOST_PROBE_SOURCE]
+    ]
+
+
+@pytest.mark.parametrize(
+    "name",
+    sorted(n for n in dir(doctor) if n.endswith("_PROBE_SOURCE")),
+)
+def test_every_python_probe_source_compiles(name):
+    compile(getattr(doctor, name), name, "exec")
 
 
 @pytest.mark.parametrize(
@@ -2950,35 +3164,65 @@ def test_vaporview_extension_probe_preserves_state_and_prefix(monkeypatch, retur
     ]
 
 
-class TestWcpPortProbe:
-    """_wcp_port_listening turns a TCP connect into pass/fail/unknown."""
+@pytest.mark.parametrize(
+    ("outcome", "stdout", "expected"),
+    [
+        (
+            0,
+            '{"bridges": [{"vaporview": "1.6.0", "error": null}]}',
+            [{"vaporview": "1.6.0", "error": None}],
+        ),
+        (0, '{"bridges": []}', []),
+        (1, "Traceback (ImportError)", None),
+        (0, "not json", None),
+        (0, "[]", None),
+        (0, '{"bridges": [{"vaporview": 5, "error": null}]}', None),
+        (FileNotFoundError("docker"), "", None),
+        (subprocess.TimeoutExpired("docker", 20), "", None),
+    ],
+    ids=[
+        "healthy",
+        "none",
+        "old-booley",
+        "garbage",
+        "not-object",
+        "bad-version",
+        "no-docker",
+        "timeout",
+    ],
+)
+def test_viewer_bridge_probe_parses_output(monkeypatch, outcome, stdout, expected):
+    seen = []
 
-    @staticmethod
-    def _fake_run(monkeypatch, outcome):
-        """Replace subprocess.run; `outcome` is a return code or an exception."""
+    def run(argv, **kwargs):
+        seen.append(argv)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return subprocess.CompletedProcess(argv, outcome, stdout=stdout, stderr="")
 
-        def run(argv, **kwargs):
-            if isinstance(outcome, Exception):
-                raise outcome
-            return subprocess.CompletedProcess(argv, outcome, "", "")
+    monkeypatch.setattr(doctor.subprocess, "run", run)
 
-        monkeypatch.setattr(doctor.subprocess, "run", run)
+    assert doctor._viewer_bridges(["docker", "exec", "c"]) == expected
+    assert seen == [["docker", "exec", "c", "python3", "-c", doctor._VIEWER_BRIDGE_PROBE_SOURCE]]
 
-    def test_true_on_zero_exit(self, monkeypatch):
-        self._fake_run(monkeypatch, 0)
-        assert doctor._wcp_port_listening(["docker", "exec", "c"], 54322) is True
 
-    def test_false_on_refused(self, monkeypatch):
-        self._fake_run(monkeypatch, 1)
-        assert doctor._wcp_port_listening(["docker", "exec", "c"], 54322) is False
-
-    def test_none_when_unrunnable(self, monkeypatch):
-        self._fake_run(monkeypatch, FileNotFoundError("docker"))
-        assert doctor._wcp_port_listening(["docker", "exec", "c"], 54322) is None
-
-    def test_none_on_timeout(self, monkeypatch):
-        self._fake_run(monkeypatch, subprocess.TimeoutExpired("docker", 20))
-        assert doctor._wcp_port_listening(["docker", "exec", "c"], 54322) is None
+def test_viewer_bridge_probe_source_runs_against_the_real_client(tmp_path):
+    """The probe text must import and print what _viewer_bridges parses."""
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "PYTHONPATH": str(Path(doctor.__file__).parents[2]),
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", doctor._VIEWER_BRIDGE_PROBE_SOURCE],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"bridges": []}
 
 
 # =============================================================
@@ -3009,6 +3253,7 @@ class _Collector:
         self.passed.append(msg)
 
     def _warn(self, msg: str, fix: str = "") -> None:
+        _require_doctor_warning(msg)
         self.warned.append(msg)
 
     def _note(self, msg: str) -> None:
@@ -4284,7 +4529,7 @@ def test_large_design_does_not_count_as_a_doctor_warning(tmp_path, capsys):
     doctor._check_design_size(_derived_project_audit(proj), reporter.pass_, reporter.note_)
     assert reporter.counts["note"] == 1
     assert reporter.counts["warn"] == 0
-    assert "NOTE  large design" in capsys.readouterr().out
+    assert "  ·  large design" in colors.strip_ansi(capsys.readouterr().out)
 
 
 def test_design_size_passes_for_small_design_and_skips_pruned_dirs(tmp_path):
@@ -5639,9 +5884,10 @@ class TestFailPathSelfTest:
         doctor._run_selftest_checks(project, runtime, rec.p, rec.w, rec.s, rec.f)
 
         assert len(printed_before_run) == 2
-        assert "RUN   sim self-test good case" in printed_before_run[0]
-        assert "real EDA run; timeout" in printed_before_run[0]
-        assert "RUN   sim self-test bad case" in printed_before_run[1]
+        good_start, bad_start = (colors.strip_ansi(text) for text in printed_before_run)
+        assert "  ▸  sim self-test good case" in good_start
+        assert "real EDA run; timeout" in good_start
+        assert "  ▸  sim self-test bad case" in bad_start
 
     def test_selftests_cannot_inherit_ticket_acceptance_context(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, True)
@@ -5906,8 +6152,8 @@ class TestDeveloperProbe:
         reporter.finish()
 
         assert (
-            "RUN   provider-backed check: Specialist provider memory and authorization probe"
-            in seen_before_call[0]
+            "  ▸  provider-backed check: Specialist provider memory and authorization probe"
+            in colors.strip_ansi(seen_before_call[0])
         )
         assert (
             "Agent-backed checks: 1 agent call, 1,234 input tokens (1,000 cached), "
@@ -5941,6 +6187,7 @@ class TestDeveloperProbe:
         class _Cfg:
             def __init__(self):
                 self.settings = self
+                self.effort_pin = None
 
             def model_for_tier(self, tier):
                 return "test-model"
@@ -6042,6 +6289,7 @@ class TestDeveloperProbe:
         class _Cfg:
             def __init__(self):
                 self.settings = self
+                self.effort_pin = None
 
             def model_for_tier(self, tier):
                 assert tier == "light"  # cheapest real call
@@ -6084,6 +6332,7 @@ class TestDeveloperProbe:
         class _Cfg:
             def __init__(self):
                 self.settings = self
+                self.effort_pin = None
 
             def model_for_tier(self, tier):
                 return "test-model"
@@ -6812,7 +7061,7 @@ class TestReporterAcceptsFixHints:
     def test_warn_without_a_fix_hint_prints_no_empty_fix_line(self, capsys):
         reporter = doctor._Reporter.create()
         reporter.warn_(doctor.warning("test.example", "just a warning"))
-        assert "fix:" not in capsys.readouterr().out
+        assert "→" not in capsys.readouterr().out
 
     def test_plain_warning_without_stable_id_is_rejected(self):
         reporter = doctor._Reporter.create()
@@ -6830,13 +7079,16 @@ def test_concise_reporter_suppresses_only_pass_rendering(capsys) -> None:
     reporter.fail_("broken runtime", "repair runtime")
     exit_code = reporter.finish()
 
-    output = capsys.readouterr().out
-    assert "PASS  healthy Target" not in output
-    assert "NOTE  informational detail" in output
-    assert "WARN  actionable warning" in output
-    assert "SKIP  optional probe unavailable" in output
-    assert "FAIL  broken runtime" in output
-    assert "1 passed, 1 warning(s)" in output
+    output = colors.strip_ansi(capsys.readouterr().out)
+    # The counts table's "✓ passed" row always prints; only the pass message row is hidden.
+    assert "  ✓  healthy Target" not in output
+    assert "  ·  informational detail" in output
+    assert "  !  actionable warning" in output
+    assert "test.concise" in output
+    assert "  ·  optional probe unavailable" in output
+    assert "  ✗  broken runtime" in output
+    assert re.search(r"^  ✓ passed +1$", output, re.M)
+    assert re.search(r"^  ! warnings +1$", output, re.M)
     assert reporter.counts == {
         "pass": 1,
         "fail": 1,
@@ -7476,6 +7728,8 @@ class TestNoDockerSkipReason:
         from booley.harness import activity_hooks, web_isolation
 
         _set_venue(monkeypatch, True)
+        # The egress probe only runs in a marked Sandbox; keep this test off real DNS.
+        monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
         monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
         monkeypatch.setattr(activity_hooks, "hooks_error", lambda: None)
         rec = _Rec()
@@ -7834,8 +8088,8 @@ def test_core_resolve_announces_before_host_fallback(tmp_path: Path, monkeypatch
     doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
 
     assert (
-        "RUN   .core resolvability of 1 Target(s) on the host (FuseSoC configure; no timeout)"
-        in capsys.readouterr().out
+        "  ▸  .core resolvability of 1 Target(s) on the host (FuseSoC configure; no timeout)"
+        in colors.strip_ansi(capsys.readouterr().out)
     )
 
 
@@ -8215,9 +8469,10 @@ def test_doctor_renders_removed_documentation_item_with_fix(
 
     result = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
-    output = capsys.readouterr().out
+    output = colors.strip_ansi(capsys.readouterr().out)
     assert result == (0 if severity == "WARN" else 1)
-    assert any(severity in line and item in line for line in output.splitlines())
+    glyph = {"WARN": "!", "FAIL": "✗"}[severity]
+    assert any(line.startswith(f"  {glyph}  ") and item in line for line in output.splitlines())
     assert fix in output
 
 
@@ -8859,7 +9114,7 @@ def test_seed_mount_policy_state_partitions_belong_to_same_project(tmp_path, mon
 
 
 @pytest.mark.parametrize("inventory", ["editor", "headless", "absent", "unknown"])
-def test_wcp_project_sandbox_resolution(
+def test_viewer_bridge_project_sandbox_resolution(
     workspace, project_sandbox_resolution, monkeypatch, inventory
 ):
     fixture = project_sandbox_resolution
@@ -8875,7 +9130,9 @@ def test_wcp_project_sandbox_resolution(
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(doctor, "_vscode_extension_host_running", lambda _: False)
     rec = _Rec()
-    doctor._check_wcp_server(TestWcpServerCheck._project(workspace), "docker", rec.p, rec.s, rec.f)
+    doctor._check_viewer_bridge(
+        TestViewerBridgeCheck._project(workspace), "docker", rec.p, rec.s, rec.f
+    )
     if inventory == "unknown":
         assert rec.kinds() == {"fail"}
         assert any("identity disagrees" in message for message in rec.fails())
@@ -9204,3 +9461,136 @@ def test_deep_doctor_synthesis_legacy_and_malformed(tmp_path):
     )
     assert doctor._synth_deep_report_error("synth", "synth", True, tmp_path) == ""
     assert doctor._synth_deep_report_error("lint", "lint", False, tmp_path) == ""
+
+
+def test_cocotb_select_check_reads_the_qualified_section(tmp_path):
+    booley_dir = _write_project(tmp_path)
+    (booley_dir / "tests.toml").write_text(
+        '["unit#sim_fast"]\nselect = "+t={name}"\n', encoding="utf-8"
+    )
+    project = doctor.ProjectAudit(
+        project_root=tmp_path,
+        booley_dir=booley_dir,
+        booley_toml={},
+        configs_toml={},
+        first_target="sim_fast",
+    )
+    ref = fusesoc_registry.TargetRef(
+        name="sim_fast",
+        vlnv="::unit:0",
+        core_file=tmp_path / "unit.core",
+        eda_tool="verilator",
+        flow="sim",
+        cocotb_module="tb",
+    )
+    failures: list[str] = []
+    doctor._check_cocotb_targets(
+        project,
+        {"sim_fast": ref},
+        lambda _message: None,
+        lambda *_args, **_kwargs: None,
+        lambda _message: None,
+        lambda message, _fix="": failures.append(message),
+    )
+    assert any("`select` plusarg template" in message for message in failures)
+
+
+# =============================================================
+# #2157: Doctor ownership through a symlinked Booley Directory
+# =============================================================
+
+
+def _symlinked_state_core(tmp_path: Path, text: str) -> Path:
+    """A Project whose `.booley` entry links to an external directory with one core."""
+    project = tmp_path / "project"
+    project.mkdir()
+    external = symlinked_booley_dir(project, tmp_path / "external-booley")
+    (project / "dut.v").write_text("module dut; endmodule\n", encoding="utf-8")
+    (external / "cores" / "demo.core").write_text(text, encoding="utf-8")
+    return project
+
+
+class TestSymlinkedBooleyDirectoryOwnership:
+    def test_legacy_api_audit_treats_stealth_core_as_owned(self, tmp_path):
+        project = _symlinked_state_core(
+            tmp_path, TestCheckLegacyCoreTargets._LEGACY_CORE.replace("i2c.v", "dut.v")
+        )
+        refs = {handle.name: handle for handle in TargetCatalog.build(project).list()}
+        passes, warns, notes = [], [], []
+        doctor._check_legacy_core_targets(
+            _schema_audit(project), project, refs, passes.append, warns.append, _note=notes.append
+        )
+        assert len(warns) == 1
+        assert "legacy FuseSoC tools-section target" in warns[0]
+        assert not notes
+
+    def test_target_naming_audit_notes_stealth_core(self, tmp_path):
+        project = _symlinked_state_core(
+            tmp_path,
+            TestCheckTargetNaming._CORE.replace("{targets}", TestCheckTargetNaming._MISNAMED),
+        )
+        refs = {handle.name: handle for handle in TargetCatalog.build(project).list()}
+        passes, notes = [], []
+        doctor._check_target_naming(
+            _schema_audit(project), project, refs, passes.append, notes.append
+        )
+        assert len(notes) == 1
+        assert "rename it 'sim_soc'" in notes[0]
+
+    def test_stray_default_audit_reports_selected_stealth_core_once(self, tmp_path):
+        selected = TestCheckStrayDefaultTargets._STANDALONE.replace(
+            "flow_options: {tool: verilator}",
+            "flow_options: {tool: verilator, booley: {doctor: [sim]}}",
+        )
+        project = _symlinked_state_core(tmp_path, selected)
+        passes, warns = [], []
+        doctor._check_stray_default_targets(
+            _schema_audit(project, {"flows": {"sim": {}}}), project, passes.append, warns.append
+        )
+        assert len(warns) == 1
+        assert "declares a 'default:' Target" in warns[0]
+        assert passes == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory symlink requires privilege")
+def test_doctor_fails_on_booley_dir_pin_mismatch(tmp_path, monkeypatch):
+    """An unpinned or retargeted linked entry is one FAIL; Doctor then stops."""
+    from booley.core import booley_dir_pin
+    from booley.harness import booley as cli
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    for name in ("ext-a", "ext-b"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "booley.toml").write_text("[project]\n", encoding="utf-8")
+    entry = project / ".booley"
+    entry.symlink_to(tmp_path / "ext-a", target_is_directory=True)
+    args = argparse.Namespace(verbose=False, deep=False)
+
+    unpinned = doctor.run_doctor_result(args, project)
+    booley_dir_pin.write_pin(project, booley_dir_pin.current_target(entry))
+    entry.unlink()
+    entry.symlink_to(tmp_path / "ext-b", target_is_directory=True)
+    retargeted = doctor.run_doctor_result(args, project)
+
+    for result, remedy in ((unpinned, "booley init"), (retargeted, "--repin-booley-dir")):
+        assert len(result.findings) == 1
+        finding = result.findings[0]
+        assert finding.severity is Severity.FAIL
+        assert finding.check_id == "project.booley-dir-pin"
+        assert remedy in finding.fix
+        assert finding.fix not in finding.message  # the remedy is reported once, as the fix
+        assert result.exit_code == 1
+    cli._require_command_project("doctor", project)
+    for command in ("session", "targets"):
+        with pytest.raises(booley_dir_pin.BooleyDirPinError):
+            cli._require_command_project(command, project)
+
+    # An ancestor's untrusted link is not this checkout's FAIL to report.
+    inner = project / "inner"
+    inner.mkdir()
+    subprocess.run(["git", "init", str(inner)], check=True, capture_output=True, timeout=30)
+    with pytest.raises(booley_dir_pin.BooleyDirPinError):
+        cli._require_command_project("doctor", inner)

@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from tests import eda_grant_support
 
 from booley.eda import cli
 from booley.eda.provisioning import authority
@@ -25,7 +26,7 @@ class _DirectGrantMutator:
         return False
 
     def add(self, project, kind, *, installation, license_profile):
-        return authority._add_grant(
+        return eda_grant_support.add_grant(
             project,
             kind,
             installation=installation,
@@ -33,11 +34,15 @@ class _DirectGrantMutator:
         )
 
     def revoke(self, project, kind):
-        return authority._revoke_grant(project, kind)
+        return eda_grant_support.revoke_grant(project, kind)
 
 
-def _run(args: argparse.Namespace, project: Path) -> int:
-    return cli.run(args, project, grant_mutator=_DirectGrantMutator())
+def _run(args: argparse.Namespace, project: Path, mutator: cli.GrantMutator | None = None) -> int:
+    from booley.harness import eda_view
+
+    return cli.run(
+        args, project, grant_mutator=mutator or _DirectGrantMutator(), record_view=eda_view
+    )
 
 
 def test_grant_add_prints_informative_success(
@@ -46,7 +51,7 @@ def test_grant_add_prints_informative_success(
     project = tmp_path / "project"
     project.mkdir()
     grant = authority.ProjectGrant(str(project), "vivado", "vivado_2025_2", None)
-    monkeypatch.setattr(authority, "_add_grant", lambda *_args, **_kwargs: grant)
+    monkeypatch.setattr(eda_grant_support, "add_grant", lambda *_args, **_kwargs: grant)
 
     args = _parse(
         "grant",
@@ -70,7 +75,7 @@ def test_grant_add_json_preserves_record_shape(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     grant = authority.ProjectGrant(str(tmp_path), "vivado", "vivado_2025_2", None)
-    monkeypatch.setattr(authority, "_add_grant", lambda *_args, **_kwargs: grant)
+    monkeypatch.setattr(eda_grant_support, "add_grant", lambda *_args, **_kwargs: grant)
 
     args = _parse("grant", "add", str(tmp_path), "--kind", "vivado", "--json")
     assert _run(args, tmp_path) == 0
@@ -94,26 +99,12 @@ def test_grant_add_json_preserves_record_shape(
         ),
         ("installation", "remove", {"removed": "vivado"}, "Removed EDA installation 'vivado'."),
         (
-            "installation",
-            "show",
-            {"name": "vivado", "kind": "vivado"},
-            "EDA installation:\n  vivado: kind=vivado",
-        ),
-        ("installation", "list", [], "EDA installations:\n  none"),
-        (
             "license",
             "register",
             {"name": "site", "server_ipv4": "10.0.0.1", "lmgrd_port": 2100},
             "Registered License Profile 'site' for 10.0.0.1:2100.",
         ),
         ("license", "remove", {"removed": "site"}, "Removed License Profile 'site'."),
-        (
-            "license",
-            "show",
-            {"name": "site", "server_ipv4": "10.0.0.1"},
-            "License Profile:\n  site: server_ipv4=10.0.0.1",
-        ),
-        ("license", "list", [], "License Profiles:\n  none"),
     ],
 )
 def test_human_renderers_cover_each_authority_operation(
@@ -136,7 +127,7 @@ def test_grant_human_output_describes_both_authority_sources(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     grant = authority.ProjectGrant(str(tmp_path), "vivado", "vivado_2025_2", "site")
-    monkeypatch.setattr(authority, "_add_grant", lambda *_args, **_kwargs: grant)
+    monkeypatch.setattr(eda_grant_support, "add_grant", lambda *_args, **_kwargs: grant)
 
     assert (
         _run(
@@ -166,8 +157,8 @@ def test_revoke_does_not_repeat_authority_cleanup(
     grant = authority.ProjectGrant(str(tmp_path), "vivado")
     calls: list[tuple[Path, str]] = []
     monkeypatch.setattr(
-        authority,
-        "_revoke_grant",
+        eda_grant_support,
+        "revoke_grant",
         lambda project, kind: (calls.append((project, kind)), grant)[1],
     )
 
@@ -214,14 +205,7 @@ def test_grant_list_fails_closed_while_runtime_recovery_is_pending(
     mutator = _DirectGrantMutator()
     mutator.recovery_pending = lambda: True
 
-    assert (
-        cli.run(
-            _parse("grant", "list"),
-            Path("/project"),
-            grant_mutator=mutator,
-        )
-        == 2
-    )
+    assert _run(_parse("grant", "list"), Path("/project"), mutator) == 2
     assert "recovery is pending" in capsys.readouterr().err
 
 
@@ -232,24 +216,19 @@ def test_pending_recovery_does_not_bypass_coordinated_grant_mutation(
     grant = authority.ProjectGrant(str(tmp_path), "vivado")
     mutator = _DirectGrantMutator()
     mutator.recovery_pending = lambda: True
-    monkeypatch.setattr(authority, "_revoke_grant", lambda *_args: grant)
+    monkeypatch.setattr(eda_grant_support, "revoke_grant", lambda *_args: grant)
 
-    assert (
-        cli.run(
-            _parse("grant", "revoke", str(tmp_path), "--kind", "vivado"),
-            tmp_path,
-            grant_mutator=mutator,
-        )
-        == 0
-    )
+    args = _parse("grant", "revoke", str(tmp_path), "--kind", "vivado")
+
+    assert _run(args, tmp_path, mutator) == 0
 
 
 @pytest.mark.parametrize("action", ["add", "revoke"])
 def test_source_project_binding_refuses_explicit_target(tmp_path, monkeypatch, action):
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     calls = []
-    monkeypatch.setattr(authority, "_add_grant", lambda *a, **k: calls.append(a))
-    monkeypatch.setattr(authority, "_revoke_grant", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(eda_grant_support, "add_grant", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(eda_grant_support, "revoke_grant", lambda *a, **k: calls.append(a))
     options = ["--installation", "registered"] if action == "add" else []
     assert (
         _run(_parse("grant", action, str(tmp_path), "--kind", "vivado", *options), tmp_path) == 2
@@ -262,8 +241,8 @@ def test_source_project_binding_refuses_explicit_target(tmp_path, monkeypatch, a
 def test_source_project_binding_target_aliases(tmp_path, monkeypatch, action, selection):
     calls = []
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setattr(authority, "_add_grant", lambda *a, **k: calls.append(a))
-    monkeypatch.setattr(authority, "_revoke_grant", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(eda_grant_support, "add_grant", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(eda_grant_support, "revoke_grant", lambda *a, **k: calls.append(a))
     source = tmp_path / "source"
     source.mkdir()
     (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
@@ -291,7 +270,7 @@ def test_project_binding_missing_revoke_preserves_argument(tmp_path, monkeypatch
         calls.append(project)
         return authority.ProjectGrant(str(project), kind, None, None)
 
-    monkeypatch.setattr(authority, "_revoke_grant", revoke)
+    monkeypatch.setattr(eda_grant_support, "revoke_grant", revoke)
     assert _run(_parse("grant", "revoke", str(missing), "--kind", "vivado"), tmp_path) == 0
     assert calls == [missing]
 
@@ -309,14 +288,8 @@ def test_project_binding_revoke_recorded_identity_under_source(
     (project / ".booley").mkdir(parents=True)
     if deleted_nested_project:
         (project / ".git").mkdir()
-    authority.register_license(
-        "registered",
-        server_ipv4="192.0.2.1",
-        server_hostid="license-host",
-        lmgrd_port=27000,
-        vendor_port=27001,
-    )
-    grant = authority._add_grant(project, "vivado", license_profile="registered")
+    eda_grant_support.register_license()
+    grant = eda_grant_support.add_grant(project, "vivado", license_profile="registered")
     (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     if deleted_nested_project:
         shutil.rmtree(project)
@@ -338,14 +311,8 @@ def test_source_project_binding_revoke_symlink_parent(tmp_path, monkeypatch, rel
     (source / ".git").mkdir()
     nested = source / "nested"
     nested.mkdir()
-    authority.register_license(
-        "registered",
-        server_ipv4="192.0.2.1",
-        server_hostid="license-host",
-        lmgrd_port=27000,
-        vendor_port=27001,
-    )
-    grant = authority._add_grant(source, "vivado", license_profile="registered")
+    eda_grant_support.register_license()
+    grant = eda_grant_support.add_grant(source, "vivado", license_profile="registered")
     (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     other = tmp_path / "other"
     other.mkdir()
@@ -364,8 +331,8 @@ def test_source_project_binding_revoke_symlink_parent(tmp_path, monkeypatch, rel
 def test_project_binding_permission_error_is_clean(tmp_path, monkeypatch, capsys, action):
     calls = []
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setattr(authority, "_add_grant", lambda *a, **k: calls.append(a))
-    monkeypatch.setattr(authority, "_revoke_grant", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(eda_grant_support, "add_grant", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(eda_grant_support, "revoke_grant", lambda *a, **k: calls.append(a))
 
     def check(project):
         raise PermissionError(f"Project Root is unreadable: {project}")
@@ -381,14 +348,8 @@ def test_project_binding_inaccessible_revoke_keeps_source_grant(tmp_path, monkey
     source = tmp_path / "source"
     (source / ".booley").mkdir(parents=True)
     (source / ".git").mkdir()
-    authority.register_license(
-        "registered",
-        server_ipv4="192.0.2.1",
-        server_hostid="license-host",
-        lmgrd_port=27000,
-        vendor_port=27001,
-    )
-    grant = authority._add_grant(source, "vivado", license_profile="registered")
+    eda_grant_support.register_license()
+    grant = eda_grant_support.add_grant(source, "vivado", license_profile="registered")
     (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     stat = Path.stat
     exists = Path.exists
@@ -410,21 +371,15 @@ def test_project_binding_cleanup_permission_error_propagates(tmp_path, monkeypat
     project = tmp_path / "project"
     (project / ".booley").mkdir(parents=True)
     (project / ".git").mkdir()
-    authority.register_license(
-        "registered",
-        server_ipv4="192.0.2.1",
-        server_hostid="license-host",
-        lmgrd_port=27000,
-        vendor_port=27001,
-    )
-    authority._add_grant(project, "vivado", license_profile="registered")
-    revoke = authority._revoke_grant
+    eda_grant_support.register_license()
+    eda_grant_support.add_grant(project, "vivado", license_profile="registered")
+    revoke = eda_grant_support.revoke_grant
 
     def cleanup_failure(target, kind):
         revoke(target, kind)
         raise PermissionError("cleanup failed after revocation")
 
-    monkeypatch.setattr(authority, "_revoke_grant", cleanup_failure)
+    monkeypatch.setattr(eda_grant_support, "revoke_grant", cleanup_failure)
     with pytest.raises(PermissionError, match="cleanup failed after revocation"):
         _run(_parse("grant", "revoke", str(project), "--kind", "vivado"), tmp_path)
     assert authority.load_state().grants == ()

@@ -1,10 +1,7 @@
 # Doctor health and deep validation
 
-Doctor diagnoses Booley's build and execution machinery in a Project's environment,
-including its integration with Project build configuration. Normal Booley Flows
-verify the design. A design failure that the machinery executes and interprets
-correctly is compatible with healthy machinery. Doctor's existing verdict rules
-still apply; deep currency reporting does not change their classification.
+Doctor checks that Booley's setup and tools work in this Project. It doesn't
+verify your design; Flows do that.
 
 A Claude Code or Codex session on the host is expected during Project Setup. `session.agent-on-host`
 is a PASS-level reminder that the Booley MCP server and Booley Flows live only
@@ -17,108 +14,80 @@ inside the Sandbox during initial Project Setup, after a Booley version change,
 after replacing the active Sandbox Image, or when investigating suspected
 machinery problems.
 
-Doctor warns with `git.attributes-policy-unknown` when a registered sibling
-worktree's user attributes cannot be inspected or Git cannot report its system
-attributes path. An unknown policy is an inspection limitation, not a confirmed
-conflict. Existing attributes and worktree registrations are preserved, and
-Project Initialization defers new shared local defaults until policy inspection
-is complete. Inspect an unavailable sibling from an environment where its
-registered path is accessible (the host if needed), or inspect the selected
-attributes file's type and access. For unsupported system-path discovery, use
-a Git build that supports discovery to inspect the system policy; the supported
-minimum Git version is unchanged.
+Plain Doctor checks FPGA Targets' setup. Deep mode prints their manual
+full-implementation commands instead of launching long Vivado runs.
 
-This warning can persist on supported older Git or in a Sandbox without host
-sibling access. Plain Doctor still exits 0 when there are only warnings, but
-unclean health prevents recording clean Doctor evidence. Normal init remains
-nonfatal; unknown-only `booley init --check` exits 1 and reports incomplete
-inspection. A waiver of `git.attributes-policy-unknown` does not waive genuine
-attributes conflicts or current-checkout inspection errors. Existing
-`git.line-endings-unreadable` waivers are not automatically applied to this new
-warning. Resolve the inspection limitation or accept it through a targeted
-waiver; do not remove a valid local rule or prune registrations to hide it.
+## Automatic checks
 
-Deep Doctor is **current** when a qualifying deep run matches the executing
-Booley version and active immutable Sandbox Image, and no later completed failed,
-warning-blocked, or incomplete deep attempt supersedes it. The recorded date is
-informational;
-deep evidence has no age expiry. Current means prior qualifying setup validation;
-it does not guarantee a new deep run will pass after arbitrary design edits.
+Booley also runs plain Doctor on its own when the container starts and on
+supported command and Flow paths: about once a week, daily while problems
+remain, and whenever the configuration changes. It never blocks work. New
+problems show up in `booley session up` and the next Flow result. The last
+result is in `.booley/runtime/doctor/last.log`.
 
-Host-side status reporting reads the package version in the observed Sandbox;
-a host-only upgrade does not replace that execution version. Inside the Sandbox,
-Doctor uses its live package version. An unverifiable version makes deep due.
+## Unknown Git attributes policy
 
-The two automatic change triggers are:
+Doctor warns with `git.attributes-policy-unknown` when it can't inspect a
+registered sibling worktree's attributes, or Git can't report its system
+attributes path. This is an inspection limit, not a confirmed conflict.
+Inspect the sibling from an environment that can reach it (the host if needed),
+or accept the limit with a targeted waiver. That waiver doesn't cover real
+attributes conflicts. Don't delete a valid local rule or prune worktree
+registrations to hide the warning.
 
-- A change to the executing Booley version.
-- A change to the active immutable Sandbox Image (Docker local image ID).
+## Deep Doctor currency
 
-Project configuration, waiver, `.core`, RTL, testbench, and self-test fixture
-edits do not make deep Doctor due. Plain Doctor and affected normal Flow runs
-exercise those changes. Moving a mutable image tag does not change the identity
-of a Sandbox already running from that image. Selecting an image in configuration
-also does not substitute it for the active image.
+Deep Doctor is **current** when the latest completed deep attempt qualified and
+matches the running Booley version and the active Sandbox Image. Deep evidence
+has no age expiry. Current means setup was validated; it doesn't promise a new
+deep run will pass after design edits.
 
-A qualifying deep run must have no active health failures or unwaived warnings
-except exactly `upgrade.review-pending`, the release-review gate. It must complete
-every applicable deep check: the Specialist provider authorization
-and memory probe, selected Simulation/Lint/ASIC Synthesis smokes, enabled sim/lint
-good-and-bad self-tests, and selected-core live resolution. Disabled capabilities
-and intentionally excluded FPGA implementation are legitimate exclusions.
-Missing required configuration, unavailable execution, absent probe evidence,
-omitted agent checks, and missing self-test execution prevent qualification.
-Waiving a warning does not execute the missing check.
+Deep becomes **due** when either of these changes:
 
-ASIC Synthesis smoke evidence is mode-aware for every selected synthesis Target,
-including existing Projects and port setups. Logical mode requires completed
-synthesis (`termination: completed`), `ppa_complete: true`, and Yosys mapped-area
-evidence (`area_source: yosys_mapped`); it makes no constrained-timing claim.
-Physical mode still requires complete PPA and constrained-clock timing with
-nonempty per-clock results. Reports with absent or empty mode follow
-that physical timing policy; an unknown mode is invalid evidence. This proves
-the Flow wiring, not that the design meets its PPA goals.
+- the running Booley version;
+- the active Sandbox Image.
 
-Checks must run under one verified, stable artifact identity and matching Booley
-version. Core resolution runs in the same Sandbox as the Flow checks. Local
-FuseSoC resolution inside that Sandbox does not require Docker on its PATH.
-A host-side deep invocation cannot qualify when it skips the in-Sandbox Specialist
-provider probe; run deep Doctor inside the Sandbox for full evidence.
+Configuration, waiver, `.core`, RTL, testbench, and self-test fixture edits
+don't make deep due. Plain Doctor and normal Flow runs exercise those changes.
 
-A completed failed, warning-blocked, or incomplete deep attempt retains historical
-success but makes deep Doctor due until a later qualifying run succeeds. Warning-only
-attempts say “did not qualify” and name the unwaived warning IDs; actual failures
-say “failed.” Older unsuccessful records with unknown health details say “did not
-qualify; legacy health verdict details unavailable.” Cancellation or an
-unexpected abort before a completed result leaves the previous evidence intact;
-version or image drift still applies independently. Successful and failed plain
-runs leave deep evidence unchanged.
+A deep run qualifies only if it has no failures and no unwaived warnings other
+than `upgrade.review-pending`, and every applicable deep check ran: the
+Specialist provider probe, the selected Simulation, Lint and ASIC Synthesis
+smokes, the enabled sim/lint self-tests, and live core resolution. Disabled
+capabilities and FPGA implementation are excluded. ASIC smoke must complete with
+full PPA. Waiving a warning does not run the missing check.
 
-The host observes the actual owned, running container. Sandbox startup transports
-that observation in a root-owned receipt bound to the live container incarnation.
-Headless startup writes it before startup checks. VS Code preparation starts a
-bounded host observer for its subsequent container start; identity is unavailable
-until that observation arrives. Bare terminals, automatic Doctor, and supervised
-commands read the same receipt without Docker access. Missing, untrusted, or
-stale receipts make identity unverifiable. Restart or reopen the Sandbox through
-Booley's normal startup path to restore the receipt.
+Run deep Doctor inside the Sandbox. A host-side deep run that skips the
+in-Sandbox Specialist provider probe can't qualify.
 
-Missing, corrupt, unsupported, and plain-only stamps report no qualifying deep
-run recorded. Plain stamps with `deep: true` lack image and completeness
-proof and cannot establish currency. A qualifying new run establishes evidence.
-Deep records live at `<booley_dir>/runtime/doctor_deep_stamp.json`, independently
-of the existing plain stamp's configuration fingerprint and age policy.
+A failed attempt says “latest deep attempt failed” and names up to eight
+blocking check IDs (a blocker with no ID shows as `unidentified-failure` or
+`unidentified-warning`). An incomplete one says “applicable deep checks
+incomplete” and names the checks that didn't run. Deep stays due until a later
+attempt qualifies. A cancelled run leaves the previous result in place.
 
-Plain Doctor and `booley session up` report **current** with version/date or
-**due** with all applicable reasons. Manual and automatic structured reports at
-`<booley_dir>/runtime/doctor/last.json` include `deep_status` with the same status,
-reason codes, historical success, and evidence-storage failure indicator.
-Storage failures are informational and do not claim new saved success. A known
-unsuccessful result still makes that invocation due when saving fails; later
-commands can only observe evidence that was successfully saved.
+If Doctor says it cannot verify Sandbox Image identity, run
+`booley session refresh`.
 
-Deep due is advisory: it does not affect health warnings, exit codes or execution, and never schedules or automatically launches deep
-checks. Automatic plain Doctor retains its existing scheduling policy.
+Deep due is advisory: it doesn't change health warnings or exit codes, and
+Doctor never launches deep checks by itself.
+
+## Self-test fixtures
+
+`doctor --deep` checks that sim and lint fail on a known-bad input as well as
+pass on a good one.
+
+- **Lint:** add a Target named `lint_selftest_bad` in its own tracked `.core`,
+  with `flow_options.booley.doctor_selftest: true`. Keep its known-bad source
+  beside that core in the tracked tree. Doctor uses the first lint Doctor
+  Target as the good case and this Target as the bad case. `booley targets`
+  and ordinary Flow selection hide Doctor self-test Targets.
+- **Simulation:** mirror the replacement file beneath
+  `.booley/selftest/sim/bad-overlay/` (for example,
+  `bad-overlay/firmware/firmware.hex`). Deep Doctor overlays that tree on an
+  isolated build of the default Target's first runnable test. Ordinary
+  simulation never uses it. Don't put Doctor-only commands in
+  `[flows.sim].pre_run_commands`.
 
 ## Upgrade review
 
@@ -138,13 +107,8 @@ qualifying deep Doctor in the Sandbox, and plain Doctor on the host before:
 booley upgrade acknowledge --expected-target <captured-target>
 ```
 
-Acknowledgment compares the expected target with the running version and the
-locked persisted pending target. A changed target, stale runtime, corrupt or
-missing state, or missing packaged release entry rejects a pending transition
-without erasing it. An exact retry with no pending target and reviewed version
-equal to both the running and expected versions exits 0 with “already current”
-and leaves state untouched. The same result on an initially current baseline
-does not prove a new release review occurred.
+If the target changed since you captured it, acknowledge refuses; capture it
+again. Running it twice is harmless.
 
 Run final plain Doctor to confirm the pending warning disappears and deep remains
 current; acknowledgment and plain Doctor preserve the qualifying deep evidence.
@@ -164,21 +128,65 @@ from quiet attributable session presence; quiet does not prove abandonment.
   fact, not as a problem. A `tests.toml` entry that the Target cannot apply
   fails: a Test Variant argument that overrides a plusarg the Target
   declares, arguments or a `seed` template on a Cocotb Target, or
-  `default_seed` on an unseeded Target. See
-  [Tests (`tests.toml`)](CONFIG.md#tests-teststoml).
-- `tickets.leftover-board`: nonempty `tickets/board`, `tickets/state`,
-  `tickets/logs`, `tickets/locks`, or `tickets/waiver-candidates` is reported
-  by directory name. Preserve needed work, then delete that directory. Empty
-  directories are listed in the same line when applicable but do not warn on
-  their own. `tickets/history/` is silent.
-- `tickets.leftover-guidance`: `ticket_creation.md` or `ticket_defaults.md`
-  matches a shipped template, so delete it; if edited or unfamiliar, move its
-  rules into a Goalset under `.booley/goalsets/`, then delete it.
+  `default_seed` on an unseeded Target. A section key that names no Target,
+  or two keys that name one Target, also fail and name the key or keys. See
+  [Tests (`tests.toml`)](TESTS.md).
 
-Both IDs are stable and waivable through `doctor-waivers.toml`. Doctor also
-WARNs on ignored `[developer]` settings and `[jobs].max_tickets` with a delete
-fix. These settings do not configure Goal Mode.
+`handles.map-size` (subject `session` or `job`) warns when a Dashboard handle
+map (`runtime/sessions/handles/map.json` or `runtime/job-handles/map.json`)
+is larger than 12 MiB, three quarters of its 16 MiB cap. Past the cap, new
+sessions and Jobs cannot get handles. Run `booley session down`, then
+`booley session up`: the Booley MCP server prunes expired handles when it
+starts. It is waivable through `doctor-waivers.toml`.
 
 Doctor WARNs with `workspace.legacy-source-stash` when an interrupted run left
 a source stash record for this worktree; see
 [manual source recovery](TROUBLESHOOTING.md#recover-sources-hidden-by-an-interrupted-older-run).
+
+## Doctor waivers (`doctor-waivers.toml`)
+
+`booley doctor` reserves `WARN` for an actionable failure mode. A clean setup
+has no active warnings: fix the cause, or explicitly accept a deliberate
+project constraint in `.booley/doctor-waivers.toml`. Waived findings
+remain visible and are counted separately; the file does not hide
+output or change failures.
+
+Each warning prints a stable identity such as `sim.trace-unavailable:sim_fast`.
+The part before the colon is `check`; the part after it is the optional
+`subject`. Match that identity exactly:
+
+```toml
+version = 1
+
+[[waiver]]
+check = "sim.trace-unavailable"
+subject = "sim_fast"
+reason = "The upstream C++ harness has no trace switch; functional simulation is sufficient."
+expires = 2026-11-01
+
+[[waiver]]
+check = "project.git-excludes-missing"
+subject = ".booley"
+reason = "This project deliberately tracks .booley in its parent repository."
+permanent = true
+```
+
+The schema is intentionally strict:
+
+- `version` must be the integer `1`.
+- Every `[[waiver]]` needs a lowercase dot/dash-separated `check` and a
+  non-empty `reason`.
+- `subject`, when present, is an exact string match. Without it, the entry
+  matches every subject for that check; use that broad scope only when one
+  justification genuinely applies to all findings.
+- Set exactly one of `expires` (a TOML date, active through that date) or
+  `permanent = true`. Prefer expiration for temporary environment or upstream
+  constraints.
+- A duplicate `check`/`subject` pair, unknown key, invalid type, or malformed
+  TOML makes Doctor fail rather than silently ignoring the intended policy.
+
+Expired entries do not match; Doctor emits a note and reports the warning
+again. `booley doctor --verbose` also notes active entries that matched no
+current warning, which is the cue to delete stale waivers. Waivers apply only
+to warnings—never failures or notes—and match structured IDs rather than
+human-readable message text.

@@ -18,10 +18,12 @@ from booley.goals.model import WorktreeIdentity
 from booley.goals.store import REPOSITORY_ID_FILE, resolve_worktree_identity
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.chat_sessions import codex_chat_owner
+from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.handles import HandleStore, fallback_predecessors, session_writer
 from booley.runtime.pid import ProcessIdentity, ProcessState, observe_process
 from booley.runtime.safe_storage import refuse_symlinks
 from booley.runtime.session_activity import (
+    ActivityStore,
     process_session_key,
     thread_session_key,
     valid_thread_id,
@@ -45,6 +47,8 @@ class Attribution:
     branch: str = ""
     process: ProcessIdentity | None = None
     namespace: str = ""
+    # Server cwd that calls omitting work_dir run in; presentation only, never identity.
+    default_work_dir: str = ""
 
 
 @dataclass(frozen=True)
@@ -108,6 +112,9 @@ def _parse_row(raw: bytes) -> SessionRow:
         require_str_value(facts.get("branch", ""), field="branch", allow_empty=True),
         process,
         require_str_value(facts.get("namespace", ""), field="namespace", allow_empty=True),
+        require_str_value(
+            facts.get("default_work_dir", ""), field="default_work_dir", allow_empty=True
+        ),
     )
     started, latest = require_str(data, "started_at"), require_str(data, "last_call_at")
     if (
@@ -155,10 +162,11 @@ class SessionPresence:
     kind: str
     quiet: bool
     process_state: ProcessState | None
+    ended: bool = False
 
     @property
     def retained(self) -> bool:
-        return (
+        return not self.ended and (
             self.process_state not in DEAD_PROCESS_STATES
             if self.kind == "process"
             else not self.quiet
@@ -189,8 +197,11 @@ class SessionRegistry:
     """Nonblocking serialized upsert/prune; observational snapshots never lock or write.
 
     Thread and fallback presence expires after quiet_after. Unknown process
-    liveness is retained. Each scan is bounded; excess/corrupt rows are diagnosed,
-    never deleted as if dead. The maintenance owner alone prunes presence.
+    liveness is retained. A session whose client reported SessionEnd after the
+    row's last call (a usable end marker) is hidden and pruned at once; an
+    unusable marker leaves the row to the rules above. Each scan is bounded;
+    excess/corrupt rows are diagnosed, never deleted as if dead. The
+    maintenance owner alone prunes presence.
     """
 
     def __init__(
@@ -205,16 +216,33 @@ class SessionRegistry:
         """Opaque filename; logical keys never become filesystem components."""
         return self.root / (sha256(key.encode()).hexdigest() + ".json")
 
+    def _presence(self, row: SessionRow, *, now: float, store: ActivityStore) -> SessionPresence:
+        """Row presence, ended when its end marker is newer than the last call.
+
+        The marker is read only for a row that is otherwise retained, so rows
+        that are out of scope, quiet or dead cost no extra read.
+        """
+        presence = session_presence(
+            row, now=now, quiet_after=self.quiet_after, proc_root=self.proc_root
+        )
+        if presence.retained:
+            ended_at = store.ended_at(row.attribution.key, now=now)
+            if ended_at is not None and parse_timestamp(ended_at) > parse_timestamp(
+                row.last_call_at
+            ):
+                return replace(presence, ended=True)
+        return presence
+
     @contextmanager
     def _writer(self) -> Iterator[None]:
         with session_writer(self.booley_dir):
             yield
 
     def _read(self, path: Path) -> SessionRow:
-        refuse_symlinks(path)
+        refuse_symlinks(path, booley_dir=self.booley_dir)
         if path.stat().st_size > MAX_ROW_BYTES:
             raise ValueError("oversized session row")
-        row = _parse_row(path.read_bytes())
+        row = _parse_row(read_file_bytes(path))
         if path != self.path(row.attribution.key):
             raise ValueError("session filename does not match its key")
         return row
@@ -223,7 +251,7 @@ class SessionRegistry:
         """Read retained presence with no pruning or persistent side effects."""
         rows, diagnostics = [], []
         try:
-            refuse_symlinks(self.root)
+            refuse_symlinks(self.root, booley_dir=self.booley_dir)
             if not self.root.exists():
                 return RegistrySnapshot(
                     diagnostics=("session registry unavailable: absent",), unavailable=True
@@ -254,12 +282,11 @@ class SessionRegistry:
                 unavailable=True,
             )
         rows = []
+        store = ActivityStore(self.booley_dir)
         for row in snapshot.rows:
             if row.attribution.namespace != scope:
                 continue
-            presence = session_presence(
-                row, now=now, quiet_after=self.quiet_after, proc_root=self.proc_root
-            )
+            presence = self._presence(row, now=now, store=store)
             if presence.retained:
                 rows.append(replace(row, process_state=presence.process_state))
         return RegistrySnapshot(tuple(rows), snapshot.diagnostics, snapshot.unavailable)
@@ -347,7 +374,7 @@ class SessionRegistry:
             original_key = attribution.key
             attribution = self.chat_attribution(attribution)
             path = self.path(attribution.key)
-            refuse_symlinks(path)
+            refuse_symlinks(path, booley_dir=self.booley_dir)
             predecessor_keys = (original_key, *predecessor_keys)
             predecessors = self._predecessors(attribution, predecessor_keys)
             attribution = self.preserve_worktree(attribution, predecessor_keys=predecessor_keys)
@@ -402,6 +429,7 @@ class SessionRegistry:
     ) -> int:
         """Remove only proven expired registry rows; refresh cannot race deletion."""
         removed = 0
+        store = ActivityStore(self.booley_dir)
         with self._writer():
             for path in islice(self.root.glob("*.json"), MAX_ROWS):
                 try:
@@ -414,9 +442,7 @@ class SessionRegistry:
                 missing = bool(
                     facts.worktree_key and worktree_exists and worktree_exists(facts) is False
                 )
-                presence = session_presence(
-                    row, now=now, quiet_after=self.quiet_after, proc_root=self.proc_root
-                )
+                presence = self._presence(row, now=now, store=store)
                 if missing or not presence.retained:
                     path.unlink(missing_ok=True)
                     removed += 1
@@ -492,9 +518,16 @@ def _worktree_facts(work_dir: Path) -> tuple[Path, str, str]:
 
 
 def canonical_attribution(facts: Attribution) -> Attribution:
-    """Match pre-Goal path rows to the same repository/admin identity used by Goal Records."""
+    """Match pre-Goal path rows to the same repository/admin identity used by Goal Records.
+
+    A row without a work_dir reports the live checkout root and branch of its
+    default_work_dir instead, so presentation shows where its calls run.
+    """
     if not facts.work_dir:
-        return facts
+        if not facts.default_work_dir:
+            return facts
+        root, _, branch = _worktree_facts(Path(facts.default_work_dir))
+        return replace(facts, default_work_dir=str(root), branch=branch)
     root, key, branch = _worktree_facts(Path(facts.work_dir))
     if facts.worktree_key.startswith("path:"):
         return replace(
@@ -505,6 +538,14 @@ def canonical_attribution(facts: Attribution) -> Attribution:
             key="worktree:" + key if facts.kind == "worktree" else facts.key,
         )
     return replace(facts, branch=branch or facts.branch)
+
+
+def _process_cwd() -> str:
+    """This process's cwd, or empty when it no longer exists."""
+    try:
+        return str(Path.cwd())
+    except OSError:
+        return ""
 
 
 def resolve_attribution(
@@ -519,6 +560,8 @@ def resolve_attribution(
     root, worktree_key, branch = (
         _worktree_facts(work_dir) if work_dir is not None else (None, "", "")
     )
+    # Calls without work_dir run in this process's cwd (call_context.resolve_work_dir).
+    default_work_dir = "" if work_dir is not None else _process_cwd()
     thread = metadata.get("threadId")
     codex = "codex" in client_name.lower() or thread is not None
     scope = namespace(proc_root)
@@ -531,6 +574,7 @@ def resolve_attribution(
             branch=branch,
             process=peer,
             namespace=scope,
+            default_work_dir=default_work_dir,
         )
     if (
         not codex
@@ -548,6 +592,7 @@ def resolve_attribution(
             branch=branch,
             process=peer,
             namespace=scope,
+            default_work_dir=default_work_dir,
         )
     return Attribution(
         "worktree:" + worktree_key,
@@ -556,6 +601,7 @@ def resolve_attribution(
         worktree_key,
         branch=branch,
         namespace=scope,
+        default_work_dir=default_work_dir,
     )
 
 

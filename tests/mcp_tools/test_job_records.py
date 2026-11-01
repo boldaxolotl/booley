@@ -38,6 +38,8 @@ class TestRunId:
 
 class TestRecordRoundTrip:
     def test_write_then_read(self, _jobs_env):
+        import json
+
         rec = jobrec.JobRecord(
             run_id="simulate-x-1",
             endpoint="sim",
@@ -45,7 +47,6 @@ class TestRecordRoundTrip:
             timeout_s=1290,
             argv=["python", "-m", "booley.flows.sim"],
             pid=4242,
-            lease_id="review-operation-1",
         )
         jobrec.write_record(rec, root=_jobs_env)
         got = jobrec.read_record("simulate-x-1", root=_jobs_env)
@@ -54,7 +55,18 @@ class TestRecordRoundTrip:
         assert got.pid == 4242
         assert got.status == jobrec.STATUS_RUNNING  # default
         assert got.argv == ["python", "-m", "booley.flows.sim"]
-        assert got.lease_id == "review-operation-1"
+        path = _jobs_env / f"{rec.run_id}.json"
+        new_payload = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(
+            json.dumps({**new_payload, "lease_id": "historical-operation"}), encoding="utf-8"
+        )
+        historical = jobrec.read_record(rec.run_id, root=_jobs_env)
+        assert historical is not None
+        assert historical.run_id == rec.run_id
+        assert historical.argv == rec.argv
+        assert jobrec.list_records(_jobs_env) == [historical]
+        assert jobrec.strict_records(_jobs_env) == [historical]
+        assert "lease_id" not in new_payload
 
     def test_read_missing_returns_none(self, _jobs_env):
         assert jobrec.read_record("nope-1", root=_jobs_env) is None
@@ -65,6 +77,53 @@ class TestRecordRoundTrip:
         root.mkdir(parents=True, exist_ok=True)
         (root / "broken-1.json").write_text("{not json", encoding="utf-8")
         assert jobrec.read_record("broken-1", root=_jobs_env) is None
+
+    def test_unreadable_record_raises_instead_of_reading_as_absent(
+        self, _jobs_env, monkeypatch: pytest.MonkeyPatch
+    ):
+        rec = jobrec.JobRecord(run_id="sim-held-1", endpoint="sim", started_at="t", timeout_s=60)
+        jobrec.write_record(rec, root=_jobs_env)
+        from tests.sharing_error_support import retry_delays_target
+
+        monkeypatch.setattr(retry_delays_target(), (0.0,), raising=False)
+        real_open = Path.open
+
+        def held_open(path: Path, *args: object, **kwargs: object):
+            if path.name == "sim-held-1.json":
+                error = PermissionError(13, "The process cannot access the file")
+                error.winerror = 32  # type: ignore[attr-defined]
+                raise error
+            return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "open", held_open)
+        with pytest.raises(PermissionError):
+            jobrec.read_record("sim-held-1", root=_jobs_env)
+        # Listing keeps its skip semantics; the Finish fence fails closed with the cause.
+        assert jobrec.list_records(_jobs_env) == []
+        with pytest.raises(jobrec.JobRecordError, match=r"sim-held-1\.json"):
+            jobrec.strict_records(_jobs_env)
+
+    def test_write_record_survives_a_transient_windows_reader(
+        self, _jobs_env, monkeypatch: pytest.MonkeyPatch
+    ):
+        rec = jobrec.JobRecord(run_id="sim-busy-1", endpoint="sim", started_at="t", timeout_s=60)
+        real_replace = Path.replace
+        blocked = False
+
+        def replace_after_reader_closes(source: Path, destination: Path):
+            nonlocal blocked
+            if destination.name == "sim-busy-1.json" and not blocked:
+                blocked = True
+                error = PermissionError(13, "A reader holds the record open")
+                error.winerror = 5  # type: ignore[attr-defined]
+                raise error
+            return real_replace(source, destination)
+
+        monkeypatch.setattr(Path, "replace", replace_after_reader_closes)
+        jobrec.write_record(rec, root=_jobs_env)
+        assert blocked
+        got = jobrec.read_record("sim-busy-1", root=_jobs_env)
+        assert got is not None and got.run_id == "sim-busy-1"
 
     def test_list_records(self, _jobs_env):
         for i in (1, 2):

@@ -60,12 +60,13 @@ if [ -n "$wheel" ]; then
 fi
 ```
 Host Bootstrap refuses the disposable environment above because its package
-is under the system temporary directory. Persistent installed-wheel venvs can
-become canonical; source/editable installs and named ephemeral workspace paths
-remain ineligible. Follow
-[canonical host installation policy](../user/SETUP.md) and
-[host installation guidance](../user/TROUBLESHOOTING.md#installation-fails-with-externally-managed-environment)
-to intentionally use this wheel on the host.
+is under the system temporary directory. One installed wheel per machine owns
+the host integrations (the skills under `~/.agents` and `~/.claude`); Booley
+records it in `~/.config/booley/host-installation.json` and refuses host
+commands from any other. Persistent installed-wheel venvs can become canonical;
+source/editable installs and named ephemeral workspace paths remain ineligible.
+To use this wheel on the host on purpose, run `booley bootstrap --update` from
+it; see [host installation guidance](../user/TROUBLESHOOTING.md#installation-fails-with-externally-managed-environment).
 
 ### Agent source-development checks
 
@@ -75,8 +76,8 @@ again before editing it. It uses one shared tools-only environment, never
 installs Booley from any checkout, and runs commands against the active
 worktree's source. Develop readiness defaults to the `python` test profile: its
 broad command runs `tests/ --test-profile python`, excluding every
-`native_bwave` test. It includes exhaustive recovery tests, as the complete
-Python compatibility workflow does; selective PR CI may exclude those tests.
+`native_bwave` test. It includes every Goal recovery and authority
+permutation, as every complete-suite CI run does.
 
 Use `python3 .github/scripts/agent_readiness.py --test-profile full` before a
 full test run. `full` covers all of `tests/`, including native integration; it
@@ -105,7 +106,7 @@ Unprofiled pytest keeps its existing selection and skip behavior, including CI's
 existing marker expression. The readiness JSON schema stays at version 1:
 `pytest.broad` and `optional-broad-verification` retain their IDs, while the
 command's arguments explicitly identify the selected profile. Passing an
-explicit profile to prepare or publish is a usage error.
+explicit profile to prepare is a usage error.
 
 Both profiles use up to eight xdist workers (`-n auto --maxprocesses=8`) with a
 disk-backed per-checkout `--basetemp` on POSIX. Set
@@ -124,31 +125,31 @@ syntax, narrowly reviewed exemptions, and the static-analysis boundary.
 
 ### Maintainer QA skills
 
-Maintainers may install the repository-owned QA skills from a complete, clean
-primary Booley checkout on `main` whose HEAD matches the canonical installed
-revision:
+Maintainers may install the repository-owned QA skills from any primary
+Booley source checkout containing all three skills, including from a nested
+directory. Branch, dirty-tree and installed-version differences do not matter:
 
 ```bash
 cd /path/to/Booley
 booley bootstrap --with-qa-skills
 ```
 
-The canonical host-installed `booley` records the opt-in under
-`~/.agents/booley-qa-skills.json`. Plain Bootstrap, check-only, and Project
-Initialization then reconcile the live checkout. Optional QA-source and pending
-reconciliation warnings do not block product Bootstrap or change check-only's
-exit status. Restore or re-enable a moved, deleted, dirty, off-main, incomplete,
-or revision-skewed source checkout. Recover from an unreadable or corrupt
-selection with the explicit opt-out below.
+The canonical host-installed `booley` records the absolute checkout path in
+`~/.agents/booley-qa-skills.json`; extra fields in existing records are ignored.
+Plain Bootstrap reconciles live links. Check-only Bootstrap, Doctor and Project
+Initialization inspect them without mutation. Missing checkouts or skills warn
+without changing the ordinary exit status. Restore the recorded checkout or
+re-enable from its new location with `--force` to relink. Explicit QA selection
+commands exit 2 if the QA step warns. Recover from unreadable or corrupt state
+with explicit opt-out.
 
-Disable the integration with `booley bootstrap --without-qa-skills`. Opt-out
-removes only links in the independent `.booley-qa-skill-links.json` ownership
-manifest; foreign and replaced entries remain. Initial hand-installed links
-stay unmanaged unless `--force` explicitly transfers ownership, and different
-content is never replaced. The QA skills remain outside release wheels and
-Sandbox host-skill mounts and require explicit invocation. When
-`mount_host_skills` is enabled, rerun `booley init --seed` after enabling or
-removing them so generated devcontainer mounts are refreshed.
+Disable with `booley bootstrap --without-qa-skills`. Only links owned by the
+independent `.booley-qa-skill-links.json` manifest are removed; product links,
+hand-made links and replaced entries remain. Unrecorded exact or equivalent QA
+links conflict even with `--force`; force may relink already recorded links.
+QA skills stay outside release wheels and Sandbox host-skill mounts and require
+explicit invocation. When `mount_host_skills` is enabled, rerun
+`booley init --seed` after enabling or removing them to refresh generated mounts.
 
 ### Development environment troubleshooting
 

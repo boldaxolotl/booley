@@ -64,6 +64,7 @@ from booley.runtime import paths as runtime_paths
 from booley.runtime.booley_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.flows.sim.leased_session import canned_build_session, split_invoker
 
 
 def _handle(root: Path, *, selector: str = "sim", eda_tool: str | None = "icarus") -> TargetHandle:
@@ -452,22 +453,15 @@ def _run_execution(
     options: SimulationOptions | None = None,
     artifact_root: Path | None = None,
     trace_mode: TraceMode | None = None,
+    canned_at: str = "launch",
 ) -> SimulationTargetOutcome:
     execution = SimulationExecution(
-        invoke=invoke,
+        invoke=split_invoker(invoke, canned_at=canned_at),
         options=options or SimulationOptions(),
         artifact_root=artifact_root,
     )
     with ExitStack() as stack:
-        stack.enter_context(
-            patch.object(
-                execution,
-                "_run_groups_with_session",
-                side_effect=lambda current_handle, groups: [
-                    execution._run_group(current_handle, group) for group in groups
-                ],
-            )
-        )
+        stack.enter_context(canned_build_session())
         stack.enter_context(
             patch(
                 "booley.flows.sim.execution.engine.TargetCatalog.build",
@@ -506,7 +500,7 @@ def _write_transport(
         "abc123",
         handle.identity,
         names,
-        prepared.build_root / ".booley-adapter-abc123.json",
+        prepared.build_root / ".a-abc123.json",
     )
     write_adapter_result(identity, result)
 
@@ -528,7 +522,7 @@ def _passing_attempt_invoker(
             token,
             handle.identity,
             names,
-            prepared.build_root / f".booley-adapter-{token}.json",
+            prepared.build_root / f".a-{token[:24]}.json",
         )
         result = AdapterResult(
             True,
@@ -557,7 +551,7 @@ def _write_partial_timeout_transport(
         "abc123",
         handle.identity,
         ("done", "active", "later"),
-        prepared.build_root / ".booley-adapter-abc123.json",
+        prepared.build_root / ".a-abc123.json",
     )
     result = AdapterResult(
         False,
@@ -621,7 +615,7 @@ def _passing_trace_invoker(
             ),
         )
         if transport_modified_ns is not None:
-            result_path = prepared.build_root / ".booley-adapter-abc123.json"
+            result_path = prepared.build_root / ".a-abc123.json"
             os.utime(result_path, ns=(transport_modified_ns, transport_modified_ns))
         return SubprocessResult(
             returncode=0,
@@ -811,7 +805,7 @@ def test_fresh_adapter_uses_build_budget_before_run_budget(tmp_path: Path) -> No
     ):
         attempt = execution._prepare_attempt(handle, ("reset", "count"))
         attempt_box["attempt"] = attempt
-        result = execution._execute_fresh_adapter(handle, attempt)
+        result = execution._execute_fresh_adapter(handle, attempt, session)
 
     assert result.result is not None
     assert timeouts == [7, 5]
@@ -866,7 +860,7 @@ def test_timeout_transport_preserves_completed_active_and_not_run_tests(
             token,
             handle.identity,
             ("done", "active", "later"),
-            prepared.build_root / f".booley-adapter-{token}.json",
+            prepared.build_root / f".a-{token[:24]}.json",
         )
         write_adapter_result(
             identity,
@@ -1094,7 +1088,9 @@ def test_run_log_open_failure_is_typed_infrastructure(tmp_path: Path, observed) 
         install_progress(sink) if observed else nullcontext(),
         patch("booley.flows.run_log.begin_run_log", side_effect=OSError("read-only filesystem")),
     ):
-        outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+        outcome = _run_execution(
+            handle, prepared, invoke, ("smoke",), cocotb=False, canned_at="raw"
+        )
 
     assert outcome.verdict == "error"
     assert outcome.infrastructure_failure is not None
@@ -1367,6 +1363,7 @@ def test_conflicting_runtime_input_is_typed_infrastructure_failure(tmp_path: Pat
         invoke,
         ("dhry",),
         cocotb=False,
+        canned_at="raw",
     )
 
     assert outcome.verdict == "error"
@@ -1972,6 +1969,49 @@ def test_corrupt_cache_forces_fresh_build(
     assert sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands) == 2
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Icarus reuse closure runs in the Linux Sandbox")
+@pytest.mark.parametrize("record", ["pointer", "manifest"])
+def test_corrupt_retained_record_is_missing_provenance_and_rebuilds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: str
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project, _ = _write_stale_compiler_fixture(tmp_path)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(
+        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
+    )
+    handle = TargetCatalog.build(project).select("sim_a", for_flow="sim")
+    commands: list[list[str]] = []
+    base_invoke = _subprocess_invoker(project)
+
+    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
+        commands.append(command)
+        return base_invoke(command, timeout=timeout)
+
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
+    assert execution.run(handle, NamedTests(("smoke",))).passed
+    slot = simulation_build_slot(handle)
+    pointer_path = slot / "current.json"
+    if record == "pointer":
+        corrupt = pointer_path
+    else:
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        corrupt = (
+            slot
+            / "g"
+            / pointer["generation"]
+            / pointer["build_root"]
+            / (".booley-build-manifest.json")
+        )
+    corrupt.write_text("{not json", encoding="utf-8")
+    second = execution.run(handle, NamedTests(("smoke",)))
+    assert second.passed
+    assert second.builds[0].ran is True
+    assert second.builds[0].cache_decision.startswith("missing provenance;")
+    assert sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands) == 2
+
+
 def test_missing_new_image_is_build_infrastructure_and_never_launches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2347,16 +2387,12 @@ def _assert_live_and_preview_build_variant(
         mode=TraceMode.NATIVE_FST,
         cleanup=MagicMock(),
     )
+    execution._build_session = MagicMock(**{"new_generation.return_value": work_root})
     with (
-        patch(
-            "booley.flows.sim.execution.engine.work_root_for",
-            return_value=work_root,
-        ) as work_root_for,
         patch(
             "booley.flows.sim.execution.engine.preview_generation_root",
             return_value=work_root,
         ) as preview_root,
-        patch.object(execution, "_reset_build_root") as reset,
         patch(
             "booley.flows.sim.execution.engine.prepare_simulation_build",
             return_value=prepared,
@@ -2376,10 +2412,17 @@ def _assert_live_and_preview_build_variant(
         execution._prepare_build(handle)
         execution._preview_group(handle, _inspection(cocotb=False), ("smoke",), False)
 
-    assert [call.kwargs["variant"] for call in work_root_for.call_args_list] == [expected]
     preview_root.assert_called_once_with(handle, expected)
-    assert reset.call_args.args[0] == work_root
-    assert reset.call_args.args[1].variant == expected
+    assert prepare.call_args.kwargs["build_root"] == work_root
+    with (
+        patch("booley.flows.sim.execution.engine.SimulationBuildSession") as session,
+        patch(
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
+            return_value=_inspection(cocotb=False),
+        ),
+    ):
+        execution.run(handle, DefaultSelection(), planned_groups=())
+    session.assert_called_once_with(handle, expected)
     assert prepare.call_args.kwargs["variant"] == expected
     setup.assert_called_once_with(handle, build_root=work_root)
     assert write_overlay.call_count == int(trace)
@@ -2461,13 +2504,7 @@ def test_pre_sim_stage_preserves_elaboration_and_infrastructure_classes(
     prepared = _prepared(handle, cocotb=False)
     execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
     with (
-        patch.object(
-            execution,
-            "_run_groups_with_session",
-            side_effect=lambda current_handle, groups: [
-                execution._run_group(current_handle, group) for group in groups
-            ],
-        ),
+        canned_build_session(),
         patch(
             "booley.flows.sim.execution.engine.TargetCatalog.build",
             return_value=_inspection(cocotb=False),
@@ -2669,7 +2706,7 @@ def _owned_main_invoker(
             "abc123",
             handle.identity,
             ("smoke",),
-            prepared.build_root / ".booley-adapter-abc123.json",
+            prepared.build_root / ".a-abc123.json",
         )
         publish_native_adapter_result(
             identity,
@@ -3079,15 +3116,11 @@ def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
     (tmp_path / "other-run").mkdir()
     traces = (tmp_path / "first" / "wave.fst", tmp_path / "second" / "wave.fst")
     run = _ChangingTraceRun(handle, prepared, config, traces)
-    execution = SimulationExecution(invoke=run.invoke, options=SimulationOptions(trace=True))
+    execution = SimulationExecution(
+        invoke=split_invoker(run.invoke), options=SimulationOptions(trace=True)
+    )
     with (
-        patch.object(
-            execution,
-            "_run_groups_with_session",
-            side_effect=lambda current_handle, groups: [
-                execution._run_group(current_handle, group) for group in groups
-            ],
-        ),
+        canned_build_session(),
         patch(
             "booley.flows.sim.execution.engine.TargetCatalog.build",
             return_value=_inspection(cocotb=False),
@@ -3452,7 +3485,6 @@ def test_retained_log_failure_keeps_build_slot_failure_boundary(tmp_path, observ
     session = MagicMock()
     session.try_reuse.return_value = prepared
     execution._build_session = session
-    execution._fresh_generation = prepared.work_root
     sink = LiveProgressSink(tmp_path / "progress.json", tmp_path, "reuse")
     with (
         install_progress(sink) if observed else nullcontext(),
@@ -3468,4 +3500,3 @@ def test_retained_log_failure_keeps_build_slot_failure_boundary(tmp_path, observ
             execution._select_generation_for_group(handle, attempt, {})
     session.discard_candidate.assert_called_once_with(prepared.work_root)
     execution._invoke.assert_not_called()
-    assert execution._fresh_generation is None

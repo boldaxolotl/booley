@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol, cast
@@ -34,6 +35,41 @@ class GrantMutator(Protocol):
     def revoke(self, project: Path, kind: str) -> authority.ProjectGrant: ...
 
     def recovery_pending(self) -> bool: ...
+
+
+class RecordView(Protocol):
+    """Outer-composition interface for the human view of registered records."""
+
+    def table(
+        self,
+        records: _Records,
+        columns: Sequence[tuple[str, str]],
+        *,
+        empty: str,
+        caps: Mapping[int, int],
+    ) -> str: ...
+
+    def fields(self, title: str, record: _Record) -> str: ...
+
+
+#: ``(header, record field)`` columns of the ``list`` tables.
+_INSTALLATION_COLUMNS = (
+    ("Name", "name"),
+    ("Kind", "kind"),
+    ("Version", "version"),
+    ("Arch", "architecture"),
+    ("Source", "source"),
+)
+_LICENSE_COLUMNS = (
+    ("Name", "name"),
+    ("Kind", "kind"),
+    ("Server", "server_ipv4"),
+    ("Host ID", "server_hostid"),
+    ("lmgrd port", "lmgrd_port"),
+    ("Vendor port", "vendor_port"),
+)
+#: Visible-character cap on the installation ``Source`` column (index 4).
+_SOURCE_CAPS = {4: 48}
 
 
 def add_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -105,7 +141,8 @@ def run(
     args: argparse.Namespace,
     _project_root: Path,
     *,
-    grant_mutator: GrantMutator | None = None,
+    grant_mutator: GrantMutator,
+    record_view: RecordView,
 ) -> int:
     """Execute one authority operation with human output or explicit JSON."""
     try:
@@ -122,11 +159,11 @@ def run(
     if value is not None and (legacy_grant_list or getattr(args, "json", False)):
         print(json.dumps(value, indent=2, sort_keys=True))
     elif value is not None:
-        _render_human(args, value)
+        _render_human(args, value, record_view)
     return 0
 
 
-def _dispatch(args: argparse.Namespace, *, grant_mutator: GrantMutator | None = None) -> _Result:
+def _dispatch(args: argparse.Namespace, *, grant_mutator: GrantMutator) -> _Result:
     group = args.eda_group
     action = args.eda_action
     if group == "installation":
@@ -179,10 +216,8 @@ def _grant_action(
     args: argparse.Namespace,
     action: str,
     *,
-    grant_mutator: GrantMutator | None,
+    grant_mutator: GrantMutator,
 ) -> _Result:
-    if grant_mutator is None:
-        raise authority.AuthorityError("EDA grant access requires host lifecycle coordination")
     if action == "list" and grant_mutator.recovery_pending():
         raise authority.AuthorityError(
             "Sandbox recovery is pending; run a host lifecycle command first"
@@ -226,16 +261,16 @@ def _require_grant_checkout(project: Path, *, allow_missing: bool) -> None:
         raise authority.AuthorityError(f"cannot inspect Project Root {project}: {exc}") from exc
 
 
-def _render_human(args: argparse.Namespace, value: _Result) -> None:
+def _render_human(args: argparse.Namespace, value: _Result, record_view: RecordView) -> None:
     if args.eda_group == "installation":
-        _render_installation(args.eda_action, value)
+        _render_installation(args.eda_action, value, record_view)
     elif args.eda_group == "license":
-        _render_license(args.eda_action, value)
+        _render_license(args.eda_action, value, record_view)
     else:
         _render_grant(args.eda_action, value)
 
 
-def _render_installation(action: str, value: _Result) -> None:
+def _render_installation(action: str, value: _Result, record_view: RecordView) -> None:
     if action == "register":
         item = cast(_Record, value)
         print(
@@ -244,12 +279,19 @@ def _render_installation(action: str, value: _Result) -> None:
     elif action == "remove":
         print(f"Removed EDA installation {cast(_Record, value)['removed']!r}.")
     elif action == "show":
-        _print_records("EDA installation", [cast(_Record, value)], "name")
+        print(record_view.fields("EDA installation", cast(_Record, value)))
     else:
-        _print_records("EDA installations", cast(_Records, value), "name")
+        print(
+            record_view.table(
+                cast(_Records, value),
+                _INSTALLATION_COLUMNS,
+                empty="No EDA installations registered.",
+                caps=_SOURCE_CAPS,
+            )
+        )
 
 
-def _render_license(action: str, value: _Result) -> None:
+def _render_license(action: str, value: _Result, record_view: RecordView) -> None:
     if action == "register":
         item = cast(_Record, value)
         print(
@@ -259,9 +301,16 @@ def _render_license(action: str, value: _Result) -> None:
     elif action == "remove":
         print(f"Removed License Profile {cast(_Record, value)['removed']!r}.")
     elif action == "show":
-        _print_records("License Profile", [cast(_Record, value)], "name")
+        print(record_view.fields("License Profile", cast(_Record, value)))
     else:
-        _print_records("License Profiles", cast(_Records, value), "name")
+        print(
+            record_view.table(
+                cast(_Records, value),
+                _LICENSE_COLUMNS,
+                empty="No License Profiles registered.",
+                caps={},
+            )
+        )
 
 
 def _render_grant(action: str, value: _Result) -> None:
@@ -282,14 +331,3 @@ def _grant_authority_summary(item: _Record) -> str:
     if item.get("license_profile"):
         selected.append(f"License Profile {item['license_profile']!r}")
     return " and ".join(selected) or "no installation or License Profile"
-
-
-def _print_records(title: str, records: _Records, key: str) -> None:
-    print(f"{title}:")
-    if not records:
-        print("  none")
-        return
-    for item in records:
-        label = item.get(key, "unnamed")
-        details = ", ".join(f"{name}={value}" for name, value in item.items() if name != key)
-        print(f"  {label}: {details}")

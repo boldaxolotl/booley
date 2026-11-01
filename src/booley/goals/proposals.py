@@ -38,6 +38,7 @@ from booley.goals.store import RecordLock
 from booley.goals.translate import translate_goals
 from booley.goals.waiver_binding import WaiverBinding, require_waiver_binding
 from booley.runtime.atomic_files import atomic_replace_bytes, atomic_write_once, fsync_directory
+from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.timefmt import utc_now_rfc3339
 
 ProposalState = Literal["pending", "approved", "rejected", "applied"]
@@ -292,9 +293,9 @@ def load_proposal(root: Path, proposal_id: str) -> ProposalView:
     """Read a completely published payload/metadata pair without repair."""
     path = proposal_path(root, proposal_id)
     try:
-        proposal = Proposal.from_json(json.loads((path / "payload.json").read_bytes()))
+        proposal = Proposal.from_json(json.loads(read_file_bytes(path / "payload.json")))
         proposal = _named_proposal(proposal, optional_names(root))
-        raw = json.loads((path / "state.json").read_bytes())
+        raw = json.loads(read_file_bytes(path / "state.json"))
         return _view(proposal, raw)
     except (OSError, ValueError, TypeError) as exc:
         raise ProposalError(f"cannot read proposal {proposal_id}: {exc}", path=path) from exc
@@ -364,14 +365,12 @@ def _closure_timestamp(value: object) -> str | None:
 
 
 def _transaction_digest(value: object, decision: Decision | None) -> str | None:
-    if value is None:
-        return None  # Terminal legacy metadata remains readable; recovery requires a binding.
+    if value is None and decision is None:
+        return None  # A pending proposal has no prepared transaction yet.
+    if value is None or decision is None or decision.transaction_id is None:
+        raise ProposalError("invalid prepared transaction authority digest")
     result = text(value, "transaction_digest")
-    if (
-        decision is None
-        or decision.transaction_id is None
-        or re.fullmatch(r"[0-9a-f]{64}", result) is None
-    ):
+    if re.fullmatch(r"[0-9a-f]{64}", result) is None:
         raise ProposalError("invalid prepared transaction authority digest")
     return result
 

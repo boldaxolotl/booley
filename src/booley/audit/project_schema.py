@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
-from typing import Any
+from typing import Any, Final
 
 from booley.audit.config_common import (
     ConfigFinding,
@@ -35,6 +35,13 @@ KNOWN_BOOLEY_TOML_TABLES = frozenset(
 )
 
 IGNORED_BOOLEY_TOML_TABLES = frozenset({"developer"})
+
+#: ``(message, fix)`` for a malformed ``[feedback].redact_extra``; shared with
+#: the run-time reader so Doctor and ``booley feedback`` say the same thing.
+REDACT_EXTRA_PROBLEM: Final[tuple[str, str]] = (
+    "booley.toml [feedback].redact_extra must be a list of strings",
+    'use e.g. redact_extra = ["codename"]',
+)
 
 RETIRED_BOOLEY_TOML_TABLES = {
     "mcp_tools": (
@@ -190,12 +197,7 @@ def _feedback_field_findings(feedback: Mapping[str, Any]) -> list[ConfigFinding]
         )
     extra = feedback.get("redact_extra")
     if extra is not None and not is_str_list(extra):
-        findings.append(
-            fail_finding(
-                "booley.toml [feedback].redact_extra must be a list of strings",
-                'use e.g. redact_extra = ["codename"]',
-            )
-        )
+        findings.append(fail_finding(*REDACT_EXTRA_PROBLEM))
     if "redact_identifiers" in feedback and not _has_valid_bool(feedback, "redact_identifiers"):
         findings.append(
             fail_finding(

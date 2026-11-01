@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.flows.endpoint_admission import AdmissionContext
-from booley.flows.sim.campaign.codec import canonical_json_bytes
+from booley.flows.sim.campaign.codec import MANIFEST_SCHEMA, RESULT_SCHEMA, canonical_json_bytes
 from booley.flows.sim.campaign.coordinator import (
     CampaignPolicy,
     NewCampaignRunRequest,
@@ -30,7 +30,7 @@ from booley.flows.sim.campaign.resume import (
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
-from tests.flows.sim.test_campaign_manifest_codec import _manifest, _sha
+from tests.flows.sim.test_campaign_manifest_codec import _manifest, _selection_test_runs, _sha
 
 
 def _admission() -> AdmissionContext:
@@ -140,6 +140,7 @@ def _single_item_selection_manifest(kind: str, names: tuple[str, ...]) -> object
         if key not in {"work_item_id", "fingerprint_sha256"}
     }
     identity["selection"] = {"kind": kind, "names": list(names)}
+    identity["test_runs"] = _selection_test_runs(names)
     identity["arguments"] = list(names)
     if len(names) > 1:
         identity["kind"] = "cocotb_batch"
@@ -162,6 +163,7 @@ def _work_item(ordinal: int, name: str, target: object, variant_id: object) -> d
         "revision": "abc123",
         "target": target,
         "selection": {"kind": "named", "names": [name]},
+        "test_runs": _selection_test_runs((name,)),
         "arguments": [name],
         "build_variant_id": variant_id,
         "run_directory": {
@@ -216,6 +218,11 @@ def test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs(
     )
     _assert_shared_campaign(outcome, compile_count[0], launches, bindings, invocation)
     assert [item["cycle_count"] for item in outcome.observations] == [1234, 1234]
+    store = CampaignStore(outcome.manifest_path.parent)
+    assert store.load_manifest().document["$schema"] == MANIFEST_SCHEMA
+    results = _completed_result_documents(store)
+    assert all(result["$schema"] == RESULT_SCHEMA for result in results)
+    assert [result["observations"][0]["test_run"] for result in results] == ["alpha", "beta"]
 
 
 def test_failed_shared_build_blocks_each_named_work_item_with_its_own_selection(
@@ -372,6 +379,7 @@ def test_unfiltered_cocotb_shared_build_failure_has_one_unnamed_observation(
     assert result["observations"] == [
         {
             "test": None,
+            "test_run": "<default>",
             "execution": "blocked_by_build",
             "failure_class": "design",
             "functional": "not_observed",
@@ -398,7 +406,6 @@ def _seed_failed_campaign(store, manifest, project, handle, build_root):
     counters = {"compile": 0, "launch": 0}
     request = _work_request(store, manifest, items[0], project, handle)
     result = _failed_shared_executor(build_root, counters).execute(request)
-    store.verify_result_evidence(request.attempt_directory, result)
     store.publish_result(items[0]["work_item_id"], result)
     node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
     validated = ValidatedResumeManifest(

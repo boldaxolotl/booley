@@ -78,7 +78,13 @@ from booley.flows.sim.execution.engine import (
     target_test_plan,
 )
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX, has_infra_error
+from booley.flows.sim.run_guard import unstaged_runtime_input_diagnostic
 from booley.flows.sim.runner import SIM_RUN_HALVES, resolve_sim_sentinels
+from booley.flows.sim.runtime_inputs import (
+    RuntimeInputError,
+    declared_runtime_inputs,
+    materialize_runtime_inputs,
+)
 from booley.flows.target_campaign import (
     CampaignUnit,
     TargetCampaign,
@@ -100,16 +106,17 @@ from booley.runtime.paths import refs_dir
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 from booley.targets.catalog import TargetCatalog
+from booley.targets.selection import TargetSectionConflictError, selector_target_name
 
 from .specialist import Specialist
 
 _SIM_RUN_HALVES = SIM_RUN_HALVES
 
 
-def _target_environment(work_dir: Path, target: str) -> dict[str, str]:
-    """The ``tests.toml`` env table of *target* in the checkout at *work_dir*."""
+def _target_environment(work_dir: Path, identity: str) -> dict[str, str]:
+    """The ``tests.toml`` env table of Target *identity* in the checkout at *work_dir*."""
     sections = load_test_configuration_field(work_dir, "env")
-    return dict(lookup_target_section(sections, target) or {})
+    return dict(lookup_target_section(sections, identity) or {})
 
 
 _resolve_sim_sentinels = resolve_sim_sentinels
@@ -143,7 +150,9 @@ def _infra_failure_reason(proc: subprocess.CompletedProcess) -> str:
     if proc.returncode == 2 and "usage:" in combined and ": error:" in combined:
         return "runner argument parsing failed"
     if not has_infra_error(combined):
-        return ""
+        # A declared copyto input the TB could not open is the same "no
+        # observation" the Simulation Flow classifies as infrastructure.
+        return unstaged_runtime_input_diagnostic(combined)
     for line in combined.splitlines():
         if SIM_INFRA_ERROR_PREFIX in line:
             return line.split(SIM_INFRA_ERROR_PREFIX, 1)[1].strip()
@@ -155,6 +164,29 @@ def _infra_failure_reason(proc: subprocess.CompletedProcess) -> str:
 # per-mutant run-many loop reads them so it never has to re-resolve the Target.
 _EDALIZE_BINDIR_MARKER = ".booley_edalize_bindir"
 _EDALIZE_EDA_TOOL_MARKER = ".booley_edalize_eda_tool"
+# JSON list of the Target's declared ``copyto`` runtime inputs (build-relative).
+_RUNTIME_INPUTS_MARKER = ".booley_runtime_inputs"
+
+
+@dataclass(frozen=True)
+class _PinnedBuild:
+    """What a prebuilt simulation needs to launch: its dir and declared inputs."""
+
+    rel: str
+    runtime_inputs: tuple[str, ...]
+
+
+def _record_build_markers(
+    build_path: Path, prepared: PreparedSimulationBuild, work_dir: Path
+) -> str:
+    """Write the bin-dir, EDA-tool and runtime-input markers; return the bin-dir."""
+    rel = posix_relpath(prepared.build_root, work_dir)
+    (build_path / _EDALIZE_BINDIR_MARKER).write_text(rel, encoding="utf-8")
+    (build_path / _EDALIZE_EDA_TOOL_MARKER).write_text(prepared.eda_tool, encoding="utf-8")
+    (build_path / _RUNTIME_INPUTS_MARKER).write_text(
+        json.dumps(declared_runtime_inputs(prepared.resolved)), encoding="utf-8"
+    )
+    return rel
 
 
 # The creator can inspect source but cannot modify it or invoke shell tools.
@@ -867,14 +899,14 @@ replacement must differ, and every proposal must remain a single source edit.
 
     def _apply_campaign_defaults(self) -> McpToolResult | None:
         """Default mutation controls from this Target's criterion parameters."""
-        key = f"mutation_score_{self.args.target}"
+        key = f"mutation_score_{selector_target_name(self.args.target)}"
         try:
             campaign = resolve_target_campaign(
                 self.args.target,
                 self.satisfies,
                 self.state.criteria,
                 explicit_scope=self.args.scope,
-                **self._registered_tests(),
+                **self._registered_tests(self.args.target),
                 enforce_scope_match=(
                     self.state.strict_criteria and not getattr(self.args, "diagnostic", False)
                 ),
@@ -894,11 +926,10 @@ replacement must differ, and every proposal must remain a single source edit.
                     "or the invocation must pass --scope."
                 ),
             )
-        except NoRunnableTestsError as exc:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=f"mutation_tester: {exc}",
-            )
+        except UnsupportedSimTargetError as exc:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+        except (NoRunnableTestsError, TargetSectionConflictError) as exc:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=f"mutation_tester: {exc}")
         self._target_campaign = campaign
         self.args.scope = campaign.scope_arg
         params = campaign.params_for("mutation_score")
@@ -1422,10 +1453,14 @@ replacement must differ, and every proposal must remain a single source edit.
         attempt: int,
     ) -> tuple[list[MutationSpec], float]:
         """Invoke the Mutation Tester Specialist.  Returns (parsed_specs, elapsed_s)."""
+        from booley.config.settings import get_agent_settings
+
         start = time.monotonic()
         params = AgentCallParams(
             prompt=prompt,
             model=self._resolve_model(),
+            # Only the gateway pin sets an effort here; otherwise Codex's own default.
+            reasoning_effort=get_agent_settings().effort_pin,
             cwd=self.args.work_dir,
             allowed_agent_capabilities=_CREATOR_TOOLS,
             system_prompt=None,
@@ -1758,9 +1793,8 @@ replacement must differ, and every proposal must remain a single source edit.
                 stderr=f"FuseSoC target resolution failed: {exc}",
             )
         configured_tool = prepared.eda_tool
-        rel = posix_relpath(prepared.build_root, work_dir)
-        (build_path / _EDALIZE_BINDIR_MARKER).write_text(rel, encoding="utf-8")
-        (build_path / _EDALIZE_EDA_TOOL_MARKER).write_text(configured_tool, encoding="utf-8")
+        self.record_eda_tool(target, configured_tool)
+        _record_build_markers(build_path, prepared, work_dir)
         # Mutants compile through the same managed Project compiler cache as
         # ordinary Simulation; unchanged generated C++ hits across variants.
         build_environment = {**os.environ, **simulation_build_environment(prepared)}
@@ -1796,7 +1830,7 @@ replacement must differ, and every proposal must remain a single source edit.
             lane_kind="unreserved",
             # The Target's env table is a build input of the Simulation Flow;
             # a mutant must build and run under the same one.
-            environment=_target_environment(work_dir, target),
+            environment=_target_environment(work_dir, handle.identity),
         )
         if mutation is not None:
             materialize_build_mutation(mutation[0], mutation[1], work_dir, prepared.resolved)
@@ -1905,34 +1939,40 @@ replacement must differ, and every proposal must remain a single source edit.
                 "point --target at an icarus or verilator Target."
             )
 
-    def _bin_dir_rel(self, target: str, work_dir: Path, build_path: Path) -> str:
-        """The edalize build dir, relative to *work_dir*, for the prebuilt sim."""
-        marker = build_path / _EDALIZE_BINDIR_MARKER
-        if marker.exists():
-            return marker.read_text(encoding="utf-8").strip()
+    def _pinned_build(self, target: str, work_dir: Path, build_path: Path) -> _PinnedBuild:
+        """The prebuilt sim's dir (relative to *work_dir*) and declared runtime inputs."""
+        bindir = build_path / _EDALIZE_BINDIR_MARKER
+        inputs = build_path / _RUNTIME_INPUTS_MARKER
+        if bindir.exists() and inputs.exists():
+            return _PinnedBuild(
+                bindir.read_text(encoding="utf-8").strip(),
+                tuple(json.loads(inputs.read_text(encoding="utf-8"))),
+            )
         if build_path.name.startswith("mutant_"):
             raise UnsupportedSimTargetError(
                 "private mutation build marker missing; rerun the mutation sweep"
             )
         # Defensive: baseline marker lost — re-resolve.
-        _handle, prepared = self._resolve_elab_target(
-            target,
-            work_dir,
-            build_path,
-        )
-        rel = posix_relpath(prepared.build_root, work_dir)
-        marker.write_text(rel, encoding="utf-8")
-        (build_path / _EDALIZE_EDA_TOOL_MARKER).write_text(prepared.eda_tool, encoding="utf-8")
-        return rel
+        _handle, prepared = self._resolve_elab_target(target, work_dir, build_path)
+        rel = _record_build_markers(build_path, prepared, work_dir)
+        return _PinnedBuild(rel, declared_runtime_inputs(prepared.resolved))
 
-    def _registered_tests(self) -> dict[str, dict[str, list[str]]]:
-        """The Test registry and skips of the checkout this run mutates.
+    def _target_identity(self, target: str) -> str:
+        """The identity (``vlnv#name``) of *target* in the checkout this run mutates."""
+        try:
+            return TargetCatalog.build(self.args.work_dir).select(target, for_flow="sim").identity
+        except fusesoc_registry.FuseSocError as exc:
+            raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
+
+    def _registered_tests(self, target: str) -> dict[str, Any]:
+        """*target*'s identity plus the Test registry and skips of the mutated checkout.
 
         Read from that checkout's ``tests.toml``, the same file the launch of
         each Test Run reads, so the suite and its arguments cannot disagree.
         """
         work_dir = self.args.work_dir
         return {
+            "identity": self._target_identity(target),
             "test_names": load_test_configuration_field(work_dir, "tests"),
             "test_skips": load_test_configuration_field(work_dir, "skip"),
         }
@@ -1940,8 +1980,8 @@ replacement must differ, and every proposal must remain a single source edit.
     def _target_test_suite(self, target: str) -> TargetTestSuite:
         """Return every runnable test declared for *target*."""
         try:
-            return require_runnable_target_test_suite(target, **self._registered_tests())
-        except NoRunnableTestsError as exc:
+            return require_runnable_target_test_suite(target, **self._registered_tests(target))
+        except (NoRunnableTestsError, TargetSectionConflictError) as exc:
             raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
 
     def _campaign_for_target(self, target: str) -> TargetCampaign:
@@ -1957,7 +1997,7 @@ replacement must differ, and every proposal must remain a single source edit.
             target,
             criterion_keys=self.satisfies,
             criteria=criteria,
-            **self._registered_tests(),
+            **self._registered_tests(target),
         )
 
     def _cocotb_sim_cmd(
@@ -2137,12 +2177,34 @@ replacement must differ, and every proposal must remain a single source edit.
         build_path: Path,
         tb_top: str,
         *,
+        pinned: _PinnedBuild,
         timeout: int = 300,
         test_name: str | None = None,
         cocotb_tests: tuple[str, ...] = (),
     ) -> tuple[list[str], TestRunLaunch]:
-        """The pinned simulator command of one mutant and its launch inputs."""
-        rel = self._bin_dir_rel(target, work_dir, build_path)
+        """The pinned simulator command of one mutant and its launch inputs.
+
+        Declared ``copyto`` inputs are passed as ``--runtime-input`` so the run
+        half classifies a missing ``$readmemh`` file as the Flow does.
+        """
+        command, launch = self._pinned_adapter_command(
+            target, work_dir, build_path, tb_top, pinned.rel, timeout, test_name, cocotb_tests
+        )
+        command.extend(f"--runtime-input={value}" for value in pinned.runtime_inputs)
+        return command, launch
+
+    def _pinned_adapter_command(
+        self,
+        target: str,
+        work_dir: Path,
+        build_path: Path,
+        tb_top: str,
+        rel: str,
+        timeout: int,
+        test_name: str | None,
+        cocotb_tests: tuple[str, ...],
+    ) -> tuple[list[str], TestRunLaunch]:
+        """The adapter-specific run-half command of one prebuilt simulation."""
         cocotb = self.cocotb_target(target, work_dir)
         if cocotb is not None:
             launch, plusargs = self._default_test_run_launch(
@@ -2188,34 +2250,47 @@ replacement must differ, and every proposal must remain a single source edit.
         test_name: str | None = None,
         cocotb_tests: tuple[str, ...] = (),
     ) -> subprocess.CompletedProcess:
-        """Run the simulation image built in *build_path*."""
+        """Run the simulation image built in *build_path*.
+
+        The Target's declared ``copyto`` inputs are exposed in ``run_cwd`` for
+        the run and removed afterwards, as the Simulation Flow does.
+        """
+        pinned = self._pinned_build(target, work_dir, build_path)
         cmd, launch = self._pinned_sim_command(
             target,
             work_dir,
             build_path,
             tb_top,
+            pinned=pinned,
             timeout=timeout,
             test_name=test_name,
             cocotb_tests=cocotb_tests,
         )
-        return subprocess.run(
-            cmd,
-            cwd=work_dir,
-            env=relocate_python_artifacts(
-                {
-                    **os.environ,
-                    **launch_environment(
-                        _target_environment(work_dir, target), launch.environment
-                    ),
-                },
-                python_artifact_root(os.environ, build_path / "python-artifacts"),
-                pytest_scope=f"mutation-run:{build_path.resolve()}",
-            ),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        marker = build_path / _EDALIZE_EDA_TOOL_MARKER
+        if marker.is_file():
+            self.record_eda_tool(target, marker.read_text(encoding="utf-8").strip())
+        with materialize_runtime_inputs(
+            work_dir / pinned.rel, work_dir / resolve_run_cwd(work_dir), pinned.runtime_inputs
+        ):
+            return subprocess.run(
+                cmd,
+                cwd=work_dir,
+                env=relocate_python_artifacts(
+                    {
+                        **os.environ,
+                        **launch_environment(
+                            _target_environment(work_dir, self._target_identity(target)),
+                            launch.environment,
+                        ),
+                    },
+                    python_artifact_root(os.environ, build_path / "python-artifacts"),
+                    pytest_scope=f"mutation-run:{build_path.resolve()}",
+                ),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
 
     def _run_target_test_suite(
         self,
@@ -2253,6 +2328,12 @@ replacement must differ, and every proposal must remain a single source edit.
                     test_name=unit.display_name,
                     timed_out=True,
                     output=_timeout_output(exc),
+                    requires_cocotb_results=batched,
+                )
+            except RuntimeInputError as exc:
+                return MutationTestRun(
+                    test_name=unit.display_name,
+                    error=f"Simulation runtime input setup failed: {exc}",
                     requires_cocotb_results=batched,
                 )
             except (OSError, subprocess.SubprocessError) as exc:

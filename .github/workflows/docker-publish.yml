@@ -52,7 +52,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
           cache: pip
@@ -76,7 +76,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -194,7 +194,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -267,11 +267,11 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -293,15 +293,9 @@ jobs:
           evidence="${RUNNER_TEMP}/standard-image-evidence"
           mkdir -p "${evidence}"
           docker pull "${RUNTIME_BASE}"
-          python .github/scripts/image_package_inventory.py \
-            --image "${RUNTIME_BASE}" \
-            --output "${evidence}/base-package-inventory.json" \
-            --evidence "${evidence}/base-package-inventory-evidence.json"
-          python .github/scripts/image_package_inventory.py \
-            --image "${IMAGE}" --base-reference "${RUNTIME_BASE}" \
-            --expected-inventory "${evidence}/base-package-inventory.json" \
-            --output "${evidence}/package-inventory.json" \
-            --evidence "${evidence}/package-inventory-evidence.json"
+          docker run --rm --network none --entrypoint cat "${RUNTIME_BASE}" /usr/local/share/booley/base-package-inventory.json > "${evidence}/base-package-inventory.json"
+          docker run --rm --network none --entrypoint cat "${IMAGE}" /usr/local/share/booley/base-package-inventory.json > "${evidence}/package-inventory.json"
+          cmp "${evidence}/base-package-inventory.json" "${evidence}/package-inventory.json"
       - name: Validate provenance, runtime, size, and resources
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
@@ -354,10 +348,10 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -412,10 +406,10 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -485,14 +479,14 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - name: Prepare exact reviewed demo contract
         uses: ./.github/actions/prepare-picorv32-demo
         with:
           materialize: true
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -522,6 +516,7 @@ jobs:
             --mount type=bind,src="${RUNNER_TEMP}/simulation-project/.booley",dst=/booley-project \
             --mount type=bind,src="${RUNNER_TEMP}/simulation-evidence",dst=/evidence \
             -w /work -e BOOLEY_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
+            -e BOOLEY_EGRESS=unproxied \
             -e PYTHONPATH=/booley-source/.github/scripts \
             "${IMAGE}" python3 -m release_validation.simulation_selftest \
             --project /work --booley /usr/local/bin/booley \
@@ -550,7 +545,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - name: Build and inspect helper images
@@ -573,11 +568,11 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -598,15 +593,9 @@ jobs:
           docker pull "${BASE_IMAGE}"
           docker pull "${STANDARD_SUBSTRATE}"
           docker pull "${RISCV_IMAGE}"
-          python .github/scripts/image_package_inventory.py \
-            --image "${BASE_IMAGE}" \
-            --output "${evidence}/standard-package-inventory.json" \
-            --evidence "${evidence}/standard-package-inventory-evidence.json"
-          python .github/scripts/image_package_inventory.py \
-            --image "${RISCV_IMAGE}" \
-            --expected-inventory "${evidence}/standard-package-inventory.json" \
-            --output "${evidence}/package-inventory.json" \
-            --evidence "${evidence}/package-inventory-evidence.json"
+          docker run --rm --network none --entrypoint cat "${BASE_IMAGE}" /usr/local/share/booley/base-package-inventory.json > "${evidence}/standard-package-inventory.json"
+          docker run --rm --network none --entrypoint cat "${RISCV_IMAGE}" /usr/local/share/booley/base-package-inventory.json > "${evidence}/package-inventory.json"
+          cmp "${evidence}/standard-package-inventory.json" "${evidence}/package-inventory.json"
           expected_wheel_source="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import resolve_wheel_source_fingerprint; print(resolve_wheel_source_fingerprint(Path.cwd()))')"
           expected_runtime_base_contract="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_build_contracts import source_image_build_contracts; print(source_image_build_contracts(Path.cwd()).runtime_base)')"
           expected_standard_substrate_contract="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_build_contracts import standard_substrate_contract; print(standard_substrate_contract(Path.cwd()))')"
@@ -657,7 +646,7 @@ jobs:
       - name: Prepare exact reviewed demo contract
         id: demo
         uses: ./.github/actions/prepare-picorv32-demo
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -710,7 +699,7 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - name: Prepare exact reviewed demo contract
@@ -721,7 +710,7 @@ jobs:
         run: |
           PDK_ROOT="$(PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
           echo "root=${PDK_ROOT}" >> "${GITHUB_OUTPUT}"
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -791,7 +780,7 @@ jobs:
           ref: 34b0705760ef3dfa00e99637432473d2be8f22f3
           path: ibex-demo
           persist-credentials: false
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -861,7 +850,7 @@ jobs:
     steps:
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}

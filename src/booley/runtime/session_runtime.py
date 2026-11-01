@@ -25,7 +25,7 @@ import logging
 import os
 import re
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -34,7 +34,7 @@ from booley.core.differences import format_differences
 from booley.runtime import auth_token, image_identity, project_image
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
-from booley.runtime.image_provenance import is_local_image_id
+from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 
 if TYPE_CHECKING:
@@ -329,12 +329,23 @@ def exec_argv(
 
 
 def _preflight(spec: dict, *, license_required: bool = False) -> None:
-    """Refuse to start when `booley init`'s Docker objects are absent."""
-    if not idk.network_exists(dc.EGRESS_NETWORK):
+    """Refuse to start when Booley's Docker objects are absent.
+
+    The spec was already validated against host ``[sandbox] egress``, so its
+    ``--network`` flags name the mode's network: the egress network must exist,
+    and the routed unproxied network is created on demand.
+    """
+    networks = _flag_values(spec.get("runArgs"), "--network")
+    if dc.EGRESS_NETWORK in networks and not idk.network_exists(dc.EGRESS_NETWORK):
         raise SessionError(
             f"the '{dc.EGRESS_NETWORK}' network does not exist — run `booley init` "
             "first (it creates the network, egress proxy, and idle reaper)"
         )
+    if dc.UNPROXIED_NETWORK in networks:
+        try:
+            idk.ensure_unproxied_network()
+        except RuntimeError as exc:
+            raise SessionError(f"cannot prepare {dc.UNPROXIED_NETWORK}: {exc}") from exc
     image = str(spec.get("image", ""))
     if image and not idk.image_exists(image):
         raise SessionError(
@@ -356,7 +367,7 @@ def _load_spec(workspace: Path) -> dict:
 
     path = dc.devcontainer_path(workspace)
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(read_file_bytes(path).decode("utf-8"))
     except FileNotFoundError:
         raise SessionError(
             f"no {path} — run `booley init` in this folder to generate it"
@@ -383,12 +394,7 @@ def _warn_on_image_drift(spec: dict, workspace: Path) -> None:
         return
     if spec_image == expected:
         return
-    if not is_local_image_id(spec_image):
-        comparison = image_identity.Comparison(image_identity.Status.MISMATCH)
-    elif project_image.is_managed_sandbox_image(workspace, expected):
-        comparison = idk.compare_issued_selection(spec_image, expected, project_root=workspace)
-    else:
-        comparison = idk.compare_issued_reference(spec_image, expected)
+    comparison = idk.compare_issued_image(spec_image, expected, project_root=workspace)
     if comparison.status is image_identity.Status.MATCH:
         logger.debug(
             "[sandbox].image tag %r moved to an equivalent Sandbox Image; "
@@ -701,7 +707,7 @@ def plan_session_refresh(workspace: Path, issuance: Issuance) -> ParkedSession |
             + sandbox_remedy(workspace, runtime_only=True)
         )
     _ensure_unlicensed_refresh(workspace, issuance, labels)
-    backup = f"{name}-pre-refresh"
+    backup = f"{name}{idk.REFRESH_BACKUP_SUFFIX}"
     if _strict_refresh_container(backup) is not None:
         raise SessionError(
             f"cannot refresh while recovery container {backup!r} exists; inspect it first"
@@ -836,7 +842,7 @@ def discard_refresh_candidate(workspace: Path, issuance: Issuance) -> None:
 
 def _park_session_for_rebuild(name: str) -> ParkedSession:
     """Stop and rename an unlicensed Session so refresh can roll it back."""
-    backup = f"{name}-pre-refresh"
+    backup = f"{name}{idk.REFRESH_BACKUP_SUFFIX}"
     if idk.container_exists(backup):
         raise SessionError(
             f"cannot refresh while recovery container {backup!r} exists; inspect it first"
@@ -889,7 +895,7 @@ def _validate_up_request(workspace: Path, image_override: str | None) -> _UpRequ
         issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
     except runtime_spec.RuntimeSpecError as exc:
         raise SessionError(
-            f"refusing Sandbox startup: {exc}; {sandbox_remedy(workspace)}"
+            f"refusing Sandbox startup: {exc}; {_spec_refusal_remedy(workspace, exc, vscode=False)}"
         ) from exc
     _warn_on_image_drift(spec, workspace)
     if image_override is not None and image_override != spec.get("image"):
@@ -951,9 +957,6 @@ def _create_or_resume_session(
         )
     else:
         _start_session_container(request.name)
-    from booley.runtime.sandbox_artifact import publish_receipt
-
-    publish_receipt(workspace, request.name)
     if created and request.spec.get("postCreateCommand"):
         _run_hook(request.name, str(request.spec["postCreateCommand"]), "postCreateCommand")
     if request.spec.get("postStartCommand"):
@@ -1124,27 +1127,20 @@ def _ensure_unlocked(
 
 
 def _recover_before_lifecycle(workspace: Path, retry_command: str | None) -> None:
-    from booley.eda.provisioning.licensing.flexnet_docker import (
-        cleanup_project_resources_for_identity,
-    )
     from booley.runtime.session_refresh import RecoveryOutcome, recover_project_locked
 
-    invalidated = _recover_invalidations_locked(
-        cleanup_resources=cleanup_project_resources_for_identity,
-    )
+    invalidated = _recover_invalidations_locked()
     recovered = recover_project_locked(workspace)
     if invalidated or recovered.outcome is not RecoveryOutcome.NONE:
         retry = f"run `{retry_command}` again" if retry_command else "retry the command"
         raise SessionError(f"recovered interrupted Sandbox host state; {retry}")
 
 
-def _recover_invalidations_locked(
-    *, cleanup_resources: Callable[[str], tuple[str, ...]]
-) -> tuple[str, ...]:
+def _recover_invalidations_locked() -> tuple[str, ...]:
     from booley.runtime import issuance_invalidation
 
     try:
-        return issuance_invalidation.recover_all_locked(cleanup_resources=cleanup_resources)
+        return issuance_invalidation.recover_all_locked()
     except issuance_invalidation.InvalidationError as exc:
         raise SessionError(str(exc)) from exc
 
@@ -1192,7 +1188,7 @@ def validate(workspace: Path) -> str:
     try:
         issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
     except runtime_spec.RuntimeSpecError as exc:
-        raise SessionError(f"{exc}; {sandbox_remedy(workspace)}") from exc
+        raise SessionError(f"{exc}; {_spec_refusal_remedy(workspace, exc, vscode=False)}") from exc
     selected = resolve_running_sandbox(workspace)
     if selected is not None and not _container_matches_issuance(
         selected.container_id,
@@ -1275,11 +1271,7 @@ def prepare(workspace: Path) -> str:
 
     with host_lifecycle_lock("session prepare"):
         _recover_before_lifecycle(workspace, "booley session prepare")
-        digest = _prepare_unlocked(workspace)
-    from booley.runtime.sandbox_artifact import launch_vscode_observer
-
-    launch_vscode_observer(workspace, digest)
-    return digest
+        return _prepare_unlocked(workspace)
 
 
 @dataclass(frozen=True)
@@ -1306,10 +1298,29 @@ def _authenticate_quiesce_validate(
         issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
     except runtime_spec.RuntimeSpecError as exc:
         recovery = _quiesced_validation_recovery(quiesced)
-        raise SessionError(
-            f"refusing Sandbox preparation: {exc}; {sandbox_remedy(workspace)}{recovery}"
-        ) from exc
+        remedy = _spec_refusal_remedy(workspace, exc, vscode=True)
+        raise SessionError(f"refusing Sandbox preparation: {exc}; {remedy}{recovery}") from exc
     return issuance, quiesced
+
+
+def _spec_refusal_remedy(workspace: Path, exc: Exception, *, vscode: bool) -> str:
+    """Name the host workflow that cures one Sandbox spec refusal."""
+    from booley.runtime import session_issuance as runtime_spec
+
+    if isinstance(exc, runtime_spec.HostPolicyError):
+        return f"fix {exc.path} on the host, then start the Sandbox again"
+    if isinstance(exc, runtime_spec.EgressDriftError):
+        if vscode:
+            return (
+                "on the host run `booley init --seed`, then reopen the folder in the "
+                "container (Dev Containers: Rebuild Container if it is running)"
+            )
+        return (
+            "host [sandbox] egress changed; on the host run `booley init --seed` to "
+            "reissue the Sandbox spec (run `booley session down` first if a headless "
+            "Sandbox is running), then start the Sandbox again"
+        )
+    return sandbox_remedy(workspace)
 
 
 def _same_host_path(actual: str, expected: Path) -> bool:
@@ -2602,19 +2613,6 @@ SANDBOX_HOST_INSPECTION_REMEDY = (
 )
 
 
-def _authenticated_recovery_available(workspace: Path) -> bool:
-    from booley.runtime import session_issuance as runtime_spec
-
-    try:
-        spec = _load_spec(workspace)
-        if not isinstance(spec, dict):
-            return False
-        runtime_spec.load_recovery_snapshot(workspace, spec, dc.devcontainer_path(workspace))
-    except (SessionError, runtime_spec.RuntimeSpecError):
-        return False
-    return True
-
-
 def sandbox_remedy(
     workspace: Path, *, runtime_only: bool = False, recovery_unavailable: bool = False
 ) -> str:
@@ -2649,7 +2647,7 @@ def sandbox_remedy(
     workflow = "run `booley session refresh` on the host"
     if external:
         workflow = "rebuild/pull the selected external image, then run `booley session down`, `booley init --seed`, and `booley session up` on the host"
-    elif recovery_unavailable or not _authenticated_recovery_available(workspace):
+    elif recovery_unavailable:
         workflow = (
             "on the host run `booley session down`, `booley init --seed`, and `booley session up`"
         )

@@ -13,8 +13,7 @@ from booley.criteria.evidence_ledger import validated_evidence_records
 from booley.criteria.state import DevelopmentState
 from booley.flows.sim.campaign.codec import (
     MANIFEST_MAX_BYTES,
-    MANIFEST_SCHEMA,
-    MANIFEST_V3_SCHEMA,
+    UnsupportedSimulationCampaignFormatError,
     decode_simulation_campaign_manifest,
 )
 from booley.goals.derivation import selected_observations
@@ -32,14 +31,14 @@ from booley.targets.catalog import TargetCatalog
 def generated_inputs(
     project: Path, record: GoalRecord, state: DevelopmentState, root: Path
 ) -> tuple[GeneratedBuildInput, ...]:
-    """Only selected observations or their hash-verified originals can authorize data."""
+    """Only selected observations or their validated contributors can authorize data."""
     paths = record_paths(project, record.id)
     records = validated_evidence_records(GOAL_SCOPE, paths.logs_dir, state, {})
     indexed = {row["sequence"]: row for row in records}
     selected = selected_observations(record, state, project)
     origins: dict[int, dict[str, Any]] = {}
     for row in selected.values():
-        for original in [row, *original_observations(row, indexed)]:
+        for original in [row, *original_observations(row, indexed, record)]:
             origins[original["sequence"]] = original
     result: list[GeneratedBuildInput] = []
     for row in origins.values():
@@ -70,7 +69,11 @@ def _producer_manifest(runtime: Path, envelope: dict[str, Any]) -> Mapping[str, 
             != envelope["manifest_sha256"]
         ):
             continue
-        producer = decode_simulation_campaign_manifest(raw).document
+        try:
+            producer = decode_simulation_campaign_manifest(raw).document
+        except UnsupportedSimulationCampaignFormatError as exc:
+            # ``<invocation>/targets/<target>/campaign/manifest.json``
+            raise exc.located(path.parents[3]) from None
         if (
             producer["campaign_id"] != envelope["campaign_id"]
             or producer["origin"] != envelope["origin"]
@@ -87,15 +90,9 @@ def _producer_manifest(runtime: Path, envelope: dict[str, Any]) -> Mapping[str, 
 def _declares_source_identities(producer: Mapping[str, object]) -> bool:
     """Whether a campaign manifest's disclosures map generated files to sources.
 
-    Manifest v3 was written exactly for such campaigns. v4 is written for
-    every campaign, so the same fact is read from its disclosures: a setup
-    planner with contract version 2, or any entry that names a source path.
+    The fact is read from the disclosures: a setup planner with contract
+    version 2, or any entry that names a source path.
     """
-    schema = producer["$schema"]
-    if schema == MANIFEST_V3_SCHEMA:
-        return True
-    if schema != MANIFEST_SCHEMA:
-        return False
     disclosures = cast("tuple[Mapping[str, Any], ...]", producer["planning_disclosures"])
     return any(
         (

@@ -8,7 +8,7 @@ from booley.audit.doctor_waivers import (
     load_doctor_waivers,
     warning,
 )
-from booley.harness import doctor
+from booley.harness import colors, doctor
 
 
 def _write(tmp_path, body: str) -> None:
@@ -149,9 +149,10 @@ permanent = true
         )
     )
 
-    output = capsys.readouterr().out
-    assert "WAIVED  trace is unavailable [sim.trace-unavailable:sim_fast]" in output
-    assert "reason: The upstream harness deliberately has no trace switch." in output
+    output = colors.strip_ansi(capsys.readouterr().out)
+    assert "  ~  trace is unavailable" in output
+    assert "sim.trace-unavailable:sim_fast" in output
+    assert "→ reason: The upstream harness deliberately has no trace switch." in output
     assert reporter.counts["warn"] == 0
     assert reporter.counts["waived"] == 1
 
@@ -187,8 +188,8 @@ permanent = true
 
     doctor._check_devcontainer_excludes(tmp_path, reporter.pass_, reporter.warn_)
 
-    output = capsys.readouterr().out
-    assert "WARN  git info/exclude missing Booley entry: .devcontainer" in output
-    assert "WAIVED  git info/exclude missing Booley entry: .booley" in output
+    output = colors.strip_ansi(capsys.readouterr().out)
+    assert "  !  git info/exclude missing Booley entry: .devcontainer" in output
+    assert "  ~  git info/exclude missing Booley entry: .booley" in output
     assert reporter.counts["warn"] == 1
     assert reporter.counts["waived"] == 1

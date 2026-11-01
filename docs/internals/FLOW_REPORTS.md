@@ -7,7 +7,7 @@ script or tool that consumes Flow output.
 
 | Document | Covers |
 |---|---|
-| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | How to run each Flow and read its verdict |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md)) | How to run each Flow and read its verdict |
 | **This document** | Report files, JSON fields, and on-disk layout |
 | [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | How the Flows produce these files: planning, verdict rules, recovery |
 | [MCP-TOOLS.md](MCP-TOOLS.md#built-in-flow-calls) | How the same results reach an agent over MCP |
@@ -44,8 +44,20 @@ Consumers must use the numbered `<report-root>/<name>/<N>/...` paths.
 | `criterion_key`, `criterion_met` | For Flow/Specialist reports with an acceptance identity (normally Goal-bound), the effective key and boolean verdict when exactly one applicable Criterion maps to the invocation and was evaluated. Empty key and `null` verdict for zero/multiple mapped Criteria, no evaluation, or every multi-Target invocation (including partial runs). Unbound Flow/Specialist reports omit both fields; consumers must use optional-key access. `passed` remains independent of this verdict. |
 | `timestamp`, `elapsed_s`, `slug` | Start time, duration, and execution identity: the Goal Record ID for Goal-bound runs or the supplied execution identity for Interactive runs; normally empty for standalone diagnostics. |
 | `detail` | Flow-specific results and pointers to per-Target files. |
-| `eda_tool`, `run_id`, `report_text` | The EDA tool used, the job ID, and the printed verdict card, when present. |
+| `eda_tool`, `eda_tools` | Resolved EDA identity: scalar `eda_tool` for one selected Target, or `eda_tools` mapping each selected Target to its tool (`null` if unresolved/unreached) for multiple Targets, even when tools match. Unknown single-Target identity is omitted; standalone frontends use the scalar. Specialists omit these keys when they run no EDA tool. |
+| `resources` | Optional process accounting: `cpu_user_s`, `cpu_sys_s` in seconds and `peak_rss_mb` in MiB. |
+| `run_id`, `report_text` | The Job ID and printed verdict card, when present. |
 | `usage` | For Specialists that call a model: `input_tokens`, `output_tokens`, `cached_tokens`, `cache_create_tokens`, and `cost_usd`. |
+
+Final resource accounting is a process-lifetime snapshot shared by numbered and
+flat reports. CPU sums the endpoint and its waited-for children; peak memory
+is the **largest process**, not a simultaneous process-tree total. Detached or
+unwaited children are excluded. `elapsed_s` remains wall time.
+
+Repeated in-process calls can include earlier work; resumed Campaigns account
+only for the resuming process. Unsupported or failed accounting omits `resources`
+without preventing report publication (failures are logged). Older reports may
+also omit it; consumers must not substitute zeros.
 
 ## Progress
 
@@ -82,6 +94,12 @@ the real run of the same work have the same fingerprint.
 A dry run runs no EDA tool, touches no Criteria, and fills no caches. It may
 run FuseSoC setup or generators in a throwaway directory when resolving the
 Target requires it; `planning_disclosures` says so when that happens.
+
+For Simulation, ordinary candidate and baseline units expose the simulator
+budget as `timeout_ms` and the invocation-carried build budget as recipe
+`build_timeout_ms`. Elaboration Check units expose their build budget in both
+fields because the Target build is their only subprocess. Standalone units
+retain the standalone-sweep `timeout_ms` and have no build field.
 
 ## `sim`
 
@@ -227,7 +245,7 @@ from the Target directory.
 Pass the canonical numbered Target-level `coverage.json` to the Coverage Analyst.
 It resolves the reference and authenticates the enclosing Simulation Campaign
 and completed Target projection; the nested path alone is not an Analyst input.
-Manifest summary/deep readers in
+Manifest readers in
 `booley.flows.sim.coverage_campaign_store` accept the resolved Campaign manifest,
 not the V1 reference. Always read points through the manifest rather than opening
 the point store directly.
@@ -242,58 +260,73 @@ and enclosing Simulation Campaign together.
 In `report.json`, `detail.targets[<target>]` keeps each Target's `simulation`,
 `collection`, and `evaluation` results even when another Target decided the
 exit code. `coverage_campaign` points to the Target-level reference once it
-has been written. A coverage threshold miss exits `0` when execution succeeds.
+has been written. A Target with an authenticated Coverage Campaign also has
+`coverage_metrics`: native metric name →
+`{percent: number|null, threshold: number|null, met: bool|null}`, taken from
+the same evaluated Coverage Campaign as `coverage.json`. `met` compares the
+exact metric ratio with its floor, independent of the aggregate Criterion
+verdict (`criterion_key` / `criterion_met`). No floor: `threshold` and `met`
+are null. No eligible points: `percent` is null, and a configured floor gets
+`met: false`. Unscored Campaigns give an empty map. `coverage_overall: number`
+is reserved for a producer-supplied overall percentage; no producer supplies
+one, so the field is absent.
+
+A coverage threshold miss exits `0` when execution succeeds.
 For an acceptance-bound invocation with one evaluated Criterion,
 `criterion_met` is false on that miss; unbound reports omit Criterion fields
 while retaining the per-Target evaluation.
 
-New coverage builds also publish `declarations/inventory.json`, registered as
-artifact kind `declaration_inventory` with `contract_version:
-booley.verilator-declarations/v1` and `discovery_status: complete|incomplete`.
-It records declaration kinds/names/locations, producing compiler and build
-identity, source aliases/roles/hashes, diagnostics, raw evidence references,
-and native source presence captured before record-class filtering. This uses
-the existing artifact envelope; old Campaigns remain readable and mean
-"discovery not recorded" when the artifact is absent.
-
-`COV_RTL_SOURCE_WITHOUT_POINTS` findings address exact paths through
-`/source_closure/rtl/<index>/path`. `COV_RTL_SOURCE_DISCOVERY_INCOMPLETE` suppresses
-source-gap accusations for that Target. These warnings do not change collection,
-evaluation, Criteria, percentages, or exit codes. The verdict card previews three
-escaped paths; the Analyst overview previews 50 and `zero_point_sources` pages
-through the complete sorted list with `limit` (1–100) and `cursor`. Report-only
-access works without current Project source files. Invalid advisory pointers
-are counted as unusable evidence without invalidating point scoring.
-
-Raw compiler dumps are bounded diagnostic artifacts under `build-evidence/`,
-kind `declaration_raw`. Their hashes bind them to the compact inventory; they are
-not executable snapshot inputs or Analyst context. Compact inventory and findings
-survive native-only pruning; full Campaign pruning removes all these artifacts.
-Raw diagnostics may follow build-evidence retention independently; interpreting
-the compact inventory does not require raw dumps or the old build generation.
+`COV_RTL_SOURCE_WITHOUT_POINTS` findings are the only record of source gaps.
+They address exact paths through `/source_closure/rtl/<index>/path`; a pointer
+outside the closure is skipped. These warnings do not change collection,
+evaluation, Criteria, percentages, or exit codes. The verdict card appears only
+when at least one finding exists and previews three escaped paths; the Analyst
+overview previews 50 and `zero_point_sources` pages through the complete sorted
+list with `limit` (1–100) and `cursor`. Report-only access works without current
+Project source files.
 
 ### Coverage retention
 
 `python -m booley.flows.sim.campaign_retention` deletes the evidence of one
 exact run. Nothing is ever deleted automatically. Usage is in
-[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md#cleaning-up-completed-campaigns); the
+[COVERAGE.md](../user/COVERAGE.md#cleaning-up-completed-campaigns); the
 algorithm is in
 [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#exact-report-retention).
 
-- **`--native-target <target>`** removes only that Target's raw and merged
-  Verilator databases. `coverage.json` and the point store stay, so the
+- **`--native-target <target>`** removes that Target's `native/` directory (raw and
+  merged Verilator databases). `coverage.json` and the point store stay, so the
   Campaign can still be analyzed. `availability.json` in the Target directory
   records the pruning.
 - **`--full`** removes the whole run. It leaves an empty `.pruned-N` marker so
   the run number is not reused. It refuses when later resumed runs depend on
   this one, unless `--include-dependents` is given.
 
-Both refuse to touch a run that is still active, or any file the run did not
-produce. An interrupted cleanup is safe to retry with the same arguments.
+Both refuse to touch a run that is still active. `--full` also refuses any file
+the run did not produce; `--native-target` removes the Target's whole `native/`
+directory. An interrupted cleanup is safe to retry with the same arguments.
 
 ## `lint`
 
-`lint_report.json`:
+Job report `detail` includes a bounded findings preview:
+
+| Field | Type and contents |
+|---|---|
+| `findings` | Up to 20 findings: distinct in-scope warnings in order, then Target errors in report order. |
+| `findings_total` | Integer: distinct in-scope warnings plus Target errors, before truncation. |
+| `findings_truncated` | Boolean: `findings_total > 20`. |
+| `findings_by_target` | Multiple Targets only: every selected Target → `{warnings: int, errors: int}`, zeros included. |
+
+Every finding has string `severity`, `message`, and `target` (even for a
+single Target), plus `rule`, `file`, and `line`. Warnings have
+`severity: "warning"`, string `rule` and `file`, and `line: int`. Errors have
+`severity: "error"` and null `rule`, `file`, and `line`. A warning shared by
+several Targets shows its first reporting Target in the preview but counts
+toward each contributing Target in `findings_by_target` (after deduplication
+and scope filtering, truncated findings included), so per-Target warning
+counts can sum past the distinct total. Errors count once per Target, without
+deduplication.
+
+`lint_report.json` is the full record:
 
 | Field | Contents |
 |---|---|

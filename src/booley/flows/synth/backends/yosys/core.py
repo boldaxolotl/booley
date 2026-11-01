@@ -18,6 +18,8 @@ import re
 import sys
 from pathlib import Path
 
+from booley.core.booley_dir_links import lexical_booley_path
+from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.core.boundary import (
     BoundaryError,
     is_str_list,
@@ -722,7 +724,11 @@ def _resolve_sta_sdc_paths(sdc: list[str] | None, root: Path | None = None) -> l
     resolved_sdc: list[Path] = []
     for raw in sdc or []:
         sdc_path = Path(raw)
-        resolved = sdc_path.resolve() if sdc_path.is_absolute() else (base / sdc_path).resolve()
+        physical = sdc_path.resolve() if sdc_path.is_absolute() else (base / sdc_path).resolve()
+        # A stealth core's SDC behind a symlinked Booley Directory entry (a Codespace's
+        # /work/.booley) is named through the entry, as the Flow forwards it; any
+        # other link out of the checkout is still refused below.
+        resolved = lexical_booley_path(base / BOOLEY_DIR_NAME, physical)
         try:
             resolved.relative_to(base)
         except ValueError:

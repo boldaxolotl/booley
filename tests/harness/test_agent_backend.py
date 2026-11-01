@@ -15,8 +15,6 @@ import pytest
 from booley.config.agent import _PROVIDER_TIER_MODELS, AgentSettings
 from booley.config.settings import (
     _DEFAULT_TIER_MODELS,
-    MODEL_MAP,
-    STEP_TIERS,
     BackendConfigError,
 )
 from booley.runtime.agent_backend import (
@@ -212,44 +210,17 @@ class TestRuntimeBackendConfig:
 
 
 # ===========================================================================
-# STEP_TIERS
-# ===========================================================================
-
-
-class TestStepTiers:
-    def test_all_tiers_valid(self):
-        valid_tiers = {"heavy", "standard", "light"}
-        for step, tier in STEP_TIERS.items():
-            assert tier in valid_tiers, f"STEP_TIERS[{step!r}] = {tier!r} invalid"
-
-    def test_has_required_tiers(self):
-        tiers_used = set(STEP_TIERS.values())
-        assert "heavy" in tiers_used
-        assert "light" in tiers_used
-
-    def test_recovery_is_light(self):
-        assert STEP_TIERS["recovery"] == "light"
-
-    def test_developer_is_heavy(self):
-        assert STEP_TIERS["developer"] == "heavy"
-
-
-# ===========================================================================
 # load_backend_config (reads [agent] from harness config)
 # ===========================================================================
 
 
 class TestLoadBackendConfig:
     def setup_method(self):
-        # Save and reset global state before each test
-        self._saved_model_map = dict(MODEL_MAP)
+        # Reset global state before each test
         set_backend_config(None)
 
     def teardown_method(self):
         set_backend_config(None)
-        # Restore MODEL_MAP to avoid poisoning other tests
-        MODEL_MAP.clear()
-        MODEL_MAP.update(self._saved_model_map)
 
     def test_missing_file_uses_defaults(self, tmp_path):
         """No toml → default (claude) provider, never a silent codex."""
@@ -1096,7 +1067,7 @@ class TestCallOnceTimeoutResultSalvage:
         counters = cb._UsageCounters()
         counters.final_text = "partial findings so far"
 
-        async def _fake_process(self, prompt, options, timeout_seconds, c, tf, oe, st):
+        async def _fake_process(self, prompt, options, timeout_seconds, c, tf, oe, st, **_kwargs):
             c.got_result = True  # result already landed before the stall
             raise TimeoutError
 
@@ -1125,7 +1096,7 @@ class TestCallOnceTimeoutResultSalvage:
         backend = ClaudeSDKBackend()
         counters = cb._UsageCounters()
 
-        async def _fake_process(self, prompt, options, timeout_seconds, c, tf, oe, st):
+        async def _fake_process(self, prompt, options, timeout_seconds, c, tf, oe, st, **_kwargs):
             raise TimeoutError  # no result captured
 
         with (
@@ -1418,7 +1389,9 @@ class TestDispatchUsage:
 
 def test_private_codex_auth_reconciles_same_cached_home(tmp_path, monkeypatch):
     from booley.runtime import _codex_backend
+    from tests.conftest import require_symlinks
 
+    require_symlinks(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     original = tmp_path / ".codex" / "auth.json"
@@ -1429,11 +1402,11 @@ def test_private_codex_auth_reconciles_same_cached_home(tmp_path, monkeypatch):
     _codex_backend._populate_private_codex_home(private, {}, auth_mode="subscription")
     assert (private / "auth.json").exists()
     _codex_backend._populate_private_codex_home(private, {}, auth_mode="api_key")
-    assert not (private / "auth.json").exists()
+    assert not os.path.lexists(private / "auth.json")
     _codex_backend._populate_private_codex_home(private, {}, auth_mode="subscription")
     original.unlink()
     _codex_backend._populate_private_codex_home(private, {}, auth_mode="subscription")
-    assert not (private / "auth.json").exists()
+    assert not os.path.lexists(private / "auth.json")
 
 
 @pytest.mark.asyncio
@@ -1466,7 +1439,9 @@ async def test_nested_codex_sets_cli_home_to_validated_private_copy(tmp_path, mo
 
 def test_private_codex_copy_uses_cli_home(tmp_path, monkeypatch):
     from booley.runtime import _codex_backend
+    from tests.conftest import require_symlinks
 
+    require_symlinks(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     default = tmp_path / ".codex" / "auth.json"

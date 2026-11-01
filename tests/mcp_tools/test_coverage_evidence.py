@@ -477,7 +477,7 @@ def test_bound_tool_exposes_nothing_when_final_point_storage_is_corrupt(tmp_path
     monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
     monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)
 
-    with pytest.raises(ValueError, match=r"COV_POINT_(FORMAT|INTEGRITY)"):
+    with pytest.raises(ValueError, match="COV_POINT_FORMAT"):
         coverage_evidence.query_active_coverage_evidence({"view": "overview"})
 
 
@@ -504,23 +504,13 @@ def test_bound_tool_audits_terminal_query_rejection(tmp_path, monkeypatch):
 
 
 def _campaign_with_source_gaps(count=157):
-    from booley.flows.sim.coverage_campaign import CoverageArtifact, CoverageFinding
+    from booley.flows.sim.coverage_campaign import CoverageFinding
     from booley.flows.sim.coverage_source_gaps import GAP_CODE
 
     campaign = _campaign_with_waiver()
     paths = [f"rtl/file_{index:04d}.sv" for index in range(count)]
     closure = freeze_coverage_mapping(
         {"rtl": [{"path": p, "sha256": "sha256:" + "a" * 64} for p in paths], "testbench": []}
-    )
-    artifact = CoverageArtifact(
-        "artifact:inventory",
-        "declaration_inventory",
-        "declarations/inventory.json",
-        "sha256:" + "a" * 64,
-        1,
-        "fresh_queryable",
-        None,
-        freeze_coverage_mapping({"discovery_status": "complete"}),
     )
     unrelated = tuple(
         CoverageFinding("warning", "OTHER", "/collection", "unrelated") for _ in range(130)
@@ -534,7 +524,6 @@ def _campaign_with_source_gaps(count=157):
     return replace(
         campaign,
         source_closure=closure,
-        artifacts=(*campaign.artifacts, artifact),
         findings=(*unrelated, *gaps),
     ), paths
 
@@ -545,7 +534,7 @@ def test_zero_point_sources_are_fully_pageable_without_source_access_or_point_re
     overview = session.query({"view": "overview"})["rtl_sources_without_points"]
     assert overview["total_sources"] == len(paths)
     assert overview["omitted"] == len(paths) - 50
-    assert overview["discovery_status"] == "complete"
+    assert overview["paths"] == paths[:50]
     retrieved, cursor = [], None
     for _ in range(4):
         request = {"view": "zero_point_sources", "limit": 50}
@@ -557,6 +546,8 @@ def test_zero_point_sources_are_fully_pageable_without_source_access_or_point_re
         if cursor is None:
             break
     assert retrieved == paths
+    removed = {"discovery_status", "comparison_status", "unusable_findings"}
+    assert not removed & overview.keys() and not removed & page.keys()
     audit = session.analysis_scope()
     decoded = decode_coverage_evidence_audit(audit)
     assert decoded.analysis_scope["points_retrieved"] == 0
@@ -585,21 +576,20 @@ def test_zero_point_sources_cursor_and_budget_preserve_audit_contract():
         )
 
 
-def test_minimal_overview_retains_discovery_and_count():
+def test_minimal_overview_retains_count():
     from booley.flows.sim.coverage_evidence import _minimal_overview
 
     campaign, paths = _campaign_with_source_gaps()
     overview = CoverageEvidenceSession(campaign, None).query({"view": "overview"})
     minimal = _minimal_overview(overview)["rtl_sources_without_points"]
-    assert minimal["discovery_status"] == "complete"
     assert minimal["total_sources"] == len(paths)
     assert minimal["omitted"] == len(paths)
     assert minimal["query"]["view"] == "zero_point_sources"
 
 
-def test_malformed_source_gap_pointers_do_not_invalidate_scored_evidence():
+def test_malformed_source_gap_pointers_are_skipped():
     from booley.flows.sim.coverage_campaign import CoverageFinding
-    from booley.flows.sim.coverage_source_gaps import GAP_CODE, source_gap_summary
+    from booley.flows.sim.coverage_source_gaps import GAP_CODE, source_gap_paths
 
     campaign, paths = _campaign_with_source_gaps(1)
     campaign = replace(
@@ -610,6 +600,4 @@ def test_malformed_source_gap_pointers_do_not_invalidate_scored_evidence():
             campaign.findings[-1],
         ),
     )
-    summary = source_gap_summary(campaign)
-    assert summary.paths == tuple(paths)
-    assert summary.unusable_findings == 2
+    assert source_gap_paths(campaign) == tuple(paths)

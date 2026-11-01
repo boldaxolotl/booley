@@ -22,8 +22,8 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.runtime.endpoint_execution import EXIT_SUCCESS
 from tests.flows.sim.test_flow import (
     _FLOW_ENABLED,
+    _canned_build_session,  # noqa: F401 -- autouse fixture
     _make_flow,
-    _use_legacy_build_transport_for_canned_flow_tests,  # noqa: F401 -- autouse fixture
 )
 
 _REVISION = "b" * 40
@@ -115,7 +115,7 @@ def _run(
         patch("booley.flows.sim.flow.baseline_worktree", worktree),
         patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
         patch.object(flow, "_execute", side_effect=execute),
-        flow.context.publication_resources,
+        flow.publication_resources,
     ):
         result = flow._run()
     return result, launched, flow.state.criteria[key]

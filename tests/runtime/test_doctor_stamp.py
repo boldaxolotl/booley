@@ -252,3 +252,75 @@ class TestWarnIfStale:
         doctor_stamp.warn_if_stale(tmp_path, emitted.append)  # must not raise
 
         assert emitted == []
+
+
+def test_stamp_read_survives_transient_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    booley_dir = _write_project(tmp_path)
+    doctor_stamp.record_clean_run(booley_dir, tmp_path, deep=True)
+    path = doctor_stamp.stamp_path(booley_dir)
+    attempts = hold_opens(monkeypatch, {path: 1})
+    stamp = doctor_stamp.load_stamp(booley_dir)
+    assert stamp is not None
+    assert stamp["deep"] is True
+    assert attempts[path] == 2
+
+
+def test_stamp_write_survives_transient_replace_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_replaces
+
+    booley_dir = _write_project(tmp_path)
+    doctor_stamp.record_clean_run(booley_dir, tmp_path, deep=False)
+    path = doctor_stamp.stamp_path(booley_dir)
+    attempts = hold_replaces(monkeypatch, {path: 1})
+    assert doctor_stamp.record_clean_run(booley_dir, tmp_path, deep=True) == path
+    assert doctor_stamp.load_stamp(booley_dir)["deep"] is True
+    assert attempts[path] == 2
+
+
+def test_lasting_stamp_sharing_error_is_an_unreadable_advisory(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    booley_dir = _write_project(tmp_path)
+    doctor_stamp.record_clean_run(booley_dir, tmp_path, deep=True)
+    path = doctor_stamp.stamp_path(booley_dir)
+    attempts = hold_opens(monkeypatch, {path: 1000})
+    with pytest.raises(PermissionError) as lasting:
+        doctor_stamp.load_stamp(booley_dir)
+    assert lasting.value.winerror == 32  # type: ignore[attr-defined]
+    advisory = doctor_stamp.check_stamp_advisory(booley_dir, tmp_path)
+    assert advisory is not None
+    assert "could not be read" in advisory.message
+    assert "no warning-free" not in advisory.message
+    assert attempts[path] > 2
+
+
+def test_posix_unreadable_stamp_reads_as_absent(tmp_path, monkeypatch):
+    import errno
+    import sys
+    from pathlib import Path
+
+    booley_dir = _write_project(tmp_path)
+    doctor_stamp.record_clean_run(booley_dir, tmp_path, deep=True)
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def denied(path, *args, **kwargs):
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(Path, "open", denied)
+    assert doctor_stamp.load_stamp(booley_dir) is None
+    advisory = doctor_stamp.check_stamp_advisory(booley_dir, tmp_path)
+    assert advisory is not None
+    assert "no warning-free" in advisory.message
+
+
+def test_stamp_write_lasting_sharing_error_stays_fail_soft(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_replaces
+
+    booley_dir = _write_project(tmp_path)
+    doctor_stamp.record_clean_run(booley_dir, tmp_path, deep=False)
+    path = doctor_stamp.stamp_path(booley_dir)
+    hold_replaces(monkeypatch, {path: 1000})
+    assert doctor_stamp.record_clean_run(booley_dir, tmp_path, deep=True) is None
+    assert doctor_stamp.load_stamp(booley_dir)["deep"] is False

@@ -643,6 +643,66 @@ class TestCriterionChanges:
         assert changes[0].reason == "outcome"
 
 
+class _JudgingPersistence:
+    """A persistence whose ``save`` reprojects judged evidence (duck-typed marker)."""
+
+    def projects_judged_evidence(self) -> None:
+        """Marker: the ledger alone latches ``ever_failed`` for this strategy."""
+
+    def loaded(self, state):
+        """Nothing to capture."""
+
+    def save(self, state):
+        """Nothing to write."""
+
+
+def _observation(met, reason):
+    return {"criterion": "sim_pass_default", "met": met, "reason": reason}
+
+
+@pytest.mark.parametrize(
+    ("met", "reason", "latches"),
+    [
+        (False, "outcome", True),
+        (False, "source-invalidated", True),
+        (False, "goal-test-run-pending", False),
+        (False, "goal-test-run-metric-missing", False),
+        (True, "outcome", False),
+    ],
+)
+def test_apply_observation_latches_only_an_observed_failure(met, reason, latches):
+    from booley.criteria.evidence_ledger import apply_observation
+
+    state = DevelopmentState.in_memory()
+    state.init_criteria({"sim_pass_default": True})
+    apply_observation(state, _observation(met, reason))
+    assert state.criteria["sim_pass_default"].ever_failed is latches
+
+
+class TestJudgedEvidenceDefersTheLatch:
+    """A Goal-style state takes ``ever_failed`` from the judged ledger verdict only."""
+
+    @staticmethod
+    def _fail(state):
+        state.init_criteria({"sim_pass_default": True})
+        state.set_criterion("sim_pass_default", False)
+        return state.criteria["sim_pass_default"].ever_failed
+
+    def test_file_backed_strict_state_defers_to_the_ledger(self, tmp_path):
+        state = DevelopmentState.load(tmp_path / "s.json", _JudgingPersistence())
+        state.strict_criteria = True
+        assert self._fail(state) is False
+
+    def test_in_memory_state_still_latches(self):
+        state = DevelopmentState.in_memory(_JudgingPersistence())
+        state.strict_criteria = True
+        assert self._fail(state) is True
+
+    def test_non_strict_state_still_latches(self, tmp_path):
+        state = DevelopmentState.load(tmp_path / "s.json", _JudgingPersistence())
+        assert self._fail(state) is True
+
+
 class TestEverFailedLatch:
     """`ever_failed` records that a tool actually observed a failure (F-53)."""
 

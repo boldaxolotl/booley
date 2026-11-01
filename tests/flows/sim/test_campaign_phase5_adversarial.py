@@ -14,7 +14,6 @@ import pytest
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
-    canonical_json_bytes,
 )
 from booley.flows.sim.campaign.coordinator import (
     CampaignPolicy,
@@ -56,7 +55,6 @@ from booley.flows.sim.flow import (
 from booley.flows.sim.verilator_coverage import SimulationBuildResult, SimulationRunResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
-from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_older_schema
 from tests.flows.sim.test_campaign_crash_matrix import (
     _build_execution,
     _CrashOnce,
@@ -452,6 +450,7 @@ def _run_coverage_campaign(
     *,
     runtime_input: bool = False,
     pre_sim_commands: tuple[str, ...] = (),
+    publication_checkpoint=None,
 ):
     plan, target = _coverage_campaign_plan(
         root, runtime_input=runtime_input, pre_sim_commands=pre_sim_commands
@@ -469,7 +468,9 @@ def _run_coverage_campaign(
         return native
 
     executor = CoverageAggregateExecutor(
-        plans={target.handle.identity: target}, execution_factory=execution_factory
+        plans={target.handle.identity: target},
+        execution_factory=execution_factory,
+        publication_checkpoint=publication_checkpoint,
     )
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
@@ -480,27 +481,24 @@ def _run_coverage_campaign(
     return outcome, CampaignStore(invocation / "targets/sim_0/campaign")
 
 
-def _rewrite_nested_coverage_v3(path: Path, *, invalid_scores: bool = False) -> None:
-    document = json.loads(path.read_text())
-    if document["$schema"] == "booley.coverage-campaign/v5":
-        rewrite_manifest_as_older_schema(document, 3)
-    if invalid_scores:
-        document["collection"]["status"] = "collector_error"
-        document["normalization"]["status"] = "partial"
-    path.write_text(json.dumps(document))
-
-
-def _retain_v3_before_reference(monkeypatch: pytest.MonkeyPatch, *, invalid_scores=False) -> None:
+def _retain_score_bearing_invalid_campaign(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Publish a nested Campaign whose scoring is invalid but still carries rollups."""
     from booley.flows.sim import coverage_transaction
 
     original = coverage_transaction.publish_coverage_campaign
 
-    def publish_v3_campaign(target_dir, campaign):
+    def publish_invalid_campaign(target_dir, campaign):
         paths = original(target_dir, campaign)
-        _rewrite_nested_coverage_v3(paths.campaign, invalid_scores=invalid_scores)
+        document = json.loads(paths.campaign.read_text())
+        document["collection"]["status"] = "collector_error"
+        document["normalization"]["status"] = "partial"
+        document["scoring"] = {"status": "invalid", "reason": "collector_error"}
+        paths.campaign.write_text(json.dumps(document))
         return paths
 
-    monkeypatch.setattr(coverage_transaction, "publish_coverage_campaign", publish_v3_campaign)
+    monkeypatch.setattr(
+        coverage_transaction, "publish_coverage_campaign", publish_invalid_campaign
+    )
 
 
 def _validated_resume(store, plan, target, root: Path) -> ValidatedResumeManifest:
@@ -525,10 +523,7 @@ def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
     assert native.executed_original is False
 
 
-def test_coverage_resume_reuses_retained_valid_v3_nested_campaign(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _retain_v3_before_reference(monkeypatch)
+def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None:
     plan, target = _coverage_campaign_plan(tmp_path)
     native = NativeExecution()
     executor = CoverageAggregateExecutor(
@@ -567,14 +562,14 @@ def test_coverage_resume_reuses_retained_valid_v3_nested_campaign(
     assert resumed.complete is True
     assert len(native.runs) == 2
     assert resumed.coverage_reference["coverage_campaign"]["schema"] == (
-        "booley.coverage-campaign/v3"
+        "booley.coverage-campaign/v5"
     )
 
 
-def test_coverage_campaign_rejects_score_bearing_invalid_v3_nested_result(
+def test_coverage_campaign_rejects_score_bearing_invalid_nested_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _retain_v3_before_reference(monkeypatch, invalid_scores=True)
+    _retain_score_bearing_invalid_campaign(monkeypatch)
 
     with pytest.raises(
         CampaignPublicationError, match="nested Coverage Campaign cannot be authenticated"
@@ -666,7 +661,7 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
             tmp_path, PreSimSpawnError(), pre_sim_commands=("missing-vector-generator",)
         )
 
-    assert raised.value.evaluation_status == "not_requested"
+    assert raised.value.detail["evaluation"] == "not_requested"
     nested = next(
         (tmp_path / "reports/1/targets/sim_0").glob(
             "campaign/work-items/*/attempts/*/coverage-campaign/coverage.json"
@@ -688,6 +683,66 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
     assert firing.document["test_names"] == ("reset",)
     assert firing.document["producer_invocation_id"] == 1
     assert firing.terminal is False
+
+
+def test_post_commit_failure_reports_incomplete_collection(tmp_path: Path) -> None:
+    """A committed `incomplete` collection survives a later publication failure."""
+
+    class MissingInput(NativeExecution):
+        def run(self, request):
+            return SimulationRunResult(
+                "fail",
+                "$readmemh: Cannot open memory.hex",
+                termination="fatal_init",
+                failure_kind="missing_input",
+            )
+
+        def command(self, request):
+            raise AssertionError("merge must not run after a design abort")
+
+    def fail_after_commit(boundary: str) -> None:
+        if boundary == "after:coverage_campaign":
+            raise OSError("injected post-commit publication failure")
+
+    with pytest.raises(_CoverageAggregateError) as raised:
+        _run_coverage_campaign(tmp_path, MissingInput(), publication_checkpoint=fail_after_commit)
+
+    detail = raised.value.detail
+    assert detail["collection"] == "incomplete"
+    assert detail["evaluation"] == "not_requested"
+    assert detail["abort_remaining"] is True
+    assert detail["passed"] is False
+    assert detail["simulation"] == "aborted"
+    assert "coverage_campaign" not in detail
+
+
+@pytest.mark.parametrize(
+    ("coverage", "scans"), [(True, 3), (False, 2)], ids=["coverage", "ordinary"]
+)
+def test_campaign_run_adds_no_recovery_scan_for_failure_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coverage: bool, scans: int
+) -> None:
+    """Failure-detail facts reuse the coordinator's scans: 3 for coverage, 2 otherwise."""
+    from booley.flows.sim.campaign import coordinator
+
+    calls: list[None] = []
+    original = coordinator._scan_recovery
+
+    def counting_scan(*args, **kwargs):
+        calls.append(None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(coordinator, "_scan_recovery", counting_scan)
+    if coverage:
+        _run_coverage_campaign(tmp_path, NativeExecution())
+    else:
+        _run_cocotb(
+            tmp_path,
+            ("reset",),
+            (SimulationTestOutcome(name="reset", verdict="pass", passed=True),),
+        )
+
+    assert len(calls) == scans
 
 
 def test_coverage_rejects_fabricated_hook_with_empty_frozen_commands(tmp_path: Path) -> None:
@@ -754,8 +809,6 @@ class _CocotbHarness:
     build_root: Path
     launches: list[tuple[str, ...]]
     reported: tuple[SimulationTestOutcome, ...] | None = None
-    transport_names: tuple[str, ...] | None = None
-    transport_reported: tuple[SimulationTestOutcome, ...] | None = None
 
     @contextmanager
     def ordinary_group(self, _handle, names, _test_runs=None):
@@ -794,9 +847,8 @@ class _CocotbGroup:
         tests = self._harness.reported or tuple(
             SimulationTestOutcome(name=name, verdict="pass", passed=True) for name in self.names
         )
-        transport_names = self._harness.transport_names or tuple(test.name for test in tests)
-        transported = self._harness.transport_reported or tests
-        path.write_text(json.dumps(_transport(transported, transport_names)), encoding="utf-8")
+        transport_names = tuple(test.name for test in tests)
+        path.write_text(json.dumps(_transport(tests, transport_names)), encoding="utf-8")
         return SimulationTargetOutcome(
             target="sim",
             target_identity=self._harness.handle.identity,
@@ -832,16 +884,6 @@ def _transport(
         ],
         "skipped_unselected": 0,
     }
-
-
-def _assert_result_selection_is_authenticated(store: CampaignStore, work_item_id: str) -> None:
-    result_path = store.work_item_directory(work_item_id) / "result.json"
-    hostile = json.loads(result_path.read_bytes())
-    hostile["observations"].reverse()
-    result_path.chmod(0o600)
-    result_path.write_bytes(canonical_json_bytes(hostile))
-    with pytest.raises(SimulationCampaignIntegrityError, match="named work-item selection"):
-        store.scan()
 
 
 def _start_crashed_cocotb_campaign(
@@ -905,25 +947,19 @@ def test_production_cocotb_batch_retries_whole_batch_after_crash(tmp_path: Path)
         "reset",
     )
     assert [item["kind"] for item in result.document["evidence"]] == ["cocotb_results"]
-    _assert_result_selection_is_authenticated(store, recovered.work_item_id)
 
 
 def _run_cocotb(
     root: Path,
     names: tuple[str, ...],
     reported: tuple[SimulationTestOutcome, ...],
-    *,
-    transport_names: tuple[str, ...] | None = None,
-    transport_reported: tuple[SimulationTestOutcome, ...] | None = None,
 ) -> CampaignStore:
     plan = _plan(root, kind="cocotb_batch", names=names, cocotb=True)
     handle = TargetCatalog.build(root).select("sim", for_flow="sim")
     build_root = root / "build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"simulator")
-    execution = _CocotbHarness(
-        handle, build_root, [], reported, transport_names, transport_reported
-    )
+    execution = _CocotbHarness(handle, build_root, [], reported)
     executor = OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: execution,  # type: ignore[arg-type,return-value]
@@ -935,12 +971,6 @@ def _run_cocotb(
     )
     SimulationCampaign(executor).run(request)
     return CampaignStore(invocation / "targets/sim/campaign")
-
-
-def _result_document(store: CampaignStore) -> tuple[Path, dict[str, object]]:
-    recovered = store.scan().items[0]
-    path = store.work_item_directory(recovered.work_item_id) / "result.json"
-    return path, json.loads(path.read_bytes())
 
 
 def test_cocotb_result_preserves_exact_ordered_observations(tmp_path: Path) -> None:
@@ -985,71 +1015,6 @@ def test_unfiltered_cocotb_binds_discovered_order_and_detail(tmp_path: Path) -> 
         ("discovered_a", "fail"),
     ]
     assert observations[1]["detail"] == {"reason": "bad value"}
-
-
-@pytest.mark.parametrize("substitution", ["name", "verdict", "detail"])
-def test_cocotb_rejects_authenticated_source_transport_substitution(
-    tmp_path: Path, substitution: str
-) -> None:
-    reported = (
-        SimulationTestOutcome(
-            name="count", verdict="fail", passed=False, error_tail="reported failure"
-        ),
-        SimulationTestOutcome(name="reset", verdict="pass", passed=True),
-    )
-    transported = reported
-    names = ("count", "reset")
-    if substitution == "name":
-        names = ("reset", "count")
-    elif substitution == "verdict":
-        transported = (
-            SimulationTestOutcome(name="count", verdict="pass", passed=True),
-            reported[1],
-        )
-    else:
-        transported = (
-            SimulationTestOutcome(
-                name="count", verdict="fail", passed=False, error_tail="source failure"
-            ),
-            reported[1],
-        )
-    with pytest.raises(SimulationCampaignIntegrityError, match="transport"):
-        _run_cocotb(
-            tmp_path,
-            ("count", "reset"),
-            reported,
-            transport_names=names,
-            transport_reported=transported,
-        )
-
-
-def _substitute_observation(document: dict[str, object], field: str) -> None:
-    observation = document["observations"][0]  # type: ignore[index]
-    if field == "detail":
-        observation["detail"] = {"reason": "forged detail"}
-        return
-    observation[field] = "fail" if field == "functional" else "dirty"
-    if field == "assertions":
-        observation["assertion_count"] = 1
-    document["grade"] = "fail"
-
-
-@pytest.mark.parametrize("field", ["functional", "assertions", "detail"])
-def test_cocotb_rejects_result_substitution_against_authenticated_transport(
-    tmp_path: Path, field: str
-) -> None:
-    reported = (
-        SimulationTestOutcome(name="count", verdict="pass", passed=True),
-        SimulationTestOutcome(name="reset", verdict="pass", passed=True),
-    )
-    store = _run_cocotb(tmp_path, ("count", "reset"), reported)
-    path, document = _result_document(store)
-    _substitute_observation(document, field)
-    path.chmod(0o600)
-    path.write_bytes(canonical_json_bytes(document))
-
-    with pytest.raises(SimulationCampaignIntegrityError, match="transport"):
-        store.scan()
 
 
 def test_mcp_campaign_details_bound_observations_without_collapsing_axes(
@@ -1109,3 +1074,20 @@ def test_campaign_report_preserves_the_failed_simulator_reason(tmp_path: Path) -
         f"  report: {(tmp_path / 'sim.json').resolve()}\n"
         "  intentional simulator failure"
     )
+
+
+def test_cocotb_scan_takes_the_published_result_without_rereading_its_transport(
+    tmp_path: Path,
+) -> None:
+    reported = (
+        SimulationTestOutcome(name="count", verdict="pass", passed=True),
+        SimulationTestOutcome(name="reset", verdict="pass", passed=True),
+    )
+    store = _run_cocotb(tmp_path, ("count", "reset"), reported)
+    published = store.scan().items[0].result
+    assert published is not None
+    (reference,) = published.document["evidence"]
+    (attempt,) = (store.root / "work-items").glob("*/attempts/*")
+    (attempt / reference["path"]).unlink()
+
+    assert store.scan().items[0].result == published

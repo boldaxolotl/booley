@@ -133,11 +133,11 @@ def goal_enter_schema() -> dict[str, Any]:
 
 def _status_selection(store: GoalStore, root: Path) -> GoalStatusSelection:
     """Status with the Simulation Flow's reader of unpublished campaign results."""
-    from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
+    from booley.mcp.sim_baseline_jobs import schedule_goal_baselines
 
     selection = select_status(store, root, campaign_reader=read_unpublished_results)
     for view in selection.views:
-        schedule_sim_baselines(store.booley_dir, view.record)
+        schedule_goal_baselines(store.booley_dir, view.record)
     return selection
 
 
@@ -315,7 +315,7 @@ def _text(
 
 
 def _entry_environment(booley_dir: Path, context: McpRequestContext | None) -> EntryEnvironment:
-    from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
+    from booley.mcp.sim_baseline_jobs import schedule_goal_baselines
 
     own = (context or McpRequestContext()).session_key()
     keys = tuple(key for key in context.other_session_keys if key != own) if context else ()
@@ -324,5 +324,5 @@ def _entry_environment(booley_dir: Path, context: McpRequestContext | None) -> E
         recipe_families=_recipe_families(),
         routing_guidance=work_dir_guidance(),
         other_sessions=lambda _identity: keys,
-        schedule_baselines=lambda record: schedule_sim_baselines(booley_dir, record),
+        schedule_baselines=lambda record: schedule_goal_baselines(booley_dir, record),
     )

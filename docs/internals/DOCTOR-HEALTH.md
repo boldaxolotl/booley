@@ -4,7 +4,7 @@ How Doctor's checks are split across owners, what each owner may touch, and how
 Doctor, MCP and the Dashboard read one shared health observation. The import
 rules that keep these owners apart are in
 [the source-dependency contract](SOURCE-DEPENDENCY-CONTRACT.md#doctor-diagnostic-boundary);
-waiver syntax is in [CONFIG.md](../user/CONFIG.md#doctor-waivers-doctor-waiverstoml).
+waiver syntax is in [DOCTOR.md](../user/DOCTOR.md#doctor-waivers-doctor-waiverstoml).
 
 ## Diagnostic owners
 
@@ -114,5 +114,6 @@ consumes clean observations announces the recurrence.
 
 The Dashboard reads one non-consuming snapshot and renders compact active FAIL
 and WARN counts, or `Doctor: OK` when clean. It labels unavailable results and
-adds a stale suffix when a recheck is due. The separate `brief_message()` adapter
+ends a due result with ` · recheck due`, drawn in the attention color while the
+counts keep their severity style. The separate `brief_message()` adapter
 retains verbose findings and transcript paths for existing CLI and MCP callers.

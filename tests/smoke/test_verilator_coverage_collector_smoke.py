@@ -530,7 +530,7 @@ def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:
         previous = binaries
 
 
-def _add_declaration_sources(root: Path) -> None:
+def _add_module_sources(root: Path) -> None:
     files = {
         "unused.sv": "module unused; logic x; assign x = 1'b0; endmodule\nmodule sibling; endmodule\n",
         "parameters.sv": "parameter int VALUE = 1;\n",
@@ -549,29 +549,15 @@ def _add_declaration_sources(root: Path) -> None:
     core.write_text(core.read_text().replace("  tb:\n", entries + "  tb:\n"))
 
 
-@pytest.mark.parametrize("logical", [None, "used_alias", "nonexistent"])
-def test_real_producing_inventory_reports_unused_sources_and_rejects_line_aliases(
-    tmp_path, logical
-):
+def test_real_lexical_scan_reports_unused_module_sources(tmp_path):
     from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
     from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
-    from booley.flows.sim.coverage_source_gaps import GAP_CODE, INCOMPLETE_CODE, source_gap_summary
+    from booley.flows.sim.coverage_source_gaps import source_gap_paths
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
 
     _write_generated_target(tmp_path)
-    _add_declaration_sources(tmp_path)
-    if logical:
-        name = (
-            "src/booley_smoke_coverage-booleycoverage_1/rtl/counter.sv"
-            if logical == "used_alias"
-            else "logical_source.sv"
-        )
-        (tmp_path / "rtl/unused.sv").write_text(
-            f'`line 100 "{name}" 0\nmodule unused; endmodule\n'
-        )
-        core = tmp_path / "counter.core"
-        core.write_text(core.read_text().replace("--main, --exe]", "--main, --exe, --no-MMD]"))
+    _add_module_sources(tmp_path)
     data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n')
@@ -581,91 +567,10 @@ def test_real_producing_inventory_reports_unused_sources_and_rejects_line_aliase
     assert result.exit_code == 0, result.outcome.detail
     path = _coverage_campaign_path(tmp_path / "reports", result.outcome.detail)
     campaign = resolve_coverage_campaign_reference(path).loaded.campaign
-    summary = source_gap_summary(campaign)
-    if logical:
-        assert summary.status == "incomplete"
-        assert [f.code for f in campaign.findings if f.code in {GAP_CODE, INCOMPLETE_CODE}] == [
-            INCOMPLETE_CODE
-        ]
-        assert "RTL source discovery incomplete" in result.outcome.report_text
-    else:
-        assert summary.status == "complete", (
-            json.loads(
-                (
-                    path.parent
-                    / next(a.path for a in campaign.artifacts if a.kind == "declaration_inventory")
-                ).read_text()
-            )
-            if (path.parent / "declarations/inventory.json").exists()
-            else summary
-        )
-        assert summary.paths == ("rtl/conditional.sv", "rtl/unused.sv")
-        assert "RTL sources without coverage points: 2" in result.outcome.report_text
-        assert "rtl/unused.sv" in result.outcome.report_text
-        assert CoverageEvidenceSession(campaign, None).query({"view": "zero_point_sources"})[
-            "paths"
-        ] == list(summary.paths)
-    inventory = next(a for a in campaign.artifacts if a.kind == "declaration_inventory")
-    assert inventory.attributes["contract_version"] == "booley.verilator-declarations/v1"
-
-
-def test_real_declaration_dump_preserves_native_measurement_bytes(tmp_path):
-    from booley.flows.sim.verilator_coverage import VERILATOR_COVERAGE_INSTRUMENTATION
-    from booley.flows.sim.verilator_declarations import DECLARATION_OPTIONS
-
-    version = subprocess.run(
-        ["verilator", "--version"], capture_output=True, text=True, timeout=30, check=True
-    ).stdout
-    assert "Verilator 5.052" in version
-    assert (
-        PINNED_VERILATOR.commit in Path("/usr/local/share/verilator/BOOLEY-SOURCE.txt").read_text()
-    )
-    _write_generated_target(tmp_path)
-    _add_declaration_sources(tmp_path)
-    outputs = []
-    inputs = [
-        tmp_path / "rtl" / name
-        for name in (
-            "counter.sv",
-            "unused.sv",
-            "pkg.sv",
-            "iface.sv",
-            "conditional.sv",
-            "parameters.sv",
-        )
-    ]
-    for name, dump in (("baseline", ()), ("discovery", DECLARATION_OPTIONS)):
-        build = tmp_path / name
-        command = [
-            "verilator",
-            "--binary",
-            "--timing",
-            "--top-module",
-            "counter_tb",
-            "--prefix",
-            "CustomPrefix",
-            "--Mdir",
-            str(build),
-            "-I" + str(tmp_path / "rtl"),
-            *VERILATOR_COVERAGE_INSTRUMENTATION,
-            *dump,
-            *(str(p) for p in inputs),
-            str(tmp_path / "tb/counter_tb.sv"),
-        ]
-        compiled = subprocess.run(
-            command, capture_output=True, text=True, timeout=_TOOL_TIMEOUT_S, check=False
-        )
-        assert compiled.returncode == 0, compiled.stdout + compiled.stderr
-        raw = tmp_path / (name + ".dat")
-        run = subprocess.run(
-            [str(build / "CustomPrefix"), "+verilator+coverage+file+" + str(raw)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        assert run.returncode == 0, run.stdout + run.stderr
-        outputs.append(raw.read_bytes())
-    assert outputs[0] == outputs[1]
-    assert len(list((tmp_path / "discovery").glob("*_cells.tree.json"))) == 1
-    assert not list((tmp_path / "baseline").glob("*_cells.tree.json"))
+    paths = source_gap_paths(campaign)
+    assert paths == ("rtl/conditional.sv", "rtl/unused.sv")
+    assert "RTL sources without coverage points: 2" in result.outcome.report_text
+    assert "rtl/unused.sv" in result.outcome.report_text
+    assert CoverageEvidenceSession(campaign, None).query({"view": "zero_point_sources"})[
+        "paths"
+    ] == list(paths)

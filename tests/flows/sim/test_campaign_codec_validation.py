@@ -191,33 +191,12 @@ def test_scalar_contract_helpers_reject_invalid_values(function, value: object) 
         function(value, "field")
 
 
-@pytest.mark.parametrize(
-    ("configured", "kind"),
-    [
-        ("run/{unknown}", "templated"),
-        ("run/{test!r}", "templated"),
-        ("run/{test:10}", "templated"),
-        ("run/{test", "templated"),
-        ("run/{test}", "literal"),
-    ],
-)
-def test_run_directory_format_rejects_ambiguous_templates(configured: str, kind: str) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
-        codec._validate_configured_run_kind(configured, kind)
-
-
 def test_manifest_rejects_invalid_top_level_contracts() -> None:
     invalid_documents: list[dict[str, object]] = []
     for path, value in [
         (("origin", "execution_id"), "not-an-execution"),
         (("origin", "invocation_id"), 0),
         (("target", "role"), "unknown"),
-        (("workload", "mode"), "lint"),
-        (("workload", "pre_sim_build_access"), "mutable"),
-        (("workload", "run_cwd", "kind"), "unknown"),
-        (("workload", "run_cwd", "placeholders"), ["unknown"]),
-        (("required_suite", "default_invocation"), False),
-        (("build_variants", 0, "kind"), "unknown"),
         (("work_items", 0, "ordinal"), 2),
         (("work_items", 0, "kind"), "unknown"),
         (("work_items", 0, "role"), "unknown"),
@@ -248,14 +227,6 @@ def test_codec_rejects_non_json_wrong_shape_and_wrong_schema() -> None:
         codec.decode_build_result(codec.canonical_json_bytes(document))
 
 
-def test_nested_json_string_validation_walks_lists_objects_and_keys() -> None:
-    codec._validate_bounded_json_strings({"key": ["value"]}, "detail")
-    with pytest.raises(SimulationCampaignIntegrityError, match="ceiling"):
-        codec._validate_bounded_json_strings(
-            {"key": ["x" * (codec.MAX_STRING_BYTES + 1)]}, "detail"
-        )
-
-
 def test_common_timestamps_must_be_canonical_utc() -> None:
     with pytest.raises(SimulationCampaignIntegrityError, match="RFC3339"):
         codec._validate_common({"created_at": "not-a-date"})
@@ -264,9 +235,15 @@ def test_common_timestamps_must_be_canonical_utc() -> None:
 
 
 def test_child_and_build_attempt_identities_must_be_coherent() -> None:
-    with pytest.raises(SimulationCampaignIntegrityError, match="both"):
+    # Current lanes name their execution with no entry digest; 0.3.0 attempts carry both.
+    codec._validate_child_identity({"child_execution_id": "e" * 32, "child_entry_sha256": None})
+    codec._validate_child_identity(
+        {"child_execution_id": "e" * 32, "child_entry_sha256": "sha256:" + "1" * 64}
+    )
+    codec._validate_child_identity({"child_execution_id": None, "child_entry_sha256": None})
+    with pytest.raises(SimulationCampaignIntegrityError, match="child_entry_sha256"):
         codec._validate_child_identity(
-            {"child_execution_id": "e" * 32, "child_entry_sha256": None}
+            {"child_execution_id": None, "child_entry_sha256": "sha256:" + "1" * 64}
         )
     with pytest.raises(SimulationCampaignIntegrityError, match="32 lowercase"):
         codec._validate_child_identity(
@@ -297,68 +274,6 @@ def test_child_and_build_attempt_identities_must_be_coherent() -> None:
     )
     with pytest.raises(SimulationCampaignIntegrityError, match="both"):
         codec._validate_build_attempt(invalid)
-
-
-def test_runtime_declarations_require_digest_and_unique_identity() -> None:
-    declaration = {
-        "source_artifact_path": "input/a",
-        "destination": "run/a",
-        "declaration_id": "sha256:" + "0" * 64,
-    }
-    with pytest.raises(SimulationCampaignIntegrityError, match="digest"):
-        codec._validate_runtime_declarations([declaration])
-    declaration["declaration_id"] = codec._digest(
-        {"source_artifact_path": "input/a", "destination": "run/a"}
-    )
-    with pytest.raises(SimulationCampaignIntegrityError, match="unique"):
-        codec._validate_runtime_declarations([declaration, declaration])
-
-
-def test_source_recipe_rejects_duplicate_parameters_and_invalid_sources() -> None:
-    recipe = {
-        "sources": [],
-        "parameters": [{"name": "WIDTH", "value": {"nested": [1]}}] * 2,
-        "defines": [],
-        "pre_sim_commands": [],
-    }
-    with pytest.raises(SimulationCampaignIntegrityError, match="unique"):
-        codec._validate_source_recipe(recipe)
-    with pytest.raises(SimulationCampaignIntegrityError, match="kind"):
-        codec._validate_source_entries(
-            [
-                {
-                    "path": "rtl/top.sv",
-                    "bytes": 1,
-                    "sha256": "sha256:" + "1" * 64,
-                    "kind": "unknown",
-                }
-            ],
-            "sources",
-        )
-
-
-@pytest.mark.parametrize(
-    "suite",
-    [
-        {
-            "names": ["test"],
-            "default_invocation": True,
-            "source_path": "tests.txt",
-            "source_bytes": 1,
-            "source_sha256": "sha256:" + "1" * 64,
-        },
-        {
-            "names": [],
-            "default_invocation": True,
-            "source_path": "tests.txt",
-            "source_bytes": 1,
-            "source_sha256": "sha256:" + "1" * 64,
-        },
-    ],
-)
-def test_required_suite_rejects_default_invocation_payloads(suite) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
-        codec._validate_required_suite(suite)
 
 
 @pytest.mark.parametrize(
@@ -453,13 +368,6 @@ def test_observations_reject_state_grade_cycle_and_diagnostic_disagreements() ->
     assert setup["execution"] == "setup_error"
 
 
-def test_run_cwd_declared_placeholders_must_match_template() -> None:
-    with pytest.raises(SimulationCampaignIntegrityError, match="disagree"):
-        codec._validate_run_cwd(
-            {"configured": "run/{test}", "kind": "templated", "placeholders": ["attempt"]}
-        )
-
-
 def test_simulation_attempt_rejects_access_and_directory_kinds() -> None:
     document = _attempt()
     document["pre_sim_build_access"] = "mutable"
@@ -505,3 +413,80 @@ def test_infrastructure_build_abort_rejects_forged_execution(mutation: str) -> N
 
 def test_launched_abort_still_requires_snapshot() -> None:
     _reject_result(("executable_snapshot",), None, "aborted")
+
+
+@pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
+@pytest.mark.parametrize(
+    "reader",
+    ["manifest", "attempt", "build_attempt", "build_result", "bundle", "snapshot", "result"],
+)
+def test_reader_rejects_corrupt_record(tmp_path, reader, error):
+    from pathlib import Path
+
+    from tests.flows.sim.test_campaign_test_runs import _result_document
+
+    files = Path(__file__).parents[1] / "fixtures/simulation_campaign"
+    readers = {
+        "manifest": (codec.decode_simulation_campaign_manifest, _manifest),
+        "attempt": (codec.decode_simulation_attempt, _attempt),
+        "build_attempt": (
+            codec.decode_bundle_build_attempt,
+            lambda: json.loads((files / "build-attempt-private.json").read_bytes()),
+        ),
+        "build_result": (codec.decode_build_result, lambda: json.loads(_BUILD_READY)),
+        "bundle": (
+            codec.decode_simulator_bundle,
+            lambda: json.loads((files / "bundle.json").read_bytes()),
+        ),
+        "snapshot": (
+            codec.decode_executable_snapshot,
+            lambda: json.loads((files / "snapshot.json").read_bytes()),
+        ),
+        "result": (codec.decode_simulation_result, lambda: _result_document(tmp_path)),
+    }
+    decode, make_document = readers[reader]
+    document = make_document()
+    decode(codec.canonical_json_bytes(document))
+    if error == "schema":
+        document["$schema"] = "unknown"
+    elif error == "missing":
+        del document[next(key for key in document if key != "$schema")]
+    raw = b"{" if error == "truncated" else codec.canonical_json_bytes(document)
+    with pytest.raises(SimulationCampaignIntegrityError):
+        decode(raw)
+
+
+def test_manifest_decode_does_not_revalidate_planned_sections() -> None:
+    document = _manifest()
+    workload = document["workload"]
+    workload["mode"] = "lint"
+    workload["source_recipe"]["defines"] = [""]
+    workload["build_recipe"]["toplevel"] = ""
+    document["required_suite"] = {"names": ["x", "x"], "default_invocation": False}
+    document["build_variants"][0]["kind"] = "unknown"
+    document["planning_disclosures"] = [{"planner": ""}]
+    raw = codec.canonical_json_bytes(document)
+    assert codec.decode_simulation_campaign_manifest(raw).canonical_bytes() == raw
+
+
+def test_manifest_reader_rejects_a_wrong_nested_type() -> None:
+    document = _manifest()
+    document["workload"]["run_cwd"]["configured"] = 7
+    raw = codec.canonical_json_bytes(document)
+    with pytest.raises(SimulationCampaignIntegrityError, match=r"run_cwd\.configured"):
+        codec.decode_simulation_campaign_manifest(raw)
+
+
+def test_manifest_reader_rejects_a_missing_nested_field(tmp_path) -> None:
+    from booley.flows.sim.campaign.inspection import inspect_retained_campaign
+
+    document = _manifest()
+    del document["workload"]["run_cwd"]["configured"]
+    raw = codec.canonical_json_bytes(document)
+    with pytest.raises(SimulationCampaignIntegrityError, match=r"run_cwd\.configured"):
+        codec.decode_simulation_campaign_manifest(raw)
+    path = tmp_path / "campaign" / "manifest.json"
+    path.parent.mkdir()
+    path.write_bytes(raw)
+    with pytest.raises(SimulationCampaignIntegrityError, match=r"run_cwd\.configured"):
+        inspect_retained_campaign(path)

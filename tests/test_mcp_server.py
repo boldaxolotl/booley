@@ -12,6 +12,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Import the real server first: the per-class `mcp` stubs below cannot satisfy
+# `mcp.server.context`, so an isolated run of one class would fail at setup.
+import booley.mcp.server  # noqa: F401
 from booley.mcp import (
     catalog,
     endpoint_process,
@@ -1894,6 +1897,7 @@ class TestMainProxySelfHeal:
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY"):
             monkeypatch.delenv(var, raising=False)
+        monkeypatch.delenv("BOOLEY_EGRESS", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TRANSPORT", raising=False)
 
     def test_main_defaults_proxy_env_in_sandbox(self, monkeypatch):
@@ -1911,6 +1915,32 @@ class TestMainProxySelfHeal:
         for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             assert os.environ[var] == runtime_context._PROXY_URL
         assert os.environ["NO_PROXY"] == "localhost,127.0.0.1"
+
+    def test_main_leaves_unproxied_sandbox_unproxied(self, monkeypatch):
+        import os
+
+        monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
+        monkeypatch.setattr(self.mcp_server, "_main", MagicMock())
+        monkeypatch.setattr(self.mcp_server, "asyncio", MagicMock())
+        monkeypatch.setattr(sys, "argv", ["booley-mcp"])
+
+        self.mcp_server.main()
+
+        assert not any(
+            var in os.environ for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+        )
+
+    def test_main_refuses_invalid_egress_mode(self, monkeypatch, capsys):
+        monkeypatch.setenv("BOOLEY_EGRESS", "bogus")
+        monkeypatch.setattr(self.mcp_server, "_main", MagicMock())
+        monkeypatch.setattr(self.mcp_server, "asyncio", MagicMock())
+        monkeypatch.setattr(sys, "argv", ["booley-mcp"])
+
+        with pytest.raises(SystemExit) as refusal:
+            self.mcp_server.main()
+
+        assert refusal.value.code == 2
+        assert "`unproxied`" in capsys.readouterr().err
 
     def test_main_respects_delivered_proxy_env(self, monkeypatch):
         """A config that DOES forward the proxy vars must win untouched."""
@@ -2180,7 +2210,7 @@ def test_registered_poll_observes_blocked_legacy_simulation_execution(tmp_path, 
     monkeypatch.setattr(flow, "_simulation_execution", lambda **_kwargs: execution)
     monkeypatch.setattr(flow, "_target_handle", lambda _target: handle)
     with ExitStack() as stack:
-        stack.callback(flow.context.publication_resources.close)
+        stack.callback(flow.publication_resources.close)
         stack.enter_context(_compile_surface_patch(handle))
         stack.enter_context(
             patch(
@@ -2293,3 +2323,42 @@ def test_oversized_live_checkpoint_preserves_owned_active_log_pointer():
     assert checkpoint["complete"] is False and checkpoint["partial"] is True
     assert "passed" not in payload and "exit_code" not in checkpoint
     assert report_encoding._payload_size(payload) <= report_encoding._MAX_STRUCTURED_REPORT_BYTES
+
+
+class TestMainSweepsStaleScratch:
+    """MCP server start reclaims Booley scratch left by SIGKILL-ed runs."""
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="needs SIGKILL and the Linux Sandbox")
+    def test_main_reclaims_killed_run_scratch(self, tmp_path, monkeypatch):
+        import shutil
+        import tempfile
+
+        from tests.owned_scratch_support import kill_child_with_scratch, make_repo
+
+        mcp_stubs = {
+            "mcp": MagicMock(),
+            "mcp.server": MagicMock(),
+            "mcp.server.models": MagicMock(),
+            "mcp.server.request_state": MagicMock(),
+            "mcp.server.stdio": MagicMock(),
+            "mcp.types": MagicMock(),
+        }
+        with patch.dict(sys.modules, mcp_stubs):
+            from booley.mcp import server as mcp_server
+        monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+        monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
+        monkeypatch.delenv("BOOLEY_MCP_TRANSPORT", raising=False)
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+        repo = make_repo(tmp_path / "repo")
+        killed = kill_child_with_scratch(repo, scratch, tmp_path / "home")
+        monkeypatch.setattr(mcp_server, "_main", MagicMock())
+        monkeypatch.setattr(mcp_server, "asyncio", MagicMock())
+        monkeypatch.setattr(sys, "argv", ["booley-mcp"])
+        try:
+            mcp_server.main()
+            assert [path for path in killed if path.exists()] == []
+        finally:
+            for path in killed:  # unfixed code leaves the nested home in the real /tmp
+                shutil.rmtree(path, ignore_errors=True)

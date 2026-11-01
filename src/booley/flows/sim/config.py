@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from string import Formatter
 from typing import Any, Final
 
-from booley.core.boundary import BoundaryError, require_int
+from booley.audit.flow_schema import pre_run_commands_problem
+from booley.core.boundary import (
+    BoundaryError,
+    is_str_list,
+    require_bool,
+    require_dict,
+    require_int,
+    require_str_value,
+)
 from booley.flows.invocation import default_timeout_ms, resolve_timeout_ms
 from booley.flows.sim.campaign_reports import is_report_link
 from booley.targets.flow_names import config_section
@@ -66,7 +75,7 @@ def parse_run_cwd_template(configured: str) -> tuple[str, ...]:
 # The one remedy sentence shared by the run-time error and the Doctor WARN fix column.
 LITERAL_RUN_CWD_REMEDY: Final[str] = (
     "Booley never creates a literal [flows.sim].run_cwd. Create it and commit a "
-    "placeholder file so it exists in every checkout and Ticket worktree (for "
+    "placeholder file so it exists in every checkout and worktree (for "
     "example: mkdir -p <dir> && touch <dir>/.gitkeep, then git add -f the "
     ".gitkeep in the repository that contains it and commit). Or, if the "
     "directory only receives per-run outputs, add an {attempt} placeholder (for "
@@ -118,8 +127,24 @@ def resolve_trace_files(work_dir: Path | str | None = None) -> list[str]:
 
 
 def resolve_pre_sim_commands(work_dir: Path | str | None = None) -> list[str]:
-    """Return Project-owned shell lines run before each Simulation work unit."""
-    return [str(command) for command in (_sim_config(work_dir).get("pre_run_commands") or [])]
+    """Return Project-owned shell lines run before each Simulation work unit.
+
+    This is the only reader of ``[flows.sim].pre_run_commands`` (ADR 0039), a
+    per-test non-RTL build step such as compiling a firmware image.  An unset
+    knob yields ``[]`` and a list of strings is returned unchanged.
+
+    Raises:
+        BoundaryError: The value is anything else (a bare string, a table, a
+            number, or a list with a non-string entry).  The message is
+            Doctor's, so run time and Doctor agree and no command runs.
+    """
+    value = _sim_config(work_dir).get("pre_run_commands")
+    if value is None:
+        return []
+    if not is_str_list(value) or not all(value):
+        message, fix = pre_run_commands_problem("sim")
+        raise BoundaryError(f"{message}; {fix}")
+    return list(value)
 
 
 def resolve_pre_sim_build_access(work_dir: Path | str | None = None) -> str:
@@ -157,6 +182,23 @@ def resolve_sim_build_timeout_ms(work_dir: Path | str | None = None) -> int:
     if timeout_ms <= 0:
         raise BoundaryError(f"{field} must be a positive integer, got {timeout_ms!r}")
     return timeout_ms
+
+
+_CACHE_SIZE_RE = re.compile(r"[1-9][0-9]*(?:M|G|Mi|Gi)")
+
+
+def resolve_compiler_cache_settings(work_dir: Path | str | None = None) -> tuple[bool, str]:
+    """Return ``(enabled, max_size)`` from ``[flows.sim.compiler_cache]``."""
+    field = "flows.sim.compiler_cache"
+    section = require_dict(_sim_config(work_dir).get("compiler_cache", {}), field=field)
+    enabled = require_bool(section, "enabled", default=True, field=f"{field}.enabled")
+    max_size = require_str_value(section.get("max_size", "5G"), field=f"{field}.max_size")
+    if not _CACHE_SIZE_RE.fullmatch(max_size):
+        raise BoundaryError(
+            f"{field}.max_size must be a positive integer with suffix M, G, Mi, or Gi "
+            f"(for example 5G), got {max_size!r}"
+        )
+    return enabled, max_size
 
 
 def resolve_sim_time_grace_s(work_dir: Path | str | None = None) -> float:

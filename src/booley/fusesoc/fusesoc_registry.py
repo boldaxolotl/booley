@@ -56,6 +56,7 @@ from booley.fusesoc.core_projection import (
     projection_enabled,
     reconcile_isolated_registry,
     reconcile_projected_cores,
+    stealth_core_relative,
 )
 from booley.targets.domain import (
     CoreCollisionError,
@@ -238,6 +239,11 @@ def state_cores_dir(project_root: Path | str) -> Path:
     for stealth cores; ``booley doctor`` reports the mismatch.
     """
     return Path(project_root) / _STATE_DIR_NAME / STATE_CORES_SUBDIR
+
+
+def is_stealth_core(project_root: Path | str, path: Path) -> bool:
+    """True when *path* lies under the stealth core root, in either spelling."""
+    return stealth_core_relative(project_root, path) is not None
 
 
 def discover_cores(project_root: Path | str) -> list[Path]:
@@ -1733,8 +1739,7 @@ def _core_files_root(core_file: Path, project_root: Path) -> Path:
     reading the authoritative file, so they must apply the same root semantics.
     Legacy hidden cores retain core-directory-relative behavior.
     """
-    stealth_root = state_cores_dir(project_root)
-    if projection_enabled(project_root) and core_file.is_relative_to(stealth_root):
+    if projection_enabled(project_root) and is_stealth_core(project_root, core_file):
         return project_root
     return core_file.parent
 

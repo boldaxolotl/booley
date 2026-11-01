@@ -346,10 +346,10 @@ def metric_cases():
     )
 
 
-def metric_package(layout, monkeypatch, family, key, detail):
+def metric_package(layout, monkeypatch, family, key, detail, params=None):
     from dataclasses import replace
 
-    from booley.criteria.state import DevelopmentState
+    from booley.criteria.state import CriterionEntry, DevelopmentState
     from booley.goals import review_package
     from booley.goals.model import GoalFamily
     from booley.review.goal_package import GoalReviewContext
@@ -362,10 +362,15 @@ def metric_package(layout, monkeypatch, family, key, detail):
         family=GoalFamily(family),
         key=key,
         target=None if family == "review" else goal.spec.target,
+        params=params or goal.spec.params,
     )
     record = replace(layout.record, goals=(replace(goal, spec=spec),))
     state = DevelopmentState()
-    state.set_criterion(key, True, detail=detail)
+    if params:
+        state.criteria[key] = CriterionEntry(met=False, mandatory=True, params=dict(params))
+    changes = state.set_criterion(key, True, detail=detail)
+    # Production records the evaluated detail (with threshold checks) as the observation.
+    detail = changes[0].detail if params else detail
     observation = {
         "sequence": 1,
         "producer": "custom",
@@ -400,6 +405,97 @@ def test_all_goal_family_package_metrics(layout, monkeypatch, family, key, detai
         facts["goals"][0]["metric"] == format_met_goal_metric(key, state.criteria[key]) == expected
     )
     assert GoalCompletionPackage.from_json(facts).to_json() == facts
+
+
+RELATIVE_PACKAGE_CASES = {
+    "synth": (
+        "synth",
+        "synthesis_ok_top",
+        {"area_reduce_at_least": 8},
+        {"cells": 12, "_metric_map": {"area": "area_um2"}, "area_um2": 1050},
+        {"area_um2": 1200},
+        "12 cells; baseline 0123456789ab → current: area 1,200 → 1,050 μm² (-150, -12.5%)",
+    ),
+    "fpga": (
+        "fpga",
+        "fpga_impl_ok_top",
+        {"lut_count_increase_at_most": 20},
+        {"lut_count": 1500, "_metric_map": {"lut_count": "lut_count"}},
+        {"lut_count": 1400},
+        "1.5k LUTs; baseline 0123456789ab → current: LUTs 1,400 → 1,500 (+100, +7.1%)",
+    ),
+}
+
+
+def relative_package(layout, monkeypatch, case):
+    family, key, params, detail, baseline, _ = RELATIVE_PACKAGE_CASES[case]
+    detail = {**detail, "baseline_metrics": baseline, "_baseline_ref": "0123456789ab" * 3 + "0123"}
+    return key, *metric_package(layout, monkeypatch, family, key, detail, params)
+
+
+@pytest.mark.parametrize("case", RELATIVE_PACKAGE_CASES)
+def test_relative_implementation_package_shows_baseline(layout, monkeypatch, case):
+    from dataclasses import replace
+
+    from booley.goals.format import format_met_goal_metric
+    from booley.goals.paths import REVIEW_PACKAGE_FILE, record_paths
+    from booley.goals.store import GoalStore
+    from booley.harness.dashboard.model import _terminal
+
+    expected = RELATIVE_PACKAGE_CASES[case][-1]
+    key, package, state = relative_package(layout, monkeypatch, case)
+    facts = package.to_json()
+    assert (
+        facts["goals"][0]["metric"] == format_met_goal_metric(key, state.criteria[key]) == expected
+    )
+    assert GoalCompletionPackage.from_json(facts).to_json() == facts
+
+    # A finished Goal's Dashboard view reads the same comparison from the frozen package.
+    record = replace(layout.record, finish_operation="finish-1")
+    path = record_paths(layout.control, record.id).root / "operations" / "finish-1"
+    path.mkdir(parents=True)
+    (path / REVIEW_PACKAGE_FILE).write_text(json.dumps(facts))
+    view = _terminal(GoalStore(layout.control), record)
+    assert expected.split("; ", 1)[1] in view.goals[0].test_runs
+
+
+def test_relative_implementation_baseline_on_live_status_and_dashboard(layout):
+    from booley.criteria.state import CriterionChange, DevelopmentState
+    from booley.evidence.fields import SOURCE_INVALIDATED_REASON
+    from booley.goals.flow_execution import GoalFlowExecution
+    from booley.goals.format import render_status
+    from booley.goals.state_store import load_goal_state
+    from booley.goals.status import build_status
+    from booley.goals.store import GoalStore
+    from booley.harness.dashboard.model import project_goal
+    from tests.goals.conftest import bind
+
+    case = RELATIVE_PACKAGE_CASES["synth"]
+    layout.record = enter_goals(
+        layout,
+        [{"family": "SYNTH", "target": "top", "thresholds": {"area_reduce_at_least": "8%"}}],
+    )
+    adapter = GoalFlowExecution(bind(layout))
+    state = DevelopmentState.load(adapter.state_file, adapter.state_persistence())
+    detail = {**case[3], "baseline_metrics": case[4], "_baseline_ref": "0123456789ab" * 3 + "0123"}
+    changes = state.set_criterion(case[1], True, detail=detail)
+    adapter.record_changes(state, changes, invocation_id="live", producer="synth")
+    state.save()
+
+    store = GoalStore(layout.control)
+    expected = case[-1].split("; ", 1)[1]
+    status = build_status(store, layout.record)
+    assert expected in status.goals[0].evidence_summary
+    assert "12.5%" in render_status((status,))  # the table wraps long cells
+    assert expected in project_goal(store, layout.record).goals[0].test_runs
+
+    live = load_goal_state(store, layout.record).criteria[case[1]]
+    # A source change invalidates the evidence: Status shows "?", so must the Dashboard.
+    stale_change = CriterionChange(
+        case[1], False, SOURCE_INVALIDATED_REASON, dict(changes[0].detail), True, dict(live.params)
+    )
+    adapter.record_changes(state, [stale_change], invocation_id="edit", producer="synth")
+    assert project_goal(store, layout.record).goals[0].test_runs == ()
 
 
 def test_historical_inventory_body_omission_preserves_original_digest_and_references(tmp_path):
@@ -452,7 +548,10 @@ def test_historical_inventory_body_omission_preserves_original_digest_and_refere
 
 def _publish_current_base_simulation(layout):
     from booley.criteria.state import DevelopmentState
-    from booley.flows.sim.campaign.codec import encode_simulation_campaign_manifest
+    from booley.flows.sim.campaign.codec import (
+        MANIFEST_SCHEMA,
+        encode_simulation_campaign_manifest,
+    )
     from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
     from booley.goals.paths import record_paths
     from booley.goals.recorder import GoalEvidenceRecorder
@@ -464,7 +563,7 @@ def _publish_current_base_simulation(layout):
     variants, items = _manifest_work(target, recipe, build, workload)
     manifest = finalize_manifest(
         {
-            "$schema": "booley.simulation-campaign-manifest/v1",
+            "$schema": MANIFEST_SCHEMA,
             "campaign_id": str(uuid4()),
             "created_at": "2026-10-07T10:00:00Z",
             "origin": {"execution_id": "b" * 32, "invocation_id": 8},
@@ -559,9 +658,9 @@ def _assert_retargeted_simulation_package(layout, old_transaction, current):
     assert transactions[old_transaction.transaction_id]["manifest"] is None
     import hashlib
 
+    from booley.goals.finish import render_goal_briefing
+    from booley.goals.finish_presentation import render_goal_html
     from booley.goals.review_package import canonical_json
-    from booley.review.goal_package import render_goal_briefing
-    from booley.review.goal_presentation_v1 import render_goal_html
 
     old_path = logs / "acceptance/transactions" / (old_transaction.transaction_id + ".json")
     assert (
@@ -580,3 +679,31 @@ def _assert_retargeted_simulation_package(layout, old_transaction, current):
     ):
         assert "prepared.vmem" not in rendered
     assert all(path.read_bytes() == content for path, content in ledger.items())
+
+
+def test_saved_package_renders_frozen_test_runs_without_stored_ledger(layout):
+    from booley.goals.finish import render_goal_briefing
+    from tests.goals.conftest import run_row
+    from tests.goals.test_finish import request
+    from tests.goals.test_test_run_evidence import TWO_TESTS, A, B, _record
+
+    layout.record = enter_goals(layout, [{"family": "SIM", "target": "top"}], tests_toml=TWO_TESTS)
+    _record(layout, "run-1", [run_row(A)])
+    _record(layout, "run-2", [run_row(B)])
+    result = finish_goal(request(layout), environment(layout))
+    facts = json.loads(Path(result["package"]).read_bytes())
+    (goal,) = facts["goals"]
+    for row in [goal["selected_observation"], *goal["original_observations"]]:
+        row["detail"]["test_run_ledger"] = {
+            "schema": "booley.goal-test-run-ledger/v1",
+            "runs": [
+                {"name": run.name, "fingerprint": run.fingerprint, "outcome": "failed"}
+                for run in (A, B)
+            ],
+            "source_evidence": [],
+        }
+    package = GoalCompletionPackage.from_json(facts)
+    text = render_goal_briefing(package)
+    assert "Test Runs: a@1 passed, b@1 passed" in text
+    assert "rerun b@1: booley flow sim --target top --test=b@1" in text
+    assert package.to_json() == facts

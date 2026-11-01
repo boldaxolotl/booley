@@ -38,12 +38,19 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Sequence
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, NamedTuple
 
 from booley.runtime import auth_token
-from booley.runtime.mcp_config import HTTP_ENDPOINT_PATH, _codex_toml_parser, http_port
+from booley.runtime.mcp_config import (
+    GATEWAY_PROVIDER_ID,
+    HTTP_ENDPOINT_PATH,
+    _codex_toml_parser,
+    gateway_provider_toml,
+    http_port,
+)
 
 MCP_SERVER_NAME = "booley"
 _TOOL_TIMEOUT_SEC = 7200
@@ -150,18 +157,39 @@ def desired_claude_entry() -> dict:
     return {"type": "http", "url": http_url(), "timeout": _TOOL_TIMEOUT_SEC * 1000}
 
 
+def _read_json_object(path: Path, label: str) -> dict:
+    """Read a user JSON object; missing or blank is ``{}``, anything invalid is refused.
+
+    Registration writers rewrite these files wholesale, so an unreadable or
+    non-object file must stop them before any write: replacing it with ``{}``
+    would silently destroy the user's settings.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(_invalid_json_message(label, path, exc)) from exc
+    if not text.strip():
+        return {}
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(_invalid_json_message(label, path, exc)) from exc
+    if not isinstance(data, dict):
+        raise ValueError(_invalid_json_message(label, path, "top level must be an object"))
+    return data
+
+
+def _invalid_json_message(label: str, path: Path, reason: object) -> str:
+    return (
+        f"Invalid {label} {path}: {reason}; repair or delete this file, then restart the Sandbox"
+    )
+
+
 def upsert_claude(path: Path) -> bool:
     """Ensure ``mcpServers.booley`` exists in *path*. Returns True if changed."""
-    if path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            data = {}
-    else:
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-
+    data = _read_json_object(path, "Claude config")
     servers = data.setdefault("mcpServers", {})
     desired = desired_claude_entry()
     if servers.get(MCP_SERVER_NAME) == desired:
@@ -317,6 +345,7 @@ def _validate_codex_shape(parsed):
     for table in ("features", "notice"):
         if table in parsed and not isinstance(parsed[table], dict):
             raise ValueError(f"{table} must be a table")
+    _require_project_tables(parsed)
     if "suppress_unstable_features_warning" in parsed and not isinstance(
         parsed["suppress_unstable_features_warning"], bool
     ):
@@ -336,6 +365,16 @@ def _codex_data(existing: str, *, path: Path | None = None) -> dict:
             f"Invalid Codex config {path}: {exc}; repair this file and retry"
         ) from exc
     return parsed
+
+
+def _require_project_tables(parsed: dict) -> None:
+    """Reject ``projects`` shapes Codex cannot use, before any write."""
+    projects = parsed.get("projects", {})
+    if not isinstance(projects, dict):
+        raise ValueError("projects must be a table")
+    for key, entry in projects.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"projects.{key} must be a table")
 
 
 def _read_codex_config(path: Path) -> str:
@@ -512,32 +551,33 @@ def _toml_entries(existing: str) -> list[_TomlEntry]:
     return entries
 
 
-def _strip_codex_table(existing: str) -> str:
-    """Remove owned statements, preserving unrelated statements verbatim."""
-    owned = ("mcp_servers", MCP_SERVER_NAME)
+def _strip_owned_codex_table(existing: str, owned: tuple[str, ...]) -> str:
+    """Remove statements under the *owned* table path, keeping every other byte."""
     return "".join(
-        statement for statement, path, _header in _toml_entries(existing) if path[:2] != owned
+        statement
+        for statement, path, _header in _toml_entries(existing)
+        if path[: len(owned)] != owned
     )
 
 
 def _upsert_existing_codex_table_setting(
-    existing: str, *, table: str, key: str, value: str
+    existing: str, *, table: tuple[str, ...], key: str, value: str
 ) -> str | None:
     """Update a scalar assignment or insert into its actual table boundary."""
     parser = _codex_toml_parser()
     entries = _toml_entries(existing)
-    target = (table, key)
+    target = (*table, key)
     for index, (statement, path, header) in enumerate(entries):
         if path == target and not header:
             entries[index] = _TomlEntry(_replace_toml_assignment(statement, value), path, header)
             return "".join(item[0] for item in entries)
     for index, (statement, path, header) in enumerate(entries):
-        if path == (table,) and not header and parser.loads(statement):
+        if path == table and not header and parser.loads(statement):
             updated = _upsert_inline_table_setting(statement, key, value)
             entries[index] = _TomlEntry(updated, path, header)
             return "".join(item.text for item in entries)
     for index, (_statement, path, header) in enumerate(entries):
-        if path == (table,) and header:
+        if path == table and header:
             if not _statement.endswith("\n"):
                 entries[index] = _TomlEntry(_statement + "\n", path, header)
             entries.insert(index + 1, _TomlEntry(f"{key} = {value}\n", target, False))
@@ -552,7 +592,7 @@ def _upsert_codex_modern_mcp_feature(existing: str) -> str:
     if parsed.get("features", {}).get("mcp_2026_07_28") is True:
         return existing
     updated = _upsert_existing_codex_table_setting(
-        existing, table="features", key="mcp_2026_07_28", value="true"
+        existing, table=("features",), key="mcp_2026_07_28", value="true"
     )
     return updated if updated is not None else "features.mcp_2026_07_28 = true\n" + existing
 
@@ -569,7 +609,7 @@ def _prepare_codex_mcp(existing: str, path: Path) -> str:
     servers = parsed.get("mcp_servers", {})
     desired = {"url": http_url(), "tool_timeout_sec": _TOOL_TIMEOUT_SEC}
     if not isinstance(servers, dict) or servers.get(MCP_SERVER_NAME) != desired:
-        updated = _strip_codex_table(updated)
+        updated = _strip_owned_codex_table(updated, ("mcp_servers", MCP_SERVER_NAME))
         sep = "" if not updated or updated.endswith("\n") else "\n"
         updated += sep + codex_section()
     if not _codex_entry_is_current(updated, path=path):
@@ -585,6 +625,17 @@ def upsert_codex(path: Path) -> bool:
         return False
     _publish_codex_config(path, updated)
     return True
+
+
+def _upsert_codex_root_setting(existing: str, key: str, value: str) -> str:
+    """Replace a root assignment or prepend safely before every TOML table."""
+    target = tuple(key.split("."))
+    entries = _toml_entries(existing)
+    for index, (statement, path, header) in enumerate(entries):
+        if path == target and not header:
+            entries[index] = _TomlEntry(_replace_toml_assignment(statement, value), path, header)
+            return "".join(item[0] for item in entries)
+    return f"{key} = {value}\n" + existing
 
 
 @lru_cache(maxsize=1)
@@ -728,12 +779,7 @@ def _apply_claude_credential(token: str | None, home: Path | None = None) -> str
     subscription credentials forever.
     """
     path = claude_settings_path(home)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
+    data = _read_json_object(path, "Claude settings")
     env_map = data.get("env")
     if not isinstance(env_map, dict):
         env_map = {}
@@ -753,6 +799,20 @@ def _apply_claude_credential(token: str | None, home: Path | None = None) -> str
     env_map[var] = token
     _write_private_json(path, data)
     return "written"
+
+
+def is_registrar_codex_key_file(path: Path) -> bool:
+    """Whether *path* is exactly the single-key ``auth.json`` this module writes.
+
+    Such a file is a copy of a stored or exported API key, not a Codex login,
+    so it must not count as the visitor's credential on a later start.
+    """
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    var = auth_token.CREDENTIALS[auth_token.APP_CODEX].env_var
+    return isinstance(existing, dict) and set(existing) == {var}
 
 
 def _apply_codex_credential(token: str | None, home: Path | None = None) -> str:
@@ -827,12 +887,7 @@ def _apply_claude_permission_mode(home: Path | None = None) -> str:
     ``deny`` rules alongside it survive untouched.
     """
     path = claude_settings_path(home)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
+    data = _read_json_object(path, "Claude settings")
     permissions = data.get("permissions")
     if not isinstance(permissions, dict):
         permissions = {}
@@ -918,7 +973,15 @@ def apply_stored_credential(app: str, home: Path | None = None) -> str:
     ``"written"``/``"current"``/``"cleared"``/``"none"`` — see the per-app
     helpers. Unknown apps are a no-op.
     """
-    policy = os.environ.get("BOOLEY_PRIMARY_AUTH", "auto")
+    from booley.config.agent import env_auth_handoff
+    from booley.config.gateway import GATEWAY_AUTH
+
+    policy = env_auth_handoff() or "auto"
+    if policy == GATEWAY_AUTH:  # already inside the container by definition
+        # The gateway login is the provider written by _apply_codex_gateway;
+        # there is no auth.json. Leave any Booley-managed credential copies
+        # untouched and validate nothing.
+        return "none"
     plan = auth_token.credential_plan(app, policy, home=home or _agent_home())
     credential = auth_token.credential_for_app(app)
     token = dict(plan.values).get(credential.env_var) if credential else None
@@ -932,13 +995,386 @@ def apply_stored_credential(app: str, home: Path | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# First-run state — no onboarding, login or folder-trust prompt in the Sandbox
+# ---------------------------------------------------------------------------
+#
+# A Sandbox without a seeded host config (a Codespace, or any host with no
+# agent config to seed from) would otherwise greet the first ``claude`` /
+# ``codex`` with a theme picker, a login picker and a "trust this folder?"
+# dialog. The Sandbox is already the isolation boundary (permission modes
+# above), so trusting the Project's own directories adds no authority.
+#
+# Every write is set-if-absent: a value the user or a host seed already chose,
+# including ``false`` / ``untrusted``, wins. Writes land in the per-Sandbox
+# home, never in the host's agent configuration. Claude's custom-API-key
+# approval dialog is deliberately NOT pre-answered: it is the billing consent.
+_DEFAULT_CLAUDE_THEME = "dark"
+
+
+def trust_keys(paths: Sequence[Path]) -> tuple[str, ...]:
+    """Config keys under which the agent apps may look up each existing *path*.
+
+    Both CLIs check the resolved path; the absolute as-spelled path is kept as
+    well (a symlinked workspace or a ``/booley-project`` bind spelling).
+    Ordered, de-duplicated, pure path work.
+    """
+    keys: dict[str, None] = {}
+    for path in paths:
+        if path.exists():
+            keys[str(path.resolve())] = None
+            keys[str(path.absolute())] = None
+    return tuple(keys)
+
+
+def _claude_credential_present(home: Path | None) -> bool:
+    """Whether Claude would find a login credential, by the registrar's own inputs."""
+    from booley.config.agent import env_auth_handoff
+
+    policy = env_auth_handoff() or "auto"
+    credential = auth_token.effective_credential(
+        auth_token.APP_CLAUDE, policy, home=home or _agent_home()
+    )
+    return credential is not None
+
+
+def _trust_claude_projects(config: dict, trust: Sequence[str]) -> None:
+    """Add ``hasTrustDialogAccepted`` to each *trust* project entry that lacks it."""
+    if not trust:
+        return
+    projects = config.setdefault("projects", {})
+    if not isinstance(projects, dict):
+        raise ValueError("projects must be an object")
+    for key in trust:
+        entry = projects.setdefault(key, {})
+        if not isinstance(entry, dict):
+            raise ValueError(f"projects.{key} must be an object")
+        entry.setdefault("hasTrustDialogAccepted", True)
+
+
+def _preflight_claude(home: Path | None, trust: Sequence[str]) -> None:
+    """Refuse a misshaped Claude config or settings file before any writer touches it."""
+    config_path = claude_config_path(home)
+    config = _read_json_object(config_path, "Claude config")
+    _read_json_object(claude_settings_path(home), "Claude settings")
+    try:
+        if not isinstance(config.get("mcpServers", {}), dict):
+            raise ValueError("mcpServers must be an object")
+        _trust_claude_projects(json.loads(json.dumps(config)), trust)
+    except ValueError as exc:
+        raise ValueError(_invalid_json_message("Claude config", config_path, exc)) from exc
+
+
+def _apply_claude_first_run(home: Path | None, trust: Sequence[str], *, onboard: bool) -> str:
+    """Trust *trust* paths, and with a credential skip onboarding and the theme picker.
+
+    Returns ``"written"`` or ``"current"``. Both files are validated before
+    either is written, so an invalid file stops registration untouched.
+    """
+    config_path = claude_config_path(home)
+    settings_path = claude_settings_path(home)
+    config = _read_json_object(config_path, "Claude config")
+    settings = _read_json_object(settings_path, "Claude settings")
+    before = json.dumps(config, sort_keys=True)
+    try:
+        _trust_claude_projects(config, trust)
+    except ValueError as exc:
+        raise ValueError(_invalid_json_message("Claude config", config_path, exc)) from exc
+    if onboard:
+        config.setdefault("hasCompletedOnboarding", True)
+    status = "current"
+    if json.dumps(config, sort_keys=True) != before:
+        config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        status = "written"
+    if onboard and "theme" not in settings and "theme" not in config:
+        settings["theme"] = _DEFAULT_CLAUDE_THEME
+        # Private-mode write: the same file carries the OAuth token in ``env``.
+        _write_private_json(settings_path, settings)
+        status = "written"
+    return status
+
+
+def _with_codex_trust(text: str, key: str) -> str | None:
+    """*text* with ``trust_level = "trusted"`` for *key*, or None when no layout fits.
+
+    Tries the existing entry, a new ``[projects."key"]`` table, then a root
+    dotted key. Each candidate must parse and carry the trust, so an inline
+    ``projects = {...}`` or a dotted-defined entry never turns valid user TOML
+    into invalid TOML.
+    """
+    parser = _codex_toml_parser()
+    edited = _upsert_existing_codex_table_setting(
+        text, table=("projects", key), key="trust_level", value='"trusted"'
+    )
+    spelled = json.dumps(key, ensure_ascii=False)
+    separator = "" if not text or text.endswith("\n") else "\n"
+    candidates = (
+        [edited]
+        if edited is not None
+        else [
+            f'{text}{separator}[projects.{spelled}]\ntrust_level = "trusted"\n',
+            f'projects.{spelled}.trust_level = "trusted"\n{text}',
+        ]
+    )
+    for candidate in candidates:
+        try:
+            trusted = parser.loads(candidate).get("projects", {}).get(key, {})
+        except parser.TOMLDecodeError:
+            continue
+        if isinstance(trusted, dict) and trusted.get("trust_level") == "trusted":
+            return candidate
+    return None
+
+
+def _apply_codex_trust(home: Path | None, trust: Sequence[str]) -> str:
+    """Add ``trust_level = "trusted"`` for each *trust* path without a ``trust_level``.
+
+    Edits the TOML in place, keeping comments and every other byte, and
+    publishes once atomically. Returns ``"written"`` or ``"current"``.
+    """
+    path = codex_config_path(home)
+    existing = _read_codex_config(path)
+    projects = _codex_data(existing, path=path).get("projects", {})
+    updated = existing
+    for key in trust:
+        if "trust_level" in projects.get(key, {}):
+            continue
+        edited = _with_codex_trust(updated, key)
+        if edited is None:
+            print(
+                f"warning: Codex trust for {key} skipped: the projects layout in {path} "
+                'cannot take a new entry; add trust_level = "trusted" there by hand',
+                file=sys.stderr,
+            )
+            continue
+        updated = edited
+    if updated == existing:
+        return "current"
+    _publish_codex_config(path, updated)
+    return "written"
+
+
+# ---------------------------------------------------------------------------
+# Gateway provider — interactive Codex under BOOLEY_PRIMARY_AUTH=gateway (#2270)
+# ---------------------------------------------------------------------------
+
+# Codex may wait for the token helper this much longer than the helper waits for
+# the user's token command, so the helper reports the command's stderr first.
+_AUTH_HELPER_MARGIN_S = 15
+
+
+def _desired_provider(provider_toml: str) -> dict:
+    """The parsed ``booley_gateway`` table a registration should leave in the config."""
+    return _codex_toml_parser().loads(provider_toml)["model_providers"][GATEWAY_PROVIDER_ID]
+
+
+def _gateway_exclude_list(existing: str, current: object) -> str | None:
+    """Add the static token to ``shell_environment_policy.exclude``; ``None`` if unchanged."""
+    from booley.config.gateway import GATEWAY_TOKEN_ENV
+
+    if current is not None and not isinstance(current, list):
+        return None  # the user's own non-list value wins; the caller reports the skip
+    if current is not None and GATEWAY_TOKEN_ENV in current:
+        return None
+    names = [*(current or []), GATEWAY_TOKEN_ENV]
+    value = json.dumps(names)
+    table = ("shell_environment_policy",)
+    updated = _upsert_existing_codex_table_setting(
+        existing, table=table, key="exclude", value=value
+    )
+    if updated is not None:
+        return updated
+    return _upsert_codex_root_setting(existing, "shell_environment_policy.exclude", value)
+
+
+def _with_gateway_settings(
+    existing: str, data: dict, provider_toml: str, model_pin: str | None
+) -> str:
+    """Add the owned provider table and the set-if-absent root keys to *existing* TOML."""
+    updated = existing
+    providers = data.get("model_providers", {})
+    if not isinstance(providers, dict) or providers.get(GATEWAY_PROVIDER_ID) != _desired_provider(
+        provider_toml
+    ):
+        updated = _strip_owned_codex_table(updated, ("model_providers", GATEWAY_PROVIDER_ID))
+        if updated and not updated.endswith("\n"):
+            updated += "\n"
+        updated += ("\n" if updated else "") + provider_toml
+    if "model_provider" not in data:
+        updated = _upsert_codex_root_setting(
+            updated, "model_provider", json.dumps(GATEWAY_PROVIDER_ID)
+        )
+    if model_pin and "model" not in data:
+        updated = _upsert_codex_root_setting(updated, "model", json.dumps(model_pin))
+    features = data.get("features", {})
+    if isinstance(features, dict) and "fast_mode" not in features:
+        # The gateway rejects Codex's default priority tier (spike #2264).
+        edited = _upsert_existing_codex_table_setting(
+            updated, table=("features",), key="fast_mode", value="false"
+        )
+        updated = (
+            edited
+            if edited is not None
+            else _upsert_codex_root_setting(updated, "features.fast_mode", "false")
+        )
+    policy = data.get("shell_environment_policy", {})
+    excluded = _gateway_exclude_list(
+        updated, policy.get("exclude") if isinstance(policy, dict) else None
+    )
+    return updated if excluded is None else excluded
+
+
+def _warn_gateway_overrides(data: dict) -> None:
+    """Say so when a user's own Codex keys keep the gateway from working."""
+    if data.get("model_provider") != GATEWAY_PROVIDER_ID:
+        print(
+            f"warning: Codex gateway provider {GATEWAY_PROVIDER_ID} is configured but not "
+            f"selected: model_provider in your Codex config wins; set it to "
+            f"{GATEWAY_PROVIDER_ID} to use the gateway",
+            file=sys.stderr,
+        )
+    if data.get("features", {}).get("fast_mode") is True:
+        print(
+            "warning: features.fast_mode = true in your Codex config; the gateway rejects "
+            "the priority tier, so set features.fast_mode = false",
+            file=sys.stderr,
+        )
+
+
+def _gateway_inputs(path: Path) -> tuple[str, str | None] | None:
+    """The provider TOML and model pin from the gateway environment; ``None`` if incomplete."""
+    from booley.config.gateway import (
+        GatewayConfigError,
+        gateway_model_pin_from_env,
+        gateway_settings_from_env,
+    )
+    from booley.runtime.gateway_token import COMMAND_TIMEOUT_S
+
+    try:
+        settings = gateway_settings_from_env()
+        model_pin = gateway_model_pin_from_env().model
+    except GatewayConfigError as exc:
+        print(f"warning: Codex gateway provider skipped: {exc}", file=sys.stderr)
+        return None
+    provider_toml = gateway_provider_toml(
+        settings.url,
+        str(path.parent),
+        timeout_ms=(COMMAND_TIMEOUT_S + _AUTH_HELPER_MARGIN_S) * 1000,
+    )
+    return provider_toml, model_pin
+
+
+def _apply_codex_gateway(home: Path | None = None) -> str:
+    """Add and select the ``booley_gateway`` provider in the user's Codex config.
+
+    Only under ``BOOLEY_PRIMARY_AUTH=gateway``. Booley owns the provider table
+    (a stale URL is replaced); ``model_provider``, ``model`` and
+    ``features.fast_mode`` are written only when absent, so the user's keys
+    win. Neither the token nor the token command reaches the file: ``auth``
+    runs the helper, which runs the command on each Codex auth call.
+
+    Returns ``off``, ``invalid`` (incomplete gateway environment), ``skipped``
+    (a TOML layout that cannot take the entries), ``current`` or ``written``.
+    """
+    from booley.config import agent_app
+    from booley.config.agent import env_auth_handoff
+    from booley.config.gateway import GATEWAY_AUTH
+
+    if env_auth_handoff() != GATEWAY_AUTH:
+        return _drop_codex_gateway(home) if agent_app.auto_choice() else "off"
+    path = codex_config_path(home)
+    inputs = _gateway_inputs(path)
+    if inputs is None:
+        return "invalid"
+    provider_toml, model_pin = inputs
+    existing = _read_codex_config(path)
+    data = _codex_data(existing, path=path)
+    try:
+        updated = _with_gateway_settings(existing, data, provider_toml, model_pin)
+        data = _codex_data(updated, path=path)
+    except ValueError:  # an edit left TOML the parser rejects: a layout we cannot extend
+        data = None
+    if data is None or not _gateway_entries_present(data, provider_toml):
+        print(
+            f"warning: Codex gateway provider skipped: the layout in {path} cannot take "
+            "it; add the booley_gateway provider there by hand",
+            file=sys.stderr,
+        )
+        return "skipped"
+    _warn_gateway_overrides(data)
+    if updated == existing:
+        return "current"
+    _publish_codex_config(path, updated)
+    return "written"
+
+
+def _strip_codex_root_key(existing: str, key: str) -> str:
+    """Remove the root assignment of *key*, keeping every other byte."""
+    return "".join(
+        statement
+        for statement, path, header in _toml_entries(existing)
+        if header or path != (key,)
+    )
+
+
+def _drop_codex_gateway(home: Path | None) -> str:
+    """Remove Booley's gateway selection from the user's Codex config.
+
+    For ``BOOLEY_AGENT_APP=auto`` only: a start that stopped using the gateway
+    must not leave Codex routed through it. Drops the owned provider table,
+    ``model_provider`` when it selects that provider, and ``model`` when it
+    equals the current gateway model pin. ``features.fast_mode`` and the token
+    exclusion stay: neither routes traffic and either may be the user's.
+
+    Returns ``removed`` or ``off`` (nothing of Booley's to remove).
+    """
+    from booley.config.gateway import GatewayConfigError, gateway_model_pin_from_env
+
+    path = codex_config_path(home)
+    existing = _read_codex_config(path)
+    data = _codex_data(existing, path=path)
+    updated = _strip_owned_codex_table(existing, ("model_providers", GATEWAY_PROVIDER_ID))
+    if data.get("model_provider") == GATEWAY_PROVIDER_ID:
+        updated = _strip_codex_root_key(updated, "model_provider")
+        try:
+            pin = gateway_model_pin_from_env().model
+        except GatewayConfigError:
+            pin = None
+        if pin and data.get("model") == pin:
+            updated = _strip_codex_root_key(updated, "model")
+    if updated == existing:
+        return "off"
+    _publish_codex_config(path, updated)
+    return "removed"
+
+
+def _gateway_entries_present(data: dict, provider_toml: str) -> bool:
+    """Whether parsed *data* carries the owned provider and the token exclusion."""
+    from booley.config.gateway import GATEWAY_TOKEN_ENV
+
+    providers = data.get("model_providers")
+    policy = data.get("shell_environment_policy")
+    provider = providers.get(GATEWAY_PROVIDER_ID) if isinstance(providers, dict) else None
+    exclude = policy.get("exclude") if isinstance(policy, dict) else None
+    return (
+        provider == _desired_provider(provider_toml)
+        and isinstance(exclude, list)
+        and GATEWAY_TOKEN_ENV in exclude
+    )
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 
-def register(app: str, *, home: Path | None = None) -> str:
-    """Write the client registration for *app*. Returns a short status string."""
+def register(app: str, *, home: Path | None = None, trust_paths: Sequence[str] = ()) -> str:
+    """Write the client registration for *app*. Returns a short status string.
+
+    *trust_paths* are the config keys (see :func:`trust_keys`) the app should
+    trust without asking.
+    """
     if app == "claude":
+        _preflight_claude(home, trust_paths)
         changed = upsert_claude(claude_config_path(home))
         linked = deploy_skills(app, home)
         host_linked = deploy_host_skills(app, home)
@@ -946,8 +1382,14 @@ def register(app: str, *, home: Path | None = None) -> str:
         # After the credential: both writers rewrite settings.json wholesale,
         # so the last one to read it must see the other's result.
         perm = _apply_claude_permission_mode(home)
+        first = _apply_claude_first_run(
+            home, trust_paths, onboard=_claude_credential_present(home)
+        )
         mcp = "written" if changed else "current"
-        return f"claude:{mcp} skills:+{linked} host-skills:+{host_linked} cred:{cred} perm:{perm}"
+        return (
+            f"claude:{mcp} skills:+{linked} host-skills:+{host_linked} "
+            f"cred:{cred} perm:{perm} first-run:{first}"
+        )
     if app == "codex":
         path = codex_config_path(home)
         existing, document = _codex_document(path)
@@ -961,6 +1403,11 @@ def register(app: str, *, home: Path | None = None) -> str:
         host_linked = deploy_host_skills(app, home)
         cred = apply_stored_credential(app, home)
         perm = _apply_codex_permission_mode(home, prepared=(mcp_only, combined))
+        first = _apply_codex_trust(home, trust_paths)
+        gateway = _apply_codex_gateway(home)
         mcp = "written" if changed else "current"
-        return f"codex:{mcp} skills:+{linked} host-skills:+{host_linked} cred:{cred} perm:{perm}"
+        return (
+            f"codex:{mcp} skills:+{linked} host-skills:+{host_linked} "
+            f"cred:{cred} perm:{perm} first-run:{first} gateway:{gateway}"
+        )
     return "none"

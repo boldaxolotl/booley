@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import gzip
-import hashlib
 import json
 import os
 from dataclasses import replace
@@ -23,16 +22,13 @@ from booley.flows.sim.coverage_campaign import (
     freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_campaign_store import (
-    CAMPAIGN_SCHEMA_V3,
-    CAMPAIGN_SCHEMA_V4,
     CAMPAIGN_SCHEMA_V5,
-    MAX_COMPRESSED_BYTES,
     CoverageCampaignStoreError,
     load_coverage_campaign,
+    load_coverage_campaign_bytes,
     publish_coverage_campaign,
-    read_coverage_summary,
 )
-from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_older_schema
+from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_v4
 from tests.flows.sim.test_coverage_campaign import _valid_document
 from tests.runtime.test_sandbox_layout import project_alias
 
@@ -79,14 +75,10 @@ def test_nested_coverage_exact_and_over_limit_preserve_authoritative_hook_sideca
     campaign = replace(campaign, runs=runs)
     measured = publish_coverage_campaign(attempt / "measured", campaign)
     if boundary == "manifest":
-        limit = measured.campaign.stat().st_size
-        constant = "MAX_MANIFEST_BYTES"
+        limit, constant = measured.campaign.stat().st_size, "MAX_MANIFEST_BYTES"
     else:
-        limit = max(
-            len(line)
-            for line in gzip.decompress(measured.points.read_bytes()).splitlines(keepends=True)
-        )
-        constant = "MAX_LINE_BYTES"
+        limit = len(gzip.decompress(measured.points.read_bytes()))
+        constant = "MAX_UNCOMPRESSED_BYTES"
     monkeypatch.setattr(store, constant, limit)
     exact = publish_coverage_campaign(attempt / "exact", campaign)
     assert exact.campaign.is_file()
@@ -112,18 +104,6 @@ def _invalid_campaign():
             }
         ),
     )
-
-
-def _rewrite_point_store(paths, data: bytes) -> None:
-    compressed = gzip.compress(data, mtime=0)
-    paths.points.write_bytes(compressed)
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    manifest["point_store"].update(
-        sha256=f"sha256:{hashlib.sha256(compressed).hexdigest()}",
-        bytes=len(compressed),
-        uncompressed_bytes=len(data),
-    )
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
 
 
 def _point_id(identity: dict[str, object]) -> str:
@@ -247,29 +227,6 @@ def _source_campaign():
     return replace(base, points=points, rollups=derive_coverage_rollups(points))
 
 
-def _two_source_line_campaign():
-    base = _campaign()
-    points = (
-        _point(
-            source="rtl/counter.sv",
-            metric="line",
-            line=10,
-            hits=1,
-            disposition="eligible",
-            hierarchy="TOP.first",
-        ),
-        _point(
-            source="tb/counter_tb.sv",
-            metric="line",
-            line=11,
-            hits=0,
-            disposition="unscored",
-            hierarchy="TOP.second",
-        ),
-    )
-    return replace(base, points=points, rollups=derive_coverage_rollups(points))
-
-
 def test_publish_separates_summary_from_lossless_points(tmp_path: Path) -> None:
     paths = publish_coverage_campaign(tmp_path, _campaign())
 
@@ -291,12 +248,8 @@ def test_publish_separates_summary_from_lossless_points(tmp_path: Path) -> None:
     assert manifest["source_rollups"][0]["rollups"][0]["percent"] == 100.0
     assert paths.points.is_file()
 
-    summary = read_coverage_summary(paths.campaign, TARGET)
     loaded = load_coverage_campaign(paths.campaign, TARGET)
-    assert summary.rollups[0].percent == 100.0
-    assert summary.source_rollups[0].source == "rtl/counter.sv"
-    assert summary.evaluation["status"] == "not_requested"
-    assert loaded.summary == summary
+    assert loaded.summary.document["source_rollups"][0]["source"] == "rtl/counter.sv"
     assert loaded.campaign == _campaign()
     assert not hasattr(loaded.campaign, "schema")
 
@@ -308,119 +261,10 @@ def test_invalid_scoring_summary_and_deep_load_retain_points(tmp_path: Path) -> 
     assert manifest["scoring"] == {"status": "invalid", "reason": "collector_error"}
     assert manifest["rollups"] == []
     assert manifest["source_rollups"] == []
-    summary = read_coverage_summary(paths.campaign, TARGET)
     loaded = load_coverage_campaign(paths.campaign, TARGET)
-    assert summary.scoring == {"reason": "collector_error", "status": "invalid"}
+    assert loaded.summary.document["scoring"] == {"reason": "collector_error", "status": "invalid"}
     assert loaded.campaign.points
     assert loaded.campaign.rollups == ()
-
-
-@pytest.mark.parametrize(
-    "scoring",
-    [
-        {"status": "valid", "reason": None},
-        {"status": "invalid", "reason": "incomplete"},
-        {"status": "invalid", "reason": None},
-    ],
-)
-def test_v4_rejects_scoring_state_contradictions(tmp_path: Path, scoring: object) -> None:
-    paths = publish_coverage_campaign(tmp_path, _invalid_campaign())
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    manifest["scoring"] = scoring
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        read_coverage_summary(paths.campaign, TARGET)
-
-    assert error.value.code == "COV_SCORING_STATE_INVALID"
-
-
-@pytest.mark.parametrize("inventory", ["rollups", "source_rollups"])
-def test_v4_rejects_scores_smuggled_behind_invalid_state(tmp_path: Path, inventory: str) -> None:
-    valid_paths = publish_coverage_campaign(tmp_path / "valid", _campaign())
-    invalid_paths = publish_coverage_campaign(tmp_path / "invalid", _invalid_campaign())
-    valid = json.loads(valid_paths.campaign.read_text(encoding="utf-8"))
-    invalid = json.loads(invalid_paths.campaign.read_text(encoding="utf-8"))
-    invalid[inventory] = valid[inventory]
-    invalid_paths.campaign.write_text(json.dumps(invalid), encoding="utf-8")
-
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        read_coverage_summary(invalid_paths.campaign, TARGET)
-
-    assert error.value.code == "COV_INVALID_SCORING_SUMMARY"
-
-
-def test_valid_v3_remains_readable(tmp_path: Path) -> None:
-    paths = publish_coverage_campaign(tmp_path, _campaign())
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    rewrite_manifest_as_older_schema(manifest, 3)
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-
-    summary = read_coverage_summary(paths.campaign, TARGET)
-    loaded = load_coverage_campaign(paths.campaign, TARGET)
-
-    assert summary.source_schema == CAMPAIGN_SCHEMA_V3
-    assert summary.scoring == {"reason": None, "status": "valid"}
-    assert loaded.campaign == _campaign()
-
-
-def test_valid_v4_remains_readable_with_runs_named_by_their_test(tmp_path: Path) -> None:
-    paths = publish_coverage_campaign(tmp_path, _campaign())
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    rewrite_manifest_as_older_schema(manifest, 4)
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-
-    summary = read_coverage_summary(paths.campaign, TARGET)
-    loaded = load_coverage_campaign(paths.campaign, TARGET)
-
-    assert summary.source_schema == CAMPAIGN_SCHEMA_V4
-    assert [(run.test, run.test_run) for run in loaded.campaign.runs] == [("reset", "reset")]
-    assert loaded.campaign == _campaign()
-
-
-def test_v5_run_without_its_test_run_is_rejected(tmp_path: Path) -> None:
-    paths = publish_coverage_campaign(tmp_path, _campaign())
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    for run in manifest["tests"]["runs"]:
-        for field in ("test_run", "variant", "seed", "fingerprint"):
-            del run[field]
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        read_coverage_summary(paths.campaign, TARGET)
-
-    assert error.value.code == "COV_MANIFEST_FORMAT"
-    assert "must record test_run" in str(error.value)
-
-
-@pytest.mark.parametrize("version", [3, 4])
-def test_older_manifest_that_names_test_runs_is_rejected(tmp_path: Path, version: int) -> None:
-    paths = publish_coverage_campaign(tmp_path, _campaign())
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    runs = json.loads(json.dumps(manifest["tests"]["runs"]))
-    rewrite_manifest_as_older_schema(manifest, version)
-    manifest["tests"]["runs"] = runs
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        load_coverage_campaign(paths.campaign, TARGET)
-
-    assert error.value.code == "COV_MANIFEST_FORMAT"
-    assert "cannot record test_run" in str(error.value)
-
-
-def test_score_bearing_invalid_v3_is_rejected(tmp_path: Path) -> None:
-    paths = publish_coverage_campaign(tmp_path, _campaign())
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    rewrite_manifest_as_older_schema(manifest, 3)
-    manifest["collection"]["status"] = "collector_error"
-    manifest["normalization"]["status"] = "partial"
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        read_coverage_summary(paths.campaign, TARGET)
-
-    assert error.value.code == "COV_INVALID_SCORING_SUMMARY"
 
 
 def test_manifest_has_canonical_per_source_rollups(tmp_path: Path) -> None:
@@ -462,40 +306,6 @@ def test_manifest_has_canonical_per_source_rollups(tmp_path: Path) -> None:
     )
 
 
-def test_deep_reader_rejects_source_distribution_tamper(tmp_path: Path) -> None:
-    campaign = _two_source_line_campaign()
-    paths = publish_coverage_campaign(tmp_path, campaign)
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    by_source = {item["source"]: item for item in manifest["source_rollups"]}
-    rtl_line = by_source["rtl/counter.sv"]["rollups"][0]
-    tb_line = by_source["tb/counter_tb.sv"]["rollups"][0]
-    rtl_line.update(
-        total_points=0, eligible_points=0, covered_points=0, waived_points=0, percent=None
-    )
-    tb_line.update(
-        total_points=2, eligible_points=1, covered_points=1, waived_points=0, percent=100.0
-    )
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-
-    read_coverage_summary(paths.campaign, TARGET)
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        load_coverage_campaign(paths.campaign, TARGET)
-
-    assert error.value.code == "COV_SOURCE_ROLLUP_MISMATCH"
-
-
-def test_summary_reader_rejects_source_semantics_tamper(tmp_path: Path) -> None:
-    paths = publish_coverage_campaign(tmp_path, _campaign())
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    manifest["source_rollups"][0]["rollups"][0]["semantics"] = "tampered"
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        read_coverage_summary(paths.campaign, TARGET)
-
-    assert error.value.code == "COV_SOURCE_ROLLUP_MISMATCH"
-
-
 def test_publish_rejects_oversized_manifest_and_removes_point_store(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -511,16 +321,34 @@ def test_publish_rejects_oversized_manifest_and_removes_point_store(
     assert not (tmp_path / "coverage-points.jsonl.gz").exists()
 
 
-def test_summary_read_does_not_require_point_storage(tmp_path: Path) -> None:
-    paths = publish_coverage_campaign(tmp_path, _campaign())
-    paths.points.unlink()
+def test_publish_decodes_nothing_it_just_encoded(tmp_path: Path, monkeypatch) -> None:
+    import booley.flows.sim.coverage_campaign_store as store
 
-    summary = read_coverage_summary(paths.campaign, TARGET)
+    def refuse_decode(*args, **kwargs):
+        raise AssertionError("publication must not decode the manifest it just encoded")
 
-    assert summary.rollups[0].percent == 100.0
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        load_coverage_campaign(paths.campaign, TARGET)
-    assert error.value.code == "COV_PATH_UNSAFE"
+    with monkeypatch.context() as patched:
+        patched.setattr(store, "_decode_owned_coverage_campaign", refuse_decode)
+        paths = publish_coverage_campaign(tmp_path, _campaign())
+
+    assert load_coverage_campaign(paths.campaign, TARGET).campaign == _campaign()
+
+
+def test_failed_manifest_link_removes_point_store(tmp_path: Path, monkeypatch) -> None:
+    real_link = os.link
+
+    def link_unless_manifest(source, destination, *args, **kwargs):
+        if Path(destination).name == "coverage.json":
+            raise OSError("injected manifest link failure")
+        return real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, "link", link_unless_manifest)
+
+    with pytest.raises(OSError, match="injected manifest link failure"):
+        publish_coverage_campaign(tmp_path, _campaign())
+
+    assert not (tmp_path / "coverage.json").exists()
+    assert not (tmp_path / "coverage-points.jsonl.gz").exists()
 
 
 def test_publish_never_replaces_existing_campaign_artifact(tmp_path: Path) -> None:
@@ -544,27 +372,26 @@ def test_publish_never_replaces_existing_manifest(tmp_path: Path) -> None:
     assert not (tmp_path / "coverage-points.jsonl.gz").exists()
 
 
-def test_deep_reader_rejects_tampered_point_storage(tmp_path: Path) -> None:
+def test_deep_reader_rejects_truncated_point_storage(tmp_path: Path) -> None:
     paths = publish_coverage_campaign(tmp_path, _campaign())
-    stored = bytearray(paths.points.read_bytes())
-    stored[-1] ^= 1
-    paths.points.write_bytes(stored)
+    paths.points.write_bytes(paths.points.read_bytes()[:-8])
 
-    assert read_coverage_summary(paths.campaign, TARGET).rollups[0].percent == 100.0
     with pytest.raises(CoverageCampaignStoreError) as error:
         load_coverage_campaign(paths.campaign, TARGET)
-    assert error.value.code in {"COV_POINT_FORMAT", "COV_POINT_INTEGRITY"}
+    assert error.value.code == "COV_POINT_FORMAT"
 
 
-def test_summary_rejects_resource_metadata_above_format_limit(tmp_path: Path) -> None:
+def test_deep_reader_stops_at_the_uncompressed_ceiling(tmp_path: Path, monkeypatch) -> None:
+    import booley.flows.sim.coverage_campaign_store as store
+
     paths = publish_coverage_campaign(tmp_path, _campaign())
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    manifest["point_store"]["bytes"] = MAX_COMPRESSED_BYTES + 1
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-    paths.points.unlink()
+    ceiling = json.loads(paths.campaign.read_bytes())["point_store"]["uncompressed_bytes"]
+    monkeypatch.setattr(store, "MAX_UNCOMPRESSED_BYTES", ceiling)
+    load_coverage_campaign(paths.campaign, TARGET)
+    paths.points.write_bytes(gzip.compress(b" " * (ceiling + 1), mtime=0))
 
-    with pytest.raises(CoverageCampaignStoreError, match="exceeds V2 limit") as error:
-        read_coverage_summary(paths.campaign, TARGET)
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        load_coverage_campaign(paths.campaign, TARGET)
     assert error.value.code == "COV_POINT_LIMIT"
 
 
@@ -580,19 +407,6 @@ def test_deep_reader_rejects_linked_point_storage(tmp_path: Path) -> None:
     assert error.value.code == "COV_PATH_UNSAFE"
 
 
-def test_deep_reader_rejects_noncanonical_jsonl(tmp_path: Path) -> None:
-    paths = publish_coverage_campaign(tmp_path, _campaign())
-    lines = gzip.decompress(paths.points.read_bytes()).splitlines(keepends=True)
-    point = json.loads(lines[1])
-    lines[1] = json.dumps(point, separators=(", ", ": ")).encode() + b"\n"
-    _rewrite_point_store(paths, b"".join(lines))
-
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        load_coverage_campaign(paths.campaign, TARGET)
-
-    assert error.value.code == "COV_POINT_CANONICAL"
-
-
 @pytest.mark.skipif(os.name == "nt", reason="Windows symlink setup requires host privileges")
 def test_manifest_reader_rejects_linked_parent(tmp_path: Path) -> None:
     retained = tmp_path / "retained"
@@ -601,30 +415,48 @@ def test_manifest_reader_rejects_linked_parent(tmp_path: Path) -> None:
     linked.symlink_to(retained, target_is_directory=True)
 
     with pytest.raises(CoverageCampaignStoreError) as error:
-        read_coverage_summary(linked / paths.campaign.name, TARGET)
+        load_coverage_campaign(linked / paths.campaign.name, TARGET)
 
     assert error.value.code == "COV_PATH_UNSAFE"
 
 
-def test_summary_read_rejects_invalid_stored_evaluation_without_opening_points(
-    tmp_path: Path,
-) -> None:
+def test_deep_load_validates_the_campaign_once(tmp_path: Path, monkeypatch) -> None:
+    import booley.flows.sim.coverage_campaign as codec
+
+    paths = publish_coverage_campaign(tmp_path, _campaign())
+    structural = codec._structural_findings
+    calls = 0
+
+    def counted(document):
+        nonlocal calls
+        calls += 1
+        return structural(document)
+
+    monkeypatch.setattr(codec, "_structural_findings", counted)
+    load_coverage_campaign(paths.campaign, TARGET)
+    assert calls == 1
+
+
+def test_deep_load_rejects_invalid_stored_evaluation(tmp_path: Path) -> None:
     paths = publish_coverage_campaign(tmp_path, _campaign())
     manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
     manifest["evaluation"]["status"] = "pass"
     paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-    paths.points.unlink()
 
-    with pytest.raises(CoverageCampaignValidationError, match="invalid"):
-        read_coverage_summary(paths.campaign, TARGET)
+    with pytest.raises(CoverageCampaignValidationError, match="COV_EVALUATION_MISMATCH"):
+        load_coverage_campaign(paths.campaign, TARGET)
 
 
-@pytest.mark.parametrize("reader", [read_coverage_summary, load_coverage_campaign])
-@pytest.mark.parametrize("schema", ["booley.coverage-campaign/v1", "booley.coverage-campaign/v2"])
-def test_readers_reject_pre_v3_campaigns(tmp_path: Path, reader, schema: str) -> None:
+def _load_bytes(path: Path, target: DurableTargetIdentity):
+    return load_coverage_campaign_bytes(path, path.read_bytes(), target)
+
+
+@pytest.mark.parametrize("reader", [load_coverage_campaign, _load_bytes])
+@pytest.mark.parametrize("version", ["v1", "v2", "v3"])
+def test_readers_reject_pre_v3_campaigns(tmp_path: Path, reader, version: str) -> None:
     path = tmp_path / "coverage.json"
     document = _valid_document()
-    document["$schema"] = schema
+    document["$schema"] = f"booley.coverage-campaign/{version}"
     path.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(CoverageCampaignStoreError, match="recollect coverage") as error:
@@ -633,14 +465,18 @@ def test_readers_reject_pre_v3_campaigns(tmp_path: Path, reader, schema: str) ->
     assert error.value.code == "COV_SCHEMA_VERSION_UNSUPPORTED"
 
 
-def test_summary_reader_rejects_unsupported_schema(tmp_path: Path) -> None:
-    document = _valid_document()
-    document["$schema"] = "booley.coverage-campaign/v999"
+@pytest.mark.parametrize("reader", [load_coverage_campaign, _load_bytes])
+@pytest.mark.parametrize("schema", [[], {}, 5, None])
+def test_readers_reject_a_non_string_schema_as_unsupported(
+    tmp_path: Path, reader, schema: object
+) -> None:
     path = tmp_path / "coverage.json"
+    document = _valid_document()
+    document["$schema"] = schema
     path.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(CoverageCampaignStoreError) as error:
-        read_coverage_summary(path, TARGET)
+        reader(path, TARGET)
 
     assert error.value.code == "COV_SCHEMA_VERSION_UNSUPPORTED"
 
@@ -676,17 +512,14 @@ def test_large_campaign_keeps_manifest_and_summary_work_constant(tmp_path: Path)
     small_manifest = small.campaign.read_bytes()
     large_manifest = large.campaign.read_bytes()
 
-    summary = read_coverage_summary(large.campaign, TARGET)
+    point_store = json.loads(large_manifest)["point_store"]
 
     assert len(large_manifest) - len(small_manifest) < 128
-    assert summary.point_store is not None
-    assert summary.point_store.point_count == 40_000
-    assert large.points.stat().st_size < summary.point_store.uncompressed_bytes
+    assert point_store["point_count"] == 40_000
+    assert large.points.stat().st_size < point_store["uncompressed_bytes"]
 
 
 def test_image_alias_store_readers_and_suffix_links(project_alias):
-    from booley.flows.sim.coverage_campaign_store import load_coverage_campaign_bytes
-
     alias, target = project_alias
     published = publish_coverage_campaign(target / "campaign", _campaign())
     path = alias / "campaign/coverage.json"
@@ -694,35 +527,16 @@ def test_image_alias_store_readers_and_suffix_links(project_alias):
         load_coverage_campaign(path).campaign
         == load_coverage_campaign(published.campaign).campaign
     )
-    assert read_coverage_summary(path, TARGET) == read_coverage_summary(published.campaign, TARGET)
     assert (
         load_coverage_campaign_bytes(path, published.campaign.read_bytes()).campaign == _campaign()
     )
     (target / "linked").symlink_to(target / "campaign", target_is_directory=True)
     for read in (
         load_coverage_campaign,
-        lambda p: read_coverage_summary(p, TARGET),
         lambda p: load_coverage_campaign_bytes(p, published.campaign.read_bytes()),
     ):
         with pytest.raises((ValueError, OSError), match=r"link|regular|unsafe"):
             read(alias / "linked/coverage.json")
-
-
-@pytest.mark.parametrize("field", ["variant", "seed"])
-def test_v5_run_without_its_variant_or_seed_is_rejected(tmp_path: Path, field: str) -> None:
-    """v5 records the Test Variant and seed beside the name; readers never re-parse it."""
-    paths = publish_coverage_campaign(tmp_path, _campaign())
-    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    assert {"test_run", "variant", "seed", "fingerprint"} <= set(manifest["tests"]["runs"][0])
-    for run in manifest["tests"]["runs"]:
-        del run[field]
-    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
-
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        read_coverage_summary(paths.campaign, TARGET)
-
-    assert error.value.code == "COV_MANIFEST_FORMAT"
-    assert "must record test_run, variant, seed and fingerprint" in str(error.value)
 
 
 def test_the_per_run_projection_takes_variant_and_seed_from_the_run() -> None:
@@ -742,3 +556,77 @@ def test_the_per_run_projection_takes_variant_and_seed_from_the_run() -> None:
     )
     entry = _coverage_test_projection(run)  # type: ignore[arg-type]
     assert (entry["test_run"], entry["variant"], entry["seed"]) == ("reset+soak@7", "soak", 7)
+
+
+@pytest.mark.parametrize("linked", ["entry", "below"])
+def test_store_follows_only_the_booley_dir_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, linked: str
+) -> None:
+    """Publish and both readers cross the symlinked ``.booley`` entry, nothing else (#2192)."""
+    from tests.conftest import symlink_or_skip
+    from tests.fusesoc_test_support import symlinked_booley_dir
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    external = symlinked_booley_dir(project, tmp_path / "external-booley")
+    if linked == "below":
+        (tmp_path / "elsewhere").mkdir()
+        symlink_or_skip(
+            external / "flow-reports", tmp_path / "elsewhere", target_is_directory=True
+        )
+    target_dir = project / ".booley/flow-reports/sim/1/targets/sim"
+
+    if linked == "below":
+        with pytest.raises(CoverageCampaignStoreError, match="contains a link"):
+            publish_coverage_campaign(target_dir, _campaign())
+        return
+    paths = publish_coverage_campaign(target_dir, _campaign())
+    assert load_coverage_campaign(paths.campaign, TARGET).campaign == _campaign()
+    assert _load_bytes(paths.campaign, TARGET).campaign == _campaign()
+
+
+def _publish_campaign_as_written_by_booley_0_3_0(root: Path):
+    """Publish a Campaign, then rewrite its manifest into what Booley 0.3.0 wrote."""
+    paths = publish_coverage_campaign(root, _campaign())
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    rewrite_manifest_as_v4(manifest)
+    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
+    return paths
+
+
+def test_a_campaign_written_by_booley_0_3_0_is_refused_naming_its_directory(
+    tmp_path: Path,
+) -> None:
+    paths = _publish_campaign_as_written_by_booley_0_3_0(tmp_path)
+
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        load_coverage_campaign(paths.campaign, TARGET)
+
+    assert error.value.code == "COV_SCHEMA_VERSION_UNSUPPORTED"
+    assert str(paths.campaign.parent) in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "dropped",
+    [
+        pytest.param(("test_run",), id="test_run"),
+        pytest.param(("variant",), id="variant"),
+        pytest.param(("test_run", "variant", "seed", "fingerprint"), id="all"),
+    ],
+)
+def test_a_run_without_its_test_run_identity_is_refused(
+    tmp_path: Path, dropped: tuple[str, ...]
+) -> None:
+    paths = publish_coverage_campaign(tmp_path, _campaign())
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    for field in dropped:
+        del manifest["tests"]["runs"][0][field]
+    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(CoverageCampaignValidationError) as error:
+        load_coverage_campaign(paths.campaign, TARGET)
+
+    findings = {(finding.code, finding.pointer) for finding in error.value.findings}
+    for field in dropped:
+        assert ("COV_FIELD_REQUIRED", f"/tests/runs/0/{field}") in findings

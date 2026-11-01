@@ -67,6 +67,7 @@ from booley.runtime.atomic_files import (
     atomic_write_once,
     fsync_directory,
 )
+from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.project_repositories import GitDirectoryInspectionError, git_directories
 
 # The repository identity file inside Git's common directory (D3).
@@ -257,7 +258,7 @@ def _repository_id(common_dir: Path, *, create: bool) -> str | None:
         with contextlib.suppress(WriteOnceConflictError):
             atomic_write_once(path, f"{uuid.uuid4()}\n".encode(), mode=0o644)
     try:
-        return require_uuid4(path.read_text(encoding="utf-8").strip(), field=str(path))
+        return require_uuid4(read_file_bytes(path).decode("utf-8").strip(), field=str(path))
     except (OSError, UnicodeDecodeError, BoundaryError) as exc:
         raise WorktreeIdentityError(f"unreadable repository identity {path}: {exc}") from exc
 
@@ -474,6 +475,8 @@ class GoalStore:
         staging name and renamed into place.
         """
         self._check_create(lock, record)
+        created = replace(record, revision=1)
+        encoded = _validate_encodable(created)
         scan = self.list_records()
         if scan.corrupt:
             raise GoalRecordCorruptError(scan.corrupt)
@@ -481,14 +484,14 @@ class GoalStore:
         if occupant is not None:
             raise WorktreeOccupiedError(occupant)
         self._sweep_stale_staging()
-        return self._publish(replace(record, revision=1))
+        return self._publish(created, encoded)
 
-    def _publish(self, created: GoalRecord) -> GoalRecord:
+    def _publish(self, created: GoalRecord, encoded: bytes) -> GoalRecord:
         target = record_paths(self.booley_dir, created.id).root
         staging = goals_root(self.booley_dir) / f"{STAGING_PREFIX}{created.id}-{uuid.uuid4().hex}"
         staging.mkdir(parents=True)
         try:
-            atomic_replace_bytes(staging / RECORD_FILE, _encode(created))
+            atomic_replace_bytes(staging / RECORD_FILE, encoded)
             save_names(staging, (row.spec for row in created.goals))
             staging.rename(target)
         except OSError as exc:
@@ -531,7 +534,6 @@ class GoalStore:
         if record.state is not GoalState.ENTERING or record.revision != 0:
             raise InvalidRecordUpdateError("a new Goal Record starts as 'entering' at revision 0")
         validate_goal_id(record.id)
-        _validate_encodable(replace(record, revision=1))
 
     def load(self, goal_id: str) -> GoalRecord:
         """Read Goal Record *goal_id*; corrupt content raises, never returns ``None``."""
@@ -539,7 +541,7 @@ class GoalStore:
         if not paths.root.is_dir():
             raise GoalRecordNotFoundError(f"no Goal Record {goal_id} in {self.booley_dir}")
         try:
-            raw: Any = json.loads(paths.record_file.read_bytes().decode("utf-8"))
+            raw: Any = json.loads(read_file_bytes(paths.record_file).decode("utf-8"))
             record = GoalRecord.from_json(raw)
         except (OSError, UnicodeDecodeError, ValueError) as exc:
             raise GoalRecordCorruptError([CorruptRecord(paths.record_file, str(exc))]) from exc
@@ -553,8 +555,7 @@ class GoalStore:
 
         Raises :class:`StaleRevisionError` when another writer saved first,
         and :class:`InvalidRecordUpdateError` for a forbidden state
-        transition, a change to a field fixed at creation, or content that
-        would not load back.
+        transition, a change to a field fixed at creation, or invalid record invariants.
         """
         lock.require_owned()
         current = self.load(record.id)
@@ -581,12 +582,11 @@ class GoalStore:
         if frozen:
             raise InvalidRecordUpdateError(f"Goal Record {record.id}: {frozen}")
         saved = replace(record, revision=current.revision + 1)
+        encoded = _validate_encodable(saved)
         save_names(
             record_paths(self.booley_dir, record.id).root, (row.spec for row in saved.goals)
         )
-        atomic_replace_bytes(
-            record_paths(self.booley_dir, record.id).record_file, _validate_encodable(saved)
-        )
+        atomic_replace_bytes(record_paths(self.booley_dir, record.id).record_file, encoded)
         return saved
 
     def list_records(self) -> RecordScan:
@@ -665,15 +665,11 @@ def frozen_run_violation(current: GoalRecord, record: GoalRecord) -> str:
     return ""
 
 
-def _encode(record: GoalRecord) -> bytes:
-    return (json.dumps(record.to_json(), indent=2, sort_keys=True) + "\n").encode("utf-8")
-
-
 def _validate_encodable(record: GoalRecord) -> bytes:
-    """Encode *record*, refusing content :meth:`GoalStore.load` would reject."""
-    encoded = _encode(record)
+    """Encode a typed candidate and check its record invariants."""
+    encoded = (json.dumps(record.to_json(), indent=2, sort_keys=True) + "\n").encode("utf-8")
     try:
-        GoalRecord.from_json(json.loads(encoded))
+        record.validate()
     except GoalRecordFormatError as exc:
         raise InvalidRecordUpdateError(
             f"Goal Record {record.id} would not load back: {exc}"

@@ -7,9 +7,12 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -28,8 +31,9 @@ from booley.flows.sim.waiver_candidates import (
     waiver_candidates_lock_path,
     waiver_candidates_path,
 )
+from booley.goals.apply_effects import FileEffect
+from booley.mcp.goal_waivers import GoalWaiverService
 
-SLUG = "t1"
 NOW = datetime(2026, 9, 30, 12, 0, 0, tzinfo=UTC)
 LATER = NOW + timedelta(minutes=5)
 SHA_A = "sha256:" + "a" * 64
@@ -67,7 +71,7 @@ def _record(tickets: Path, *proposals: WaiverProposal, **kwargs: Any) -> store.R
     kwargs.setdefault("invocation_id", "inv-1")
     kwargs.setdefault("now", NOW)
     binding = kwargs.pop("binding")
-    return store.record_proposals(tickets, SLUG, binding, proposals or (_proposal(),), **kwargs)
+    return store.record_proposals(tickets, binding, proposals or (_proposal(),), **kwargs)
 
 
 def _rejection(point: str = POINT, sha: str = SHA_A) -> Rejection:
@@ -88,34 +92,32 @@ def _only(record: CandidateRecord) -> store.WaiverCandidate:
 # Accumulation -------------------------------------------------------------------
 
 
-def test_missing_record_is_empty(tmp_path: Path) -> None:
-    record = store.load(tmp_path, SLUG)
-    assert record == CandidateRecord(SLUG)
-    assert record.is_empty
-    assert not waiver_candidates_path(tmp_path, SLUG).exists()
-
-
 def test_first_proposal_creates_the_record_lazily(tmp_path: Path) -> None:
+    record = store.load(tmp_path)
+    assert record == CandidateRecord()
+    assert record.is_empty
+    assert not waiver_candidates_path(tmp_path).exists()
     outcome = _record(tmp_path)
+    assert store.load(tmp_path / "another-record").is_empty
 
     expected_id = (
         "wc-"
         + hashlib.sha256(f"{_binding().target_identity}|{POINT}|{SHA_A}".encode()).hexdigest()[:12]
     )
     assert outcome == store.RecordOutcome(1, 0, (expected_id,))
-    candidate = _only(store.load(tmp_path, SLUG))
+    candidate = _only(store.load(tmp_path))
     assert candidate.candidate_id == expected_id == candidate_id(*candidate.key, SHA_A)
     assert candidate.proposal_count == 1
     assert candidate.first_recorded_at == candidate.last_recorded_at == "2026-09-30T12:00:00Z"
     if os.name == "posix":
-        assert waiver_candidates_path(tmp_path, SLUG).stat().st_mode & 0o777 == 0o644
+        assert waiver_candidates_path(tmp_path).stat().st_mode & 0o777 == 0o644
 
 
 def test_same_campaign_bumps_count_and_replaces_justification(tmp_path: Path) -> None:
     _record(tmp_path)
     _record(tmp_path, _proposal(justification="tied low"), invocation_id="inv-2", now=LATER)
 
-    candidate = _only(store.load(tmp_path, SLUG))
+    candidate = _only(store.load(tmp_path))
     assert candidate.proposal_count == 2
     assert candidate.proposal.justification == "tied low"
     assert candidate.first_recorded_at == "2026-09-30T12:00:00Z"
@@ -129,7 +131,7 @@ def test_different_campaign_replaces_entry_and_resets_count(tmp_path: Path) -> N
     newer = _binding("camp-2", point_store=SHA_B)
     _record(tmp_path, binding=newer, now=LATER)
 
-    candidate = _only(store.load(tmp_path, SLUG))
+    candidate = _only(store.load(tmp_path))
     assert candidate.binding == newer
     assert candidate.proposal_count == 1
     assert candidate.first_recorded_at == "2026-09-30T12:05:00Z"
@@ -139,7 +141,7 @@ def test_changed_source_on_same_key_replaces_entry(tmp_path: Path) -> None:
     _record(tmp_path)
     _record(tmp_path, _proposal(sha=SHA_B))
 
-    candidate = _only(store.load(tmp_path, SLUG))
+    candidate = _only(store.load(tmp_path))
     assert candidate.proposal.source_sha256 == SHA_B
     assert candidate.proposal_count == 1
 
@@ -147,7 +149,7 @@ def test_changed_source_on_same_key_replaces_entry(tmp_path: Path) -> None:
 def test_batch_naming_a_point_twice_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="once"):
         _record(tmp_path, _proposal(), _proposal())
-    assert not waiver_candidates_path(tmp_path, SLUG).exists()
+    assert not waiver_candidates_path(tmp_path).exists()
 
 
 def test_naive_now_is_refused(tmp_path: Path) -> None:
@@ -155,79 +157,43 @@ def test_naive_now_is_refused(tmp_path: Path) -> None:
         _record(tmp_path, now=datetime(2026, 9, 30, 12, 0, 0))
 
 
-@pytest.mark.parametrize(
-    "change",
-    [
-        {"point_id": "not-a-point"},
-        {"source": "/abs/core.sv"},
-        {"source": "rtl/../core.sv"},
-        {"source_sha256": "sha256:short"},
-        {"reason": "maybe"},
-        {"justification": ""},
-        {"evidence_refs": "rtl/core.sv:12"},
-        {"evidence_refs": ("",)},
-    ],
-)
-def test_invalid_proposal_is_refused(change: dict[str, Any]) -> None:
-    fields = {
-        "point_id": POINT,
-        "source": "rtl/core.sv",
-        "source_sha256": SHA_A,
-        "reason": "excluded",
-        "justification": "x",
-        **change,
-    }
-    with pytest.raises(BoundaryError):
-        WaiverProposal(**fields)
-
-
 # Rejections ---------------------------------------------------------------------
 
 
 def test_rejected_proposal_is_filtered_and_never_counted(tmp_path: Path) -> None:
-    store.record_rejections(tmp_path, SLUG, [_rejection()])
+    record = store.rejected_record(store.load(tmp_path), [_rejection()])
+    waiver_candidates_path(tmp_path).write_bytes(record.to_bytes())
 
     outcome = _record(tmp_path, _proposal(), _proposal(OTHER_POINT))
 
     assert (outcome.recorded, outcome.filtered_by_rejection) == (1, 1)
-    record = store.load(tmp_path, SLUG)
+    record = store.load(tmp_path)
     assert list(record.candidates) == [(_binding().target_identity, OTHER_POINT)]
+    rejected = store.rejected_record(record, [_rejection(OTHER_POINT)])
+    assert not rejected.candidates
+    assert (
+        store.rejected_record(
+            rejected, [replace(_rejection(), rejected_at="2027-01-01T00:00:00Z")]
+        )
+        == rejected
+    )
 
 
 def test_changed_source_reopens_a_rejected_point(tmp_path: Path) -> None:
-    store.record_rejections(tmp_path, SLUG, [_rejection(sha=SHA_A)])
+    record = store.rejected_record(store.load(tmp_path), [_rejection(sha=SHA_A)])
+    waiver_candidates_path(tmp_path).write_bytes(record.to_bytes())
 
     outcome = _record(tmp_path, _proposal(sha=SHA_B))
 
     assert (outcome.recorded, outcome.filtered_by_rejection) == (1, 0)
-    assert _only(store.load(tmp_path, SLUG)).proposal.source_sha256 == SHA_B
-
-
-def test_rejections_are_an_idempotent_set_and_drop_matching_candidates(tmp_path: Path) -> None:
-    _record(tmp_path, _proposal(), _proposal(OTHER_POINT))
-
-    assert store.record_rejections(tmp_path, SLUG, [_rejection()]) == 1
-    before = waiver_candidates_path(tmp_path, SLUG).read_bytes()
-    later = Rejection(**{**_rejection().to_json(), "rejected_at": "2026-10-01T00:00:00Z"})
-    assert store.record_rejections(tmp_path, SLUG, [later]) == 0
-
-    assert waiver_candidates_path(tmp_path, SLUG).read_bytes() == before
-    record = store.load(tmp_path, SLUG)
-    assert record.rejections == (_rejection(),)
-    assert list(record.candidates) == [(_binding().target_identity, OTHER_POINT)]
-    assert record.is_rejected(_binding().target_identity, POINT, SHA_A)
-    assert not record.is_rejected(_binding().target_identity, POINT, SHA_B)
+    assert _only(store.load(tmp_path)).proposal.source_sha256 == SHA_B
 
 
 def test_rejection_of_another_source_keeps_the_candidate(tmp_path: Path) -> None:
     _record(tmp_path, _proposal(sha=SHA_B))
-    store.record_rejections(tmp_path, SLUG, [_rejection(sha=SHA_A)])
-    assert len(store.load(tmp_path, SLUG).candidates) == 1
-
-
-def test_records_are_per_directory(tmp_path: Path) -> None:
-    _record(tmp_path)
-    assert store.load(tmp_path / "another-record", "t2").is_empty
+    record = store.rejected_record(store.load(tmp_path), [_rejection(sha=SHA_A)])
+    waiver_candidates_path(tmp_path).write_bytes(record.to_bytes())
+    assert len(store.load(tmp_path).candidates) == 1
 
 
 # Encoding and fail-closed parsing ----------------------------------------------
@@ -235,20 +201,21 @@ def test_records_are_per_directory(tmp_path: Path) -> None:
 
 def _stored(tmp_path: Path) -> dict[str, Any]:
     _record(tmp_path)
-    store.record_rejections(tmp_path, SLUG, [_rejection(OTHER_POINT)])
-    return json.loads(waiver_candidates_path(tmp_path, SLUG).read_text(encoding="utf-8"))
+    record = store.rejected_record(store.load(tmp_path), [_rejection(OTHER_POINT)])
+    waiver_candidates_path(tmp_path).write_bytes(record.to_bytes())
+    return json.loads(waiver_candidates_path(tmp_path).read_text(encoding="utf-8"))
 
 
 def test_encoding_is_canonical_and_round_trips(tmp_path: Path) -> None:
     document = _stored(tmp_path)
-    raw = waiver_candidates_path(tmp_path, SLUG).read_text(encoding="utf-8")
+    raw = waiver_candidates_path(tmp_path).read_text(encoding="utf-8")
 
     assert raw == json.dumps(document, indent=2, sort_keys=True) + "\n"
-    assert document["schema"] == 1 and document["slug"] == SLUG
+    assert document["schema"] == 1 and "slug" not in document
     (entry,) = document["candidates"].values()
     assert entry["campaign_path"] == "sim/1/core/camp-1/coverage.json"
     assert entry["reason"] == "unreachable" and entry["proof_reference"] == ""
-    assert store.load(tmp_path, SLUG).to_bytes() == raw.encode()
+    assert store.load(tmp_path).to_bytes() == raw.encode()
 
 
 def _candidate_entry(document: dict[str, Any]) -> dict[str, Any]:
@@ -259,7 +226,6 @@ _CORRUPTIONS: dict[str, Any] = {
     "schema-2": lambda d: d.update(schema=2),
     "schema-bool": lambda d: d.update(schema=True),
     "schema-missing": lambda d: d.pop("schema"),
-    "slug-mismatch": lambda d: d.update(slug="t2"),
     "extra-top-level": lambda d: d.update(extra=1),
     "candidates-list": lambda d: d.update(candidates=[]),
     "reason": lambda d: _candidate_entry(d).update(reason="maybe"),
@@ -271,6 +237,8 @@ _CORRUPTIONS: dict[str, Any] = {
     ),
     "bad-sha": lambda d: _candidate_entry(d).update(manifest_sha256="sha256:XYZ"),
     "escaping-path": lambda d: _candidate_entry(d).update(campaign_path="../x.json"),
+    "moved-id": lambda d: d.update(candidates={"wc-000000000000": _candidate_entry(d)}),
+    "rejection-point": lambda d: d["rejections"][0].update(point_id="bad"),
     "candidate-id": lambda d: _candidate_entry(d).update(candidate_id="wc-000000000000"),
     "unknown-field": lambda d: _candidate_entry(d).update(note="hi"),
     "missing-field": lambda d: _candidate_entry(d).pop("justification"),
@@ -283,16 +251,17 @@ _CORRUPTIONS: dict[str, Any] = {
 def test_invalid_record_fails_closed(tmp_path: Path, name: str) -> None:
     document = _stored(tmp_path)
     _CORRUPTIONS[name](document)
-    path = waiver_candidates_path(tmp_path, SLUG)
+    path = waiver_candidates_path(tmp_path)
     path.write_text(json.dumps(document), encoding="utf-8")
     before = path.read_bytes()
 
-    with pytest.raises(WaiverCandidateRecordError, match="is invalid"):
-        store.load(tmp_path, SLUG)
+    diagnostic = {"rejection-point": "point_id", "timestamp": "canonical UTC"}.get(
+        name, "is invalid"
+    )
+    with pytest.raises(WaiverCandidateRecordError, match=diagnostic):
+        store.load(tmp_path)
     with pytest.raises(WaiverCandidateRecordError):
         _record(tmp_path)
-    with pytest.raises(WaiverCandidateRecordError):
-        store.record_rejections(tmp_path, SLUG, [_rejection()])
     assert path.read_bytes() == before
 
 
@@ -302,19 +271,11 @@ def test_invalid_record_fails_closed(tmp_path: Path, name: str) -> None:
     ids=["syntax", "not-utf8", "duplicate-key", "empty"],
 )
 def test_undecodable_record_fails_closed(tmp_path: Path, raw: bytes) -> None:
-    path = waiver_candidates_path(tmp_path, SLUG)
+    path = waiver_candidates_path(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(raw)
     with pytest.raises(WaiverCandidateRecordError, match="not valid JSON"):
-        store.load(tmp_path, SLUG)
-
-
-def test_moved_candidate_under_another_id_fails_closed(tmp_path: Path) -> None:
-    document = _stored(tmp_path)
-    document["candidates"] = {"wc-000000000000": _candidate_entry(document)}
-    waiver_candidates_path(tmp_path, SLUG).write_text(json.dumps(document), encoding="utf-8")
-    with pytest.raises(WaiverCandidateRecordError, match="does not match"):
-        store.load(tmp_path, SLUG)
+        store.load(tmp_path)
 
 
 # Locking and crash safety ------------------------------------------------------
@@ -322,7 +283,7 @@ def test_moved_candidate_under_another_id_fails_closed(tmp_path: Path) -> None:
 
 def test_lock_wait_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(store, "LOCK_TIMEOUT_SECONDS", 0.2)
-    lock = waiver_candidates_lock_path(tmp_path, SLUG)
+    lock = waiver_candidates_lock_path(tmp_path)
     lock.parent.mkdir(parents=True, exist_ok=True)
     with lock.open("a+", encoding="utf-8") as handle:
         acquire_file_lock(handle)
@@ -331,7 +292,7 @@ def test_lock_wait_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
                 _record(tmp_path)
         finally:
             release_file_lock(handle)
-    assert not waiver_candidates_path(tmp_path, SLUG).exists()
+    assert not waiver_candidates_path(tmp_path).exists()
     assert _record(tmp_path).recorded == 1
 
 
@@ -340,7 +301,7 @@ def test_crash_mid_publish_keeps_the_old_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str
 ) -> None:
     _record(tmp_path)
-    path = waiver_candidates_path(tmp_path, SLUG)
+    path = waiver_candidates_path(tmp_path)
     before = path.read_bytes()
 
     def crash(*_args: object, **_kwargs: object) -> None:
@@ -357,7 +318,7 @@ def test_crash_mid_publish_keeps_the_old_record(
     assert path.read_bytes() == before
     assert {entry.name for entry in path.parent.iterdir()} == {
         path.name,
-        waiver_candidates_lock_path(tmp_path, SLUG).name,
+        waiver_candidates_lock_path(tmp_path).name,
     }
     assert _record(tmp_path, _proposal(OTHER_POINT)).recorded == 1
 
@@ -380,7 +341,7 @@ for index in range(rounds):
         for point in (shared, own)
     ]
     store.record_proposals(
-        directory, "t1", binding, proposals,
+        directory, binding, proposals,
         invocation_id=f"{name}-{index}", now=datetime.now(UTC),
     )
 """
@@ -402,7 +363,7 @@ def test_concurrent_writers_never_lose_updates(tmp_path: Path) -> None:
         _, stderr = writer.communicate(timeout=120)
         assert writer.returncode == 0, stderr.decode()
 
-    record = store.load(tmp_path, SLUG)
+    record = store.load(tmp_path)
     target = _binding().target_identity
     assert record.candidates[(target, POINT)].proposal_count == 2 * rounds
     own = {key[1] for key in record.candidates} - {POINT}
@@ -411,10 +372,67 @@ def test_concurrent_writers_never_lose_updates(tmp_path: Path) -> None:
 
 @pytest.fixture(autouse=True)
 def isolated_owner(tmp_path, monkeypatch):
-    import os
-
     from booley.runtime.booley_dir import reset_cache
 
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
     reset_cache()
+
+
+def test_internal_record_construction_does_not_validate_fields() -> None:
+    with (
+        patch.object(store, "_timestamp", wraps=store._timestamp) as timestamp,
+        patch.object(store, "_point_id", wraps=store._point_id) as validate,
+    ):
+        binding, proposal, rejection = _binding(), _proposal(), _rejection()
+        candidate = store.WaiverCandidate(
+            binding, proposal, 1, "2026-09-30T12:00:00Z", "2026-09-30T12:00:00Z", "inv"
+        )
+        assert validate.call_count == 0, "trusted construction repeated field validation"
+        record = CandidateRecord(candidates={candidate.key: replace(candidate, proposal_count=2)})
+        store.rejected_record(record, [rejection])
+        assert validate.call_count == 0, "trusted construction repeated field validation"
+        assert timestamp.call_count == 0
+
+
+def test_proposal_ingress_validates_once(tmp_path: Path) -> None:
+    binding, proposal = _binding(), _proposal()
+    with patch.object(store, "_point_id", wraps=store._point_id) as validate:
+        store.record_proposals(tmp_path, binding, [proposal], invocation_id="inv", now=NOW)
+        assert validate.call_count == 1
+
+
+@pytest.mark.parametrize("binding,proposal", [("bad", None), (None, "bad")])
+def test_proposal_ingress_rejects_invalid_reason_and_binding(tmp_path, binding, proposal):
+    binding = replace(_binding(), campaign_path="../bad") if binding else _binding()
+    proposal = replace(_proposal(), reason="bad") if proposal else _proposal()
+    with pytest.raises(BoundaryError):
+        store.record_proposals(tmp_path, binding, [proposal], invocation_id="inv", now=NOW)
+    assert not waiver_candidates_path(tmp_path).exists()
+
+
+@pytest.mark.parametrize("legacy", ["matching", "ignored", "absent"])
+def test_legacy_record_is_read_and_new_serialization_omits_slug(tmp_path, legacy):
+    record = SimpleNamespace(id="evidence-20260930T120000Z", worktree_path=str(tmp_path))
+    service = GoalWaiverService(tmp_path, record)
+    path = service.paths.root / "waiver-candidates.json"
+    document = {"schema": 1, "candidates": {}, "rejections": []}
+    if legacy != "absent":
+        document["slug"] = record.id if legacy == "matching" else {"legacy": "ignored"}
+    replay = FileEffect(path, None, json.dumps(document).encode(), "candidate")
+    replay.apply()
+    replay.apply()
+    item = SimpleNamespace(
+        target_identity=_binding().target_identity, point_id=POINT, source_sha256=SHA_A
+    )
+    proposal = SimpleNamespace(waiver=SimpleNamespace(candidate=item))
+    decision = SimpleNamespace(at="2026-09-30T13:00:00Z", session_key="Ada")
+    try:
+        (effect,) = service.rejection(proposal, decision)
+    except WaiverCandidateRecordError as exc:
+        pytest.fail(f"legacy record was not accepted: {exc}")
+    effect.apply()
+    written = json.loads(path.read_bytes())
+    assert "slug" not in written, "new record must omit slug"
+    assert written["rejections"][0]["point_id"] == POINT
+    assert service.rejection(proposal, decision)[0].after == effect.after

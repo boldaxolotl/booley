@@ -37,6 +37,7 @@ from booley.flows.sim.campaign import (
 from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES, SimulationCampaignIntegrityError
 from booley.flows.sim.campaign.test_run_report import evidence_test_run_rows
 from booley.flows.sim.campaign_reports import (
+    simulation_booley_dir,
     write_compatibility_projection,
 )
 from booley.flows.sim.coverage_projection import project_coverage_criterion
@@ -395,6 +396,8 @@ def record_campaign_acceptance(
     work_dir = getattr(endpoint.args, "work_dir", None)
     if endpoint.state._file_path is not None and work_dir is not None:
         endpoint.state.work_dir = str(Path(work_dir).resolve())
+    # A symlinked Booley Directory entry is followed when reading published artifacts back.
+    booley_dir = None if work_dir is None else simulation_booley_dir(Path(work_dir))
     recorder = endpoint._acceptance_recorder
     recorded_identity = recorder.acceptance_identity()
     identity: Mapping[str, Any] = recorded_identity if recorded_identity is not None else {}
@@ -428,7 +431,7 @@ def record_campaign_acceptance(
             "no_criteria",
             "no_applicable_criteria",
         }
-        projection = _campaign_projection(item)
+        projection = _campaign_projection(item, booley_dir=booley_dir)
         origin = item.manifest_path.parents[1] / "simulation.json"
         write_compatibility_projection(origin, projection, acceptance_committed=complete)
 
@@ -455,7 +458,9 @@ def _record_standalone_campaign(endpoint: EndpointState, outcome: CampaignOutcom
     )
 
 
-def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
+def _campaign_projection(
+    outcome: CampaignOutcome, *, booley_dir: Path | None = None
+) -> dict[str, object]:
     facts = outcome.acceptance_facts.document
     campaign_id = str(facts["campaign_id"])
     target_directory = outcome.manifest_path.parents[1]
@@ -484,10 +489,15 @@ def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
             kind="simulation_campaign_manifest",
             owner=campaign_id,
             maximum=MANIFEST_MAX_BYTES,
+            booley_dir=booley_dir,
         ),
     }
     if outcome.coverage_reference is not None:
-        projection.update(_coverage_projection_fields(outcome, target_directory, campaign_id))
+        projection.update(
+            _coverage_projection_fields(
+                outcome, target_directory, campaign_id, booley_dir=booley_dir
+            )
+        )
     return projection
 
 
@@ -542,7 +552,11 @@ def _observation_error_tail(observation: Mapping[str, object]) -> str:
 
 
 def _coverage_projection_fields(
-    outcome: CampaignOutcome, target_directory: Path, campaign_id: str
+    outcome: CampaignOutcome,
+    target_directory: Path,
+    campaign_id: str,
+    *,
+    booley_dir: Path | None = None,
 ) -> dict[str, object]:
     public = target_directory / "coverage.json"
     coverage = _resolve_facts_coverage(outcome, public).loaded.campaign
@@ -553,6 +567,7 @@ def _coverage_projection_fields(
             kind="coverage_campaign_reference",
             owner=campaign_id,
             maximum=MAX_REFERENCE_BYTES,
+            booley_dir=booley_dir,
         ),
         "collection": coverage.collection["status"],
         "evaluation": coverage.evaluation["status"],
@@ -560,7 +575,13 @@ def _coverage_projection_fields(
 
 
 def _artifact_document(
-    path: Path, *, base: Path, kind: str, owner: str, maximum: int
+    path: Path,
+    *,
+    base: Path,
+    kind: str,
+    owner: str,
+    maximum: int,
+    booley_dir: Path | None,
 ) -> dict[str, object]:
     reference = build_artifact_reference(
         path,
@@ -569,6 +590,7 @@ def _artifact_document(
         kind=kind,
         owner=owner,
         maximum=maximum,
+        booley_dir=booley_dir,
     )
     return encode_artifact_reference(reference)
 
@@ -806,7 +828,6 @@ def _bound_baseline(
     """
     if not has_relative_threshold(dict(params)):
         return None, "not_required"
-    selector = _baseline_selector(params)
     revision = params.get(BASELINE_REF_PARAM)
     for item in prerequisites:
         target = item.get("target")
@@ -818,7 +839,7 @@ def _bound_baseline(
         bound = (
             item.get("role") == "cycle_count_baseline"
             and target.get("role") == "cycle_count_baseline"
-            and target.get("selector") == selector
+            and _names_baseline_target(params, target)
             and (revision is None or target.get("revision") == revision)
             and cycle.get("test") == test
             and _same_test_run(cycle, current)
@@ -857,9 +878,20 @@ def _name_baseline_refusal(detail: dict[str, object], refusal: str | None) -> No
         detail["reason"] = refusal
 
 
-def _baseline_selector(params: Mapping[str, object]) -> object:
-    """The baseline Target a Cycle Count Criterion compares against."""
-    return params.get(BASELINE_TARGET_PARAM, params.get("_target_selector"))
+def _names_baseline_target(params: Mapping[str, object], target: Mapping[str, object]) -> bool:
+    """Whether *target* is the baseline Target a Cycle Count Criterion compares against.
+
+    An explicit baseline Target names its selector. Otherwise the baseline is
+    the Criterion's own Target, which a Goal names only in ``target`` (as a
+    selector or an identity) and a Criterion may also pin by selector.
+    """
+    if BASELINE_TARGET_PARAM in params:
+        return target.get("selector") == params[BASELINE_TARGET_PARAM]
+    return criterion_matches_target(
+        params,
+        identity=f"{target.get('vlnv')}#{target.get('name')}",
+        selector=str(target.get("selector")),
+    )
 
 
 def _cycle_threshold_checks(

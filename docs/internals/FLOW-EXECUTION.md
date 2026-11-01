@@ -29,14 +29,14 @@ location are environment-derived preparation fields, excluded from constructors.
 
 - `FlowMechanics` supplies subprocess execution, timeout/cancellation cleanup,
   artifact age checks and the Flow pre-state gate.
-- `BuiltinFlow` composes a fresh `FlowSession` per invocation. Its narrow service
-  delegates expose prepared inputs, Criteria state/updates, report-directory
-  reservation, EDA-tool identity and progress. Its CLI convenience methods keep
-  existing commands and module entry points callable without inheriting the
-  legacy endpoint facade.
-- `FlowSession` binds concrete execution, job-class and display-label callbacks
-  to `EndpointState`. The latter owns per-invocation state and delegates to the
-  separate acceptance, admission, reporting and invocation modules.
+- `BuiltinFlow` inherits `FlowMechanics` and `EndpointState` and is the single
+  owner of its invocation state. Each entry point (construction, `execute`,
+  `execute_cli`, `parse_args`) starts an invocation that reinitializes every per-invocation
+  field plus the Flow's own extras (publication resources, terminal progress,
+  Simulation outcomes). Its CLI convenience methods keep existing commands and
+  module entry points callable without inheriting the legacy endpoint facade.
+- `EndpointState` owns per-invocation state and delegates to the separate
+  acceptance, admission, reporting and invocation modules.
 - `builtin_cli` builds a parser from common definitions and the concrete Flow's
   argument adapter. It translates CLI input to the same typed request. Concrete
   implementations supply their adapter; common modules never select a Flow.
@@ -105,29 +105,28 @@ current execution and persistence behavior.
 
 ### Verilator compiler cache ownership
 
-Simulation build preparation resolves strict checkout-local compiler-cache
-configuration into an immutable policy. `PreparedSimulationBuild.environment`
+Simulation build preparation resolves the compiler-cache settings
+(`resolve_compiler_cache_settings` in `flows/sim/config.py`, the shared Simulation
+reader) and the issued root into an immutable policy. `PreparedSimulationBuild.environment`
 is authoritative for compilation. `simulation_build_script` finalizes storage
 availability only for execution and scopes compiler exports to the build half;
 simulator environment and testbench fingerprints retain their existing owners.
 Ordinary, compatibility, campaign, coverage, Cocotb, and elaboration-only builds
 consume this shared interface; Mutation Tester builds, which run Make directly,
 use `simulation_build_environment`. Icarus preparation does not resolve cache
-policy. The cache policy module never reads the process environment: build
-preparation passes `read_issued_identity(os.environ)` and the ambient environment in.
-A missing (pre-cache Sandbox) or foreign issued root yields an inactive policy
-that compiles uncached with a refresh warning; only malformed configuration
-fails preparation.
+policy. The cache policy module takes the environment as an argument: build
+preparation passes `os.environ` in. An unset root yields an inactive policy that
+compiles uncached with a refresh warning; only invalid settings fail preparation.
+The root is trusted as given and `execution_environment` only creates it.
 
 Sandbox Issuance fixes `BOOLEY_COMPILER_CACHE_ROOT` under the existing Project
 mount in both container and remote environments. Goal-bound and review
 subprocesses inherit it.
 Its presence/value participates in spec validation, digest/drift detection, and
-refresh; no new mount is introduced. Non-issued development resolves ownership
-through `resolve_booley_dir` and selected configuration through
-`resolve_checkout_booley_dir` plus `resolve_toml`.
+refresh; no new mount is introduced. There is no host Booley Directory fallback.
 
-The shared subtree is outside all mutable build generations and is never
-registered as a disposable `flow-cache` artifact. Setup cleanup preserves
-unowned runtime residue. Baseline core copying only copies the core subtree;
+The shared subtree is outside all mutable build generations. Setup cleanup
+removes only its marker-guarded run root under `tmp/setup/<run-id>/` and never
+touches the shared subtree. Baseline checkouts of a Project with stealth cores mirror only
+authored Booley Directory files, never transient state such as `.runtime`;
 ordinary Project Git ignores exclude `.runtime` from source snapshots.

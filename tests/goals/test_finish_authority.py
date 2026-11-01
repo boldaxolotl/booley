@@ -7,13 +7,14 @@ from types import SimpleNamespace
 import pytest
 
 from booley.goals.finish import finish_goal
-from booley.goals.lifecycle import LifecycleError
+from booley.goals.lifecycle import LifecycleError, bind_operation, read_bound_request
 from booley.goals.model import GoalState
 from booley.goals.proposals import digest
 from booley.goals.store import GoalStore
 from booley.review.goal_package import GoalCompletionPackage, GoalPackageError
 from tests.goals.conftest import git
 from tests.goals.test_finish import Crash, environment, publication_layout, request
+from tests.sharing_error_support import hold_opens
 
 pytestmark = pytest.mark.timeout(120)
 
@@ -232,18 +233,6 @@ def test_saved_success_also_validates_the_frozen_package(complete):
         finish_goal(call, environment(complete))
 
 
-def test_legacy_unpaired_record_can_freeze_and_retry_with_current_authority(complete):
-    record_file = complete.control / "goals" / complete.record.id / "record.json"
-    value = json.loads(record_file.read_bytes())
-    del value["input_paths"]
-    del value["input_topology_digest"]
-    record_file.write_text(json.dumps(value))
-    call = request(complete)
-    result = finish_goal(call, environment(complete))
-    assert result["status"] == "finished"
-    assert finish_goal(call, environment(complete)) == result
-
-
 def test_publication_journal_substitution_refuses_before_next_effect(layout):
     layout = publication_layout(layout)
     call, operation = freeze(layout, "commit-journaled")
@@ -274,3 +263,46 @@ def test_package_reader_refuses_empty_goal_metric(complete):
     facts["goals"][0]["metric"] = ""
     with pytest.raises(GoalPackageError, match="metric must be a non-empty string"):
         GoalCompletionPackage.from_json(facts)
+
+
+# --- Windows sharing errors (#2187) -------------------------------------------------
+
+
+def _frozen(complete, held_name, count, monkeypatch):
+    """Freeze an attempt, then hold ``held_name`` in its operation directory."""
+    call, operation = freeze(complete, "finishing")
+    attempts = hold_opens(monkeypatch, {operation / held_name: count})
+    return call, GoalStore(complete.control), operation / held_name, attempts
+
+
+def test_sealed_authority_read_survives_transient_sharing_error(complete, monkeypatch):
+    call, store, _, _ = _frozen(complete, "attempt.authority.json", 1, monkeypatch)
+    with bind_operation(store, call) as operation:
+        assert operation.sealed_directory("attempt").name == call.operation_id
+
+
+def test_sealed_authority_read_retries_before_raising_lifecycle_error(complete, monkeypatch):
+    call, store, held, attempts = _frozen(complete, "attempt.authority.json", 5, monkeypatch)
+    with bind_operation(store, call) as operation, pytest.raises(LifecycleError) as caught:
+        operation.read_sealed("attempt")
+    assert caught.value.__cause__.winerror == 32
+    assert attempts[held] > 1
+
+
+def test_sealed_artifact_read_survives_transient_sharing_error(complete, monkeypatch):
+    call, store, _, _ = _frozen(complete, "attempt.json", 1, monkeypatch)
+    with bind_operation(store, call) as operation:
+        assert operation.read_sealed("attempt")
+
+
+def test_bind_request_read_survives_transient_sharing_error(complete, monkeypatch):
+    call, store, _, _ = _frozen(complete, "request.json", 1, monkeypatch)
+    with bind_operation(store, call) as operation:
+        assert operation.request.operation_id == call.operation_id
+
+
+def test_bound_request_read_survives_transient_sharing_error(complete, monkeypatch):
+    call, operation_dir = freeze(complete, "finishing")
+    with bind_operation(GoalStore(complete.control), call) as operation:
+        hold_opens(monkeypatch, {operation_dir / "request.json": 1})
+        assert read_bound_request(operation, call.operation_id).operation_id == call.operation_id

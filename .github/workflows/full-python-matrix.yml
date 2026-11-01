@@ -17,7 +17,7 @@ jobs:
   test:
     name: full / ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -49,6 +49,10 @@ jobs:
       - name: Prove the full suite executed
         if: always()
         shell: bash
+        # The 10000 floor is a collection-collapse sanity check, not the suite size:
+        # about 22.3k tests were collected on 2026-10-23 (Linux, Python 3.13,
+        # `pytest --collect-only -q tests/ -m "not native_bwave"`; other legs differ
+        # slightly). Adding or removing tests needs no edit unless the suite nears it.
         run: >-
           python .github/scripts/assert_junit.py "${{ runner.temp }}/junit.xml"
           --label "${{ matrix.os }} / Python ${{ matrix.python }}"

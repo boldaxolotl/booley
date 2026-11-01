@@ -12,6 +12,8 @@ from pathlib import Path
 from booley.commit_policy import validate_message
 from booley.core import scope_matching
 from booley.runtime.git_environment import inherited_git_environment
+from booley.runtime.git_facts import run_remembered
+from booley.runtime.guarded_write import SymlinkTargetError, replace_regular_file
 
 from .agent_errors import BlockingError
 
@@ -107,16 +109,24 @@ def _git_common_dir(wt: Path) -> Path | None:
     are actually honored from every worktree.
     """
     try:
-        result = subprocess.run(
+        environment = inherited_git_environment()
+        result = run_remembered(
             ["git", "rev-parse", "--git-common-dir"],
-            cwd=str(wt),
-            env=inherited_git_environment(),
-            capture_output=True,
+            wt,
+            environment,
             text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            check=False,
+            decoding="replace",
+            run=lambda: subprocess.run(
+                ["git", "rev-parse", "--git-common-dir"],
+                cwd=str(wt),
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                check=False,
+            ),
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         result = None
@@ -244,14 +254,19 @@ def add_git_excludes(
     take effect from linked worktrees too. Entries are anchored with a leading
     ``/`` (repo-root relative) and grouped under *header*.
 
-    Best-effort: an absent or unusual ``.git`` is logged and skipped, not fatal.
+    Best-effort: an absent or unusual ``.git`` is logged and skipped, not fatal,
+    and so is a symlinked ``exclude`` file (never written through; it stays
+    pending, so ``git_excludes_pending`` keeps reporting it).
     Returns ``True`` if the exclude file was modified.
     """
     exclude, lines = _git_exclude_update(wt, names, header=header)
     if exclude is None or lines is None:
         return False
-    exclude.parent.mkdir(parents=True, exist_ok=True)
-    exclude.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        replace_regular_file(exclude, ("\n".join(lines) + "\n").encode("utf-8"))
+    except SymlinkTargetError:
+        logger.warning("Refusing to write through symlinked git exclude %s", exclude)
+        return False
     return True
 
 

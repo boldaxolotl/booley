@@ -36,8 +36,10 @@ from pathlib import Path
 
 import yaml
 
+from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.boundary import as_dict, as_str
 
+from .campaign_reports import simulation_booley_dir
 from .compiler_cache import RESERVED as COMPILER_CACHE_MANAGED
 
 # Upper bound on files a read closure may name; a larger closure is not reused.
@@ -257,7 +259,12 @@ def capture_core_closure(edam_path: Path, project_root: Path) -> dict[str, str] 
         for name, core in sorted(cores.items(), key=lambda item: str(item[0])):
             if not isinstance(core, dict) or not isinstance(core.get("core_file"), str):
                 return None
-            core_file = (edam_path.parent / core["core_file"]).resolve()
+            # FuseSoC writes the path lexically: apply ``..`` before any link is followed,
+            # then keep a core behind a symlinked Booley Directory project-relative (#2191).
+            core_file = lexical_booley_path(
+                simulation_booley_dir(project_root),
+                Path(os.path.normpath(edam_path.parent / core["core_file"])).resolve(),
+            )
             if not core_file.is_relative_to(root) or not core_file.is_file():
                 return None
             if has_generated_core_behavior(yaml.safe_load(core_file.read_text(encoding="utf-8"))):

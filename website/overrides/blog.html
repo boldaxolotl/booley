@@ -1,0 +1,32 @@
+{#-
+  Blog index, set as the application-notes register: title strip, the
+  index page's own text, then one entry per post (number, date, title,
+  excerpt). Replaces Material's blog.html; `posts` and `pagination` come
+  from Material's blog plugin.
+-#}
+{% extends "main.html" %}
+
+{% block container %}
+  <div class="strip"><span><a class="strip__home" href="{{ 'blog/' | url }}"><b>AN</b>Application notes</a></span><span>Booley product family &middot; booley-rtl</span></div>
+  {{ page.content }}
+
+  <section class="notes" aria-label="Application notes">
+    {% for post in posts %}
+      <article class="note-entry">
+        <p class="note-entry__meta">
+          <b>{{ post.meta.number or "Note" }}</b>
+          <time datetime="{{ post.config.date.created }}">{{ post.config.date.created.strftime("%-d %B %Y") }}</time>
+          {%- if post.config.readtime %} &middot; {{ post.config.readtime }} min read{% endif %}
+        </p>
+        <h2 class="note-entry__t"><a href="{{ post.url | url }}">{{ post.title }}</a></h2>
+        <div class="note-entry__x">{{ post.content }}</div>
+        <p class="note-entry__more"><a href="{{ post.url | url }}">Read the application note</a></p>
+      </article>
+    {% else %}
+      <p class="note-entry__none">No application notes are published yet.</p>
+    {% endfor %}
+    {% if pagination %}
+      <nav class="notes__pages" aria-label="Pages">{{ pagination({"symbol_previous": "Newer", "symbol_next": "Older"}) }}</nav>
+    {% endif %}
+  </section>
+{% endblock %}

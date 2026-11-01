@@ -22,6 +22,7 @@ from booley.runtime import (
     session_runtime,
 )
 from booley.runtime.pid import RUNNING, UNKNOWN, ProcessIdentity, observe_process
+from tests.sharing_error_support import hold_opens
 
 _SRC_ROOT = Path(__file__).parents[2] / "src"
 
@@ -446,53 +447,37 @@ def test_protocol_version_mismatch_fails_closed(tmp_path: Path, monkeypatch, cap
     assert time.monotonic() - started < 2
 
 
-@pytest.mark.parametrize(
-    "stale,cause,expected",
-    [
-        (True, "protocol_mismatch", "refresh"),
-        (False, "protocol_mismatch", "rebuild"),
-        (False, "protocol_unavailable", "verify/repair"),
-    ],
-)
-def test_protocol_repair_distinguishes_spec_drift_from_runtime_defect(
-    tmp_path, monkeypatch, caplog, stale, cause, expected
+@pytest.mark.parametrize("has_root", [True, False], ids=["root", "no-root"])
+def test_protocol_failure_logs_fixed_message_and_one_remedy(
+    tmp_path, monkeypatch, caplog, has_root
 ):
-    from types import SimpleNamespace
+    from unittest.mock import Mock
 
-    from booley.runtime import (
-        image_identity,
-        interactive_docker,
-        session_issuance,
-        session_runtime,
-    )
+    from booley.runtime import interactive_docker, session_issuance, session_runtime
 
-    path = tmp_path / "devcontainer.json"
-    path.write_text("{}")
-    monkeypatch.setattr(
-        session_issuance, "load_issued_snapshot", lambda _root: SimpleNamespace(image="immutable")
-    )
-    monkeypatch.setattr(session_runtime.dc, "devcontainer_path", lambda _root: path)
-    monkeypatch.setattr(session_issuance, "validate", lambda *_args: None)
-    monkeypatch.setattr(
-        interactive_docker,
-        "compare_issued_build",
-        lambda _image: SimpleNamespace(
-            status=image_identity.Status.MISMATCH if stale else image_identity.Status.MATCH
-        ),
-    )
-    monkeypatch.setattr(
-        session_runtime,
-        "sandbox_remedy",
-        lambda _root, *, runtime_only: "rebuild" if runtime_only else "refresh",
-    )
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("protocol failure must not load, validate or compare identity")
+
+    for owner, name in (
+        (session_issuance, "load_issued_snapshot"),
+        (session_issuance, "validate"),
+        (interactive_docker, "compare_issued_build"),
+    ):
+        monkeypatch.setattr(owner, name, forbidden)
+    remedy = Mock(return_value="run the selected remedy")
+    monkeypatch.setattr(session_runtime, "sandbox_remedy", remedy)
+    cause = "protocol_mismatch" if has_root else "protocol_unavailable"
     runtime_attachment._report_protocol_failure(
-        runtime_attachment.ExecutionResult(125, "unrecoverable", False, cause), tmp_path
+        runtime_attachment.ExecutionResult(125, "unrecoverable", False, cause),
+        tmp_path if has_root else None,
     )
-    assert expected in caplog.text
-    if stale:
-        assert "rebuild" not in caplog.text
+    assert "Sandbox execution protocol is unavailable or incompatible; " in caplog.text
+    if has_root:
+        remedy.assert_called_once_with(tmp_path, runtime_only=True)
+        assert "run the selected remedy" in caplog.text
     else:
-        assert "refresh" not in caplog.text
+        remedy.assert_not_called()
+        assert session_runtime.SANDBOX_HOST_INSPECTION_REMEDY in caplog.text
 
 
 def test_cwd_disappearing_at_startup_is_not_reported_as_image_defect(
@@ -509,3 +494,48 @@ def test_cwd_disappearing_at_startup_is_not_reported_as_image_defect(
     )
     assert "selected directory '/work/linked'" in caplog.text
     assert "published image" not in caplog.text
+
+
+# --- Windows sharing errors on the record poll (#2187) ------------------------------
+
+
+class _ExitedTransport:
+    """A transport process that has already exited."""
+
+    def poll(self) -> int:
+        return 0
+
+
+def _drive_with_held_record(tmp_path: Path, monkeypatch, held_opens: int):
+    """Drive a terminal record whose first ``held_opens`` opens hit a sharing violation."""
+    paths = execution_records.execution_paths("e" * 32, booley_dir=tmp_path)
+    paths.root.mkdir(parents=True)
+    execution_records.atomic_write_json(
+        paths.record,
+        {
+            "schema_version": execution_records.PROTOCOL_VERSION,
+            "state": "terminal",
+            "exit_code": 7,
+            "tree_terminal": True,
+            "terminal_cause": "exited",
+        },
+    )
+    # With no startup grace, reading a held record as absent would fail the run.
+    monkeypatch.setattr(runtime_attachment, "_STARTUP_LIMIT_SECONDS", 0.0)
+    hold_opens(monkeypatch, {paths.record: held_opens})
+    return runtime_attachment._drive_execution(
+        _ExitedTransport(), paths, runtime_attachment._PendingSignals()
+    )
+
+
+def test_record_poll_survives_transient_sharing_error(tmp_path: Path, monkeypatch) -> None:
+    result = _drive_with_held_record(tmp_path, monkeypatch, 1)
+    assert (result.exit_code, result.terminal_cause) == (7, "exited")
+
+
+def test_record_poll_keeps_polling_through_lasting_sharing_error(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    result = _drive_with_held_record(tmp_path, monkeypatch, 3)  # outlasts one poll's retries
+    assert (result.exit_code, result.terminal_cause) == (7, "exited")
+    assert "Cannot read execution record" in caplog.text

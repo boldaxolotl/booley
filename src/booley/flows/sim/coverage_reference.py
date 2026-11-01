@@ -16,11 +16,12 @@ from typing import TYPE_CHECKING, cast
 from booley.core.boundary import BoundaryError, require_dict, require_int, require_str_value
 from booley.flows.sim.campaign_durability import durable_create
 from booley.flows.sim.coverage_campaign_store import (
+    CAMPAIGN_SCHEMA_V5,
     MAX_MANIFEST_BYTES,
-    POINT_STORE_CAMPAIGN_SCHEMAS,
     LoadedCoverageCampaign,
     load_coverage_campaign_bytes,
 )
+from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
@@ -106,7 +107,7 @@ def publish_coverage_campaign_reference(
     try:
         durable_create(path, raw)
     except FileExistsError:
-        descriptor = open_regular_nofollow(path)
+        descriptor = open_regular_nofollow(path, booley_dir=crossed_booley_dir_entry(path))
         with os.fdopen(descriptor, "rb") as stream:
             existing = stream.read(MAX_REFERENCE_BYTES + 1)
         decoded = decode_coverage_campaign_reference(existing)
@@ -273,10 +274,12 @@ def authenticate_coverage_campaign_owner(
 
     document = resolved.reference.document
     nested = cast(Mapping[str, object], document["coverage_campaign"])
+    manifest_path = resolved.reference_path.parent / "campaign" / "manifest.json"
     try:
         authenticated = authenticate_work_item(
-            resolved.reference_path.parent / "campaign" / "manifest.json",
+            manifest_path,
             cast(str, document["simulation_work_item_id"]),
+            booley_dir=crossed_booley_dir_entry(manifest_path),
         )
     except SimulationCampaignWorkItemError as exc:
         raise CoverageCampaignReferenceError(
@@ -355,9 +358,7 @@ def _validate_reference(value: Mapping[str, object]) -> None:
 
 
 def _validate_nested_reference(nested: Mapping[str, object]) -> None:
-    if nested["path_base"] != "origin_target" or nested["schema"] not in (
-        POINT_STORE_CAMPAIGN_SCHEMAS
-    ):
+    if nested["path_base"] != "origin_target" or nested["schema"] != CAMPAIGN_SCHEMA_V5:
         raise CoverageCampaignReferenceError("coverage_campaign storage contract is invalid")
     nested_path = _relative_path(nested["path"])
     nested_parts = Path(nested_path).parts
@@ -445,7 +446,7 @@ def _contained_relative(root: Path, relative: str) -> Path:
 
 def _read_regular(path: Path, label: str, maximum: int) -> bytes:
     try:
-        descriptor = open_regular_nofollow(path)
+        descriptor = open_regular_nofollow(path, booley_dir=crossed_booley_dir_entry(path))
         with os.fdopen(descriptor, "rb") as stream:
             raw = stream.read(maximum + 1)
     except OSError as exc:

@@ -7,14 +7,16 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import tomllib
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from booley.core.host_probes import GithubProbe, HostProbe, ProbeState, probe_docker, probe_github
+from booley.core import file_lock
+from booley.core.host_probes import HostProbe, ProbeState, probe_docker
 from booley.dev_support import agent_readiness as readiness
 
 
@@ -164,32 +166,71 @@ def test_escalation_is_visible_even_when_exit_is_zero():
     assert result.as_dict()["status"] == "escalation-required"
 
 
-def test_real_launcher_emits_one_versioned_json_document(tmp_path):
-    launcher = Path(__file__).parents[2] / ".github/scripts/agent_readiness.py"
+# The serialized shape of one readiness check, with no per-check probe flag.
+CHECK_KEYS = {"id", "status", "required", "summary", "commands"}
+LAUNCHER = Path(__file__).parents[2] / ".github/scripts/agent_readiness.py"
+
+
+def _run_launcher(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run the real launcher in this checkout with a neutral readiness environment."""
     environment = os.environ.copy()
     environment.pop("PYTHONDONTWRITEBYTECODE", None)
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(launcher),
-            "--phase",
-            "prepare",
-            "--branch",
-            "codex/contract-test",
-            "--json",
-        ],
-        cwd=launcher.parents[2],
+    environment.pop("BOOLEY_AGENT_GIT_WRITE_POLICY", None)
+    return subprocess.run(
+        [sys.executable, str(LAUNCHER), *args],
+        cwd=LAUNCHER.parents[2],
         env=environment,
         capture_output=True,
         text=True,
         check=False,
         timeout=30,
     )
+
+
+def test_real_launcher_emits_one_versioned_json_document():
+    result = _run_launcher("--phase", "prepare", "--branch", "codex/contract-test", "--json")
     assert result.returncode in {0, 1}
     document = json.loads(result.stdout)
     assert document["schema_version"] == 1
     assert document["phase"] == "prepare"
     assert not result.stderr
+
+
+@pytest.mark.parametrize(
+    ("args", "check_ids"),
+    [
+        pytest.param(
+            ("--phase", "prepare", "--branch", "codex/contract-test", "--json"),
+            [
+                "git.executable",
+                "git.repository-identity",
+                "repository.source-marker",
+                "git.main",
+                "git.branch-absent",
+                "git.main-tracking",
+                "worktree.path",
+                "git.write-policy",
+                "git.current-checkout",
+            ],
+            id="prepare",
+        ),
+        pytest.param(
+            ("--phase", "develop", "--json"),
+            [
+                "git.topology",
+                "repository.source-marker",
+                "python.shared-environment",
+                "docker.executable",
+            ],
+            id="develop",
+        ),
+    ],
+)
+def test_real_launcher_reports_current_check_ids(args, check_ids):
+    document = json.loads(_run_launcher(*args).stdout)
+    assert document["schema_version"] == 1
+    assert [check["id"] for check in document["checks"]] == check_ids
+    assert all(set(check) == CHECK_KEYS for check in document["checks"])
 
 
 def test_neutral_docker_probe_does_not_disclose_output():
@@ -201,21 +242,6 @@ def test_neutral_docker_probe_does_not_disclose_output():
     assert not hasattr(observation, "stdout")
 
 
-def test_neutral_github_probes_auth_and_connectivity_independently():
-    seen = []
-
-    def run(args, **kwargs):
-        seen.append(tuple(args[1:]))
-        return subprocess.CompletedProcess(
-            args, 0 if args[1] == "auth" else 1, stdout="", stderr=""
-        )
-
-    observation = probe_github(which=lambda _: "/gh", run=run)
-    assert observation.authentication is ProbeState.HEALTHY
-    assert observation.connectivity is ProbeState.FAILED
-    assert seen == [("auth", "status"), ("repo", "view", "--json", "nameWithOwner")]
-
-
 @pytest.mark.parametrize("value", ["bad", "allowed-now"])
 def test_git_write_policy_is_closed(monkeypatch, value):
     monkeypatch.setenv("BOOLEY_AGENT_GIT_WRITE_POLICY", value)
@@ -223,41 +249,45 @@ def test_git_write_policy_is_closed(monkeypatch, value):
         readiness._prepare(Path.cwd(), "codex/x", None)
 
 
-def test_invalid_receipts_are_rejected_without_attribute_errors(tmp_path):
-    module = _bootstrap_module()
-    environment = tmp_path / "environment"
-    (environment / "bin").mkdir(parents=True)
-    (environment / "bin/python").touch()
-    for value in ("null", "[]"):
-        (environment / "receipt.json").write_text(value, encoding="utf-8")
-        assert not module._valid_receipt(environment, "fingerprint", readiness.PINNED_RUNNERS)
+RECEIPT = {"schema_version": 2, "fingerprint": "fp", "installed": readiness.PINNED_RUNNERS}
+STALE = "shared tools environment receipt or interpreter is stale"
+PINS = "shared tools environment has mismatched Ruff/Pytest runner pins"
 
 
-def test_receipt_runner_pins_are_checked_before_reusing_environment(tmp_path):
-    module = _bootstrap_module()
-    environment = tmp_path / "environment"
-    (environment / "bin").mkdir(parents=True)
-    (environment / "bin/python").touch()
-    installed = dict(readiness.PINNED_RUNNERS)
-    installed["ruff"] = "0.0.0"
-    (environment / "receipt.json").write_text(
-        json.dumps({"schema_version": 1, "fingerprint": "fingerprint", "installed": installed}),
-        encoding="utf-8",
+def _write_receipt(environment: Path, receipt: object = RECEIPT) -> None:
+    """Publish *receipt* (raw JSON text when a string) beside a venv interpreter."""
+    python = readiness.venv_python(environment)
+    python.parent.mkdir(parents=True, exist_ok=True)
+    python.touch()
+    text = receipt if isinstance(receipt, str) else json.dumps(receipt)
+    (environment / "receipt.json").write_text(text, encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("receipt", "summary"),
+    [
+        (RECEIPT, "shared tools environment matches the repository fingerprint"),
+        ("[", "shared tools environment is missing or has no valid receipt"),
+        ("null", STALE),
+        ({**RECEIPT, "schema_version": 1}, STALE),
+        ({**RECEIPT, "fingerprint": "other"}, STALE),
+        ({**RECEIPT, "installed": None}, PINS),
+        ({**RECEIPT, "installed": {**readiness.PINNED_RUNNERS, "ruff": "0.0.0"}}, PINS),
+    ],
+    ids=["valid", "unparsable", "null", "schema-1", "fingerprint", "no-pins", "wrong-pin"],
+)
+def test_develop_trusts_the_receipt_without_probing(monkeypatch, tmp_path, receipt, summary):
+    monkeypatch.setattr(readiness, "dependency_fingerprint", lambda _root: "fp")
+    monkeypatch.setattr(readiness, "agent_tools_root", lambda: tmp_path)
+    monkeypatch.setattr(readiness.subprocess, "run", lambda *_a, **_k: pytest.fail("probed"))
+    _write_receipt(tmp_path / "fp", receipt)
+    check, commands, _python = readiness._environment_check(tmp_path)
+    blocked = receipt is not RECEIPT
+    assert (check.id, check.summary) == ("python.shared-environment", summary)
+    assert check.status is (readiness.Status.BLOCKED if blocked else readiness.Status.READY)
+    assert [command.id for command in commands] == (
+        ["python.bootstrap-agent-tools", "readiness.rerun-develop"] if blocked else []
     )
-    assert not module._valid_receipt(environment, "fingerprint", readiness.PINNED_RUNNERS)
-
-
-def test_readiness_rejects_nonobject_receipts(tmp_path):
-    environment = tmp_path / "environment"
-    environment.mkdir()
-    (environment / "receipt.json").write_text("null", encoding="utf-8")
-
-    valid, reason = readiness.validate_environment(
-        environment, "fingerprint", environment / "bin/python"
-    )
-
-    assert not valid
-    assert "receipt" in reason
 
 
 def test_invalid_environment_is_rebuilt_in_place(monkeypatch, tmp_path):
@@ -281,24 +311,54 @@ def test_invalid_environment_is_rebuilt_in_place(monkeypatch, tmp_path):
     assert sorted(path.name for path in tmp_path.iterdir()) == ["environment"]
 
 
-def test_failed_rebuild_restores_the_previous_environment(monkeypatch, tmp_path):
+def test_failed_build_leaves_neither_tree_nor_receipt(monkeypatch, tmp_path):
     module = _bootstrap_module()
-    destination = tmp_path / "environment"
-    destination.mkdir()
-    (destination / "previous").write_text("previous", encoding="utf-8")
+    environment = tmp_path / "fp"
+    _write_receipt(environment, {**RECEIPT, "schema_version": 1})
+    error = RuntimeError("pip failed")
 
     def build(environment, *_args):
-        environment.mkdir()
-        (environment / "partial").write_text("partial", encoding="utf-8")
-        raise RuntimeError("pip failed")
+        readiness.venv_python(environment).parent.mkdir(parents=True)
+        raise error
+
+    def rmtree_in_use(path):
+        raise PermissionError(13, "in use", str(path))
 
     monkeypatch.setattr(module, "_build", build)
-    with pytest.raises(RuntimeError, match="pip failed"):
-        module._rebuild(destination, tmp_path, "fingerprint", {})
+    with pytest.raises(RuntimeError) as raised:
+        module.main(["--environment", str(environment), "--fingerprint", "fp"])
+    assert raised.value is error
+    assert sorted(path.name for path in tmp_path.iterdir()) == [".fp.lock"]
 
-    assert (destination / "previous").read_text(encoding="utf-8") == "previous"
-    assert not (destination / "partial").exists()
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["environment"]
+    monkeypatch.setattr(module.shutil, "rmtree", rmtree_in_use)
+    with pytest.raises(RuntimeError) as raised:
+        module._rebuild(environment, tmp_path, "fp", {})
+    assert raised.value is error
+    assert "partial agent-tools tree" in raised.value.__notes__[0]
+
+
+def test_waiting_bootstrap_reuses_the_published_environment(monkeypatch, tmp_path):
+    module = _bootstrap_module()
+    acquire, contended = file_lock.acquire_file_lock, threading.Event()
+
+    def observed_acquire(handle, **kwargs):
+        try:
+            acquire(handle, **kwargs)
+        except file_lock.LockContentionError:
+            contended.set()
+            raise
+
+    monkeypatch.setattr(file_lock, "acquire_file_lock", observed_acquire)
+    monkeypatch.setattr(module, "_build", lambda *_args: pytest.fail("rebuilt"))
+    argv = ["--environment", str(tmp_path / "fp"), "--fingerprint", "fp"]
+    lock = tmp_path / ".fp.lock"
+    with ThreadPoolExecutor() as pool, lock.open("a+", encoding="utf-8") as first:
+        acquire(first)
+        second = pool.submit(module.main, argv)
+        assert contended.wait(30)
+        _write_receipt(tmp_path / "fp")
+        file_lock.release_file_lock(first)
+        assert second.result(60) == 0
 
 
 def _console_script_wheel(directory: Path) -> Path:
@@ -351,191 +411,30 @@ def offline_bootstrap(monkeypatch, tmp_path):
 # Real venv + offline pip install. No Windows CI duration observed yet: these
 # take 2-5 s on Linux; the budget assumes a Windows venv build is ~10x slower
 # (tests/timeout_headroom.py sizing rule).
-@pytest.mark.timeout(240)
-def test_published_environment_console_scripts_run(offline_bootstrap, tmp_path):
-    """Regression: launchers once named a deleted staging interpreter (exit 127)."""
+@pytest.mark.timeout(240)  # Two real venv builds.
+def test_schema_one_receipt_is_rebuilt_with_working_console_scripts(offline_bootstrap, tmp_path):
+    """Launchers once named a deleted staging interpreter (exit 127); schema 2 retires them."""
     environment = tmp_path / "agent-tools" / "fingerprint"
-
+    receipt = environment / "receipt.json"
     argv = ["--environment", str(environment), "--fingerprint", "fingerprint"]
+    assert offline_bootstrap.main(argv) == 0
+    old = {**json.loads(receipt.read_text(encoding="utf-8")), "schema_version": 1}
+    receipt.write_text(json.dumps(old), encoding="utf-8")
+    (environment / "stale").touch()
     assert offline_bootstrap.main(argv) == 0
 
     result = _run_console_script(environment)
     assert (result.returncode, result.stdout.strip()) == (0, "demo-tool ran"), result.stderr
-    assert offline_bootstrap._valid_receipt(environment, "fingerprint", {})
-    assert sorted(path.name for path in environment.parent.iterdir()) == ["fingerprint"]
-
-
-@pytest.mark.timeout(240)  # Two real venv builds; see the budget note above.
-def test_relocated_environment_is_rejected_and_rebuilt(offline_bootstrap, tmp_path):
-    """An environment renamed into place by the old bootstrap self-heals."""
-    tools = tmp_path / "agent-tools"
-    staging = tools / ".fingerprint.staging-old"
-    environment = tools / "fingerprint"
-    offline_bootstrap._build(staging, Path(__file__).parents[2], "fingerprint", {})
-    staging.replace(environment)
-    # POSIX exits 127; a Windows .exe launcher reports its own non-zero code.
-    assert _run_console_script(environment).returncode != 0
-
-    assert not offline_bootstrap._valid_receipt(environment, "fingerprint", {})
-    valid, reason = readiness.validate_environment(
-        environment, "fingerprint", readiness.venv_python(environment)
-    )
-    assert (valid, reason) == (False, "shared tools environment console scripts cannot start")
-
-    argv = ["--environment", str(environment), "--fingerprint", "fingerprint"]
-    assert offline_bootstrap.main(argv) == 0
-    assert _run_console_script(environment).returncode == 0
+    assert not (environment / "stale").exists()
     assert readiness.validate_environment(
         environment, "fingerprint", readiness.venv_python(environment)
     )[0]
 
 
-def test_failed_rebuild_keeps_backup_when_partial_tree_survives(monkeypatch, tmp_path):
-    module = _bootstrap_module()
-    destination = tmp_path / "environment"
-    destination.mkdir()
-    (destination / "previous").write_text("previous", encoding="utf-8")
-    build_error = RuntimeError("pip failed")
-
-    def build(environment, *_args):
-        environment.mkdir()
-        (environment / "removable").write_text("x", encoding="utf-8")
-        (environment / "locked").write_text("x", encoding="utf-8")
-        raise build_error
-
-    def rmtree_leaving_residue(path, ignore_errors=False):
-        (Path(path) / "removable").unlink()
-        if not ignore_errors:
-            raise PermissionError(13, "in use", str(Path(path) / "locked"))
-
-    monkeypatch.setattr(module, "_build", build)
-    monkeypatch.setattr(module.shutil, "rmtree", rmtree_leaving_residue)
-    with pytest.raises(RuntimeError) as raised:
-        module._rebuild(destination, tmp_path, "fingerprint", {})
-
-    (backup,) = tmp_path.glob(".environment.backup-*")
-    assert raised.value.__cause__ is build_error
-    assert str(destination) in str(raised.value)
-    assert str(backup) in str(raised.value)
-    assert (backup / "previous").read_text(encoding="utf-8") == "previous"
-    assert sorted(path.name for path in destination.iterdir()) == ["locked"]
-
-
-def test_orphan_sweep_removes_only_this_environments_set_aside_trees(tmp_path):
-    module = _bootstrap_module()
-    token = "0123456789abcdef" * 2
-    orphans = [f".fp.backup-{token}", f".fp.staging-4242-{token}"]
-    survivors = [
-        "fp",
-        ".fp.lock",
-        ".fp.backup-short",
-        f".fp.backup-{token}x",
-        f".fp2.backup-{token}",
-        f".fpx.staging-1-{token}",
-        f"fp.backup-{token}",
-    ]
-    for name in orphans + survivors:
-        (tmp_path / name).mkdir()
-        (tmp_path / name / "content").write_text("x", encoding="utf-8")
-
-    module._sweep_orphans(tmp_path / "fp")
-
-    assert sorted(path.name for path in tmp_path.iterdir()) == sorted(survivors)
-
-
-def test_lock_waiter_outlasts_a_live_owners_normal_build(monkeypatch, tmp_path):
-    """A second bootstrapper waits for a full build instead of failing at 60 s."""
-    module = _bootstrap_module()
-    worst_build = (
-        module.VENV_TIMEOUT_SECONDS + module.PIP_TIMEOUT_SECONDS + 3 * module.PROBE_TIMEOUT_SECONDS
-    )
-    assert worst_build < module.LOCK_WAIT_SECONDS
-    lock = tmp_path / ".fp.lock"
-    # The current PID is always treated as a live owner.
-    lock.write_text(json.dumps({"pid": os.getpid(), "created": 0}), encoding="utf-8")
-    clock = {"now": 0.0}
-
-    def sleep(seconds):
-        clock["now"] += max(seconds, 10.0)
-        if clock["now"] >= worst_build - 10:
-            lock.unlink(missing_ok=True)
-
-    monkeypatch.setattr(
-        module,
-        "time",
-        SimpleNamespace(monotonic=lambda: clock["now"], sleep=sleep, time=lambda: 0.0),
-    )
-    module._acquire(lock)
-
-    assert clock["now"] >= worst_build - 10
-    assert json.loads(lock.read_text(encoding="utf-8"))["pid"] == os.getpid()
-
-
-def test_lock_waiter_reclaims_a_dead_owners_lock(tmp_path):
-    module = _bootstrap_module()
-    lock = tmp_path / ".fp.lock"
-    dead = subprocess.run(
-        (sys.executable, "-c", "import os; print(os.getpid())"),
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=60,
-    )
-    lock.write_text(json.dumps({"pid": int(dead.stdout), "created": 0}), encoding="utf-8")
-
-    module._acquire(lock)
-
-    assert json.loads(lock.read_text(encoding="utf-8"))["pid"] == os.getpid()
-
-
-def _fake_environment(root: Path, launcher_body: str) -> Path:
-    """Create a venv-shaped tree whose ``pip`` launcher is a POSIX shell script."""
-    launcher = readiness.venv_python(root).with_name("pip")
-    launcher.parent.mkdir(parents=True)
-    launcher.write_text("#!/bin/sh\n" + launcher_body, encoding="utf-8")
-    launcher.chmod(0o755)
-    return launcher
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="shell-script launchers are POSIX-only")
-def test_console_script_problem_names_launcher_and_cause(tmp_path):
-    healthy = tmp_path / "healthy"
-    _fake_environment(healthy, "echo pip 1.0\n")
-    assert readiness.console_script_problem(healthy) is None
-
-    failing = tmp_path / "failing"
-    launcher = _fake_environment(
-        failing, "echo noise >&2\necho 'interpreter gone' >&2\nexit 127\n"
-    )
-    problem = readiness.console_script_problem(failing)
-    assert problem == f"launcher {launcher} exited 127: noise | interpreter gone"
-
-    slow = tmp_path / "slow"
-    launcher = _fake_environment(slow, "exec sleep 30\n")
-    assert readiness.console_script_problem(slow, timeout=0.2) == (
-        f"launcher {launcher} did not finish within 0.2 s"
-    )
-
-
-def test_console_script_problem_reports_a_missing_launcher(tmp_path):
-    problem = readiness.console_script_problem(tmp_path)
-    assert problem is not None
-    assert problem.startswith(f"launcher {readiness.venv_python(tmp_path).parent}")
-    assert "could not start" in problem
-
-
-def test_partial_lock_metadata_is_not_deleted_while_fresh(tmp_path):
-    module = _bootstrap_module()
-    lock = tmp_path / "lock"
-    lock.write_text("", encoding="utf-8")
-
-    assert not module._stale(lock)
-
-
 def test_models_and_renderers_serialize_nested_commands():
     command = readiness.Command("check", ("python", "-V"), "/repo", "inspect", "now")
     check = readiness.Check(
-        "example", readiness.Status.READY, True, "x" * 300, write_probed=True, commands=(command,)
+        "example", readiness.Status.READY, True, "x" * 300, commands=(command,)
     )
     result = readiness.Result(
         "develop",
@@ -547,6 +446,7 @@ def test_models_and_renderers_serialize_nested_commands():
 
     assert command.as_dict()["argv"] == ["python", "-V"]
     assert len(check.as_dict()["summary"]) == 240
+    assert set(check.as_dict()) == CHECK_KEYS
     assert result.as_dict()["repository"]["branch"] == "codex/example"
     assert "Run [now] check" in readiness.render_human(result)
     assert readiness._argv(("hello world", "--flag")) == "'hello world' --flag"
@@ -555,10 +455,17 @@ def test_models_and_renderers_serialize_nested_commands():
 @pytest.mark.parametrize(
     ("argv", "message"),
     [
-        (["--phase", "prepare"], "--branch is required"),
-        (["--phase", "publish", "--branch", "codex/x"], "only valid"),
-        (["--phase", "publish", "--require", "docker"], "only valid"),
-        (["--phase", "prepare", "--branch", "bad"], "new local"),
+        pytest.param(["--phase", "prepare"], "--branch is required", id="no-branch"),
+        pytest.param(
+            ["--phase", "develop", "--branch", "codex/x"], "only valid", id="develop-branch"
+        ),
+        pytest.param(
+            ["--phase", "prepare", "--branch", "codex/x", "--require", "docker"],
+            "only valid",
+            id="prepare-require",
+        ),
+        pytest.param(["--phase", "prepare", "--branch", "bad"], "new local", id="bad-branch"),
+        pytest.param(["--phase", "publish"], "invalid choice", id="publish-removed"),
     ],
 )
 def test_parse_args_rejects_invalid_phase_combinations(argv, message, capsys):
@@ -570,7 +477,7 @@ def test_parse_args_rejects_invalid_phase_combinations(argv, message, capsys):
 def test_main_renders_usage_error_as_json(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
 
-    assert readiness.main(["--phase", "publish", "--json"]) == 1
+    assert readiness.main(["--phase", "develop", "--json"]) == 1
     document = json.loads(capsys.readouterr().out)
     assert document["status"] == "blocked"
     assert document["checks"][0]["id"] == "repository.source-marker"
@@ -609,18 +516,14 @@ def test_run_phase_dispatches_each_phase(monkeypatch, tmp_path):
         readiness, "_prepare", lambda *args: calls.append(("prepare", args)) or expected
     )
     monkeypatch.setattr(
-        readiness, "_publish", lambda *args: calls.append(("publish", args)) or expected
-    )
-    monkeypatch.setattr(
         readiness,
         "_develop",
         lambda *args, **kwargs: calls.append(("develop", args, kwargs)) or expected,
     )
 
     readiness.run_phase(readiness._parse_args(["--phase", "prepare", "--branch", "codex/x"]))
-    readiness.run_phase(readiness._parse_args(["--phase", "publish"]))
     readiness.run_phase(readiness._parse_args(["--phase", "develop", "--require", "docker"]))
-    assert [call[0] for call in calls] == ["prepare", "publish", "develop"]
+    assert [call[0] for call in calls] == ["prepare", "develop"]
 
 
 def test_prepare_reports_safe_and_unsafe_paths(monkeypatch, tmp_path):
@@ -643,7 +546,7 @@ def test_prepare_reports_safe_and_unsafe_paths(monkeypatch, tmp_path):
     assert not result.commands
 
 
-def test_develop_and_publish_assemble_all_checks(monkeypatch, tmp_path):
+def test_develop_assembles_all_checks(monkeypatch, tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     python = tmp_path / "python"
@@ -662,25 +565,11 @@ def test_develop_and_publish_assemble_all_checks(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(readiness, "_git_count", lambda *_args: 2)
     monkeypatch.setattr(readiness, "_environment_check", lambda _root: (ready_check, (), python))
-    monkeypatch.setattr(readiness, "_tool_checks", lambda *_args: (ready_check,))
-    monkeypatch.setattr(readiness, "_cache_path_check", lambda _root: ready_check)
     monkeypatch.setattr(readiness, "_docker_check", lambda required: ready_check)
     monkeypatch.setattr(readiness, "_verification_commands", lambda *_args: ())
     monkeypatch.setattr(readiness.shutil, "which", lambda _name: "/usr/bin/git")
     developed = readiness._develop(root, require_docker=True)
     assert developed.phase == "develop"
-
-    monkeypatch.setattr(
-        readiness, "_git", lambda _root, args: subprocess.CompletedProcess(args, 0, str(root), "")
-    )
-    monkeypatch.setattr(
-        readiness,
-        "probe_github",
-        lambda **_kwargs: GithubProbe("gh", ProbeState.HEALTHY, ProbeState.HEALTHY),
-    )
-    published = readiness._publish(root)
-    assert published.phase == "publish"
-    assert published.status is readiness.Status.READY
 
 
 @pytest.mark.parametrize("state", list(ProbeState))
@@ -717,43 +606,16 @@ def test_dependency_helpers_and_platform_paths(monkeypatch, tmp_path):
     assert readiness.dependency_argv(root)[0] == "install"
     monkeypatch.setattr(readiness.sys, "platform", "win32")
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    assert readiness.agent_tools_root() == tmp_path / "local" / "Booley" / "agent-tools"
+    assert readiness.agent_tools_root() == tmp_path / "local" / "Booley" / "agent-tools-v2"
+    monkeypatch.setattr(readiness, "RECEIPT_SCHEMA_VERSION", 1)
+    assert readiness.agent_tools_root().name == "agent-tools-v1"
     assert readiness.venv_python(tmp_path) == tmp_path / "Scripts/python.exe"
-
-
-def test_validate_environment_rejects_each_stale_condition(monkeypatch, tmp_path):
-    python = tmp_path / "bin/python"
-    python.parent.mkdir()
-    python.touch()
-    receipt = {
-        "schema_version": 1,
-        "fingerprint": "fp",
-        "installed": dict(readiness.PINNED_RUNNERS),
-    }
-    (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
-    monkeypatch.setattr(readiness, "_installed_versions", lambda _python: receipt["installed"])
-    monkeypatch.setattr(
-        readiness, "_run_child", lambda *_args: subprocess.CompletedProcess([], 0, "", "")
-    )
-    monkeypatch.setattr(readiness, "console_script_problem", lambda _venv: None)
-    assert readiness.validate_environment(tmp_path, "fp", python)[0]
-    for installed in (None, {}, {"ruff": "bad"}):
-        monkeypatch.setattr(
-            readiness, "_installed_versions", lambda _python, value=installed: value
-        )
-        assert not readiness.validate_environment(tmp_path, "fp", python)[0]
-    monkeypatch.setattr(readiness, "_installed_versions", lambda _python: receipt["installed"])
-    monkeypatch.setattr(
-        readiness, "_run_child", lambda *_args: subprocess.CompletedProcess([], 1, "", "")
-    )
-    assert "pip check" in readiness.validate_environment(tmp_path, "fp", python)[1]
 
 
 def test_low_level_helpers_handle_failures(monkeypatch, tmp_path):
     failed = subprocess.CompletedProcess([], 1, "", "")
     monkeypatch.setattr(readiness, "_git", lambda *_args: failed)
     assert readiness._git_text(tmp_path, ()) is None
-    assert not readiness._git_success(tmp_path, ())
     monkeypatch.setattr(readiness, "_git_text", lambda *_args: "not-an-int")
     assert readiness._git_count(tmp_path, ()) is None
     monkeypatch.setattr(
@@ -780,7 +642,7 @@ def test_worktree_and_linked_checkout_guards(tmp_path):
     assert not readiness._is_linked_worktree(root)
 
 
-def test_remaining_readiness_boundaries(monkeypatch, tmp_path):  # noqa: PLR0915
+def test_remaining_readiness_boundaries(monkeypatch, tmp_path):
     assert readiness.aggregate_status(()) is readiness.Status.READY
     assert readiness._parse_args(["--phase", "develop"]).phase == "develop"
 
@@ -791,7 +653,7 @@ def test_remaining_readiness_boundaries(monkeypatch, tmp_path):  # noqa: PLR0915
 
     monkeypatch.setattr(readiness, "_git_text", lambda *_args: None)
     monkeypatch.setattr(readiness, "_is_linked_worktree", lambda _root: False)
-    result = readiness._result("x", tmp_path, (), (), git=None)
+    result = readiness._result("x", tmp_path, (), ())
     assert result.repository.branch is None
 
     def text_factory(items):
@@ -813,54 +675,13 @@ def test_remaining_readiness_boundaries(monkeypatch, tmp_path):  # noqa: PLR0915
 
     monkeypatch.setattr(readiness, "_within", lambda *_args: False)
     assert readiness._worktree_path(tmp_path, "codex/x", None) is None
-    monkeypatch.setattr(readiness, "_git_text", lambda *_args: None)
-    monkeypatch.setattr(readiness, "validate_environment", lambda *_args: (True, "valid"))
-    monkeypatch.setattr(readiness, "agent_tools_root", lambda: tmp_path)
-    monkeypatch.setattr(readiness, "venv_python", lambda _root: tmp_path / "python")
     source_root = Path(__file__).parents[2]
-    check, commands, _python = readiness._environment_check(source_root)
-    assert check.status is readiness.Status.READY and not commands
 
     monkeypatch.setattr(readiness, "_git_text", lambda *_args: "relative/common")
     assert len(readiness.dependency_fingerprint(source_root)) == 32
 
-    monkeypatch.setattr(readiness.sys, "platform", "win32")
-    monkeypatch.setattr(
-        readiness, "_project_dependencies", lambda _root: {"dependencies": ("x" * 30000,)}
-    )
-    with pytest.raises(RuntimeError, match="command limit"):
-        readiness.dependency_argv(tmp_path)
     monkeypatch.setattr(readiness.sys, "platform", "linux")
     assert readiness.agent_tools_root()
-
-    assert not readiness._runner_versions([])
-    assert readiness._installed_versions(tmp_path / "missing") is None
-    assert (
-        readiness._tool_checks(tmp_path / "missing", tmp_path)[0].status
-        is readiness.Status.BLOCKED
-    )
-    monkeypatch.setattr(readiness, "_installed_versions", lambda _python: None)
-    assert (
-        readiness._runner_check(tmp_path / "python", tmp_path).status is readiness.Status.BLOCKED
-    )
-    monkeypatch.setattr(readiness, "agent_tools_root", lambda: tmp_path / "inside")
-    monkeypatch.setattr(readiness, "_within", lambda *_args: True)
-    assert readiness._cache_path_check(tmp_path).status is readiness.Status.BLOCKED
-    monkeypatch.setattr(readiness, "_run_process", lambda *_args, **_kwargs: None)
-    assert readiness._run_child(tmp_path / "python", (), tmp_path) is None
-    monkeypatch.setattr(
-        readiness.Path,
-        "read_text",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError()),
-    )
-    assert not readiness._is_linked_worktree(tmp_path)
-
-
-def test_validate_environment_rejects_invalid_json(tmp_path):
-    (tmp_path / "receipt.json").write_text("[", encoding="utf-8")
-    valid, reason = readiness.validate_environment(tmp_path, "fp", tmp_path / "python")
-    assert not valid
-    assert "valid receipt" in reason
 
 
 def test_probe_boundaries_and_human_main(monkeypatch, capsys, tmp_path):
@@ -870,15 +691,6 @@ def test_probe_boundaries_and_human_main(monkeypatch, capsys, tmp_path):
         raise OSError
 
     assert probe_docker(which=lambda _name: "docker", run=docker_error).state is ProbeState.FAILED
-    assert probe_github(which=lambda _name: None).authentication is ProbeState.MISSING
-
-    def github_timeout(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired("gh", 5)
-
-    assert (
-        probe_github(which=lambda _name: "gh", run=github_timeout).authentication
-        is ProbeState.TIMEOUT
-    )
     monkeypatch.setattr(
         readiness,
         "run_phase",
@@ -895,22 +707,6 @@ def test_probe_boundaries_and_human_main(monkeypatch, capsys, tmp_path):
 
 
 def test_remaining_probe_and_environment_branches(monkeypatch, tmp_path):
-    def github_error(*_args, **_kwargs):
-        raise OSError
-
-    observed = probe_github(which=lambda _name: "gh", run=github_error)
-    assert observed.authentication is ProbeState.FAILED
-    monkeypatch.setattr(
-        readiness, "_run_child", lambda *_args: subprocess.CompletedProcess([], 0, "[]", "")
-    )
-    assert readiness._installed_versions(tmp_path / "python") is None
-    monkeypatch.setattr(
-        readiness, "_run_child", lambda *_args: subprocess.CompletedProcess([], 0, "not-json", "")
-    )
-    assert readiness._installed_versions(tmp_path / "python") is None
-    python = tmp_path / "python"
-    python.touch()
-    assert readiness._tool_checks(python, tmp_path)[0].status is readiness.Status.BLOCKED
     monkeypatch.setattr(
         readiness.Path, "read_text", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError())
     )
@@ -918,18 +714,30 @@ def test_remaining_probe_and_environment_branches(monkeypatch, tmp_path):
     gitfile.write_text("gitdir", encoding="utf-8")
     assert not readiness._is_linked_worktree(tmp_path)
     monkeypatch.setattr(readiness.sys, "platform", "linux")
-    assert readiness.agent_tools_root().name == "agent-tools"
+    assert readiness.agent_tools_root().name == "agent-tools-v2"
 
 
-def test_validate_environment_reports_runner_pin_mismatch(monkeypatch, tmp_path):
-    python = tmp_path / "python"
-    python.touch()
-    installed = dict(readiness.PINNED_RUNNERS)
-    installed["ruff"] = "old"
-    (tmp_path / "receipt.json").write_text(
-        json.dumps({"schema_version": 1, "fingerprint": "fp", "installed": installed}),
-        encoding="utf-8",
-    )
-    valid, reason = readiness.validate_environment(tmp_path, "fp", python)
-    assert not valid
-    assert "runner pins" in reason
+@pytest.mark.parametrize(
+    ("branch", "git_result", "accepted", "expect_call"),
+    [
+        pytest.param("codex/issue-1-x", "real", True, True, id="valid"),
+        pytest.param("feature/x", "real", False, False, id="no-prefix"),
+        pytest.param("codex/x..y", "real", False, True, id="git-refuses"),
+        pytest.param(
+            "codex/ok", subprocess.CompletedProcess([], 128, "", ""), False, True, id="git-refused"
+        ),
+        pytest.param("codex/ok", None, False, True, id="git-missing"),
+    ],
+)
+def test_branch_validation_defers_to_git(monkeypatch, branch, git_result, accepted, expect_call):
+    """The codex/ prefix is gated locally; every other ref rule is Git's."""
+    real_run_process = readiness._run_process
+    calls = []
+
+    def spy(argv, cwd, **kwargs):
+        calls.append(tuple(argv))
+        return real_run_process(argv, cwd, **kwargs) if git_result == "real" else git_result
+
+    monkeypatch.setattr(readiness, "_run_process", spy)
+    assert readiness._valid_branch(branch) is accepted
+    assert calls == ([("git", "check-ref-format", "--branch", branch)] if expect_call else [])

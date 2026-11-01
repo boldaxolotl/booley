@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+from booley.harness import projects_view
+from booley.harness.terminal_table import render_table
 from booley.projects import cli as project_inventory_cli
 from booley.projects import inventory as project_inventory
 from booley.runtime import image_keepers as runtime_image_keepers
@@ -19,7 +21,17 @@ from booley.runtime.session_issuance import keeper_image
 
 
 def _run(args: argparse.Namespace) -> int:
-    return project_inventory_cli.run(args, keeper_operations=runtime_image_keepers)
+    return project_inventory_cli.run(
+        args,
+        keeper_operations=runtime_image_keepers,
+        leftovers_view=projects_view.render_leftovers,
+    )
+
+
+def _run_without_keepers(argv: list[str]) -> int:
+    return project_inventory_cli.run(
+        _parser().parse_args(argv), leftovers_view=projects_view.render_leftovers
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -161,10 +173,11 @@ def test_forget_lists_leftovers_with_sizes_and_tags(
     image = "sha256:" + "a" * 64
     keeper_host.tags.update({f"{project_image_name(project)}:latest": image, "mirror:x": image})
     assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 0
-    assert (
-        f"Left behind for this Project:\n  image {image} 1GB [shared] tags: "
-        f"mirror:x, {project_image_name(project)}:latest\n"
-    ) in capsys.readouterr().out
+    table = render_table(
+        ["Kind", "Name", "Size", "Reason", "Tags"],
+        [["image", image, "1GB", "shared", f"mirror:x, {project_image_name(project)}:latest"]],
+    )
+    assert "Left behind for this Project:\n" + "\n".join(table) + "\n" in capsys.readouterr().out
 
 
 def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
@@ -482,6 +495,62 @@ def test_prune_digest_ignores_unrelated_observations(
     assert first["digest"] == second["digest"]
 
 
+def _nothing_eligible_host(tmp_path: Path, keeper_host: FakeDocker) -> None:
+    """Two keepers, both protected: one inventoried, one orphan used by a container."""
+    project = _remember(tmp_path)
+    in_use = keeper_image(tmp_path / "orphan")
+    keeper_host.tags[keeper_image(project)] = "sha256:" + "a" * 64
+    keeper_host.tags[in_use] = "sha256:" + "b" * 64
+    keeper_host.containers["c" * 64] = keeper_host.tags[in_use]
+
+
+def test_prune_with_nothing_eligible_offers_no_confirmation(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _nothing_eligible_host(tmp_path, keeper_host)
+    assert _run(_parser().parse_args(["projects", "prune-keepers"])) == 0
+    human = capsys.readouterr().out
+    assert "Nothing to release." in human
+    assert "Preview digest" not in human and "--confirm" not in human
+    status, preview = _prune(capsys)
+    assert status == 0
+    assert preview["digest"] is None and preview["schema"] == 1
+    assert preview["candidates"] and not any(item["eligible"] for item in preview["candidates"])
+    assert set(preview) == {"digest", "candidates", "released", "retained", "errors", "schema"}
+
+
+def test_prune_confirm_with_nothing_eligible_is_refused(
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import hashlib
+
+    from booley.runtime import image_lifecycle
+
+    cleanups: list[str] = []
+    monkeypatch.setattr(
+        image_lifecycle, "cleanup_owned_images", lambda *a, **k: cleanups.append("called") or []
+    )
+    _nothing_eligible_host(tmp_path, keeper_host)
+    tags_before = dict(keeper_host.tags)
+    _, preview = _prune(capsys)
+    # Deliberately mirrors the digest algorithm in runtime.image_keepers._preview (unchanged
+    # for eligible snapshots): it is the digest an older preview would have printed here.
+    copied = hashlib.sha256(
+        json.dumps(preview["candidates"], sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    for confirm in (copied, "0" * 64):
+        status, result = _prune(capsys, confirm)
+        assert status == 2, confirm
+        assert any("nothing to release" in error for error in result["errors"])
+        assert result["released"] == []
+    assert keeper_host.tags == tags_before
+    assert not any(call[:2] == ["image", "rm"] for call in keeper_host.calls)
+    assert cleanups == []
+
+
 def test_prune_partial_failure_accounts_for_prior_releases(
     tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -585,7 +654,7 @@ def test_prune_protects_missing_uninitialized_and_grant_only_roots(
     keeper_host.tags["booley-issued-BAD:session"] = "sha256:" + "a" * 64
     _, preview = _prune(capsys)
     assert all(item["reason"] == "inventoried" for item in preview["candidates"])
-    assert _prune(capsys, preview["digest"])[0] == 0
+    assert preview["digest"] is None and _prune(capsys, "0" * 64)[0] == 2
     assert len(keeper_host.tags) == 4
 
 
@@ -815,7 +884,12 @@ def test_human_keeper_outcomes_identify_image_and_retained_tags(
     release = image_keepers.KeeperRelease("retained-in-use", "keeper", image)
     assert (
         project_inventory_cli._render_forgotten(
-            Path("/project"), release, None, (), json_output=False
+            Path("/project"),
+            release,
+            None,
+            (),
+            json_output=False,
+            leftovers_view=projects_view.render_leftovers,
         )
         == 0
     )
@@ -846,8 +920,8 @@ def test_real_pending_journal_preserves_keeper_and_inventory(
         project_inventory.forget_project(project)
         _, preview = _prune(capsys)
     if journal_kind == "invalidation":
-        pending = issuance_invalidation.prepare(str(project), cleanup_resources=True)
-        journal = issuance_invalidation._path(pending.project_root)
+        issuance_invalidation.prepare(str(project))
+        journal = issuance_invalidation._path(str(project))
     else:
         journal = _write_restore_journal(tmp_path / "config", project)
         if journal_kind == "malformed-refresh":
@@ -885,7 +959,7 @@ def test_missing_keeper_adapter_refuses_before_observation(
     )
     if action == "confirm":
         flags.extend(["--confirm", "digest"])
-    assert project_inventory_cli.run(_parser().parse_args(flags)) == 2
+    assert _run_without_keepers(flags) == 2
     assert capsys.readouterr().err.strip() == (
         "ERROR: Project keeper access requires host lifecycle coordination"
     )
@@ -1008,13 +1082,8 @@ def test_inventory_commands_without_keeper_adapter_still_work(
     project = tmp_path / "discover"
     (project / ".booley").mkdir(parents=True)
     (project / ".git").mkdir()
-    assert project_inventory_cli.run(_parser().parse_args(["projects", "--json"])) == 0
+    assert _run_without_keepers(["projects", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["projects"] == []
-    assert (
-        project_inventory_cli.run(
-            _parser().parse_args(["projects", "discover", str(project), "--json"])
-        )
-        == 0
-    )
+    assert _run_without_keepers(["projects", "discover", str(project), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["discovered"] == [str(project)]
     assert keeper_host.calls == []

@@ -10,6 +10,7 @@ import pytest
 
 from booley.flows.synth import timing as synth_timing
 from booley.flows.synth.backends.openroad import reporting as openroad_reporting
+from tests.conftest import symlink_or_skip
 
 # ---------------------------------------------------------------------------
 # resolve_liberty
@@ -728,6 +729,28 @@ class TestSynthTimingConfigTomlBoundary:
         self._with_timing(monkeypatch, {})
         with pytest.raises(SystemExit, match="escapes the selected checkout"):
             syn_core.synth_timing_config(sdc=[str(outside)], project_root=tmp_path)
+
+    def test_sdc_follows_symlinked_booley_dir_entry(self, monkeypatch, tmp_path):
+        """A Codespace links ``/work/.booley`` elsewhere; its SDC stays named through the entry."""
+        from booley.flows.synth.backends.yosys import core as syn_core
+
+        root = tmp_path / "work"
+        data = tmp_path / "workspaces" / "repo"
+        elsewhere = tmp_path / "elsewhere"
+        for directory in (root, data / "cores", elsewhere):
+            directory.mkdir(parents=True)
+        symlink_or_skip(root / ".booley", data)
+        symlink_or_skip(data / "linked", elsewhere)
+        for sdc in (data / "cores" / "top.sdc", elsewhere / "top.sdc"):
+            sdc.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
+        self._with_timing(monkeypatch, {})
+
+        cfg = syn_core.synth_timing_config(sdc=[".booley/cores/top.sdc"], project_root=root)
+        assert cfg.sdc == (root.resolve() / ".booley" / "cores" / "top.sdc",)
+
+        # A link below the entry still leaves the selected checkout.
+        with pytest.raises(SystemExit, match="escapes the selected checkout"):
+            syn_core.synth_timing_config(sdc=[".booley/linked/top.sdc"], project_root=root)
 
     def test_missing_cli_sdc_file_raises_clear_error(self, monkeypatch, tmp_path):
         from booley.flows.synth.backends.yosys import core as syn_core

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from booley.core.booley_dir import reset_cache
 from booley.goals.freshness import DEFAULT_RESOLVERS
 from booley.goals.model import GoalState
 from booley.goals.paths import record_paths
@@ -34,17 +36,21 @@ from booley.goals.test_run_freezing import TargetPlans, ensure_test_run_resoluti
 from booley.mcp.sim_baseline_execution import (
     baseline_kind,
     contents_stamp,
+    reap_owned_checkout,
     run_baseline,
 )
 from booley.mcp.sim_baseline_jobs import launch_baseline as real_launch_baseline
 from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
 from booley.runtime import job_records
+from booley.runtime.project_gitignore import PROJECT_GITIGNORE
 from booley.runtime.timefmt import utc_now_rfc3339
 from tests.goals.conftest import (
     SIM_KEY,
     SMOKE_RUN,
+    TESTS_TOML,
     enter_goals,
     git,
+    pending_baseline_launch,
     run_row,
     write_tests_toml,
 )
@@ -64,17 +70,13 @@ def _schedule(layout, record=None):
 
     def launch(path, request):
         layout.launches.append(path)
-        job_records.write_record(
-            job_records.JobRecord(
-                request["job_id"], "sim_baseline", utc_now_rfc3339(), 60, pid=os.getpid(), argv=[]
-            ),
-            Path(request["jobs_root"]),
-        )
+        pending_baseline_launch(path, request)
 
     schedule_sim_baselines(layout.control, record, launch=launch)
     goal = sim_goals(record)[0]
     path = request_path(
-        layout.control, request_identity(record, goal, entry_inputs(layout.control, record))
+        layout.control,
+        request_identity(layout.control, record, goal, entry_inputs(layout.control, record)),
     )
     return path, read_document(path)
 
@@ -431,7 +433,7 @@ def test_sim_goal_added_by_approved_change_schedules_at_original_base(layout, mo
     )
     scheduled = []
     monkeypatch.setattr(
-        "booley.mcp.sim_baseline_jobs.schedule_sim_baselines",
+        "booley.mcp.sim_baseline_jobs.schedule_goal_baselines",
         lambda project, rec: scheduled.append(rec),
     )
     result = asyncio.run(
@@ -658,7 +660,9 @@ def test_real_detached_supervisor_publishes_without_a_goal_binding(layout):
         report = baseline_observations(layout.control, record, goal)
     if report["status"] != "complete":
         diagnostic = json.dumps(report, indent=2)
-        identity = request_identity(record, goal, entry_inputs(layout.control, record))
+        identity = request_identity(
+            layout.control, record, goal, entry_inputs(layout.control, record)
+        )
         log = request_path(layout.control, identity).parent / "job.log"
         if log.is_file():
             with log.open("rb") as handle:
@@ -694,6 +698,66 @@ def test_baseline_request_publication_tolerates_a_windows_reader(tmp_path, monke
 
     assert read_document(path) == complete
     assert list(tmp_path.iterdir()) == [path]
+
+
+def _hold_reads(monkeypatch, held: dict[Path, int]):
+    """Raise a Windows sharing violation on the next N opens of each path."""
+    real_open = Path.open
+
+    def open_unless_held(path, *args, **kwargs):
+        if held.get(path, 0) > 0:
+            held[path] -= 1
+            error = PermissionError(13, "The process cannot access the file")
+            error.winerror = 32
+            raise error
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_unless_held)
+
+
+def test_baseline_observation_reads_through_transient_windows_sharing_errors(
+    baseline, monkeypatch
+):
+    path, request = _schedule(baseline)
+    job_path = Path(request["jobs_root"]) / (request["job_id"] + ".json")
+    _hold_reads(monkeypatch, {path: 1, job_path: 1})
+    report = baseline_observations(
+        baseline.control, baseline.record, sim_goals(baseline.record)[0]
+    )
+    assert report["status"] == "pending"
+
+
+def test_unreadable_baseline_job_record_reports_its_cause(baseline, monkeypatch):
+    _path, request = _schedule(baseline)
+    job_path = Path(request["jobs_root"]) / (request["job_id"] + ".json")
+    from tests.sharing_error_support import retry_delays_target
+
+    monkeypatch.setattr(retry_delays_target(), (0.0,), raising=False)
+    _hold_reads(monkeypatch, {job_path: 10**6})
+    report = baseline_observations(
+        baseline.control, baseline.record, sim_goals(baseline.record)[0]
+    )
+    assert report["status"] == "unavailable"
+    assert "interrupted" not in report["reason"]
+    assert "cannot be read" in report["reason"]
+    assert "cannot access the file" in report["reason"]
+
+
+def test_pending_request_is_published_only_after_its_job_record(baseline, monkeypatch):
+    from booley.mcp import sim_baseline_jobs
+
+    goal = sim_goals(baseline.record)[0]
+    seen = []
+    publish = sim_baseline_jobs.write_document
+
+    def publish_then_observe(path, value):
+        publish(path, value)
+        if value.get("status") == "pending":
+            seen.append(baseline_observations(baseline.control, baseline.record, goal))
+
+    monkeypatch.setattr(sim_baseline_jobs, "write_document", publish_then_observe)
+    schedule_sim_baselines(baseline.control, baseline.record, launch=lambda _path, _request: None)
+    assert [report["status"] for report in seen] == ["pending"]
 
 
 def test_unversioned_protected_program_is_captured_with_executable_state(layout):
@@ -874,3 +938,150 @@ def test_initialized_directory_policy_runs_baseline_and_reports_transition(
     assert checkouts == [scratch]
     assert not scratch.exists()
     assert policy.read_bytes() == before
+
+
+def test_current_transition_uses_history_fold(baseline):
+    from booley.goals.sim_transitions import goal_transitions
+
+    _record(baseline, "failed", [run_row(SMOKE_RUN, "fail")])
+    _record(baseline, "passed", [run_row()])
+    history = _history(baseline)
+    for row in history:
+        row["detail"].pop("test_run_ledger", None)
+    rows = goal_transitions(
+        baseline.control,
+        baseline.record,
+        sim_goals(baseline.record)[0],
+        history[-1],
+        history,
+        baseline.worktree,
+        DEFAULT_RESOLVERS,
+    )
+    assert rows[0]["current"] == "failed"
+
+
+def _version_booley_directory(layout, excludes, tmp_path, *, submodules=False):
+    """Turn the Goal worktree's Snapshot into a Paired Checkout of a standalone repository.
+
+    ``layout.control`` (the main checkout's ``.booley``) becomes the standalone
+    Versioned Booley Directory; the Goal worktree's ``.booley`` becomes a linked
+    worktree of it. With ``submodules`` the RTL repository also carries one
+    submodule that only Goal entry populates in the worktree.
+    """
+    control = layout.control
+    git(layout.main, "config", "core.excludesFile", str(excludes))
+    if submodules:
+        dependency = tmp_path / "dependency"
+        dependency.mkdir()
+        git(dependency, "init", "-q", "-b", "main")
+        (dependency / "source.sv").write_bytes(b"old\n")
+        git(dependency, "add", "-A")
+        git(dependency, "commit", "-qm", "dependency")
+        # Fixture-only: the dependency is a local path, which Git blocks by default.
+        git(
+            layout.main,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            str(dependency),
+            "vendor/ip",
+        )
+        git(layout.main, "commit", "-qm", "submodule")
+        git(layout.worktree, "merge", "-q", "--ff-only", "main")
+        assert not (layout.worktree / "vendor/ip/source.sv").exists()
+        (control / "booley.toml").write_bytes(
+            b"[project]\nname = 'demo'\n[submodules]\npaths = [\"vendor/ip\"]\n"
+        )
+    (control / ".gitignore").write_bytes(PROJECT_GITIGNORE.encode())
+    (control / "notes.txt").write_bytes(b"v1\n")
+    (control / "tests.toml").write_bytes(TESTS_TOML)
+    git(control, "init", "-q", "-b", "main")
+    git(control, "config", "core.autocrlf", "false")
+    git(control, "config", "core.excludesFile", str(excludes))
+    git(control, "add", "-A")
+    git(control, "commit", "-qm", "project")
+    paired = layout.worktree / ".booley"
+    shutil.rmtree(paired)
+    git(control, "worktree", "add", "-q", "--detach", str(paired))
+    return paired
+
+
+@pytest.mark.parametrize("submodules", [False, True], ids=["plain", "submodules"])
+def test_versioned_booley_directory_baseline_classifies_at_entry_pinned_paired_revision(
+    layout, tmp_path, isolated_git_excludes, monkeypatch, submodules
+):
+    paired = _version_booley_directory(
+        layout, isolated_git_excludes, tmp_path, submodules=submodules
+    )
+    record = enter_goals(layout, [{"family": "SIM", "target": "top"}])
+    if submodules:
+        assert (layout.worktree / "vendor/ip/source.sv").read_bytes() == b"old\n"
+    pinned = record.paired_project_base_sha
+    # The Paired Checkout moves on after entry; the baseline must not follow it.
+    (paired / "notes.txt").write_bytes(b"v2\n")
+    git(paired, "commit", "-qam", "current")
+    mode = SimpleNamespace(**vars(layout), record=record, launches=[])
+    path, request = _schedule(mode)
+    scratch = []
+
+    def execute(checkout, target, runs, output):
+        scratch.append(checkout)
+        assert checkout.resolve().is_relative_to(paired.resolve())
+        assert git(checkout / ".booley", "rev-parse", "HEAD") == pinned
+        assert (checkout / ".booley" / "notes.txt").read_bytes() == b"v1\n"
+        if submodules:
+            assert (checkout / "vendor/ip/source.sv").read_bytes() == b"old\n"
+        return _execute(checkout, target, runs, output)
+
+    monkeypatch.delenv("BOOLEY_DIR")
+    reset_cache()
+    try:
+        rows = run_baseline(path, request, execute=execute)
+    finally:
+        monkeypatch.setenv("BOOLEY_DIR", str(layout.control))
+        reset_cache()
+    write_document(path, request | {"status": "complete", "results": rows})
+    _record(mode, "current", [run_row(grade="fail")])
+    summary = transition_summary(
+        build_status(GoalStore(layout.control), record).goals[0].sim_transitions
+    )
+    assert "pass -> fail" in summary
+    assert "unavailable" not in summary
+    assert not scratch[0].exists()
+    assert ".baseline-wt-" not in git(layout.control, "worktree", "list", "--porcelain")
+    assert ".baseline-wt-" not in git(layout.worktree, "worktree", "list", "--porcelain")
+
+
+def test_interrupted_versioned_baseline_reap_removes_paired_registration(
+    layout, tmp_path, isolated_git_excludes, monkeypatch
+):
+    _version_booley_directory(layout, isolated_git_excludes, tmp_path)
+    record = enter_goals(layout, [{"family": "SIM", "target": "top"}])
+    mode = SimpleNamespace(**vars(layout), record=record, launches=[])
+    path, request = _schedule(mode)
+    scratch = []
+
+    class KilledError(Exception):
+        """Stands in for SIGKILL: the supervisor's own cleanup never runs."""
+
+    def execute(checkout, target, runs, output):
+        scratch.append(checkout)
+        # The reconciler's reap of a dead supervisor's checkout (same pid prefix).
+        reap_owned_checkout(read_document(path), os.getpid())
+        monkeypatch.setattr(
+            "booley.flows.baseline_worktree._cleanup_baseline_worktree", lambda *args: None
+        )
+        raise KilledError
+
+    monkeypatch.delenv("BOOLEY_DIR")
+    reset_cache()
+    try:
+        with pytest.raises(KilledError):
+            run_baseline(path, request, execute=execute)
+    finally:
+        monkeypatch.setenv("BOOLEY_DIR", str(layout.control))
+        reset_cache()
+    assert not scratch[0].exists()
+    assert ".baseline-wt-" not in git(layout.control, "worktree", "list", "--porcelain")
+    assert ".baseline-wt-" not in git(layout.worktree, "worktree", "list", "--porcelain")

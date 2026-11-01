@@ -216,7 +216,15 @@ def _drive_execution(
                 signum=pending.signum,
             )
             recovery_started = recovery_started or now
-        payload = read_json(paths.record)
+        record_readable = True
+        try:
+            payload = read_json(paths.record)
+        except OSError as exc:
+            # A sharing error outlasting the read retries is "indeterminate this
+            # pass", not "no record": skip the terminal/startup checks, poll again.
+            logger.warning("Cannot read execution record %s this pass: %s", paths.record, exc)
+            payload = None
+            record_readable = False
         result = _terminal_result(payload)
         if result is not None:
             if result.terminal_cause != "protocol_mismatch":
@@ -229,6 +237,7 @@ def _drive_execution(
         if (
             process.poll() is not None
             and payload is None
+            and record_readable
             and now - started_at >= _STARTUP_LIMIT_SECONDS
         ):
             return ExecutionResult(125, "unrecoverable", False, "protocol_unavailable")
@@ -244,33 +253,13 @@ def _drive_execution(
 def _report_protocol_failure(result: ExecutionResult, project_root: Path | None = None) -> None:
     if result.terminal_cause not in {"protocol_mismatch", "protocol_unavailable"}:
         return
-    from booley.runtime import (
-        image_identity,
-        interactive_docker,
-        session_issuance,
-        session_runtime,
+    from booley.runtime import session_runtime
+
+    remedy = (
+        session_runtime.sandbox_remedy(project_root, runtime_only=True)
+        if project_root is not None
+        else session_runtime.SANDBOX_HOST_INSPECTION_REMEDY
     )
-
-    remedy = "inspect the published image/wheel execution protocol on the host before rebuilding the Sandbox"
-    if project_root is not None:
-        try:
-            issued = session_issuance.load_issued_snapshot(project_root)
-            path = session_runtime.dc.devcontainer_path(project_root)
-            import json
-
-            spec = json.loads(path.read_text())
-            session_issuance.validate(project_root, spec, path)
-            stale = (
-                interactive_docker.compare_issued_build(issued.image).status
-                is image_identity.Status.MISMATCH
-            )
-            remedy = session_runtime.sandbox_remedy(project_root, runtime_only=not stale)
-            if not stale and result.terminal_cause == "protocol_unavailable":
-                remedy = (
-                    "verify/repair the published image/wheel execution protocol, then " + remedy
-                )
-        except (session_issuance.RuntimeSpecError, OSError, ValueError):
-            remedy = session_runtime.sandbox_remedy(project_root)
     logger.error("Sandbox execution protocol is unavailable or incompatible; %s", remedy)
 
 

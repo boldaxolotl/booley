@@ -9,11 +9,12 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
-from ci_changes import build_test_matrix
+from ci_changes import ALL_JOBS, build_test_matrix, classify, required_jobs
 from picorv32_ci_inputs import RISCV_IMAGE_FILES
 
 _CLASSIFIER = _ROOT / ".github/scripts/ci_changes.py"
@@ -79,6 +80,7 @@ def _run_classifier(
     windows_shard_count: int = 4,
     windows_shard_benchmark: bool = False,
     riscv_measurement: str | None = None,
+    linux_options: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     output = repo / "github-output.txt"
     command = [
@@ -103,6 +105,8 @@ def _run_classifier(
         command.extend(("--event-name", event_name))
     if riscv_measurement is not None:
         command.extend(("--riscv-measurement", riscv_measurement))
+    for option, value in (linux_options or {}).items():
+        command.extend((f"--linux-{option}", value))
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     return result, output
 
@@ -117,6 +121,7 @@ def _classify(
     windows_shard_count: int = 4,
     windows_shard_benchmark: bool = False,
     riscv_measurement: str | None = None,
+    linux_options: dict[str, str] | None = None,
 ) -> dict[str, str]:
     result, output = _run_classifier(
         repo,
@@ -127,6 +132,7 @@ def _classify(
         windows_shard_count=windows_shard_count,
         windows_shard_benchmark=windows_shard_benchmark,
         riscv_measurement=riscv_measurement,
+        linux_options=linux_options,
     )
     assert result.returncode == 0, result.stderr
     return dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
@@ -148,7 +154,7 @@ def _jobs(outputs: dict[str, str]) -> dict[str, bool]:
 
 @pytest.mark.parametrize("shard_count", [4, 6, 8, 10])
 def test_windows_shard_experiment_builds_complete_matrix(shard_count: int) -> None:
-    entries = build_test_matrix(shard_count)["include"]
+    entries = build_test_matrix(shard_count, linux_shard_count=1)["include"]
     shards = [entry for entry in entries if entry["mode"] == "shard"]
     compatibility = [entry for entry in entries if entry["mode"] != "shard"]
 
@@ -182,7 +188,7 @@ def test_classifier_emits_requested_windows_shard_matrix(tmp_path: Path) -> None
     outputs = _classify(repo, base, head, windows_shard_count=6)
     entries = json.loads(outputs["test_matrix"])["include"]
 
-    assert sum(entry["mode"] == "shard" for entry in entries) == 6
+    assert sum(entry.get("group") == "windows" for entry in entries) == 6
 
 
 def test_windows_shard_benchmark_matches_ordinary_python_change(tmp_path: Path) -> None:
@@ -439,8 +445,7 @@ def test_stable_base_input_requests_local_compatibility_build(tmp_path: Path) ->
     [
         # #829: the base inventory helper's bytes are a base compatibility input.
         ("src/booley/data/docker/base_package_inventory.py", True),
-        # The host exporter and the contract gate every image lane but not the base.
-        (".github/scripts/image_package_inventory.py", False),
+        # The contract gates every image lane but not the base.
         (".github/contracts/session-runtime.toml", False),
     ],
 )
@@ -460,38 +465,131 @@ def test_package_inventory_inputs_select_their_image_gates(
     assert "bwave-smoke" in _required(outputs)
 
 
-def test_docs_only_requires_only_lightweight_tests_aggregate_inputs(tmp_path: Path) -> None:
-    repo, base = _repository(tmp_path)
-    _write(repo, "docs/architecture.md")
-    head = _commit(repo, "docs only")
-
-    outputs = _classify(repo, base, head)
-
-    assert outputs["docs"] == "true"
-    assert _required(outputs) == {"changes", "release-semantic", "docs-check"}
-    assert _jobs(outputs)["docs-check"] is True
-    assert _jobs(outputs)["test"] is False
-    assert _jobs(outputs)["coverage-shards"] is False
-    assert _jobs(outputs)["coverage"] is False
-    assert "coverage-shards" not in _required(outputs)
-    assert "coverage" not in _required(outputs)
+_BASE_JOBS = {"changes", "release-semantic", "docs-check"}
+_SITE_JOBS = _BASE_JOBS | {"site-build", "lint"}
 
 
 @pytest.mark.parametrize(
-    "path",
-    ["website/docs/index.md", "website/docs/stylesheets/terminal.css", "website/mkdocs.yml"],
+    ("paths", "expected"),
+    [
+        pytest.param(["README.md"], _BASE_JOBS | {"package-artifacts"}, id="readme"),
+        pytest.param(["website/docs/index.md"], _SITE_JOBS, id="website-page"),
+        pytest.param(["website/mkdocs.yml"], _SITE_JOBS, id="website-config"),
+        # Python under website/ must still reach Ruff through ``lint``.
+        pytest.param(["website/hooks/user_docs.py"], _SITE_JOBS, id="website-python"),
+        pytest.param(["docs/user/USAGE.md"], _SITE_JOBS, id="user-docs"),
+        # The install smoke runs the Install guide's commands.
+        pytest.param(
+            ["docs/user/INSTALL.md"], _SITE_JOBS | {"package-artifacts"}, id="install-guide"
+        ),
+        pytest.param(["docs/architecture.md"], _BASE_JOBS, id="internal-docs"),
+        pytest.param(["AGENTS.md"], _BASE_JOBS, id="root-markdown"),
+        pytest.param(["qa/AREAS.md"], _BASE_JOBS, id="qa-markdown"),
+        pytest.param(
+            ["README.md", "website/docs/index.md"],
+            _SITE_JOBS | {"package-artifacts"},
+            id="readme-and-website",
+        ),
+    ],
 )
-def test_project_site_changes_run_the_site_contract_tests(tmp_path: Path, path: str) -> None:
+def test_documentation_only_changes_select_the_narrow_job_set(
+    paths: list[str], expected: set[str]
+) -> None:
+    """README, website and documentation changes skip the Python, Rust and image lanes."""
+    assert required_jobs(classify(paths)) == expected
+
+
+def test_readme_and_website_pull_request_outputs_the_narrow_set(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
-    _write(repo, path)
-    head = _commit(repo, "project site change")
+    _write(repo, "README.md")
+    _write(repo, "website/docs/index.md")
+    head = _commit(repo, "readme and website")
 
     outputs = _classify(repo, base, head)
 
-    assert outputs["docs"] == "true"
-    assert outputs["python_tests"] == "true"
+    expected = _SITE_JOBS | {"package-artifacts"}
     assert outputs["full"] == "false"
-    assert {"docs-check", "test"} <= _required(outputs)
+    assert outputs["packaging"] == "false"
+    assert outputs["python_tests"] == "false"
+    assert _required(outputs) == expected
+    assert {job for job, selected in _jobs(outputs).items() if selected} == expected - {
+        "changes",
+        "release-semantic",
+    }
+    for skipped in ("test", "test-verify", "coverage-shards", "coverage", "bwave-smoke"):
+        assert _jobs(outputs)[skipped] is False
+
+
+_NOT_SELECTED_BY_SOURCE = {
+    "bwave-integration",
+    "bwave-smoke",
+    "rust-test",
+    "sidecar-smoke",
+}
+
+
+@pytest.mark.parametrize(
+    ("paths", "unselected"),
+    [
+        # Characterization: these sets are what was selected before the
+        # documentation job set was narrowed, and must stay unchanged.
+        *(
+            pytest.param([path], set(), id=path)
+            for path in (
+                "pyproject.toml",
+                "setup.cfg",
+                "setup.py",
+                "VERSION",
+                "MANIFEST.in",
+                "LICENSE",
+                "THIRD_PARTY_NOTICES.md",
+                ".github/workflows/example.yml",
+                "CHANGELOG.md",
+                "release-assets/x",
+                "unmapped/config.xyz",
+            )
+        ),
+        pytest.param(
+            ["src/booley/example.py"],
+            _NOT_SELECTED_BY_SOURCE | {"docs-check", "site-build"},
+            id="source",
+        ),
+        pytest.param(
+            ["tests/unit/test_example.py"],
+            _NOT_SELECTED_BY_SOURCE | {"docs-check", "site-build", "package-artifacts"},
+            id="tests",
+        ),
+        pytest.param(["README.md", "pyproject.toml"], set(), id="readme-and-packaging"),
+        pytest.param(
+            ["website/docs/index.md", "src/booley/example.py"],
+            _NOT_SELECTED_BY_SOURCE,
+            id="website-and-source",
+        ),
+        pytest.param(
+            ["docs/architecture.md", "src/booley/example.py"],
+            _NOT_SELECTED_BY_SOURCE | {"site-build"},
+            id="internal-docs-and-source",
+        ),
+        # README stopped being a packaging file: with source it adds only its
+        # own narrow jobs (documentation check, package build) to the source set.
+        pytest.param(
+            ["README.md", "src/booley/example.py"],
+            _NOT_SELECTED_BY_SOURCE | {"site-build"},
+            id="readme-and-source",
+        ),
+    ],
+)
+def test_non_documentation_changes_keep_their_job_sets(
+    paths: list[str], unselected: set[str]
+) -> None:
+    assert required_jobs(classify(paths)) == set(ALL_JOBS) - unselected
+
+
+def test_aggregate_waits_for_every_conditional_job() -> None:
+    """ci-required must need each selectable job, or a selected job could be skipped unseen."""
+    workflow = yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
+
+    assert set(ALL_JOBS) <= set(workflow["jobs"]["ci-required"]["needs"])
 
 
 @pytest.mark.parametrize(
@@ -733,11 +831,10 @@ def test_unrelated_path_does_not_require_sidecar_smoke(tmp_path: Path) -> None:
     assert "sidecar-smoke" not in _required(outputs)
 
 
-def test_readme_and_version_are_packaging_and_release_inputs(tmp_path: Path) -> None:
+def test_version_is_a_packaging_and_release_input(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
-    _write(repo, "README.md")
     _write(repo, "VERSION", "9.9.9\n")
-    head = _commit(repo, "package metadata")
+    head = _commit(repo, "version bump")
 
     outputs = _classify(repo, base, head)
 
@@ -781,6 +878,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
         "changes",
         "release-semantic",
         "docs-check",
+        "site-build",
         "lint",
         "test",
         "test-verify",
@@ -883,3 +981,199 @@ def test_demo_evidence_and_fixture_inputs_select_riscv_validation_without_git(pa
     from ci_changes import classify
 
     assert "riscv_image" in classify([path])
+
+
+def _merged_source_change(tmp_path: Path) -> tuple[Path, str, str]:
+    """Return a repo, its first commit, and a two-parent merge touching Python source."""
+    repo, base = _repository(tmp_path)
+    _git(repo, "switch", "-c", "feature")
+    _write(repo, "src/booley/example.py")
+    _commit(repo, "feature change")
+    _git(repo, "switch", "main")
+    _write(repo, "docs/upstream.md")
+    _commit(repo, "upstream change")
+    return repo, base, _merge(repo, "feature")
+
+
+_TODAYS_LINUX_FULL_COMMAND = (
+    "pytest tests/ -q --tb=short -n 4 --dist=loadscope"
+    ' --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"'
+    " --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8"
+    " --timeout-headroom-warn=0.5' || '' }}"
+    ' --durations=30 --junitxml="${{ runner.temp }}/junit.xml" -p ci_pytest_shard'
+    ' --ci-timing-output "${{ runner.temp }}/timing/test-timings.json"'
+)
+
+
+def test_default_linux_inputs_shard_ubuntu_in_two_and_keep_linux_command(
+    tmp_path: Path,
+) -> None:
+    repo, base, head = _merged_source_change(tmp_path)
+    workflow = yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
+    full_step = next(
+        step
+        for step in workflow["jobs"]["test"]["steps"]
+        if step.get("name") == "Run full compatibility suite"
+    )
+    todays_matrix = {
+        "include": [
+            *(
+                {
+                    "name": f"ubuntu-{python}-shard-{index + 1}-of-2",
+                    "os": "ubuntu-latest",
+                    "python": python,
+                    "mode": "shard",
+                    "group": f"linux-{python}",
+                    "shard_index": index,
+                    "shard_count": 2,
+                }
+                for python in ("3.11", "3.14")
+                for index in range(2)
+            ),
+            {
+                "name": "windows-3.11-compatibility",
+                "os": "windows-latest",
+                "python": "3.11",
+                "mode": "compatibility",
+            },
+            {
+                "name": "windows-3.13-compatibility",
+                "os": "windows-latest",
+                "python": "3.13",
+                "mode": "compatibility",
+            },
+            *(
+                {
+                    "name": f"windows-3.14-shard-{index + 1}-of-10",
+                    "os": "windows-latest",
+                    "python": "3.14",
+                    "mode": "shard",
+                    "group": "windows",
+                    "shard_index": index,
+                    "shard_count": 10,
+                }
+                for index in range(10)
+            ),
+        ]
+    }
+
+    for event in ("pull_request", "push", "workflow_call"):
+        outputs = _classify(
+            repo,
+            base,
+            head,
+            event_name=event,
+            windows_shard_count=10,
+            linux_options={
+                "shard-count": "2",
+                "scheduler": "loadscope",
+                "shard-benchmark": "false",
+            },
+        )
+        rendered = full_step["run"].replace(
+            "${{ needs.changes.outputs.linux_scheduler }}", outputs["linux_scheduler"]
+        )
+
+        assert json.loads(outputs["test_matrix"]) == todays_matrix
+        assert (outputs["linux_shard_count"], outputs["linux_scheduler"]) == ("2", "loadscope")
+        assert " ".join(rendered.split()) == _TODAYS_LINUX_FULL_COMMAND
+
+
+def test_linux_shard_dispatch_emits_matrix_for_each_count_and_scheduler(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/example.py")
+    head = _commit(repo, "source change")
+    non_linux = build_test_matrix(4, linux_shard_count=1)["include"][2:]
+
+    for count in (1, 2, 3):
+        for scheduler in ("loadscope", "worksteal"):
+            outputs = _classify(
+                repo,
+                base,
+                head,
+                event_name="workflow_dispatch",
+                linux_options={"shard-count": str(count), "scheduler": scheduler},
+            )
+            entries = json.loads(outputs["test_matrix"])["include"]
+            linux = [entry for entry in entries if entry["os"] == "ubuntu-latest"]
+
+            assert (outputs["linux_shard_count"], outputs["linux_scheduler"]) == (
+                str(count),
+                scheduler,
+            )
+            assert entries[len(linux) :] == non_linux
+            if count == 1:
+                assert linux == build_test_matrix(4, linux_shard_count=1)["include"][:2]
+                continue
+            assert [entry["name"] for entry in linux] == [
+                f"ubuntu-{python}-shard-{index + 1}-of-{count}"
+                for python in ("3.11", "3.14")
+                for index in range(count)
+            ]
+            assert all(
+                (entry["mode"], entry["group"], entry["shard_count"])
+                == ("shard", f"linux-{entry['python']}", count)
+                for entry in linux
+            )
+            assert [entry["shard_index"] for entry in linux] == list(range(count)) * 2
+
+
+def test_linux_shard_benchmark_selects_the_ordinary_python_job_set(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/example.py")
+    ordinary = _classify(repo, base, _commit(repo, "ordinary"), event_name="push")
+    _git(repo, "reset", "--hard", base)
+    _write(repo, ".github/workflows/test.yml")
+    head = _commit(repo, "benchmark workflow")
+
+    outputs = _classify(
+        repo,
+        base,
+        head,
+        event_name="workflow_dispatch",
+        linux_options={"shard-benchmark": "true"},
+    )
+
+    assert _jobs(outputs) == _jobs(ordinary)
+    assert _required(outputs) == _required(ordinary)
+
+
+def test_linux_shard_benchmark_rejects_non_dispatch_events_and_riscv_arms(
+    tmp_path: Path,
+) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/example.py")
+    head = _commit(repo, "source change")
+
+    for event in ("push", None):
+        result, _output = _run_classifier(
+            repo, base, head, event_name=event, linux_options={"shard-benchmark": "true"}
+        )
+
+        assert result.returncode == 2
+        assert "Linux shard benchmarking requires workflow_dispatch" in result.stderr
+    result, _output = _run_classifier(
+        repo,
+        base,
+        head,
+        event_name="workflow_dispatch",
+        riscv_measurement="cold",
+        linux_options={"shard-benchmark": "true"},
+    )
+
+    assert result.returncode == 2
+    assert "Linux shard benchmarking cannot be combined" in result.stderr
+
+
+def test_linux_shard_overrides_require_workflow_dispatch(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/example.py")
+    head = _commit(repo, "source change")
+
+    for override in ({"shard-count": "1"}, {"shard-count": "3"}, {"scheduler": "worksteal"}):
+        result, _output = _run_classifier(
+            repo, base, head, event_name="push", linux_options=override
+        )
+
+        assert result.returncode == 2
+        assert "Linux shard count and scheduler overrides require" in result.stderr

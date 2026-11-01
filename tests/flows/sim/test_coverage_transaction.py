@@ -13,9 +13,7 @@ from booley.flows.sim.coverage_campaign import (
     freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_campaign_store import (
-    CoverageCampaignStoreError,
     load_coverage_campaign,
-    load_coverage_campaign_bytes,
 )
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
@@ -578,7 +576,7 @@ def test_invalid_waivers_block_every_coverage_run(tmp_path, invalid):
         assert document["evaluation"]["status"] == "blocked"
         assert document["collection"]["status"] == "complete"
         flow = SimulateFlow()
-        flow.context._args = SimRequest(work_dir=root)
+        flow._args = SimRequest(work_dir=root)
         assert "--no-waivers" in flow._coverage_result([outcome]).report_text
         results[gated] = [
             (item["code"], item["pointer"], item["message"])
@@ -844,10 +842,7 @@ def test_target_transaction_never_resumes_existing_native_state(tmp_path):
 def persistence_fault(boundary):
     import os
 
-    from booley.flows.sim import coverage_campaign_store
-
     original_replace, original_link = Path.replace, os.link
-    original_commit = coverage_campaign_store._commit_new
     evidence_count = 0
     filenames = {
         "point_store": "coverage-points.jsonl.gz",
@@ -864,6 +859,9 @@ def persistence_fault(boundary):
 
     def link_file(source, destination, **kwargs):
         nonlocal evidence_count
+        # The point store and manifest are published by linking them into place.
+        if Path(destination).name == filenames.get(boundary):
+            raise OSError(f"injected {boundary} failure")
         if Path(destination).name == "record.json":
             evidence_count += 1
             if (boundary == "first_evidence" and evidence_count == 1) or (
@@ -872,12 +870,7 @@ def persistence_fault(boundary):
                 raise OSError("injected evidence failure")
         return original_link(source, destination, **kwargs)
 
-    def commit_file(temporary, final):
-        if final.name == filenames.get(boundary):
-            raise OSError(f"injected {boundary} failure")
-        return original_commit(temporary, final)
-
-    return replace_file, link_file, commit_file
+    return replace_file, link_file
 
 
 def gated_ticket_plan(tmp_path):
@@ -918,170 +911,90 @@ def gated_ticket_plan(tmp_path):
     return plan, state, state_path
 
 
-def _gap_plan(tmp_path):
+def gap_plan(tmp_path, sources=None, *, includes=(), testbench=None, criterion=False):
+    """A one-Target project whose rtl fileset adds ``sources`` (path to text) to counter.sv.
+
+    ``includes`` names rtl paths flagged ``is_include_file``; ``testbench`` maps paths into a
+    ``tb``-tagged fileset; ``criterion`` binds a 100% line Criterion to the Target.
+    """
+    sources = {"rtl/unused.sv": "module unused; endmodule\n"} if sources is None else sources
+    testbench = testbench or {}
+    tmp_path.mkdir(exist_ok=True)
     context = project(tmp_path)
-    (tmp_path / "rtl/unused.sv").write_text("module unused; endmodule\n")
-    core = tmp_path / "counter.core"
-    core.write_text(
-        core.read_text().replace(
-            "files: [rtl/counter.sv]", "files: [rtl/counter.sv, rtl/unused.sv]"
+    (tmp_path / "tb").mkdir()
+    for path, text in {**sources, **testbench}.items():
+        (tmp_path / path).write_text(text)
+
+    def entries(paths, flag=""):
+        return "".join(
+            f"      - {p}: {{file_type: systemVerilogSource{flag if p in includes else ''}}}\n"
+            for p in paths
         )
+
+    tb_fileset = f"  tb:\n    files:\n{entries(testbench)}    tags: [tb]\n" if testbench else ""
+    (tmp_path / "counter.core").write_text(
+        "CAPI=2:\nname: acme:demo:counter:1\nfilesets:\n  rtl:\n    files:\n"
+        f"{entries(['rtl/counter.sv', *sources], ', is_include_file: true')}"
+        f"{tb_fileset}targets:\n  sim_0:\n    flow: sim\n    default_tool: verilator\n"
+        "    flow_options: {tool: verilator}\n"
+        f"    filesets: [rtl{', tb' if testbench else ''}]\n    toplevel: counter\n"
     )
+    if criterion:
+        key = "coverage_sim_0"
+        context = replace(
+            context,
+            criteria={
+                key: CoverageCriterion(
+                    DurableTargetIdentity("acme:demo:counter:1#sim_0"),
+                    (CoverageThreshold("line", Fraction(100)),),
+                    None,
+                )
+            },
+        )
     prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
-    from booley.flows.sim.verilator_declarations import (
-        Declaration,
-        DeclarationInventory,
-        DeclarationSource,
-    )
-
-    sources = tuple(
-        DeclarationSource(
-            r["path"], (r["path"],), r["sha256"], "systemVerilogSource", False, False
-        )
-        for r in plan.source_closure["rtl"]
-    )
-    inventory = DeclarationInventory(
-        (PINNED_VERILATOR.tag, PINNED_VERILATOR.commit),
-        "producing-generation:1",
-        sources,
-        tuple(sorted(Declaration("MODULE", s.path, s.path, s.path, 1, 1) for s in sources)),
-    )
-
-    class Execution(NativeExecution):
-        def build(self, request):
-            return SimulationBuildResult(True, collector=PINNED_VERILATOR, declarations=inventory)
-
-    return plan, Execution()
+    return replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
 
 
 def test_direct_publication_preserves_source_gaps_and_card_preview(tmp_path):
+    from booley.flows.sim import coverage_source_gaps as gaps
     from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
-    from booley.flows.sim.coverage_source_gaps import source_gap_summary
+    from booley.flows.sim.request import SimRequest
 
-    plan, execution = _gap_plan(tmp_path)
-    outcome = run_coverage_target(plan, execution, Progress())
-    assert outcome.exit_code == 0
+    plan = gap_plan(tmp_path / "gap", criterion=True)
+    outcome = run_coverage_target(plan, NativeExecution(), Progress())
     loaded = load_coverage_campaign(outcome.campaign_path)
-    assert source_gap_summary(loaded.campaign).paths == ("rtl/unused.sv",)
+    assert gaps.source_gap_paths(loaded.campaign) == ("rtl/unused.sv",)
     session = CoverageEvidenceSession(loaded.campaign, None)
     assert session.query({"view": "zero_point_sources"})["paths"] == ["rtl/unused.sv"]
     flow = SimulateFlow()
-    from booley.flows.sim.request import SimRequest
-
-    flow.context._args = SimRequest(work_dir=tmp_path)
-    assert "RTL sources without coverage points: 1" in flow._coverage_result([outcome]).report_text
-    assert "rtl/unused.sv" in flow._coverage_result([outcome]).report_text
-    owned = _coverage_owned_files(
-        outcome.campaign_path.parent, outcome.campaign_path.parent, loaded
+    flow._args = SimRequest(work_dir=tmp_path / "gap")
+    card = flow._coverage_result([outcome]).report_text
+    assert "RTL sources without coverage points: 1" in card and "rtl/unused.sv" in card
+    # The finding is advisory: exit code, Criterion and verdict match a project without the gap.
+    clean = gap_plan(tmp_path / "clean", {}, criterion=True)
+    baseline = run_coverage_target(clean, NativeExecution(), Progress())
+    other = load_coverage_campaign(baseline.campaign_path).campaign
+    assert not gaps.source_gap_paths(other)
+    assert (outcome.exit_code, loaded.campaign.evaluation, loaded.campaign.rollups) == (
+        baseline.exit_code,
+        other.evaluation,
+        other.rollups,
     )
-    assert (outcome.campaign_path.parent / "declarations/inventory.json").absolute() in owned
-
-
-@pytest.mark.parametrize("from_bytes", [False, True])
-@pytest.mark.parametrize("damage", ["tampered", "missing"])
-def test_compact_inventory_tampering_is_an_integrity_failure(tmp_path, from_bytes, damage):
-    plan, execution = _gap_plan(tmp_path)
-    outcome = run_coverage_target(plan, execution, Progress())
-    assert outcome.exit_code == 0
-    inventory = outcome.campaign_path.parent / "declarations/inventory.json"
-    if damage == "tampered":
-        inventory.write_text("{}")
-    else:
-        inventory.unlink()
-    with pytest.raises(CoverageCampaignStoreError) as error:
-        if from_bytes:
-            load_coverage_campaign_bytes(outcome.campaign_path, outcome.campaign_path.read_bytes())
-        else:
-            load_coverage_campaign(outcome.campaign_path)
-    assert error.value.code == "COV_DECLARATION_INTEGRITY"
+    assert loaded.campaign.evaluation["status"] == "pass"
+    assert [r.simulation_verdict for r in loaded.campaign.runs] == [
+        r.simulation_verdict for r in other.runs
+    ]
 
 
 def test_incomplete_collection_never_accuses_module_sources(tmp_path):
-    from booley.flows.sim.coverage_source_gaps import GAP_CODE, INCOMPLETE_CODE
+    from booley.flows.sim.coverage_source_gaps import GAP_CODE
 
-    plan, execution = _gap_plan(tmp_path)
+    execution = NativeExecution()
     execution.missing = True
-    outcome = run_coverage_target(plan, execution, Progress())
+    outcome = run_coverage_target(gap_plan(tmp_path), execution, Progress())
     campaign = load_coverage_campaign(outcome.campaign_path).campaign
     assert outcome.exit_code == 2
-    assert not any(f.code in {GAP_CODE, INCOMPLETE_CODE} for f in campaign.findings)
-    assert any(a.kind == "declaration_inventory" for a in campaign.artifacts)
-
-
-@pytest.mark.parametrize(
-    ("damage", "message"),
-    [
-        ("contract", "contract"),
-        ("duplicate_sources", "duplicate paths"),
-        ("source_path", "source identity"),
-        ("source_digest", "source identity"),
-        ("source_aliases", "source aliases"),
-        ("source_roles", "source roles"),
-        ("foreign_declaration", "declaration"),
-        ("declaration_order", "ordering"),
-        ("location", "location"),
-        ("status", "completeness"),
-        ("presence", "source presence"),
-        ("unresolved", "unresolved"),
-        ("raw_path", "raw declaration reference"),
-        ("raw_count", "Too many"),
-        ("compiler", "compiler differs"),
-        ("attributes", "attributes differ"),
-    ],
-)
-def test_authenticated_inventory_rejects_invalid_evidence_contract(tmp_path, damage, message):
-    from booley.flows.sim.coverage_provenance import content_digest
-
-    plan, execution = _gap_plan(tmp_path)
-    outcome = run_coverage_target(plan, execution, Progress())
-    path = outcome.campaign_path.parent / "declarations/inventory.json"
-    document = json.loads(path.read_text())
-    _damage_inventory_document(document, damage)
-    path.write_text(json.dumps(document))
-    manifest = json.loads(outcome.campaign_path.read_text())
-    artifact = next(a for a in manifest["artifacts"] if a["kind"] == "declaration_inventory")
-    artifact.update(sha256=content_digest(path.read_bytes()), bytes=path.stat().st_size)
-    if damage == "attributes":
-        artifact["discovery_status"] = "incomplete"
-    outcome.campaign_path.write_text(json.dumps(manifest))
-    with pytest.raises(CoverageCampaignStoreError, match=message) as error:
-        load_coverage_campaign(outcome.campaign_path)
-    assert error.value.code == "COV_DECLARATION_INTEGRITY"
-
-
-def _damage_inventory_document(document, damage):
-    source = document["sources"][0]
-    if damage == "contract":
-        document["$schema"] = "unknown"
-    elif damage == "duplicate_sources":
-        document["sources"].append(source)
-    elif damage in {"source_path", "source_digest", "source_aliases", "source_roles"}:
-        key, value = {
-            "source_path": ("path", "../outside.sv"),
-            "source_digest": ("sha256", "invalid"),
-            "source_aliases": ("aliases", []),
-            "source_roles": ("testbench", "false"),
-        }[damage]
-        source[key] = value
-    elif damage == "foreign_declaration":
-        document["declarations"][0]["source"] = "foreign.sv"
-    elif damage == "declaration_order":
-        document["declarations"].reverse()
-    elif damage == "location":
-        document["declarations"][0]["line"] = 0
-    elif damage == "status":
-        document["status"] = "incomplete"
-    elif damage == "presence":
-        document["native_source_presence"]["paths"] = ["foreign.sv"]
-    elif damage == "unresolved":
-        document["native_source_presence"]["unresolved"] = [False]
-    elif damage == "raw_path":
-        document["raw_evidence"] = [{"path": "../outside.json", "sha256": source["sha256"]}]
-    elif damage == "raw_count":
-        document["raw_evidence"] = [{}, {}, {}]
-    elif damage == "compiler":
-        document["compiler"]["tag"] = "v5.050"
+    assert not any(f.code == GAP_CODE for f in campaign.findings)
 
 
 def test_coverage_ledger_failure_retains_evaluated_final_report(tmp_path):
@@ -1178,7 +1091,6 @@ def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
     import os
 
     from booley.criteria.state import DevelopmentState
-    from booley.flows.sim import coverage_campaign_store
     from booley.flows.sim.coverage_progress import CoverageProgress
 
     plan, state, state_path = gated_ticket_plan(tmp_path)
@@ -1186,11 +1098,10 @@ def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
     assert prior.exit_code == 0
     invocation = tmp_path / "reports/sim/2"
     plan = replace(plan, invocation_dir=invocation)
-    replace_file, link_file, commit_file = persistence_fault(boundary)
+    replace_file, link_file = persistence_fault(boundary)
     with monkeypatch.context() as patch:
         patch.setattr(Path, "replace", replace_file)
         patch.setattr(os, "link", link_file)
-        patch.setattr(coverage_campaign_store, "_commit_new", commit_file)
         outcome = run_coverage_target(
             plan, NativeExecution(verdict="fail", hits=0), CoverageProgress(invocation, ("sim_0",))
         )
@@ -1216,3 +1127,54 @@ def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
     assert outcome.detail["collection"] == (
         "infrastructure_error" if boundary in {"point_store", "campaign"} else "complete"
     )
+
+
+def test_direct_coverage_outcome_includes_metrics(tmp_path):
+    from booley.flows.sim.coverage_waivers import CoverageWaiverConfig
+
+    context = project(tmp_path)
+    for number, (gated, invalid) in enumerate(((False, False), (True, False), (True, True)), 1):
+        plan, outcome = _run_with_waivers(
+            tmp_path,
+            CoverageWaiverConfig("rtl_repository", "../unsafe") if invalid else None,
+            invocation=str(number),
+            gated=gated,
+            prepare=lambda: context,
+        )
+        assert "coverage_metrics" in outcome.detail
+        floor, met = (100, True) if gated else (None, None)
+        expected = {"line": {"percent": 100.0, "threshold": floor, "met": met}}
+        assert outcome.detail["coverage_metrics"] == expected
+        document = json.loads(outcome.campaign_path.read_text())
+        assert document["evaluation"]["thresholds"] == ({"line": 100} if gated else {})
+        assert outcome.detail["evaluation"] == (
+            "blocked" if invalid else "pass" if gated else "not_requested"
+        )
+        assert outcome.exit_code == (2 if invalid else 0)
+        if invalid:
+            assert document["evaluation"]["metrics"] == []
+        retained_plan = replace(plan, invocation_dir=tmp_path / "reports/sim" / str(number + 3))
+
+        def checkpoint(boundary):
+            if boundary == "after:coverage_campaign":
+                raise OSError("publication interrupted")
+
+        retained = run_coverage_target(
+            retained_plan, NativeExecution(), Progress(), publication_checkpoint=checkpoint
+        )
+        assert retained.exit_code == 2 and retained.detail["coverage_metrics"] == expected
+    from booley.flows.sim.coverage_report import coverage_metrics
+
+    campaign = load_coverage_campaign(outcome.campaign_path).campaign
+    for covered, eligible, percent, met in ((2, 3, 66.67, False), (0, 0, None, False)):
+        rollup = replace(
+            campaign.rollups[0], covered_points=covered, eligible_points=eligible, percent=percent
+        )
+        edge = replace(
+            campaign,
+            rollups=(rollup,),
+            evaluation=freeze_coverage_mapping({"thresholds": {"line": 66.67}}),
+        )
+        assert coverage_metrics(edge) == {
+            "line": {"percent": percent, "threshold": 66.67, "met": met}
+        }

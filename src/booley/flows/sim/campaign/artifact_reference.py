@@ -48,6 +48,7 @@ def build_artifact_reference(
     kind: str,
     owner: str,
     maximum: int,
+    booley_dir: Path | None = None,
 ) -> ArtifactReference:
     """Build a typed reference after authenticating an already published file."""
     base = base.absolute()
@@ -57,7 +58,7 @@ def build_artifact_reference(
     except ValueError as exc:
         raise ArtifactReferenceError("artifact is outside its declared base") from exc
     contained = _contained_path(base, relative)
-    raw = _read_regular(contained, maximum)
+    raw = _read_regular(contained, maximum, booley_dir=booley_dir)
     return _artifact_reference(
         path_base=base_name,
         path=relative,
@@ -88,6 +89,7 @@ def resolve_artifact_reference(
     expected_kind: str,
     expected_owner: str,
     maximum: int,
+    booley_dir: Path | None = None,
 ) -> ResolvedArtifact:
     """Resolve and authenticate a reference under one profile's exact bases."""
     reference = _reference(value, allowed_bases)
@@ -98,7 +100,7 @@ def resolve_artifact_reference(
     except KeyError as exc:
         raise ArtifactReferenceError("artifact base is unavailable") from exc
     path = _contained_path(base, reference.path)
-    raw = _read_regular(path, maximum)
+    raw = _read_regular(path, maximum, booley_dir=booley_dir)
     if len(raw) != reference.bytes or _digest(raw) != reference.sha256:
         raise ArtifactReferenceError("artifact bytes disagree with reference")
     return ResolvedArtifact(path, raw)
@@ -117,6 +119,7 @@ def resolve_report_artifact_reference(
     expected_owner: str,
     maximum: int,
     external_origin_target: Path | None = None,
+    booley_dir: Path | None = None,
 ) -> ResolvedArtifact:
     """Resolve a report reference from the location of its containing document."""
     invocation = report_path.absolute().parent
@@ -135,6 +138,7 @@ def resolve_report_artifact_reference(
         expected_kind=expected_kind,
         expected_owner=expected_owner,
         maximum=maximum,
+        booley_dir=booley_dir,
     )
 
 
@@ -208,9 +212,9 @@ def _contained_path(base: Path, relative: str) -> Path:
     return path
 
 
-def _read_regular(path: Path, maximum: int) -> bytes:
+def _read_regular(path: Path, maximum: int, *, booley_dir: Path | None = None) -> bytes:
     try:
-        descriptor = open_regular_nofollow(path)
+        descriptor = open_regular_nofollow(path, booley_dir=booley_dir)
         with os.fdopen(descriptor, "rb") as stream:
             raw = stream.read(maximum + 1)
     except OSError as exc:

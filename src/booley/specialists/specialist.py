@@ -36,6 +36,7 @@ from booley.dev_support.commit_git_io import (
     _save_files_to_logs,
 )
 from booley.dev_support.commit_message_format import _auto_format_commit_message
+from booley.flows.cli_arguments import HumanParser, add_timeout_args
 from booley.flows.cli_help import SurfaceHelp
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
 from booley.runtime import job_slots
@@ -46,6 +47,7 @@ from booley.runtime.exception_diagnostics import (
     write_exception_diagnostic,
 )
 from booley.runtime.nested_mcp_capabilities import nested_mcp_tools_for
+from booley.runtime.owned_scratch import sweep_stale_scratch
 from booley.runtime.process_tree import descendant_pids as _descendant_pids
 
 from .specialist_workspace import (
@@ -139,11 +141,11 @@ class Specialist(McpTool):
             default=self.default_max_turns,
             help="Maximum Specialist conversation turns",
         )
-        parser.add_argument(
-            "--timeout-ms",
-            type=parse_positive_int_arg,
+        add_timeout_args(
+            parser,
+            human=isinstance(parser, HumanParser),
             default=self.default_timeout * 1000,
-            help="Specialist model-call timeout in positive milliseconds",
+            help_text="Specialist model-call timeout in positive milliseconds",
         )
         self._add_agent_args(parser)
 
@@ -338,6 +340,8 @@ class Specialist(McpTool):
                 params,
                 nested_mcp_tools=nested_mcp_tools_for(self.name),
             )
+        # Reclaim scratch left by runs that were killed before they could clean up.
+        sweep_stale_scratch()
         with isolated_agent_workspace(
             params,
             self.workspace_access,
@@ -455,7 +459,7 @@ class Specialist(McpTool):
 
     def _make_streaming_callback(self) -> Any:
         """Create an on_event callback that streams agent text to display.jsonl."""
-        from booley.mcp.base import _specialist_thinking_event, _write_display_event
+        from booley.flows.endpoint_events import _specialist_thinking_event, _write_display_event
 
         def _on_event(event: dict) -> None:
             if event.get("type") == "agent_thinking":

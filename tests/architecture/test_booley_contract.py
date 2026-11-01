@@ -45,8 +45,7 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
         ("D28", "booley.fusesoc", "booley.runtime", "fusesoc/__init__.py"),
         ("D28", "booley.fusesoc.core_security", "booley.runtime.git", "seed.py"),
         ("D18", "booley.config.agent", "booley.runtime.agent_backend", "seed.py"),
-        ("D21", "booley.review.generation", "booley.harness.booley", "seed.py"),
-        ("D21", "booley.review.artifact", "booley.harness.booley", "seed.py"),
+        ("D21", "booley.review.goal_package", "booley.harness.booley", "seed.py"),
         ("D15", "booley.flows", "booley.mcp", "flows/__init__.py"),
         ("D15", "booley.flows.base", "booley.mcp.base", "flows/base.py"),
         ("D15", "booley.flows.sim.flow", "booley.mcp.schema_extractor", "seed.py"),
@@ -226,7 +225,6 @@ def test_campaign_storage_rule_allows_public_facade_import(tmp_path: Path) -> No
     ("source", "target"),
     [
         ("booley.flows.sim.campaign.coordinator", "booley.flows.sim.campaign.store"),
-        ("booley.flows.sim.campaign.child_protocol", "booley.flows.sim.campaign.store"),
         ("booley.flows.sim.campaign.inspection", "booley.flows.sim.campaign.store"),
         ("booley.flows.sim.campaign", "booley.flows.sim.campaign.inspection"),
     ],

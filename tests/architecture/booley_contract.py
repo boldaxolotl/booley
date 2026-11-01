@@ -385,13 +385,6 @@ COMPOSITION_PERMISSIONS = (
         "Campaign execution composes durable transaction, recovery, and publication.",
     ),
     CompositionPermission(
-        "C11",
-        "D31",
-        "booley.flows.sim.campaign.child_protocol",
-        "booley.flows.sim.campaign.store",
-        "Campaign-owned child linkage validates and publishes durable Campaign paths.",
-    ),
-    CompositionPermission(
         "C12",
         "D31",
         "booley.flows.sim.campaign.inspection",

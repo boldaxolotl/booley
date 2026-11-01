@@ -16,6 +16,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from booley.config.coverage_waiver_inputs import CoverageWaiverConfig
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.criteria.state import CriterionEntry, DevelopmentState
 from booley.flows.sim import waiver_candidates as candidates
@@ -33,14 +34,12 @@ from booley.flows.sim.coverage_reference import (
     resolve_persisted_coverage_campaign_reference,
 )
 from booley.flows.sim.coverage_waiver_application import (
-    WaiverPromotionPlan,
     evaluation_json,
     load_promoted_waiver_set,
     strict_reevaluation,
 )
 from booley.flows.sim.coverage_waiver_promotion import (
     ApprovalStamps,
-    WaiverCandidateEvidence,
     build_promotion,
     render_approval_document,
     review_proof_path,
@@ -49,6 +48,7 @@ from booley.flows.sim.coverage_waiver_promotion import (
 from booley.flows.sim.coverage_waivers import (
     ApprovedWaiverSet,
     CoverageRepositoryRoots,
+    CoverageWaiverValidationError,
     load_approved_waiver_set,
 )
 from booley.goals.apply_effects import FileEffect, read_bytes
@@ -66,6 +66,16 @@ from booley.goals.waiver_policy import (
 )
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
+
+
+@contextmanager
+def _loader_refusal_as_proposal_error() -> Generator[None]:
+    """Surface an Approved Waiver loader refusal as a proposal error naming its finding codes."""
+    try:
+        yield
+    except CoverageWaiverValidationError as exc:
+        codes = ", ".join(dict.fromkeys(finding.code for finding in exc.findings))
+        raise ProposalError(f"approval files would not load: {codes}") from exc
 
 
 class GoalWaiverService:
@@ -152,7 +162,7 @@ class GoalWaiverService:
         )
 
     def _candidate(self, candidate_id: str) -> candidates.WaiverCandidate:
-        record = candidates.load(self.paths.root, self.record.id)
+        record = candidates.load(self.paths.root)
         found = [item for item in record.candidates.values() if item.candidate_id == candidate_id]
         if len(found) != 1:
             raise ProposalError(
@@ -171,7 +181,6 @@ class GoalWaiverService:
         reference = cast("Mapping[str, Any]", detail["coverage_campaign_reference"])
         if (
             binding.campaign_path != reference["path"]
-            or binding.campaign_id != resolved.loaded.campaign.campaign_id
             or binding.manifest_sha256 != summary.manifest_sha256
             or summary.point_store is None
             or binding.point_store_sha256 != summary.point_store.sha256
@@ -199,7 +208,13 @@ class GoalWaiverService:
 
         for encoded in record.protected_paths:
             path = roots.absolute(ProtectedPath.decode(encoded), roots.main_checkout())
-            if path is not None and (destination == path or path in destination.parents):
+            if path is not None and any(
+                candidate.is_relative_to(protected)
+                for candidate, protected in (
+                    (destination, path),
+                    (destination.resolve(), path.resolve()),
+                )
+            ):
                 raise ProposalError(f"waiver destination is a protected input: {destination}")
 
     @contextmanager
@@ -211,7 +226,7 @@ class GoalWaiverService:
         with lock_path.open("a+") as handle:
             wait_for_file_lock(handle, timeout_s=30)
             try:
-                with candidates.candidate_lock(self.paths.root, self.record.id):
+                with candidates.record_lock(self.paths.root):
                     yield
             finally:
                 release_file_lock(handle)
@@ -248,21 +263,32 @@ class GoalWaiverService:
     ) -> tuple[tuple[FileEffect, ...], CoverageEvaluation]:
         """Capture live file effects and predict strict Goal evidence with the real loader."""
         before_policy = waiver_policy_fingerprint(self.root)
-        item, _resolved, _detail = self._revalidate(proposal)
+        with _loader_refusal_as_proposal_error():
+            item, _resolved, _detail = self._revalidate(proposal)
         assert proposal.waiver is not None
-        evidence = self._evidence(item)
         stamps = ApprovalStamps(
             decision.session_key or "unknown",
             decision.at,
             f"goal:{proposal.record_id}/proposal:{proposal.id}",
         )
-        plan = WaiverPromotionPlan(
-            proposal.waiver.anchor, proposal.waiver.directory, stamps, (evidence,)
+        config = CoverageWaiverConfig(
+            cast(Literal["rtl_repository", "project_data_repository"], proposal.waiver.anchor),
+            proposal.waiver.directory,
         )
-        effects = self._promotion_effects(plan, proposal)
-        with tempfile.TemporaryDirectory(prefix="booley-goal-waiver-") as temporary:
+        effects = self._promotion_effects(item, stamps, proposal)
+        after_bytes = {
+            Path(config.directory)
+            / effect.path.relative_to(Path(proposal.waiver.approval_root)): cast(
+                bytes, effect.after
+            )
+            for effect in effects
+        }
+        with (
+            _loader_refusal_as_proposal_error(),
+            tempfile.TemporaryDirectory(prefix="booley-goal-waiver-") as temporary,
+        ):
             waivers = load_promoted_waiver_set(
-                plan, self._roots(), Path(temporary), self._targets()
+                config, self._roots(), Path(temporary), self._targets(), after_bytes
             )
         policy = waiver_policy_fingerprint(
             self.root, overrides={effect.path: effect.after for effect in effects}
@@ -278,41 +304,18 @@ class GoalWaiverService:
 
         return effects, evaluate
 
-    @staticmethod
-    def _evidence(item: candidates.WaiverCandidate) -> WaiverCandidateEvidence:
-        return WaiverCandidateEvidence(
-            item.candidate_id,
-            item.binding.campaign_id,
-            item.binding.manifest_sha256,
-            item.binding.point_store_sha256,
-            item.binding.target_identity,
-            item.proposal.point_id,
-            item.proposal.source,
-            item.proposal.source_sha256,
-            cast('Literal["excluded", "unreachable"]', item.proposal.reason),
-            item.proposal.justification,
-            item.proposal.evidence_refs,
-            item.proposal_count,
-        )
-
     def _promotion_effects(
-        self, plan: WaiverPromotionPlan, proposal: Proposal
+        self, item: candidates.WaiverCandidate, stamps: ApprovalStamps, proposal: Proposal
     ) -> tuple[FileEffect, ...]:
         assert proposal.waiver is not None
         root = Path(proposal.waiver.approval_root)
-        item = plan.candidates[0]
-        promotion = build_promotion(item, plan.stamps)
-        path = root / waiver_file_path(item.source)
+        promotion = build_promotion(item, stamps)
+        path = root / waiver_file_path(item.proposal.source)
         before = read_bytes(path)
-        after = render_approval_document(
-            before,
-            source=item.source,
-            source_sha256=item.source_sha256,
-            records=(promotion.record,),
-        )
+        after = render_approval_document(before, promotion)
         effects = [FileEffect(path, before, after, "waiver")]
         if promotion.proof is not None:
-            proof = root / review_proof_path(item.waiver_id)
+            proof = root / review_proof_path(item.candidate_id)
             effects.append(FileEffect(proof, read_bytes(proof), promotion.proof, "waiver"))
         return tuple(effects)
 
@@ -320,7 +323,7 @@ class GoalWaiverService:
         """Persist exact candidate rejection, even if the proposal otherwise conflicts."""
         assert proposal.waiver is not None
         item = proposal.waiver.candidate
-        record = candidates.load(self.paths.root, self.record.id)
+        record = candidates.load(self.paths.root)
         rejection = candidates.Rejection(
             item.target_identity,
             item.point_id,

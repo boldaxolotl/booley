@@ -12,15 +12,14 @@ from booley.flows.builtin_cli import build_parser, parse_request
 from booley.flows.cli_selection import (
     INVOCATION_ORIGIN_ENV,
     Duration,
-    extract_project_tail,
-    human_parser,
-    invocation_context,
     normalize_endpoint_args,
     parse_duration,
     resolve_selection,
 )
+from booley.flows.endpoint_cli import human_endpoint_parser
 from booley.flows.lint.flow import LintFlow
 from booley.harness import booley as cli
+from booley.mcp.base import McpTool
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.registry import discover_mcp_tools
 from booley.specialists.reviewer import ReviewerSpecialist
@@ -68,24 +67,8 @@ def test_duration_grammar(value, milliseconds):
 @pytest.mark.parametrize(
     "value",
     [
-        "",
-        "0",
-        "0h0m0s",
-        "-1",
-        "+1",
-        "1.5",
-        "1ms",
-        "NaN",
-        "inf",
-        " 1s",
-        "1s ",
-        "1h 2m",
-        "1m1h",
-        "1s1s",
-        "1H",
-        "s",
-        "1h2",
-        "1" * 4097,
+        *("", "0", "0h0m0s", "-1", "+1", "1.5", "1ms", "NaN", "inf"),
+        *(" 1s", "1s ", "1h 2m", "1m1h", "1s1s", "1H", "s", "1h2", "1" * 4097),
     ],
 )
 def test_invalid_duration(value):
@@ -138,12 +121,7 @@ def assert_controls(parser, *, timeout=False):
         assert option not in parser.format_help()
     # A shared destination must not acquire another visible spelling.
     shared = {controls["--project"].dest, "timeout_ms", "dry_run", "verbose", "json"}
-    approved = {
-        "-C",
-        "--project",
-        "--project-root",
-        "-p",
-        "--work-dir",
+    approved = {"-C", "--project", "--project-root", "-p", "--work-dir"} | {
         "--timeout",
         "--timeout-ms",
         "--dry-run",
@@ -170,21 +148,11 @@ def test_recursive_command_inventory():
     # New nested routes require an explicit ownership/compatibility decision.
     nested = {
         "session": {"up", "enter", "down", "status", "validate", "prepare", "refresh"},
-        "cleanup": {"prepare", "record", "preview", "apply"},
+        "cleanup": {"prepare", "preview", "apply"},
         "upgrade": {"status", "acknowledge"},
         "worktree": {"new"},
-        "feedback": {
-            "add",
-            "friction",
-            "say",
-            "win",
-            "triage",
-            "filed",
-            "list",
-            "report",
-            "export",
-            "redact",
-        },
+        "feedback": {"add", "friction", "say", "win", "triage", "filed"}
+        | {"list", "report", "export", "redact"},
     }
     actual = {route for route, _ in routes if len(route) > 1 and route[0] in nested}
     expected = {
@@ -201,7 +169,7 @@ def test_detached_endpoint_inventory():
         if info.kind == "flow":
             parser = build_parser(endpoint, human=True)
         else:
-            parser = human_parser(endpoint._parser, durations=True)
+            parser = human_endpoint_parser(endpoint, durations=True)
         assert_controls(parser, timeout=True)
 
 
@@ -214,9 +182,10 @@ def test_detached_endpoint_inventory():
         ["session", "status", "--project=../b"],
         ["-C../b", "session", "status"],
         ["-C", "../b"],
-        ["cleanup", "preview", "-C", "../b"],
+        ["cleanup", "preview", "--run-id", "r", "-C", "../b"],
         ["feedback", "list", "-C", "../b"],
         ["upgrade", "status", "-C", "../b"],
+        ["session", "down", "--project-root", "../b"],
     ],
 )
 def test_project_positions(projects, argv, monkeypatch):
@@ -272,10 +241,6 @@ def test_session_prepare_legacy_selector_notice(projects, capsys):
     args = command(["session", "prepare", "--project-root", str(projects[1])])
     assert cli._resolve_cli_selection(args) == projects[1]
     assert capsys.readouterr().err.count("--project-root is deprecated") == 1
-    with invocation_context(transport=True):
-        args = command(["session", "prepare", "--project-root", str(projects[1])])
-    assert cli._resolve_cli_selection(args) == projects[1]
-    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize(
@@ -291,34 +256,52 @@ def test_payload_is_opaque(argv, field):
     assert getattr(args, field) == argv[argv.index("--") :]
 
 
-@pytest.mark.parametrize(
-    "tail",
-    [
-        ["-C", "../b", "--target", "demo"],
-        ["--target", "demo", "--project=../b"],
-        ["--", "--target", "demo", "-C../b"],
-        ["--timeout", "5s", "--target", "demo", "-C", "../b"],
-    ],
-)
-def test_builtin_tail_selection_before_discovery(projects, tail):
-    args = command(["flow", "lint", *tail])
-    assert cli._resolve_cli_selection(args) == projects[1]
-    assert not any(
-        token.startswith("-C") or token.startswith("--project") for token in args.endpoint_args
-    )
+SELECTED_TAILS = [
+    ["-C", "../b", "--target", "demo"],
+    ["--target", "demo", "--project=../b"],
+    ["--", "--target", "demo", "-C../b"],
+    ["--timeout", "5s", "--target", "demo", "-C", "../b"],
+    ["-q", "-C", "../b", "--target", "demo"],
+    ["-qC../b", "--target", "demo"],
+]
 
 
-def test_extractor_preserves_values_and_boundaries():
-    parser = human_parser(ReviewerSpecialist()._parser, durations=True)
-    tails = [
+def test_builtin_tail_selection_before_discovery(projects):
+    for tail in SELECTED_TAILS:
+        args = command(["flow", "lint", *tail])
+        assert getattr(args, "_cli_tail_selection", False), tail
+        assert args.endpoint_args == (tail[1:] if tail[0] == "--" else tail)
+        assert cli._resolve_cli_selection(args) == projects[1], tail
+
+
+def test_tail_selection_matches_endpoint_parse(projects):
+    """The probe records what argparse hands to Project actions, never payload text."""
+    from booley.flows.builtin_cli import build_cli_parser
+    from booley.flows.cli_selection import CliInvocation
+    from booley.harness.endpoint_help import tail_project_selections
+
+    def parser():
+        return build_cli_parser(LintFlow(), CliInvocation())
+
+    for tail in [*SELECTED_TAILS, ["--work-dir", "../b", "--target", "demo"]]:
+        found = tail_project_selections(parser(), tail)
+        real = parser().parse_args(tail[1:] if tail[:1] == ["--"] else tail).work_dir
+        assert [resolve_selection(i.value, legacy=i.legacy) for i in found] == [real], tail
+    for tail in (["--target", "demo", "-C"], ["--target", "demo", "--", "-C", "../b"]):
+        assert tail_project_selections(parser(), tail) == []
+
+
+def test_tail_selection_ignores_payload_text():
+    from booley.harness.endpoint_help import tail_project_selections
+
+    parser = human_endpoint_parser(ReviewerSpecialist(), durations=True)
+    for tail in (
         ["--instruction", "--project", "--scope", "rtl"],
         ["--instruction", "text --project b", "--", "--project", "../b"],
-        ["--unknown", "--project", "../b"],
-    ]
-    for tail in tails:
-        forwarded, selections = extract_project_tail(parser, tail)
-        assert forwarded == tail
-        assert selections == []
+    ):
+        assert tail_project_selections(parser, tail) == []
+    attached = ["--instruction=--project", "--project", "../b"]
+    assert [item.value for item in tail_project_selections(parser, attached)] == ["../b"]
 
 
 @pytest.mark.parametrize(
@@ -328,12 +311,18 @@ def test_extractor_preserves_values_and_boundaries():
         (["--timeout-ms", "5000"], 5000),
         (["--timeout-ms", "1"], 1),
         ([], None),
+        (["--timeout", "5s", "-q"], 5000),
+        (["--timeout", "5s", "--quiet"], 5000),
     ],
 )
-def test_flow_timeout_boundary(projects, options, expected, capsys):
-    request = parse_request(LintFlow(), ["--target", "demo", *options])
+def test_builtin_control_matrix(projects, options, expected, capsys):
+    flow = LintFlow()
+    before = flow_schema(flow)
+    request = parse_request(flow, ["--project", "../b", "--target", "demo", *options])
+    assert request.work_dir == projects[1]
+    assert flow_schema(flow) == before
     assert request.timeout_ms == expected
-    assert not any(key.startswith("_cli_") for key in vars(request))
+    assert not any(key.startswith(("_cli_", "_console")) for key in vars(request))
     assert bool(capsys.readouterr().err) == ("--timeout-ms" in options)
 
 
@@ -352,9 +341,6 @@ def test_duplicate_timeout(options):
 
 def test_transport_schema_and_cli_remain_unchanged(projects, monkeypatch, capsys):
     flow = LintFlow()
-    before = flow_schema(flow)
-    parse_request(flow, ["--project", "../b", "--target", "demo", "--timeout", "5s"])
-    assert flow_schema(flow) == before
     monkeypatch.setenv(INVOCATION_ORIGIN_ENV, "transport")
     request = parse_request(
         flow, ["--work-dir", str(projects[1]), "--target", "demo", "--timeout-ms", "1"]
@@ -366,26 +352,58 @@ def test_transport_schema_and_cli_remain_unchanged(projects, monkeypatch, capsys
         parse_request(flow, ["--target", "demo", "--timeout", "5s"])
 
 
-def test_scoped_selection_restores_and_has_no_synthetic_alias(projects, capsys):
-    with invocation_context(projects[1]):
-        request = parse_request(LintFlow(), ["--target", "demo"])
-        assert request.work_dir == projects[1]
-        with pytest.raises(SystemExit):
-            parse_request(LintFlow(), ["--target", "demo", "-C", "a"])
-    assert parse_request(LintFlow(), ["--target", "demo"]).work_dir == projects[0]
+def test_project_selection_does_not_leak_between_invocations(projects, monkeypatch, capsys):
+    from booley.flows.cli_selection import CliInvocation
+
+    seen = []
+
+    def main(flow, argv):
+        request = parse_request(flow, argv)
+        seen.append((request.work_dir, request.timeout_ms, flow._cli_invocation.project))
+        return 0
+
+    monkeypatch.setattr(LintFlow, "main", main)
+    a, b = projects
+    for tail, expected in (
+        (["-C", "../b", "lint", "--target", "demo"], (b, None, b)),
+        (["lint", "--target", "demo"], (a, None, None)),
+        (["lint", "--target", "demo", "--project", "../b"], (b, None, None)),
+        (["lint", "--target", "demo", "--timeout", "5s"], (a, 5000, None)),
+    ):
+        assert dispatch(["flow", *tail], monkeypatch) == 0
+        assert seen[-1] == expected
     assert "deprecated" not in capsys.readouterr().err
+    reused = LintFlow()
+    for invocation, expected in ((CliInvocation(project=b), b), (CliInvocation(), a)):
+        reused._cli_invocation = invocation
+        assert parse_request(reused, ["--target", "demo"]).work_dir == expected
 
 
-def test_plugin_owned_options_and_transport_are_preserved():
-    parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument("--work-dir", type=Path, default=Path.cwd())
-    parser.add_argument("--project", choices=["short", "long"])
-    parser.add_argument("--timeout", choices=["short", "long"])
-    projection = human_parser(parser, durations=False)
+class Plugin(McpTool):
+    name = "example"
+    description = "Plugin-owned controls"
+
+    def _add_args(self, parser):
+        parser.add_argument("--project", choices=["short", "long"])
+        parser.add_argument("--timeout", choices=["short", "long"])
+
+    def _run(self):
+        raise AssertionError("not executing")
+
+
+def test_plugin_controls(projects):
+    endpoint = Plugin()
+    projection = human_endpoint_parser(endpoint)
     args = projection.parse_args(["--project", "short", "--timeout", "long"])
     assert args.project == "short" and args.timeout == "long"
-    assert "-C" not in parser._option_string_actions
+    assert "-C" not in projection._option_string_actions
+    assert "-C" not in endpoint._parser._option_string_actions
     normalize_endpoint_args(args)
+    projected = human_endpoint_parser(endpoint, project=projects[1])
+    with pytest.raises(SystemExit):
+        projected.parse_args(["--work-dir", str(projects[0])])
+    assert projected.parse_args(["--project", "short"]).work_dir == projects[1]
+    assert human_endpoint_parser(endpoint).parse_args([]).work_dir == projects[0]
 
 
 def dispatch(argv, monkeypatch):
@@ -403,7 +421,11 @@ def dispatch(argv, monkeypatch):
 def test_handlers_receive_selected_checkout(projects, monkeypatch, route):
     captured = []
     monkeypatch.setitem(cli._EARLY_COMMANDS, route, lambda args, root: captured.append(root) or 0)
-    nested = {"cleanup": ["preview"], "upgrade": ["status"], "auth": ["--status"]}.get(route, [])
+    nested = {
+        "cleanup": ["preview", "--run-id", "r"],
+        "upgrade": ["status"],
+        "auth": ["--status"],
+    }.get(route, [])
     assert dispatch([route, *nested, "-C", "../b/rtl"], monkeypatch) == 0
     assert captured == [projects[1]]
 
@@ -474,33 +496,32 @@ def test_external_data_selection_and_cache_switch(projects, monkeypatch):
 
 
 def test_shared_plugin_outer_selection_and_override_refusal(projects, capsys):
+    from booley.flows.cli_selection import CliInvocation
     from booley.flows.endpoint_context import EndpointContext
-    from booley.mcp.base import McpTool
 
-    class Common(McpTool):
-        name = "example"
-        description = "Example"
-
-        def _add_args(self, parser):
-            parser.add_argument("--project", choices=["short", "long"])
-
-        def _run(self):
-            raise AssertionError("not executing")
-
-    endpoint = Common()
-    with invocation_context(projects[1]):
+    endpoint = Plugin()
+    for selected, expected in ((projects[1], projects[1]), (None, projects[0])):
+        endpoint._cli_invocation = CliInvocation(project=selected)
         endpoint.parse_args(["--project", "short"])
-    assert endpoint.args.work_dir == projects[1]
-    assert endpoint.args.project == "short"
+        assert endpoint.args.work_dir == expected
+        assert endpoint.args.project == "short"
+    reviewer = ReviewerSpecialist()
+    for argv, expected, timeout_ms in (
+        (["-C", str(projects[1]), "--timeout", "5s"], projects[1], 5000),
+        ([], projects[0], reviewer.default_timeout * 1000),
+    ):
+        assert reviewer.parse_args(argv).work_dir == expected
+        assert reviewer.args.timeout_ms == timeout_ms
 
-    class Override(Common):
+    class Override(Plugin):
         def main(self, argv=None):
             pytest.fail("override executed")
 
-    args = argparse.Namespace(_cli_endpoint_project=projects[1])
-    assert cli._invoke_endpoint(Override(), [], args) == 2
+    ns = argparse.Namespace
+    for args in (ns(_cli_endpoint_project=projects[1]), ns(_cli_tail_selection=True)):
+        assert cli._invoke_endpoint(Override(), [], args) == 2
     assert "overrides the shared CLI" in capsys.readouterr().err
-    assert Common.main is EndpointContext.main
+    assert Plugin.main is EndpointContext.main
 
 
 def test_complete_specialist_schemas_are_compatible():
@@ -514,7 +535,7 @@ def test_complete_specialist_schemas_are_compatible():
             continue
         endpoint = cli._load_mcp_tool_class(info)()
         assert flow_schema(endpoint) == expected[info.name]
-        human_parser(endpoint._parser, durations=True)
+        human_endpoint_parser(endpoint, durations=True)
         assert flow_schema(endpoint) == expected[info.name]
 
 
@@ -526,17 +547,6 @@ def test_cheat_help_advertises_path_and_new_section_only():
     assert "--project-files" in help_text
 
 
-def test_colliding_plugin_cannot_override_outer_checkout(projects):
-    parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument("--work-dir", type=Path, default=projects[0])
-    parser.add_argument("--project", choices=["short", "long"])
-    with invocation_context(projects[1]):
-        projected = human_parser(parser, durations=False)
-        with pytest.raises(SystemExit):
-            projected.parse_args(["--work-dir", str(projects[0])])
-        assert projected.parse_args(["--project", "short"]).work_dir == projects[1]
-
-
 def test_bare_cheat_alias_warns_once_per_invocation(capsys):
     args = command(["cheat", "--project", "--project"])
     assert args.project
@@ -544,10 +554,19 @@ def test_bare_cheat_alias_warns_once_per_invocation(capsys):
     assert not any(key.startswith("_cli_") for key in vars(args))
 
 
-def test_human_dispatch_context_overrides_inherited_transport_marker(
-    projects, monkeypatch, capsys
-):
+def test_inherited_marker_and_explicit_transport_origin(projects, monkeypatch, capsys):
+    from booley.flows.cli_selection import CliInvocation
+
     monkeypatch.setenv(INVOCATION_ORIGIN_ENV, "transport")
+    # Help through main() is human even though the marker is inherited.
+    monkeypatch.setattr("sys.argv", ["booley", "flow", "lint", "--help"])
+    monkeypatch.setattr(cli.runtime_context, "container_only_error", lambda *_args: None)
+    monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", lambda: False)
+    with pytest.raises(SystemExit):
+        cli.main()
+    help_text = capsys.readouterr().out
+    assert "--project" in help_text and "--timeout" in help_text
+    assert "--work-dir" not in help_text
     executed = []
 
     def main(flow, argv):
@@ -556,41 +575,20 @@ def test_human_dispatch_context_overrides_inherited_transport_marker(
         return 0
 
     monkeypatch.setattr(LintFlow, "main", main)
-    assert (
-        dispatch(
-            ["flow", "-C", "../b", "lint", "--target", "demo", "--timeout", "5s"], monkeypatch
-        )
-        == 0
-    )
+    tail = ["-C", "../b", "lint", "--target", "demo", "--timeout", "5s"]
+    assert dispatch(["flow", *tail], monkeypatch) == 0
     assert executed == [(projects[1], 5000)]
-    # Context exit restores the subprocess marker's transport interpretation.
-    request = parse_request(LintFlow(), ["--target", "demo", "--timeout-ms", "1"])
-    assert request.timeout_ms == 1
-
-
-def test_human_main_alias_notice_overrides_inherited_transport_marker(
-    projects, monkeypatch, capsys
-):
-    monkeypatch.setenv(INVOCATION_ORIGIN_ENV, "transport")
     monkeypatch.setitem(cli._EARLY_COMMANDS, "doctor", lambda _args, _root: 0)
     assert dispatch(["doctor", "--project-root", str(projects[1])], monkeypatch) == 0
     assert "--project-root is deprecated" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("quiet", ["-q", "--quiet"])
-def test_human_flow_progress_flags_preserve_project_and_duration_vocabulary(
-    projects, quiet, capsys
-):
-    flow = LintFlow()
-    before = flow_schema(flow)
-    request = parse_request(
-        flow, ["--target", "demo", "--project", "../b", "--timeout", "5s", quiet]
-    )
-    assert request.work_dir == projects[1]
-    assert request.timeout_ms == 5000
-    assert not any(key.startswith(("_cli_", "_console")) for key in vars(request))
-    assert flow_schema(flow) == before
-    assert capsys.readouterr().err == ""
+    # Outside the human dispatch the marker, or an explicit origin without it, is transport.
+    for explicit in (False, True):
+        flow = LintFlow()
+        if explicit:
+            monkeypatch.delenv(INVOCATION_ORIGIN_ENV)
+            flow._cli_invocation = CliInvocation(transport=True)
+        assert parse_request(flow, ["--target", "demo", "--timeout-ms", "1"]).timeout_ms == 1
+        assert capsys.readouterr().err == ""
 
 
 def test_canonical_synth_help_uses_initialized_project(

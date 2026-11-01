@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from booley.harness.bootstrap import (
     BootstrapFinding,
     BootstrapResult,
@@ -9,15 +11,13 @@ from booley.harness.bootstrap import (
     inspect_bootstrap,
     reconcile_bootstrap,
 )
-from booley.harness.colors import accent, bold_chrome, green, red, yellow
+from booley.harness.colors import green, red, yellow
+from booley.harness.terminal_status import LineStatus, section_header, status_line
 from booley.runtime.host_install import HostInstallationError, register_host_installation
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
 from booley.runtime.paths import skills_dir
-from booley.runtime.qa_skill_selection import (
-    QaSkillSelectionError,
-    checkout_enclosing_cwd,
-)
+from booley.runtime.qa_skill_selection import QaSkillSelectionError
 from booley.runtime.qa_skill_selection import (
     disable as disable_qa_skills,
 )
@@ -115,14 +115,12 @@ def _mutate_bootstrap(
                     f"{identity.version} ({identity.payload_fingerprint[:12]})."
                 )
             )
-        revision = identity.revision if with_qa else ""
-        if not _apply_qa_enable(with_qa, revision):
+        if not _apply_qa_enable(with_qa):
             return None
         result = reconcile_bootstrap(
             intent,
             verbose=getattr(args, "verbose", False),
             qa_opt_out=without_qa,
-            allow_qa_adoption=getattr(args, "force", False),
         )
         if without_qa and _qa_prune_succeeded(result):
             try:
@@ -140,21 +138,12 @@ def _recovery_error(intent: Intent, error: RuntimeError) -> BootstrapResult:
     )
 
 
-def _apply_qa_enable(with_qa: bool, revision: str) -> bool:
+def _apply_qa_enable(with_qa: bool) -> bool:
     if not with_qa:
         return True
-    source = checkout_enclosing_cwd()
-    if source is None:
-        print(
-            red(
-                "--with-qa-skills must be run inside the complete primary "
-                "Booley source checkout on main"
-            )
-        )
-        return False
     try:
-        enable_qa_skills(source, revision)
-    except QaSkillSelectionError as exc:
+        enable_qa_skills(Path.cwd())
+    except (QaSkillSelectionError, OSError) as exc:
         print(red(f"Cannot enable QA skills: {exc}"))
         return False
     return True
@@ -168,19 +157,20 @@ def _qa_prune_succeeded(result: BootstrapResult) -> bool:
     )
 
 
+_ROW_STATUS = {
+    BootstrapState.CURRENT: LineStatus.CURRENT,
+    BootstrapState.PENDING: LineStatus.PENDING,
+    BootstrapState.CHANGED: LineStatus.PASS,
+    BootstrapState.WARNING: LineStatus.WARN,
+    BootstrapState.ERROR: LineStatus.FAIL,
+}
+
+
 def _render_result(result: BootstrapResult) -> int:
-    print(bold_chrome("Host Bootstrap"))
-    glyphs = {
-        BootstrapState.CURRENT: (accent, "[--]"),
-        BootstrapState.PENDING: (yellow, "[!!]"),
-        BootstrapState.CHANGED: (green, "[OK]"),
-        BootstrapState.WARNING: (yellow, "[!!]"),
-        BootstrapState.ERROR: (red, "[XX]"),
-    }
+    print(section_header("Host Bootstrap"))
     for finding in result.findings:
-        color, glyph = glyphs[finding.state]
         detail = _inspection_detail(finding) if result.intent is Intent.CHECK else finding.detail
-        print(f"  {color(glyph)} {finding.resource}: {detail}")
+        print(status_line(_ROW_STATUS[finding.state], f"{finding.resource}: {detail}"))
     if result.exit_status == 0:
         print(green("Host Bootstrap is current."))
     elif result.exit_status == 1:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import sys
 from argparse import Namespace
@@ -75,15 +77,6 @@ def test_doctor_parser_requires_deep_for_skip_agent_checks(capsys):
     assert "--skip-agent-checks requires --deep" in capsys.readouterr().err
 
 
-def test_doctor_parser_accepts_explicit_project_root(tmp_path):
-    parser = tlr._build_parser()
-
-    args = parser.parse_args(["doctor", "--project-root", str(tmp_path)])
-
-    args = tlr._normalize_args(parser, args)
-    assert tlr._resolve_cli_selection(args) == tmp_path
-
-
 def test_project_command_rejects_source_but_feedback_is_allowed(tmp_path, capsys):
     (tmp_path / "pyproject.toml").write_text(
         "[tool.booley]\nsource_checkout = true\n",
@@ -124,6 +117,13 @@ def test_init_parser_accepts_explicit_agent_selection():
     assert args.auth == "api_key"
 
 
+def test_init_scaffold_stealth_flag():
+    parser = tlr._build_parser()
+
+    assert parser.parse_args(["init", "--scaffold", "demo", "--stealth"]).stealth is True
+    assert parser.parse_args(["init", "--scaffold", "demo"]).stealth is False
+
+
 def test_init_parser_accepts_skip_credentials():
     args = tlr._build_parser().parse_args(["init", "--skip-credentials"])
 
@@ -138,7 +138,53 @@ def test_chat_parser_and_dispatch_are_registered():
     assert args.command == "chat"
     assert tlr._EARLY_COMMANDS["chat"] is tlr.run_chat
     help_text = parser.format_help()
-    assert "[Sandbox] Open this Project's configured agent" in help_text
+    assert "Open this Project's configured agent" in help_text
+
+
+def _parse_argv(monkeypatch, *argv):
+    monkeypatch.setattr(sys, "argv", ["booley", *argv])
+    return tlr._parse_cli()
+
+
+def test_chat_forwards_arguments_after_chat(monkeypatch):
+    assert _parse_argv(monkeypatch, "chat", "resume", "--last").agent_args == ["resume", "--last"]
+    assert _parse_argv(monkeypatch, "chat", "--resume", "abc").agent_args == ["--resume", "abc"]
+    # The first `chat` is the value of --project; only the second is the command.
+    args = _parse_argv(monkeypatch, "--project", "chat", "chat", "--resume", "x", "--", "y")
+    assert args.agent_args == ["--resume", "x", "--", "y"]
+    assert args._cli_selection.value == "chat"
+    # Leading Booley options stay Booley's; the rest is forwarded.
+    args = _parse_argv(monkeypatch, "chat", "--project", "P", "--continue")
+    assert args.agent_args == ["--continue"]
+    assert args._cli_selection.value == "P"
+
+
+def test_chat_later_booley_options_are_forwarded(monkeypatch, capsys):
+    """Only leading -h/-C/--project are Booley's; later ones belong to the agent."""
+    for tail in (["--resume", "x", "--project", "P"], ["--resume", "x", "-C", "P"]):
+        args = _parse_argv(monkeypatch, "chat", *tail)
+        assert args.agent_args == tail
+        assert not hasattr(args, "_cli_selection")
+    assert _parse_argv(monkeypatch, "chat", "--resume", "x", "--help").agent_args == [
+        "--resume",
+        "x",
+        "--help",
+    ]
+    assert capsys.readouterr().out == ""
+
+
+def test_chat_separator_forwards_reserved_options(monkeypatch, capsys):
+    assert _parse_argv(monkeypatch, "chat", "--", "--help").agent_args == ["--help"]
+    assert capsys.readouterr().out == ""
+
+
+def test_chat_help_documents_passthrough(monkeypatch, capsys):
+    with pytest.raises(SystemExit) as raised:
+        _parse_argv(monkeypatch, "chat", "--help")
+    assert raised.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "passed unchanged to the agent CLI" in help_text
+    assert "booley chat -- --help" in help_text
 
 
 def test_bare_booley_defaults_to_chat(monkeypatch):
@@ -160,9 +206,12 @@ def test_bootstrap_parser_exposes_only_host_reconciliation_flags(update_flag):
     assert not hasattr(args, "project_root")
 
 
-def test_bootstrap_parser_rejects_check_only_with_force(capsys):
+@pytest.mark.parametrize(
+    "flags", [("--check-only", "--force"), ("--with-qa-skills", "--without-qa-skills")]
+)
+def test_bootstrap_parser_rejects_exclusive_flags(flags, capsys):
     with pytest.raises(SystemExit) as raised:
-        tlr._build_parser().parse_args(["bootstrap", "--check-only", "--force"])
+        tlr._build_parser().parse_args(["bootstrap", *flags])
     assert raised.value.code == 2
     assert "not allowed with argument" in capsys.readouterr().err
 
@@ -251,11 +300,13 @@ def _configure_indirect_lifecycle_timeout(command, monkeypatch, failure) -> None
         monkeypatch.setattr(auth_cmd, "_preflight", lambda *_args: True)
         monkeypatch.setattr(auth_cmd, "_acquire", MagicMock(side_effect=failure))
     else:
-        from booley.runtime import issuance_invalidation
+        # Importing the coordinator first keeps modules that bind the lock by
+        # name (session_refresh) from capturing the patched callable.
+        from booley.harness import eda_grants
 
         monkeypatch.setattr(
-            issuance_invalidation,
-            "coordinate_mutation",
+            eda_grants.lifecycle_lock,
+            "host_lifecycle_lock",
             MagicMock(side_effect=failure),
         )
 
@@ -299,8 +350,10 @@ def test_projects_dispatch_precedes_active_project_discovery(
     monkeypatch.setattr(tlr, "_host_install_authority_error", lambda _command: None)
     from booley.runtime import image_keepers as runtime_image_keepers
 
-    def run(_args: Namespace, *, keeper_operations: project_inventory_cli.KeeperOperations) -> int:
-        assert keeper_operations is runtime_image_keepers
+    seen: dict[str, object] = {}
+
+    def run(_args: Namespace, **kwargs: object) -> int:
+        seen.update(kwargs)
         return 19
 
     monkeypatch.setattr(project_inventory_cli, "run", run)
@@ -311,6 +364,13 @@ def test_projects_dispatch_precedes_active_project_discovery(
     )
 
     assert tlr.main() == 19
+    assert seen["keeper_operations"] is runtime_image_keepers
+    view = seen.get("leftovers_view")
+    assert view is not None
+    assert (view.__module__, view.__name__) == (
+        "booley.harness.projects_view",
+        "render_leftovers",
+    )
 
 
 def test_noncanonical_host_command_stops_before_dispatch(monkeypatch, capsys):
@@ -544,17 +604,6 @@ def test_version_flag_prints_and_exits(capsys):
     assert out.startswith("booley ")
 
 
-def test_version_string_includes_commit_in_checkout(monkeypatch):
-    # In a source checkout, the commit disambiguates the static packaged version.
-    monkeypatch.setattr(tlr, "_source_commit", lambda: "abc1234")
-    assert "(abc1234)" in tlr._version_string()
-
-
-def test_version_string_bare_without_commit(monkeypatch):
-    monkeypatch.setattr(tlr, "_source_commit", lambda: None)
-    assert "(" not in tlr._version_string()
-
-
 class TestBakedBuildCommit:
     """F-5: a wheel install has no .git, so `--version` reported no commit.
 
@@ -565,13 +614,13 @@ class TestBakedBuildCommit:
 
     def test_absent_stamp_module_yields_none(self, monkeypatch):
         monkeypatch.setattr(
-            tlr, "_baked_commit", tlr._baked_commit
+            tlr, "_baked_identity", tlr._baked_identity
         )  # exercise the real implementation
-        # No _build_commit module is generated in a checkout, so this is None.
+        # No _build_commit module is generated in a checkout, so nothing is known.
         import booley
 
         assert not hasattr(booley, "_build_commit")
-        assert tlr._baked_commit() is None
+        assert tlr._baked_identity() == ("", "")
 
     def test_source_git_failure_does_not_borrow_baked_commit(self, tmp_path, monkeypatch):
         """A checkout must not combine its version with another build's stamp."""
@@ -589,8 +638,8 @@ class TestBakedBuildCommit:
                 source_root=source_root,
             ),
         )
-        monkeypatch.setattr(tlr, "_baked_commit", lambda: "cafe123")
-        assert tlr._source_commit() is None
+        monkeypatch.setattr(tlr, "_baked_identity", lambda: ("cafe123", ""))
+        assert tlr._code_identity()[0] == ""
         assert "(cafe123)" not in tlr._version_string()
 
     def test_wheel_uses_baked_commit_without_live_git(self, monkeypatch):
@@ -611,9 +660,9 @@ class TestBakedBuildCommit:
             "source_git_metadata",
             lambda _self: pytest.fail("wheel attribution must not inspect Git"),
         )
-        monkeypatch.setattr(tlr, "_baked_commit", lambda: "cafe123")
+        monkeypatch.setattr(tlr, "_baked_identity", lambda: ("cafe123", ""))
 
-        assert tlr._source_commit() == "cafe123"
+        assert tlr._code_identity() == ("cafe123", "")
 
     def test_live_checkout_wins_over_the_baked_commit(self, monkeypatch):
         """A checkout's live state is the truthful one — it can be +dirty."""
@@ -624,8 +673,8 @@ class TestBakedBuildCommit:
             "source_git_metadata",
             lambda _self: ("live999", "2026-08-30T10:39:40Z"),
         )
-        monkeypatch.setattr(tlr, "_baked_commit", lambda: "stale00")
-        assert tlr._source_commit() == "live999"
+        monkeypatch.setattr(tlr, "_baked_identity", lambda: ("stale00", ""))
+        assert tlr._code_identity() == ("live999", "2026-08-30T10:39:40Z")
 
     def test_source_without_git_does_not_borrow_enclosing_repository(self, tmp_path, monkeypatch):
         import booley
@@ -644,9 +693,9 @@ class TestBakedBuildCommit:
                 source_root=source_root,
             ),
         )
-        monkeypatch.setattr(tlr, "_baked_commit", lambda: "stale00")
+        monkeypatch.setattr(tlr, "_baked_identity", lambda: ("stale00", ""))
 
-        assert tlr._source_commit() is None
+        assert tlr._code_identity()[0] == ""
 
     def test_baked_commit_reads_the_generated_module(self, monkeypatch):
         import types
@@ -657,7 +706,7 @@ class TestBakedBuildCommit:
         stamp.COMMIT = "abcd123+dirty"
         monkeypatch.setattr(booley, "_build_commit", stamp, raising=False)
         monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
-        assert tlr._baked_commit() == "abcd123+dirty"
+        assert tlr._baked_identity() == ("abcd123+dirty", "")
 
     def test_empty_stamp_is_treated_as_unknown(self, monkeypatch):
         """build.sh writes an empty COMMIT when git is unavailable."""
@@ -669,7 +718,150 @@ class TestBakedBuildCommit:
         stamp.COMMIT = ""
         monkeypatch.setattr(booley, "_build_commit", stamp, raising=False)
         monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
-        assert tlr._baked_commit() is None
+        assert tlr._baked_identity() == ("", "")
+
+
+class TestVersionCommitDate:
+    """`booley --version` shows the UTC commit date next to the commit (#2235)."""
+
+    @staticmethod
+    def _attribute(monkeypatch, origin, **fields):
+        import booley
+        from booley.runtime.version_attribution import VersionAttribution
+
+        monkeypatch.setattr(
+            booley,
+            "version_attribution",
+            VersionAttribution(version="4.5.6", origin=origin, **fields),
+        )
+
+    @classmethod
+    def _source(cls, monkeypatch, commit, committed_at):
+        from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+
+        cls._attribute(monkeypatch, VersionOrigin.SOURCE, source_root=Path("/unused"))
+        monkeypatch.setattr(
+            VersionAttribution,
+            "source_git_metadata",
+            lambda _self: (commit, committed_at),
+        )
+
+    @classmethod
+    def _stamped_wheel(cls, monkeypatch, **stamp_values):
+        import types
+
+        import booley
+        from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+
+        cls._attribute(monkeypatch, VersionOrigin.DISTRIBUTION, distribution_name="booley-rtl")
+        monkeypatch.setattr(
+            VersionAttribution,
+            "source_git_metadata",
+            lambda _self: pytest.fail("wheel attribution must not inspect Git"),
+        )
+        stamp = types.ModuleType("booley._build_commit")
+        for name, value in stamp_values.items():
+            setattr(stamp, name, value)
+        monkeypatch.setattr(booley, "_build_commit", stamp, raising=False)
+        monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
+
+    def test_source_checkout_shows_head_commit_date_in_utc(self, monkeypatch):
+        from booley import __version__
+
+        self._source(monkeypatch, "abc1234", "2026-10-26T10:00:00Z")
+        assert tlr._version_string() == f"booley {__version__} (abc1234, 2026-10-26)"
+
+    def test_dirty_checkout_shows_dirty_commit_and_date(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from booley import __version__
+        from booley.runtime.version_attribution import VersionOrigin
+
+        repo = tmp_path / "checkout"
+        repo.mkdir()
+
+        def git(*args, **env):
+            return subprocess.run(
+                ["git", "-C", str(repo), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                # Ignore the developer's global git config (signing, hooks).
+                env={
+                    **os.environ,
+                    "GIT_CONFIG_GLOBAL": os.devnull,
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    **env,
+                },
+            ).stdout.strip()
+
+        git("init")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "T")
+        (repo / "file.txt").write_text("one\n", encoding="utf-8")
+        git("add", ".")
+        # Distinct author and committer days prove the committer date is shown.
+        git(
+            "commit",
+            "-m",
+            "init",
+            GIT_COMMITTER_DATE="2026-10-26T12:00:00+00:00",
+            GIT_AUTHOR_DATE="2026-09-01T12:00:00+00:00",
+        )
+        short = git("rev-parse", "--short", "HEAD")
+        (repo / "file.txt").write_text("two\n", encoding="utf-8")
+        self._attribute(monkeypatch, VersionOrigin.SOURCE, source_root=repo)
+
+        assert tlr._version_string() == f"booley {__version__} ({short}+dirty, 2026-10-26)"
+
+    def test_source_offset_date_is_converted_to_utc_day(self, monkeypatch):
+        from booley import __version__
+
+        # 23:30 at UTC-7 is already the next day in UTC.
+        self._source(monkeypatch, "abc1234", "2026-10-26T23:30:00-07:00")
+        assert tlr._version_string() == f"booley {__version__} (abc1234, 2026-10-27)"
+
+    def test_missing_commit_prints_bare_version(self, monkeypatch):
+        from booley import __version__
+
+        self._source(monkeypatch, "", "2026-10-26T10:00:00Z")
+        assert tlr._version_string() == f"booley {__version__}"
+
+    def test_missing_date_prints_commit_only(self, monkeypatch):
+        from booley import __version__
+
+        self._source(monkeypatch, "abc1234", "")
+        assert tlr._version_string() == f"booley {__version__} (abc1234)"
+
+    def test_stamp_without_date_field_prints_commit_only(self, monkeypatch):
+        from booley import __version__
+
+        self._stamped_wheel(monkeypatch, COMMIT="cafe123")
+        assert tlr._version_string() == f"booley {__version__} (cafe123)"
+
+    def test_stamp_with_empty_date_prints_commit_only(self, monkeypatch):
+        from booley import __version__
+
+        self._stamped_wheel(monkeypatch, COMMIT="cafe123", COMMIT_TIME="")
+        assert tlr._version_string() == f"booley {__version__} (cafe123)"
+
+    def test_fallback_version_prints_bare_version(self, monkeypatch):
+        from booley import __version__
+        from booley.runtime.version_attribution import VersionOrigin
+
+        self._attribute(monkeypatch, VersionOrigin.FALLBACK)
+        assert tlr._version_string() == f"booley {__version__}"
+
+    def test_version_flag_stays_one_line_on_narrow_terminal(self, monkeypatch, capsys):
+        monkeypatch.setenv("COLUMNS", "20")
+        self._source(monkeypatch, "d4c94dc35+dirty", "2026-10-26T10:00:00Z")
+        with pytest.raises(SystemExit) as exc:
+            tlr._build_parser().parse_args(["--version"])
+        assert exc.value.code == 0
+        lines = capsys.readouterr().out.splitlines()
+        assert len(lines) == 1
+        assert lines[0].endswith("(d4c94dc35+dirty, 2026-10-26)")
 
 
 # ===========================================================================
@@ -752,16 +944,13 @@ class TestEnforceVenue:
             "projects",
         } == tlr._HOST_ONLY_COMMANDS
 
-    def test_top_level_help_labels_every_advertised_command_location(self):
+    def test_top_level_help_drops_per_command_location_tags(self):
+        """The group header carries the location; command rows carry none."""
         help_text = tlr._build_parser().format_help()
 
-        assert "dashboard" in help_text and "[Sandbox]" in help_text
-        assert "projects" in help_text and "[host]" in help_text
-        assert "doctor" in help_text and "[either]" in help_text
-        assert "flow" in help_text and "[Sandbox]" in help_text
-        assert "targets" in help_text and "[either]" in help_text
-        assert "[mixed]" not in help_text
-        assert "Locations:" in help_text
+        assert not re.search(r"\[(Sandbox|either|host|mixed)\]", help_text)
+        assert "Locations:" not in help_text
+        assert "Open this Project's configured agent CLI" in help_text
 
     def test_runtime_guards_are_derived_from_command_location_catalog(self):
         assert (
@@ -898,7 +1087,7 @@ class TestCmdShell:
 
     def test_shell_hidden_from_help(self):
         """ADR 0028 Decision 2: `shell` keeps working but is stripped from
-        `booley --help` (no help=, subparsers metavar hides the choice)."""
+        `booley --help` (absent from the grouped listing and the advertised metavar)."""
         parser = tlr._build_parser()
         assert "shell" not in parser.format_help()
         # ...while remaining fully functional.
@@ -921,6 +1110,14 @@ class _FakeFlow:
     def main(self, argv):
         type(self).calls.append(list(argv))
         return type(self).rc
+
+
+def _unknown_flow_error(name: str) -> str:
+    """The stderr text for an unknown Flow: plain heading and table, never styled."""
+    from booley.harness.terminal_table import render_table
+
+    table = "\n".join(render_table(["Name", "Description"], [["fakeflow", "A fake Flow"]]))
+    return f"ERROR: {name!r} is not a flow for booley flow.\n\nAvailable Flows\n{table}\n"
 
 
 class TestCmdFlow:
@@ -979,21 +1176,40 @@ class TestCmdFlow:
         _FakeFlow.rc = rc
         assert tlr._cmd_flow(self._args(["flow", "fakeflow"]), Path("/work")) == rc
 
+    @pytest.mark.parametrize("kind", ["flow", "specialist"])
+    def test_bare_listing_is_a_header_table(self, kind, monkeypatch, capsys):
+        from booley.harness import colors
+        from booley.harness.terminal_table import render_table
+        from booley.mcp.registry import McpToolInfo
+
+        monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+        infos = [
+            McpToolInfo(name=name, path=f"{kind}s/{name}.py", description=text, kind=kind)
+            for name, text in (("zeta", "Last one. Hidden."), ("alpha", "First\n   one"))
+        ]
+        args = Namespace(command=kind, endpoint_name=None, endpoint_args=[])
+
+        assert tlr._select_endpoint(args, infos, kind) == 0
+
+        heading = "Available Flows" if kind == "flow" else "Available Specialists"
+        table = render_table(
+            ["Name", "Description"], [["alpha", "First one"], ["zeta", "Last one"]]
+        )
+        assert capsys.readouterr().out.splitlines() == [heading, *table]
+
     def test_unknown_flow_name_lists_available_flows(self, capsys):
         rc = tlr._cmd_flow(self._args(["flow", "nosuchtool"]), Path("/work"))
         assert rc == 2
         streams = capsys.readouterr()
         assert streams.out == ""
-        assert streams.err == (
-            "ERROR: 'nosuchtool' is not a flow for booley flow.\n\nAvailable Flows:\n  fakeflow  A fake Flow\n"
-        )
+        assert streams.err == (_unknown_flow_error("nosuchtool"))
         assert not _FakeFlow.calls
 
     def test_missing_flow_name_lists_available_flows(self, capsys):
         rc = tlr._cmd_flow(self._args(["flow"]), Path("/work"))
         assert rc == 0
         streams = capsys.readouterr()
-        assert "Available Flows:" in streams.out
+        assert "Available Flows" in streams.out
         assert "fakeflow" in streams.out
         assert streams.err == ""
 
@@ -1008,7 +1224,7 @@ class TestCmdFlow:
 
         assert tlr.main() == 0
         streams = capsys.readouterr()
-        assert "Available Flows:" in streams.out
+        assert "Available Flows" in streams.out
         assert "fakeflow" in streams.out
         assert streams.err == ""
 
@@ -1017,15 +1233,28 @@ class TestCmdFlow:
         assert rc == 2
         streams = capsys.readouterr()
         assert streams.out == ""
-        assert streams.err == (
-            "ERROR: '' is not a flow for booley flow.\n\nAvailable Flows:\n  fakeflow  A fake Flow\n"
-        )
+        assert streams.err == (_unknown_flow_error(""))
 
     def test_listing_trims_the_llm_facing_description(self, capsys):
         tlr._cmd_flow(self._args(["flow"]), Path("/work"))
         out = capsys.readouterr().out
         assert "A fake Flow" in out
         assert "must not be shown" not in out
+
+    def test_piped_listing_keeps_a_long_description_whole(self, monkeypatch, capsys):
+        """Piped output is never cut or ellipsized (maintainer rule from #2433)."""
+        from booley.mcp.registry import McpToolInfo
+
+        long_lead = "Lead sentence " + "that keeps going " * 12 + "to the very end"
+        info = McpToolInfo(
+            name="fakeflow", path="flows/fakeflow.py", description=long_lead, kind="flow"
+        )
+        monkeypatch.setattr(tlr, "_discover_project_mcp_tools", lambda _root: [info])
+
+        tlr._cmd_flow(self._args(["flow"]), Path("/work"))
+        out = capsys.readouterr().out
+        assert long_lead in out
+        assert "…" not in out
 
     def test_unloadable_endpoint_errors_without_running(self, monkeypatch, capsys):
         monkeypatch.setattr(tlr, "_load_mcp_tool_class", lambda _info: None)
@@ -1142,20 +1371,6 @@ class TestConstants:
 # ===========================================================================
 
 
-def test_hidden_session_prepare_accepts_explicit_workspace_root():
-    """Dev Containers need not run initializeCommand from the workspace cwd."""
-    parser = tlr._build_parser()
-    args = tlr._normalize_args(
-        parser,
-        parser.parse_args(["session", "prepare", "--project-root", "/tmp/project"]),
-    )
-
-    assert args.command == "session"
-    assert args.session_command == "prepare"
-    assert args._cli_selection.value == "/tmp/project"
-    assert args._cli_selection.legacy
-
-
 @pytest.mark.parametrize("command", ["up", "prepare"])
 def test_at_cap_session_start_reports_status_two_without_success(
     command, tmp_path, monkeypatch, capsys
@@ -1205,23 +1420,6 @@ def test_session_plain_runtime_error_remains_one_line(tmp_path, monkeypatch, cap
     assert capsys.readouterr().err == "ERROR: image refresh failed\n"
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["session", "down", "--project-root", "/tmp/project"],
-    ],
-)
-def test_session_down_accepts_explicit_project_root(argv):
-    """Sidecar blockers can offer a copyable, Project-scoped shutdown command."""
-    parser = tlr._build_parser()
-    args = tlr._normalize_args(parser, parser.parse_args(argv))
-
-    assert args.command == "session"
-    assert args.session_command == "down"
-    assert args._cli_selection.value == "/tmp/project"
-    assert args._cli_selection.legacy
-
-
 @pytest.mark.parametrize("command", ["up", "enter", "status", "validate", "refresh"])
 def test_project_root_is_not_exposed_on_unrelated_session_commands(command):
     parser = tlr._build_parser()
@@ -1237,7 +1435,6 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
     from booley.runtime import session_refresh as refresh_runtime
     from booley.runtime import session_runtime
     from booley.runtime.docker_capacity import DockerCapacityError
-    from booley.runtime.image_lifecycle import LifecycleResult, Status
 
     spec = tmp_path / ".devcontainer/devcontainer.json"
     spec.parent.mkdir()
@@ -1253,7 +1450,7 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
     monkeypatch.setattr(
         init_cmd,
         "inspect_refreshable_runtime_image",
-        lambda *_args, **_kwargs: LifecycleResult("project-image", "sha256:running", Status.STALE),
+        lambda *_args, **_kwargs: None,
     )
     preparations = []
 
@@ -1271,7 +1468,7 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
     assert tlr._cmd_session(args, tmp_path) == 2
     captured = capsys.readouterr()
     assert captured.err == (
-        "[XX] image-capacity: Project overlay needs 10 GiB; only 1 GiB available\n"
+        "ERROR: image-capacity: Project overlay needs 10 GiB; only 1 GiB available\n"
     )
     assert "Refreshed Sandbox" not in captured.out
     assert preparations == [tmp_path.resolve()]
@@ -1552,15 +1749,6 @@ def test_removed_alias_docs_still_have_project_replacement_notice(tmp_path, caps
     assert "--project" in notice
 
 
-def test_bare_cheat_project_names_section_replacement(capsys):
-    parser = tlr._build_parser()
-    args = tlr._normalize_args(parser, parser.parse_args(["cheat", "--project"]))
-    assert args.project
-    notice = capsys.readouterr().err
-    assert "--project" in notice
-    assert "--project-files" in notice
-
-
 def test_auth_status_optional_context_preserves_source_checkout(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout=true\n")
     monkeypatch.chdir(tmp_path)
@@ -1688,7 +1876,7 @@ def test_auth_status_cli_refuses_corrupt_owned_project(
     assert tlr.main() == 1
     captured = capsys.readouterr()
     assert "agents run on" not in captured.out
-    assert "[XX]" in captured.out
+    assert "✗" in captured.out
 
 
 def _auth_cli_environment(tmp_path, monkeypatch, argv):

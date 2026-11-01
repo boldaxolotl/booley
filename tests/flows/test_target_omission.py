@@ -12,7 +12,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from booley.flows.builtin_cli import build_cli_parser, execute_cli
-from booley.flows.cli_selection import invocation_context
+from booley.flows.cli_selection import CliInvocation
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintConfigResult, LintFlow
 from booley.flows.plan import FlowPlan
@@ -144,13 +144,11 @@ async def _transport_child(command, *, env=None, **kwargs):
     assert name in FLOWS and module == f"booley.mcp.{name}"
     argv = command[command.index(module) + 1 :]
     output, errors = io.StringIO(), io.StringIO()
-    with (
-        contextlib.redirect_stdout(output),
-        contextlib.redirect_stderr(errors),
-        invocation_context(transport=True),
-    ):
+    flow = FLOWS[name]()
+    flow._cli_invocation = CliInvocation(transport=True)
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
         try:
-            result = execute_cli(FLOWS[name](), argv)
+            result = execute_cli(flow, argv)
             code = result.exit_code
         except SystemExit as exc:
             code = exc.code
@@ -215,7 +213,7 @@ def test_omitted_target_selects_and_announces_only_eligible(entry, name, project
     ids=[f"{entry}-{name}-{label}" for entry, name in CASES for label in ("zero", "many")],
 )
 def test_omitted_target_rejects_cardinality(entry, name, count, project, executed, monkeypatch):
-    from booley.flows.flow_session import FlowSession
+    from booley.flows.endpoint_state import EndpointState
 
     admitted, started = [], []
 
@@ -223,7 +221,7 @@ def test_omitted_target_rejects_cardinality(entry, name, count, project, execute
         admitted.append(True)
         return None, None
 
-    monkeypatch.setattr(FlowSession, "_acquire_job_slot", acquire_slot)
+    monkeypatch.setattr(EndpointState, "_acquire_job_slot", acquire_slot)
     monkeypatch.setattr(
         "booley.flows.endpoint_session._write_display_event", lambda *args: started.append(args)
     )
@@ -363,7 +361,7 @@ def test_selection_notice_is_once_for_quiet_and_normal_calls(quiet, project, exe
     flow = LintFlow()
     argv = ["--work-dir", str(project)] + (["--quiet"] if quiet else [])
     result = flow.execute_cli(argv)
-    flow.context._publish_console_report(result.outcome)
+    flow._publish_console_report(result.outcome)
     captured = capsys.readouterr()
     notice = "lint: --target omitted; selected Target chosen."
     assert captured.err.count(notice) == 1
@@ -375,12 +373,12 @@ def test_selection_notice_is_once_for_quiet_and_normal_calls(quiet, project, exe
 def test_selection_notice_survives_preparation_failure(
     failure, project, executed, monkeypatch, capsys
 ):
-    from booley.flows.flow_session import FlowSession
+    from booley.flows.endpoint_state import EndpointState
 
     write_targets(project, "sim")
     if failure == "binding":
         monkeypatch.setattr(
-            FlowSession,
+            EndpointState,
             "_criterion_binding_gate",
             lambda self: EndpointOutcome(exit_code=2, report_text="binding refused"),
         )
@@ -398,13 +396,13 @@ def test_selection_notice_survives_preparation_failure(
             lambda self: EndpointOutcome(exit_code=2, report_text="coverage refused"),
         )
     monkeypatch.setattr(
-        FlowSession, "_acquire_job_slot", lambda self: pytest.fail("admitted refusal")
+        EndpointState, "_acquire_job_slot", lambda self: pytest.fail("admitted refusal")
     )
     notice = "sim: --target omitted; selected Target chosen."
     flow = SimulateFlow()
     extra = ["--coverage"] if failure == "coverage" else []
-    with invocation_context(transport=True):
-        result = flow.execute_cli(["--work-dir", str(project), *extra])
+    flow._cli_invocation = CliInvocation(transport=True)
+    result = flow.execute_cli(["--work-dir", str(project), *extra])
     captured = capsys.readouterr()
     assert result.exit_code == 2 and executed == []
     assert captured.err.count(notice) == 1 and captured.err.rstrip().endswith(notice)

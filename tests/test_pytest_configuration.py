@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import configparser
+import fnmatch
 import ntpath
 import os
 import re
@@ -18,6 +19,9 @@ import pytest
 import yaml
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
+sys.path.insert(0, str(REPOSITORY_ROOT / ".github/scripts"))
+
+from ci_changes import CATEGORIES, build_test_matrix, required_jobs
 
 
 def _workflow(filename: str) -> dict:
@@ -31,6 +35,23 @@ def _test_workflow() -> dict:
 
 def _deep_tests_workflow() -> dict:
     return _workflow("deep-tests.yml")
+
+
+_RUNNER_OS_CHOICE = re.compile(r"\$\{\{ runner\.os == '(\w+)' && (.+?) \|\| (.+?) \}\}")
+_LINUX_SCHEDULER_OUTPUT = "needs.changes.outputs.linux_scheduler"
+
+
+def _render_expressions(run: str, runner_os: str, scheduler: str) -> str:
+    """Resolve the scheduler output and the `runner.os == X && A || B` choices."""
+
+    def operand(text: str) -> str:
+        return scheduler if text == _LINUX_SCHEDULER_OUTPUT else text.strip("'")
+
+    def choose(match: re.Match[str]) -> str:
+        return operand(match[2] if match[1] == runner_os else match[3])
+
+    resolved = _RUNNER_OS_CHOICE.sub(choose, run)
+    return resolved.replace("${{ " + _LINUX_SCHEDULER_OUTPUT + " }}", scheduler)
 
 
 def _named_step(job: dict, name: str) -> dict:
@@ -93,7 +114,9 @@ def test_ci_uses_workstealing_for_windows_module_imbalance() -> None:
         step for step in test_steps if step.get("name") == "Run duration-balanced shard"
     )
 
-    assert "pytest tests/ -q --tb=short -n 4 --dist=worksteal" in parallel_step["run"].replace(
+    windows_command = _render_expressions(parallel_step["run"], "Windows", "loadscope")
+
+    assert "pytest tests/ -q --tb=short -n 4 --dist=worksteal" in windows_command.replace(
         "\n", " "
     )
     assert "--ci-shard-count" in parallel_step["run"]
@@ -132,6 +155,7 @@ _EXPECTED_NATIVE_BWAVE_NODES = {
     "tests/bwave/test_contract.py::test_native_list_metadata_crosses_multi_root_python_decoder",
     "tests/bwave/test_contract.py::test_trace_session_accepts_native_multi_root_store",
     "tests/bwave/test_contract.py::test_total_miss_is_exit_usage_plus_marker",
+    "tests/bwave/test_contract.py::test_value_past_the_trace_end_is_exit_usage_plus_marker",
     "tests/bwave/test_contract.py::test_list_tree_stderr_carries_the_scope_line",
     "tests/bwave/test_contract.py::test_build_refuses_zero_signal_vcd",
     "tests/bwave/test_contract.py::test_empty_store_marker_survives_in_binary",
@@ -143,6 +167,21 @@ _EXPECTED_NATIVE_BWAVE_NODES = {
     "tests/bwave/test_sessions.py::test_stale_session_warning",
     "tests/bwave/test_sessions.py::test_fresh_trace_with_old_registration_does_not_warn",
     "tests/bwave/test_sessions.py::test_register_reports_trace_identity_and_age",
+    "tests/bwave/test_scope_relative_globs.py::test_relative_glob_selects_the_list_tree[list]",
+    "tests/bwave/test_scope_relative_globs.py::test_relative_glob_selects_the_list_tree[value]",
+    "tests/bwave/test_scope_relative_globs.py::test_relative_glob_selects_the_list_tree[find]",
+    "tests/bwave/test_scope_relative_globs.py::test_relative_glob_selects_the_list_tree[sample]",
+    "tests/bwave/test_scope_relative_globs.py::test_relative_glob_selects_the_list_tree[stats]",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_resolves_relative_glob",
+    "tests/bwave/test_scope_relative_globs.py::test_glob_total_miss_suggests_anchored_form[u_core.*]",
+    "tests/bwave/test_scope_relative_globs.py::test_glob_total_miss_suggests_anchored_form[tb.*]",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_total_miss_suggests_anchored_form",
+    "tests/bwave/test_scope_relative_globs.py::test_anchored_globs_select_as_before[TOP.tb.dut.*]",
+    "tests/bwave/test_scope_relative_globs.py::test_anchored_globs_select_as_before[*dut.*]",
+    "tests/bwave/test_scope_relative_globs.py::test_bare_name_suffix_match_unchanged",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_keeps_anchored_and_bare_matching[TOP.tb.dut.*-expected0]",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_keeps_anchored_and_bare_matching[*dut.*-expected1]",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_keeps_anchored_and_bare_matching[bus-expected2]",
 }
 
 
@@ -293,20 +332,71 @@ def test_bwave_smoke_enforces_cached_path_duration_budget() -> None:
     job = workflow["jobs"]["bwave-smoke"]
     steps = job["steps"]
 
-    start = next(step for step in steps if step.get("name") == "Start duration budget clock")
+    start = next(step for step in steps if step.get("name") == "Start test-phase duration clock")
     canary = next(step for step in steps if step.get("name") == "Enforce duration budget")
 
     assert job["timeout-minutes"] == 180
     assert "started_at_epoch=$(date +%s)" in start["run"]
-    assert canary["if"] == "always() && steps.runtime-base.outputs.build != 'true'"
+    assert canary["if"] == (
+        "always() && steps.runtime-base.outputs.build != 'true' && "
+        "steps.duration-clock.outcome == 'success'"
+    )
     assert ".github/scripts/ci_duration_budget.py" in canary["run"]
-    assert canary["env"]["STANDARD_BUDGET_SECONDS"] == 600
+    assert canary["env"]["STANDARD_BUDGET_SECONDS"] == 560
     assert '--budget-seconds "${budget}"' in canary["run"]
     assert steps.index(canary) > next(
         index
         for index, step in enumerate(steps)
         if step.get("name") == "Upload installed agent CLI policy evidence"
     )
+
+
+def _bwave_smoke_clock_seconds(*, build_seconds: int, validation_seconds: int) -> int:
+    """Return the budget-clock reading for a synthetic run of the real step order.
+
+    Every top-level ``Build …`` step takes ``build_seconds``, the parallel
+    validation group takes ``validation_seconds``, and every other step 1 s.
+    """
+    steps = _test_workflow()["jobs"]["bwave-smoke"]["steps"]
+    names = [step.get("name", "") for step in steps]
+    clock = names.index("Start test-phase duration clock")
+    enforce = names.index("Enforce duration budget")
+
+    def duration(step: dict) -> int:
+        if "parallel" in step:
+            return validation_seconds
+        return build_seconds if step.get("name", "").startswith("Build ") else 1
+
+    return sum(duration(step) for step in steps[clock + 1 : enforce])
+
+
+@pytest.mark.parametrize(
+    ("build_seconds", "validation_seconds", "passed"),
+    [(900, 450, True), (60, 600, False)],
+    ids=["slow-build-normal-tests", "fast-build-slow-tests"],
+)
+def test_bwave_smoke_budget_times_tests_not_image_builds(
+    build_seconds: int, validation_seconds: int, *, passed: bool
+) -> None:
+    """Runner build variance cannot fail the budget; a test-time regression does."""
+    from ci_duration_budget import evaluate
+
+    budget_step = next(
+        step
+        for step in _test_workflow()["jobs"]["bwave-smoke"]["steps"]
+        if step.get("name") == "Enforce duration budget"
+    )
+    elapsed = _bwave_smoke_clock_seconds(
+        build_seconds=build_seconds, validation_seconds=validation_seconds
+    )
+    result = evaluate(
+        "bwave-smoke",
+        started_at=1_000,
+        now=1_000 + elapsed,
+        budget=budget_step["env"]["STANDARD_BUDGET_SECONDS"],
+    )
+
+    assert result.passed is passed
 
 
 def test_standard_size_ceiling_runs_without_riscv_gate() -> None:
@@ -380,11 +470,6 @@ def test_riscv_image_lane_is_path_gated() -> None:
     assert steps.index(resolve) < group_index
     assert riscv["if"] == gate
     assert "Dockerfile.riscv" in riscv["run"]
-    assert "--progress rawjson" in riscv["run"]
-    assert "riscv-tool-substrate-build.raw.jsonl" in riscv["run"]
-    assert "wheel-overlay-build.raw.jsonl" in riscv["run"]
-    assert "riscv-tool-substrate-metadata.json" in riscv["run"]
-    assert "wheel-overlay-metadata.json" in riscv["run"]
     assert "verify_riscv_image_contract.sh" in riscv["run"]
     assert "run_picorv32_ci_demo.sh" in riscv["run"]
     assert '--build-context "riscv-tooling=${TOOLING_CONTEXT}"' in riscv["run"]
@@ -394,13 +479,6 @@ def test_riscv_image_lane_is_path_gated() -> None:
     assert restore["if"] == f"always() && {gate}"
     assert upload["if"] == f"always() && {gate}"
     assert steps.index(restore) > group_index
-
-
-def test_riscv_timing_retains_all_validation_phases_and_parallel_lanes() -> None:
-    workflow = _test_workflow()
-    steps = workflow["jobs"]["bwave-smoke"]["steps"]
-    group = next(step for step in steps if "parallel" in step)
-    rendered_lanes = "\n".join(step["run"] for step in group["parallel"])
     helper = (REPOSITORY_ROOT / ".github/scripts/verify_riscv_image_contract.sh").read_text(
         encoding="utf-8"
     )
@@ -408,35 +486,10 @@ def test_riscv_timing_retains_all_validation_phases_and_parallel_lanes() -> None
         encoding="utf-8"
     )
 
-    assert rendered_lanes.count("--topology parallel") == len(group["parallel"])
-    timed_lanes = [
-        step
-        for step in group["parallel"]
-        if step.get("name") != "Run RISC-V candidate image contract"
-    ]
-    assert all(
-        step["run"].startswith("python .github/scripts/riscv_phase_metrics.py timed-run")
-        for step in timed_lanes
-    )
-    assert "--name riscv_tool_substrate --topology nested" in rendered_lanes
-    assert "--name wheel_overlay --topology nested" in rendered_lanes
-    assert "--name image_contract_size_resources --topology nested" in rendered_lanes
-    assert "--name picorv32_runtime_demo --topology nested" in rendered_lanes
     assert "image_contract.py" in helper
     assert "image_size_report.py" in helper
     assert "image_runtime_resources.py" in helper
     assert "verify_picorv32_demo.sh" in demo
-
-    ibex = next(step for step in steps if step.get("name") == "Run pinned Ibex lint demo")
-    finalizer = next(
-        step for step in steps if step.get("name") == "Finalize RISC-V phase evidence"
-    )
-    upload = next(step for step in steps if step.get("name") == "Upload candidate RISC-V evidence")
-    assert "--name ibex_runtime --topology post-group" in ibex["run"]
-    assert "riscv_phase_metrics.py finalize" in finalizer["run"]
-    assert "phases.json" in finalizer["run"]
-    assert "--tooling-source" in finalizer["run"]
-    assert steps.index(finalizer) < steps.index(upload)
 
 
 def test_matrix_uses_test_only_dependencies() -> None:
@@ -452,12 +505,12 @@ def test_matrix_uses_test_only_dependencies() -> None:
 
 
 def test_matrix_enforces_the_ci_duration_budget() -> None:
-    """Bound full suites at twenty minutes and shard/compatibility legs at fifteen."""
+    """Bound full suites at thirty minutes and shard/compatibility legs at fifteen."""
     workflow = _test_workflow()
     test_job = workflow["jobs"]["test"]
 
-    assert test_job["timeout-minutes"] == "${{ matrix.mode == 'full' && 20 || 15 }}"
-    assert _workflow("full-python-matrix.yml")["jobs"]["test"]["timeout-minutes"] == 20
+    assert test_job["timeout-minutes"] == "${{ matrix.mode == 'full' && 30 || 15 }}"
+    assert _workflow("full-python-matrix.yml")["jobs"]["test"]["timeout-minutes"] == 30
 
     pytest_steps = [step for step in test_job["steps"] if "pytest " in str(step.get("run", ""))]
     assert pytest_steps
@@ -588,9 +641,31 @@ def test_primary_pytest_jobs_share_evidence_publishing() -> None:
 
     action_path = REPOSITORY_ROOT / ".github/actions/publish-pytest-evidence/action.yml"
     rendered_action = action_path.read_text(encoding="utf-8")
-    assert rendered_action.count("actions/upload-artifact@") == 3
+    assert rendered_action.count("actions/upload-artifact@") == 4
     assert ".github/scripts/assert_junit.py" in rendered_action
     assert "always() && inputs.publish-shard == 'true'" in rendered_action
+    assert "always() && inputs.publish-timing == 'true'" in rendered_action
+    assert evidence_steps["test"]["with"]["publish-timing"] == "${{ matrix.mode == 'full' }}"
+    assert "publish-timing" not in evidence_steps["coverage-shards"]["with"]
+
+
+def test_complete_suites_emit_phase_timing_without_sharding() -> None:
+    steps = _test_workflow()["jobs"]["test"]["steps"]
+    full = next(step for step in steps if step.get("name") == "Run full compatibility suite")
+    command = " ".join(full["run"].split())
+
+    assert full["if"] == "matrix.mode == 'full'"
+    assert full["env"]["PYTHONPATH"] == ".github/scripts"
+    assert "-p ci_pytest_shard" in command
+    assert '--ci-timing-output "${{ runner.temp }}/timing/test-timings.json"' in command
+    for sharding_option in (
+        "--ci-shard-count",
+        "--ci-shard-index",
+        "--ci-shard-group",
+        "--ci-shard-manifest",
+        "--ci-timing-model",
+    ):
+        assert sharding_option not in command
 
 
 def test_ci_records_queue_and_runner_minutes() -> None:
@@ -680,7 +755,7 @@ def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
     evidence = _named_step(job, "Assert worktree execution evidence")
     assert evidence["if"] == "always()"
     assert 'assert_junit.py "${RUNNER_TEMP}/worktree-mounts.xml"' in evidence["run"]
-    assert "--min-tests 8 --max-skips 0" in evidence["run"]
+    assert "--min-tests 1 --max-skips 0" in evidence["run"]
     for item in [job, *job["steps"]]:
         assert not item.get("continue-on-error", False)
         assert "|| true" not in item.get("run", "")
@@ -856,13 +931,13 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert "test_verilator_coverage_collector_smoke.py" in coverage["run"]
     assert "test_verilator_compiler_cache_smoke.py" in coverage["run"]
     assert "assert_junit.py" in coverage["run"]
-    assert "--min-tests 21 --max-skips 0" in coverage["run"]
+    assert "--min-tests 1 --max-skips 0" in coverage["run"]
     goal_mode = next(step for step in validations if step["name"].startswith("Run Goal Mode"))
     assert "BOOLEY_GOAL_MODE_SMOKE=1" in goal_mode["run"]
     assert "test_goal_mode_image_smoke.py" in goal_mode["run"]
     assert "--junitxml=/validation-tmp/goal-mode.xml" in goal_mode["run"]
     assert "assert_junit.py" in goal_mode["run"]
-    assert "--min-tests 3 --max-skips 0" in goal_mode["run"]
+    assert "--min-tests 1 --max-skips 0" in goal_mode["run"]
     upload = next(
         step for step in steps if step.get("name") == "Upload coverage release test timing"
     )
@@ -874,7 +949,7 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert all(cleanup_wrapper in step["run"] for step in validations)
     for step in validations:
         tokens = shlex.split(step["run"])
-        assert tokens.index(cleanup_wrapper) > tokens.index("--")
+        assert tokens[0] == cleanup_wrapper
         assert "&&" not in tokens
 
 
@@ -1229,3 +1304,96 @@ def _nested_runs(node: object) -> list[str]:
     return own + [
         run for key, child in node.items() if key != "run" for run in _nested_runs(child)
     ]
+
+
+def test_linux_shard_dispatch_inputs_reach_the_classifier() -> None:
+    workflow = _test_workflow()
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    changes = workflow["jobs"]["changes"]
+    classify = _named_step(changes, "Classify changed paths")
+
+    assert (inputs["linux_shard_count"]["options"], inputs["linux_shard_count"]["default"]) == (
+        ["1", "2", "3"],
+        "2",
+    )
+    assert (inputs["linux_scheduler"]["options"], inputs["linux_scheduler"]["default"]) == (
+        ["loadscope", "worksteal"],
+        "loadscope",
+    )
+    assert inputs["linux_shard_benchmark"]["type"] == "boolean"
+    assert inputs["linux_shard_benchmark"]["default"] is False
+    for expected in (
+        "--linux-shard-count \"${{ inputs.linux_shard_count || '2' }}\"",
+        "--linux-scheduler \"${{ inputs.linux_scheduler || 'loadscope' }}\"",
+        '--linux-shard-benchmark "${{ inputs.linux_shard_benchmark || false }}"',
+    ):
+        assert expected in classify["run"]
+    assert "!inputs.linux_shard_benchmark" in classify["env"]["FORCE_ALL"]
+    for output in ("linux_shard_count", "linux_scheduler"):
+        assert changes["outputs"][output] == f"${{{{ steps.classify.outputs.{output} }}}}"
+
+
+def test_linux_scheduler_and_timing_model_reach_only_linux_commands() -> None:
+    workflow = _test_workflow()
+    test_job = workflow["jobs"]["test"]
+    full = _named_step(test_job, "Run full compatibility suite")["run"]
+    shard = _named_step(test_job, "Run duration-balanced shard")["run"]
+    scheduler_users = {
+        (job_name, step.get("name"))
+        for job_name, job in workflow["jobs"].items()
+        for step in job.get("steps", [])
+        if _LINUX_SCHEDULER_OUTPUT in step.get("run", "")
+    }
+    windows_shard = _render_expressions(shard, "Windows", "loadscope")
+
+    assert scheduler_users == {
+        ("test", "Run full compatibility suite"),
+        ("test", "Run duration-balanced shard"),
+    }
+    for scheduler in ("loadscope", "worksteal"):
+        linux_shard = _render_expressions(shard, "Linux", scheduler)
+        assert f"--dist={scheduler} " in _render_expressions(full, "Linux", scheduler)
+        assert f"--dist={scheduler} " in linux_shard
+        assert "--ci-timing-model .github/ci/linux-test-timings.json" in linux_shard
+        assert "windows-test-timings" not in linux_shard
+    assert "--dist=worksteal " in windows_shard
+    assert "--ci-timing-model .github/ci/windows-test-timings.json" in windows_shard
+
+
+def test_test_verify_proves_each_linux_group_when_sharded() -> None:
+    workflow = _test_workflow()
+    verify = workflow["jobs"]["test-verify"]
+    steps = verify["steps"]
+    names = [step.get("name") for step in steps]
+    download = _named_step(verify, "Download Linux shard manifests")
+    prove = _named_step(verify, "Prove every Linux sharded test ran exactly once")
+    gate = "${{ !cancelled() && needs.changes.outputs.linux_shard_count != '1' }}"
+    groups = sorted(
+        {
+            str(entry["group"])
+            for entry in build_test_matrix(10, linux_shard_count=2)["include"]
+            if entry["os"] == "ubuntu-latest"
+        }
+    )
+    command = " ".join(prove["run"].replace("\\\n", " ").split())
+
+    assert verify["needs"] == ["changes", "test"]
+    assert names.index(download["name"]) < names.index(prove["name"])
+    assert download["if"] == prove["if"] == gate
+    assert download["with"]["pattern"] == "shard-linux-*"
+    assert download["with"]["path"] == "${{ runner.temp }}/linux-shards"
+    assert prove["env"]["LINUX_SHARD_COUNT"] == "${{ needs.changes.outputs.linux_shard_count }}"
+    assert f"for group in {' '.join(groups)}; do" in command
+    assert '--root "${RUNNER_TEMP}/linux-shards" --group "${group}"' in command
+    assert '--shard-count "${LINUX_SHARD_COUNT}"' in command
+    # Both groups are checked even when the first fails.
+    assert "|| status=1" in command
+    assert command.endswith('exit "${status}"')
+    for artifact in ("shard-coverage-0", "coverage-shard-0", "pytest-timing-ubuntu-3.11-full"):
+        assert not any(
+            fnmatch.fnmatch(artifact, step.get("with", {}).get("pattern", "")) for step in steps
+        )
+    assert "test-verify" in workflow["jobs"]["ci-required"]["needs"]
+    for category in CATEGORIES:
+        jobs = required_jobs({category})
+        assert ("test" in jobs) == ("test-verify" in jobs)

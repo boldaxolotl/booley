@@ -8,6 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from booley.harness import colors
+from booley.harness import terminal_status as ts
+
 ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT / ".github/scripts"))
 
@@ -19,7 +22,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _fake_booley(root: Path) -> tuple[Path, Path]:
+def _fake_booley(root: Path, *, init_output: str = "[OK] initialized") -> tuple[Path, Path]:
     log = root / "commands.jsonl"
     executable = root / "bin" / "booley"
     executable.parent.mkdir()
@@ -38,14 +41,35 @@ def _fake_booley(root: Path) -> tuple[Path, Path]:
         "capture_output=True, text=True)\n"
         "    assert 'ms-vscode-remote.remote-containers' in after.stdout\n"
         "elif sys.argv[1] == 'init':\n"
-        "    print('[OK] initialized')\n"
+        "    import shutil\n"
+        "    agent = shutil.which('codex')\n"
+        "    assert agent == os.path.join(os.environ['HOME'], 'bin', 'codex'), agent\n"
+        "    subprocess.run([agent, '--version'], check=True)\n"
+        f"    print({init_output!r})\n"
         "elif sys.argv[1] == 'doctor':\n"
         "    print('MCP server exposes 17 MCP tool(s)')\n"
-        "    print('0 failed.')\n",
+        "    print('  ✗ failed     0')\n",
         encoding="utf-8",
     )
     executable.chmod(0o755)
     return executable, log
+
+
+@pytest.mark.parametrize("scenario", ["clean", "failing", "colored"])
+def test_no_failure_check_reads_real_doctor_counts(
+    scenario: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.harness import colors, doctor
+
+    monkeypatch.setattr(colors, "COLORS_ENABLED", scenario == "colored")
+    reporter = doctor._Reporter.create()
+    reporter.pass_("fine")
+    if scenario == "failing":
+        reporter.fail_("broken")
+    reporter.finish()
+
+    output = capsys.readouterr().out
+    assert host_doctor.doctor_reports_no_failures(output) is (scenario != "failing")
 
 
 def test_host_doctor_isolates_xdg_config_home(
@@ -100,7 +124,7 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
             "--provider",
             "codex",
             "--auth",
-            "subscription",
+            "auto",
             "--skip-credentials",
         ],
         ["doctor"],
@@ -127,9 +151,11 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
     }
     assert evidence["cleanup"] == {
         "editor_probe_removed": True,
+        "agent_cli_probe_removed": True,
         "editor_marker_removed": True,
     }
     assert not (home / "bin" / "code").exists()
+    assert not (home / "bin" / "codex").exists()
     assert not (home / ".booley-ci-dev-containers").exists()
 
 
@@ -149,3 +175,89 @@ def test_host_doctor_rejects_project_outside_isolated_root(tmp_path: Path) -> No
             candidate_sha="candidate-sha",
             image_digest="sha256:candidate",
         )
+
+
+def test_host_doctor_names_the_initialization_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A warning fails the gate, and the error carries the offending line itself."""
+    booley, log = _fake_booley(
+        tmp_path, init_output="  \x1b[33m!\x1b[0m  host-agent-cli: something drifted"
+    )
+    project = tmp_path / "project"
+    home = tmp_path / "home"
+    project.mkdir()
+    home.mkdir()
+    monkeypatch.setenv("COMMAND_LOG", str(log))
+
+    with pytest.raises(RuntimeError, match=r"!  host-agent-cli: something drifted"):
+        host_doctor.validate(
+            allowed_root=tmp_path,
+            project=project,
+            home=home,
+            booley=booley,
+            expected_uid=os.getuid(),
+            expected_gid=os.getgid(),
+            candidate_sha="candidate-sha",
+            image_digest="sha256:candidate",
+        )
+    # Both stubs are removed even when the gate fails.
+    assert not (home / "bin" / "code").exists()
+    assert not (home / "bin" / "codex").exists()
+
+
+def test_host_doctor_keeps_a_preexisting_agent_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``codex`` this run did not write is refused and left in place."""
+    booley, log = _fake_booley(tmp_path)
+    project = tmp_path / "project"
+    home = tmp_path / "home"
+    project.mkdir()
+    (home / "bin").mkdir(parents=True)
+    existing = home / "bin" / "codex"
+    existing.write_text("not ours", encoding="utf-8")
+    monkeypatch.setenv("COMMAND_LOG", str(log))
+
+    with pytest.raises(ValueError, match="codex probe path already exists"):
+        host_doctor.validate(
+            allowed_root=tmp_path,
+            project=project,
+            home=home,
+            booley=booley,
+            expected_uid=os.getuid(),
+            expected_gid=os.getgid(),
+            candidate_sha="candidate-sha",
+            image_digest="sha256:candidate",
+        )
+    assert existing.read_text(encoding="utf-8") == "not ours"
+    assert not (home / "bin" / "code").exists()
+
+
+def test_no_failure_check_uses_the_closing_counts_row() -> None:
+    echoed = "  ✗ failed     3\ntool log\n  ✗ failed     0\n"
+
+    assert host_doctor.doctor_reports_no_failures(echoed) is True
+    assert host_doctor.doctor_reports_no_failures("  ✗ failed     0\n  ✗ failed     2\n") is False
+
+
+@pytest.mark.parametrize(
+    ("status_name", "is_problem"),
+    [
+        ("WARN", True),
+        ("FAIL", True),
+        ("PASS", False),
+        ("CURRENT", False),
+        ("PENDING", False),
+        ("SKIP", False),
+        ("NOTE", False),
+    ],
+)
+def test_problem_row_matches_exactly_the_warning_and_failure_rows(
+    status_name: str, is_problem: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate's regex tracks the rows ``terminal_status`` prints, glyph and gap."""
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+    row = ts.status_line(getattr(ts.LineStatus, status_name), "init row")
+    assert bool(host_doctor._PROBLEM_ROW.match(row)) is is_problem
+    assert host_doctor._PROBLEM_ROW.match(ts.hint_line("remedy text")) is None

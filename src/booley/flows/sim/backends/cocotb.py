@@ -57,6 +57,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -1147,10 +1148,11 @@ def _execute_cocotb_run(
     transport: AdapterTransportIdentity | None,
     runtime_inputs: tuple[str, ...],
 ):
+    from booley.harness.colors import dim
     from booley.presentation.heartbeat import render_heartbeat
     from booley.runtime.heartbeat import Heartbeat
 
-    heartbeat = Heartbeat("cocotb sim", render=render_heartbeat, interval=60)
+    heartbeat = Heartbeat("cocotb sim", render=partial(render_heartbeat, style=dim), interval=60)
     heartbeat.start()
     try:
         publish = _partial_result_publisher(transport, run.tests, run.results_file)

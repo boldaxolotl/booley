@@ -190,7 +190,7 @@ exclusive `consumed` marker permits exactly one EIO across descendants.
 | Simulation publication | rename to exact Target `/simulation.json`; fail before replacement. |
 | Acceptance state | rename to the captured Goal Record `goals/<record-id>/booley_state.json`; fail only when temporary JSON adds an acceptance transaction absent from the baseline state. |
 | Terminal progress | rename to exact invocation `/progress.json`; fail only when temporary JSON has `complete: true`. Earlier observational writes pass through. |
-| Native-prune interruption | unlink of a recorded raw/merged payload beneath that Target's `.native-pruned/`, after native rename and journal. Select a concrete relative suffix from the recorded deletion set. |
+| Native-prune interruption | unlink of a recorded raw/merged payload beneath that Target's `native/`, after the `pruning` availability sidecar write. Select a concrete relative suffix from the recorded deletion set. |
 | Full-prune interruption | unlink of a recorded payload beneath exact `.pruned-N/`, excluding `.prune.json`, after invocation rename and journal. |
 
 Save the source temporary JSON while the syscall is paused, the consumed event,
@@ -242,18 +242,14 @@ Use a declared included `rtl/constants.svh` with a comment-only change for the
 include-source analysis case; it must be in the recorded closure before collection.
 
 Campaign faults use fresh V4 evidence. Use `baseline.native` for point mutations
-(the Campaign must contain points) and `baseline.multi` for `wrong-source-rollup`
-(two RTL sources with distinct distributions). Copy an entire completed numbered invocation into a new
+(the Campaign must contain points). Copy an entire completed numbered invocation into a new
 owned reports root, preserving `sim/N/targets/<target>/coverage.json` layout.
 Create `.qa-coverage-fault-copy` at that new owned root and invoke
 `faults/campaign.py <mode> <copied-target>/coverage.json --owned <copy-root>`, passing
 the copied Target reference. The script follows the reference to the nested
-Campaign, mutates it, writes point lines and the manifest in Booley's canonical
-compact encoding, and rebinds the reference's `bytes`/`sha256`. The original
-Campaign is never mutated. The `invalid-overall-score` and `invalid-source-score`
-modes retain a scoring inventory that an invalid Campaign must not publish;
-`wrong-source-rollup` swaps two distinct source distributions. Truncation and final-record cases update unrelated
-envelope digests/sizes to reach the intended deeper validation. Note the
+Campaign, mutates it, and rewrites only the damaged file; point faults leave the
+manifest as published. The original
+Campaign is never mutated. Note the
 particular error code, field, and message proving that boundary; an unrelated earlier parse
 error does not show the deeper validation works. Restore by discarding only that
 copy, recreating it from the original, and successfully analyzing the valid pair.

@@ -29,10 +29,12 @@ from booley.goals.presentation import GoalPresentation, goal_presentation
 from booley.goals.proposals import ProposalView, list_proposals
 from booley.goals.state_store import load_goal_state_and_evidence
 from booley.goals.store import GoalStore, GoalStoreError
+from booley.goals.synth_baseline import is_relative_synth
 from booley.goals.test_run_freezing import TargetPlans, ensure_test_run_resolutions
 from booley.goals.test_run_goals import names_test_runs
 from booley.goals.test_run_status import TestRunJudgement, judge_test_runs
 from booley.goals.warnings import goal_warnings, protected_warnings
+from booley.runtime.git_facts import repository_facts
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,8 @@ class GoalStatus:
     state_conflict: bool = False
     presentation: GoalPresentation | None = None
     sim_transitions: tuple[dict[str, Any], ...] | None = None
+    #: ``{"status", "reason"}`` of a relative SYNTH Goal's baseline Job, else ``None``.
+    synth_baseline: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +84,7 @@ class GoalStatusSelection:
     project_wide: bool
 
 
+@repository_facts()
 def checkout_violation(store: GoalStore, record: GoalRecord, work_dir: Path) -> str:
     """Require the Worktree Identity and symbolic Goal Branch recorded at entry."""
     try:
@@ -102,29 +107,29 @@ def build_status(
     work_dir: Path | None = None,
     resolvers: GoalFreshnessResolvers = DEFAULT_RESOLVERS,
     observational: bool = False,
+    campaign_reader: CampaignResultsReader | None = None,
 ) -> GoalStatusView:
     """Read one coherent record/state/lifecycle projection without recovering it."""
-    from booley.runtime.booley_dir_migration import is_archived_record
-
-    observational = observational or is_archived_record(store.booley_dir, record.id)
     with store.record_lock(record.id, existing_only=observational):
-        return _build_status(store, store.load(record.id), work_dir=work_dir, resolvers=resolvers)
+        return _build_status(
+            store,
+            store.load(record.id),
+            work_dir=work_dir,
+            resolvers=resolvers,
+            campaign_reader=campaign_reader,
+        )
 
 
+@repository_facts()
 def _build_status(
     store: GoalStore,
     record: GoalRecord,
     *,
     work_dir: Path | None,
     resolvers: GoalFreshnessResolvers,
+    campaign_reader: CampaignResultsReader | None,
 ) -> GoalStatusView:
-    from booley.runtime.booley_dir_migration import archival_path, is_archived_record
-
-    if is_archived_record(store.booley_dir, record.id):
-        return _archived_status(store, record)
-    root = work_dir or archival_path(
-        store.booley_dir, Path(record.worktree_path), record_id=record.id
-    )
+    root = work_dir or Path(record.worktree_path)
     try:
         checkout = GoalCheckout(root).containing_repository()
     except CheckoutError:
@@ -141,9 +146,10 @@ def _build_status(
     drift = ("Goal apply is interrupted; recovery is required" if interrupted else "") or (
         protected[0] if protected else checkout_violation(store, record, root)
     )
-    unaccounted = campaign_accounting.unaccounted_goals(store, record, state)
+    unaccounted = campaign_accounting.unaccounted_goals(
+        store, record, state, history, campaign_reader
+    )
     goals = _goal_statuses(record, state, history, store, root, drift, resolvers, unaccounted)
-    goals = _with_unfinished_runs(goals, campaign_accounting.started_without_result(store, record))
     return GoalStatusView(
         record,
         goals,
@@ -195,22 +201,17 @@ def _goal_statuses(
                 store.booley_dir, record, goal, evidence, history, root, resolvers
             )
             status = replace(status, sim_transitions=tuple(transitions))
+        if is_relative_synth(goal):
+            from booley.goals.sim_baseline_store import SYNTH_BASELINE
+            from booley.goals.sim_transitions import baseline_observations
+
+            seen = baseline_observations(store.booley_dir, record, goal, SYNTH_BASELINE)
+            status = replace(
+                status,
+                synth_baseline={"status": seen["status"], "reason": str(seen.get("reason", ""))},
+            )
         statuses.append(status)
     return tuple(statuses)
-
-
-def _with_unfinished_runs(
-    goals: tuple[GoalStatus, ...], notes: Mapping[str, str]
-) -> tuple[GoalStatus, ...]:
-    """Say of an unmet Goal that a frozen run of it was started and left no result."""
-    return tuple(
-        replace(
-            goal, reason=f"{goal.reason}; {notes[goal.key]}" if goal.reason else notes[goal.key]
-        )
-        if goal.key in notes and goal.status == "unmet"
-        else goal
-        for goal in goals
-    )
 
 
 def _entry_facts(entry: Any) -> dict[str, Any] | None:
@@ -335,7 +336,13 @@ def select_status(
         record = _brought_up_to_date(store, record, found[0], campaign_reader)
     records = (record,) if record is not None else scan.records
     views = tuple(
-        build_status(store, rec, work_dir=work_dir if rec is record else None) for rec in records
+        build_status(
+            store,
+            rec,
+            work_dir=work_dir if rec is record else None,
+            campaign_reader=campaign_reader,
+        )
+        for rec in records
     )
     return GoalStatusSelection(views, project_wide=record is None)
 
@@ -376,30 +383,3 @@ def status_views(
     campaign evidence before it reads.
     """
     return select_status(store, work_dir, campaign_reader=campaign_reader).views
-
-
-def _archived_status(store: GoalStore, record: GoalRecord) -> GoalStatusView:
-    """Inspect terminal frozen facts without reopening old inputs or judging live freshness."""
-    from booley.runtime.booley_dir_migration import archival_path
-
-    state, _history = load_goal_state_and_evidence(store, record)
-    rows: list[GoalStatus] = []
-    for goal in record.goals:
-        entry = state.criteria.get(goal.spec.key)
-        rows.append(
-            GoalStatus(
-                goal.spec.key,
-                "met" if entry is not None and entry.met else "unmet",
-                "recorded evidence (historical)",
-                presentation=goal_presentation(goal.spec, _entry_facts(entry)),
-            )
-        )
-    display = replace(
-        record,
-        worktree_path=str(
-            archival_path(store.booley_dir, Path(record.worktree_path), record_id=record.id)
-        ),
-    )
-    return GoalStatusView(
-        display, tuple(rows), "Historical Goal Record; current checkout freshness is not asserted."
-    )

@@ -1,7 +1,8 @@
 """Per-invocation execution state and shared endpoint services.
 
-Parsing, acceptance, admission and publication have separate owners. Structured Flow sessions and legacy adapters use the same recording and
-publication operations; this module does not construct parsers.
+Parsing, acceptance, admission and publication have separate owners. Built-in
+Flows and legacy adapters use the same recording and publication operations;
+this module does not construct parsers.
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ from booley.runtime.endpoint_execution import (
 )
 
 if TYPE_CHECKING:
+    from booley.flows.terminal_progress import ProgressText
     from booley.targets.domain import TargetHandle
 
 logger = logging.getLogger(__name__)
@@ -134,16 +136,44 @@ class EndpointState(ABC):
         # Set for the duration of _run(); console publication reads it to avoid
         # echoing a verdict block the endpoint already printed itself (F-28).
         self._stdout_witness: endpoint_reporting._StdoutWitness | None = None
+        # A terminal rendition of the final report, set by an endpoint that wants
+        # it printed after the live progress rows close; its ``record_text`` is
+        # the plain report_text it stands for.
+        self._human_report: ProgressText | None = None
         self._pending_criteria_set: tuple[str, ...] | None = None
         # The underlying EDA tool that actually ran (e.g. "verilator",
         # "verible", "yosys", "vivado"). Endpoints set this at target-resolution
         # time; write_report() emits it as ``eda_tool`` so reports say which
         # binary produced the result — distinct from the Booley Flow name.
         self._eda_tool: str | None = None
+        self._eda_tools: dict[str, str | None] = {}
         # Why this invocation's evidence was discarded (B1); reset per invocation.
         self._evidence_discarded: str | None = None
         self.configure_flow_execution(StandaloneFlowExecution())
         self.flow_acceptance: ResolvedFlowAcceptance = ResolvedFlowAcceptance()
+
+    def reset_report_metadata(self) -> None:
+        """Start resolved EDA identity afresh for every invocation."""
+        self._eda_tool = None
+        self._eda_tools = {}
+        if self._args is None:
+            return
+        target = self._selected_target
+        targets = target.split(",") if isinstance(target, str) else target
+        self.set_report_targets([item.strip() for item in targets if item.strip()])
+
+    def set_report_targets(self, targets: list[str]) -> None:
+        """Preserve selection cardinality even when some Targets never resolve."""
+        self._eda_tools = {target: self._eda_tools.get(target) for target in targets}
+        self._eda_tool = (
+            next(iter(self._eda_tools.values())) if len(self._eda_tools) == 1 else None
+        )
+
+    def record_eda_tool(self, target: str, eda_tool: str | None) -> None:
+        """Record the raw simulator or EDA identity resolved for a selected Target."""
+        self._eda_tools[target] = eda_tool or None
+        if len(self._eda_tools) == 1:
+            self._eda_tool = eda_tool or None
 
     def configure_flow_execution(self, adapter: FlowExecutionAdapter) -> None:
         """Use one adapter as the authority for Flow admission and recording."""
@@ -398,9 +428,6 @@ class EndpointState(ABC):
         """Hook for subclasses to mutate ``self.state`` (or *result*) just before
         ``state.save()`` runs.  Default no-op."""
         return
-
-    def _adapt_outcome(self, outcome: EndpointOutcome) -> EndpointOutcome:
-        return outcome
 
     def execute_prepared(self) -> ExecutionResult:
         """Run configured input through the same gates and coordinator as CLI."""

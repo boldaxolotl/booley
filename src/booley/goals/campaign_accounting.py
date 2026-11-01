@@ -21,8 +21,8 @@ the record lock,
 
 1. completes every unselected acceptance transaction with the ledger's own
    recovery (:func:`booley.criteria.evidence_ledger.complete_transaction`);
-2. **adopts** the finished results of every registered campaign that is not
-   settled: per Goal one observation with the campaign's matching Test Run
+2. **adopts** the finished results of every registered campaign that is
+   pending: per Goal one observation with the campaign's matching Test Run
    rows, stamped with the contents the campaign started at, folded into the
    Goal's Test Run ledger like any other observation. Failures are always
    adopted. Passes are adopted only while the publication gate of the run
@@ -34,15 +34,15 @@ status is read and before Finish. Reading a campaign's results is the
 Simulation Flow's business: the composing entry point supplies the reader
 (:data:`~booley.flows.campaign_results.CampaignResultsReader`).
 
-A registration is **open** until nothing more can come out of its campaign:
+A registration is **pending** until nothing more can come out of its campaign:
 its acceptance was published, or every one of its work items has a durable
-result that was adopted. Only then it is **settled** and never read again.
-An open registration is read again on every pass, so results that appear
+result that was adopted. Then it is deleted and never read again.
+A pending registration is read again on every pass, so results that appear
 later (the campaign had not started, was still running, or was resumed) are
-adopted then. While it is open it makes its Goals unmet
+adopted then. It makes its Goals unmet
 (:func:`unaccounted_goals`, ``goal-campaign-unaccounted``) only as long as
-its results may still change or cannot be told: it has not been read since
-it was registered, a scheduler holds its lock, or the read fails. An idle,
+its results may still change or cannot be told: a scheduler holds its lock,
+the read fails or has no reader, or a failure it holds is not adopted. An idle,
 readable campaign that ran only in part has its results adopted; its other
 runs simply stay missing, and it blocks nothing.
 
@@ -60,20 +60,17 @@ review package lists every registration that is open or quarantined
 
 Residual risk. A campaign's work-item files are as writable as the worktree:
 a result deleted before it is adopted is not an integrity error, its run
-only reads as started without a result. Protecting those files belongs to
+only reads as missing. Protecting those files belongs to
 protected inputs (issue #1111), not to this module.
 
-Crash safety. Adoption makes three durable writes, in this order:
+Crash safety. Adoption makes two durable writes, in this order:
 
 1. the observation is appended to the ledger (one atomic rename). From here
    the failure is sticky: every later fold reads it;
-2. the Goal state file is replaced with the observation mirrored into it. A
-   stop before this leaves the state differing from its newest observation,
-   which status reads as a conflict (never met);
-3. the registration is replaced with the campaign settled. A stop before
+2. the registration of a complete campaign is deleted. A stop before
    this makes the next call adopt again: it finds the observation by the
    campaign and result digests it carries, appends nothing, and repeats
-   steps 2 and 3.
+   step 2.
 """
 
 from __future__ import annotations
@@ -87,13 +84,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
-from booley.core.boundary import (
-    BoundaryError,
-    require_bool_value,
-    require_dict,
-    require_list,
-    require_str_value,
-)
+from booley.core.boundary import BoundaryError, require_dict, require_str_value
 from booley.criteria import evidence_ledger
 from booley.criteria.evidence_ledger import AcceptanceLedgerError, canonical_json
 from booley.criteria.state import CriterionChange, DevelopmentState
@@ -105,6 +96,7 @@ from booley.flows.campaign_results import (
     StartedCampaign,
 )
 from booley.flows.execution_persistence import EvidenceDiscarded
+from booley.flows.frozen_test_runs import GoalTestRuns
 from booley.goals.apply_barrier import pending_applies
 from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.evidence_projection import current_observations, project_evidence
@@ -120,6 +112,7 @@ from booley.goals.store import GoalStore
 from booley.goals.test_run_evidence import goal_test_runs, judged_change, outcomes_decide
 from booley.goals.test_run_goals import names_test_runs
 from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.runtime.filesystem_utils import read_file_bytes, replace_file
 from booley.runtime.timefmt import parse_timestamp, utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
@@ -139,15 +132,8 @@ _FIELDS = frozenset(
         "binding",
         "stamps",
         "registered_at",
-        "accounted",
-        "unfinished",
-        "blocked",
-        "settled",
     }
 )
-
-# Why a registration that was never read keeps its Goals unmet.
-_NOT_READ = "has not been read since it was registered"
 
 
 class RegistrationFormatError(ValueError):
@@ -156,16 +142,10 @@ class RegistrationFormatError(ValueError):
 
 @dataclass(frozen=True)
 class CampaignRegistration:
-    """One Simulation Campaign a bound run started, and what of it is in the ledger.
+    """One pending Simulation Campaign a bound run started.
 
     ``stamps`` holds, per Goal of the campaign's Target, the source
     fingerprint detail of the file contents the campaign started at.
-    ``accounted`` names the work-item results (id, digest) whose outcomes the
-    ledger holds, ``unfinished`` the Test Runs (name, fingerprint) that were
-    started and had no result when the campaign was last read. ``blocked``
-    says why the campaign's results may still change or cannot be told
-    (empty once it was read idle); ``settled`` says nothing more can come
-    out of the campaign.
     """
 
     campaign_id: str
@@ -174,10 +154,6 @@ class CampaignRegistration:
     binding: Mapping[str, Any]
     stamps: Mapping[str, Mapping[str, Any]]
     registered_at: str
-    accounted: tuple[tuple[str, str], ...] = ()
-    unfinished: tuple[tuple[str, str], ...] = ()
-    blocked: str = _NOT_READ
-    settled: bool = False
 
     def run_binding(self) -> GoalRunBinding:
         """The run the campaign started under. Raises :class:`GoalBindingError`."""
@@ -193,10 +169,6 @@ class CampaignRegistration:
             "binding": dict(self.binding),
             "stamps": {key: dict(stamp) for key, stamp in sorted(self.stamps.items())},
             "registered_at": self.registered_at,
-            "accounted": [list(pair) for pair in self.accounted],
-            "unfinished": [list(pair) for pair in self.unfinished],
-            "blocked": self.blocked,
-            "settled": self.settled,
         }
 
     @classmethod
@@ -207,11 +179,6 @@ class CampaignRegistration:
             if frozenset(document) != _FIELDS or document["$schema"] != REGISTRATION_SCHEMA:
                 raise RegistrationFormatError(f"{where} is not a campaign registration")
             stamps = require_dict(document["stamps"], field=f"{where}.stamps")
-            accounted = require_list(document["accounted"], field=f"{where}.accounted")
-            unfinished = require_list(document["unfinished"], field=f"{where}.unfinished")
-            blocked = document["blocked"]
-            if not isinstance(blocked, str):
-                raise RegistrationFormatError(f"{where}.blocked must be a string")
             registration = cls(
                 require_str_value(document["campaign_id"], field=f"{where}.campaign_id"),
                 require_str_value(document["manifest_sha256"], field=f"{where}.manifest_sha256"),
@@ -222,10 +189,6 @@ class CampaignRegistration:
                     for key, stamp in stamps.items()
                 },
                 require_str_value(document["registered_at"], field=f"{where}.registered_at"),
-                tuple(_result_pair(pair, f"{where}.accounted") for pair in accounted),
-                tuple(_result_pair(pair, f"{where}.unfinished") for pair in unfinished),
-                blocked,
-                require_bool_value(document["settled"], field=f"{where}.settled"),
             )
             parse_timestamp(registration.registered_at)
         except (BoundaryError, ValueError) as exc:
@@ -233,13 +196,6 @@ class CampaignRegistration:
                 raise
             raise RegistrationFormatError(f"{where}: {exc}") from None
         return registration
-
-
-def _result_pair(raw: object, where: str) -> tuple[str, str]:
-    pair = require_list(raw, field=where)
-    if len(pair) != 2 or not all(isinstance(item, str) and item for item in pair):
-        raise RegistrationFormatError(f"{where} must hold pairs of two names")
-    return str(pair[0]), str(pair[1])
 
 
 @dataclass(frozen=True)
@@ -275,9 +231,9 @@ def _path(paths: GoalRecordPaths, manifest_sha256: str) -> Path:
 
 def _read(path: Path) -> CampaignRegistration:
     try:
-        raw = json.loads(path.read_bytes())
+        raw = json.loads(read_file_bytes(path))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RegistrationFormatError(f"campaign registration {path.name}: {exc}") from None
+        raise RegistrationFormatError(f"campaign registration {path.name}: {exc}") from exc
     return CampaignRegistration.from_json(raw, where=f"campaign registration {path.name}")
 
 
@@ -319,7 +275,7 @@ def quarantine_unreadable(store: GoalStore, record_id: str) -> tuple[str, ...]:
     for path, _reason in unreadable:
         target = _directory(paths) / _QUARANTINE / path.name
         target.parent.mkdir(parents=True, exist_ok=True)
-        path.replace(target)
+        replace_file(path, target)
         moved.append(path.name)
     return tuple(moved)
 
@@ -329,15 +285,8 @@ def unsettled_campaigns(store: GoalStore, record: GoalRecord) -> list[dict[str, 
     paths = record_paths(store.booley_dir, record.id)
     found, unreadable = _stored(paths)
     listed: list[dict[str, Any]] = [
-        {
-            "state": "open",
-            "campaign_id": item.campaign_id,
-            "manifest_path": item.manifest_path,
-            "blocked": item.blocked,
-            "started_without_result": [name for name, _ in item.unfinished],
-        }
+        {"state": "open", "campaign_id": item.campaign_id, "manifest_path": item.manifest_path}
         for item in found
-        if not item.settled
     ]
     listed += [{"state": "unreadable", "file": path.name} for path, _ in unreadable]
     quarantine = _directory(paths) / _QUARANTINE
@@ -390,8 +339,7 @@ def register_campaign(
     *stamp* gives the source fingerprint detail of a Goal's dependent file
     contents now, or ``None`` when the run's evidence for that Goal would be
     discarded anyway. A baseline campaign, and one whose Target no Goal is
-    judged by through its Test Runs' outcomes, is not registered. A campaign that is registered already (it
-    is being resumed) keeps what was accounted and is open again.
+    judged by through its Test Runs' outcomes, is not registered.
     """
     if not campaign.candidate:
         return
@@ -408,8 +356,6 @@ def register_campaign(
     if not stamps:
         return
     paths = record_paths(store.booley_dir, binding.record_id)
-    path = _path(paths, campaign.manifest_sha256)
-    accounted = _accounted_so_far(path)
     registration = CampaignRegistration(
         campaign.campaign_id,
         campaign.manifest_sha256,
@@ -417,17 +363,8 @@ def register_campaign(
         binding.to_json(),
         stamps,
         utc_now_rfc3339(),
-        accounted,
     )
     _write(paths, registration)
-
-
-def _accounted_so_far(path: Path) -> tuple[tuple[str, str], ...]:
-    """What an earlier registration of the same campaign already brought into the ledger."""
-    try:
-        return _read(path).accounted if path.exists() else ()
-    except RegistrationFormatError:
-        return ()  # unreadable: adopting its results again is harmless
 
 
 def mark_published(store: GoalStore, record_id: str, acceptance_facts: Mapping[str, Any]) -> None:
@@ -437,28 +374,7 @@ def mark_published(store: GoalStore, record_id: str, acceptance_facts: Mapping[s
     its outcome. The caller holds the record lock.
     """
     paths = record_paths(store.booley_dir, record_id)
-    path = _path(paths, str(acceptance_facts.get("manifest_sha256")))
-    if not path.exists():
-        return
-    published = replace(
-        _read(path), accounted=_consumed(acceptance_facts), unfinished=(), blocked="", settled=True
-    )
-    _write(paths, published)
-
-
-def _consumed(acceptance_facts: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
-    """The (work item, result digest) pairs *acceptance_facts* consumed."""
-    raw = acceptance_facts.get("consumed_results")
-    facts = [_mapping(item) for item in cast("Sequence[object]", raw or ())]
-    return tuple(
-        (str(fact.get("work_item_id")), str(_mapping(fact.get("result")).get("sha256")))
-        for fact in facts
-    )
-
-
-def _mapping(value: object) -> Mapping[str, object]:
-    """*value* when it is a mapping, else an empty one."""
-    return cast("Mapping[str, object]", value) if isinstance(value, Mapping) else {}
+    _path(paths, str(acceptance_facts.get("manifest_sha256"))).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -467,24 +383,25 @@ def _mapping(value: object) -> Mapping[str, object]:
 
 
 def unaccounted_goals(
-    store: GoalStore, record: GoalRecord, state: DevelopmentState
+    store: GoalStore,
+    record: GoalRecord,
+    state: DevelopmentState,
+    history: Sequence[dict[str, Any]],
+    reader: CampaignResultsReader | None,
 ) -> dict[str, str]:
     """Why each Goal with durable evidence outside its ledger reads unmet, by Goal key.
 
-    Read-only. Names the Goals of every open registration whose results may
+    Read-only. Names the Goals of every pending registration whose results may
     still change or cannot be told (module docstring), of every acceptance
     transaction the state does not select, and, for a registration that
     cannot be decoded, every Goal that is judged by its Test Runs' outcomes.
+    *history* is the record's evidence; *reader* reads the campaigns.
     """
     paths = record_paths(store.booley_dir, record.id)
     everything = tuple(goal.spec.key for goal in record.goals if names_test_runs(goal.spec))
     decided = tuple(goal.spec.key for goal in _outcome_goals(record))
     registrations, unreadable = _stored(paths)
-    found = [
-        _open_campaign(item, _relevant_keys(item, record), item.blocked)
-        for item in registrations
-        if not item.settled and item.blocked
-    ]
+    found = [_pending(item, record, history, reader) for item in registrations]
     found += [
         Unaccounted(
             decided,
@@ -505,34 +422,43 @@ def unaccounted_goals(
     return reasons
 
 
-def started_without_result(store: GoalStore, record: GoalRecord) -> dict[str, str]:
-    """A note per Goal whose frozen Test Run a campaign started and left without a result.
-
-    Such a run reads ``missing`` in the Goal's ledger; the note says that it
-    was not simply never run. Read-only, from the open registrations.
-    """
-    paths = record_paths(store.booley_dir, record.id)
-    notes: dict[str, str] = {}
-    for item in _stored(paths)[0]:
-        left = set(item.unfinished)
-        for key in _relevant_keys(item, record) if left and not item.settled else ():
-            resolution = record.test_run_resolution(key)
-            runs = () if resolution is None else resolution.test_runs
-            names = [run.name for run in runs if (run.name, run.fingerprint) in left]
-            if names:
-                notes.setdefault(
-                    key,
-                    f"{', '.join(names)} started in Simulation Campaign {item.campaign_id} "
-                    f"({item.manifest_path}) and left no result",
-                )
-    return notes
-
-
-def _open_campaign(
-    registration: CampaignRegistration, keys: tuple[str, ...], reason: str
+def _pending(
+    registration: CampaignRegistration,
+    record: GoalRecord,
+    history: Sequence[dict[str, Any]],
+    reader: CampaignResultsReader | None,
 ) -> Unaccounted:
+    """The Goals *registration* blocks now, and why: none for an idle, adopted campaign."""
+    keys = _relevant_keys(registration, record)
     what = f"Simulation Campaign {registration.campaign_id} ({registration.manifest_path})"
-    return Unaccounted(keys, what, reason)
+    durable, problem = _results(registration, reader)
+    if durable is None:
+        return Unaccounted(keys, what, problem)
+    adopted = _adopted(record, history, registration, durable)
+    goals = {goal.spec.key: goal for goal in record.goals}
+    failing = tuple(
+        key
+        for key in keys
+        if key not in adopted
+        and _matching(
+            goal_test_runs(goals[key], record.test_run_resolution(key)), durable, {"fail"}
+        )
+    )
+    return Unaccounted(failing, what, "holds a failure that is not adopted yet")
+
+
+def _results(
+    registration: CampaignRegistration, reader: CampaignResultsReader | None
+) -> tuple[DurableCampaignResults | None, str]:
+    """What *reader* returns for *registration*'s campaign, or why it returns nothing."""
+    if reader is None:
+        return None, "cannot be read by this caller"
+    try:
+        return reader(Path(registration.manifest_path), registration.manifest_sha256), ""
+    except CampaignBusyError:
+        return None, "is still running"
+    except ValueError as exc:  # the campaign's integrity error
+        return None, f"cannot be read ({exc})"
 
 
 def _unselected(
@@ -583,6 +509,9 @@ class _LockedStateFile:
             return declared_goal_state(self._record, self._record.worktree_path)
         return state
 
+    def projects_judged_evidence(self) -> None:
+        """Marker (``JudgedEvidenceProjection``): ``save`` reprojects the judged ledger."""
+
     def loaded(self, state: DevelopmentState) -> None:
         """Nothing to capture: every save writes the whole state."""
 
@@ -615,11 +544,11 @@ def account_for_campaigns(
     """Bring every durable observation of Goal Record *record_id* into its ledger.
 
     Completes unselected acceptance transactions, then adopts the finished
-    results of registered campaigns that are not settled (module docstring).
+    results of every pending campaign (module docstring).
     *reader* reads a campaign's finished results; without one no campaign is
     adopted. Campaigns the run *own_run* registered are left to that run's
     own publication. Nothing happens for a record that is not active or whose
-    apply is interrupted. What cannot be settled is left as it is, for
+    apply is interrupted. What cannot be read is left as it is, for
     :func:`unaccounted_goals` to name; nothing is raised for it.
 
     Raises :class:`~booley.goals.store.GoalStoreError` when the record cannot
@@ -637,10 +566,12 @@ def account_for_campaigns(
         for path, reason in unreadable:
             logger.warning("campaign registration %s of Goal Mode %s: %s", path, record_id, reason)
         for registration in registrations:
-            if registration.settled or _run_id(registration) == own_run:
+            if _run_id(registration) == own_run:
                 continue
-            problem = _settle(run, registration)
-            if problem:
+            durable, problem = _results(registration, reader)
+            if durable is not None:
+                _settle(run, registration, durable)
+            else:
                 logger.warning(
                     "Simulation Campaign %s of Goal Mode %s is unaccounted: %s",
                     registration.campaign_id,
@@ -677,49 +608,22 @@ def _run_id(registration: CampaignRegistration) -> str:
     return str(registration.binding.get("invocation_id", ""))
 
 
-def _settle(run: _Accounting, registration: CampaignRegistration) -> str:
-    """Read an open *registration* again, adopt what is new, and say why it stays blocked.
+def _settle(
+    run: _Accounting, registration: CampaignRegistration, durable: DurableCampaignResults
+) -> None:
+    """Adopt what *durable* holds for *registration*'s Goals; delete it once complete.
 
-    The registration is settled only when its campaign is complete: every
-    work item has a result, and all of them are adopted. A campaign that is
-    idle and readable but ran only in part stays open and unblocked; one that
-    is running or cannot be read stays open and blocked (the returned text).
+    A campaign whose every work item has a result has nothing more to give;
+    one that is idle but ran only in part stays pending and is read again.
     """
-    if run.reader is None:
-        return "this caller cannot read Simulation Campaigns"
-    try:
-        durable = run.reader(Path(registration.manifest_path), registration.manifest_sha256)
-    except CampaignBusyError:
-        return _blocked(run, registration, "is still running")
-    except ValueError as exc:  # the campaign's integrity error
-        return _blocked(run, registration, f"cannot be read ({exc})")
-    if set(durable.results) - set(registration.accounted):
-        keys = _relevant_keys(registration, run.record)
-        trusted = bool(keys) and _publishable(registration, keys)
-        state = run.state()
-        goals = {goal.spec.key: goal for goal in run.record.goals}
-        changed = [
-            _adopt(run, state, registration, durable, goals[key], passes=trusted) for key in keys
-        ]
-        if any(changed):
-            write_goal_state_file(run.paths.state_file, state)
-    read = replace(
-        registration,
-        accounted=durable.results,
-        unfinished=durable.unfinished,
-        blocked="",
-        settled=durable.complete,
-    )
-    if read != registration:
-        _write(run.paths, read)
-    return ""
-
-
-def _blocked(run: _Accounting, registration: CampaignRegistration, reason: str) -> str:
-    """Record that *registration*'s results may still change or cannot be told."""
-    if registration.blocked != reason:
-        _write(run.paths, replace(registration, blocked=reason))
-    return reason
+    keys = _relevant_keys(registration, run.record)
+    trusted = bool(keys) and _publishable(registration, keys)
+    state = run.state()
+    goals = {goal.spec.key: goal for goal in run.record.goals}
+    for key in keys:
+        _adopt(run, state, registration, durable, goals[key], passes=trusted)
+    if durable.complete:
+        _path(run.paths, registration.manifest_sha256).unlink(missing_ok=True)
 
 
 def _publishable(registration: CampaignRegistration, keys: Sequence[str]) -> bool:
@@ -739,54 +643,59 @@ def _adopt(
     goal: RecordedGoal,
     *,
     passes: bool,
-) -> bool:
-    """Record *goal*'s matching rows of *durable* once and mirror them into *state*.
+) -> None:
+    """Record *goal*'s matching rows of *durable* once.
 
-    Returns whether *state* changed. Without *passes* only failures are
-    adopted: the run that started the campaign could not publish them now.
+    Without *passes* only failures are adopted: the run that started the
+    campaign could not publish them now.
     """
     from booley.goals.recorder import GOAL_SCOPE
 
     key = goal.spec.key
     frozen = goal_test_runs(goal, run.record.test_run_resolution(key))
-    wanted = {"fail", "pass"} if passes else {"fail"}
-    rows = [row for row in frozen.matching(durable.rows) if row["grade"] in wanted]
+    rows = _matching(frozen, durable, {"fail", "pass"} if passes else {"fail"})
     if not rows or key not in state.criteria:
-        return False
-    marker = _marker(registration, durable, passes=passes)
+        return
     history = evidence_ledger.validated_evidence_records(GOAL_SCOPE, run.paths.logs_dir, state, {})
-    mine = [
-        row
-        for row in current_observations(run.record, history)
-        if row["criterion"] == key and row["role"] == "candidate"
-    ]
-    adopted = [row for row in mine if row["detail"].get(ADOPTED_DETAIL_KEY) == marker]
-    if adopted:
-        newest = adopted[-1] if adopted[-1]["sequence"] == mine[-1]["sequence"] else None
-        if newest is None or _mirrors(state, key, newest["met"], newest["detail"]):
-            return False
-        project_evidence(run.record, state, run.paths.logs_dir)
-        return True
+    if key in _adopted(run.record, history, registration, durable):
+        return
     detail = {
-        ADOPTED_DETAIL_KEY: marker,
+        ADOPTED_DETAIL_KEY: _marker(registration, durable),
         **frozen.outcomes_detail(rows),
         SOURCE_FINGERPRINT_DETAIL_KEY: dict(registration.stamps[key]),
     }
     _append(run, state, registration, goal, detail, history)
-    project_evidence(run.record, state, run.paths.logs_dir)
-    return True
 
 
-def _marker(
-    registration: CampaignRegistration, durable: DurableCampaignResults, *, passes: bool
-) -> dict[str, Any]:
-    """What identifies one adoption: the campaign, the results it held, what was taken."""
+def _matching(
+    frozen: GoalTestRuns, durable: DurableCampaignResults, grades: set[str]
+) -> list[Mapping[str, Any]]:
+    """The rows of *durable* that match the *frozen* Test Runs and have one of *grades*."""
+    return [row for row in frozen.matching(durable.rows) if row["grade"] in grades]
+
+
+def _adopted(
+    record: GoalRecord,
+    history: Sequence[dict[str, Any]],
+    registration: CampaignRegistration,
+    durable: DurableCampaignResults,
+) -> set[str]:
+    """The Goals whose current evidence already holds the adoption of *durable*."""
+    marker = _marker(registration, durable)
+    return {
+        row["criterion"]
+        for row in current_observations(record, history)
+        if row["role"] == "candidate" and row["detail"].get(ADOPTED_DETAIL_KEY) == marker
+    }
+
+
+def _marker(registration: CampaignRegistration, durable: DurableCampaignResults) -> dict[str, Any]:
+    """What identifies one adoption: the campaign and the results it held."""
     results = {"results": [list(pair) for pair in durable.results]}
     return {
         "campaign_id": registration.campaign_id,
         "manifest_sha256": registration.manifest_sha256,
         "results_sha256": hashlib.sha256(canonical_json(results)).hexdigest(),
-        "passes": passes,
     }
 
 
@@ -804,6 +713,10 @@ def _append(
     key = goal.spec.key
     (change,) = deepcopy(state).set_criterion(key, False, detail=detail)
     change = judged_change(change, goal, run.record, history)
+    # A restated observation still names the adoption it records: a retry finds it.
+    change = replace(
+        change, detail={**change.detail, ADOPTED_DETAIL_KEY: detail[ADOPTED_DETAIL_KEY]}
+    )
     evidence_ledger.record_changes(
         run.paths.logs_dir,
         state,
@@ -815,8 +728,3 @@ def _append(
         identity=goal_identity(run.record.id, {key: goal.spec_revision}),
     )
     return change
-
-
-def _mirrors(state: DevelopmentState, key: str, met: object, detail: object) -> bool:
-    entry = state.criteria[key]
-    return entry.met == met and entry.detail == detail

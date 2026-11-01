@@ -59,6 +59,8 @@ def literal_document(access: str, *, configured: str = "run") -> dict:
         "kind": "literal",
         "placeholders": [],
     }
+    from tests.flows.sim.test_campaign_manifest_codec import _selection_test_runs
+
     name = "alpha"
     suite_raw = f"[test.{name}]\n".encode()
     document["required_suite"] = {
@@ -76,6 +78,7 @@ def literal_document(access: str, *, configured: str = "run") -> dict:
         "revision": "abc123",
         "target": document["target"],
         "selection": {"kind": "named", "names": [name]},
+        "test_runs": _selection_test_runs((name,)),
         "arguments": [name],
         "build_variant_id": variant["build_variant_id"],
         "run_directory": {
@@ -236,7 +239,7 @@ def test_legacy_hook_never_runs_when_literal_run_cwd_is_missing(
 
 def test_claim_rejects_literal_removed_after_preflight(tmp_path: Path) -> None:
     missing = tmp_path / "gone"
-    run = RunDirectory(missing, str(missing), False, tmp_path / "locks" / "gone.lock")
+    run = RunDirectory(missing, str(missing), False, tmp_path / "locks" / "gone.lock", None)
 
     with (
         pytest.raises(SimulationCampaignIntegrityError, match=_MISSING) as caught,

@@ -168,6 +168,34 @@ def test_recovering_publication_with_broken_paired_git_is_actionable(
     assert git(complete.worktree, "rev-parse", "HEAD") == before
 
 
+def _crashed_abandonment(complete):
+    call = request(complete, abandon=True, instruction_quote="Stop this Goal now")
+    with pytest.raises(Crash):
+        finish_goal(call, environment(complete, stop_at("abandoned")))
+    directory = complete.control / "goals" / call.record_id / "operations" / call.operation_id
+    return call, directory
+
+
+def test_abandoned_retry_refuses_an_unsealed_abandonment_file(layout):
+    complete = publication_layout(layout)
+    call, directory = _crashed_abandonment(complete)
+    (directory / "abandonment.authority.json").unlink()
+    assert (directory / "abandonment.json").is_file()
+    with pytest.raises(LifecycleError, match="invalid frozen abandonment"):
+        finish_goal(call, environment(complete))
+
+
+def test_inode_list_operation_directory_identity_is_refused(layout):
+    complete = publication_layout(layout)
+    call, directory = _crashed_abandonment(complete)
+    path = directory / "abandonment.authority.json"
+    authority = json.loads(path.read_bytes())
+    authority["record_directory"]["identity"] = [1, 2]
+    path.write_text(json.dumps(authority))
+    with pytest.raises(LifecycleError, match="different logical record"):
+        finish_goal(call, environment(complete))
+
+
 @pytest.mark.parametrize("substitute", ["projection", "notes"])
 def test_abandoned_retry_refuses_substituted_modern_notes(layout, substitute):
     complete = publication_layout(layout)
@@ -354,29 +382,3 @@ def test_pruned_publication_without_exact_authority_refuses_without_git_writes(l
         git(complete.worktree, "count-objects", "-v"),
         git(complete.worktree, "diff", "--cached", "--raw"),
     )
-
-
-def test_legacy_own_publication_with_moved_paired_pin_repairs_only_owned_index(
-    layout, tmp_path, monkeypatch
-):
-    from tests.goals.test_r1_lifecycle import publish_legacy_attempt
-
-    complete, project = paired_publication(layout, tmp_path)
-    call = request(complete, explain_html=True)
-    with monkeypatch.context() as old_policy:
-        old_policy.setattr("booley.goals.finish._skip_publication", lambda *_: None)
-        frozen, destination, content = publish_legacy_attempt(complete, call)
-    # Simulate process death just after ref CAS, before the index synchronization.
-    git(complete.worktree, "reset", "-q", frozen["inputs"]["rtl_pin"], "--", frozen["path"])
-    (project / "later.txt").write_bytes(b"paired participant moved\n")
-    git(project, "add", "later.txt")
-    git(project, "commit", "-qm", "later paired participant")
-    assert finish_goal(call, environment(complete))["status"] == "revalidation_required"
-    assert "D  " + frozen["path"] not in git(complete.worktree, "status", "--porcelain")
-    (complete.worktree / "user-note.txt").write_bytes(b"ordinary next change\n")
-    git(complete.worktree, "add", "user-note.txt")
-    git(complete.worktree, "commit", "-qm", "ordinary next commit")
-    from booley.runtime.pinned_history import raw_git
-
-    assert raw_git(complete.worktree, "show", "HEAD:" + frozen["path"]) == content
-    assert destination.read_bytes() == content

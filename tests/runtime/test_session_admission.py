@@ -12,6 +12,7 @@ import pytest
 
 from booley.runtime import devcontainer as dc
 from booley.runtime import session_admission, session_issuance
+from booley.runtime.session_runtime import session_container_name
 
 
 def _completed(returncode: int = 0, stdout: str = "", stderr: str = ""):
@@ -723,3 +724,92 @@ def test_windows_root_identity_normalizes_drive_case(monkeypatch):
 
     monkeypatch.setattr(session_admission.os.path, "normcase", ntpath.normcase)
     assert session_admission._same_project_root("C:/Users/Project", "c:/users/project")
+
+
+def _listing_only_docker(rows: list[str]):
+    """Docker stub that serves one `docker ps` listing and records inspections."""
+    inspected: list[str] = []
+
+    def run(argv: list[str], **_kwargs):
+        if argv[1] == "ps":
+            return _completed(stdout="\n".join(rows) + "\n")
+        inspected.append(argv[3])
+        return _completed(1, stderr=f"no workspace mount on {argv[3]}")
+
+    return run, inspected
+
+
+def test_project_inventory_skips_host_sidecars(tmp_path: Path) -> None:
+    """Regression #1898: reaper and egress proxy rows must not abort the inventory."""
+    project = tmp_path / "project"
+    project.mkdir()
+    run, inspected = _listing_only_docker(
+        [
+            "reaper-id\tbooley-reaper\t\t\treaper",
+            "proxy-id\tbooley-proxy\t\t\tegress-proxy",
+        ]
+    )
+
+    assert session_admission.running_project_sandboxes(project, run=run) == ()
+    assert inspected == []
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        # A sidecar role does not hide a row that carries Project identity.
+        "odd-id\todd\t\tsome-project-id\treaper",
+        "odd-id\todd\t{folder}\t\treaper",
+        # Nor does it hide a row under the local Sandbox name.
+        "odd-id\t{local}\t\t\treaper",
+        # Sandbox roles and unlabeled roles stay fail-closed too.
+        "odd-id\todd\t\t\tinteractive",
+        "odd-id\todd\t\t\tlicense-relay",
+    ],
+)
+def test_project_inventory_still_inspects_possible_sandboxes(tmp_path: Path, row: str) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    row = row.format(folder=project, local=session_container_name(project))
+    run, inspected = _listing_only_docker([row])
+
+    with pytest.raises(session_admission.AdmissionError):
+        session_admission.running_project_sandboxes(project, run=run)
+    assert inspected == ["odd-id"]
+
+
+def _pending_claim(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path]:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=1),
+    )
+    assert session_admission.claim_vscode_start(project, run=lambda *_a, **_kw: _completed())
+    root = session_admission._canonical_root(project)
+    return project, session_admission._store().root / session_admission._claim_filename(root)
+
+
+def test_claim_clear_survives_transient_unlink_sharing_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tests.sharing_error_support import hold_unlinks
+
+    project, claim = _pending_claim(monkeypatch, tmp_path)
+    attempts = hold_unlinks(monkeypatch, {claim: 1})
+    assert session_admission.clear_vscode_claim(project) is True
+    assert attempts[claim] == 2
+    assert not claim.exists()
+
+
+def test_claim_clear_retries_before_raising_lasting_sharing_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tests.sharing_error_support import hold_unlinks
+
+    project, claim = _pending_claim(monkeypatch, tmp_path)
+    attempts = hold_unlinks(monkeypatch, {claim: 99})
+    with pytest.raises(PermissionError):
+        session_admission.clear_vscode_claim(project)
+    assert attempts[claim] > 1

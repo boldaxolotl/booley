@@ -4,29 +4,25 @@ from __future__ import annotations
 
 import copy
 import gzip
-import hashlib
 import json
 from pathlib import Path
 
 
-def rewrite_manifest_as_older_schema(manifest: dict, version: int) -> None:
-    """Turn a freshly published manifest into what Booley wrote at v3 or v4.
+def rewrite_manifest_as_v4(manifest: dict) -> None:
+    """Turn a freshly published manifest into what Booley 0.3.0 wrote (v4).
 
-    Runs named a bare Test before v5, and v3 had no scoring state.
+    Runs named a bare Test, with no Test Run identity.
     """
-    assert version in {3, 4}
-    manifest["$schema"] = f"booley.coverage-campaign/v{version}"
+    manifest["$schema"] = "booley.coverage-campaign/v4"
     for run in manifest["tests"]["runs"]:
         for field in ("test_run", "variant", "seed", "fingerprint"):
             del run[field]
-    if version == 3:
-        del manifest["scoring"]
 
 
-def corrupt_v3_campaign_with_duplicate_negative_point(
+def corrupt_campaign_with_duplicate_negative_point(
     campaign_path: Path, *, run_id: str = "run:reset"
 ) -> None:
-    """Rewrite one V3 Campaign with duplicate-point and negative-hit defects."""
+    """Rewrite one Campaign with duplicate-point and negative-hit defects."""
     manifest = json.loads(campaign_path.read_text(encoding="utf-8"))
     points_path = campaign_path.parent / manifest["point_store"]["path"]
     records = [json.loads(line) for line in gzip.decompress(points_path.read_bytes()).splitlines()]
@@ -40,12 +36,6 @@ def corrupt_v3_campaign_with_duplicate_negative_point(
     )
     compressed = gzip.compress(raw, mtime=0)
     points_path.write_bytes(compressed)
-    manifest["point_store"].update(
-        sha256="sha256:" + hashlib.sha256(compressed).hexdigest(),
-        bytes=len(compressed),
-        uncompressed_bytes=len(raw),
-        point_count=2,
-    )
     rollup_values = {
         "total_points": 2,
         "eligible_points": 2,

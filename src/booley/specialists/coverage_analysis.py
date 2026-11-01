@@ -22,7 +22,7 @@ from booley.flows.sim.coverage_campaign import (
     freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_campaign_store import (
-    POINT_STORE_CAMPAIGN_SCHEMAS,
+    CAMPAIGN_SCHEMA_V5,
     CoverageCampaignSummary,
 )
 from booley.flows.sim.coverage_evidence import is_coverage_point_reference
@@ -83,7 +83,7 @@ def _analysis_envelope(
             **({"point_store": point_store} if point_store is not None else {}),
         }
     }
-    if summary is None or summary.source_schema not in POINT_STORE_CAMPAIGN_SCHEMAS:
+    if summary is None or summary.source_schema != CAMPAIGN_SCHEMA_V5:
         observed = encode_coverage_campaign(campaign)
         return _AnalysisEnvelope("booley.coverage-analysis/v1", reference, observed), target
     assert manifest is not None
@@ -499,5 +499,5 @@ def _candidate_screen(item, point, rtl, sources) -> tuple[str, str]:
         return "investigate", "Unreachability is contradicted by observed hits"
     return (
         "ready_for_human_review",
-        "A human must accept or reject this candidate at Ticket review",
+        "A human must accept or reject this candidate through a Goal Change Proposal",
     )

@@ -6,6 +6,7 @@ import pytest
 
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
+from tests.conftest import symlink_or_skip
 
 
 @pytest.mark.skipif(init_cmd.os.name == "nt", reason="POSIX permission contract")
@@ -42,3 +43,19 @@ def test_project_data_scaffold_is_written_with_lf(tmp_path: Path) -> None:
     assert {".gitignore", "booley.toml", "FUSESOC_IGNORE"} <= {path.name for path in written}
     for path in written:
         assert b"\r\n" not in path.read_bytes(), path.name
+
+
+def test_symlinked_project_gitignore_is_refused(tmp_path: Path) -> None:
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    destination = tmp_path / "outside-ignore"
+    destination.write_bytes(b"# user rules\n")
+    symlink_or_skip(booley_dir / ".gitignore", destination)
+    planted_target = (booley_dir / ".gitignore").readlink()
+    ctx = InitContext(project_root=tmp_path)
+
+    init_cmd._backfill_project_gitignore(booley_dir, ctx)
+
+    assert destination.read_bytes() == b"# user rules\n"
+    assert (booley_dir / ".gitignore").readlink() == planted_target
+    assert (ctx.results[-1].name, ctx.results[-1].status) == ("booley_dir", "warn")

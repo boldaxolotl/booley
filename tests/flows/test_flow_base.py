@@ -266,14 +266,6 @@ class TestResourceEvidence:
         assert result.peak_rss_mb is not None
         assert result.peak_rss_mb >= 16
 
-    def test_cgroup_oom_counter_parser(self, tmp_path: Path, monkeypatch):
-        from booley.flows import base as flow_base
-
-        events = tmp_path / "memory.events"
-        events.write_text("low 0\nhigh 0\noom 3\noom_kill 2\n", encoding="utf-8")
-        monkeypatch.setattr(flow_base, "_CGROUP_MEMORY_EVENT_PATHS", (events,))
-        assert flow_base._cgroup_oom_kill_count() == 2
-
 
 class TestBoundaryExecutor:
     """Boundary-named helper is now a local Sandbox subprocess."""
@@ -473,86 +465,3 @@ class TestTimeoutKillsTheWholeTree:
         assert not self._alive(grandchild), (
             f"grandchild {grandchild} survived Ctrl-C — the orphan leak is back"
         )
-
-
-@pytest.mark.parametrize(
-    "name,family",
-    [
-        ("synth", "synthesis_ok"),
-        ("lint", "lint_clean"),
-        ("fpga", "fpga_impl_ok"),
-        ("sim", "sim_pass"),
-    ],
-)
-@pytest.mark.parametrize("met", [True, False])
-def test_final_report_uses_effective_evaluation(tmp_path, name, family, met):
-    import json
-
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    flow = EchoFlow()
-    flow.name = name
-    flow.parse_args(
-        [
-            "--target",
-            "core",
-            "--work-dir",
-            str(tmp_path),
-            "--report-dir",
-            str(tmp_path / "reports"),
-        ]
-    )
-    flow.read_state()
-    flow.set_criterion(f"{family}_core", met)
-    outcome = EndpointOutcome(
-        exit_code=0 if met else 1, criterion_key="stale", criterion_met=not met
-    )
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(flow)
-    path = flow.write_report(outcome)
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(flow)
-    report = json.loads(path.read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
-    assert flow.state.criteria[f"{family}_core"].met is met
-    assert report["$schema"] == (
-        "booley.simulation-report/v3" if name == "sim" else "booley.flow-report/v1"
-    )
-
-
-@pytest.mark.parametrize(
-    "target,keys",
-    [
-        ("first,second", ["sim_pass_first"]),
-        ("first", ["sim_pass_first", "coverage_first"]),
-        ("first", []),
-    ],
-)
-def test_final_report_absent_verdict_is_null(tmp_path, target, keys):
-    import json
-
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    flow = EchoFlow()
-    flow.parse_args(
-        [
-            "--target",
-            target,
-            "--work-dir",
-            str(tmp_path),
-            "--report-dir",
-            str(tmp_path / "reports"),
-        ]
-    )
-    flow.read_state()
-    for key in keys:
-        flow.set_criterion(key, True)
-    outcome = EndpointOutcome(exit_code=2, criterion_key="stale", criterion_met=True)
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(flow)
-    report = json.loads(flow.write_report(outcome).read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
-    assert report["exit_code"] == 2

@@ -133,3 +133,21 @@ def test_issued_policy_uses_authorized_source_not_ambient_auth_handoff(
     assert sources.credential_plan.policy == "api_key"
     assert sources.credential_plan.selected.mode == auth_token.MODE_API_KEY
     assert sources.auth_source is None
+
+
+def test_overridden_credential_is_a_hint_under_the_winning_source(monkeypatch):
+    """A credential the winner outranks is a hint row, not a free-form info line."""
+    from types import SimpleNamespace
+
+    rows: list[tuple[str, str]] = []
+    effective = SimpleNamespace(mode="oauth", source="stored token", overridden=["API key"])
+    monkeypatch.setattr(init_cmd.auth_token, "effective_credential", lambda *_a: effective)
+    monkeypatch.setattr(init_cmd, "ok", lambda msg: rows.append(("ok", msg)))
+    monkeypatch.setattr(init_cmd, "hint", lambda msg: rows.append(("hint", msg)))
+
+    init_cmd._check_provider_creds("claude", "oauth")
+
+    assert rows == [
+        ("ok", "using stored token"),
+        ("hint", "API key is present but not used; the line above wins"),
+    ]

@@ -93,7 +93,7 @@ def attach_blocker(root: Path, booley_dir: Path) -> str:
 
 
 def _read_ownership(booley_dir: Path) -> dict[str, Any]:
-    ownership = _bytes(booley_dir / "runtime/dashboard-task.json")
+    ownership = _bytes(booley_dir / "runtime/dashboard-task.json", booley_dir)
     owner = (
         require_dict(json.loads(ownership), field="Dashboard task ownership") if ownership else {}
     )
@@ -120,8 +120,8 @@ def _attach_task_blocker(path: Path, booley_dir: Path) -> str:
     return ""
 
 
-def _bytes(path: Path) -> bytes | None:
-    refuse_symlinks(path)
+def _bytes(path: Path, booley_dir: Path | None = None) -> bytes | None:
+    refuse_symlinks(path, booley_dir=booley_dir)
     if not path.exists():
         return None
     if path.stat().st_size > 2 * 1024 * 1024:
@@ -200,7 +200,7 @@ def _names_dashboard_task(path: Path) -> bool:
 def _disable_tracked_ownership(root: Path, booley_dir: Path) -> TaskPlan:
     """Reset a recorded opt-out without modifying a now user-tracked task file."""
     path = booley_dir / "runtime/dashboard-task.json"
-    before = _bytes(path)
+    before = _bytes(path, booley_dir)
     if before is None:
         return TaskPlan()
     owner = _read_ownership(booley_dir)
@@ -225,7 +225,7 @@ def _inspect(root: Path, booley_dir: Path, common_dir: Path) -> TaskPlan:
             "add the task yourself or set [sandbox].dashboard = false"
         )
         return TaskPlan(notices=(notice,))
-    ownership = _bytes(booley_dir / "runtime/dashboard-task.json")
+    ownership = _bytes(booley_dir / "runtime/dashboard-task.json", booley_dir)
     if not active and ownership is None:
         return TaskPlan()
     owner = (
@@ -410,8 +410,9 @@ def _exclude_change(
 class TaskTransaction:
     """Lock serializes Booley writers; byte comparisons protect intervening user edits."""
 
-    def __init__(self, plan: TaskPlan) -> None:
+    def __init__(self, plan: TaskPlan, *, booley_dir: Path | None = None) -> None:
         self.plan = plan
+        self.booley_dir = booley_dir
         self.applied: list[FileChange] = []
         self.directories: list[Path] = []
 
@@ -423,7 +424,7 @@ class TaskTransaction:
             return False
         try:
             for change in self.plan.changes:
-                if _bytes(change.path) != change.before:
+                if _bytes(change.path, self.booley_dir) != change.before:
                     raise OSError(f"Dashboard task changed since inspection: {change.path}")
             for change in self.plan.changes:
                 self._publish(change)
@@ -437,7 +438,7 @@ class TaskTransaction:
 
     def _publish(self, change: FileChange) -> None:
         missing = [parent for parent in change.path.parents if not parent.exists()]
-        if _bytes(change.path) != change.before:
+        if _bytes(change.path, self.booley_dir) != change.before:
             raise OSError(f"Dashboard task concurrent edit: {change.path}")
         if change.after is None:
             change.path.unlink(missing_ok=True)
@@ -450,7 +451,7 @@ class TaskTransaction:
         """Restore predecessors conditionally; concurrent user changes survive failure."""
         for change in reversed(self.applied):
             try:
-                if _bytes(change.path) != change.after:
+                if _bytes(change.path, self.booley_dir) != change.after:
                     logger.warning("Dashboard rollback preserved concurrent edit: %s", change.path)
                     continue
                 if change.before is None:
@@ -468,10 +469,10 @@ class TaskTransaction:
 def reconcile(root: Path, booley_dir: Path) -> TaskTransaction:
     """Inspect and apply within a bounded, nonblocking writer lock."""
     plan = inspect(root, booley_dir)
-    transaction = TaskTransaction(plan)
+    transaction = TaskTransaction(plan, booley_dir=booley_dir)
     if plan.pending:
         lock = booley_dir / "runtime" / "dashboard-task.lock"
-        refuse_symlinks(lock)
+        refuse_symlinks(lock, booley_dir=booley_dir)
         lock.parent.mkdir(parents=True, exist_ok=True)
         try:
             with (

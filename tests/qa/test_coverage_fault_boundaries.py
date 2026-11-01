@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -133,7 +134,10 @@ for complete in [False,True]:
             for event in control.glob("event-*")
         )
         if not mutated and published:
-            (tmp_path / "temp").write_text(json.dumps({"complete": True}))
+            # Replace atomically: a truncate-then-write would let the shim read an empty file.
+            staging = tmp_path / "temp.staging"
+            staging.write_text(json.dumps({"complete": True}))
+            staging.replace(tmp_path / "temp")
             mutated = True
         return original_service(*args, **kwargs)
 
@@ -153,6 +157,23 @@ for complete in [False,True]:
         )
         == 0
     )
+
+
+def test_should_fail_waits_out_a_source_that_is_still_being_written(tmp_path):
+    """The live-file fallback can be read mid-write; an empty read is not a verdict."""
+    source = tmp_path / "temp"
+    source.write_text("")
+
+    def finish_write() -> None:
+        time.sleep(0.1)
+        source.write_text(json.dumps({"complete": True}))
+
+    writer = threading.Thread(target=finish_write)
+    writer.start()
+    try:
+        assert controller.should_fail(source, "complete", set()) is True
+    finally:
+        writer.join()
 
 
 def test_source_mutation_waits_for_published_event_after_snapshot_creation(tmp_path, monkeypatch):

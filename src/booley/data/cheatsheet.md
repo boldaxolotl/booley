@@ -30,6 +30,7 @@ requires the Sandbox.
 | `booley cheat` | either | List sections; use section flags or `--all` to print the reference |
 | `booley doctor` | either | Check project, Sandbox, and toolchain health |
 | `booley help` | either | Show top-level help, same as `booley --help` |
+| `booley resources` | either | Show measured peak memory and run time per Target and Job phase |
 | `booley targets` | either | List or filter Targets; full detail resolution requires the Sandbox |
 
 #### Host-only commands
@@ -133,7 +134,7 @@ LLM-powered Specialists running in scoped, isolated workspaces:
 
 Ask your Developer Agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--model`, `--max-turns`, and `--timeout` are CLI-only controls.
 
-For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. The supported module alternative is `python -m booley.specialists.reviewer` with the same flags. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's Goal-bound MCP calls with `work_dir`.
+For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's Goal-bound MCP calls with `work_dir`.
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
@@ -327,7 +328,7 @@ Example: `{"family": "SYNTH", "target": "synth_core", "thresholds": {"clk_i.fmax
 
 | Command | What it does |
 |---------|-------------|
-| `booley targets` | List every `.core` Target: flow, EDA tool, toplevel, and `Dr` Doctor selection |
+| `booley targets` | List every `.core` Target: drivable Booley Flows, EDA tool, toplevel, and `✓` Doctor selection |
 | `booley targets --for sim` | Only Targets that Booley Flow could drive (any target-aware Booley Flow) |
 | `booley targets 'sim_*'` | Glob filter over bare name or `vendor:lib:name#target` |
 | `booley targets <name>` | Resolved detail: parameters, file counts, SDC/XDC (runs `fusesoc`, container-side) |
@@ -404,15 +405,13 @@ The `booley-sandbox` image contains Booley's EDA toolchain, Developer Agent clie
 | `booley session up` | Start the Sandbox headlessly (no VS Code) |
 | `booley session enter [-- cmd]` | Shell into it, or run one command |
 | `booley session down` | Stop and remove it |
-| `booley` / `booley chat` | Recommended: launch the configured `claude` or `codex` command inside the Sandbox |
+| `booley` / `booley chat` | Launch the configured `claude` or `codex` command inside the Sandbox |
 | `docker pull ghcr.io/boldaxolotl/booley-sandbox:<ver>` | Manual pull of pre-built image |
 
 To extend the image, create `.booley/docker/Dockerfile` with `FROM booley-sandbox`, build it, then set `[sandbox].image` in `.booley/booley.toml`.
 
 Inside the Sandbox, `booley` / `booley chat` is a convenience alias for the selected Developer Agent command:
-it replaces itself with the native CLI. Invoke `claude` or `codex` directly to
-pass agent-specific options. The selected provider's VS Code extension is an
-optional alternative in the attached container window.
+it replaces itself with the native CLI. Arguments after `booley chat` are passed to it unchanged, for example `booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex); `booley chat -- --help` forwards `--help`.
 
 **`booley chat`, `booley goal`, and `booley dashboard` run in the Sandbox.**
 Bare `booley` prints help on the host and starts the configured Developer Agent in the

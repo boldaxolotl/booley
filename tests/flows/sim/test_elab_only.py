@@ -165,7 +165,7 @@ def test_elab_only_rejects_run_stage_arguments(
     flow = SimulateFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", mode, *extra])
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._run()
 
     assert result is not None
@@ -179,7 +179,7 @@ def test_standalone_requires_elab_only(tmp_path: Path) -> None:
     flow = SimulateFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--standalone"])
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._run()
 
     assert result is not None
@@ -196,7 +196,7 @@ def test_elab_only_disabled_result_keeps_mode(
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", "elab-only"])
     monkeypatch.setattr(flow, "_flow_enabled", lambda: False)
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._run()
 
     assert result.exit_code == EXIT_ERROR
@@ -216,7 +216,7 @@ def test_elab_only_target_resolution_error_keeps_mode(
         lambda: McpToolResult(exit_code=EXIT_ERROR, report_text="bad target"),
     )
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._run()
 
     assert result.exit_code == EXIT_ERROR
@@ -270,7 +270,7 @@ def test_standalone_mode_runs_target_elaboration_before_sweep(
         lambda *_args: McpToolResult(exit_code=EXIT_SUCCESS),
     )
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._run_elab_only()
 
     assert result.exit_code == EXIT_SUCCESS
@@ -293,7 +293,8 @@ def test_build_stage_script_measures_both_halves_and_preserves_run_exit() -> Non
         check=False,
         capture_output=True,
         text=True,
-        timeout=10,
+        # MSYS sh spawns slowly on a loaded Windows runner; this only guards a hang.
+        timeout=60 if os.name == "nt" else 10,
     )
 
     assert completed.returncode == 7
@@ -454,7 +455,7 @@ def test_campaign_continues_and_applies_error_fail_pass_precedence(
 
     monkeypatch.setattr(flow, "_run_one_elab_only", run_one)
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._run_elab_only()
 
     assert result.exit_code == EXIT_ERROR
@@ -503,7 +504,7 @@ def test_missing_executable_is_typed_in_elab_only_result(
         ),
     )
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._run_elab_only()
 
     assert result.exit_code == EXIT_ERROR
@@ -536,7 +537,7 @@ def test_elab_only_terminalizes_after_later_target_crash(
 
     with (
         pytest.raises(RuntimeError, match="elaboration interruption"),
-        flow.context.publication_resources,
+        flow.publication_resources,
     ):
         flow._run_elab_only()
 
@@ -579,19 +580,30 @@ def test_one_target_executes_only_authenticated_make_and_archives_complete_log(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     flow = _flow_with_state(tmp_path, ["sim_dut"])
-    prepared = PreparedSimulationBuild(
-        target="sim_dut",
-        target_identity="::dut:0#sim_dut",
-        resolved=MagicMock(),
-        work_root=tmp_path / ".booley/.runtime/edalize/sim/sim_dut",
-        build_root=tmp_path / ".booley/.runtime/edalize/sim/sim_dut/inner",
-        eda_tool="verilator",
-        toplevel="tb_dut",
-        make_argv=("make", "-C", "cache"),
-        environment={"SIM_MODE": "build"},
-        fileset={"rtl": ("rtl/dut.sv",), "tb": ("tb/tb_dut.sv",)},
-    )
-    monkeypatch.setattr("booley.flows.sim.flow.prepare_simulation_build", lambda *a, **k: prepared)
+
+    def fake_prepare(
+        *_args: object, build_root: Path, **_kwargs: object
+    ) -> PreparedSimulationBuild:
+        """Prepare in the leased generation the flow allocates, with a built image."""
+        prepared = PreparedSimulationBuild(
+            target="sim_dut",
+            target_identity="::dut:0#sim_dut",
+            resolved=MagicMock(cocotb_module=""),
+            work_root=build_root,
+            build_root=build_root / "inner",
+            eda_tool="verilator",
+            toplevel="tb_dut",
+            make_argv=("make", "-C", "cache"),
+            environment={"SIM_MODE": "build"},
+            fileset={"rtl": ("rtl/dut.sv",), "tb": ("tb/tb_dut.sv",)},
+        )
+        prepared.build_root.mkdir(parents=True)
+        image = prepared.build_root / "Vtb_dut"
+        image.write_bytes(b"image")
+        image.chmod(0o755)
+        return prepared
+
+    monkeypatch.setattr("booley.flows.sim.flow.prepare_simulation_build", fake_prepare)
     monkeypatch.setattr(flow, "_target_sim_env", lambda target: {})
     monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 3_600_000)
     monkeypatch.setattr(flow, "_effective_build_timeout_ms", lambda: 7000)
@@ -607,7 +619,7 @@ def test_one_target_executes_only_authenticated_make_and_archives_complete_log(
 
     monkeypatch.setattr(flow, "_execute_boundary", execute)
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._run_one_elab_only("sim_dut")
 
     assert result.outcome.passed
@@ -665,7 +677,7 @@ def test_setup_failure_archives_current_error_without_reusing_old_log(
 
     monkeypatch.setattr("booley.flows.sim.flow.prepare_simulation_build", fail_setup)
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._run_one_elab_only("sim_dut")
 
     assert result.outcome.verdict is None
@@ -681,7 +693,7 @@ def test_standalone_sweep_log_cannot_collide_with_target_named_standalone(
 ) -> None:
     flow = _flow_with_state(tmp_path, ["standalone"])
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         target_pointer = flow._persist_elab_only_log("standalone", "target output")
         sweep_pointer = flow._persist_standalone_log("sweep output")
 
@@ -740,7 +752,7 @@ def test_elab_only_branch_skips_test_and_cocotb_discovery(
         lambda targets: pytest.fail("Cocotb validation ran in elab-only mode"),
     )
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         result = flow._run()
 
     assert result.exit_code == EXIT_SUCCESS
@@ -899,7 +911,7 @@ def test_build_only_live_checkpoint_is_building_before_invoker(
     sink = LiveProgressSink(
         invocation / "progress.json", tmp_path, os.environ.get("BOOLEY_RUN_ID", "")
     )
-    with flow.context.publication_resources, install_progress(sink):
+    with flow.publication_resources, install_progress(sink):
         flow._write_elab_only_progress(["sim_dut"], [], phase="starting")
         with attempt_scope("sim_dut", operation="elaboration"):
             result = flow._execute_elab_only_build("sim_dut", prepared)
@@ -929,7 +941,7 @@ def test_standalone_live_probe_has_module_and_build_only_stage(
     sink = LiveProgressSink(
         invocation / "progress.json", tmp_path, os.environ.get("BOOLEY_RUN_ID", "")
     )
-    with flow.context.publication_resources, install_progress(sink):
+    with flow.publication_resources, install_progress(sink):
         flow._write_elab_only_progress(["sim_dut"], [], phase="starting")
         finding, _log, error = flow._run_standalone_probe(
             "dut", "dut.sv", [], "verilator", timeout_s=5

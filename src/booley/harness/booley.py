@@ -16,21 +16,32 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import itertools
 import logging
 import os
 import shlex
 import subprocess
 import sys
+import textwrap
 import warnings
 from collections.abc import Callable
 from contextlib import nullcontext
+from datetime import UTC
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from booley.feedback import cli as feedback_cli
 from booley.feedback.storage import feedback_storage_dir
-from booley.harness import cheatsheet, upgrade_cli, upgrade_review
+from booley.harness import (
+    cheatsheet,
+    colors,
+    feedback_view,
+    projects_view,
+    resources_cli,
+    upgrade_cli,
+    upgrade_review,
+)
 from booley.harness.auth_cmd import run_auth
 from booley.harness.bootstrap_cli import run_bootstrap
 from booley.harness.chat_cmd import run as run_chat
@@ -40,11 +51,14 @@ from booley.harness.init_cmd import run_init
 from booley.harness.render_md import render
 from booley.harness.setup import cleanup_cli
 from booley.harness.setup.common import configure_progress_output
+from booley.harness.terminal_status import MAX_WIDTH, section_header
+from booley.harness.terminal_table import render_table, width_budget
 from booley.harness.worktree_cmd import add_subparser as add_worktree_subparser
 from booley.harness.worktree_cmd import run as run_worktree
 from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import BOOLEY_DIR_NAME
+from booley.runtime.docs_links import docs_url
 from booley.runtime.lifecycle_lock import LifecycleLockError
 from booley.runtime.paths import cheatsheet_path
 
@@ -64,8 +78,9 @@ class CommandLocation(Enum):
     EITHER = "either"
 
     @property
-    def label(self) -> str:
-        return f"[{self.value}]"
+    def heading(self) -> str:
+        """The top-level help section that lists this location's commands."""
+        return {"host": "Host", "Sandbox": "Sandbox", "either": "Host or Sandbox"}[self.value]
 
 
 COMMAND_LOCATIONS = {
@@ -84,6 +99,7 @@ COMMAND_LOCATIONS = {
     "projects": CommandLocation.HOST,
     "upgrade": CommandLocation.EITHER,
     "targets": CommandLocation.EITHER,
+    "resources": CommandLocation.EITHER,
     "flow": CommandLocation.SESSION_RUNTIME,
     "specialist": CommandLocation.SESSION_RUNTIME,
     "feedback": CommandLocation.EITHER,
@@ -123,6 +139,7 @@ COMMAND_PROJECT_BINDINGS = {
     "projects": ProjectBinding.INDEPENDENT,
     "upgrade": ProjectBinding.REQUIRED,
     "targets": ProjectBinding.REQUIRED,
+    "resources": ProjectBinding.REQUIRED,
     "flow": ProjectBinding.REQUIRED,
     "specialist": ProjectBinding.REQUIRED,
     "feedback": ProjectBinding.FEEDBACK,
@@ -242,62 +259,91 @@ def _force_utf8() -> None:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
-def _baked_commit() -> str | None:
-    """Commit stamped into the package at wheel-build time, if any.
+def _baked_identity() -> tuple[str, str]:
+    """``(commit, commit time)`` stamped into the package at wheel-build time.
 
-    A wheel install has no adjacent ``.git``, so ``_source_commit`` returns
-    ``None`` and every image reports a bare ``booley 0.1.0`` — leaving no way
-    to confirm which commit was actually baked, which is exactly what the
-    freshness check asks you to verify (F-5). ``build.sh`` writes this module
-    just before building the wheel; it is generated, not tracked.
+    A wheel install has no adjacent ``.git``, so without the stamp every image
+    would report a bare ``booley 0.1.0`` — leaving no way to confirm which
+    commit was actually baked, which is exactly what the freshness check asks
+    you to verify (F-5). ``booley.runtime.build_stamp.write_build_stamp``
+    writes this module just before building the wheel; it is generated, not
+    tracked. Unknown parts are ``""``: an older stamp has no ``COMMIT_TIME``.
     """
     try:
         from booley import _build_commit  # type: ignore[attr-defined]
     except ImportError:
-        return None
-    commit = getattr(_build_commit, "COMMIT", "")
-    return commit or None
+        return "", ""
+    return (
+        getattr(_build_commit, "COMMIT", ""),
+        getattr(_build_commit, "COMMIT_TIME", ""),
+    )
 
 
-def _source_commit() -> str | None:
-    """Short commit (``+dirty``) attributed to the imported Booley code.
+def _code_identity() -> tuple[str, str]:
+    """``(short commit, commit time)`` attributed to the imported Booley code.
 
-    Live source and installed distributions are disjoint: a source failure
-    never borrows a wheel stamp, and a wheel never borrows an enclosing repo.
+    The commit may carry ``+dirty``. Live source and installed distributions
+    are disjoint: a source failure never borrows a wheel stamp, and a wheel
+    never borrows an enclosing repo. Unknown parts are ``""``.
     """
     import booley
 
     attribution = booley.version_attribution
     if attribution.distribution_name is not None:
-        return _baked_commit()
-    revision, _updated_at = attribution.source_git_metadata()
-    return revision or None
+        return _baked_identity()
+    return attribution.source_git_metadata()
+
+
+def _utc_date(timestamp: str) -> str:
+    """UTC ``YYYY-MM-DD`` of an ISO-8601 *timestamp*, or ``""`` when unparseable."""
+    from booley.runtime.timefmt import parse_timestamp
+
+    try:
+        return parse_timestamp(timestamp).astimezone(UTC).date().isoformat()
+    except ValueError:
+        return ""
 
 
 def _version_string() -> str:
-    """`booley <version>` plus the source commit when running from a checkout."""
+    """`booley <version>` plus commit and UTC commit date when they are known."""
     from booley import __version__
 
-    commit = _source_commit()
-    return f"booley {__version__}" + (f" ({commit})" if commit else "")
+    commit, commit_time = _code_identity()
+    if not commit:
+        return f"booley {__version__}"
+    date = _utc_date(commit_time)
+    return (
+        f"booley {__version__} ({commit}, {date})" if date else f"booley {__version__} ({commit})"
+    )
+
+
+class _PrintVersion(argparse.Action):
+    """Print the version on one unwrapped line and exit.
+
+    argparse's built-in ``version`` action re-wraps its text to the terminal
+    width; this one also defers the (possibly git-backed) lookup until asked.
+    """
+
+    def __init__(self, option_strings: list[str], dest: str, **kwargs: Any) -> None:
+        super().__init__(option_strings, dest, nargs=0, default=argparse.SUPPRESS, **kwargs)
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        sys.stdout.write(_version_string() + "\n")
+        parser.exit()
 
 
 def _install_project_options(parser: argparse.ArgumentParser) -> None:
     """Install shared controls using the command ownership catalog."""
-    from booley.flows.cli_selection import SelectionAction, add_project_option
+    from booley.flows.cli_selection import add_project_option
 
     def install(node, route):
         dest = "_cli_project_" + "_".join(route or ("root",))
-        if route:
-            for action in node._actions:
-                if "--project-root" in action.option_strings:
-                    # Recreate the alias, rather than sharing mutable parent actions.
-                    from booley.flows.cli_selection import _replace_action
-
-                    _replace_action(node, action, SelectionAction)
-                    replacement = node._option_string_actions["--project-root"]
-                    replacement.dest = dest
-                    replacement.default = argparse.SUPPRESS
         add_project_option(node, dest, cheat=route == ("cheat",))
         if route and route[0] == "feedback":
             for option in ("-C", "--project"):
@@ -327,16 +373,20 @@ def _resolve_cli_selection(args: argparse.Namespace) -> Path:
 
 
 def _extract_endpoint_selection(parser, args) -> None:
-    """Extract shared selectors while walking known built-in option arities.
+    """Find a built-in endpoint's tail Project selector, leaving the tail untouched.
 
-    Stop at the first opaque argument: its value can legally be an option name.
-    A leading separator belongs to the main CLI; the next belongs to the payload.
+    The endpoint's own argparse parse says which tokens reach a selector, so option
+    values and payload text can never be mistaken for one. The endpoint's real parse
+    resolves the same token again, against the same checkout, when it runs.
     """
     if args.command not in {"flow", "specialist"} or not args.endpoint_name:
         return
     tail = args.endpoint_args
+    # A superset of the tokens that can reach a selector, including short clusters
+    # such as -qC../b; a false positive only costs one probe parse.
     if not any(
-        token.split("=", 1)[0] in {"--project", "--work-dir", "-C"} or token.startswith("-C")
+        token.split("=", 1)[0] in {"--project", "--work-dir"}
+        or (token.startswith("-") and not token.startswith("--") and "C" in token)
         for token in tail
     ):
         return
@@ -351,69 +401,107 @@ def _extract_endpoint_selection(parser, args) -> None:
     if info is None:
         return
     from booley.flows.base import BuiltinFlow
-    from booley.flows.builtin_cli import build_parser
-    from booley.flows.cli_selection import extract_project_tail, human_parser
+    from booley.flows.builtin_cli import build_cli_parser
+    from booley.flows.cli_selection import CliInvocation
+    from booley.flows.endpoint_cli import human_endpoint_parser
+    from booley.harness.endpoint_help import tail_project_selections
 
     endpoint_cls = _load_mcp_tool_class(info)
     if endpoint_cls is None:
         return
     endpoint = endpoint_cls()
+    # The parser execution will use, so discovery and execution agree on every spelling.
     endpoint_parser = (
-        build_parser(endpoint, human=True)
+        build_cli_parser(endpoint, CliInvocation())
         if isinstance(endpoint, BuiltinFlow)
-        else human_parser(endpoint._parser, durations=True)
+        else human_endpoint_parser(endpoint)
     )
-    args.endpoint_args, selections = extract_project_tail(
-        endpoint_parser, list(args.endpoint_args)
-    )
+    selections = tail_project_selections(endpoint_parser, list(tail))
     if len(selections) + int(hasattr(args, "_cli_selection")) > 1:
         parser.error("multiple Project selectors are not supported")
     if selections:
         args._cli_selection = selections[0]
+        args._cli_tail_selection = True
+
+
+def _outer_endpoint_selection(args: argparse.Namespace) -> bool:
+    """A selector before the endpoint name; a tail selector stays in the endpoint's argv."""
+    return hasattr(args, "_cli_selection") and not getattr(args, "_cli_tail_selection", False)
 
 
 def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
-    from booley.flows.cli_selection import invocation_context
+    from booley.flows.cli_selection import CliInvocation
     from booley.harness.endpoint_help import supports_shared_cli
 
     selected = getattr(args, "_cli_endpoint_project", None)
     supported = supports_shared_cli(endpoint)
-    if selected is not None and not supported:
+    # A tail selector stays in argv, so an override would receive it raw.
+    if (selected is not None or getattr(args, "_cli_tail_selection", False)) and not supported:
         print(
             "ERROR: endpoint overrides the shared CLI entrypoint; implement the common parser "
-            "to support outer --project selection.",
+            "to support --project selection.",
             file=sys.stderr,
         )
         return 2
-    with invocation_context(selected):
-        return endpoint.main(argv, **kwargs)
+    endpoint._cli_invocation = CliInvocation(project=selected)
+    return endpoint.main(argv, **kwargs)
+
+
+_MIN_WRAP_WIDTH = 11
+_ROOT_DESCRIPTION = "Booley — RTL development harness."
+_ROOT_FOOTER = (
+    "Run bare `booley` on the host for help, or inside the Sandbox to open this "
+    "Project's configured agent CLI. See `booley cheat --skills` for guided agent workflows."
+)
+
+
+def _help_width() -> int:
+    """Columns top-level help wraps at: the terminal's, capped at ``MAX_WIDTH``.
+
+    A pipe has no terminal, so it wraps at the cap and the same run always prints
+    the same bytes. The 2 is argparse's right margin.
+    """
+    return min(width_budget() or MAX_WIDTH, MAX_WIDTH) - 2
+
+
+def _wrap(text: str, width: int, indent: str = "") -> list[str]:
+    """Wrap *text* at *width* without cutting or splitting a word."""
+    return textwrap.wrap(
+        text,
+        max(width - len(indent), _MIN_WRAP_WIDTH),  # argparse's own floor
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+
+
+class _RootHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Top-level help: prewrapped command groups and footer, lines within ``MAX_WIDTH``."""
+
+    def __init__(self, prog: str) -> None:
+        super().__init__(prog, width=_help_width())
 
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser with subcommands + legacy flags."""
     parser = argparse.ArgumentParser(
         prog="booley",
-        description="Booley — RTL development harness.",
-        epilog=(
-            "Run bare `booley` on the host for help, or inside the Sandbox to open "
-            "this Project's configured agent CLI. "
-            "Locations: [Sandbox] inside the Sandbox only; [either] host or Sandbox; "
-            "[host] host terminal only. "
-            "See `booley cheat --skills` for guided agent workflows."
-        ),
+        usage="booley [options] <command> [args]",
+        formatter_class=_RootHelpFormatter,
     )
     parser.add_argument(
         "--version",
-        action="version",
-        version=_version_string(),
-        help="Show the Booley version (and source commit in a checkout) and exit",
+        action=_PrintVersion,
+        help="Show the Booley version, plus its commit and UTC commit date when known, and exit",
     )
-    # metavar hides unadvertised subcommands (e.g. the debugging-only `shell`,
-    # ADR 0028 Decision 2: kept working, stripped from help/docs) from the
-    # usage line; subparsers added without `help=` stay out of the listing.
+    # metavar is the parser's advertised command set, read by the docs guards and
+    # argparse's invalid-choice error. Hidden commands (skill adapters, and the
+    # debugging-only `shell`, ADR 0028 Decision 2) are absent from it and from
+    # the grouped listing built by `_describe_commands`.
     sub = parser.add_subparsers(
         dest="command",
         metavar=f"{{{','.join(command_locations())}}}",
+        help=argparse.SUPPRESS,  # The description lists commands by location instead.
+        prog="booley",  # Not the custom usage: subcommand usage stays `booley <command>`.
     )
 
     help_parser = sub.add_parser(
@@ -435,34 +523,41 @@ def _build_parser() -> argparse.ArgumentParser:
     attach.add_argument("--on-attach", action="store_true", help=argparse.SUPPRESS)
 
     _install_project_options(parser)
-    _decorate_command_help(sub)
+    _describe_commands(parser, sub)
 
     return parser
 
 
-def _decorate_command_help(subparsers: argparse._SubParsersAction) -> None:
-    """Hide skill commands and order public summaries by execution location."""
+def _describe_commands(
+    parser: argparse.ArgumentParser, subparsers: argparse._SubParsersAction
+) -> None:
+    """Advertise public commands only, grouped under one header per location.
+
+    Descriptions wrap under one shared column and are never cut: agents read
+    this help through a pipe.
+    """
     locations = command_locations()
     advertised = {action.dest: action for action in subparsers._choices_actions}
     subparsers._choices_actions[:] = [advertised[name] for name in locations]
-    for action in subparsers._choices_actions:
-        action.help = f"{locations[action.dest].label} {action.help}"
+    width = _help_width()
+    indent = " " * (2 + max(map(len, locations)) + 2)
+    lines = [_ROOT_DESCRIPTION]
+    # command_locations() is ordered by location, so each location is one run.
+    for location, names in itertools.groupby(locations, key=locations.__getitem__):
+        lines += ["", section_header(location.heading)]
+        for name in names:
+            first, *rest = _wrap(str(advertised[name].help), width, indent)
+            lines += [f"  {name}".ljust(len(indent)) + first, *(indent + part for part in rest)]
+    parser.description = "\n".join(lines)
+    parser.epilog = "\n".join(_wrap(_ROOT_FOOTER, width))
 
 
-def _project_root_parent() -> argparse.ArgumentParser:
-    """A reusable ``--project-root`` option for subcommands that accept one.
+def _project_root_parent(dest: str) -> argparse.ArgumentParser:
+    """A reusable ``--project-root``/``-p`` alias owned by one subcommand route."""
+    from booley.flows.cli_arguments import add_project_root_alias
 
-    ``default=SUPPRESS`` lets parent parsers and subparsers share the option
-    without a subparser default overwriting a value already parsed.
-    """
     parent = argparse.ArgumentParser(add_help=False)
-    parent.add_argument(
-        "--project-root",
-        "-p",
-        type=str,
-        default=argparse.SUPPRESS,
-        help="Path to the RTL Project Root (default: discovered from cwd)",
-    )
+    add_project_root_alias(parent, dest, short=True)
     return parent
 
 
@@ -520,7 +615,7 @@ def _add_doctor_subparser(sub) -> None:
     doctor_p = sub.add_parser(
         "doctor",
         help="Run setup and environment health checks [may invoke provider probe]",
-        parents=[_project_root_parent()],
+        parents=[_project_root_parent("_cli_project_doctor")],
         description="Check setup and environment health. Deep checks may invoke a Specialist provider authorization and memory probe unless skipped.",
     )
     output = doctor_p.add_mutually_exclusive_group()
@@ -587,6 +682,12 @@ def _add_init_scaffold_arguments(init_p) -> None:
         metavar="PART",
         help="Scaffold: enable fpga for this Vivado part (default off)",
     )
+    init_p.add_argument(
+        "--stealth",
+        action="store_true",
+        help="Scaffold: keep Booley out of git history ([stealth] enabled = true, "
+        "Booley-authored cores under .booley/cores/; default off)",
+    )
 
 
 def _add_init_subparser(sub) -> None:
@@ -630,6 +731,11 @@ def _add_init_subparser(sub) -> None:
         metavar="{auto,subscription,api-key}",
         help="Agent authentication policy to record (default: auto)",
     )
+    init_p.add_argument(
+        "--repin-booley-dir",
+        action="store_true",
+        help="Re-pin a symlinked .booley entry to its current target",
+    )
     _add_init_scaffold_arguments(init_p)
 
 
@@ -658,7 +764,7 @@ def _add_bootstrap_subparser(sub) -> None:
     qa_skills.add_argument(
         "--with-qa-skills",
         action="store_true",
-        help="Persist and reconcile maintainer QA skills from this primary main checkout",
+        help="Persist and reconcile maintainer QA skills from this primary source checkout",
     )
     qa_skills.add_argument(
         "--without-qa-skills",
@@ -709,7 +815,9 @@ def _add_specialist_subparser(sub) -> None:
 
 def _add_session_subparser(sub) -> None:
     """Add lifecycle controls for the Sandbox."""
-    root_opt = _project_root_parent()
+    from booley.flows.cli_arguments import add_project_root_alias
+
+    root_opt = _project_root_parent("_cli_project_session_down")
     session_p = sub.add_parser(
         "session",
         help="Start/enter/stop the Sandbox container without VS Code",
@@ -743,7 +851,7 @@ def _add_session_subparser(sub) -> None:
         help="Validate the host-issued Sandbox specification",
     )
     prepare_p = session_sub.add_parser("prepare")
-    prepare_p.add_argument("--project-root", help=argparse.SUPPRESS)
+    add_project_root_alias(prepare_p, "_cli_project_session_prepare")
     session_sub.add_parser(
         "refresh",
         help="Rebuild the configured image from current Booley sources and recreate the session",
@@ -752,8 +860,8 @@ def _add_session_subparser(sub) -> None:
 
 def _add_shell_subparser(sub) -> None:
     """Add the deliberately undocumented host debugging shell."""
-    # `booley shell` is deliberately undocumented (no `help=`, hidden via the
-    # subparsers metavar): a host-side debugging hatch, kept working but out
+    # `booley shell` is deliberately undocumented (no `help=`, left out of
+    # the grouped top-level listing): a host-side debugging hatch, kept working but out
     # of the advertised Sandbox workflow (ADR 0028).
     shell_p = sub.add_parser(
         "shell",
@@ -780,6 +888,14 @@ def _add_utility_subparsers(sub) -> None:
         "chat",
         help="Open this Project's configured agent CLI [invokes agent]",
         description="Open the configured interactive agent CLI for this Project.",
+        usage="%(prog)s [-h] [-C PATH | --project PATH] [--] [ARGS ...]",
+        epilog=(
+            "Arguments after `chat` are passed unchanged to the agent CLI, after "
+            "Booley's own launch arguments, for example `booley chat --resume <id>` "
+            "(Claude) or `booley chat resume --last` (Codex). Booley reads -h/--help "
+            "and -C/--project only before any other argument. Put `--` "
+            "first to forward them to the agent: `booley chat -- --help`."
+        ),
     )
     _add_cheat_subparser(sub)
 
@@ -793,6 +909,7 @@ def _add_utility_subparsers(sub) -> None:
     _add_flow_subparser(sub)
     _add_specialist_subparser(sub)
     _add_targets_subparser(sub)
+    resources_cli.add_subparser(sub)
 
     # Skill adapters stay registered; top-level help advertises human commands only.
     feedback_cli.add_subparser(sub)
@@ -856,11 +973,11 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
         from booley.criteria.evidence_ledger import AcceptanceLedgerError
         from booley.goals.diagnostics import is_unnamable_error, unavailable_diagnostic
         from booley.goals.ended_records import with_last_ended
-        from booley.goals.format import render_status
         from booley.goals.proposal_errors import ProposalError
         from booley.goals.state_store import GoalStateError
         from booley.goals.status import select_status
         from booley.goals.store import GoalStore, GoalStoreError
+        from booley.harness.goal_status_view import render_goal_status
         from booley.runtime.booley_dir import resolve_booley_dir
 
         try:
@@ -869,13 +986,15 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
             store = GoalStore(resolve_booley_dir(_project_root))
             checkout = _goal_checkout(args, _project_root)
             selection = select_status(store, checkout, campaign_reader=read_unpublished_results)
-            from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
+            from booley.mcp.sim_baseline_jobs import schedule_goal_baselines
 
             for view in selection.views:
-                schedule_sim_baselines(resolve_booley_dir(_project_root), view.record)
+                schedule_goal_baselines(resolve_booley_dir(_project_root), view.record)
             short = True if args.short else False if args.long else None
             text = (
-                render_status(selection.views, short=short, project_wide=selection.project_wide)
+                render_goal_status(
+                    selection.views, short=short, project_wide=selection.project_wide
+                )
                 if selection.views
                 else "No active Goal Mode."
             )
@@ -981,15 +1100,17 @@ def _normalize_args(
     if args.command is None:
         if not runtime_context.inside_session_runtime():
             parser.print_help()
-            print(
-                "\nGetting started: run `booley bootstrap`, then `booley init` in your RTL "
+            getting_started = (
+                "Getting started: run `booley bootstrap`, then `booley init` in your RTL "
                 "repo, and open the Project in its devcontainer. "
-                "See `booley --help` and docs/user/SETUP.md."
+                f"See `booley --help` and {docs_url('SETUP.md')}"
             )
+            print("\n" + "\n".join(_wrap(getting_started, _help_width())))
             parser.exit(0)
         else:
             args.command = "chat"
             args.default_chat = True
+            args.agent_args = []
 
     _normalize_project_options(parser, args)
     _validate_doctor_args(parser, args)
@@ -1018,8 +1139,8 @@ def _global_options_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _argv_command(argv: list[str], globals_parser: argparse.ArgumentParser) -> str | None:
-    """Find a command after a valid global prefix, leaving its entire tail opaque.
+def _argv_command_index(argv: list[str], globals_parser: argparse.ArgumentParser) -> int | None:
+    """Find the command word's index after a valid global prefix, leaving its tail opaque.
 
     Parse each candidate's prefix so variable-arity options cannot consume the
     command. A required option value must be supplied before that boundary.
@@ -1036,18 +1157,57 @@ def _argv_command(argv: list[str], globals_parser: argparse.ArgumentParser) -> s
         except argparse.ArgumentError:
             continue
         if not unknown:
-            return None if options.help else word
+            return None if options.help else index
     return None
+
+
+def _chat_option_width(tail: list[str], position: int) -> int:
+    """Return how many tokens Booley's own `chat` Project option takes at `position`."""
+    if position >= len(tail):
+        return 0
+    token = tail[position]
+    if token in ("-C", "--project"):
+        return 2 if position + 1 < len(tail) else 1
+    if token.startswith("--project=") or (token.startswith("-C") and len(token) > 2):
+        return 1
+    return 0
+
+
+def _split_chat_tail(argv: list[str], command_index: int) -> tuple[list[str], list[str]]:
+    """Split `booley ... chat TAIL` into Booley's argv and the agent CLI's arguments.
+
+    Booley keeps `-C`/`--project` only while they lead the tail. Everything after
+    them goes to the agent CLI untouched, with one leading `--` dropped so
+    `booley chat -- --help` forwards `--help`. A leading `-h`/`--help` stays
+    Booley's: the whole argv goes to argparse, which prints the `chat` help.
+    """
+    tail = argv[command_index + 1 :]
+    own_end = 0
+    while width := _chat_option_width(tail, own_end):
+        own_end += width
+    agent_args = tail[own_end:]
+    if agent_args[:1] in (["-h"], ["--help"]):
+        return argv, []
+    if agent_args[:1] == ["--"]:
+        agent_args = agent_args[1:]
+    return argv[: command_index + 1] + tail[:own_end], agent_args
 
 
 def _parse_cli() -> argparse.Namespace:
     """Parse CLI args with subcommands."""
     _force_utf8()
     parser = _build_parser()
-    command = _argv_command(sys.argv[1:], _global_options_parser())
+    argv = sys.argv[1:]
+    command_index = _argv_command_index(argv, _global_options_parser())
+    command = None if command_index is None else argv[command_index]
     if command in RETIRED_COMMAND_POINTERS:
         parser.exit(2, RETIRED_COMMAND_POINTERS[command] + "\n")
-    args = parser.parse_args()
+    agent_args: list[str] = []
+    if command == "chat":
+        argv, agent_args = _split_chat_tail(argv, command_index)
+    args = parser.parse_args(argv)
+    if args.command == "chat":
+        args.agent_args = agent_args
     if args.command == "help":
         parser.print_help()
         parser.exit()
@@ -1163,13 +1323,7 @@ def _cheat_criteria_params_reference(text: str) -> str:
 
 def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     if _cheat_lists_sections(args):
-        for slug in cheatsheet.section_slugs():
-            aliases = cheatsheet.section_flags(slug)[1:]
-            alias_names = ", ".join(f"--{name}" for name in aliases)
-            alias_note = f" (alias: {alias_names})" if aliases else ""
-            print(
-                f"  --{cheatsheet.section_flags(slug)[0]:<14}{cheatsheet.section_help(slug)}{alias_note}"
-            )
+        print("\n".join(cheatsheet.render_index(width_budget())))
         print(
             "\nExample: booley cheat --commands --project-files\n"
             "Use booley cheat --all for the whole cheatsheet."
@@ -1197,7 +1351,7 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     # Drop the HTML-comment markers so they don't reach the terminal.
     text = "\n".join(ln for ln in text.splitlines() if not ln.strip().startswith("<!--"))
 
-    print(render(text), end="")
+    print(render(text, width=width_budget()), end="")
     return 0
 
 
@@ -1351,7 +1505,7 @@ def _cmd_session(args: argparse.Namespace, project_root: Path) -> int:
     try:
         return handler(args, project_root)
     except DockerCapacityError as exc:
-        print(f"[XX] image-capacity: {exc}", file=sys.stderr)
+        print(f"ERROR: image-capacity: {exc}", file=sys.stderr)
         return 2
     except sr.SessionError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -1404,7 +1558,11 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
             file=sys.stderr,
         )
 
-    cfg = get_agent_settings()
+    try:
+        cfg = get_agent_settings()
+    except RuntimeError as exc:  # BackendConfigError, e.g. BOOLEY_AGENT_APP=auto on the host
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
     docker_cfg = DockerSandboxConfig(
         image=cfg.sandbox.image,
         needs_network=bool(getattr(args, "net", False)),
@@ -1489,29 +1647,25 @@ def _load_mcp_tool_class(info: McpToolInfo) -> type | None:
     return None
 
 
-_FLOW_BLURB_CHARS = 72
-
-
 def _flow_blurb(description: str) -> str:
-    """Return one terminal line from a Flow description.
+    """Return the first sentence of a Flow description, on one line.
 
-    Endpoint descriptions can run to paragraphs; the CLI listing stays terse.
+    Endpoint descriptions can run to paragraphs; the listing shows the lead
+    sentence whole. Width fitting belongs to the table (TTY only), so piped
+    output is never cut mid-sentence.
     """
-    first = description.split(". ", maxsplit=1)[0].strip()
-    if len(first) > _FLOW_BLURB_CHARS:
-        first = first[: _FLOW_BLURB_CHARS - 1].rstrip() + "…"
-    return first
+    return " ".join(description.split()).split(". ", maxsplit=1)[0].strip()
 
 
 def _flow_listing(flows: list[McpToolInfo]) -> str:
     """Render available Flows for the CLI."""
     if not flows:
         return "  (none discovered)"
-    width = max(len(flow.name) for flow in flows)
-    return "\n".join(
-        f"  {flow.name:<{width}}  {_flow_blurb(flow.description)}"
+    rows = [
+        [colors.accent(flow.name), _flow_blurb(flow.description)]
         for flow in sorted(flows, key=lambda item: item.name)
-    )
+    ]
+    return "\n".join(render_table(["Name", "Description"], rows, width=width_budget()))
 
 
 def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolInfo | int:
@@ -1522,7 +1676,7 @@ def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolIn
     heading = "Flows" if kind == "flow" else "Specialists"
     raw_name = getattr(args, "endpoint_name", None)
     if raw_name is None:
-        print(f"Available {heading}:\n{_flow_listing(choices)}")
+        print(f"{section_header(f'Available {heading}')}\n{_flow_listing(choices)}")
         return 0
     name = canonical(raw_name) if kind == "flow" else raw_name
     info = next((item for item in choices if item.name == name), None)
@@ -1532,9 +1686,10 @@ def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolIn
         _enforce_runtime_location(args.command)
     other = next((item for item in endpoints if item.name == canonical(raw_name)), None)
     suggestion = f" Use booley {other.kind} {other.name}." if other is not None else ""
+    # Colour follows stdout, so the stderr listing is printed plain.
+    listing = colors.strip_ansi(f"Available {heading}\n{_flow_listing(choices)}")
     print(
-        f"ERROR: {name!r} is not a {kind} for booley {kind}.{suggestion}"
-        f"\n\nAvailable {heading}:\n{_flow_listing(choices)}",
+        f"ERROR: {name!r} is not a {kind} for booley {kind}.{suggestion}\n\n{listing}",
         file=sys.stderr,
     )
     return 2
@@ -1638,6 +1793,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     import json as _json
 
     from booley.fusesoc import fusesoc_registry
+    from booley.harness import targets_view
     from booley.targets import target_surface
 
     selector: str | None = getattr(args, "selector", None)
@@ -1663,7 +1819,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
         except fusesoc_registry.FuseSocError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
-        print(_json.dumps(payload, indent=2) if as_json else target_surface.render_detail(payload))
+        print(_json.dumps(payload, indent=2) if as_json else targets_view.render_detail(payload))
         return 0
 
     try:
@@ -1682,7 +1838,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     elif nothing_authored:
         print("no .core Targets authored yet")
     else:
-        print(target_surface.render_listing(surface, project_root))
+        print(targets_view.render_listing(target_surface.surface_payload(surface, project_root)))
     return 0
 
 
@@ -1691,7 +1847,7 @@ def _cmd_feedback(args: argparse.Namespace, project_root: Path) -> int:
     env = None
     if feedback_cli.requires_environment(args):
         env = resolve_feedback_environment(feedback_storage_dir(project_root))
-    return feedback_cli.run(args, project_root, env=env)
+    return feedback_cli.run(args, project_root, env=env, list_view=feedback_view.render_listing)
 
 
 _EARLY_COMMANDS: dict[str, Callable] = {
@@ -1703,6 +1859,7 @@ _EARLY_COMMANDS: dict[str, Callable] = {
     "shell": _cmd_shell,
     "session": _cmd_session,
     "targets": _cmd_targets,
+    "resources": resources_cli.run,
     "worktree": run_worktree,
     "goal": _cmd_goal,
     "dashboard": _cmd_dashboard,
@@ -1717,9 +1874,10 @@ from booley.eda import cli as _eda_cli
 
 
 def _cmd_eda(args: argparse.Namespace, project_root: Path) -> int:
+    from booley.harness import eda_view
     from booley.harness.eda_grants import COORDINATOR
 
-    return _eda_cli.run(args, project_root, grant_mutator=COORDINATOR)
+    return _eda_cli.run(args, project_root, grant_mutator=COORDINATOR, record_view=eda_view)
 
 
 _EARLY_COMMANDS["eda"] = _cmd_eda
@@ -1840,6 +1998,7 @@ class ProjectRequiredError(RuntimeError):
 
 def _require_command_project(command: str, project_root: Path) -> None:
     """Validate required Project context before dispatch, allowing initialization."""
+    from booley.core.booley_dir_pin import BooleyDirPinError, entry_needs_pin
     from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
     # Initialization creates the context this guard requires, including in non-Git folders.
@@ -1862,6 +2021,12 @@ def _require_command_project(command: str, project_root: Path) -> None:
         present = False
     except PermissionError as exc:
         raise ProjectRequiredError(f"cannot access Booley Directory: {exc}") from exc
+    except BooleyDirPinError:
+        # Doctor reports the checkout's own untrusted entry as a FAIL; an ancestor's
+        # untrusted link is not Doctor's to report, so it refuses like any command.
+        if command != "doctor" or not entry_needs_pin(project_root):
+            raise
+        present = True
     if not present:
         raise ProjectRequiredError(
             "not a Booley Project; cd into one or run `booley init` on the host."
@@ -2021,15 +2186,24 @@ def _dispatch_selected(
     if command == "projects":
         from booley.runtime import image_keepers as runtime_image_keepers
 
-        return project_inventory_cli.run(args, keeper_operations=runtime_image_keepers)
+        return project_inventory_cli.run(
+            args,
+            keeper_operations=runtime_image_keepers,
+            leftovers_view=projects_view.render_leftovers,
+        )
 
     # Project and runtime-location guards precede runtime mutation and screen clearing.
     # docker-exec entry drops the spec's remoteEnv — self-heal the proxy env
     # here so agents spawned below inherit a working egress path.
-    if runtime_context.ensure_proxy_env():
-        logger.debug("proxy env was absent in-container — defaulted to booley-proxy")
+    try:
+        if runtime_context.ensure_proxy_env():
+            logger.debug("proxy env was absent in-container — defaulted to booley-proxy")
+    except runtime_context.EgressModeError:
+        # Doctor must still run to report the invalid declaration as a FAIL.
+        if command != "doctor":
+            raise
 
-    if hasattr(args, "_cli_selection") and command in {"flow", "specialist"}:
+    if _outer_endpoint_selection(args) and command in {"flow", "specialist"}:
         args._cli_endpoint_project = project_root
     from booley.runtime.layout_consumers import directory_consumer
 
@@ -2048,7 +2222,7 @@ def _dispatch_help_candidate(args: argparse.Namespace, project_root: Path) -> in
     """Keep metadata admission while avoiding execution-path runtime setup."""
     from booley.runtime.layout_consumers import directory_consumer
 
-    if hasattr(args, "_cli_selection"):
+    if _outer_endpoint_selection(args):
         args._cli_endpoint_project = project_root
     with directory_consumer(project_root):
         result = _handle_early_exits(args, project_root)
@@ -2059,14 +2233,12 @@ def _dispatch_help_candidate(args: argparse.Namespace, project_root: Path) -> in
 def main() -> int:
     """Run the CLI with one rendering boundary for lifecycle contention."""
     from booley.core.booley_layout import BooleyLayoutError
-    from booley.flows.cli_selection import invocation_context
     from booley.mcp.endpoint_config import EndpointConfigError
     from booley.runtime.checkout_role import SourceCheckoutProjectError
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
     try:
-        with invocation_context():
-            return _dispatch_main()
+        return _dispatch_main()
     except (
         LifecycleLockError,
         BooleyLayoutError,
@@ -2074,6 +2246,7 @@ def main() -> int:
         EndpointConfigError,
         ProjectRequiredError,
         SourceCheckoutProjectError,
+        runtime_context.EgressModeError,
     ) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

@@ -1,0 +1,93 @@
+{#-
+  One blog post, set as a Booley application note: title strip, headline,
+  byline, then the prose column beside a sticky contents sidebar. Replaces
+  Material's blog-post.html (its sidebar and metadata nav are not emitted).
+
+  Optional post front matter read here:
+    number     application-note number for the strip and footer, e.g. AN-001
+    exhibits   [[id, label], ...] figures/tables/listings listed under contents
+    downloads  [[label, file], ...] files the blog plugin publishes beside the post
+-#}
+{% extends "main.html" %}
+
+{% set number = page.meta.number or "Note" %}
+
+{% block container %}
+  <div class="post doc">
+    <div class="doc__head">
+      <div class="strip">
+        <span><a class="strip__home" href="{{ 'blog/' | url }}"><b>{{ number }}</b>
+          {#- The AND gate, shrunk to a document mark. -#}
+          <svg class="glyph" viewBox="0 0 34 20" aria-hidden="true" focusable="false"><path d="M0 6 H8 M0 14 H8" stroke="currentColor" stroke-width="1.4"/><path d="M8 1 h7 a9 9 0 0 1 0 18 h-7 z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M24 10 H34" stroke="var(--mask)" stroke-width="2.4"/></svg>Booley application note</a></span>
+        <span><time datetime="{{ page.config.date.created }}">{{ page.config.date.created.strftime("%-d %B %Y") }}</time>
+          {%- if page.config.readtime %} &middot; {{ page.config.readtime }} min read{% endif %}</span>
+      </div>
+      <h1>{{ page.title }}</h1>
+      <p class="byline">By <b>{{ config.site_author }}</b>, maintainer of Booley.</p>
+    </div>
+
+    <article class="prose">
+      {{ page.content }}
+    </article>
+
+    {#- Contents: the post's numbered sections (its top-level headings). -#}
+    <aside class="toc" aria-label="Contents">
+      <p class="toc__h">Contents</p>
+      <ol>
+        {% for item in page.toc %}
+          <li><a href="{{ item.url }}"><span>{{ loop.index }}</span>{{ item.title }}</a></li>
+        {% endfor %}
+      </ol>
+      {% if page.meta.exhibits or page.meta.downloads %}
+        <div class="toc__refs">
+          {% for id, label in page.meta.exhibits or [] %}
+            <p><a href="#{{ id }}">{{ label }}</a></p>
+          {% endfor %}
+          {% if page.meta.downloads %}
+            <p class="toc__dl">Downloads:
+              {% for label, path in page.meta.downloads -%}
+                <a href="{{ path }}" download>{{ label }}</a>{% if not loop.last %}, {% endif %}
+              {%- endfor %}</p>
+          {% endif %}
+        </div>
+      {% endif %}
+    </aside>
+  </div>
+
+  <script>
+    /* Section numbers in the contents sidebar match the headings' CSS
+       counters. Highlight the section being read, and open a collapsed
+       <details> when a link (Table 2, Listings 3-6, #reproduce) points
+       inside it, before the browser scrolls to the target. */
+    (function () {
+      function openForHash() {
+        var t = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
+        if (!t) return;
+        var d = t.closest("details");
+        if (d && !d.open) { d.open = true; t.scrollIntoView(); }
+      }
+      window.addEventListener("hashchange", openForHash);
+      openForHash();
+
+      var links = Array.prototype.slice.call(document.querySelectorAll(".toc ol a"));
+      var heads = links.map(function (a) { return document.getElementById(a.hash.slice(1)); });
+      function mark() {
+        var current = 0;
+        heads.forEach(function (h, i) { if (h && h.getBoundingClientRect().top < 120) current = i; });
+        links.forEach(function (a, i) { a.classList.toggle("on", i === current); });
+      }
+      if (links.length) { window.addEventListener("scroll", mark, { passive: true }); mark(); }
+    })();
+  </script>
+{% endblock %}
+
+{% block footer %}
+  <footer class="foot">
+    <dl class="foot__in">
+      <div><dt>Document</dt><dd>{{ number }}, Booley application note</dd></div>
+      <div><dt>First published</dt><dd>{{ page.config.date.created.strftime("%-d %B %Y") }}, {{ config.site_author }}</dd></div>
+      <div><dt>Package</dt><dd><a href="https://pypi.org/project/booley-rtl/">booley-rtl</a> on PyPI</dd></div>
+      <div><dt>Source</dt><dd><a href="https://github.com/boldaxolotl/booley">github.com/boldaxolotl/booley</a></dd></div>
+    </dl>
+  </footer>
+{% endblock %}

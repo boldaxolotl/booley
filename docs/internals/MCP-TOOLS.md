@@ -13,10 +13,12 @@ The documentation is split by responsibility, not by reader type:
 | Document | Owns |
 |---|---|
 | **This document** | The MCP tool framework: discovery, lifecycle, base classes, `McpToolResult`, Criteria routing, and Custom Flows and MCP tools and built-in Specialist evidence contracts |
-| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | How RTL developers run built-in Booley Flows and interpret their results |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md)) | How RTL developers run built-in Booley Flows and interpret their results |
 | [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | The implementation and evidence contracts of the built-in deterministic `sim`, `lint`, `synth`, and `fpga` Booley Flows |
 | [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON schemas, and Campaign file layouts of the built-in Flows |
-| [CONFIG.md](../user/CONFIG.md) | The project configuration surface: exact keys, defaults, examples, `.core` design description, and `tests.toml` |
+| [CONFIG.md](../user/CONFIG.md) | The Project-wide `booley.toml` surface: exact keys, defaults, and examples; each Flow page owns its `[flows.*]` keys |
+| [TARGETS.md](../user/TARGETS.md) | The `.core` design description and Targets |
+| [TESTS.md](../user/TESTS.md) | `tests.toml`: Tests, Test Variants, and seeds |
 | [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
 
 This document may show small configuration fragments when an extension contract
@@ -30,7 +32,7 @@ This is an implementation-level guide. It assumes the vocabulary and whole-syste
 - **[GLOSSARY-MAP.md](../../GLOSSARY-MAP.md)** — the controlled-vocabulary
   index. This guide uses the shared Booley, Goal Mode, and Simulation Coverage glossaries.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the agent session, Specialists, and the Booley Flow contract fit together at run time.
-- **[CONFIG.md](../user/CONFIG.md)** — the configuration reference for `booley.toml`, `.core` files, `tests.toml`, EDA provisioning, and Pre-Sim Commands.
+- **[CONFIG.md](../user/CONFIG.md)** — the `booley.toml` configuration reference. `.core` files are in [TARGETS.md](../user/TARGETS.md), `tests.toml` in [TESTS.md](../user/TESTS.md), EDA provisioning in [SANDBOX.md](../user/SANDBOX.md#commercial-eda-provisioning), and Pre-Sim Commands in [FLOW-SIM.md](../user/FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands).
 - **[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md)** — the public contract for invoking and interpreting built-in Booley Flows.
 - **[FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md)** — how built-in deterministic Booley Flows turn FuseSoC Targets into commands and normalize EDA output into evidence.
 - **[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md)** — which EDA tools and provisioning sources are supported and what each requires.
@@ -127,7 +129,7 @@ Write a Custom Flow or custom MCP tool when:
 - You need a project-specific check that doesn't belong in the framework (DRC, protocol compliance, custom linting)
 - You need an LLM-powered specialist with project-specific prompting
 
-First check the [supported EDA tool matrix](../user/SUPPORTED-EDA-TOOLS.md). If Booley already supports the workflow, configure the built-in Flow. Otherwise, use `BooleyFlow` for deterministic in-container subprocess logic, `Specialist` for LLM-powered work, or `McpTool` for other in-container orchestration. For a per-test build step, use [Pre-Sim Commands](../user/CONFIG.md#pre-sim-commands-flowssimpre_run_commands). A missing commercial EDA policy cannot be replaced by a custom host wrapper.
+First check the [supported EDA tool matrix](../user/SUPPORTED-EDA-TOOLS.md). If Booley already supports the workflow, configure the built-in Flow. Otherwise, use `BooleyFlow` for deterministic in-container subprocess logic, `Specialist` for LLM-powered work, or `McpTool` for other in-container orchestration. For a per-test build step, use [Pre-Sim Commands](../user/FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands). A missing commercial EDA policy cannot be replaced by a custom host wrapper.
 
 ---
 
@@ -153,6 +155,28 @@ enabled = false                 # remove one discovered Specialist MCP tool
 
 Agent-facing MCP tools and the subprocesses they launch run inside the Sandbox. A custom endpoint that needs additional software adds it to a Project
 image or uses a supported built-in EDA provisioning policy.
+
+### `work_dir` routing
+
+The Developer Agent passes the Goal worktree's absolute root as `work_dir` to
+every tool that accepts it.
+
+Built-in MCP worktree routing:
+
+| Accepts `work_dir` | Does not accept `work_dir` |
+| --- | --- |
+| `sim`, `lint`, `synth`, `fpga` | `booley_status` |
+| `reviewer`, `mutation_tester`, `coverage_analyst` | `booley_poll`, `booley_cancel` |
+| `goal_enter`, `goal_status`, `goal_propose_change`, `goal_finish` | `booley_sleep`, `coverage_evidence` |
+| `booley_targets`, `booley_report` | `bwave` |
+
+`booley_sleep` appears only when diagnostic tools are enabled, and
+`coverage_evidence` only in the Coverage Analyst's nested server.
+
+While any Goal Record occupies the Project, Booley Flows, Specialists, Goal
+tools, and `booley_report` refuse a call without `work_dir`, even a diagnostic
+call outside that worktree; `booley_targets` may omit it. Project-defined
+endpoints must declare `work_dir` to run.
 
 ### Configuration Boundary
 
@@ -206,7 +230,7 @@ Chapter 3 covers any project Criteria named by `satisfies`.
 
 ## Chapter 2: The Shared Python Contract
 
-Built-in Flows compose a transport-independent execution session and accept
+Built-in Flows own their per-invocation execution state and accept
 typed requests. CLI and MCP adapters expose them through the existing commands
 and schemas; see [Built-in Flow execution](FLOW-EXECUTION.md). Custom Flows retain
 `BooleyFlow`, while Specialists and direct MCP endpoints retain their existing
@@ -223,7 +247,7 @@ Criteria themselves are defined and expanded.
 
 | Class | Contract | Built-in examples |
 |-------|----------|-------------------|
-| `BuiltinFlow` | Execute typed requests through a composed Flow session | `sim`, `lint`, `synth`, `fpga` |
+| `BuiltinFlow` | Execute typed requests as their own invocation-state owner | `sim`, `lint`, `synth`, `fpga` |
 | `BooleyFlow` | Preserve the Custom Flow CLI/subprocess extension contract | Project-local Flows |
 | `Specialist` | Build a focused prompt, run an LLM agent loop, and interpret its output | `reviewer`, `mutation_tester` |
 | `McpTool` | Implement orchestration directly when neither higher-level contract fits; also available to Project-local custom tools | Project-local custom endpoint |
@@ -245,6 +269,12 @@ Every MCP tool inherits a base argument set. A concrete implementation adds only
 | `--target` | Which project Target to operate on (comma-separated). This is what `self.args.target` reads in the examples below |
 
 The Target value is also what the `per_target` Criterion convention keys on.
+
+Unknown endpoint arguments stop selector extraction, so custom endpoints take
+the selector before the endpoint name (`booley flow -C ../other custom`);
+inherited common parsers support it. Overrides that bypass the common
+entrypoint reject explicit outer selection. Plugin-owned options, including a
+custom `--timeout short|long`, keep their own contracts.
 
 ### Execution Hooks
 
@@ -588,7 +618,7 @@ Interactive Mode is the normal way to try a Custom Flow or Specialist. Once the 
 - *"Run `drc_check` on the `variant_a` Target with the signoff rule set."*
 - *"Ask `protocol_reviewer` to check `rtl/axi_slave.sv`."*
 
-The agent selects the arguments and invokes the custom MCP tool. Goal Mode uses the same implementation and registry with an immutable Run Binding; evidence may update the declared Goals when its keys and subject match them. Outside Goal Mode, the verdict is returned to the session without persistent Goal state. While any Goal Record occupies the Project, every endpoint, `booley_report`, and Goal tool call must pass explicit `work_dir`, including diagnostic calls outside the Goal worktree, so a custom endpoint must declare `work_dir` to run. `booley_targets` may omit it; the [built-in routing inventory](../user/USAGE.md#working-with-evidence) lists the tools that accept none.
+The agent selects the arguments and invokes the custom MCP tool. Goal Mode uses the same implementation and registry with an immutable Run Binding; evidence may update the declared Goals when its keys and subject match them. Outside Goal Mode, the verdict is returned to the session without persistent Goal state. While any Goal Record occupies the Project, every endpoint, `booley_report`, and Goal tool call must pass explicit `work_dir`, including diagnostic calls outside the Goal worktree, so a custom endpoint must declare `work_dir` to run. `booley_targets` may omit it; the [built-in routing inventory](#work_dir-routing) lists the tools that accept none.
 
 #### Diagnose a Flow Through the Direct CLI
 
@@ -661,7 +691,7 @@ Interactive session logs land under `.booley/.interactive_logs/<session-id>/`. A
 
 Goals are Goal Mode's mandatory success conditions. Only bound Booley Flow or
 Specialist evidence can meet them; Finish checks current evidence for every Goal
-(see [USAGE.md](../user/USAGE.md#working-with-evidence)). The implementation
+(see [GOAL-MODE.md](../user/GOAL-MODE.md#working-with-evidence)). The implementation
 translates Goals into shared Criteria definitions and evidence keys, then routes
 producer `set_criterion()` updates to the declared Goals.
 [Criterion](../GLOSSARY.md#execution-and-evidence) is the internal policy/evaluation vocabulary in shared Criteria and evidence code used by Goal Mode and Specialists.
@@ -851,11 +881,11 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 | I want to... | Do this |
 |-------------|---------|
 | Add an in-container endpoint | Write a `BooleyFlow`, `Specialist`, or direct `McpTool` subclass in `.booley/mcp_tools/`; discovery is automatic |
-| Run a per-test build step before sim | `[flows.sim].pre_run_commands` ([CONFIG.md](../user/CONFIG.md#pre-sim-commands-flowssimpre_run_commands)) |
-| Use host-provisioned Vivado | Follow [CONFIG.md](../user/CONFIG.md#commercial-eda-provisioning) for the Project request, [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#fpga) for the Flow contract, and [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy) for requirements |
+| Run a per-test build step before sim | `[flows.sim].pre_run_commands` ([FLOW-SIM.md](../user/FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands)) |
+| Use host-provisioned Vivado | Follow [SANDBOX.md](../user/SANDBOX.md#commercial-eda-provisioning) for the Project request, [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#fpga) for the Flow contract, and [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy) for requirements |
 | Add another host-provisioned EDA tool | Implement and validate a built-in policy; custom MCP tools cannot add host mounts or execution paths |
 | Define when my Flow should run | Create a Criterion in `criteria.toml`, reference it in `satisfies` |
-| Configure a built-in Booley Flow | Use the per-Flow reference in [CONFIG.md](../user/CONFIG.md#booleytoml) |
+| Configure a built-in Booley Flow | Use the Configuration section of its Flow page: [sim](../user/FLOW-SIM.md#configuration-flowssim), [lint](../user/FLOW-LINT.md#configuration-flowslint), [synth](../user/FLOW-SYNTH.md#configuration-flowssynth), [fpga](../user/FLOW-FPGA.md#configuration-flowsfpga) |
 | Try a custom MCP tool | Request a fresh MCP tool list, then ask the Interactive Mode agent to invoke it |
 | Debug MCP tool discovery | `booley doctor` for aggregate checks; inspect shared endpoint-validation diagnostics |
 | See base criteria for reference | Check `data/criteria.toml` in the Booley package |
@@ -968,31 +998,31 @@ is a Specialist error. Invalid verification dispositions keep findings pending.
 
 ### Publication and history
 
-Review results have immutable JSON evidence under `reviewer-evidence/` in the
-directory resolved by `booley.runtime.booley_dir`, including Interactive Mode
-and failures after input validation. Dry runs and input-validation failures do
-not publish review evidence. Results include the path in `audit_evidence` and
-`artifacts.reviewer_evidence`. Evidence is published atomically before a passing
-Criterion is recorded.
+Each review run uses one durable JSON evidence path under `reviewer-evidence/`
+in the directory resolved by `booley.runtime.booley_dir`, including Interactive
+Mode and failures after input validation. Dry runs and input-validation failures
+do not publish review evidence. Results and recorded Criterion details include
+the same path in `audit_evidence` and `artifacts.reviewer_evidence`. Evidence is
+published atomically before a passing Criterion is recorded; a later error
+rewrites that same file with the final error detail.
 
 Audit rows retain proposal ordinals, attempts, and phases within one contract.
-A contract change archives the previous receipt and starts new audit history,
-preserving open obligations and explicit disposition provenance. Historical
-resolutions remain inspectable, but an active pending finding takes precedence
-over any historical resolution with the same identity in normalized views.
-Old automatic policy exclusions are historical only.
+A contract change starts new audit history, preserving open obligations and
+explicit disposition provenance. Historical resolutions remain inspectable, but
+an active pending finding takes precedence over any historical resolution with
+the same identity in normalized views. Old automatic policy exclusions are
+historical only.
 
-Live receipts predating the filtering revision require fresh discovery.
-Historical accepted packages stay readable; previously discarded proposals
-cannot be recovered. Audit evidence appears separately in review packages,
-briefings, HTML explanations, and MCP results, without entering severity
-counts, dispositions, acceptance predicates, or `review_report_required`.
+Live receipts predating the filtering revision require fresh discovery;
+previously discarded proposals cannot be recovered. Filtered and rejected audit
+rows appear separately in MCP results and persisted Criterion detail, without
+entering severity counts, dispositions, or acceptance predicates.
 
 ## Report-driven Coverage Analyst
 
 `coverage_analyst` accepts required `campaign` (one exact canonical `coverage.json`
-path) and optional `instruction`. V3 or V4 input returns `booley.coverage-analysis/v2`
-with the Campaign manifest and integrity-linked point-store digest as observed evidence.
+path) and optional `instruction`. A Coverage Campaign (storage v5) returns `booley.coverage-analysis/v2`
+with the Campaign manifest and recorded point-store digest as observed evidence.
 The report carries immutable observed evidence, model-authored hypotheses and recommendations,
 explicit limitations, source-access status, screened Waiver Candidates, and the exact
 bounded evidence-retrieval scope.
@@ -1009,8 +1039,8 @@ Invalid input or
 malformed/model-incomplete output is an execution error; a valid advisory report
 succeeds even when its Campaign records simulation failure or a coverage miss.
 
-The wrapper checks canonical invocation/Target identity, the complete point-store
-manifest/point-store relationship, and a matching completed Simulation projection
+The wrapper checks canonical invocation/Target identity, the complete
+manifest/point-store pair (schema, format, ceiling, every point), and a matching completed Simulation projection
 before model invocation. The deep module is
 `analyze_coverage_campaign(campaign, sources, instruction)`; `CoverageAnalyzer`
 constructor injection substitutes only the external text-model boundary.
@@ -1025,7 +1055,7 @@ verified `source` excerpts, and cursor-paged `zero_point_sources` (sorted paths,
 measurement records, independent of hits, point eligibility and waivers. It is
 available in report-only mode, charges normal evidence byte budgets, and records
 returned source counts with empty point IDs. Overview and its minimal fallback
-retain discovery status, total source count, and a pagination hint. These findings
+retain the total source count and a pagination hint. These findings
 are advisory; they do not establish deadness or missing instantiation. Model-facing point records use deterministic short
 `point_ref` values instead of the Campaign's long opaque IDs. A `point_ref` becomes
 usable only after its exact point was successfully delivered within the response and
@@ -1033,8 +1063,8 @@ cumulative byte budgets; later `points` or `source` queries may pass delivered v
 as `point_refs`. The host privately resolves them back to exact Campaign IDs before
 publishing an advisory report. Point records include their complete eligible,
 unscored, or waived disposition and Approved Waiver provenance. The host first
-deep-validates the complete manifest/point-store pair, so paging and reference
-resolution never weaken Campaign integrity. No other MCP tool is visible to this
+deep-loads the complete manifest/point-store pair before paging and reference
+resolution. No other MCP tool is visible to this
 model. The validated session retains references to immutable
 Coverage Points rather than encoded population copies, uses an exact-ID index, derives
 overview counts once, and keeps at most one filtered match set for consecutive pages.

@@ -16,6 +16,7 @@ from booley.goals.store import GoalStore
 from booley.harness.dashboard import doctor, model
 from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime.worktrees import WorktreeEntry
+from tests.goals.conftest import INPUT_PATHS
 
 SCOPE = "pid:[17]"
 WT = WorktreeIdentity("00000000-0000-4000-8000-000000000001", "main")
@@ -31,6 +32,8 @@ def record(path):
         "refs/heads/main",
         "a" * 40,
         "2026-10-08T10:00:00Z",
+        input_topology_digest="sha256:" + "e" * 64,
+        input_paths=INPUT_PATHS,
         revision=1,
     )
 
@@ -200,7 +203,13 @@ def test_goal_evidence_states_checking_and_artifact_projection(tmp_path, monkeyp
         ),
     )
     entries = {
-        key: SimpleNamespace(ever_failed=index == 2, to_dict=lambda: {"params": {}})
+        key: SimpleNamespace(
+            ever_failed=index == 2,
+            stale=False,
+            params={},
+            detail={},
+            to_dict=lambda: {"params": {}},
+        )
         for index, key in enumerate(keys)
     }
     artifact = tmp_path / "lint.log"
@@ -353,10 +362,14 @@ async def test_deleted_goal_worktree_does_not_break_status_or_dashboard(
     missing_record = replace(
         record(work), input_paths=root_bindings({"rtl": work, "project": control})
     )
+    # The healthy directory is not a Git checkout, so its roots are stubbed to the entry roots.
+    healthy_roots = root_bindings({"rtl": healthy, "project": control})
+    monkeypatch.setattr("booley.goals.protected_inputs.capture_roots", lambda *_: healthy_roots)
     healthy_record = replace(
         record(healthy),
         id="healthy-20261008T100000Z",
         worktree=replace(WT, checkout="worktrees/other"),
+        input_paths=healthy_roots,
     )
     _persist_record(control, missing_record)
     _persist_record(control, healthy_record)
@@ -466,3 +479,26 @@ def test_reader_joins_each_visible_session_with_its_reported_activity(tmp_path, 
     assert before == {
         str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
     }
+
+
+def test_codex_session_end_hides_its_row_on_the_next_dashboard_read(tmp_path, monkeypatch):
+    import time
+
+    from tests.harness.test_session_activity_hook import hook
+
+    monkeypatch.setattr(model, "namespace", lambda: SCOPE)
+    now = time.time()
+    registry = SessionRegistry(tmp_path)
+    for thread in ("ended", "open"):
+        registry.upsert(
+            Attribution(f"codex:{thread}", "thread", "/fixture", "repo:w", namespace=SCOPE),
+            "sim",
+            "completed",
+            now=now - 60,
+        )
+    reader = model.DashboardReader(tmp_path, tmp_path)
+    assert {row.attribution.key for row in reader.read().sessions} == {"codex:ended", "codex:open"}
+    payload = {"hook_event_name": "SessionEnd", "session_id": "ended"}
+    assert hook.record("codex", payload, project=tmp_path, now=now)
+    assert [row.attribution.key for row in reader.read().sessions] == ["codex:open"]
+    assert registry.path("codex:ended").exists()  # Reading hides; maintenance deletes.

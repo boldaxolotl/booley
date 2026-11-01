@@ -118,11 +118,8 @@ def test_init_reports_unsafe_private_store_before_project_work(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
     project = tmp_path / "project"
     project.mkdir()
-    pending = issuance_invalidation.prepare(
-        str(project.resolve()),
-        cleanup_resources=False,
-    )
-    issuance_invalidation.cancel(pending)
+    issuance_invalidation.prepare(str(project.resolve()))
+    issuance_invalidation.cancel(str(project.resolve()))
     booley_config = config_root / "booley"
     booley_config.chmod(0o755)
     monkeypatch.setattr(
@@ -364,7 +361,7 @@ def test_init_capacity_refusal_returns_two_without_image_or_spec_adoption(
     monkeypatch.setattr(init_cmd, "_run_project_init_steps", image_steps)
     assert init_cmd.run_init(_args(force=True), tmp_path) == 2
     captured = capsys.readouterr()
-    assert "[XX] image-capacity:" in captured.out
+    assert "✗  image-capacity:" in captured.out
     assert "only 1 GiB available" in captured.out
     assert "Traceback" not in captured.out + captured.err
     assert intents == [Intent.REFRESH]
@@ -496,18 +493,44 @@ def test_auth_reseed_checks_sidecars_without_full_bootstrap(tmp_path, monkeypatc
 @pytest.mark.parametrize("host", [False, True])
 def test_auth_reseed_classifies_image_repair(tmp_path, monkeypatch, capsys, host):
     from booley.harness import host_sidecars, image_lifecycle
+    from booley.runtime.image_lifecycle import ImageRole, PlanAction
 
     monkeypatch.setattr(
         host_sidecars, "reconcile_sidecars", lambda *a, **k: host_sidecars.SidecarResult(())
     )
-    role = (
-        image_lifecycle.ImageRole.RUNTIME_BASE
-        if host
-        else image_lifecycle.ImageRole.PROJECT_OVERLAY
-    )
-    step = SimpleNamespace(role=role, action=image_lifecycle.PlanAction.BUILD)
+    role = ImageRole.RUNTIME_BASE if host else ImageRole.PROJECT_OVERLAY
+    step = SimpleNamespace(role=role, action=PlanAction.BUILD)
     monkeypatch.setattr(image_lifecycle, "plan", lambda *a, **k: SimpleNamespace(steps=(step,)))
     assert not init_cmd._auth_reseed_dependencies(tmp_path)
     output = capsys.readouterr().out
     assert ("booley bootstrap" in output) == host
     assert "booley init" in output
+
+
+def test_seed_accepts_absent_proxy_and_network_under_unproxied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.config.host_config import SandboxHostPolicy
+    from booley.harness import host_sidecars
+    from tests.harness.test_bootstrap import _wire_current
+    from tests.harness.test_host_sidecars import _egress_docker
+
+    reconcile_sidecars = host_sidecars.reconcile_sidecars
+    _wire_current(monkeypatch)
+    monkeypatch.setattr(host_sidecars, "reconcile_sidecars", reconcile_sidecars)
+    policy = SandboxHostPolicy(egress="unproxied")
+    monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: policy)
+    docker = _egress_docker(monkeypatch)
+    docker.add_sidecar(
+        host_sidecars.legacy.REAPER_CONTAINER,
+        "reaper",
+        host_sidecars.legacy.REAPER_IMAGE,
+        policy,
+    )
+    ctx = init_cmd.InitContext(project_root=tmp_path)
+
+    result = init_cmd._reconcile_init_bootstrap(ctx, _args(seed=True))
+
+    assert result is not None, "absent proxy and network are current under unproxied"
+    assert "run `booley bootstrap`" not in capsys.readouterr().out
+    assert docker.mutations() == []

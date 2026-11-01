@@ -11,6 +11,7 @@ from .artifact_reference import (
 )
 from .codec import (
     SimulationCampaignIntegrityError,
+    UnsupportedSimulationCampaignFormatError,
     decode_bundle_build_attempt,
     decode_bundle_build_result,
     decode_executable_snapshot,
@@ -61,6 +62,7 @@ from .inspection import (
     read_invocation_pre_sim_firings,
     read_pre_sim_firings,
     recover_retained_campaign_resources,
+    reread_pre_sim_firings,
     retained_campaign_lock,
     started_campaign,
 )
@@ -117,6 +119,7 @@ __all__ = [
     "SimulationProjection",
     "SimulationResult",
     "SimulatorBundle",
+    "UnsupportedSimulationCampaignFormatError",
     "ValidatedResumeManifest",
     "acceptance_facts_sha256",
     "authenticate_retained_campaign_inventory",
@@ -148,6 +151,7 @@ __all__ = [
     "read_invocation_pre_sim_firings",
     "read_pre_sim_firings",
     "recover_retained_campaign_resources",
+    "reread_pre_sim_firings",
     "resolve_artifact_reference",
     "resolve_report_artifact_reference",
     "retained_campaign_lock",

@@ -23,10 +23,16 @@ from booley.goals.paths import validate_goal_id
 from booley.goals.proposals import digest, encode
 from booley.goals.store import GoalStore, RecordLock
 from booley.runtime.atomic_files import WriteOnceConflictError, atomic_write_once
+from booley.runtime.filesystem_utils import read_file_bytes
 
 
 class LifecycleError(ValueError):
     """The requested lifecycle action cannot safely proceed."""
+
+
+def _read_json(path: Path) -> Any:
+    """Parse a lifecycle JSON file, retrying transient Windows sharing errors."""
+    return json.loads(read_file_bytes(path))
 
 
 @dataclass(frozen=True)
@@ -123,7 +129,7 @@ class LifecycleOperation:
     def sealed_directory(self, name: str) -> PurePath:
         """The original logical storage prefix, for byte-identical restored responses."""
         authority = require_dict(
-            json.loads((self.directory / (name + ".authority.json")).read_bytes()),
+            _read_json(self.directory / (name + ".authority.json")),
             field=name + " authority",
         )
         original = _record_directory(
@@ -148,7 +154,7 @@ def read_sealed_artifact(
     """Read immutable artifact authority without lifecycle locks, writes or recovery."""
     try:
         authority = require_dict(
-            json.loads((directory / (name + ".authority.json")).read_bytes()),
+            _read_json(directory / (name + ".authority.json")),
             field=name + " authority",
         )
         value = require_dict(authority.get("value"), field=name)
@@ -160,11 +166,7 @@ def read_sealed_artifact(
             raise ValueError("immutable authority differs from the operation")
         _record_directory(authority, directory.parent.parent, record)
         path = directory / (name + ".json")
-        from booley.runtime.booley_dir_migration import is_archived_record
-
-        if is_archived_record(directory.parents[3], record.id) and not path.is_file():
-            raise ValueError("archived sealed artifact is missing")
-        if path.exists() and json.loads(path.read_bytes()) != value:
+        if path.exists() and _read_json(path) != value:
             raise ValueError("persisted artifact differs from durable authority")
         return value
     except (OSError, ValueError, TypeError) as exc:
@@ -207,7 +209,7 @@ def bind_locked(
     content = {**payload, "payload_digest": digest(payload)}
     path = operation.directory / "request.json"
     if path.exists():
-        if json.loads(path.read_bytes()) != content:
+        if _read_json(path) != content:
             raise LifecycleError("operation_id conflicts with a different immutable payload")
     else:
         occupant = store.active_for_worktree(root)
@@ -303,7 +305,7 @@ def _validate_result_paths(value: dict[str, Any], operation: LifecycleOperation)
             authority = directory / authority_name
             if authority.exists():
                 original = _record_directory(
-                    require_dict(json.loads(authority.read_bytes()), field="artifact authority"),
+                    require_dict(_read_json(authority), field="artifact authority"),
                     operation.lock.record_dir,
                     operation.store.load(operation.request.record_id),
                 )
@@ -330,12 +332,7 @@ def _record_directory(authority: dict[str, Any], current: Path, record: GoalReco
     ):
         raise LifecycleError("immutable operation directory identity was substituted")
     identity = binding["identity"]
-    if isinstance(identity, list):
-        identity = require_list(identity, field="legacy directory identity")
-        # Legacy storage inode IDs never supersede the bound logical record/request.
-        if len(identity) != 2 or any(type(item) is not int or item < 0 for item in identity):
-            raise LifecycleError("invalid legacy operation directory identity")
-    elif identity != {"record_id": record.id, "worktree": record.worktree.to_json()}:
+    if identity != {"record_id": record.id, "worktree": record.worktree.to_json()}:
         raise LifecycleError("operation directory belongs to a different logical record")
     return original
 
@@ -344,9 +341,7 @@ def read_bound_request(operation: LifecycleOperation, operation_id: str) -> Life
     """Decode prior request authority before using its fields for recovery."""
     record = operation.store.load(operation.request.record_id)
     directory = operation.lock.record_dir / "operations" / operation_id
-    saved = require_dict(
-        json.loads((directory / "request.json").read_bytes()), field="prior lifecycle request"
-    )
+    saved = require_dict(_read_json(directory / "request.json"), field="prior lifecycle request")
     payload = {key: value for key, value in saved.items() if key != "payload_digest"}
     if (
         set(saved)
@@ -397,23 +392,3 @@ def _validate_finished_artifacts(result: dict[str, Any], operation: LifecycleOpe
     }
     if any(result[key] != value for key, value in expected.items()):
         raise LifecycleError("saved finished result differs from its frozen completion")
-
-
-def archived_result(store: GoalStore, request: LifecycleRequest) -> dict[str, Any] | None:
-    """Replay only a proven migrated terminal operation; no live checkout is required."""
-    from booley.runtime.booley_dir_migration import is_archived_record
-
-    validate_goal_id(request.record_id)
-    require_uuid4(request.operation_id, field="operation_id")
-    if not is_archived_record(store.booley_dir, request.record_id):
-        return None
-    record = store.load(request.record_id)
-    if record.state.value not in {"finished", "abandoned", "failed"}:
-        raise LifecycleError("archival replay requires a terminal Goal Record")
-    # Observational locking never creates storage, recovers operations or publishes state.
-    with store.record_lock(record.id, existing_only=True) as lock:
-        operation = LifecycleOperation(store, lock, request, Path(record.worktree_path))
-        saved = operation.saved_result()
-        if saved is None:
-            raise LifecycleError("archived operation has no sealed result")
-        return saved

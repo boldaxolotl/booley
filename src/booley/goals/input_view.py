@@ -46,6 +46,7 @@ from booley.runtime.booley_dir import (
     contains,
     resolve_checkout_booley_dir,
 )
+from booley.runtime.git_facts import repository_facts
 from booley.runtime.pinned_history import raw_git, tree_rows, validate_pin
 from booley.runtime.project_repositories import (
     RepositoryCheckoutError,
@@ -111,6 +112,7 @@ class InputSelectionError(LifecycleError):
     """Live participant topology cannot represent the recorded input selection."""
 
 
+@repository_facts()
 def select_inputs(record: GoalRecord, root: Path) -> InputSelection:
     """Classify participant availability separately from persisted artifact integrity."""
     try:
@@ -141,16 +143,9 @@ def _select_inputs(record: GoalRecord, root: Path) -> InputSelection:
     project_pin = None if project_repo is None else GoalCheckout(project_repo).head_sha()
     topology = topology_digest(root, project, project_repo)
     _require_selection_identity(record, root, project, project_repo)
-    if (
-        record.input_topology_digest is not None
-        and record.input_topology_digest != "sha256:" + topology
-    ):
+    if record.input_topology_digest != "sha256:" + topology:
         raise InputSelectionError(
             "input Project topology differs from the recorded entry identity"
-        )
-    if project_repo is not None and record.input_topology_digest is None:
-        raise InputSelectionError(
-            "legacy Paired Checkout has no entry topology proof; abandon and re-enter before finish"
         )
     for repository, commit in ((root, pin), (project_repo, project_pin)):
         if repository is not None and commit is not None:
@@ -177,8 +172,7 @@ def _require_selection_identity(
             **({"paired": project_repo} if project_repo is not None else {}),
         }
     )
-    if record.input_paths is not None:
-        require_bindings({key: record.input_paths[key] for key in selected_roots}, selected_roots)
+    require_bindings({key: record.input_paths[key] for key in selected_roots}, selected_roots)
 
 
 def _tracked_project(repository: Path, project: Path) -> bool:
@@ -215,8 +209,9 @@ def topology_digest(root: Path, project: Path, paired: Path | None) -> str:
             value[label + "_git"] = None
             continue
         identities: list[list[int]] = []
-        for option in ("--git-common-dir", "--git-dir"):
-            directory = Path(os.fsdecode(raw_git(path, "rev-parse", option).rstrip(b"\n")))
+        answer = raw_git(path, "rev-parse", "--git-common-dir", "--git-dir")
+        for line in os.fsdecode(answer).split("\n")[:2]:
+            directory = Path(line)
             directory = (path / directory) if not directory.is_absolute() else directory
             identities.append(directory_identity(directory))
         value[label + "_git"] = identities
@@ -313,14 +308,13 @@ class CommittedView:
     project: Path
     observations: list[dict[str, Any]]
     mappings: tuple[tuple[Path, Path], ...]
-    saved_roots: Mapping[str, Any] | None = None
-    current_roots: Mapping[str, Any] | None = None
+    saved_roots: Mapping[str, Any]
+    current_roots: Mapping[str, Any]
     materializations: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
 
     def mapped(self, path: Path) -> Path:
         """The innermost participant owns paths, including RTL nested in shared control."""
-        if self.saved_roots is not None and self.current_roots is not None:
-            path = rebase_path(path, self.saved_roots, self.current_roots)
+        path = rebase_path(path, self.saved_roots, self.current_roots)
         for original, materialized in sorted(
             self.mappings, key=lambda pair: len(pair[0].parts), reverse=True
         ):
@@ -557,13 +551,11 @@ def _logical_surface(
         target,
         artifact_paths=artifact_paths,
         logical_roots={new: _entry_label(view, old) for old, new in view.mappings},
-        logical_tests=None if view.saved_roots is None else tests_label(view.saved_roots),
+        logical_tests=tests_label(view.saved_roots),
     )
 
 
 def _entry_label(view: CommittedView, path: Path) -> Path:
-    if view.saved_roots is None or view.current_roots is None:
-        return path
     for current, saved in sorted(
         logical_roots(view.saved_roots, view.current_roots).items(),
         key=lambda pair: len(pair[0].parts),
@@ -581,8 +573,6 @@ def alias_resolvers(
     live: GoalFreshnessResolvers,
 ) -> GoalFreshnessResolvers:
     """Read current physical inputs while preserving the producer's entry labels."""
-    if record.input_paths is None:
-        return live
     saved = record.input_paths
     mappings = logical_roots(saved, capture_path_roots(selection.rtl, control_project))
 
@@ -632,9 +622,13 @@ def _role_waiver_label(
     role = "project" if value["config"]["anchor"] == "project_data_repository" else "rtl"
     current = project if role == "project" else rtl
     root = Path(value["root"])
-    if not root.is_relative_to(current):
+    # The fingerprint root is physical; a role root below a symlinked entry is lexical.
+    matched_base = next(
+        (base for base in (current, current.resolve()) if root.is_relative_to(base)), None
+    )
+    if matched_base is None:
         return False
-    value["root"] = str(Path(saved[role]["path"]) / root.relative_to(current))
+    value["root"] = str(Path(saved[role]["path"]) / root.relative_to(matched_base))
     value["digest"] = digest({key: val for key, val in value.items() if key != "digest"})
     return True
 
@@ -646,9 +640,7 @@ def committed_resolvers(
 
     def waiver(root: Path) -> dict[str, Any]:
         value = waiver_policy_fingerprint(root)
-        if view.saved_roots is not None and _role_waiver_label(
-            value, view.saved_roots, view.root, view.project
-        ):
+        if _role_waiver_label(value, view.saved_roots, view.root, view.project):
             return value
         if "root" in value:
             raw = Path(value["root"])
@@ -753,8 +745,8 @@ def _materialize_generated(
         (
             item
             for item in authorized
-            if current_path(item.path, view.current_roots or {})
-            == current_path(path, view.current_roots or {})
+            if current_path(item.path, view.current_roots)
+            == current_path(path, view.current_roots)
         ),
         None,
     )
@@ -786,8 +778,7 @@ def _map_review_inputs(view: CommittedView, detail: dict[str, Any]) -> None:
         if not isinstance(text, str) or not text:
             continue
         original = Path(text)
-        if view.saved_roots is not None and view.current_roots is not None:
-            original = rebase_path(original, view.saved_roots, view.current_roots)
+        original = rebase_path(original, view.saved_roots, view.current_roots)
         if name == "spec":
             mapped = _confined(view.mapped(original), view.root.parent)
             if not mapped.is_file():
@@ -843,14 +834,11 @@ def _protected_observation(view: CommittedView, path: Path) -> None:
         )
 
 
-def observations_unchanged(
-    proof: dict[str, Any], current_roots: Mapping[str, Any] | None = None
-) -> bool:
+def observations_unchanged(proof: dict[str, Any], current_roots: Mapping[str, Any]) -> bool:
     """Recheck exact captured exceptions on every recovery and terminal boundary."""
-    saved = proof.get("path_roots")
-    if saved is not None and current_roots is not None:
-        require_bindings(saved, current_roots)
-    if current_roots is not None and not materializations_unchanged(proof, dict(current_roots)):
+    saved = proof["path_roots"]
+    require_bindings(saved, current_roots)
+    if not materializations_unchanged(proof, dict(current_roots)):
         return False
     return all(
         _observation_unchanged(row, saved, current_roots)

@@ -1,6 +1,7 @@
 """Text-only model boundary: no model-visible execution capabilities."""
 
 import json
+import os
 import tomllib
 from pathlib import Path
 
@@ -50,10 +51,83 @@ def test_text_only_catalog_removes_model_supplied_tools_and_ambient_servers(tmp_
     assert not (Path(env["CODEX_HOME"]) / "config.toml").exists()
 
 
-def test_text_only_missing_exact_model_fails_closed(tmp_path):
-    (tmp_path / "models_cache.json").write_text('{"models": []}')
-    params = AgentCallParams(prompt="Analyze", model="missing", cwd=tmp_path, text_only=True)
+def test_text_only_auth_links_real_login(tmp_path):
+    """AC1: the text-only home links the real login instead of copying it."""
+    from tests.conftest import require_symlinks
+
+    require_symlinks(tmp_path)
+    original = tmp_path / "original"
+    original.mkdir()
+    (original / "models_cache.json").write_text('{"models":[{"slug":"chosen"}]}')
+    native = original / "auth.json"
+    native.write_text('{"tokens":{"access_token":"SYNTHETIC"}}')
+    root = tmp_path / "invocation"
+    root.mkdir()
+    params = AgentCallParams(prompt="Explain", model="chosen", cwd=root, text_only=True)
+    _, child = prepare_codex_text_only(
+        ["codex", "exec", "-"], params, {"CODEX_HOME": str(original)}
+    )
+    auth = Path(child["CODEX_HOME"]) / "auth.json"
+    assert auth.is_symlink()
+    assert auth.resolve() == native.resolve()
+    assert [p for p in root.rglob("auth.json") if not p.is_symlink()] == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(None, id="no-cache-probe"),
+        pytest.param(["coverage_evidence"], id="cache-lacks-model-coverage-analyst"),
+    ],
+)
+def test_text_only_missing_exact_model_uses_generated_tool_free_entry(tmp_path, caplog, case):
+    """A cache without the model (or no cache) falls back to a generated, tool-free entry."""
+    if case:  # Coverage Analyst shape: a cache holding only another model.
+        (tmp_path / "models_cache.json").write_text('{"models": [{"slug": "other"}]}')
+    params = AgentCallParams(
+        prompt="Analyze",
+        model="missing",
+        cwd=tmp_path / "invocation",
+        text_only=True,
+        reasoning_effort="low",
+        nested_mcp_tools=case,
+    )
+    params.cwd.mkdir()
+    command, env = prepare_codex_text_only(
+        ["codex", "exec", "-"], params, {"CODEX_HOME": str(tmp_path)}
+    )
+    private = Path(env["CODEX_HOME"])
+    (entry,) = json.loads((private / "model-catalog.json").read_text())["models"]
+    assert entry["slug"] == "missing"
+    assert entry["context_window"] == 272_000
+    assert entry["shell_type"] == "disabled"
+    assert entry["apply_patch_tool_type"] is None
+    assert entry["experimental_supported_tools"] == []
+    assert "features.shell_tool=false" in command
+    assert [r.message for r in caplog.records if r.levelname == "WARNING"] == [
+        "Codex models cache lacks 'missing'; using Booley's generated tool-free catalog entry"
+    ]
+    if case:
+        config = (private / "config.toml").read_text()
+        assert 'BOOLEY_NESTED_MCP_TOOLS = "coverage_evidence"' in config
+    else:
+        assert not (private / "config.toml").exists()
+
+
+def test_text_only_corrupt_models_cache_still_fails_loud(tmp_path):
+    """Only a cache that lacks the model falls back; an unreadable one is a fault to see."""
+    (tmp_path / "models_cache.json").write_text("not json")
+    params = AgentCallParams(prompt="Analyze", model="m", cwd=tmp_path, text_only=True)
     with pytest.raises(ValueError, match="exact model"):
+        prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(tmp_path)})
+
+
+def test_text_only_duplicate_model_in_cache_still_fails_loud(tmp_path):
+    """A slug listed twice is an ambiguous cache, not a missing model."""
+    entries = [{"slug": "m", "context_window": 1}] * 2
+    (tmp_path / "models_cache.json").write_text(json.dumps({"models": entries}))
+    params = AgentCallParams(prompt="Analyze", model="m", cwd=tmp_path, text_only=True)
+    with pytest.raises(ValueError, match="exactly one"):
         prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(tmp_path)})
 
 
@@ -137,6 +211,9 @@ def test_text_only_regeneration_preserves_destination_preference(
 
 
 def test_text_only_reused_output_clears_disallowed_or_disappeared_auth(tmp_path):
+    from tests.conftest import require_symlinks
+
+    require_symlinks(tmp_path)
     original = tmp_path / "original"
     original.mkdir()
     (original / "models_cache.json").write_text('{"models":[{"slug":"chosen"}]}')
@@ -151,8 +228,85 @@ def test_text_only_reused_output_clears_disallowed_or_disappeared_auth(tmp_path)
     copied = Path(child["CODEX_HOME"]) / "auth.json"
     assert copied.exists()
     prepare_codex_text_only(command, params, environment, auth_mode="api_key")
-    assert not copied.exists()
+    assert not os.path.lexists(copied)
     prepare_codex_text_only(command, params, environment, auth_mode="subscription")
     native.unlink()
     prepare_codex_text_only(command, params, environment, auth_mode="subscription")
-    assert not copied.exists()
+    assert not os.path.lexists(copied)
+
+
+def test_text_only_gateway_seeds_pinned_model_catalog_entry(tmp_path):
+    original = tmp_path / "original"
+    original.mkdir()
+    (original / "auth.json").write_text('{"tokens": {}}', encoding="utf-8")
+    cache = original / "models_cache.json"
+    cache.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "slug": "gw-model",
+                        "base_instructions": "NATIVE",
+                        "apply_patch_tool_type": "freeform",
+                        "shell_type": "shell_command",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    root = tmp_path / "invocation"
+    root.mkdir()
+    environment = {
+        "CODEX_HOME": str(original),
+        "BOOLEY_GATEWAY_URL": "https://gateway.example/v1",
+        "BOOLEY_GATEWAY_TOKEN": "SYNTHETIC_GATEWAY_TOKEN",
+    }
+    params = AgentCallParams(
+        prompt="Analyze",
+        model="gw-model",
+        cwd=root,
+        text_only=True,
+        reasoning_effort="low",
+        nested_mcp_tools=["coverage_evidence"],
+    )
+
+    def prepare():
+        _, env = prepare_codex_text_only(
+            ["codex", "exec", "-"], params, environment, auth_mode="gateway"
+        )
+        return Path(env["CODEX_HOME"])
+
+    private = prepare()
+    models = json.loads((private / "model-catalog.json").read_text(encoding="utf-8"))["models"]
+    (entry,) = models
+    assert entry["slug"] == "gw-model"
+    assert entry["base_instructions"] not in ("", "NATIVE")
+    assert entry["shell_type"] == "disabled"
+    assert entry["apply_patch_tool_type"] is None
+    assert entry["experimental_supported_tools"] == []
+    assert entry["default_reasoning_level"] == "low"
+    config = tomllib.loads((private / "config.toml").read_text(encoding="utf-8"))
+    assert config["model_provider"] == "booley_gateway"
+    provider = config["model_providers"]["booley_gateway"]
+    assert provider["base_url"] == "https://gateway.example/v1"
+    assert provider["auth"]["cwd"] == str(private)
+    assert not (private / "auth.json").exists()
+    assert not any(
+        "SYNTHETIC_GATEWAY_TOKEN" in path.read_text(encoding="utf-8", errors="replace")
+        for path in private.rglob("*")
+        if path.is_file()
+    )
+
+    # The seeded entry does not depend on the Codex models cache.
+    cache.unlink()
+    assert prepare() == private
+    assert json.loads((private / "model-catalog.json").read_text(encoding="utf-8")) == {
+        "models": models
+    }
+
+    # Without an allowlist the run keeps the provider and writes no Booley MCP server.
+    params.nested_mcp_tools = None
+    config = tomllib.loads((prepare() / "config.toml").read_text(encoding="utf-8"))
+    assert config["model_provider"] == "booley_gateway"
+    assert "mcp_servers" not in config

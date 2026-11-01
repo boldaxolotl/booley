@@ -10,6 +10,22 @@ import subprocess
 from pathlib import Path
 
 _MCP_TOOLS = re.compile(r"MCP server exposes [0-9]+ MCP tool\(s\)")
+# Doctor's closing counts row for failures, e.g. "  ✗ failed     0".
+_FAILED_COUNT = re.compile(r"^\s*\S*\s*failed\s+(\d+)$", re.MULTILINE)
+# Color codes a FORCE_COLOR environment adds around Doctor's rows.
+_COLOR_CODES = re.compile(r"\x1b\[[0-9;]*m")
+# A Project Initialization status row led by the warning (!) or failure (✗) glyph.
+_PROBLEM_ROW = re.compile(r"^\s*[!\u2717]\s{2}")
+# Executables stubbed into the isolated home's bin for the duration of a run.
+_EDITOR_PROBE = "code"
+_AGENT_CLI_PROBE = "codex"
+
+
+def doctor_reports_no_failures(output: str) -> bool:
+    """True when Doctor's counts table says ``failed`` is 0 (color codes ignored)."""
+    # The counts table closes the run, so the last matching row is the verdict.
+    counts = _FAILED_COUNT.findall(_COLOR_CODES.sub("", output))
+    return bool(counts) and counts[-1] == "0"
 
 
 def _inside(root: Path, path: Path, label: str) -> Path:
@@ -27,6 +43,9 @@ def _run(command: list[str], *, project: Path, env: dict[str, str]) -> str:
         env=env,
         capture_output=True,
         text=True,
+        # Doctor prints UTF-8 glyphs whatever the runner's locale is.
+        encoding="utf-8",
+        errors="replace",
         check=False,
         timeout=600,
     )
@@ -49,12 +68,21 @@ def _environment(home: Path, executable: Path) -> dict[str, str]:
     return env
 
 
-def _prepare_editor_probe(home: Path) -> Path:
-    probe = home / "bin" / "code"
+def _write_probe(home: Path, name: str, script: str) -> Path:
+    """Write an executable stub into the isolated home's ``bin``; refuse to overwrite."""
+    probe = home / "bin" / name
     probe.parent.mkdir(parents=True, exist_ok=True)
     if probe.exists() or probe.is_symlink():
-        raise ValueError("isolated editor probe path already exists")
-    probe.write_text(
+        raise ValueError(f"isolated {name} probe path already exists")
+    probe.write_text(script, encoding="utf-8")
+    probe.chmod(0o755)
+    return probe
+
+
+def _prepare_editor_probe(home: Path) -> Path:
+    return _write_probe(
+        home,
+        _EDITOR_PROBE,
         "#!/bin/sh\n"
         "set -eu\n"
         'marker="${HOME}/.booley-ci-dev-containers"\n'
@@ -68,10 +96,31 @@ def _prepare_editor_probe(home: Path) -> Path:
         '    : > "${marker}" ;;\n'
         "  *) exit 2 ;;\n"
         "esac\n",
-        encoding="utf-8",
     )
-    probe.chmod(0o755)
-    return probe
+
+
+def _prepare_agent_cli_probe(home: Path) -> Path:
+    """Stub the host agent CLI that Host Bootstrap's ``host-agent-cli`` check looks for.
+
+    A fresh runner has neither ``claude`` nor ``codex``, so without the stub
+    Project Initialization prints that (correct) prerequisite warning and the
+    clean-initialization gate fails. The Project selects ``codex``.
+    """
+    return _write_probe(
+        home,
+        _AGENT_CLI_PROBE,
+        "#!/bin/sh\n"
+        'case "${1:-}" in\n'
+        "  --version) printf 'codex-cli 0.0.0-release-validation\\n' ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+    )
+
+
+def _problem_lines(output: str) -> list[str]:
+    """Return the color-stripped output lines that are warning or failure rows."""
+    lines = _COLOR_CODES.sub("", output).splitlines()
+    return [line for line in lines if _PROBLEM_ROW.match(line)]
 
 
 def _editor_marker(home: Path) -> Path:
@@ -95,9 +144,12 @@ def validate(
     identity = {"uid": os.getuid(), "gid": os.getgid()}
     if identity != {"uid": expected_uid, "gid": expected_gid}:
         raise RuntimeError(f"host identity differs: {identity}")
-    probe = _prepare_editor_probe(home)
+    # Track each stub as it is created so cleanup never removes a file this run did not write.
+    probes: list[Path] = []
     checks = [{"id": "host.identity", "status": "pass"}]
     try:
+        probes.append(_prepare_editor_probe(home))
+        probes.append(_prepare_agent_cli_probe(home))
         env = _environment(home, booley)
         _run(["git", "init", "-b", "main"], project=project, env=env)
         checks.append({"id": "project.repository", "status": "pass"})
@@ -118,22 +170,28 @@ def validate(
                 "--no-asic",
                 "--provider",
                 "codex",
+                # The runner has no agent credential. A pinned policy without its
+                # credential is a Doctor failure by design, so keep the default.
                 "--auth",
-                "subscription",
+                "auto",
                 "--skip-credentials",
             ],
             project=project,
             env=env,
         )
-        if "[!!]" in init or "[XX]" in init:
-            raise RuntimeError("Project Initialization reported a warning or failure")
+        problems = _problem_lines(init)
+        if problems:
+            raise RuntimeError(
+                "Project Initialization reported a warning or failure:\n" + "\n".join(problems)
+            )
         checks.append({"id": "project-initialization.clean", "status": "pass"})
         doctor = _run([str(booley), "doctor"], project=project, env=env)
-        if "0 failed." not in doctor or _MCP_TOOLS.search(doctor) is None:
+        if not doctor_reports_no_failures(doctor) or _MCP_TOOLS.search(doctor) is None:
             raise RuntimeError("plain host Doctor did not prove the issued-image MCP seam")
         checks.append({"id": "host-doctor.plain-issued-image", "status": "pass"})
     finally:
-        probe.unlink(missing_ok=True)
+        for probe in probes:
+            probe.unlink(missing_ok=True)
         _editor_marker(home).unlink(missing_ok=True)
     return {
         "schema": 1,
@@ -141,7 +199,8 @@ def validate(
         "identity": identity,
         "checks": checks,
         "cleanup": {
-            "editor_probe_removed": not probe.exists(),
+            "editor_probe_removed": not (home / "bin" / _EDITOR_PROBE).exists(),
+            "agent_cli_probe_removed": not (home / "bin" / _AGENT_CLI_PROBE).exists(),
             "editor_marker_removed": not _editor_marker(home).exists(),
         },
     }

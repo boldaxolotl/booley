@@ -87,6 +87,29 @@ def test_prune_keeps_registered_and_recent_signals_only(tmp_path):
     assert store.read("codex:gone") is None
 
 
+def test_store_reads_and_prunes_under_a_symlinked_booley_directory(tmp_path):
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    booley_dir = tmp_path / "project" / ".booley"
+    booley_dir.parent.mkdir()
+    symlink_or_skip(booley_dir, store_dir, target_is_directory=True)
+    store = ActivityStore(booley_dir)
+    path = write_activity_signal(booley_dir, "codex:a", activity.WORKING, STAMP)
+    os.utime(path, (NOW - 500, NOW - 500))
+
+    assert store.read("codex:a") == ActivitySignal("codex:a", activity.WORKING, STAMP)
+    assert store.prune(set(), now=NOW, quiet_after=100) == 1
+    assert store.read("codex:a") is None
+
+    # A link below the Booley Directory is still refused.
+    write_activity_signal(store_dir, "codex:b", activity.WORKING, STAMP)
+    moved = store_dir / "moved"
+    (store_dir / "runtime/session_activity").rename(moved)
+    symlink_or_skip(store_dir / "runtime/session_activity", moved, target_is_directory=True)
+    assert store.read("codex:b") is None
+    assert store.prune(set(), now=NOW + 10_000, quiet_after=100) == 0
+
+
 def test_prune_expires_signals_when_directory_entries_have_no_inode(tmp_path, monkeypatch):
     store = ActivityStore(tmp_path)
     path = write_activity_signal(tmp_path, "codex:gone", activity.WAITING_USER, STAMP)
@@ -159,3 +182,103 @@ def test_session_keys_match_the_registry_format():
     assert not activity.valid_thread_id("")
     assert not activity.valid_thread_id("a\nb")
     assert not activity.valid_thread_id(7)
+
+
+def test_activity_read_survives_transient_sharing_error(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    store = ActivityStore(tmp_path)
+    write_activity_signal(tmp_path, "codex:a", activity.WORKING, STAMP)
+    attempts = hold_opens(monkeypatch, {store.path("codex:a"): 1})
+    assert store.read("codex:a") == ActivitySignal("codex:a", activity.WORKING, STAMP)
+    assert attempts[store.path("codex:a")] == 2
+
+
+def test_lasting_activity_sharing_error_reads_unknown_after_retrying(tmp_path, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    store = ActivityStore(tmp_path)
+    write_activity_signal(tmp_path, "codex:a", activity.WORKING, STAMP)
+    attempts = hold_opens(monkeypatch, {store.path("codex:a"): 99})
+    assert store.read("codex:a") is None
+    assert attempts[store.path("codex:a")] > 1
+
+
+def test_end_marker_reader_accepts_only_the_hook_layout(tmp_path):
+    assert getattr(activity, "ENDED", None) == "ended"
+    now = 1791454205.0
+    store = ActivityStore(tmp_path)
+    write_activity_signal(tmp_path, "codex:t", "ended", "2026-10-08T10:10:00Z")
+    assert store.ended_at("codex:t", now=now) == "2026-10-08T10:10:00Z"
+    assert store.read("codex:t") is None
+    assert store.ended_at("codex:absent", now=now) is None
+    write_activity_signal(tmp_path, "codex:t", activity.WORKING, "2026-10-08T10:10:00Z")
+    assert store.ended_at("codex:t", now=now) is None
+    write_activity_signal(tmp_path, "codex:t", "ended", "2026-10-08T11:10:00Z")
+    assert store.ended_at("codex:t", now=now) is None  # From the future: unusable.
+    store.path("codex:t").write_text("{", encoding="utf-8")
+    assert store.ended_at("codex:t", now=now) is None
+
+
+def test_prune_removes_unretained_end_markers_at_once_and_spares_a_replacement(
+    tmp_path, monkeypatch
+):
+    assert getattr(activity, "ENDED", None) == "ended"
+    store = ActivityStore(tmp_path)
+    gone = write_activity_signal(tmp_path, "codex:gone", "ended", STAMP)
+    kept = write_activity_signal(tmp_path, "codex:kept", "ended", STAMP)
+    busy = write_activity_signal(tmp_path, "codex:busy", activity.WORKING, STAMP)
+    # Marker mtimes are fresh (not past quiet_after) and even ahead of the clock.
+    for path in (gone, kept, busy):
+        os.utime(path, (NOW + 60, NOW + 60))
+    assert store.prune({"codex:kept"}, now=NOW, quiet_after=7200) == 1
+    assert not gone.exists()
+    assert kept.exists()  # Its session still has a row.
+    assert busy.exists()  # Not a marker: the quiet rule still applies.
+
+    # A marker the hook replaced between the two identity checks is spared.
+    original_lstat = Path.lstat
+    calls = 0
+
+    def replaced_after_first_lstat(current):
+        nonlocal calls
+        metadata = original_lstat(current)
+        if current == kept:
+            calls += 1
+            if calls == 2:
+                return SimpleNamespace(
+                    st_ino=metadata.st_ino + 1, st_mtime_ns=metadata.st_mtime_ns
+                )
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", replaced_after_first_lstat)
+    assert store.prune(set(), now=NOW, quiet_after=7200) == 0
+    assert calls == 2
+    assert kept.exists()
+
+
+def test_prune_keeps_a_fresh_file_that_is_not_readable_as_an_end_marker(tmp_path):
+    """A fresh file whose bytes are not JSON or not a marker is no marker: the quiet rule applies."""
+    store = ActivityStore(tmp_path)
+    store.root.mkdir(parents=True)
+    garbage = store.path("codex:garbage")
+    garbage.write_bytes(b"\xff not json")
+    # A marker stored under another key's file name is not this file's marker.
+    misplaced = store.path("codex:misplaced")
+    misplaced.write_text(
+        json.dumps({"schema": 1, "key": "codex:other", "state": "ended", "at": STAMP}),
+        encoding="utf-8",
+    )
+    for path in (garbage, misplaced):
+        os.utime(path, (NOW + 60, NOW + 60))
+    assert store.prune(set(), now=NOW, quiet_after=7200) == 0
+    assert garbage.exists()
+    assert misplaced.exists()
+
+
+def test_store_ignores_a_symlinked_end_marker(tmp_path):
+    store = ActivityStore(tmp_path)
+    target = write_activity_signal(tmp_path / "elsewhere", "codex:b", "ended", STAMP)
+    store.root.mkdir(parents=True)
+    symlink_or_skip(store.path("codex:b"), target)
+    assert store.ended_at("codex:b", now=NOW) is None

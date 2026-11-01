@@ -26,6 +26,7 @@ from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 from booley.goals import entry as entry_module
 from booley.goals import test_run_freezing
 from booley.goals.binding import GoalRunBinding, bind_run
+from booley.goals.sim_baseline_store import family_for_schema
 from booley.goals.store import GoalStore
 from booley.mcp import (
     sim_baseline_jobs,
@@ -37,6 +38,12 @@ from booley.targets.domain import UnknownTargetError
 GIT_TIMEOUT_S = 30
 KNOWN_TARGETS = frozenset({"top", "base"})
 DATE = "20261006"
+
+# A valid, never-resolved set of entry input roots for hand-built Goal Records.
+INPUT_PATHS: dict[str, Any] = {
+    "rtl": {"path": "/work", "identity": [1, 2]},
+    "project": {"path": "/work/.booley", "identity": [1, 3]},
+}
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -81,7 +88,9 @@ def fake_target_identity(_work_dir: Path | str, target: str) -> str:
 def fake_test_plan(work_dir: Path | str, target: str) -> TargetTestPlan:
     """The Test Run plan of a known Target: its ``tests.toml`` section on Verilator."""
     name = fake_target_identity(work_dir, target).rpartition("#")[2]
-    return target_test_plan_loading.load_target_test_plan(work_dir, name, adapter="verilator")
+    return target_test_plan_loading.load_target_test_plan(
+        work_dir, name, identity=name, adapter="verilator"
+    )
 
 
 class FakeCatalog:
@@ -144,7 +153,12 @@ def pending_baseline_launch(_path: Path, request: Mapping[str, Any]) -> None:
     """Record a live (this process) baseline Job without starting a worker."""
     job_records.write_record(
         job_records.JobRecord(
-            request["job_id"], "sim_baseline", utc_now_rfc3339(), 60, pid=os.getpid(), argv=[]
+            request["job_id"],
+            family_for_schema(request["schema"]).endpoint,
+            utc_now_rfc3339(),
+            sim_baseline_jobs.BASELINE_TIMEOUT_S,
+            pid=os.getpid(),
+            argv=[],
         ),
         Path(request["jobs_root"]),
     )
@@ -240,8 +254,12 @@ def enter_goals(
     goals: Sequence[Mapping[str, Any]] = GOAL_ARGS,
     *,
     tests_toml: bytes = TESTS_TOML,
+    environment: Any = None,
 ) -> Any:
-    """Commit a ``top`` core and a ``tests.toml`` in the worktree, then enter Goal Mode."""
+    """Commit a ``top`` core and a ``tests.toml`` in the worktree, then enter Goal Mode.
+
+    *environment* replaces the default entry environment (for example, to freeze recipes).
+    """
     from booley.goals.entry import EntryRequest, enter_goal_mode
     from booley.goals.model import parse_goal_args
 
@@ -254,7 +272,7 @@ def enter_goals(
     request = EntryRequest(
         work_dir=layout.worktree, slug="evidence", goals=parse_goal_args(list(goals))
     )
-    return enter_goal_mode(request, entry_environment(layout)).record
+    return enter_goal_mode(request, environment or entry_environment(layout)).record
 
 
 @pytest.fixture

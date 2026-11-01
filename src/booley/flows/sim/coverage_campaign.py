@@ -144,10 +144,7 @@ class CoverageRun:
 
     ``test`` is the bare Test; ``test_run`` is the resolved Test Run name
     (``test[+variant][@seed]``, ADR 0072) and ``fingerprint`` covers the Test
-    Variant's declared arguments and environment. Both are always explicit: a
-    run decoded from storage older than v5 is given the bare Test and
-    :data:`NO_DECLARED_INPUTS_FINGERPRINT` by the decoder, which is what
-    every run recorded then was.
+    Variant's declared arguments and environment. Both are always explicit.
     """
 
     id: str
@@ -290,17 +287,6 @@ class CoverageSourceRollup:
 
 
 @dataclass(frozen=True)
-class CoverageCampaignSummaryFields:
-    """Validated Campaign fields that do not depend on Coverage Points."""
-
-    campaign_id: str
-    target: CoverageTarget
-    rollups: tuple[CoverageRollup, ...]
-    collection: Mapping[str, FrozenJson]
-    evaluation: Mapping[str, FrozenJson]
-
-
-@dataclass(frozen=True)
 class CoverageCampaign:
     """One indivisible normalized coverage record for one Target invocation."""
 
@@ -368,6 +354,11 @@ def _matches_json_type(value: object, expected: str) -> bool:
     return matches[expected]
 
 
+def _missing_field(pointer: str, key: str) -> CoverageFinding:
+    """The finding for a required field a document does not record."""
+    return _error("COV_FIELD_REQUIRED", pointer, f"Required field {key!r} is missing.")
+
+
 def _check_field(
     document: Mapping[str, object],
     key: str,
@@ -377,9 +368,7 @@ def _check_field(
 ) -> object | None:
     pointer = f"{parent}/{_pointer_token(key)}"
     if key not in document:
-        findings.append(
-            _error("COV_FIELD_REQUIRED", pointer, f"Required field {key!r} is missing.")
-        )
+        findings.append(_missing_field(pointer, key))
         return None
     value = document[key]
     if not _matches_json_type(value, expected):
@@ -565,26 +554,19 @@ def _validate_run_shapes(runs: list[object], findings: list[CoverageFinding]) ->
         _validate_run_identity_shape(run, pointer, findings)
 
 
-#: What a run records about its Test Run (storage v5): all of them, or none.
+#: What every run records about its Test Run (storage v5).
 RUN_IDENTITY_FIELDS = ("test_run", "variant", "seed", "fingerprint")
 
 
 def _validate_run_identity_shape(
     run: Mapping[str, object], pointer: str, findings: list[CoverageFinding]
 ) -> None:
-    """A run records its whole Test Run identity, or none of it (before v5)."""
-    present = [field for field in RUN_IDENTITY_FIELDS if field in run]
+    """A run records its whole Test Run identity; ``variant`` and ``seed`` may be null."""
     for field in ("test_run", "fingerprint"):
-        if field in run:
-            _check_field(run, field, "string", pointer, findings)
-    if present and len(present) != len(RUN_IDENTITY_FIELDS):
-        findings.append(
-            _error(
-                "COV_TEST_RUN_IDENTITY_INCOMPLETE",
-                pointer,
-                "A run must record test_run, variant, seed and fingerprint together.",
-            )
-        )
+        _check_field(run, field, "string", pointer, findings)
+    for field in ("variant", "seed"):
+        if field not in run:
+            findings.append(_missing_field(f"{pointer}/{field}", field))
 
 
 def _validate_tests_shape(tests: Mapping[str, object], findings: list[CoverageFinding]) -> None:
@@ -974,8 +956,8 @@ def _validate_tests(document: Mapping[str, object]) -> tuple[list[CoverageFindin
 
 
 def _test_run_of(run: Mapping[str, object]) -> str:
-    """The Test Run a run document records; the bare Test before storage v5."""
-    return str(run.get("test_run", run["test"]))
+    """The Test Run a run document records."""
+    return str(run["test_run"])
 
 
 def _test_run_identity_problem(run: Mapping[str, object]) -> str:
@@ -1016,8 +998,7 @@ def _test_run_identity_findings(runs: list[object]) -> list[CoverageFinding]:
                 _error("COV_TEST_RUN_DUPLICATE", pointer, f"Duplicate Test Run {name!r}.")
             )
         seen.add(name)
-        recorded = all(field in run for field in RUN_IDENTITY_FIELDS)
-        problem = _test_run_identity_problem(run) if recorded else ""
+        problem = _test_run_identity_problem(run)
         if problem:
             findings.append(_error("COV_TEST_RUN_TEST_MISMATCH", pointer, problem))
     return findings
@@ -1700,17 +1681,9 @@ def _decode_run(document: Mapping[str, object]) -> CoverageRun:
 def _decode_run_identity(document: Mapping[str, object]) -> dict[str, object]:
     """A run's Test Run name, Test Variant, seed and fingerprint, exactly as recorded.
 
-    Storage older than v5 records none of them: such a run was the bare Test
-    with no declared inputs. The Campaign validator has already checked a
-    recorded identity; nothing is coerced here.
+    The Campaign validator has already checked the recorded identity; nothing
+    is coerced here.
     """
-    if "test_run" not in document:
-        return {
-            "test_run": str(document["test"]),
-            "variant": None,
-            "seed": None,
-            "fingerprint": NO_DECLARED_INPUTS_FINGERPRINT,
-        }
     variant, seed = document["variant"], document["seed"]
     return {
         "test_run": require_str_value(document["test_run"], field="test_run"),
@@ -1890,40 +1863,6 @@ def _decode_owned_coverage_campaign(
     """Validate then consume loader-owned point dictionaries during domain decoding."""
     validated = _validated_campaign_document(document, expected_target)
     return _decode_valid_campaign(validated, consume_owned_points=True)
-
-
-def validate_coverage_campaign_summary(
-    document: Mapping[str, object],
-    expected_target: DurableTargetIdentity,
-) -> CoverageCampaignSummaryFields:
-    """Validate Campaign semantics that do not require Coverage Points."""
-    probe = dict(document)
-    probe["$schema"] = _SCHEMA
-    probe["points"] = []
-    probe.pop("point_store", None)
-    structural_findings = _structural_findings(probe)
-    findings = _identity_semantic_findings(probe, expected_target, structural_findings)
-    findings.extend(_observation_semantic_findings(probe, structural_findings))
-    collection_dependencies = ("/tests", "/artifacts", "/collection", "/normalization")
-    if _sections_are_structurally_valid(structural_findings, *collection_dependencies):
-        findings.extend(_validate_collection(probe))
-    evaluation_dependencies = ("/evaluation", "/collection", "/rollups")
-    if _sections_are_structurally_valid(structural_findings, *evaluation_dependencies):
-        findings.extend(_validate_evaluation(probe))
-    all_findings = structural_findings + tuple(findings)
-    if all_findings:
-        raise CoverageCampaignValidationError(all_findings)
-    target = probe["target"]
-    rollups = probe["rollups"]
-    assert isinstance(target, Mapping)
-    assert isinstance(rollups, list)
-    return CoverageCampaignSummaryFields(
-        campaign_id=str(probe["campaign_id"]),
-        target=CoverageTarget(identity=str(target["identity"]), selector=str(target["selector"])),
-        rollups=tuple(_decode_rollup(item) for item in rollups),
-        collection=_freeze_mapping(probe["collection"]),
-        evaluation=_freeze_mapping(probe["evaluation"]),
-    )
 
 
 def _encode_capability(capability: CoverageCapability) -> dict[str, object]:

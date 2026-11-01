@@ -81,7 +81,7 @@ def test_selection_rejection_precedes_target_authorization(
     flow = SimulateFlow()
     flow._state = DevelopmentState()
     flow._args = SimpleNamespace(mode=SimulationMode.SIMULATE)
-    monkeypatch.setattr(flow.context, "_criterion_binding_gate", lambda: None)
+    monkeypatch.setattr(flow, "_criterion_binding_gate", lambda: None)
     monkeypatch.setattr(
         flow,
         "_prepare_campaign_targets",
@@ -106,6 +106,52 @@ def test_selection_rejection_precedes_target_authorization(
     assert build_timeout_resolutions == []
 
 
+@pytest.mark.parametrize(
+    "value",
+    ['"make -C tests build"', '["make", 3]'],
+    ids=["bare-string", "non-string-entry"],
+)
+def test_invalid_pre_run_commands_refuse_before_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """A malformed Pre-Sim Commands knob fails the preflight with Doctor's message."""
+    from booley.audit.flow_schema import audit_flow_tables
+
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "booley.toml").write_text(
+        f"[flows.sim]\npre_run_commands = {value}\n", encoding="utf-8"
+    )
+    handle = _handle("sim", "acme:lib:dut:1#sim", tmp_path)
+    flow = SimulateFlow()
+    flow._state = DevelopmentState()
+    flow._args = SimpleNamespace(
+        mode=SimulationMode.SIMULATE, work_dir=tmp_path, coverage=False, resume_from=None
+    )
+    monkeypatch.setattr(flow, "_criterion_binding_gate", lambda: None)
+    monkeypatch.setattr(
+        flow,
+        "_prepare_campaign_targets",
+        lambda: ((handle,), None, ("sim",), {"sim": ["smoke"]}),
+    )
+    monkeypatch.setattr(flow, "_validate_prepared_selection", lambda *_args: None)
+    monkeypatch.setattr(flow, "_effective_build_timeout_ms", lambda: 1000)
+    authorized: list[tuple[TargetHandle, ...]] = []
+    monkeypatch.setattr(
+        "booley.flows.endpoint_admission.authorize_simulation_targets",
+        lambda _context, targets: authorized.append(targets),
+    )
+    audit = audit_flow_tables({"flows": {"sim": {"pre_run_commands": "x"}}}, ())
+    (doctor_finding,) = audit.findings
+
+    outcome = flow.prepare_simulation_endpoint()
+
+    assert isinstance(outcome, EndpointOutcome)
+    assert outcome.exit_code == 2
+    assert doctor_finding.message in outcome.report_text
+    assert doctor_finding.fix in outcome.report_text
+    assert authorized == []
+
+
 def test_unfinished_coverage_refusal_precedes_target_authorization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -113,7 +159,7 @@ def test_unfinished_coverage_refusal_precedes_target_authorization(
     flow = SimulateFlow()
     flow._state = DevelopmentState()
     flow._args = SimpleNamespace(mode=SimulationMode.SIMULATE)
-    monkeypatch.setattr(flow.context, "_criterion_binding_gate", lambda: None)
+    monkeypatch.setattr(flow, "_criterion_binding_gate", lambda: None)
     resume = SimpleNamespace()
     monkeypatch.setattr(
         flow,
@@ -235,7 +281,7 @@ def test_campaign_preflight_orders_candidate_before_historical_baseline(
         diagnostic=False,
         mode=SimulationMode.SIMULATE,
     )
-    monkeypatch.setattr(flow.context, "_criterion_binding_gate", lambda: None)
+    monkeypatch.setattr(flow, "_criterion_binding_gate", lambda: None)
     monkeypatch.setattr(flow, "_resolve_requested_targets", lambda: ["sim"])
     monkeypatch.setattr(flow, "_validate_interactive_args", lambda _targets: None)
     monkeypatch.setattr(flow, "_validate_prepared_selection", lambda *_args: None)
@@ -258,7 +304,7 @@ def test_campaign_preflight_orders_candidate_before_historical_baseline(
     monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", historical_worktree)
     monkeypatch.setattr(TargetCatalog, "build", lambda root: Catalog())
 
-    with flow.context.publication_resources:
+    with flow.publication_resources:
         prepared = flow.prepare_simulation_endpoint()
 
     assert isinstance(prepared, PreparedSimulationEndpoint)
@@ -294,23 +340,50 @@ def test_campaign_authorization_materializes_project_topologies(tmp_path, monkey
         assert baseline.exists()
         assert flow.args.work_dir == root
     finally:
-        flow.context.publication_resources.close()
+        flow.publication_resources.close()
     assert not baseline.exists()
 
 
-def test_prepare_resets_report_only_metadata_before_early_gate(monkeypatch):
+def test_prepare_resets_report_only_metadata_before_early_gate(tmp_path, monkeypatch):
     from booley.flows.endpoint_session import prepare_execution
+    from booley.flows.sim.request import SimRequest
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _public_cycle_campaign
 
     flow = SimulateFlow()
-    context = flow.context
-    previous = (object(),)
-    context._simulation_report_outcomes = previous
-    context._simulation_campaign_outcomes = previous
+    campaign = _public_cycle_campaign(tmp_path, monkeypatch)
+    flow._args = SimRequest(target="sim", work_dir=tmp_path, report_dir=tmp_path / "rejected")
+    flow._campaign_endpoint_outcome([campaign])
+    previous = flow._simulation_campaign_outcomes
+    flow.record_eda_tool("previous", "verilator")
     rejected = EndpointOutcome(exit_code=2)
 
     def gate():
-        assert context._simulation_report_outcomes == ()
-        assert context._simulation_campaign_outcomes is previous
+        assert flow.cycle_report_json is None
+        assert flow._eda_tool is None
+        assert flow._eda_tools == {"sim": None}
+        with flow.publication_resources:
+            path = flow.write_report(rejected)
+        assert '"cycle_counts"' not in path.read_text()
+        assert flow._simulation_campaign_outcomes is previous
+        return rejected
+
+    monkeypatch.setattr(flow, "_apply_pre_state_gate", gate)
+    assert prepare_execution(flow) is rejected
+
+
+@pytest.mark.parametrize("target", ["sim_core", "sim_core, sim_other", ["sim_core", "sim_other"]])
+def test_prepare_early_gate_keeps_unresolved_report_target_cardinality(monkeypatch, target):
+    from booley.flows.endpoint_session import prepare_execution
+
+    context = SimulateFlow()
+    context._args = SimpleNamespace(target=target)
+    context.record_eda_tool("previous", "verilator")
+    rejected = EndpointOutcome(exit_code=2)
+    selected = ["sim_core"] if target == "sim_core" else ["sim_core", "sim_other"]
+
+    def gate():
+        assert context._eda_tool is None
+        assert context._eda_tools == dict.fromkeys(selected)
         return rejected
 
     monkeypatch.setattr(context, "_apply_pre_state_gate", gate)

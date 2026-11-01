@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import subprocess
 import sys
@@ -16,7 +17,7 @@ _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
 from check_suppressed_assertions import apply_exemptions, check_repository, scan_source
-from ci_changes import classify, required_jobs
+from ci_changes import CATEGORIES, classify, required_jobs
 
 _SCRIPT = _ROOT / ".github/scripts/check_suppressed_assertions.py"
 _MANIFEST = ".github/scripts/suppressed_assertion_exemptions.json"
@@ -306,10 +307,58 @@ def test_repository_failures_are_not_green(tmp_path: Path, problem: str) -> None
         check_repository(repo)
 
 
-def test_current_repository_has_no_unexempted_violations() -> None:
-    count, diagnostics = check_repository(_ROOT)
-    assert count > 0
-    assert diagnostics == []
+# The required ``lint`` job is the sole enforcement of the whole-repository scan
+# (pytest no longer re-runs it), so every change that can affect the scan's
+# inputs, or that runs pytest at all, must select ``lint``.
+@pytest.mark.parametrize(
+    "paths",
+    [
+        pytest.param([".github/scripts/check_suppressed_assertions.py"], id="checker-script"),
+        pytest.param([_MANIFEST], id="exemption-manifest"),
+        pytest.param([".github/workflows/test.yml"], id="workflow"),
+        pytest.param(["pyproject.toml"], id="packaging-config"),
+        pytest.param(["src/booley/__init__.py"], id="booley-source"),
+        pytest.param(["tests/ci/test_suppressed_assertions.py"], id="test-file"),
+        pytest.param(["website/mkdocs.yml"], id="project-site"),
+        pytest.param(["unmapped/config.xyz"], id="unknown-path"),
+        pytest.param(["docs/architecture.md", "tests/test_example.py"], id="docs-plus-test"),
+    ],
+)
+def test_scan_input_changes_require_lint(paths: list[str]) -> None:
+    assert "lint" in required_jobs(classify(paths))
+
+
+def _test_workflow() -> dict:
+    """Parse the CI workflow that hosts the ``lint`` and ``ci-required`` jobs."""
+    return yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
+
+
+def test_ci_required_waits_for_lint() -> None:
+    """A failed or skipped ``lint`` must block the protected ``ci-required`` check."""
+    assert "lint" in _test_workflow()["jobs"]["ci-required"]["needs"]
+
+
+def test_lint_checker_step_can_fail_the_job() -> None:
+    """The checker step must not be skippable or advisory, or ``lint`` stays green."""
+    lint = _test_workflow()["jobs"]["lint"]
+    assert "continue-on-error" not in lint
+    checker_steps = [
+        step
+        for step in lint["steps"]
+        if step.get("run") == "python .github/scripts/check_suppressed_assertions.py"
+    ]
+    assert len(checker_steps) == 1
+    assert "continue-on-error" not in checker_steps[0]
+    assert "if" not in checker_steps[0]
+
+
+def test_every_category_set_that_runs_pytest_also_runs_lint() -> None:
+    """No classification may run the pytest legs without the ``lint`` scan."""
+    for size in range(len(CATEGORIES) + 1):
+        for categories in itertools.combinations(CATEGORIES, size):
+            jobs = required_jobs(set(categories))
+            if jobs & {"test", "test-verify", "coverage-shards", "coverage"}:
+                assert "lint" in jobs, categories
 
 
 def test_exemption_only_change_runs_lint_and_lint_invokes_guard() -> None:

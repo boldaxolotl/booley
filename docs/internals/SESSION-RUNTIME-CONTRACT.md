@@ -167,14 +167,14 @@ before a release is published.
 ### Runtime-base package inventory
 
 Every runtime base built from `Dockerfile.base` embeds the package inventory it
-resolved at
-`/usr/local/share/booley/base-package-inventory.json`. The image-config label
-`io.booley.runtime-base.package-inventory` names that fixed path. The label is
-informational provenance only. It is not a freshness or compatibility key and
-does not replace the immutable image ID or registry digest.
+resolved at `/usr/local/share/booley/base-package-inventory.json`. The
+image-config label `io.booley.runtime-base.package-inventory` names that fixed
+path. The label is informational provenance only. It is not a freshness or
+compatibility key and does not replace the immutable image ID or registry
+digest.
 
-The v1 file is UTF-8 JSON with sorted keys, two-space indentation, and one
-trailing newline:
+The v1 file is JSON with sorted keys, two-space indentation, and one trailing
+newline:
 
 ```json
 {
@@ -187,62 +187,40 @@ trailing newline:
 }
 ```
 
-`packages` lists every dpkg package whose state is `installed`, held packages
-included, sorted and unique by `(name, architecture)`. Config-only and absent
-packages are left out. Collection fails on any partly installed package or a
-dpkg error flag. It does not drop them silently. `python` records the exact
-final-release interpreter version and the pip version, and both must agree
-between the imported module and its distribution metadata. The file carries no
-timestamp, commit, hostname, or digest. Identity comes from the surrounding CI
-evidence.
+`packages` lists every dpkg package whose state is `installed`, sorted by
+`(name, architecture)`. Config-only and absent packages are left out. `python`
+records the interpreter's patch version and the pip version. The file carries
+no timestamp, commit, hostname, or digest, so the same package set always
+produces the same bytes.
 
 The standard-library helper `/usr/local/libexec/booley/base_package_inventory.py`
-generates the file in the base's final layer, after every apt and pip change.
-It always runs as `python -I`, so user-site packages and `PYTHON*` variables
-cannot affect the result. The same helper validates the schema (`validate`) and
-compares the file with live package state (`verify`). The base build runs
-`verify` before it succeeds.
+has two commands. `generate` writes the file in the base's final layer, after
+every apt and pip change, as `python -I` so user-site packages and `PYTHON*`
+variables cannot affect it. `validate` checks only the shape (a readable JSON
+object with the expected fields and types), not sorting, `scope`, or live package
+state. The common contract probe runs it. Standard, RISC-V, and Project-derived images
+inherit the base bytes unchanged and never regenerate or relabel them. The file
+is not an SBOM or a lockfile; the SPDX attestations above remain in place. It
+omits the EDA builder stages and derived layers. Apt stays floating, so rebuilds
+are not reproducible. Images built before this contract lack the file and fail
+the image contract.
 
-Scope limits:
-
-- It describes the final runtime base only. It does not cover the EDA builder
-  stages or any layer added by a derived image. It is not an SBOM or a lockfile;
-  the SPDX attestations above remain in place.
-- Standard, RISC-V, and Project-derived images inherit the base bytes unchanged
-  and never regenerate or relabel them. The common contract probe checks only
-  the schema in those images, because derived layers may add or replace packages.
-- Apt stays floating. Cached apt layers can reuse old packages, so a rebuild
-  does not necessarily pick up security updates. The inventory records what was
-  resolved; it does not make historical rebuilds reproducible.
-- Images built before this contract lack the file and fail the image contract.
-
-Extract the file from a local image without starting it on a POSIX host. The
-exporter is a Linux CI utility; its executable launch and pipe selection are
-not supported on native Windows:
+Extract the file by running `cat` in the image:
 
 ```bash
-python .github/scripts/image_package_inventory.py --image IMAGE \
-  --output inventory.json --evidence inventory-evidence.json \
-  [--expected-inventory parent.json] [--verify-current-state]
+docker run --rm --network none --entrypoint cat IMAGE \
+  /usr/local/share/booley/base-package-inventory.json > inventory.json
+cmp parent.json inventory.json
 ```
 
-The exporter pins every step to the inspected local image ID and checks the
-label. It reads `docker cp` output as a bounded in-memory tar stream and accepts
-only one regular file, so it never follows links or writes archive paths on the
-host. It writes the accepted bytes unchanged and records the requested
-reference, image ID, repository digests, SHA-256, package count, and
-Python/pip versions in the evidence file. Malformed bytes are kept as
-`<output>.rejected` and the command fails.
+A missing file, a failed `docker run`, or differing bytes fails the CI step.
 
 CI keeps these artifacts:
 
-| Workflow | Artifact | Gate |
-| --- | --- | --- |
-| `docker-base-publish.yml` | `base-package-inventory-<run>-<attempt>` | exact digest; live-state `verify` before `:main` promotion |
-| `test.yml` (local base) | `docker-build-evidence` | base `verify`; standard bytes equal base bytes |
-| `test.yml` (published base) | `docker-build-evidence` | standard inventory valid; selected base digest recorded |
-| `test.yml` (RISC-V lane) | `riscv-image-evidence-*` | RISC-V bytes equal standard bytes |
-| `docker-publish.yml` | `release-standard-image-*`, `release-riscv-image-*` | standard equals selected base digest; RISC-V equals standard |
-
-CI artifacts expire. While the immutable image is retained, the embedded file
-remains the lasting record.
+| Workflow | Artifact |
+| --- | --- |
+| `docker-base-publish.yml` | `base-package-inventory-<run>-<attempt>` |
+| `test.yml` (local base) | `docker-build-evidence` |
+| `test.yml` (published base) | `docker-build-evidence` |
+| `test.yml` (RISC-V lane) | `riscv-image-evidence-*` |
+| `docker-publish.yml` | `release-standard-image-*`, `release-riscv-image-*` |

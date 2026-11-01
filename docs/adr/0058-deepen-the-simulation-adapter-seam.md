@@ -14,12 +14,14 @@ continues to own Verilator, Icarus, and Cocotb command shaping; leaf adapters ow
 simulator launch, verdict normalization, and trace finalization.
 
 The public `booley.flows.sim.campaign` package also owns storage-backed read
-capabilities. External Simulation, Coverage, and retention callers authenticate
-one terminal work item or inspect retention eligibility through that package and
-receive immutable typed evidence. Durable store construction, path layout,
+capabilities. External Simulation, Coverage, and retention callers read
+one terminal work item (amended 2026-10-21, see Amendments) or inspect
+retention eligibility through that package and receive immutable typed evidence.
+Durable store construction, path layout,
 manifest/result recovery scanning, and summary decoding remain private to the
-Campaign implementation. Campaign coordination and child linkage retain direct
-store access because they own the durable transaction; callers do not receive a
+Campaign implementation. Campaign coordination retains direct store access
+(amended 2026-10-25, see Amendments)
+because it owns the durable transaction; callers do not receive a
 store, recovery collection, or storage-relative helper to interpret themselves.
 
 Here, trace finalization means current-attempt orchestration and final evidence:
@@ -104,3 +106,22 @@ existing distinction between incomplete recovery, an incomplete summary or
 projection, and corrupt storage while normalizing storage I/O failures at the
 public Campaign boundary. A source-dependency rule and named-type ownership gate
 enforce this refined seam for production code.
+
+## Amendments (2026-10-21)
+
+Recorded while implementing issue #1745. Campaign evidence is authenticated
+when a Simulator Bundle or executable snapshot is
+launched or reused, and trusted on read. A scan decodes each work item's final
+attempt and result and binds them by attempt ID and ordinal. It does not re-read
+the build, bundle or snapshot chain or re-hash evidence files. Retention owns the
+files a completed attempt's result names and its Booley-written build trees.
+
+## Amendments (2026-10-25)
+
+Recorded while implementing issue #1950. A parallel Campaign lane keeps its
+execution identity: an execution ID, a context sidecar, and a waiting then
+terminal execution record. The attempt names that ID. A Campaign it starts writes no
+child entry, retirement or release record, and the attempt scan no longer reads or
+digest-checks a child entry. Resume and full pruning cancel an interrupted
+attempt's lane execution before removing its run directory and fail closed when
+the lane cannot be proven terminal. `child_protocol` has no store access.

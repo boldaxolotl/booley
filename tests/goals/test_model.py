@@ -34,6 +34,7 @@ from booley.goals.model import (
     parse_goal_arg,
     parse_goal_args,
 )
+from tests.goals.conftest import INPUT_PATHS
 
 REPOSITORY = "1b4e28ba-2fa1-41d2-883f-0016d3cca427"
 SHA = "a" * 40
@@ -50,6 +51,10 @@ def record(**changes: Any) -> GoalRecord:
         original_ref="refs/heads/main",
         base_sha=SHA,
         entered_at="2026-10-06T10:15:00Z",
+        input_topology_digest="sha256:" + "e" * 64,
+        input_paths=INPUT_PATHS,
+        protected_digest=None,
+        protected_head_digest=None,
         revision=1,
         goals=(
             RecordedGoal(
@@ -260,15 +265,22 @@ def test_terminal_states_have_no_exit() -> None:
 # --- Goal Record format -------------------------------------------------------
 
 
-def test_record_round_trips_through_json() -> None:
+@pytest.mark.parametrize("family", list(GoalFamily))
+@pytest.mark.parametrize("state", list(GoalState))
+def test_record_round_trips_through_json(family: GoalFamily, state: GoalState) -> None:
     original = record(
         session_key="pid:12:34",
         goalsets_used=("bugfix",),
         protected_digest="sha256:" + "b" * 64,
+        protected_head_digest="sha256:" + "f" * 64,
         protected_paths=("/work/booley.toml",),
         validated_head="c" * 64,
         package_digest="sha256:" + "d" * 64,
         ended_at="2026-10-06T11:00:00Z",
+    )
+    goal = original.goals[0]
+    original = replace(
+        original, state=state, goals=(replace(goal, spec=replace(goal.spec, family=family)),)
     )
     encoded = json.loads(json.dumps(original.to_json()))
     assert GoalRecord.from_json(encoded) == original
@@ -293,17 +305,6 @@ def test_record_fields_are_validated(field: str, value: object, message: str) ->
     raw = record().to_json()
     raw[field] = value
     with pytest.raises(GoalRecordFormatError, match=message):
-        GoalRecord.from_json(raw)
-
-
-def test_record_rejects_unknown_and_missing_fields() -> None:
-    raw = record().to_json()
-    raw["extra"] = 1
-    with pytest.raises(GoalRecordFormatError, match="unknown fields"):
-        GoalRecord.from_json(raw)
-    raw = record().to_json()
-    del raw["branch"]
-    with pytest.raises(GoalRecordFormatError, match="missing"):
         GoalRecord.from_json(raw)
 
 
@@ -354,11 +355,51 @@ def test_a_record_from_a_newer_booley_is_refused_with_that_reason() -> None:
         GoalRecord.from_json(raw)
 
 
-@pytest.mark.parametrize("required", ["id", "worktree", "base_sha", "entered_at", "schema"])
+@pytest.mark.parametrize(
+    "required",
+    [
+        "id",
+        "worktree",
+        "base_sha",
+        "entered_at",
+        "schema",
+        "branch",
+        "input_paths",
+        "input_topology_digest",
+        "protected_head_digest",
+    ],
+)
 def test_required_fields_stay_required(required: str) -> None:
     raw = record().to_json()
     del raw[required]
     with pytest.raises(GoalRecordFormatError, match="missing"):
+        GoalRecord.from_json(raw)
+
+
+@pytest.mark.parametrize("field", ["input_paths", "input_topology_digest"])
+def test_record_input_fields_may_not_be_null(field: str) -> None:
+    raw = record().to_json()
+    raw[field] = None
+    with pytest.raises(GoalRecordFormatError):
+        GoalRecord.from_json(raw)
+
+
+@pytest.mark.parametrize("state", ["entering", "failed"])
+def test_record_without_a_protected_snapshot_round_trips(state: str) -> None:
+    raw = record(state=GoalState(state)).to_json()
+    assert raw["protected_digest"] is None and raw["protected_head_digest"] is None
+    assert GoalRecord.from_json(raw).to_json() == raw
+
+
+@pytest.mark.parametrize(
+    "present",
+    ["protected_digest", "protected_head_digest"],
+    ids=["digest-without-head", "head-without-digest"],
+)
+def test_protected_digests_are_null_together(present: str) -> None:
+    raw = record().to_json()
+    raw[present] = "sha256:" + "b" * 64
+    with pytest.raises(GoalRecordFormatError, match="null exactly when"):
         GoalRecord.from_json(raw)
 
 

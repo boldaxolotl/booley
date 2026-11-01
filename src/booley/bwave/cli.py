@@ -32,6 +32,7 @@ wrapper would apply its query defaults (`--limit`, marker flags) to them.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import os
@@ -44,14 +45,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple, NoReturn
 
-from booley.bwave import wcp as bwave_wcp
-from booley.bwave.contract import NO_MATCH_MARKER
+from booley.bwave import vaporview_bridge
+from booley.bwave.contract import (
+    BEYOND_RANGE_MARKER,
+    DID_YOU_MEAN_MARKER,
+    EXIT_USAGE,
+    NO_MATCH_MARKER,
+)
 from booley.bwave.contract import exit_usage as _exit_usage
 from booley.bwave.waveform_store import (
     conversion_failure_messages,
     discover_waveform,
     waveform_cache_dir,
 )
+from booley.core.boundary import BoundaryError, require_int
 from booley.runtime import runtime_context, vaporview
 
 # ---------------------------------------------------------------------------
@@ -627,9 +634,8 @@ def _apply_limit_default(cmd_args: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Subcommand: open (Waveform Viewer, ADR 0040 / ADR 0035)
+# Subcommand: gui (Waveform Viewer, ADR 0040 / ADR 0078)
 # ---------------------------------------------------------------------------
-_VAPORVIEW_EXTENSION = vaporview.EXTENSION_ID
 # Probe order: `code` first, then `cursor`. shutil.which resolves Windows
 # `code.cmd` via PATHEXT, so no platform branching is needed.
 _VIEWER_CLIS = ("code", "cursor")
@@ -645,8 +651,9 @@ _GUI_SIGNAL_CAP = 64
 # VaporView's two markers. `gui --time` brackets the range with them, so the
 # viewer's status bar reports the span as a delta instead of leaving the human
 # to subtract two numbers off the ruler.
-_MARKER_MAIN = bwave_wcp.WcpClient.MARKER_MAIN
-_MARKER_ALT = bwave_wcp.WcpClient.MARKER_ALT
+# Plan markers are keyed by the viewer-session field that holds them.
+_MAIN_MARKER = "markerTime"
+_ALT_MARKER = "altMarkerTime"
 
 
 def _launch_viewer(cli: str, trace: str) -> int:
@@ -689,18 +696,29 @@ def _available_viewer_clis() -> list[str]:
     return [hit for name in _VIEWER_CLIS if (hit := shutil.which(name))]
 
 
-def _scoped_setup_hint() -> str:
-    """Diagnose extension absence before suggesting an extension-host reload."""
+def _bridge_setup_hint(exc: Exception) -> str:
+    """Diagnose extension absence before suggesting an attach or reload."""
     state = _viewer_extension_state()
     if state is vaporview.ExtensionState.MISSING:
         editors = _available_viewer_clis()
         editor = Path(editors[0]).stem if editors else "code"
         return (
             "ERROR: VaporView extension is not installed, so scoped `bwave gui` "
-            "cannot start its WCP control server.\n"
+            "has no viewer to drive.\n"
             f"{vaporview.install_guidance(editor=editor)}"
         )
-    hint = bwave_wcp.setup_hint()
+    problems = getattr(exc, "problems", [])
+    outcome = "no attached window's bridge answered properly" if problems else "no window answered"
+    hint = (
+        "ERROR: scoped `bwave gui` drives VaporView through the Viewer Bridge of the "
+        f"Booley Sandbox Integration extension in an attached VS Code window, and {outcome}.\n"
+        "  - Attach VS Code to this Sandbox, then retry.\n"
+        '  - If a window is attached, run "Developer: Reload Window" there; the\n'
+        "    extension starts the Viewer Bridge when the window loads.\n"
+        "  - If `booley doctor` reports devcontainer drift, refresh the Sandbox so its\n"
+        "    spec installs the Booley Sandbox Integration extension.\n"
+        f"  (bridge probe: {exc})"
+    )
     if state is vaporview.ExtensionState.UNKNOWN:
         return (
             f"{hint}\n"
@@ -708,6 +726,16 @@ def _scoped_setup_hint() -> str:
             "a failed editor query is not treated as proof that it is missing."
         )
     return hint
+
+
+def _ambiguous_viewer_hint(exc: Exception) -> str:
+    """Several windows are attached; say how to pick one."""
+    return (
+        f"ERROR: {exc}.\n"
+        "  Run `bwave gui` from a terminal of the window that should show the trace\n"
+        f"  (its terminals set {vaporview_bridge.SOCKET_ENV}), or click into that window\n"
+        "  and retry, or close the windows you do not need."
+    )
 
 
 def _resolve_gui_target(target: str | None) -> tuple[str, str]:
@@ -765,9 +793,9 @@ def _exit_with_inner_error(
 ) -> NoReturn:
     """Exit surfacing the inner binary's message verbatim, never the plumbing.
 
-    The Rust binary writes genuinely useful diagnostics — e.g. `--at-time N is
-    beyond simulation range (sim length: 15 cycles)` plus a did-you-mean HINT —
-    and then, for that class of failure, exits 0 with no JSON on stdout. The
+    The Rust binary writes genuinely useful diagnostics — e.g. an ERROR line
+    plus a did-you-mean HINT — and some failures exit with no JSON on stdout,
+    some even with status 0. The
     wrapper used to answer that with "bwave returned non-JSON output for: value
     <argv>", which hides the hint the user needed and leaks internal plumbing.
     So: the inner text is the error; *plumbing* (which internal query broke, and
@@ -789,21 +817,34 @@ def _run_capture(cmd_args: list[str]) -> dict:
     the user's terminal like _run(); a failure here is an input problem
     (bad glob, bad time token), so the binary's stderr is surfaced verbatim.
     """
+    return _capture_data(_run_query(cmd_args), cmd_args)
+
+
+def _run_query(cmd_args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run one internal Rust query, exiting only on a timeout."""
     cmd = [*_bwave_cmd(), *cmd_args]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
     except subprocess.TimeoutExpired:
         sys.exit(f"ERROR: bwave query timed out (120s): {' '.join(cmd_args)}")
+
+
+def _capture_envelope(result: subprocess.CompletedProcess[str], cmd_args: list[str]) -> dict:
+    """Return the JSON envelope, surfacing the binary's own error on failure."""
     if result.returncode != 0:
         _exit_with_inner_error(result, cmd_args, "bwave query failed")
     try:
         envelope = json.loads(result.stdout)
     except json.JSONDecodeError:
         _exit_with_inner_error(result, cmd_args, "bwave returned non-JSON output for")
-    data = envelope.get("data")
-    if not isinstance(data, dict):
+    if not isinstance(envelope.get("data"), dict):
         _exit_with_inner_error(result, cmd_args, "bwave JSON envelope has no data object for")
-    return data
+    return envelope
+
+
+def _capture_data(result: subprocess.CompletedProcess[str], cmd_args: list[str]) -> dict:
+    """Return the JSON envelope `data`, surfacing the binary's own error on failure."""
+    return _capture_envelope(result, cmd_args)["data"]
 
 
 # Trailing bit range on a bwave signal name: "[7:0]" (vector) or "[3]" (bit).
@@ -912,7 +953,7 @@ def _with_selector_style(
     )
 
 
-def _list_query(trace: str, globs: list[str]) -> dict:
+def _list_envelope(trace: str, globs: list[str]) -> dict:
     """One `bwave list` envelope — the trace header plus the matched signals.
 
     This is the cheap query: `list` reads the hierarchy only (~100 ms on a
@@ -921,7 +962,13 @@ def _list_query(trace: str, globs: list[str]) -> dict:
     signal set, the clock, the end of the trace — rides on this one call.
     """
     flags = [flag for glob in globs for flag in ("-s", glob)]
-    return _run_capture(["list", trace, *flags, "--format", "json", "--limit", "10000"])
+    cmd_args = ["list", trace, *flags, "--format", "json", "--limit", "10000"]
+    return _capture_envelope(_run_query(cmd_args), cmd_args)
+
+
+def _list_query(trace: str, globs: list[str]) -> dict:
+    """The `data` object of one `bwave list` envelope (see `_list_envelope`)."""
+    return _list_envelope(trace, globs)["data"]
 
 
 def _clock_of(data: dict) -> _OpenSignal | None:
@@ -949,10 +996,20 @@ def _resolve_signal_globs(
     selectors = [_parse_display_selector(glob, option=option) for glob in globs]
     listing: dict | None = None
     signals: dict[str, _OpenSignal] = {}
+    unmatched: list[str] = []
+    suggestions: list[str] = []
     for selector in selectors:
-        data = _list_query(trace, [selector.glob])
+        envelope = _list_envelope(trace, [selector.glob])
+        data = envelope["data"]
         if listing is None:
             listing = data
+        if not data.get("signals"):
+            unmatched.append(selector.glob)
+            suggestions.extend(
+                warning
+                for warning in envelope.get("warnings") or []
+                if isinstance(warning, str) and DID_YOU_MEAN_MARKER in warning
+            )
         prefix = data.get("scope_prefix") or ""
         for sig in data.get("signals", []):
             name = sig.get("name")
@@ -968,7 +1025,11 @@ def _resolve_signal_globs(
         # Same wording class (and exit code) as the Rust total-miss error —
         # NO_MATCH_MARKER keeps the two surfaces greppable the same way.
         pat = ", ".join(f"'{g}'" for g in globs)
-        _exit_usage(f"ERROR: {NO_MATCH_MARKER} {option} {pat} in {trace}")
+        hint = f"; {' '.join(suggestions)}" if suggestions else ""
+        _exit_usage(f"ERROR: {NO_MATCH_MARKER} {option} {pat} in {trace}{hint}")
+    for glob in unmatched:
+        # Like the Rust partial miss: the other selectors still show.
+        print(f"WARNING: {NO_MATCH_MARKER} {option} '{glob}'; not shown", file=sys.stderr)
     resolved = list(signals.values())
     if len(resolved) > cap:
         head = "\n".join(f"  {signal.bwave_name}" for signal in resolved[:5])
@@ -1080,7 +1141,15 @@ class _TickResolver:
         self.markers = _get_markers(_load_sessions(), alias)
         self._total_ticks: int | None = None
 
-    def to_tick(self, token: str) -> int:
+    def to_tick(self, token: str, *, option: str) -> int:
+        """Resolve *token*; one past the end of the trace is a usage error."""
+        tick = self._tick_within_trace(token)
+        if tick is None:
+            sys.exit(f"ERROR: {option} {token} is past the end of the trace")
+        return tick
+
+    def _tick_within_trace(self, token: str) -> int | None:
+        """Resolve *token* to a tick, or None when it lies past the end of the trace."""
         # Markers are stored as cycle numbers; make the unit explicit so the
         # token survives async traces' bare-integer rejection with a clear
         # error pointing at the cycle grammar rather than a mystery number.
@@ -1095,7 +1164,10 @@ class _TickResolver:
         if token.endswith(("t", "ps", "ns", "us", "ms")):
             command.append("--async")
         command.extend(["--at", token, "--format", "json", "--limit", "1"])
-        data = _run_capture(command)
+        result = _run_query(command)
+        if result.returncode == EXIT_USAGE and BEYOND_RANGE_MARKER in result.stderr.lower():
+            return None
+        data = _capture_data(result, command)
         tick = data.get("target_tick")
         if not isinstance(tick, int):
             sys.exit(f"ERROR: could not resolve time token '{token}' to a tick")
@@ -1123,136 +1195,82 @@ class _TickResolver:
                 "Either end may be omitted: '500c:' or ':100ns'."
             )
         raw_start, raw_end = spec.split(":", 1)
-        start = self.to_tick(raw_start) if raw_start else 0
-        end = self.to_tick(raw_end) if raw_end else self.total_ticks()
+        start = self.to_tick(raw_start, option="--time start") if raw_start else 0
+        end = self._tick_within_trace(raw_end) if raw_end else self.total_ticks()
+        # VaporView rejects a window that ends past the trace (its end is the
+        # last timestamp plus a margin, never less than `list`'s total_ticks).
+        last = self.total_ticks()
+        if start >= last:
+            sys.exit(
+                f"ERROR: --time starts at tick {start}, at or after the end of the trace "
+                f"(tick {last})"
+            )
+        if end is None or end > last:
+            print(
+                f"NOTE: --time end {raw_end} is past the end of the trace; "
+                f"showing up to tick {last}",
+                file=sys.stderr,
+            )
+            end = last
         if start >= end:
             sys.exit(f"ERROR: empty --time range: start tick {start} >= end tick {end}")
         return start, end
 
 
-def _uri_is_open(uri: str, documents: list[str]) -> bool:
-    """Match our file URI against VaporView's (vscode-normalized) document list."""
-    from urllib.parse import unquote
+# ── Viewer control (ADR 0078) ──────────────────────────────────────────────
+#
+# The bridge applies a whole VaporView session asynchronously; everything
+# below builds that session from the plan and proves, by reading the viewer's
+# own state back, that what is on screen is what was asked for.
 
-    candidates = {uri, unquote(uri)}
-    return any(doc in candidates or unquote(doc) in candidates for doc in documents)
+# VaporView's session round-trips through its webview, so readback lags the
+# apply by a frame or more (and by the netlist lookups on a large trace) —
+# poll instead of reading once.
+_VIEW_SETTLE_TIMEOUT = 10.0
+_VIEW_POLL_INTERVAL = 0.05
+
+# Presentation fields restored after a failed update. ``selectedSignal`` is
+# left out: the viewer reports it as a name object but expects a netlist id.
+_RESTORE_KEYS = (
+    "displayedSignals",
+    _MAIN_MARKER,
+    _ALT_MARKER,
+    "displayTimeUnit",
+    "zoomRatio",
+    "scrollLeft",
+    "defaultPixelTime",
+)
 
 
-def _wcp_ensure_open(client: bwave_wcp.WcpClient, uri: str) -> bool:
-    """Make sure *uri* is loaded in the viewer; return True if freshly opened."""
-    if _uri_is_open(uri, client.get_open_documents()):
+class ViewerControlError(Exception):
+    """The viewer accepted a request but its state does not prove the result."""
+
+
+_VIEWER_ERRORS = (vaporview_bridge.BridgeError, ViewerControlError)
+
+
+def _is_netlist_id(value: object) -> bool:
+    """VaporView marks a row it could not resolve by omitting its netlist id."""
+    try:
+        require_int(value, field="netlistId")
+    except BoundaryError:
         return False
-    client.open_document(uri)
-    client.wait_event("waveform_loaded")
     return True
 
 
-# VaporView's displayed-signal list round-trips through its webview, so it lags
-# the add_signal ack by a frame or two — poll it instead of reading once.
-_VIEW_SETTLE_TIMEOUT = 3.0
-_VIEW_POLL_INTERVAL = 0.05
+def _saved_names(signal: _OpenSignal) -> frozenset[str]:
+    """Every name VaporView may save *signal*'s row under.
 
-
-def _displayed_paths(client: bwave_wcp.WcpClient, uri: str) -> set[str]:
-    """Instance paths the viewer is actually showing for *uri*."""
-    ids = client.get_item_list(uri=uri)
-    if not ids:
-        return set()
-    return {
-        row["name"]
-        for row in client.get_item_info(ids, uri=uri)
-        if isinstance(row.get("name"), str)
-    }
-
-
-def _wait_until_displayed(client: bwave_wcp.WcpClient, uri: str, expected: set[str]) -> set[str]:
-    """Poll the viewer until it shows every path in *expected*, or time out."""
-    shown = _displayed_paths(client, uri)
-    if not expected:
-        return shown
-    deadline = time.monotonic() + _VIEW_SETTLE_TIMEOUT
-    while not expected <= shown and time.monotonic() < deadline:
-        time.sleep(_VIEW_POLL_INTERVAL)
-        shown = _displayed_paths(client, uri)
-    return shown
-
-
-def _partition_append_signals(
-    client: bwave_wcp.WcpClient,
-    uri: str,
-    signals: list[_OpenSignal],
-    *,
-    layout: list[dict] | None = None,
-) -> tuple[list[_OpenSignal], list[_OpenSignal]]:
-    """Split an append request into rows to add and rows already displayed."""
-    if layout is not None:
-        existing = [signal for signal in signals if _find_saved_signal(layout, signal)]
-        existing_set = set(existing)
-        return [signal for signal in signals if signal not in existing_set], existing
-    if not signals or "get_item_info" not in client.capabilities:
-        return signals, []
-    shown = _displayed_paths(client, uri)
-
-    def already_displayed(signal: _OpenSignal) -> bool:
-        return signal.instance_path in shown or (
-            signal.fallback is not None and signal.fallback in shown
-        )
-
-    return (
-        [signal for signal in signals if not already_displayed(signal)],
-        [signal for signal in signals if already_displayed(signal)],
-    )
-
-
-def _add_signals(
-    client: bwave_wcp.WcpClient, uri: str, signals: list[_OpenSignal]
-) -> tuple[list[_OpenSignal], list[_OpenSignal]]:
-    """Add *signals* to the viewer; return the (accepted, dropped) split.
-
-    `add_signal` acks `{"success": true}` even when the lookup misses, so the
-    viewer's own item list is the only truthful answer about what landed. An
-    older VaporView without get_item_info leaves us nothing to check against —
-    there we trust the ack rather than invent a drop.
+    A saved row carries the bare instance path only (no msb/lsb); a 1-bit
+    array element is saved under its bracketed name.
     """
-    for sig in signals:
-        client.add_signal(sig.instance_path, uri=uri, msb=sig.msb, lsb=sig.lsb)
-    if not signals or "get_item_info" not in client.capabilities:
-        return list(signals), []
-
-    shown = _wait_until_displayed(client, uri, {s.instance_path for s in signals})
-
-    # A miss on a `foo[3]` means the bracket belonged to the identifier after
-    # all (an `mem[0]`-style array element, not a bit range): retry those under
-    # their raw name before writing them off as dropped.
-    retried = [s for s in signals if s.instance_path not in shown and s.fallback is not None]
-    if retried:
-        for sig in retried:
-            client.add_signal(sig.fallback, uri=uri)
-        shown |= _wait_until_displayed(client, uri, {s.fallback for s in retried})
-
-    def landed(sig: _OpenSignal) -> bool:
-        return sig.instance_path in shown or (sig.fallback is not None and sig.fallback in shown)
-
-    return [s for s in signals if landed(s)], [s for s in signals if not landed(s)]
-
-
-_GROUP_LAYOUT_CAPABILITIES = {
-    "set_signal_layout",
-    "get_signal_layout",
-    "get_viewer_state",
-}
+    names = (signal.instance_path, signal.fallback, signal.bwave_name)
+    return frozenset(name for name in names if name is not None)
 
 
 def _saved_item_matches(item: dict, signal: _OpenSignal) -> bool:
     """Whether one native saved row represents *signal*."""
-    if item.get("dataType") != "netlist-variable":
-        return False
-    name = item.get("name")
-    if signal.fallback is not None and name == signal.fallback:
-        return True
-    # VaporView uses msb/lsb to resolve add_signal, but its native saved row
-    # retains only the bare instance path and netlist id.
-    return name == signal.instance_path
+    return item.get("dataType") == "netlist-variable" and item.get("name") in _saved_names(signal)
 
 
 def _find_saved_signal(items: list[dict], signal: _OpenSignal) -> dict | None:
@@ -1278,10 +1296,7 @@ def _apply_requested_styles(layout: list[dict], signals: list[_OpenSignal]) -> N
         if not _has_requested_style(signal):
             continue
         item = _find_saved_signal(layout, signal)
-        if item is None:
-            raise bwave_wcp.WcpProtocolError(
-                f"get_signal_layout omitted displayed signal {signal.bwave_name}"
-            )
+        assert item is not None, f"composed layout lacks {signal.bwave_name}"
         if signal.number_format is not None:
             item["numberFormat"] = signal.number_format
         if signal.color is not None:
@@ -1320,13 +1335,14 @@ def _build_grouped_layout(
 ) -> tuple[list[dict], list[_OpenGroup]]:
     """Move accepted rows into native groups while preserving their formatting."""
     accepted_names = {signal.bwave_name for signal in accepted}
+    by_name = {signal.bwave_name: signal for signal in accepted}
     applied: list[_OpenGroup] = []
     for group in groups:
-        members = [s for s in group.signals if s.bwave_name in accepted_names]
+        members = [by_name[s.bwave_name] for s in group.signals if s.bwave_name in accepted_names]
         existing = _top_level_group(current, group.name)
         existing_children = existing.get("children") if existing is not None else None
         if existing is not None and not isinstance(existing_children, list):
-            raise bwave_wcp.WcpProtocolError(f"signal group {group.name!r} has malformed children")
+            raise ViewerControlError(f"signal group {group.name!r} has malformed children")
         children: list[dict] = []
         for signal in members:
             if existing_children is not None and any(
@@ -1334,10 +1350,7 @@ def _build_grouped_layout(
             ):
                 continue
             item = _pop_saved_signal(current, signal)
-            if item is None:
-                raise bwave_wcp.WcpProtocolError(
-                    f"get_signal_layout omitted displayed signal {signal.bwave_name}"
-                )
+            assert item is not None, f"composed layout lacks {signal.bwave_name}"
             children.append(item)
         if not members:
             continue
@@ -1355,36 +1368,6 @@ def _build_grouped_layout(
             existing_children.extend(children)
         applied.append(_OpenGroup(group.name, members))
     return current, applied
-
-
-def _replace_layout_rows(layout: list[dict], accepted: list[_OpenSignal]) -> list[dict]:
-    """Build the exact requested flat row order from viewer-resolved rows."""
-    replacement: list[dict] = []
-    for signal in accepted:
-        item = _pop_saved_signal(layout, signal)
-        if item is None:
-            raise bwave_wcp.WcpProtocolError(
-                f"get_signal_layout omitted displayed signal {signal.bwave_name}"
-            )
-        replacement.append(item)
-    return replacement
-
-
-def _wait_for_exact_layout(
-    client: bwave_wcp.WcpClient,
-    uri: str,
-    expected: list[dict],
-    *,
-    failure: str,
-) -> list[dict]:
-    """Poll until the complete ordered saved-row tree matches *expected*."""
-    deadline = time.monotonic() + _VIEW_SETTLE_TIMEOUT
-    while time.monotonic() < deadline:
-        readback = client.get_signal_layout(uri=uri)
-        if readback == expected:
-            return readback
-        time.sleep(_VIEW_POLL_INTERVAL)
-    raise bwave_wcp.WcpProtocolError(failure)
 
 
 def _groups_from_layout(layout: list[dict], expected: list[_OpenGroup]) -> list[_OpenGroup]:
@@ -1410,80 +1393,378 @@ def _groups_from_layout(layout: list[dict], expected: list[_OpenGroup]) -> list[
     return actual
 
 
-def _apply_signal_layout(
-    client: bwave_wcp.WcpClient,
-    uri: str,
-    groups: list[_OpenGroup],
-    accepted: list[_OpenSignal],
-    *,
-    replace: bool,
-) -> list[_OpenGroup]:
-    """Commit and exactly verify one ordered recursive presentation tree."""
-    styled = [signal for signal in accepted if _has_requested_style(signal)]
-    if not replace and not groups and not styled:
-        return []
-    layout = client.get_signal_layout(uri=uri)
-    if replace:
-        layout = _replace_layout_rows(layout, accepted)
-    _apply_requested_styles(layout, styled)
-    layout, applied = _build_grouped_layout(layout, groups, accepted)
-    client.set_signal_layout(layout, uri=uri)
-    readback = _wait_for_exact_layout(
-        client,
-        uri,
-        layout,
-        failure="viewer did not apply the exact requested signal presentation",
+def _new_row(signal: _OpenSignal) -> dict:
+    """A session row VaporView resolves by bare path plus bit range."""
+    row: dict = {"dataType": "netlist-variable", "name": signal.instance_path}
+    if signal.msb is not None and signal.lsb is not None:
+        row["msb"] = signal.msb
+        row["lsb"] = signal.lsb
+    return row
+
+
+class _ViewTarget(NamedTuple):
+    """The rows, markers, and matching rules one session apply must produce."""
+
+    rows: list[dict]
+    markers: dict[str, int]
+    # Sent row name -> every name the viewer may save that row under.
+    aliases: dict[str, frozenset[str]]
+    # Sent names of rows this run added; each must resolve to a netlist item.
+    ours: frozenset[str]
+    added: list[_OpenSignal]
+    groups: list[_OpenGroup]
+
+    def session(self) -> dict:
+        return {"displayedSignals": self.rows, **self.markers}
+
+
+class _RowRequest(NamedTuple):
+    """What to build a row tree from: the read-back rows, the plan, and the mode."""
+
+    base: list[dict]
+    plan: _GuiPlan
+    append: bool
+
+    def compose(self, signals: list[_OpenSignal]) -> _ViewTarget:
+        """Build the complete tree: append keeps *base*, replace starts empty."""
+        rows = copy.deepcopy(self.base) if self.append else []
+        added: list[_OpenSignal] = []
+        for signal in signals:
+            if _find_saved_signal(rows, signal) is None:
+                rows.append(_new_row(signal))
+                added.append(signal)
+        _apply_requested_styles(rows, signals)
+        rows, groups = _build_grouped_layout(rows, self.plan.groups, signals)
+        aliases: dict[str, frozenset[str]] = {}
+        for signal in signals:
+            name = signal.instance_path
+            aliases[name] = aliases.get(name, frozenset()) | _saved_names(signal)
+        return _ViewTarget(
+            rows=rows,
+            markers={key: tick for tick, key, _label in self.plan.markers},
+            aliases=aliases,
+            ours=frozenset(signal.instance_path for signal in added),
+            added=added,
+            groups=groups,
+        )
+
+
+def _rows_match(expected: list[dict], actual: object, target: _ViewTarget, strict: bool) -> bool:
+    if not isinstance(actual, list) or len(actual) != len(expected):
+        return False
+    return all(_row_matches(e, a, target, strict) for e, a in zip(expected, actual, strict=True))
+
+
+def _row_matches(expected: dict, actual: object, target: _ViewTarget, strict: bool) -> bool:
+    """Compare one row; *strict* also demands resolution and presentation."""
+    if not isinstance(actual, dict) or actual.get("dataType") != expected.get("dataType"):
+        return False
+    kind = expected.get("dataType")
+    if kind == "signal-group":
+        return actual.get("groupName") == expected.get("groupName") and _rows_match(
+            expected.get("children", []), actual.get("children"), target, strict
+        )
+    if kind == "signal-separator":
+        return actual.get("label") == expected.get("label")
+    if kind != "netlist-variable":
+        return True  # custom rows round-trip through VaporView's own format
+    name = expected.get("name")
+    if actual.get("name") not in target.aliases.get(name, frozenset({name})):
+        return False
+    if not strict:
+        return True
+    must_resolve = name in target.ours or _is_netlist_id(expected.get("netlistId"))
+    if must_resolve and not _is_netlist_id(actual.get("netlistId")):
+        return False
+    return all(
+        actual.get(key) == expected[key]
+        for key in ("numberFormat", "colorIndex")
+        if key in expected and not (key == "numberFormat" and _radix_not_applicable(actual))
     )
-    return _groups_from_layout(readback, applied)
 
 
-class _ViewerSnapshot(NamedTuple):
-    """Recoverable rows and presentation state captured before mutation."""
+def _radix_not_applicable(actual: dict) -> bool:
+    """Whether the viewer draws *actual* as a 1-bit waveform, where radix has no meaning.
 
-    layout: list[dict]
-    state: bwave_wcp.ViewerState
-
-
-def _restore_signal_layout(
-    client: bwave_wcp.WcpClient, uri: str, snapshot: _ViewerSnapshot
-) -> None:
-    """Restore and verify the pre-transaction presentation after a WCP failure."""
-    client.set_signal_layout(snapshot.layout, uri=uri, restore_state=snapshot.state)
-    _wait_for_exact_layout(
-        client,
-        uri,
-        snapshot.layout,
-        failure="viewer did not restore the previous signal presentation",
-    )
+    VaporView renders 1-bit rows as binary waveforms and reports
+    ``numberFormat: "binary"`` for them whatever radix was requested, so a
+    ``%h``/``%d`` request spanning 1-bit signals must not demand it there.
+    """
+    return actual.get("renderType") == "binary"
 
 
-def _clear_view(client: bwave_wcp.WcpClient, uri: str) -> None:
-    """Remove every row, including groups/separators that have no netlist id."""
-    if set(client.capabilities) >= _GROUP_LAYOUT_CAPABILITIES:
-        client.set_signal_layout([], uri=uri)
+def _droppable(row: dict, target: _ViewTarget) -> bool:
+    """Whether the viewer may have left *row* out: it is one this run added."""
+    return row.get("dataType") == "netlist-variable" and row.get("name") in target.ours
+
+
+def _rows_align(expected: list[dict], actual: object, target: _ViewTarget) -> bool:
+    """Match *actual* against *expected* when rows this run added may be absent.
+
+    Covers a viewer that omits an unresolved row instead of keeping a
+    placeholder; the omitted rows then read as unresolved.
+    """
+    if not isinstance(actual, list):
+        return False
+    remaining = list(actual)
+    for row in expected:
+        if remaining and _row_aligns(row, remaining[0], target):
+            remaining.pop(0)
+        elif not _droppable(row, target):
+            return False
+    return not remaining
+
+
+def _row_aligns(expected: dict, actual: object, target: _ViewTarget) -> bool:
+    if (
+        expected.get("dataType") == "signal-group"
+        and isinstance(actual, dict)
+        and actual.get("dataType") == "signal-group"
+    ):
+        return actual.get("groupName") == expected.get("groupName") and _rows_align(
+            expected.get("children", []), actual.get("children"), target
+        )
+    return _row_matches(expected, actual, target, strict=False)
+
+
+def _state_rows(state: dict) -> list[dict]:
+    """Validate the viewer's reported row list at the boundary."""
+    rows = state.get("displayedSignals")
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise ViewerControlError(f"viewer reported malformed rows: {rows!r}")
+    return rows
+
+
+class _ViewSession:
+    """One trace's viewer document, driven through the bridge."""
+
+    def __init__(self, client: vaporview_bridge.BridgeClient, path: str):
+        self.client = client
+        self.path = path
+        self.mutated = False
+        # Rows the viewer showed right before the latest load (after any clear).
+        self.rows_before_load: list[dict] = []
+
+    def state(self) -> dict:
+        state = self.client.state(self.path)
+        if state is None:
+            raise ViewerControlError(f"{self.path} is not open in the Waveform Viewer")
+        return state
+
+    def apply(self, session: dict) -> None:
+        self.mutated = True
+        rows = self._current_rows()
+        if session["displayedSignals"] and any(
+            row.get("dataType") == "signal-group" for row in rows
+        ):
+            self._clear(session)
+            rows = []
+        self.rows_before_load = rows
+        self.client.apply(self.path, session)
+
+    def _current_rows(self) -> list[dict]:
+        state = self.client.state(self.path)
+        return _state_rows(state) if state else []
+
+    def _clear(self, session: dict) -> None:
+        """Load an empty view and wait for it before loading *session*.
+
+        VaporView 1.6.0 ends with an empty view, not the requested rows, when
+        a load replaces a view that holds a signal group with rows that leave
+        the group out. Every row would then read as dropped. The caller clears
+        whenever the view holds any group: not every group change was tested
+        live, and a clear costs one extra round trip.
+        """
+        self.client.apply(self.path, {**session, "displayedSignals": []})
         deadline = time.monotonic() + _VIEW_SETTLE_TIMEOUT
-        while time.monotonic() < deadline:
-            if not client.get_signal_layout(uri=uri):
-                return
+        while _state_rows(self.state()):
+            if time.monotonic() >= deadline:
+                raise ViewerControlError("viewer did not clear the previous rows")
             time.sleep(_VIEW_POLL_INTERVAL)
-        raise bwave_wcp.WcpProtocolError("viewer did not clear its signal layout")
-    displayed = client.get_item_list(uri=uri)
-    if displayed:
-        client.remove_items(displayed, uri=uri)
+
+    def set_viewport(self, start: int, end: int) -> None:
+        self.client.set_viewport(self.path, start, end)
+
+    def reveal_time(self, tick: int) -> None:
+        self.client.reveal_time(self.path, tick)
+
+    def settle(self, target: _ViewTarget, *, strict: bool, failure: str) -> dict:
+        """Poll until the viewer shows *target* exactly; *strict* checks everything."""
+        deadline = time.monotonic() + _VIEW_SETTLE_TIMEOUT
+        while True:
+            state = self.state()
+            markers_ok = not strict or all(
+                state.get(key) == tick for key, tick in target.markers.items()
+            )
+            rows = state.get("displayedSignals")
+            if markers_ok and _rows_match(target.rows, rows, target, strict):
+                return state
+            if time.monotonic() >= deadline:
+                raise ViewerControlError(failure)
+            time.sleep(_VIEW_POLL_INTERVAL)
+
+    def settle_probe(self, target: _ViewTarget) -> dict:
+        """Poll until the viewer shows *target*, tolerating omitted rows we added.
+
+        A tolerant match that still equals the rows shown right before the
+        load may just be the old state, so it is accepted only once the rows
+        change or the deadline passes.
+        """
+        previous = self.rows_before_load
+        deadline = time.monotonic() + _VIEW_SETTLE_TIMEOUT
+        while True:
+            state = self.state()
+            rows = state.get("displayedSignals")
+            if _rows_match(target.rows, rows, target, strict=False):
+                return state
+            expired = time.monotonic() >= deadline
+            if _rows_align(target.rows, rows, target) and (rows != previous or expired):
+                return state
+            if expired:
+                raise ViewerControlError(_SETTLE_FAILURE)
+            time.sleep(_VIEW_POLL_INTERVAL)
+
+
+def _unresolved(rows: list[dict], signals: list[_OpenSignal]) -> list[_OpenSignal]:
+    """Signals the viewer could not resolve: placeholder row, or no row at all."""
+    missing: list[_OpenSignal] = []
+    for signal in signals:
+        row = _find_saved_signal(rows, signal)
+        if row is None or not _is_netlist_id(row.get("netlistId")):
+            missing.append(signal)
+    return missing
+
+
+def _as_identifier(signal: _OpenSignal) -> _OpenSignal:
+    """Retry a `foo[3]` bit-select reading as the identifier `foo[3]`."""
+    assert signal.fallback is not None
+    return signal._replace(instance_path=signal.fallback, msb=None, lsb=None, fallback=None)
+
+
+_SETTLE_FAILURE = "viewer did not apply the requested signal rows"
+_EXACT_FAILURE = "viewer did not apply the exact requested signal presentation"
+
+
+def _resolve_rows(
+    view: _ViewSession, request: _RowRequest
+) -> tuple[_ViewTarget, list[_OpenSignal]]:
+    """Apply once, retry bracket fallbacks, and return (target, unresolved)."""
+    signals = list(request.plan.signals)
+    target = request.compose(signals)
+    view.apply(target.session())
+    state = view.settle_probe(target)
+    missing = _unresolved(_state_rows(state), target.added)
+    retry = {signal.bwave_name for signal in missing if signal.fallback is not None}
+    if not retry:
+        return target, missing
+    signals = [_as_identifier(s) if s.bwave_name in retry else s for s in signals]
+    target = request.compose(signals)
+    view.apply(target.session())
+    state = view.settle_probe(target)
+    return target, _unresolved(_state_rows(state), target.added)
+
+
+def _commit_rows(
+    view: _ViewSession, request: _RowRequest
+) -> tuple[list[_OpenSignal], list[_OpenSignal], list[_OpenGroup]]:
+    """Commit the requested rows; return the viewer-confirmed accepted/dropped/groups."""
+    target, missing = _resolve_rows(view, request)
+    dropped_names = {signal.bwave_name for signal in missing}
+    if missing:
+        # Never leave placeholder rows on screen for signals the viewer lacks.
+        resolved = {signal.bwave_name: signal for signal in target.added}
+        kept = [
+            resolved.get(signal.bwave_name, signal)
+            for signal in request.plan.signals
+            if signal.bwave_name not in dropped_names
+        ]
+        target = request.compose(kept)
+        view.apply(target.session())
+    state = view.settle(target, strict=True, failure=_EXACT_FAILURE)
+    dropped = [s for s in request.plan.signals if s.bwave_name in dropped_names]
+    accepted = [s for s in request.plan.signals if s.bwave_name not in dropped_names]
+    return accepted, dropped, _groups_from_layout(_state_rows(state), target.groups)
+
+
+def _apply_viewport(view: _ViewSession, plan: _GuiPlan) -> None:
+    """Move the time window last; a lone cursor is scrolled into view."""
+    if plan.viewport is not None:
+        view.set_viewport(*plan.viewport)
+        return
+    cursor = next((tick for tick, key, _label in plan.markers if key == _MAIN_MARKER), None)
+    if cursor is not None:
+        view.reveal_time(cursor)
+
+
+def _restore_view(view: _ViewSession, snapshot: dict, error: Exception) -> None:
+    """Re-apply the pre-transaction session and verify its rows came back.
+
+    VaporView cannot clear a marker, so one this run placed where none was
+    before stays; markers that existed are moved back.
+    """
+    session = {key: snapshot[key] for key in _RESTORE_KEYS if snapshot.get(key) is not None}
+    target = _ViewTarget(
+        rows=_state_rows(snapshot),
+        markers={},
+        aliases={},
+        ours=frozenset(),
+        added=[],
+        groups=[],
+    )
+    try:
+        view.apply(session)
+        view.settle(target, strict=False, failure="viewer did not restore the previous rows")
+    except _VIEWER_ERRORS as rollback_error:
+        raise ViewerControlError(
+            f"{error}; restoring the previous presentation also failed: {rollback_error}"
+        ) from error
+
+
+def _apply_gui_plan(
+    client: vaporview_bridge.BridgeClient, path: str, plan: _GuiPlan, *, append: bool
+) -> tuple[bool, list[_OpenSignal], list[_OpenSignal], list[_OpenGroup]]:
+    """Apply one validated plan, restoring the prior presentation on failure."""
+    freshly_opened = client.open(path)
+    view = _ViewSession(client, path)
+    snapshot = view.state()
+    request = _RowRequest(base=_state_rows(snapshot), plan=plan, append=append)
+    try:
+        accepted, dropped, groups = _commit_rows(view, request)
+        _apply_viewport(view, plan)
+    except _VIEWER_ERRORS as error:
+        if view.mutated:
+            _restore_view(view, snapshot, error)
+        raise
+    return freshly_opened, accepted, dropped, groups
 
 
 def _gui_bare(trace_abs: str) -> None:
-    """Plain `bwave gui`: WCP when the viewer listens, editor CLI otherwise."""
-    client = bwave_wcp.try_connect()
-    if client is None:
+    """Plain `bwave gui`: open through the bridge, else hand off to the editor CLI."""
+    try:
+        info = vaporview_bridge.find_bridge(trace_abs)
+        if info.vaporview is None:
+            raise vaporview_bridge.BridgeUnavailableError(
+                "the attached window has no usable VaporView", problems=[info.error or "no detail"]
+            )
+        opened = vaporview_bridge.BridgeClient(info.socket_path).open(trace_abs)
+    except vaporview_bridge.BridgeError as exc:
+        # "No window" and "several windows" are expected; a window that
+        # answered wrongly is a fault worth naming before the fallback.
+        quiet = isinstance(exc, vaporview_bridge.BridgeAmbiguousError) or (
+            isinstance(exc, vaporview_bridge.BridgeUnavailableError) and not exc.problems
+        )
+        if not quiet:
+            print(
+                f"WARNING: Waveform Viewer Bridge problem ({exc}); "
+                "opening with the editor CLI instead",
+                file=sys.stderr,
+            )
         _gui_via_editor_cli(trace_abs)
         return
-    with client:
-        uri = Path(trace_abs).as_uri()
-        if _wcp_ensure_open(client, uri):
-            print(f"Opened in the Waveform Viewer: {trace_abs}")
-        else:
-            print(f"Already open in the Waveform Viewer: {trace_abs}")
+    if opened:
+        print(f"Opened in the Waveform Viewer: {trace_abs}")
+    else:
+        print(f"Already open in the Waveform Viewer: {trace_abs}")
 
 
 def _gui_via_editor_cli(trace_abs: str) -> None:
@@ -1495,20 +1776,21 @@ def _gui_via_editor_cli(trace_abs: str) -> None:
         sys.exit(
             f"Could not open a viewer. Trace: {trace_abs}\n"
             "Open it manually, or install the VaporView VS Code extension:\n"
-            f"  code --install-extension {_VAPORVIEW_EXTENSION}"
+            f"  code --install-extension {vaporview.BUNDLED_VSIX}"
         )
     cli_name = Path(cli).stem
     if _extension_missing(cli):
         sys.exit(
             f"VaporView extension is not installed in this editor. Trace: {trace_abs}\n"
-            "Install it (rebuilding the devcontainer also installs it):\n"
-            f"  {cli_name} --install-extension {_VAPORVIEW_EXTENSION}"
+            "Install the build bundled in the Sandbox Image (refreshing the Sandbox "
+            "also installs it):\n"
+            f"  {cli_name} --install-extension {vaporview.BUNDLED_VSIX}"
         )
     if _launch_viewer(cli, trace_abs) != 0:
         sys.exit(
             f"Could not open a viewer. Trace: {trace_abs}\n"
             "Open it manually, or install the VaporView VS Code extension:\n"
-            f"  {cli_name} --install-extension {_VAPORVIEW_EXTENSION}"
+            f"  {cli_name} --install-extension {vaporview.BUNDLED_VSIX}"
         )
 
 
@@ -1516,7 +1798,7 @@ class _GuiPlan(NamedTuple):
     signals: list[_OpenSignal]
     groups: list[_OpenGroup]
     viewport: tuple[int, int] | None
-    markers: list[tuple[int, int, str]]
+    markers: list[tuple[int, str, str]]
 
 
 def _resolve_gui_selection(
@@ -1557,114 +1839,16 @@ def _build_gui_plan(trace_abs: str, alias: str, args: argparse.Namespace) -> _Gu
     signals, groups = _resolve_gui_selection(trace_abs, args)
     resolver = _TickResolver(trace_abs, alias)
     viewport = resolver.range_to_ticks(args.time) if args.time else None
-    cursor_tick = resolver.to_tick(args.cursor) if args.cursor else None
-    markers: list[tuple[int, int, str]] = []
+    cursor_tick = resolver.to_tick(args.cursor, option="--cursor") if args.cursor else None
+    markers: list[tuple[int, str, str]] = []
     if viewport is not None:
         markers.append(
-            (cursor_tick if cursor_tick is not None else viewport[0], _MARKER_MAIN, "START")
+            (cursor_tick if cursor_tick is not None else viewport[0], _MAIN_MARKER, "START")
         )
-        markers.append((viewport[1], _MARKER_ALT, "END"))
+        markers.append((viewport[1], _ALT_MARKER, "END"))
     elif cursor_tick is not None:
-        markers.append((cursor_tick, _MARKER_MAIN, "cursor"))
+        markers.append((cursor_tick, _MAIN_MARKER, "cursor"))
     return _GuiPlan(signals, groups, viewport, markers)
-
-
-def _require_signal_layout(client: bwave_wcp.WcpClient, plan: _GuiPlan) -> None:
-    """Fail before mutation when requested presentation cannot be verified."""
-    missing = _GROUP_LAYOUT_CAPABILITIES - set(client.capabilities)
-    styled = any(_has_requested_style(signal) for signal in plan.signals)
-    if (not plan.groups and not styled) or not missing:
-        return
-    action = (
-        "create verified signal groups" if plan.groups else "apply verified signal presentation"
-    )
-    sys.exit(
-        f"ERROR: this VaporView install cannot {action} "
-        f"(missing WCP capabilities: {', '.join(sorted(missing))}).\n"
-        "  Run: python -m booley.runtime.incontainer_vaporview\n"
-        '  Then run "Developer: Reload Window" and retry.'
-    )
-
-
-def _stage_gui_signals(
-    client: bwave_wcp.WcpClient,
-    uri: str,
-    plan: _GuiPlan,
-    *,
-    append: bool,
-    snapshot: _ViewerSnapshot | None,
-) -> tuple[list[_OpenSignal], list[_OpenSignal]]:
-    """Stage requested rows and return the viewer-confirmed accepted/drop split."""
-    if snapshot is not None:
-        signals, existing = _partition_append_signals(
-            client, uri, plan.signals, layout=snapshot.layout
-        )
-    else:
-        signals, existing = (
-            _partition_append_signals(client, uri, plan.signals) if append else (plan.signals, [])
-        )
-        if not append:
-            _clear_view(client, uri)
-    newly_accepted, dropped = _add_signals(client, uri, signals)
-    accepted_set = set(existing) | set(newly_accepted)
-    accepted = [signal for signal in plan.signals if signal in accepted_set]
-    return accepted, dropped
-
-
-def _apply_view_annotations(client: bwave_wcp.WcpClient, uri: str, plan: _GuiPlan) -> None:
-    """Apply requested viewport and marker positions before the row commit."""
-    if plan.viewport is not None:
-        client.set_viewport(*plan.viewport, uri=uri)
-    for tick, marker_type, _label in plan.markers:
-        client.set_marker(tick, uri=uri, marker_type=marker_type)
-
-
-def _apply_gui_plan(
-    client: bwave_wcp.WcpClient,
-    uri: str,
-    plan: _GuiPlan,
-    *,
-    append: bool,
-) -> tuple[bool, list[_OpenSignal], list[_OpenSignal], list[_OpenGroup]]:
-    """Apply one validated plan, restoring the prior row tree on failure."""
-    _require_signal_layout(client, plan)
-    freshly_opened = _wcp_ensure_open(client, uri)
-    layout_available = set(client.capabilities) >= _GROUP_LAYOUT_CAPABILITIES
-    transactional = layout_available and bool(plan.signals)
-    snapshot = (
-        _ViewerSnapshot(
-            layout=client.get_signal_layout(uri=uri),
-            state=client.get_viewer_state(uri=uri),
-        )
-        if transactional
-        else None
-    )
-    try:
-        # Stage additions without destroying the previous tree. Ancillary
-        # controls move before the final set_signal_layout commit point.
-        accepted, dropped = _stage_gui_signals(client, uri, plan, append=append, snapshot=snapshot)
-        _apply_view_annotations(client, uri, plan)
-        applied_groups = (
-            _apply_signal_layout(
-                client,
-                uri,
-                plan.groups,
-                accepted,
-                replace=not append,
-            )
-            if transactional
-            else []
-        )
-    except bwave_wcp.WcpError as error:
-        if snapshot is not None:
-            try:
-                _restore_signal_layout(client, uri, snapshot)
-            except bwave_wcp.WcpError as rollback_error:
-                raise bwave_wcp.WcpProtocolError(
-                    f"{error}; restoring the previous presentation also failed: {rollback_error}"
-                ) from error
-        raise
-    return freshly_opened, accepted, dropped, applied_groups
 
 
 def _gui_result_lines(
@@ -1686,7 +1870,7 @@ def _gui_result_lines(
         lines.extend(f"    {signal.bwave_name}" for signal in group.signals)
     if plan.viewport is not None:
         lines.append(f"  viewport: {plan.viewport[0]}..{plan.viewport[1]} ticks")
-    lines.extend(f"  {label} marker: {tick} ticks" for tick, _kind, label in plan.markers)
+    lines.extend(f"  {label} marker: {tick} ticks" for tick, _key, label in plan.markers)
     return lines
 
 
@@ -1704,8 +1888,32 @@ def _warn_dropped(signals: list[_OpenSignal]) -> None:
     )
 
 
+def _connect_scoped_viewer(trace_abs: str) -> vaporview_bridge.BridgeClient:
+    """Select the window to drive, failing with recovery guidance before mutation."""
+    try:
+        info = vaporview_bridge.find_bridge(trace_abs)
+    except vaporview_bridge.BridgeAmbiguousError as exc:
+        sys.exit(_ambiguous_viewer_hint(exc))
+    except vaporview_bridge.BridgeError as exc:
+        sys.exit(_bridge_setup_hint(exc))
+    if info.vaporview is None:
+        detail = f" ({info.error})" if info.error else ""
+        sys.exit(
+            "ERROR: the attached VS Code window has no usable VaporView extension"
+            f"{detail}, so scoped `bwave gui` has no viewer to drive.\n"
+            f"{vaporview.install_guidance()}"
+        )
+    if info.vaporview != vaporview.VERIFIED_VERSION:
+        sys.exit(
+            f"ERROR: the attached VS Code window runs VaporView {info.vaporview}; scoped "
+            f"`bwave gui` supports only the verified {vaporview.VERIFIED_VERSION}.\n"
+            f"{vaporview.install_guidance()}"
+        )
+    return vaporview_bridge.BridgeClient(info.socket_path)
+
+
 def _gui_scoped(trace_abs: str, alias: str, args: argparse.Namespace) -> None:
-    """Scoped/append view: drive the running viewer over WCP (ADR 0035)."""
+    """Scoped/append view: drive the attached viewer through the bridge (ADR 0078)."""
     if args.append and not (args.signals or args.groups or args.time or args.cursor):
         sys.exit(
             "ERROR: --append needs something to add or move: --signals/--group/--time/--cursor"
@@ -1714,19 +1922,13 @@ def _gui_scoped(trace_abs: str, alias: str, args: argparse.Namespace) -> None:
     # Resolve every input before touching the viewer: invalid input cannot
     # leave a half-updated view.
     plan = _build_gui_plan(trace_abs, alias, args)
-
+    client = _connect_scoped_viewer(trace_abs)
+    # Only a signal request replaces the rows; --time/--cursor alone just move
+    # the window and markers over whatever is already on screen.
+    keep_rows = args.append or not (args.signals or args.groups)
     try:
-        client = bwave_wcp.try_connect()
-    except bwave_wcp.WcpError as exc:
-        sys.exit(f"{bwave_wcp.setup_hint()}\n  (probe failure: {exc})")
-    if client is None:
-        sys.exit(_scoped_setup_hint())
-
-    uri = Path(trace_abs).as_uri()
-    try:
-        with client:
-            result = _apply_gui_plan(client, uri, plan, append=args.append)
-    except bwave_wcp.WcpError as exc:
+        result = _apply_gui_plan(client, trace_abs, plan, append=keep_rows)
+    except _VIEWER_ERRORS as exc:
         sys.exit(f"ERROR: Waveform Viewer control failed: {exc}")
     # Full hierarchical paths on their own lines: VaporView linkifies them in
     # the integrated terminal, so each line is click-to-reveal for the user.
@@ -2188,11 +2390,14 @@ registered trace. A sim directory is accepted like `register` (finds
 .fst, falls back to .vcd). The trace opens in the attached VS Code
 window via the VaporView extension (lramseyer.vaporview).
 
-Scoped views (ADR 0035): --signals / --group / --time / --cursor / --append drive
-the RUNNING viewer over its WCP control server (127.0.0.1, port from
-the devcontainer's vaporview.wcp.port; override: BOOLEY_WCP_PORT).
-A scoped view replaces what is on screen with the requested signals;
---append adds to it instead. If no WCP server is reachable, scoped views
+Scoped views: --signals / --group / --time / --cursor / --append drive
+the viewer in the attached VS Code window through the Viewer Bridge of the
+Booley Sandbox Integration extension. A command typed in that window's
+terminal targets that window; with several windows attached, the one already showing the trace
+or the most recently focused one is used.
+A scoped view with --signals/--group replaces what is on screen with the
+requested signals; --append adds to them instead, and --time/--cursor alone
+keep the rows and only move the time window and markers. If no attached window answers, scoped views
 FAIL with a setup hint — they never silently fall back to the whole trace.
 
 What `gui` does for you, so the view is readable on arrival:
@@ -2208,13 +2413,17 @@ What `gui` does for you, so the view is readable on arrival:
   viewer's status bar reports the span as a delta and the human can read
   the duration off the screen instead of subtracting ruler numbers.
   --cursor moves the START (main) marker somewhere else inside the range;
-  END stays put.
+  END stays put. An end past the trace is clamped to the trace end; a
+  start or --cursor past it is an error. The
+  viewer cannot remove a marker, so one this command does not set stays
+  where it was.
 
   Honest reporting. The signal list it prints is read back from the
   viewer, so it is what is actually on screen. Anything the viewer would
   not display is named in a WARNING on stderr — relay that to the human
   rather than claiming the full view; the trace itself is still fine and
-  still queryable.
+  still queryable. A --signals glob that matches nothing in the trace
+  gets a WARNING too.
 
   Native groups. Prefer repeatable --group 'NAME=GLOB' for a view with
   more than one logical section. Groups are named viewer rows that the
@@ -2224,15 +2433,15 @@ What `gui` does for you, so the view is readable on arrival:
 
   Radix and color. Append %b, %h, or %d and then @red, @blue, or @green
   to either selector: --group 'State=tb.dut.state%h@blue'. Explicit
-  presentation is applied through the recursive layout and read back before
-  success is reported.
+  presentation is read back from the viewer before success is reported.
+  A radix applies only to vectors: 1-bit signals always draw as waveforms.
 
 Pick signals like you would draw them on a whiteboard: the strobe that
 starts the thing, the state it walks, the counter that proves it, the
 strobe that ends it. A view with 40 rows in it is not a view.
 
-A bare `bwave gui` also prefers WCP (focus/open the document), and only
-falls back to launching the editor CLI (`code`, then `cursor`) that VS
+A bare `bwave gui` also prefers the bridge (focus/open the document), and
+only falls back to launching the editor CLI (`code`, then `cursor`) that VS
 Code injects into attachment terminals. Environments with neither (a
 plain `docker exec` shell), or containers whose editor lacks the
 VaporView extension, get the resolved trace path plus an install hint

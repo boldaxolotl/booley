@@ -1,4 +1,4 @@
-"""Harness configuration — model routing, MCP capability sets, and re-exports.
+"""Harness configuration — MCP capability sets and re-exports.
 
 Submodules own their concerns; this facade re-exports for backward compat:
   - _limits: iteration caps
@@ -52,21 +52,6 @@ from .limits import (  # noqa: F401 — re-exported as public API of configurati
     MAX_POST_REVIEW_SIM_ITERATIONS,
     MUTATION_TESTING_PASS_THRESHOLD,
 )
-
-# --- Model assignments (developer-era) ---
-MODEL_MAP: dict[str, str] = {
-    "developer": "claude-fable-5",
-    "recovery": "claude-sonnet-5",
-    "triage_report": "claude-opus-4-8",
-}
-
-# --- Step-to-tier mapping (developer-era) ---
-STEP_TIERS: dict[str, str] = {
-    "developer": "heavy",
-    "recovery": "light",
-    "triage_report": "standard",
-}
-
 
 # --- booley.toml loader ---
 

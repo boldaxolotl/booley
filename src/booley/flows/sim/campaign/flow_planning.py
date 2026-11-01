@@ -7,6 +7,8 @@ import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from booley.core.booley_dir_links import lexical_booley_path
+from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.flows.sim.config import (
     parse_run_cwd_template,
     resolve_pre_sim_build_access,
@@ -214,9 +216,13 @@ def _recipes(
     inspection: TargetInspection,
     sources: list[dict[str, object]],
     trace: bool,
-    coverage: bool,
 ) -> tuple[dict[str, object], dict[str, object]]:
     """Build the frozen source and build recipes of a Target workload."""
+    if not inspection.toplevel:
+        raise SimulationCampaignIntegrityError(
+            f"Target {handle.identity!r} has an empty toplevel; set toplevel to the "
+            "simulation top module in its .core target"
+        )
     root = handle.project_root.resolve()
     parameters = [
         {"name": name, "value": value} for name, value in sorted(inspection.parameters.items())
@@ -224,20 +230,12 @@ def _recipes(
     source_recipe = {
         "sources": sources,
         "parameters": parameters,
-        "defines": _defines(inspection.flow_options),
+        # Kept for the stored schema. Target `flow_options.defines` is
+        # unsupported (Doctor FAILs it); defines travel as `vlogdefine` parameters.
+        "defines": [],
         "pre_sim_commands": list(resolve_pre_sim_commands(root)),
     }
-    from ..verilator_declarations import DECLARATION_CONTRACT, DECLARATION_OPTIONS
-
     command_model = {
-        **(
-            {
-                "declaration_contract": DECLARATION_CONTRACT,
-                "declaration_options": DECLARATION_OPTIONS,
-            }
-            if coverage
-            else {}
-        ),
         "target_identity": handle.identity,
         "toplevel": inspection.toplevel,
         "eda_tool": inspection.eda_tool or "",
@@ -264,7 +262,7 @@ def _workload_document(
     no_waivers: bool = False,
 ) -> tuple[dict[str, object], str, str, list[dict[str, object]]]:
     root = handle.project_root.resolve()
-    source_recipe, build_recipe = _recipes(handle, inspection, sources, trace, coverage)
+    source_recipe, build_recipe = _recipes(handle, inspection, sources, trace)
     configured_cwd = resolve_run_cwd(root)
     placeholders = parse_run_cwd_template(configured_cwd)
     run_kind = "templated" if placeholders else "literal"
@@ -333,9 +331,12 @@ def _variant_document(
 
 def _source_entries(root: Path, inputs: Sequence[TargetInput]) -> list[dict[str, object]]:
     entries = []
+    booley_dir = simulation_booley_dir(root)
     for item in inputs:
         path = Path(item.path)
         resolved = (path if path.is_absolute() else root / path).resolve()
+        # Inputs behind a symlinked Booley Directory stay project-relative (#2191).
+        resolved = lexical_booley_path(booley_dir, resolved)
         try:
             relative = resolved.relative_to(root).as_posix()
             raw = resolved.read_bytes()
@@ -365,15 +366,6 @@ def _source_entries(root: Path, inputs: Sequence[TargetInput]) -> list[dict[str,
             }
         )
     return entries
-
-
-def _defines(options: Mapping[str, object]) -> list[str]:
-    raw = options.get("defines", ())
-    if isinstance(raw, str):
-        return [raw]
-    if isinstance(raw, Sequence):
-        return [str(item) for item in raw]
-    return []
 
 
 def _eda_identity(kind: str | None) -> str:

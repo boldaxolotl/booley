@@ -1,7 +1,7 @@
 """Wrapper around agent backends with token tracking and dispatch.
 
 Public API:
-  - call_agent()           — dispatch by model string (backward compat) or step_name
+  - call_agent()           — dispatch to the configured backend
   - extract_json()         — JSON extraction from agent prose (shared utility)
 
 The actual SDK interaction lives in the backend modules (agent_backend.py).
@@ -13,9 +13,9 @@ import json
 import logging
 import re
 import sys
+from collections.abc import Callable
 from typing import Any
 
-from booley.config.settings import STEP_TIERS
 from booley.core.models import AgentCallParams, AgentResult
 
 from .agent_config import get_backend_config
@@ -25,33 +25,47 @@ logger = logging.getLogger(__name__)
 
 
 def announce_agent_dispatch(params: AgentCallParams) -> None:
-    """Disclose an actual Booley-owned agent call before backend dispatch."""
+    """Disclose a Booley-owned agent call once its backend confirmed the start."""
     role = params.label or "specialist"
     purpose = {
-        "developer": "execute the Ticket",
-        "triage-report": "prepare a review package",
-        "blocked-triage-report": "diagnose a blocked Ticket",
         "doctor-developer-probe": (
             "estimate the provider CLI's memory and check Specialist provider authorization for Doctor"
         ),
     }.get(role, "perform the requested Specialist analysis")
     actor = "provider probe" if role == "doctor-developer-probe" else "Specialist"
-    if role in {"developer", "triage-report", "blocked-triage-report"}:
-        actor = "agent"  # Retained Ticket callers keep their historical terminology.
     print(f"Booley is starting the {role} {actor} to {purpose}.", file=sys.stderr)
+
+
+def _once_start_notice(params: AgentCallParams) -> Callable[[], None]:
+    """Return a callback that discloses the call at most once, whatever happens to stderr.
+
+    Backends invoke it each time they see a start (every retried attempt, every
+    message). A broken stderr must not abort or retry an already-running paid call.
+    """
+    announced = False
+
+    def notify() -> None:
+        nonlocal announced
+        if announced:
+            return
+        announced = True
+        try:
+            announce_agent_dispatch(params)
+        except (OSError, ValueError):
+            logger.debug("Agent start notice could not be written", exc_info=True)
+
+    return notify
 
 
 async def call_agent(
     params: AgentCallParams,
     *,
-    step_name: str | None = None,
     on_event: Any = None,
 ) -> AgentResult:
     """Call an agent via the configured backend.
 
-    Routes through BackendConfig: if step_name is provided, resolves
-    tier -> model. Otherwise uses the active backend with the
-    provided model string (backward compatibility).
+    Routes through BackendConfig: uses the active backend with the
+    caller-provided model.
 
     The backend runs the agent CLI/SDK as a plain subprocess — Booley is
     container-only (ADR 0028), so specialists already execute inside the
@@ -59,14 +73,9 @@ async def call_agent(
     """
     cfg = get_backend_config()
 
-    if step_name is not None and step_name in STEP_TIERS:
-        tier = STEP_TIERS[step_name]
-        params.model = cfg.settings.model_for_tier(tier)
-        if params.reasoning_effort is None:
-            params.reasoning_effort = cfg.settings.effort_for_tier(tier)
-
-    announce_agent_dispatch(params)
-    return await cfg.active_backend.call(params, on_event=on_event)
+    return await cfg.active_backend.call(
+        params, on_event=on_event, on_start=_once_start_notice(params)
+    )
 
 
 def extract_json(text: str) -> dict[str, Any] | None:

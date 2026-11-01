@@ -70,6 +70,31 @@ def test_invalid_policy_fails_strictly(tmp_path: Path, body: str, field: str, ta
 
 
 @pytest.mark.parametrize(
+    "line, expected",
+    [("", "proxy"), ('egress = "proxy"\n', "proxy"), ('egress = "unproxied"\n', "unproxied")],
+    ids=["absent", "proxy", "unproxied"],
+)
+def test_egress_mode_round_trips(tmp_path: Path, line: str, expected: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(f"[sandbox]\n{line}", encoding="utf-8")
+    assert load_host_policy(path).egress == expected
+
+
+@pytest.mark.parametrize(
+    "body",
+    ['egress = "direct"\n', 'egress = "unproxied"\negress_allowlist = ["example.com"]\n'],
+    ids=["unknown-value", "unproxied-with-allowlist"],
+)
+def test_invalid_egress_mode_fails_strictly(tmp_path: Path, body: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(f"[sandbox]\n{body}", encoding="utf-8")
+    with pytest.raises(HostConfigError) as raised:
+        load_host_policy(path)
+    assert raised.value.path == path
+    assert raised.value.field == "sandbox.egress"
+
+
+@pytest.mark.parametrize(
     "hostname",
     [
         "https://example.com",

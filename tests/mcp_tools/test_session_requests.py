@@ -1,5 +1,7 @@
 """Per-message HTTP attribution through the real stateful SDK transport."""
 
+import contextlib
+import itertools
 from types import SimpleNamespace
 
 import httpx
@@ -126,7 +128,7 @@ async def test_each_http_post_uses_its_own_peer_in_one_sdk_session(
         rows = SessionRegistry(tmp_path).snapshot().rows
         assert len(rows) == 2
         assert all(row.attribution.work_dir == str(tmp_path) for row in rows)
-        assert any(row.calls[-1].tool == "tools/list" for row in rows)
+        assert all(row.calls[-1].tool == "probe" for row in rows)
 
 
 @pytest.mark.asyncio
@@ -193,3 +195,115 @@ async def test_reused_sdk_handler_task_reads_message_request_not_inherited_peer(
         )
     await task
     assert seen == [98765, 98766]
+
+
+def _probe_application():
+    async def dispatch(_name, _arguments, _source, _context):
+        return McpDispatchResult([TextContent(type="text", text="ready")], False)
+
+    return McpApplication(
+        [{"name": "probe", "schema": {"type": "object"}}],
+        dispatch=dispatch,
+        request_dispatch=dispatch,
+        canonicalize=lambda n: n,
+        on_discovery_error=lambda _: None,
+    )
+
+
+@contextlib.asynccontextmanager
+async def _sdk_session(observer, client_name):
+    """One stateful SDK session over ASGI whose peer lookup names no process."""
+    lifetime = SimpleNamespace(
+        sessions=observer,
+        mark_activity=lambda: None,
+        mark_mcp_endpoint_start=lambda: None,
+        mark_mcp_endpoint_end=lambda: None,
+    )
+    sdk = server._build_sdk_server(_probe_application(), lifetime)
+    http = sdk.streamable_http_app(
+        streamable_http_path="/mcp",
+        json_response=True,
+        stateless_http=False,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+
+    async def app(scope, receive, send):
+        scope = {**scope, "client": ("127.0.0.1", 50001), "server": ("127.0.0.1", 4321)}
+        await session_peer.PeerBoundary(http)(scope, receive, send)
+
+    ids = itertools.count(1)
+    async with (
+        sdk.session_manager.run(),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://localhost",
+            headers={"accept": "application/json, text/event-stream"},
+        ) as client,
+    ):
+
+        async def post(method, params=None):
+            body = {"jsonrpc": "2.0", "id": next(ids), "method": method}
+            if params is not None:
+                body["params"] = params
+            response = await client.post("/mcp", json=body)
+            assert response.status_code == 200, response.text
+            return response
+
+        response = await post(
+            "initialize",
+            {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": client_name, "version": "1"},
+            },
+        )
+        client.headers["mcp-session-id"] = response.headers["mcp-session-id"]
+        client.headers["mcp-protocol-version"] = "2025-11-25"
+        await client.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"})
+        yield post
+
+
+def _observer_without_peer(tmp_path, monkeypatch, clock):
+    monkeypatch.setattr(session_peer, "peer_identity", lambda *_a, **_k: None)
+    monkeypatch.setattr(session_registry, "namespace", lambda *_: SCOPE)
+    monkeypatch.setattr(session_registry, "_worktree_facts", lambda p: (p, "fixture", "main"))
+    observer = SessionObserver(now=lambda: clock[0], budget=1)
+    monkeypatch.setattr(observer, "_registry", lambda: SessionRegistry(tmp_path))
+    return observer
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("client_name", "meta"),
+    [
+        pytest.param("claude-code", None, id="claude-code"),
+        pytest.param("codex-mcp-client", {"threadId": "listing"}, id="codex"),
+    ],
+)
+async def test_tools_list_alone_creates_no_session_row(tmp_path, monkeypatch, client_name, meta):
+    observer = _observer_without_peer(tmp_path, monkeypatch, [100.0])
+    async with _sdk_session(observer, client_name) as post:
+        for _ in range(2):
+            await post("tools/list", None if meta is None else {"_meta": meta})
+    assert SessionRegistry(tmp_path).snapshot().rows == ()
+    assert not list((tmp_path / "runtime" / "sessions").glob("*.json"))
+
+
+@pytest.mark.asyncio
+async def test_tools_list_never_refreshes_an_existing_row(tmp_path, monkeypatch):
+    clock = [100.0]
+    observer = _observer_without_peer(tmp_path, monkeypatch, clock)
+    row = SessionRegistry(tmp_path).path("codex:listing")
+    meta = {"threadId": "listing"}
+    async with _sdk_session(observer, "codex-mcp-client") as post:
+        await post(
+            "tools/call",
+            {"name": "probe", "arguments": {"work_dir": str(tmp_path)}, "_meta": meta},
+        )
+        if observer._pending is not None:  # Let the call's registry write finish first.
+            await observer._pending
+        before = row.read_bytes()
+        clock[0] = 200.0
+        await post("tools/list", {"_meta": meta})
+    assert SessionRegistry(tmp_path).snapshot().rows[0].last_call_at == "1970-01-01T00:01:40Z"
+    assert row.read_bytes() == before

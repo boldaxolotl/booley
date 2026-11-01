@@ -53,7 +53,7 @@ The host-owned act of sealing and vouching for one exact Sandbox specification, 
 _Avoid_: Session Runtime Issuance, EDA runtime spec, provisioning issuance
 
 **Interactive Mode**:
-Execution mode in which a human steers the Developer Agent inside a Sandbox, using the recommended CLI or an optional VS Code extension in a window attached to that Sandbox. The Developer Agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside it; work outside Goal Mode has no persistent Goal tracking. The same session may enter Goal Mode when the human is ready to state machine-checked Goals.
+Execution mode in which a human steers the Developer Agent inside a Sandbox, using the Developer Agent's CLI in a Sandbox terminal. The Developer Agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside it; work outside Goal Mode has no persistent Goal tracking. The same session may enter Goal Mode when the human is ready to state machine-checked Goals.
 _Avoid_: MCP Mode, Standalone Mode, Tab Mode, Booley Interactive
 
 **Goal Mode**:
@@ -119,8 +119,12 @@ An advisory cluster of Developer Agent activity, useful Specialists, Booley Flow
 _Avoid_: stage, phase, pipeline step
 
 **Sandbox Policy**:
-The isolation rules applied to a Sandbox: mounted paths, network access, credentials, memory, process limits, and Linux capabilities. Booley Flows and Specialists share this policy within the same Sandbox. Network egress is default-deny and admitted only through purpose-specific gateways such as the model-service egress proxy and an authorized **FlexNet License Relay**; there is no per-Flow network boundary.
+The isolation rules applied to a Sandbox: mounted paths, network access, credentials, memory, process limits, and Linux capabilities. Booley Flows and Specialists share this policy within the same Sandbox. Network egress is default-deny and admitted only through purpose-specific gateways such as the model-service egress proxy and an authorized **FlexNet License Relay**, except in an **Unproxied Sandbox**, whose egress Booley does not mediate; there is no per-Flow network boundary. Host authority (Docker sockets, SSH credentials, host EDA configuration) is never present in a Sandbox; an SSH directory holding only an `authorized_keys` file grants inbound access to the Sandbox, not host authority. Doctor checks this isolation independently of the Booley Directory identity, which accepts `BOOLEY_DIR` set to `/booley-project` or to the Project Root's `.booley` entry and never consults platform variables such as `CODESPACES` ([ADR 0073](adr/0073-use-dot-booley-as-the-booley-directory.md)).
 _Avoid_: per-Flow network policy
+
+**Unproxied Sandbox**:
+A **Sandbox** whose spec declares `BOOLEY_EGRESS=unproxied`, either hand-written or issued by Booley under host `[sandbox] egress = "unproxied"`. Booley neither sets nor forces the egress proxy environment there, so agents and tools reach the network the platform provides, such as a Codespace. It is an explicit opt-in, never inferred from platform signals, and Doctor keeps it visible as the waivable WARN `sandbox.unproxied`. The declaration is not the isolation boundary: a Sandbox Booley issued under host `egress = "proxy"` keeps its default-deny network whatever the variable says; under host `egress = "unproxied"` Booley issues it on a routed network.
+_Avoid_: no proxy, open egress, direct egress
 
 **Host-Provisioned Sandbox EDA Tool**:
 An EDA tool whose immutable installation files are supplied by the host while every process executes inside the **Sandbox** under its **Sandbox Policy**. Host provisioning conveys file availability, not host execution authority.
@@ -214,6 +218,10 @@ _Avoid_: Design Configuration, build config, profile, named config
 **Tech Cell Replacement**:
 A Project's documented mapping and design inputs for realizing technology-dependent RTL intent with cells from its selected physical-library family, including preserved direct instantiations and substitutions through Project hooks or adapters.
 
+**Memory Timing Surrogate**:
+A standard-cell stand-in for a memory, selected by a synth-only define, that drops storage capacity but keeps the memory's latency, reset behavior and data dependence, so the surrounding logic synthesizes as in the real design.
+_Avoid_: RAM stub, fake RAM
+
 **Cocotb Target**:
 A sim **Target** whose testbench is a cocotb Python module, declared in the Target's flow options rather than authored as HDL. Its `toplevel` is whatever the Python testbench attaches to: the DUT itself for a simple design, with no HDL testbench wrapper; or a thin HDL wrapper when the DUT's ports are SystemVerilog interfaces, since cocotb's bus interfaces bind to interface *instances*, which something must instantiate. Its **Tests** are named cocotb test functions registered in `tests.toml`. Booley executes its **Test Runs** in batches, one simulator process for Test Runs of different Tests that share an environment and a seed, with per-test verdicts taken from cocotb's result file (`results.xml`) rather than from a **Simulation Sentinel** (defined below under Simulation evidence).
 _Avoid_: python testbench config, cocotb core, cocotb suite
@@ -250,7 +258,7 @@ A fast Simulation Flow mode that compiles, elaborates, and links a simulation Ta
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Specialist**:
-An optional LLM-powered capability the **Developer Agent** invokes with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
+An optional LLM-powered capability the **Developer Agent** invokes with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) (the canonical list lives in [CLI-REFERENCE.md](user/CLI-REFERENCE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
 _Avoid_: agentic MCP tool, agent, worker
 
 **Specialist Source Isolation**:
@@ -318,6 +326,10 @@ _Avoid_: check, gate, acceptance test
 **Cycle Count Criterion**:
 A Criterion requiring one **Test Run** to pass on one Target and its reported cycle count to meet one declared threshold.
 _Avoid_: cycle budget, synthesis criterion, benchmark score
+
+**Result Cache**:
+The per-Project store, in the **Main Booley Directory**, of graded `sim`, `synth`, and `fpga` passes and metrics from runs at a **clean commit** that stayed clean until the run ended. A stored result is served in place of a fresh run only when its Result Key matches. The key covers: the tracked bytes of the RTL repository and of the Booley Directory's repository, `booley.toml` minus its verdict-neutral sections, the resolved Target Test Plan, non-Booley ignored files, the Target and its resolved EDAM, the keyed environment, Booley's build, the Sandbox Image, any mounted EDA tool's manifest, and a Booley-generated identity of the same host. A hit is labelled as cached with its producing run. Sampled re-runs check hits, and a mismatch disables the cache for the Project. It stores results, never builds; that is what distinguishes it from a **Simulator Bundle** and from the compiler cache.
+_Avoid_: build cache, global build cache, binary cache, memoization
 
 **Escalation**:
 A signal that a decision exceeds the current authority level and must move from Specialist to Developer Agent to Human.

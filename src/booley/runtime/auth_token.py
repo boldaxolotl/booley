@@ -48,6 +48,11 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from booley.config.gateway import (
+    GATEWAY_AUTH,
+    GatewayConfigError,
+    gateway_settings_from_env,
+)
 from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
 
@@ -243,8 +248,38 @@ def _api_key_policy_credential(
     return None
 
 
+def _gateway_credential(app: str) -> EffectiveCredential | None:
+    """The gateway as *app*'s credential; ``None`` if incomplete or *app* is not Codex."""
+    if app != APP_CODEX:
+        return None
+    try:
+        settings = gateway_settings_from_env()
+    except GatewayConfigError:
+        return None
+    return EffectiveCredential(
+        app=app,
+        mode=GATEWAY_AUTH,
+        source=f"the gateway at {settings.url} ({settings.token_source})",
+        rotation_free=True,
+        overridden=(),
+    )
+
+
 def effective_credential(
     app: str = APP_CLAUDE, policy: str = "auto", *, home: Path | None = None
+) -> EffectiveCredential | None:
+    """Resolve which credential *app*'s agents would actually use under *policy*.
+
+    ``gateway`` is environment-selected and has no native credential; every
+    other policy resolves the native credential, CLI-style.
+    """
+    if policy == GATEWAY_AUTH:
+        return _gateway_credential(app)
+    return _native_credential(app, policy, home=home)
+
+
+def _native_credential(
+    app: str, policy: str, *, home: Path | None = None
 ) -> EffectiveCredential | None:
     """Resolve which credential *app*'s agents would actually use, CLI-style.
 
@@ -412,7 +447,13 @@ def stored_token_is_private(app: str = APP_CLAUDE) -> bool:
     return mode is not None and not mode & (stat.S_IRWXG | stat.S_IRWXO)
 
 
-CREDENTIAL_ENV_KEYS = frozenset({"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"})
+# ``ANTHROPIC_AUTH_TOKEN`` is a Claude-CLI bearer that outranks the login file.
+# It is tracked so policies that disallow it scrub it from agent environments,
+# but it is scrub-only: Booley never forwards it into a Sandbox spec.
+SCRUB_ONLY_ENV_KEYS = frozenset({"ANTHROPIC_AUTH_TOKEN"})
+CREDENTIAL_ENV_KEYS = frozenset(
+    {"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"} | SCRUB_ONLY_ENV_KEYS
+)
 CREDENTIAL_SCHEMA = "1"
 
 
@@ -448,15 +489,19 @@ def subscription_available(app: str, policy: str, path: Path) -> bool:
 
 def allowed_credential_keys(app: str, policy: str) -> frozenset[str]:
     """Deterministic transport permissions, independent of shell exports."""
-    if policy not in {"auto", "subscription", "api_key"}:
+    if policy not in {"auto", "subscription", "api_key", GATEWAY_AUTH}:
         raise ValueError("invalid credential policy; refresh the Sandbox")
-    if app not in CREDENTIALS:
+    if app not in CREDENTIALS or policy == GATEWAY_AUTH:
         return frozenset()
     if policy == "api_key":
         return frozenset({API_KEY_ENV[app]})
     if policy == "subscription":
         return frozenset({ENV_VAR}) if app == APP_CLAUDE else frozenset()
-    return frozenset({API_KEY_ENV[app], CREDENTIALS[app].env_var})
+    allowed = {API_KEY_ENV[app], CREDENTIALS[app].env_var}
+    if app == APP_CLAUDE:
+        # ``auto`` leaves the CLI's own precedence untouched, bearer included.
+        allowed |= SCRUB_ONLY_ENV_KEYS
+    return frozenset(allowed)
 
 
 @dataclass(frozen=True)
@@ -485,6 +530,12 @@ class CredentialPlan:
 
     def require_credential(self) -> None:
         """Pinned modes must never silently fall through to another source."""
+        if self.policy == GATEWAY_AUTH and self.selected is None:
+            if self.app != APP_CODEX:
+                raise ValueError(
+                    f"auth '{GATEWAY_AUTH}' routes Codex only; set [agent] provider = 'codex'"
+                )
+            gateway_settings_from_env()  # raises GatewayConfigError naming the variable
         if self.policy != "auto" and self.selected is None:
             raise ValueError(
                 f"{self.app}: no usable credential under auth = '{self.policy}'; provide that credential and refresh the Sandbox"
@@ -517,7 +568,7 @@ def credential_plan(
     if app not in CREDENTIALS:
         return CredentialPlan(app, policy, None, allowed, ())
     values = {}
-    for key in allowed:
+    for key in sorted(allowed - SCRUB_ONLY_ENV_KEYS):
         value = (os.environ.get(key) or "").strip()
         if not value and key == CREDENTIALS[app].env_var:
             value = read_stored_token(app, home=home) or ""
@@ -527,7 +578,9 @@ def credential_plan(
             values[key] = value
     login = subscription_creds_path(app, home=home)
     subscription = (
-        login if policy != "api_key" and subscription_available(app, policy, login) else None
+        login
+        if policy not in {"api_key", GATEWAY_AUTH} and subscription_available(app, policy, login)
+        else None
     )
     token = token_path(app) if home is None else home / TOKEN_SEED_BASENAME[app]
     token_seed = (
@@ -553,29 +606,31 @@ def credential_plan(
     )
 
 
-def copy_codex_auth(source: Path, destination: Path, policy: str = "auto") -> None:
-    """Reconcile a Booley-owned private auth copy at every invocation."""
-    import shutil
-    import tempfile
+def link_codex_auth(source: Path, destination: Path, policy: str = "auto") -> None:
+    """Make a Booley-owned private auth entry a link to the real login.
 
+    A link, not a copy: Codex rotates ``auth.json`` in place, so a copy would
+    strand the rotated tokens in scratch and leave a credential behind. When
+    the policy excludes the login, or it is missing, no entry remains.
+    """
     allowed_credential_keys(APP_CODEX, policy)
     allowed = policy == "auto" or (
         policy == "subscription" and subscription_available(APP_CODEX, policy, source)
     )
-    if source.is_file() and allowed:
-        descriptor, temporary = tempfile.mkstemp(
-            prefix=f".{destination.name}.", dir=destination.parent
-        )
-        os.close(descriptor)
-        temporary_path = Path(temporary)
-        try:
-            shutil.copyfile(source, temporary_path)
-            temporary_path.chmod(0o600)
-            temporary_path.replace(destination)
-        finally:
-            temporary_path.unlink(missing_ok=True)
-    else:
+    if not (source.is_file() and allowed):
         destination.unlink(missing_ok=True)
+        return
+    # Resolve so a link never points at another (removable) link.
+    target = source.resolve()
+    if destination.is_symlink() and destination.readlink() == target:
+        return
+    pending = destination.parent / f".{destination.name}.{os.getpid()}.{os.urandom(4).hex()}"
+    try:
+        pending.symlink_to(target)
+        # Atomic: an interrupted relink keeps the previous entry.
+        pending.replace(destination)
+    finally:
+        pending.unlink(missing_ok=True)
 
 
 def credential_warnings(plan: CredentialPlan) -> tuple[str, ...]:

@@ -17,7 +17,7 @@ from booley.flows.campaign_results import CampaignResultsReader
 from booley.goals.apply import ChangeEnvironment, WaiverPort, recover_locked
 from booley.goals.campaign_accounting import account_for_campaigns
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_ref
-from booley.goals.completion_capture import legacy_materialization_buffers, public_capture
+from booley.goals.completion_capture import public_capture
 from booley.goals.completion_history import (
     associate_completion,
     earlier_attempt_facts,
@@ -25,7 +25,12 @@ from booley.goals.completion_history import (
     validate_canonical_ownership,
 )
 from booley.goals.ended_records import schedule_ended_cleanup
-from booley.goals.finish_presentation import freeze_presentation, frozen_response, html_bytes
+from booley.goals.finish_presentation import (
+    freeze_presentation,
+    frozen_response,
+    html_bytes,
+    render_goal_briefing,
+)
 from booley.goals.freshness import DEFAULT_RESOLVERS, RESOLVER_ERRORS, GoalFreshnessResolvers
 from booley.goals.generated_artifacts import (
     ArtifactEpoch,
@@ -78,9 +83,9 @@ from booley.goals.warnings import protected_warnings
 from booley.review.goal_package import (
     GoalCompletionPackage,
     GoalReviewContext,
-    render_goal_briefing,
 )
 from booley.runtime.atomic_files import atomic_write_once
+from booley.runtime.git_facts import repository_facts
 from booley.runtime.history_commit import FileCommitError
 from booley.runtime.job_records import JobRecordError
 from booley.runtime.job_wait import active_jobs
@@ -143,11 +148,6 @@ def finish_goal(request: LifecycleRequest, env: FinishEnvironment) -> dict[str, 
 def _finish_goal(request: LifecycleRequest, env: FinishEnvironment) -> dict[str, Any]:
     """Bind first, then resume the exact operation or freeze a new validated attempt."""
     store = env.changes.store
-    from booley.goals.lifecycle import archived_result
-
-    saved = archived_result(store, request)
-    if saved is not None:
-        return saved
     with bind_operation(store, request) as operation:
         saved = operation.saved_result()
         if saved is not None:
@@ -255,6 +255,7 @@ def _freeze(
         record,
         work_dir=operation.root,
         resolvers=alias_resolvers(record, selection, operation.store.booley_dir, env.resolvers),
+        campaign_reader=env.campaign_reader,
     )
     unmet = [
         row.presentation.text if row.presentation else "Goal unavailable"
@@ -512,10 +513,6 @@ def recover_finish(operation: LifecycleOperation, env: FinishEnvironment) -> dic
     publication = _publication_intent(operation, frozen)
     head = require_branch(operation.root, frozen["branch"])
     try:
-        if legacy_materialization_buffers(frozen):
-            raise InputSelectionError(
-                "legacy publication requires a fresh operation for unpublished materialization buffers"
-            )
         current = select_inputs(record, operation.root)
     except InputSelectionError as exc:
         return _recover_identity_mismatch(
@@ -615,8 +612,7 @@ def _complete_proven_publication(
 
 
 def _control_binding_unchanged(operation: LifecycleOperation, frozen: dict[str, Any]) -> bool:
-    capture = frozen.get("private_capture", frozen["package"]["input_proof"])
-    control = capture.get("path_roots", {}).get("control")
+    control = frozen["private_capture"]["path_roots"].get("control")
     return control is None or control["identity"] == directory_identity(operation.store.booley_dir)
 
 
@@ -651,12 +647,10 @@ def _revalidate_publication(
     return _revalidation(operation, record, reason)
 
 
+@repository_facts()
 def _original_input_bindings(operation: LifecycleOperation, frozen: dict[str, Any]) -> bool:
     """Content invalidation never substitutes for independent physical-root authority."""
-    capture = frozen.get("private_capture", frozen["package"]["input_proof"])
-    saved = capture.get("path_roots")
-    if saved is None:
-        return False  # Legacy captures without physical authority cannot authorize index writes.
+    saved = frozen["private_capture"]["path_roots"]
     try:
         current = capture_path_roots(operation.root, operation.store.booley_dir)
         require_bindings(saved, current)
@@ -714,9 +708,12 @@ def _finish_terminal(
 def _inputs_unchanged(
     operation: LifecycleOperation, record: GoalRecord, frozen: dict[str, Any]
 ) -> bool:
+    # A finishing Goal was entered, so both digests exist (null only while entering).
+    assert record.protected_digest is not None
+    assert record.protected_head_digest is not None
     violations = protected_input_violations(
         record.protected_paths,
-        record.protected_digest or "",
+        record.protected_digest,
         record.protected_head_digest,
         ProtectedInputRoots(operation.root, operation.store.booley_dir).with_input_paths(
             record.input_paths
@@ -724,7 +721,7 @@ def _inputs_unchanged(
         record.declared_protected_inputs,
     )
     return not violations and observations_unchanged(
-        frozen.get("private_capture", frozen["package"]["input_proof"]),
+        frozen["private_capture"],
         capture_path_roots(operation.root, operation.store.booley_dir),
     )
 

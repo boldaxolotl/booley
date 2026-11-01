@@ -518,7 +518,7 @@ def test_cli_flags_do_not_change_shared_schema(flow_type):
 
 @pytest.mark.parametrize("mode", ["human", "quiet", "runtime", "ticket", "transport", "dry-run"])
 def test_cli_installs_only_at_human_adapter_boundary(tmp_path, monkeypatch, mode):
-    from booley.flows.flow_session import FlowSession
+    from booley.flows.base import BuiltinFlow
 
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
     monkeypatch.delenv(INVOCATION_ORIGIN_ENV, raising=False)
@@ -533,11 +533,11 @@ def test_cli_installs_only_at_human_adapter_boundary(tmp_path, monkeypatch, mode
         args.append("--dry-run")
     observed = []
 
-    def execute(session):
+    def execute(flow):
         observed.append(current_progress())
         return ExecutionResult(0, EndpointOutcome())
 
-    with patch.object(FlowSession, "execute_prepared", execute):
+    with patch.object(BuiltinFlow, "execute_prepared", execute):
         execute_cli(
             LintFlow(),
             args,
@@ -741,6 +741,17 @@ def test_missing_executable_finishes_observation_and_can_run_again(tmp_path):
     assert "second command" in sink.stream.getvalue()
 
 
+def test_missing_executable_records_no_command_start(tmp_path):
+    flow = LintFlow()
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])
+    sink = observer(tmp_path, flow="lint", tool_output=True)
+    with sink.installed():
+        assert flow._execute_boundary([str(tmp_path / "missing-tool")]).returncode == -1
+    assert "command started" not in sink.stream.getvalue(), (
+        "unstarted command must not record a start"
+    )
+
+
 def test_campaign_worker_inherits_invocation_observer(tmp_path):
     from contextlib import nullcontext
     from types import SimpleNamespace
@@ -748,9 +759,12 @@ def test_campaign_worker_inherits_invocation_observer(tmp_path):
     from booley.flows.sim.campaign.scheduler import BoundedCampaignScheduler, ScheduledAttempt
 
     capacity = SimpleNamespace(
-        managed=False, shutdown_requested=False, outer_permit=nullcontext, slot_store=None
+        managed=False,
+        shutdown_requested=False,
+        outer_permit=nullcontext,
+        cancellation_cause=lambda: None,
     )
-    registry = SimpleNamespace(project_data=tmp_path, recover_unretired=lambda _: None)
+    registry = SimpleNamespace(project_data=tmp_path)
     flow = SimulateFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])
 
@@ -836,15 +850,15 @@ def test_blocked_transcript_writer_cannot_block_process_capture(tmp_path):
 
 
 def test_sim_verbose_keeps_resume_semantics_with_quiet():
-    from booley.flows.flow_session import FlowSession
+    from booley.flows.base import BuiltinFlow
 
     seen = []
 
-    def execute(session):
-        seen.append((session.args.verbose, current_progress()))
+    def execute(flow):
+        seen.append((flow.args.verbose, current_progress()))
         return ExecutionResult(0, EndpointOutcome())
 
-    with patch.object(FlowSession, "execute_prepared", execute):
+    with patch.object(BuiltinFlow, "execute_prepared", execute):
         execute_cli(SimulateFlow(), ["--target", "demo", "--verbose", "--quiet"])
     assert seen == [(True, None)]
 
@@ -865,7 +879,9 @@ def test_concurrent_commands_keep_observing_after_one_finishes(tmp_path):
         "import pathlib,time; print('second ready',flush=True); "
         f"p=pathlib.Path({str(release)!r}); deadline=time.monotonic()+5; "
         "exec('while not p.exists() and time.monotonic()<deadline: time.sleep(0.01)'); "
-        "print('second still live',flush=True); time.sleep(0.5)"
+        "print('second still live',flush=True); "
+        f"p=pathlib.Path({str(release.with_name('done'))!r}); "
+        "exec('while not p.exists() and time.monotonic()<deadline: time.sleep(0.01)')"
     )
     with sink.installed():
         sink.begin_command()
@@ -896,6 +912,7 @@ def test_concurrent_commands_keep_observing_after_one_finishes(tmp_path):
             wait_until(lambda: "second still live" in sink.stream.getvalue())
             assert second.poll() is None
         finally:
+            release.with_name("done").touch()  # let the second command exit
             release.touch()
             thread.join(timeout=7)
             second.stdout.close()
@@ -933,12 +950,12 @@ def test_parallel_pipe_sources_do_not_merge_partial_lines(tmp_path):
 def test_agent_console_and_display_bytes_match_existing_transport(
     tmp_path, monkeypatch, capsys, mode
 ):
+    from booley.flows.base import BuiltinFlow
     from booley.flows.endpoint_events import (
         _endpoint_progress_event,
         _serialize_display_event,
         _write_display_event,
     )
-    from booley.flows.flow_session import FlowSession
 
     def write_event(event):
         with path.open("a", encoding="utf-8") as stream:
@@ -963,16 +980,16 @@ def test_agent_console_and_display_bytes_match_existing_transport(
     expected_events = path.read_bytes()
     path.unlink()
 
-    def execute(session):
-        assert session.terminal_progress is None
+    def execute(flow):
+        assert flow.terminal_progress is None
         assert current_progress() is None
-        session.emit_progress("checking")
-        session.emit_completion("done")
+        flow.emit_progress("checking")
+        flow.emit_completion("done")
         print("verdict unchanged")
         return ExecutionResult(7, EndpointOutcome())
 
     adapter = FixtureRecorder(identity={"generation": "d" * 32}) if mode == "ticket" else None
-    with patch.object(FlowSession, "execute_prepared", execute):
+    with patch.object(BuiltinFlow, "execute_prepared", execute):
         result = execute_cli(LintFlow(), ["--target", "demo"], adapter=adapter)
     captured = capsys.readouterr()
     assert captured.out == "verdict unchanged\n"
@@ -1057,6 +1074,7 @@ def test_vivado_stage_identification_accepts_native_path_separators(
 
 def test_tty_adaptive_intervals_use_monotonic_differences(tmp_path, monkeypatch):
     monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", False)
     screen = Screen(tty=True)
     now = [1000000.0]
     progress = observer(
@@ -1068,11 +1086,207 @@ def test_tty_adaptive_intervals_use_monotonic_differences(tmp_path, monkeypatch)
     progress.last_output = now[0]
     now[0] += 3661
     progress.tick()
-    assert "elapsed=1h 01m command=1h 01m" in screen.getvalue()
-    assert "last output=1h ago" in screen.getvalue()
+    assert "sim · sim_demo · preparing   1h 01m   last output 1h ago" in screen.getvalue()
     screen.seek(0)
     screen.truncate()
     progress.last_output = now[0] - 0.4
     now[0] += 0.3
     progress.tick()
-    assert "last output=just now" in screen.getvalue()
+    assert "1h 01m   last output just now" in screen.getvalue()
+
+
+# --- Compact TTY status row (#2431) ---------------------------------------------------
+
+
+def _cells(text):
+    """Terminal cells of *text*, counted independently of production code."""
+    import unicodedata
+
+    return sum(
+        0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in "WF" else 1
+        for c in text
+    )
+
+
+def _tty_sink(tmp_path, monkeypatch, *, width=120, colors=False, target="top"):
+    """A TTY observer with stubbed size, clock and color policy (no host dependence)."""
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", colors)
+    clock = [0.0]
+    sink = TerminalProgress(
+        "sim",
+        target,
+        tmp_path,
+        stream=Screen(tty=True),
+        clock=lambda: clock[0],
+        dimensions=lambda: os.terminal_size((width, 24)),
+    )
+    return sink, clock
+
+
+def _frame(sink):
+    """Render one frame and return its physical rows (no clear prefix)."""
+    sink.stream.seek(0)
+    sink.stream.truncate()
+    sink.rows = 0
+    sink.tick()
+    return sink.stream.getvalue().splitlines()
+
+
+@pytest.mark.parametrize(
+    ("last_output", "expected"),
+    [
+        (51.0, "sim · top · building   1m 03s   last output 12s ago"),
+        (None, "sim · top · building   1m 03s"),
+    ],
+    ids=["output-seen", "no-output-yet"],
+)
+def test_tty_status_row_is_compact(tmp_path, monkeypatch, last_output, expected):
+    sink, clock = _tty_sink(tmp_path, monkeypatch)
+    sink.stage = "building"
+    sink.last_output = last_output
+    clock[0] = 63.0
+    assert _frame(sink) == [expected]
+
+
+def test_tty_status_row_styles_through_color_helpers(tmp_path, monkeypatch):
+    from booley.harness.colors import accent, amber, dim
+
+    sink, clock = _tty_sink(tmp_path, monkeypatch, colors=True)
+    sink.stage = "building"
+    sink.last_output = 51.0
+    clock[0] = 63.0
+    assert _frame(sink) == [
+        f"sim · {accent('top')} · {amber('building')}   {dim('1m 03s')}   last output 12s ago"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("width", "target"),
+    [(80, "t" * 60), (30, "t" * 60), (60, "設計" * 20)],
+    ids=["80", "30", "wide-chars"],
+)
+def test_tty_status_row_cuts_target_to_width(tmp_path, monkeypatch, width, target):
+    sink, clock = _tty_sink(tmp_path, monkeypatch, width=width, target=target)
+    sink.stage = "building"
+    sink.last_output = 51.0
+    clock[0] = 63.0
+    (row,) = _frame(sink)
+    assert _cells(row) <= width - 1
+    assert row.startswith("sim · ")
+    if width == 30:
+        # Narrow terminals keep eight Target cells and drop trailing parts whole.
+        assert row == "sim · ttttttt… · building"
+    else:
+        assert row.endswith("…" + " · building   1m 03s   last output 12s ago")
+        assert _cells(row) == width - 1
+
+
+def _two_lane_sink(tmp_path, monkeypatch, *, colors, width=120):
+    sink, clock = _tty_sink(tmp_path, monkeypatch, width=width, colors=colors, target="sim_demo")
+    sink.last_output = 51.0
+    alpha = sink._open_lane("alpha/1")
+    alpha.stage = "simulation: alpha"
+    alpha.last_output = 51.0
+    alpha.tail.append("alpha tail")
+    beta = sink._open_lane("beta_long/2")
+    beta.stage = "building"
+    beta.tail.append("beta tail")
+    clock[0] = 63.0
+    return sink
+
+
+@pytest.mark.parametrize("colors", [False, True], ids=["plain", "colored"])
+def test_tty_lane_rows_are_indented_and_aligned(tmp_path, monkeypatch, colors):
+    from booley.harness.colors import strip_ansi
+
+    sink = _two_lane_sink(tmp_path, monkeypatch, colors=colors)
+    frame = _frame(sink)
+    assert [strip_ansi(row) for row in frame] == [
+        "sim · sim_demo · 2 lanes   1m 03s   last output 12s ago",
+        "  alpha/1       simulation: alpha   last output 12s ago",
+        "    alpha tail",
+        "  beta_long/2   building",
+        "    beta tail",
+    ]
+    # Padding sits outside the styling, so colors never change the layout.
+    assert any("\x1b[" in row for row in frame) is colors
+
+
+def test_tty_lane_names_are_cut_to_fit(tmp_path, monkeypatch):
+    sink = _two_lane_sink(tmp_path, monkeypatch, colors=False, width=30)
+    sink._lanes[0].label = "a" * 40
+    sink._lanes[0].tail.append("x" * 60)
+    rows = _frame(sink)
+    assert all(_cells(row) <= 29 for row in rows), rows
+    assert rows[1].startswith("  aaaaaaa…"), rows
+    # Parts that do not fit are dropped whole, never cut mid-token.
+    assert "last output" not in rows[1]
+    assert rows[1].rstrip() == rows[1]
+
+
+# Captured from the pre-#2431 implementation: redirected records must never change.
+_RECORD = "[booley-progress] 2026-10-05T13:00:00Z sim Target=sim_demo"
+REDIRECTED_GOLDEN = "\n".join(
+    [
+        f"{_RECORD} stage=simulation elapsed=0s ",
+        f"{_RECORD} stage=simulation elapsed=0s "
+        "transcript=<ROOT>/.runtime/flow-console/invocation-ID/tool-output.log",
+        f"{_RECORD} stage=simulation elapsed=0s command started",
+        f"{_RECORD} stage=simulation elapsed=5s heartbeat (elapsed time; process health unknown)",
+        f"{_RECORD} stage=simulation elapsed=5s output: serial one",
+        f"{_RECORD} stage=simulation elapsed=5s output: serial two",
+        f"{_RECORD} lane=alpha/1 stage=simulation: alpha elapsed=5s ",
+        f"{_RECORD} lane=alpha/1 stage=simulation: alpha elapsed=5s command started",
+        f"{_RECORD} stage=lanes=1 elapsed=10s heartbeat (elapsed time; process health unknown)",
+        f"{_RECORD} lane=alpha/1 stage=simulation: alpha elapsed=10s output: lane line",
+        "",
+    ]
+)
+
+
+def test_redirected_progress_records_are_byte_identical(tmp_path, monkeypatch):
+    from booley.flows.terminal_progress import announce_unit, progress_lane
+    from booley.harness.colors import strip_ansi
+
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", True)
+    monkeypatch.setattr(
+        "booley.flows.terminal_progress.utc_now_rfc3339", lambda: "2026-10-05T13:00:00Z"
+    )
+    now = [0.0]
+    sink = TerminalProgress(
+        "sim",
+        "sim_demo",
+        tmp_path,
+        stream=Screen(),
+        clock=lambda: now[0],
+        dimensions=lambda: os.terminal_size((100, 24)),
+    )
+    with patch.object(sink, "_run"), sink.installed():
+        announce_unit("simulation")
+        sink.begin_command()
+        sink.observe("stdout", b"serial one\nserial two\n")
+        sink._poll()
+        now[0] = 5
+        sink.tick()
+        with progress_lane("alpha/1"):
+            announce_unit("simulation: alpha")
+            sink.begin_command()
+            sink.observe("stdout", b"lane line\n")
+            sink._poll()
+            now[0] = 10
+            sink.tick()
+        sink._drain_end()
+    text = sink.stream.getvalue()
+    assert "\x1b" not in text
+    normalized = re.sub(
+        r"invocation-\w+", "invocation-ID", text.replace(str(tmp_path), "<ROOT>")
+    ).replace("\\", "/")
+    assert normalized == REDIRECTED_GOLDEN
+    # The same state on a terminal renders the compact row instead of the records.
+    sink.stream = Screen(tty=True)
+    sink.rows = 0
+    sink.last_render = -1.0
+    sink.tick()
+    assert "sim · sim_demo · " in strip_ansi(sink.stream.getvalue())

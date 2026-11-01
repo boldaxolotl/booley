@@ -23,25 +23,21 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from booley.core.host_probes import ProbeState, probe_docker, probe_github
+from booley.core.host_probes import ProbeState, probe_docker
 from booley.dev_support.test_profiles import BWAVE_BUILD, native_test_problem
 
 SCHEMA_VERSION = 1
-MIN_PYTHON = (3, 11)
 PINNED_RUNNERS = {
     "pytest": "9.1.1",
     "pytest-asyncio": "1.4.0",
     "pytest-xdist": "3.8.0",
     "pytest-timeout": "2.4.0",
     "pytest-cov": "7.1.0",
-    "ruff": "0.17.0",
+    "ruff": "0.17.2",
 }
-# ``pip --version`` takes well under a second warm, but a cold cache or an
-# antivirus scan of a Windows launcher can take far longer. A false "broken"
-# verdict makes the bootstrap rebuild a healthy environment under its users,
-# so this matches the bootstrap's probe budget rather than the 10 s used for
-# read-only observations elsewhere in this module.
-LAUNCHER_PROBE_TIMEOUT_SECONDS = 60
+# Names the cache root, so checkouts speaking another receipt schema build under
+# another directory and lock and never overwrite or race this one.
+RECEIPT_SCHEMA_VERSION = 2
 _BRANCH_RE = re.compile(r"^codex/[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _STATUS_ORDER = {"ready": 0, "degraded": 1, "escalation-required": 2, "blocked": 3}
 
@@ -77,7 +73,6 @@ class Check:
     status: Status
     required: bool
     summary: str
-    write_probed: bool = False
     commands: tuple[Command, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
@@ -86,7 +81,6 @@ class Check:
             "status": self.status.value,
             "required": self.required,
             "summary": self.summary[:240],
-            "write_probed": self.write_probed,
             "commands": [command.as_dict() for command in self.commands],
         }
 
@@ -196,7 +190,7 @@ class ReadinessUsageError(ValueError):
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", choices=("prepare", "develop", "publish"), default="develop")
+    parser.add_argument("--phase", choices=("prepare", "develop"), default="develop")
     parser.add_argument("--branch")
     parser.add_argument("--worktree-path", type=Path)
     parser.add_argument("--require", choices=("docker",))
@@ -221,8 +215,6 @@ def run_phase(args: argparse.Namespace) -> Result:
     root = find_source_checkout(Path.cwd())
     if args.phase == "prepare":
         return _prepare(root, args.branch, args.worktree_path)
-    if args.phase == "publish":
-        return _publish(root)
     return _develop(
         root, require_docker=args.require == "docker", test_profile=args.test_profile or "python"
     )
@@ -245,7 +237,6 @@ def find_source_checkout(start: Path) -> Path:
 
 def _prepare(root: Path, branch: str, requested_path: Path | None) -> Result:
     checks: list[Check] = []
-    checks.append(_python_check())
     git = shutil.which("git")
     checks.append(_presence_check("git.executable", git is not None, "Git executable found"))
     identity = _git(root, ("rev-parse", "--show-toplevel")) if git else None
@@ -290,7 +281,7 @@ def _prepare(root: Path, branch: str, requested_path: Path | None) -> Result:
     )
     checks.append(_current_checkout_advisory(root))
     commands = (command,) if command else ()
-    return _result("prepare", root, checks, commands, git=git)
+    return _result("prepare", root, checks, commands)
 
 
 def _develop(root: Path, *, require_docker: bool, test_profile: str = "python") -> Result:
@@ -311,8 +302,6 @@ def _develop(root: Path, *, require_docker: bool, test_profile: str = "python") 
     )
     environment, env_commands, shared_python = _environment_check(root)
     checks.append(environment)
-    checks.extend(_tool_checks(shared_python, root))
-    checks.append(_cache_path_check(root))
     docker_check = _docker_check(require_docker)
     checks.append(docker_check)
     commands = list(env_commands)
@@ -323,28 +312,7 @@ def _develop(root: Path, *, require_docker: bool, test_profile: str = "python") 
         native_ready = native_check.status is Status.READY
         commands.extend(native_check.commands)
     commands.extend(_verification_commands(shared_python, root, test_profile, native_ready))
-    return _result(
-        "develop", root, checks, tuple(commands), git=shutil.which("git"), branch=branch
-    )
-
-
-def _publish(root: Path) -> Result:
-    checks = [_git_identity_check(root, _git(root, ("rev-parse", "--show-toplevel")))]
-    gh = probe_github(which=shutil.which, run=subprocess.run, cwd=root)
-    checks.append(
-        _presence_check("github.executable", gh.executable is not None, "GitHub CLI found")
-    )
-    checks.append(
-        _probe_check(
-            "github.authentication", gh.authentication, "GitHub authentication is available"
-        )
-    )
-    checks.append(
-        _probe_check(
-            "github.connectivity", gh.connectivity, "GitHub read-only connectivity is available"
-        )
-    )
-    return _result("publish", root, checks, (), git=shutil.which("git"))
+    return _result("develop", root, checks, tuple(commands), branch=branch)
 
 
 def _result(
@@ -353,7 +321,6 @@ def _result(
     checks: Sequence[Check],
     commands: Sequence[Command],
     *,
-    git: str | None,
     branch: str | None = None,
 ) -> Result:
     kind = "linked" if _is_linked_worktree(root) else "primary"
@@ -362,8 +329,6 @@ def _result(
         if branch is not None
         else _git_text(root, ("symbolic-ref", "--short", "-q", "HEAD"))
     )
-    if git is None:
-        actual_branch = actual_branch or None
     return Result(
         phase,
         aggregate_status(checks),
@@ -401,17 +366,6 @@ def _argv(argv: Sequence[str]) -> str:
     return shlex.join(list(argv))
 
 
-def _python_check() -> Check:
-    current = sys.version_info[:2]
-    good = current >= MIN_PYTHON
-    summary = (
-        f"Python {current[0]}.{current[1]} is supported"
-        if good
-        else "Python 3.11 or newer is required"
-    )
-    return Check("python.bootstrap", Status.READY if good else Status.BLOCKED, True, summary)
-
-
 def _presence_check(identifier: str, present: bool, success: str) -> Check:
     return Check(
         identifier,
@@ -422,14 +376,10 @@ def _presence_check(identifier: str, present: bool, success: str) -> Check:
 
 
 def _valid_branch(branch: str) -> bool:
-    """Apply the portable subset of Git's branch-name rules at the CLI edge."""
-    forbidden = ("..", "//", "@{", "~", "^", ":", "?", "*", "[", "\\")
-    return (
-        bool(_BRANCH_RE.fullmatch(branch))
-        and not any(token in branch for token in forbidden)
-        and not any(part.startswith(".") or part.endswith(".lock") for part in branch.split("/"))
-        and not branch.endswith((".", "/"))
-    )
+    """Gate on the codex/ prefix pattern; Git itself owns every other ref rule."""
+    if not _BRANCH_RE.fullmatch(branch):
+        return False
+    return _successful(_run_process(("git", "check-ref-format", "--branch", branch), Path.cwd()))
 
 
 def _git_identity_check(root: Path, result: subprocess.CompletedProcess[str] | None) -> Check:
@@ -595,143 +545,47 @@ def dependency_argv(root: Path) -> tuple[str, ...]:
     values = _project_dependencies(root)
     flat = tuple(item for group in values.values() for item in group)
     argv = ("install", "--disable-pip-version-check", "--no-input", *flat)
-    if sys.platform == "win32" and sum(len(item) + 1 for item in argv) >= 30_000:
-        raise RuntimeError("agent-tools dependency command exceeds the Windows command limit")
     return argv
 
 
 def agent_tools_root() -> Path:
+    directory = f"agent-tools-v{RECEIPT_SCHEMA_VERSION}"
     if sys.platform == "win32":
         return (
             Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
             / "Booley"
-            / "agent-tools"
+            / directory
         )
-    return (
-        Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "booley" / "agent-tools"
-    )
+    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "booley" / directory
 
 
 def venv_python(venv: Path) -> Path:
     return venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 
 
-def console_script_problem(
-    venv: Path, timeout: float = LAUNCHER_PROBE_TIMEOUT_SECONDS
-) -> str | None:
-    """Return why the environment's console-script launchers cannot start, if they cannot.
-
-    pip bakes the interpreter's absolute path into each launcher (a POSIX
-    shebang or a Windows ``.exe`` stub), so an environment moved after
-    installation keeps a working ``python`` while ``fusesoc`` and friends exit
-    127. Running ``pip``'s launcher proves that path on every platform.
-    """
-    launcher = venv_python(venv).with_name("pip.exe" if sys.platform == "win32" else "pip")
-    try:
-        result = subprocess.run(
-            (str(launcher), "--version"),
-            cwd=venv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return f"launcher {launcher} did not finish within {timeout:g} s"
-    except OSError as error:
-        return f"launcher {launcher} could not start: {error}"
-    if result.returncode != 0:
-        return f"launcher {launcher} exited {result.returncode}: {_tail(result.stderr)}"
-    return None
-
-
-def _tail(text: str | None, lines: int = 3, limit: int = 400) -> str:
-    """Return the last few non-blank lines of *text*, bounded for one-line reports."""
-    kept = [line.strip() for line in (text or "").splitlines() if line.strip()][-lines:]
-    return " | ".join(kept)[-limit:] or "(no stderr)"
-
-
 def validate_environment(root: Path, fingerprint: str, python: Path) -> tuple[bool, str]:
-    receipt_path = root / "receipt.json"
+    """Trust a published receipt; shared by readiness and the bootstrap, it runs no subprocess.
+
+    The bootstrap writes the receipt last, after pip check and the runner-pin
+    check, so its schema, fingerprint, interpreter, and pins are the proof.
+    """
     try:
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt = json.loads((root / "receipt.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False, "shared tools environment is missing or has no valid receipt"
     if (
         not isinstance(receipt, dict)
-        or receipt.get("schema_version") != 1
+        or receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION
         or receipt.get("fingerprint") != fingerprint
         or not python.is_file()
     ):
         return False, "shared tools environment receipt or interpreter is stale"
-    if not _runner_versions(receipt.get("installed", {})):
+    installed = receipt.get("installed")
+    if not isinstance(installed, dict) or any(
+        installed.get(name) != version for name, version in PINNED_RUNNERS.items()
+    ):
         return False, "shared tools environment has mismatched Ruff/Pytest runner pins"
-    problem = _runtime_problem(root, python, receipt.get("installed", {}))
-    if problem is not None:
-        return False, problem
     return True, "shared tools environment matches the repository fingerprint"
-
-
-def _runtime_problem(root: Path, python: Path, recorded: Any) -> str | None:
-    """Probe the live environment against its receipt; return the first defect."""
-    actual = _installed_versions(python)
-    if actual is None or actual != recorded:
-        return "shared tools environment distribution set differs from its receipt"
-    if not _successful(_run_child(python, ("-m", "pip", "check"), root)):
-        return "shared tools environment failed pip check"
-    if console_script_problem(root) is not None:
-        return "shared tools environment console scripts cannot start"
-    return None
-
-
-def _runner_versions(installed: Any) -> bool:
-    if not isinstance(installed, dict):
-        return False
-    return all(installed.get(name) == version for name, version in PINNED_RUNNERS.items())
-
-
-def _installed_versions(python: Path) -> dict[str, str] | None:
-    code = "import importlib.metadata as m, json; print(json.dumps({d.metadata['Name'].lower(): d.version for d in m.distributions()}))"
-    result = _run_child(python, ("-c", code), Path.cwd())
-    if not _successful(result):
-        return None
-    try:
-        value = json.loads((result.stdout or "").strip())
-    except json.JSONDecodeError:
-        return None
-    return value if isinstance(value, dict) else None
-
-
-def _tool_checks(python: Path, root: Path) -> tuple[Check, ...]:
-    if not python.is_file():
-        return (Check("tools.runners", Status.BLOCKED, True, "shared Python is unavailable"),)
-    return (_runner_check(python, root),)
-
-
-def _runner_check(python: Path, root: Path) -> Check:
-    versions = _installed_versions(python)
-    good = versions is not None and _runner_versions(versions)
-    return Check(
-        "tools.runners",
-        Status.READY if good else Status.BLOCKED,
-        True,
-        "exact Ruff/Pytest runner stack is installed"
-        if good
-        else "exact Ruff/Pytest runner stack is unavailable",
-    )
-
-
-def _cache_path_check(root: Path) -> Check:
-    cache = agent_tools_root().resolve()
-    safe = not _within(cache, root.resolve())
-    return Check(
-        "python.cache-path",
-        Status.READY if safe else Status.BLOCKED,
-        True,
-        "shared tools cache is outside the checkout"
-        if safe
-        else "shared tools cache would be inside the checkout",
-    )
 
 
 def _docker_check(required: bool) -> Check:
@@ -768,15 +622,6 @@ def _docker_check(required: bool) -> Check:
         else "Docker daemon did not respond successfully"
     )
     return Check("docker.daemon", status, True, summary)
-
-
-def _probe_check(identifier: str, state: ProbeState, success: str) -> Check:
-    return Check(
-        identifier,
-        Status.READY if state is ProbeState.HEALTHY else Status.BLOCKED,
-        True,
-        success if state is ProbeState.HEALTHY else "GitHub read-only probe failed",
-    )
 
 
 def _native_test_check(root: Path) -> Check:
@@ -906,22 +751,12 @@ def _git_text(root: Path, args: Sequence[str]) -> str | None:
     return value or None
 
 
-def _git_success(root: Path, args: Sequence[str]) -> bool:
-    return _successful(_git(root, args))
-
-
 def _git_count(root: Path, args: Sequence[str]) -> int | None:
     value = _git_text(root, args)
     try:
         return int(value) if value is not None else None
     except ValueError:
         return None
-
-
-def _run_child(
-    python: Path, args: Sequence[str], cwd: Path
-) -> subprocess.CompletedProcess[str] | None:
-    return _run_process((str(python), "-B", *args), cwd, timeout=10)
 
 
 def _run_process(

@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import contextlib
 import copy
 import json
 import logging
 import os
 import shutil
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
 
 import anyio
 
+from booley.config.gateway import (
+    GATEWAY_AUTH,
+    GATEWAY_TOKEN_COMMAND_ENV,
+    GATEWAY_TOKEN_ENV,
+    GatewayConfigError,
+    gateway_settings_from_env,
+)
 from booley.core.models import AgentArtifactPaths, AgentCallParams, AgentResult
 
 from ._codex_live_usage import CodexLiveUsage
@@ -38,14 +46,19 @@ from ._retry import (
     transcript_path_for_label,
 )
 from .agent_errors import (
+    AgentAuthError,
     AgentProviderError,
     AgentTimeoutError,
     ContextExhaustedError,
     TransientAPIError,
     UsageLimitError,
+    is_auth_failure,
     is_context_exhausted,
     is_usage_limit,
 )
+from .gateway_token import gateway_token_for, refresh_gateway_token
+from .owned_scratch import mark_owned, remove_owned, scratch_root
+from .pid import capture_process_identity
 from .prompt_artifacts import adjacent_artifact_paths, write_prompt_artifacts
 
 logger = logging.getLogger(__name__)
@@ -233,6 +246,12 @@ class CodexBackend:
         codex_bin = shutil.which("codex")
         if codex_bin is None:
             return "Codex CLI not found on PATH (npm i -g @openai/codex)"
+        if self._auth_mode == GATEWAY_AUTH:
+            try:
+                gateway_settings_from_env()
+            except GatewayConfigError as exc:
+                return str(exc)
+            return None
         if self._auth_mode == "api_key" and plan.selected is None:
             return (
                 "[agent] auth = 'api_key' but no OPENAI_API_KEY is exported or stored — "
@@ -251,6 +270,7 @@ class CodexBackend:
         **kwargs: Any,
     ) -> AgentResult:
         on_event = kwargs.pop("on_event", None)
+        on_start = kwargs.pop("on_start", None)
         tag = self._log_start(params)
         full_prompt = _codex_build_prompt(
             params.prompt,
@@ -259,43 +279,42 @@ class CodexBackend:
         )
 
         last_exc: Exception | None = None
-        for attempt in range(1, MAX_API_RETRIES + 1):
+        transient_failures = 0
+        refresh_available = self._auth_mode == GATEWAY_AUTH and _gateway_token_command_active()
+        # One launch slot beyond MAX_API_RETRIES is reserved for the token refresh.
+        for launch in range(1, MAX_API_RETRIES + 2):
             try:
                 result = await self._call_once(
                     params,
                     full_prompt=full_prompt,
-                    transcript_path=_transcript_path_for_attempt(
-                        params.transcript_path,
-                        attempt,
-                    ),
+                    transcript_path=_transcript_path_for_attempt(params.transcript_path, launch),
                     on_event=on_event,
+                    on_start=on_start,
                 )
-                logger.info(
-                    "%sCodex agent done (%s)",
-                    tag,
-                    format_usage_log(
-                        result.input_tokens,
-                        result.cached_tokens,
-                        result.output_tokens,
-                        result.cost_usd,
-                    ),
-                )
-                return result
             except (UsageLimitError, ContextExhaustedError):
                 raise
+            except AgentAuthError as exc:
+                if not refresh_available:
+                    raise
+                refresh_available = False
+                last_exc = exc
+                logger.warning(
+                    "Codex gateway rejected the token; re-running %s once",
+                    GATEWAY_TOKEN_COMMAND_ENV,
+                )
+                # Off the event loop: the cache lock may be held by a running command.
+                await anyio.to_thread.run_sync(refresh_gateway_token)
             except TransientAPIError as exc:
                 last_exc = exc
-                if attempt >= MAX_API_RETRIES:
+                transient_failures += 1
+                if transient_failures >= MAX_API_RETRIES:
                     break
-                backoff = compute_backoff(attempt)
-                logger.warning(
-                    "Codex transient error (attempt %d/%d): %s -- retrying in %.0fs",
-                    attempt,
-                    MAX_API_RETRIES,
-                    exc,
-                    backoff,
-                )
+                backoff = compute_backoff(transient_failures)
+                _log_transient_retry(transient_failures, exc, backoff)
                 await anyio.sleep(backoff)
+            else:
+                _log_agent_done(tag, result)
+                return result
 
         raise last_exc or AgentProviderError("Codex agent exhausted retries", provider="codex")
 
@@ -306,6 +325,7 @@ class CodexBackend:
         full_prompt: str,
         transcript_path: Path | None,
         on_event: Any = None,
+        on_start: Callable[[], None] | None = None,
     ) -> AgentResult:
         """Single Codex CLI invocation."""
         source = transcript_path_for_label(transcript_path, params.label)
@@ -323,6 +343,7 @@ class CodexBackend:
                 full_prompt=full_prompt,
                 on_event=on_event,
                 auth_mode=self._auth_mode,
+                on_start=on_start,
             )
             output, in_tok, out_tok, cached_tok, error_msg, events = _codex_parse_events(
                 raw_output
@@ -463,13 +484,29 @@ def _codex_thread_id(events: list[dict[str, Any]]) -> str | None:
 _NESTED_HOMES: dict[str, str] = {}
 
 
+def _remove_nested_homes() -> None:
+    """Remove every nested home this process created (runs at normal interpreter exit)."""
+    for home in list(_NESTED_HOMES.values()):
+        remove_owned(Path(home))
+    _NESTED_HOMES.clear()
+
+
+# A SIGKILL or default-disposition SIGTERM skips this; the next sweep reclaims it.
+atexit.register(_remove_nested_homes)
+
+
 def _ticket_home_scope() -> str:
-    """Return a filesystem-safe namespace unique to this ticket run."""
+    """Return a filesystem-safe namespace unique to this process incarnation.
+
+    The process start token keeps a reused PID from re-adopting the
+    deterministic home path of a dead process.
+    """
     import hashlib
-    import os
 
     slug = os.environ.get("BOOLEY_SLUG", "").strip() or "ticket"
-    identity = f"{slug}-pid-{os.getpid()}"
+    process = capture_process_identity(os.getpid())
+    start_token = process.start_token if process is not None else 0
+    identity = f"{slug}-pid-{os.getpid()}-{start_token}"
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in identity)[:32]
     digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:8]
     return f"{safe or 'ticket'}-{digest}"
@@ -481,20 +518,27 @@ def _populate_private_codex_home(
     enabled_mcp_tools: list[str] | None = None,
     auth_mode: str = "auto",
 ) -> None:
-    """Regenerate one destination config and copy the existing native credential."""
+    """Regenerate one destination config and link the existing native credential."""
     from .mcp_config import generate_codex_config
 
     config_path = codex_dir / "config.toml"
     existing = config_path.read_text(encoding="utf-8") if config_path.exists() else None
+    gateway_url = None
+    if auth_mode == GATEWAY_AUTH:
+        gateway_url = gateway_settings_from_env().url
     config_path.write_text(
         generate_codex_config(
-            enabled_mcp_tools=enabled_mcp_tools, extra_env=booley_env, existing_config=existing
+            enabled_mcp_tools=enabled_mcp_tools,
+            extra_env=booley_env,
+            existing_config=existing,
+            gateway_url=gateway_url,
+            gateway_cwd=str(codex_dir),
         ),
         encoding="utf-8",
     )
-    from .auth_token import copy_codex_auth, subscription_creds_path
+    from .auth_token import link_codex_auth, subscription_creds_path
 
-    copy_codex_auth(subscription_creds_path("codex"), codex_dir / "auth.json", auth_mode)
+    link_codex_auth(subscription_creds_path("codex"), codex_dir / "auth.json", auth_mode)
 
 
 def _ensure_nested_codex_home(
@@ -522,9 +566,9 @@ def _ensure_nested_codex_home(
     cache_key = f"{ticket_scope}:{allowlist_str or '_none'}:{env_str}:{auth_mode}"
     cached = _NESTED_HOMES.get(cache_key)
     if cached is not None:
-        from .auth_token import copy_codex_auth, subscription_creds_path
+        from .auth_token import link_codex_auth, subscription_creds_path
 
-        copy_codex_auth(
+        link_codex_auth(
             subscription_creds_path("codex"), Path(cached) / ".codex" / "auth.json", auth_mode
         )
         return cached
@@ -535,15 +579,22 @@ def _ensure_nested_codex_home(
     safe_label = "".join(c if c.isalnum() or c in "-_" else "_" for c in (parent_label or "anon"))[
         :40
     ]
-    nested = Path(f"/tmp/codex-nested-home-{ticket_scope}-{safe_label}-{digest}")
+    nested = scratch_root() / f"codex-nested-home-{ticket_scope}-{safe_label}-{digest}"
     codex_dir = nested / ".codex"
     codex_dir.mkdir(parents=True, exist_ok=True)
+    mark_owned(nested)
 
     # Forward all BOOLEY_* env so MCP-spawned MCP endpoint subprocesses (run_sim_batch,
     # bwave, etc.) can locate the project, logs dir, and ticket slug. Codex
     # *replaces* the MCP process env when [env] is present, so we have to
     # enumerate everything the child needs.
-    booley_env = {k: v for k, v in os.environ.items() if k.startswith("BOOLEY_")}
+    # The gateway token (and the command that mints it) reaches Codex only
+    # through its inherited environment; neither may be written into the
+    # generated config.toml.
+    secret_names = {GATEWAY_TOKEN_ENV, GATEWAY_TOKEN_COMMAND_ENV}
+    booley_env = {
+        k: v for k, v in os.environ.items() if k.startswith("BOOLEY_") and k not in secret_names
+    }
     booley_env.update(extra_env or {})
     booley_env["BOOLEY_NESTED_AGENT"] = "1"
     booley_env["BOOLEY_NESTED_MCP_TOOLS"] = ",".join(allowlist)
@@ -552,6 +603,61 @@ def _ensure_nested_codex_home(
 
     _NESTED_HOMES[cache_key] = str(nested)
     return _NESTED_HOMES[cache_key]
+
+
+def _log_agent_done(tag: str, result: AgentResult) -> None:
+    """Log the usage summary of a finished Codex run."""
+    logger.info(
+        "%sCodex agent done (%s)",
+        tag,
+        format_usage_log(
+            result.input_tokens, result.cached_tokens, result.output_tokens, result.cost_usd
+        ),
+    )
+
+
+def _log_transient_retry(failures: int, exc: Exception, backoff: float) -> None:
+    """Log a transient Codex failure that will be retried after *backoff* seconds."""
+    logger.warning(
+        "Codex transient error (attempt %d/%d): %s -- retrying in %.0fs",
+        failures,
+        MAX_API_RETRIES,
+        exc,
+        backoff,
+    )
+
+
+def _gateway_token_command_active() -> bool:
+    """Whether the gateway's token comes from ``BOOLEY_GATEWAY_TOKEN_COMMAND``."""
+    try:
+        return gateway_settings_from_env().token_command is not None
+    except GatewayConfigError:
+        return False
+
+
+def _with_command_token(env: dict[str, str] | None, token: str) -> dict[str, str]:
+    """Return the Codex child env carrying the command's *token*.
+
+    Codex's unchanged auth helper reads the token from its inherited env; the
+    command that minted it stays out so the helper sees exactly one source.
+    """
+    child_env = dict(os.environ) if env is None else env
+    child_env[GATEWAY_TOKEN_ENV] = token
+    child_env.pop(GATEWAY_TOKEN_COMMAND_ENV, None)
+    return child_env
+
+
+async def _resolve_gateway_command_token() -> str | None:
+    """Validate the gateway config before spawning; return the command's token if any.
+
+    Raises :class:`GatewayConfigError` naming the missing variable, or the token
+    command's failure. The command runs in a worker thread so a slow one never
+    blocks the event loop.
+    """
+    settings = gateway_settings_from_env()
+    if settings.token_command is None:
+        return None
+    return await anyio.to_thread.run_sync(gateway_token_for, settings)
 
 
 async def _codex_spawn(
@@ -565,6 +671,7 @@ async def _codex_spawn(
     in ``params.nested_mcp_tools`` and carries the scoped MCP environment.
     An unlabeled caller uses "_anonymous" with an empty allowlist.
     """
+    command_token = await _resolve_gateway_command_token() if auth_mode == GATEWAY_AUTH else None
     env = None
     if auth_mode != "auto" and os.environ.get("CODEX_HOME"):
         from .auth_token import subscription_creds_path
@@ -600,6 +707,8 @@ async def _codex_spawn(
     plan.require_credential()
     if auth_mode != "auto" or plan.values:
         env = plan.child_environment(dict(os.environ) if env is None else env)
+    if command_token is not None:
+        env = _with_command_token(env, command_token)
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -626,6 +735,7 @@ async def _codex_run_subprocess(
     full_prompt: str,
     on_event: Any,
     auth_mode: str = "auto",
+    on_start: Callable[[], None] | None = None,
 ) -> tuple[str, str, int]:
     """Spawn codex exec, stream I/O, return (stdout, stderr, returncode)."""
     proc, session_root = await _codex_spawn(cmd, params, auth_mode)
@@ -642,6 +752,10 @@ async def _codex_run_subprocess(
             stderr_buf.extend(chunk)
 
     async def _stream_and_drain() -> None:
+        # The child exists: the start is confirmed. Inside the timeout/cancel
+        # cleanup of ``_run_codex_work``, so the notice never outlives a kill.
+        if on_start is not None:
+            on_start()
         assert proc.stdin is not None
         proc.stdin.write(full_prompt.encode("utf-8"))
         await proc.stdin.drain()
@@ -787,6 +901,8 @@ def _raise_for_codex_detail(detail: str, *, prefix: str) -> None:
         raise UsageLimitError(detail, provider="codex")
     if is_context_exhausted(detail):
         raise ContextExhaustedError(detail, provider="codex")
+    if is_auth_failure(detail) and _gateway_token_command_active():
+        raise AgentAuthError(f"{prefix}: {detail}", provider="codex")
     if _is_transient_error(RuntimeError(detail)):
         raise TransientAPIError(f"{prefix}: {detail}", retry_after=10)
     raise AgentProviderError(f"{prefix}: {detail}", provider="codex")

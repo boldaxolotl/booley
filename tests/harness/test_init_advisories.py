@@ -476,6 +476,30 @@ def test_init_guidance_does_not_offer_retired_notifications(project, capsys, con
     assert "[notifications]" not in init_cmd.BOOLEY_TOML_SKELETON
 
 
+def test_summary_rows_use_the_shared_status_glyphs(project, monkeypatch, capsys):
+    from booley.harness import colors
+    from booley.harness import terminal_status as ts
+
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+    ctx = InitContext(project_root=project)
+    ctx.record("a", "ok", "done")
+    ctx.record("b", "skip", "not applicable")
+    ctx.record("c", "warn", "drifted")
+    ctx.record("d", "err", "broke")
+
+    init_cmd._print_summary(ctx)
+
+    lines = capsys.readouterr().out.splitlines()
+    assert "Summary" in lines
+    start = lines.index("Summary") + 1
+    assert lines[start : start + 4] == [
+        ts.status_line(ts.LineStatus.PASS, "a — done"),
+        ts.status_line(ts.LineStatus.SKIP, "b — not applicable"),
+        ts.status_line(ts.LineStatus.WARN, "c — drifted"),
+        ts.status_line(ts.LineStatus.FAIL, "d — broke"),
+    ]
+
+
 def test_check_only_final_verdict_reports_checked_state(project, capsys):
     ctx = InitContext(project_root=project, check_only=True)
     ctx.record("auth", "ok", "checked authentication")

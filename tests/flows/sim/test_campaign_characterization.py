@@ -37,20 +37,16 @@ from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.domain import TargetHandle
+from tests.flows.report_headline import final_report_omits_headline
+from tests.flows.sim.leased_session import canned_build_session
 from tests.flows.sim.test_campaign_phase5_adversarial import _plan, _unmanaged
 from tests.flows.sim.test_flow import SimulateFlow, _make_flow
 
 
 @pytest.fixture()
-def _legacy_build_transport():
-    """Scope the legacy canned-process path to compatibility tests only."""
-    with patch.object(
-        SimulationExecution,
-        "_run_groups_with_session",
-        lambda self, handle, groups, **planned: self._run_planned_groups(
-            handle, groups, **planned
-        ),
-    ):
+def _leased_build_session():
+    """Run canned-process compatibility tests against a leased build session."""
+    with canned_build_session():
         yield
 
 
@@ -138,7 +134,7 @@ def _legacy_build_transport():
 )
 def test_public_simulation_precedence_table(
     tmp_path: Path,
-    _legacy_build_transport: None,
+    _leased_build_session: None,
     process: SubprocessResult,
     exit_code: int,
     verdict: str | None,
@@ -150,7 +146,7 @@ def test_public_simulation_precedence_table(
         patch("booley.flows.sim.flow._get_test_names", return_value={}),
         patch.object(SimulateFlow, "_flow_enabled", return_value=True),
         patch.object(flow, "_execute", return_value=process),
-        flow.context.publication_resources,
+        flow.publication_resources,
     ):
         outcome = flow._run()
 
@@ -167,7 +163,7 @@ def test_public_simulation_precedence_table(
 
 def test_compatibility_projection_and_endpoint_detail_shape(
     tmp_path: Path,
-    _legacy_build_transport: None,
+    _leased_build_session: None,
 ) -> None:
     """Freeze the established projection and endpoint values, not only keys."""
     flow = _make_flow(tmp_path, config="lite")
@@ -184,7 +180,7 @@ def test_compatibility_projection_and_endpoint_detail_shape(
         patch.object(flow, "_execute", return_value=process),
         patch.object(flow, "_compile_command_str", return_value=None),
         patch.object(flow, "_fileset_for_report", return_value=None),
-        flow.context.publication_resources,
+        flow.publication_resources,
     ):
         outcome = flow._run()
 
@@ -368,7 +364,6 @@ class _SessionBoundaryExecution(SimulationExecution):
             "tb_demo",
             ("make", "-C", str(build_root)),
         )
-        self._fresh_generation = work_root
         return prepared, TraceMode.VCD_FIFO
 
     def _prepare_attempt(self, *args: Any, **kwargs: Any):
@@ -720,37 +715,9 @@ def test_unfiltered_guard_without_discovered_tests_is_scannable(tmp_path) -> Non
     assert result.document["observations"][0]["detail"]["termination"] == "sim_time_stall"
 
 
-def test_campaign_scan_rejects_adapter_guard_for_foreign_target(tmp_path) -> None:
-    import hashlib
-
-    from booley.flows.sim.campaign.codec import (
-        SimulationCampaignIntegrityError,
-        canonical_json_bytes,
-    )
-
-    test_infrastructure_guard_publishes_terminal_campaign(tmp_path, "disk_budget", False)
-    store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
-    (result_path,) = store.root.glob("work-items/*/result.json")
-    document = json.loads(result_path.read_bytes())
-    (attempt,) = result_path.parent.glob("attempts/*")
-    reference = next(
-        item for item in document["evidence"] if item["kind"] == "simulation_adapter_result"
-    )
-    source_path = attempt / reference["path"]
-    source = json.loads(source_path.read_bytes())
-    source["target_identity"] = "foreign#sim"
-    raw = json.dumps(source, separators=(",", ":")).encode()
-    source_path.write_bytes(raw)
-    reference["bytes"] = len(raw)
-    reference["sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
-    result_path.write_bytes(canonical_json_bytes(document))
-    with pytest.raises(SimulationCampaignIntegrityError, match="Target disagrees"):
-        store.scan()
-
-
 @pytest.mark.parametrize("met", [True, False])
 def test_standalone_legacy_simulation_final_report_is_run_local(
-    tmp_path, _legacy_build_transport, met
+    tmp_path, _leased_build_session, met
 ):
     flow = _make_flow(tmp_path, config="lite")
     flow.args.state_file = None
@@ -762,18 +729,23 @@ def test_standalone_legacy_simulation_final_report_is_run_local(
         patch("booley.flows.sim.flow._get_test_names", return_value={}),
         patch.object(SimulateFlow, "_flow_enabled", return_value=True),
         patch.object(flow, "_execute", return_value=process),
-        flow.context.publication_resources,
+        flow.publication_resources,
     ):
         outcome = flow._run()
-        from booley.flows.endpoint_report_criteria import freeze
-
-        freeze(flow.context)
-        path = flow.context.write_report(outcome)
-    from booley.flows.endpoint_report_criteria import freeze
-
-    freeze(flow.context)
-    report = json.loads(path.read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
+        final_report_omits_headline(flow, outcome)
     assert flow.state.criteria["sim_pass_lite"].met is met
     assert "elab_pass_lite" not in flow.state.criteria
     assert flow.state._file_path is None
+
+
+def test_campaign_scan_takes_a_published_infrastructure_verdict_as_published(tmp_path) -> None:
+    test_infrastructure_guard_publishes_terminal_campaign(tmp_path, "disk_budget", False)
+    store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
+    published = store.scan().items[0].result
+    assert published is not None
+    for reference in published.document["evidence"]:
+        if reference["kind"] == "simulation_adapter_result":
+            (attempt,) = (store.root / "work-items").glob("*/attempts/*")
+            (attempt / reference["path"]).unlink()
+
+    assert store.scan().items[0].result == published

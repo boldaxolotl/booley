@@ -31,9 +31,10 @@ from .coverage_campaign import (
     encode_coverage_point,
     freeze_coverage_mapping,
 )
-from .coverage_campaign_store import MAX_POINTS
-from .coverage_source_gaps import source_gap_overview, source_gap_summary
+from .coverage_source_gaps import source_gap_overview, source_gap_paths
 
+#: The largest Campaign one Analyst evidence session indexes.
+MAX_POINTS = 1_000_000
 MAX_RESPONSE_BYTES = 64 * 1024
 DEFAULT_TOTAL_BUDGET_BYTES = 384 * 1024
 MAX_POINT_LIMIT = 100
@@ -290,23 +291,20 @@ class CoverageEvidenceSession:
     def _zero_point_sources(self, request: Mapping[str, object]) -> dict[str, object]:
         _closed(request, {"view", "limit", "cursor"})
         limit = _bounded_int(request.get("limit", 50), "limit", 1, MAX_POINT_LIMIT)
-        summary = source_gap_summary(self._campaign)
-        offset = _cursor_offset(request, len(summary.paths))
+        all_paths = source_gap_paths(self._campaign)
+        offset = _cursor_offset(request, len(all_paths))
         paths = []
-        for path in summary.paths[offset : offset + limit]:
+        for path in all_paths[offset : offset + limit]:
             if _encoded_size({"paths": [*paths, path]}) > MAX_RESPONSE_BYTES - 1024:
                 break
             paths.append(path)
-        if not paths and offset < len(summary.paths):
+        if not paths and offset < len(all_paths):
             raise CoverageEvidenceError("One source path exceeds the response limit")
         end = offset + len(paths)
         return {
-            "discovery_status": summary.status,
-            "comparison_status": summary.comparison_status,
-            "total_sources": len(summary.paths),
+            "total_sources": len(all_paths),
             "paths": paths,
-            "unusable_findings": summary.unusable_findings,
-            "next_cursor": _cursor(request, end) if end < len(summary.paths) else None,
+            "next_cursor": _cursor(request, end) if end < len(all_paths) else None,
         }
 
     def _point_page(self, request: Mapping[str, object]) -> dict[str, object]:

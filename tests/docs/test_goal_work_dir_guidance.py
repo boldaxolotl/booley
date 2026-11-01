@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ROUTING_DOCUMENTS = (
     "src/booley/data/skills/booley-goal/SKILL.md",
     "src/booley/data/cheatsheet.md",
-    "docs/user/FLOW_REFERENCE.md",
+    "docs/user/FLOW-SIM.md",
     "qa/shared/GOAL-CHILD.md",
 )
 
@@ -62,8 +62,8 @@ def _assert_guidance_names(text, available, source):
 
 
 def test_documented_work_dir_inventory_matches_registered_schemas(monkeypatch):
-    usage = (REPO_ROOT / "docs/user/USAGE.md").read_text(encoding="utf-8")
-    table = usage.split("Built-in MCP worktree routing:\n\n", 1)[1].split("\n\n")[0]
+    mcp_tools_doc = (REPO_ROOT / "docs/internals/MCP-TOOLS.md").read_text(encoding="utf-8")
+    table = mcp_tools_doc.split("Built-in MCP worktree routing:\n\n", 1)[1].split("\n\n")[0]
     documented = {}
     for row in table.splitlines()[2:]:
         for accepts, cell in zip((True, False), row.strip("|").split("|"), strict=True):
@@ -81,8 +81,8 @@ def test_documented_work_dir_inventory_matches_registered_schemas(monkeypatch):
         assert "work_dir" not in tool.input_schema["properties"]
         with pytest.raises(AssertionError, match=name):
             _assert_guidance_names(f"MCP tool `{name}`", set(live), "unqualified")
-    assert "only when diagnostic tools are enabled" in usage
-    assert "only in the Coverage Analyst's nested server" in usage
+    assert "only when diagnostic tools are enabled" in mcp_tools_doc
+    assert "only in the Coverage Analyst's nested server" in mcp_tools_doc
 
 
 def test_current_instructions_never_require_work_dir_on_every_call():
@@ -117,8 +117,10 @@ def test_agent_facing_guidance_names_only_interactive_tools(monkeypatch, capsys)
     sources = [rules(routing_guidance=guidance), mcp._format_status_card(sorted(names))]
     sources += [t.description for t in tools]
     sources += [warning, str(refusal.value)]
-    for path in (*ROUTING_DOCUMENTS, "docs/user/USAGE.md"):
+    for path in (*ROUTING_DOCUMENTS, "docs/user/GOAL-MODE.md"):
         text = (REPO_ROOT / path).read_text(encoding="utf-8")
+        # FLOW-SIM.md ends with `[flows.sim]` settings, which name C++ `main()`, not tools.
+        text = text.split("\n## Configuration", 1)[0]
         if path in ROUTING_DOCUMENTS:
             exclusions = re.findall(
                 r"([^.]+) (?:accept no `work_dir`\.|have no `work_dir` argument)",
@@ -128,7 +130,7 @@ def test_agent_facing_guidance_names_only_interactive_tools(monkeypatch, capsys)
             assert set(re.findall(r"`([a-z_]+)`", exclusions[0])) == nonaccepting
             assert all(f"`{name}`" in text for name in ("booley_targets", "booley_report"))
             sources.append(text)
-        if path in (ROUTING_DOCUMENTS[0], "docs/user/USAGE.md"):
+        if path in (ROUTING_DOCUMENTS[0], "docs/user/GOAL-MODE.md"):
             assert "CLI runs never record Goal evidence" in text
             assert all(word in text for word in ("Goal-bound", "MCP", "`work_dir`"))
     for flag in ("--goals", "--all"):

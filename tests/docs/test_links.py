@@ -8,16 +8,20 @@ import subprocess
 from functools import cache
 from html.parser import HTMLParser
 from pathlib import Path
-from unicodedata import category
 from urllib.parse import unquote, urlsplit
 
 import pytest
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
+from booley.runtime.docs_links import SITE_URL, USER_DOCS, github_anchor
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GITHUB_REPOSITORY_PATH = "/boldaxolotl/Booley"
 GITHUB_BLOB_PREFIX = "/boldaxolotl/Booley/blob/main/"
+SITE = urlsplit(SITE_URL)
+SITE_DOCS_PREFIX = f"{SITE.path}docs/"
+USER_DOC_FILES = {doc.slug: doc.file for doc in USER_DOCS}
 
 
 def _frozen_upstream_documents() -> set[Path]:
@@ -41,6 +45,7 @@ def _markdown_files() -> list[Path]:
         check=True,
         capture_output=True,
         text=True,
+        timeout=60,
     )
     frozen = _frozen_upstream_documents()
     return [
@@ -82,18 +87,37 @@ def _repository_target(target: Path, destination: str) -> Path:
     raise ValueError(f"destination escapes repository: {destination}")
 
 
+def _site_doc_path(site_path: str) -> Path | None:
+    """Map a project-site URL path under ``docs/`` to its source in ``docs/user/``."""
+    if not site_path.startswith(SITE_DOCS_PREFIX):
+        return None  # home page, videos, and other site-only pages
+    page = unquote(site_path.removeprefix(SITE_DOCS_PREFIX))
+    if page.startswith("assets/"):
+        return REPO_ROOT / "docs/user" / page
+    slug = page.strip("/")
+    if slug not in USER_DOC_FILES:
+        raise ValueError(f"unknown user-doc slug: {slug}")
+    return REPO_ROOT / "docs/user" / USER_DOC_FILES[slug]
+
+
+def _web_path(netloc: str, path: str) -> Path | None:
+    """Map a project-site or GitHub blob URL to its repository source, if any."""
+    if netloc == SITE.netloc:
+        return _site_doc_path(path)
+    if netloc != "github.com":
+        return None
+    if path.rstrip("/") == GITHUB_REPOSITORY_PATH:
+        return REPO_ROOT / "README.md"
+    if path.startswith(GITHUB_BLOB_PREFIX):
+        return REPO_ROOT / unquote(path.removeprefix(GITHUB_BLOB_PREFIX))
+    return None
+
+
 def _repository_path(document: Path, destination: str) -> Path | None:
     parsed = urlsplit(destination)
     if parsed.scheme in {"http", "https"}:
-        if parsed.netloc.casefold() != "github.com":
-            return None
-        if parsed.path.rstrip("/") == GITHUB_REPOSITORY_PATH:
-            target = REPO_ROOT / "README.md"
-        elif parsed.path.startswith(GITHUB_BLOB_PREFIX):
-            target = REPO_ROOT / unquote(parsed.path.removeprefix(GITHUB_BLOB_PREFIX))
-        else:
-            return None
-        return _repository_target(target, destination)
+        target = _web_path(parsed.netloc.casefold(), parsed.path)
+        return None if target is None else _repository_target(target, destination)
     if parsed.scheme or parsed.netloc or parsed.path.startswith("/"):
         return None
     if not parsed.path:
@@ -105,15 +129,6 @@ def _repository_path(document: Path, destination: str) -> Path | None:
 def _heading_text(token: Token) -> str:
     """Return rendered text from a Markdown heading's inline token."""
     return "".join(child.content for child in token.children or [] if child.type != "html_inline")
-
-
-def _github_slug(text: str) -> str:
-    """Approximate GitHub's heading-ID rules for the syntax used in this repo."""
-    return "".join(
-        "-" if char.isspace() else char
-        for char in text.strip().lower()
-        if char in {"-", "_"} or char.isspace() or category(char)[0] in {"L", "M", "N"}
-    )
 
 
 class _HtmlAnchors(HTMLParser):
@@ -145,7 +160,7 @@ def _markdown_anchors(document: Path) -> frozenset[str]:
     for index, token in enumerate(tokens[:-1]):
         if token.type != "heading_open":
             continue
-        base = _github_slug(_heading_text(tokens[index + 1]))
+        base = github_anchor(_heading_text(tokens[index + 1]))
         anchor = base
         suffix = 0
         while anchor in anchors:
@@ -174,11 +189,30 @@ def _destination_failure(target: Path, destination: str) -> str | None:
     [
         "../outside.md",
         "https://github.com/boldaxolotl/Booley/blob/main/%2E%2E/outside.md",
+        f"{SITE_URL}docs/assets/%2E%2E/%2E%2E/%2E%2E/%2E%2E/outside.md",
     ],
 )
 def test_repository_paths_cannot_escape(destination: str) -> None:
     with pytest.raises(ValueError, match="destination escapes repository"):
         _repository_path(REPO_ROOT / "README.md", destination)
+
+
+@pytest.mark.parametrize(
+    ("destination", "target"),
+    [
+        (f"{SITE_URL}docs/setup/#the-booley-setup-skill", "docs/user/SETUP.md"),
+        (f"{SITE_URL}docs/assets/booley-screenshot.png", "docs/user/assets/booley-screenshot.png"),
+        (f"{SITE_URL}videos/", None),
+    ],
+)
+def test_site_urls_resolve_to_user_doc_sources(destination: str, target: str | None) -> None:
+    resolved = _repository_path(REPO_ROOT / "README.md", destination)
+    assert resolved == (None if target is None else REPO_ROOT / target)
+
+
+def test_unknown_site_doc_slug_fails() -> None:
+    with pytest.raises(ValueError, match="unknown user-doc slug: nope"):
+        _repository_path(REPO_ROOT / "README.md", f"{SITE_URL}docs/nope/")
 
 
 def test_heading_anchors_follow_github_ids(tmp_path: Path) -> None:
@@ -250,3 +284,31 @@ def test_agent_instruction_document_paths_resolve() -> None:
     ]
     missing = [path.relative_to(REPO_ROOT) for path in doc_paths if not path.is_file()]
     assert not missing, f"missing documents referenced by AGENTS.md: {missing}"
+
+
+# The site moved from GitHub's project-site host to its own domain. GitHub
+# redirects the old URLs, but new text must name SITE_URL so that links do not
+# depend on that redirect. These files name the old host on purpose.
+_RETIRED_SITE_HOST = "boldaxolotl.github.io"
+_RETIRED_HOST_ALLOWED = {
+    "CHANGELOG.md",  # release history records the move
+    "src/booley/data/refs/CHANGELOG.md",  # packaged copy of the release history
+    "docs/adr/0081-publish-user-docs-on-the-project-site.md",  # amendment records the move
+    ".github/workflows/pages.yml",  # documents the redirect setting
+    "tests/docs/test_links.py",  # this guard
+}
+
+
+def test_tracked_files_name_the_site_by_its_current_domain() -> None:
+    """Old-host links pass the link check above (another host), so catch them here."""
+    result = subprocess.run(
+        ["git", "grep", "-l", "--fixed-strings", _RETIRED_SITE_HOST],
+        cwd=REPO_ROOT,
+        check=False,  # exit 1 means no match, checked below
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode in (0, 1), result.stderr
+    stale = sorted(set(result.stdout.splitlines()) - _RETIRED_HOST_ALLOWED)
+    assert not stale, f"replace {_RETIRED_SITE_HOST} links with {SITE_URL} in: {stale}"

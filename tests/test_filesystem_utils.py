@@ -1,7 +1,8 @@
-"""Tests for filesystem_utils: safe_rmtree, copy_booley_tree, and replace_file."""
+"""Tests for filesystem_utils: safe_rmtree and replace_file."""
 
 from __future__ import annotations
 
+import errno
 import stat
 import sys
 import threading
@@ -10,7 +11,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from booley.runtime.filesystem_utils import copy_booley_tree, replace_file, safe_rmtree
+from booley.runtime.filesystem_utils import replace_file, safe_rmtree, unlink_file
 
 # ---------------------------------------------------------------------------
 # safe_rmtree
@@ -65,76 +66,35 @@ class TestSafeRmtree:
         safe_rmtree(d)
         assert not d.exists()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX symlinks")
+    def test_error_handler_never_chmods_a_symlink_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A failed unlink of a link must not change the mode of what it points at."""
+        real = tmp_path / "real-login"
+        real.write_text("secret")
+        real.chmod(0o600)
+        d = tmp_path / "target"
+        d.mkdir()
+        link = d / "auth.json"
+        link.symlink_to(real)
+
+        def failing_rmtree(path, onerror):
+            onerror(Path.unlink, str(link), None)
+
+        monkeypatch.setattr("booley.runtime.filesystem_utils.shutil.rmtree", failing_rmtree)
+        # The handler retries ``func`` (unlink), which removes the link itself.
+        safe_rmtree(d)
+
+        assert stat.S_IMODE(real.stat().st_mode) == 0o600
+        assert real.exists()
+
     def test_accepts_string_path(self, tmp_path: Path):
         d = tmp_path / "strpath"
         d.mkdir()
         (d / "x.txt").write_text("data")
         safe_rmtree(str(d))
         assert not d.exists()
-
-
-# ---------------------------------------------------------------------------
-# copy_booley_tree
-# ---------------------------------------------------------------------------
-
-
-class TestCopyBooleyTree:
-    def test_copies_files(self, tmp_path: Path):
-        src = tmp_path / "src_tree"
-        src.mkdir()
-        (src / "main.py").write_text("print('hello')")
-        (src / "tools").mkdir()
-        (src / "tools" / "tool.py").write_text("# tool")
-
-        dst = tmp_path / "dst_tree"
-        copy_booley_tree(src, dst)
-
-        assert (dst / "main.py").exists()
-        assert (dst / "tools" / "tool.py").exists()
-
-    def test_excludes_standard_dirs(self, tmp_path: Path):
-        """Directories in BOOLEY_COPY_EXCLUDES should be skipped."""
-        src = tmp_path / "src_tree"
-        src.mkdir()
-        (src / "keep.py").write_text("ok")
-        for excl in [".git", ".venv", "__pycache__", "tmp", "target"]:
-            d = src / excl
-            d.mkdir()
-            (d / "inside.txt").write_text("nope")
-
-        dst = tmp_path / "dst_tree"
-        copy_booley_tree(src, dst)
-
-        assert (dst / "keep.py").exists()
-        for excl in [".git", ".venv", "__pycache__", "tmp", "target"]:
-            assert not (dst / excl).exists(), f"{excl} should be excluded"
-
-    def test_replaces_existing_dst(self, tmp_path: Path):
-        """If dst already exists, it should be removed first."""
-        src = tmp_path / "src_tree"
-        src.mkdir()
-        (src / "new.py").write_text("new content")
-
-        dst = tmp_path / "dst_tree"
-        dst.mkdir()
-        (dst / "old.py").write_text("old content")
-
-        copy_booley_tree(src, dst)
-
-        assert (dst / "new.py").exists()
-        assert not (dst / "old.py").exists()
-
-    def test_excludes_pyc_files(self, tmp_path: Path):
-        src = tmp_path / "src_tree"
-        src.mkdir()
-        (src / "code.py").write_text("ok")
-        (src / "code.pyc").write_text("bytecode")
-
-        dst = tmp_path / "dst_tree"
-        copy_booley_tree(src, dst)
-
-        assert (dst / "code.py").exists()
-        assert not (dst / "code.pyc").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -178,13 +138,12 @@ class TestReplaceFile:
         assert destination.read_text() == "new"
         assert not source.exists()
 
-    @pytest.mark.parametrize("winerror", [5, 32])
     def test_retries_transient_windows_sharing_errors(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, winerror: int
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         source, destination = tmp_path / "new", tmp_path / "record.json"
         source.write_text("new")
-        flaky = _FlakyReplace([_windows_permission_error(winerror)] * 3)
+        flaky = _FlakyReplace([_windows_permission_error(32)] * 3)
         flaky.install(monkeypatch)
         delays: list[float] = []
         replace_file(source, destination, sleep=delays.append)
@@ -230,3 +189,205 @@ class TestReplaceFile:
             closer.join(timeout=5)
             reader.close()
         assert destination.read_text() == "new"
+
+
+class _FlakyUnlink:
+    """Stand-in for Path.unlink that fails a fixed number of times first."""
+
+    def __init__(self, failures: list[OSError]) -> None:
+        self.failures = failures
+        self.calls = 0
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_unlink = Path.unlink
+
+        def flaky_unlink(path: Path, *args, **kwargs) -> None:
+            self.calls += 1
+            if self.failures:
+                raise self.failures.pop(0)
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+
+class TestUnlinkFile:
+    def test_removes_file(self, tmp_path: Path):
+        target = tmp_path / "entry"
+        target.write_text("x")
+        unlink_file(target)
+        assert not target.exists()
+
+    def test_retries_transient_windows_sharing_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        target = tmp_path / "entry"
+        target.write_text("x")
+        flaky = _FlakyUnlink([_windows_permission_error(32)] * 3)
+        flaky.install(monkeypatch)
+        delays: list[float] = []
+        unlink_file(target, sleep=delays.append)
+        assert not target.exists()
+        assert flaky.calls == 4
+        assert len(delays) == 3
+
+    def test_gives_up_after_bounded_retries(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        target = tmp_path / "entry"
+        target.write_text("x")
+        flaky = _FlakyUnlink([_windows_permission_error(32)] * 100)
+        flaky.install(monkeypatch)
+        delays: list[float] = []
+        with pytest.raises(PermissionError):
+            unlink_file(target, sleep=delays.append)
+        assert flaky.calls == len(delays) + 1
+        assert sum(delays) < 2.0
+
+
+class _FlakyOpen:
+    """Stand-in for Path.open that fails the first reads of one path."""
+
+    def __init__(self, target: Path, failures: list[OSError]) -> None:
+        self.target = target
+        self.failures = failures
+        self.calls = 0
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_open = Path.open
+
+        # A plain function (not this instance) so Path binds it as a method.
+        def flaky_open(path: Path, *args: object, **kwargs: object):
+            if path == self.target:
+                self.calls += 1
+                if self.failures:
+                    raise self.failures.pop(0)
+            return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "open", flaky_open)
+
+
+class TestReadFileBytes:
+    def test_retries_transient_windows_sharing_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from booley.runtime.filesystem_utils import read_file_bytes
+
+        path = tmp_path / "record.json"
+        path.write_bytes(b"payload")
+        flaky = _FlakyOpen(
+            path,
+            [
+                _windows_permission_error(5),
+                _windows_permission_error(32),
+                _windows_permission_error(5),
+            ],
+        )
+        flaky.install(monkeypatch)
+        delays: list[float] = []
+        assert read_file_bytes(path, sleep=delays.append) == b"payload"
+        assert flaky.calls == 4
+        assert len(delays) == 3
+
+    def test_gives_up_after_bounded_retries_and_keeps_missing_and_posix_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from booley.runtime.filesystem_utils import read_file_bytes
+
+        path = tmp_path / "record.json"
+        path.write_bytes(b"payload")
+        flaky = _FlakyOpen(path, [_windows_permission_error(32)] * 100)
+        flaky.install(monkeypatch)
+        delays: list[float] = []
+        with pytest.raises(PermissionError):
+            read_file_bytes(path, sleep=delays.append)
+        assert flaky.calls == len(delays) + 1
+        assert sum(delays) < 2.0
+
+        posix = _FlakyOpen(path, [PermissionError(13, "Permission denied")])
+        posix.install(monkeypatch)
+        delays.clear()
+        # Pin POSIX: on Windows a bare EACCES is a transient C-runtime sharing error.
+        with monkeypatch.context() as posix_host:
+            posix_host.setattr(sys, "platform", "linux")
+            with pytest.raises(PermissionError):
+                read_file_bytes(path, sleep=delays.append)
+        assert posix.calls == 1
+        assert delays == []
+
+        with pytest.raises(FileNotFoundError):
+            read_file_bytes(tmp_path / "missing.json", sleep=delays.append)
+        assert delays == []
+
+    def test_retries_bare_eacces_from_the_windows_c_runtime(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Windows open() goes through the C runtime, which reports a sharing
+        violation as plain EACCES with no winerror (#2352)."""
+        from booley.runtime.filesystem_utils import read_file_bytes
+
+        path = tmp_path / "record.json"
+        path.write_bytes(b"payload")
+        flaky = _FlakyOpen(path, [PermissionError(errno.EACCES, "Permission denied")] * 3)
+        flaky.install(monkeypatch)
+        delays: list[float] = []
+        with monkeypatch.context() as windows:
+            windows.setattr(sys, "platform", "win32")
+            assert read_file_bytes(path, sleep=delays.append) == b"payload"
+        assert flaky.calls == 4
+        assert len(delays) == 3
+
+        persistent = _FlakyOpen(path, [PermissionError(errno.EACCES, "Permission denied")] * 100)
+        persistent.install(monkeypatch)
+        delays.clear()
+        with monkeypatch.context() as windows:
+            windows.setattr(sys, "platform", "win32")
+            with pytest.raises(PermissionError):
+                read_file_bytes(path, sleep=delays.append)
+        assert persistent.calls == len(delays) + 1
+
+
+def test_open_with_sharing_retry_retries_transient_errors():
+    from booley.runtime.filesystem_utils import open_with_sharing_retry
+    from tests.sharing_error_support import flaky
+
+    opener, calls = flaky(lambda: "handle", 3)
+    delays: list[float] = []
+    assert open_with_sharing_retry(opener, Path("held.json"), sleep=delays.append) == "handle"
+    assert calls == [4]
+    assert len(delays) == 3
+
+
+def test_open_with_sharing_retry_raises_lasting_error_and_keeps_other_errors(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from booley.runtime.filesystem_utils import open_with_sharing_retry
+    from tests.sharing_error_support import flaky
+
+    path = Path("held.json")
+    opener, calls = flaky(lambda: "handle", 1000)
+    delays: list[float] = []
+    with pytest.raises(PermissionError) as lasting:
+        open_with_sharing_retry(opener, path, sleep=delays.append)
+    assert lasting.value.winerror == 32  # type: ignore[attr-defined]
+    assert calls[0] == len(delays) + 1 > 1
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    for error in (
+        FileNotFoundError(errno.ENOENT, "missing"),
+        OSError(errno.ELOOP, "symlink"),
+        PermissionError(errno.EACCES, "Permission denied"),
+    ):
+        attempts: list[int] = []
+
+        def failing(error: OSError = error, attempts: list[int] = attempts):
+            attempts.append(1)
+            raise error
+
+        with pytest.raises(type(error)):
+            open_with_sharing_retry(failing, path, sleep=delays.append)
+        assert attempts == [1]
+
+
+def test_unlink_file_missing_ok_ignores_absent_path(tmp_path: Path):
+    absent = tmp_path / "absent"
+    unlink_file(absent, missing_ok=True)
+    with pytest.raises(FileNotFoundError):
+        unlink_file(absent)

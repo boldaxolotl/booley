@@ -7,6 +7,7 @@ from pathlib import Path
 
 from booley.fusesoc.fusesoc_registry import read_core
 from booley.targets.domain import FuseSocError
+from tests.conftest import symlink_or_skip
 
 CORE_TEXT = textwrap.dedent(
     """\
@@ -73,3 +74,14 @@ def write_core(directory: Path, text: str = CORE_TEXT, *, create_sources: bool =
     if create_sources:
         touch_declared_sources(core)
     return core
+
+
+def symlinked_booley_dir(project: Path, external: Path) -> Path:
+    """Make ``<project>/.booley`` a directory symlink to *external* (#2157).
+
+    Creates *external* and its ``cores/`` directory; skips the test on hosts
+    that cannot create symlinks. Returns *external*.
+    """
+    (external / "cores").mkdir(parents=True)
+    symlink_or_skip(project / ".booley", external, target_is_directory=True)
+    return external

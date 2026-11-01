@@ -1,4 +1,4 @@
-"""Goal evidence by frozen Test Runs: matching, the ledger, and its verification (ADR 0072)."""
+"""Goal evidence by frozen Test Runs: matching and applicable history (ADR 0072)."""
 
 from __future__ import annotations
 
@@ -14,11 +14,10 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.test_runs import TestRun, build_test_run
 from booley.goals.paths import record_paths
 from booley.goals.recorder import GoalEvidenceRecorder
+from booley.goals.state_store import load_goal_state
 from booley.goals.status import GoalStatus, build_status
 from booley.goals.store import GoalStore
 from booley.goals.test_run_evidence import (
-    LEDGER_DETAIL_KEY,
-    build_ledger,
     flow_test_runs,
     fold_test_run_outcomes,
 )
@@ -83,6 +82,19 @@ def _record(
     return state.criteria[key].detail
 
 
+def _replayed(layout: SimpleNamespace, key: str) -> Any:
+    """Criterion *key* with its latches rebuilt from the evidence ledger alone.
+
+    The stored ``ever_failed`` flags are cleared first, so what the state reads back
+    is what projecting the ledger's rows (every Goal state read) derives.
+    """
+    stored = DevelopmentState.load(_state_file(layout))
+    for entry in stored.criteria.values():
+        entry.ever_failed = False
+    stored.save()
+    return load_goal_state(GoalStore(layout.control), layout.record).criteria[key]
+
+
 def _transaction(
     layout: SimpleNamespace,
     recorder: GoalEvidenceRecorder,
@@ -99,12 +111,14 @@ def _transaction(
 
 
 def _status(layout: SimpleNamespace, key: str = SIM_KEY) -> GoalStatus:
-    view = build_status(GoalStore(layout.control), layout.record, work_dir=layout.worktree)
+    reader = getattr(layout, "campaign_reader", None)
+    store = GoalStore(layout.control)
+    view = build_status(store, layout.record, work_dir=layout.worktree, campaign_reader=reader)
     return next(goal for goal in view.goals if goal.key == key)
 
 
-def _outcomes(detail: dict[str, Any]) -> dict[str, str]:
-    return {run["name"]: run["outcome"] for run in detail[LEDGER_DETAIL_KEY]["runs"]}
+def _outcomes(layout: SimpleNamespace, key: str = SIM_KEY) -> dict[str, str]:
+    return _shown(_status(layout, key))
 
 
 def _shown(status: GoalStatus) -> dict[str, str]:
@@ -134,7 +148,7 @@ def test_fold_failed_is_absorbing_and_errors_change_nothing() -> None:
     other_inputs = build_test_run("a", seed=1, args=("+x=1",))
     assert fold_test_run_outcomes([run_row(other_inputs)], [A])[0]["outcome"] == "missing"
     assert fold_test_run_outcomes([run_row(B)], [A])[0]["outcome"] == "missing"
-    assert build_ledger([], [run_row(A)], [A, B])["runs"] == [
+    assert fold_test_run_outcomes([run_row(A)], [A, B]) == [
         {"name": "a@1", "fingerprint": A.fingerprint, "outcome": "passed"},
         {"name": "b@1", "fingerprint": B.fingerprint, "outcome": "missing"},
     ]
@@ -145,18 +159,16 @@ def test_fold_failed_is_absorbing_and_errors_change_nothing() -> None:
 
 def test_partial_runs_accumulate_across_campaigns(two: SimpleNamespace) -> None:
     """A partial run extends the ledger; the other runs stay missing until they pass."""
-    first = _record(two, "run-1", [run_row(A)])
-    assert _outcomes(first) == {"a@1": "passed", "b@1": "missing"}
+    _record(two, "run-1", [run_row(A)])
+    assert _outcomes(two) == {"a@1": "passed", "b@1": "missing"}
     status = _status(two)
     assert status.status == "unmet"
     assert status.reason.startswith("goal-test-run-incomplete: ") and "b@1" in status.reason
     assert _shown(status) == {"a@1": "passed", "b@1": "missing"}
 
-    second = _record(two, "run-2", [run_row(B)])
-    assert _outcomes(second) == {"a@1": "passed", "b@1": "passed"}
-    # The earlier campaign contributed and is linked by sequence and digest.
-    (link,) = second[LEDGER_DETAIL_KEY]["source_evidence"]
-    assert link["sequence"] == 1 and len(link["sha256"]) == 64
+    _record(two, "run-2", [run_row(B)])
+    assert _outcomes(two) == {"a@1": "passed", "b@1": "passed"}
+    assert _contributors(two) == [1]
     assert (_status(two).status, _status(two).reason) == ("met", "")
 
 
@@ -164,8 +176,8 @@ def test_failure_is_sticky_at_the_same_contents_and_clears_when_they_change(
     two: SimpleNamespace,
 ) -> None:
     _record(two, "run-1", [run_row(A, "fail"), run_row(B)], met=False)
-    after_pass = _record(two, "run-2", [run_row(A), run_row(B)])
-    assert _outcomes(after_pass) == {"a@1": "failed", "b@1": "passed"}
+    _record(two, "run-2", [run_row(A), run_row(B)])
+    assert _outcomes(two) == {"a@1": "failed", "b@1": "passed"}
     status = _status(two)
     assert status.status == "unmet"
     assert status.reason.startswith("goal-test-run-failed: ") and "a@1" in status.reason
@@ -173,9 +185,9 @@ def test_failure_is_sticky_at_the_same_contents_and_clears_when_they_change(
     assert failed.rerun == "booley flow sim --target top --test=a@1"
 
     _edit_rtl(two, "module top; wire fixed; endmodule\n")
-    fresh = _record(two, "run-3", [run_row(A), run_row(B)])
-    assert _outcomes(fresh) == {"a@1": "passed", "b@1": "passed"}
-    assert fresh[LEDGER_DETAIL_KEY]["source_evidence"] == []  # other contents: nothing folds
+    _record(two, "run-3", [run_row(A), run_row(B)])
+    assert _outcomes(two) == {"a@1": "passed", "b@1": "passed"}
+    assert _contributors(two) == []  # other contents: nothing folds
     assert _status(two).status == "met"
 
 
@@ -197,8 +209,8 @@ def test_a_failing_run_no_goal_names_does_not_block(two: SimpleNamespace) -> Non
 def test_a_pass_with_other_declared_inputs_is_not_evidence(
     two: SimpleNamespace, impostor: TestRun
 ) -> None:
-    detail = _record(two, "run-1", [run_row(impostor), run_row(B)])
-    assert _outcomes(detail) == {"a@1": "missing", "b@1": "passed"}
+    _record(two, "run-1", [run_row(impostor), run_row(B)])
+    assert _outcomes(two) == {"a@1": "missing", "b@1": "passed"}
     assert _status(two).status == "unmet"
 
 
@@ -217,9 +229,9 @@ def test_rows_of_another_spec_revision_are_not_folded(two: SimpleNamespace) -> N
                 test_run_resolutions={SIM_KEY: replace(frozen, spec_revision=bumped.revision)},
             ),
         )
-    detail = _record(two, "run-2", [run_row(A), run_row(B)])
-    assert _outcomes(detail) == {"a@1": "passed", "b@1": "passed"}
-    assert detail[LEDGER_DETAIL_KEY]["source_evidence"] == []
+    _record(two, "run-2", [run_row(A), run_row(B)])
+    assert _outcomes(two) == {"a@1": "passed", "b@1": "passed"}
+    assert _contributors(two) == []
 
 
 # --- The stale-intent interleaving -----------------------------------------------
@@ -239,15 +251,15 @@ def test_stopped_transaction_is_completed_before_the_next_evidence_is_recorded(
         _transaction(two, stopped, campaign, passing)
 
     # B's recorder completes A's transaction first, so B's failure folds after it.
-    failed = _record(two, "run-b", [run_row(A, "fail"), run_row(B)], met=False)
-    assert len(failed[LEDGER_DETAIL_KEY]["source_evidence"]) == 1
+    _record(two, "run-b", [run_row(A, "fail"), run_row(B)], met=False)
+    assert len(_contributors(two)) == 1
     assert _status(two).reason.startswith("goal-test-run-failed")
 
     # Recovering A now only verifies it: the failure stays the selected observation.
     _transaction(two, GoalEvidenceRecorder(binding), campaign, passing)
     assert _status(two).reason.startswith("goal-test-run-failed")
-    rerun = _record(two, "run-c", passing)
-    assert _outcomes(rerun) == {"a@1": "failed", "b@1": "passed"}
+    _record(two, "run-c", passing)
+    assert _outcomes(two) == {"a@1": "failed", "b@1": "passed"}
     assert _status(two).reason.startswith("goal-test-run-failed")
 
 
@@ -258,8 +270,7 @@ def test_recovered_stale_intent_cannot_erase_an_intervening_failure(
     """The read-time check alone: a writer that did not complete A before recording B.
 
     Recorders account for earlier transactions before they record, so this
-    interleaving needs that step switched off; status must still refuse a
-    ledger that predates a failure.
+    interleaving needs that step switched off; status must still fold the intervening failure.
     """
     from booley.goals import campaign_accounting
 
@@ -275,21 +286,21 @@ def test_recovered_stale_intent_cannot_erase_an_intervening_failure(
     _record(two, "run-b", [run_row(A, "fail"), run_row(B)], met=False)
     assert _status(two).reason.startswith("goal-test-run-failed")
 
-    # A is recovered at a higher sequence with the ledger it froze before B's failure.
+    # A is recovered at a higher sequence with its passing rows frozen before B's failure.
     _transaction(
         two, GoalEvidenceRecorder(binding), "11111111-1111-4111-8111-111111111111", passing
     )
     state = json.loads(_state_file(two).read_text(encoding="utf-8"))
     assert state["criteria"][SIM_KEY]["met"] is True  # the frozen intent says "met"
-    assert _outcomes(state["criteria"][SIM_KEY]["detail"]) == {"a@1": "passed", "b@1": "passed"}
     status = _status(two)
     assert status.status == "unmet"
-    assert status.reason.startswith("goal-test-run-ledger-outdated: ")
-    assert "rerun the Simulation Flow" in status.reason
+    assert status.reason.startswith("goal-test-run-failed: ")
+    assert "a@1" in status.reason
 
     # The rerun folds every row, the intervening failure included: it stays sticky.
-    rerun = _record(two, "run-c", passing)
-    assert _outcomes(rerun) == {"a@1": "failed", "b@1": "passed"}
+    _record(two, "run-c", passing, extra={"test_run_outcomes_only": True})
+    assert not DevelopmentState.load(_state_file(two)).criteria[SIM_KEY].met
+    assert _outcomes(two) == {"a@1": "failed", "b@1": "passed"}
     assert _status(two).reason.startswith("goal-test-run-failed")
 
 
@@ -302,38 +313,31 @@ def _evidence_file(layout: SimpleNamespace, sequence: int) -> Any:
     return path / "record.json"
 
 
-def test_tampered_state_ledger_is_refused(two: SimpleNamespace) -> None:
-    _record(two, "run-1", [run_row(A, "fail"), run_row(B)], met=False)
-    path = _state_file(two)
-    immutable = {row: row.read_bytes() for row in (path.parent / "logs").rglob("record.json")}
-    state = json.loads(path.read_text(encoding="utf-8"))
-    entry = state["criteria"][SIM_KEY]
-    entry["met"] = True
-    entry["detail"][LEDGER_DETAIL_KEY]["runs"][0]["outcome"] = "passed"
-    path.write_text(json.dumps(state), encoding="utf-8")
-    status = _status(two)
-    assert status.status != "met"
-    assert status.reason.startswith("goal-test-run-failed")
-    from booley.goals.state_store import load_goal_state
+def _substitute_contributor(two: SimpleNamespace) -> None:
+    from booley.criteria.evidence_ledger import canonical_json
 
-    recovered = load_goal_state(GoalStore(two.control), two.record)
-    assert _outcomes(recovered.criteria[SIM_KEY].detail)["a@1"] == "failed"
-
-    assert {row: row.read_bytes() for row in immutable} == immutable
+    _transaction(
+        two,
+        GoalEvidenceRecorder(bind(two, "run-1")),
+        "11111111-1111-4111-8111-111111111111",
+        [run_row(A, "fail")],
+    )
+    _record(two, "run-2", [run_row(B)])
+    assert _status(two).reason.startswith("goal-test-run-failed")
+    path = _evidence_file(two, 1)
+    row = json.loads(path.read_bytes())
+    row["detail"]["test_runs"][0]["grade"] = "pass"
+    path.write_bytes(canonical_json(row) + b"\n")
 
 
 def test_substituted_contributor_is_refused(two: SimpleNamespace) -> None:
-    """A contributing observation swapped for a passing one no longer has its linked digest."""
-    _record(two, "run-1", [run_row(A)])
-    _record(two, "run-2", [run_row(B)])
-    assert _status(two).status == "met"
-    path = _evidence_file(two, 1)
-    row = json.loads(path.read_text(encoding="utf-8"))
-    row["detail"]["test_runs"][0]["grade"] = "fail"
-    path.write_text(json.dumps(row), encoding="utf-8")
-    status = _status(two)
-    assert status.status == "unmet"
-    assert status.reason.startswith("goal-test-run-ledger-outdated")
+    from booley.criteria.evidence_ledger import AcceptanceLedgerError
+
+    _substitute_contributor(two)
+    with pytest.raises(
+        AcceptanceLedgerError, match="transaction manifest does not bind its record"
+    ):
+        _status(two)
 
 
 # --- Multi-seed Goals ------------------------------------------------------------
@@ -365,8 +369,8 @@ def test_multi_seed_goal_accumulates_per_seed_and_lists_failing_seeds(
 
     _record(seeds, "run-1", [_seed(first), _seed(second, "fail")], key=SEEDS_KEY, met=False)
     # A seed passes in a second campaign, after the first one ended early.
-    detail = _record(seeds, "run-2", [_seed(third), _seed(second)], key=SEEDS_KEY)
-    assert list(_outcomes(detail).values()) == ["passed", "failed", "passed"]
+    _record(seeds, "run-2", [_seed(third), _seed(second)], key=SEEDS_KEY)
+    assert list(_outcomes(seeds, SEEDS_KEY).values()) == ["passed", "failed", "passed"]
     status = _status(seeds, SEEDS_KEY)
     assert status.status == "unmet"
     assert [run.rerun for run in status.test_runs.failed] == [
@@ -403,8 +407,8 @@ def test_pending_and_empty_goals_are_unmet_whatever_passes(layout: SimpleNamespa
     assert _status(mode, "sim_pass_soon").reason.startswith("goal-test-run-pending: ")
     # A pass that claims the Goals cannot meet them: nothing is required of it.
     for key in (SIM_KEY, later):
-        detail = _record(mode, f"run-{key}", [run_row(A)], key=key)
-        assert detail[LEDGER_DETAIL_KEY]["runs"] == []
+        _record(mode, f"run-{key}", [run_row(A)], key=key)
+        assert _outcomes(mode, key) == {}
         assert _status(mode, key).status == "unmet"
 
 
@@ -433,13 +437,31 @@ def test_removed_test_and_changed_variant_inputs_need_a_retarget(layout: SimpleN
     assert "retarget" in status.reason
 
 
+def test_a_test_skipped_after_entry_is_named_as_skipped(layout: SimpleNamespace) -> None:
+    key = "sim_pass_top_run_61_d"
+    record = enter_goals(
+        layout, [{"family": "SIM", "target": "top", "test": "a"}], tests_toml=TWO_TESTS
+    )
+    mode = SimpleNamespace(**vars(layout), record=record)
+    write_tests_toml(mode, b'[top]\ntests = ["a", "b"]\nskip = ["a"]\n')
+    reason = _status(mode, key).reason
+    assert reason.startswith("goal-test-run-missing: ")
+    assert "a@1" in reason and "skipped in tests.toml" in reason
+    assert "no longer exist" not in reason and "retarget" not in reason
+    # Removed from the Target but still listed in skip: it is gone, not skipped.
+    write_tests_toml(mode, b'[top]\ntests = ["b"]\nskip = ["a"]\n')
+    assert "no longer exist" in _status(mode, key).reason
+
+
 def test_evidence_recorded_before_this_change_does_not_count(goal_mode: SimpleNamespace) -> None:
-    """An observation without a ledger (an older Booley wrote it) meets nothing."""
+    """An observation without Test Run rows meets nothing."""
     path = _state_file(goal_mode)
     detail = _record(goal_mode, "run-1", [run_row()])
     assert _status(goal_mode).status == "met"
     # Rewrite the observation and its projection as the previous version stored them.
-    old = {key: value for key, value in detail.items() if key != LEDGER_DETAIL_KEY}
+    old = {
+        key: value for key, value in detail.items() if key not in {"test_run_ledger", "test_runs"}
+    }
     evidence = _evidence_file(goal_mode, 1)
     row = json.loads(evidence.read_text(encoding="utf-8"))
     row["detail"] = old
@@ -449,7 +471,7 @@ def test_evidence_recorded_before_this_change_does_not_count(goal_mode: SimpleNa
     path.write_text(json.dumps(state), encoding="utf-8")
     status = _status(goal_mode)
     assert status.status == "unmet"
-    assert status.reason.startswith("goal-test-run-ledger-missing: ")
+    assert status.reason.startswith("goal-test-run-incomplete: ")
 
 
 def test_two_publications_fold_one_after_the_other(two: SimpleNamespace) -> None:
@@ -468,7 +490,7 @@ def test_two_publications_fold_one_after_the_other(two: SimpleNamespace) -> None
         changes = state.set_criterion(SIM_KEY, met, detail={"test_runs": rows})
         recorder.record_changes(state, changes, invocation_id="ignored", producer="sim")
         state.save()
-    assert _outcomes(states[1].criteria[SIM_KEY].detail) == {"a@1": "failed", "b@1": "passed"}
+    assert _outcomes(two) == {"a@1": "failed", "b@1": "passed"}
     assert _status(two).reason.startswith("goal-test-run-failed")
 
 
@@ -488,6 +510,15 @@ def _package_inputs(layout: SimpleNamespace) -> tuple[Any, Any, dict[int, dict[s
     return record, state, {row["sequence"]: row for row in rows}
 
 
+def _contributors(layout: SimpleNamespace, key: str = SIM_KEY) -> list[int]:
+    from booley.goals.derivation import selected_observations
+    from booley.goals.review_package import original_observations
+
+    record, state, indexed = _package_inputs(layout)
+    selected = selected_observations(record, state, layout.control)[key]
+    return [row["sequence"] for row in original_observations(selected, indexed, record)]
+
+
 def test_accumulated_goal_discloses_its_contributing_campaigns(two: SimpleNamespace) -> None:
     """The review package and generated-input authorization read these observations."""
     from booley.goals.derivation import selected_observations
@@ -498,37 +529,37 @@ def test_accumulated_goal_discloses_its_contributing_campaigns(two: SimpleNamesp
     record, state, indexed = _package_inputs(two)
     selected = selected_observations(record, state, two.control)[SIM_KEY]
     assert selected["sequence"] == 2
-    assert [row["sequence"] for row in original_observations(selected, indexed)] == [1]
+    assert [row["sequence"] for row in original_observations(selected, indexed, record)] == [1]
     disclosed = presentation_observations(record, state, two.control)
     assert sorted(row["sequence"] for row in disclosed) == [1, 2]
 
 
 def test_review_package_rejects_a_substituted_contributor(two: SimpleNamespace) -> None:
-    from booley.goals.derivation import selected_observations
-    from booley.goals.lifecycle import LifecycleError
-    from booley.goals.review_package import original_observations
+    from booley.criteria.evidence_ledger import AcceptanceLedgerError
+    from booley.goals.review_package import presentation_observations
 
-    _record(two, "run-1", [run_row(A)])
-    _record(two, "run-2", [run_row(B)])
-    record, state, indexed = _package_inputs(two)
-    selected = selected_observations(record, state, two.control)[SIM_KEY]
-    forged = {**indexed, 1: {**indexed[1], "invocation_id": "another-campaign"}}
-    with pytest.raises(LifecycleError, match="missing or substituted original observation"):
-        original_observations(selected, forged)
-    with pytest.raises(LifecycleError, match="missing or substituted original observation"):
-        original_observations(selected, {2: indexed[2]})
+    _substitute_contributor(two)
+    state = DevelopmentState.load(_state_file(two))
+    with pytest.raises(
+        AcceptanceLedgerError, match="transaction manifest does not bind its record"
+    ):
+        presentation_observations(two.record, state, two.control)
 
 
 def test_briefing_names_test_runs_and_every_deferred_resolution(two: SimpleNamespace) -> None:
-    from booley.goals.test_run_freezing import ensure_test_run_resolutions
-    from booley.review.goal_package import (
+    from booley.goals.finish_presentation import (
         _deferred_resolution_lines,  # pyright: ignore[reportPrivateUsage]
         _test_run_lines,  # pyright: ignore[reportPrivateUsage]
     )
+    from booley.goals.test_run_freezing import ensure_test_run_resolutions
 
-    detail = _record(two, "run-1", [run_row(A), run_row(B, "fail")], met=False)
-    assert _test_run_lines(detail) == ["  Test Runs: a@1 passed, b@1 failed"]
-    assert _test_run_lines({"warnings": 0}) == []
+    _record(two, "run-1", [run_row(A), run_row(B, "fail")], met=False)
+    record, _state, indexed = _package_inputs(two)
+    lines = _test_run_lines(
+        record, {"key": SIM_KEY, "selected_observation": indexed[1], "original_observations": []}
+    )
+    assert lines[0] == "  Test Runs: a@1 passed, b@1 failed"
+    assert "  rerun b@1: booley flow sim --target top --test=b@1" in lines
     names = {SIM_KEY: SIM_NAME}
     assert _deferred_resolution_lines(two.record.to_json(), names) == []
     write_tests_toml(two, b'[top]\ntests = ["a", "b", "late"]\n')
@@ -561,6 +592,11 @@ def test_status_shows_frozen_runs_outcomes_and_a_rerun_command_per_failing_seed(
     ]
     text = render_status((view,))
     assert "Test Runs\n" in text
+    # The heading and its indented lines, byte for byte.
+    block = ["Test Runs", *(f"  {line}" for line in test_run_lines(goal))]
+    lines = text.splitlines()
+    start = lines.index("Test Runs")
+    assert lines[start : start + len(block)] == block
     assert f"rerun a@{second}: booley flow sim --target top --test=a@{second}" in text
     assert "goal-test-run-failed" in text
 
@@ -631,63 +667,6 @@ def test_dashboard_goal_detail_lists_the_frozen_test_runs(two: SimpleNamespace) 
     assert _evidence_detail(detail).startswith(detail.test_runs[0] + "\n  rerun b@1: ")
 
 
-# --- A stored ledger is external input ---------------------------------------------
-
-
-def _ledger(**changes: Any) -> dict[str, Any]:
-    ledger = build_ledger([], [run_row(A)], [A])
-    return {LEDGER_DETAIL_KEY: {**ledger, **changes}}
-
-
-@pytest.mark.parametrize(
-    "broken",
-    [
-        {LEDGER_DETAIL_KEY: "passed"},
-        _ledger(schema="booley.goal-test-run-ledger/v0"),
-        _ledger(runs=[{"name": "a@1", "fingerprint": A.fingerprint}]),
-        _ledger(runs=[{"name": "a@1", "fingerprint": A.fingerprint, "outcome": "fine"}]),
-        _ledger(runs="all"),
-        _ledger(source_evidence=[{"sequence": "1", "sha256": "x"}]),
-        _ledger(source_evidence=[{"sequence": True, "sha256": "x"}]),
-        {LEDGER_DETAIL_KEY: {"runs": [], "source_evidence": []}},
-    ],
-)
-def test_a_malformed_stored_ledger_is_refused_by_name(broken: dict[str, Any]) -> None:
-    from booley.evidence.test_run_ledger import LedgerFormatError, decode_ledger
-
-    with pytest.raises(LedgerFormatError):
-        decode_ledger(broken)
-    assert decode_ledger({}) is None
-    decoded = decode_ledger(_ledger())
-    assert decoded is not None and decoded.runs[0]["outcome"] == "passed"
-
-
-def test_status_names_a_malformed_ledger_instead_of_crashing(two: SimpleNamespace) -> None:
-    _record(two, "run-1", [run_row(A), run_row(B)])
-    assert _status(two).status == "met"
-    # The observation and the state that mirrors it lose a field of one ledger entry.
-    for path, entry in ((_evidence_file(two, 1), None), (_state_file(two), SIM_KEY)):
-        document = json.loads(path.read_text(encoding="utf-8"))
-        holder = document if entry is None else document["criteria"][entry]
-        del holder["detail"][LEDGER_DETAIL_KEY]["runs"][0]["outcome"]
-        path.write_text(json.dumps(document), encoding="utf-8")
-    status = _status(two)
-    assert status.status == "unmet"
-    assert status.reason.startswith("goal-test-run-ledger-malformed: ")
-    assert _shown(status) == {"a@1": "missing", "b@1": "missing"}
-    # Recording over it does not trip on it either.
-    assert _outcomes(_record(two, "run-2", [run_row(A)])) == {"a@1": "passed", "b@1": "passed"}
-
-
-def test_briefing_reports_a_malformed_ledger() -> None:
-    from booley.review.goal_package import _test_run_lines
-
-    assert _test_run_lines(_ledger()) == ["  Test Runs: a@1 passed"]
-    (line,) = _test_run_lines(_ledger(runs=[{"name": "a@1"}]))
-    assert "cannot be read" in line
-    assert _test_run_lines({}) == []
-
-
 def test_a_frozen_run_needs_a_real_timestamp() -> None:
     from booley.goals.test_run_resolution import (
         FrozenRun,
@@ -703,3 +682,85 @@ def test_a_frozen_run_needs_a_real_timestamp() -> None:
         TestRunResolution.from_json(stored, where="r")
     with pytest.raises(ResolutionFormatError, match=r"r\.spec_revision"):
         TestRunResolution.from_json({**good.to_json(), "spec_revision": 0}, where="r")
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        None,
+        "malformed",
+        {
+            "schema": "booley.goal-test-run-ledger/v1",
+            "runs": [
+                {"name": run.name, "fingerprint": run.fingerprint, "outcome": "failed"}
+                for run in (A, B)
+            ],
+            "source_evidence": [],
+        },
+    ],
+)
+def test_outcomes_ignore_stored_ledger(two: SimpleNamespace, stored: Any) -> None:
+    _record(two, "run-1", [run_row(A)])
+    _record(two, "run-2", [run_row(B)])
+    for sequence in (1, 2):
+        path = _evidence_file(two, sequence)
+        row = json.loads(path.read_bytes())
+        row["detail"].pop("test_run_ledger", None)
+        if stored is not None:
+            row["detail"]["test_run_ledger"] = stored
+        path.write_text(json.dumps(row), encoding="utf-8")
+    assert _status(two).status == "met"
+    assert _shown(_status(two)) == {"a@1": "passed", "b@1": "passed"}
+    assert "test_run_ledger" not in _record(two, "run-3", [run_row(B)])
+
+
+def test_recorded_and_restated_observations_store_only_own_runs(two: SimpleNamespace) -> None:
+    first = _record(two, "run-1", [run_row(A)])
+    second = _record(two, "run-2", [run_row(B)])
+    assert "test_run_ledger" not in first and "test_run_ledger" not in second
+    assert first["test_runs"] == [run_row(A)] and second["test_runs"] == [run_row(B)]
+    path = _evidence_file(two, 2)
+    row = json.loads(path.read_bytes())
+    row["detail"]["test_run_ledger"] = "obsolete"
+    path.write_text(json.dumps(row), encoding="utf-8")
+    again = _record(two, "run-3", [run_row(B)], extra={"test_run_outcomes_only": True})
+    assert "test_run_ledger" not in again and again["test_runs"] == [run_row(B)]
+    assert _status(two).status == "met"
+
+
+def test_record_time_and_status_agree_after_transaction_recovery(two: SimpleNamespace) -> None:
+    from booley.criteria.evidence_ledger import validated_evidence_records
+    from booley.goals.recorder import GOAL_SCOPE
+
+    binding = bind(two, "transaction")
+    stopped = GoalEvidenceRecorder(
+        binding, publication_checkpoint=_interrupt("before:acceptance_state")
+    )
+    campaign = "11111111-1111-4111-8111-111111111111"
+    with pytest.raises(_InterruptedError):
+        _transaction(two, stopped, campaign, [run_row(A, "fail")])
+    state = DevelopmentState.load(_state_file(two))
+    logs = record_paths(two.control, two.record.id).logs_dir
+    assert validated_evidence_records(GOAL_SCOPE, logs, state, {}) == []
+    _transaction(two, GoalEvidenceRecorder(binding), campaign, [run_row(A, "fail")])
+    detail = _record(two, "later", [run_row(A), run_row(B)])
+    state = DevelopmentState.load(_state_file(two))
+    assert not state.criteria[SIM_KEY].met and _status(two).status == "unmet"
+    assert _shown(_status(two)) == {"a@1": "failed", "b@1": "passed"}
+    assert "test_run_ledger" not in detail
+
+
+def test_a_pending_goal_never_latches_ever_failed(layout: SimpleNamespace) -> None:
+    record = enter_goals(
+        layout,
+        [{"family": "SIM", "target": "top", "test": "later"}],
+        tests_toml=b'[top]\ntests = ["a"]\nskip = ["a"]\n',
+    )
+    mode = SimpleNamespace(**vars(layout), record=record)
+    later = "sim_pass_top_run_6c61746572_d"
+    # What a producer claims while the Goal's Test Run does not exist yet.
+    _record(mode, "run-1", [run_row(A)], key=later, met=False)
+    assert _status(mode, later).reason.startswith("goal-test-run-pending: ")
+    live = DevelopmentState.load(_state_file(mode)).criteria[later]
+    assert live.met is False and live.ever_failed is False
+    assert _replayed(mode, later).ever_failed is False

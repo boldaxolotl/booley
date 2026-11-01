@@ -16,11 +16,13 @@ import pytest
 
 from booley.flows.baseline_worktree import (
     BaselineWorktreeError,
+    _retarget_links,
     baseline_worktree,
     git_full_sha,
     git_short_sha,
 )
 from booley.runtime.submodule_materialization import materialize_submodules
+from tests.conftest import symlink_or_skip
 
 
 @pytest.fixture(autouse=True)
@@ -323,6 +325,29 @@ def test_absolute_in_project_symlink_is_rebased_onto_the_worktree(tmp_path: Path
         assert (copied / "top.v").read_text(encoding="utf-8") == "baseline\n"
 
 
+def test_relative_link_through_symlinked_booley_dir_is_classified_physically(
+    tmp_path: Path,
+) -> None:
+    """The OS resolves a relative link from the entry's physical target, not from ``.booley``."""
+    root = tmp_path / "root"
+    data = tmp_path / "data"
+    (root / "rtl").mkdir(parents=True)
+    (data / "cores").mkdir(parents=True)
+    symlink_or_skip(root / ".booley", data)
+    # Physically ``data/cores/rtl`` -> ``<tmp>/root/rtl``: repository RTL.
+    symlink_or_skip(data / "cores" / "rtl", Path("../../root/rtl"))
+    wt = tmp_path / "wt"
+    (wt / "rtl").mkdir(parents=True)
+    copied = wt / ".booley" / "cores"
+    copied.mkdir(parents=True)
+    symlink_or_skip(copied / "rtl", Path("../../root/rtl"))
+
+    missing = _retarget_links(root, wt, root / ".booley", wt / ".booley")
+
+    assert missing == []
+    assert (copied / "rtl").resolve() == (wt / "rtl").resolve()
+
+
 def test_symlink_outside_the_project_is_left_verbatim(tmp_path: Path, monkeypatch) -> None:
     """A link to a shared tree outside the project names the same thing from
     either worktree; rebasing it would invent a path that does not exist."""
@@ -361,6 +386,99 @@ def test_link_into_the_state_dir_follows_the_live_tree(tmp_path: Path) -> None:
     with baseline_worktree(tmp_path, "HEAD") as wt:
         copied = wt / ".booley" / "cores" / "ip" / "worktrees"
         assert (copied / "pinned" / "top.v").read_text(encoding="utf-8") == "frozen\n"
+
+
+def test_stealth_core_inputs_elsewhere_in_booley_directory_are_mirrored(tmp_path: Path) -> None:
+    """A stealth core names other Booley Directory files (an SDC, a wrapper);
+    the baseline needs them too, or Target resolution fails on missing files."""
+    _init_repo(tmp_path)
+    project = tmp_path / ".booley"
+    (project / "cores").mkdir()
+    (project / "cores" / "top.core").write_text("CAPI=2:\n", encoding="utf-8")
+    (project / "synth").mkdir()
+    (project / "synth" / "top.sdc").write_text("create_clock\n", encoding="utf-8")
+    (project / "cores" / "synth").symlink_to("../synth")
+    (project / "worktrees" / "other").mkdir(parents=True)
+    (project / "worktrees" / "other" / "big.v").write_text("x\n", encoding="utf-8")
+    (project / "runtime").mkdir()
+    (project / "runtime" / "state.json").write_text("{}\n", encoding="utf-8")
+
+    with baseline_worktree(tmp_path, "HEAD") as wt:
+        mirrored = wt / ".booley"
+        assert (mirrored / "synth" / "top.sdc").read_text(encoding="utf-8") == "create_clock\n"
+        # A link to a mirrored directory names the copy, not the live tree.
+        assert (mirrored / "cores" / "synth").readlink() == Path("../synth")
+        assert not (mirrored / "worktrees").exists()
+        assert not (mirrored / "runtime").exists()
+        assert not list(mirrored.glob(".baseline-wt-*"))
+
+
+@pytest.mark.parametrize("versioned", [True, False], ids=["versioned", "unversioned"])
+def test_booley_directory_mirror_honors_its_ignore_rules(tmp_path: Path, versioned: bool) -> None:
+    """Untracked authored files are mirrored; files the directory ignores are not."""
+    _init_repo(tmp_path)
+    (tmp_path / ".git/info/exclude").write_text("/.booley\n", encoding="utf-8")
+    project = tmp_path / ".booley"
+    (project / "cores").mkdir()
+    (project / "cores" / "top.core").write_text("CAPI=2:\n", encoding="utf-8")
+    (project / ".gitignore").write_text("runs/\n", encoding="utf-8")
+    if versioned:
+        _git(project, "init", "-q")
+        _git(project, "config", "user.name", "Test")
+        _git(project, "config", "user.email", "t@example.invalid")
+        _commit_all(project, "cores")
+    (project / "synth").mkdir()
+    (project / "synth" / "top.sdc").write_text("new\n", encoding="utf-8")  # untracked
+    (project / "runs").mkdir()
+    (project / "runs" / "wave.fst").write_text("huge\n", encoding="utf-8")  # ignored
+
+    with baseline_worktree(tmp_path, "HEAD") as wt:
+        mirrored = wt / ".booley"
+        assert (mirrored / "cores" / "top.core").is_file()
+        assert (mirrored / "synth" / "top.sdc").read_text(encoding="utf-8") == "new\n"
+        assert not (mirrored / "runs").exists()
+        assert not (mirrored / ".git").exists()
+
+
+def test_booley_directory_mirror_ignores_global_excludes(tmp_path: Path, monkeypatch) -> None:
+    """A user's global ignore file must not silently drop an authored input."""
+    excludes = tmp_path / "global-ignore"
+    excludes.write_text("*.sdc\n", encoding="utf-8")
+    config = tmp_path / "global-config"
+    config.write_text(f"[core]\n\texcludesFile = {excludes.as_posix()}\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    _init_repo(tmp_path)
+    project = tmp_path / ".booley"
+    (project / "cores").mkdir()
+    (project / "cores" / "top.core").write_text("CAPI=2:\n", encoding="utf-8")
+    (project / "top.sdc").write_text("create_clock\n", encoding="utf-8")
+
+    with baseline_worktree(tmp_path, "HEAD") as wt:
+        assert (wt / ".booley" / "top.sdc").is_file()
+
+
+def test_versioned_booley_directory_submodule_is_mirrored(tmp_path: Path) -> None:
+    """A submodule inside the Booley Directory is copied as content, not as a file."""
+    _init_repo(tmp_path)
+    (tmp_path / ".git/info/exclude").write_text("/.booley\n", encoding="utf-8")
+    project = tmp_path / ".booley"
+    (project / "cores").mkdir()
+    (project / "cores" / "top.core").write_text("CAPI=2:\n", encoding="utf-8")
+    _git(project, "init", "-q")
+    _git(project, "config", "user.name", "Test")
+    _git(project, "config", "user.email", "t@example.invalid")
+    library = tmp_path.parent / f"{tmp_path.name}-library"
+    library.mkdir()
+    _init_repo(library)
+    _git(
+        project, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(library), "lib"
+    )
+    _commit_all(project, "cores and library")
+
+    with baseline_worktree(tmp_path, "HEAD") as wt:
+        mirrored = wt / ".booley" / "lib"
+        assert (mirrored / "f.txt").read_text(encoding="utf-8") == "v2\n"
+        assert not (mirrored / ".git").exists()
 
 
 def test_link_within_the_cores_tree_stays_verbatim(tmp_path: Path) -> None:
@@ -785,9 +903,8 @@ def test_nonancestor_recorded_base_uses_older_common_ancestor(tmp_path, caplog):
     assert _git(paired, "config", "branch.goal-project.booleyBase") == recorded
 
 
-@pytest.mark.parametrize("mode", ["entry_pinned", "ticket_pinned"])
 @pytest.mark.parametrize("detached", [False, True])
-def test_explicit_pairing_pin_bypasses_standalone_policy(tmp_path, caplog, mode, detached):
+def test_explicit_pairing_pin_bypasses_standalone_policy(tmp_path, caplog, detached):
     from booley.evidence.acceptance import PairedProjectBaseline
 
     goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
@@ -795,7 +912,7 @@ def test_explicit_pairing_pin_bypasses_standalone_policy(tmp_path, caplog, mode,
     _git(paired, "branch", "--set-upstream-to=project-source")
     if detached:
         _git(paired, "checkout", "--detach", "HEAD")
-    policy = getattr(PairedProjectBaseline, mode)(entry_sha)
+    policy = PairedProjectBaseline.entry_pinned(entry_sha)
     with baseline_worktree(goal, "HEAD", paired_project=policy) as baseline:
         assert git_full_sha("HEAD", baseline / ".booley") == entry_sha
     assert not baseline.exists()

@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 from booley.runtime.file_lock import release_file_lock, wait_for_file_lock
+from booley.runtime.filesystem_utils import (
+    is_transient_read_error,
+    open_with_sharing_retry,
+    replace_file,
+)
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -136,18 +141,19 @@ def read_progress_for_run(
     endpoint: str,
     run_id: str,
     *,
-    trusted_path_validator: Callable[[Path], None] | None = None,
+    booley_dir: Path | None = None,
 ) -> tuple[Path, dict[str, Any]] | None:
-    """Return the newest trusted run-scoped checkpoint and its exact path."""
+    """Return the newest trusted run-scoped checkpoint and its exact path.
+
+    *booley_dir* names the Booley Directory entry, the one path component that may
+    be a symlink; links elsewhere stay refused. A checkpoint held by a lasting
+    Windows sharing error raises its ``OSError`` when no other candidate matches.
+    """
     candidates: list[tuple[int, Path]] = []
     for root in report_roots:
         try:
             endpoint_root = root / endpoint
-            if trusted_path_validator is not None:
-                trusted_path_validator(endpoint_root)
-            if not endpoint_root.is_dir() or (
-                trusted_path_validator is None and _has_link_between(endpoint_root, root)
-            ):
+            if not endpoint_root.is_dir() or _has_link_between(endpoint_root, root):
                 continue
             invocations = tuple(endpoint_root.iterdir())
         except (OSError, ValueError):
@@ -157,44 +163,38 @@ def read_progress_for_run(
             if not invocation.name.isdigit():
                 continue
             try:
-                if trusted_path_validator is not None:
-                    trusted_path_validator(path)
                 candidates.append((path.lstat().st_mtime_ns, path))
             except OSError:
                 continue
+    unreadable: OSError | None = None
     for _mtime, path in sorted(candidates, key=lambda item: item[0], reverse=True):
-        document = _read_trusted_progress(
-            path, report_roots, trusted_path_validator=trusted_path_validator
-        )
+        try:
+            document = _read_trusted_progress(path, report_roots, booley_dir=booley_dir)
+        except OSError as exc:
+            # A held checkpoint of another run must not hide this run's.
+            unreadable = unreadable or exc
+            continue
         if (
             document is not None
             and document.get("flow") == endpoint
             and document.get("run_id") == run_id
         ):
             return path, document
+    if unreadable is not None:
+        raise unreadable
     return None
 
 
-def read_progress_document(
-    path: Path,
+def repair_progress_after_reap(
     report_roots: Sequence[Path],
+    endpoint: str,
+    run_id: str,
     *,
-    trusted_path_validator: Callable[[Path], None] | None = None,
-    raise_io_errors: bool = False,
-) -> dict[str, Any] | None:
-    """Read one validated checkpoint without publication or recovery."""
-    return _read_trusted_progress(
-        path,
-        report_roots,
-        trusted_path_validator=trusted_path_validator,
-        raise_io_errors=raise_io_errors,
-    )
-
-
-def repair_progress_after_reap(report_roots: Sequence[Path], endpoint: str, run_id: str) -> bool:
+    booley_dir: Path | None = None,
+) -> bool:
     """Best-effort terminalization after the supervisor proved a child dead."""
     try:
-        found = read_progress_for_run(report_roots, endpoint, run_id)
+        found = read_progress_for_run(report_roots, endpoint, run_id, booley_dir=booley_dir)
     except (OSError, ValueError):
         return False
     if found is None:
@@ -213,16 +213,22 @@ def repair_progress_after_reap(report_roots: Sequence[Path], endpoint: str, run_
     )
     validate_progress_shape(repaired)
     try:
-        _replace_if_unchanged(path, document, repaired)
+        _replace_if_unchanged(path, document, repaired, booley_dir=booley_dir)
     except (OSError, ValueError):
         return False
     return True
 
 
-def supersede_progress(path: Path, *, new_invocation: int, new_run_id: str) -> bool:
-    """Best-effort supersede an authenticated coverage progress projection."""
+def supersede_progress(
+    path: Path, *, new_invocation: int, new_run_id: str, booley_dir: Path | None = None
+) -> bool:
+    """Best-effort supersede an authenticated coverage progress projection.
+
+    *booley_dir* names the Booley Directory entry, the one path component that may
+    be a symlink; links elsewhere stay refused.
+    """
     try:
-        document = validate_coverage_origin_progress(path)
+        document = validate_coverage_origin_progress(path, booley_dir=booley_dir)
     except (OSError, ValueError):
         return False
     phase = document.get("phase")
@@ -244,15 +250,21 @@ def supersede_progress(path: Path, *, new_invocation: int, new_run_id: str) -> b
     )
     validate_progress_shape(updated)
     try:
-        _replace_if_unchanged(path, document, updated)
+        _replace_if_unchanged(path, document, updated, booley_dir=booley_dir)
     except (OSError, ValueError):
         return False
     return True
 
 
-def validate_coverage_origin_progress(path: Path) -> dict[str, Any]:
-    """Validate the exact authenticated invocation progress before recovery."""
-    document = _read_trusted_progress(path, (path.parents[2],))
+def validate_coverage_origin_progress(
+    path: Path, *, booley_dir: Path | None = None
+) -> dict[str, Any]:
+    """Validate the exact authenticated invocation progress before recovery.
+
+    *booley_dir* names the Booley Directory entry, the one path component that may
+    be a symlink; links elsewhere stay refused.
+    """
+    document = _read_trusted_progress(path, (path.parents[2],), booley_dir=booley_dir)
     if document is None or document.get("flow") != "sim" or document.get("coverage") is not True:
         raise ValueError("resume origin has no valid coverage progress")
     return document
@@ -262,22 +274,18 @@ def _read_trusted_progress(
     path: Path,
     report_roots: Sequence[Path],
     *,
-    trusted_path_validator: Callable[[Path], None] | None = None,
-    raise_io_errors: bool = False,
+    booley_dir: Path | None = None,
 ) -> dict[str, Any] | None:
     try:
         root = _containing_root(path, report_roots)
-        if trusted_path_validator is not None:
-            trusted_path_validator(path)
-        elif _has_link_between(path, root):
+        if _has_link_between(path, root):
             return None
-        document = _read_json_object_nofollow(
-            path, trusted_path=trusted_path_validator is not None
-        )
+        document = _read_json_object_nofollow(path, booley_dir=booley_dir)
         validate_progress_shape(document)
         return document
-    except OSError:
-        if raise_io_errors:
+    except OSError as exc:
+        # A sharing error that outlasted the retry budget is not "absent".
+        if is_transient_read_error(exc):
             raise
         return None
     except (ValueError, UnicodeError):
@@ -313,10 +321,14 @@ def _has_link_between(path: Path, root: Path) -> bool:
 
 
 def _replace_if_unchanged(
-    path: Path, original: Mapping[str, object], updated: Mapping[str, object]
+    path: Path,
+    original: Mapping[str, object],
+    updated: Mapping[str, object],
+    *,
+    booley_dir: Path | None = None,
 ) -> None:
     with _progress_file_lock(path):
-        current = _read_json_object_nofollow(path)
+        current = _read_json_object_nofollow(path, booley_dir=booley_dir)
         if current != original:
             raise ValueError("progress changed concurrently")
         _write_progress_json_unlocked(path, updated)
@@ -353,26 +365,15 @@ def _write_progress_json_unlocked(path: Path, document: Mapping[str, object]) ->
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        Path(temporary).replace(path)
+        replace_file(Path(temporary), path)
     finally:
         Path(temporary).unlink(missing_ok=True)
 
 
-def _open_validated_progress(path: Path) -> int:
-    """The supplied validator owns ancestors; still refuse a nonregular final file."""
-    if os.name == "nt":
-        # Preserve the final lexical filename for Windows handle-based link refusal.
-        return open_regular_nofollow(path.parent.resolve() / path.name)
-    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
-    descriptor = os.open(path, flags)
-    if stat.S_ISREG(os.fstat(descriptor).st_mode):
-        return descriptor
-    os.close(descriptor)
-    raise OSError(f"progress is not a regular file: {path}")
-
-
-def _read_json_object_nofollow(path: Path, *, trusted_path: bool = False) -> dict[str, Any]:
-    descriptor = _open_validated_progress(path) if trusted_path else open_regular_nofollow(path)
+def _read_json_object_nofollow(path: Path, *, booley_dir: Path | None = None) -> dict[str, Any]:
+    descriptor = open_with_sharing_retry(
+        lambda: open_regular_nofollow(path, booley_dir=booley_dir), path
+    )
     with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
         if os.fstat(stream.fileno()).st_size > _MAX_PROGRESS_BYTES:
             raise ValueError("progress exceeds the size limit")

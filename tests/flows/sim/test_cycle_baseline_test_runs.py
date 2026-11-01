@@ -251,7 +251,7 @@ def test_campaign_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, mon
             tmp_path / "invocation", None, ["sim_core"], {"sim_core": ["coremark"]}
         )
     finally:
-        flow.context.publication_resources.close()
+        flow.publication_resources.close()
 
     assert (requests, prerequisites) == ([], {"sim_core": []})
     reason = flow._test_runs.baseline.refusals[("sim_core", "coremark@1")]
@@ -322,13 +322,17 @@ def test_a_cocotb_baseline_without_a_registry_discovers_the_test():
         )
 
 
-def _baseline_fact(test_run: str | None, fingerprint: str = "sha256:" + "9" * 64) -> dict:
+def _baseline_fact(
+    test_run: str | None, fingerprint: str = "sha256:" + "9" * 64, *, selector: str = "ref"
+) -> dict:
     cycle: dict[str, object] = {"test": "stress", "cycle_count": 100, "unit": "cycles"}
     if test_run is not None:
         cycle |= {"test_run": test_run, "test_run_fingerprint": fingerprint}
+    target = {"role": "cycle_count_baseline", "selector": selector}
+    target |= {"vlnv": "local:lib:core:1", "name": selector}
     return {
         "role": "cycle_count_baseline",
-        "target": {"role": "cycle_count_baseline", "selector": "ref"},
+        "target": target,
         "manifest": {"owner": "campaign"},
         "campaign_id": "campaign",
         "result": {},
@@ -374,18 +378,14 @@ def test_facts_older_than_test_runs_still_bind_by_test():
 
 
 def test_prerequisite_facts_carry_the_baseline_work_items_test_run():
-    from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
     from booley.flows.sim.campaign.coordinator import _baseline_test_run_facts
     from booley.flows.test_runs import build_test_run, test_run_document
 
     run = build_test_run("stress", variant="soak", seed=7, args=("+iters=9",))
-    assert _baseline_test_run_facts(test_run_document(run), names_test_runs=True) == {
+    assert _baseline_test_run_facts(test_run_document(run)) == {
         "test_run": "stress+soak@7",
         "test_run_fingerprint": run.fingerprint,
     }
-    assert _baseline_test_run_facts(None, names_test_runs=False) == {}
-    with pytest.raises(SimulationCampaignIntegrityError, match="records no Test Run to compare"):
-        _baseline_test_run_facts(None, names_test_runs=True)
 
 
 @pytest.mark.parametrize(
@@ -439,3 +439,35 @@ def test_count_selector_links_every_drawn_seed_and_refuses_each_by_name(tmp_path
     assert all("cannot apply the seed" in reason for reason in baseline.refusals.values())
     assert baseline_refusal_key("stress", runs[0]) == runs[0].name
     assert baseline_refusal_key("stress", None) == "stress"
+
+
+@pytest.mark.parametrize("spelling", ["ref", "local:lib:core:1#ref"])
+def test_a_goal_binds_the_baseline_of_its_own_target(spelling: str):
+    """Goal entry names the Target only in ``target``, as a selector or an identity.
+
+    Relative Cycle Count Goals used to stay unmet in Goal Mode with
+    ``baseline_observation: "mismatched"``: acceptance looked for the
+    baseline Target only in ``_baseline_target`` or ``_target_selector``.
+    """
+    from booley.flows.sim.acceptance import _bound_baseline
+    from booley.goals.model import GoalFamily, GoalSpec
+    from booley.goals.state_store import goal_criterion_params
+
+    goal = GoalSpec(
+        "cycle_count_ref_stress",
+        GoalFamily.CYCLE_COUNT,
+        spelling,
+        {"test": "stress", "cycle_count_increase_at_most": 5},
+        ("goalset",),
+    )
+    (params,) = goal_criterion_params([goal]).values()
+    fingerprint = "sha256:" + "9" * 64
+    current = {"test": "stress", "test_run": "stress@1", "test_run_fingerprint": fingerprint}
+    own = _baseline_fact("stress@1")
+    foreign = _baseline_fact("stress@1", selector="other")
+
+    assert _bound_baseline((foreign, own), params, "stress", current) == (
+        own["cycle_observation"],
+        "observed",
+    )
+    assert _bound_baseline((foreign,), params, "stress", current) == (None, "mismatched")

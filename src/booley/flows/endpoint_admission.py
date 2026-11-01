@@ -27,6 +27,7 @@ from booley.runtime.endpoint_execution import (
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
 from booley.runtime.job_records import _proc_cmdline
 from booley.runtime.shared_infra import load_job_budget_config
+from booley.runtime.supervised_execution import no_cancellation_cause
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
@@ -52,6 +53,7 @@ class AdmissionContext:
     execution_id: ExecutionId | None
     timeout_seconds: float | None
     cancellation: Callable[[], bool]
+    cancellation_cause: Callable[[], str | None] = no_cancellation_cause
     parent_execution_id: ExecutionId = field(init=False)
 
     def __post_init__(self) -> None:
@@ -98,6 +100,7 @@ class AdmissionGate:
             role = job_slots.ROLE_INTERACTIVE
             timeout = _slot_timeout_seconds()
             max_heavy = store.caps.max_heavy if store is not None else 1
+            cause = _admission_cancellation_cause(store, token)
             yield AdmissionContext(
                 mode="managed" if store is not None else "unmanaged",
                 slot_store=store,
@@ -106,7 +109,8 @@ class AdmissionGate:
                 role=role,
                 execution_id=execution_id,
                 timeout_seconds=timeout,
-                cancellation=_admission_cancellation(store, token),
+                cancellation=lambda: cause() is not None,
+                cancellation_cause=cause,
             )
         finally:
             if store is not None and token is not None:
@@ -130,7 +134,7 @@ def authorize_simulation_targets(
     return EndpointOutcome(
         exit_code=EXIT_ERROR,
         report_text=(
-            "sim: strict Ticket has no authorized Criterion binding for Target(s): "
+            "sim: Goal Mode has no authorized Criterion binding for Target(s): "
             + ", ".join(missing)
         ),
     )
@@ -154,13 +158,22 @@ def _runtime_execution_id() -> ExecutionId | None:
     return _coerce_execution_id(os.environ.get(RUNTIME_EXECUTION_ENV))
 
 
-def _admission_cancellation(
+def _admission_cancellation_cause(
     store: job_slots.SlotStore | None, token: object | None
-) -> Callable[[], bool]:
-    """Observe withdrawal or renewal loss of the borrowed outer claim."""
+) -> Callable[[], str | None]:
+    """Name why the borrowed outer claim was withdrawn or lost, else ``None``."""
     if store is None or not isinstance(token, job_slots.SlotToken):
-        return lambda: False
-    return lambda: token.lease_health.lost.is_set() or store.token_absent(token)
+        return no_cancellation_cause
+    slot = f"{token.job_class}/{token.path.name}"
+
+    def cause() -> str | None:
+        if token.lease_health.lost.is_set():
+            return f"Job Slot lease lost: {slot}"
+        if store.token_absent(token):
+            return f"Job Slot token missing: {slot}"
+        return None
+
+    return cause
 
 
 @contextmanager
@@ -240,7 +253,9 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
     """Claim this run's admission slot, waiting in queue order if needed.
 
     Returns ``(store, token)`` to release in main()'s finally, or
-    ``(None, None)`` when no admission applies: the endpoint is unclassed, or
+    ``(None, None)`` when no admission applies: the endpoint is unclassed, the
+    parent process already holds this run's slot (``INHERITED_SLOT_ENV``;
+    claiming again would double-count it and deadlock at a cap of 1), or
     no runtime is configured (bare invocations outside a project keep
     working unguarded). Raises QueueFullError when the class queue is at
     ``queue_max`` — the only admission outcome surfaced as BLOCKED.
@@ -248,6 +263,10 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
     job_class = endpoint._resolve_job_class()
     if job_class is None:
         return (None, None)  # unclassed: skip even the store lookup
+    inherited = os.environ.get(job_slots.INHERITED_SLOT_ENV)
+    if inherited:
+        logger.debug("%s runs under its parent's %s slot", endpoint.name, inherited)
+        return (None, None)
     root = job_slots.slots_dir()
     if root is None:
         return (None, None)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import subprocess
 import sys
 import tarfile
@@ -138,12 +139,95 @@ class TestWriteBuildStamp:
         namespace: dict = {}
         exec(compile(text, "_build_commit.py", "exec"), namespace)
         assert namespace["COMMIT"] == commit != ""
+        assert namespace["COMMIT_TIME"].endswith("Z")
         assert namespace["PAYLOAD_FINGERPRINT"] == resolve_payload_fingerprint(repo)
         assert namespace["WHEEL_SOURCE_FINGERPRINT"] == resolve_wheel_source_fingerprint(repo)
         assert len(namespace["RUNTIME_BASE_CONTRACT"]) == 64
         assert len(namespace["STANDARD_SUBSTRATE_CONTRACT"]) == 64
         assert namespace["OFFICIAL_RELEASE"] is False
         assert namespace["DEVELOPMENT_CONTEXT_SHA256"] == ""
+
+    @staticmethod
+    def _commit_at(repo: Path, committed_at: str) -> None:
+        """Add a commit whose committer date is pinned to *committed_at*."""
+        (repo / "README").write_text(f"at {committed_at}\n", encoding="utf-8")
+        _git(repo, "add", ".")
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-m", "dated"],
+            check=True,
+            capture_output=True,
+            timeout=60,
+            # Ignore the developer's global git config (signing, hooks).
+            env={
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_COMMITTER_DATE": committed_at,
+            },
+        )
+
+    @staticmethod
+    def _stamp_values(repo: Path) -> dict:
+        namespace: dict = {}
+        exec(compile(stamp_path(repo).read_text(encoding="utf-8"), "stamp.py", "exec"), namespace)
+        return namespace
+
+    def test_stamps_commit_time_in_utc_across_day_boundary(self, repo: Path):
+        # 23:30 at UTC-7 is 06:30 the next day in UTC.
+        self._commit_at(repo, "2026-10-26T23:30:00-07:00")
+        write_build_stamp(repo, profile=BuildProfile.RUNTIME_IMAGE)
+
+        assert self._stamp_values(repo).get("COMMIT_TIME") == "2026-10-27T06:30:00Z"
+
+    def test_wheel_version_reads_commit_date_from_stamp(self, repo: Path, monkeypatch):
+        import booley
+        from booley import __version__
+        from booley.harness import booley as cli
+        from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+
+        self._commit_at(repo, "2026-10-26T12:00:00+00:00")
+        commit = write_build_stamp(repo, profile=BuildProfile.RUNTIME_IMAGE)
+        stamp = types.ModuleType("booley._build_commit")
+        stamp.__dict__.update(self._stamp_values(repo))
+        monkeypatch.setattr(booley, "_build_commit", stamp, raising=False)
+        monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
+        monkeypatch.setattr(
+            booley,
+            "version_attribution",
+            VersionAttribution(
+                version="4.5.6",
+                origin=VersionOrigin.DISTRIBUTION,
+                distribution_name="booley-rtl",
+            ),
+        )
+        monkeypatch.setattr(
+            VersionAttribution,
+            "source_git_metadata",
+            lambda _self: pytest.fail("wheel attribution must not inspect Git"),
+        )
+        monkeypatch.setattr(
+            subprocess, "run", lambda *a, **k: pytest.fail("wheel must not run subprocesses")
+        )
+
+        assert cli._version_string() == f"booley {__version__} ({commit}, 2026-10-26)"
+
+    def test_release_readers_accept_stamp_with_commit_time(self, repo: Path, monkeypatch):
+        from booley.runtime import image_build_contracts
+
+        self._commit_at(repo, "2026-10-26T12:00:00+00:00")
+        commit = write_build_stamp(repo, profile=BuildProfile.OFFICIAL_RELEASE)
+        wheel = _write_wheel(repo)
+        values = self._stamp_values(repo)
+        monkeypatch.setattr(
+            image_build_contracts, "_embedded_stamp_path", lambda: stamp_path(repo)
+        )
+
+        assert values.get("COMMIT_TIME") == "2026-10-26T12:00:00Z"
+        assert build_stamp_module.wheel_embedded_commit(wheel) == commit
+        assert wheel_embedded_source_fingerprint(wheel) == resolve_wheel_source_fingerprint(repo)
+        contracts = image_build_contracts.embedded_image_build_contracts()
+        assert contracts.runtime_base == values["RUNTIME_BASE_CONTRACT"]
+        assert contracts.standard_substrate == values["STANDARD_SUBSTRATE_CONTRACT"]
 
     def test_reads_wheel_source_identity_without_importing_wheel(self, tmp_path: Path):
         wheel = tmp_path / WHEEL_NAME

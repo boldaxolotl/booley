@@ -124,6 +124,7 @@ def resolve_target_campaign(
     criterion_keys: Sequence[str],
     criteria: Mapping[str, object],
     *,
+    identity: str,
     explicit_scope: str | Sequence[str] | None = None,
     test_names: Mapping[str, list[str]] | None = None,
     test_skips: Mapping[str, list[str]] | None = None,
@@ -138,6 +139,7 @@ def resolve_target_campaign(
     )
     suite = require_runnable_target_test_suite(
         target,
+        identity=identity,
         test_names=test_names,
         test_skips=test_skips,
     )
@@ -147,6 +149,7 @@ def resolve_target_campaign(
 def describe_target_campaign(
     target: str,
     *,
+    identity: str,
     criterion_keys: Sequence[str] = (),
     criteria: Mapping[str, object] | None = None,
     test_names: Mapping[str, list[str]] | None = None,
@@ -155,6 +158,7 @@ def describe_target_campaign(
     """Describe test mechanics when criterion scope is not needed by a caller."""
     suite = require_runnable_target_test_suite(
         target,
+        identity=identity,
         test_names=test_names,
         test_skips=test_skips,
     )

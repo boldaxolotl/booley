@@ -40,7 +40,9 @@ from booley.flows.sim.execution.engine import (
     PreparedOrdinaryGroup,
     SimulationBuildSlotError,
 )
-from tests.flows.sim.test_campaign_manifest_codec import _manifest, _sha
+from tests.conftest import symlink_or_skip
+from tests.flows.sim.test_campaign_manifest_codec import _manifest, _selection_test_runs, _sha
+from tests.fusesoc_test_support import symlinked_booley_dir
 
 
 def _admission() -> AdmissionContext:
@@ -75,6 +77,7 @@ def _manifest_for(names: tuple[str, ...], *, access: str = "immutable"):
             "revision": "abc123",
             "target": target,
             "selection": {"kind": "named", "names": [name]},
+            "test_runs": _selection_test_runs((name,)),
             "arguments": [name],
             "build_variant_id": variant["build_variant_id"],
             "run_directory": {
@@ -398,12 +401,6 @@ def test_shared_build_is_recovered_by_a_fresh_executor_and_scoped_per_invocation
     first = _executor(build_root, counters).execute(
         _request(store, manifest, items[0], project, invocation=1)
     )
-    store.verify_result_evidence(
-        store.work_item_directory(items[0]["work_item_id"])  # type: ignore[index]
-        / "attempts"
-        / f"{first.document['attempt_ordinal']:04d}-{first.document['attempt_id']}",
-        first,
-    )
     second = _executor(build_root, counters).execute(
         _request(store, manifest, items[1], project, invocation=1)
     )
@@ -440,8 +437,6 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     base_manifest = _manifest_for(("alpha", "beta"), access="legacy-per-test")
     manifest_document = json.loads(canonical_json_bytes(base_manifest.document))
     manifest_document.pop("fingerprints")
-    if mapped:
-        manifest_document["$schema"] = "booley.simulation-campaign-manifest/v3"
     manifest_document["planning_disclosures"] = list(disclosures.values())
     manifest = finalize_manifest(manifest_document)
     plan = create_simulation_campaign_plan(manifest)
@@ -465,7 +460,10 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
         test_runs: tuple[object, ...],
     ) -> None:
         assert commands == ()
-        assert test_runs == ()  # this manifest predates recorded Test Runs
+        assert [run.name for run in test_runs] == list(names)
+        from booley.flows.test_runs import test_run_document
+
+        assert [test_run_document(run) for run in test_runs] == _selection_test_runs(names)
         hooks.append((names, expose_build_root, run_cwd))
 
     monkeypatch.setattr(serial_execution, "_run_hook", record_hook)
@@ -517,57 +515,6 @@ def _legacy_disclosures():
     }
 
 
-@pytest.mark.parametrize(
-    "field, value",
-    [
-        pytest.param("attempt_id", "wrong-owner", id="attempt_id-wrong-owner"),
-        pytest.param("ordinal", True, id="ordinal-True"),
-        pytest.param(
-            "elapsed_s", float("nan"), marks=pytest.mark.timeout(120), id="elapsed_s-nan"
-        ),
-        pytest.param("returncode", True, id="returncode-True"),
-        pytest.param("command_count", 3, marks=pytest.mark.timeout(150), id="command_count-3"),
-        pytest.param("test_names", ["other"], id="test_names-value5"),
-        pytest.param(
-            "stdout_tail",
-            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-            id="stdout_tail-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-        ),
-        pytest.param("status", "invented", id="status-invented"),
-    ],
-)
-def test_interrupted_hook_evidence_fails_closed_on_semantic_corruption(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, value: object
-) -> None:
-    from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
-
-    invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
-    firing = outcome.pre_sim_firings[0]
-    document = json.loads(firing.path.read_bytes())
-    document[field] = value
-    firing.path.write_text(json.dumps(document))
-    (firing.path.parents[3] / "result.json").unlink()
-    with pytest.raises(SimulationCampaignIntegrityError):
-        CampaignStore(invocation / "targets/sim/campaign").scan()
-
-
-def test_terminal_hook_tampering_and_symlink_are_not_authoritative(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
-
-    invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
-    firing = outcome.pre_sim_firings[0]
-    firing.path.write_bytes(firing.path.read_bytes() + b" ")
-    store = CampaignStore(invocation / "targets/sim/campaign")
-    with pytest.raises(SimulationCampaignIntegrityError):
-        store.scan()
-    firing.path.unlink()
-    firing.path.symlink_to(tmp_path / "outside.json")
-    with pytest.raises(SimulationCampaignIntegrityError):
-        store.scan()
-
-
 @pytest.mark.parametrize("coverage", [False, True])
 def test_pre_cancelled_campaign_hook_never_compiles_or_runs(tmp_path, coverage):
     from booley.flows.sim.campaign.coverage_execution import CoverageAggregateExecutor
@@ -605,8 +552,8 @@ def test_pre_cancelled_campaign_hook_never_compiles_or_runs(tmp_path, coverage):
     assert list(request.attempt_directory.glob("pre-sim/*.json")) == []
 
 
-def _maximum_hook_selection_plan(names):
-    from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
+def _maximum_hook_selection_manifest(names):
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_manifest
 
     def transform(document):
         workload = document["workload"]
@@ -615,6 +562,7 @@ def _maximum_hook_selection_plan(names):
         item.update(
             kind="coverage_aggregate",
             selection={"kind": "named", "names": names},
+            test_runs=_selection_test_runs(names),
             arguments=list(names),
         )
         suite = document["required_suite"]
@@ -625,25 +573,30 @@ def _maximum_hook_selection_plan(names):
             source_sha256="sha256:" + hashlib.sha256(source).hexdigest(),
         )
 
-    plan, _disclosures = _pre_sim_plan("immutable", ("true",), transform)
-    return plan, _disclosures
+    return _pre_sim_manifest("immutable", ("true",), transform)
 
 
+def _maximum_hook_selection_plan(names):
+    from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+
+    manifest, disclosures = _maximum_hook_selection_manifest(names)
+    return create_simulation_campaign_plan(manifest), disclosures
+
+
+@pytest.mark.timeout(180)
 def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_path):
     from booley.flows.sim.campaign import read_pre_sim_firings
     from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
     from booley.flows.sim.execution.contract import PreSimEvidence
-    from booley.flows.sim.flow import _campaign_pre_sim_details
+    from booley.flows.sim.flow import _pre_sim_projection
 
     names = tuple(f"test{index:04d}" + "x" * 504 for index in range(4000))
 
-    plan, _disclosures = _maximum_hook_selection_plan(names)
+    manifest, _disclosures = _maximum_hook_selection_manifest(names)
     invocation = tmp_path / "reports/1"
     store = CampaignStore(invocation / "targets/sim/campaign")
-    store.publish_manifest(plan.manifest)
-    request = _request(
-        store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
-    )
+    store.publish_manifest(manifest)
+    request = _request(store, manifest, manifest.document["work_items"][0], tmp_path, invocation=1)
     _executor(tmp_path / "build", {}).prepare_attempt(request)
     evidence = PreSimEvidence(
         ("true",),
@@ -659,15 +612,8 @@ def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_pat
     assert len(canonical_json_bytes(reference)) < 1024
     firings = read_pre_sim_firings(store.manifest_path)
     assert firings[0].document["test_names"] == names
-    detail = _campaign_pre_sim_details(
-        [
-            SimpleNamespace(
-                pre_sim_firings=firings,
-                producer_invocation_directory=invocation.absolute(),
-                current_pre_sim_keys=frozenset(f.key for f in firings),
-            )
-        ],
-        invocation,
+    detail, _card = _pre_sim_projection(
+        {f.key: f for f in firings}, frozenset(f.key for f in firings), invocation
     )
     assert len(json.dumps(detail["pre_sim_runs"]).encode()) <= 16 * 1024
     assert detail["pre_sim_runs"][0]["test_count"] == 4000
@@ -709,8 +655,6 @@ def test_changed_packaged_source_fails_disclosure_equality_before_compile(
     base_manifest = _manifest_for(("alpha",))
     document = json.loads(canonical_json_bytes(base_manifest.document))
     document.pop("fingerprints")
-    if mapped:
-        document["$schema"] = "booley.simulation-campaign-manifest/v3"
     document["planning_disclosures"] = [planned]
     manifest = finalize_manifest(document)
     project = tmp_path / "project"
@@ -879,6 +823,7 @@ def test_scope_stop_after_real_hook_retains_firing_without_simulator_launch(tmp_
 
 
 def _aggregate_result_bound_fixture(tmp_path):
+    from booley.flows.sim.campaign.codec import RESULT_SCHEMA
     from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
     from booley.flows.sim.execution.contract import PreSimEvidence
     from tests.flows.sim.test_campaign_codec_golden import _simulation_result
@@ -898,14 +843,18 @@ def _aggregate_result_bound_fixture(tmp_path):
             ordinal=ordinal,
         )
     document = json.loads(_simulation_result("completed"))
+    document["$schema"] = RESULT_SCHEMA
     document.update(serial_execution._common(request))
     document["attempt_id"] = request.attempt_id
     document["executable_snapshot"]["manifest"]["owner"] = request.attempt_id
     document["evidence"] = store.pre_sim_references(request.attempt_directory)
     document["observations"] = [
-        serial_execution._observation(
-            SimulationTestOutcome(name=name, verdict="pass", passed=True)
-        )
+        {
+            **serial_execution._observation(
+                SimulationTestOutcome(name=name, verdict="pass", passed=True)
+            ),
+            "test_run": name,
+        }
         for name in names
     ]
     return store, request, document
@@ -1031,23 +980,6 @@ def test_request_replacement_reauthenticates_manifest_and_attempt(tmp_path, monk
     with pytest.raises(SimulationCampaignIntegrityError):
         _publish_request_hook(replace(first, producer_invocation_id=2), "beta", 2)
     assert not (first.attempt_directory / "pre-sim/0002.json").exists()
-
-
-@pytest.mark.parametrize("corruption", ["type", "fingerprint", "structure"])
-def test_request_rejects_malformed_manifest_at_construction(tmp_path, corruption):
-    from dataclasses import replace
-
-    from booley.flows.sim.campaign.model import SimulationCampaignManifest
-
-    request = _hook_publication_request(tmp_path)
-    document = json.loads(canonical_json_bytes(request.manifest.document))
-    if corruption == "fingerprint":
-        document["fingerprints"]["workload_sha256"] = "sha256:" + "0" * 64
-    else:
-        document.pop("work_items")
-    invalid = object() if corruption == "type" else SimulationCampaignManifest(document)
-    with pytest.raises(SimulationCampaignIntegrityError):
-        replace(request, manifest=invalid)
 
 
 def test_request_isolates_frozen_manifest_from_caller_mutation(tmp_path):
@@ -1195,8 +1127,241 @@ def test_campaign_pre_sim_project_relative_hook_uses_project_root(
         assert run.is_absolute() and run.resolve().is_relative_to(project.resolve())
     assert result.document["grade"] == "pass"
     assert counters["launch"] == 1
+    if "{" in configured:
+        # Booley-created parents of the templated attempt directory are cleaned up.
+        assert list((project / "runs").iterdir()) == []
     builds = list(store.root.rglob("build-result.json"))
     assert len(builds) == 1
     assert result.document["build_result"]["sharing"] == (
         "shared_variant" if route == "shared" else "private_work_item"
     )
+
+
+@pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
+def test_pre_sim_reader_rejects_corrupt_record(tmp_path, error):
+    request = _hook_publication_request(tmp_path)
+    _publish_request_hook(request)
+    assert len(request.store.read_pre_sim_firings()) == 1
+    path = request.attempt_directory / "pre-sim/0001.json"
+    document = json.loads(path.read_bytes())
+    if error == "schema":
+        document["$schema"] = "unknown"
+    elif error == "missing":
+        del document["attempt_id"]
+    path.chmod(0o600)
+    path.write_bytes(b"{" if error == "truncated" else canonical_json_bytes(document))
+    with pytest.raises(SimulationCampaignIntegrityError):
+        request.store.read_pre_sim_firings()
+
+
+def test_pre_sim_inspection_reads_fresh(tmp_path, monkeypatch):
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
+
+    invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    firing = outcome.pre_sim_firings[0]
+    store = CampaignStore(invocation / "targets/sim/campaign")
+
+    def inspect():
+        assert store.inspect_pre_sim_firings() == outcome.pre_sim_firings
+
+    accesses, _ = _observe_pre_sim_reads(monkeypatch)
+    inspect()
+    first = accesses[firing.path]
+    assert first > 0
+    inspect()
+    assert accesses[firing.path] == 2 * first
+    firing.path.write_bytes(firing.path.read_bytes() + b" ")
+    with pytest.raises(SimulationCampaignIntegrityError):
+        inspect()
+
+
+@pytest.mark.parametrize(
+    "defect, value, message",
+    [
+        ("attempt_id", "wrong-owner", "evidence owner disagrees"),
+        ("ordinal", True, "ordinal"),
+        pytest.param("elapsed_s", float("nan"), "elapsed_s", marks=pytest.mark.timeout(120)),
+        ("returncode", True, "returncode"),
+        pytest.param("command_count", 3, "command count", marks=pytest.mark.timeout(150)),
+        ("test_names", ["other"], "selection disagrees"),
+        ("stdout_tail", "x" * 8193, "over-budget stdout_tail"),
+        ("status", "invented", "status"),
+        ("bytes", None, "result references disagree"),
+        ("sidecar-link", None, "regular file|link"),
+        ("ordinal-path", None, "ordinal disagrees"),
+        ("directory-owner", None, "directory owner disagrees"),
+        ("missing-reference", None, "result references disagree"),
+    ],
+    ids=lambda value: None if value is None else str(value)[:32],
+)
+def test_pre_sim_read_identity_and_reference_cases(tmp_path, monkeypatch, defect, value, message):
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
+
+    invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    firing = outcome.pre_sim_firings[0]
+    result_path = firing.path.parents[3] / "result.json"
+    if value is not None:
+        document = json.loads(firing.path.read_bytes())
+        document[defect] = value
+        firing.path.write_text(json.dumps(document))
+        result_path.unlink()
+    elif defect == "bytes":
+        firing.path.write_bytes(firing.path.read_bytes() + b" ")
+    elif defect == "sidecar-link":
+        firing.path.unlink()
+        firing.path.symlink_to(tmp_path / "outside.json")
+    elif defect == "missing-reference":
+        document = json.loads(result_path.read_bytes())
+        document["evidence"] = [
+            ref for ref in document["evidence"] if ref["kind"] != "pre_sim_commands"
+        ]
+        result_path.write_bytes(canonical_json_bytes(document))
+    else:
+        result_path.unlink()
+        if defect == "ordinal-path":
+            firing.path.rename(firing.path.with_name("0002.json"))
+        else:
+            directory = firing.path.parent.parent
+            directory.rename(directory.with_name("0001-other-owner"))
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    with pytest.raises(SimulationCampaignIntegrityError, match=message):
+        store.scan()
+
+
+def _observe_pre_sim_reads(monkeypatch):
+    from collections import Counter
+
+    from booley.flows.sim.campaign.pre_sim_evidence import PreSimFiringDecoder
+
+    accesses, decodes = Counter(), Counter()
+
+    def observe(method):
+        def read(store, path, **kwargs):
+            if path.parent.name == "pre-sim":
+                accesses[path] += 1
+            return method(store, path, **kwargs)
+
+        return read
+
+    decode = PreSimFiringDecoder.decode
+
+    def count_decode(decoder, raw, item, attempt):
+        document = decode(decoder, raw, item, attempt)
+        decodes[(document["attempt_id"], document["ordinal"])] += 1
+        return document
+
+    monkeypatch.setattr(CampaignStore, "_read", observe(CampaignStore._read))
+    monkeypatch.setattr(CampaignStore, "_identity", observe(CampaignStore._identity))
+    monkeypatch.setattr(PreSimFiringDecoder, "decode", count_decode)
+    return accesses, decodes
+
+
+def _pre_sim_read_case(tmp_path, monkeypatch, *, interrupted=False):
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
+
+    invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    firing = outcome.pre_sim_firings[0]
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    if interrupted:
+        (firing.path.parents[3] / "result.json").unlink()
+    expected = store.scan()
+    accesses, decodes = _observe_pre_sim_reads(monkeypatch)
+    return store, firing, expected, accesses, decodes
+
+
+def test_scan_validates_each_pre_sim_snapshot_once(tmp_path, monkeypatch):
+    store, firing, expected, accesses, decodes = _pre_sim_read_case(tmp_path, monkeypatch)
+    assert store.scan() == expected
+    assert accesses == {firing.path: 1}, "each sidecar must have one byte access"
+    assert decodes == {(firing.key[2], firing.key[3]): 1}, "each sidecar must be decoded once"
+
+
+@pytest.mark.parametrize(
+    "entry, interrupted",
+    [("retained", False), ("scan", True), ("retained", True)],
+    ids=["complete-retained", "interrupted-scan", "interrupted-retained"],
+)
+def test_other_inspections_validate_each_pre_sim_snapshot_once(
+    tmp_path, monkeypatch, entry, interrupted
+):
+    from booley.flows.sim.campaign.inspection import inspect_retained_campaign
+
+    store, firing, expected, accesses, decodes = _pre_sim_read_case(
+        tmp_path, monkeypatch, interrupted=interrupted
+    )
+    if entry == "scan":
+        assert store.scan() == expected
+    else:
+        status = inspect_retained_campaign(store.manifest_path)
+        assert status.completed == expected.complete
+        assert status.interrupted == expected.interrupted
+        assert firing.path.absolute() in status.retention_files
+    assert accesses == {firing.path: 1}, "each sidecar must have one byte access"
+    assert decodes == {(firing.key[2], firing.key[3]): 1}, "each sidecar must be decoded once"
+
+
+@pytest.mark.parametrize("status,returncode", [("passed", 0), ("failed", 1)])
+@pytest.mark.parametrize("observation", ["decoder", "json"])
+def test_publication_does_not_decode_its_own_bytes(
+    tmp_path, monkeypatch, status, returncode, observation
+):
+    from types import SimpleNamespace
+
+    from booley.flows.sim.campaign import pre_sim_evidence
+
+    request = _hook_publication_request(tmp_path)
+    calls = {"decoder": [], "json": []}
+    decode = pre_sim_evidence.PreSimFiringDecoder.decode
+    loads = pre_sim_evidence.json.loads
+
+    def observe_decode(self, raw, item, attempt):
+        calls["decoder"].append(raw)
+        return decode(self, raw, item, attempt)
+
+    def observe_json(raw):
+        calls["json"].append(raw)
+        return loads(raw)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pre_sim_evidence.PreSimFiringDecoder, "decode", observe_decode)
+        patch.setattr(pre_sim_evidence, "json", SimpleNamespace(loads=observe_json))
+        reference = _publish_request_hook(request, status=status, returncode=returncode)
+        assert (request.attempt_directory / reference["path"]).is_file()
+        assert calls[observation] == [], f"publication decoded its own firing via {observation}"
+        assert calls == {"decoder": [], "json": []}
+    records = request.store.read_pre_sim_firings()
+    assert len(records) == 1
+    assert records[0].document["status"] == status
+    assert records[0].document["returncode"] == returncode
+
+
+@pytest.mark.parametrize("linked", ["entry", "below"])
+def test_store_follows_only_the_booley_dir_entry(tmp_path, linked):
+    """#2191: a Campaign store crosses the Booley Directory link, never a link below it."""
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / ".booley"
+    symlinked_booley_dir(project, tmp_path / "external")
+    if linked == "below":
+        # A link below the entry (flow-reports) stays refused.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        symlink_or_skip(entry / "flow-reports", outside, target_is_directory=True)
+    else:
+        (entry / "flow-reports").mkdir()
+    store = CampaignStore(
+        entry / "flow-reports" / "sim" / "1" / "targets" / "sim" / "campaign", booley_dir=entry
+    )
+    manifest = _manifest_for(("smoke",))
+
+    if linked == "below":
+        with pytest.raises(SimulationCampaignIntegrityError, match="contains a link"):
+            store.publish_manifest(manifest)
+        return
+    digest = store.publish_manifest(manifest)
+    assert store.load_manifest().document == manifest.document
+    assert store.manifest_sha256() == digest
+    store.regenerate_summary()
+    assert store.load_summary()["complete"] is False
+    with store.mutation_lock():
+        assert (store.root / ".lock").exists()

@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
 
+from booley.core.booley_dir_links import lexical_booley_path
+from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.core.boundary import require_finite_number
 
 PLAN_SCHEMA_VERSION = 1
@@ -60,8 +62,10 @@ def normalize_plan_path(path: str | Path, work_dir: Path) -> str:
     candidate = Path(path)
     if not candidate.is_absolute():
         return candidate.as_posix()
+    root = work_dir.resolve()
     try:
-        return candidate.resolve().relative_to(work_dir.resolve()).as_posix()
+        physical = lexical_booley_path(root / BOOLEY_DIR_NAME, candidate.resolve())
+        return physical.relative_to(root).as_posix()
     except ValueError:
         return candidate.as_posix()
 

@@ -18,31 +18,25 @@ import pytest
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.backends import cocotb_results as cr
 from booley.flows.sim.build_session import TargetCompileSurface
-from booley.flows.sim.execution import SimulationExecution
 from booley.flows.sim.execution import engine as execution_engine
 from booley.flows.sim.result import format_summary
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from tests.flows.sim.leased_session import canned_build_session
 from tests.flows.sim.test_flow import SimulateFlow, _make_flow
 
 
 @pytest.fixture(autouse=True)
-def _use_legacy_build_transport_for_canned_cocotb_tests(
+def _canned_cocotb_build_session(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Canned FuseSoC output here has no leased generation."""
+    """Canned FuseSoC output here: real leased session, stubbed capture and image gates."""
     monkeypatch.setattr(
         execution_engine,
         "resolve_target_compile_surface",
         lambda handle: TargetCompileSurface(handle.project_root, (), ()),
     )
-    with patch.object(
-        SimulationExecution,
-        "_run_groups_with_session",
-        lambda self, handle, groups, **planned: self._run_planned_groups(
-            handle, groups, **planned
-        ),
-    ):
+    with canned_build_session():
         yield
 
 
@@ -193,7 +187,7 @@ def _run_cocotb(
             _execute_returning(stdout, returncode, timed_out),
         ),
         patch("booley.flows.sim.flow.new_attempt_token", return_value=token),
-        flow.context.publication_resources,
+        flow.publication_resources,
     ):
         return flow._run()
 
@@ -535,7 +529,7 @@ class TestCocotbBatching:
                 "booley.flows.sim.flow._get_test_names",
                 return_value=dict(_TESTS),
             ),
-            flow.context.publication_resources,
+            flow.publication_resources,
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -553,14 +547,14 @@ class TestCocotbBatching:
             tmp_path,
             extra_args=["--dry-run", "--result-verbosity", "full"],
         )
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         command = result.detail["work_units"][0]["commands"][0]["argv"]
         assert "--result-verbosity full" in command[-1]
 
     def test_trace_scope_reaches_the_run_half(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path, extra_args=["--dry-run", "--trace"])
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         command = result.detail["work_units"][0]["commands"][0]["argv"]
         assert "--expected-trace-scope counter" in command[-1]
@@ -592,7 +586,7 @@ class TestCocotbBatching:
                 "booley.flows.sim.flow._get_test_names",
                 return_value=dict(_TESTS),
             ),
-            flow.context.publication_resources,
+            flow.publication_resources,
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -637,7 +631,7 @@ class TestCocotbBatching:
                 "booley.flows.sim.flow._get_test_skips",
                 return_value={"ccfg": ["test_fail_assert"]},
             ),
-            flow.context.publication_resources,
+            flow.publication_resources,
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -660,7 +654,7 @@ class TestCocotbSelectRejection:
             _TESTS["ccfg"],
             select="+test_id={index}",
         )
-        with flow.context.publication_resources:
+        with flow.publication_resources:
             result = flow._run()
         assert result.exit_code == EXIT_ERROR
         assert "COCOTB_TEST_FILTER" in result.report_text
@@ -678,7 +672,7 @@ class TestCocotbSelectRejection:
                     '[SIM_RESULT] PASSED\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n',
                 ),
             ),
-            flow.context.publication_resources,
+            flow.publication_resources,
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -719,7 +713,7 @@ class TestCocotbDryRun:
                 "booley.fusesoc.fusesoc_registry._resolve_target",
                 side_effect=AssertionError("dry-run must not resolve"),
             ),
-            flow.context.publication_resources,
+            flow.publication_resources,
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -738,7 +732,7 @@ class TestCocotbDryRun:
         flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
         with (
             patch("booley.flows.sim.flow._get_test_names", return_value={}),
-            flow.context.publication_resources,
+            flow.publication_resources,
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -841,7 +835,7 @@ def test_run_cmd_forwards_the_sim_time_grace(tmp_path: Path):
             "booley.flows.sim.execution.engine.resolve_sim_time_grace_s",
             return_value=42.0,
         ),
-        flow.context.publication_resources,
+        flow.publication_resources,
     ):
         result = flow._run()
     command = result.detail["work_units"][0]["commands"][0]["argv"]

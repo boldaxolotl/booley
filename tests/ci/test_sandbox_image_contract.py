@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import copy
+import os
 import re
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -535,84 +538,82 @@ def test_derived_recipes_must_not_relabel_the_inventory(field: str) -> None:
     assert "must inherit" in _errors(sources, "package inventory")
 
 
-def test_base_inventory_must_be_verified_before_promotion() -> None:
-    sources = _sources()
-    steps = sources.base_workflow["jobs"]["build-publish-smoke"]["steps"]
-    names = [step.get("name") for step in steps]
-    export = names.index("Export and verify exact base package inventory")
-    promote = names.index("Promote verified base to main consumption tag")
-    steps[export], steps[promote] = steps[promote], steps[export]
+# Fake Docker: an image's inventory is its own name; other extraction forms fail.
+_FAKE_DOCKER = """#!/bin/sh
+case "$*" in
+  "pull "*) ;;
+  "run --rm --network none --entrypoint cat $7 /usr/local/share/booley/base-package-inventory.json")
+    echo "$7" ;;
+  *) echo "unexpected: docker $*" >&2; exit 64 ;;
+esac
+"""
 
-    assert "before promotion" in _errors(sources, "stable-base publish")
 
-
-def test_base_inventory_must_consume_the_build_digest_and_verify_state() -> None:
-    sources = _sources()
-    export = _step(
-        sources,
-        "base_workflow",
-        "docker-base-publish.yml",
-        "build-publish-smoke",
-        "Export and verify exact base package inventory",
+@pytest.mark.skipif(sys.platform == "win32", reason="CI inventory steps run under Linux bash")
+@pytest.mark.parametrize(
+    ("step", "env"),
+    [
+        pytest.param(
+            ("test_workflow", "test.yml", "bwave-smoke", "Export standard package inventory"),
+            {"BUILD_STABLE_BASE": "true"},
+            id="local-base-standard",
+        ),
+        pytest.param(None, {}, id="test-standard-riscv"),
+        pytest.param(
+            (
+                "release_workflow",
+                "docker-publish.yml",
+                "standard-image-contract",
+                "Export standard and runtime-base package inventories",
+            ),
+            {"RUNTIME_BASE": "base", "IMAGE": "standard"},
+            id="release-base-standard",
+        ),
+        pytest.param(
+            (
+                "release_workflow",
+                "docker-publish.yml",
+                "riscv-image-contract",
+                "Validate exact RISC-V candidate",
+            ),
+            {"BASE_IMAGE": "standard", "RISCV_IMAGE": "riscv"},
+            id="release-standard-riscv",
+        ),
+    ],
+)
+def test_parent_inventory_mismatch_fails_the_step(
+    tmp_path: Path, step: tuple[str, str, str, str] | None, env: dict[str, str]
+) -> None:
+    docker = tmp_path / "bin" / "docker"
+    docker.parent.mkdir()
+    docker.write_text(_FAKE_DOCKER)
+    docker.chmod(0o755)
+    parent = tmp_path / "docker-build-evidence" / "base-package-inventory.json"
+    parent.parent.mkdir()
+    parent.write_text("parent\n")
+    if step is None:
+        script = _ROOT / ".github/scripts/verify_riscv_image_contract.sh"
+        argv = [str(script), str(tmp_path), "riscv", "substrate", str(parent)]
+    else:
+        value = _step(_sources(), *step)
+        script = tmp_path / "step.sh"
+        script.write_text(value["run"])
+        # GitHub's bash shell adds pipefail; a step without `shell:` runs `bash -e`.
+        shell = ["--noprofile", "--norc", "-eo", "pipefail"] if value.get("shell") else ["-e"]
+        argv = ["bash", *shell, str(script)]
+    path = f"{docker.parent}{os.pathsep}{os.environ['PATH']}"
+    result = subprocess.run(
+        argv,
+        cwd=_ROOT,
+        env={**os.environ, "PATH": path, "RUNNER_TEMP": str(tmp_path), **env},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
     )
-    export["env"]["BASE_IMAGE"] = "ghcr.io/acme/base:main"
-    export["run"] = export["run"].replace("--verify-current-state", "")
 
-    errors = _errors(sources, "stable-base publish")
-    assert "build digest" in errors
-    assert "current state" in errors
-
-
-def test_test_lane_standard_inventory_must_precede_evidence_upload() -> None:
-    sources = _sources()
-    steps = sources.test_workflow["jobs"]["bwave-smoke"]["steps"]
-    names = [step.get("name") for step in steps]
-    standard = steps.pop(names.index("Export standard package inventory"))
-    steps.append(standard)
-
-    assert "before evidence upload" in _errors(sources, "test package inventory")
-
-
-def test_test_lane_local_base_must_verify_current_state() -> None:
-    sources = _sources()
-    local = _step(
-        sources,
-        "test_workflow",
-        "test.yml",
-        "bwave-smoke",
-        "Verify and export local runtime-base package inventory",
-    )
-    local["run"] = local["run"].replace("--verify-current-state", "")
-
-    assert "must verify" in _errors(sources, "test package inventory")
-
-
-def test_release_standard_inventory_must_use_selected_base_digest() -> None:
-    sources = _sources()
-    step = _step(
-        sources,
-        "release_workflow",
-        "docker-publish.yml",
-        "standard-image-contract",
-        "Export standard and runtime-base package inventories",
-    )
-    step["env"]["RUNTIME_BASE"] = "ghcr.io/acme/base:main"
-
-    assert "selected base digest" in _errors(sources, "release package inventory")
-
-
-def test_release_riscv_inventory_must_compare_with_standard() -> None:
-    sources = _sources()
-    step = _step(
-        sources,
-        "release_workflow",
-        "docker-publish.yml",
-        "riscv-image-contract",
-        "Validate exact RISC-V candidate",
-    )
-    step["run"] = step["run"].replace("--expected-inventory", "--no-comparison")
-
-    assert "riscv-image-contract" in _errors(sources, "release package inventory")
+    assert result.returncode != 0
+    assert " differ: " in result.stdout, result.stdout + result.stderr
 
 
 def test_release_riscv_layers_must_prefix_match_the_standard_substrate() -> None:

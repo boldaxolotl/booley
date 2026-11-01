@@ -17,9 +17,12 @@ from booley.runtime.image_lifecycle import LifecycleResult, Status
 from booley.runtime.session_issuance import Issuance
 from booley.runtime.session_spec import SessionSpecSnapshot
 from tests.harness import test_session_runtime as resolution_fixtures
+from tests.runtime import test_session_issuance as issuance_fixtures
 
 project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
 workspace = resolution_fixtures.workspace
+issued = issuance_fixtures.issued
+trusted_validator = issuance_fixtures.trusted_validator
 
 
 @pytest.fixture(autouse=True)
@@ -381,7 +384,6 @@ def test_refresh_without_immutable_image_id_rolls_back_spec(tmp_path: Path, monk
 
 def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> None:
     (tmp_path / ".booley").mkdir()
-    inspection = LifecycleResult("booley-sandbox", "sha256:old", Status.CURRENT)
     refreshed = LifecycleResult(
         "booley-sandbox",
         "sha256:fresh",
@@ -407,6 +409,9 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
     def drive_runtime(project_root, images, *, verbose):
         images.inspect(project_root, verbose=verbose)
         result = images.prepare(project_root, verbose=verbose)
+        images.validate(result)
+        images.abort()
+        result = images.prepare(project_root, verbose=verbose)
         result = images.commit()
         images.reissue(project_root, result.selected_id, verbose=verbose)
         return result
@@ -415,9 +420,17 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
         patch.object(
             harness_refresh.init_cmd,
             "inspect_refreshable_runtime_image",
-            side_effect=lambda root, *, verbose: (
-                events.append(("inspect", root, verbose)) or inspection
-            ),
+            side_effect=lambda root: events.append(("inspect", root)),
+        ),
+        patch.object(
+            harness_refresh.init_cmd,
+            "validate_runtime_image",
+            side_effect=lambda value: events.append(("validate", value)),
+        ),
+        patch.object(
+            harness_refresh.init_cmd,
+            "abort_runtime_image",
+            side_effect=lambda value: events.append(("abort", value)),
         ),
         patch.object(
             harness_refresh.init_cmd,
@@ -457,7 +470,10 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
         wheel_source_fingerprint="payload-123",
     )
     assert events == [
-        ("inspect", tmp_path, True),
+        ("inspect", tmp_path),
+        ("prepare", tmp_path, True),
+        ("validate", prepared),
+        ("abort", prepared),
         ("prepare", tmp_path, True),
         ("commit", prepared),
         ("reissue", tmp_path, "sha256:fresh", True),
@@ -491,71 +507,14 @@ def test_harness_runtime_images_rejects_commit_without_selected_id(monkeypatch) 
         images.commit()
 
 
-def test_harness_runtime_image_wrappers_delegate(monkeypatch, tmp_path: Path) -> None:
-    (tmp_path / ".booley").mkdir()
-    plan = Mock()
-    prepared = Mock()
-    result = LifecycleResult("booley-sandbox", "sha256:id", Status.CURRENT)
-    monkeypatch.setattr(
-        harness_refresh.init_cmd, "inspect_refreshable_runtime_image", lambda *a, **k: result
-    )
-    monkeypatch.setattr(
-        harness_refresh.init_cmd, "prepare_runtime_image", lambda *a, **k: prepared
-    )
-    prepared.plan.selected_reference = "booley-sandbox"
-    prepared.plan.nodes = (Mock(wheel_source_fingerprint="wheel"),)
-    prepared.plan.steps = (Mock(action=object()),)
-    prepared.candidates = (
-        Mock(
-            reference="booley-sandbox",
-            candidate_reference="candidate",
-            image_id="sha256:id",
-            wheel_sha256=None,
-        ),
-    )
-    prepared.prior_tags = ()
-    monkeypatch.setattr(harness_refresh.init_cmd, "commit_runtime_image", lambda value: value)
-    monkeypatch.setattr(harness_refresh.init_cmd, "validate_runtime_image", lambda value: plan)
-    monkeypatch.setattr(harness_refresh.init_cmd, "abort_runtime_image", lambda value: plan)
-    images = harness_refresh._RuntimeImages()
-    assert images.inspect(tmp_path, verbose=True) is None
-    assert images.prepare(tmp_path, verbose=False).selected_id == "sha256:id"
-    images.validate(_result())
-    images.abort()
-
-
-def test_init_runtime_image_inspection_reports_stale_steps(monkeypatch, tmp_path: Path) -> None:
+def test_refresh_refuses_external_image_with_reseed_workflow(monkeypatch, tmp_path: Path) -> None:
     from booley.harness import init_cmd
-    from booley.runtime.image_lifecycle import PlanAction
+    from booley.runtime.image_lifecycle import ImageRole
 
-    plan = SimpleNamespace(
-        selected_reference="booley-sandbox",
-        nodes=(
-            SimpleNamespace(
-                role=init_cmd.image_lifecycle.ImageRole.WHEEL_OVERLAY,
-                wheel_source_fingerprint="wheel",
-            ),
-        ),
-        steps=(
-            SimpleNamespace(action=PlanAction.REUSE, reason=SimpleNamespace(code="current")),
-            SimpleNamespace(
-                action=PlanAction.BUILD,
-                role=SimpleNamespace(value="wheel-overlay"),
-                reason=SimpleNamespace(code="inputs-changed"),
-                reference="booley-sandbox",
-            ),
-        ),
-    )
+    plan = SimpleNamespace(nodes=(SimpleNamespace(role=ImageRole.EXTERNAL),))
     monkeypatch.setattr(init_cmd.image_lifecycle, "plan", lambda *_args: plan)
-    monkeypatch.setattr(
-        init_cmd.image_lifecycle,
-        "_docker_adapter",
-        lambda: SimpleNamespace(image_id=lambda _reference: "sha256:id"),
-    )
-    result = init_cmd.inspect_refreshable_runtime_image(tmp_path)
-    assert result.status is Status.STALE
-    assert result.diagnostics == (plan.steps[1].reason,)
-    assert result.wheel_source_fingerprint == "wheel"
+    with pytest.raises(RuntimeError, match=r"externally managed.*booley init --seed"):
+        init_cmd.inspect_refreshable_runtime_image(tmp_path)
 
 
 def test_init_runtime_image_inspection_preserves_actionable_plan_errors(
@@ -577,11 +536,18 @@ def test_init_runtime_image_prepare_commit_validate_and_abort_wrappers(
     monkeypatch, tmp_path: Path
 ) -> None:
     from booley.harness import init_cmd
+    from booley.runtime.image_lifecycle import PlanAction
 
+    step = SimpleNamespace(
+        reference="booley-sandbox",
+        action=PlanAction.BUILD,
+        role=SimpleNamespace(value="wheel-overlay"),
+        reason=SimpleNamespace(code="inputs-changed"),
+    )
     plan = SimpleNamespace(
         project_root=tmp_path,
-        steps=(),
-        nodes=(),
+        nodes=(SimpleNamespace(reference=step.reference, effective_inputs="inputs"),),
+        steps=(step,),
     )
     prepared = object()
     calls: list[tuple[str, object]] = []
@@ -605,31 +571,9 @@ def test_init_runtime_image_prepare_commit_validate_and_abort_wrappers(
     init_cmd.validate_runtime_image(prepared)
     init_cmd.abort_runtime_image(prepared)
     assert calls[-2:] == [("validate", prepared), ("abort", prepared)]
-
-
-def test_prepare_runtime_image_reports_planned_step_identity(monkeypatch, tmp_path: Path) -> None:
-    from booley.harness import init_cmd
-    from booley.runtime.image_lifecycle import PlanAction
-
-    step = SimpleNamespace(
-        reference="booley-sandbox",
-        action=PlanAction.BUILD,
-        role=SimpleNamespace(value="wheel-overlay"),
-        reason=SimpleNamespace(code="inputs-changed"),
+    assert any(
+        "inputs-changed inputs" in str(message) for kind, message in calls if kind == "info"
     )
-    plan = SimpleNamespace(
-        project_root=tmp_path,
-        nodes=(SimpleNamespace(reference=step.reference, effective_inputs="inputs"),),
-        steps=(step,),
-    )
-    prepared = object()
-    messages: list[str] = []
-    monkeypatch.setattr(init_cmd.image_lifecycle, "plan", lambda *_args: plan)
-    monkeypatch.setattr(init_cmd.image_lifecycle, "prepare", lambda *_args, **_kwargs: prepared)
-    monkeypatch.setattr(init_cmd, "info", messages.append)
-
-    assert init_cmd.prepare_runtime_image(tmp_path) is prepared
-    assert any("inputs-changed inputs" in message for message in messages)
 
 
 @pytest.mark.parametrize("problem", ["duplicate", "unknown"])
@@ -852,6 +796,9 @@ def test_ancillary_failure_after_verified_commit_keeps_forward_journal(tmp_path,
         journal,
         phase=session_refresh._RefreshPhase.VERIFIED,
         direction=session_refresh._RecoveryDirection.COMMITTED_FORWARD,
+        prepared_images=(
+            session_refresh.RefreshPreparedImage("ref", "ref-candidate", "sha256:c", None),
+        ),
         replacement_issuance=_issuance(tmp_path, "sha256:fresh"),
     )
     session_refresh._write_journal(journal)
@@ -883,3 +830,30 @@ def test_image_gc_deferral_does_not_block_completed_runtime(
     monkeypatch.setattr(image_lifecycle, "cleanup_owned_images", cleanup)
     session_refresh._cleanup_owned_images(tmp_path)
     assert ("deferred" if failure else "retained by another Project") in caplog.text
+
+
+@pytest.fixture
+def project_local_booley_dir(monkeypatch):
+    """Drop the harness-wide BOOLEY_DIR so ``issued`` uses its own Project data."""
+    from booley.runtime.booley_dir import reset_cache
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+
+
+def test_refresh_prepares_spec_in_host_egress_mode(project_local_booley_dir, issued) -> None:
+    from booley.config.host_config import host_config_path
+    from booley.runtime import devcontainer as dc
+
+    project, _spec, _path, stamp = issued
+    host_config_path().parent.mkdir(parents=True, exist_ok=True)
+    host_config_path().write_text('[sandbox]\negress = "unproxied"\n', encoding="utf-8")
+    images = harness_refresh._RuntimeImages()
+
+    images.prepare_spec(project, session_refresh.RefreshImage("booley-sandbox", stamp.image_id))
+
+    spec = images._spec.spec
+    networks = [spec["runArgs"][i + 1] for i, a in enumerate(spec["runArgs"]) if a == "--network"]
+    assert networks == [dc.UNPROXIED_NETWORK]
+    assert spec["containerEnv"]["BOOLEY_EGRESS"] == "unproxied"
+    assert not images.spec_is_current(project)

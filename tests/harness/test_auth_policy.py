@@ -521,7 +521,7 @@ def test_reporting_policy_matrix(clean_env, monkeypatch, capsys, app, policy, ke
         for name in ("pass", "warn", "skip", "fail")
     }
     assert code == (0 if expected else 1)
-    assert f"auth = '{policy}'" in output
+    assert f"auth policy '{policy}'" in output
     assert "SYNTHETIC" not in output + str(sink)
     assert bool(sink["fail"]) == (expected is None and policy != "auto")
     assert any(" auth:" in message for message in sink["pass"]) == (expected is not None)

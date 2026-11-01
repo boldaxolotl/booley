@@ -29,7 +29,15 @@ from booley.flows.sim.flow import (
 from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REFERENCE = REPO_ROOT / "docs" / "user" / "FLOW_REFERENCE.md"
+USER_DOCS = REPO_ROOT / "docs" / "user"
+# Shared Flow behavior lives in FLOW_REFERENCE.md; each Flow has its own page.
+REFERENCE = USER_DOCS / "FLOW_REFERENCE.md"
+FLOW_PAGES = {
+    "sim": ("FLOW-SIM.md", "COVERAGE.md"),
+    "lint": ("FLOW-LINT.md",),
+    "synth": ("FLOW-SYNTH.md",),
+    "fpga": ("FLOW-FPGA.md",),
+}
 REPORTS = REPO_ROOT / "docs" / "internals" / "FLOW_REPORTS.md"
 MCP_TOOLS = REPO_ROOT / "docs" / "internals" / "MCP-TOOLS.md"
 FLOW_TYPES = (
@@ -45,24 +53,34 @@ def _reference_text(doc: Path = REFERENCE) -> str:
     return doc.read_text(encoding="utf-8")
 
 
-def _flow_section(flow_name: str, doc: Path = REFERENCE) -> str:
-    """Return the top-level ``## `<flow>` `` chapter of *doc*."""
-    text = _reference_text(doc)
+def _flow_section(flow_name: str) -> str:
+    """Return the text of a Flow's user-doc pages."""
+    return "\n".join(_reference_text(USER_DOCS / page) for page in FLOW_PAGES[flow_name])
+
+
+def _shared_section() -> str:
+    """Return the shared Flow page."""
+    return _reference_text()
+
+
+def _report_flow_chapter(flow_name: str) -> str:
+    """Return the ``## `<flow>` `` chapter of FLOW_REPORTS.md."""
+    text = _reference_text(REPORTS)
     start = text.index(f"## `{flow_name}`")
     end = text.find("\n## ", start + 1)
     return text[start:] if end < 0 else text[start:end]
 
 
-def _shared_section(doc: Path = REFERENCE) -> str:
-    """Return everything in *doc* before its first per-Flow chapter."""
-    return _reference_text(doc).split("\n## `sim`", maxsplit=1)[0]
+def _report_shared_chapter() -> str:
+    """Return everything in FLOW_REPORTS.md before its first Flow chapter."""
+    return _reference_text(REPORTS).split("\n## `sim`", maxsplit=1)[0]
 
 
 def _documented_fields(flow_name: str) -> set[str]:
     """Identifiers named in code spans of the report-schema chapter for a Flow."""
     code_spans = re.findall(
         r"(?<!`)`([^`\n]+)`(?!`)",
-        _shared_section(REPORTS) + _flow_section(flow_name, REPORTS),
+        _report_shared_chapter() + _report_flow_chapter(flow_name),
     )
     return {
         identifier
@@ -104,10 +122,11 @@ def _read_json(path: Path) -> dict[str, Any]:
 @pytest.mark.parametrize("flow_type", FLOW_TYPES, ids=lambda flow_type: flow_type.name)
 def test_flow_reference_lists_every_long_cli_option(flow_type: type[Any]) -> None:
     flow = flow_type()
-    # Hidden (help=SUPPRESS) deprecated aliases are deliberately undocumented.
+    # Read the person-facing parser: its hidden (help=SUPPRESS) compatibility
+    # aliases, such as --timeout-ms and --work-dir, are deliberately undocumented.
     parser_options = {
         option
-        for action in build_parser(flow)._actions
+        for action in build_parser(flow, human=True)._actions
         if action.help != argparse.SUPPRESS
         for option in action.option_strings
         if option.startswith("--")
@@ -150,7 +169,7 @@ def test_sim_campaign_resume_granularity_stays_documented() -> None:
 
 def test_sim_configured_skip_control_stays_documented() -> None:
     section = " ".join(_flow_section("sim").split())
-    config = " ".join((REPO_ROOT / "docs/user/CONFIG.md").read_text(encoding="utf-8").split())
+    config = " ".join(_reference_text(USER_DOCS / "TESTS.md").split())
     assert "exact explicit suite" in section
     assert "overrides those entries" in section
     assert "fails preflight instead of passing vacuously" in section
@@ -159,11 +178,12 @@ def test_sim_configured_skip_control_stays_documented() -> None:
 
 def test_simulation_build_and_dry_run_timeout_contract_is_documented() -> None:
     shared = " ".join(_shared_section().split())
-    config = " ".join((REPO_ROOT / "docs/user/CONFIG.md").read_text(encoding="utf-8").split())
+    config = " ".join(_flow_section("sim").split())
 
     assert "[flows.sim].build_timeout_ms" in shared
-    assert "recipe `build_timeout_ms`" in shared
-    assert "Standalone units" in shared and "have no build field" in shared
+    dry_run = " ".join(_reference_text(REPORTS).split())
+    assert "recipe `build_timeout_ms`" in dry_run
+    assert "Standalone units" in dry_run and "have no build field" in dry_run
     assert "defaults to `3600000` (one hour)" in config
     assert "independent fixed 600-second budget" in config
 
@@ -189,7 +209,7 @@ def test_sim_report_fields_stay_documented(tmp_path: Path) -> None:
     sim._compile_command_str = lambda _target: "make sim"  # type: ignore[method-assign]
     sim._fileset_for_report = lambda _target: {"rtl": [], "tb": []}  # type: ignore[method-assign]
     sim._artifacts_for = lambda _result: {}  # type: ignore[method-assign]
-    with sim.context.publication_resources:
+    with sim.publication_resources:
         sim._write_target_report(
             TargetResult(
                 target="sim_demo",
@@ -205,7 +225,7 @@ def test_sim_report_fields_stay_documented(tmp_path: Path) -> None:
 
 def test_sim_elab_only_report_fields_stay_documented(tmp_path: Path) -> None:
     sim, report_dir = _configured_flow(SimulateFlow, tmp_path, "sim_demo")
-    with sim.context.publication_resources:
+    with sim.publication_resources:
         sim._write_elab_only_target_report(
             ElabOnlyTargetResult(
                 target="sim_demo",
@@ -252,7 +272,7 @@ def test_lint_report_fields_stay_documented(tmp_path: Path) -> None:
 def test_lint_warning_row_fields_stay_documented() -> None:
     warning_row = next(
         line
-        for line in _flow_section("lint", REPORTS).splitlines()
+        for line in _report_flow_chapter("lint").splitlines()
         if line.startswith("| `warnings[]` |")
     )
     assert "`targets`" in warning_row
@@ -339,8 +359,8 @@ def test_synth_help_lists_live_policy_keys():
 
 
 def test_target_omission_rule_matches_usage_and_reference() -> None:
-    usage = REFERENCE.parent / "USAGE.md"
-    for document in (REFERENCE, usage):
+    cli_reference = USER_DOCS / "CLI-REFERENCE.md"
+    for document in (REFERENCE, cli_reference):
         text = " ".join(document.read_text(encoding="utf-8").split())
         assert all(
             fragment in text

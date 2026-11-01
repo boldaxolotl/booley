@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import sys
 import warnings
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
 from booley.runtime import session_runtime as sr
 from booley.runtime.image_lifecycle import Diagnostic, ImageCleanup
+from tests.conftest import symlink_or_skip
 
 
 def _args(**overrides) -> argparse.Namespace:
@@ -372,6 +374,25 @@ def test_persist_selection_writes_project_data_with_lf(tmp_path):
     assert b"\r\n" not in config.read_bytes()
 
 
+@pytest.mark.parametrize("check_only", [False, True])
+def test_agent_config_refuses_symlinked_booley_toml(tmp_path, check_only):
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    destination = tmp_path / "outside.toml"
+    destination.write_bytes(b"# elsewhere\n")
+    config = booley_dir / "booley.toml"
+    symlink_or_skip(config, destination)
+    planted_target = config.readlink()
+    selection = init_cmd.AgentSelection("claude", "api_key", True, True)
+    ctx = InitContext(project_root=tmp_path, check_only=check_only)
+
+    assert init_cmd._step_agent_config(ctx, selection, config) is False
+
+    assert destination.read_bytes() == b"# elsewhere\n"
+    assert config.readlink() == planted_target
+    assert ctx.results[-1].status == "err"
+
+
 def test_existing_selection_is_authoritative_and_not_rewritten(tmp_path, monkeypatch):
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
@@ -538,7 +559,7 @@ def test_full_init_passes_verified_runtime_image_id_to_interactive_mode(tmp_path
             "warn",
             "Sandbox Image provenance is stale",
         ),
-        (init_cmd.ImageLifecycleStatus.CURRENT, "docker_image", "skip", "current"),
+        (init_cmd.ImageLifecycleStatus.CURRENT, "docker_image", "current", "current"),
     ],
 )
 def test_image_lifecycle_step_returns_each_nonerror_result(
@@ -679,3 +700,32 @@ def test_flag_cannot_silently_replace_existing_provider(tmp_path):
         is None
     )
     assert ctx.results[-1].status == "err"
+
+
+def test_seed_heads_its_output_with_a_section_header_on_a_tty(tmp_path, monkeypatch, capsys):
+    from booley.harness import colors
+
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(
+        init_cmd,
+        "_step_image_lifecycle",
+        lambda _ctx, **_kwargs: init_cmd.LifecycleResult(
+            "private", "sha256:id", init_cmd.ImageLifecycleStatus.CURRENT
+        ),
+    )
+    monkeypatch.setattr(init_cmd, "_step_interactive", lambda _ctx, **_kwargs: None)
+    monkeypatch.setattr(init_cmd, "_print_summary", lambda _ctx: 0)
+    ctx = InitContext(project_root=tmp_path, interactive=False)
+
+    init_cmd._run_seed(ctx, init_cmd.AgentSelection("codex", "api_key"))
+
+    assert capsys.readouterr().out.startswith(f"Seeding Interactive Mode for {tmp_path}\n")
+
+
+def test_unchanged_interactive_mode_is_recorded_as_current(tmp_path):
+    ctx = InitContext(project_root=tmp_path)
+
+    init_cmd._report_interactive_changes(ctx, None, SimpleNamespace(changed=False))
+
+    assert ctx.results[-1] == init_cmd.StepResult("interactive", "current", "current")

@@ -18,6 +18,7 @@ from booley.flows.endpoint_events import (
     _write_display_event,
 )
 from booley.flows.execution_persistence import EvidenceDiscarded, NoAcceptanceRecorder
+from booley.harness.colors import strip_ansi
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
     EndpointOutcome,
@@ -158,9 +159,13 @@ class _StdoutWitness:
         Requiring the text to occupy whole lines still recognises the
         ``print(report_text)`` this exists for (F-28), while a mention inside a
         longer line no longer silences the diagnostic.
+
+        The stdout tail is compared without ANSI codes: a Flow may print a
+        coloured console copy of its plain report on a terminal, and that copy
+        still counts as the report having been shown.
         """
         return _contains_whole_line_block(
-            "".join(self._chunks),
+            strip_ansi("".join(self._chunks)),
             text,
             leading_truncated=self._truncated,
         )
@@ -172,8 +177,13 @@ def _contains_whole_line_block(
     *,
     leading_truncated: bool = False,
 ) -> bool:
-    """Return whether *text* appears in *blob* as complete lines."""
-    needle = (text or "").strip()
+    """Return whether *text* appears in *blob* as complete lines.
+
+    Leading indentation belongs to the needle: a block that begins with an
+    indented line (a table header) matches only where that exact indentation
+    starts a line, so an indented echo of a one-line verdict never counts.
+    """
+    needle = (text or "").lstrip("\r\n").rstrip()
     if not needle:
         return False
     start = 0
@@ -286,9 +296,29 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
 
 
 def _refresh_report_detail(endpoint: EndpointState, result: EndpointOutcome) -> None:
-    refresh = getattr(getattr(endpoint, "flow", endpoint), "refresh_campaign_report_detail", None)
+    refresh = getattr(endpoint, "refresh_campaign_report_detail", None)
     if callable(refresh):
         refresh(result)
+
+
+def _process_resources() -> dict[str, float] | None:
+    """Snapshot process-lifetime CPU and largest reaped process RSS in MiB."""
+    try:
+        import resource
+    except ImportError:
+        return None
+    try:
+        own = resource.getrusage(resource.RUSAGE_SELF)
+        children = resource.getrusage(resource.RUSAGE_CHILDREN)
+    except OSError:
+        logger.warning("Process resource accounting unavailable", exc_info=True)
+        return None
+    divisor = 1024**2 if sys.platform == "darwin" else 1024
+    return {
+        "cpu_user_s": own.ru_utime + children.ru_utime,
+        "cpu_sys_s": own.ru_stime + children.ru_stime,
+        "peak_rss_mb": max(own.ru_maxrss, children.ru_maxrss) / divisor,
+    }
 
 
 def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[str, Any]:
@@ -324,8 +354,14 @@ def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[s
     mode = result.detail.get("mode")
     if isinstance(mode, str) and mode:
         report["mode"] = mode
-    if endpoint._eda_tool:
+    tools = getattr(endpoint, "_eda_tools", {})
+    if len(tools) > 1 and (endpoint.endpoint_kind == "flow" or any(tools.values())):
+        report["eda_tools"] = dict(tools)
+    elif endpoint._eda_tool:
         report["eda_tool"] = endpoint._eda_tool
+    resources = _process_resources()
+    if resources is not None:
+        report["resources"] = resources
     # Job identity (ADR 0027): the MCP dispatch layer exports the run_id
     # it handed the agent, so a poll can match this report to ITS run
     # instead of trusting the last-writer-wins flat copy — concurrent
@@ -340,33 +376,8 @@ def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[s
         report["usage"] = _report_usage(result)
     if result.report_text:
         report["report_text"] = result.report_text
-    _add_persisted_cycle_counts(endpoint, report)
+    report.update(json.loads(result.cycle_report_json))
     return report
-
-
-def _add_persisted_cycle_counts(endpoint: EndpointState, report: dict[str, Any]) -> None:
-    callback = getattr(getattr(endpoint, "flow", endpoint), "persisted_cycle_counts", None)
-    if not callable(callback):
-        return
-    try:
-        payload = callback()
-        if not isinstance(payload, dict) or any(
-            not isinstance(selector, str) or not isinstance(rows, list)
-            for selector, rows in payload.items()
-        ):
-            raise TypeError("invalid persisted cycle count mapping")
-        if any(
-            not isinstance(row, dict) or set(row) != {"test", "cycle_count"}
-            for rows in payload.values()
-            for row in rows
-        ):
-            raise TypeError("invalid persisted cycle count row")
-        json.dumps(payload, sort_keys=True)
-        if payload:
-            report["cycle_counts"] = payload
-    except Exception:  # reporting metadata must not change verdict or acceptance
-        logger.warning("Simulation cycle count metadata unavailable", exc_info=True)
-        report["cycle_counts_error"] = "unavailable"
 
 
 def _report_usage(result: EndpointOutcome) -> dict[str, object]:
@@ -507,7 +518,11 @@ def _publish_console_report(endpoint: EndpointState, result: EndpointOutcome) ->
 
 
 def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -> None:
-    """Publish the original verdict body before any invocation notice."""
+    """Publish the original verdict body before any invocation notice.
+
+    An endpoint that deferred a human rendition of its report (``_human_report``)
+    prints it here, after the live progress rows are closed.
+    """
     if not result.report_text:
         return
     witness = endpoint._stdout_witness
@@ -515,6 +530,12 @@ def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -
     if already_shown:
         return
     original, separator, diagnosis = result.report_text.partition("\nCompletion failure (")
+    human = endpoint._human_report
+    if human is not None and human.record_text == original:
+        print(human, flush=True)
+        if separator:
+            print(f"Completion failure ({diagnosis}", file=sys.stderr, flush=True)
+        return
     if separator and witness is not None and witness.saw(original):
         print(f"Completion failure ({diagnosis}", file=sys.stderr, flush=True)
         return

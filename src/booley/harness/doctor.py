@@ -17,6 +17,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -26,6 +27,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 import booley
 from booley.agent_workspace.isolation import get_category_dirs
@@ -50,6 +52,14 @@ from booley.audit.doctor_waivers import (
     load_doctor_waivers,
     warning,
 )
+from booley.config.gateway import (
+    GATEWAY_AUTH,
+    GATEWAY_EFFORT_ENV,
+    GATEWAY_MODEL_ENV,
+    GatewayConfigError,
+    gateway_model_pin_from_env,
+    gateway_settings_from_env,
+)
 from booley.config.jobs import parse_caps
 from booley.config.project_config import (
     TESTS_SECTION_KEYS,
@@ -57,6 +67,7 @@ from booley.config.project_config import (
     normalize_tests_toml,
 )
 from booley.config.tests_toml_rules import TEST_NAME_RULES
+from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
     is_str_list,
@@ -64,6 +75,7 @@ from booley.core.boundary import (
     require_dict,
     require_int,
     require_list,
+    require_opt_str,
     require_str,
 )
 from booley.flows import execution
@@ -85,19 +97,22 @@ from booley.fusesoc import (
     fusesoc_registry,
     selftest_overlay,
 )
+from booley.fusesoc.core_projection import lexical_stealth_path
 from booley.harness import (
     doctor_deep,
     host_diagnostics,
     nangate_pdk,
+    sandbox_git_identity,
     upgrade_cli,
     upgrade_review,
 )
 from booley.harness import (
     doctor_sim_dump as sim_dump,
 )
-from booley.harness.colors import green, red, yellow
+from booley.harness import terminal_status as ts
+from booley.harness.colors import dim, yellow
 from booley.harness.setup import readiness
-from booley.harness.setup.common import banner, err, info, note, ok, skip, warn
+from booley.harness.setup.common import info
 from booley.harness.setup.docker_image import DOCKER_IMAGE, FLAVOR_IMAGES
 from booley.harness.setup.line_endings import (
     LineEndingActionKind,
@@ -112,6 +127,7 @@ from booley.harness.setup.line_endings import (
     unknown_attributes_policy_details,
 )
 from booley.harness.setup.readiness import ProjectAudit
+from booley.harness.terminal_table import render_table
 from booley.runtime import (
     auth_token,
     doctor_stamp,
@@ -120,11 +136,13 @@ from booley.runtime import (
     inspection,
     project_repositories,
     runtime_context,
-    sandbox_artifact,
     session_runtime,
     vaporview,
 )
 from booley.runtime import devcontainer as dc
+from booley.runtime import (
+    handles as handle_maps,
+)
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
 from booley.runtime.booley_dir import (
@@ -133,9 +151,13 @@ from booley.runtime.booley_dir import (
     resolve_checkout_booley_dir,
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
+from booley.runtime.docs_links import docs_url
+from booley.runtime.gateway_token import GatewayTokenCommandError, run_token_command
 from booley.runtime.git import _git_common_dir
+from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_gitignore import missing_gitignore_patterns
+from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
 from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
@@ -149,11 +171,15 @@ from booley.targets.domain import (
     flow_can_drive,
 )
 from booley.targets.flow_names import config_section
+from booley.targets.selection import (
+    TargetSectionConflictError,
+    section_key_names,
+    target_section_key,
+)
 
 if TYPE_CHECKING:
     from booley.harness import developer_probe
 
-_DOCTOR_TMP = Path("tmp") / "doctor"
 _DRY_RUN_TIMEOUT_S = 60
 _DEEP_TIMEOUTS_S = {
     "sim": 900,
@@ -170,6 +196,8 @@ _SIM_DEEP_FINALIZE_MARGIN_S = 30
 # The three core Flow tables remain required project configuration. FPGA is an
 # optional axis: plain Doctor covers it when configured or selected by Target
 # metadata, while deep Doctor deliberately stops short of implementation.
+# Doctor line label for the `bwave gui` Viewer Bridge probe.
+_VIEWER_BRIDGE_DESCRIPTION = "Viewer Bridge answers in the attached VS Code window (`bwave gui`)"
 _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
 _PLAIN_DOCTOR_FLOWS = (*_REQUIRED_FLOW_TABLES, "fpga")
 _DEEP_DOCTOR_FLOWS = _REQUIRED_FLOW_TABLES
@@ -255,7 +283,6 @@ class _DoctorFlowRuntime:
     docker_exe: str | None
     container_name: str | None = None
     startup_error: session_runtime.SessionError | None = None
-    deep_artifact: sandbox_artifact.SandboxArtifact | None = None
 
     @property
     def inside(self) -> bool:
@@ -278,16 +305,7 @@ class _DoctorFlowRuntime:
             except session_runtime.SessionError as exc:
                 self.startup_error = exc
                 raise
-        container = self.container_name
-        if self.deep_artifact is not None and self.deep_artifact.image_id is not None:
-            observed = sandbox_artifact.observe(self.project_root, container=container)
-            if (observed.image_id, observed.container_id) != (
-                self.deep_artifact.image_id,
-                self.deep_artifact.container_id,
-            ):
-                raise session_runtime.SessionError("Sandbox artifact changed during deep Doctor")
-            container = self.deep_artifact.container_id
-        argv = session_runtime.exec_argv(container, inner, tty=False, env=env)
+        argv = session_runtime.exec_argv(self.container_name, inner, tty=False, env=env)
         argv[0] = self.docker_exe
         return argv
 
@@ -376,6 +394,12 @@ class DoctorRunResult:
         return self.diagnostics.health.clean
 
 
+def _section(title: str) -> None:
+    """Start a Doctor section: a blank line, then its header."""
+    print()
+    print(ts.section_header(title))
+
+
 def _announce_long_check(label: str, expectation: str) -> None:
     """Print a start line before a long deep check and flush.
 
@@ -383,7 +407,7 @@ def _announce_long_check(label: str, expectation: str) -> None:
     output is often redirected to a file or pipe, where block buffering would
     hide the line until the check had already finished.
     """
-    print(f"  RUN   {label} ({expectation})", flush=True)
+    print(ts.status_line(ts.LineStatus.RUNNING, f"{label} ({expectation})"), flush=True)
 
 
 @dataclass(frozen=True)
@@ -507,15 +531,17 @@ class _Reporter:
             )
         )
         if not self.concise:
-            ok(f"PASS  {self.display_overrides.get(str(msg), str(msg))}")
+            print(
+                ts.status_line(ts.LineStatus.PASS, self.display_overrides.get(str(msg), str(msg)))
+            )
         self.counts["pass"] += 1
 
     def note_(self, msg: str, fix: str = "") -> None:
         assert self.findings is not None
         self.findings.append(DiagnosticFinding(Severity.NOTE, str(msg), fix))
-        note(f"NOTE  {msg}")
+        print(ts.status_line(ts.LineStatus.NOTE, str(msg)))
         if fix:
-            info(f"  fix: {fix}")
+            print(ts.hint_line(fix))
         self.counts["note"] += 1
 
     def warn_(self, msg: str, fix: str = "") -> None:
@@ -539,25 +565,35 @@ class _Reporter:
         self.findings.append(
             DiagnosticFinding(Severity.WARN, str(msg), fix, msg.check_id, msg.subject)
         )
-        warn(f"WARN  {self.display_overrides.get(str(msg), str(msg))} {suffix}")
+        print(
+            ts.status_line(
+                ts.LineStatus.WARN,
+                self.display_overrides.get(str(msg), str(msg)),
+                check_id=suffix,
+            )
+        )
         if fix:
-            info(f"  fix: {fix}")
+            print(ts.hint_line(fix))
         self.counts["warn"] += 1
 
     def waived_(self, finding: DiagnosticFinding) -> None:
         """Render an already-waived observation without making it active again."""
         assert self.findings is not None
         self.findings.append(finding)
-        note(
-            f"WAIVED  {self.display_overrides.get(finding.message, finding.message)} {_warning_identity(finding)}"
+        print(
+            ts.status_line(
+                ts.LineStatus.WAIVED,
+                self.display_overrides.get(finding.message, finding.message),
+                check_id=_warning_identity(finding),
+            )
         )
-        info(f"  reason: {finding.fix}")
+        print(ts.hint_line(f"reason: {finding.fix}"))
         self.counts["waived"] += 1
 
     def skip_(self, msg: str) -> None:
         assert self.findings is not None
         self.findings.append(DiagnosticFinding(Severity.SKIP, str(msg)))
-        skip(f"SKIP  {msg}")
+        print(ts.status_line(ts.LineStatus.SKIP, str(msg)))
         self.counts["skip"] += 1
 
     def agent_check_enabled(self, description: str) -> bool:
@@ -572,34 +608,27 @@ class _Reporter:
     ) -> None:
         assert self.findings is not None
         self.findings.append(DiagnosticFinding(Severity.FAIL, str(msg), fix, check_id, subject))
-        err(f"FAIL  {msg}")
+        identity = _warning_identity(self.findings[-1]) if check_id else ""
+        shown = self.display_overrides.get(str(msg), str(msg))
+        print(ts.status_line(ts.LineStatus.FAIL, shown, check_id=identity))
         if fix:
-            info(f"  fix: {fix}")
+            print(ts.hint_line(fix))
         self.counts["fail"] += 1
 
     def finish(self) -> int:
+        unused = self.waivers.unused() if self.verbose else ()
+        if self.waivers.expired or unused:
+            # Own header, so these notes do not land under the last check section.
+            _section("Waivers")
         for item in self.waivers.expired:
             subject = f" subject={item.subject!r}" if item.subject is not None else ""
             self.note_(
                 f"expired Doctor waiver ignored: {item.check}{subject} (expired {item.expires})"
             )
-        if self.verbose:
-            for item in self.waivers.unused():
-                subject = f" subject={item.subject!r}" if item.subject is not None else ""
-                self.note_(f"Doctor waiver did not match an active warning: {item.check}{subject}")
-        print()
-        summary = (
-            f"  {self.counts['pass']} passed, {self.counts['warn']} warning(s), "
-            f"{self.counts['waived']} waived, {self.counts['note']} note(s), "
-            f"{self.counts['skip']} skipped, "
-            f"{self.counts['fail']} failed."
-        )
-        if self.counts["fail"]:
-            print(red(summary))
-        elif self.counts["warn"]:
-            print(yellow(summary))
-        else:
-            print(green(summary))
+        for item in unused:
+            subject = f" subject={item.subject!r}" if item.subject is not None else ""
+            self.note_(f"Doctor waiver did not match an active warning: {item.check}{subject}")
+        self._print_summary()
         if self.profile.deep:
             assert self.agent_calls is not None
             print(f"  {_agent_usage_summary(self.agent_calls)}")
@@ -609,6 +638,36 @@ class _Reporter:
             )
         assert self.findings is not None
         return DiagnosticReport(tuple(self.findings)).health.exit_code
+
+    def _print_summary(self) -> None:
+        """Print the closing problem table (FAIL then WARN) and the counts table."""
+        assert self.findings is not None
+        _section("Summary")
+        # FAIL rows first; the sort is stable, so each tier keeps report order.
+        active = sorted(
+            DiagnosticReport(tuple(self.findings)).active_findings,
+            key=lambda finding: finding.severity is not Severity.FAIL,
+        )
+        if active:
+            rows = [
+                [
+                    f"{ts.glyph(_LINE_STATUS[finding.severity])} {finding.severity}",
+                    " ".join(self.display_overrides.get(finding.message, finding.message).split()),
+                    dim(_warning_identity(finding)) if finding.check_id else "",
+                ]
+                for finding in active
+            ]
+            print(
+                "\n".join(render_table(("Status", "Check", "ID"), rows, max_widths={1: 72, 2: 48}))
+            )
+        else:
+            print(ts.status_line(ts.LineStatus.PASS, "no failures or warnings"))
+        print()
+        count_rows = [
+            [f"{ts.glyph(_LINE_STATUS[kind])} {label}", str(self.counts[kind])]
+            for kind, label in _COUNT_LABELS
+        ]
+        print("\n".join(render_table(("Status", "Count"), count_rows)))
 
     def result(self, exit_code: int) -> DoctorRunResult:
         """Freeze the accumulated findings after :meth:`finish`."""
@@ -621,9 +680,30 @@ class _Reporter:
         )
 
 
+#: Severity -> the glyph status that marks it.
+_LINE_STATUS = {
+    Severity.PASS: ts.LineStatus.PASS,
+    Severity.WARN: ts.LineStatus.WARN,
+    Severity.FAIL: ts.LineStatus.FAIL,
+    Severity.SKIP: ts.LineStatus.SKIP,
+    Severity.NOTE: ts.LineStatus.NOTE,
+    Severity.WAIVED: ts.LineStatus.WAIVED,
+}
+
+#: Counts-table rows in display order: (counter key, label).
+_COUNT_LABELS = (
+    ("pass", "passed"),
+    ("warn", "warnings"),
+    ("waived", "waived"),
+    ("note", "notes"),
+    ("skip", "skipped"),
+    ("fail", "failed"),
+)
+
+
 def _warning_identity(finding: DoctorWarning | DiagnosticFinding) -> str:
     subject = f":{finding.subject}" if finding.subject is not None else ""
-    return f"[{finding.check_id}{subject}]"
+    return f"{finding.check_id}{subject}"
 
 
 def _load_waivers(project_root: Path) -> tuple[DoctorWaivers, str | None]:
@@ -661,6 +741,25 @@ def _create_reporter(
     return reporter
 
 
+def _booley_dir_pin_failure(
+    project_root: Path, profile: _DoctorProfile, *, verbose: bool, concise: bool
+) -> DoctorRunResult | None:
+    """Report an untrusted linked Booley Directory entry as the only finding.
+
+    Every later check would follow the link, so Doctor stops after this FAIL.
+    """
+    from booley.core.booley_dir_pin import BooleyDirPinError, require_pinned_entry
+
+    try:
+        require_pinned_entry(project_root)
+    except BooleyDirPinError as exc:
+        waivers = DoctorWaivers.empty(project_root / BOOLEY_DIR_NAME / WAIVER_FILENAME)
+        reporter = _Reporter.create(waivers, profile=profile, verbose=verbose, concise=concise)
+        reporter.fail_(exc.detail, exc.remedy, check_id="project.booley-dir-pin")
+        return reporter.result(reporter.finish())
+    return None
+
+
 def record_manual_result(project_root: Path, result: DoctorRunResult) -> dict[str, Any] | None:
     """Make a manual in-Sandbox Doctor result current for interactive reporting."""
     if not result.health_evidence:
@@ -694,7 +793,7 @@ def run_doctor(args: argparse.Namespace, project_root: Path) -> int:
         validate_environment()
         require_current_layout(project_root)
     except BooleyLayoutError as exc:
-        err(str(exc))
+        print(ts.status_line(ts.LineStatus.FAIL, str(exc)))
         return 2
     result = run_doctor_result(args, project_root)
     if runtime_context.inside_session_runtime():
@@ -718,14 +817,16 @@ def run_doctor_result(
     conditions but never rewrites guidance links or moves orphaned tickets.
     Manual ``booley doctor`` retains its established self-healing behavior.
     """
-    banner("Booley Doctor")
+    _section("Booley Doctor")
     info(f"version: {booley.__version__}")
-    print()
 
     verbose = getattr(args, "verbose", False)
     concise = getattr(args, "concise", False)
     deep = getattr(args, "deep", False)
     profile = _DoctorProfile.from_args(args)
+    pin_failure = _booley_dir_pin_failure(project_root, profile, verbose=verbose, concise=concise)
+    if pin_failure is not None:
+        return pin_failure
     reporter = _create_reporter(
         project_root,
         profile=profile,
@@ -757,8 +858,6 @@ def _report_deep_currency(
     persist: bool,
 ) -> DoctorRunResult:
     """Save completed deep evidence, then report the persisted policy result."""
-    storage_failed = False
-    attempt = None
     if summary is not None and persist:
         try:
             booley_dir = (
@@ -775,22 +874,23 @@ def _report_deep_currency(
                     and finding.check_id == "upgrade.review-pending"
                 )
             )
-            failures = sum(finding.severity == Severity.FAIL for finding in blockers)
-            warnings = tuple(
-                finding.check_id
-                for finding in blockers
-                if finding.severity == Severity.WARN and finding.check_id is not None
-            )
             attempt = summary.attempt(
                 version=booley.__version__,
                 clean=not blockers,
-                failure_count=failures,
-                blocking_warning_ids=warnings,
+                # A blocker without a check ID still gets named, so it is never hidden.
+                blocking_checks=tuple(
+                    f.check_id
+                    or (
+                        "unidentified-failure"
+                        if f.severity == Severity.FAIL
+                        else "unidentified-warning"
+                    )
+                    for f in blockers
+                ),
             )
-            storage_failed = not doctor_deep.record_deep_attempt(booley_dir, attempt)
-    status = observe_deep_status(project_root, unsaved_attempt=attempt if storage_failed else None)
-    if storage_failed:
-        status = replace(status, storage_failed=True)
+            if not doctor_deep.record_deep_attempt(booley_dir, attempt):
+                info("deep result was not saved")
+    status = observe_deep_status(project_root)
     info(status.render())
     return replace(result, deep_status=status)
 
@@ -799,20 +899,55 @@ def observe_deep_status(
     project_root: Path,
     *,
     container: str | None = None,
-    unsaved_attempt: doctor_deep.DeepAttempt | None = None,
 ) -> doctor_deep.DeepStatus:
     """Read and report currency without starting checks or modifying evidence."""
-    state = doctor_deep.DeepState()
+    record = None
     with contextlib.suppress(FileNotFoundError, OSError):
-        state = doctor_deep.load_deep_state(resolve_checkout_booley_dir(project_root))
-    identity = sandbox_artifact.observe_execution(project_root, container=container)
-    return doctor_deep.evaluate_deep_status(
-        state,
-        version=booley.__version__
-        if runtime_context.inside_session_runtime()
-        else identity.booley_version,
-        image_id=identity.image_id,
-        unsaved_attempt=unsaved_attempt,
+        record = doctor_deep.load_deep_record(resolve_checkout_booley_dir(project_root))
+    image_id, version = _observe_sandbox_identity(project_root, container)
+    return doctor_deep.evaluate_deep_status(record, version=version, image_id=image_id)
+
+
+# Prints the issued image variable and the package version from inside a Sandbox.
+_IDENTITY_PROBE = (
+    f"import os, booley; print(os.environ.get({SANDBOX_IMAGE_ID_ENV!r}, '')); "
+    "print(booley.__version__)"
+)
+_VERSION_PATTERN = re.compile(r"[A-Za-z0-9_.+-]{1,128}")
+
+
+def _observe_sandbox_identity(
+    project_root: Path, container: str | None
+) -> tuple[str | None, str | None]:
+    """Return the active Sandbox Image ID and Booley version; ``None`` when unknown."""
+    if runtime_context.inside_session_runtime():
+        image_id = os.environ.get(SANDBOX_IMAGE_ID_ENV, "")
+        return (image_id if is_local_image_id(image_id) else None), booley.__version__
+    if container is None:
+        try:
+            selected = session_runtime.resolve_running_sandbox(project_root)
+        except session_runtime.SessionError:
+            return None, None
+        if selected is None:
+            return None, None
+        container = selected.container_id
+    argv = session_runtime.exec_argv(
+        container, ["python3", "-I", "-c", _IDENTITY_PROBE], tty=False
+    )
+    try:
+        # exec_argv keeps stdin open (-i); never forward the caller's stdin into the probe.
+        result = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, timeout=15
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    lines = result.stdout.splitlines() if result.returncode == 0 else []
+    if len(lines) != 2:
+        return None, None
+    image_id, version = lines
+    return (
+        image_id if is_local_image_id(image_id) else None,
+        version if _VERSION_PATTERN.fullmatch(version) else None,
     )
 
 
@@ -823,7 +958,7 @@ def _run_project_phase(
     read_only: bool,
 ) -> tuple[str | None, ProjectAudit | None]:
     """Run host, config, Git, and Goal presence checks."""
-    banner("Host checks")
+    _section("Host checks")
     host = host_diagnostics.inspect_host()
     reporter.diagnostics(host.report)
     docker_exe = host.docker_exe
@@ -839,6 +974,7 @@ def _run_project_phase(
     else:
         reporter.diagnostics(readiness.check_guidance(project, mode=mode))
         _check_project_data_destination_branch(project.project_root, reporter)
+    _check_worktree_booley_pairing(project_root, reporter)
     _check_worktree_prune_guard(project_root, reporter.pass_, reporter.skip_, reporter.fail_)
     _check_line_endings(
         project_root,
@@ -865,9 +1001,9 @@ def _check_legacy_source_stashes(project_root: Path, reporter: _Reporter) -> Non
                 f"An older run left a source stash record at {manifest}",
                 subject=str(manifest),
             ),
-            "Inspect the record before Sandbox rebuild or temp cleanup. See "
-            "TROUBLESHOOTING.md: Recover sources hidden by an interrupted older run. "
-            "Recovery is manual; never overwrite current sources.",
+            "Inspect the record before Sandbox rebuild or temp cleanup. Recovery is "
+            "manual; never overwrite current sources. Guide: "
+            + docs_url("TROUBLESHOOTING.md", "recover-sources-hidden-by-an-interrupted-older-run"),
         )
 
 
@@ -922,6 +1058,37 @@ def _check_project_data_destination_branch(project_root: Path, reporter: _Report
         )
     else:
         _warn_missing_project_data_branch(project_repo, outer_branch, project_head, reporter)
+
+
+def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> None:
+    """Warn when a linked worktree holds a plain copy of a Versioned Booley Directory.
+
+    ``booley worktree new`` gives such a worktree a Paired Checkout. A copy
+    made by hand looks healthy, but Goal Mode then records no paired revision
+    and its baselines read the copy's live files instead of versioned ones.
+    """
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.runtime.directory_migration_git import primary_checkout
+
+    local = project_root / BOOLEY_DIR_NAME
+    is_copy = local.is_dir() and not local.is_symlink() and not (local / ".git").exists()
+    if not (project_root / ".git").is_file() or not is_copy:
+        return
+    try:
+        primary = primary_checkout(project_root)
+    except (BooleyLayoutError, OSError, subprocess.TimeoutExpired):
+        return  # Git layout problems are reported by the Git state checks.
+    versioned = primary / BOOLEY_DIR_NAME
+    if primary == project_root.resolve() or not project_repositories.is_standalone_git_repository(
+        versioned
+    ):
+        return  # A Snapshot of a non-versioned Booley Directory is the expected layout.
+    _warning_sink(reporter.warn_, "project-data.worktree-unpaired", subject="project-data")(
+        f"{local} is a plain copy, not a Paired Checkout of the Versioned Booley Directory "
+        f"{versioned}; Goal Mode and baselines will not use its committed revisions",
+        "save any work in this worktree, then recreate it with `booley worktree new <name>` "
+        f"from {primary}",
+    )
 
 
 def _warn_missing_project_data_branch(
@@ -1078,7 +1245,7 @@ def _run_flow_and_core_phase(
 ) -> None:
     """Run Flow dry-runs and the authored FuseSoC core audit."""
     progress("Flow dry-runs")
-    banner("Booley Flow setup checks")
+    _section("Booley Flow setup checks")
     if project is None:
         reporter.skip_("Flow dry-runs skipped - project config invalid")
     else:
@@ -1094,7 +1261,7 @@ def _run_flow_and_core_phase(
             reporter.fail_,
         )
     progress("FuseSoC .core audit")
-    banner("FuseSoC .core checks")
+    _section("FuseSoC .core checks")
     if project is None:
         reporter.skip_(".core audit skipped - project config invalid")
     else:
@@ -1116,17 +1283,15 @@ def _run_deep_phase(
     verbose: bool,
     reporter: _Reporter,
 ) -> doctor_deep.DeepAttemptSummary:
-    banner("Deep checks")
+    _section("Deep checks")
     if project is None:
         reporter.skip_("deep checks skipped - project config invalid")
         return doctor_deep.DeepAttemptSummary(("project-config",))
     assert flow_runtime is not None
     tracker = doctor_deep.DeepCheckTracker()
-    before = sandbox_artifact.observe_execution(
-        project.project_root, container=flow_runtime.container_name
+    image_id, sandbox_version = _observe_sandbox_identity(
+        project.project_root, flow_runtime.container_name
     )
-    flow_runtime.deep_artifact = before
-    version = booley.__version__
     _track_developer_probe(project, reporter, tracker)
     _run_deep_checks(
         project,
@@ -1147,13 +1312,10 @@ def _run_deep_phase(
         flow_runtime=flow_runtime,
         completeness=tracker,
     )
-    after = sandbox_artifact.observe_execution(
-        project.project_root, container=flow_runtime.container_name
-    )
-    issues = _deep_identity_reasons(before, after, version)
+    issues = _deep_identity_reasons(image_id, sandbox_version)
     if not reporter.profile.records_health_evidence:
         tracker.require("agent-checks")
-    return doctor_deep.DeepAttemptSummary(tracker.missing, issues, before.image_id)
+    return doctor_deep.DeepAttemptSummary(tracker.missing, issues, image_id)
 
 
 def _track_developer_probe(
@@ -1171,22 +1333,15 @@ def _track_developer_probe(
             reporter.record_agent_call(record)
 
 
-def _deep_identity_reasons(
-    before: sandbox_artifact.SandboxArtifact,
-    after: sandbox_artifact.SandboxArtifact,
-    version: str,
-) -> tuple[str, ...]:
+def _deep_identity_reasons(image_id: str | None, sandbox_version: str | None) -> tuple[str, ...]:
+    """Name what the start-of-phase identity observation cannot qualify."""
     reasons: list[str] = []
-    if before.image_id is None or after.image_id is None:
+    if image_id is None:
         reasons.append("image-identity-unavailable")
-    elif (before.image_id, before.container_id) != (after.image_id, after.container_id):
-        reasons.append("sandbox-artifact-drift")
-    if before.booley_version is None or after.booley_version is None:
+    if sandbox_version is None:
         reasons.append("sandbox-version-unavailable")
-    elif before.booley_version != version or after.booley_version != version:
+    elif sandbox_version != booley.__version__:
         reasons.append("booley-version-mismatch")
-    if booley.__version__ != version:
-        reasons.append("booley-version-drift")
     return tuple(reasons)
 
 
@@ -2190,7 +2345,7 @@ def _check_current_runtime_activity_hooks(_pass: Check, _warn: Check) -> None:
 
     error = hooks_error()
     if error:
-        _warn(
+        _warning_sink(_warn, "sandbox.activity-hooks-unavailable")(
             f"Dashboard session activity will show as unknown: {error}; "
             "rebuild the sandbox image, then rebuild/reopen the Sandbox"
         )
@@ -2204,9 +2359,68 @@ def _check_current_runtime_dashboard_extension(_pass: Check, _warn: Check) -> No
 
     error = installed_error()
     if error:
-        _warn(f"{error}; rebuild the Sandbox Image, then rebuild/reopen the Sandbox")
+        _warning_sink(_warn, "sandbox.dashboard-extension-unavailable")(
+            f"{error}; rebuild the Sandbox Image, then rebuild/reopen the Sandbox"
+        )
         return
     _pass("Dashboard workspace extension bundled in the Sandbox Image")
+
+
+def _check_current_runtime_git_identity(
+    project: ProjectAudit | None, _pass: Check, _warn: Check, _skip: Check
+) -> None:
+    """Check Git would commit as ``[agent.git]`` and no gitconfig competes with it."""
+    if project is None:
+        _skip("Sandbox Git identity checks skipped - project config invalid")
+        return
+    for result in (
+        sandbox_git_identity.inspect_override(project.project_root, project.booley_dir),
+        sandbox_git_identity.inspect_gitconfig_identity(project.project_root),
+    ):
+        if result.warning is not None:
+            _warn(result.warning, result.fix)
+        else:
+            _pass(result.passed)
+
+
+def _check_current_runtime_egress(_pass: Check, _warn: Check, _fail: Fail) -> None:
+    """Report the declared Sandbox egress mode and whether the proxy host resolves."""
+    from booley.runtime import runtime_context
+
+    if os.environ.get("BOOLEY_CONTAINER") != "1":
+        return  # Booley forces no egress setting outside a Booley-marked Sandbox.
+    try:
+        mode = runtime_context.egress_mode()
+    except runtime_context.EgressModeError as exc:
+        _fail(
+            str(exc),
+            "set BOOLEY_EGRESS to `proxy` or `unproxied` in the Sandbox spec's containerEnv, then rebuild the Sandbox",
+        )
+        return
+    if mode == "unproxied":
+        _warning_sink(_warn, "sandbox.unproxied")(
+            "Unproxied Sandbox (BOOLEY_EGRESS=unproxied): Booley does not force its "
+            "egress proxy, so egress is not mediated by Booley"
+        )
+        return
+    # Doctor runs after the entry point forced the proxy variables, so the
+    # effective proxy is the first one set (Booley's, unless one was delivered).
+    proxy_urls = (
+        os.environ.get(var) for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+    )
+    proxy_url = next((url for url in proxy_urls if url), dc.PROXY_URL)
+    # A scheme-less value such as `corp:3128` parses with no hostname unless
+    # given the netloc marker.
+    host = urlsplit(proxy_url if "//" in proxy_url else f"//{proxy_url}").hostname or dc.PROXY_HOST
+    try:
+        socket.getaddrinfo(host, None)
+    except OSError:
+        _fail(
+            f"egress proxy {host} does not resolve; agent and model-service calls cannot leave this Sandbox",
+            "start the Sandbox from a Booley-issued devcontainer spec, or declare an Unproxied Sandbox with BOOLEY_EGRESS=unproxied in the spec's containerEnv",
+        )
+        return
+    _pass(f"egress proxy {host} resolves")
 
 
 def _check_container_runtime_payload(
@@ -2250,11 +2464,13 @@ def _run_container_checks(
     """Run container EDA tool and runtime checks."""
     from booley.runtime import runtime_context
 
-    banner("Container checks")
+    _section("Container checks")
     if runtime_context.inside_session_runtime():
         _check_current_runtime_web_isolation(_pass, _fail)
         _check_current_runtime_activity_hooks(_pass, _warn)
         _check_current_runtime_dashboard_extension(_pass, _warn)
+        _check_current_runtime_git_identity(project, _pass, _warn, _skip)
+        _check_current_runtime_egress(_pass, _warn, _fail)
         _skip(_no_docker_skip_reason())
         return
     if not docker_exe:
@@ -2382,7 +2598,7 @@ def _run_mcp_checks(
 ) -> None:
     """Validate Interactive Mode: devcontainer spec, excludes, Docker objects,
     auth token, and in-container MCP server discovery (ADR 0018)."""
-    banner("Interactive Mode checks")
+    _section("Interactive Mode checks")
     if project is None:
         reporter.skip_("Interactive Mode checks skipped - project config invalid")
         return
@@ -2401,7 +2617,7 @@ def _run_mcp_checks(
     _check_devcontainer_excludes(project.project_root, reporter.pass_, reporter.warn_)
     _check_interactive_logs_tracked(project.booley_dir, reporter.pass_, reporter.fail_)
     _run_agent_credential_checks(project, reporter)
-    _check_wcp_server(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
+    _check_viewer_bridge(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
     reporter.diagnostics(inspection.inspect_retained_resources(project.project_root, docker_exe))
 
     if not docker_exe:
@@ -2419,8 +2635,15 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     """Run credential checks when the invocation profile includes agents."""
     if not reporter.agent_check_enabled("agent credential checks"):
         return
+    if not _report_agent_app_choice(reporter):
+        return
     provider = _configured_provider(project)
     auth_policy = _configured_auth_policy(project)
+    _warn_ignored_gateway_handoff(reporter)
+    _check_gateway_model_pin(auth_policy, provider, reporter)
+    if auth_policy == GATEWAY_AUTH:
+        _check_gateway_auth(provider, reporter)
+        return
     try:
         plan = auth_token.credential_plan(provider, auth_policy)
     except ValueError as exc:
@@ -2454,6 +2677,88 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
         plan=plan,
         display_overrides=reporter.display_overrides,
     )
+
+
+def _report_agent_app_choice(reporter: _Reporter) -> bool:
+    """PASS the app ``BOOLEY_AGENT_APP=auto`` chose; FAIL when it cannot be honored.
+
+    Prints nothing for explicit values. Returns ``False`` after a FAIL, since
+    the remaining agent checks would only repeat it.
+    """
+    from booley.config import agent_app
+
+    try:
+        choice = agent_app.auto_choice()
+    except agent_app.AgentAppError as exc:
+        reporter.fail_(str(exc), check_id="agent.credential-policy", subject="BOOLEY_AGENT_APP")
+        return False
+    if choice is not None:
+        label = _AGENT_APP_LABELS[choice.app]
+        reporter.pass_(f"Agent app: {label} chosen by BOOLEY_AGENT_APP=auto ({choice.reason})")
+    return True
+
+
+def _warn_ignored_gateway_handoff(reporter: _Reporter) -> None:
+    """Warn that a host-exported ``BOOLEY_PRIMARY_AUTH=gateway`` changes nothing."""
+    from booley.config.agent import env_auth_handoff, gateway_handoff_active
+
+    if env_auth_handoff() == GATEWAY_AUTH and not gateway_handoff_active():
+        reporter.warn_(
+            warning(
+                "agent.credential-policy",
+                "BOOLEY_PRIMARY_AUTH=gateway is honored only inside a Sandbox that sets it "
+                "(for example a Codespace); Booley-issued Sandboxes use booley.toml",
+            )
+        )
+
+
+def _check_gateway_model_pin(auth_policy: str, provider: str, reporter: _Reporter) -> None:
+    """FAIL an invalid gateway model/effort pin; NOTE pin variables set where they are ignored.
+
+    The pin applies only under the gateway policy with the Codex provider, as in
+    ``config.agent._gateway_pin``. A valid pin prints nothing (the gateway check
+    stays one PASS). Values are never printed.
+    """
+    if auth_policy == GATEWAY_AUTH and provider == auth_token.APP_CODEX:
+        try:
+            gateway_model_pin_from_env()
+        except GatewayConfigError as exc:
+            reporter.fail_(str(exc), check_id="agent.credential-policy", subject=provider)
+        return
+    ignored = [
+        name
+        for name in (GATEWAY_MODEL_ENV, GATEWAY_EFFORT_ENV)
+        if (os.environ.get(name) or "").strip()
+    ]
+    if ignored:
+        reporter.note_(
+            f"{' and '.join(ignored)} ignored: only BOOLEY_PRIMARY_AUTH=gateway "
+            "with the Codex provider inside a Sandbox applies them"
+        )
+
+
+def _check_gateway_auth(provider: str, reporter: _Reporter) -> None:
+    """Grade the env-selected gateway policy: it routes Codex only and needs URL + token."""
+    if provider != auth_token.APP_CODEX:
+        reporter.fail_(
+            f"auth '{GATEWAY_AUTH}' routes Codex only; set [agent] provider = 'codex'",
+            check_id="agent.credential-missing",
+            subject=provider,
+        )
+        return
+    try:
+        settings = gateway_settings_from_env()
+    except GatewayConfigError as exc:
+        reporter.fail_(str(exc), check_id="agent.credential-missing", subject=provider)
+        return
+    if settings.token_command:
+        # A fresh check, not the cache: Doctor reports whether the command works now.
+        try:
+            run_token_command(settings.token_command)
+        except GatewayTokenCommandError as exc:
+            reporter.fail_(str(exc), check_id="agent.credential-missing", subject=provider)
+            return
+    reporter.pass_(f"Codex auth: the gateway at {settings.url} ({settings.token_source})")
 
 
 def _check_interactive_logs_tracked(
@@ -2576,7 +2881,9 @@ def _configured_provider(project: ProjectAudit | None) -> str:
             declared = None
         if declared is not None:
             return declared
-    app_provider = (os.environ.get("BOOLEY_AGENT_APP") or "").strip()
+    from booley.config import agent_app
+
+    app_provider = agent_app.resolved_app((os.environ.get("BOOLEY_AGENT_APP") or "").strip())
     if app_provider in _VALID_PROVIDERS:
         return app_provider
     return _DEFAULT_PROVIDER
@@ -2589,9 +2896,13 @@ def _configured_auth_policy(project: ProjectAudit | None) -> str:
         _VALID_AUTH_MODES,
         BackendConfigError,
         _parse_auth,
+        env_auth_handoff,
+        gateway_handoff_active,
     )
 
-    env_auth = (os.environ.get("BOOLEY_PRIMARY_AUTH") or "").strip()
+    if gateway_handoff_active():
+        return GATEWAY_AUTH  # env-only policy: it outranks the Project toml
+    env_auth = env_auth_handoff() or ""
     if project is None:
         return env_auth if env_auth in _VALID_AUTH_MODES else _DEFAULT_AUTH
     agent_section = project.booley_toml.get("agent")
@@ -2893,22 +3204,17 @@ def _check_subscription_creds_health(
         )
 
 
-# Reload-Window guidance, shared by the two probe paths below. The manifest
-# patch (booley.runtime.incontainer_vaporview) rewrites package.json from
-# postAttachCommand, which VS Code runs *after* it has already launched the
-# extension host — so on the first window of a fresh container the patch lands a
-# beat too late and VaporView stays lazy, exactly as its module docstring warns.
-# One reload fixes the window; the reload is what nobody knows to do.
-_WCP_RELOAD_FIX = (
-    "run 'Developer: Reload Window' in the attached VS Code window (the "
-    "postAttach VaporView patch only takes effect at the next extension-host "
-    "start); do not run 'WCP: Start Server' while auto-start is enabled -- "
-    "VaporView 1.5.4 can bind the port during activation and then falsely "
-    "report EADDRINUSE from a second start"
+# Recovery when no attached window's bridge answers. The Booley workspace
+# extension starts the Viewer Bridge when a window loads; an extension host
+# that predates a spec refresh (or a spec that predates the bridge) has none.
+_BRIDGE_RELOAD_FIX = (
+    "run 'Developer: Reload Window' in the attached VS Code window so the Booley "
+    "extension starts its Viewer Bridge; if Doctor also reports devcontainer drift, "
+    "refresh the Sandbox so its spec installs the Booley Sandbox Integration extension"
 )
 
-_WCP_MISSING_EXTENSION_FIX = vaporview.install_guidance()
-_WCP_UNKNOWN_EXTENSION_FIX = (
+_BRIDGE_MISSING_EXTENSION_FIX = vaporview.install_guidance()
+_BRIDGE_UNKNOWN_EXTENSION_FIX = (
     "could not determine whether VaporView is installed; verify it in the attached "
     "remote window, then install it if absent or run 'Developer: Reload Window' if present"
 )
@@ -2920,42 +3226,46 @@ _VAPORVIEW_STATE_PROBE_SOURCE = (
     "sys.exit(0 if s is ExtensionState.INSTALLED else 3 if s is ExtensionState.MISSING else 4)"
 )
 
-# Probe body: a bare TCP connect, run by whichever interpreter is at hand. Kept
-# to connect_ex so a refused port is an exit code, never a traceback.
-_WCP_PROBE_SOURCE = (
-    "import socket,sys;"
-    "s=socket.socket();s.settimeout(3);"
-    "sys.exit(0 if s.connect_ex(('127.0.0.1',{port})) == 0 else 1)"
+# Prints the live VaporView versions as JSON; exit 4 means the registry could
+# not be read. An older in-container Booley without installed_versions fails the
+# import, which the runner also treats as unknown.
+_VAPORVIEW_VERSIONS_PROBE_SOURCE = (
+    "import json,sys;from pathlib import Path;"
+    "from booley.runtime.vaporview import installed_versions;"
+    "v=installed_versions(Path.home());"
+    "print(json.dumps(v)) if v is not None else sys.exit(4)"
 )
 
-_VSCODE_EXTENSION_HOST_PROBE_SOURCE = (
-    "from pathlib import Path;import sys;"
-    "m=b'bootstrap-fork\\x00--type=extensionHost';hit=False;"
-    "files=Path('/proc').glob('[0-9]*/cmdline');"
-    "exec('for f in files:\n"
-    " try:\n  hit = hit or m in f.read_bytes()\n"
-    " except OSError:\n  pass');"
-    "sys.exit(0 if hit else 1)"
+# Prints every live bridge's VaporView report as JSON. An in-container Booley
+# without the bridge client fails the import, which the runner treats as
+# "probe could not run" rather than as a dark window.
+_VIEWER_BRIDGE_PROBE_SOURCE = (
+    "import json;from booley.bwave.vaporview_bridge import doctor_summary;"
+    "print(json.dumps(doctor_summary()))"
 )
 
+# Exit 0 when a VS Code extension host process runs, 3 when none does. Any
+# other exit (an interpreter error, a missing python3) stays "unknown", so a
+# broken probe can never pass for "no window attached".
+_VSCODE_EXTENSION_HOST_PROBE_SOURCE = """\
+import sys
+from pathlib import Path
 
-def _wcp_port_listening(argv_prefix: list[str], port: int) -> bool | None:
-    """True/False if the probe answered, None if it could not be run at all."""
+marker = b"bootstrap-fork\\x00--type=extensionHost"
+attached = False
+for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
     try:
-        result = subprocess.run(
-            [*argv_prefix, "python3", "-c", _WCP_PROBE_SOURCE.format(port=port)],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return None
-    return result.returncode == 0
+        attached = marker in cmdline.read_bytes()
+    except OSError:
+        continue
+    if attached:
+        break
+sys.exit(0 if attached else 3)
+"""
 
 
 def _vscode_extension_host_running(argv_prefix: list[str]) -> bool | None:
-    """True/False when a live VS Code extension host can be detected."""
+    """True/False when a live VS Code extension host can be detected, else None."""
     try:
         result = subprocess.run(
             [*argv_prefix, "python3", "-c", _VSCODE_EXTENSION_HOST_PROBE_SOURCE],
@@ -2966,9 +3276,11 @@ def _vscode_extension_host_running(argv_prefix: list[str]) -> bool | None:
         )
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
         return None
-    if result.returncode not in {0, 1}:
-        return None
-    return result.returncode == 0
+    if result.returncode == 0:
+        return True
+    if result.returncode == 3:
+        return False
+    return None
 
 
 def _vaporview_extension_state(argv_prefix: list[str]) -> vaporview.ExtensionState:
@@ -2990,59 +3302,159 @@ def _vaporview_extension_state(argv_prefix: list[str]) -> vaporview.ExtensionSta
     return vaporview.ExtensionState.UNKNOWN
 
 
-def _wcp_dark_fix(argv_prefix: list[str]) -> str:
+def _vaporview_installed_versions(argv_prefix: list[str]) -> list[str] | None:
+    """Live VaporView versions in the remote registry, or None when unknown."""
+    try:
+        result = subprocess.run(
+            [*argv_prefix, "python3", "-c", _VAPORVIEW_VERSIONS_PROBE_SOURCE],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        versions = json.loads(result.stdout)
+    except ValueError:
+        return None
+    if not is_str_list(versions):
+        return None
+    return versions
+
+
+def _vaporview_version_fix() -> str:
+    """Recovery for an installed VaporView build other than the verified one."""
+    return (
+        "in the attached remote window's terminal run "
+        f"`code --install-extension {vaporview.BUNDLED_VSIX}`, then "
+        "'Developer: Reload Window'; for a lasting fix refresh the Sandbox so "
+        "its generated spec installs the bundled verified build"
+    )
+
+
+def _check_vaporview_version(
+    argv_prefix: list[str], where: str, _pass: Check, _skip: Check, _fail: Fail
+) -> None:
+    """Report whether the attached window runs the VaporView build Booley verified.
+
+    The bridge answers for any VaporView build, but Booley's compatibility
+    patch and its readback rules are verified against exactly one; only the
+    installed version separates them.
+    """
+    description = f"VaporView version is the verified {vaporview.VERIFIED_VERSION}"
+    versions = _vaporview_installed_versions(argv_prefix)
+    if versions is None:
+        _skip(f"{description} - version probe could not run{where}")
+        return
+    if not versions:
+        # Absence is reported by the bridge check with install guidance.
+        _skip(f"{description} - VaporView not installed{where}")
+        return
+    other = [version for version in versions if version != vaporview.VERIFIED_VERSION]
+    if not other:
+        _pass(description)
+        return
+    _fail(
+        f"VaporView {', '.join(other)} is installed{where}; Booley verifies only "
+        f"{vaporview.VERIFIED_VERSION}",
+        _vaporview_version_fix(),
+    )
+
+
+def _viewer_bridges(argv_prefix: list[str]) -> list[dict] | None:
+    """Live bridge reports (``vaporview``/``error``), or None when the probe failed."""
+    try:
+        result = subprocess.run(
+            [*argv_prefix, "python3", "-c", _VIEWER_BRIDGE_PROBE_SOURCE],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        report = require_dict(json.loads(result.stdout), field="bridge probe")
+        entries = require_list(report.get("bridges"), field="bridge probe bridges")
+        return [
+            {
+                "vaporview": require_opt_str(entry, "vaporview"),
+                "error": require_opt_str(entry, "error"),
+            }
+            for entry in (require_dict(item, field="bridge entry") for item in entries)
+        ]
+    except (ValueError, BoundaryError):
+        return None
+
+
+def _bridge_dark_fix(argv_prefix: list[str]) -> str:
     """Choose recovery from an authoritative remote extension observation."""
     state = _vaporview_extension_state(argv_prefix)
     if state is vaporview.ExtensionState.MISSING:
-        return "VaporView extension is not installed. " + _WCP_MISSING_EXTENSION_FIX
+        return "VaporView extension is not installed. " + _BRIDGE_MISSING_EXTENSION_FIX
     if state is vaporview.ExtensionState.UNKNOWN:
-        return _WCP_UNKNOWN_EXTENSION_FIX
-    return _WCP_RELOAD_FIX
+        return _BRIDGE_UNKNOWN_EXTENSION_FIX
+    return _BRIDGE_RELOAD_FIX
 
 
-def _check_wcp_server(
+def _report_viewer_bridges(
+    argv_prefix: list[str], where: str, _pass: Check, _skip: Check, _fail: Fail
+) -> None:
+    """Turn the bridge inventory into one pass/skip/fail line."""
+    description = _VIEWER_BRIDGE_DESCRIPTION
+    bridges = _viewer_bridges(argv_prefix)
+    if bridges is None:
+        _skip(f"{description} - probe could not run{where}")
+        return
+    if not bridges:
+        _fail(f"{description}: no window answered{where}", _bridge_dark_fix(argv_prefix))
+        return
+    broken = [entry for entry in bridges if entry["vaporview"] is None]
+    if broken:
+        reasons = "; ".join(sorted({entry["error"] or "no detail" for entry in broken}))
+        _fail(
+            f"{description}: {len(broken)} of {len(bridges)} window(s){where} report no "
+            f"usable VaporView ({reasons})",
+            _bridge_dark_fix(argv_prefix),
+        )
+        return
+    count = f" ({len(bridges)} windows)" if len(bridges) > 1 else ""
+    _pass(f"{description}{count}")
+
+
+def _check_viewer_bridge(
     project: ProjectAudit,
     docker_exe: str | None,
     _pass: Check,
     _skip: Check,
     _fail: Fail,
 ) -> None:
-    """Live probe: is VaporView's WCP control server actually accepting connections?
+    """Live probe: does an attached window's Viewer Bridge answer, with VaporView ready?
 
     The spec check (:func:`_check_devcontainer_spec`) is static — it proves the
-    devcontainer *asks* for the viewer, never that the viewer is up. A perfect
-    spec still leaves the server dark on the first window of any fresh container
-    (see :data:`_WCP_RELOAD_FIX`), and the failure surfaces only when a human
-    finally runs `bwave gui` and gets "WCP server not running" from a doctor-clean
-    project. This probe closes that gap by asking the port itself.
+    devcontainer *asks* for the viewer and the Booley Sandbox Integration extension, never that a
+    window is running them. Without this probe the failure surfaces only when
+    a human runs `bwave gui` in a Doctor-clean project.
 
     From the host, scope the probe to a VS Code-created devcontainer: a headless
     `booley session up` container has no extension host by design. From inside a
-    runtime, probe its own loopback because Docker metadata is unavailable there.
+    runtime, probe its own socket directory because Docker metadata is
+    unavailable there.
     """
-    # Deferred, as everywhere else in this module: Sandbox location for the in-container
-    # branch, and bwave_wcp for the port — importing the MCP-tool stack eagerly
-    # would tax every doctor run for one integer.
-    from booley.bwave import wcp as bwave_wcp
     from booley.runtime import runtime_context
 
-    port = bwave_wcp.wcp_port()
-    description = f"VaporView WCP server reachable on port {port} (`bwave gui`)"
-
+    description = _VIEWER_BRIDGE_DESCRIPTION
     if runtime_context.inside_session_runtime():
-        # Already inside the container: probe our own loopback, which is the
-        # very socket `bwave gui` will dial.
-        attached = _vscode_extension_host_running([])
-        if attached is False:
+        if _vscode_extension_host_running([]) is False:
             _skip(f"{description} - no VS Code extension host attached")
             return
-        listening = _wcp_port_listening([], port)
-        if listening is None:
-            _skip(f"{description} - probe could not run")
-        elif listening:
-            _pass(description)
-        else:
-            _fail(f"{description}: nothing is listening", _wcp_dark_fix([]))
+        _check_vaporview_version([], "", _pass, _skip, _fail)
+        _report_viewer_bridges([], "", _pass, _skip, _fail)
         return
 
     if not docker_exe:
@@ -3057,17 +3469,12 @@ def _check_wcp_server(
         _skip(f"{description} - no VS Code devcontainer running for this project")
         return
     argv_prefix = [docker_exe, "exec", container]
-    attached = _vscode_extension_host_running(argv_prefix)
-    if attached is False:
+    if _vscode_extension_host_running(argv_prefix) is False:
         _skip(f"{description} - no VS Code extension host attached in '{container}'")
         return
-    listening = _wcp_port_listening(argv_prefix, port)
-    if listening is None:
-        _skip(f"{description} - probe could not run in '{container}'")
-    elif listening:
-        _pass(description)
-    else:
-        _fail(f"{description}: nothing is listening in '{container}'", _wcp_dark_fix(argv_prefix))
+    where = f" in '{container}'"
+    _check_vaporview_version(argv_prefix, where, _pass, _skip, _fail)
+    _report_viewer_bridges(argv_prefix, where, _pass, _skip, _fail)
 
 
 def _run_mcp_probe(
@@ -3215,12 +3622,13 @@ def _run_project_checks(
     reporter: _Reporter,
 ) -> None:
     """Run shared Project configuration, repository, and backend checks."""
-    banner("Project checks")
+    _section("Project checks")
     if project is None:
         reporter.skip_("Project checks skipped - project config invalid")
         return
 
     _check_ticket_leftovers(project.booley_dir, reporter.warn_)
+    _check_handle_map_size(project.booley_dir, reporter.warn_)
     _check_project_gitignore(project.booley_dir, reporter.pass_, reporter.warn_)
     _check_goal_history_ignored(
         project.project_root, project.booley_dir, reporter.pass_, reporter.warn_
@@ -3310,6 +3718,24 @@ def _check_leftover_guidance(booley_dir: Path, _warn: Check) -> None:
         warning(f"leftover Ticket guidance in {path}", fix)
 
 
+def _check_handle_map_size(booley_dir: Path, _warn: Check) -> None:
+    """Warn when a display handle map nears the cap past which allocation fails."""
+    for jobs in (False, True):
+        path = handle_maps.HandleStore(booley_dir, jobs=jobs).path
+        subject = "job" if jobs else "session"
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > handle_maps.MAP_WARN_BYTES:
+            _warning_sink(_warn, "handles.map-size", subject=subject)(
+                f"{subject} handle map {path} is {size / 2**20:.1f} MiB of its "
+                f"{handle_maps.MAX_MAP_BYTES // 2**20} MiB cap",
+                "run `booley session down`, then `booley session up`: the MCP server "
+                "prunes expired handles at start",
+            )
+
+
 def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Check) -> None:
     """Warn when ``.booley/.gitignore`` lacks a transient-state pattern ``init`` adds.
 
@@ -3344,16 +3770,17 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
     from booley.commit_policy import stealth_enabled
     from booley.runtime.project_trackability import (
         FIX,
-        HISTORY_PROBE,
+        history_probe,
         inspect_project_trackability,
     )
 
     if stealth_enabled(root, booley_dir=booley_dir):
         return
     inspection = inspect_project_trackability(root, booley_dir)
+    probe = history_probe(root)
     for group in inspection.ignored:
         # The existing outer publication check owns this exact synthetic path.
-        if group.history and HISTORY_PROBE in group.paths:
+        if group.history and probe is not None and probe in group.paths:
             continue
         check_id = "goals.history-ignored" if group.history else "project.inputs-ignored"
         _warning_sink(_warn, check_id, subject=group.subject)(group.message, FIX)
@@ -3384,12 +3811,13 @@ def _goal_history_layout_advice(root: Path) -> tuple[str, str]:
 def _check_goal_history_ignored(root: Path, booley_dir: Path, _pass: Check, _warn: Warn) -> None:
     """Report preserved explicit exclusions which keep non-Stealth Goal history local."""
     from booley.commit_policy import stealth_enabled
-    from booley.runtime.booley_dir import BOOLEY_DIR_NAME
-    from booley.runtime.project_trackability import query_ignores
+    from booley.runtime.project_trackability import history_probe, query_ignores
 
     if stealth_enabled(root, booley_dir=booley_dir):
         return
-    relative = (Path(BOOLEY_DIR_NAME) / "goals/history/doctor-probe.md").as_posix()
+    relative = history_probe(root)
+    if relative is None:
+        return  # The RTL repository cannot publish that history; trackability owns the layout.
     inspect_warning = _warning_sink(_warn, "goals.history-inspection")
     try:
         matches = query_ignores(root, (relative,))
@@ -3909,12 +4337,11 @@ def _owned_core_files(project: ProjectAudit, root: Path) -> set[Path]:
     if catalog is not None:
         for token in _project_target_matrix(project).seed_targets:
             try:
-                owned.add(catalog.select(token).core_file)
+                owned.add(lexical_stealth_path(root, catalog.select(token).core_file))
             except FuseSocError:
                 continue  # unresolvable config tokens are their own doctor finding
-    state_cores = fusesoc_registry.state_cores_dir(root)
     for core_file in fusesoc_registry.discover_cores(root):
-        if state_cores in core_file.parents:
+        if fusesoc_registry.is_stealth_core(root, core_file):
             owned.add(core_file)
     return owned
 
@@ -4144,7 +4571,7 @@ def _check_sim_target_setup(
             not in explicit.tb_files
         )
         if inferred:
-            _warn(
+            _warning_sink(_warn, "sim.harness-untagged", subject=name)(
                 f"sim Target '{name}' untagged C/C++ harness files: {', '.join(inferred)}; add tags:[tb] to their fileset"
             )
         if ref.flow != "sim":
@@ -4218,9 +4645,37 @@ def _check_target_metadata(
         audit.project, audit.root, refs, audit.pass_, audit.warn, _note=audit.note
     )
     _check_synth_recipe_migrations(refs, audit.warn)
+    _check_target_flow_option_defines(audit.root, audit.fail)
     _check_yosys_targets_have_arch(audit.root, refs, audit.pass_, audit.warn)
     _check_sim_traceable(audit.root, refs, audit.pass_, audit.warn)
     _check_cocotb_targets(audit.project, refs, audit.pass_, audit.warn, audit.skip, audit.fail)
+
+
+def _check_target_flow_option_defines(root: Path, _fail: Fail) -> None:
+    """FAIL a Doctor-selected Target whose `flow_options` sets `defines`.
+
+    No Flow applies the key, so it would be silently ignored. Presence is
+    tested rather than truthiness so an empty value is caught too.
+    """
+    from booley.core.boundary import as_dict
+
+    for handle in TargetCatalog.build(root).list():
+        if not handle.doctor_flows:
+            continue
+        try:
+            document = fusesoc_registry.read_core(handle.core_file)
+        except fusesoc_registry.FuseSocError:
+            continue  # The owning core audit reports unreadable declarations.
+        targets = as_dict(document.get("targets"), default={}) or {}
+        target = as_dict(targets.get(handle.name), default={}) or {}
+        options = as_dict(target.get("flow_options"), default={}) or {}
+        if "defines" in options:
+            _fail(
+                f"Target {handle.identity!r} sets flow_options.defines, which no Flow applies "
+                f"({handle.core_file.name})",
+                "delete flow_options.defines and declare each define as a vlogdefine "
+                "parameter on the Target",
+            )
 
 
 def _check_synth_recipe_migrations(refs: dict[str, TargetHandle], warn: Check) -> None:
@@ -4531,7 +4986,6 @@ def _check_legacy_core_targets(
     """
     note_sink = _note or _pass
     del refs  # audit every declaration, including duplicate bare Target names
-    state_cores = fusesoc_registry.state_cores_dir(root)
     selected = _selected_core_targets(project, root)
     legacy = []
     try:
@@ -4560,7 +5014,7 @@ def _check_legacy_core_targets(
     # was selected.
     native_unselected: dict[Path, list[str]] = {}
     for name, ref in legacy:
-        is_state_core = state_cores in ref.core_file.parents
+        is_state_core = fusesoc_registry.is_stealth_core(root, ref.core_file)
         if is_state_core or (ref.core_file, name) in selected:
             _warning_sink(_warn, "core.legacy-target", subject=name)(
                 f"Target '{name}' in {ref.core_file.name} is a legacy FuseSoC tools-section "
@@ -4614,7 +5068,6 @@ def _check_target_naming(
     unfollowable advice for a repo that must stay byte-identical (ADR 0036).
     """
     del refs  # qualified duplicate Target names need exact declaration scope
-    state_cores = fusesoc_registry.state_cores_dir(root)
     selected = _selected_core_targets(project, root)
     doctor_axes = _project_target_matrix(project).axes()
     try:
@@ -4624,7 +5077,10 @@ def _check_target_naming(
     offenders = [
         (handle.name, handle)
         for handle in handles
-        if (state_cores in handle.core_file.parents or (handle.core_file, handle.name) in selected)
+        if (
+            fusesoc_registry.is_stealth_core(root, handle.core_file)
+            or (handle.core_file, handle.name) in selected
+        )
         and target_naming.violation(handle.name)
     ]
     if not offenders:
@@ -4666,7 +5122,6 @@ def _check_stray_default_targets(
     """
     _warn = _warning_sink(_warn, "core.stray-default-target")
     note_sink = _note or _pass
-    state_cores = fusesoc_registry.state_cores_dir(root)
     owned_cores = _owned_core_files(project, root)
     if not owned_cores:
         return
@@ -4681,7 +5136,7 @@ def _check_stray_default_targets(
         if not isinstance(targets, Mapping) or "default" not in targets:
             continue
         if fusesoc_registry.core_identity_key(doc) not in depended:
-            stray.append((core_file, state_cores in core_file.parents))
+            stray.append((core_file, fusesoc_registry.is_stealth_core(root, core_file)))
     if not stray:
         _pass("no dead 'default:' Targets in Booley-authored .core files")
         return
@@ -5380,7 +5835,7 @@ def _literal_sim_run_cwd(project: ProjectAudit) -> str | None:
 def _check_sim_run_cwd(project: ProjectAudit, _pass: Check, _warn: Check) -> None:
     """Warn when a literal ``[flows.sim].run_cwd`` will be missing at run time.
 
-    Booley never creates a literal ``run_cwd`` (docs/user/CONFIG.md), so it must
+    Booley never creates a literal ``run_cwd`` (docs/user/FLOW-SIM.md), so it must
     exist in every checkout and Goal worktree. That means a real directory that
     holds at least one *committed* file: an empty directory, a gitignored one, or
     one whose placeholder is only staged vanishes in a fresh checkout. Unset,
@@ -5696,7 +6151,10 @@ def _check_cocotb_targets(
     sections = _load_tests_toml_normalized(project)
     for name, ref in sorted(cocotb_refs.items()):
         module = ref.cocotb_module or ""
-        section = sections.get(name, {})
+        try:
+            section = lookup_target_section(sections, f"{ref.vlnv}#{ref.name}") or {}
+        except TargetSectionConflictError:
+            continue  # the section-key audit reports the duplicate keys
         if "select" in section:
             _fail(
                 f"cocotb Target '{name}' declares a tests.toml `select` plusarg template",
@@ -5938,9 +6396,13 @@ def _audit_test_run_plans(
             if isinstance(spec, Mapping) and spec.get("paramtype") == "plusarg"
         ]
         try:
+            section = lookup_target_section(sections, handle.identity)
+        except TargetSectionConflictError:
+            continue  # the section-key audit reports the duplicate keys once
+        try:
             plan = build_target_test_plan(
                 handle.selector,
-                lookup_target_section(sections, handle.selector),
+                section,
                 adapter=adapter,
                 target_plusargs=plusargs,
             )
@@ -5972,13 +6434,12 @@ def _test_run_plan_line(selector: str, plan: TargetTestPlan) -> str:
 
 
 def _audit_tests_toml_targets(project: ProjectAudit, sections: dict, _fail: Fail) -> None:
-    """Check every tests.toml section names a Target that actually exists.
+    """Check every tests.toml section key names one Target, and no Target has two.
 
-    A section keyed to a Target no one declares is dead config that looks
-    live: the lookup misses, no selector reaches the binary, and the
-    testbench runs its *default* test to a green PASS. That is the same
-    silent-uninitialized-run failure the qualifier-tolerant lookup fixes, so
-    validation has to agree with execution about which keys resolve.
+    A key naming no Target is dead config that looks live: the lookup misses,
+    no selector reaches the binary, and the testbench runs its *default* test
+    to a green PASS. Two keys naming one Target make the choice of section
+    ambiguous. Both use the lookup rule the Simulation Flow uses.
     """
     try:
         handles = TargetCatalog.build(project.project_root).list()
@@ -5986,16 +6447,20 @@ def _audit_tests_toml_targets(project: ProjectAudit, sections: dict, _fail: Fail
         return  # enumeration failure is already reported by the structural audit
     if not handles:
         return
-    known = {handle.name for handle in handles} | {handle.identity for handle in handles}
-    bare_known = {name.rsplit("#", 1)[-1] for name in known}
     for key in sections:
-        if key in known or key.rsplit("#", 1)[-1] in bare_known:
-            continue
-        _fail(
-            f"tests.toml section [{key}] names no declared .core Target",
-            "fix the section key (a dead key runs the testbench's default "
-            "test and reports a false PASS)",
-        )
+        if not any(
+            section_key_names(key, handle.identity) or key == handle.name for handle in handles
+        ):
+            _fail(
+                f"tests.toml section [{key}] names no declared .core Target",
+                "fix the section key (a dead key runs the testbench's default "
+                "test and reports a false PASS)",
+            )
+    for handle in handles:
+        try:
+            target_section_key(sections, handle.identity)
+        except TargetSectionConflictError as exc:
+            _fail(str(exc), "keep one tests.toml section per Target")
 
 
 def _report_core_resolve(
@@ -6597,7 +7062,7 @@ def _execute_selftest(
 
 
 def _selftest_report_path(project: ProjectAudit) -> Path:
-    return project.booley_dir / _DOCTOR_TMP / "flow-reports" / "sim.json"
+    return project.booley_dir / DOCTOR_TMP_DIR / "flow-reports" / "sim.json"
 
 
 def _read_selftest_campaign(project: ProjectAudit, case: _SelftestCase, rc: int) -> dict:
@@ -7063,7 +7528,7 @@ def _prepare_flow_report_dir(
     project: ProjectAudit, flow_name: str, target: str, dry_run: bool
 ) -> Path:
     """Create the Doctor report directory and remove stale synth evidence."""
-    report_dir = project.booley_dir / _DOCTOR_TMP / "flow-reports"
+    report_dir = project.booley_dir / DOCTOR_TMP_DIR / "flow-reports"
     report_dir.mkdir(parents=True, exist_ok=True)
     if flow_name != "synth" or dry_run:
         return report_dir
@@ -7235,7 +7700,7 @@ def _is_simulate_tb_top_skip(
     needle = "--tb-top is required"
     if needle in f"{result.stderr or ''}\n{result.stdout or ''}":
         return True
-    report = project.booley_dir / _DOCTOR_TMP / "flow-reports" / f"{flow_name}.json"
+    report = project.booley_dir / DOCTOR_TMP_DIR / "flow-reports" / f"{flow_name}.json"
     try:
         payload = json.loads(report.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -7305,9 +7770,11 @@ def _first_smoke_test(project: ProjectAudit, target: str) -> str | None:
                 sections = normalize_tests_toml(tomllib.load(f))
         except (OSError, ValueError, tomllib.TOMLDecodeError):
             sections = {}  # _audit_tests_toml already reported the breakage
-        # Targets may arrive VLNV-qualified ("vlnv#name"); tests.toml keys are
-        # bare Target names.
-        section = sections.get(target) or sections.get(target.rsplit("#", 1)[-1])
+        try:
+            handle = TargetCatalog.build(project.project_root).select(target, for_flow="sim")
+            section = lookup_target_section(sections, handle.identity)
+        except (FuseSocError, TargetSectionConflictError):
+            section = None  # reported by the resolve and section-key audits
         if isinstance(section, dict):
             tests = section.get("tests")
             if isinstance(tests, list) and tests:
@@ -7334,9 +7801,9 @@ def _flow_argv(
 ) -> list[str]:
     work_dir = "/work" if host_entry else str(project.project_root)
     report_dir = (
-        f"{dc.BOOLEY_DIR_TARGET}/{_DOCTOR_TMP}/flow-reports"
+        f"{dc.BOOLEY_DIR_TARGET}/{DOCTOR_TMP_DIR}/flow-reports"
         if host_entry
-        else str(project.booley_dir / _DOCTOR_TMP / "flow-reports")
+        else str(project.booley_dir / DOCTOR_TMP_DIR / "flow-reports")
     )
     argv = [
         "--work-dir",

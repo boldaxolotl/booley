@@ -26,11 +26,12 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.booley_layout import GOALS_DIR_NAME
 from booley.goals.model import WorktreeIdentity
 from booley.runtime.session_paths import RUNTIME_DIR, session_jobs_dir
 from booley.runtime.timefmt import compact_utc_now
 
-GOALS_DIR = "goals"
+GOALS_DIR = GOALS_DIR_NAME
 LOCKS_DIR = "locks"
 HISTORY_DIR = "history"
 RECORD_FILE = "record.json"

@@ -29,11 +29,12 @@ from booley.flows.sim.build_reuse import (
 )
 from booley.flows.sim.build_session import (
     SimulationBuildSession,
-    SimulationBuildSlotError,
     _generation_neutral,
     _verilator_reuse_key,
 )
 from booley.targets.domain import TargetHandle
+from tests.conftest import symlink_or_skip
+from tests.fusesoc_test_support import symlinked_booley_dir
 
 posix_only = pytest.mark.skipif(
     os.name == "nt", reason="Verilator reuse runs in the Linux Sandbox"
@@ -229,6 +230,46 @@ def test_core_closure_hashes_every_dependency_core(tmp_path: Path) -> None:
     }
     rtl.write_text("CAPI=2:\nname: a:b:rtl:1\ndescription: edited\n", encoding="utf-8")
     assert capture_core_closure(edam, project) != closure
+
+
+def _core_behind_linked_booley_dir(tmp_path: Path, case: str) -> tuple[Path, Path, Path]:
+    """Project whose ``.booley`` is a symlink; return ``(project, edam, core)``.
+
+    ``project_core`` keeps the core in the Project, ``stealth_core`` keeps it in
+    ``.booley/cores`` (below the entry, where stealth cores live), and ``below``
+    reaches ``.booley/cores`` through a second link below the entry. The EDAM
+    sits under the lexical ``.booley/.runtime`` and names the core with the
+    lexical relative path FuseSoC writes, so a ``..`` is applied after the entry
+    link is followed unless the consumer re-spells the path.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    external = symlinked_booley_dir(project, tmp_path / "external")
+    if case == "project_core":
+        core = project / "demo.core"
+    else:
+        if case == "below":
+            (external / "cores").rmdir()
+            symlink_or_skip(external / "cores", tmp_path / "other", target_is_directory=True)
+            (tmp_path / "other").mkdir()
+        core = project / ".booley" / "cores" / "demo.core"
+    core.write_text("CAPI=2:\nname: a:b:demo:1\n", encoding="utf-8")
+    edam = _edam(project / ".booley" / ".runtime" / "edalize" / "g", {"a:b:demo:1": core})
+    return project, edam, core
+
+
+@pytest.mark.parametrize("case", ["project_core", "stealth_core", "below"])
+def test_core_closure_reads_cores_through_the_booley_dir_entry(tmp_path: Path, case: str) -> None:
+    """Only the entry link is followed; a core behind a deeper link still declines."""
+    project, edam, core = _core_behind_linked_booley_dir(tmp_path, case)
+
+    closure = capture_core_closure(edam, project)
+
+    if case == "below":
+        assert closure is None
+    else:
+        relative = core.relative_to(project).as_posix()
+        assert closure == {"a:b:demo:1": f"{relative}:{_sha(core)}"}
 
 
 @pytest.mark.parametrize("case", ["generator", "outside", "missing", "no-cores", "malformed-edam"])
@@ -638,12 +679,6 @@ def test_keyed_verilator_image_records_its_read_closure_and_promotes(
         assert manifest["reusable"] is True
         assert set(manifest["read_closure"]) == {"work:src/top.sv", "work:Vtop.cpp"}
         assert (session.slot / "current.json").is_file()
-        session.verify_image(prepared)
-        manifest_path = prepared.build_root / ".booley-build-manifest.json"
-        manifest_path.write_text(json.dumps({**manifest, "input_key": None}), encoding="utf-8")
-        with pytest.raises(SimulationBuildSlotError, match="identity changed"):
-            session.verify_image(prepared)
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
         assert session._read_closure_matches(prepared.work_root, manifest, prepared)
         (prepared.work_root / "Vtop.cpp").write_text("// tampered\n", encoding="utf-8")
@@ -667,7 +702,6 @@ def test_unprovable_read_closure_downgrades_without_failing_the_build(
         assert manifest["reusable"] is False
         assert "lack dependency records" in manifest["reason"]
         assert not (session.slot / "current.json").exists()
-        session.verify_image(prepared)
 
 
 def test_pre_sim_output_in_the_generation_disables_reuse(

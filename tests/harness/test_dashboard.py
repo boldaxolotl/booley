@@ -14,14 +14,27 @@ from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport,
 from booley.criteria.presentation import CriterionPresentation
 from booley.goals.model import GoalFamily, GoalSpec
 from booley.harness import upgrade_review
+from booley.harness.dashboard import app as dashboard_app
 from booley.harness.dashboard import model
 from booley.harness.dashboard.app import DashboardApp, Navigation
 from booley.harness.dashboard.jobs import JobSnapshot, JobView
+from booley.harness.dashboard.topbar import TopBar
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
 from booley.runtime import health
 from booley.runtime.job_records import JobRecord
 
 STAMP = "2026-10-08T10:00:00Z"
+
+
+@pytest.fixture(autouse=True)
+def _generous_first_read_budget(monkeypatch):
+    """Let a slow CI worker finish the first read before any key press (#2023).
+
+    Under load the 1 s budget can lapse, so the app starts empty and stale
+    and keyboard tests act on rows that are not there yet. Tests of the
+    budget itself patch it again.
+    """
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
 
 
 @pytest.mark.asyncio
@@ -62,6 +75,9 @@ async def test_terminal_naming_failure_keeps_selectable_evidence_and_artifacts(t
         table.focus()
         await pilot.pause()
         await pilot.press("enter")
+        # Let the goal view lay out before clicking into it; a slow Windows
+        # runner otherwise clicks the pre-layout widget and opens nothing.
+        await pilot.pause()
         assert app.navigation.view == "goal"
         text = str(app.query_one("#detail", Static).render())
         assert diagnostic in text and "warnings" in text
@@ -94,6 +110,39 @@ def snapshot(count=12):
     )
 
 
+async def open_session(app, pilot, key):
+    """Arrow the overview cursor onto a session row and press Enter.
+
+    Works wherever the cursor is and whatever the group order; group header
+    rows never hold the cursor, so the walk is bounded by the row count.
+    """
+    table = app.query_one(DataTable)
+    target = app.row_keys.index(key)
+    for _ in range(len(app.row_keys)):
+        if table.cursor_row == target:
+            break
+        await pilot.press("down" if table.cursor_row < target else "up")
+    assert app._selected_key() == key
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+async def choose_in_bar(app, pilot, label):
+    """Reach the top bar, arrow to the item whose label starts with `label`, apply it.
+
+    Focus stays on the bar afterwards; callers press `down` to return to the list.
+    """
+    if not isinstance(app.focused, TopBar):
+        await pilot.press("up")
+    assert isinstance(app.focused, TopBar), "up did not reach the top bar"
+    bar = app.query_one(TopBar)
+    labels = [item[0] for item in bar._items()]
+    index = next(index for index, text in enumerate(labels) if text.startswith(label))
+    step = index - bar.cursor
+    await pilot.press(*(["right" if step > 0 else "left"] * abs(step)), "enter")
+    await pilot.pause()
+
+
 @pytest.mark.asyncio
 async def test_handles_name_every_dashboard_surface_and_full_keys_only_in_details():
     current = snapshot(12)
@@ -109,16 +158,18 @@ async def test_handles_name_every_dashboard_surface_and_full_keys_only_in_detail
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 35)) as pilot:
         assert "S12" in str(app._content()[2][-1])
-        assert "J-SIM1" in str(app._content()[2][0])
+        # Row 0 is the UNKNOWN group header; S1 follows it.
+        assert "J-SIM1" in str(app._content()[2][1])
         assert "codex:00" not in str(app._content()[2])
-        await pilot.press("1")
+        await open_session(app, pilot, "codex:00")
         orientation, _, rows = app._content()
         assert orientation.startswith("S1 ·")
         assert "Session key: codex:00" in orientation
         assert "J-SIM1" in str(rows)
-        await pilot.press("j")
+        await pilot.press("right")
         orientation, _, rows = app._content()
-        assert orientation.endswith(" · S1")
+        # The Jobs window starts on all sessions, whichever session it was reached from.
+        assert orientation.endswith(" · All sessions")
         assert "J-SIM1" in str(rows) and "S1" in str(rows)
         assert "codex:00" not in orientation + str(rows)
         await pilot.press("enter")
@@ -126,7 +177,8 @@ async def test_handles_name_every_dashboard_surface_and_full_keys_only_in_detail
         assert "Owner: S1" in detail and "J-SIM1 · sim" in detail
         assert "Session key: codex:00" in detail and "Run ID: one" in detail
         await pilot.press("escape", "escape")
-        assert app.navigation.session == "codex:00"
+        assert app.navigation.view == "jobs"
+        assert app.navigation.session is None
 
 
 def test_alias_ownership_keeps_historical_jobs_in_session_scope_and_summaries():
@@ -143,9 +195,10 @@ def test_alias_ownership_keeps_historical_jobs_in_session_scope_and_summaries():
     )
     app = DashboardApp(lambda: current)
     app.snapshot = current
+    app.window = "jobs"
     app.navigation = Navigation("jobs", "codex:00")
     assert app._jobs() == [job]
-    assert "J-SIM1" in app._overview_row(current.sessions[0])
+    assert any("J-SIM1" in running for running in app._session_facts(current.sessions[0]).jobs)
     assert "S1" in str(app._content())
     assert old not in str(app._content())
 
@@ -162,99 +215,121 @@ def test_disconnected_session_without_cached_row_still_has_its_handle():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("shortcut", "job_filter", "expected_global", "expected_scoped"),
+    ("label", "job_filter", "expected"),
     [
-        ("r", "recent", ["two"], []),
-        ("j", "running", ["one"], ["one"]),
-        ("a", "all", ["one", "two"], ["one"]),
+        ("Finished", "finished", ["two"]),
+        ("Running", "running", ["one"]),
+        ("All", "all", ["one", "two"]),
     ],
 )
 @pytest.mark.parametrize("scoped", [False, True])
-async def test_jobs_shortcut_returns_to_sessions(
-    shortcut, job_filter, expected_global, expected_scoped, scoped
+async def test_jobs_filter_opens_jobs_window_and_left_returns_to_sessions(
+    label, job_filter, expected, scoped
 ):
     current = snapshot(2)
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 30)) as pilot:
         if scoped:
-            await pilot.press("1")
-        await pilot.press(shortcut)
+            await open_session(app, pilot, "codex:00")
+        await pilot.press("right")
+        await choose_in_bar(app, pilot, label)
+        await pilot.press("down")
         assert app.navigation.view == "jobs"
         assert app.navigation.job_filter == job_filter
-        assert app.navigation.session == ("codex:00" if scoped else None)
-        expected = expected_scoped if scoped else expected_global
+        assert app.navigation.session is None
         assert [json.loads(key)[1] for key in app.row_keys] == expected
         previous = app.navigation
         previous_rows = app.row_keys.copy()
 
-        await pilot.press("s")
+        await pilot.press("left")
+        # A scoped visit left the session detail open; Esc steps back to the overview.
+        if scoped:
+            assert app.navigation.view == "session"
+            await pilot.press("escape")
         assert app.navigation.view == "overview"
         assert app.navigation.session is None
-        assert app.row_keys == [row.attribution.key for row in current.sessions]
+        assert app.row_keys == [
+            "group:UNKNOWN",
+            *(row.attribution.key for row in current.sessions),
+        ]
 
         await pilot.press("enter")
         assert app.navigation.view == "session"
         assert app.navigation.session == current.sessions[0].attribution.key
+        # Esc stays inside Sessions; the arrow returns to the Jobs window as it was.
         await pilot.press("escape", "escape")
+        assert app.navigation.view == "overview"
+        await pilot.press("right")
         assert app.navigation == previous
         assert app.row_keys == previous_rows
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("shortcut", ["j", "r", "a"])
+@pytest.mark.parametrize("label", ["Running", "Finished", "All"])
 @pytest.mark.parametrize("via_help", [False, True])
-async def test_all_job_owners_shortcut_preserves_filter(shortcut, via_help):
+async def test_owner_chip_back_to_all_sessions_preserves_filter(label, via_help):
     current = snapshot(2)
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(130, 30)) as pilot:
-        await pilot.press("1", shortcut)
+        await open_session(app, pilot, "codex:00")
+        await pilot.press("right")
+        await choose_in_bar(app, pilot, label)
         job_filter = app.navigation.job_filter
+        # The chip cycles All sessions -> S1 -> S2 -> Standalone -> All sessions.
+        await choose_in_bar(app, pilot, "Owner")
+        assert app.navigation.session == "codex:00"
         if via_help:
-            await pilot.press("?")
-        await pilot.press("u")
+            await choose_in_bar(app, pilot, "Help")
+            await pilot.press("down", "escape")
+        for _ in range(3):
+            await choose_in_bar(app, pilot, "Owner")
         assert app.navigation.view == "jobs"
         assert app.navigation.session is None
         assert app.navigation.job_filter == job_filter
-        expected = {"j": ["one"], "r": ["two"], "a": ["one", "two"]}
-        assert [json.loads(key)[1] for key in app.row_keys] == expected[shortcut]
+        expected = {"Running": ["one"], "Finished": ["two"], "All": ["one", "two"]}
+        assert [json.loads(key)[1] for key in app.row_keys] == expected[label]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("shortcut", ["j", "r", "a"])
-async def test_all_job_owners_shortcut_from_narrow_job_detail(shortcut):
+@pytest.mark.parametrize("label", ["Running", "Finished", "All"])
+async def test_filter_choice_from_narrow_job_detail_returns_to_list(label):
     current = snapshot(2)
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 30)) as pilot:
-        await pilot.press(shortcut, "enter")
+        await pilot.press("right")
+        await choose_in_bar(app, pilot, label)
+        await pilot.press("down", "enter")
         assert app.navigation.view == "job"
         job_filter = app.navigation.job_filter
-        await pilot.press("u")
+        await choose_in_bar(app, pilot, label)
         assert app.navigation.view == "jobs"
         assert app.navigation.session is None
         assert app.navigation.job_filter == job_filter
-        expected = {"j": ["one"], "r": ["two"], "a": ["one", "two"]}
-        assert [json.loads(key)[1] for key in app.row_keys] == expected[shortcut]
+        expected = {"Running": ["one"], "Finished": ["two"], "All": ["one", "two"]}
+        assert [json.loads(key)[1] for key in app.row_keys] == expected[label]
 
 
 @pytest.mark.asyncio
-async def test_session_arrows_help_back_and_quit_shortcuts():
+async def test_session_arrows_help_back_and_quit():
     current = snapshot()
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(90, 30)) as pilot:
         for number in range(1, 10):
-            await pilot.press(str(number))
+            await open_session(app, pilot, f"codex:{number - 1:02}")
             assert app.navigation.view == "session"
             assert app.navigation.session == f"codex:{number - 1:02}"
-        await pilot.press("s", "down", "enter")
+            await pilot.press("escape")
+        await open_session(app, pilot, "codex:01")
         assert app.navigation.session == "codex:01"
         await pilot.press("escape", "up", "enter")
         assert app.navigation.session == "codex:00"
-        await pilot.press("j")
+        await pilot.press("right")
         previous = app.navigation
         previous_rows = app.row_keys.copy()
-        await pilot.press("?")
+        await choose_in_bar(app, pilot, "Help")
+        await pilot.press("down")
         assert app.navigation.view == "help"
-        assert "Navigation is read-only" in str(app.query_one("#detail", Static).render())
+        assert "read-only" in str(app.query_one("#detail", Static).render())
         await pilot.press("escape")
         assert app.navigation == previous
         assert app.row_keys == previous_rows
@@ -328,31 +403,39 @@ async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect(monkeyp
         from textual.coordinate import Coordinate
 
         assert isinstance(app.query_one(DataTable).get_cell_at(Coordinate(0, 0)), Text)
-        await pilot.press("1")
+        await open_session(app, pilot, "codex:00")
         assert (app.navigation.view, app.navigation.session) == ("session", "codex:00")
         await _inspect_goals_and_proposal(app, pilot)
-        await pilot.press("j")
-        assert app.navigation.session == "codex:00"
-        assert len(app.row_keys) == 1
-        await pilot.press("enter")
-        assert app.navigation.view == "job"
-        await pilot.press("escape", "escape", "r")
-        assert app.navigation.job_filter == "recent"
-        assert app.row_keys == []
-        await pilot.press("u")
-        assert app.navigation.view == "jobs"
-        assert app.navigation.session is None
-        assert len(app.row_keys) == 1
-        await pilot.press("?", "escape")
-        assert app.navigation.view == "jobs"
-        app.navigation = Navigation()
-        app.render_snapshot()
-        app.query_one(DataTable).move_cursor(row=11)
+        await _inspect_jobs_window_and_help(app, pilot)
+        # Left shows Sessions with the session detail still open; Esc steps back.
+        await pilot.press("left", "escape")
+        assert app.navigation.view == "overview"
+        app.query_one(DataTable).move_cursor(row=app.row_keys.index("codex:11"))
         await pilot.press("enter")
         assert app.navigation.session == "codex:11"
         current = replace(current, sessions=())
         await app.refresh_snapshot()
         assert "disconnected" in str(app.query_one("#orientation", Static).render())
+
+
+async def _inspect_jobs_window_and_help(app, pilot):
+    await pilot.press("right")
+    assert app.navigation.session is None
+    assert len(app.row_keys) == 1
+    await pilot.press("enter")
+    assert app.navigation.view == "job"
+    await pilot.press("escape")
+    await choose_in_bar(app, pilot, "Finished")
+    await pilot.press("down")
+    assert app.navigation.job_filter == "finished"
+    assert [json.loads(key)[1] for key in app.row_keys] == ["two"]
+    # The Jobs window lists every owner; the owner chip is not scoped.
+    assert app.navigation.view == "jobs"
+    assert app.navigation.session is None
+    assert len(app.row_keys) == 1
+    await choose_in_bar(app, pilot, "Help")
+    await pilot.press("down", "escape")
+    assert app.navigation.view == "jobs"
 
 
 async def _inspect_goals_and_proposal(app, pilot):
@@ -368,11 +451,10 @@ async def _inspect_goals_and_proposal(app, pilot):
     await pilot.press("escape")
     await pilot.resize_terminal(180, 30)
     await pilot.pause()
-    assert app.goal_columns == 3
     assert app._selected_key() == "proposal:change"
     await pilot.resize_terminal(90, 30)
     await pilot.pause()
-    assert app.goal_columns == 1
+    assert app._selected_key() == "proposal:change"
 
 
 @pytest.mark.asyncio
@@ -409,7 +491,7 @@ async def test_pilot_wide_aside_narrow_detail_and_terminal_selection():
     current = replace(current, jobs=JobSnapshot((*current.jobs.jobs, *extra)))
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(130, 30)) as pilot:
-        await pilot.press("j")
+        await pilot.press("right")
         assert app.query_one("#aside").display
         previous = app.navigation
         await pilot.press("enter")
@@ -469,66 +551,77 @@ def test_reported_activity_is_shown_per_session_and_unknown_is_never_guessed():
 
     app = DashboardApp(snapshot)
     app.snapshot = replace(
-        snapshot(3),
+        replace(snapshot(3), jobs=JobSnapshot(())),
         activity={
             "codex:00": Activity(WAITING_TOOL, STAMP, "mcp__booley__Sim"),
             "codex:01": Activity(WAITING_USER, STAMP),
         },
     )
-    app._assign_shortcuts()
-    rows = [str(row) for row in app._overview()[2]]
-    assert "waiting for tool call (mcp__booley__Sim) · 10m 00s" in rows[0]
-    assert "waiting for user input · 10m 00s" in rows[1]
-    assert "activity unknown" in rows[2]
+    keys, rows = app._overview()[1], [row[0].plain for row in app._overview()[2]]
+    by_key = dict(zip(keys, rows, strict=True))
+    # The overview says the same thing shorter, and the third session has no signal.
+    assert "tool call (mcp__booley__Sim) 10m 00s" in by_key["codex:00"]
+    assert "waiting 10m 00s" in by_key["codex:01"]
+    assert by_key["codex:02"].rstrip().endswith("unknown")
     app.navigation = Navigation("session", "codex:00")
     assert "\nWaiting for tool call (mcp__booley__Sim) · 10m 00s" in app._session()[0]
     app.navigation = Navigation("session", "codex:02")
     assert "\nActivity unknown" in app._session()[0]
 
 
-def test_stable_shortcuts_and_unknown_activity_without_client_signals():
+def test_unknown_activity_without_client_signals():
     app = DashboardApp(snapshot)
-    app.snapshot = snapshot()
-    app._assign_shortcuts()
-    numbers = dict(app.shortcuts)
-    app.snapshot = replace(app.snapshot, sessions=app.snapshot.sessions[1:])
-    app._assign_shortcuts()
-    assert app.shortcuts["codex:01"] == numbers["codex:01"]
-    assert all("activity unknown" in str(row) for row in app._overview()[2])
-    assert all("Last" not in str(row) for row in app._overview()[2])
+    # The first session owns a running Job, which its Activity cell lists after "unknown".
+    app.snapshot = replace(snapshot(), sessions=snapshot().sessions[1:])
+    keys, rows = app._overview()[1], app._overview()[2]
+    session_rows = [
+        row[0].plain for key, row in zip(keys, rows, strict=True) if key.startswith("codex:")
+    ]
+    assert session_rows
+    assert all(row.rstrip().endswith("unknown") for row in session_rows)
+    assert all("Last" not in row for row in session_rows)
 
 
-def test_responsive_goal_selection_uses_the_displayed_column_count(monkeypatch):
-    app = DashboardApp(snapshot)
-    app.navigation = Navigation("session", "codex:00")
-    app.row_keys = [str(number) for number in range(6)]
-    app._table_columns = 2
-    app.goal_columns = 3  # Incoming layout; the current cursor still belongs to two columns.
-    monkeypatch.setattr(app, "query_one", lambda _: SimpleNamespace(cursor_row=1, cursor_column=1))
-    assert app._selected_key() == "3"
+# (automatic Doctor report, due reason, expected Dashboard lines)
+_HEALTH_ROWS = [
+    ({"counts": {"fail": 0, "warn": 0}}, None, ("Doctor: OK",)),
+    ({"counts": {"fail": 0, "warn": 0}}, "expired", ("Doctor: OK · recheck due",)),
+    (
+        {"counts": {"fail": 0, "warn": 1}},
+        "inputs changed",
+        ("Doctor: 1 WARN · recheck due",),
+    ),
+    (
+        {"counts": {"fail": 1, "warn": 0}},
+        "inputs changed",
+        ("Doctor: 1 FAIL · recheck due",),
+    ),
+    (None, None, ("Doctor: unavailable: no readable automatic result",)),
+]
 
 
-@pytest.mark.parametrize(
-    "report,due,expected",
-    [
-        ({"counts": {"fail": 0, "warn": 0}}, None, ("Doctor: OK",)),
-        ({"counts": {"fail": 0, "warn": 0}}, "expired", ("Doctor: OK · stale",)),
-        (
-            {"counts": {"fail": 1, "warn": 0}},
-            "inputs changed",
-            ("Doctor: 1 FAIL · stale",),
-        ),
-        (None, None, ("Doctor: unavailable: no readable automatic result",)),
-    ],
-)
-def test_health_nonconsuming_compact_and_freshness(tmp_path, monkeypatch, report, due, expected):
-    diagnostics = DiagnosticReport(
-        (DiagnosticFinding(Severity.FAIL, "failure"),)
-        if report is not None and report["counts"]["fail"]
-        else ()
-    )
+def test_health_nonconsuming_compact_and_freshness(tmp_path, monkeypatch):
+    for index, row in enumerate(_HEALTH_ROWS):
+        root = tmp_path / f"row{index}"
+        root.mkdir()
+        # Rows share one test (the evidence helper needs function-level node IDs),
+        # so name the failing row instead of leaving an anonymous loop assertion.
+        try:
+            _check_health_row(root, monkeypatch, *row)
+        except AssertionError as error:
+            error.add_note(f"failing row {index}: {row!r}")
+            raise
+
+
+def _check_health_row(root, monkeypatch, report, due, expected):
+    findings = ()
+    if report is not None and report["counts"]["fail"]:
+        findings += (DiagnosticFinding(Severity.FAIL, "failure"),)
+    if report is not None and report["counts"]["warn"]:
+        findings += (DiagnosticFinding(Severity.WARN, "warning", check_id="test.warning"),)
+    diagnostics = DiagnosticReport(findings)
     snapshot = (
-        health.HealthSnapshot(diagnostics, "fixture-hash", tmp_path / "last.log", due)
+        health.HealthSnapshot(diagnostics, "fixture-hash", root / "last.log", due)
         if report is not None
         else None
     )
@@ -550,9 +643,12 @@ def test_health_nonconsuming_compact_and_freshness(tmp_path, monkeypatch, report
     monkeypatch.setattr(
         model.upgrade_review, "observe", lambda *_a, **_k: pytest.fail("upgrade state changed")
     )
-    assert tuple(line.text for line in model.health_lines(tmp_path, tmp_path)) == expected
+    lines = model.health_lines(root, root)
+    assert tuple(line.text for line in lines) == expected
+    # The due marker travels as data so the renderer never sniffs the text.
+    assert lines[0].due_suffix == (" · recheck due" if due else "")
     assert reads == [True]
-    assert list(tmp_path.iterdir()) == []
+    assert list(root.iterdir()) == []
 
 
 def test_readonly_upgrade_pending_and_corrupt_states(tmp_path):
@@ -619,9 +715,58 @@ def test_thread_without_process_proof_is_last_seen_and_own_fallback_is_not_other
     assert "connected" not in orientation
     assert "last seen" in orientation
     assert "WARNING" not in orientation
-    overview = app._overview_row(row)
-    assert "goal/fixture" in overview
-    assert "WARNING" not in overview
+    facts = app._session_facts(row)
+    assert facts.branch == "goal/fixture"
+    assert facts.notices == ()
+
+
+def test_session_without_work_dir_shows_its_default_checkout_and_branch():
+    """A session that never passed work_dir runs in its server cwd; show it, not a blank."""
+    bare = SessionRow(
+        Attribution("pid:one", "process", "", "", branch="booley", default_work_dir="/work"),
+        STAMP,
+        STAMP,
+    )
+    pinned = SessionRow(
+        Attribution(
+            "pid:two", "process", "/work/wt", "wt", branch="experiment", default_work_dir="/work"
+        ),
+        STAMP,
+        STAMP,
+    )
+    unknown = SessionRow(Attribution("pid:three", "process", "", ""), STAMP, STAMP)
+    # A Goal's branch belongs to the Goal worktree, never to the default checkout.
+    goal = model.GoalView(
+        "fixture",
+        record=SimpleNamespace(
+            worktree=SimpleNamespace(key=""),
+            state=SimpleNamespace(value="active"),
+            branch="goal/fixture",
+        ),
+    )
+    app = DashboardApp(lambda: None)
+    app.snapshot = model.DashboardSnapshot(
+        sessions=(bare, pinned, unknown), goals=(goal,), observed_at=1791453900
+    )
+    facts = app._session_facts(bare)
+    assert (facts.work_dir, facts.branch) == ("/work (default)", "booley")
+    # An explicit work_dir association always wins over the default.
+    pinned_facts = app._session_facts(pinned)
+    assert (pinned_facts.work_dir, pinned_facts.branch) == ("/work/wt", "experiment")
+    # Rows from servers that predate default_work_dir show no default checkout.
+    assert "(default)" not in app._session_facts(unknown).work_dir
+    app.navigation = Navigation("session", "pid:one")
+    orientation, _ = app._session()
+    assert " · /work (default) · booley · " in orientation
+
+    # A detached default checkout has no branch to show.
+    app.snapshot = replace(
+        app.snapshot,
+        sessions=(SessionRow(replace(bare.attribution, branch=""), STAMP, STAMP),),
+        goals=(),
+    )
+    detached = app._session_facts(app.snapshot.sessions[0])
+    assert (detached.work_dir, detached.branch) == ("/work (default)", "")
 
 
 @pytest.mark.asyncio
@@ -697,9 +842,9 @@ async def test_published_paths_open_in_editor_on_click_and_report_failures(tmp_p
 
     app = DashboardApp(lambda: current, opener)
     async with app.run_test(size=(max(90, 2 * max(len(report), len(log)) + 40), 40)) as pilot:
-        await pilot.press("r")
-        await pilot.pause()
-        await pilot.press("enter")
+        await pilot.press("right")
+        await choose_in_bar(app, pilot, "Finished")
+        await pilot.press("down", "enter")
         assert app.navigation.view == ("job" if app.size.width < 120 else "jobs")
         detail = app.query_one("#detail", Static)
         lines = str(detail.render()).split("\n")
@@ -714,27 +859,8 @@ async def test_published_paths_open_in_editor_on_click_and_report_failures(tmp_p
         assert [note.message for note in app._notifications] == [hint[0]]
 
 
-def test_overview_summarizes_session_and_standalone_running_jobs():
-    current = snapshot(1)
-    standalone = JobView(
-        Path("/jobs"),
-        JobRecord("three", "lint", STAMP, 60, argv=["--target", "lint_top"]),
-        "running",
-    )
-    app = DashboardApp(lambda: current)
-    app.snapshot = replace(current, jobs=JobSnapshot((*current.jobs.jobs, standalone)))
-    elapsed = "10m 00s"
-    orientation, _, rows = app._overview()
-    assert f"Standalone running Jobs: J-LINT? · lint lint_top {elapsed}" in orientation
-    assert f"sim Target — {elapsed}" in str(rows[0])
-    app.snapshot = current
-    assert "Standalone" not in app._overview()[0]
-
-
-def test_recent_results_are_newest_first_and_bounded(monkeypatch):
-    from booley.harness.dashboard import app as dashboard_app
-
-    monkeypatch.setattr(dashboard_app, "RECENT_JOBS", 2)
+def test_finished_jobs_are_newest_first_and_bounded(monkeypatch):
+    monkeypatch.setattr(dashboard_app, "FINISHED_JOBS", 2)
     jobs = tuple(
         JobView(
             Path("/jobs"),
@@ -747,14 +873,46 @@ def test_recent_results_are_newest_first_and_bounded(monkeypatch):
     )
     app = DashboardApp(snapshot)
     app.snapshot = replace(snapshot(1), jobs=JobSnapshot(jobs))
-    app.navigation = Navigation("jobs", None, "recent")
+    app.window = "jobs"
+    app.navigation = Navigation("jobs", None, "finished")
     assert [job.record.run_id for job in app._jobs()] == ["3", "2"]
-    assert "recent (newest 2)" in app._content()[0]
-    # The selected result stays listed when newer results push it past the bound.
-    app.navigation = Navigation("jobs", None, "recent", json.dumps(jobs[0].key))
+    assert "Finished (newest 2)" in app._content()[0]
+    # The selected Job stays listed when newer Jobs push it past the bound.
+    app.navigation = Navigation("jobs", None, "finished", json.dumps(jobs[0].key))
     assert [job.record.run_id for job in app._jobs()] == ["3", "2", "1"]
     app.navigation = Navigation("jobs", None, "all")
     assert [job.record.run_id for job in app._jobs()] == ["3", "2", "1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", [90, 140])
+@pytest.mark.parametrize("state", ["completed", "orphaned"])
+async def test_missing_report_resource_line_is_dim(tmp_path, width, state):
+    from rich.text import Text
+
+    record = JobRecord("fast", "sim", STAMP, 60, status="done", exit_code=0)
+    job = JobView(tmp_path, record, state)
+    current = replace(snapshot(1), jobs=JobSnapshot((job,)))
+    app = DashboardApp(lambda: current)
+    app.snapshot = current
+    app.window = "jobs"
+    app.navigation = Navigation("job", selected=json.dumps(job.key))
+    async with app.run_test(size=(width, 40)):
+        app.render_snapshot()
+        rendered = app.query_one("#detail", Static).content
+        assert isinstance(rendered, Text)
+        start = rendered.plain.index("resources not recorded (no report)")
+        assert any(span.start == start and str(span.style) == "dim" for span in rendered.spans)
+        # Report-controlled matching words must never acquire the generated style.
+        old = replace(job, report={"report_text": "resources not recorded (no report)"})
+        app.snapshot = replace(current, jobs=JobSnapshot((old,)))
+        app._render_detail()
+        rendered = app.query_one("#detail", Static).content
+        assert "resources not recorded (no report)" in rendered.plain
+        start = rendered.plain.index("resources not recorded (no report)")
+        assert not any(
+            span.start <= start < span.end and str(span.style) == "dim" for span in rendered.spans
+        )
 
 
 @pytest.mark.asyncio
@@ -779,7 +937,6 @@ async def test_time_display_pilot_snapshots(monkeypatch):
     app = DashboardApp(lambda: current)
     app.snapshot = current
     app.navigation = Navigation("session", "codex:00")
-    app._assign_shortcuts()
     orientation, _ = app._session()
     assert "Started 10m ago" in orientation
     assert "· 10m ago" in orientation
@@ -843,13 +1000,13 @@ async def _capture_time_pilot(monkeypatch, current, completed, orientation, size
 
 
 def test_absent_time_fields_keep_unavailable_markers():
-    from booley.harness.dashboard.app import _evidence_detail, _job_row, _job_summary, job_detail
+    from booley.harness.dashboard.app import _evidence_detail, _job_cells, _job_summary, job_detail
 
     current = snapshot(1)
     missing = replace(current.jobs.jobs[0], state="completed", report=None)
-    assert "completed · unavailable" in _job_row(missing, current.observed_at, "S1"), (
-        "absent time marker changed"
-    )
+    assert _job_cells(missing, current.observed_at, current.session_handles)[6].plain == (
+        "unavailable"
+    ), "absent time marker changed"
     assert "unavailable" in _job_summary(missing, current.observed_at), (
         "absent time marker changed"
     )
@@ -912,13 +1069,22 @@ def _style_at(text, offset=0):
 
 @pytest.mark.asyncio
 async def test_pilot_header_semantic_styles(monkeypatch, tmp_path):
+    for due in (None, "expired reason"):
+        try:
+            await _check_header_semantic_styles(monkeypatch, tmp_path, due)
+        except AssertionError as error:
+            error.add_note(f"failing row: due={due!r}")
+            raise
+
+
+async def _check_header_semantic_styles(monkeypatch, tmp_path, due):
     from rich.style import Style
 
     from booley.harness import colors
     from booley.harness.dashboard.resources import Resources
 
     current = model.DashboardSnapshot(
-        health=_header_health(monkeypatch, tmp_path, upgrade=True),
+        health=_header_health(monkeypatch, tmp_path, due=due, upgrade=True),
         diagnostics=("diagnostic [literal/path]",),
         resources=Resources(12.5, 1024**3, 2 * 1024**3, 3 * 1024**3, 4),
     )
@@ -931,11 +1097,18 @@ async def test_pilot_header_semantic_styles(monkeypatch, tmp_path):
         assert _style_at(orientation) == Style.parse(f"bold color({colors.PALETTE_DODGER_BLUE})")
         assert _style_at(orientation, orientation.plain.index("detail")) == Style()
         doctor = _rich_payload(app.query_one("#health", Static))
-        assert doctor.plain.splitlines()[0] == "Doctor: 2 FAIL · 1 WARN"
+        assert doctor.plain.splitlines()[0] == "Doctor: 2 FAIL · 1 WARN" + (
+            " · recheck due" if due else ""
+        )
         assert _style_at(doctor) == Style.parse("bold red")
-        assert "Upgrade review" in doctor.plain
-        assert _style_at(doctor, doctor.plain.index("Upgrade")) == Style()
-        assert _style_at(doctor, doctor.plain.index("diagnostic")) == Style()
+        if due:
+            # #2241: the due suffix keeps the attention color through the wrapper.
+            suffix = doctor.plain.index(" · recheck due")
+            assert _style_at(doctor, suffix) == Style.parse(f"color({colors.PALETTE_ORANGE})")
+        notices = _rich_payload(app.query_one("#notices", Static))
+        assert "Upgrade review" in notices.plain
+        assert _style_at(notices, notices.plain.index("Upgrade")) == Style()
+        assert _style_at(notices, notices.plain.index("diagnostic")) == Style()
         widget = app.query_one("#resources", Static)
         resources = _rich_payload(widget)
         assert (
@@ -969,33 +1142,46 @@ async def test_pilot_stale_notice_uses_attention_style(monkeypatch, tmp_path):
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(120, 30)):
         app._show_stale("read failed [path]")
-        content = _rich_payload(app.query_one("#health", Static))
+        content = _rich_payload(app.query_one("#notices", Static))
         assert content.plain == "Dashboard data unavailable/stale: read failed [path]"
         assert _style_at(content) == Style.parse(f"color({colors.PALETTE_ORANGE})")
+        # The Doctor line stays visible beside a stale notice.
+        doctor = _rich_payload(app.query_one("#health", Static))
+        assert doctor.plain == "Doctor: 2 FAIL · 1 WARN"
+        assert _style_at(doctor) == Style.parse("bold red")
         app.render_snapshot()
-        restored = _rich_payload(app.query_one("#health", Static))
-        assert restored.plain == "Doctor: 2 FAIL · 1 WARN"
-        assert _style_at(restored) == Style.parse("bold red")
+        assert not app.query_one("#notices", Static).display
 
 
-@pytest.mark.parametrize(
-    "fail,warn,due,missing,expected,style",
-    [
-        (2, 1, None, False, "Doctor: 2 FAIL · 1 WARN", "bold red"),
-        (2, 0, None, False, "Doctor: 2 FAIL", "bold red"),
-        (0, 1, None, False, "Doctor: 1 WARN", "yellow"),
-        (0, 0, None, False, "Doctor: OK", "dim"),
-        (2, 1, "expired reason", False, "Doctor: 2 FAIL · 1 WARN · stale", "bold red"),
-        (0, 0, None, True, "Doctor: unavailable: no readable automatic result", "dim"),
-        (0, 0, "expired reason", False, "Doctor: OK · stale", "dim"),
-    ],
-    ids=["fail-warn", "fail-only", "warn-only", "clean", "stale", "no-snapshot", "clean-stale"],
-)
+# (fail, warn, due reason, missing snapshot, expected text, count style)
+_DOCTOR_LINE_ROWS = [
+    (2, 1, None, False, "Doctor: 2 FAIL · 1 WARN", "bold red"),
+    (2, 0, None, False, "Doctor: 2 FAIL", "bold red"),
+    (0, 1, None, False, "Doctor: 1 WARN", "yellow"),
+    (0, 0, None, False, "Doctor: OK", "dim"),
+    (2, 1, "expired reason", False, "Doctor: 2 FAIL · 1 WARN · recheck due", "bold red"),
+    (0, 0, None, True, "Doctor: unavailable: no readable automatic result", "dim"),
+    (0, 0, "expired reason", False, "Doctor: OK · recheck due", "dim"),
+    (0, 1, "expired reason", False, "Doctor: 1 WARN · recheck due", "yellow"),
+]
+
+
 @pytest.mark.asyncio
-async def test_pilot_compact_doctor_line(
+async def test_pilot_compact_doctor_line(monkeypatch, tmp_path):
+    for row in _DOCTOR_LINE_ROWS:
+        try:
+            await _check_pilot_doctor_line(monkeypatch, tmp_path, *row)
+        except AssertionError as error:
+            error.add_note(f"failing row: {row!r}")
+            raise
+
+
+async def _check_pilot_doctor_line(
     monkeypatch, tmp_path, fail, warn, due, missing, expected, style
 ):
     from rich.style import Style
+
+    from booley.harness import colors
 
     current = model.DashboardSnapshot(
         health=_header_health(monkeypatch, tmp_path, fail, warn, due, missing)
@@ -1009,6 +1195,25 @@ async def test_pilot_compact_doctor_line(
         assert "sentinel" not in content.plain
         assert "expired reason" not in content.plain
         assert _style_at(content) == Style.parse(style)
+        last = len(content.plain) - 1
+        if not due or missing:
+            # Not due or unavailable: one style end to end, no attention span.
+            assert _style_at(content, last) == Style.parse(style)
+            return
+        suffix = " · recheck due"
+        attention = Style.parse(f"color({colors.PALETTE_ORANGE})")
+        start = content.plain.index(suffix)
+        assert content.plain.endswith(suffix)
+        # Counts keep their severity style; only the suffix takes the attention color.
+        assert _style_at(content, start - 1) == Style.parse(style)
+        assert _style_at(content, start) == attention
+        assert _style_at(content, last) == attention
+        # The widget actually paints the suffix in orange, not just the Text object.
+        painted = [
+            (char, segment.style) for segment in widget.render_line(0) for char in segment.text
+        ]
+        assert painted[start][1].color.get_truecolor() == attention.color.get_truecolor()
+        assert painted[start - 1][1].color.get_truecolor() != attention.color.get_truecolor()
 
 
 def test_goal_statuses_use_shared_semantic_styles():
@@ -1060,7 +1265,7 @@ def test_dashboard_palette_imports_have_no_copied_codes():
     from booley.harness import colors
     from booley.harness.dashboard import app as app_module
 
-    tree = ast.parse(Path(app_module.__file__).read_text())
+    tree = ast.parse(Path(app_module.__file__).read_text(encoding="utf-8"))
     imported = {
         alias.name
         for node in ast.walk(tree)
@@ -1078,7 +1283,7 @@ def test_dashboard_palette_imports_have_no_copied_codes():
         colors.PALETTE_LAVENDER,
     }
     for path in Path(app_module.__file__).parent.glob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Constant):
                 assert node.value not in codes if isinstance(node.value, int) else True
                 if isinstance(node.value, str):
@@ -1107,8 +1312,9 @@ async def _result_pilot(report, expected, code=0, compact=False):
     current = replace(snapshot(1), jobs=JobSnapshot((item,)))
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(120, 30)) as pilot:
-        await pilot.press("r")
-        await pilot.pause()
+        await pilot.press("right")
+        await choose_in_bar(app, pilot, "Finished")
+        await pilot.press("down")
         widget = app.query_one("#detail", Static)
         text = str(widget.content)
         assert "Flow result:" in text, "Pilot must show the new Flow result in the selected pane"

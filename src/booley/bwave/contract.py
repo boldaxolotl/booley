@@ -3,7 +3,7 @@
 Exit codes and load-bearing stderr markers shared between the Rust binary
 (``crates/bwave``) and every Python consumer. The Rust half of the contract
 lives in ``crates/bwave/src/cache.rs`` (``no_match_message``,
-``no_signals_in_store_message``) and the exit sites in
+``no_signals_in_store_message``, ``beyond_range_message``) and the exit sites in
 ``crates/bwave/src/main.rs``; a Rust unit test in ``cache.rs``
 (``contract`` tests at the bottom of its test mod) pins the marker
 substrings, and ``tests/bwave/test_contract.py`` pins them
@@ -42,6 +42,16 @@ EXIT_USAGE = 2
 # Substring of the Rust total-miss diagnostic ("ERROR: no signals match
 # pattern(s) ..."). Compare against lowercased stderr and EXIT_USAGE.
 NO_MATCH_MARKER = "no signals match"
+
+# Substring of the suggestion the Rust total-miss diagnostic appends when a
+# glob matches below some scope boundary ("did you mean 'TOP.tb.dut.*'?").
+# Change together with the Rust pin in crates/bwave/src/cache.rs.
+DID_YOU_MEAN_MARKER = "did you mean"
+
+# Substring of the `value --at` diagnostic for a time past the end of the
+# trace ("ERROR: value time N is beyond simulation range", exit 2). `bwave
+# gui` clamps a --time end on it.
+BEYOND_RANGE_MARKER = "beyond simulation range"
 
 # Substring of the zero-signal-store diagnostic ("ERROR: waveform store has
 # no signals ..."), emitted by queries (exit 2) and by `list` (exit 0, both

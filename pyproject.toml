@@ -74,7 +74,7 @@ test = [
 ]
 quality = [
     "pyright==1.1.414",
-    "ruff==0.17.0",
+    "ruff==0.17.2",
 ]
 mutation = [
     "mutmut==3.8.0",
@@ -106,7 +106,7 @@ dev = [
     # .github/workflows/test.yml — a floor here let three different ruff versions
     # coexist locally, so `ruff format --check` disagreed with CI. Bump both files
     # in the same commit, and re-run `ruff check .` + `ruff format --check .` first.
-    "ruff==0.17.0",
+    "ruff==0.17.2",
 ]
 
 [project.scripts]
@@ -115,7 +115,9 @@ booley-mcp = "booley.mcp.server:main"
 bwave = "booley.bwave.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/boldaxolotl/Booley"
+Homepage = "https://booley.dev/"
+Documentation = "https://booley.dev/docs/"
+Source = "https://github.com/boldaxolotl/Booley"
 Issues = "https://github.com/boldaxolotl/Booley/issues"
 
 [tool.booley]
@@ -362,7 +364,6 @@ include = [
     "src/booley/mcp/goal_completion.py",
     "src/booley/mcp/goal_generated_inputs.py",
     "src/booley/review/goal_package.py",
-    "src/booley/review/goal_presentation_v1.py",
     "src/booley/runtime/publication_ownership.py",
     "src/booley/runtime/pinned_history.py",
 ]
@@ -387,7 +388,6 @@ strict = [
     "src/booley/mcp/goal_completion.py",
     "src/booley/mcp/goal_generated_inputs.py",
     "src/booley/review/goal_package.py",
-    "src/booley/review/goal_presentation_v1.py",
     "src/booley/runtime/publication_ownership.py",
     "src/booley/runtime/pinned_history.py",
 ]

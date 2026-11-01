@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.flows.progress_lifecycle import progress_document
 from booley.mcp import endpoint_process, job_results
 from booley.mcp.call_context import CallContext
 from booley.mcp.job_lifecycle import JobLifecycle
@@ -21,6 +22,7 @@ from booley.runtime import job_records, job_slots
 from booley.runtime.handles import HandleStore
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import utc_now_rfc3339
+from tests.conftest import symlink_or_skip
 
 SOURCE_ROOT = Path(__file__).parents[2] / "src"
 pytestmark = pytest.mark.timeout(120)
@@ -168,6 +170,47 @@ def test_goal_job_handle_uses_bound_project_directory(context, tmp_path, monkeyp
     rec = job_records.JobRecord("goal-run", "sim", utc_now_rfc3339(), JOB_TIMEOUT)
     JobLifecycle._stamp_context(rec, bound)
     assert HandleStore(project, jobs=True).load().entries == {"goal-run": "J-SIM1"}
+
+
+def test_job_progress_follows_symlinked_booley_dir_entry(context, tmp_path, monkeypatch):
+    """Progress behind a Job report is read and repaired through the linked entry."""
+    real = tmp_path / "real-booley-dir"
+    entry = tmp_path / "project" / ".booley"
+    entry.parent.mkdir()
+    real.mkdir()  # the pin needs an existing target
+    symlink_or_skip(entry, real)
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(entry / "runtime"))
+    monkeypatch.setattr(
+        job_results,
+        "project_goal_store",
+        lambda: SimpleNamespace(
+            booley_dir=entry, list_records=lambda: SimpleNamespace(records=())
+        ),
+    )
+    rec = job_records.JobRecord("run-1", "sim", utc_now_rfc3339(), JOB_TIMEOUT)
+    job_records.write_record(rec, root=entry / "runtime" / "jobs")
+    checkpoint = real / "runtime" / "flow-reports" / "sim" / "1" / "progress.json"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text(
+        json.dumps(
+            progress_document(
+                flow="sim",
+                run_id="run-1",
+                phase="running",
+                targets=("sim_a",),
+                completed_targets=(),
+                detail={},
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    partial = job_results.JobRepository().progress_for_run("sim", "run-1")
+    assert partial is not None
+    assert partial["partial"] is True
+
+    JobLifecycle()._record_terminal(rec, 2, timed_out=False)
+    assert json.loads(checkpoint.read_text(encoding="utf-8"))["phase"] == "aborted"
 
 
 @pytest.mark.asyncio
@@ -393,6 +436,53 @@ async def test_real_queued_job_credit_and_withdrawal(context, withdraw):
         await stop_jobs(jobs)
 
 
+def _sharing_violation() -> PermissionError:
+    """The error Windows raises when unlinking a file another handle holds open."""
+    exc = PermissionError(13, "The process cannot access the file")
+    exc.winerror = 32  # type: ignore[attr-defined]  # POSIX lacks the field
+    return exc
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fault", "expected"),
+    [
+        pytest.param(_sharing_violation, "queued", id="sharing-once"),
+        pytest.param(lambda: FileNotFoundError("promoted"), "running", id="not-found"),
+    ],
+)
+async def test_queued_cancel_withdrawal_unlink_faults(context, monkeypatch, fault, expected):
+    """A transient sharing error on the withdrawal unlink is retried (queued, #2089);
+    a missing entry means promotion won the race (running)."""
+    store = job_slots.SlotStore(job_slots.slots_dir())
+    holder = store.acquire("heavy", pid=os.getpid(), timeout_s=60)
+    jobs = FastSupervisor()
+    real_unlink = Path.unlink
+    raised: list[Path] = []
+
+    def faulty_unlink(path, *args, **kwargs):
+        is_waiter = path.parent.name == "heavy" and path.name.startswith("w-")
+        if is_waiter and not raised:
+            raised.append(path)
+            raise fault()
+        return real_unlink(path, *args, **kwargs)
+
+    try:
+        run_id = jobs.submit("lint", queued_command(context), JOB_TIMEOUT, context=context)
+        await wait_until((context.work_dir / "queued").exists)
+        monkeypatch.setattr(Path, "unlink", faulty_unlink)
+        outcome = await jobs.cancel(run_id)
+        monkeypatch.setattr(Path, "unlink", real_unlink)
+        assert raised, "the withdrawal never unlinked a waiter entry"
+        assert outcome == expected
+        assert (await jobs.poll(run_id)).result.exit_code == 130
+        assert not (context.work_dir / "started").exists()
+    finally:
+        monkeypatch.setattr(Path, "unlink", real_unlink)
+        store.release(holder)
+        await stop_jobs(jobs)
+
+
 def descendant_command(context):
     descendant_ready = context.work_dir / "descendant"
     child_script = f"""
@@ -501,6 +591,31 @@ async def test_poll_exposes_only_current_nonterminal_checkpoint(context):
     assert state.record.run_id == rec.run_id
 
 
+def test_poll_view_keeps_running_state_when_progress_is_held():
+    from booley.mcp.job_lifecycle import _poll_view
+
+    def held(_run_id):
+        raise job_records.JobRecordError("Job progress for run-1 unreadable: held")
+
+    repository = SimpleNamespace(
+        record=lambda _id: None, phase=lambda _id: "RUNNING", progress=held
+    )
+    state = _poll_view("run-1", "running", True, repository)  # type: ignore[arg-type]
+    assert state.status == "running" and state.progress is None
+
+
+def test_finished_poll_names_the_job_when_its_report_is_held(monkeypatch):
+    from booley.mcp.job_lifecycle import JobPoll
+
+    def held(_self, _run_id):
+        raise job_records.JobRecordError("Job report is unreadable: held")
+
+    monkeypatch.setattr(JobLifecycle, "terminal_result", held)
+    with pytest.raises(job_records.JobRecordError, match="Job run-9 finished") as raised:
+        JobLifecycle()._complete_poll(JobPoll("run-9", "finished", True))
+    assert isinstance(raised.value.__cause__, job_records.JobRecordError)
+
+
 @pytest.mark.asyncio
 async def test_synchronous_execution_uses_same_supervisor_and_forgets_finished_record(context):
     jobs = JobLifecycle()
@@ -542,3 +657,34 @@ async def test_queue_wait_does_not_consume_active_budget(context, monkeypatch):
     assert attempts == [5, 5, 5, 5, 2]
     assert active == [20]
     assert clock.elapsed == 22
+
+
+def _orphan_with_report(context):
+    """An orphaned RUNNING record whose finished report is on disk."""
+    rec = job_records.JobRecord("orphan", "lint", utc_now_rfc3339(), 5)
+    job_records.write_record(rec, context.jobs_root)
+    write_report(context, rec.run_id, {"exit_code": 0, "passed": True})
+    return rec, context.runtime_dir / "flow-reports/lint/1/report.json"
+
+
+def test_reconcile_adopts_report_after_transient_sharing_error(context, monkeypatch):
+    from tests.sharing_error_support import hold_opens, retry_delays_target
+
+    rec, report = _orphan_with_report(context)
+    # Hold longer than the report lookup's fallback reads, so only the retry can adopt it.
+    attempts = hold_opens(monkeypatch, {report: 3})
+    monkeypatch.setattr(retry_delays_target(), (0.0,) * 4)
+    JobLifecycle().reconcile_orphaned()
+    final = job_records.read_record(rec.run_id, context.jobs_root)
+    assert (final.status, final.exit_code) == ("done", 0)
+    assert attempts[report] == 4
+
+
+def test_reconcile_leaves_job_running_on_lasting_report_sharing_error(context, monkeypatch):
+    from tests.sharing_error_support import hold_opens
+
+    rec, report = _orphan_with_report(context)
+    attempts = hold_opens(monkeypatch, {report: 100})
+    JobLifecycle().reconcile_orphaned()
+    assert job_records.read_record(rec.run_id, context.jobs_root).status == "running"
+    assert attempts[report] > 1

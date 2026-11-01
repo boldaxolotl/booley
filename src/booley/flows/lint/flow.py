@@ -6,7 +6,7 @@ warnings, and deduplicates warnings across configs.
 
 Exit codes: 0 = clean, 1 = the design failed (warnings remain, or the
 linter rejected the RTL), 2 = the linter could not run at all (missing
-binary, setup failure, timeout). See docs/user/USAGE.md for the shared
+binary, setup failure, timeout). See docs/user/FLOW_REFERENCE.md for the shared
 Booley Flow exit-code taxonomy.
 """
 
@@ -30,6 +30,7 @@ from booley.flows.eda_failures import (
     new_attempt_token,
     render_failure_marker,
 )
+from booley.flows.job_resources import resource_phase
 from booley.flows.lint.cli import LintArguments
 from booley.flows.lint.request import LintRequest
 from booley.flows.parameter_transport import normalize_resolved_parameters
@@ -404,6 +405,54 @@ def _target_summary_line(result: LintConfigResult) -> str:
     )
 
 
+def _lint_findings(
+    targets: list[str],
+    warnings: list[LintWarning],
+    results: list[LintConfigResult],
+) -> dict[str, Any]:
+    """Bound the preview while counting all scoped, distinct warning provenance."""
+    findings = [
+        {
+            "severity": "warning",
+            "rule": warning.rule,
+            "file": warning.file,
+            "line": warning.line,
+            "message": warning.message,
+            "target": warning.target,
+        }
+        for warning in warnings[:20]
+    ]
+    counts = {target: {"warnings": 0, "errors": 0} for target in targets}
+    for warning in warnings:
+        for target in warning.targets or (warning.target,):
+            counts[target]["warnings"] += 1
+    total = len(warnings)
+    for result in results:
+        if not result.error:
+            continue
+        total += 1
+        counts[result.target]["errors"] += 1
+        if len(findings) < 20:
+            findings.append(
+                {
+                    "severity": "error",
+                    "rule": None,
+                    "file": None,
+                    "line": None,
+                    "message": result.error,
+                    "target": result.target,
+                }
+            )
+    detail: dict[str, Any] = {
+        "findings": findings,
+        "findings_total": total,
+        "findings_truncated": total > 20,
+    }
+    if len(targets) > 1:
+        detail["findings_by_target"] = counts
+    return detail
+
+
 def _lint_result_parts(
     targets: list[str],
     unique: list[LintWarning],
@@ -421,6 +470,7 @@ def _lint_result_parts(
     detail: dict[str, Any] = {
         "targets": targets,
         "total_warnings": len(unique),
+        **_lint_findings(targets, unique, target_results or []),
         "elapsed_s": round(elapsed, 2),
     }
     eda_tools = sorted({cr.eda_tool for cr in (target_results or []) if cr.eda_tool})
@@ -550,6 +600,11 @@ class LintFlow(BuiltinFlow[LintRequest]):
             f"{{ echo {shlex.quote(marker)}; exit 127; }}; exec {shlex.join(command)}"
         )
         return _PreparedLintCommand(["sh", "-c", script], resolved, token)
+
+    def _run_linter(self, selector: str, cmd: list[str]) -> SubprocessResult:
+        """Run one Target's linter under its resource-history label."""
+        with resource_phase(selector, "lint"):
+            return self._execute_boundary(cmd)
 
     def _dry_run_command(self, target: TargetHandle) -> list[str]:
         """Build a side-effect-free ``--dry-run`` preview for one Target.
@@ -712,13 +767,14 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 return errors[0]
             prepared = prepared_units[target.identity]
         result = prepared.result
+        self.record_eda_tool(selector, prepared.resolved.configured_eda_tool)
         cmd = prepared.command
         family = _lint_eda_tool_family(prepared.resolved.configured_eda_tool)
         start = time.monotonic()
         from booley.flows.terminal_progress import announce_unit
 
         announce_unit("checking", target=selector)
-        proc = self._execute_boundary(cmd)
+        proc = self._run_linter(selector, cmd)
         result.duration_s = time.monotonic() - start
         result.returncode = proc.returncode
 
@@ -816,6 +872,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         by construction.
         """
         result.eda_tool = resolved.configured_eda_tool or family
+        self.record_eda_tool(result.target, result.eda_tool)
         hdl_files = [f for f in resolved.files if f.is_hdl and not f.is_include]
         result.files_linted = len(hdl_files)
         result.toplevel = resolved.toplevel
@@ -972,7 +1029,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=(
-                    "lint: --target is required when running outside a ticket. "
+                    "lint: --target is required outside Goal-bound MCP calls. "
                     "Pass --target <name>; available Targets are the .core "
                     "lint Targets in .booley/."
                 ),
@@ -985,6 +1042,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         if err is not None:
             return err
         targets = self._get_targets()
+        self.set_report_targets([target.selector for target in targets])
         if not targets:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -1085,7 +1143,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
             if relative_log is not None:
                 artifact_block[f"log_{config_result.target}"] = relative_log
         artifacts.merge_artifacts(detail, artifact_block)
-        self._eda_tool = ", ".join(sorted({cr.eda_tool for cr in target_results if cr.eda_tool}))
+        for result in target_results:
+            self.record_eda_tool(result.target, result.eda_tool)
 
         if errored:
             exit_code, summary = _errored_verdict(errored)

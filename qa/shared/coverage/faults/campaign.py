@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 
 REFERENCE_SCHEMA = "booley.coverage-campaign-reference/v1"
+#: Booley's uncompressed point-store ceiling (coverage_campaign_store.MAX_UNCOMPRESSED_BYTES).
+POINT_CEILING_BYTES = 512 * 1024 * 1024
 
 
 def canonical(value: object) -> bytes:
@@ -19,35 +21,19 @@ def canonical(value: object) -> bytes:
     )
 
 
-def rewrite_points(path: Path, document: dict, records: list[dict]) -> None:
-    raw = b"".join(canonical(row) for row in records)
-    compressed = gzip.compress(raw, mtime=0)
-    path.write_bytes(compressed)
-    document["point_store"].update(
-        bytes=len(compressed),
-        uncompressed_bytes=len(raw),
-        point_count=len(records) - 1,
-        sha256="sha256:" + hashlib.sha256(compressed).hexdigest(),
-    )
-
-
-def corrupt_points(mode: str, path: Path, document: dict) -> None:
+def corrupt_points(mode: str, path: Path) -> None:
+    """Booley trusts the recorded point-store identity, so the manifest stays as published."""
     if mode == "missing-points":
         path.unlink()
-    elif mode == "changed-points":
-        path.write_bytes(path.read_bytes() + b"changed")
     elif mode == "truncated-gzip":
-        data = path.read_bytes()[:-8]
-        path.write_bytes(data)
-        document["point_store"].update(
-            bytes=len(data), sha256="sha256:" + hashlib.sha256(data).hexdigest()
-        )
+        path.write_bytes(path.read_bytes()[:-8])
     elif mode == "trailing-data":
-        data = path.read_bytes() + b"not a gzip member"
-        path.write_bytes(data)
-        document["point_store"].update(
-            bytes=len(data), sha256="sha256:" + hashlib.sha256(data).hexdigest()
-        )
+        path.write_bytes(path.read_bytes() + b"not a gzip member")
+    elif mode == "resource-ceiling":
+        # Decompresses one byte past the ceiling; the reader must stop there.
+        with gzip.GzipFile(path, "wb", compresslevel=1, mtime=0) as stream:
+            for start in range(0, POINT_CEILING_BYTES + 1, 1 << 20):
+                stream.write(b" " * min(1 << 20, POINT_CEILING_BYTES + 1 - start))
     else:
         records = [json.loads(line) for line in gzip.decompress(path.read_bytes()).splitlines()]
         if mode == "duplicate-point":
@@ -56,7 +42,7 @@ def corrupt_points(mode: str, path: Path, document: dict) -> None:
             records[-1]["hits_by_run"] = {"wrong-run": -1}
         else:
             raise ValueError("unknown point fault")
-        rewrite_points(path, document, records)
+        path.write_bytes(gzip.compress(b"".join(canonical(row) for row in records), mtime=0))
 
 
 def regular_owned(path: Path, owned: Path) -> None:
@@ -71,7 +57,7 @@ def regular_owned(path: Path, owned: Path) -> None:
 
 
 def nested_campaign(reference: Path, owned: Path) -> tuple[Path, dict]:
-    """Follow a Target reference to its nested V4 manifest inside the owned copy."""
+    """Follow a Target reference to its nested Campaign manifest inside the owned copy."""
     document = json.loads(reference.read_text())
     if document.get("$schema") != REFERENCE_SCHEMA:
         raise ValueError(f"expected the Target coverage.json ({REFERENCE_SCHEMA})")
@@ -106,22 +92,16 @@ def mutate(reference: Path, owned: Path, mode: str) -> None:
     points = path.parent / "coverage-points.jsonl.gz"
     if mode in {
         "missing-points",
-        "changed-points",
         "truncated-gzip",
         "trailing-data",
         "duplicate-point",
         "invalid-final-record",
+        "resource-ceiling",
     }:
-        corrupt_points(mode, points, document)
-    elif mode in {"v1", "v2"}:
+        corrupt_points(mode, points)
+    elif mode in {"v1", "v2", "v3"}:
+        # The schema gate rejects an unsupported version before any decode.
         document["$schema"] = "booley.coverage-campaign/" + mode
-        document.pop("source_rollups")
-        document.pop("scoring")
-        if mode == "v1":
-            document["points"] = [
-                json.loads(line) for line in gzip.decompress(points.read_bytes()).splitlines()
-            ][1:]
-            document.pop("point_store")
     else:
         corrupt_manifest(mode, path, document, owned)
     path.write_bytes(canonical(document))
@@ -129,20 +109,7 @@ def mutate(reference: Path, owned: Path, mode: str) -> None:
 
 
 def corrupt_manifest(mode: str, path: Path, document: dict, owned: Path) -> None:
-    fields = {
-        "point-count": "point_count",
-        "compressed-size": "bytes",
-        "uncompressed-size": "uncompressed_bytes",
-    }
-    if mode in fields:
-        document["point_store"][fields[mode]] += 1
-    elif mode == "point-digest":
-        document["point_store"]["sha256"] = "sha256:" + "0" * 64
-    elif mode in {"unsafe-relative-path", "absolute-path"}:
-        document["point_store"]["path"] = (
-            "../outside.gz" if mode.startswith("unsafe") else str(owned / "outside.gz")
-        )
-    elif mode == "symlink":
+    if mode == "symlink":
         points = path.parent / "coverage-points.jsonl.gz"
         outside = owned / "outside.gz"
         with outside.open("xb") as stream:
@@ -151,30 +118,12 @@ def corrupt_manifest(mode: str, path: Path, document: dict, owned: Path) -> None
         points.symlink_to(outside)
     elif mode == "wrong-rollup":
         document["rollups"][0]["covered_points"] += 1
-    elif mode == "wrong-source-rollup":
-        rows = document["source_rollups"]
-        if len(rows) < 2 or rows[0]["rollups"] == rows[1]["rollups"]:
-            raise ValueError("two sources with distinct distributions required")
-        rows[0]["rollups"], rows[1]["rollups"] = rows[1]["rollups"], rows[0]["rollups"]
-    elif mode in {"invalid-overall-score", "invalid-source-score"}:
-        corrupt_scoring(mode, document)
     elif mode == "wrong-evaluation":
         document["evaluation"]["status"] = (
             "pass" if document["evaluation"]["status"] != "pass" else "fail"
         )
-    elif mode == "resource-ceiling":
-        document["point_store"]["point_count"] = 1_000_001
     else:
         raise ValueError(f"unknown Campaign fault: {mode}")
-
-
-def corrupt_scoring(mode: str, document: dict) -> None:
-    document["collection"]["status"] = "collector_error"
-    document["scoring"] = {"status": "invalid", "reason": "collector_error"}
-    if mode == "invalid-overall-score":
-        document["source_rollups"] = []
-    else:
-        document["rollups"] = []
 
 
 def main() -> None:

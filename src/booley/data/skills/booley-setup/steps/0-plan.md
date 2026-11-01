@@ -203,6 +203,13 @@ the only branch that short-circuits the rest is the first.
   generated files to the tracked tree; it does not ask you to delete what an
   earlier run or the maintainer dogfood workflow already committed. Removing
   tracked files is the user's call, not a setup step.
+  **Exception: scaffold-authored root cores under a hidden footprint.** In a
+  scaffold-origin Project (`# booley-init-origin: scaffold`) with row 16 hidden,
+  Doctor warns `stealth.scaffold-core-tracked` for each tracked scaffold core.
+  Do not leave those in place: plan their move under `.booley/cores/` with
+  repository-root-relative paths, as the WARN says. Interactive: confirm with
+  the user, since it removes tracked files. Unattended: star `review` and keep
+  the WARN. Booley never moves the files itself.
   **A tracked `SETUP-REPORT.md` is not proof the port is finished.** Check its
   mtime and `git log -1 --format=%cr -- SETUP-REPORT.md`: on a maintainer
   dogfood repo it is usually the **current** port's report, created hours ago, with
@@ -369,7 +376,7 @@ script lines) as you go.
      and lift the exact wording of every early-exit path.
   **Then check how often the pass sentinel prints.** A per-case `TEST SUCCEEDED`
   that fires ~96× in one run means the whole verdict rests on the tie-breaking
-  rule: **a fail sentinel wins ties** (CONFIG.md → sentinels). That is what makes
+  rule: **a fail sentinel wins ties** (FLOW-SIM.md → sentinels). That is what makes
   a fail-dominant sentinel set safe with a repeating pass string — and what makes
   a *missing* category-4 sentinel fatal. Record in row 5 that the set is
   fail-dominant by design, so nobody later "cleans up" the fail list.
@@ -447,7 +454,7 @@ script lines) as you go.
   `git -C .booley submodule status` too. If either has any, add a
   decision row — but a short one: Goal worktrees get their submodules
   reconstructed from local Git objects at the same repository path, never
-  cloned, so private SSH URLs are not consulted (mechanics in CONFIG.md →
+  cloned, so private SSH URLs are not consulted (mechanics in TARGETS.md →
   "Submodules"). What the plan owes is the precondition and, if the outer repo
   has heavy submodules nothing builds against, the explicit list:
   - Every selected submodule must be **present, clean, non-shallow, and contain
@@ -553,7 +560,7 @@ separate columns (see "How a row resolves"). The standard checklist:
    **Enumerate the full
    Target list here**, not just a name per intent: each Target with its intent,
    toplevel, and test list. The counting rule depends on the TB flavor (row 4);
-   `CONFIG.md` is authoritative:
+   `TARGETS.md` is authoritative:
    - **Classic sentinel SV/UVM TB** — one Target per *intent* (sim / lint /
      asic / fpga). A distinct config (parameter/define set) or a distinct
      toplevel gets its own Target; nothing else does.
@@ -626,7 +633,7 @@ separate columns (see "How a row resolves"). The standard checklist:
    proposed pattern, and record their agreement in this row. Step 2 writes
    `[project].protected_inputs` only from that agreement; see CONFIG.md →
    "Additional Protected Inputs". Two shape constraints to plan against, both
-   from CONFIG.md: `pre_run_commands` and `run_cwd` live under
+   from FLOW-SIM.md: `pre_run_commands` and `run_cwd` live under
    `[flows.sim]` and are therefore **global to the Flow — one value shared
    by every sim Target**, not per-Target knobs. Per-Target behavior has to come
    from *inside* the commands, branching on the exported `$BOOLEY_TARGET` (also
@@ -938,15 +945,11 @@ Fill `../SETUP_PLAN_TEMPLATE.md` and write it to
 - **§3 Approval & deviations** — the approval record; the deviation log starts
   empty and is appended by execution steps.
 
-The standard decision rows also include setup-artifact retention and Flow-cache
-disposition. `minimal` is the recommended default: preserve configuration,
-authored integrations, reports, Findings semantics, and structured evidence;
-remove only current-run manifest-owned scratch, duplicate captures, and
-reproducible products. `diagnostic` retains raw current-run evidence while
-still removing disposable probes. `preserve` is the recommended cache mode;
-`evict-setup-touched` is explicit cache eviction through the Flow owner and
-must disclose its rebuild cost. Unattended planning writes those defaults
-without a late approval gate.
+The standard decision rows also include setup-artifact retention. `minimal` is
+the recommended default: remove the run's scratch root, keeping configuration,
+authored integrations, reports, and Findings evidence. `diagnostic` keeps the
+scratch root. Unattended planning writes that default without a late approval
+gate.
 
 **Interactive:** show the user the complete plan and ask for exactly one
 action: `approve`, `edit`, or `cancel` (default `cancel` on ambiguity). On
@@ -972,11 +975,10 @@ From here on, Steps 1–4 consume the plan under the deviation rule in
 is fixed and logged in §3.
 
 Before execution begins, allocate one run-owned scratch root with
-`booley cleanup prepare`. Record its run ID, scratch root, and manifest path in
+`booley cleanup prepare`. Record its run ID and scratch root in
 the plan's §3 **Execution ledger**. Every setup-authored detached capture,
-exit-code sidecar, probe, and conversion belongs beneath that root and is
-registered with `booley cleanup record` before Step 7 can consider it. A
-plan without the ledger remains readable but has no deletion authority.
+exit-code sidecar, probe, and conversion belongs beneath that root. A plan
+without a run ID remains readable but has no cleanup.
 
 ## Appendix — worked example: a RISC-V CPU core's boot software
 
@@ -1000,7 +1002,7 @@ compile-flag probe.
 
    For the image contents, how to pull or build it, and how to layer extra
   EDA tools on top with `# booley:keep` (needed when a repo like ibex also bakes
-   Python deps), see CONFIG.md → "RISC-V toolchain image".
+   Python deps), see SANDBOX.md → "RISC-V toolchain image".
 
 2. **Post-setup hook**: build the firmware on demand instead of committing a
    `.hex`. A Project setup script can run inside the container after a Goal

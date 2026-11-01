@@ -3,7 +3,7 @@
 Covers ``fusesoc_registry.classified_sources`` and ``source_dirs_from_core`` —
 the subprocess-free partition of design sources by the ``tags:[tb]`` marker that
 replaced the retired ``[sources.*]`` config as the single source of truth — plus
-the ``_diff_classify._classify_files`` drift fix that keys off exact declared
+the ``endpoint_diff._classify_files`` drift fix that keys off exact declared
 files rather than conventional ``tb/`` directory prefixes.
 """
 
@@ -16,8 +16,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from booley.criteria.state import CATEGORY_RTL, CATEGORY_TB
+from booley.flows.endpoint_diff import _classify_files
 from booley.fusesoc.fusesoc_registry import classified_sources, source_dirs_from_core
-from booley.mcp.diff_classify import _classify_files
 
 
 def _write_core(path: Path, body: str) -> None:

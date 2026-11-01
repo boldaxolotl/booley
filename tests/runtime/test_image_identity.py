@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from booley.runtime import image_identity as identity
@@ -125,249 +127,136 @@ def test_decode_malformed_docker_document_is_unknown() -> None:
     assert identity.decode_image_metadata("issued", [{"Id": 3}]) is None
 
 
-def test_decode_rejects_unbounded_metadata() -> None:
-    document = [
-        {
-            "Id": "sha256:issued",
-            "Config": {"Labels": {str(index): "value" for index in range(257)}},
+_SELECTION_LABELS = {
+    "role": identity.LABEL_ARTIFACT_ROLE,
+    "inputs": identity.LABEL_EFFECTIVE_INPUTS,
+    "recipe": identity.LABEL_RECIPE_FINGERPRINT,
+    "parent_kind": identity.LABEL_PARENT_ARTIFACT_KIND,
+    "parent": identity.LABEL_PARENT_ARTIFACT,
+    "runtime": identity.LABEL_RUNTIME_BASE_CONTRACT,
+    "standard": identity.LABEL_STANDARD_SUBSTRATE_CONTRACT,
+    "schema": identity.LABEL_SCHEMA,
+}
+
+
+_SELECTION_CASES = {
+    "equal-stamps": ({}, ("f", "f"), None, "match"),
+    "inherited-recipe": ({"recipe": "changed"}, ("f", "f"), None, "recipe"),
+    "project-inputs": ({"inputs": "changed"}, ("f", "f"), None, "inputs"),
+    "wheel-inputs": ({"role": "wheel-overlay", "inputs": "changed"}, ("f", "f"), None, "match"),
+    "role": ({"role": "wheel-overlay"}, ("f", "f"), None, "role"),
+    "parent-kind": ({"parent_kind": "registry-digest"}, ("f", "f"), None, "parent_kind"),
+    "runtime-contract": ({"runtime": "changed"}, ("f", "f"), None, "runtime"),
+    "standard-contract": ({"standard": "changed"}, ("f", "f"), None, "standard"),
+    "different-stamps": ({}, ("f", "e"), None, "selection_fingerprint"),
+    "flavor-both": ({}, ("f", "f"), "riscv", "sandbox_flavor"),
+    "flavor-one": ({}, ("f", None), "riscv", "sandbox_flavor"),
+    "flavor-neither": ({}, (None, None), "riscv", "sandbox_flavor"),
+    "absent-standard": ({}, ("f", "f"), "standard", "match"),
+    "literal-empty": ({}, ("f", "f"), "", "sandbox_flavor"),
+    "literal-unknown": ({}, ("f", "f"), "unknown", "sandbox_flavor"),
+    "literal-custom": ({}, ("f", "f"), "custom", "sandbox_flavor"),
+    "registry-equal": ({"parent": "registry@sha256:abc"}, (None, None), None, "match"),
+    "registry-different": (
+        {"parent": "registry@sha256:def"},
+        (None, None),
+        None,
+        "registry_parent",
+    ),
+    "registry-missing": ({"parent": ""}, (None, None), None, "unknown"),
+    "one-stamp": ({}, ("f", None), None, "unknown"),
+    "one-stamp-recipe": ({"recipe": "changed"}, ("f", None), None, "recipe"),
+    "malformed": ({}, ("malformed", "f"), None, "unknown"),
+    "old-schema": ({"schema": "2"}, ("f", "f"), None, "unknown"),
+    "nonfinal-stamped": ({"role": "runtime-base"}, ("f", "f"), None, "unknown"),
+    "malformed-before-flavor": ({}, ("malformed", "f"), "riscv", "unknown"),
+}
+
+
+@pytest.mark.parametrize(
+    "changes,stamps,flavor,expected",
+    _SELECTION_CASES.values(),
+    ids=_SELECTION_CASES,
+)
+def test_final_selection_rules(changes, stamps, flavor, expected):
+    fields = {
+        "role": "wheel-overlay" if "parent" in changes else "project-overlay",
+        "inputs": "inputs",
+        "recipe": "recipe",
+        "parent_kind": "registry-digest" if "parent" in changes else "local-image-id",
+        "parent": "registry@sha256:abc",
+        "runtime": "runtime",
+        "standard": "standard",
+        "schema": "3",
+    }
+    left = dict(fields)
+    if "inputs" in changes and changes.get("role") == "wheel-overlay":
+        left["role"] = "wheel-overlay"
+    if changes.get("role") == "runtime-base":
+        left["role"] = "runtime-base"
+    images = {}
+    for name, values, stamp, environment in zip(
+        ("issued", "configured"),
+        (left, fields | changes),
+        stamps,
+        ({}, {} if flavor is None else {identity.ENV_SANDBOX_FLAVOR: flavor}),
+        strict=True,
+    ):
+        labels = {_SELECTION_LABELS[field]: value for field, value in values.items()}
+        if stamp is not None:
+            labels[identity.LABEL_LOGICAL_SELECTION_FINGERPRINT] = (
+                stamp * 64 if len(stamp) == 1 else stamp
+            )
+        images[name] = _metadata(
+            name, image_id="sha256:" + name, labels=labels, environment=environment
+        )
+    result = identity.compare_logical_selection("issued", "configured", images.get)
+    status = expected if expected in {"match", "unknown"} else "mismatch"
+    assert result.status == status
+    if status == "mismatch":
+        detail = {
+            "recipe": "recipe_fingerprint",
+            "inputs": "effective_inputs",
+            "runtime": "runtime_base_contract",
+            "standard": "standard_substrate_contract",
         }
-    ]
-
-    assert identity.decode_image_metadata("issued", document) is None
-
-    oversized_environment = [{"Id": "sha256:issued", "Config": {"Env": ["X=" + "x" * 20_000]}}]
-    assert identity.decode_image_metadata("issued", oversized_environment) is None
+        assert detail.get(expected, expected) in result.detail
 
 
-def test_final_selection_fingerprint_survives_pruned_ancestry() -> None:
-    fingerprint = "f" * 64
-    old = _metadata(
-        "sha256:old",
-        image_id="sha256:old",
-        labels={
-            "io.booley.provenance.schema": "3",
-            "io.booley.artifact.role": "wheel-overlay",
-            "io.booley.build.recipe-fingerprint": "recipe-wheel",
-            "io.booley.sandbox.selection-fingerprint": fingerprint,
-        },
-    )
-    moved = _metadata(
-        "tag",
-        image_id="sha256:new",
-        labels=dict(old.labels),
-    )
+def test_final_selection_never_walks_parents():
+    calls = []
 
-    result = identity.compare_logical_selection(
-        "sha256:old", "tag", {"sha256:old": old}.get, {"tag": moved}.get
-    )
+    def inspect(reference):
+        calls.append(reference)
+        return _metadata(
+            reference,
+            image_id=reference,
+            labels={
+                identity.LABEL_SCHEMA: identity.PROVENANCE_SCHEMA,
+                identity.LABEL_ARTIFACT_ROLE: "wheel-overlay",
+                identity.LABEL_RECIPE_FINGERPRINT: "recipe",
+                identity.LABEL_PARENT_ARTIFACT_KIND: "local-image-id",
+                identity.LABEL_PARENT_ARTIFACT: "parent",
+            },
+        )
 
-    assert result.status is identity.Status.MATCH
-
-
-def test_equal_stamped_selection_fingerprints_ignore_image_ids() -> None:
-    fingerprint = "f" * 64
-    issued = _metadata(
-        "sha256:issued",
-        image_id="sha256:old",
-        labels={
-            "io.booley.provenance.schema": "3",
-            "io.booley.artifact.role": "wheel-overlay",
-            "io.booley.build.recipe-fingerprint": "recipe-wheel",
-            "io.booley.sandbox.selection-fingerprint": fingerprint,
-        },
-    )
-    configured = _metadata(
-        "booley-sandbox",
-        image_id="sha256:new",
-        labels=dict(issued.labels),
-    )
-
-    result = identity.compare_logical_selection(
-        "sha256:issued",
-        "booley-sandbox",
-        {"sha256:issued": issued}.get,
-        {"booley-sandbox": configured}.get,
-    )
-
-    assert result.status is identity.Status.MATCH
-
-
-def test_malformed_selection_fingerprint_is_unknown() -> None:
-    issued = _same_source_graph("a")
-    configured = _same_source_graph("b")
-    issued["sha256:a2"].labels["io.booley.sandbox.selection-fingerprint"] = "not-a-sha256"
-    configured["tag"].labels["io.booley.sandbox.selection-fingerprint"] = "f" * 64
-
-    result = identity.compare_logical_selection("sha256:a2", "tag", issued.get, configured.get)
-
+    result = identity.compare_logical_selection("issued", "configured", inspect)
+    assert calls == ["issued", "configured"]
     assert result.status is identity.Status.UNKNOWN
 
 
-def test_inherited_fingerprint_does_not_hide_derived_image_recipe() -> None:
-    fingerprint = "f" * 64
-    base = _node("sha256:base", "wheel-overlay", "sha256:parent")
-    base.labels["io.booley.sandbox.selection-fingerprint"] = fingerprint
-    derived = _node("sha256:derived", "wheel-overlay", "sha256:base")
-    derived.labels["io.booley.sandbox.selection-fingerprint"] = fingerprint
-    derived.labels["io.booley.build.recipe-fingerprint"] = "project-recipe"
-    graph = {"sha256:base": base, "configured": derived}
-
-    result = identity.compare_logical_selection("sha256:base", "configured", graph.get, graph.get)
-
-    assert result.status is identity.Status.MISMATCH
-    assert "recipe_fingerprint" in result.detail
-
-
-def test_mixed_schema_three_and_legacy_ancestry_is_unknown() -> None:
-    final = _node("sha256:final", "wheel-overlay", "sha256:legacy")
-    legacy = _metadata(
-        "sha256:legacy",
-        image_id="sha256:legacy",
-        labels={"io.booley.build.recipe-fingerprint": "legacy-recipe"},
-    )
-    graph = {"sha256:final": final, "tag": final, "sha256:legacy": legacy}
-
-    result = identity.compare_logical_selection("sha256:final", "tag", graph.get, graph.get)
-
-    assert result.status is identity.Status.UNKNOWN
-
-
-def test_registry_digest_parent_is_a_terminal_selection_fact() -> None:
-    left = _same_source_graph("a", registry_parent=True)
-    right = _same_source_graph("b", registry_parent=True)
-    right["tag"].labels["io.booley.build.parent-artifact"] = (
-        "example.test/booley@sha256:" + "d" * 64
-    )
-
-    same = identity.compare_logical_selection("sha256:a2", "tag", left.get, left.get)
-    changed = identity.compare_logical_selection("sha256:a2", "tag", left.get, right.get)
-
-    assert same.status is identity.Status.MATCH
-    assert changed.status is identity.Status.MISMATCH
-
-
-def test_schema_three_graph_ignores_changed_image_and_parent_ids() -> None:
-    left = _same_source_graph("a")
-    right = _same_source_graph("b")
-
-    result = identity.compare_logical_selection("sha256:a2", "tag", left.get, right.get)
-
-    assert result.status is identity.Status.MATCH
-
-
-def test_standard_and_riscv_graphs_mismatch() -> None:
-    standard = _same_source_graph("a")
-    riscv = _same_source_graph("b", riscv=True)
-
-    result = identity.compare_logical_selection("sha256:a2", "tag", standard.get, riscv.get)
-
-    assert result.status is identity.Status.MISMATCH
-    assert "sandbox_flavor" in result.detail
-
-
-def test_changed_project_inputs_mismatch() -> None:
-    old = _same_source_graph("a", project_inputs="requirements-old")
-    new = _same_source_graph("b", project_inputs="requirements-new")
-
-    result = identity.compare_logical_selection("sha256:a3", "tag", old.get, new.get)
-
-    assert result.status is identity.Status.MISMATCH
-    assert "effective_inputs" in result.detail
-
-
-def test_pruned_parent_is_unknown_not_stale() -> None:
-    pruned = _same_source_graph("a")
-    del pruned["sha256:a1"]
-
-    assert (
-        identity.compare_logical_selection("sha256:a2", "tag", pruned.get, pruned.get).status
-        is identity.Status.UNKNOWN
-    )
-
-
-def test_pruned_standard_and_riscv_ancestry_still_mismatch_by_flavor() -> None:
-    standard = _same_source_graph("a")
-    riscv = _same_source_graph("b", riscv=True)
-    del standard["sha256:a1"]
-    del riscv["sha256:br"]
-
-    result = identity.compare_logical_selection("sha256:a2", "tag", standard.get, riscv.get)
-
-    assert result.status is identity.Status.MISMATCH
-    assert "sandbox_flavor standard -> riscv" in result.detail
-
-
-def test_cyclic_ancestry_is_unknown_and_bounded() -> None:
-    graph = _same_source_graph("a")
-    graph["sha256:a1"] = _node("sha256:a1", "standard-substrate", "sha256:a2")
-    calls = 0
-
-    def inspect(reference: str):
-        nonlocal calls
-        calls += 1
-        return graph.get(reference)
-
-    result = identity.compare_logical_selection("sha256:a2", "tag", inspect, inspect)
-
-    assert result.status is identity.Status.UNKNOWN
-    assert calls <= 8
-
-
-def _node(image_id: str, role: str, parent: str | None, *, inputs: str = "same"):
-    labels = {
-        "io.booley.provenance.schema": "3",
-        "io.booley.artifact.role": role,
-        "io.booley.artifact.effective-inputs": inputs,
-        "io.booley.build.recipe-fingerprint": f"recipe-{role}",
-        "io.booley.runtime-base.contract": "runtime-contract",
-        "io.booley.standard-substrate.contract": "standard-contract",
-    }
-    if parent:
-        labels["io.booley.build.parent-artifact"] = parent
-        labels["io.booley.build.parent-artifact-kind"] = "local-image-id"
-    return _metadata(image_id, image_id=image_id, labels=labels)
-
-
-def _same_source_graph(
-    suffix: str,
-    *,
-    riscv: bool = False,
-    project_inputs: str | None = None,
-    registry_parent: bool = False,
-) -> dict[str, identity.ImageMetadata]:
-    root_id = f"sha256:{suffix}0"
-    standard_id = f"sha256:{suffix}1"
-    final_id = f"sha256:{suffix}{'3' if project_inputs else '2'}"
-    graph = {
-        root_id: _node(root_id, "runtime-base", None),
-        standard_id: _node(standard_id, "standard-substrate", root_id),
-    }
-    parent = standard_id
-    if riscv:
-        riscv_id = f"sha256:{suffix}r"
-        graph[riscv_id] = _node(riscv_id, "riscv-substrate", standard_id)
-        parent = riscv_id
-    if project_inputs:
-        project_id = f"sha256:{suffix}p"
-        graph[project_id] = _node(project_id, "project-substrate", parent, inputs=project_inputs)
-        parent = project_id
-    final = _node(final_id, "wheel-overlay", parent, inputs="wheel-content")
-    if riscv:
-        final.environment["BOOLEY_SANDBOX_FLAVOR"] = "riscv"
-    if registry_parent:
-        final.labels["io.booley.build.parent-artifact"] = "example.test/booley@sha256:" + "c" * 64
-        final.labels["io.booley.build.parent-artifact-kind"] = "registry-digest"
-    graph[final_id] = final
-    graph["tag"] = final
-    return graph
+def test_decode_large_valid_metadata():
+    values = {str(index): "x" * 20_000 for index in range(257)}
+    config = {"Labels": values, "Env": [f"{k}={v}" for k, v in values.items()]}
+    result = identity.decode_image_metadata("issued", [{"Id": "issued", "Config": config}])
+    assert result is not None
+    assert result.labels == result.environment == values
 
 
 def _layout_pair(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
     from booley.runtime import project_image
-    from booley.runtime.image_provenance import resolve_recipe_fingerprint
-    from booley.runtime.paths import docker_data_dir
 
     parent_id, child_id = "sha256:" + "a" * 64, "sha256:" + "b" * 64
     parent_labels = {
@@ -387,15 +276,13 @@ def _layout_pair(monkeypatch, tmp_path):
     from booley.core.booley_dir import reset_cache
 
     reset_cache()
-    recipe = resolve_recipe_fingerprint((docker_data_dir() / "Dockerfile.project-data-layout",))
-    reference, inputs = project_image.layout_identity(root, parent_id, recipe)
+    topology = project_image.layout_topology(root)
+    reference, inputs = topology.identity(parent_id)
     child_labels = dict(parent_labels)
     child_labels.update(
         {
             identity.LABEL_ARTIFACT_ROLE: "project-data-layout",
-            identity.LABEL_RECIPE_FINGERPRINT: resolve_recipe_fingerprint(
-                (docker_data_dir() / "Dockerfile.project-data-layout",)
-            ),
+            identity.LABEL_RECIPE_FINGERPRINT: topology.recipe_fingerprint,
             identity.LABEL_EFFECTIVE_INPUTS: inputs,
             identity.LABEL_PARENT_ARTIFACT: parent_id,
             project_image.LABEL_LAYOUT_REFERENCE: reference,
@@ -414,14 +301,14 @@ def _layout_pair(monkeypatch, tmp_path):
     return images, records, parent_labels, child_labels
 
 
+def _layout_status(images, tmp_path, **kwargs):
+    kwargs.setdefault("project_root", tmp_path / "project")
+    return identity.compare_logical_selection("issued", "configured", images.get, **kwargs).status
+
+
 def test_proven_layout_derivative_preserves_parent_logical_selection(monkeypatch, tmp_path):
     images, _records, _parent, _child = _layout_pair(monkeypatch, tmp_path)
-    assert (
-        identity.compare_logical_selection(
-            "issued", "configured", images.get, project_root=tmp_path / "project"
-        ).status
-        is identity.Status.MATCH
-    )
+    assert _layout_status(images, tmp_path) is identity.Status.MATCH
 
 
 def test_layout_does_not_hide_changed_parent_selection(monkeypatch, tmp_path):
@@ -430,12 +317,7 @@ def test_layout_does_not_hide_changed_parent_selection(monkeypatch, tmp_path):
     images["configured"] = _metadata(
         "configured", image_id="sha256:" + "2" * 64, labels=configured
     )
-    assert (
-        identity.compare_logical_selection(
-            "issued", "configured", images.get, project_root=tmp_path / "project"
-        ).status
-        is identity.Status.MISMATCH
-    )
+    assert _layout_status(images, tmp_path) is identity.Status.MISMATCH
 
 
 def test_layout_does_not_hide_forged_recipe_topology_or_parent_fingerprint(monkeypatch, tmp_path):
@@ -448,12 +330,7 @@ def test_layout_does_not_hide_forged_recipe_topology_or_parent_fingerprint(monke
     ):
         original = child_labels[label]
         child_labels[label] = "3" * 64
-        assert (
-            identity.compare_logical_selection(
-                "issued", "configured", images.get, project_root=tmp_path / "project"
-            ).status
-            is identity.Status.UNKNOWN
-        )
+        assert _layout_status(images, tmp_path) is identity.Status.UNKNOWN
         child_labels[label] = original
 
 
@@ -463,21 +340,12 @@ def test_layout_requires_actual_parent_configuration_and_layer_ancestry(monkeypa
     images, records, _parent, _child = _layout_pair(monkeypatch, tmp_path)
     child = records[images["issued"].image_id]
     child["Config"]["User"] = "root"
-    assert (
-        identity.compare_logical_selection(
-            "issued", "configured", images.get, project_root=tmp_path / "project"
-        ).status
-        is identity.Status.UNKNOWN
-    )
+    assert _layout_status(images, tmp_path) is identity.Status.UNKNOWN
     child["Config"]["User"] = "agent"
-    child["RootFS"]["Layers"] = ["foreign", "layout"]
-    project_image.verify_layout_parent_identity.cache_clear()
-    assert (
-        identity.compare_logical_selection(
-            "issued", "configured", images.get, project_root=tmp_path / "project"
-        ).status
-        is identity.Status.UNKNOWN
-    )
+    for layers in (["foreign", "layout"], ["base", "layout", "extra"]):
+        child["RootFS"]["Layers"] = layers
+        project_image.verify_layout_parent_identity.cache_clear()
+        assert _layout_status(images, tmp_path) is identity.Status.UNKNOWN
 
 
 def _layout_inspections(parent_id, child_id, parent_labels, child_labels):
@@ -511,8 +379,6 @@ def _layout_history(reference, _executable):
 
 def test_layout_requires_explicit_matching_project_and_topology(monkeypatch, tmp_path):
     from booley.runtime import project_image
-    from booley.runtime.image_provenance import resolve_recipe_fingerprint
-    from booley.runtime.paths import docker_data_dir
 
     images, _records, _parent, child_labels = _layout_pair(monkeypatch, tmp_path)
     assert (
@@ -521,43 +387,10 @@ def test_layout_requires_explicit_matching_project_and_topology(monkeypatch, tmp
     )
     foreign = tmp_path / "foreign"
     foreign.mkdir()
-    recipe = resolve_recipe_fingerprint((docker_data_dir() / "Dockerfile.project-data-layout",))
-    reference, inputs = project_image.layout_identity(foreign, "sha256:" + "a" * 64, recipe)
+    reference, inputs = project_image.layout_topology(foreign).identity("sha256:" + "a" * 64)
     child_labels[project_image.LABEL_LAYOUT_REFERENCE] = reference
     child_labels[identity.LABEL_EFFECTIVE_INPUTS] = inputs
-    assert (
-        identity.compare_logical_selection(
-            "issued", "configured", images.get, project_root=tmp_path / "project"
-        ).status
-        is identity.Status.UNKNOWN
-    )
-
-
-def test_layout_rejects_inherited_extra_layers_and_forged_recipe_history(monkeypatch, tmp_path):
-    from booley.runtime import project_image
-
-    images, records, _parent, _child = _layout_pair(monkeypatch, tmp_path)
-    record = records[images["issued"].image_id]
-    record["RootFS"]["Layers"].append("modified-payload")
-
-    def compare():
-        return identity.compare_logical_selection(
-            "issued", "configured", images.get, project_root=tmp_path / "project"
-        )
-
-    assert compare().status is identity.Status.UNKNOWN
-    record["RootFS"]["Layers"].pop()
-    project_image.verify_layout_parent_identity.cache_clear()
-    monkeypatch.setattr(
-        project_image,
-        "_image_history",
-        lambda ref, _exe: (
-            ["base build"]
-            if ref.endswith("a" * 64)
-            else ["RUN /bin/sh -c replace wheel", "base build"]
-        ),
-    )
-    assert compare().status is identity.Status.UNKNOWN
+    assert _layout_status(images, tmp_path) is identity.Status.UNKNOWN
 
 
 def test_layout_verification_uses_configured_docker_executable(monkeypatch, tmp_path):
@@ -630,32 +463,28 @@ def test_layout_inspection_preserves_exact_docker_record(monkeypatch: pytest.Mon
     assert commands[0][1]["timeout"] == 30
 
 
-def test_layout_inspection_transport_failure_is_controlled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.parametrize(
+    "operation,args,message",
+    [
+        ("inspect_layout_image", ("image",), "cannot inspect"),
+        ("_image_history", ("image", "docker"), "cannot verify Booley Directory layout"),
+        ("_probe_layout_directory", ("image",), "cannot verify Booley Directory layout"),
+    ],
+)
+@pytest.mark.parametrize(
+    "failure", [OSError("Docker unavailable"), subprocess.CalledProcessError(1, "docker")]
+)
+def test_layout_docker_transport_failure_is_controlled(
+    monkeypatch, operation, args, message, failure
+):
     from booley.runtime import project_image
 
     def unavailable(*_args, **_kwargs):
-        raise OSError("Docker unavailable")
+        raise failure
 
     monkeypatch.setattr(project_image.subprocess, "run", unavailable)
-    with pytest.raises(RuntimeError, match="cannot inspect"):
-        project_image.inspect_layout_image("candidate")
-
-
-@pytest.mark.parametrize("entry", ["unknown operation", "/bin/sh -c change payload"])
-def test_layout_history_rejects_untrusted_derivative_operations(
-    monkeypatch: pytest.MonkeyPatch, entry: str
-) -> None:
-    from booley.runtime import project_image
-
-    monkeypatch.setattr(
-        project_image,
-        "_image_history",
-        lambda image, _executable: ["base"] if image == "parent" else [entry, "base"],
-    )
-    with pytest.raises(RuntimeError, match="history"):
-        project_image._verify_layout_history("parent", "candidate", "docker")
+    with pytest.raises(RuntimeError, match=message):
+        getattr(project_image, operation)(*args)
 
 
 def test_layout_history_refuses_unbounded_docker_output(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -739,9 +568,16 @@ def test_layout_proof_refuses_a_failed_alias_directory_probe(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "parent,child", [([], ["extra"]), (["base"], ["base"]), (["base"], ["extra", "other"])]
+    "parent,child,message",
+    [
+        ([], ["extra"], "substituted parent"),
+        (["base"], ["base"], "substituted parent"),
+        (["base"], ["extra", "other"], "substituted parent"),
+        (["base"], ["unknown operation", "base"], "history"),
+        (["base"], ["/bin/sh -c change payload", "base"], "history"),
+    ],
 )
-def test_layout_history_refuses_substituted_parent_layers(monkeypatch, parent, child):
+def test_layout_history_refuses_untrusted_derivatives(monkeypatch, parent, child, message):
     from booley.runtime import project_image
 
     monkeypatch.setattr(
@@ -749,7 +585,7 @@ def test_layout_history_refuses_substituted_parent_layers(monkeypatch, parent, c
         "_image_history",
         lambda image, _executable: parent if image == "parent" else child,
     )
-    with pytest.raises(RuntimeError, match="build history has a substituted parent"):
+    with pytest.raises(RuntimeError, match=message):
         project_image._verify_layout_history("parent", "child", "docker")
 
 
@@ -765,3 +601,53 @@ def test_layout_history_requires_the_trusted_recipe(monkeypatch, tmp_path):
     monkeypatch.setattr(paths, "docker_data_dir", lambda: tmp_path)
     with pytest.raises(RuntimeError, match="trusted recipe is unavailable or malformed"):
         project_image._verify_layout_history(parent, child, "docker")
+
+
+@pytest.mark.parametrize(
+    "with_nodes,parent,expected",
+    [
+        (False, "", "1eda4eb81bcc607229beac648e80b5a07ce75779a82b3dda5d4991a67870979c"),
+        (
+            False,
+            "registry-parent",
+            "1eda4eb81bcc607229beac648e80b5a07ce75779a82b3dda5d4991a67870979c",
+        ),
+        (True, "", "514e2db26e807d1dec453d4eacbbd7029d4b256054209f271b7ce888a6c44d14"),
+        (
+            True,
+            "registry-parent",
+            "6b348a8dd84e4876bb11c5d60b4eebd4fc2153c8c7bd7804ae38121257e0e6b8",
+        ),
+    ],
+)
+def test_logical_selection_fingerprint_chain_golden(with_nodes, parent, expected):
+    nodes = [
+        ("runtime-base", "runtime-inputs", "runtime-recipe", "runtime-v1", ""),
+        ("standard-substrate", "standard-inputs", "standard-recipe", "runtime-v1", "standard-v1"),
+        ("wheel-overlay", "", "wheel-recipe", "runtime-v1", "standard-v1"),
+    ]
+    assert (
+        identity.logical_selection_fingerprint_for_chain(
+            "booley-sandbox", nodes if with_nodes else [], initial_parent_key=parent
+        )
+        == expected
+    )
+
+
+def test_layout_topology_accepts_symlinked_booley_dir_entry(tmp_path, monkeypatch) -> None:
+    """A linked entry is checkout-local, like a plain ``.booley``; #2159 owns its Sandbox mount."""
+    from tests.conftest import symlink_or_skip
+
+    from booley.core.booley_dir import reset_cache
+    from booley.runtime import project_image
+
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".git").mkdir()
+    data = tmp_path / "booley-data"
+    data.mkdir()
+    symlink_or_skip(root / ".booley", data)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+
+    assert project_image.layout_topology(root) is None

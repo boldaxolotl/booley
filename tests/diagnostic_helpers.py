@@ -11,7 +11,7 @@ from pathlib import Path
 
 from booley import __version__
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
-from booley.audit.doctor_waivers import warning
+from booley.audit.doctor_waivers import DoctorWarning, warning
 from booley.config.eda import parse_eda_config
 from booley.runtime import inspection
 
@@ -70,6 +70,12 @@ def _inspection_request(project, docker_exe):
     )
 
 
+def _require_doctor_warning(message: str) -> None:
+    """Reject plain-string warnings exactly as ``doctor._Reporter.warn_`` does."""
+    if not isinstance(message, DoctorWarning):
+        raise TypeError("Doctor warnings must carry a stable check ID via warning()")
+
+
 class _Rec:
     """Collects doctor check outcomes as (level, message) tuples.
 
@@ -77,7 +83,8 @@ class _Rec:
     optional fix hint. A stub that accepted fewer args than the real reporter is
     what let the ``warn_(msg, fix)`` TypeError reach a user's `doctor` run: the
     checks that pass fix hints to ``_warn`` had no host-side coverage, so the
-    crash only surfaced on a real cocotb project.
+    crash only surfaced on a real cocotb project. ``w`` also rejects plain-string
+    warnings like the reporter does (#2123).
     """
 
     def __init__(self) -> None:
@@ -88,6 +95,7 @@ class _Rec:
         self.events.append(("pass", m))
 
     def w(self, m: str, fix: str = "") -> None:
+        _require_doctor_warning(m)
         self.events.append(("warn", m))
 
     def n(self, m: str) -> None:
@@ -200,6 +208,7 @@ def _isolate_runtime_files(monkeypatch):
     monkeypatch.setenv("BOOLEY_DIR", "/booley-project")
     is_dir = Path.is_dir
     exists = Path.exists
+    lstat = Path.lstat
     hidden = {
         Path(name)
         for name in (
@@ -215,3 +224,13 @@ def _isolate_runtime_files(monkeypatch):
         Path, "is_dir", lambda p: True if p == Path("/booley-project") else is_dir(p)
     )
     monkeypatch.setattr(Path, "exists", lambda p: False if p in hidden else exists(p))
+
+    ssh_dirs = {Path("/root/.ssh"), Path("/home/agent/.ssh")}
+
+    def hidden_lstat(path, *args, **kwargs):
+        """Make the host's SSH directories look absent to the lstat-based SSH check."""
+        if path in ssh_dirs:
+            raise FileNotFoundError(path)
+        return lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", hidden_lstat)

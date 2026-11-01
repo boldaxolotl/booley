@@ -16,6 +16,7 @@ from booley.flows.plan import (
     plan_value_fingerprint,
     stable_unit_id,
 )
+from tests.conftest import symlink_or_skip
 
 
 def _unit(**overrides: object) -> WorkUnitPlan:
@@ -209,6 +210,24 @@ def test_path_outside_checkout_remains_absolute(tmp_path: Path) -> None:
     outside = tmp_path.parent / "outside.sv"
 
     assert normalize_plan_path(outside, tmp_path) == outside.as_posix()
+
+
+def test_plan_path_names_symlinked_booley_dir_lexically(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    data = tmp_path / "booley-data"
+    data.mkdir()
+    symlink_or_skip(root / ".booley", data)
+
+    assert normalize_plan_path(root / ".booley" / "runtime" / "run.log", root) == (
+        ".booley/runtime/run.log"
+    )
+    # A link below the entry is not re-spelled: it still names another place.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    symlink_or_skip(data / "linked", elsewhere)
+    below = root / ".booley" / "linked" / "x.log"
+    assert normalize_plan_path(below, root) == below.as_posix()
 
 
 def test_stable_unit_id_is_repeatable_and_scope_sensitive() -> None:

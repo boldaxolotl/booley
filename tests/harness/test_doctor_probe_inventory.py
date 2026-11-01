@@ -68,6 +68,8 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_custom_image_freshness",
             "_check_current_runtime_activity_hooks",
             "_check_current_runtime_dashboard_extension",
+            "_check_current_runtime_egress",
+            "_check_current_runtime_git_identity",
             "_check_current_runtime_web_isolation",
             "_check_derived_image_freshness",
             "_check_image_bakes_current_booley",
@@ -83,7 +85,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "inspect_retained_resources",
             "_check_devcontainer_excludes",
             "_check_interactive_logs_tracked",
-            "_check_wcp_server",
+            "_check_viewer_bridge",
             "_run_agent_credential_checks",
             "_run_mcp_probe",
         }
@@ -94,6 +96,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_agent_backend_health",
             "_check_custom_endpoints_and_criteria",
             "_check_git_state",
+            "_check_handle_map_size",
             "_check_project_gitignore",
             "_check_project_trackability",
             "_check_ticket_leftovers",
@@ -124,6 +127,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_upgrade_review",
             "_check_legacy_source_stashes",
             "_check_goal_presence",
+            "_check_worktree_booley_pairing",
             "_check_worktree_core_shadow_guard",
             "_check_worktree_prune_guard",
         }

@@ -23,18 +23,21 @@ from booley.runtime.job_slots import SlotCaps, SlotStore, SlotToken
 from booley.runtime.pid import DEAD, REUSED, RUNNING, ProcessIdentity, ProcessObservation
 
 # Each step touches the real slot store on disk, so input generation slows down
-# on a loaded host; that wall-clock health check would make the verdict depend on load.
+# on a loaded host; that wall-clock health check and Hypothesis's per-example deadline
+# (a 290 ms example flaked under the broad suite) would make the verdict depend on load.
 _LOAD_INDEPENDENT = (HealthCheck.too_slow,)
 PR_SETTINGS = settings(
     derandomize=True,
     max_examples=100,
     stateful_step_count=25,
+    deadline=None,
     suppress_health_check=_LOAD_INDEPENDENT,
 )
 EXPLORATORY_SETTINGS = settings(
     derandomize=False,
     max_examples=100,
     stateful_step_count=50,
+    deadline=None,
     suppress_health_check=_LOAD_INDEPENDENT,
 )
 

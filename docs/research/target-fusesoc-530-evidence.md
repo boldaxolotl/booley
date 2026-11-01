@@ -91,7 +91,8 @@ Scope cases cover literal/prefix/glob matching, new tags, exact and normalized
 wildcard cases, deletion policy and actual canonical script-path classification.
 Existing EDAM confinement, core structural/provenance, standalone-hook, Git
 staging, Flow and golden tests remain in the verification set. CI classification
-now retains exhaustive recovery selection for matcher-only changes.
+then retained exhaustive recovery selection for matcher-only changes; that
+selection was removed in `1460ad065` (see `.github/ci/README.md`).
 
 From the implementation worktree, with the existing test virtualenv on `PATH`:
 

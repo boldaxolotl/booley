@@ -14,7 +14,7 @@ from booley.core.boundary import BoundaryError
 from booley.criteria.state import DevelopmentState
 from booley.flows.base import BooleyFlow, BuiltinFlow, SubprocessResult
 from booley.flows.endpoint_cli import normalize_target_arg
-from booley.flows.flow_session import FlowSession
+from booley.flows.endpoint_state import EndpointState
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.invocation import BudgetPlan, resolve_timeout_ms
 from booley.flows.lint.flow import LintFlow
@@ -23,7 +23,6 @@ from booley.flows.request import FlowRequest
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.base import EXIT_ERROR
-from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import DuplicateTargetError
@@ -95,7 +94,7 @@ def test_duplicate_target_fails_before_start_event_or_admission(
         lambda *_args: pytest.fail("published start event for invalid Target selection"),
     )
     monkeypatch.setattr(
-        FlowSession,
+        EndpointState,
         "_acquire_job_slot",
         lambda _self: pytest.fail("acquired a slot for invalid Target selection"),
     )
@@ -123,75 +122,18 @@ def test_duplicate_target_fails_before_start_event_or_admission(
 
 
 @pytest.mark.parametrize(("flow_type", "_name", "_default_ms"), BUILTINS)
-def test_builtin_schema_exposes_one_canonical_timeout(
-    flow_type: type[BooleyFlow],
-    _name: str,
-    _default_ms: int,
+@pytest.mark.parametrize("option,expected", [("--timeout-ms", 2500), ("--timeout", 2500000)])
+def test_builtin_timeout_conversion(
+    flow_type: type[BooleyFlow], _name: str, _default_ms: int, option: str, expected: int
 ) -> None:
-    schema = flow_schema(flow_type())
-    properties = schema["properties"]
-
-    assert schema["additionalProperties"] is False
-    assert properties["timeout_ms"]["type"] == "integer"
-    assert properties["timeout_ms"]["minimum"] == 1
-    assert "timeout" not in properties
-    assert "_legacy_timeout_ms" not in properties
-    assert properties["dry_run"]["type"] == "boolean"
-
-
-@pytest.mark.parametrize(("flow_type", "name", "_default_ms"), BUILTINS)
-def test_builtin_schema_keeps_target_as_comma_separated_scalar(
-    flow_type: type[BuiltinFlow],
-    name: str,
-    _default_ms: int,
-) -> None:
-    schema = flow_schema(flow_type())
-    target = schema["properties"]["target"]
-
-    assert target["type"] == "string"
-    assert "items" not in target
-    assert "CLI flag may be repeated" in target["description"]
-    assert "target" not in schema.get("required", [])
-
-
-def test_fpga_schema_exposes_portable_profile_vocabulary() -> None:
-    properties = flow_schema(FpgaImplFlow())["properties"]
-
-    assert properties["ppa_profile"]["enum"] == ["compact", "balanced", "max_frequency"]
-    assert "synth" not in properties
-    assert "pnr" not in properties
-
-
-@pytest.mark.parametrize(("flow_type", "_name", "_default_ms"), BUILTINS)
-def test_builtin_parsers_accept_canonical_timeout(
-    flow_type: type[BooleyFlow],
-    _name: str,
-    _default_ms: int,
-) -> None:
-    args = flow_type().parse_args(["--target", "demo", "--timeout-ms", "2500"])
-
-    assert args.timeout_ms == 2500
-
-
-@pytest.mark.parametrize(("flow_type", "_name", "_default_ms"), BUILTINS)
-def test_human_timeout_is_converted_once(
-    flow_type: type[BooleyFlow],
-    _name: str,
-    _default_ms: int,
-) -> None:
-    args = flow_type().parse_args(["--target", "demo", "--timeout", "2500"])
-    assert args.timeout_ms == 2500000
+    args = flow_type().parse_args(["--target", "demo", option, "2500"])
+    assert args.timeout_ms == expected
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", "nan", "words"])
 def test_builtin_timeout_rejects_non_positive_or_non_integer_values(value: str) -> None:
     with pytest.raises(SystemExit):
         LintFlow().parse_args(["--target", "demo", "--timeout-ms", value])
-
-
-def test_builtin_timeout_spellings_conflict() -> None:
-    with pytest.raises(SystemExit):
-        LintFlow().parse_args(["--target", "demo", "--timeout-ms", "1000", "--timeout", "2000"])
 
 
 @pytest.mark.parametrize(("_flow_type", "name", "default_ms"), BUILTINS)
@@ -330,7 +272,7 @@ def test_cli_report_preserves_authored_repeated_target_argv(
         lambda: EndpointOutcome(detail={"targets": flow.args.target.split(",")}),
     )
 
-    with mock.patch.object(FlowSession, "admission", return_value=nullcontext(None)):
+    with mock.patch.object(EndpointState, "admission", return_value=nullcontext(None)):
         result = flow.execute_cli(argv)
 
     report = json.loads((report_dir / "lint.json").read_text())
@@ -521,7 +463,7 @@ def test_state_backed_simulation_coverage_verdict_reaches_stdout(
         ),
     )
 
-    with mock.patch.object(FlowSession, "admission", return_value=nullcontext(None)):
+    with mock.patch.object(EndpointState, "admission", return_value=nullcontext(None)):
         execution = flow.execute_cli(
             ["--target", "demo", "--coverage", "--work-dir", str(tmp_path)]
         )
@@ -551,12 +493,12 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
 
     with (
         mock.patch.object(
-            FlowSession,
+            EndpointState,
             "_acquire_job_slot",
             side_effect=AssertionError("dry-run acquired a heavy slot"),
         ),
         mock.patch.object(
-            FlowSession,
+            EndpointState,
             "_post_run",
             side_effect=AssertionError("dry-run entered normal persistence"),
         ),
@@ -640,12 +582,12 @@ def test_failed_builtin_dry_run_keeps_json_stdout_and_reason_stderr(
 
     with (
         mock.patch.object(
-            FlowSession,
+            EndpointState,
             "_acquire_job_slot",
             side_effect=AssertionError("dry-run acquired a heavy slot"),
         ),
         mock.patch.object(
-            FlowSession,
+            EndpointState,
             "_post_run",
             side_effect=AssertionError("dry-run entered normal persistence"),
         ),

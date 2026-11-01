@@ -5,6 +5,7 @@ import pytest
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.runtime.booley_dir import reset_cache
 from booley.targets.domain import UnknownTargetError
+from tests.conftest import symlink_or_skip
 
 
 def _write_core(tmp_path, name: str, target: str, source: str) -> None:
@@ -41,6 +42,28 @@ def test_campaign_fingerprint_tracks_tests_and_selected_core(tmp_path) -> None:
         ".booley/tests.toml",
         "design.core",
     ]
+
+
+def test_campaign_fingerprint_names_files_through_symlinked_booley_dir(tmp_path) -> None:
+    root = tmp_path / "project"
+    (root / "rtl").mkdir(parents=True)
+    (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
+    data = tmp_path / "booley-data"
+    (data / "cores").mkdir(parents=True)
+    (data / "tests.toml").write_text('[sim_unit]\ntests = ["smoke"]\n')
+    symlink_or_skip(root / ".booley", data)
+    reset_cache()
+    # A stealth core lives in the Booley Directory, whose target is outside the root.
+    (data / "cores" / "design.core").write_text(
+        "CAPI=2:\nname: ::design:0\n"
+        "filesets:\n  rtl: {files: [../../project/rtl/dut.sv]}\n"
+        "targets:\n  sim_unit: {filesets: [rtl], toplevel: dut}\n",
+        encoding="utf-8",
+    )
+
+    campaign = compute_source_fingerprint(root, target="sim_unit")["campaign"]
+
+    assert campaign["files"] == [".booley/cores/design.core", ".booley/tests.toml"]
 
 
 def test_campaign_fingerprint_tracks_transitive_core_changes(tmp_path) -> None:
@@ -121,6 +144,36 @@ def test_workload_fingerprint_tracks_pre_sim_program_not_its_arguments(tmp_path)
     workload = compute_source_fingerprint(tmp_path, target="sim")["workload"]
 
     assert workload["files"] == ["hooks/build.py", "rtl/dut.sv"]
+
+
+@pytest.mark.parametrize("linked", [False, True], ids=["plain", "linked"])
+def test_workload_fingerprint_tracks_pre_sim_program_under_booley_dir(tmp_path, linked) -> None:
+    """A Pre-Sim program behind a linked ``.booley`` entry stays in ``workload`` (#2250)."""
+    root = tmp_path / "project"
+    (root / "rtl").mkdir(parents=True)
+    (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
+    _write_core(root, "design", "sim", "rtl/dut.sv")
+    data = tmp_path / "booley-data" if linked else root / ".booley"
+    (data / "hooks").mkdir(parents=True)
+    (data / ".git").mkdir()
+    (data / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n')
+    (data / "booley.toml").write_text(
+        '[flows.sim]\npre_run_commands = ["bash .booley/hooks/x.sh"]\n'
+    )
+    hook = data / "hooks" / "x.sh"
+    hook.write_text("echo first\n")
+    if linked:
+        symlink_or_skip(root / ".booley", data, target_is_directory=True)
+    reset_cache()
+
+    first = compute_source_fingerprint(root, target="sim")["workload"]
+    hook.write_text("echo second\n")
+    edited = compute_source_fingerprint(root, target="sim")["workload"]
+
+    # The Versioned Booley Directory entry is a redirecting entry in both layouts.
+    assert first["files"] == [".booley", ".booley/hooks/x.sh", "rtl/dut.sv"]
+    assert edited["files"] == first["files"]
+    assert edited["digest"] != first["digest"]
 
 
 # Independently captured from origin/main 9da903961 using its original source,
