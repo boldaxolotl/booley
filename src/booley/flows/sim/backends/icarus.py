@@ -403,6 +403,30 @@ def _execute_icarus_run(
         heartbeat.stop()
 
 
+def _drop_unchanged(run: _IcarusRun, path: Path | None) -> Path | None:
+    """Drop a declared file whose stamp is unchanged since before vvp started."""
+    if path is None:
+        return None
+    stamp = run.declared_before.get(path.resolve())
+    return None if stamp is not None and stamp == trace_file_stamp(path) else path
+
+
+def _find_current_trace(
+    run: _IcarusRun, trace: TraceSession, trace_files: list[str]
+) -> Path | None:
+    """Return this run's trace: a discovered store or a freshly written declared file."""
+    trace.postprocess(run.run_cwd / _DEFAULT_VCD_NAME)
+    found = _drop_unchanged(run, trace.find())
+    if found is None and trace_files:
+        found = _drop_unchanged(
+            run,
+            adopt_declared_trace_files(
+                trace, trace_files, run.trace_roots, before=run.declared_before
+            ),
+        )
+    return found
+
+
 def _finalize_icarus_trace(
     run: _IcarusRun,
     proc,
@@ -410,22 +434,7 @@ def _finalize_icarus_trace(
 ) -> tuple[str, AdapterTraceResult | None]:
     if run.trace is None:
         return "", None
-
-    def _current(path: Path | None) -> Path | None:
-        """Drop a declared file whose stamp is unchanged since before vvp started."""
-        if path is None:
-            return None
-        stamp = run.declared_before.get(path.resolve())
-        return None if stamp is not None and stamp == trace_file_stamp(path) else path
-
-    run.trace.postprocess(run.run_cwd / _DEFAULT_VCD_NAME)
-    found = _current(run.trace.find())
-    if found is None and trace_files:
-        found = _current(
-            adopt_declared_trace_files(
-                run.trace, trace_files, run.trace_roots, before=run.declared_before
-            )
-        )
+    found = _find_current_trace(run, run.trace, trace_files)
     if found is not None:
         inspection = run.trace.inspect(found)
         if not inspection.usable:

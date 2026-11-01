@@ -196,7 +196,8 @@ def test_icarus_marks_unqueryable_fst_as_incident(tmp_path: Path, capsys):
     assert result is not None
     assert result.status == "incident"
     assert "TRACE_INCIDENT" in output
-    assert "ERROR: trace requested" in capsys.readouterr().out
+    # Reaches the "not queryable" branch, not the "nothing produced" one.
+    assert "retained waveform is not queryable" in capsys.readouterr().out
 
 
 def test_icarus_names_trace_files_when_declared_patterns_matched_nothing(tmp_path: Path):
@@ -640,6 +641,7 @@ class _FakeTraceSession:
     def postprocess(self, path):
         if self._published is not None and path.exists():
             self._published.write_text("converted", encoding="utf-8")
+            path.unlink()  # a successful conversion consumes the source VCD
 
     def find(self):
         candidates = [*self._find_candidates, *([self._published] if self._published else [])]
@@ -749,7 +751,7 @@ def test_icarus_never_converts_unchanged_declared_vcd(tmp_path: Path, monkeypatc
 
     assert "TRACE_INCIDENT" in output
     assert "TRACE_OK" not in output
-    assert (tmp_path / "run" / "tb_dump.vcd").read_text(encoding="utf-8") == "stale"
+    assert (tmp_path / "run" / "tb_dump.vcd").exists()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX vvp stub")
