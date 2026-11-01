@@ -1,6 +1,8 @@
 """Parent-side Simulation adapter composition contract."""
 
 import ast
+import dataclasses
+import importlib
 from pathlib import Path
 
 import pytest
@@ -94,6 +96,51 @@ def test_cocotb_adapter_receives_the_seed_as_its_own_option() -> None:
         )
     )
     assert "--seed" not in unseeded
+
+
+@pytest.mark.parametrize("adapter", ["icarus", "verilator", "cocotb"])
+def test_every_optional_field_renders_a_command_its_entry_point_accepts(adapter: str) -> None:
+    every_field = {
+        "build_dir": "build/sim",
+        "run_cwd": "assets",
+        "timeout_s": 12,
+        "work_dir": "attempt/evidence",
+        "eda_tool": "icarus",
+        "max_rundir_bytes": 2048,
+        "plusargs": ("test_id=2",),
+        "environment": (("K", "V"),),
+        "cocotb_seed": 7,
+        "artifact_group": "g",
+        "trace": True,
+        "trace_mode": "native_fst",
+        "trace_scope": "tb",
+        "trace_args": ("--trace={file}",),
+        "trace_files": ("dump.vcd",),
+        "runtime_inputs": ("firmware.hex",),
+        "pass_sentinels": ("PASS",),
+        "fail_sentinels": ("FAIL",),
+        "top": "tb",
+        "cocotb_module": "tests.counter",
+        "tests": ("test_a",),
+        "result_verbosity": "full",
+        "sim_time_grace_s": 1.5,
+        "adapter_result_path": "result.json",
+        "attempt_token": "token",
+        "target_identity": "target",
+    }
+    # A new field must be added above so this guard keeps covering every flag.
+    unrendered = {"adapter", "test_runs"}  # test_runs is structured; no writer renders it
+    assert (
+        set(every_field)
+        == {f.name for f in dataclasses.fields(PreparedSimulationWork)} - unrendered
+    )
+
+    argv = prepare_adapter_invocation(PreparedSimulationWork(adapter=adapter, **every_field))
+
+    entry_point = importlib.import_module(argv[2])
+    entry_point._parse_args(argv[3:])  # argparse exits 2 on a flag the entry point rejects
+    if adapter == "icarus":
+        assert "--trace" in argv
 
 
 def test_transport_identity_is_all_or_nothing() -> None:
