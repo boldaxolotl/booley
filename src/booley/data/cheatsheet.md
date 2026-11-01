@@ -72,6 +72,7 @@ Goal tools, `booley_targets`, and `booley_report`. While a Goal Record
 occupies the Project, calls without it are refused (only `booley_targets` may
 omit it), and Project-defined endpoints must declare `work_dir` to run.
 `booley_status`, `booley_poll`, `booley_cancel`, and `bwave` accept no `work_dir`.
+With several Jobs running, call `booley_poll` with no `run_id` and handle whichever of your Jobs finishes first; pass a `run_id` only to wait for one specific Job. Never wait for a Job with `sleep` loops or log tails.
 Resume saved proposal and Finish IDs rather than editing records. Protected Input changes block
 Finish until reverted. Open `done` review findings remain visible; Finish does not merge.
 Read Project-owned Goalsets, including `default.md`, from `goalsets/` in the

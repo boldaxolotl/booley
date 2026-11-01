@@ -36,8 +36,8 @@ def _sim_tool_definition() -> dict:
 def _call_sim_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arguments: dict):
     commands: list[list[str]] = []
 
-    async def run_child_now(name, cmd, _timeout, _jobs, *, context):
-        del context
+    async def run_child_now(name, cmd, _timeout, _jobs, *, context, caller=None):
+        del context, caller
         assert name == "sim" and cmd[0] == "python"
         commands.append(cmd)
         child = subprocess.run(

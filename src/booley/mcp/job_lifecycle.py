@@ -28,6 +28,7 @@ from booley.mcp.endpoint_process import (
     _run_subprocess,
     write_synthetic_endpoint_end,
 )
+from booley.mcp.job_ownership import Caller, owns
 from booley.mcp.job_results import (
     _KNOWN_JOB_ROOTS,
     JobRepository,
@@ -86,6 +87,15 @@ class JobPoll:
 
 
 @dataclass(frozen=True, slots=True)
+class OwnedPoll:
+    """An argument-free poll: the first finished Job, and what else the caller has in flight."""
+
+    finished: JobPoll | None
+    unread: tuple[jobrec.JobRecord, ...] = ()
+    running: tuple[jobrec.JobRecord, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class JobSubmission:
     """Submission outcome including whether it joined an existing live run."""
 
@@ -116,6 +126,13 @@ class JobLifecycle:
         # run_id -> (exit_code, stdout, stderr, timed_out) once finished.
         self._results: dict[str, tuple[int, str, str, bool]] = {}
         self._counter = 0
+        # Whole seconds, like record stamps: a Job ended in this second counts as new.
+        self._started_at = float(int(time.time()))
+        # Live records of the Jobs this server submitted (the supervising task mutates
+        # them, so they are current even when persistence is off) and the run_ids whose
+        # result the owner has read.
+        self._submitted: dict[str, jobrec.JobRecord] = {}
+        self._read: set[str] = set()
 
     def _record_root(self, run_id: str) -> Path | None:
         """Root for *run_id*'s record writes: pinned at start, else the container root."""
@@ -249,15 +266,18 @@ class JobLifecycle:
         timeout: int,
         *,
         context: CallContext,
+        owner: str | None = None,
     ) -> str:
         """Spawn *cmd* as a detached background job and return its run_id.
 
         Always spawns: admission (queue or run) is the child's own slot-store
         claim, not this server's decision. The record lives under the call
-        context's jobs root.
+        context's jobs root and names *owner*, the agent that started it.
         """
         run_id = context.binding.invocation_id if context.binding else self._next_run_id(name)
         rec = self._new_record(run_id, name, cmd, timeout)
+        rec.owner = owner
+        self._submitted[run_id] = rec
         self._stamp_context(rec, context)
         self._job_roots[run_id] = context.jobs_root
         _KNOWN_JOB_ROOTS[run_id] = context.jobs_root
@@ -493,12 +513,21 @@ class JobLifecycle:
         return JobResult(*self._result_parts(run_id))
 
     async def submit_and_wait(
-        self, name: str, cmd: list[str], timeout: int, *, context: CallContext, wait_seconds: float
+        self,
+        name: str,
+        cmd: list[str],
+        timeout: int,
+        *,
+        context: CallContext,
+        wait_seconds: float,
+        owner: str | None = None,
     ) -> JobSubmission:
         """Join identical live work or submit once, then wait within the inline budget."""
         attached = self._repository.find_attachable(name, cmd, context=context)
         run_id = (
-            attached if attached is not None else self.submit(name, cmd, timeout, context=context)
+            attached
+            if attached is not None
+            else self.submit(name, cmd, timeout, context=context, owner=owner)
         )
         return JobSubmission(await self.poll(run_id, wait_seconds), attached is not None)
 
@@ -519,6 +548,87 @@ class JobLifecycle:
             run_id, wait_seconds, self._repository, self._is_alive, disk_tick=disk_tick
         )
         return self._complete_poll(state)
+
+    def mark_read(self, run_id: str, caller: Caller) -> None:
+        """Record that the owner has read *run_id*'s final result; a non-owner's read does not.
+
+        The first read wins. The in-memory mark keeps a failed write from handing
+        the same Job back on every argument-free poll.
+        """
+        rec = self._submitted.get(run_id) or self._read_run(run_id)
+        if rec is None or not owns(rec, caller):
+            return
+        self._read.add(run_id)
+        if rec.read_at is None:
+            rec.read_at = utc_now_rfc3339()
+            jobrec.write_record(rec, root=self._write_root(rec))
+
+    def _owned_jobs(self, caller: Caller) -> list[tuple[jobrec.JobRecord, bool]]:
+        """The caller's Jobs on disk and in memory, each with whether it is still running."""
+        records = {
+            rec.run_id: rec
+            for root in self._repository.roots()
+            for rec in jobrec.list_records(root=root, skip_malformed=True)
+        }
+        records.update(self._submitted)
+        owned = []
+        for rec in records.values():
+            if not owns(rec, caller):
+                continue
+            task = self._tasks.get(rec.run_id)
+            running = (
+                not task.done() if task is not None else jobrec.is_active(rec, self._is_alive)
+            )
+            owned.append((rec, running))
+        return owned
+
+    def _is_unread(self, rec: jobrec.JobRecord) -> bool:
+        """Finished and not yet read by its owner.
+
+        Releases never stamped ``read_at``, and Interactive Mode keeps every Job
+        record in the Project tree, so a record without an owner only counts when
+        this server could still be the one to deliver it: still unrecorded as
+        finished, or ended since the server started.
+        """
+        if rec.read_at is not None or rec.run_id in self._read:
+            return False
+        if rec.owner is not None:
+            return True
+        ended = jobrec.parse_stamp(rec.ended_at)
+        return rec.status == jobrec.STATUS_RUNNING or (
+            ended is not None and ended >= self._started_at
+        )
+
+    async def poll_owned(
+        self, wait_seconds: float, caller: Caller, *, disk_tick: float = _DISK_POLL_TICK_SECONDS
+    ) -> OwnedPoll:
+        """Wait for the first of the caller's Jobs to finish; never blocks without a running Job.
+
+        A finished Job whose result the caller has not read is returned at once,
+        earliest first, with the other unread ones listed. Waiting never cancels a Job.
+        """
+        deadline = time.monotonic() + max(0.0, wait_seconds)
+        while True:
+            owned = self._owned_jobs(caller)
+            running = tuple(rec for rec, active in owned if active)
+            unread = sorted(
+                (rec for rec, active in owned if not active and self._is_unread(rec)),
+                key=lambda rec: (rec.ended_at or rec.started_at, rec.run_id),
+            )
+            if unread:
+                first = unread[0]
+                tracked = first.run_id in self._tasks
+                view = _poll_view(first.run_id, "finished", tracked, self._repository)
+                return OwnedPoll(self._complete_poll(view), tuple(unread[1:]), running)
+            remaining = deadline - time.monotonic()
+            if not running or remaining <= 0:
+                return OwnedPoll(None, (), running)
+            tasks = {self._tasks[rec.run_id] for rec in running if rec.run_id in self._tasks}
+            tick = min(disk_tick, remaining)
+            if tasks:
+                await asyncio.wait(tasks, timeout=tick, return_when=asyncio.FIRST_COMPLETED)
+            else:
+                await asyncio.sleep(tick)
 
     def _complete_poll(self, state: JobPoll) -> JobPoll:
         if state.status == "finished":

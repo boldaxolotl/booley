@@ -456,3 +456,29 @@ def test_malformed_routing_envelope_is_job_error(tmp_path, field, value):
         jobrec.read_record("bad-envelope", root)
     with pytest.raises(jobrec.JobRecordError, match=field):
         jobrec.strict_records(root)
+
+
+def test_owner_and_read_at_round_trip_and_legacy_load(tmp_path: Path) -> None:
+    rec = jobrec.JobRecord(
+        "run-1", "sim", "t", 60, owner="srv|codex:t1", read_at="2026-01-01T00:00:00Z"
+    )
+    jobrec.write_record(rec, root=tmp_path)
+
+    loaded = jobrec.read_record("run-1", tmp_path)
+    legacy = jobrec.JobRecord.from_dict(
+        {"run_id": "old", "endpoint": "sim", "started_at": "t", "timeout_s": 60}
+    )
+
+    assert loaded is not None
+    assert (loaded.owner, loaded.read_at) == ("srv|codex:t1", "2026-01-01T00:00:00Z")
+    assert (legacy.owner, legacy.read_at) == (None, None)
+
+
+def test_list_records_skips_malformed_envelope(tmp_path: Path) -> None:
+    jobrec.write_record(jobrec.JobRecord("good", "sim", "t", 60), root=tmp_path)
+    (tmp_path / "bad.json").write_text(
+        '{"run_id": "bad", "endpoint": "sim", "started_at": "t", "timeout_s": 60, "schema": 0}',
+        encoding="utf-8",
+    )
+
+    assert [rec.run_id for rec in jobrec.list_records(tmp_path, skip_malformed=True)] == ["good"]

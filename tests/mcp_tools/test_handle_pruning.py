@@ -271,7 +271,7 @@ def test_server_start_logs_pruning_failure_and_still_serves(tmp_path, monkeypatc
         "from_env",
         classmethod(lambda cls, **_: SimpleNamespace(sessions=None)),
     )
-    monkeypatch.setattr(server, "_build_server", lambda lifetime: (object(), []))
+    monkeypatch.setattr(server, "_build_server", lambda lifetime, **_: (object(), []))
     monkeypatch.setattr(server, "_streamable_http_app", lambda srv: object())
     monkeypatch.setattr(server, "SessionMaintenanceApp", lambda app, sessions: app)
     monkeypatch.setattr(uvicorn, "run", lambda *a, **k: served.append(True))

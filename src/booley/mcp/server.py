@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import itertools
 import json
 import logging
 import os
@@ -74,6 +75,7 @@ from booley.mcp import (
     endpoint_process,
     handle_pruning,
     job_lifecycle,
+    job_ownership,
     job_results,
 )
 from booley.mcp.application import (
@@ -96,7 +98,8 @@ from booley.mcp.goal_tools import (
     GOAL_TOOL_NAMES,
     dispatch_goal_tool,
 )
-from booley.mcp.job_lifecycle import JobLifecycle, JobPoll, JobResult, _poll_status
+from booley.mcp.job_lifecycle import JobLifecycle, JobPoll, JobResult, OwnedPoll, _poll_status
+from booley.mcp.job_ownership import Caller
 from booley.mcp.live_catalog import (
     LiveCatalog,
     custom_directory,
@@ -158,16 +161,7 @@ logging.basicConfig(
 # only via booley_report. They are lightweight on memory (Read/Grep/Glob +
 # API calls), so single-flight admission is stricter than they need, but the
 # poll affordance is exactly what was missing.
-_ASYNC_JOB_MCP_TOOLS = frozenset(
-    {
-        "sim",
-        "fpga",
-        "synth",
-        "reviewer",
-        "mutation_tester",
-        "coverage_analyst",
-    }
-)
+_ASYNC_JOB_MCP_TOOLS = job_ownership.ASYNC_JOB_ENDPOINTS
 
 # How long a submit (and each poll) blocks inline before handing back a run_id.
 # Must sit safely under the generic MCP client's ~60-90s call cap so the caller
@@ -714,6 +708,17 @@ def _prepend_health_block(content: object, block: TextContent) -> McpRawContent:
     return [block, *content]
 
 
+def _frame_content(content: McpToolContent, head: str, tail: str) -> McpToolContent:
+    """Surround a result with text blocks, keeping its structured content and error flag."""
+    payload = content.value if isinstance(content, McpDispatchResult) else content
+    payload = _prepend_health_block(payload, TextContent(type="text", text=head))
+    if tail:
+        blocks, structured = payload if isinstance(payload, tuple) else (payload, None)
+        blocks = [*blocks, TextContent(type="text", text=tail)]
+        payload = blocks if structured is None else (blocks, structured)
+    return replace(content, value=payload) if isinstance(content, McpDispatchResult) else payload
+
+
 def _dispatch_targets(arguments: dict[str, Any]) -> list[TextContent]:
     """Handle the synthetic targets-listing MCP tool in-process (no subprocess).
 
@@ -926,9 +931,9 @@ def _format_job_attached(name: str, run_id: str) -> str:
     return (
         f"{_job_phase(run_id)}: an identical '{name}' run is already in "
         f"flight — attached to it instead of starting a duplicate "
-        f"(run_id={run_id}). This is NOT the result. Call the "
-        f"'{catalog.POLL_MCP_TOOL_NAME}' MCP tool with run_id={run_id} and keep polling "
-        f"until it returns an EXIT_CODE."
+        f"(run_id={run_id}). This is NOT the result. It belongs to the agent that "
+        f"started it, so call the '{catalog.POLL_MCP_TOOL_NAME}' MCP tool with "
+        f"run_id={run_id} and keep polling until it returns an EXIT_CODE."
     )
 
 
@@ -943,20 +948,28 @@ def _format_job_running(name: str, run_id: str) -> str:
     return (
         f"{phase}: '{name}' {waiting} and is now "
         f"running in the background (run_id={run_id}). This is NOT the result "
-        f"— the run has not finished. Call the '{catalog.POLL_MCP_TOOL_NAME}' MCP tool with "
-        f"run_id={run_id} to keep waiting, and keep polling until it returns "
-        f"an EXIT_CODE. Pass/fail criteria are recorded only when the run "
-        f"actually completes, so do not conclude the step until then."
+        f"— the run has not finished. With several Jobs running, call "
+        f"'{catalog.POLL_MCP_TOOL_NAME}' with no run_id to get whichever of your Jobs "
+        f"finishes first; pass run_id={run_id} only to wait for this Job alone. Keep "
+        f"polling until you have its EXIT_CODE. Pass/fail criteria are recorded only "
+        f"when the run actually completes, so do not conclude the step until then."
     )
 
 
-def _format_job_running_poll(run_id: str) -> str:
-    """Message for a poll whose job is still running (or queued for a slot)."""
-    message = (
-        f"{_job_phase(run_id)}: job {run_id} is still in progress. Call "
-        f"'{catalog.POLL_MCP_TOOL_NAME}' again with the same run_id to keep waiting for "
-        f"the result."
+def _format_job_running_poll(run_id: str, owned: bool = True) -> str:
+    """Message for a poll whose job is still running (or queued for a slot).
+
+    *owned*: the polling agent started the Job, so an argument-free poll covers it.
+    """
+    advice = (
+        f"With several Jobs running, call '{catalog.POLL_MCP_TOOL_NAME}' with no run_id to "
+        f"handle whichever finishes first; pass run_id={run_id} again only to keep waiting "
+        f"for this one."
+        if owned
+        else f"Call '{catalog.POLL_MCP_TOOL_NAME}' with run_id={run_id} again to keep waiting; "
+        f"a poll with no run_id covers only Jobs you started."
     )
+    message = f"{_job_phase(run_id)}: job {run_id} is still in progress. {advice}"
     progress = _running_progress(run_id)
     if progress is None:
         return message
@@ -983,10 +996,11 @@ def _running_handoff_content(text: str, run_id: str) -> McpToolContent:
     return _with_structured_report([TextContent(type="text", text=text)], progress)
 
 
-def _running_poll_content(run_id: str) -> McpToolContent:
+def _running_poll_content(run_id: str, caller: Caller | None = None) -> McpToolContent:
     """Running poll card enriched with the latest durable matrix checkpoint."""
-    content = [TextContent(type="text", text=_format_job_running_poll(run_id))]
     rec = _job_record(run_id)
+    owned = caller is None or rec is None or job_ownership.owns(rec, caller)
+    content = [TextContent(type="text", text=_format_job_running_poll(run_id, owned))]
     return _goal_warning_result(
         _with_structured_report(content, _running_progress(run_id)),
         None if rec is None else job_results.job_binding(rec),
@@ -1098,32 +1112,87 @@ async def _poll_from_disk(
     return _render_job_poll(state, jobs)
 
 
-def _render_job_poll(state: JobPoll, jobs: _JobManager) -> McpToolContent:
+def _render_job_poll(
+    state: JobPoll, jobs: _JobManager, caller: Caller | None = None
+) -> McpToolContent:
     if state.status == "unknown":
         return _error_result(
             f"Unknown run_id {state.run_id!r}. It may belong to a different project "
             f"run, or the job record has been cleaned up."
         )
     if state.status == "finished":
-        return jobs.result_content(state.run_id, result=state.result)
-    return _running_poll_content(state.run_id)
+        content = jobs.result_content(state.run_id, result=state.result)
+        if caller is not None:
+            jobs.mark_read(state.run_id, caller)
+        return content
+    return _running_poll_content(state.run_id, caller)
 
 
-async def _dispatch_poll_impl(arguments: dict[str, Any], jobs: _JobManager) -> McpToolContent:
+def _target_label(argv: list[str]) -> str:
+    """The Targets a Job was started with, for listings; ``default`` when none were named."""
+    targets = [value for flag, value in itertools.pairwise(argv) if flag == "--target"] + [
+        arg.partition("=")[2] for arg in argv if arg.startswith("--target=")
+    ]
+    return ", ".join(targets) or "default"
+
+
+def _job_listing(outcome: OwnedPoll) -> str:
+    """Trailing block naming the caller's other Jobs; empty when there are none."""
+
+    def line(rec: jobrec.JobRecord, state: str) -> str:
+        return f"- {rec.run_id}: {rec.endpoint}, Target {_target_label(rec.argv)}, {state}"
+
+    sections = []
+    if outcome.unread:
+        lines = [line(rec, rec.status) for rec in outcome.unread]
+        sections.append("Also finished, not yet read:\n" + "\n".join(lines))
+    if outcome.running:
+        lines = [line(rec, job_results._phase_for_record(rec)) for rec in outcome.running]
+        sections.append("Still running:\n" + "\n".join(lines))
+    return "\n\n".join(sections)
+
+
+def _render_owned_poll(outcome: OwnedPoll, jobs: _JobManager, caller: Caller) -> McpToolContent:
+    """Render an argument-free poll: first finished result, nothing to wait for, or timeout."""
+    listing = _job_listing(outcome)
+    if outcome.finished is not None:
+        head = f"Result of job {outcome.finished.run_id}:"
+        return _frame_content(_render_job_poll(outcome.finished, jobs, caller), head, listing)
+    if not outcome.running:
+        text = (
+            "NOTHING TO WAIT FOR: no Job started by this agent is running, "
+            "and none has a result you have not read."
+        )
+    else:
+        text = (
+            f"RUNNING: none of your Jobs finished within the wait.\n\n{listing}\n\n"
+            f"Call '{catalog.POLL_MCP_TOOL_NAME}' with no run_id again to keep waiting."
+        )
+    return [TextContent(type="text", text=text)]
+
+
+async def _dispatch_poll_impl(
+    arguments: dict[str, Any], jobs: _JobManager, caller: Caller | None = None
+) -> McpToolContent:
     """Validate wire inputs and compose the lifecycle's bounded poll outcome."""
     raw = arguments.get("run_id")
     run_id = raw.strip() if isinstance(raw, str) else ""
+    wait_seconds = _requested_poll_wait_seconds(arguments)
     if not run_id:
-        return _error_result("Provide a 'run_id' (returned by an endpoint that reported RUNNING).")
+        caller = caller or Caller("", None)
+        outcome = await jobs.poll_owned(
+            wait_seconds, caller, disk_tick=job_lifecycle._DISK_POLL_TICK_SECONDS
+        )
+        return _render_owned_poll(outcome, jobs, caller)
     state = await _poll_status(
         run_id,
-        _requested_poll_wait_seconds(arguments),
+        wait_seconds,
         jobs.wait,
         _MCP_JOB_REPOSITORY,
         is_pid_alive,
         disk_tick=job_lifecycle._DISK_POLL_TICK_SECONDS,
     )
-    return _render_job_poll(state, jobs)
+    return _render_job_poll(state, jobs, caller)
 
 
 async def _dispatch_sleep(arguments: dict[str, Any]) -> list[TextContent]:
@@ -1248,15 +1317,21 @@ async def _dispatch_async_job(
     jobs: _JobManager,
     *,
     context: CallContext,
+    caller: Caller | None = None,
 ) -> McpToolContent:
     """Compose inline completion or a background handoff from the lifecycle."""
     try:
         submission = await jobs.submit_and_wait(
-            name, cmd, mcp_tool_timeout, context=context, wait_seconds=_job_inline_wait_seconds()
+            name,
+            cmd,
+            mcp_tool_timeout,
+            context=context,
+            wait_seconds=_job_inline_wait_seconds(),
+            owner=None if caller is None else caller.owner,
         )
         state = submission.poll
         if state.status != "running" or (submission.attached and not state.tracked):
-            return _render_job_poll(state, jobs)
+            return _render_job_poll(state, jobs, caller)
     except jobrec.JobRecordError as exc:
         return _error_result(str(exc))
     text = (
@@ -1394,6 +1469,7 @@ async def _dispatch_booley_mcp_tool(
     mcp_tool_call_counts: dict[str, int],
     jobs: _JobManager,
     request_context: McpRequestContext | None = None,
+    caller: Caller | None = None,
 ) -> McpToolContent:
     """Run a Booley Flow subprocess and return an MCP result.
 
@@ -1426,7 +1502,9 @@ async def _dispatch_booley_mcp_tool(
     logger.info("Dispatching %s (timeout=%ds): %s", name, mcp_tool_timeout, " ".join(cmd))
 
     if name in _ASYNC_JOB_MCP_TOOLS:
-        result = await _dispatch_async_job(name, cmd, mcp_tool_timeout, jobs, context=context)
+        result = await _dispatch_async_job(
+            name, cmd, mcp_tool_timeout, jobs, context=context, caller=caller
+        )
         return _goal_warning_result(result, context.binding, context.session_key)
 
     exit_code, stdout, stderr, _timed_out = await _run_inline_endpoint(
@@ -1672,6 +1750,7 @@ async def _dispatch_special_mcp_tool(
     jobs: _JobManager,
     status_mcp_tool_names: list[str],
     request_context: McpRequestContext | None = None,
+    caller: Caller | None = None,
 ) -> McpToolContent | McpInputRequired | None:
     """Route the fixed, always-nameable meta MCP tools (status/report/poll/cancel/sleep).
 
@@ -1703,7 +1782,7 @@ async def _dispatch_special_mcp_tool(
         visible, handler = entry
         return handler() if visible() else None
     if name == catalog.POLL_MCP_TOOL_NAME and catalog.utilities_visible(_exposure()):
-        return await _dispatch_poll(arguments, jobs)
+        return await _dispatch_poll(arguments, jobs, caller)
     if name == catalog._CANCEL_MCP_TOOL_NAME and catalog.utilities_visible(_exposure()):
         return await _dispatch_cancel(arguments, jobs)
     if name == catalog._SLEEP_MCP_TOOL_NAME and _exposure().debug:
@@ -1724,15 +1803,21 @@ async def _dispatch_application_tool(
     status_mcp_tool_names: list[str],
     mcp_tool_call_counts: dict[str, int],
     request_context: McpRequestContext | None = None,
+    server_identity: str | None = None,
 ) -> McpToolContent | McpInputRequired:
     """Dispatch one validated application call to its concrete endpoint."""
+    caller = (
+        None
+        if server_identity is None
+        else job_ownership.caller_for(server_identity, request_context)
+    )
     if name in GOAL_TOOL_NAMES and request_context is not None:
         special_result = await _dispatch_special_mcp_tool(
-            name, arguments, jobs, status_mcp_tool_names, request_context
+            name, arguments, jobs, status_mcp_tool_names, request_context, caller
         )
     else:
         special_result = await _dispatch_special_mcp_tool(
-            name, arguments, jobs, status_mcp_tool_names
+            name, arguments, jobs, status_mcp_tool_names, caller=caller
         )
     if special_result is not None:
         return special_result
@@ -1741,9 +1826,9 @@ async def _dispatch_application_tool(
         return _prepend_changed_health_alert(bwave_result)
     args = (name, arguments, dict(mcp_tool_def), mcp_tool_call_counts, jobs)
     result = (
-        await _dispatch_booley_mcp_tool(*args)
+        await _dispatch_booley_mcp_tool(*args, caller=caller)
         if request_context is None
-        else await _dispatch_booley_mcp_tool(*args, request_context=request_context)
+        else await _dispatch_booley_mcp_tool(*args, request_context=request_context, caller=caller)
     )
     return _prepend_changed_health_alert(result)
 
@@ -1754,8 +1839,14 @@ def _build_mcp_application(
     lifetime: _McpLifetime,
     *,
     live: bool = False,
+    server_identity: str | None = None,
 ) -> McpApplication:
-    """Build the SDK-independent catalog and endpoint dispatcher."""
+    """Build the SDK-independent catalog and endpoint dispatcher.
+
+    *server_identity* names the owner of Jobs this server starts (see
+    :mod:`booley.mcp.job_ownership`); a client-spawned server derives its own.
+    """
+    server_identity = server_identity or job_ownership.server_identity()
     from booley.targets.flow_names import canonical
 
     mcp_tool_index = _build_mcp_tool_index(mcp_tools)
@@ -1775,6 +1866,7 @@ def _build_mcp_application(
             jobs=jobs,
             status_mcp_tool_names=status_mcp_tool_names,
             mcp_tool_call_counts=mcp_tool_call_counts,
+            server_identity=server_identity,
         )
 
     async def request_dispatch(
@@ -1790,6 +1882,7 @@ def _build_mcp_application(
             jobs=jobs,
             status_mcp_tool_names=status_mcp_tool_names,
             mcp_tool_call_counts=mcp_tool_call_counts,
+            server_identity=server_identity,
             request_context=context,
         )
 
@@ -1833,6 +1926,7 @@ def _build_mcp_application(
 
 def _build_mcp_catalog(
     lifetime: _McpLifetime,
+    server_identity: str | None = None,
 ) -> tuple[McpApplication, list[dict[str, Any]], list[str]]:
     """Discover and validate the catalog shared by live startup and probes."""
     from booley.core.checkout_role import SourceCheckoutProjectError
@@ -1843,7 +1937,9 @@ def _build_mcp_catalog(
     initial_fingerprint = project_fingerprint(directory)
     mcp_tools, discovery_errors = _discover_booley_mcp_tools()
     logger.info("Discovered %d Booley MCP tools", len(mcp_tools))
-    application = _build_mcp_application(mcp_tools, discovery_errors, lifetime, live=True)
+    application = _build_mcp_application(
+        mcp_tools, discovery_errors, lifetime, live=True, server_identity=server_identity
+    )
     if (
         application.live_catalog is not None
         and application.live_catalog.fingerprint() != initial_fingerprint
@@ -2092,11 +2188,13 @@ def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Se
 
 def _build_server(
     lifetime: _McpLifetime | None = None,
+    *,
+    server_identity: str | None = None,
 ) -> tuple[Server, list[dict[str, Any]]]:
     """Build the MCP v2 adapter around the Booley MCP application."""
     _reconcile_orphaned_jobs()
     lifetime = lifetime or _McpLifetime(None, None)
-    application, mcp_tools, discovery_errors = _build_mcp_catalog(lifetime)
+    application, mcp_tools, discovery_errors = _build_mcp_catalog(lifetime, server_identity)
     if discovery_errors:
         _log_discovery_errors(mcp_tools, discovery_errors)
     server = _build_sdk_server(application, lifetime)
@@ -2240,7 +2338,10 @@ def _run_http(port: int) -> None:
     _maybe_configure_interactive_logs_dir()
     _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env(self_exit=False)
-    server, _ = _build_server(lifetime)
+    server, _ = _build_server(
+        lifetime,
+        server_identity=job_ownership.http_server_identity(_interactive_session_id(), port),
+    )
     handle_pruning.prune_at_start()
     app = _streamable_http_app(server)
     app = SessionMaintenanceApp(app, lifetime.sessions)
@@ -2341,9 +2442,11 @@ def _goal_warning_result(
     )
 
 
-async def _dispatch_poll(arguments: dict[str, Any], jobs: _JobManager) -> McpToolContent:
+async def _dispatch_poll(
+    arguments: dict[str, Any], jobs: _JobManager, caller: Caller | None = None
+) -> McpToolContent:
     try:
-        return await _dispatch_poll_impl(arguments, jobs)
+        return await _dispatch_poll_impl(arguments, jobs, caller)
     except jobrec.JobRecordError as exc:
         return _error_result(str(exc))
 

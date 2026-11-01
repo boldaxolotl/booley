@@ -108,6 +108,16 @@ Help, validation-only, dry-run and quiet calls create no transcript.
 Shell calls, including the Developer Agent's, print this progress to stderr
 even without a terminal. Pass `--quiet` for clean captured output.
 
+### Background Jobs
+
+When a Flow or Specialist started through an MCP tool outlives the inline wait,
+it keeps running as a background Job and the call returns a `run_id`. With
+several Jobs running, call `booley_poll` with no `run_id`: it returns the
+result of whichever Job you started finishes first and says which others are
+still running, or that there is nothing to wait for. Pass a `run_id` to wait for
+one specific Job. Jobs started by another agent session or by a nested
+Specialist are not included.
+
 ### Choosing Targets
 
 For sim, lint, synth, and fpga on CLI and MCP, omitting `--target` selects
