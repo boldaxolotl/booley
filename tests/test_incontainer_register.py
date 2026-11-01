@@ -1782,3 +1782,13 @@ def test_main_reports_refused_registration_but_still_runs_the_hook(
     assert raised.value.code == 1
     assert doctor_runs == [1]
     assert "registration refused" in capsys.readouterr().err
+
+
+def test_codex_publish_refuses_invalid_text_by_default(tmp_path):
+    """Writers outside the permission path (trust, gateway, MCP) rely on this check."""
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir()
+    path.write_text('model="existing"\n')
+    with pytest.raises(ValueError, match=re.escape(str(path))):
+        reg._publish_codex_config(path, "notice=true\n")
+    assert path.read_text() == 'model="existing"\n'

@@ -385,8 +385,13 @@ def _read_codex_config(path: Path) -> str:
         return stream.read()
 
 
-def _publish_codex_config(path: Path, content: str) -> None:
-    """Publish validated TOML atomically, preserving existing permission bits."""
+def _publish_codex_config(path: Path, content: str, *, validated: bool = False) -> None:
+    """Publish TOML atomically, preserving existing permission bits.
+
+    Validates *content* first unless the caller already did (``validated``).
+    """
+    if not validated:
+        _codex_data(content, path=path)
     path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
@@ -740,7 +745,8 @@ def _apply_codex_permission_mode(
         existing, updated = prepared
     if updated == existing:
         return "current"
-    _publish_codex_config(path, updated)
+    # Prepared from a validated document; registration's text also passed _codex_data.
+    _publish_codex_config(path, updated, validated=True)
     return "written"
 
 
@@ -1413,7 +1419,7 @@ def register(app: str, *, home: Path | None = None, trust_paths: Sequence[str] =
         combined = _prepare_codex_mcp(permissions, path)
         changed = mcp_only != existing
         if changed:
-            _publish_codex_config(path, mcp_only)
+            _publish_codex_config(path, mcp_only, validated=True)
         linked = deploy_skills(app, home)
         host_linked = deploy_host_skills(app, home)
         cred = apply_stored_credential(app, home)
