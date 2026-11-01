@@ -1523,6 +1523,9 @@ class DashboardApp(App[None]):
         return detail
 
     def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
+        # A highlight queued before shutdown can arrive after the table is gone.
+        if not self.query(DataTable):
+            return
         self.navigation = replace(self.navigation, selected=self._selected_key())
         self._render_detail()
         self._update_footer()
@@ -1546,6 +1549,8 @@ class DashboardApp(App[None]):
             )
 
     def on_data_table_row_selected(self, _event: DataTable.RowSelected) -> None:
+        if not self.query(DataTable):  # Same shutdown race as the highlight handler.
+            return
         self._open_selected()
 
     def _enter_target(self) -> Navigation | None:
