@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from tests.python_command_support import python_path_entry
 
 from booley.dev_support.demo_contract_codec import load_contract
 from booley.goals.translate import translate_goals
@@ -198,7 +199,7 @@ def test_release_summary_is_written_only_after_valid_readiness(
         cwd=ROOT,
         env={
             **os.environ,
-            "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}",
+            "PATH": f"{python_path_entry(tmp_path / 'python-shim')}{os.pathsep}{os.environ['PATH']}",
             "RUNNER_TEMP": str(tmp_path),
             "GITHUB_SHA": "candidate-sha",
             "IMAGE_DIGEST": "sha256:image",
