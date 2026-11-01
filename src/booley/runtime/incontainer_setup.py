@@ -671,6 +671,22 @@ def _codex_document(path: Path):
     return existing, document
 
 
+def _set_codex_root_keys(document, values: dict) -> None:
+    """Update root keys in place; insert missing ones first, in order.
+
+    Appending would land a new key after a trailing comment that introduces
+    the next table, detaching that comment from its table.
+    """
+    position = 0
+    prepend = bool(document.body)  # an empty document has nothing to insert before
+    for key, value in values.items():
+        if key in document or not prepend:
+            document[key] = value
+        else:
+            document._insert_at(position, key, value)
+            position += 1
+
+
 def _prepare_codex_permissions(existing, document):
     """Edit owned permissions with the document library; preserve unrelated trivia."""
     editor = _codex_editor()
@@ -684,8 +700,7 @@ def _prepare_codex_permissions(existing, document):
         and document.get("notice", {}).get("hide_full_access_warning") is True
     ):
         return existing
-    for key, value in desired.items():
-        document[key] = value
+    _set_codex_root_keys(document, desired)
     if "notice" not in document:
         document["notice"] = editor.table()
     notice = document["notice"]

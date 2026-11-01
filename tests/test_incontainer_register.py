@@ -1270,7 +1270,12 @@ def _assert_codex_permission_parse_count(tmp_path, monkeypatch, operation):
             counting.setattr(editor, "parse", counted(editor.parse))
             prepare = Mock(wraps=reg._prepare_codex_permissions)
             counting.setattr(reg, "_prepare_codex_permissions", prepare)
-        for name in ("upsert_codex", "_prepare_codex_mcp"):
+        for name in (
+            "upsert_codex",
+            "_prepare_codex_mcp",
+            "_apply_codex_trust",
+            "_apply_codex_gateway",
+        ):
             if hasattr(reg, name):
                 counting.setattr(reg, name, counted(getattr(reg, name), legacy=True))
         for name in ("deploy_skills", "deploy_host_skills"):
