@@ -862,10 +862,46 @@ class TestDevcontainerSpecStaleness:
             for lvl, m in rec.events
         )
 
-    def test_spec_without_hdl_highlight_is_a_note(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        ("bundled", "gallery_entry", "label"),
+        [
+            pytest.param(
+                "/usr/local/libexec/booley/veriloghdl-1.29.0.vsix",
+                "mshr-h.veriloghdl",
+                "veriloghdl-1.29.0.vsix",
+                id="mshr-h.veriloghdl",
+            ),
+            pytest.param(
+                "/usr/local/libexec/booley/live-server-0.4.20.vsix",
+                "ms-vscode.live-server",
+                "live-server-0.4.20.vsix",
+                id="ms-vscode.live-server",
+            ),
+        ],
+    )
+    def test_gallery_hdl_or_live_preview_spec_warns_as_drift(
+        self, tmp_path, monkeypatch, bundled, gallery_entry, label
+    ):
+        # An egress-locked Sandbox cannot install a gallery ID, so a spec that
+        # lists one is drift Doctor must send to a Sandbox refresh.
+        from booley.runtime import devcontainer as dc
+
+        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        vscode = spec["customizations"]["vscode"]
+        vscode["extensions"] = [
+            e for e in vscode["extensions"] if e not in (bundled, gallery_entry)
+        ] + [gallery_entry]
+        dc.write_devcontainer(tmp_path, spec)
+        rec = self._run(tmp_path, monkeypatch)
+        assert rec.fails() == []
+        warns = [m for lvl, m in rec.events if lvl == "warn"]
+        assert len(warns) == 1, rec.events
+        assert label in warns[0] and "--seed" in warns[0]
+
+    def test_spec_without_hdl_highlight_warns(self, tmp_path, monkeypatch):
         # A spec seeded before the SystemVerilog highlighting extension landed
-        # renders RTL as plain text in attached windows; extensions are
-        # spec-delivered (never image-baked), so only a re-seed fixes it.
+        # renders RTL as plain text in attached windows; the extension is
+        # installed from the spec, so only a re-seed fixes it.
         from booley.runtime import devcontainer as dc
         from booley.runtime import vaporview
 
@@ -880,7 +916,10 @@ class TestDevcontainerSpecStaleness:
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch)
         assert rec.fails() == []
-        assert any(lvl == "note" and "highlighting" in m for lvl, m in rec.events)
+        assert any(
+            lvl == "warn" and "highlighting" in m and dc.HDL_VSIX in m and "--seed" in m
+            for lvl, m in rec.events
+        )
 
     def test_each_retired_vscode_entry_warns(self, tmp_path, monkeypatch):
         # Specs written by older Booley installed the agent and Tcl extensions
@@ -943,11 +982,10 @@ class TestDevcontainerSpecStaleness:
         assert not any(lvl == "warn" for lvl, _ in rec.events)
 
     def test_spec_without_live_preview_warns(self, tmp_path, monkeypatch):
-        # Live Preview is spec-delivered, so a project seeded before it landed
-        # cannot render review HTML in its attached container window.
-
+        # Without the bundled Live Preview VSIX in the spec, the attached
+        # container window cannot render review HTML.
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-        spec["customizations"]["vscode"]["extensions"].remove("ms-vscode.live-server")
+        spec["customizations"]["vscode"]["extensions"].remove(dc.LIVE_PREVIEW_VSIX)
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch)
         assert rec.fails() == []

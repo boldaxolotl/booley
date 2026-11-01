@@ -269,6 +269,69 @@ RUN echo ">>> Bundling VaporView ${VAPORVIEW_VERSION} VSIX..." \
         /usr/local/share/booley/licenses/vaporview/SOURCE.txt \
     && rm -f /tmp/vaporview.vsix
 
+# Verilog-HDL and Live Preview (pinned MIT VSIXs). Like VaporView above, they
+# install by file path from the generated devcontainer spec, so an egress-locked
+# local Sandbox needs no extension gallery and VS Code pins the install. Each
+# VERILOGHDL_VERSION / LIVE_PREVIEW_VERSION must equal the version in the
+# matching booley.runtime.devcontainer VSIX path (tests enforce the lockstep).
+# Both are MIT: the build fails unless the shipped LICENSE.txt says so, and the
+# license, third-party notices and a source pointer ship beside the image.
+ARG VERILOGHDL_VERSION=1.29.0
+ARG VERILOGHDL_SHA256=fd52004fd9e70c6e7627387e8f4134dfc3528e82c25d9495452bc659739ebae6
+ARG VERILOGHDL_SOURCE_TAG=v1.29.0
+ARG VERILOGHDL_SOURCE_COMMIT=53484f7c5bc6313cf648955d050dbffcd3fe6855
+RUN echo ">>> Bundling Verilog-HDL ${VERILOGHDL_VERSION} VSIX..." \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://open-vsx.org/api/mshr-h/veriloghdl/${VERILOGHDL_VERSION}/file/mshr-h.veriloghdl-${VERILOGHDL_VERSION}.vsix" \
+    -o /tmp/veriloghdl.vsix \
+    && echo "${VERILOGHDL_SHA256}  /tmp/veriloghdl.vsix" | sha256sum -c - \
+    && install -d -m 0755 /usr/local/libexec/booley /usr/local/share/booley/licenses/veriloghdl \
+    && unzip -p /tmp/veriloghdl.vsix extension/LICENSE.txt \
+        > /usr/local/share/booley/licenses/veriloghdl/LICENSE.txt \
+    && unzip -p /tmp/veriloghdl.vsix extension/THIRD_PARTY_NOTICES.md \
+        > /usr/local/share/booley/licenses/veriloghdl/THIRD_PARTY_NOTICES.md \
+    && grep -q "MIT License" /usr/local/share/booley/licenses/veriloghdl/LICENSE.txt \
+    && grep -q "Permission is hereby granted, free of charge" /usr/local/share/booley/licenses/veriloghdl/LICENSE.txt \
+    && install -m 0644 /tmp/veriloghdl.vsix "/usr/local/libexec/booley/veriloghdl-${VERILOGHDL_VERSION}.vsix" \
+    && printf '%s\n' \
+        "Verilog-HDL ${VERILOGHDL_VERSION} (mshr-h.veriloghdl), MIT, see LICENSE.txt and THIRD_PARTY_NOTICES.md." \
+        "Redistributed unmodified as /usr/local/libexec/booley/veriloghdl-${VERILOGHDL_VERSION}.vsix" \
+        "(Open VSX build, sha256 ${VERILOGHDL_SHA256})." \
+        "Source: https://github.com/mshr-h/vscode-verilog-hdl-support" \
+        "  tag ${VERILOGHDL_SOURCE_TAG}, commit ${VERILOGHDL_SOURCE_COMMIT}" \
+        > /usr/local/share/booley/licenses/veriloghdl/SOURCE.txt \
+    && chmod 0644 /usr/local/share/booley/licenses/veriloghdl/LICENSE.txt \
+        /usr/local/share/booley/licenses/veriloghdl/THIRD_PARTY_NOTICES.md \
+        /usr/local/share/booley/licenses/veriloghdl/SOURCE.txt \
+    && rm -f /tmp/veriloghdl.vsix
+
+ARG LIVE_PREVIEW_VERSION=0.4.20
+ARG LIVE_PREVIEW_SHA256=672ff5bbed08a3d2387a63837c0087ba95108db1ca3f4656837cace48884a133
+ARG LIVE_PREVIEW_SOURCE_TAG=v0.4.20
+ARG LIVE_PREVIEW_SOURCE_COMMIT=5b3ce20cdd17ca462825606863a1b95f368695fc
+RUN echo ">>> Bundling Live Preview ${LIVE_PREVIEW_VERSION} VSIX..." \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://open-vsx.org/api/ms-vscode/live-server/${LIVE_PREVIEW_VERSION}/file/ms-vscode.live-server-${LIVE_PREVIEW_VERSION}.vsix" \
+    -o /tmp/live-server.vsix \
+    && echo "${LIVE_PREVIEW_SHA256}  /tmp/live-server.vsix" | sha256sum -c - \
+    && install -d -m 0755 /usr/local/libexec/booley /usr/local/share/booley/licenses/live-server \
+    && unzip -p /tmp/live-server.vsix extension/LICENSE.txt \
+        > /usr/local/share/booley/licenses/live-server/LICENSE.txt \
+    && unzip -p /tmp/live-server.vsix extension/out/extension.js.LICENSE.txt \
+        > /usr/local/share/booley/licenses/live-server/extension.js.LICENSE.txt \
+    && grep -q "MIT License" /usr/local/share/booley/licenses/live-server/LICENSE.txt \
+    && grep -q "Permission is hereby granted, free of charge" /usr/local/share/booley/licenses/live-server/LICENSE.txt \
+    && install -m 0644 /tmp/live-server.vsix "/usr/local/libexec/booley/live-server-${LIVE_PREVIEW_VERSION}.vsix" \
+    && printf '%s\n' \
+        "Live Preview ${LIVE_PREVIEW_VERSION} (ms-vscode.live-server), MIT, see LICENSE.txt and extension.js.LICENSE.txt." \
+        "Redistributed unmodified as /usr/local/libexec/booley/live-server-${LIVE_PREVIEW_VERSION}.vsix" \
+        "(Open VSX build, sha256 ${LIVE_PREVIEW_SHA256})." \
+        "Source: https://github.com/microsoft/vscode-livepreview" \
+        "  tag ${LIVE_PREVIEW_SOURCE_TAG}, commit ${LIVE_PREVIEW_SOURCE_COMMIT}" \
+        > /usr/local/share/booley/licenses/live-server/SOURCE.txt \
+    && chmod 0644 /usr/local/share/booley/licenses/live-server/LICENSE.txt \
+        /usr/local/share/booley/licenses/live-server/extension.js.LICENSE.txt \
+        /usr/local/share/booley/licenses/live-server/SOURCE.txt \
+    && rm -f /tmp/live-server.vsix
+
 # Node.js 24 LTS + agent CLIs. Download exact publisher artifacts and verify
 # them before execution; neither a mutable setup script nor semver ranges are
 # allowed in the release image.

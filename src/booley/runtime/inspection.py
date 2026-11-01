@@ -308,10 +308,12 @@ def _viewer_extensions_current(
         )
         return False
     if not dc.spec_installs_hdl_highlight(spec):
-        report.note(
-            "devcontainer.json predates the Verilog/SystemVerilog "
-            "highlighting extension: RTL renders as plain text in attached "
-            "VS Code windows; " + request.remedy
+        _spec_warning(
+            request,
+            report,
+            "devcontainer.json's Verilog/SystemVerilog highlighting extension "
+            f"entry is missing or is not exactly the image-bundled {dc.HDL_VSIX}: "
+            "RTL renders as plain text in attached VS Code windows",
         )
         return False
     return True
@@ -339,7 +341,8 @@ def _preview_terminal_current(
         _spec_warning(
             request,
             report,
-            "devcontainer.json lacks the collision-safe Live Preview setup: "
+            "devcontainer.json lacks the collision-safe Live Preview setup (the "
+            f"extension entry must be exactly the image-bundled {dc.LIVE_PREVIEW_VSIX}): "
             "rendered review HTML may open as a blank preview",
         )
         return False

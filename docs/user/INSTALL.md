@@ -15,7 +15,7 @@ supported. You need:
 - [Git 2.37.2+](https://git-scm.com/downloads)
 - [Docker](https://www.docker.com/), with about **4 GB** free for the image
   (**6 GB** with the RISC-V toolchain) plus room for build artifacts
-- [VS Code](https://code.visualstudio.com/)
+- [VS Code](https://code.visualstudio.com/) 1.109 or newer
 - An agent CLI on the host PATH with credentials configured for Project Setup:
   [Claude Code](https://code.claude.com/docs/en/setup) (`claude`, the default)
   or [Codex](https://developers.openai.com/codex/cli) (`codex`)
