@@ -121,7 +121,6 @@ def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
     cmd += [f"--pass-sentinel={value}" for value in work.pass_sentinels]
     cmd += [f"--fail-sentinel={value}" for value in work.fail_sentinels]
     if work.trace:
-        cmd += [f"--trace-arg={value}" for value in work.trace_args]
         cmd += [f"--trace-file={value}" for value in work.trace_files]
     cmd += [f"--runtime-input={value}" for value in work.runtime_inputs]
     cmd += work_transport_arguments(work)
