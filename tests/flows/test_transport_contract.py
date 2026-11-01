@@ -363,11 +363,11 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
     import asyncio
     import os
     import shutil
-    import sys
     from unittest.mock import Mock
 
     from booley.mcp import catalog, server
     from tests.flows.lint.test_flow import _LINT_CORE_TEXT
+    from tests.python_command_support import python_path_entry
 
     if os.name != "posix" or shutil.which("make") is None:
         pytest.skip("fake Verilator executable requires POSIX and make")
@@ -383,7 +383,9 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
     verilator.chmod(0o755)
     monkeypatch.setenv(
         "PATH",
-        os.pathsep.join((str(binaries), str(Path(sys.executable).parent), os.environ["PATH"])),
+        os.pathsep.join(
+            (str(binaries), python_path_entry(runtime / "python-shim"), os.environ["PATH"])
+        ),
     )
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[2] / "src"))
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")

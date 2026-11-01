@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +11,7 @@ import pytest
 from booley.flows.lint.flow import LintFlow
 from booley.mcp import server as mcp_server
 from booley.runtime.endpoint_execution import EXIT_ERROR
+from tests.python_command_support import python_path_entry
 
 
 @pytest.mark.asyncio
@@ -30,7 +30,7 @@ async def test_cli_and_mcp_adapters_return_equivalent_structured_outcomes(
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
     monkeypatch.setenv(
         "PATH",
-        os.pathsep.join((str(Path(sys.executable).parent), os.environ["PATH"])),
+        os.pathsep.join((python_path_entry(tmp_path / "python-shim"), os.environ["PATH"])),
     )
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[3] / "src"))
     monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
