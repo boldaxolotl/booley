@@ -751,7 +751,7 @@ def test_icarus_never_converts_unchanged_declared_vcd(tmp_path: Path, monkeypatc
 
     assert "TRACE_INCIDENT" in output
     assert "TRACE_OK" not in output
-    assert (tmp_path / "run" / "tb_dump.vcd").exists()
+    assert (tmp_path / "run" / "tb_dump.vcd").read_text(encoding="utf-8") == "stale"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX vvp stub")

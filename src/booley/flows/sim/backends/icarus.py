@@ -414,7 +414,7 @@ def _drop_unchanged(run: _IcarusRun, path: Path | None) -> Path | None:
 def _find_current_trace(
     run: _IcarusRun, trace: TraceSession, trace_files: list[str]
 ) -> Path | None:
-    """Return this run's trace: a discovered store or a freshly written declared file."""
+    """Return this run's trace candidate (store or raw VCD), minus unchanged declared files."""
     trace.postprocess(run.run_cwd / _DEFAULT_VCD_NAME)
     found = _drop_unchanged(run, trace.find())
     if found is None and trace_files:
