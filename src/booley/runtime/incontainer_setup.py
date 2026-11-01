@@ -39,6 +39,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Sequence
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal, NamedTuple
 
@@ -340,19 +341,23 @@ def codex_section() -> str:
     )
 
 
+def _validate_codex_shape(parsed):
+    for table in ("features", "notice"):
+        if table in parsed and not isinstance(parsed[table], dict):
+            raise ValueError(f"{table} must be a table")
+    _require_project_tables(parsed)
+    if "suppress_unstable_features_warning" in parsed and not isinstance(
+        parsed["suppress_unstable_features_warning"], bool
+    ):
+        raise ValueError("suppress_unstable_features_warning must be a boolean")
+
+
 def _codex_data(existing: str, *, path: Path | None = None) -> dict:
     """Validate interactive config before any registration mutation."""
     parser = _codex_toml_parser()
     try:
         parsed = parser.loads(existing)
-        for table in ("features", "notice"):
-            if table in parsed and not isinstance(parsed[table], dict):
-                raise ValueError(f"{table} must be a table")
-        _require_project_tables(parsed)
-        if "suppress_unstable_features_warning" in parsed and not isinstance(
-            parsed["suppress_unstable_features_warning"], bool
-        ):
-            raise ValueError("suppress_unstable_features_warning must be a boolean")
+        _validate_codex_shape(parsed)
     except ValueError as exc:
         if path is None:
             raise
@@ -380,9 +385,13 @@ def _read_codex_config(path: Path) -> str:
         return stream.read()
 
 
-def _publish_codex_config(path: Path, content: str) -> None:
-    """Publish validated TOML atomically, preserving existing permission bits."""
-    _codex_data(content, path=path)
+def _publish_codex_config(path: Path, content: str, *, validated: bool = False) -> None:
+    """Publish TOML atomically, preserving existing permission bits.
+
+    Validates *content* first unless the caller already did (``validated``).
+    """
+    if not validated:
+        _codex_data(content, path=path)
     path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
@@ -593,12 +602,11 @@ def _upsert_codex_modern_mcp_feature(existing: str) -> str:
     return updated if updated is not None else "features.mcp_2026_07_28 = true\n" + existing
 
 
-def upsert_codex(path: Path) -> bool:
-    """Migrate owned MCP settings and default warning preference without rewriting the settings file."""
-    existing = _read_codex_config(path)
+def _prepare_codex_mcp(existing: str, path: Path) -> str:
+    """Prepare the legacy MCP migration before publishing or applying credentials."""
     parsed = _codex_data(existing, path=path)
     if _codex_entry_is_current(existing):
-        return False
+        return existing
     updated = existing
     if "suppress_unstable_features_warning" not in parsed:
         updated = "suppress_unstable_features_warning = true\n" + updated
@@ -611,6 +619,15 @@ def upsert_codex(path: Path) -> bool:
         updated += sep + codex_section()
     if not _codex_entry_is_current(updated, path=path):
         raise ValueError(f"Codex migration did not produce current settings: {path}")
+    return updated
+
+
+def upsert_codex(path: Path) -> bool:
+    """Migrate owned MCP settings and default warning preference without redumping."""
+    existing = _read_codex_config(path)
+    updated = _prepare_codex_mcp(existing, path)
+    if updated == existing:
+        return False
     _publish_codex_config(path, updated)
     return True
 
@@ -626,48 +643,110 @@ def _upsert_codex_root_setting(existing: str, key: str, value: str) -> str:
     return f"{key} = {value}\n" + existing
 
 
-def _upsert_codex_full_access_notice(existing: str) -> str:
-    """Acknowledge Codex's one-time full-access warning in existing TOML."""
-    updated = _upsert_existing_codex_table_setting(
-        existing,
-        table=("notice",),
-        key="hide_full_access_warning",
-        value="true",
-    )
-    return (
-        updated
-        if updated is not None
-        else _upsert_codex_root_setting(existing, "notice.hide_full_access_warning", "true")
-    )
+@lru_cache(maxsize=1)
+def _codex_editor():
+    """Resolve the editor's TOML1.1 parsing and mutation capability."""
+    try:
+        import tomlkit
+
+        probe = tomlkit.parse("probe={\n # retained\n enabled=false,\n}\n")
+        probe["probe"]["enabled"] = True
+        if probe.unwrap() != {"probe": {"enabled": True}} or "# retained" not in probe.as_string():
+            raise ValueError("Codex editor capability probe returned an unexpected value")
+    except Exception as exc:  # Installation failures only; user input is parsed below.
+        raise RuntimeError(
+            "Incompatible Booley installation: Codex config requires tomlkit>=0.15.2 with "
+            "TOML1.1; reinstall dependencies or rebuild the compatible base"
+        ) from exc
+    return tomlkit
 
 
-def _apply_codex_permission_mode(home: Path | None = None) -> str:
-    """Pin Codex to its container-trusted, provider-web-disabled mode."""
-    path = codex_config_path(home)
+def _codex_document(path: Path):
+    """Read and validate the permission document once, before registration effects."""
+    _codex_toml_parser()  # Preserve the existing dependency diagnostic's precedence.
+    editor = _codex_editor()
     existing = _read_codex_config(path)
-    data = _codex_data(existing, path=path)
-    notice = data.get("notice", {})
-    if (
-        data.get("approval_policy") == "never"
-        and data.get("sandbox_mode") == "danger-full-access"
-        and data.get("web_search") == "disabled"
-        and isinstance(notice, dict)
-        and notice.get("hide_full_access_warning") is True
-    ):
-        return "current"
-
-    updated = _upsert_codex_root_setting(existing, "approval_policy", '"never"')
-    updated = _upsert_codex_root_setting(updated, "sandbox_mode", '"danger-full-access"')
-    updated = _upsert_codex_root_setting(updated, "web_search", '"disabled"')
-    updated = _upsert_codex_full_access_notice(updated)
-    if (
-        _codex_data(updated, path=path).get("notice", {}).get("hide_full_access_warning")
-        is not True
-    ):
+    try:
+        document = editor.parse(existing)
+        _validate_codex_shape(document.unwrap())
+    except (ValueError, editor.exceptions.TOMLKitError) as exc:
         raise ValueError(
-            f"Cannot apply Codex full-access notice to {path}; repair this file and retry"
-        )
-    _publish_codex_config(path, updated)
+            f"Invalid Codex config {path}: {exc}; repair this file and retry"
+        ) from exc
+    return existing, document
+
+
+def _set_codex_root_keys(document, values: dict) -> None:
+    """Update root keys in place; insert missing ones first, in order.
+
+    Appending would land a new key after a trailing comment that introduces
+    the next table, detaching that comment from its table.
+    """
+    position = 0
+    prepend = bool(document.body)  # an empty document has nothing to insert before
+    for key, value in values.items():
+        if key in document or not prepend:
+            document[key] = value
+        else:
+            document._insert_at(position, key, value)
+            position += 1
+
+
+def _prepare_codex_permissions(existing, document):
+    """Edit owned permissions with the document library; preserve unrelated trivia."""
+    editor = _codex_editor()
+    desired = {
+        "approval_policy": "never",
+        "sandbox_mode": "danger-full-access",
+        "web_search": "disabled",
+    }
+    if (
+        all(document.get(key) == value for key, value in desired.items())
+        and document.get("notice", {}).get("hide_full_access_warning") is True
+    ):
+        return existing
+    _set_codex_root_keys(document, desired)
+    if "notice" not in document:
+        document["notice"] = editor.table()
+    notice = document["notice"]
+    key = "hide_full_access_warning"
+    if key in notice:
+        notice[key] = True
+    else:
+        value = editor.item(True)
+        if isinstance(notice, editor.items.InlineTable):
+            value.trivia.indent = " "
+            value.trivia.trail = ""
+            body = type(notice.value)(True)
+            body.append(editor.key(key), value)
+            if notice:
+                body.append(None, editor.ws(","))
+            for old_key, old_value in notice.value.body:
+                body.append(old_key, old_value)
+            document["notice"] = editor.items.InlineTable(body, notice.trivia)
+        elif isinstance(notice, editor.container.OutOfOrderTableProxy):
+            notice[key] = True
+        elif notice.value.body:
+            notice.value._insert_at(0, editor.key(key), value)
+        else:
+            notice[key] = value
+    return document.as_string()
+
+
+def _apply_codex_permission_mode(
+    home: Path | None = None, *, prepared: tuple[str, str] | None = None
+) -> str:
+    """Publish standalone permissions or the registration preflight's prepared output."""
+    path = codex_config_path(home)
+    if prepared is None:
+        existing, document = _codex_document(path)
+        updated = _prepare_codex_permissions(existing, document)
+    else:
+        existing, updated = prepared
+    if updated == existing:
+        return "current"
+    # Prepared from a validated document; registration's text also passed _codex_data.
+    _publish_codex_config(path, updated, validated=True)
     return "written"
 
 
@@ -1333,11 +1412,18 @@ def register(app: str, *, home: Path | None = None, trust_paths: Sequence[str] =
             f"cred:{cred} perm:{perm} first-run:{first}"
         )
     if app == "codex":
-        changed = upsert_codex(codex_config_path(home))
+        path = codex_config_path(home)
+        existing, document = _codex_document(path)
+        permissions = _prepare_codex_permissions(existing, document)
+        mcp_only = _prepare_codex_mcp(existing, path)
+        combined = _prepare_codex_mcp(permissions, path)
+        changed = mcp_only != existing
+        if changed:
+            _publish_codex_config(path, mcp_only, validated=True)
         linked = deploy_skills(app, home)
         host_linked = deploy_host_skills(app, home)
         cred = apply_stored_credential(app, home)
-        perm = _apply_codex_permission_mode(home)
+        perm = _apply_codex_permission_mode(home, prepared=(mcp_only, combined))
         first = _apply_codex_trust(home, trust_paths)
         gateway = _apply_codex_gateway(home)
         mcp = "written" if changed else "current"
