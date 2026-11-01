@@ -67,11 +67,14 @@ from booley.flows.sim.backends.shared import (
     BOOLEY_DUMP_VCD_NAME,
     RunLogProgress,
     RunTermination,
+    TraceFileSnapshot,
     adopt_declared_trace_files,
     append_child_cpu_marker,
     child_cpu_snapshot,
     find_icarus_image,
     format_idle_note,
+    snapshot_declared_trace_files,
+    trace_file_stamp,
 )
 from booley.flows.sim.result import (
     extract_vrfc_warnings,
@@ -94,6 +97,17 @@ class _IcarusRun:
     image: Path
     command: list[str]
     trace: TraceSession | None
+    # Declared trace files (and their stamps) that existed before vvp started.
+    declared_before: TraceFileSnapshot
+
+    @property
+    def trace_roots(self) -> list[Path]:
+        return _trace_roots(self.run_cwd, self.work_dir, self.build_dir)
+
+
+def _trace_roots(run_cwd: Path, work_dir: Path, build_dir: Path) -> list[Path]:
+    """Directories searched for a testbench-declared trace file."""
+    return [run_cwd, work_dir, build_dir]
 
 
 def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
@@ -335,6 +349,7 @@ def _prepare_icarus_run(
     plusargs: list[str],
     vcd: bool,
     trace_scope: str | None,
+    trace_files: list[str],
 ) -> _IcarusRun | str:
     build = Path(build_dir).resolve()
     run = Path(run_cwd).resolve() if run_cwd is not None else build
@@ -349,7 +364,13 @@ def _prepare_icarus_run(
     trace = _new_trace_session(work, trace_scope) if vcd else None
     if trace is not None:
         trace.reset_for_run((run / _DEFAULT_VCD_NAME,))
-    return _IcarusRun(build, run, work, image, command, trace)
+    # One snapshot per root: a stale copy that an earlier root's match would
+    # shadow in a first-match search must still be recognised as stale.
+    declared_before: TraceFileSnapshot = {}
+    if trace is not None:
+        for root in _trace_roots(run, work, build):
+            declared_before.update(snapshot_declared_trace_files(trace_files, [root]))
+    return _IcarusRun(build, run, work, image, command, trace, declared_before)
 
 
 def _execute_icarus_run(
@@ -382,6 +403,30 @@ def _execute_icarus_run(
         heartbeat.stop()
 
 
+def _drop_unchanged(run: _IcarusRun, path: Path | None) -> Path | None:
+    """Drop a declared file whose stamp is unchanged since before vvp started."""
+    if path is None:
+        return None
+    stamp = run.declared_before.get(path.resolve())
+    return None if stamp is not None and stamp == trace_file_stamp(path) else path
+
+
+def _find_current_trace(
+    run: _IcarusRun, trace: TraceSession, trace_files: list[str]
+) -> Path | None:
+    """Return this run's trace candidate (store or raw VCD), minus unchanged declared files."""
+    trace.postprocess(run.run_cwd / _DEFAULT_VCD_NAME)
+    found = _drop_unchanged(run, trace.find())
+    if found is None and trace_files:
+        found = _drop_unchanged(
+            run,
+            adopt_declared_trace_files(
+                trace, trace_files, run.trace_roots, before=run.declared_before
+            ),
+        )
+    return found
+
+
 def _finalize_icarus_trace(
     run: _IcarusRun,
     proc,
@@ -389,11 +434,7 @@ def _finalize_icarus_trace(
 ) -> tuple[str, AdapterTraceResult | None]:
     if run.trace is None:
         return "", None
-    run.trace.postprocess(run.run_cwd / _DEFAULT_VCD_NAME)
-    found = run.trace.find()
-    if found is None and trace_files:
-        roots = [run.run_cwd, run.work_dir, run.build_dir]
-        found = adopt_declared_trace_files(run.trace, trace_files, roots)
+    found = _find_current_trace(run, run.trace, trace_files)
     if found is not None:
         inspection = run.trace.inspect(found)
         if not inspection.usable:
@@ -469,6 +510,7 @@ def run_icarus_image(
     transport: AdapterTransportIdentity | None = None,
 ) -> str:
     """Run an edalize-built vvp image once and return its captured output."""
+    declared = list(trace_files or [])
     run = _prepare_icarus_run(
         build_dir,
         run_cwd,
@@ -476,6 +518,7 @@ def run_icarus_image(
         list(plusargs or []),
         vcd,
         trace_scope,
+        declared,
     )
     if isinstance(run, str):
         return _icarus_setup_failure(run, transport)
@@ -489,7 +532,7 @@ def run_icarus_image(
         fail_sentinels=fail_sentinels,
         termination=termination,
     )
-    trace_output, trace_result = _finalize_icarus_trace(run, proc, list(trace_files or []))
+    trace_output, trace_result = _finalize_icarus_trace(run, proc, declared)
     output += trace_output
     _publish_adapter_result(
         transport,
