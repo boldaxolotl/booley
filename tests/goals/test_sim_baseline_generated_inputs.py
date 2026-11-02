@@ -32,7 +32,7 @@ import os
 from pathlib import Path
 
 root = Path(os.environ["BOOLEY_WORKTREE"])
-(root / "fw.hex").write_text((root / "fw.src").read_text().upper())
+(root / "fw.hex").write_bytes((root / "fw.src").read_bytes().upper())
 """
 
 
