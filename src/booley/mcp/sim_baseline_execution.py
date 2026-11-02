@@ -53,6 +53,7 @@ from booley.goals.sim_baseline_store import (
 )
 from booley.goals.test_run_evidence import freshness_stamp
 from booley.goals.test_run_freezing import TargetPlans
+from booley.mcp.baseline_preparation import HOOK_PROOF, file_digest, run_post_setup_hook
 from booley.mcp.synth_baseline_execution import classify_synth, measure_synth, synth_job_class
 from booley.runtime import job_slots
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
@@ -66,6 +67,8 @@ from booley.runtime.process_group import (
 )
 
 SIM_KEY = "sim_pass_baseline"
+#: Proof label for unversioned configuration that matches its Goal-entry capture.
+ENTRY_PROOF = "entry-snapshot"
 # Digest of the canonical empty file list, for declaration-only fingerprint categories.
 EMPTY_CATEGORY_DIGEST = hashlib.sha256(b"[]").hexdigest()
 Execute = Callable[[Path, str, tuple[TestRun, ...], Path], dict[str, Any]]
@@ -147,6 +150,7 @@ def prove_base_contents(
     if GoalCheckout(root).head_sha() != record.base_sha:
         raise ValueError("baseline checkout is not at the Goal base commit")
     captured = require_dict(request["inputs"]["files"], field="entry input files")
+    hook = require_dict(request["post_setup"], field="baseline post-setup outputs")
     projections: dict[Path, Any] = {}
     proof: dict[str, str] = {}
     for name in _dependent_files(fingerprint, key):
@@ -164,17 +168,11 @@ def prove_base_contents(
         projection = projections[repository]
         if tracked_matches_pin(repository, pin, path.resolve(), projection=projection):
             proof[str(name)] = pin
-        elif (
-            str(name) in captured
-            and captured[str(name)] is not None
-            and path.read_bytes().hex() == captured[str(name)]
-        ):
-            # Only unversioned configuration can use the independently captured entry bytes.
-            if os.fsencode(path.resolve().relative_to(repository).as_posix()) in projection.rows:
-                raise ValueError(f"versioned baseline dependency differs from base: {name}")
-            proof[str(name)] = "entry-snapshot"
         else:
-            raise ValueError(f"baseline dependency differs from base or is unavailable: {name}")
+            versioned = (
+                os.fsencode(path.resolve().relative_to(repository).as_posix()) in projection.rows
+            )
+            proof[str(name)] = _unversioned_proof(str(name), path, versioned, captured, hook)
     _check_captured_inputs(root, request)
     return {
         "base_sha": record.base_sha,
@@ -183,6 +181,23 @@ def prove_base_contents(
         "contents": contents_stamp(fingerprint, key),
         "dependencies": proof,
     }
+
+
+def _unversioned_proof(
+    name: str, path: Path, versioned: bool, captured: Mapping[str, Any], hook: Mapping[str, Any]
+) -> str:
+    """Prove a dependency Git does not pin: entry configuration bytes or base hook output."""
+    if captured.get(name) is not None and path.read_bytes().hex() == captured[name]:
+        # Only unversioned configuration can use the independently captured entry bytes.
+        if versioned:
+            raise ValueError(f"versioned baseline dependency differs from base: {name}")
+        return ENTRY_PROOF
+    generated = require_dict(hook["files"], field="baseline post-setup files")
+    if name in generated and generated[name] == file_digest(path):
+        # Untracked at base and written by the entry hook from base sources.
+        return HOOK_PROOF
+    cause = f" ({hook['error']})" if hook["error"] else ""
+    raise ValueError(f"baseline dependency differs from base or is unavailable: {name}{cause}")
 
 
 def _dependent_files(fingerprint: Mapping[str, Any], key: str) -> set[str]:
@@ -354,6 +369,11 @@ def _run_baseline_locked(
         request["scratch_parent"] = str(checkout.parent)
         request["owned_paired_checkout"] = (
             str(resolve_checkout_booley_dir(checkout)) if record.paired_project_base_sha else None
+        )
+        # Ownership is published before the hook, so an interrupted hook's checkout is reaped.
+        write_document(path, request)
+        request["post_setup"] = run_post_setup_hook(
+            checkout, slug=record.id, timeout_s=_remaining_seconds(path.parent)
         )
         write_document(path, request)
         units = tuple(family.parse_unit(row) for row in request["identity"]["runs"])
