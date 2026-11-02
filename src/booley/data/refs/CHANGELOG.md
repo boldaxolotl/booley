@@ -9,6 +9,13 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- In a Codespace that falls back to the demo gateway (`BOOLEY_AGENT_APP=auto`
+  with no Claude or Codex login), `booley doctor` now warns instead of failing
+  while the gateway token is still missing. With an explicit agent app
+  (`BOOLEY_AGENT_APP=codex`), a missing gateway token still fails.
+- VS Code's Chat side bar no longer takes a third of the window when you first
+  open a Sandbox or GitHub Codespace. The Booley Sandbox Integration extension
+  closes it once per workspace; reopen it any time and it stays open.
 - Booley MCP servers that Booley starts for its own agents no longer add rows
   to the Dashboard's Sessions view, and `booley doctor --deep`'s developer probe
   no longer starts a Booley MCP server or offers tools.

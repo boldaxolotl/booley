@@ -292,3 +292,9 @@ def test_docs_landing_table_lists_every_user_doc_in_sidebar_order():
     assert sum(span for _, span in sections) == len(rows)
     for section, span in sections:
         assert span == sum(doc.section == section for doc in USER_DOCS), section
+
+
+def test_demo_page_keeps_the_gateway_bring_your_own_key_anchor():
+    """The demo gateway's notice and errors link to booley.dev/demo#bring-your-own-key."""
+    page = (WEBSITE / "docs/demo.md").read_text(encoding="utf-8")
+    assert 'id="bring-your-own-key"' in page

@@ -14,13 +14,17 @@ function fakeEditor(options, records, settings) {
     const { trusted = true } = options;
     // An explicit `remote: undefined` models a local window, as VS Code reports it.
     const remote = 'remote' in options ? options.remote : 'dev-container';
-    const { log, terminals, listeners } = records;
+    const { log, terminals, listeners, commands } = records;
     const root = { fsPath: '/work' };
     const output = { appendLine: line => log.push(line), show() {}, dispose() {} };
     const listen = name => fn => { listeners[name] = fn; return { dispose() {} }; };
     return {
         TerminalExitReason: {Shutdown: 1, Process: 2, User: 3, Extension: 4},
         env: { remoteName: remote, sessionId: 'fixture-window' },
+        commands: { executeCommand: async id => {
+            commands.push(id);
+            if (options.commandFails) { throw new Error('unknown command'); }
+        } },
         workspace: {
             isTrusted: trusted,
             workspaceFolders: [{ uri: root }],
@@ -46,7 +50,7 @@ function fakeEditor(options, records, settings) {
 
 function fixture(options = {}) {
     const {enabled = true, error, raw, delayed = false} = options;
-    const records = {log: [], terminals: [], calls: [], listeners: {}};
+    const records = {log: [], terminals: [], calls: [], listeners: {}, commands: []};
     const {log, terminals, calls, listeners} = records;
     const settings = {protocol: options.protocol ?? 1, permission: options.permission};
     const vscode = fakeEditor(options, records, settings);
@@ -73,7 +77,7 @@ function fixture(options = {}) {
         update: async (key, value) => { state.set(key, value); },
     } };
     module.exports.activate(context);
-    return { calls, context, log, terminals, listeners, vscode, settings, complete: () => complete(),
+    return { calls, commands: records.commands, context, log, terminals, listeners, vscode, settings, complete: () => complete(),
         reactivate: () => module.exports.activate({subscriptions: [], workspaceState: context.workspaceState}) };
 }
 
@@ -242,4 +246,32 @@ test('user closure, editor shutdown and extension disposal stay quiet', async ()
         f.listeners.close(terminal);
         assert.equal(f.log.length, 0);
     }
+});
+
+test('a Sandbox window closes the Chat side bar once per workspace', async () => {
+    for (const remote of ['dev-container', 'attached-container', 'codespaces']) {
+        const f = fixture({ remote });
+        await tick();
+        assert.deepEqual(f.commands, ['workbench.action.closeAuxiliaryBar']);
+        // A reload or a later window of the same workspace leaves the user's layout alone.
+        f.reactivate();
+        await tick();
+        assert.deepEqual(f.commands, ['workbench.action.closeAuxiliaryBar']);
+    }
+});
+
+test('a local or unrelated window keeps its Chat side bar', async () => {
+    for (const remote of [undefined, 'ssh-remote']) {
+        const f = fixture({ remote });
+        await tick();
+        assert.deepEqual(f.commands, []);
+    }
+});
+
+test('a missing close command never blocks the Dashboard', async () => {
+    const f = fixture({ commandFails: true });
+    await tick();
+    assert.deepEqual(f.commands, ['workbench.action.closeAuxiliaryBar']);
+    assert.equal(f.terminals.length, 1);
+    assert.equal(f.log.length, 0);
 });

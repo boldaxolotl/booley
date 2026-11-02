@@ -31,26 +31,29 @@ The [Features page](https://booley.dev/docs/features/) is the complete feature r
 
 Three ways in, ordered by how much you want to invest:
 
-1. **[Level 1: Watch](#level-1-watch).** See an engineer drive Booley on a demo project, start to finish. Zero setup.
-2. **[Level 2: Try the demo yourself](#level-2-try-the-demo-yourself).** Open the configured demo in your browser or clone it, then type your first request to the agent.
-3. **[Level 3: Use it on your own project](#level-3-use-it-on-your-own-project).** Full integration on your own RTL.
+1. **[Watch](#watch).** See an engineer drive Booley on a demo project, start to finish. Zero setup.
+2. **[Demo](#demo).** Open the demo free in your browser, or clone it, then type your first request to the agent.
+3. **[Your own project](#your-own-project).** Full integration on your own RTL.
 
-### Level 1: Watch
+### Watch
 
 Two videos on the [Videos page](https://booley.dev/videos/) show an engineer driving Booley on a demo project end to end, so you can see the workflow before touching anything.
 
-### Level 2: Try the demo yourself
+### Demo
 
-**[Follow the demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32/blob/e53c1896ab02595aa4ebb3a56b5aa7bd109177f9/README.md)** to try the demo, after you [install Booley](#installation).
-
-Or skip the install and run the demo in browser VS Code, macOS included:
+Try the demo in browser VS Code with one click. It is free, needs no install,
+and works on macOS too:
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/boldaxolotl/booley-prj-picorv32?quickstart=1)
 
-The Codespace uses your own GitHub Codespaces quota and your own Claude or
-ChatGPT account.
+The Codespace fits in GitHub's free monthly Codespaces allowance, and the
+agent runs GPT-6 Luna on us after a quick GitHub sign-in. Connect your own
+Claude or ChatGPT account if you want a smarter model. The first launch takes
+3-4 minutes while the container image builds. [How the free demo works](https://booley.dev/demo/).
 
-### Level 3: Use it on your own project
+Or **[follow the demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32/blob/e53c1896ab02595aa4ebb3a56b5aa7bd109177f9/README.md)** to run the demo locally, after you [install Booley](#installation).
+
+### Your own project
 
 Follow the [Setup guide](https://booley.dev/docs/setup/) to integrate Booley with your own RTL project, after you [install Booley](#installation).
 
@@ -69,7 +72,7 @@ booley bootstrap
 The [Install guide](https://booley.dev/docs/install/) has the full
 requirements, upgrade steps, and what `booley bootstrap` does.
 
-**Next:** [try the demo](#level-2-try-the-demo-yourself) or [set up your own project](#level-3-use-it-on-your-own-project).
+**Next:** [try the demo](#demo) or [set up your own project](#your-own-project).
 
 ## Supported EDA Tools
 
