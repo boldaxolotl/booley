@@ -1,25 +1,41 @@
 # Targets
 
-How Booley learns your design. Every Booley Flow builds from a FuseSoC `.core`
-Target, so a `.core` file is the second mandatory piece of a Project next to
-[`booley.toml`](CONFIG.md). The `booley-setup` skill writes both; this page
-explains what they mean.
+A **Target** is one named build configuration of your design: which source
+files, which top module, which parameters, and which EDA tool. Every Booley
+Flow (sim, lint, synth, fpga) builds from a Target, and the Developer Agent
+picks Targets by name instead of inventing its own tool arguments. So every
+result traces back to a configuration you can read and rerun.
+
+Targets live in [FuseSoC](https://github.com/olofk/fusesoc) `.core` files.
+A Project needs at least one `.core` next to [`booley.toml`](CONFIG.md); the
+`booley-setup` skill writes both during [setup](SETUP.md). Read this page when
+you review what setup wrote, add a Target, or fix one that Doctor flags. What
+each Target should *verify* (its tests) lives in [`tests.toml`](TESTS.md).
+
+FuseSoC is mandatory. A `.core` is usually a plain restatement of the build
+you already have: a file list plus a top module. The one thing it can't
+express, a per-test build step such as compiling a test's firmware, goes in
+[Pre-Sim Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands).
+
+## Adding or changing a Target
+
+1. Ask the agent, for example: "add a Verible style-lint Target for the RTL"
+   or "add a sim Target with `WIDTH=32`".
+2. The agent edits the `.core` (and `tests.toml` for a sim Target) and runs
+   Doctor.
+3. Check the result with `booley targets` (the list) or
+   `booley targets <name>` (one Target in detail). `--for sim|lint|synth|fpga`
+   shows only the Targets that Flow can run.
+
+Renaming a Target also means updating its `tests.toml` section, any Goals, and
+anything else that calls it by name; ask the agent to do all of it in one
+change.
 
 ## Design description (`.core`)
 
-The design itself is described outside `booley.toml`: *how it builds* lives in
-one or more FuseSoC CAPI2 `.core` files ([CAPI2 reference](https://fusesoc.readthedocs.io/en/stable/user/build_system/core_file.html)),
-and *what to verify* in `.booley/tests.toml` (see [Simulation tests](TESTS.md)).
-
-> **Is FuseSoC mandatory?** Yes: every Booley Flow builds from a resolvable `.core`
-> Target. A `.core` is usually a mechanical restatement of the build
-> you already have (a filelist plus a toplevel); for the one thing it can't
-> express, a per-test non-RTL build step like compiling a test's firmware,
-> declare [Pre-sim commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands)
-> instead of abandoning the flow.
-
-A `.core` describes *how the design builds*: source files (`filesets`), top
-modules (`toplevel`), typed parameters/defines, and build **targets**:
+A `.core` file ([FuseSoC CAPI2 format](https://fusesoc.readthedocs.io/en/stable/user/build_system/core_file.html))
+groups source files into **filesets**, declares typed **parameters**, and
+names the **targets** that combine them:
 
 ```yaml
 CAPI=2:
@@ -52,113 +68,88 @@ targets:
     toplevel: dut
   synth:
     flow: generic
-    flow_options: {tool: yosys, arch: xilinx}  # arch is edalize plumbing Booley
-    filesets: [rtl]                            # ignores; the OpenROAD engine
-    toplevel: dut                              # drives its own PDK/target
+    flow_options: {tool: yosys, arch: xilinx}  # arch is ignored by Booley
+    filesets: [rtl]
+    toplevel: dut
 ```
 
-A few conventions worth calling out in that example:
+Points worth knowing in that example:
 
-- **Tracing needs no project-owned helper source.** The Icarus trace overlay
-  supplies the packaged dump module when the Target does not already provide one,
-  then roots it for the trace run. Existing project-supplied modules remain
-  supported and are reused. Verilator relies on the Target's trace-capable C++
-  simulation harness and does not need the SystemVerilog dump module.
-- **A `file_type: user` file with `copyto:`** stages a non-RTL data file (a
-  `$readmemh` image, a vectors file) into the build tree at the name the TB opens.
-  Before the simulator starts, Booley exposes that declared relative path in the
-  configured `run_cwd`; the temporary entry is removed after the run. An identical
-  file already present there is preserved, while a different file at the same path
-  is an input-setup error rather than being overwritten.
-  Doctor warns about differing declared inputs at the Project Root or a literal
-  `run_cwd`, naming the Target, source and destination. Rename the `copyto`
-  destination, remove the checked-in copy, or choose a literal `run_cwd` without
-  the collision. Identical files and templated `run_cwd` produce no collision
-  warning.
-  A missing declared `$readmemh` destination is a staging/infrastructure error;
-  an undeclared path is a `missing_input` design failure with a fileset hint.
-- **`flow_options.arch`** (and any other Edalize-only knob) is plumbing Booley
-  passes through to the toolchain. The built-in synth path drives its own
-  PDK/target via the OpenROAD engine and ignores `arch`.
+- **`tags: [tb]`** is how Booley tells testbench files from RTL; reviews and
+  change tracking rely on it, so tag every testbench fileset.
+- **Waveform tracing needs no extra source in the `.core`.** The Icarus trace
+  overlay supplies the packaged dump module when the Target does not already
+  provide one. Existing project-supplied modules remain supported and are
+  reused. Verilator relies on the Target's trace-capable C++ simulation
+  harness and does not need the dump module.
+- **`file_type: user` with `copyto:`** puts a data file (a `$readmemh` image,
+  a vectors file) at the path the testbench opens. Booley places it in the
+  simulation's working directory ([`run_cwd`](FLOW-SIM.md#sim-working-directory-flowssimrun_cwd))
+  for the run and removes it afterwards. If a *different* file already sits at
+  that path, the run fails rather than overwrite it, and Doctor warns ahead of
+  time: rename the `copyto` destination or remove the checked-in copy.
+- **`flow_options.arch`** and other Edalize-only options are ignored by
+  Booley's synth Flow, which picks its own PDK; see
+  [ASIC synthesis](FLOW-SYNTH.md).
 
 ### Fileset file types
 
-Set `file_type` on a fileset as the default for its files, or on a file entry
-to override it. Booley treats untyped files as `user`.
-
-The built-in Flows consume these types. Spell them exactly as shown:
+Set `file_type` on a fileset as the default for its files, or on one file to
+override it. Untyped files count as `user`. Spell the types exactly as shown:
 
 | `file_type` | Use for |
 | --- | --- |
-| `verilogSource` | Verilog RTL and testbenches for lint and sim; non-testbench RTL for synth and fpga. |
-| `systemVerilogSource` | SystemVerilog RTL and testbenches for the same Flows. |
-| `vlt` | Verilator control (waiver) files for lint and Target-based Verilator simulation builds. See the [Verilator recipe](#verilator-lint-target). |
+| `verilogSource` | Verilog RTL and testbenches. |
+| `systemVerilogSource` | SystemVerilog RTL and testbenches. |
+| `vlt` | Verilator waiver files; see the [Verilator recipe](#verilator-lint-target). |
 | `cSource`, `cppSource` | C/C++ sources of a Verilator simulation harness. |
-| `veribleLintRules` | Verible rules file; select at most one. |
-| `veribleLintWaiver` | Verible waiver files; select any number. See the [Verible recipe](#verible-lint-target). |
-| `SDC` | ASIC timing constraints for physical synth; the type is uppercase. See [ASIC synthesis](FLOW-SYNTH.md#configuration-flowssynth). |
-| `xdc` | Vivado FPGA constraints; name the file `*.xdc`. See [FPGA implementation](FLOW-FPGA.md#configuration-flowsfpga). |
-| `user` | Non-RTL inputs such as firmware, vectors, and cocotb Python modules. `copyto:` sets the staged path; see the example above and [Cocotb Targets](#cocotb-targets-python-testbenches). |
+| `veribleLintRules` | Verible rules file; at most one per Target. |
+| `veribleLintWaiver` | Verible waiver files; see the [Verible recipe](#verible-lint-target). |
+| `SDC` | ASIC timing constraints (uppercase); see [ASIC synthesis](FLOW-SYNTH.md#configuration-flowssynth). |
+| `xdc` | Vivado constraints, named `*.xdc`; see [FPGA implementation](FLOW-FPGA.md#configuration-flowsfpga). |
+| `user` | Firmware, vectors, cocotb Python modules; `copyto:` sets where they land. |
 
-- Give headers the same type as their sources and mark them
-  `is_include_file: true`. HDL headers (`.vh`/`.svh`) then supply include
-  paths instead of compiling separately.
-- Keep `SDC` and `xdc` files outside testbench-tagged filesets.
-- Use the unversioned names `verilogSource` and `systemVerilogSource`. Some
-  consumers accept version-suffixed names, but simulation reuse and coverage
-  helpers match the unversioned names exactly.
-
-Every Flow except fpga keeps declared types; for lint and simulation, FuseSoC
-passes them to the selected EDA tool. The fpga Flow rebuilds file types from
-filenames and selects RTL by suffix alone, so give FPGA RTL a lowercase `.v`
-or `.sv` suffix. The `xdc` type is matched case-insensitively, but a file
-keeps it only if its name also has an XDC suffix.
-
-Edalize support alone does not make a type an input to every Booley Flow.
-These types are recognized only in narrow places:
-
-- `systemCSource`, `uhdm`: the pinned Edalize Verilator node accepts them, but
-  that alone does not make SystemC or UHDM execution supported; see the
-  [EDA-tool matrix](SUPPORTED-EDA-TOOLS.md).
-- `tclSource`: mapped from the `.tcl` suffix, but the built-in synth and FPGA
-  recipes have no general Tcl fileset hook.
-- `vhdlSource`, `vhdlSource-2008`: classified as sources by simulation
-  coverage, but Booley has no supported VHDL simulation path.
+- Give headers (`.vh`, `.svh`) the same type as their sources and mark them
+  `is_include_file: true`, so they act as include paths.
+- Keep `SDC` and `xdc` files out of `tags: [tb]` filesets.
+- Use the unversioned `verilogSource` and `systemVerilogSource`. Coverage and
+  build reuse don't recognize version-suffixed names.
+- The fpga Flow ignores declared types and goes by filename: give FPGA RTL a
+  lowercase `.v` or `.sv` suffix, and constraints an `.xdc` suffix.
+- SystemC, UHDM, VHDL, and Tcl filesets have no supported path through the
+  built-in Flows; see the [EDA-tool matrix](SUPPORTED-EDA-TOOLS.md).
 
 ### Target authoring
 
-Name project-owned Targets `<axis>_<subject>` using the Booley Flow axis:
+Name your own Targets `<axis>_<subject>`, where the axis is the Flow that
+runs them:
 
-| Axis | Driven by | Example |
+| Axis | Flow | Example |
 | --- | --- | --- |
-| `sim_` | `sim` | `sim_smoke` |
-| `lint_` | `lint` | `lint_style` |
-| `synth_` | `synth` | `synth_timing` |
-| `fpga_` | `fpga` | `fpga_board` |
+| `sim_` | sim | `sim_smoke` |
+| `lint_` | lint | `lint_style` |
+| `synth_` | synth | `synth_timing` |
+| `fpga_` | fpga | `fpga_board` |
 
-The axis is needed because CAPI2 has no synthesis flow: synth and FPGA Targets
-can both resolve as `generic`. A bare axis such as `lint` is fine when there is
-only one Target for it; the Elaboration Check reuses a sim Target.
+The prefix matters for synth and fpga: both use FuseSoC's `generic` flow, so
+the `synth_`/`fpga_` prefix decides which Flow runs the Target. Without a
+prefix, a Target whose tool is `vivado` counts as fpga. A bare `lint` is fine when
+there is only one lint Target. Doctor notes names that break the rule. Vendored
+upstream cores keep their own names.
 
-Use `default:` only when another core depends on this one; Booley does not show
-it as a selectable Target. Vendored upstream cores keep their original names.
-Renaming a Target also requires updating its `tests.toml` section, Doctor
-metadata references, explicit callers, and Goals. For Python testbenches, see
-[Cocotb Targets](#cocotb-targets-python-testbenches).
+Add a `default:` Target only when another core depends on this one. Booley
+doesn't list it as a Target you can run.
 
-Explicit lint Targets require `verilator`, `verible`, or `veriblelint` in
-`flow_options.tool`; unsupported or missing EDA tools are excluded from
-`booley targets --for lint`, and explicit Doctor lint selections report incompatibility.
+A lint Target needs `flow: lint` and `flow_options.tool` set to `verilator` or
+`verible` (`veriblelint` also works). Other tools don't show up in `booley targets --for lint`.
+For Python testbenches, see [Cocotb Targets](#cocotb-targets-python-testbenches).
 
 #### Verilator lint Target
 
-To waive Verilator warnings, declare a `.vlt` control file with
-`file_type: vlt` and select its fileset on the lint Target. The type must be
-exactly `vlt`: an untyped `.vlt` file, or a guessed type such as
-`verilatorConfig`, does not apply the waiver.
-
-This core sits beside the `rtl/` and `lint/` directories; file paths are
-relative to the `.core` file:
+To waive Verilator warnings, add a `.vlt` control file with `file_type: vlt`
+and include its fileset in the lint Target. The type must be exactly `vlt`:
+an untyped `.vlt` file, or a guessed type such as `verilatorConfig`, is
+silently ignored. Paths are relative to the `.core` file:
 
 ```yaml
 CAPI=2:
@@ -175,45 +166,29 @@ targets:
     flow: lint
     flow_options:
       tool: verilator
-      verilator_options: [-Wall]
+      verilator_options: [-Wall]   # optional: more warnings, unrelated to the waiver
     filesets: [rtl, lint_config]
     toplevel: top
 ```
 
-`-Wall` is optional: it adds lint warnings to Verilator's default set and is
-independent of the waiver.
-
-`lint/waivers.vlt` holds the required control-file directive, then the warning
-to waive:
+`lint/waivers.vlt` starts with the control-file directive, then lists what to
+waive:
 
 ```text
 `verilator_config
 lint_off -rule WIDTHTRUNC -file "*top.sv"
 ```
 
-This waives `WIDTHTRUNC` in source paths ending in `top.sv`, including the
-FuseSoC build-tree copy; other warning classes stay enabled. Make the pattern
-specific to your sources; `-lines` narrows a waiver further (see Verilator's
+This waives `WIDTHTRUNC` in files ending in `top.sv` (the pattern also matches
+FuseSoC's build-tree copy); every other warning stays on. Keep patterns
+specific, and narrow further with `-lines` (see Verilator's
 [control-file reference](https://verilator.org/guide/latest/control.html)).
-
-Run inside the Sandbox:
-
-```bash
-booley flow lint --target lint_structural
-```
-
-- Edalize places `vlt` files before HDL inputs, so file-specific rules apply
-  when those inputs are read.
-- Add `lint_config` to other Verilator Targets only where the same waiver is
-  intended.
-- `--mode elab-only-standalone` probes (see
-  [Elaboration checks](FLOW-SIM.md#elaboration-checks)) use their own HDL-only
-  inputs and ignore Target waiver filesets.
+Add `lint_config` to other Verilator Targets only where the same waiver
+should apply.
 
 #### Verible lint Target
 
-Use canonical `verible` for a style Target that selects RTL, its rules, and optional
-waivers:
+A style Target selects the RTL plus a rules file and, optionally, waivers:
 
 ```yaml
 CAPI=2:
@@ -234,14 +209,14 @@ targets:
     toplevel: top
 ```
 
-These are existing Project source files at paths relative to the `.core` file,
-selected through its filesets. Supply at most one rules file; waiver files are optional.
+Use at most one rules file; waiver files are optional. For what lint reports,
+see [Lint](FLOW-LINT.md).
 
 ## Cocotb Targets (Python testbenches)
 
-A **Cocotb Target** is an ordinary sim Target whose testbench is a cocotb Python
-module instead of HDL. It needs nothing beyond the built-in flow: declare `cocotb_module` in the
-Target's flow options and Booley takes it from there.
+A **Cocotb Target** is a sim Target whose testbench is a
+[cocotb](https://www.cocotb.org/) Python module instead of HDL. Setting
+`cocotb_module` in the Target's flow options is all it takes:
 
 ```yaml
 filesets:
@@ -251,16 +226,16 @@ filesets:
   tb:
     files:
       - tb/test_counter.py: {file_type: user, copyto: test_counter.py}
-      # multi-file TBs: copyto preserves the package layout in the build root
+      # multi-file TBs: copyto keeps the package layout
       - tb/helpers/util.py: {file_type: user, copyto: helpers/util.py}
-    tags: [tb]                       # required, same as an SV testbench fileset
+    tags: [tb]                       # required, as for an SV testbench
 
 targets:
   sim_cocotb:
     flow: sim
     flow_options:
       tool: icarus                   # icarus | verilator
-      cocotb_module: test_counter    # THIS is what makes it a Cocotb Target
+      cocotb_module: test_counter    # this makes it a Cocotb Target
       iverilog_options: [-g2012]     # SystemVerilog sources need -g2012
       timescale: 1ns/1ps
     filesets: [rtl, tb]
@@ -270,170 +245,120 @@ targets:
 ```toml
 # .booley/tests.toml
 [sim_cocotb]
-tests = ["test_reset", "test_basic"]   # the @cocotb.test() FUNCTION names
-# no `select` — see below
+tests = ["test_reset", "test_basic"]   # the @cocotb.test() function names
 ```
 
-What differs from an SV Target:
+How it differs from an SV Target:
 
-- **`toplevel` is whatever the Python testbench attaches to.** For a simple
-  design that is the **DUT itself**: cocotb's `dut` handle *is* the toplevel,
-  and there is no HDL wrapper. But a design whose ports are **SystemVerilog
-  interfaces** needs one: cocotb's BFMs bind to interface *instances*
-  (`AxiStreamBus.from_entity(dut.s_axis_tx)`), and an instance has to be
-  instantiated somewhere. Such projects ship a thin HDL wrapper that declares
-  the interfaces and instantiates the DUT, and **the wrapper is the
-  `toplevel`** (commonly named after the test module, e.g.
-  `toplevel: test_taxi_eth_mac_10g` alongside
-  `cocotb_module: test_taxi_eth_mac_10g`). Both shapes work as-is; point
-  `toplevel` at the module the testbench actually drives.
-- **`tests.toml` lists cocotb test-function names**, and must **not** declare a
-  `select` template, since selection is an env-var filter Booley builds
-  (`COCOTB_TEST_FILTER`, or `TESTCASE` on cocotb 1.x, auto-detected). A `select`
-  on a Cocotb Target is a setup-time error. `skip` works unchanged.
-- **Seeds and Test Variants.** Booley seeds a Cocotb Target through cocotb's
-  own seed variable, so `tests.toml` must not declare a `seed` template for
-  it, and its Test Variants carry `env` only. Tests that differ in seed or in
-  Variant environment run in separate simulator processes; see
-  [Seeds](TESTS.md#seeds-seed-default_seed).
-- **No sentinels** (see [pass/fail sentinels](FLOW-SIM.md#passfail-sentinels-and-cycle-counts)):
-  a missing or truncated `results.xml` is *inconclusive*, never a pass. RTL
-  assertion output is still scanned.
-- **One test module per Target.** A cocotb Target names exactly one
-  `cocotb_module`, so a second test module is a second Target. Build variants
-  (a `-D` set per hardware flavour) multiply that: variants × modules. Decide
-  which variants earn a full module sweep rather than generating the whole
-  matrix; a common shape is every module on the default variant, plus the
-  modules that exercise the varying behaviour on the other variants.
-- **Tracing goes through a VCD.** Booley converts it to FST; `--trace-fst` is
-  rejected. See [Tracing a Cocotb Target](#tracing-a-cocotb-target).
-- **Image-provisioned only**, Icarus or Verilator. Commercial simulators are
-  out of scope for Cocotb Targets.
-- Tests generated by **`TestFactory` / `generate_tests`** or
-  **`@cocotb.parametrize`** are fine: list the rendered IDs in `tests.toml`
-  (e.g. `run_test_tx/ifg=12`), not the generating function's name.
-  `booley doctor` defers checking these names to `results.xml` at run time.
+- **`toplevel` is the module the Python testbench drives.** Usually that is
+  the DUT itself. A DUT with SystemVerilog interface ports needs a thin HDL
+  wrapper that instantiates the interfaces and the DUT, because cocotb's bus
+  models bind to interface instances; then the wrapper is the `toplevel`.
+- **`tests.toml` lists cocotb test-function names.** Tests generated by
+  `TestFactory`, `generate_tests`, or `@cocotb.parametrize` are listed by their
+  rendered names (for example `run_test_tx/ifg=12`). Doctor can't check these
+  names ahead of time; a wrong one shows up when the test runs.
+- **No `select` or `seed` template in `tests.toml`.** Booley picks tests and
+  seeds through cocotb's own environment variables; a `select` is a setup
+  error. Test Variants carry `env` only. See [Seeds](TESTS.md#seeds-seed-default_seed).
+- **Pass/fail comes from cocotb's `results.xml`**, not from
+  [sentinels](FLOW-SIM.md#passfail-sentinels-and-cycle-counts). A missing
+  or truncated `results.xml` is *inconclusive*, never a pass. RTL assertion
+  output is still checked.
+- **One test module per Target.** A second module is a second Target, and
+  build variants (a `-D` set per hardware flavour) multiply that. Rather than
+  the full matrix, a common choice is every module on the default variant,
+  plus only the modules that exercise the difference on the other variants.
+- **Icarus or Verilator only.** Commercial simulators can't run Cocotb Targets.
 
 ### Tracing a Cocotb Target
 
 `booley flow sim --target <target> --trace` works on a Cocotb Target with no
-trace setup in the `.core`. The cocotb run owns a VCD dump: the simulator writes
-`dump.vcd` in the run directory, and after the run Booley converts it to the FST
-that B-Wave reads, then removes the raw VCD. A failed conversion keeps the VCD,
-as `trace.vcd`, with its diagnostics in the Target's simulation work directory.
-As on any Target, a header-only or otherwise unqueryable waveform is rejected.
+trace setup in the `.core`. The simulator writes a VCD, and Booley converts it
+to FST after the run. If the conversion fails, the VCD is kept as `trace.vcd`
+in the Target's simulation work directory, next to the error output.
+[`[flows.sim].trace_args`](FLOW-SIM.md#waveforms)
+has no effect here: Booley drives the dump itself.
 
-Booley drives the dump itself, so `[flows.sim].trace_args` has no effect here:
-
-- **Icarus** gets `+trace`, which fires Booley's dump module, the same one the
-  [trace overlay](FLOW-SIM.md#waveforms) supplies
-  to an SV Target.
-- **Verilator** gets `--trace --trace-file dump.vcd`, the flags of the C++
-  harness cocotb supplies.
-
-What `verilator_options` may carry on a Verilator Cocotb Target, and what a
-traced run then does:
-
-| Trace flag | Result |
-|---|---|
-| none | Accepted. Booley adds `--trace` to the traced build. |
-| `--trace` or `--trace-vcd` | Accepted. This is a VCD trace recipe; Booley keeps the options as written. |
-| `--trace-fst` | Rejected: this is a native FST recipe, and cocotb's harness is driven for a VCD. |
-| `--trace-saif` | Rejected, as on every Verilator Target. |
-
-Booley refuses a traced run of a `--trace-fst` Cocotb Target with:
+On a Verilator Cocotb Target, `verilator_options` may contain `--trace` or
+`--trace-vcd`, or no trace flag at all. `--trace-fst` makes a traced run fail
+with:
 
 ```text
 Cocotb Target '<target>' requests native FST tracing, but the Cocotb run-half currently owns a VCD dump; use a VCD trace recipe for this Target
 ```
 
-Remove `--trace-fst`, or replace it with `--trace`, to fix it. A
-`-DVM_TRACE_FMT_FST` define must go with it, since Booley rejects that define
-without `--trace-fst`.
+Replace `--trace-fst` with `--trace`, and remove any `-DVM_TRACE_FMT_FST`
+define along with it.
 
 ## Flat and vendored repos
 
-- **Flat single-file repos** (one `picorv32.v` at the root) need no `rtl/`+`tb/`
-  restructure. Classification comes from the project's mandatory `.core`
-  ([as always](TESTS.md#per-target-environment-env)): a fileset listing the root-level
-  file (e.g. `files: [picorv32.v]`) is classified by its **exact path** rather
-  than a parent directory, so the single file is treated as RTL with no
-  directory layout. TB files use the same fileset mechanism carrying
-  `tags: [tb]`.
-- **Vendored cores** you don't want Booley/FuseSoC to discover (a bundled SoC's
-  example cores) are quarantined with a `FUSESOC_IGNORE` marker file in the
-  directory. Booley's `.core` scanner skips any directory carrying one, exactly
-  as FuseSoC's own scanner does.
-- **Recursive symlinks** are directory links back to a containing ancestor
-  (for example `src/a/lib/self -> ../../..`). FuseSoC discovery follows directory
-  links, so following these would repeatedly scan the same tree. Doctor reports
-  one failure per resolved ancestor, with a link count and a few paths; run
-  `booley doctor --verbose` for every affected path. Place `FUSESOC_IGNORE` in
-  each link's containing directory, or an enclosing subtree you can exclude:
-  it hides **all cores in that subtree**, so avoid excluding wanted cores at
-  the link's target. Local untracked markers leave vendored source files
-  unchanged, but **nested untracked markers are not copied into Goal or baseline
-  worktrees**; commit them if repository changes are acceptable. To keep the
-  vendored repository unchanged across worktrees, use
-  [Stealth isolation](STEALTH.md#stealth-mode) (`enabled = true` and
-  `ignore_native_cores = true`) with authored cores in `.booley/cores/`;
-  this excludes native discovery entirely while reading the original RTL.
-- **Git submodules** work, but Goal Mode does not clone them. See
-  [Submodules](#submodules) below.
-- **Multi-core repos** (a FuseSoC-native project shipping tens or hundreds of
-  `.core` files: ibex has 208, with a `lint` target in 54 of them) work with
-  **no `[fusesoc]` config at all**. Sharing a Target name across cores (many
-  `lint`s, many `sim`s) is normal FuseSoC, not an error; Booley identifies a
-  Target by its `(VLNV, name)` pair — VLNV being FuseSoC's
-  Vendor:Library:Name:Version coordinate for a core — and only asks you to
-  disambiguate when a bare name is genuinely contested.
+- **Flat repos** (one `picorv32.v` at the root) need no `rtl/` and `tb/`
+  restructure. A fileset can list root-level files directly
+  (`files: [picorv32.v]`); testbench files go in a fileset tagged
+  `tags: [tb]`, as usual.
+- **Unwanted vendored cores** (say, a bundled SoC's example cores): put an
+  empty file named `FUSESOC_IGNORE` in their directory. Booley and FuseSoC skip
+  every core under it.
+- **Directory symlinks that loop back** to a containing directory (for
+  example `src/a/lib/self -> ../../..`) would make core discovery scan the same
+  tree over and over, so Doctor fails on them; `booley doctor --verbose` lists
+  every affected path. Put a `FUSESOC_IGNORE` in the directory holding the
+  link. It hides all cores below it, so don't place it where wanted cores
+  live. Commit the marker if you can: an uncommitted one in a subdirectory
+  doesn't reach Goal or baseline worktrees. To
+  leave a vendored repository untouched, use
+  [Stealth Mode](STEALTH.md) with `ignore_native_cores = true`
+  and keep your own cores in `.booley/cores/`.
+- **Many cores in one repo** (ibex ships 208) need no extra configuration. Many
+  cores may each have a Target called `lint` or `sim`; Booley asks you to
+  pick only when a bare name is ambiguous, and you then name it as
+  `vendor:library:name:version#target`.
+- **Git submodules** work, with one setup step; see [Submodules](#submodules).
 
 ### Submodules
 
-Goal Mode and baseline-relative Flows run in isolated git worktrees. Booley
-does not run `git submodule update` there: doing so may re-clone from a private
-SSH URL that the Sandbox cannot reach.
+Goal Mode and baseline comparisons run in separate git worktrees. Booley
+fills each worktree's submodules from your local copy at the same path, at the
+commit the branch pins, without cloning anything, so private SSH URLs are
+fine. Recursive submodules work the same way.
 
-Instead, Booley rebuilds each submodule offline from your locally initialized
-copy at the **same path** in the main Project, at the commit the branch pins,
-so SSH-only URLs are fine. Recursive submodules work the same way.
-
-What this asks of you, once, on the host:
+Run this once on the host:
 
 ```bash
 git submodule update --init --recursive
-# If .booley is a standalone Git repository:
+# If .booley is its own Git repository:
 git -C .booley submodule update --init --recursive
 ```
 
-Every selected submodule must be **present, clean, and non-shallow** in its
-owning RTL repository or Paired Checkout before Goal entry or a baseline Flow
-starts. Its local object database must also contain the complete object closure
-for the destination's pinned commit. Worktree setup hard-errors when one of
-these preconditions is not met, for example:
+Each submodule must be present, clean, and have its full history (not a
+shallow clone) before a Goal or baseline run starts. Otherwise the run stops
+with one of:
 
 - `submodule <path> not found in source Project; initialize it first`
 - `submodule <path> is dirty`
 - `submodule <path> is shallow; fetch its complete history first`
 - `local objects for submodule <path> are incomplete`
 
-Booley uses the pinned commit even when your main checkout has a newer one.
+The last one means your local copy lacks objects for the commit the branch
+pins; fetch in that submodule. Booley always uses the pinned commit, even when your checkout
+has a newer one.
 
-To copy only some of the submodules (a big docs or FPGA-board submodule nothing
-builds against), list the ones you want:
+To copy only some submodules (skip a large docs or board submodule nothing
+builds from), list the ones you want in `booley.toml`:
 
 ```toml
 [submodules]
 paths = ["deps/bus_pkg", "deps/axi_verif"]
 ```
 
-When `paths` is absent, all top-level gitlinks in the selected destination
-revision are materialized. An explicit empty list selects none. A non-empty
-list is an allowlist intersected with that revision's top-level gitlinks;
-anything omitted remains an empty gitlink directory in the worktree. Nested
-gitlinks below a selected entry are always reconstructed recursively.
+Without `paths`, every top-level submodule is copied; `paths = []` copies
+none. Unlisted submodules appear as empty directories in the worktree.
+Submodules nested inside a listed one are always copied. The list applies to
+the outer repository only: when `.booley` is its own Git repository, all of
+its submodules are always copied.
 
-For a separately paired `.booley` repository, the allowlist above
-selects gitlinks in the outer repository. Booley also materializes every
-top-level gitlink recorded by the Paired Checkout, recursively and
-offline, because that repository can own acceptance controls and build inputs.
+---
+
+If a Target misbehaves, start with [Troubleshooting](TROUBLESHOOTING.md) and
+[Doctor](DOCTOR.md).

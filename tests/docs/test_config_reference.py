@@ -19,7 +19,11 @@ def _config_pages_text() -> str:
 # Project [interactive] recognizes migration inputs only: policy and app are
 # rejected, and no field supplies a current setting. Recognition stays intact;
 # tests/harness/test_doctor.py proves each field's user-visible replacement.
-MIGRATION_ONLY_TABLES = {"interactive"}
+#
+# Project [sources] is still recognized (no unknown-table warning) but nothing
+# reads it since [sources.testbench].preflight_checks was removed, so the
+# configuration pages must not advertise it as a working setting.
+MIGRATION_ONLY_TABLES = {"interactive", "sources"}
 
 
 @pytest.mark.parametrize("table", sorted(KNOWN_BOOLEY_TOML_TABLES - MIGRATION_ONLY_TABLES))
