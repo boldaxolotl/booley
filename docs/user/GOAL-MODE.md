@@ -49,7 +49,7 @@ You describe Goals in plain words; the Developer Agent writes the exact
 arguments. The [Goal catalog](#goal-catalog) lists every Goal, and
 `booley cheat --criteria` prints the threshold parameters.
 
-## Threshold parameters
+## Thresholds
 
 Synthesis, FPGA, and Cycle Count Goals can carry limits. A limit is either
 absolute, such as "at most 5,000 LUTs" or "Fmax at least 200 MHz", or relative
@@ -68,7 +68,7 @@ for example
 `baseline 0123456789ab → current: area 1,200 → 1,050 μm² (-150, -12.5%)`.
 Absolute Goals and Goals without baseline evidence show their usual metrics.
 
-## Goals that name Test Runs
+## Simulation, Cycle Count, and coverage Goals
 
 Simulation, Cycle Count, and coverage Goals can say exactly how a test must
 run. You can ask for a test to run several times with different random seeds,
@@ -178,7 +178,12 @@ Protected Inputs decide how evidence is produced: `booley.toml`,
 affected evidence. Never weaken tests or Targets to make a Goal pass. The
 Review Package flags `.core`, `tests.toml`, and `.sdc`/`.xdc` edits.
 
-## Simulation baseline reports
+## Baseline comparisons
+
+Booley also runs some Goals on the code the Goal Mode started from, so you can
+see what changed. These runs never change whether a Goal is met.
+
+### Simulation
 
 Entering Goal Mode starts a background Job for each SIM Goal's frozen Test Runs
 at the Goal Branch's base contents. Adding a SIM Goal through an approved Goal
@@ -214,7 +219,7 @@ infrastructure error does not. Earlier evidence without that classification
 cannot prove a functional failure. Finish freezes the report as it is, so its
 Review Package may still show a pending baseline.
 
-## Synthesis baseline Jobs
+### Synthesis
 
 Entering Goal Mode, or approving a Goal Change that adds one, starts a
 background synthesis Job for each baseline-relative SYNTH Goal. It synthesises

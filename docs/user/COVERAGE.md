@@ -247,7 +247,7 @@ A coverage Goal sets policy independently for each Target:
 ```
 
 Each Target must be explicit. `tests` is `all` or a nonempty list of
-[Test Run selectors](GOAL-MODE.md#goals-that-name-test-runs), for example
+[Test Run selectors](GOAL-MODE.md#simulation-cycle-count-and-coverage-goals), for example
 `["reset", "stress+soak@x5"]`. Metrics are `line`,
 `branch`, `expression`, `toggle`, and `cover_property`; select at least one.
 Each `min_pct` is a finite non-boolean number in `(0, 100]`. Thresholds combine
