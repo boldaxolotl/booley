@@ -13,9 +13,10 @@ conditions.
 2. **Clear the chat.** Once entry succeeds, clear the conversation (for
    example `/clear`). The Goals live in the Goal Record, not in the chat, so
    nothing is lost, and the work starts with a full context window.
-3. **Run `/booley-goal` again.** In the fresh chat, type `/booley-goal`. The
-   skill finds the active Goal Record with `goal_status`, then does the work
-   and gathers evidence until every Goal is met and it can finish.
+3. **Run `/booley-goal` again.** In the same chat, now cleared, type
+   `/booley-goal`. The skill finds the active Goal Record with `goal_status`,
+   then does the work and gathers evidence until every Goal is met and it can
+   finish.
 
 ## Goalsets and entry
 
