@@ -30,7 +30,7 @@ Two paths, sharing everything up to that handoff:
 Both paths begin with host-side Project Initialization, then use their own skill mode. For
 what each configuration field *means*, see [CONFIG.md](CONFIG.md) for
 `booley.toml` and `enabled`, [TARGETS.md](TARGETS.md) for `.core` and
-`tests.toml`, [FLOW-SIM.md](FLOW-SIM.md#simulation--passfail-sentinels-flowssim)
+`tests.toml`, [FLOW-SIM.md](FLOW-SIM.md#passfail-sentinels-and-cycle-counts)
 for sentinels (the log-pattern strings that decide a simulation's pass/fail
 verdict), and [SANDBOX.md](SANDBOX.md#commercial-eda-provisioning) for EDA
 provisioning.
