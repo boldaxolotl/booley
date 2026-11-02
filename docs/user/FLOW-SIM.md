@@ -167,7 +167,7 @@ printing `[SIM_CYCLES] <test> <count>`, for example `[SIM_CYCLES] coremark 12345
 such as `["CoreMark completed in:"]` for `CoreMark completed in: coremark 12345`.
 Counts appear as `cycles=N` on the verdict card and in the report, also for
 Cocotb Targets. They are informational unless a `CYCLE_COUNT` Goal sets
-[thresholds](GOAL-MODE.md#threshold-parameters) on them.
+[thresholds](GOAL-MODE.md#thresholds) on them.
 
 ## Waveforms
 

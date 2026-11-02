@@ -69,7 +69,7 @@ is reported and the run ends in `ERROR` (missing timing evidence).
 
 An `FPGA:{target}` Goal in [Goal Mode](GOAL-MODE.md) is met only by a `PASS`;
 the Goal can add limits on resources and Fmax, absolute or relative to the Goal
-base ([threshold parameters](GOAL-MODE.md#threshold-parameters)).
+base ([threshold parameters](GOAL-MODE.md#thresholds)).
 
 ## Optimization profiles
 
