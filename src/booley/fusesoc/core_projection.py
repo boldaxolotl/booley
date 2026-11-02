@@ -19,6 +19,8 @@ from urllib.parse import quote
 
 import yaml
 
+from booley.core.booley_dir import BOOLEY_DIR_NAME
+from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.boundary import as_dict
 
 PROJECTED_CORE_PREFIX = ".booley-projected-"
@@ -363,6 +365,9 @@ def _absolute_fileset_path(raw: str, root: Path, core_file: Path) -> str:
         )
     path = Path(raw)
     absolute = path if path.is_absolute() else (root / path).resolve(strict=False)
+    # A file behind a symlinked Booley Directory keeps its ``<root>/.booley/...``
+    # spelling; the physical target would read as escaping the Project.
+    absolute = lexical_booley_path(root / BOOLEY_DIR_NAME, absolute)
     # FuseSoC 2.4.7 parses fileset paths as expressions and rejects the
     # backslashes emitted by Windows' ``str(Path)`` representation.
     return absolute.as_posix()

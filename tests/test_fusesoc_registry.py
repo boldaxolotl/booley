@@ -2889,6 +2889,33 @@ class TestSymlinkedBooleyDirectory:
         assert [core["core_file"] for core in listing["cores"]] == [".booley/cores/design.core"]
 
     @pytest.mark.parametrize("mode", sorted(_SYMLINK_MODES))
+    def test_source_below_entry_classifies_project_relative(self, tmp_path: Path, mode: str):
+        """A source declared under a linked `.booley` keeps its `.booley/...` spelling.
+
+        Strict classification (reviewer, Specialist workspace) refused it as
+        escaping the Project Root because the entry link was resolved away.
+        """
+
+        def tb_files(project: Path) -> tuple[str, ...]:
+            booley_dir = project / ".booley"
+            (booley_dir / "sim").mkdir()
+            (booley_dir / "sim" / "tb_extra.sv").write_text("module x; endmodule\n", "utf-8")
+            core = booley_dir / "cores" / "design.core"
+            declared = "- tb/tb_counter.sv: {file_type: systemVerilogSource}\n"
+            text = core.read_text(encoding="utf-8")
+            assert declared in text
+            extra = declared.replace("tb/tb_counter.sv", ".booley/sim/tb_extra.sv")
+            indent = text[: text.index(declared)].rsplit("\n", 1)[1]
+            core.write_text(text.replace(declared, declared + indent + extra), "utf-8")
+            return fusesoc_registry.classified_sources(project, strict=True).tb_files
+
+        real = tb_files(_stealth_layout(tmp_path, mode, symlinked=False))
+        linked = tb_files(_stealth_layout(tmp_path, mode, symlinked=True))
+
+        assert ".booley/sim/tb_extra.sv" in real
+        assert linked == real
+
+    @pytest.mark.parametrize("mode", sorted(_SYMLINK_MODES))
     def test_link_inside_core_root_pointing_outside_keeps_today_outcome(
         self, tmp_path: Path, mode: str
     ):

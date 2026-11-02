@@ -242,3 +242,46 @@ def test_symlinked_booley_directory_runs_and_reuses_build(
     # The attempt log is written through the entry link by the run itself.
     (log,) = run.glob("**/run.log")
     assert log.read_text(encoding="utf-8").startswith("[BOOLEY RUN_LOG]")
+
+
+@pytest.mark.parametrize("linked", [True, False], ids=["linked", "plain"])
+def test_symlinked_booley_directory_accepts_declared_source_below_entry(
+    flow_project: Path, tmp_path: Path, linked: bool
+) -> None:
+    """A Simulation source a core declares under a linked ``.booley`` stays in the Project.
+
+    The picorv32 demo keeps its Verilator C++ main in ``.booley/sim/``, and its
+    ``.booley`` is a symlink to a sibling Project repo. The declaration is spelled
+    through the entry, so it must not be refused as escaping the Project. With
+    ``ignore_native_cores`` the isolated core copy used to resolve it through the link.
+    """
+    entry = flow_project / ".booley"
+    (entry / "sim").mkdir()
+    (flow_project / "dpi" / "helper.cpp").rename(entry / "sim" / "helper.cpp")
+    # Stealth layout as in the demo: the core lives in ``.booley/cores/`` and
+    # its file paths are relative to the Project Root (ADR 0036).
+    (entry / "booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
+    )
+    (entry / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    (entry / "cores").mkdir()
+    core = flow_project / "demo.core"
+    (entry / "cores" / "demo.core").write_text(
+        core.read_text(encoding="utf-8").replace("dpi/helper.cpp", ".booley/sim/helper.cpp"),
+        encoding="utf-8",
+    )
+    core.unlink()
+    if linked:
+        external = tmp_path / "external-booley"
+        entry.rename(external)
+        symlink_or_skip(entry, external, target_is_directory=True)
+
+    reports = tmp_path / "reports"
+    build = _flow_sim(flow_project, reports, "first")
+
+    # Isolated cores (``ignore_native_cores``) decline build reuse in either layout.
+    _assert_built(build, "reuse unsupported")
+    (manifest,) = reports.glob("sim/*/targets/sim/campaign/manifest.json")
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    closure = [item["path"] for item in document["build_variants"][0]["source_closure"]]
+    assert ".booley/sim/helper.cpp" in closure

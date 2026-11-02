@@ -343,3 +343,41 @@ def test_generated_detection_through_symlinked_booley_dir(tmp_path: Path, isolat
     for spelling in (generated, generated.parent.resolve() / generated.name):
         assert is_generated_projection(root, spelling)
         assert is_generated_projection(root / ".booley", spelling)
+
+
+def test_isolated_registry_keeps_files_below_symlinked_booley_dir_lexical(
+    tmp_path: Path,
+) -> None:
+    """A fileset path under a linked ``.booley`` renders through the entry, not its target.
+
+    Only the entry itself is followed: a link below it that points outside the
+    Project still renders as its physical path, so later checks refuse it.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    external = symlinked_booley_dir(root, tmp_path / "external-booley")
+    (external / "booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
+    )
+    (external / "sim").mkdir()
+    (external / "sim" / "main.cc").write_text("int main() {}\n", encoding="utf-8")
+    outside = tmp_path / "outside.cc"
+    outside.write_text("// outside\n", encoding="utf-8")
+    symlink_or_skip(external / "sim" / "escape.cc", outside)
+    (external / "cores" / "demo.core").write_text(
+        "CAPI=2:\n"
+        "name: booley::demo:0\n"
+        "filesets:\n"
+        "  tb:\n"
+        "    files:\n"
+        "      - .booley/sim/main.cc: {file_type: cppSource}\n"
+        "      - .booley/sim/escape.cc: {file_type: cppSource}\n"
+        "targets: {}\n",
+        encoding="utf-8",
+    )
+
+    text = reconcile_isolated_registry(root).written[0].read_text(encoding="utf-8")
+
+    assert (root.resolve() / ".booley" / "sim" / "main.cc").as_posix() in text
+    assert (external.resolve() / "sim" / "main.cc").as_posix() not in text
+    assert outside.resolve().as_posix() in text
