@@ -2737,6 +2737,22 @@ def _check_gateway_model_pin(auth_policy: str, provider: str, reporter: _Reporte
         )
 
 
+def _gateway_is_auto_fallback() -> bool:
+    """Whether ``BOOLEY_AGENT_APP=auto`` chose the gateway because no login was found.
+
+    An explicit ``BOOLEY_PRIMARY_AUTH=gateway`` is a pinned policy, so a token
+    failure there stays a FAIL. The choice record is already validated by
+    :func:`_report_agent_app_choice`; an unreadable one counts as explicit.
+    """
+    from booley.config import agent_app
+
+    try:
+        choice = agent_app.auto_choice()
+    except agent_app.AgentAppError:
+        return False
+    return choice is not None and choice.policy == GATEWAY_AUTH
+
+
 def _check_gateway_auth(provider: str, reporter: _Reporter) -> None:
     """Grade the env-selected gateway policy: it routes Codex only and needs URL + token."""
     if provider != auth_token.APP_CODEX:
@@ -2756,7 +2772,16 @@ def _check_gateway_auth(provider: str, reporter: _Reporter) -> None:
         try:
             run_token_command(settings.token_command)
         except GatewayTokenCommandError as exc:
-            reporter.fail_(str(exc), check_id="agent.credential-missing", subject=provider)
+            if _gateway_is_auto_fallback():
+                # Like a missing login under auth = 'auto': the user has not signed in
+                # yet, which is a warning, not a broken setup.
+                reporter.warn_(
+                    warning("agent.credential-missing", str(exc), subject=provider),
+                    "get the gateway token its command reads, or sign in to Claude Code or "
+                    "Codex and run `python -m booley.harness.incontainer_register`",
+                )
+            else:
+                reporter.fail_(str(exc), check_id="agent.credential-missing", subject=provider)
             return
     reporter.pass_(f"Codex auth: the gateway at {settings.url} ({settings.token_source})")
 

@@ -115,6 +115,24 @@ def test_doctor_gateway_failing_token_command_fails_quoting_stderr(gateway_env, 
     assert "SYNTHETIC_LEAKED_STDOUT" not in findings[0].message
 
 
+def test_doctor_gateway_auto_fallback_without_token_warns(gateway_env, monkeypatch):
+    """Under BOOLEY_AGENT_APP=auto the gateway is a fallback: no token yet is a warning."""
+    from booley.config import agent_app
+
+    command, _ = write_token_command(gateway_env, [], stderr="no token yet\n", exit_code=1)
+    monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN")
+    monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN_COMMAND", command)
+    choice = agent_app.AgentAppChoice("codex", "gateway", "no Claude or Codex credential")
+    monkeypatch.setattr(agent_app, "auto_choice", lambda: choice)
+
+    findings = _doctor_findings(gateway_env)
+
+    assert [(f.severity.value, f.check_id) for f in findings if f.severity.value != "pass"] == [
+        ("warn", "agent.credential-missing")
+    ]
+    assert "BOOLEY_GATEWAY_TOKEN_COMMAND exited 1" in str(findings[-1].message)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="gateway mode is container-only")
 def test_doctor_gateway_working_token_command_passes(gateway_env, monkeypatch):
     command, _ = write_token_command(gateway_env, [_TOKEN])
