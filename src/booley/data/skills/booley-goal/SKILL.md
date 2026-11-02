@@ -52,8 +52,9 @@ The skill has two invocations:
    Variant, seed, or number of seeds, write it as a Test Run selector; see
    [Goals that name Test Runs](#goals-that-name-test-runs). Set each Goal's `origin` to its Goalset name; ad-hoc Goals
    may omit it. Do not merge duplicates yourself: the tool chooses the stricter
-   Goal and reports merges. Show the final Goals to the human before entry; proceed when their
-   existing instruction settles the choices.
+   Goal and reports merges. Stop and show the final Goals to the human, then
+   wait for their confirmation before entry. Skip the wait only when the human
+   or the workflow that invoked this skill already approved these exact Goals.
 6. Call `goal_enter(work_dir=..., slug=..., goals=..., goalsets_used=...)`.
    Record the Goalsets used with **`goalsets_used`** (not `goals_used`). Include
    `default` there when used.

@@ -17,9 +17,10 @@ that.
 1. **Set up the Goals.** Open a Developer Agent session and type
    `/booley-goal` followed by the work you want done. The skill helps you
    choose a clean linked worktree, [Goalsets](#goalsets), Targets, and ad-hoc
-   Goals, shows you the final Goals, then calls `goal_enter`. Booley creates a
-   Goal Branch from the worktree's current HEAD and records that base for
-   comparisons. The skill stops there.
+   Goals. Then it stops and shows you the final Goals; review them, ask for
+   changes, and confirm. Only after you confirm does it enter Goal Mode: Booley
+   creates a Goal Branch from the worktree's current HEAD and records that base
+   for comparisons. The skill stops there.
 2. **Clear the chat.** Once entry succeeds, type `/clear`. The Goals live in
    the Goal Record, not in the chat, so nothing is lost, and the work starts
    with a full context window.
