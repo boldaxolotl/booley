@@ -61,17 +61,19 @@ arguments. The [Goal catalog](#goal-catalog) lists every Goal, and
 Synthesis, FPGA, and Cycle Count Goals can carry limits. A limit is either
 absolute, such as "at most 5,000 LUTs" or "Fmax at least 200 MHz", or relative
 to the code the Goal Mode started from, such as "area grows at most 10%" or
-"cycle count drops at least 8%". For a relative limit, Booley runs the same
-Target on the starting code and compares the two results. Describe the limits
-you want; the Developer Agent looks up the exact parameter names with
-`booley cheat --goals`.
+"cycle count drops at least 8%". Describe the limits you want; the Developer
+Agent looks up the exact parameter names with `booley cheat --goals`.
 
-For a SYNTH or FPGA Goal with a relative limit, the Dashboard's Goal details
-and the Review Package also show the baseline revision and, per thresholded
-metric, `baseline → current` with the signed change and percentage, for
-example
-`baseline 0123456789ab → current: area 1,200 → 1,050 μm² (-150, -12.5%)`.
-Absolute Goals and Goals without baseline evidence show their usual metrics.
+For a relative limit, Booley runs the same Target on the starting code in a
+background Job and compares the two results. The Dashboard's Goal details and
+the Review Package show the comparison, for example
+`area 1,200 → 1,050 μm² (-150, -12.5%)`.
+
+Booley also runs each simulation Goal's tests on the starting code, so the
+Review Package can show what changed: regressions (`pass -> fail`), fixes
+(`fail -> pass`), and new tests. It flags new tests that passed without ever
+being seen failing, since such a test may not check anything. This comparison
+is for your review only: it never decides whether a Goal is met.
 
 ## Simulation, Cycle Count, and coverage Goals
 
@@ -144,62 +146,6 @@ Some Project files decide how evidence is produced: `booley.toml`,
 `mcp_tools` directories. Editing one during Goal Mode blocks Finish until you
 revert it. The Review Package flags edits to `.core` files, `tests.toml`, and
 constraint files (`.sdc`, `.xdc`).
-
-## Baseline comparisons
-
-Booley also runs some Goals on the code the Goal Mode started from, so you can
-see what changed. These runs never change whether a Goal is met.
-
-### Simulation
-
-Entering Goal Mode starts a background Job for each SIM Goal's frozen Test Runs
-at the Goal Branch's base contents. Adding a SIM Goal through an approved Goal
-Change schedules its baseline too. Entry returns while the Job runs; status
-shows the baseline as pending.
-
-The Dashboard's Goal details and the Review Package show a summary for each
-SIM Goal. Every Test Run other than
-`pass -> pass` is named, with its Variant and seed:
-
-| Transition | Meaning |
-|---|---|
-| `pass -> pass` | Passed at baseline and passes at current contents. |
-| `fail -> pass` | Failed at baseline and passes now. |
-| `pass -> fail` | Passed at baseline and fails now: a regression. |
-| `fail -> fail` | Failed at baseline and still fails. |
-| `new (seen failing) -> pass` | Absent at baseline; a matching functional failure was recorded earlier in this session at different dependent contents. |
-| `new (never seen failing) -> pass` | Absent at baseline and no qualifying earlier failure was recorded. |
-| `new -> fail` | Absent at baseline and fails now. |
-
-Baseline and current evidence must name the same resolved Test Run, including
-Variant, seed and declared arguments. An existing Test with incompatible inputs
-is **not comparable**, with a reason. A new Test never runs against the baseline design
-using a newly authored testbench. A stale or missing current result is shown as unavailable
-rather than a transition. The Review Package calls attention to regressions and
-new Test Runs that passed without being seen failing.
-
-These reports do not change any Goal's met, unmet or stale state and never block
-Finish. A build error, timeout, interrupted Job, unavailable dependency or
-ungraded result is **unavailable**, with its reason, rather than a failing Test.
-Only a recorded functional Test failure counts as seen failing; a timeout or
-infrastructure error does not. Earlier evidence without that classification
-cannot prove a functional failure. Finish freezes the report as it is, so its
-Review Package may still show a pending baseline.
-
-### Synthesis
-
-Entering Goal Mode, or approving a Goal Change that adds one, starts a
-background synthesis Job for each baseline-relative SYNTH Goal. It synthesises
-the Goal's baseline Target at the Goal Branch's base contents, with the
-synthesis recipe frozen at that entry or change. Absolute SYNTH Goals get none.
-
-At most one baseline Job per Flow runs at a time, SIM included; others wait,
-and the wait does not count against a Job's time budget. `booley goal status`
-prints `baseline: pending`, `baseline: complete` or
-`baseline: unavailable (<reason>)` for each such Goal. An interrupted,
-timed-out, infrastructure-failed or recipe-mismatched Job is unavailable and
-stores no result. Like simulation baselines, it never changes a Goal's met,
-unmet or stale state.
 
 ## Changes and human decisions
 
