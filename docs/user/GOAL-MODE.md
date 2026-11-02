@@ -189,7 +189,12 @@ Summary and Review Package, once both its worktree (`git worktree remove`, or
 are gone. Committed summaries under `goals/history/` are kept. Copy anything
 you want to keep before you remove both the worktree and the branch.
 
-## Recovery, unattended work, and parallel sessions
+## Watching, recovery, and parallel sessions
+
+Follow Goal Mode in the [Dashboard](USAGE.md#dashboard). A session waiting for
+your answer or a Goal change decision moves to NEEDS YOU. Each Goal's details
+show whether it is met, its evidence, its frozen Test Runs, and any baseline
+comparison.
 
 The same Goal session can work with your guidance or unattended. If intent is
 missing or a Goal cannot be met, the Developer Agent explains what decision it needs.
@@ -212,26 +217,6 @@ worktree without an active Goal Mode, `booley goal status` also shows its most
 recently ended Goal Record: Goal id, state, end time, the
 failure reason of a failed record, and the Session Summary and Review Package
 paths when those files exist.
-
-## Dashboard
-
-`booley dashboard` shows sessions, Goals, and Jobs inside the Sandbox. It opens
-when VS Code attaches to the folder; opt out with `[sandbox].dashboard=false`.
-Each session shows what its agent client last reported: working, waiting for
-tool call, or waiting for user input. Click a report, artifact, or evidence
-path in a detail view to open it in the editor.
-
-The Dashboard has two windows, Sessions and Jobs. Press `←` or `→` to switch
-between them. The Sessions window groups sessions by state; NEEDS YOU holds the
-ones waiting for your input or a Goal-change decision, and the tab reads
-`Sessions N◆` while N sessions need you. The Jobs window filters Running,
-Finished (the newest 50) or All Jobs, and by owning session. Press `↑` on the
-first row to reach the top bar with the tabs, filters, and Help. The footer
-shows the keys that apply where the cursor is.
-
-Sessions have short Project handles such as `S17`; Jobs carry their kind, as in
-`J-SIM25`, `J-SYN34`, `J-LINT45`, `J-FPGA33` or `J-JOB<n>`. A session resumed
-after a long pause may get a new handle.
 
 ## Goal catalog
 

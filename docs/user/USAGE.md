@@ -9,9 +9,10 @@ with AI coding agents to follow it.
 2. [Check your setup](#first-verify-your-setup)
 3. [Choose how to work](#choose-how-to-work)
 4. [Interactive Mode](#interactive-mode): [first session](#open-your-first-developer-agent-session), [good prompts](#write-a-useful-prompt), [reviewing changes](#what-the-developer-agent-is-allowed-to-do), [editing instructions](#editing-project-instructions), [waveforms](#viewing-waveforms)
-5. [Entering the Sandbox without VS Code](#entering-the-sandbox-without-vs-code)
-6. [Auth & billing](#auth--billing)
-7. [Reporting problems and feedback](#when-booley-itself-misbehaves)
+5. [Dashboard](#dashboard)
+6. [Entering the Sandbox without VS Code](#entering-the-sandbox-without-vs-code)
+7. [Auth & billing](#auth--billing)
+8. [Reporting problems and feedback](#when-booley-itself-misbehaves)
 
 Goal Mode has its own guide, [GOAL-MODE.md](GOAL-MODE.md). Every command,
 Flow, and Specialist is listed in [CLI-REFERENCE.md](CLI-REFERENCE.md).
@@ -253,6 +254,26 @@ the status bar shows the span. Add `%b`/`%h`/`%d` to a signal for binary, hex,
 or decimal, and `@red`/`@blue`/`@green` for a color. `bwave gui --help` has
 the rest. If a view fails to open, see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#bwave-gui-fails-on-a-scoped-view).
+
+## Dashboard
+
+`booley dashboard` shows sessions, Goals, and Jobs inside the Sandbox. It opens
+when VS Code attaches to the folder; opt out with `[sandbox].dashboard=false`.
+Each session shows what its agent client last reported: working, waiting for
+tool call, or waiting for user input. Click a report, artifact, or evidence
+path in a detail view to open it in the editor.
+
+The Dashboard has two windows, Sessions and Jobs. Press `←` or `→` to switch
+between them. The Sessions window groups sessions by state; NEEDS YOU holds the
+ones waiting for your input or a Goal-change decision, and the tab reads
+`Sessions N◆` while N sessions need you. The Jobs window filters Running,
+Finished (the newest 50) or All Jobs, and by owning session. Press `↑` on the
+first row to reach the top bar with the tabs, filters, and Help. The footer
+shows the keys that apply where the cursor is.
+
+Sessions have short Project handles such as `S17`; Jobs carry their kind, as in
+`J-SIM25`, `J-SYN34`, `J-LINT45`, `J-FPGA33` or `J-JOB<n>`. A session resumed
+after a long pause may get a new handle.
 
 ## Entering the Sandbox without VS Code
 
