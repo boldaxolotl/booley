@@ -103,20 +103,39 @@ class AttachController {
                 this.output.appendLine(result.reason);
                 return;
             }
-            this.terminal = vscode.window.createTerminal({
+            // Sample before creating ours: any terminal already open (for example
+            // the shell a Codespace visitor just opened with Ctrl+`) is in use.
+            const busy = vscode.window.terminals.length > 0;
+            const terminal = vscode.window.createTerminal({
                 name: 'Booley Dashboard',
                 shellPath: BOOLEY,
                 shellArgs: ['dashboard', '--on-attach'],
                 cwd: root,
                 isTransient: true,
             });
-            this.terminal.show(true);
+            this.terminal = terminal;
+            if (busy) {
+                this.offer(terminal);
+            } else {
+                terminal.show(true);
+            }
         } catch (error) {
             if (!this.disposed) {
                 this.output.appendLine(`Dashboard attach failed: ${error.message}`);
                 this.output.show(true);
             }
         }
+    }
+
+    // A panel terminal created without show() becomes the visible tab only
+    // when it is the panel's first terminal, so the user's terminal and any
+    // prompt waiting in it stay in front. Offer the Dashboard instead.
+    offer(terminal) {
+        void Promise.resolve(vscode.window.showInformationMessage(
+            'Booley Dashboard is ready in the terminal panel.', 'Open')).then(choice => {
+            // Skip the reveal once the Dashboard has exited or been closed.
+            if (choice === 'Open' && this.terminal === terminal) { terminal.show(); }
+        }, () => {});
     }
 
     closed(closed) {

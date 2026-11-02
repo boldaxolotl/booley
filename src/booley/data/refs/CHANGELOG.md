@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- When you open a terminal in a fresh Sandbox or GitHub Codespace, the
+  Dashboard no longer takes over the panel a moment later. When a terminal is already open, the
+  Booley Sandbox Integration extension starts the Dashboard in its own tab and
+  shows a "Booley Dashboard is ready" notification with an Open button.
 - In a Codespace that falls back to the demo gateway (`BOOLEY_AGENT_APP=auto`
   with no Claude or Codex login), `booley doctor` now warns instead of failing
   while the gateway token is still missing. With an explicit agent app

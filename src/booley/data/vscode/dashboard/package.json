@@ -3,7 +3,7 @@
   "publisher": "booley",
   "displayName": "Booley Sandbox Integration",
   "description": "Open the terminal Dashboard when attaching to a Booley Sandbox, close the unused Chat side bar once, and host the Viewer Bridge that `bwave gui` uses to show scoped waveform views.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "license": "Apache-2.0",
   "engines": { "vscode": "^1.95.0" },
   "main": "./extension.js",
