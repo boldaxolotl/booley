@@ -1,6 +1,6 @@
 ---
 name: booley-goal
-description: Enter, resume, and finish Booley Goal Mode for RTL work; translate Project Goalsets, gather evidence, and handle human decisions on Goal changes.
+description: Set up Booley Goal Mode for RTL work with `/booley-goal <request>`, then start, resume, and finish it with `/booley-goal start`; translate Project Goalsets, gather evidence, and handle human decisions on Goal changes.
 ---
 
 # Work in Goal Mode
@@ -61,9 +61,11 @@ The skill has two invocations:
    rules and warnings. On refusal, resolve the named cause; never retry with
    weakened Goals just to obtain entry.
 7. Stop after a successful entry. Show the human the record ID, Goal Branch,
-   and worktree, then tell them to clear this chat (for example `/clear`) and
-   type `/booley-goal start`. Do not start the work in this conversation
-   unless the human explicitly asks you to continue without clearing.
+   and worktree, then tell them to clear this chat (`/clear` in Claude Code,
+   `/new` in Codex) and type `/booley-goal start` (`$booley-goal start` in
+   Codex). Do not start the work in this conversation unless the human or the
+   workflow that invoked this skill explicitly asks you to continue without
+   clearing; then follow [Start](#start) from step 2.
 
 ## Start
 
@@ -235,8 +237,8 @@ otherwise it stays local. Paired Checkout summaries always stay local.
 
 ## Resume or abandon
 
-After a crash, reconnection, or context compaction, call
-`goal_status(work_dir=..., rules=true)` first. Recover the record ID, Goal
+After a crash, reconnection, or context compaction, follow [Start](#start):
+call `goal_status(work_dir=..., rules=true)` first. Recover the record ID, Goal
 Branch, Goals, evidence, pending proposals, and returned rules before editing.
 Resume the same saved proposal or Finish operation; do not create a new record
 or edit Goal state files to bypass recovery. If the tool refuses, resolve its

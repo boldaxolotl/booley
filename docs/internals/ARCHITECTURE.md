@@ -14,7 +14,7 @@ Booley makes EDA workflows drivable by LLM agents without trusting the agents' c
 Everything executes in a containerized **Sandbox**, one per opened project folder. Two modes share that runtime and the same `.booley/` configuration:
 
 - **Interactive Mode** is a human-steered engineering session in a VS Code devcontainer.
-- **Goal Mode** binds an agent session's work to mandatory Goals in a linked worktree on a Goal Branch. The human may steer it or leave the tab working unattended; `/booley-goal` guides entry, changes, and Finish.
+- **Goal Mode** binds an agent session's work to mandatory Goals in a linked worktree on a Goal Branch. The human may steer it or leave the tab working unattended; `/booley-goal` guides entry; after the human clears the chat, `/booley-goal start` guides the work, changes, and Finish.
 
 The host owns bootstrap, runtime lifecycle, trusted EDA registrations and Grants, the egress proxy, and idle reaping. Developer Agent commands are intended to execute only inside the Sandbox, but [#1529](https://github.com/boldaxolotl/booley/issues/1529) documents an unresolved indirect host-execution path through shared Git metadata.
 

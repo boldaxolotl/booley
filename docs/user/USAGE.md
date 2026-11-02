@@ -99,7 +99,8 @@ host verification, acknowledgment, and the final plain check.
 
 Start with Interactive Mode to explore and run individual Flows. Use
 `/booley-goal` in the same Developer Agent chat when a task needs mandatory
-completion conditions. Goal Mode supports both human guidance and unattended
+completion conditions, then clear the chat and type `/booley-goal start` to
+do the work. Goal Mode supports both human guidance and unattended
 work, with one linked worktree and Goal Branch per session; see
 [GOAL-MODE.md](GOAL-MODE.md).
 
