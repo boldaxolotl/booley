@@ -61,9 +61,8 @@ The skill has two invocations:
    rules and warnings. On refusal, resolve the named cause; never retry with
    weakened Goals just to obtain entry.
 7. Stop after a successful entry. Show the human the record ID, Goal Branch,
-   and worktree, then tell them to clear this chat (`/clear` in Claude Code,
-   `/new` in Codex) and type `/booley-goal start` (`$booley-goal start` in
-   Codex). Do not start the work in this conversation unless the human or the
+   and worktree, then tell them to clear this chat with `/clear` and type
+   `/booley-goal start` (`$booley-goal start` in Codex). Do not start the work in this conversation unless the human or the
    workflow that invoked this skill explicitly asks you to continue without
    clearing; then follow [Start](#start) from step 2.
 

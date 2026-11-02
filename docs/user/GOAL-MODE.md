@@ -14,9 +14,9 @@ shows every Goal is met.
    Goals, shows you the final Goals, then calls `goal_enter`. Booley creates a Goal Branch
    from the worktree's current HEAD and records that base for comparisons.
    The skill stops there.
-2. **Clear the chat.** Once entry succeeds, clear the conversation
-   (`/clear` in Claude Code, `/new` in Codex). The Goals live in the Goal Record, not in the chat, so
-   nothing is lost, and the work starts with a full context window.
+2. **Clear the chat.** Once entry succeeds, type `/clear`. The Goals live in
+   the Goal Record, not in the chat, so nothing is lost, and the work starts
+   with a full context window.
 3. **Type `/booley-goal start`.** In the same chat, now cleared, type
    `/booley-goal start` (`$booley-goal start` in Codex). The skill finds the active Goal Record, then does the
    work and gathers evidence until every Goal is met and it can finish. With
