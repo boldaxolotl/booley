@@ -23,7 +23,9 @@ def test_project_guidance_header_explains_editing_and_staging():
     assert "git add .booley/AGENTS.md" in header, (
         "generated guidance must explain staging the canonical instructions"
     )
-    usage = (Path(__file__).resolve().parents[2] / "docs/user/USAGE.md").read_text()
+    usage = (Path(__file__).resolve().parents[2] / "docs/user/USAGE.md").read_text(
+        encoding="utf-8"
+    )
     # The template covers all three layouts in setup terms: root links to the
     # canonical file, a separate Booley repository (e.g. Stealth), and the
     # explicitly requested hybrid tracked root copy. USAGE.md explains the first
