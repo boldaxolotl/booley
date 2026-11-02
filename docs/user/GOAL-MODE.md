@@ -1,7 +1,10 @@
 # Goal Mode
 
 Goal Mode gives one Developer Agent session mandatory, evidence-backed completion
-conditions.
+conditions. It is the recommended way to run long, unattended work: the Goals
+keep the Developer Agent within the limits you set, such as passing tests,
+area, and timing budgets, and the work is not done until Booley's own evidence
+shows every Goal is met.
 
 ## How to use Goal Mode
 
