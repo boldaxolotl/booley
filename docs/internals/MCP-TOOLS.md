@@ -776,7 +776,7 @@ category    = "rtl"
 4. If invocation arguments differ by Criterion, add literal `satisfies_args` prompt hints.
 5. For `per_target = true`, supply the expanded `<criterion>_<target>` key to `set_criterion()`.
 6. Flow/Specialist headline fields are derived centrally from `set_criterion()` evaluations; generic `mcp_tool` endpoints retain their result-field contract.
-7. Run `booley doctor`, then inspect the live catalog with `booley cheat --criteria`.
+7. Run `booley doctor`, then inspect the live catalog with `booley cheat --goals`.
 8. Exercise the endpoint diagnostically. To count in Goal Mode, its output must
    match a supported declared Goal; the project catalog cannot add a family.
 
@@ -861,7 +861,7 @@ The Criterion collision in check 6 is a hard validation failure reported by Doct
 
 ### Checking Project and Goal Entry Diagnostics
 
-Run `booley doctor` for shared Project, custom endpoint, and Criteria validation. It reports aggregate health; per-file validation diagnostics use the shared validator's logging. Use `booley cheat --criteria` to inspect the live Criteria catalog. Goal entry refusals cover clean linked-worktree requirements, occupied records, Goal shapes, and bound inputs; they do not reproduce Ticket Preflight.
+Run `booley doctor` for shared Project, custom endpoint, and Criteria validation. It reports aggregate health; per-file validation diagnostics use the shared validator's logging. Use `booley cheat --goals` to inspect the live Criteria catalog. Goal entry refusals cover clean linked-worktree requirements, occupied records, Goal shapes, and bound inputs; they do not reproduce Ticket Preflight.
 
 For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies or incompatible project Targets, then invoke the Flow directly when diagnosing its arguments or EDA integration. The per-Flow evidence and artifact contracts are documented in [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md).
 
@@ -872,7 +872,7 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 3. Invoke it in Interactive Mode with a known passing case and a known failing case.
 4. Use `booley flow <name> ...` for a Flow inside the Sandbox to isolate argument parsing and result interpretation from agent behavior; invoke a non-Flow endpoint through the Interactive Mode agent.
 5. For a direct Flow, confirm exit 0, 1, and 2 mean met, unmet, and unable to run respectively; for a non-Flow endpoint, confirm the agent reports those verdict states clearly.
-6. For Goal use, inspect `booley cheat --criteria`, enter with supported concrete Goals, and verify evidence publication and staleness with `goal_status`. A project-only Criterion is diagnostic unless it maps to a supported declared Goal; it cannot add a Goal family.
+6. For Goal use, inspect `booley cheat --goals`, enter with supported concrete Goals, and verify evidence publication and staleness with `goal_status`. A project-only Criterion is diagnostic unless it maps to a supported declared Goal; it cannot add a Goal family.
 
 ---
 

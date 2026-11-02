@@ -54,7 +54,7 @@ Each Goal has a short name such as `SIM:sim_fifo` or `REVIEW:rtl_bugs`, with
 details in parentheses, for example `SYNTH:synth_fifo (area increase ≤ 10%)`.
 You describe Goals in plain words; the Developer Agent writes the exact
 arguments. The [Goal catalog](#goal-catalog) lists every Goal, and
-`booley cheat --criteria` prints the threshold parameters.
+`booley cheat --goals` prints the threshold parameters.
 
 ## Thresholds
 
@@ -64,7 +64,7 @@ to the code the Goal Mode started from, such as "area grows at most 10%" or
 "cycle count drops at least 8%". For a relative limit, Booley runs the same
 Target on the starting code and compares the two results. Describe the limits
 you want; the Developer Agent looks up the exact parameter names with
-`booley cheat --criteria`.
+`booley cheat --goals`.
 
 For a SYNTH or FPGA Goal with a relative limit whose evidence includes a
 baseline, the long

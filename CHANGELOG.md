@@ -13,6 +13,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   Goals and stops after entry; clear the chat, then type `/booley-goal start`
   to do the work (`$booley-goal` in Codex). `/booley-goal start` also
   resumes a Goal Mode after a crash or reconnection.
+- `booley cheat --goals` now also prints the Goal catalog and threshold
+  parameters, which moved there from the separate Criteria section.
+  `--criteria` still works as an alias.
 - Booley MCP servers that Booley starts for its own agents no longer add rows
   to the Dashboard's Sessions view, and `booley doctor --deep`'s developer probe
   no longer starts a Booley MCP server or offers tools.
