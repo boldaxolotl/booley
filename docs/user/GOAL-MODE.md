@@ -191,7 +191,7 @@ you want to keep before you remove both the worktree and the branch.
 
 ## Watching, recovery, and parallel sessions
 
-Follow Goal Mode in the [Dashboard](USAGE.md#dashboard). A session waiting for
+Follow Goal Mode in the [Dashboard](USAGE.md#the-dashboard). A session waiting for
 your answer or a Goal change decision moves to NEEDS YOU. Each Goal's details
 show whether it is met, its evidence, its frozen Test Runs, and any baseline
 comparison.
