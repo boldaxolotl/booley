@@ -11,7 +11,7 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 - Goal Mode now takes two invocations. `/booley-goal <request>` sets up the
   Goals and stops after entry; clear the chat, then type `/booley-goal start`
-  (`$booley-goal start` in Codex) to do the work. `/booley-goal start` also
+  to do the work (`$booley-goal` in Codex). `/booley-goal start` also
   resumes a Goal Mode after a crash or reconnection.
 - Booley MCP servers that Booley starts for its own agents no longer add rows
   to the Dashboard's Sessions view, and `booley doctor --deep`'s developer probe

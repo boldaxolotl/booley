@@ -11,17 +11,19 @@ shows every Goal is met.
 1. **Set up the Goals.** Open a Developer Agent session and type
    `/booley-goal` followed by the work you want done. The skill helps you
    choose a clean linked worktree, [Goalsets](#goalsets), Targets, and ad-hoc
-   Goals, shows you the final Goals, then calls `goal_enter`. Booley creates a Goal Branch
-   from the worktree's current HEAD and records that base for comparisons.
-   The skill stops there.
+   Goals, shows you the final Goals, then calls `goal_enter`. Booley creates a
+   Goal Branch from the worktree's current HEAD and records that base for
+   comparisons. The skill stops there.
 2. **Clear the chat.** Once entry succeeds, type `/clear`. The Goals live in
    the Goal Record, not in the chat, so nothing is lost, and the work starts
    with a full context window.
 3. **Type `/booley-goal start`.** In the same chat, now cleared, type
-   `/booley-goal start` (`$booley-goal start` in Codex). The skill finds the active Goal Record, then does the
+   `/booley-goal start`. The skill finds the active Goal Record, then does the
    work and gathers evidence until every Goal is met and it can finish. With
    several active Goal Records in the Project, it asks you which one to work
    on.
+
+In Codex, type `$booley-goal` instead of `/booley-goal` in steps 1 and 3.
 
 ## Goals
 
