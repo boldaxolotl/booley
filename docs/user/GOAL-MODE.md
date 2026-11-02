@@ -7,8 +7,8 @@ conditions.
 
 1. **Set up the Goals.** Open a Developer Agent session and type
    `/booley-goal` followed by the work you want done. The skill helps you
-   choose a clean linked worktree, Goalsets, Targets, and ad-hoc Goals, shows
-   you the final Goals, then calls `goal_enter`. Booley creates a Goal Branch
+   choose a clean linked worktree, [Goalsets](#goalsets), Targets, and ad-hoc
+   Goals, shows you the final Goals, then calls `goal_enter`. Booley creates a Goal Branch
    from the worktree's current HEAD and records that base for comparisons.
    The skill stops there.
 2. **Clear the chat.** Once entry succeeds, clear the conversation
@@ -20,33 +20,13 @@ conditions.
    several active Goal Records in the Project, it asks you which one to work
    on.
 
-## Goalsets and entry
-
-Goalsets are Project-owned Markdown files under `.booley/goalsets/`.
-`booley init` creates missing `feature.md`, `bugfix.md`, `refactor.md`, and
-`verification.md` without rewriting existing files. Customize their prose to
-express your project's rules. The Developer Agent translates them into concrete Goals;
-Booley validates the arguments, not the prose. Each Goal records its origin.
-
-An optional `default.md` applies to every entry. Skipping it requires your
-explicit instruction and reason. Setup can create this file; initialization
-does not seed it. You can also add Goals for this particular change. Duplicate
-Goals merge to the stricter condition, and entry reports every merge.
-
-Goalsets, including `default.md`, come from the **Main Booley Directory**. In the Sandbox that is `BOOLEY_DIR`, even when the
-directory lives outside the main checkout. The Worktree Booley Directory inside
-the Goal worktree is not used: a `default.md` that exists only there does not
-apply. `work_dir` selects the worktree, not the Goalsets.
-
-A session started inside a worktree without `BOOLEY_DIR` can resolve
-that worktree's copy instead. Start the session with `BOOLEY_DIR` set
-to the Main Booley Directory; entry refuses a Booley Directory
-inside the Goal worktree.
+## Goals
 
 A Goal has one name, `CAPABILITY:target`, for example `SIM:sim_fifo`.
 Review Goals use `REVIEW:rtl_bugs`. Details such as tests, thresholds and the
 review requirement follow the name in parentheses. Goal arguments use the
-uppercase capability as `family`. Every Goal is mandatory. For example, a Goalset excerpt can ask for:
+uppercase capability as `family`. Every Goal is mandatory. For example, these
+Goal arguments ask for:
 
 ```json
 [
@@ -60,7 +40,8 @@ uppercase capability as `family`. Every Goal is mandatory. For example, a Goalse
 Use the [Goal catalog](#goal-catalog) and `booley cheat --criteria` for
 the public Goal names and threshold parameters. A new Target can be
 named at entry but stays unmet until it exists. Spec reviews name a spec file
-relative to the worktree.
+relative to the worktree. If two Goals ask for the same thing, entry keeps the
+stricter one and reports the merge.
 
 ## Threshold parameters
 
@@ -464,3 +445,12 @@ files plus dependencies) or `paths` (files relative to the Goal worktree). Examp
 Goal argument `family` uses the uppercase capability before the colon.
 Internal evidence keys and Project-defined evidence bindings are not Goal names.
 <!-- END GENERATED: criteria -->
+
+## Goalsets
+
+A Goalset is a Markdown file under `.booley/goalsets/` that stores a set of
+Goals you use often, written in plain prose. When you set up Goals, name a
+Goalset and the Developer Agent turns it into concrete Goals. `booley init`
+creates `feature.md`, `bugfix.md`, `refactor.md`, and `verification.md` for
+you to edit. An optional `default.md` applies to every Goal Mode unless you
+say to skip it.
