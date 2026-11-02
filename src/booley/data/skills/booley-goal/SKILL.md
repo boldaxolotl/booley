@@ -1,6 +1,6 @@
 ---
 name: booley-goal
-description: Enter, resume, and finish Booley Goal Mode for RTL work; translate Project Goalsets, gather evidence, and handle human decisions on Goal changes.
+description: Set up Booley Goal Mode for RTL work with `/booley-goal <request>`, then start, resume, and finish it with `/booley-goal start`; translate Project Goalsets, gather evidence, and handle human decisions on Goal changes.
 ---
 
 # Work in Goal Mode
@@ -8,6 +8,12 @@ description: Enter, resume, and finish Booley Goal Mode for RTL work; translate 
 Goal Mode binds this Developer Agent session to one linked worktree and Goal Branch.
 Only Booley Flow and Specialist evidence can meet its mandatory Goals.
 Use it for human-steered or unattended work inside the Sandbox.
+
+The skill has two invocations:
+
+- `/booley-goal <request>` sets up the Goals: follow [Enter](#enter), then stop.
+- `/booley-goal start` works on Goals that are already set up: follow
+  [Start](#start).
 
 ## Enter
 
@@ -46,14 +52,35 @@ Use it for human-steered or unattended work inside the Sandbox.
    Variant, seed, or number of seeds, write it as a Test Run selector; see
    [Goals that name Test Runs](#goals-that-name-test-runs). Set each Goal's `origin` to its Goalset name; ad-hoc Goals
    may omit it. Do not merge duplicates yourself: the tool chooses the stricter
-   Goal and reports merges. Show the final Goals to the human before entry; proceed when their
-   existing instruction settles the choices.
+   Goal and reports merges. Stop and show the final Goals to the human, then
+   wait for their confirmation before entry. Skip the wait only when the human
+   or the workflow that invoked this skill already approved these exact Goals.
 6. Call `goal_enter(work_dir=..., slug=..., goals=..., goalsets_used=...)`.
    Record the Goalsets used with **`goalsets_used`** (not `goals_used`). Include
    `default` there when used.
    Save the returned record ID and Goal Branch. Read and follow the returned
    rules and warnings. On refusal, resolve the named cause; never retry with
    weakened Goals just to obtain entry.
+7. Stop after a successful entry. Show the human the record ID, Goal Branch,
+   and worktree, then tell them to clear this chat with `/clear` and type
+   `/booley-goal start` (`$booley-goal start` in Codex). Do not start the work in this conversation unless the human or the
+   workflow that invoked this skill explicitly asks you to continue without
+   clearing; then follow [Start](#start) from step 2.
+
+## Start
+
+Use this section for `/booley-goal start`, usually in a chat that was just
+cleared after entry.
+
+1. Find the Goal worktree. Run `booley goal status --long` in the Sandbox and
+   read each active record's `Worktree:` line. With one active record, use
+   its worktree as `work_dir`. With several, ask the human which one to work
+   on. With none, say so and suggest `/booley-goal <request>` to set up Goals.
+2. Call `goal_status(work_dir=..., rules=true)`. Recover the record ID, Goal
+   Branch, Goals, evidence, and pending proposals, and follow the returned
+   rules.
+3. Continue with [Work and evidence](#work-and-evidence) until every Goal is
+   met, then [Finish](#finish-and-review).
 
 ## Goals that name Test Runs
 
@@ -210,8 +237,8 @@ otherwise it stays local. Paired Checkout summaries always stay local.
 
 ## Resume or abandon
 
-After a crash, reconnection, or context compaction, call
-`goal_status(work_dir=..., rules=true)` first. Recover the record ID, Goal
+After a crash, reconnection, or context compaction, follow [Start](#start):
+call `goal_status(work_dir=..., rules=true)` first. Recover the record ID, Goal
 Branch, Goals, evidence, pending proposals, and returned rules before editing.
 Resume the same saved proposal or Finish operation; do not create a new record
 or edit Goal state files to bypass recovery. If the tool refuses, resolve its

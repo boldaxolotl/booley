@@ -20,13 +20,13 @@ SAMPLE = """## Booley: Quick Reference
 
 preamble line
 
+### Goal Mode
+
+goal body
+
 ### Booley Flows
 
 flows body
-
-### Criteria
-
-crit body
 
 ### Sandbox & Docker
 
@@ -44,16 +44,16 @@ class TestSplitSections:
         preamble, bodies = cheatsheet.split_sections(SAMPLE)
         assert "## Booley: Quick Reference" in preamble
         assert "preamble line" in preamble
-        assert set(bodies) == {"Booley Flows", "Criteria", "Sandbox & Docker"}
+        assert set(bodies) == {"Booley Flows", "Goal Mode", "Sandbox & Docker"}
 
     def test_body_keeps_its_own_heading(self):
         _, bodies = cheatsheet.split_sections(SAMPLE)
-        assert bodies["Criteria"].startswith("### Criteria")
-        assert "crit body" in bodies["Criteria"]
+        assert bodies["Goal Mode"].startswith("### Goal Mode")
+        assert "goal body" in bodies["Goal Mode"]
 
     def test_bodies_do_not_bleed_into_each_other(self):
         _, bodies = cheatsheet.split_sections(SAMPLE)
-        assert "sandbox body" not in bodies["Criteria"]
+        assert "sandbox body" not in bodies["Goal Mode"]
 
     def test_no_headings_is_all_preamble(self):
         preamble, bodies = cheatsheet.split_sections("just text\n")
@@ -71,8 +71,8 @@ class TestSelect:
         assert cheatsheet.select(SAMPLE, []) == SAMPLE
 
     def test_single_section_drops_everything_else(self):
-        out = cheatsheet.select(SAMPLE, ["criteria"])
-        assert "crit body" in out
+        out = cheatsheet.select(SAMPLE, ["goals"])
+        assert "goal body" in out
         assert "sandbox body" not in out
         assert "## Booley: Quick Reference" not in out  # filtered view drops the title
 
@@ -82,8 +82,8 @@ class TestSelect:
 
     def test_missing_section_is_skipped_not_fatal(self):
         """A section the file doesn't carry must not blank out the ones it does."""
-        out = cheatsheet.select(SAMPLE, ["criteria", "missing"])
-        assert "crit body" in out
+        out = cheatsheet.select(SAMPLE, ["goals", "missing"])
+        assert "goal body" in out
 
 
 # ===========================================================================
@@ -133,9 +133,13 @@ class TestCheatCommand:
             assert getattr(args, slug) is False
 
     def test_flags_are_combinable(self):
-        args = self._parse(["cheat", "--criteria", "--sandbox"])
-        assert args.criteria and args.sandbox
+        args = self._parse(["cheat", "--goals", "--sandbox"])
+        assert args.goals and args.sandbox
         assert not args.flows
+
+    def test_criteria_flag_remains_a_goals_alias(self):
+        args = self._parse(["cheat", "--criteria"])
+        assert args.goals
 
     def test_docker_flag_remains_a_sandbox_alias(self):
         args = self._parse(["cheat", "--docker"])
@@ -159,11 +163,11 @@ class TestCheatCommand:
         assert "booley cheat --all" in default_out
         assert "\nCommands\n" not in default_out
 
-    @pytest.mark.parametrize("flags", (["--all"], ["--all", "--criteria"]))
+    @pytest.mark.parametrize("flags", (["--all"], ["--all", "--goals"]))
     def test_all_prints_whole_sheet(self, capsys, flags):
         assert tlr._cmd_cheat(self._parse(["cheat", *flags]), Path.cwd()) == 0
         out = capsys.readouterr().out
-        assert "Criteria" in out
+        assert "Goal catalog" in out
         assert "Sandbox & Docker" in out
         assert "Tips" not in out
         assert "Architecture" not in out
@@ -172,7 +176,6 @@ class TestCheatCommand:
             < out.index("\nGoal Mode\n")
             < out.index("\nBooley Flows\n")
             < out.index("\nSpecialists\n")
-            < out.index("\nCriteria\n")
             < out.index("\nProject Files\n")
         )
 
@@ -186,7 +189,7 @@ class TestCheatCommand:
         out = capsys.readouterr().out
         assert "\nCommands\n" in out
         assert "\nProject Files\n" in out
-        assert "\nCriteria\n" not in out
+        assert "\nGoal Mode\n" not in out
         assert "\nSandbox & Docker\n" not in out
 
     def test_commands_include_configured_agent_chat(self, capsys):
@@ -205,8 +208,8 @@ class TestCheatCommand:
             < out.index("Host-only commands")
         )
 
-    def test_criteria_flag_narrows_output(self, capsys):
-        assert tlr._cmd_cheat(self._parse(["cheat", "--criteria"]), Path.cwd()) == 0
+    def test_goals_flag_narrows_output(self, capsys):
+        assert tlr._cmd_cheat(self._parse(["cheat", "--goals"]), Path.cwd()) == 0
         out = capsys.readouterr().out
         assert "ELAB:{target}" in out  # live-spliced criteria table survives filtering
         assert "SYNTH:{target}" in out

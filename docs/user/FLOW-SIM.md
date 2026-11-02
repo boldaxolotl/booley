@@ -225,7 +225,7 @@ Runs with the same declared arguments and environment, run by a Goal-bound
   record them.
 
 When a simulation Goal is met: see
-[Goals that name Test Runs](GOAL-MODE.md#goals-that-name-test-runs).
+[Simulation, Cycle Count, and coverage Goals](GOAL-MODE.md#simulation-cycle-count-and-coverage-goals).
 
 ## Elaboration checks
 

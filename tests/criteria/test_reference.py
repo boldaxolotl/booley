@@ -55,7 +55,7 @@ def test_committed_block_matches_source(doc: Path) -> None:
     )
 
 
-# GOAL-MODE.md links to `booley cheat --criteria` for the full threshold tables
+# GOAL-MODE.md links to `booley cheat --goals` for the full threshold tables
 # instead of embedding them, so only the cheatsheet carries this block.
 _PARAMS_EMBEDDED_DOCS = [cheatsheet_path()]
 

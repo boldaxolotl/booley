@@ -9,6 +9,13 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Goal Mode now takes two invocations. `/booley-goal <request>` sets up the
+  Goals and stops after entry; clear the chat, then type `/booley-goal start`
+  to do the work (`$booley-goal` in Codex). `/booley-goal start` also
+  resumes a Goal Mode after a crash or reconnection.
+- `booley cheat --goals` now also prints the Goal catalog and threshold
+  parameters, which moved there from the separate Criteria section.
+  `--criteria` still works as an alias.
 - When you open a terminal in a fresh Sandbox or GitHub Codespace, the
   Dashboard no longer takes over the panel a moment later. When a terminal is already open, the
   Booley Sandbox Integration extension starts the Dashboard in its own tab and

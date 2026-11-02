@@ -273,7 +273,8 @@ Each step is also a standalone how-to file in the skill's `steps/` directory if
 you'd rather write it by hand.
 
 Once `booley doctor` (and `--deep`) is green, you're set up. Head to
-[GOAL-MODE.md](GOAL-MODE.md) to enter your first Goal Mode with `/booley-goal`, or start an
+[GOAL-MODE.md](GOAL-MODE.md) to set up your first Goal Mode with `/booley-goal` and run it
+with `/booley-goal start`, or start an
 [Interactive Mode](USAGE.md#interactive-mode) session.
 
 ### A new IP: greenfield mode
@@ -307,7 +308,8 @@ to match the current interface, keeping it buildable and behaviorally failing
 the selected smoke Test. Re-run the Doctor check
 whenever the shape of the project changes (new Target, new flow, new
 constraints). From there, drive development the normal way: see
-[GOAL-MODE.md](GOAL-MODE.md) to enter your first Goal Mode with `/booley-goal`, or start an
+[GOAL-MODE.md](GOAL-MODE.md) to set up your first Goal Mode with `/booley-goal` and run it
+with `/booley-goal start`, or start an
 [Interactive Mode](USAGE.md#interactive-mode) session.
 
 ## See also

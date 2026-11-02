@@ -7,7 +7,7 @@ changes, constraint edits, and mandatory Session Summary.
 
 ## Inspect and verify
 
-Continue in the linked worktree that owns the Goal Record. `/booley-goal`
+Continue in the linked worktree that owns the Goal Record. `/booley-goal start`
 guides the workflow; `goal_status(rules=true)` returns the entry rules again
 when needed. The human can also inspect a snapshot with:
 

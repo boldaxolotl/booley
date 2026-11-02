@@ -937,7 +937,7 @@ period is unknown.
 Timing thresholds (`fpga_impl_ok`) gate on these per-clock values. A **flat**
 `critical_path_ps_max` / `fmax_mhz_min` gates the timing-worst clock, so every
 clock must pass, while a **clock-scoped** `clk_i.fmax_mhz_min` gates just
-clock `clk_i` (see [GOAL-MODE.md](../user/GOAL-MODE.md#threshold-parameters)).
+clock `clk_i` (see [GOAL-MODE.md](../user/GOAL-MODE.md#thresholds)).
 
 ### Verdict semantics
 

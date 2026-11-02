@@ -4,8 +4,10 @@ Apply these rules to every mission area that uses a Goal child.
 
 - The host operator starts a long-lived Codex Goal child in the Sandbox with
   `booley session enter -- codex ...`, then sends `$booley-goal` and the area's
-  mission prompt. Claude children use `/booley-goal`. The operator never
-  implements the child's design work. Read
+  mission prompt. The skill stops after entry; the operator then clears the
+  child's chat with `/clear` and sends `$booley-goal start` to begin the work.
+  Claude children use `/booley-goal` and `/booley-goal start`. The operator
+  never implements the child's design work. Read
   `src/booley/data/skills/booley-goal/SKILL.md` (including `review.md`) and
   `docs/user/GOAL-MODE.md` from the candidate build for the workflow.
 - The operator is the deciding human for disposable QA proposals: answer entry

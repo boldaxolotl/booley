@@ -53,9 +53,10 @@ layer cache.
 
 ### Goal Mode
 
-Use `/booley-goal` in a Developer Agent chat. One session owns a clean linked
-worktree and Goal Branch; every Goal is mandatory and judged by Flow or
-Specialist evidence at the current code.
+Type `/booley-goal <request>` in a Developer Agent chat to set up the Goals,
+clear the chat, then type `/booley-goal start` to do the work. One session
+owns a clean linked worktree and Goal Branch; every Goal is mandatory and
+judged by Flow or Specialist evidence at the current code.
 
 | Step/tool | Purpose |
 |-----------|---------|
@@ -105,95 +106,7 @@ Goal is decided by its floors alone, whether or not its Test Runs passed.
 `goal_status` lists the frozen Test Runs with a rerun command per failure. A
 `--diagnostic` run records no Test Run outcome, frozen or not.
 
-### Booley Flows
-
-<!-- BEGIN GENERATED: flows -->
-Deterministic end-to-end orchestration; no LLM:
-
-| Booley Flow | Purpose | Sets |
-|--------|---------|------|
-| `sim` | Run RTL simulation for one or more Targets | `ELAB:{target}`, `SIM:{target}`, `CYCLE_COUNT:{target}`, `COVERAGE:{target}` |
-| `lint` | Run lint for one or more Targets | `LINT:{target}` |
-| `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `SYNTH:{target}` |
-| `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `FPGA:{target}` |
-
-Common controls: repeat `--target` or use comma-separated values; `--target a --target b,c` preserves the order `a`, `b`, `c`, and duplicate resolved Targets are rejected. MCP keeps one comma-separated `target` string. `--dry-run` returns a normalized plan without executing EDA; `booley flow <name> --help` shows the full contract.
-
-Key Flow-specific controls:
-
-- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. Repeat `--test <test-run>` for an exact ordered suite or use `--tests-file <path>`; a Test Run is `test`, `test+variant`, `test@seed`, `test+variant@seed`, or `test[+variant]@xN` for N drawn seeds, and `--seed <N>|random` sets or draws the seed of every selected Test Run; there is no CLI `--skip`, and configured skips apply only to unfiltered selection. MCP passes the same suite as a `test` array. Resume one exact durable Simulation Campaign with `--resume-from <exact-manifest.json>` (optionally with `--dry-run`): Cocotb retries the whole batch; a coverage Campaign resumes only after its collection finished (otherwise exit 2: start a new `--coverage` run). `--coverage` / `--cov` collects a native Coverage Campaign, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
-- `lint`: `--scope <file,...>` filters reported findings to selected files
-- `synth`: `--baseline <ref>` compares metrics against a git revision; physical Targets must own an SDC fileset that creates a clock
-- `fpga`: `--baseline <ref>` compares metrics against a git revision; `--ppa-profile compact|balanced|max_frequency` selects portable optimization intent; `--no-cache` forces a fresh implementation
-<!-- END GENERATED: flows -->
-
-### Specialists
-
-<!-- BEGIN GENERATED: specialists -->
-LLM-powered Specialists running in scoped, isolated workspaces:
-
-Ask your Developer Agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--model`, `--max-turns`, and `--timeout` are CLI-only controls.
-
-For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's Goal-bound MCP calls with `work_dir`.
-
-| Specialist | Purpose | Sets | Modifies code |
-|------------|---------|------|:-------------:|
-| `coverage_analyst` | Explain one exact coverage.json Campaign and propose advisory next steps | — | — |
-| `mutation_tester` | Proposal-locked mutation testing: creator selects exact replacements, tester builds isolated variants | `MUTATION:{target}` | — |
-| `reviewer` | Single-focus code review: reports issues by severity | `REVIEW:rtl_spec`, `REVIEW:rtl_bugs`, `REVIEW:rtl_protocol`, `REVIEW:tb_quality`, `REVIEW:rtl_security`, `REVIEW:rtl_optimization`, `REVIEW:rtl_code_style` | — |
-
-#### `coverage_analyst`
-
-Call the `coverage_analyst` Specialist from your Developer Agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Goal Mode, screened Waiver Candidates support a proposed Goal change, which needs human approval. Finish requires every Goal met; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
-
-#### `reviewer`
-
-Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Goal Mode, `done` reports findings without requiring fixes; the review package includes open findings. `clean` requires every finding to be fixed or waived with a justification.
-
-Interactive source review accepts Verilog/SystemVerilog (.v, .vh, .sv, .svh), plus Python (.py) and explicitly scoped C/C++ testbench sources and headers (.c, .cc, .cpp, .cxx, .h, .hh, .hpp, .hxx) for category=tb. Goal Mode also accepts other explicitly scoped support files. Sim C/C++ harness inputs count as TB for isolation and cannot be mutation scope. Declared opposite-category sources are refused in either mode; unregistered scoped sources retain the registration warning and receive only an exact per-file category grant.
-
-The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
-
-Call the `reviewer` Specialist from your Developer Agent session with `category="<category>"` and `focus="<focus>"`.
-
-| Category | Focus | What it checks | Sets |
-|----------|-------|----------------|------|
-| `rtl` | `bugs` | Functional bug patterns, synthesis hazards, reset/width/signing mistakes, and ifdef/config consistency | `REVIEW:rtl_bugs` |
-| `rtl` | `protocol` | Bus/protocol rule compliance, handshake behavior, ordering, and clock-domain crossings (CDC) | `REVIEW:rtl_protocol` |
-| `rtl` | `spec` | Spec compliance: the RTL implements what the change request/spec requires, no more and no less | `REVIEW:rtl_spec` |
-| `rtl` | `code_style` | Comments, naming, readability, maintainability, magic values, and assertion/cover-point quality | `REVIEW:rtl_code_style` |
-| `rtl` | `optimization` | Unused/dead RTL and strict power/performance/area improvements with no functional or engineering trade-off | `REVIEW:rtl_optimization` |
-| `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `REVIEW:rtl_security` |
-| `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `REVIEW:tb_quality` |
-
-**Interactive Mode:** also pass `scope="<file,...>"`. Add `spec="<path>"` (required for the `spec` focus) or `steer=["<context>"]` for context. `dry_run=true` previews the call. Each new review replaces the previous findings.
-
-**Goal Mode:** the Review Goal fixes scope and spec, so `scope`, `spec` and `steer` are refused. Declare each Review Goal with exactly one `target` or `paths` (see the Goal catalog).
-
-**Verify fixes (both modes):** after fixing findings, call `reviewer` with `verify=true` (CLI: `--verify`). It rechecks only the latest review's open findings, finds nothing new, and passes when none remain open. To argue a finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: `--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts or rejects each. No other argument is accepted with verify. After repeated failed verifies, Goal Mode stops and asks you to change or abandon the Goal.
-
-#### `mutation_tester`
-
-Proposal-locked mutation testing. A read-only LLM creator returns exact source replacements; Booley runs a pristine baseline, then compiles and tests each replacement in isolation. It does not parse HDL or inject runtime selectors.
-
-**Mutation campaign modes:**
-
-| Campaign | Goal arguments | Interactive Mode arguments |
-|----------|-----------------------------------------|------------------------|
-| Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal arguments)_ — the same 10-of-10 campaign |
-| Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |
-| Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `count="auto"`; add `min_detected=K` for an explicit threshold |
-
-`dry_run=true` validates Target metadata and prints the source-size breakdown and proposed auto count without invoking a Specialist or simulator.
-
-Call the `mutation_tester` Specialist from your Developer Agent session: `scope="<rtl-file,...>"` chooses mutation sites; `target="<sim-target>"` chooses exactly one complete runnable Target suite; `steer=["<context>"]` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `regen_lock=true`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
-<!-- END GENERATED: specialists -->
-
-Booley validates exact replacements and compiles each in isolation. It emits a
-self-contained campaign manifest with durable baseline/per-mutant logs, source
-variants, and the first public test that killed each detected mutant.
-
-### Criteria
+#### Goal catalog
 
 <!-- BEGIN GENERATED: criteria -->
 | Goal | Requirement | Evidence producer |
@@ -226,7 +139,7 @@ Goal argument `family` uses the uppercase capability before the colon.
 Internal evidence keys and Project-defined evidence bindings are not Goal names.
 <!-- END GENERATED: criteria -->
 
-**Threshold parameters:**
+#### Threshold parameters
 
 <!-- BEGIN GENERATED: criteria-params -->
 `synth` and `fpga` Goals name each Target directly and accept metric thresholds. Four flavours apply per metric: two absolute, two relative to the Goal base commit:
@@ -321,6 +234,94 @@ BRAM/DSP/utilization are not clock-scopable):
 
 `critical_path_ps_max` ⊕ `fmax_mhz_min` is mutually exclusive **per clock**.
 Example: `{"family": "SYNTH", "target": "synth_core", "thresholds": {"clk_i.fmax_mhz_min": 400, "clk_2x.critical_path_ps_max": 5000}}`.
+
+### Booley Flows
+
+<!-- BEGIN GENERATED: flows -->
+Deterministic end-to-end orchestration; no LLM:
+
+| Booley Flow | Purpose | Sets |
+|--------|---------|------|
+| `sim` | Run RTL simulation for one or more Targets | `ELAB:{target}`, `SIM:{target}`, `CYCLE_COUNT:{target}`, `COVERAGE:{target}` |
+| `lint` | Run lint for one or more Targets | `LINT:{target}` |
+| `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `SYNTH:{target}` |
+| `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `FPGA:{target}` |
+
+Common controls: repeat `--target` or use comma-separated values; `--target a --target b,c` preserves the order `a`, `b`, `c`, and duplicate resolved Targets are rejected. MCP keeps one comma-separated `target` string. `--dry-run` returns a normalized plan without executing EDA; `booley flow <name> --help` shows the full contract.
+
+Key Flow-specific controls:
+
+- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. Repeat `--test <test-run>` for an exact ordered suite or use `--tests-file <path>`; a Test Run is `test`, `test+variant`, `test@seed`, `test+variant@seed`, or `test[+variant]@xN` for N drawn seeds, and `--seed <N>|random` sets or draws the seed of every selected Test Run; there is no CLI `--skip`, and configured skips apply only to unfiltered selection. MCP passes the same suite as a `test` array. Resume one exact durable Simulation Campaign with `--resume-from <exact-manifest.json>` (optionally with `--dry-run`): Cocotb retries the whole batch; a coverage Campaign resumes only after its collection finished (otherwise exit 2: start a new `--coverage` run). `--coverage` / `--cov` collects a native Coverage Campaign, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
+- `lint`: `--scope <file,...>` filters reported findings to selected files
+- `synth`: `--baseline <ref>` compares metrics against a git revision; physical Targets must own an SDC fileset that creates a clock
+- `fpga`: `--baseline <ref>` compares metrics against a git revision; `--ppa-profile compact|balanced|max_frequency` selects portable optimization intent; `--no-cache` forces a fresh implementation
+<!-- END GENERATED: flows -->
+
+### Specialists
+
+<!-- BEGIN GENERATED: specialists -->
+LLM-powered Specialists running in scoped, isolated workspaces:
+
+Ask your Developer Agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--model`, `--max-turns`, and `--timeout` are CLI-only controls.
+
+For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's Goal-bound MCP calls with `work_dir`.
+
+| Specialist | Purpose | Sets | Modifies code |
+|------------|---------|------|:-------------:|
+| `coverage_analyst` | Explain one exact coverage.json Campaign and propose advisory next steps | — | — |
+| `mutation_tester` | Proposal-locked mutation testing: creator selects exact replacements, tester builds isolated variants | `MUTATION:{target}` | — |
+| `reviewer` | Single-focus code review: reports issues by severity | `REVIEW:rtl_spec`, `REVIEW:rtl_bugs`, `REVIEW:rtl_protocol`, `REVIEW:tb_quality`, `REVIEW:rtl_security`, `REVIEW:rtl_optimization`, `REVIEW:rtl_code_style` | — |
+
+#### `coverage_analyst`
+
+Call the `coverage_analyst` Specialist from your Developer Agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Goal Mode, screened Waiver Candidates support a proposed Goal change, which needs human approval. Finish requires every Goal met; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
+
+#### `reviewer`
+
+Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Goal Mode, `done` reports findings without requiring fixes; the review package includes open findings. `clean` requires every finding to be fixed or waived with a justification.
+
+Interactive source review accepts Verilog/SystemVerilog (.v, .vh, .sv, .svh), plus Python (.py) and explicitly scoped C/C++ testbench sources and headers (.c, .cc, .cpp, .cxx, .h, .hh, .hpp, .hxx) for category=tb. Goal Mode also accepts other explicitly scoped support files. Sim C/C++ harness inputs count as TB for isolation and cannot be mutation scope. Declared opposite-category sources are refused in either mode; unregistered scoped sources retain the registration warning and receive only an exact per-file category grant.
+
+The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
+
+Call the `reviewer` Specialist from your Developer Agent session with `category="<category>"` and `focus="<focus>"`.
+
+| Category | Focus | What it checks | Sets |
+|----------|-------|----------------|------|
+| `rtl` | `bugs` | Functional bug patterns, synthesis hazards, reset/width/signing mistakes, and ifdef/config consistency | `REVIEW:rtl_bugs` |
+| `rtl` | `protocol` | Bus/protocol rule compliance, handshake behavior, ordering, and clock-domain crossings (CDC) | `REVIEW:rtl_protocol` |
+| `rtl` | `spec` | Spec compliance: the RTL implements what the change request/spec requires, no more and no less | `REVIEW:rtl_spec` |
+| `rtl` | `code_style` | Comments, naming, readability, maintainability, magic values, and assertion/cover-point quality | `REVIEW:rtl_code_style` |
+| `rtl` | `optimization` | Unused/dead RTL and strict power/performance/area improvements with no functional or engineering trade-off | `REVIEW:rtl_optimization` |
+| `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `REVIEW:rtl_security` |
+| `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `REVIEW:tb_quality` |
+
+**Interactive Mode:** also pass `scope="<file,...>"`. Add `spec="<path>"` (required for the `spec` focus) or `steer=["<context>"]` for context. `dry_run=true` previews the call. Each new review replaces the previous findings.
+
+**Goal Mode:** the Review Goal fixes scope and spec, so `scope`, `spec` and `steer` are refused. Declare each Review Goal with exactly one `target` or `paths` (see the Goal catalog).
+
+**Verify fixes (both modes):** after fixing findings, call `reviewer` with `verify=true` (CLI: `--verify`). It rechecks only the latest review's open findings, finds nothing new, and passes when none remain open. To argue a finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: `--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts or rejects each. No other argument is accepted with verify. After repeated failed verifies, Goal Mode stops and asks you to change or abandon the Goal.
+
+#### `mutation_tester`
+
+Proposal-locked mutation testing. A read-only LLM creator returns exact source replacements; Booley runs a pristine baseline, then compiles and tests each replacement in isolation. It does not parse HDL or inject runtime selectors.
+
+**Mutation campaign modes:**
+
+| Campaign | Goal arguments | Interactive Mode arguments |
+|----------|-----------------------------------------|------------------------|
+| Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal arguments)_ — the same 10-of-10 campaign |
+| Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |
+| Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `count="auto"`; add `min_detected=K` for an explicit threshold |
+
+`dry_run=true` validates Target metadata and prints the source-size breakdown and proposed auto count without invoking a Specialist or simulator.
+
+Call the `mutation_tester` Specialist from your Developer Agent session: `scope="<rtl-file,...>"` chooses mutation sites; `target="<sim-target>"` chooses exactly one complete runnable Target suite; `steer=["<context>"]` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `regen_lock=true`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
+<!-- END GENERATED: specialists -->
+
+Booley validates exact replacements and compiles each in isolation. It emits a
+self-contained campaign manifest with durable baseline/per-mutant logs, source
+variants, and the first public test that killed each detected mutant.
 
 ### Targets
 

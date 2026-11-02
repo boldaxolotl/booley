@@ -168,9 +168,10 @@ file and `.booley/tests.toml` for you. The background is in
 
 **Work that must be finished properly?** When a task has conditions that must
 hold before it counts as done (all tests pass, a clean review, area under a
-limit), type `/booley-goal` and describe the work. Booley then won't let the
-agent declare it done until each condition is met with evidence. See
-[GOAL-MODE.md](GOAL-MODE.md).
+limit), type `/booley-goal` and describe the work, confirm the Goals, clear the
+chat, and type `/booley-goal start`. Booley then won't let the agent declare it
+done until each condition is met with evidence. See
+[GOAL-MODE.md](GOAL-MODE.md#how-to-use-goal-mode).
 
 ### Booley skills
 
@@ -220,15 +221,24 @@ shows peak memory and run time per Target. How to read a result:
 ### The dashboard
 
 The Dashboard opens in a VS Code terminal when you attach to the container (or
-run `booley dashboard` in a container terminal). It has two windows; press `←`
-or `→` to switch:
+run `booley dashboard` in a container terminal); turn the automatic start off
+with `[sandbox].dashboard=false`. The Dashboard has two windows; press `←` or
+`→` to switch:
 
-- **Sessions:** every Developer Agent session and what it is doing. Sessions
-  waiting for you are grouped under **NEEDS YOU**.
-- **Jobs:** running and finished Jobs, filterable by session.
+- **Sessions:** every Developer Agent session and what its agent last
+  reported: working, waiting for a tool call, or waiting for your input.
+  Sessions waiting for your input or a Goal change decision are grouped under
+  **NEEDS YOU**, and the tab reads `Sessions N◆` while N sessions need you.
+- **Jobs:** Running, Finished (the newest 50), or All Jobs, filterable by
+  session.
 
-Click a report or log path to open it in the editor. The footer shows the keys
-you can use. Details: [GOAL-MODE.md](GOAL-MODE.md#dashboard).
+Click a report, artifact, or log path to open it in the editor. Press `↑` on
+the first row to reach the top bar with the tabs, filters, and Help; the footer
+shows the keys you can use.
+
+Sessions have short handles such as `S17`; Jobs carry their kind, as in
+`J-SIM25` or `J-SYN34`. A session resumed after a long pause may get a new
+handle.
 
 ### Several agents at once
 

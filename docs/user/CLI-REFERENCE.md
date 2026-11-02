@@ -37,8 +37,7 @@ booley worktree new <name>        # .booley/worktrees/<name>, Paired Checkout or
 # Quick reference
 booley cheat                      # available sections (same as --list)
 booley cheat --all                # the whole cheatsheet
-booley cheat --goals              # Goal Mode workflow
-booley cheat --criteria           # evidence catalog (combine sections)
+booley cheat --goals              # Goal Mode, Goal catalog, and thresholds
 
 # Health checks
 booley doctor                     # check setup

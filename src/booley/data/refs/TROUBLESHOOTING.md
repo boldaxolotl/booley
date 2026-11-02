@@ -336,7 +336,7 @@ user input until the tool finishes.
 
 Simulation, Cycle Count and coverage Goals require exact Test Runs that Goal
 Mode freezes at entry
-([Goals that name Test Runs](https://booley.dev/docs/goal-mode/#goals-that-name-test-runs)).
+([Simulation, Cycle Count, and coverage Goals](https://booley.dev/docs/goal-mode/#simulation-cycle-count-and-coverage-goals)).
 `goal_status` shows each Goal's frozen Test Runs with their outcomes, and one
 of these reasons when the Goal is unmet. A coverage Goal is decided by its
 coverage floors alone, so it never shows `goal-test-run-incomplete`,

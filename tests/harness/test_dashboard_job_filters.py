@@ -26,7 +26,7 @@ from tests.harness.test_dashboard import STAMP, open_session, snapshot
 # Positions in the Jobs window's bar: Sessions, Jobs, Running, Finished, All, owner, Help.
 RUNNING, FINISHED, ALL, OWNER = 2, 3, 4, 5
 ALIAS_KEY = "worktree:path:/fixture/0"
-GOAL_MODE_DOC = Path(__file__).parents[2] / "docs" / "user" / "GOAL-MODE.md"
+DASHBOARD_DOC = Path(__file__).parents[2] / "docs" / "user" / "USAGE.md"
 
 
 @pytest.fixture(autouse=True)
@@ -365,7 +365,7 @@ async def test_no_jobs_filter_text_says_recent_or_results():
                 await focus_bar(app, pilot)
                 await choose(app, pilot, index)
                 texts += [bar_text(app), orientation(app), empty_text(app)]
-    excerpt = GOAL_MODE_DOC.read_text(encoding="utf-8")
+    excerpt = DASHBOARD_DOC.read_text(encoding="utf-8")
     excerpt = excerpt.split("The Dashboard has two windows")[1].split("Sessions have short")[0]
     texts.append(excerpt)
     assert [text for text in texts if word.search(text)] == []

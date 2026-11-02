@@ -1,8 +1,8 @@
 """Split the quick-reference cheatsheet into flag-addressable sections.
 
 ``booley cheat`` lists the available sections by default; ``--all`` prints
-the whole sheet. Section flags (``--criteria``, ``--flows``, ...) select
-individual slices: the Goal skill only needs the criteria catalog, a user
+the whole sheet. Section flags (``--goals``, ``--flows``, ...) select
+individual slices: the Goal skill only needs the Goal Mode section, a user
 debugging a container only needs the Sandbox & Docker table.
 
 Sections are the ``### `` headings of ``data/cheatsheet.md``; the table below
@@ -34,14 +34,18 @@ class Section:
 
 SECTIONS: tuple[Section, ...] = (
     Section("commands", "Commands", "Public `booley` subcommands"),
-    Section("goals", "Goal Mode", "Goals, Goalsets, and session lifecycle"),
+    Section(
+        "goals",
+        "Goal Mode",
+        "Goals, Goalsets, Goal catalog, threshold params, and session lifecycle",
+        aliases=("criteria",),
+    ),
     Section("flows", "Booley Flows", "Deterministic end-to-end orchestration"),
     Section(
         "specialists",
         "Specialists",
         "LLM specialists, review focuses, and mutation goals",
     ),
-    Section("criteria", "Criteria", "Criterion catalog + threshold params"),
     Section("targets", "Targets", "FuseSoC Targets and `booley targets`"),
     Section(
         "project",
