@@ -16,7 +16,7 @@ document: Free browser demo
   <ul>
     <li>The Codespace runs on your GitHub account's free monthly Codespaces allowance. The first launch takes 3-4 minutes while the container image builds.</li>
     <li>The agent runs OpenAI's GPT-6 Luna through the Booley demo gateway, on the Booley maintainer's account. You run <code>booley-demo-claim</code> in a terminal: it shows a short notice, you agree and sign in with GitHub to get a demo token. The gateway logs usage numbers, never your prompts or code.</li>
-    <li>Each token has a monthly allowance: plenty to run a simulation, read a waveform and synthesize the core. The Zbb Goal Mode walkthrough is a bigger job and may use it up.</li>
+    <li>Each GitHub account gets $1 of demo usage per month.</li>
     <li><a href="https://github.com/boldaxolotl/booley-prj-picorv32/blob/main/CODESPACES.md">CODESPACES.md</a> opens in the Codespace and walks you through the rest.</li>
   </ul>
 </section>
