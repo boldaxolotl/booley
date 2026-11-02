@@ -66,12 +66,10 @@ Target on the starting code and compares the two results. Describe the limits
 you want; the Developer Agent looks up the exact parameter names with
 `booley cheat --goals`.
 
-For a SYNTH or FPGA Goal with a relative limit whose evidence includes a
-baseline, the long
-`booley goal status` view (one Goal), the `goal_status` tool, the Dashboard's
-Goal details and the Review Package also show the baseline revision and, per
-thresholded metric, `baseline → current` with the signed change and percentage,
-for example
+For a SYNTH or FPGA Goal with a relative limit, the Dashboard's Goal details
+and the Review Package also show the baseline revision and, per thresholded
+metric, `baseline → current` with the signed change and percentage, for
+example
 `baseline 0123456789ab → current: area 1,200 → 1,050 μm² (-150, -12.5%)`.
 Absolute Goals and Goals without baseline evidence show their usual metrics.
 
@@ -126,14 +124,12 @@ not count (see [Working with evidence](#working-with-evidence)).
 If you remove, change, or skip a frozen Test, its Goal stays unmet until you
 approve a Goal change. See
 [A Goal that names Test Runs stays unmet](TROUBLESHOOTING.md#a-goal-that-names-test-runs-stays-unmet)
-for each reason `goal_status` can show.
+for each reason a Goal can stay unmet.
 
-**Seeing the frozen Test Runs.** `goal_status`, `booley goal status` and the
-Dashboard list each Goal's frozen Test Runs with their outcomes, the parts
-still pending, the Test Runs resolved after entry, and a rerun command for every
-failed Test Run. The Review Package computes the same outcomes from its frozen
-evidence and lists each frozen Test Run with its rerun command. It retains the
-contributing observations, so later runs do not change a saved package.
+**Seeing the frozen Test Runs.** The Dashboard's Goal details list each Goal's
+frozen Test Runs with their outcomes, the parts still pending, the Test Runs
+resolved after entry, and a rerun command for every failed Test Run. The
+Review Package lists the same, and later runs do not change a saved package.
 
 ## Working with evidence
 
@@ -141,7 +137,7 @@ Only Booley's own Flows and Specialists can meet a Goal. The Developer Agent
 runs them through Goal-bound MCP calls that name the Goal worktree as
 `work_dir`. Shell output, or the agent saying "done", does not count, and
 CLI runs never record Goal evidence: a `booley flow sim` you run yourself is
-just a look. After code changes a Goal may need a fresh run; `goal_status` shows which.
+just a look. After code changes a Goal may need a fresh run; the Dashboard shows which.
 
 Some Project files decide how evidence is produced: `booley.toml`,
 `FUSESOC_IGNORE`, and the Project's `hooks`, `.managed`, `generators`, and
@@ -161,8 +157,8 @@ at the Goal Branch's base contents. Adding a SIM Goal through an approved Goal
 Change schedules its baseline too. Entry returns while the Job runs; status
 shows the baseline as pending.
 
-`goal_status`, `booley goal status`, the Dashboard's Goal details and the Review
-Package show a summary for each SIM Goal. Every Test Run other than
+The Dashboard's Goal details and the Review Package show a summary for each
+SIM Goal. Every Test Run other than
 `pass -> pass` is named, with its Variant and seed:
 
 | Transition | Meaning |
@@ -198,8 +194,8 @@ the Goal's baseline Target at the Goal Branch's base contents, with the
 synthesis recipe frozen at that entry or change. Absolute SYNTH Goals get none.
 
 At most one baseline Job per Flow runs at a time, SIM included; others wait,
-and the wait does not count against a Job's time budget. `goal_status` and
-`booley goal status` print `baseline: pending`, `baseline: complete` or
+and the wait does not count against a Job's time budget. `booley goal status`
+prints `baseline: pending`, `baseline: complete` or
 `baseline: unavailable (<reason>)` for each such Goal. An interrupted,
 timed-out, infrastructure-failed or recipe-mismatched Job is unavailable and
 stores no result. Like simulation baselines, it never changes a Goal's met,
@@ -257,8 +253,8 @@ you want to keep before you remove both the worktree and the branch.
 
 The same Goal session can work with your guidance or unattended. If intent is
 missing or a Goal cannot be met, the Developer Agent explains what decision it needs.
-After a crash or reconnection, type `/booley-goal start`; it calls
-`goal_status(rules=true)` in the Goal worktree before continuing. Saved proposal IDs and Finish operation IDs
+After a crash or reconnection, type `/booley-goal start`; the agent reloads the
+Goal Mode state before continuing. Saved proposal IDs and Finish operation IDs
 allow recovery without duplicating a decision or completion. A Finish result
 of `revalidation_required` needs fresh evidence and a new summary and operation ID.
 
@@ -273,8 +269,8 @@ Jobs share the Project's [admission caps](CONFIG.md#jobs--concurrency-jobs).
 
 For scripted inspection, `booley goal status` shows this worktree's Goal Mode,
 or every active Goal Mode in the Project when this worktree hosts none. In a
-worktree without an active Goal Mode, `booley goal status` and `goal_status`
-also show its most recently ended Goal Record: Goal id, state, end time, the
+worktree without an active Goal Mode, `booley goal status` also shows its most
+recently ended Goal Record: Goal id, state, end time, the
 failure reason of a failed record, and the Session Summary and Review Package
 paths when those files exist.
 
