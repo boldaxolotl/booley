@@ -70,34 +70,24 @@ Absolute Goals and Goals without baseline evidence show their usual metrics.
 
 ## Goals that name Test Runs
 
-A **Test Run** is one Test Variant simulated with one seed, written
-`test[+variant][@seed]`
-([reference](FLOW-SIM.md#test-runs-test-variants-and-seeds)). Simulation,
-Cycle Count and coverage Goals require exact Test Runs, and each can name them
-with a selector:
+Simulation, Cycle Count, and coverage Goals can say exactly how a test must
+run. You can ask for a test to run several times with different random seeds,
+for example "the stress test passes with 20 seeds", or once with a specific
+seed you want to reproduce. You can also pick a
+[Test Variant](FLOW-SIM.md#test-runs-test-variants-and-seeds) declared in
+`tests.toml`. One simulation of one Variant with one seed is a **Test Run**.
 
-```json
-[
-  {"family": "SIM", "target": "sim_fifo"},
-  {"family": "SIM", "target": "sim_fifo", "test": "stress+soak"},
-  {"family": "SIM", "target": "sim_fifo", "test": "stress+soak@42"},
-  {"family": "SIM", "target": "sim_fifo", "test": "stress+soak@x20"},
-  {"family": "CYCLE_COUNT", "target": "sim_fifo", "test": "burst@7",
-   "thresholds": {"cycle_count_max": 1000}},
-  {"family": "COVERAGE", "target": "sim_fifo", "tests": ["reset", "stress@x5"],
-   "metrics": {"line": 90}}
-]
-```
-
-| `family` | `test` / `tests` | Requires |
+| Goal | What it can ask for | Example selector |
 |---|---|---|
-| `SIM` without `test` | none | The default Test Variant of every Test of the Target that is not skipped, each at the Default Seed. |
-| `SIM` with `test` | `test`, `test+variant`, either with `@seed`, or either with `@xN` | That Test Run. `@xN` requires N Test Runs of the Test Variant with different seeds, N from 1 to 1000. |
-| `CYCLE_COUNT` | `test`, `test+variant`, either with `@seed` | One Test Run. `@xN` is refused: a threshold applies to the Cycle Count of one Test Run. |
-| `COVERAGE` | `"all"`, or a list of selectors, `@xN` included | Coverage floors over the merged coverage of the listed Test Runs. |
+| Simulation | Every Test of the Target that is not skipped, each once at the Default Seed | none |
+| Simulation | One Test, or one Variant of it | `stress`, `stress+soak` |
+| Simulation | One Test Run with a specific seed | `stress+soak@42` |
+| Simulation | N Test Runs with different random seeds, N from 1 to 1000 | `stress+soak@x20` |
+| Cycle Count | One Test Run, optionally with a specific seed. Several seeds are refused: a threshold applies to the Cycle Count of one Test Run | `burst@7` |
+| Coverage | All Tests, or a list of Test Runs, several seeds included. The coverage floors apply to their merged coverage | `all`, `reset, stress@x5` |
 
-A selector without a Test Variant means the Test's default Variant. A selector
-without a seed means the Target's Default Seed.
+Without a Variant, a selector means the Test's default Variant. Without a
+seed, it means the Target's Default Seed.
 
 **Freezing.** At entry Booley resolves every such Goal to exact Test Runs and
 stores them in the Goal Record. From then on the Goal requires those Test
