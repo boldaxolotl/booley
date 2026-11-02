@@ -106,8 +106,8 @@ later. The Review Package lists every such Test Run under the heading
 
 **Evidence.** Each frozen Test Run is `passed`, `failed`, or `missing` (not
 run yet). A failure stays until the code changes, so rerunning a flaky seed
-until it passes does not help. Only Goal-bound runs by the Developer Agent
-count: diagnostic runs do not, and CLI runs never record Goal evidence.
+until it passes does not help. Diagnostic runs and runs you start yourself do
+not count (see [Working with evidence](#working-with-evidence)).
 
 - A **simulation** Goal is met when all its Test Runs pass. They can pass over
   several runs.
@@ -130,23 +130,17 @@ contributing observations, so later runs do not change a saved package.
 
 ## Working with evidence
 
-The Developer Agent passes the Goal worktree's absolute root as `work_dir` to
-every tool that accepts it. While any Goal Record occupies the Project, Booley
-Flows, Specialists, Goal tools, and `booley_report` refuse a call without
-`work_dir`, even a diagnostic call outside that worktree; `booley_targets` may
-omit it. Project-defined endpoints must declare `work_dir` to run. Full list:
-[MCP-TOOLS](../internals/MCP-TOOLS.md#work_dir-routing).
+Only Booley's own Flows and Specialists can meet a Goal. The Developer Agent
+runs them through Goal-bound MCP calls that name the Goal worktree as
+`work_dir`. Shell output, or the agent saying "done", does not count, and
+CLI runs never record Goal evidence: a `booley flow sim` you run yourself is
+just a look. After code changes a Goal may need a fresh run; `goal_status` shows which.
 
-Only Booley Flows and Specialists meet Goals. Shell output or the Developer Agent saying
-"done" does not. `goal_status` shows each Goal's current evidence and freshness;
-code changes can require another run. For a bugfix, reproduce the reported bug
-with a failing test before editing the design.
-
-Protected Inputs decide how evidence is produced: `booley.toml`,
+Some Project files decide how evidence is produced: `booley.toml`,
 `FUSESOC_IGNORE`, and the Project's `hooks`, `.managed`, `generators`, and
-`mcp_tools` directories. Editing one blocks Finish until reverted and discards
-affected evidence. Never weaken tests or Targets to make a Goal pass. The
-Review Package flags `.core`, `tests.toml`, and `.sdc`/`.xdc` edits.
+`mcp_tools` directories. Editing one during Goal Mode blocks Finish until you
+revert it. The Review Package flags edits to `.core` files, `tests.toml`, and
+constraint files (`.sdc`, `.xdc`).
 
 ## Baseline comparisons
 
