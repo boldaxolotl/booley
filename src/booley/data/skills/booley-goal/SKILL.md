@@ -9,6 +9,12 @@ Goal Mode binds this Developer Agent session to one linked worktree and Goal Bra
 Only Booley Flow and Specialist evidence can meet its mandatory Goals.
 Use it for human-steered or unattended work inside the Sandbox.
 
+The skill has two invocations:
+
+- `/booley-goal <request>` sets up the Goals: follow [Enter](#enter), then stop.
+- `/booley-goal start` works on Goals that are already set up: follow
+  [Start](#start).
+
 ## Enter
 
 1. Use an existing clean linked worktree or create one with
@@ -54,6 +60,25 @@ Use it for human-steered or unattended work inside the Sandbox.
    Save the returned record ID and Goal Branch. Read and follow the returned
    rules and warnings. On refusal, resolve the named cause; never retry with
    weakened Goals just to obtain entry.
+7. Stop after a successful entry. Show the human the record ID, Goal Branch,
+   and worktree, then tell them to clear this chat (for example `/clear`) and
+   type `/booley-goal start`. Do not start the work in this conversation
+   unless the human explicitly asks you to continue without clearing.
+
+## Start
+
+Use this section for `/booley-goal start`, usually in a chat that was just
+cleared after entry.
+
+1. Find the Goal worktree. Run `booley goal status --long` in the Sandbox and
+   read each active record's `Worktree:` line. With one active record, use
+   its worktree as `work_dir`. With several, ask the human which one to work
+   on. With none, say so and suggest `/booley-goal <request>` to set up Goals.
+2. Call `goal_status(work_dir=..., rules=true)`. Recover the record ID, Goal
+   Branch, Goals, evidence, and pending proposals, and follow the returned
+   rules.
+3. Continue with [Work and evidence](#work-and-evidence) until every Goal is
+   met, then [Finish](#finish-and-review).
 
 ## Goals that name Test Runs
 

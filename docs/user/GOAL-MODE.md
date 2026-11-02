@@ -10,13 +10,15 @@ conditions.
    choose a clean linked worktree, Goalsets, Targets, and ad-hoc Goals, shows
    you the final Goals, then calls `goal_enter`. Booley creates a Goal Branch
    from the worktree's current HEAD and records that base for comparisons.
+   The skill stops there.
 2. **Clear the chat.** Once entry succeeds, clear the conversation (for
    example `/clear`). The Goals live in the Goal Record, not in the chat, so
    nothing is lost, and the work starts with a full context window.
-3. **Run `/booley-goal` again.** In the same chat, now cleared, type
-   `/booley-goal`. The skill finds the active Goal Record with `goal_status`,
-   then does the work and gathers evidence until every Goal is met and it can
-   finish.
+3. **Type `/booley-goal start`.** In the same chat, now cleared, type
+   `/booley-goal start`. The skill finds the active Goal Record, then does the
+   work and gathers evidence until every Goal is met and it can finish. With
+   several active Goal Records in the Project, it asks you which one to work
+   on.
 
 ## Goalsets and entry
 
@@ -386,8 +388,8 @@ you want to keep before you remove both the worktree and the branch.
 
 The same Goal session can work with your guidance or unattended. If intent is
 missing or a Goal cannot be met, the Developer Agent explains what decision it needs.
-After a crash or reconnection, ask it to call `goal_status(rules=true)` in the
-same worktree before continuing. Saved proposal IDs and Finish operation IDs
+After a crash or reconnection, type `/booley-goal start`; it calls
+`goal_status(rules=true)` in the Goal worktree before continuing. Saved proposal IDs and Finish operation IDs
 allow recovery without duplicating a decision or completion. A Finish result
 of `revalidation_required` needs fresh evidence and a new summary and operation ID.
 
@@ -396,7 +398,8 @@ Abandonment is available only on your explicit instruction, through
 being stuck never abandons a Goal automatically. The branch and worktree remain.
 
 For parallel work, use one linked worktree and Goal Branch per session. Start
-another Developer Agent in another container terminal and invoke `/booley-goal` there.
+another Developer Agent in another container terminal and follow the same three
+steps there. `/booley-goal start` asks which Goal Mode to work on.
 Jobs share the Project's [admission caps](CONFIG.md#jobs--concurrency-jobs).
 
 For scripted inspection, `booley goal status` shows this worktree's Goal Mode,

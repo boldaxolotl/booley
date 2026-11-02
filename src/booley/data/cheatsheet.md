@@ -53,9 +53,10 @@ layer cache.
 
 ### Goal Mode
 
-Use `/booley-goal` in a Developer Agent chat. One session owns a clean linked
-worktree and Goal Branch; every Goal is mandatory and judged by Flow or
-Specialist evidence at the current code.
+Type `/booley-goal <request>` in a Developer Agent chat to set up the Goals,
+clear the chat, then type `/booley-goal start` to do the work. One session
+owns a clean linked worktree and Goal Branch; every Goal is mandatory and
+judged by Flow or Specialist evidence at the current code.
 
 | Step/tool | Purpose |
 |-----------|---------|

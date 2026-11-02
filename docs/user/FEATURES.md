@@ -51,7 +51,7 @@ Goal Mode is for changes where "done" has to be proven, not claimed. Before the 
 
 Use it for features, bug fixes, refactors, and optimizations you would otherwise re-check by hand, and for work you want to leave running unattended. A Goal survives crashes and context compaction: the Developer Agent picks it up where it left off. For quick questions and exploration, just talk to the Developer Agent.
 
-To start, type `/booley-goal` and describe the task. The Developer Agent proposes Goals from your project's reusable checklists (for features, bug fixes, refactors, and verification) plus anything specific to this task, then works on its own branch in a separate worktree. When every Goal is met, you get a Review Package: the diff, the evidence behind each Goal, any Goal changes you approved, and the Developer Agent's summary. Merging stays your call. See [Goal Mode](GOAL-MODE.md#goal-mode).
+To start, type `/booley-goal` and describe the task. The Developer Agent proposes Goals from your project's reusable checklists (for features, bug fixes, refactors, and verification) plus anything specific to this task. Then clear the chat and type `/booley-goal start`: the Developer Agent works on its own branch in a separate worktree. When every Goal is met, you get a Review Package: the diff, the evidence behind each Goal, any Goal changes you approved, and the Developer Agent's summary. Merging stays your call. See [Goal Mode](GOAL-MODE.md#goal-mode).
 
 ## Named Targets and Tests
 
