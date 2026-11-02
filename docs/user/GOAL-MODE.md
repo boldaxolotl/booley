@@ -166,11 +166,11 @@ results before it counts as met; a changed simulation Goal always does.
 
 ## Finish and review
 
-Finish requires all Goals met with fresh evidence at a clean, committed HEAD
-and a Session Summary. The Developer Agent calls `goal_finish` with the record ID, a
-stable operation ID, and that summary. The Review Package contains the diff
-against the base, final Goals and evidence, the Change Log, open review
-findings, Target changes, constraint edits, and the Session Summary.
+Goal Mode finishes when every Goal is met with fresh results and all work is
+committed. The Developer Agent writes a Session Summary of what changed and
+why, and Booley builds the Review Package: the diff against the starting code,
+the final Goals and their evidence, the Change Log, open review findings,
+Target and constraint changes, and the Session Summary.
 
 A `clean` review requires no open findings. A `done` review is advisory:
 findings remain in the package and do not require a second approval to Finish.
@@ -194,13 +194,12 @@ you want to keep before you remove both the worktree and the branch.
 The same Goal session can work with your guidance or unattended. If intent is
 missing or a Goal cannot be met, the Developer Agent explains what decision it needs.
 After a crash or reconnection, type `/booley-goal start`; the agent reloads the
-Goal Mode state before continuing. Saved proposal IDs and Finish operation IDs
-allow recovery without duplicating a decision or completion. A Finish result
-of `revalidation_required` needs fresh evidence and a new summary and operation ID.
+Goal Mode state before continuing. It picks up pending proposals and an
+interrupted Finish without asking you twice or finishing twice.
 
-Abandonment is available only on your explicit instruction, through
-`goal_finish(abandon=true)` with your quoted words. Quiet presence or a Developer Agent
-being stuck never abandons a Goal automatically. The branch and worktree remain.
+Goal Mode is abandoned only when you say so: tell the Developer Agent, or run
+`booley goal abandon` in the Goal worktree. A quiet or stuck agent never
+abandons a Goal Mode on its own. The branch and worktree remain.
 
 For parallel work, use one linked worktree and Goal Branch per session. Start
 another Developer Agent in another container terminal and follow the same three
