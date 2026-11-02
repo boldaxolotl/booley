@@ -11,7 +11,10 @@ Booley turns Claude Code or Codex into a capable RTL assistant. It runs the Deve
 
 **Website:** [booley.dev](https://booley.dev/) for the full feature tour, videos, and blog.
 
-![Booley in VS Code with RTL, a Developer Agent session, Goal progress, and waveform inspection](https://booley.dev/docs/assets/booley-screenshot.png)
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://booley.dev/docs/assets/booley-screenshot-light.png">
+  <img alt="Booley in VS Code with two Developer Agent sessions, the Booley Dashboard with Goal progress, and waveform inspection" src="https://booley.dev/docs/assets/booley-screenshot.png">
+</picture>
 
 ## What it does
 

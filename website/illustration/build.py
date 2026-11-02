@@ -126,7 +126,39 @@ def figure_html() -> str:
         f"{window}{legend}"
         "  </div>\n"
         '  <figcaption id="fig1cap"><b>Figure 1.</b> Booley in VS Code (illustration).</figcaption>\n'
+        f"{real_screenshot_html()}"
         "</figure>\n"
+    )
+
+
+# The real window the illustration simplifies: same axis-kit project, sessions and trace.
+# The dark capture keeps the README's long-standing file name, so links in published
+# package descriptions stay valid; CSS shows the one matching the site theme.
+SCREENSHOTS = (
+    ("light", "docs/assets/booley-screenshot-light.png"),
+    ("dark", "docs/assets/booley-screenshot.png"),
+)
+SCREENSHOT_SIZE = (3322, 1881)
+SCREENSHOT_ALT = (
+    "Screenshot of the real VS Code window the illustration is drawn from: two Claude Code"
+    " sessions on the left, the Booley Dashboard top right, and the VaporView waveform of"
+    " the failing backpressure test bottom right."
+)
+
+
+def real_screenshot_html() -> str:
+    """Return the collapsed spoiler holding the light and dark real screenshots."""
+    width, height = SCREENSHOT_SIZE
+    images = "".join(
+        f'    <a class="shot__real-img shot__real-img--{theme}" href="{src}">'
+        f'<img src="{src}" alt="{SCREENSHOT_ALT}" width="{width}" height="{height}" loading="lazy"></a>\n'
+        for theme, src in SCREENSHOTS
+    )
+    return (
+        '  <details class="shot__real">\n'
+        "    <summary>Click here to see the actual screenshot</summary>\n"
+        f"{images}"
+        "  </details>\n"
     )
 
 
