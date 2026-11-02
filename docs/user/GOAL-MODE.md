@@ -104,50 +104,20 @@ Goal over a whole Target also freezes each Test that is added to the Target
 later. The Review Package lists every such Test Run under the heading
 `Test Runs resolved after entry`.
 
-**Evidence.** A Test Run counts for a Goal only when its name and its declared
-arguments and environment equal one of the Goal's frozen Test Runs. Each
-frozen Test Run is `passed`, `failed` or `missing`, computed from applicable
-evidence history at the same Goal revision and dependent file contents:
+**Evidence.** Each frozen Test Run is `passed`, `failed`, or `missing` (not
+run yet). A failure stays until the code changes, so rerunning a flaky seed
+until it passes does not help. Only Goal-bound runs by the Developer Agent
+count: diagnostic runs do not, and CLI runs never record Goal evidence.
 
-- It becomes `passed` when it passes at the current contents of the files the
-  Goal depends on.
-- It becomes `failed` when it fails at those contents, and a later pass at the
-  same contents does not change that. A flaky seed therefore stays failed
-  until the code changes.
-- It is `missing` until it has run. An `error` or `inconclusive` Test Run
-  leaves the outcome as it was.
+- A **simulation** Goal is met when all its Test Runs pass. They can pass over
+  several runs.
+- A **Cycle Count** Goal is measured from a passing run of its Test Run.
+- A **coverage** Goal is met when one coverage run of exactly its Test Runs
+  reaches the floors, even if some of those Test Runs failed. Add a simulation
+  Goal too if they must also pass.
 
-A diagnostic MCP run changes none of these outcomes, even when it runs a
-frozen Test Run. Its report names the Goals whose frozen Test Runs ran and
-the ones that failed; use a Goal-bound Developer Agent MCP call with `work_dir`
-and without `diagnostic` to record them. CLI runs never record Goal evidence.
-
-A simulation Goal is met when every frozen Test Run is `passed`. They do not
-have to pass in one invocation: 20 seeds can pass over several runs and
-Simulation Campaigns, including after an interruption, and a run of a few
-named Test Runs adds their outcomes without disturbing the others. A Cycle
-Count Goal takes its measurement from a run of its frozen Test Run, and that
-Test Run must be `passed`.
-
-A coverage Goal is decided by its coverage floors alone. It takes its
-measurement from one `--coverage` run that ran exactly its frozen Test Runs,
-because coverage is not merged across runs. Whether those Test Runs passed
-does not matter to it: when the floors are met the Goal is met, even if a
-Test Run failed in that run or in any other. `goal_status` shows the outcomes
-of the measuring run under the Goal, with a rerun command for each failure.
-Add a simulation Goal for the same Test Runs when they must also pass. A run
-that does not measure the Goal, such as a plain simulation, leaves a
-measurement at the same file contents as it was. A failing Test Run that ends
-before the simulator writes its coverage data makes collection incomplete, so
-that run measures nothing either. With no earlier measurement at those
-contents, the Goal stays unmet as not measured.
-
-If a frozen Test Run's Test or Test Variant is removed, or its declared
-arguments or environment change, the Goal stays unmet until you approve a
-retarget. If its Test is skipped in `tests.toml`, the Goal stays unmet until
-the Test leaves `skip` or you approve a Goal change that drops it; a retarget of
-a Goal that names the skipped Test is refused, while a retarget of a Goal on the
-whole Target freezes its suite again without that Test. See
+If you remove, change, or skip a frozen Test, its Goal stays unmet until you
+approve a Goal change. See
 [A Goal that names Test Runs stays unmet](TROUBLESHOOTING.md#a-goal-that-names-test-runs-stays-unmet)
 for each reason `goal_status` can show.
 
