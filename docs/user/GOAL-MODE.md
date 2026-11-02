@@ -149,26 +149,20 @@ constraint files (`.sdc`, `.xdc`).
 
 ## Changes and human decisions
 
-When a Goal needs to be added, relaxed, retargeted, or changed through a coverage
-waiver, the Developer Agent uses `goal_propose_change`. You see the exact proposal and
-approve or reject it with a reason. The client form is used when available;
-chat fallback records your quoted instruction against the saved proposal ID.
-Silence cannot approve a change. Approved changes appear in the Change Log.
-Coverage Waiver Candidates need your decision; the Analyst cannot approve them.
+Once Goal Mode starts, the Developer Agent cannot change the Goals on its own.
+If a Goal turns out to be wrong or out of reach, the agent proposes a change
+and waits for you. A change can:
 
-Changing which Test Runs a Goal requires is a Goal change like any other:
+- **add** a Goal;
+- **relax** one, such as a looser area limit or fewer seeds;
+- **retarget** one, such as pointing it at a renamed Test or a different seed;
+- **waive** coverage that cannot be reached. The Coverage Analyst can suggest
+  waivers, but only you can approve them.
 
-| Change | Kind | Frozen Test Runs |
-|---|---|---|
-| Add a Goal that names a Test Run | `add` | Frozen when the change is applied. |
-| Pin a seed, name another Test Variant, or raise N | `retarget` | Raising N keeps the frozen seeds and draws only the difference. |
-| Lower N | `relax` | The Goal keeps its first N frozen seeds. |
-| Retarget a Goal without changing how it is written | `retarget` | Frozen again from the Target as it is now. Use this when a frozen Test Run is gone or its declaration changed. |
-
-A change that would freeze a Test Run of a Test the Target skips in `tests.toml`
-is refused.
-
-After any of these changes the Goal's Test Run outcomes start again.
+You see the exact Goal before and after the change, then approve or reject it
+with a short reason. Staying silent never counts as approval. Approved changes
+are listed in the Review Package's Change Log. A changed Goal may need fresh
+results before it counts as met; a changed simulation Goal always does.
 
 ## Finish and review
 
