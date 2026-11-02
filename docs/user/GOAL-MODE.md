@@ -27,26 +27,27 @@ In Codex, type `$booley-goal` instead of `/booley-goal` in steps 1 and 3.
 
 ## Goals
 
-A Goal has one name, `CAPABILITY:target`, for example `SIM:sim_fifo`.
-Review Goals use `REVIEW:rtl_bugs`. Details such as tests, thresholds and the
-review requirement follow the name in parentheses. Goal arguments use the
-uppercase capability as `family`. Every Goal is mandatory. For example, these
-Goal arguments ask for:
+A Goal is one condition the work must meet before it counts as done, such as
+"the simulation passes" or "area grows by at most 10%". Every Goal is
+mandatory. The Developer Agent cannot declare a Goal met: Booley checks it
+against fresh results from its own Flows and Specialists.
 
-```json
-[
-  {"family": "LINT", "target": "lint_fifo"},
-  {"family": "SIM", "target": "sim_fifo"},
-  {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"},
-  {"family": "SYNTH", "target": "synth_fifo", "thresholds": {"area_increase_at_most": "10%"}}
-]
-```
+The main groups of Goals are:
 
-Use the [Goal catalog](#goal-catalog) and `booley cheat --criteria` for
-the public Goal names and threshold parameters. A new Target can be
-named at entry but stays unmet until it exists. Spec reviews name a spec file
-relative to the worktree. If two Goals ask for the same thing, entry keeps the
-stricter one and reports the merge.
+- **Lint and compile:** the linter passes and the RTL elaborates cleanly.
+- **Simulation:** tests pass, a test finishes within a cycle budget, coverage
+  reaches its floors, and mutation testing kills enough mutants.
+- **Implementation:** ASIC synthesis or FPGA implementation stays within area,
+  resource, and timing limits, as absolute values or relative to the code you
+  started from.
+- **Review:** an AI Reviewer checks the RTL or testbench for bugs, spec
+  compliance, protocol, security, optimization, or code style.
+
+Each Goal has a short name such as `SIM:sim_fifo` or `REVIEW:rtl_bugs`, with
+details in parentheses, for example `SYNTH:synth_fifo (area increase ≤ 10%)`.
+You describe Goals in plain words; the Developer Agent writes the exact
+arguments. The [Goal catalog](#goal-catalog) lists every Goal, and
+`booley cheat --criteria` prints the threshold parameters.
 
 ## Threshold parameters
 
