@@ -89,21 +89,12 @@ seed you want to reproduce. You can also pick a
 Without a Variant, a selector means the Test's default Variant. Without a
 seed, it means the Target's Default Seed.
 
-**Freezing.** At entry Booley resolves every such Goal to exact Test Runs and
-stores them in the Goal Record. From then on the Goal requires those Test
-Runs. Editing a Test's `default` Variant or the Target's `default_seed` in
-`tests.toml` afterwards does not change what the Goal requires. For `@xN`
-Booley draws N distinct seeds at random at entry, so each Goal Mode samples
-new seeds, and reruns inside one Goal Mode use the same ones. Goals of one
-Target that name the same Test Variant with the same N share one set of
-seeds.
-
-Goals that resolve to the same Test Runs merge at entry, like other duplicate
-Goals. Of two `@xN` Goals on the same Test Variant, the larger N remains. A
-Goal with a pinned seed and an `@xN` Goal stay separate Goals. A Goal that
-names a seed on an unseeded Target is refused at entry. So is a Goal that names
-a Test its Target skips in `tests.toml`, and so is a Goal change that would
-freeze one: remove the Test from `skip` or drop the Goal.
+**Freezing.** When Goal Mode starts, Booley fixes each Goal's exact Test Runs.
+Later edits to defaults in `tests.toml` do not change them. For "N seeds",
+Booley picks the N random seeds once: reruns in the same Goal Mode reuse them,
+and the next Goal Mode gets new ones. Goals that ask for the same Test Runs
+merge, keeping the larger N. A seed on an unseeded Target, or a Test the
+Target skips in `tests.toml`, is refused.
 
 **Targets and Tests that do not exist yet.** A Goal can name a Target, Test or
 Test Variant that the work will add. That part of the Goal is *pending* and
