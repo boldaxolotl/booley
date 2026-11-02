@@ -428,6 +428,10 @@ Worktree Booley Directory; it does not invoke these scripts automatically. Keep 
 build outputs ignored and commit deliberate Project inputs before Goal entry.
 Hooks are Protected Inputs during Goal Mode.
 
-Goal Mode's baseline Jobs run `post-setup` (`.sh`, `.py`, or no suffix) in each
-fresh baseline checkout, with `BOOLEY_WORKTREE` set to that checkout. Write
-the hook so it is idempotent and builds only from files in the checkout.
+The one exception is Goal Mode's baseline Jobs. They run `post-setup` (`.sh`,
+`.py`, or no suffix) in their fresh checkout of the Goal's base commit, with
+`BOOLEY_WORKTREE` set to that checkout, so ignored files the hook builds, such
+as a firmware image, exist at the base too. Write the hook so it is idempotent
+and reads its inputs from the checkout. If it fails, only Targets that need
+its output lose their baseline, and the reason shows the hook's error. A hook
+that changes a tracked file makes the baseline unavailable.

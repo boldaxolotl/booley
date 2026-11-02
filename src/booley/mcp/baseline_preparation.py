@@ -14,13 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from booley.flows.execution import flow_enabled
-from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.pinned_history import raw_git
 from booley.runtime.project_prepare import prepare_project
+from booley.runtime.project_repositories import paired_project_repository
 
 #: Proof label for a dependency that the post-setup hook wrote in the baseline checkout.
 HOOK_PROOF = "post-setup-hook"
-#: The hook's share of a baseline Job's budget; a hung hook must leave time to measure.
+#: Upper bound on the hook's run time, so a hung hook cannot spend a whole Job budget.
 HOOK_TIMEOUT_S = 900
 
 
@@ -53,9 +53,9 @@ def untracked_digests(checkout: Path) -> dict[str, str]:
     files are never attributed to the outer repository.
     """
     repositories = [checkout]
-    booley_dir = resolve_checkout_booley_dir(checkout)
-    if booley_dir.is_relative_to(checkout) and (booley_dir / ".git").exists():
-        repositories.append(booley_dir)
+    paired = paired_project_repository(checkout)
+    if paired is not None:
+        repositories.append(paired.worktree)
     digests: dict[str, str] = {}
     for repository in repositories:
         listing = raw_git(repository, "ls-files", "-z", "--others")

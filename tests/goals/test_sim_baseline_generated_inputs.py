@@ -18,9 +18,9 @@ import pytest
 from booley.flows.source_fingerprint import compute_source_fingerprint, hash_named_files
 from booley.goals.freshness import DEFAULT_RESOLVERS
 from booley.mcp import sim_baseline_execution
-from booley.mcp.baseline_preparation import untracked_digests
+from booley.mcp.baseline_preparation import HOOK_PROOF, untracked_digests
 from booley.mcp.sim_baseline_execution import contents_stamp
-from tests.goals.conftest import enter_goals, git, run_row
+from tests.goals.conftest import enter_goals, git, install_paired_project, run_row
 from tests.goals.test_sim_baseline import _complete
 
 pytestmark = pytest.mark.timeout(120)
@@ -90,7 +90,7 @@ def test_hook_rebuilds_generated_input_from_base_sources(generated):
 
     assert seen == [b"BASE FIRMWARE\n"]
     assert rows[0]["grade"] == "pass"
-    assert rows[0]["proof"]["dependencies"][GENERATED] == "post-setup-hook"
+    assert rows[0]["proof"]["dependencies"][GENERATED] == HOOK_PROOF
     assert rows[0]["proof"]["dependencies"]["fw.src"] == mode.record.base_sha
 
 
@@ -142,18 +142,17 @@ def test_hook_that_rewrites_a_tracked_file_is_rejected(generated):
         _complete(mode, _execute([]))
 
 
-def test_untracked_digests_cover_a_paired_booley_directory_once(tmp_path, monkeypatch):
-    checkout = tmp_path / "checkout"
-    for repository in (checkout, checkout / ".booley"):
-        repository.mkdir()
-        git(repository, "init", "-q")
-    (checkout / "built.hex").write_bytes(b"outer\n")
-    (checkout / ".booley" / "sim").mkdir()
-    (checkout / ".booley" / "sim" / "main.cc").write_bytes(b"paired\n")
-    (checkout / "link.hex").symlink_to("built.hex")
-    monkeypatch.setenv("BOOLEY_DIR", str(checkout / ".booley"))
+def test_untracked_digests_cover_a_paired_booley_directory_once(layout, tmp_path):
+    paired = install_paired_project(layout, tmp_path)
+    (layout.worktree / "built.hex").write_bytes(b"outer\n")
+    (paired / "sim").mkdir()
+    (paired / "sim" / "main.cc").write_bytes(b"paired\n")
+    (layout.worktree / "link.hex").symlink_to("built.hex")
 
-    digests = untracked_digests(checkout)
+    digests = untracked_digests(layout.worktree)
 
-    assert set(digests) == {"built.hex", ".booley/sim/main.cc"}
+    # The paired checkout's files are listed once, by its own repository.
+    assert {"built.hex", ".booley/sim/main.cc"} <= set(digests)
+    assert not any(name.startswith(".booley/.git") for name in digests)
+    assert "link.hex" not in digests
     assert digests["built.hex"] == hashlib.sha256(b"outer\n").hexdigest()

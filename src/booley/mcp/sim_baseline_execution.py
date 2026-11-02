@@ -67,6 +67,8 @@ from booley.runtime.process_group import (
 )
 
 SIM_KEY = "sim_pass_baseline"
+#: Proof label for unversioned configuration that matches its Goal-entry capture.
+ENTRY_PROOF = "entry-snapshot"
 # Digest of the canonical empty file list, for declaration-only fingerprint categories.
 EMPTY_CATEGORY_DIGEST = hashlib.sha256(b"[]").hexdigest()
 Execute = Callable[[Path, str, tuple[TestRun, ...], Path], dict[str, Any]]
@@ -149,7 +151,6 @@ def prove_base_contents(
         raise ValueError("baseline checkout is not at the Goal base commit")
     captured = require_dict(request["inputs"]["files"], field="entry input files")
     hook = require_dict(request["post_setup"], field="baseline post-setup outputs")
-    generated = require_dict(hook["files"], field="baseline post-setup files")
     projections: dict[Path, Any] = {}
     proof: dict[str, str] = {}
     for name in _dependent_files(fingerprint, key):
@@ -167,23 +168,11 @@ def prove_base_contents(
         projection = projections[repository]
         if tracked_matches_pin(repository, pin, path.resolve(), projection=projection):
             proof[str(name)] = pin
-        elif (
-            str(name) in captured
-            and captured[str(name)] is not None
-            and path.read_bytes().hex() == captured[str(name)]
-        ):
-            # Only unversioned configuration can use the independently captured entry bytes.
-            if os.fsencode(path.resolve().relative_to(repository).as_posix()) in projection.rows:
-                raise ValueError(f"versioned baseline dependency differs from base: {name}")
-            proof[str(name)] = "entry-snapshot"
-        elif str(name) in generated and generated[str(name)] == file_digest(path):
-            # Untracked at base and written by the entry hook from base sources.
-            proof[str(name)] = HOOK_PROOF
         else:
-            cause = f" ({hook['error']})" if hook["error"] else ""
-            raise ValueError(
-                f"baseline dependency differs from base or is unavailable: {name}{cause}"
+            versioned = (
+                os.fsencode(path.resolve().relative_to(repository).as_posix()) in projection.rows
             )
+            proof[str(name)] = _unversioned_proof(str(name), path, versioned, captured, hook)
     _check_captured_inputs(root, request)
     return {
         "base_sha": record.base_sha,
@@ -192,6 +181,23 @@ def prove_base_contents(
         "contents": contents_stamp(fingerprint, key),
         "dependencies": proof,
     }
+
+
+def _unversioned_proof(
+    name: str, path: Path, versioned: bool, captured: Mapping[str, Any], hook: Mapping[str, Any]
+) -> str:
+    """Prove a dependency Git does not pin: entry configuration bytes or base hook output."""
+    if captured.get(name) is not None and path.read_bytes().hex() == captured[name]:
+        # Only unversioned configuration can use the independently captured entry bytes.
+        if versioned:
+            raise ValueError(f"versioned baseline dependency differs from base: {name}")
+        return ENTRY_PROOF
+    generated = require_dict(hook["files"], field="baseline post-setup files")
+    if name in generated and generated[name] == file_digest(path):
+        # Untracked at base and written by the entry hook from base sources.
+        return HOOK_PROOF
+    cause = f" ({hook['error']})" if hook["error"] else ""
+    raise ValueError(f"baseline dependency differs from base or is unavailable: {name}{cause}")
 
 
 def _dependent_files(fingerprint: Mapping[str, Any], key: str) -> set[str]:
