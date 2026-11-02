@@ -103,20 +103,39 @@ class AttachController {
                 this.output.appendLine(result.reason);
                 return;
             }
-            this.terminal = vscode.window.createTerminal({
+            // Sample before creating ours: any terminal already open (for example
+            // the shell a Codespace visitor just opened with Ctrl+`) is in use.
+            const busy = vscode.window.terminals.length > 0;
+            const terminal = vscode.window.createTerminal({
                 name: 'Booley Dashboard',
                 shellPath: BOOLEY,
                 shellArgs: ['dashboard', '--on-attach'],
                 cwd: root,
                 isTransient: true,
             });
-            this.terminal.show(true);
+            this.terminal = terminal;
+            if (busy) {
+                this.offer(terminal);
+            } else {
+                terminal.show(true);
+            }
         } catch (error) {
             if (!this.disposed) {
                 this.output.appendLine(`Dashboard attach failed: ${error.message}`);
                 this.output.show(true);
             }
         }
+    }
+
+    // A panel terminal created without show() becomes the visible tab only
+    // when it is the panel's first terminal, so the user's terminal and any
+    // prompt waiting in it stay in front. Offer the Dashboard instead.
+    offer(terminal) {
+        void Promise.resolve(vscode.window.showInformationMessage(
+            'Booley Dashboard is ready in the terminal panel.', 'Open')).then(choice => {
+            // Skip the reveal once the Dashboard has exited or been closed.
+            if (choice === 'Open' && this.terminal === terminal) { terminal.show(); }
+        }, () => {});
     }
 
     closed(closed) {
@@ -165,7 +184,26 @@ function startBridge(context) {
     });
 }
 
+// Recent VS Code opens its Chat panel in the secondary side bar the first time a
+// workspace opens. Booley's agent runs as a terminal CLI, so in a Sandbox the
+// panel only takes space. A devcontainer setting cannot hide it: the browser
+// lays out the window before the remote settings arrive. Close it once per
+// workspace instead, so a user who reopens it keeps it open.
+const CHAT_CLOSED_KEY = 'chatSideBarClosed';
+
+async function closeChatSideBarOnce(context) {
+    if (!REMOTES.has(vscode.env.remoteName)) { return; }
+    if (context.workspaceState.get(CHAT_CLOSED_KEY, false)) { return; }
+    await context.workspaceState.update(CHAT_CLOSED_KEY, true);
+    try {
+        await vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar');
+    } catch {
+        // Layout is cosmetic: an editor without the command keeps its default.
+    }
+}
+
 exports.activate = context => {
     startBridge(context);
+    void closeChatSideBarOnce(context);
     void new AttachController(context).open();
 };

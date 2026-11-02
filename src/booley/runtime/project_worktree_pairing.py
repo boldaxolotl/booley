@@ -288,8 +288,12 @@ def validate_project_pairing(source: Path | None, name: str) -> None:
 def worktree_removal_instructions(
     project_root: Path, worktree: Path, name: str, *, paired: bool = True
 ) -> str:
-    """Format removal in the Sandbox namespace available to this command."""
-    root, outer = project_root.resolve(), worktree.resolve()
+    """Format removal in the Sandbox namespace available to this command.
+
+    Paths stay as the caller named them (absolute, symlinks kept) so they match
+    the worktree path ``booley worktree new`` prints; Git resolves them itself.
+    """
+    root, outer = project_root.absolute(), worktree.absolute()
     source = root / BOOLEY_DIR_NAME
 
     def quote(path: Path) -> str:
@@ -298,8 +302,7 @@ def worktree_removal_instructions(
     kind = "Paired Checkout" if paired else "Snapshot"
     steps = [
         f"{kind} removal instructions (run in the same Sandbox, outside this worktree):",
-        "WARNING: usable host removal commands are unavailable; "
-        "these absolute paths are Sandbox paths.",
+        "These are Sandbox paths; do not paste them into a host terminal.",
         "First preserve needed evidence and other ignored/untracked files outside "
         "this worktree (see docs/user/CLI-REFERENCE.md).",
         "Then clean dirty/untracked files, including a Snapshot's copied files; "

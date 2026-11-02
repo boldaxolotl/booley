@@ -58,6 +58,8 @@ booley projects forget --purge <project>  # also remove its unused images and st
 booley projects prune-keepers     # preview orphan image keepers; release with --confirm <digest>
 ```
 
+### Worktrees
+
 `booley worktree new <name>` gives a Versioned Booley Directory a
 Paired Checkout on `booley-worktree/<name>` at its current HEAD. Commit tracked
 changes and untracked files in the Booley Directory's repository first; an unborn
@@ -87,10 +89,14 @@ Then, in the same Sandbox and from outside the worktree:
 4. Optional, Paired Checkout only: to reuse the name, delete the Project branch
    with `git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
 
-Inspect locks before unlocking a worktree or forcing removal. `booley worktree new`
-prints the worktree path to stdout and these steps to stderr, with a warning: Booley
-cannot map paths to the host, so the commands use quoted absolute **Sandbox
-paths**. Do not paste them into a host terminal.
+Inspect locks before unlocking a worktree or forcing removal. On success,
+`booley worktree new` prints the worktree path to stdout and a one-line pointer
+to this section to stderr. When creation fails after a checkout is registered,
+it prints these steps to stderr with the actual paths. Booley cannot map paths
+to the host, so the commands use quoted absolute **Sandbox paths**. Do not paste
+them into a host terminal.
+
+### Projects on this machine
 
 Each successful `booley init` remembers its Project Root. `booley projects`
 lists those roots with their EDA Grants and marks each `present`, `missing`, or

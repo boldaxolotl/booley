@@ -157,13 +157,22 @@ def test_creates_a_detached_worktree_and_prints_its_path(project: Path, capsys, 
     worktree = project / ".booley" / "worktrees" / "goal-entry"
     output = capsys.readouterr()
     assert output.out == f"{worktree}\n"
+    # Success prints one calm line pointing at the removal docs, not the steps themselves.
+    assert output.err == (
+        "Created worktree 'goal-entry' with a Snapshot. "
+        "To remove it later, see https://booley.dev/docs/cli-reference/#worktrees\n"
+    )
+    # The Snapshot steps still exist for failures; their commands must work.
+    steps = worktree_cmd.worktree_removal_instructions(
+        project, worktree, "goal-entry", paired=False
+    )
     command = shlex.join(["git", "-C", str(project), "worktree", "remove", str(worktree)])
-    assert command in output.err, "Snapshot removal instructions missing"
-    assert "Snapshot" in output.err and "same Sandbox" in output.err
-    assert "WARNING: usable host removal commands are unavailable" in output.err
-    assert "preserve" in output.err and "docs/user/CLI-REFERENCE.md" in output.err
-    assert output.err.count("git -C") == 1 and "branch -D" not in output.err
-    assert "populated submodules" in output.err and "--force" in output.err
+    assert command in steps, "Snapshot removal instructions missing"
+    assert "Snapshot" in steps and "same Sandbox" in steps and "Sandbox paths" in steps
+    assert "WARNING" not in steps
+    assert "preserve" in steps and "docs/user/CLI-REFERENCE.md" in steps
+    assert steps.count("git -C") == 1 and "branch -D" not in steps
+    assert "populated submodules" in steps and "--force" in steps
     assert (worktree / ".git").is_file()
     assert (worktree / "README.md").read_text(encoding="utf-8") == "hello\n"
     assert _git(worktree, "symbolic-ref", "--quiet", "HEAD").returncode != 0
@@ -320,23 +329,22 @@ def test_user_command_pairs_committed_project_and_prints_removal(versioned_proje
         assert git(paired, "config", "--worktree", "--get", key) == value
     output = capsys.readouterr()
     assert output.out.strip() == str(worktree)
-    assert "same Sandbox" in output.err, "Sandbox removal venue missing"
-    assert "WARNING: usable host removal commands are unavailable" in output.err
-    commands = [line.split(": ", 1)[1] for line in output.err.splitlines() if "git -C" in line]
+    assert output.err.startswith("Created worktree 'real-paired' with a Paired Checkout.")
+    assert "#worktrees" in output.err and "git -C" not in output.err
+    assert _new("real-paired", root) == 1
+    error = capsys.readouterr().err
+    assert "same Sandbox" in error and "Remove the Paired Checkout first" in error
+    assert "Sandbox paths" in error and "WARNING" not in error
+    commands = [line.split(": ", 1)[1] for line in error.splitlines() if "git -C" in line]
     expected = [
         ["git", "-C", str(source), "worktree", "remove", str(paired)],
         ["git", "-C", str(root), "worktree", "remove", str(worktree)],
         ["git", "-C", str(source), "branch", "-D", "booley-worktree/real-paired"],
     ]
     assert commands == [shlex.join(command) for command in expected]
-    assert "Optional" in output.err and "preserving its commits" in output.err
+    assert "Optional" in error and "preserving its commits" in error
     assert git(source, "config", "extensions.worktreeConfig") == "true"
     assert git(source, "config", "gc.worktreePruneExpire") == "never"
-    assert _new("real-paired", root) == 1
-    error = capsys.readouterr().err
-    assert "same Sandbox" in error and "Remove the Paired Checkout first" in error
-    assert "WARNING: usable host removal commands are unavailable" in error
-    assert all(command in error for command in commands)
     for command, removed in zip(commands[:2], (paired, worktree), strict=True):
         subprocess.run(shlex.split(command), check=True, capture_output=True, timeout=10)
         assert not removed.exists()
@@ -1568,3 +1576,18 @@ def test_goal_worktree_baseline_finds_submodules(goal_project):
 
     with baseline_worktree(worktree, "HEAD") as baseline:
         assert (baseline / "vendor/ip/source.sv").read_text(encoding="utf-8") == "old\n"
+
+
+def test_removal_steps_keep_symlinked_paths_as_printed(tmp_path: Path) -> None:
+    # Codespaces demo: `.booley` is a symlink to a sibling repo. The steps must
+    # name the same path `worktree new` printed, not its resolved target.
+    real = tmp_path / "real-project"
+    (real / ".booley").mkdir(parents=True)
+    link = tmp_path / "linked-project"
+    link.symlink_to(real, target_is_directory=True)
+    worktree = link / ".booley" / "worktrees" / "zbb"
+
+    steps = worktree_cmd.worktree_removal_instructions(link, worktree, "zbb")
+
+    assert shlex.join(["git", "-C", str(link), "worktree", "remove", str(worktree)]) in steps
+    assert str(real) not in steps

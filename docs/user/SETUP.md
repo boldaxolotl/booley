@@ -84,8 +84,9 @@ booley init --scaffold my_ip
 ```
 
 Init asks which agent provider (`claude` or `codex`) and auth policy
-(`subscription`, `api-key`, or `auto`) this project uses. Press Enter to accept
-the `claude` and `auto` defaults, or pass them as flags:
+(`subscription`, `api-key`, or `auto`) this project uses; see
+[Sign-in and billing](#sign-in-and-billing) before you answer. Press Enter to
+accept the `claude` and `auto` defaults, or pass them as flags:
 
 ```bash
 booley init --provider codex --auth subscription
@@ -109,6 +110,61 @@ Initialization walks through:
 6. Writes the devcontainer config, so VS Code can open the Project in the
    Sandbox (Reopen in Container)
 7. Prints any follow-up advice
+
+### Sign-in and billing
+
+The Developer Agent and Specialists use one AI provider, Claude (the default)
+or Codex, and bill it through a **subscription** or an **API key**. Init asks
+which one to bill and records it in `.booley/booley.toml`:
+
+```toml
+[agent]
+provider = "claude"     # or "codex"
+auth = "subscription"   # or "api_key"
+```
+
+Pick `subscription` or `api_key` explicitly. The default, `auto`, lets the
+provider's CLI decide, and an exported API key always beats a subscription, so
+you can end up paying per token without noticing. With an explicit choice,
+`booley doctor` fails when that credential is missing instead of quietly using
+another one. All values are in
+[CONFIG.md](CONFIG.md#pinning-what-bills-agent-auth).
+
+To see which login Booley is using, run `booley auth --status` on the host.
+
+Where each credential comes from:
+
+| Provider | Subscription | API key |
+|---|---|---|
+| `claude` | Claude Pro/Max/Team/Enterprise (your login in `~/.claude/.credentials.json`) | `ANTHROPIC_API_KEY` |
+| `codex` | your Codex login (`codex login`, saved in `~/.codex/auth.json`) | `OPENAI_API_KEY` |
+
+- **Subscription:** usage counts against your plan. When you hit a Claude
+  rate limit, Booley waits and retries a Specialist call within its retry and
+  timeout budgets; a Codex call stops and must be invoked again after the
+  limit resets. Resume an interrupted Goal session with
+  `goal_status(rules=true)`.
+- **API key:** you pay per token.
+
+Both work in Interactive Mode and Goal Mode.
+
+**For long runs, run `booley auth`.** The normal login renews itself
+periodically, and a renewal can sign out every running Developer Agent or
+Specialist in the middle of a run
+([details](TROUBLESHOOTING.md#developer-agents-and-specialists-turn-into-not-logged-in-partway-through-an-unattended-run)).
+`booley auth` saves a login that doesn't need renewing:
+
+| App | Login that doesn't expire | How |
+|---|---|---|
+| Claude | a one-year token | `booley auth` (it runs `claude setup-token` for you) |
+| Codex | an API key | `booley auth --app codex`, then paste the key |
+
+Codex has no long-lived subscription token, so for Codex this means paying per
+token instead of using your subscription.
+
+The saved login lives in `~/.config/booley/`, outside every project, so it can't
+be committed by accident. Booley passes it to every container on its own,
+including VS Code's; rebuild an existing container once to pick it up.
 
 ### What `--scaffold` adds
 

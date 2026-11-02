@@ -14,13 +14,19 @@ function fakeEditor(options, records, settings) {
     const { trusted = true } = options;
     // An explicit `remote: undefined` models a local window, as VS Code reports it.
     const remote = 'remote' in options ? options.remote : 'dev-container';
-    const { log, terminals, listeners } = records;
+    const { log, terminals, listeners, commands, messages } = records;
+    // Terminals the user already has open; the Dashboard joins this list.
+    const open = options.userTerminal ? [{ name: 'bash' }] : [];
     const root = { fsPath: '/work' };
     const output = { appendLine: line => log.push(line), show() {}, dispose() {} };
     const listen = name => fn => { listeners[name] = fn; return { dispose() {} }; };
     return {
         TerminalExitReason: {Shutdown: 1, Process: 2, User: 3, Extension: 4},
         env: { remoteName: remote, sessionId: 'fixture-window' },
+        commands: { executeCommand: async id => {
+            commands.push(id);
+            if (options.commandFails) { throw new Error('unknown command'); }
+        } },
         workspace: {
             isTrusted: trusted,
             workspaceFolders: [{ uri: root }],
@@ -37,7 +43,14 @@ function fakeEditor(options, records, settings) {
                 const terminal = { options, shown: false, disposed: false,
                     show() { this.shown = true; }, dispose() { this.disposed = true; } };
                 terminals.push(terminal);
+                open.push(terminal);
                 return terminal;
+            },
+            get terminals() { return open.slice(); },
+            showInformationMessage: (message, ...items) => {
+                const record = { message, items, resolve: undefined };
+                messages.push(record);
+                return new Promise(resolve => { record.resolve = resolve; });
             },
             onDidCloseTerminal: listen('close'),
         },
@@ -46,7 +59,7 @@ function fakeEditor(options, records, settings) {
 
 function fixture(options = {}) {
     const {enabled = true, error, raw, delayed = false} = options;
-    const records = {log: [], terminals: [], calls: [], listeners: {}};
+    const records = {log: [], terminals: [], calls: [], listeners: {}, commands: [], messages: []};
     const {log, terminals, calls, listeners} = records;
     const settings = {protocol: options.protocol ?? 1, permission: options.permission};
     const vscode = fakeEditor(options, records, settings);
@@ -73,7 +86,7 @@ function fixture(options = {}) {
         update: async (key, value) => { state.set(key, value); },
     } };
     module.exports.activate(context);
-    return { calls, context, log, terminals, listeners, vscode, settings, complete: () => complete(),
+    return { calls, commands: records.commands, messages: records.messages, context, log, terminals, listeners, vscode, settings, complete: () => complete(),
         reactivate: () => module.exports.activate({subscriptions: [], workspaceState: context.workspaceState}) };
 }
 
@@ -86,6 +99,7 @@ test('default-off application permission still opens one fixed remote process', 
     assert.deepEqual(Array.from(f.terminals[0].options.shellArgs), ['dashboard', '--on-attach']);
     assert.equal(f.terminals[0].options.cwd.fsPath, '/work');
     assert.equal(f.terminals[0].options.isTransient, true);
+    assert.equal(f.messages.length, 0, 'an idle panel needs no notification');
     assert.equal(f.calls[0].options.cwd, '/work');
     assert.equal(f.calls[0].options.timeout, 35000);
     assert.deepEqual(Array.from(f.calls[0].args), ['dashboard', '--attach-policy']);
@@ -242,4 +256,65 @@ test('user closure, editor shutdown and extension disposal stay quiet', async ()
         f.listeners.close(terminal);
         assert.equal(f.log.length, 0);
     }
+});
+
+test('a Sandbox window closes the Chat side bar once per workspace', async () => {
+    for (const remote of ['dev-container', 'attached-container', 'codespaces']) {
+        const f = fixture({ remote });
+        await tick();
+        assert.deepEqual(f.commands, ['workbench.action.closeAuxiliaryBar']);
+        // A reload or a later window of the same workspace leaves the user's layout alone.
+        f.reactivate();
+        await tick();
+        assert.deepEqual(f.commands, ['workbench.action.closeAuxiliaryBar']);
+    }
+});
+
+test('a local or unrelated window keeps its Chat side bar', async () => {
+    for (const remote of [undefined, 'ssh-remote']) {
+        const f = fixture({ remote });
+        await tick();
+        assert.deepEqual(f.commands, []);
+    }
+});
+
+test('a missing close command never blocks the Dashboard', async () => {
+    const f = fixture({ commandFails: true });
+    await tick();
+    assert.deepEqual(f.commands, ['workbench.action.closeAuxiliaryBar']);
+    assert.equal(f.terminals.length, 1);
+    assert.equal(f.log.length, 0);
+});
+
+test('a terminal already in use keeps the panel; the Dashboard waits behind a notification', async () => {
+    const f = fixture({ userTerminal: true });
+    await tick();
+    assert.equal(f.terminals.length, 1, 'the Dashboard still starts');
+    assert.equal(f.terminals[0].shown, false, 'the user terminal must stay in front');
+    assert.equal(f.messages.length, 1);
+    assert.deepEqual(Array.from(f.messages[0].items), ['Open']);
+    f.messages[0].resolve('Open');
+    await tick();
+    assert.equal(f.terminals[0].shown, true);
+});
+
+test('dismissing the notification leaves the Dashboard in the background', async () => {
+    const f = fixture({ userTerminal: true });
+    await tick();
+    f.messages[0].resolve(undefined);
+    await tick();
+    assert.equal(f.terminals[0].shown, false);
+});
+
+test('Open after the Dashboard exited reveals nothing, and exit handling still runs', async () => {
+    const f = fixture({ userTerminal: true });
+    await tick();
+    const terminal = f.terminals[0];
+    terminal.exitStatus = { code: 3 };
+    f.listeners.close(terminal);
+    assert.equal(terminal.disposed, true);
+    assert.match(f.log[0], /already open/);
+    f.messages[0].resolve('Open');
+    await tick();
+    assert.equal(terminal.shown, false);
 });

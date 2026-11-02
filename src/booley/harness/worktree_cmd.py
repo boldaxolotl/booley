@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 from booley.runtime.booley_dir import BOOLEY_DIR_NAME
+from booley.runtime.docs_links import docs_url
 from booley.runtime.paths import worktree_create_script
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_repositories import run_git
@@ -143,7 +144,7 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
 
 
 def _run_current(args: argparse.Namespace, project_root: Path) -> int:
-    """Create the outer and paired checkouts atomically; print removal instructions."""
+    """Create the outer and paired checkouts atomically; print removal steps on failure."""
     worktree = worktree_path(project_root, args.name)
     created = False
     paired_created = False
@@ -170,11 +171,17 @@ def _run_current(args: argparse.Namespace, project_root: Path) -> int:
             )
         return 1
     print(worktree)
-    print(
-        worktree_removal_instructions(project_root, worktree, args.name, paired=paired),
-        file=sys.stderr,
-    )
+    print(_ready_notice(args.name, paired=paired), file=sys.stderr)
     return 0
+
+
+def _ready_notice(name: str, *, paired: bool) -> str:
+    """One calm line for a successful creation; full removal steps print only on failure."""
+    kind = "Paired Checkout" if paired else "Snapshot"
+    return (
+        f"Created worktree {name!r} with a {kind}. "
+        f"To remove it later, see {docs_url('CLI-REFERENCE.md', 'worktrees')}"
+    )
 
 
 def _populate_submodules(worktree: Path) -> None:

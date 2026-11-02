@@ -23,11 +23,19 @@ def test_project_guidance_header_explains_editing_and_staging():
     assert "git add .booley/AGENTS.md" in header, (
         "generated guidance must explain staging the canonical instructions"
     )
-    usage = (Path(__file__).resolve().parents[2] / "docs/user/USAGE.md").read_text()
+    usage = (Path(__file__).resolve().parents[2] / "docs/user/USAGE.md").read_text(
+        encoding="utf-8"
+    )
+    # The template covers all three layouts in setup terms: root links to the
+    # canonical file, a separate Booley repository (e.g. Stealth), and the
+    # explicitly requested hybrid tracked root copy. USAGE.md explains the first
+    # two in plain language; the hybrid is a setup-only edge case.
+    assert "non-Stealth" in header and "separate Booley repository" in header
+    assert "hybrid" in header and "tracked" in header
+    usage_compact = " ".join(usage.split())
+    assert "Booley Directory is its own Git repository" in usage_compact
     for text in (header, usage):
         assert "AGENTS.md` and `CLAUDE.md" in text
-        assert "non-Stealth" in text and "separate Booley repository" in text
-        assert "hybrid" in text and "tracked" in text
         assert "git add .booley/AGENTS.md" in text
     assert "#editing-project-instructions" in usage
 
