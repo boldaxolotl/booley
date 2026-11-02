@@ -1,10 +1,11 @@
 # Sandbox
 
 Every Booley Flow, Specialist, and Developer Agent runs inside one Docker
-container per Project folder: the Sandbox. This page covers its settings:
-host-wide Sandbox Policy, the Project's `[sandbox]` table, network egress,
-custom images, and commercial EDA provisioning. Read the known limitation
-below before you rely on the Sandbox as a security boundary.
+container per Project folder: the Sandbox. This page covers entering it
+without VS Code and its settings: host-wide Sandbox Policy, the Project's
+`[sandbox]` table, network egress, custom images, and commercial EDA
+provisioning. Read the known limitation below before you rely on the Sandbox
+as a security boundary.
 
 ## Known Sandbox escape through shared Git metadata
 
@@ -36,6 +37,33 @@ Workspace tasks and `.envrc` are additional ways to execute Project-controlled
 code on the host. Do not approve host execution of untrusted Project files.
 Remediation of #1529 is deferred for reconsideration on **31 DEC 2026**, not
 promised for that date.
+
+## Entering the Sandbox without VS Code
+
+**Reopen in Container** needs VS Code. Without it (e.g. over SSH),
+`booley session` starts the same container. Run these on
+the **host**, after `booley init`:
+
+```bash
+booley session up                       # create or start the container
+booley session enter                    # open a shell inside it
+booley session enter -- booley doctor   # or run one command and exit
+booley session status                   # running (with VS Code owner/name) | stopped | absent
+booley session refresh                  # rebuild the image and recreate the container
+booley session down                     # stop and remove a headless Sandbox
+```
+
+`booley session enter` works like a container terminal, so every
+container-only command works through it. `Ctrl-C` on a command run with `--`
+stops everything it started inside the container.
+
+`session refresh` is safe to interrupt; the prior container stays usable until
+the new one is ready. If your EDA tools need a license server, run
+`booley session down` before refreshing.
+
+`up` and `enter` reuse a running Sandbox, including one VS Code opened.
+`refresh`, `down`, and `up --rebuild` leave a VS Code-owned container alone:
+close the window, or use **Dev Containers: Rebuild Container**.
 
 ## Host configuration (`config.toml`)
 

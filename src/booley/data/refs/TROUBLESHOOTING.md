@@ -173,7 +173,7 @@ mode that bites long, unattended runs specifically.
 The fix is a **rotation-free** credential: run `booley auth` for Claude or
 `booley auth --app codex` for Codex, then **rebuild an existing container
 once** so the credential mount exists. Billing options and credential choice
-are in [USAGE.md](https://booley.dev/docs/usage/#auth--billing).
+are in [SETUP.md](https://booley.dev/docs/setup/#sign-in-and-billing).
 
 ### Two Developer Agents keep clobbering each other's edits
 

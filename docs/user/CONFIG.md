@@ -312,8 +312,8 @@ auth = "subscription"   # "subscription" | "api_key" | "auto" (default)
 - **`api_key`**: bill the API key.
 
 Either non-`auto` value fails loud (`booley doctor`) when its credential is
-absent, rather than silently falling back. See [USAGE.md: Auth &
-billing](USAGE.md#auth--billing).
+absent, rather than silently falling back. See [SETUP.md: Sign-in and
+billing](SETUP.md#sign-in-and-billing).
 
 #### Git identity (`[agent.git]`)
 
