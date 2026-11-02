@@ -1,17 +1,17 @@
 # CLI reference
 
-Every public command, Booley Flow, and Specialist. You rarely need this day
-to day: ask the Developer Agent and it picks the command. [USAGE.md](USAGE.md)
-covers the workflow.
+Every `booley` command, plus the Booley Flows and Specialists the Developer
+Agent runs for you. Day to day you rarely type these: ask the Developer Agent
+and it picks the command. Use this page when you prepare a machine or a
+Project, check health, manage worktrees, or run a Flow yourself to reproduce a
+problem. For the everyday workflow, read [Usage](USAGE.md).
 
 ## Commands
 
-`booley help` and `booley --help` show the same public commands. Sandbox
-commands run in a container terminal. The Either commands in the table below
-work on the host and inside the Sandbox. Target listing works in either
-location, but full detail resolution requires the Sandbox. Flow and
-Specialist listing and execution are Sandbox-only; their `-h` / `--help`
-pages also work on the host inside an initialized Project.
+Each command runs either in a **host terminal** (your own computer) or in a
+**container terminal** (inside the Sandbox, the Docker container that holds
+the EDA tools); see [where you type](USAGE.md#read-this-first). A command run
+in the wrong place stops and prints how to run it in the right one.
 
 | Location | Public commands, in order |
 |---|---|
@@ -19,145 +19,207 @@ pages also work on the host inside an initialized Project.
 | Either | `cheat`, `doctor`, `help`, `resources`, `targets` |
 | Host-only | `auth`, `bootstrap`, `eda`, `init`, `projects` |
 
-Commands used by skills remain available but are omitted from top-level help.
-Use `booley cheat --skills` for guided agent workflows.
+`booley flow` and `booley specialist` run and list only in the Sandbox, but
+`booley flow <name> --help` and `booley specialist <name> --help` also work on
+the host inside an initialized Project. `booley targets` lists Targets
+anywhere; showing one Target in full detail needs the Sandbox.
+
+`booley help` and `booley --help` print the same command list.
+`booley --version` prints the version, plus its commit and that commit's UTC
+date when known. [A few more commands](#commands-for-skills) serve the agent's
+skills and stay out of that list.
+
+### Set up the machine and the Project · host
 
 ```bash
-# Developer Agent (Sandbox)
-booley chat --resume <id>         # Claude: arguments after chat go to the agent CLI
-booley chat resume --last         # Codex: same, for its own subcommands
-booley chat -- --help             # the agent's own help (Booley's is booley chat --help)
-
-# Dashboard (Sandbox)
-booley dashboard                  # sessions, Goals, and Jobs
-
-# Worktrees (container)
-booley worktree new <name>        # .booley/worktrees/<name>, Paired Checkout or Snapshot
-
-# Quick reference
-booley cheat                      # available sections (same as --list)
-booley cheat --all                # the whole cheatsheet
-booley cheat --goals              # Goal Mode, Goal catalog, and thresholds
-
-# Health checks
-booley doctor                     # check setup
-booley doctor --concise           # show only problems
-booley doctor --deep              # also run short real sims, lints, and syntheses
-booley doctor --deep --skip-agent-checks   # skip agent credential and provider checks
-booley --version                  # version, plus commit and its UTC commit date when known
-
-# Job resources
-booley resources                  # peak memory and run time per Target and Job phase
-booley resources --json           # the same statistics, machine-readable
-
-# Projects on this machine (host)
-booley projects                   # list known projects
-booley projects discover <dir>    # find existing projects under <dir>
-booley projects forget <project>  # forget a Project with no live Grants; release its unused keeper
-booley projects forget --purge <project>  # also remove its unused images and state volumes
-booley projects prune-keepers     # preview orphan image keepers; release with --confirm <digest>
+booley bootstrap                  # prepare this machine once for every Project
+booley bootstrap --update         # rerun after every Booley upgrade
+booley bootstrap --check-only     # report pending work; change nothing
+booley init                       # set up the Project in the current directory
+booley init --scaffold my_ip      # start a new IP from scratch in a fresh repo
+booley auth                       # save a long-lived Claude login for unattended runs
+booley auth --app codex           # the same for Codex: paste an API key
+booley auth --status              # show which login each agent would use
 ```
+
+Host Bootstrap is described in [INSTALL.md](INSTALL.md#host-bootstrap);
+`init` and its options in [SETUP.md](SETUP.md); logins and billing in
+[Sign-in and billing](SETUP.md#sign-in-and-billing).
+
+### Work in the Sandbox · container
+
+```bash
+booley                            # open the Developer Agent (same as booley chat)
+booley chat --resume <id>         # Claude: arguments after chat go to the agent CLI
+booley chat resume --last         # Codex: the same, with its own subcommands
+booley chat -- --help             # the agent CLI's help (Booley's is booley chat --help)
+booley dashboard                  # sessions and Jobs; see Usage
+booley worktree new <name>        # a linked worktree for parallel work; see below
+```
+
+The Dashboard opens by itself when you attach to the container; see
+[The dashboard](USAGE.md#the-dashboard).
+
+### Check and look things up · either
+
+```bash
+booley cheat                      # list the cheatsheet sections
+booley cheat --all                # the whole cheatsheet
+booley cheat --goals              # Goal Mode, the Goal catalog, and thresholds
+booley doctor                     # check setup and environment health
+booley doctor --concise           # show only problems
+booley doctor --deep              # also run short real simulations, lints, and syntheses
+booley doctor --deep --skip-agent-checks   # skip the agent login and provider checks
+booley targets                    # list Targets
+booley targets --for sim          # only Targets a Flow can use
+booley targets <name>             # one Target in detail (Sandbox)
+booley resources                  # peak memory and run time per Target and Job phase
+booley resources --json           # the same, machine-readable
+```
+
+Doctor also runs by itself at certain points; see [Doctor](DOCTOR.md).
+Targets are explained in [TARGETS.md](TARGETS.md), and resource history in
+[Job resource history](CONFIG.md#job-resource-history).
+
+### Projects on this machine · host
+
+```bash
+booley projects                          # list known Projects and their EDA Grants
+booley projects discover <dir>...        # find existing Projects under these directories
+booley projects forget <project>         # forget a Project and list what it still holds in Docker
+booley projects forget --purge <project> # also remove its unused images and state volumes
+booley projects prune-keepers            # preview images left by earlier forgets
+booley projects prune-keepers --confirm <digest>   # remove exactly that preview
+```
+
+Each successful `booley init` remembers its Project Root. `booley projects`
+marks each one `present`, `missing`, or `uninitialized`.
+
+`discover` scans only the directories you name and doesn't follow symlinks.
+It stops at each Project it finds, so it doesn't crawl that Project's RTL and
+build trees; to import a Project nested inside another, name its path directly.
+
+`forget` refuses while the Project still has a live Grant (see below). It
+lists what the Project still holds in Docker, with sizes: images, agent state
+volumes (a copy of the agent's login and history), containers, and networks.
+It removes none of them unless you add `--purge`, which removes the unused
+ones, even for a Project already forgotten or deleted. To use a forgotten
+Project again, run `booley init` in it.
+
+### Commercial EDA · host
+
+Commercial tools installed on your computer, currently Vivado 2025.2 on Linux
+x86-64, reach a Sandbox only through a **Grant**: your permission for one exact
+Project path to use one registered installation or license profile.
+
+```bash
+booley eda installation register --kind vivado --source <install-dir> <name>
+booley eda installation list
+booley eda license list
+booley eda grant add --kind vivado --installation <name> <project>
+booley eda grant revoke --kind vivado <project>
+```
+
+The setup is in [Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning);
+`booley eda <group> --help` lists every subcommand.
 
 ### Worktrees
 
-`booley worktree new <name>` gives a Versioned Booley Directory a
-Paired Checkout on `booley-worktree/<name>` at its current HEAD. Commit tracked
-changes and untracked files in the Booley Directory's repository first; an unborn
-repository and an existing Booley Directory branch are refused. Ignored state stays
-behind. A non-versioned Booley Directory supplies a Snapshot. Run this command from
-the primary workspace; creating from a Paired Checkout is refused.
-The outer checkout starts detached unless `<branch>--<description>` selects an
-existing branch.
+A worktree is a second checkout of your Project where a separate Developer
+Agent can work without touching your files, for example one per Goal Mode
+session. Usually you ask the agent to create one. In a container terminal,
+from the main checkout:
 
-Removing a worktree deletes everything in it, including ignored files. First
-preserve the commits you need, then copy needed untracked and ignored files into
-a new archive outside the worktree, overwriting nothing. Check the whole worktree,
-including its Booley Directory: `reviewer-evidence/`, the Findings Log
-(`findings.jsonl`), `handoffs/`, reports and runtime diagnostics. Also copy every
-needed file that Findings attach, wherever it lives: the log does not contain
-them, and its absolute attachment paths may not resolve from the archive. Keep
-the archive separate from the main Findings Log; do not merge the two.
+```bash
+booley worktree new <name>
+```
+
+This creates `.booley/worktrees/<name>`, prints its path, and starts it at the
+current commit on a detached HEAD. A name of the form `<branch>--<description>`
+checks out the existing branch `<branch>` instead. An existing destination is
+refused and left untouched. Git submodules are filled in from the main
+checkout, without network access.
+
+The worktree gets its own Booley Directory (the `.booley/` folder):
+
+- **Paired Checkout**, when your Booley Directory is its own Git repository:
+  a checkout of it on branch `booley-worktree/<name>`. Commit everything in
+  that repository first, untracked files included; Booley refuses a repository
+  with no commits or an existing branch of that name. Ignored files stay
+  behind. Booley refuses to create a worktree from inside a Paired Checkout.
+- **Snapshot**, otherwise: a plain copy of the Booley Directory.
+
+**Removing a worktree** deletes everything in it, ignored files included, and
+Booley has no command for it. First save what you need:
+
+1. Put the commits you want on a branch you keep. The worktree starts on a
+   detached HEAD, so its commits may be on no branch at all. For a Paired
+   Checkout, the same goes for its `booley-worktree/<name>` branch.
+2. Copy needed untracked and ignored files into a new folder outside the
+   worktree, overwriting nothing. Look through the whole worktree, including
+   its `.booley/`: `reviewer-evidence/`, `handoffs/`, the Findings Log
+   (`findings.jsonl`), reports, and logs. A finding can attach files that live
+   elsewhere; copy those as well. Keep this archive separate from the
+   Project's own Findings Log; don't merge the two.
 
 Then, in the same Sandbox and from outside the worktree:
 
-1. Clean dirty and untracked files, including a Snapshot's copied Booley
-   Directory files when Git lists them as untracked.
+1. Clean dirty and untracked files, including a Snapshot's copied files when
+   Git lists them as untracked.
 2. Paired Checkout only: remove the inner checkout with
    `git -C <absolute-booley-directory> worktree remove <absolute-worktree>/.booley`.
-3. Remove the outer worktree with
+3. Remove the worktree with
    `git -C <absolute-project-root> worktree remove <absolute-worktree>`.
-4. Optional, Paired Checkout only: to reuse the name, delete the Project branch
-   with `git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
+4. Optional, Paired Checkout only: to reuse the name, delete its branch with
+   `git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
 
-Inspect locks before unlocking a worktree or forcing removal. On success,
-`booley worktree new` prints the worktree path to stdout and a one-line pointer
-to this section to stderr. When creation fails after a checkout is registered,
-it prints these steps to stderr with the actual paths. Booley cannot map paths
-to the host, so the commands use quoted absolute **Sandbox paths**. Do not paste
-them into a host terminal.
+Git refuses to remove a worktree that holds populated submodules; once your
+files are saved, add `--force` to each `git worktree remove`. Check for locks
+before you unlock a worktree or force a removal.
 
-### Projects on this machine
+Use Sandbox paths in these commands, not host paths: the host may see the
+worktree somewhere else. If `booley worktree new` fails and leaves a checkout
+behind, it prints these steps with the real paths.
 
-Each successful `booley init` remembers its Project Root. `booley projects`
-lists those roots with their EDA Grants and marks each `present`, `missing`, or
-`uninitialized`. `booley projects discover <root>...` imports existing
-initialized Projects; it scans only the named roots and does not follow
-directory symlinks.
+### Commands for skills
 
-`booley projects discover` stops descending at each initialized Project to
-avoid scanning its RTL, vendor, and build trees. Nested Projects are not imported
-by that scan; run `booley projects discover <nested path>` on a nested Project
-directly to import it.
+These commands exist mainly for the agent's skills and are left out of
+`booley help`. You may still run them yourself:
 
-`booley projects forget <project>` drops a remembered root once its live Grants
-are revoked. It then lists, with sizes, what the Project still holds in Docker:
-images, agent state volumes (a copy of the agent's login and history),
-containers, and networks. It removes none of them; `--purge` also removes the
-unused ones, even for a root already forgotten or deleted. If you forget a
-Project that still exists, run `booley init` there before using it again.
-`booley projects prune-keepers` previews leftover images from earlier forgets;
-`--confirm <digest>` removes exactly that preview.
-
-Booley also runs plain Doctor automatically; see
-[automatic checks](DOCTOR.md#automatic-checks).
-
-Plain Doctor and `booley session up` also say when deep validation is due; see
-[Doctor health and deep validation](DOCTOR.md).
-
-Use `booley cheat --goals` for the Goal lifecycle and MCP tools.
+| Command | Where | What it's for |
+|---|---|---|
+| `booley session` | host | Start, enter, or stop the Sandbox without VS Code; see [SANDBOX.md](SANDBOX.md#entering-the-sandbox-without-vs-code) |
+| `booley goal` | container | Show or abandon a Goal Mode; see [GOAL-MODE.md](GOAL-MODE.md#watching-recovery-and-parallel-sessions) |
+| `booley upgrade` | either | Review a Booley upgrade; see [Upgrade review](DOCTOR.md#upgrade-review) |
+| `booley feedback` | either | Record Booley bugs and impressions; use `/booley-feedback` instead |
+| `booley cleanup` | either | Remove a skill's scratch files |
 
 ## Selecting a Project
 
-`-C/--project PATH` selects the checkout or worktree for a Project-bound
-command; any directory inside it works. The path is relative to where you run
-the command. Without it, Booley uses the checkout that contains the current
-directory. An explicit selector overrides `RTL_PROJECT_ROOT`.
+By default a command works on the checkout that contains the current
+directory. To pick another one, pass `-C PATH` or `--project PATH`: any
+directory inside a Project's checkout or worktree, relative to where you run
+the command.
 
 ```bash
 booley -C ../other targets
-booley session -C ../other status
-booley session status --project ../other
 booley flow lint --target lint --project ../other
+booley session -C ../other status
 ```
 
-Give the selector once: before the command, after it, or on a nested
-operation. It works on Flows, Specialists, `session`, `chat`, `doctor`,
-`init`, `upgrade`, `cleanup`, `feedback`, `auth --status`, and on bare
-`booley` inside the Sandbox (to pick the Project for chat). On the host, bare
-`booley` prints help. Bare `cheat` and `cheat --list` ignore it; `bootstrap`,
-`projects`, and `eda` don't accept it. Ambiguous abbreviations of option names
-are errors, and arguments after a command's `--` are passed through untouched.
-
-The selector picks the checkout; `BOOLEY_DIR` picks the Booley Directory. The
-directory must exist, except for `init`, which accepts an uninitialized one.
+Give it once, before or after the command name. Every command that works on a
+Project accepts it; `bootstrap`, `projects`, and `eda` don't, because they work
+on the whole machine. Inside the Sandbox, `booley -C <path>` picks the Project
+the Developer Agent opens in. The directory must exist; only `booley init`
+accepts one that Booley hasn't set up yet.
 
 ## Booley Flows & Specialists
 
-You rarely call Flows or Specialists yourself: ask
-the Developer Agent (*"run the reset test on `sim_lite`"*, *"how much area did that
-cost?"*) and it picks the Flow or Specialist, Target, and options. The **Sets** column shows
-which [acceptance criteria](GOAL-MODE.md#working-with-evidence) each one can satisfy. Which
-EDA program runs underneath depends on the Target; see
+Ask the Developer Agent (*"run the reset test on `sim_lite`"*, *"how much area
+did that cost?"*) and it picks the Flow or Specialist, the Target, and the
+options. The **Sets** column shows which
+[Goal evidence](GOAL-MODE.md#working-with-evidence) each one can produce. The
+EDA tool that runs underneath depends on the Target; see
 [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md). `booley cheat --flows` and
 `booley cheat --specialists` print the same lists.
 
@@ -236,43 +298,27 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 Call the `mutation_tester` Specialist from your Developer Agent session: `scope="<rtl-file,...>"` chooses mutation sites; `target="<sim-target>"` chooses exactly one complete runnable Target suite; `steer=["<context>"]` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `regen_lock=true`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
 <!-- END GENERATED: flows -->
 
-## Running a Booley Flow directly
+## Running a Flow yourself
 
-Running a Flow yourself is useful when checking your setup or reproducing a
-problem. In a container terminal:
+Run a Flow yourself to check your setup or reproduce a problem. In a
+container terminal:
 
 ```bash
-booley specialist                            # list visible Specialists
-booley specialist reviewer --help            # shared and Specialist arguments
 booley flow                                  # list the Flows
 booley targets --for sim                     # Targets a Flow can use
 booley flow sim --target sim_soc --test reset
-booley flow sim --target sim_soc --test stress+soak@42   # a Test Variant with one seed
 booley flow sim --help                       # every option
+booley specialist                            # list the Specialists
+booley specialist reviewer --help            # a Specialist's arguments
 ```
 
-For sim, lint, synth, and fpga on CLI and MCP, omitting `--target` selects
-exactly one eligible Target, and that selection is announced. With zero or multiple
-eligible Targets, the run exits 2 and lists eligible selectors (`(none)` for zero).
-Simulation resume (`--resume-from`) retains the manifest Target regardless of
-the current catalog.
+Without `--target`, a Flow runs when there is exactly one eligible Target,
+and that selection is announced; with zero or multiple eligible Targets it
+stops with exit code 2 and lists them. A resumed simulation (`--resume-from`) keeps the Target of the
+run it resumes. Runs you start yourself never count as Goal evidence.
 
-[FLOW_REFERENCE.md](FLOW_REFERENCE.md) has the full details: options, exit
-codes, and results. [FLOW_REPORTS.md](../internals/FLOW_REPORTS.md) defines the
-report files.
+Options, exit codes, and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md);
+coverage runs and the Coverage Analyst in [COVERAGE.md](COVERAGE.md).
 
-**Coverage.** Coverage is collected only when you ask for it. Then pass the
-result to the Coverage Analyst for an explanation:
-
-```bash
-booley flow sim --target sim_counter --coverage
-```
-
-Then call the `coverage_analyst` Specialist from your Developer Agent session with
-`campaign="<reports>/sim/12/targets/sim_counter/coverage.json"`.
-
-In Goal Mode, add a [coverage Goal](COVERAGE.md#coverage-goals)
-for each Target that needs one. Only valid coverage evidence satisfies it.
-The Analyst may screen Waiver Candidates; approving one requires your decision
-through `goal_propose_change`. Rerun coverage after approval to obtain fresh
-strict evidence. See [coverage waivers](COVERAGE.md#coverage-waivers).
+If a command misbehaves or this page is wrong, see
+[When Booley itself misbehaves](USAGE.md#when-booley-itself-misbehaves).

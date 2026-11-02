@@ -1,161 +1,165 @@
 # Stealth Mode
 
-Keeps your AI-assisted workflow out of the git history (see
-[FEATURES.md: Stealth Mode](FEATURES.md#stealth-mode)).
-The `[stealth]` table in `booley.toml` belongs to an initialized Project.
+Stealth Mode keeps Booley out of your RTL repository and its history. Booley's
+configuration, and any FuseSoC cores it writes for your design, stay in a
+`.booley/` folder that Git ignores. Git hooks clean AI attribution and words you
+ban out of commit messages and block pushes that would still leak them. Use it
+on a design repo you share with people who don't use Booley, or whose history
+must not show AI tools. Leave it off when you want to share the Booley setup
+through Git: with Stealth on, a colleague who clones the repo gets no Booley at
+all.
+
+## Turning it on
+
+1. Setup asks whether to keep Booley out of your git history. Answer yes, and
+   the agent writes this to `.booley/booley.toml`:
+
+    ```toml
+    [stealth]
+    enabled = true
+    ```
+
+    For a new IP, `booley init --scaffold --stealth` does the same.
+2. `booley init` hides `.booley/` from your repository and makes it a separate
+   Git repository. Commit your Booley setup there, not in the RTL repo.
+3. Commit and push the RTL repo as usual; the hooks below do their work.
+
+To turn it off, set `enabled = false`. Write the key either way: when it is
+missing, the hooks treat Stealth as on, but Booley doesn't set up hidden cores.
+Turning Stealth off stops the hooks at once, but `.booley/` stays hidden and
+stays its own repository. Booley doesn't undo that; `booley init` warns about
+the hidden files instead.
+
+## What changes
+
+- **Booley's files stay untracked.** `.booley/` goes into `.git/info/exclude`,
+  your clone's private ignore list. The `.devcontainer/` and `.claude/` folders
+  and the root `AGENTS.md` and `CLAUDE.md` links are excluded with or without
+  Stealth.
+- **Cores Booley writes live in `.booley/cores/`.** Your own `.core` files stay
+  untouched. Booley places ignored copies named `.booley-projected-*.core` at
+  the repository root so FuseSoC can find them, and refreshes them before each
+  Flow. Edit the file under `.booley/cores/`, not the copy.
+- **Commit messages are cleaned**, see [Commit messages](#commit-messages).
+- **Pushes are checked**, see [Push checks](#push-checks).
+- **Goal Mode summaries stay local** instead of being committed on the Goal
+  Branch ([GOAL-MODE.md](GOAL-MODE.md)).
+
+If your repository ships `.core` files that are broken, obsolete, or that you
+don't want Booley to see, add `ignore_native_cores = true`. Booley then reads
+only the cores in `.booley/cores/` and ignores every other `.core` file. It
+works only together with `enabled = true`. FuseSoC run by hand still sees the
+native cores, so run Flows through Booley.
+
+## Commit messages
+
+When you or the agent commit, the commit-msg hook:
+
+- **Rejects attribution footers**: `Co-Authored-By:` lines, lines starting with
+  🤖, and a last line `Generated with <name>` where the name is a banned word,
+  such as "Generated with Codex". The message is left as written; remove the
+  line and commit again. The agent does this on its own.
+- **Replaces banned words with `redacted`** in the subject and body, and keeps
+  everything else. It prints what it rewrote:
+
+    ```text
+    commit-msg: stealth-mode redaction rewrote the subject -> fix(redacted): drop stale flag
+    ```
+
+The default banned words are `claude`, `anthropic`, `copilot`, `codex`,
+`openai`, `chatgpt`, `gemini`, `booley`, `cursor`, `ticket`, `gpt`, `llm`, and
+`co-authored-by`.
 
 ```toml
 [stealth]
-enabled = false              # open setup; hidden answer sets true
-# ignore_native_cores = true # use only stealth-authored cores during Booley resolution
-# banned_words = ["claude", "anthropic", "codex", "booley", ...]  # override
-#                            # the built-in list; [] disables this tier
-# banned_substrings = ["quokka"] # add literal substrings (default: [])
-#                            # structural attribution is still rejected
-# enforce_convention = true  # enforce type(scope): summary subjects
-#                            # (default: off — opt in)
-# max_body_lines = 0         # cap the commit body (0 = subject line only);
-#                            # unset = unlimited
-# allowed_authors = ["*@example.com", "Jane Doe"]  # identity allowlist checked
-#                            # at push time; unset or [] = unrestricted
+enabled = true
+# banned_words = ["claude", "codex", "acme_codename"]  # replaces the default list
+# banned_substrings = ["quokka"]                        # adds terms; default none
 ```
 
-Setup asks whether to keep Booley out of your git history. Yes keeps
-`.booley/` hidden and writes `[stealth] enabled = true`, enabling the
-commit-message scrub and hidden-core projection when Booley authors cores.
-No uses open config and native cores with `enabled = false`. A missing
-`enabled` key means **on**; write the key rather than omitting it when you want
-stealth disabled.
+- **`banned_words` replaces the default list**, it doesn't add to it. Copy the
+  defaults you want to keep. `banned_words = []` turns word cleaning off;
+  attribution lines are still rejected.
+- **Words match whole identifier parts**, ignoring case. `_`, `-`, `.`, `/`, and
+  case or letter-digit changes split a name into parts, so `ticket` matches
+  `ticket_fifo` and `GPT4` but not `Tickets` or `ticketing`.
+- **AI vendor and product names match anywhere**: `claude`, `anthropic`,
+  `codex`, `openai`, `chatgpt`, `copilot`, `gemini`, and `booley` match inside
+  `myClaudeHelper` too.
+- **`banned_substrings` match anywhere**: `quokka` also matches `myquokkafile`.
+  An entry that is part of a Booley placeholder, such as `redacted` or `<email>`,
+  is an error: commits and pushes fail until you remove it.
 
-Stealth also makes `.booley/` a self-contained home for authored
-FuseSoC cores. Cores under `.booley/cores/` use repository-root-relative
-fileset paths; `booley init` generates ignored `.booley-projected-*.core` copies
-at the repository root so FuseSoC reads pristine RTL directly, with no source
-symlinks or copied RTL. Booley refreshes the projections again before target
-resolution. This filesystem behavior requires explicit `enabled = true`.
+If your design uses `cursor`, `ticket`, `gpt`, or `llm` as ordinary names, set
+`banned_words` without them. Otherwise a commit about `ticket_fifo` reads
+`redacted_fifo`, and a push that adds `rtl/ticket_fifo.sv` is blocked.
 
-`ignore_native_cores` is an optional, default-false isolation switch for
-repositories whose shipped `.core` files are invalid, obsolete, or deliberately
-outside the Booley Target surface. It requires explicit `enabled = true`. When
-set, Booley enumerates only `.booley/cores/` and gives FuseSoC a private
-generated registry containing only those cores; repository-native `.core` files
-are never parsed during Booley resolution. The private copies use absolute
-source paths generated for the current workspace, so no source symlinks or RTL
-copies are created. Run `booley init` or a Booley Flow rather than raw FuseSoC
-when relying on this switch.
+### Enforcing the subject convention (`enforce_convention`)
 
-When enabled, a commit-msg hook rejects recognized machine-attribution footers,
-then sanitizes the built-in banned-word list out of all other commit-message
-prose. An already-installed hook no-ops at commit time when the flag is off.
+Off by default. Set `enforce_convention = true` to reject commits whose subject
+isn't `type(scope): summary`, with a type of `feat`, `fix`, `refactor`, `test`,
+`review`, `wip`, `docs`, or `chore`, and a summary of at most 72 characters.
+Merge commits are exempt. It is off by default because a design repo usually
+carries upstream and human commits in other styles.
 
-The built-in list is `claude`, `anthropic`, `copilot`, `codex`, `openai`,
-`chatgpt`, `gemini`, `booley`, `cursor`, `ticket`, `gpt`, `llm`, and
-`co-authored-by`. `banned_words` replaces (not extends) it; `banned_substrings`
-adds literal substring terms. Both lists are combined case-insensitively without
-duplicates. An absent `banned_words` keeps the built-in vocabulary, while an
-explicit empty list never restores defaults. Override `banned_words` when your
-Project uses `cursor`, `ticket`, `gpt`, or `llm` in ordinary engineering text.
+### Capping the body (`max_body_lines`)
 
-Matching is case-insensitive. The built-in identity names `booley`, `claude`,
-`anthropic`, `codex`, `openai`, `chatgpt`, `copilot`, and `gemini` match as
-substrings, including when supplied in `banned_words`. Other words use ASCII
-alphanumeric token edges: `_`, `-`, `.`, `/`, and non-ASCII characters separate
-tokens, as do CamelCase, acronym-to-titlecase, and letter/digit transitions.
-Thus `axi_agent`, `XMLAgent`, and `GPT4` match, while `reagent` and `precursor`
-do not. Multiword phrases retain their exact internal spaces or hyphens.
-Custom `banned_words` entries use token matching; `banned_substrings =
-["quokka"]` also matches `myquokkafile`. Redaction replaces only the matched
-original spans, preserving surrounding identifier text.
-
-`banned_substrings` must be a list of strings. Entries that occur inside reserved
-redaction placeholders (`redacted`, `<author>`, `<author-email>`, `<repo>`,
-`<home>`, `<remote>`, `<org>`, `<email>`, `<redacted>`, or `<module-N>` for
-any positive integer N)
-are rejected before publication.
-
-`.booley/hooks/` is for your own `post-setup` hooks.
-
-**Your message is redacted, not truncated.** Subject *and* body are kept, with
-banned phrases substituted in place; the hook prints what it rewrote. Recognized
-attribution is different: `Co-Authored-By:` and robot-prefixed footer lines are
-always rejected. A plain "Generated with …" footer is rejected only when it is
-the final nonblank body line and its whole payload is exactly one banned word,
-such as "Generated with Codex". Ordinary prose like "Generated with Docker for
-reproducibility" passes. On rejection the hook leaves your message unchanged and
-tells you to remove the footer and retry.
-
-An empty `banned_words = []`, with `banned_substrings` absent or empty, disables
-vocabulary redaction and therefore cannot confirm that an ambiguous plain "Generated with …" line names a protected
-identity. The two structurally unambiguous footer forms remain rejected while
-Stealth Mode is enabled.
-
-## Enforcing the subject convention (`enforce_convention`)
-
-**Off by default — opt in.** Booley's own commits follow a
-`type(scope): summary` subject (`feat`, `fix`, `refactor`, `test`, `review`,
-`wip`, `docs`, `chore`), but that convention is *not* forced on your repo unless
-you ask for it. A design repo carries human- and upstream-style commits on code
-you don't own, and rejecting every one that doesn't match the format is noise,
-not hygiene. Turn it on for a team that wants the convention across its own
-history:
+Unlimited by default. `max_body_lines = 0` allows the subject line only;
+`max_body_lines = 5` allows five body lines. Blank lines and `#` comment lines
+don't count. A message over the cap is rejected, not trimmed, so nothing you
+wrote is lost. Merge commits are capped too.
 
 ```toml
 [stealth]
 enforce_convention = true
+max_body_lines = 5
 ```
 
-With it on, a non-conforming subject is rejected (merge commits are exempt).
-Independent of the toggle: attribution rejection, the banned-word scrub, and
-the `max_body_lines` cap are in force when stealth is enabled.
-`BOOLEY_SKIP_COMMIT_VALIDATION=1` lands one commit past the convention check and
-the body cap. It cannot bypass attribution rejection or sanitization.
+To skip both checks for one commit, set `BOOLEY_SKIP_COMMIT_VALIDATION=1`.
+Attribution rejection and word cleaning still apply.
 
-## Capping the body (`max_body_lines`)
+## Push checks
 
-Unset by default, meaning unlimited. Set it if you want terse history:
-`max_body_lines = 0` allows the subject line only, `= 5` allows five lines of
-prose. Blank lines and git's `#` comment lines don't count — only lines that
-actually reach history, so the cap doesn't move when you re-space a paragraph.
+The commit hook can't see everything: `git revert`, `git cherry-pick`, and
+`git commit --no-verify` skip it. So a pre-push hook checks every commit you
+push that the destination doesn't already have, and blocks the push when:
 
-An over-long message is **rejected, not trimmed**: the commit fails and tells
-you the line count, so nothing you wrote is silently thrown away. Merge commits
-are capped too (unlike the subject-format check, which exempts them) — a merge
-body is exactly where long hand-written narratives collect.
+- the message, author, or committer contains a banned word;
+- a changed file path or symlink target contains a banned word, or points into
+  `.booley/`;
+- the author or committer isn't on `allowed_authors`, when you set it.
 
-## Author allowlist (`allowed_authors`)
+File contents aren't checked. The hook lists each offending commit and what it
+found; rewrite those commits and push again. To skip every check for one push,
+set `BOOLEY_SKIP_PUSH_GUARD=1`.
 
-Enforced by the **pre-push** hook, not commit-msg — git hands the commit-msg
-hook only the message file, so `git commit --author='someone <else@local>'`
-cannot be caught there. Push time is the first point where both identities are
-readable, and it also covers identities that arrive via rebase, cherry-pick, or
-`--no-verify`.
+The hook also blocks when it can't finish the check: an unreadable
+`booley.toml`, missing history, or a shallow clone. Fetch the full history
+(`git fetch --unshallow`) and retry.
 
-The hook also inspects changed tracked paths and committed symlink targets. A
-push is rejected when either carries a banned term or resolves into the hidden
-Booley Directory. The reserved repository spelling `.booley/`
-is blocked independently of the Sandbox's absolute project-state path,
-and changing the worktree link after committing does not bypass the check.
+### Author allowlist (`allowed_authors`)
 
-Both the **author and the committer** of every outgoing commit must match at
-least one entry. Each entry is an fnmatch glob, matched case-insensitively
-against the bare email, the bare name, and the full `Name <email>` ident:
+Lists who may appear as author and committer of the commits you push. This is
+checked at push time because the commit hook can't see the author, so it also
+catches `git commit --author=...`, rebases, and cherry-picks. Each entry is a
+shell-style pattern (`*` matches anything), matched without case against the email, the name,
+or `Name <email>`. Unset or `[]` allows anyone.
 
 ```toml
+[stealth]
 allowed_authors = [
     "*@example.com",              # a whole domain
-    "jane.doe@personal.example",  # one exact address
-    "Jane Doe",                   # a bare name, any address
+    "jane.doe@personal.example",  # one address
+    "Jane Doe",                   # a name, any address
 ]
 ```
 
-Unset or `[]` disables the identity allowlist check. The hook scans all pushed
-commit ancestry except history already at the actual destination and a verified
-upstream import boundary, when configured. Local remote-tracking refs alone
-grant no exemption. Without an upstream boundary, imported history is checked
-too, including on a first push to an empty destination.
+### Pushing imported history (`upstream_repository`, `upstream_base`)
 
-To import a trusted source's pristine history, record its canonical repository
-location and the full commit ID at which local development began:
+Commits the destination already has aren't checked. But when you push a design
+with its upstream history to a new or empty remote, every upstream commit is
+checked, and upstream messages or authors can block the push. To exempt
+them, pin the upstream source and the upstream commit you started from:
 
 ```toml
 [stealth]
@@ -163,75 +167,38 @@ upstream_repository = "https://example.com/team/design.git"
 upstream_base = "0123456789abcdef0123456789abcdef01234567"
 ```
 
-Set both keys together in the Project's `booley.toml`. The base must be a
-locally available commit reachable from the source's advertised branches or tags;
-pull-request refs and other ref namespaces grant no import exemption. Fetch
-the source's complete history if necessary before pushing. Verification needs
-at least one currently advertised branch or tag containing the base available
-locally. If upstream advances beyond your fetched history, fetch it again before
-pushing; the hook never downloads objects automatically. This applies to
-incremental pushes too, even when the destination already has the import.
-Only that base and
-its ancestors are exempt. Advancing upstream never exempts later local commits,
-even if upstream now contains them. The trusted source and pinned base are
-owner-selected policy: do not point them at a copy of your local development
-branch to exempt new work.
+- Set both keys or neither. `upstream_repository` is an HTTPS or SSH URL, or an
+  absolute path to a local repository. `upstream_base` is a full commit ID.
+- The base commit must be in your clone and reachable from a branch or tag the
+  upstream publishes. The hook doesn't download anything, so fetch upstream
+  first.
+- Only that commit and its ancestors are exempt. Your own commits are always
+  checked.
+- After merging newer upstream history, move `upstream_base` to the upstream
+  commit you merged, not your merge commit.
 
-After importing newer upstream history, deliberately advance the pin to the
-upstream commit you imported, not your local merge commit. Until then, newer
-upstream commits receive ordinary checks. The new local merge commit and its
-changed paths remain checked in either case.
-
-Use a canonical HTTPS or SSH URL, or a standalone local repository path, for
-`upstream_repository`. The hook names any problem with the import settings and
-blocks the push; remove both keys to go back to scanning imported history.
-
-Malformed or unreadable `booley.toml`, missing inspected history, and shallow
-boundaries in the selected scan range block the push.
-`BOOLEY_SKIP_PUSH_GUARD=1` skips every guard check for one push.
+The hook names any problem with these settings and blocks the push. Remove both
+keys to go back to checking all history.
 
 ## What survives a fresh clone
 
-Keeping Booley out of the git history has a price, and it is worth stating
-plainly: **the setup is local**. `booley init` writes these entries into
-`.git/info/exclude` (which is per-clone and itself never committed):
+The Booley setup is local to your clone. Someone who clones the repo gets your
+RTL, `.core` files, and constraints, and no Booley. Everything under `.booley/`
+lives only on your machine unless you commit it to that folder's own repository
+or back it up:
 
-```
-/.devcontainer
-/.booley
-/.claude
-/AGENTS.md            # root symlink into .booley/AGENTS.md
-/CLAUDE.md            # same file, second name
-```
+- `booley.toml`, `tests.toml`, `AGENTS.md`, and the cores in `.booley/cores/`;
+- hooks, `mcp_tools/`, and any
+  [`pip_requirements`](SANDBOX.md#python-dependencies-sandboxpip_requirements)
+  file.
 
-So a colleague who clones the repo gets your RTL, your `.core` files, your SDC
-— and no Booley at all. Nothing breaks for them; that is the point. But it
-means anything you park under `.booley/` is **your machine's state, not
-the project's**, including:
+Two consequences:
 
-- `booley.toml` and everything it configures;
-- `AGENTS.md` / `CLAUDE.md` (the root files are symlinks — after a fresh clone
-  they simply don't exist, and a stale one left behind by a copy is a dangling
-  link);
-- `hooks/post-setup.sh`, `mcp_tools/`, `tests.toml`;
-- any requirements file you baked with
-  [`pip_requirements`](SANDBOX.md#python-dependencies-sandboxpip_requirements).
-
-Two consequences worth planning for:
-
-**`git add -f` does not rescue a file under `.booley/`.** `booley init`
-gives the Booley Directory its **own** git repo when stealth is on, so the host repo
-sees an embedded repository and refuses to track paths inside it. Commit that
-inner repo (or back it up) if you want the setup to survive a machine, and use
-`git add -f` only for files *outside* the Booley Directory.
-
-**A file that a tracked `.core` references must itself be tracked.** This is
-most visible for a deliberately-broken lint fixture: it has to be a real file
-in a real Target. `booley doctor` warns when it finds one on disk but not in git
-("a fresh clone or CI checkout will lack them"), and it is right: put that file
-in the **tracked tree**, not in `.booley/`. A `tb/fixtures/` or
-`verif/lint_bad.sv` next to the sources reads as ordinary test material and
-gives nothing away — which is what stealth mode is actually asking of you.
-
-For where Doctor's known-bad self-test fixtures live, see
-[DOCTOR.md: Self-test fixtures](DOCTOR.md#self-test-fixtures).
+- **`git add -f` can't add a file under `.booley/`** to the RTL repo. Git sees
+  `.booley/` as a separate repository and refuses its paths. Commit them in
+  `.booley/` instead.
+- **A file a tracked `.core` uses must be tracked too**, for example a
+  deliberately broken lint fixture. `booley doctor` warns when it finds one
+  that only exists on your disk. Put it next to your sources (say,
+  `verif/lint_bad.sv`), not in `.booley/`. See
+  [DOCTOR.md: Self-test fixtures](DOCTOR.md#self-test-fixtures).

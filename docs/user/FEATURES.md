@@ -128,19 +128,11 @@ Jobs are never preempted. See [Jobs](CONFIG.md#jobs--concurrency-jobs).
 
 ## Windows Support
 
-Because every EDA tool and Developer Agent runs inside the Docker sandbox, Booley's
-standard image-provisioned toolchain is functionally available from a native
-Windows checkout: you don't need to build Verilator, Yosys, or the rest
-natively, and you do not need to install a user-facing Ubuntu distribution.
-The normal Docker Desktop workflow bind-mounts that checkout into a Linux
-container, so filesystem-heavy EDA builds may be slower than on Linux-native
-storage. A WSL-hosted checkout can be used as an optional advanced
-workflow, but is not a prerequisite for Windows support.
-
-Host-provisioned commercial EDA is Linux x86-64 only. Docker Desktop runs Linux
-containers, and a native Windows EDA installation cannot execute merely because
-its directory is mounted into one. See
-[SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md).
+Booley runs from a native Windows checkout with Docker Desktop: every EDA tool
+runs inside the Sandbox, so you don't build Verilator or Yosys on Windows or
+install Ubuntu. A WSL-hosted checkout is an optional advanced workflow, not a
+requirement. See [Windows first-run problems](WINDOWS.md) for speed and
+licensed-tool limits.
 
 ## Stealth Mode
 

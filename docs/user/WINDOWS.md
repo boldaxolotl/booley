@@ -1,54 +1,76 @@
 # Windows first-run problems
 
-The CLI runs **natively on Windows** (repo on `C:\...`, Windows Python), not
-from inside WSL. Docker Desktop's WSL2 backend only hosts the containers.
+This page is for running Booley natively on Windows: Booley installed with
+Windows Python, your RTL checkout on a Windows drive, and Docker Desktop
+running the Linux containers. You don't need Ubuntu or any EDA tool installed
+on Windows; every tool runs inside the Sandbox. Read it alongside
+[Install](INSTALL.md) and [Setup](SETUP.md): each problem below shows up on
+first install or the first `booley init`, in roughly that order.
 
-EDA builds over the bind-mounted checkout may be slower than on Linux-native
-storage.
+EDA runs can be slower than on Linux, because the container reads your
+checkout through a Windows bind mount, and local image builds take longer.
 
-Five first-run traps:
+## `python` or `py` opens the Microsoft Store
 
-- **Git is older than 2.37.2.** Upgrade Git for Windows from
-  [git-scm.com](https://git-scm.com/downloads/win), open a new terminal, and
-  rerun `booley init`. Older releases can exhaust their small pool of temporary
-  names when Booley stages a large checkout for line-ending repair, so bootstrap
-  stops early and names the installed and required versions.
-- **`python`/`py` open the Microsoft Store instead of running.** A fresh
-  Windows has no real interpreter, only Store aliases. Install one first:
-  `winget install Python.Python.3.13`.
-- **`docker` isn't found even though Docker Desktop is installed.** Its CLI
-  joins `PATH` only after the app has started: launch Docker Desktop, then open
-  a **new** terminal before `booley init`. Init treats a missing CLI or stopped
-  daemon as fatal and exits before creating or changing project files.
-- **The container sees a fully modified tree / phantom diffs.** Git for
-  Windows' `core.autocrlf=true` default checks files out with CRLF, which the
-  Linux container reads as every file modified. `booley init` fixes it: it sets
-  `core.autocrlf=false` and adds an LF default (`* text=auto eol=lf`) without
-  overriding attribute rules your repo already has. With Stealth on, the default
-  goes in the local `.git/info/attributes`; otherwise init writes it to the root
-  `.gitattributes`, which you commit only if you want to share the policy. If
-  Doctor then warns `git.attributes-policy-unknown`, see
-  [Doctor health](https://booley.dev/docs/doctor/#unknown-git-attributes-policy).
+A fresh Windows has no real Python, only Store shortcuts with the same names.
+Install Python 3.11 or newer first, for example
+`winget install Python.Python.3.13`, then open a new terminal.
 
-    Init also rewrites files already checked out with CRLF, but only from a
-    clean tree. If it reports the repair unsafe, commit or stash your changes
-    and rerun:
+## Bootstrap rejects your Git version
 
-    ```bash
-    booley init
-    ```
+Booley needs Git 2.37.2 or newer, because earlier Git for Windows releases
+fail when Booley prepares a large checkout. Upgrade from
+[git-scm.com](https://git-scm.com/downloads/win), open a new terminal, and
+rerun `booley bootstrap`, then `booley init`.
 
-    `booley doctor` rechecks every run both the RTL repository and, when it is a
-    separate repository, the Booley Directory's, and names whichever one is
-    unsafe, so a config reset, a fresh clone that drifts back to CRLF, or stale
-    index metadata left by an earlier repair gets caught rather than surfacing as
-    phantom diffs in the container.
+## `docker` is not found, but Docker Desktop is installed
 
-    Don't fix this by hand: `git checkout -- .` leaves the CRLF in place.
+The `docker` command joins `PATH` only after Docker Desktop has started.
+Launch Docker Desktop, open a new terminal, and rerun the command.
+`booley init` stops before changing any Project file when Docker is missing or
+not running, so retrying is safe.
 
-- **Init cannot resolve the trusted host Booley executable.** A per-user Python
-  install normally places `booley.exe` under the user scripts directory rather
-  than the interpreter's system `Scripts` directory. Booley checks both. If the
-  error remains, restore the canonical installed Booley launcher (check
-  `pipx list` or `uv tool list` for isolated installs), or add its scripts
-  directory to `PATH`, open a new terminal, and rerun init.
+## Every file shows as modified inside the container
+
+Git for Windows checks files out with Windows (CRLF) line endings by default.
+The Linux container then sees every file as changed. `booley init` fixes this
+for you:
+
+- It turns off Git's line-ending conversion for the repository
+  (`core.autocrlf=false`).
+- It adds the rule `* text=auto eol=lf` unless your repository already sets a
+  line-ending policy. With [Stealth Mode](STEALTH.md) on, the rule goes in
+  `.git/info/attributes` and stays local; otherwise it goes in the root
+  `.gitattributes`, which you commit only if you want to share it.
+- It rewrites files already checked out with CRLF, but only on a clean tree.
+  If init says the repair is unsafe, commit or stash your changes and run
+  `booley init` again.
+
+Don't fix this by hand: `git checkout -- .` keeps the CRLF endings.
+
+`booley doctor` checks line endings on every run, including a separate Booley
+Directory repository, and fails with the fix (usually `booley init`) if a
+fresh clone or a Git config change brings CRLF back. If it warns
+`git.attributes-policy-unknown` instead, see
+[Doctor](DOCTOR.md#unknown-git-attributes-policy).
+
+## Init can't find the Booley executable
+
+The error reads `cannot resolve the trusted host Booley executable`. Booley
+looks for `booley.exe` on `PATH` and in Python's Scripts directories, including
+the per-user one. If you still get it, reinstall Booley the way you installed
+it (check `pipx list` or `uv tool list`), or add the directory that holds
+`booley.exe` to `PATH`. Then open a new terminal and rerun `booley init`.
+
+## Host-provisioned Vivado isn't available
+
+Windows uses only the EDA tools inside the Sandbox Image. A Vivado installed on
+Windows can't run in the Linux container, and Booley rejects
+`provisioning = "host"` in `[eda.*]` on Windows. See
+[Supported EDA tools](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy).
+
+## Still stuck
+
+See [Troubleshooting](TROUBLESHOOTING.md). To report a Windows problem,
+[open an issue on GitHub](https://github.com/boldaxolotl/Booley/issues/new) or
+email [boldaxolotl@proton.me](mailto:boldaxolotl@proton.me).
