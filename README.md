@@ -43,10 +43,10 @@ and works on macOS too:
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/boldaxolotl/booley-prj-picorv32?quickstart=1)
 
-The Codespace and the agent's tokens are covered for you. The agent runs GPT
-Luna 6 by default; connect your own Claude or ChatGPT account if you want a
-smarter model. The first launch takes 3-4 minutes while the container image
-builds.
+The Codespace fits in GitHub's free monthly Codespaces allowance, and the
+agent runs GPT-6 Luna on us after a quick GitHub sign-in. Connect your own
+Claude or ChatGPT account if you want a smarter model. The first launch takes
+3-4 minutes while the container image builds. [How the free demo works](https://booley.dev/demo/).
 
 Or **[follow the demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32/blob/e53c1896ab02595aa4ebb3a56b5aa7bd109177f9/README.md)** to run the demo locally, after you [install Booley](#installation).
 

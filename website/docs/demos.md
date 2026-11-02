@@ -18,7 +18,7 @@ document: Evaluation designs
         <tr id="picorv32">
           <td data-l="Design"><span><b>PicoRV32</b></span></td>
           <td data-l="What it is"><span>A small RISC-V CPU core (<a href="https://github.com/YosysHQ/picorv32">YosysHQ/picorv32</a>)</span></td>
-          <td data-l="Notes"><span>Start here. Clone it, open it in VS Code, and type your first request to the agent. Or <a href="https://codespaces.new/boldaxolotl/booley-prj-picorv32?quickstart=1">open it in GitHub Codespaces</a> to try it free in your browser with nothing to install. The Codespace and tokens are covered; it runs GPT Luna 6 by default, and you can connect your own Claude or ChatGPT account for a smarter model.</span></td>
+          <td data-l="Notes"><span>Start here. Clone it, open it in VS Code, and type your first request to the agent. Or <a href="https://codespaces.new/boldaxolotl/booley-prj-picorv32?quickstart=1">open it in GitHub Codespaces</a> to try it free in your browser with nothing to install: the Codespace fits in GitHub&rsquo;s free monthly allowance, and the agent runs GPT-6 Luna on us after a GitHub sign-in (<a href="demo/">how the free demo works</a>). Connect your own Claude or ChatGPT account for a smarter model.</span></td>
           <td data-l="Project" class="lnk"><span><a href="https://github.com/boldaxolotl/booley-prj-picorv32/blob/e53c1896ab02595aa4ebb3a56b5aa7bd109177f9/README.md">Open the PicoRV32 demo</a></span></td>
         </tr>
         <tr>
