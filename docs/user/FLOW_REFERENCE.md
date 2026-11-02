@@ -96,7 +96,7 @@ Without `--timeout`, a Flow uses `[flows.<name>].timeout_ms` from
 second time at that commit and report the difference, so you can see what a
 change cost in area or timing. In Goal Mode the baseline is the commit pinned
 when the Goal started. If your Booley Directory is a Git repository of its own
-(a Paired Checkout), the baseline run also uses the Target definitions from
+(a Versioned Booley Directory, of which each worktree gets a Paired Checkout), the baseline run also uses the Target definitions from
 where your worktree branched off, so both runs build the same design. The
 progress output names the commit it chose.
 
@@ -178,7 +178,7 @@ Every built-in Flow uses the same exit codes:
 
 | Exit | Meaning | What to do |
 |---:|---|---|
-| `0` | The check passed. | Nothing. Advisory findings, such as lint warnings that aren't errors, may still be listed. |
+| `0` | The check passed. | Nothing. Advisory findings, such as lint warnings with `warnings_as_errors = false`, may still be listed. |
 | `1` | The design failed the check, or a simulation was inconclusive. | Fix the RTL or testbench, then rerun. |
 | `2` | The Flow couldn't reach a verdict: bad configuration, missing tool, crash, or a tool or build timeout. | Fix the setup. The result says nothing about the design. |
 
@@ -189,7 +189,8 @@ out of time exits `2`. [Simulation results](FLOW-SIM.md#reading-results)
 has the details.
 
 **Reports.** Each run writes a JSON report and full logs under `flow-reports/`
-in the Booley Directory, or under `--report-dir`. The verdict and the report
+in the Booley Directory (Goal runs use the Goal's runtime directory), or under
+`--report-dir`. The verdict and the report
 both give the exact paths. [FLOW_REPORTS.md](../internals/FLOW_REPORTS.md)
 describes the report files, for scripts that read them.
 

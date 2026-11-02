@@ -117,7 +117,7 @@ default_seed = 7             # this Target's Default Seed; 1 when not set
   to 2147483647. Set it when your existing regression uses a fixed seed
   other than 1.
 - An **unseeded** Target cannot apply a seed, so Booley refuses any request
-  for one, and its results carry no seed. To seed an Icarus Target, give its
+  for one, including a `default_seed` key, and its results carry no seed. To seed an Icarus Target, give its
   testbench a seed argument and declare the `seed` template.
 
 `booley doctor` prints one line per sim Target saying how its Test Runs are

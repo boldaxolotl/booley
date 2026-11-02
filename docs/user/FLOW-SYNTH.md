@@ -65,8 +65,8 @@ field details are in
 | Verdict | Meaning | Exit |
 |---|---|---:|
 | `PASS` | Synthesis finished, the netlist is clean, timing is met. | `0` |
-| `WARN` | Timing is violated, the EDA tools reported actionable warnings, or the baseline turned out to be the same source. | `0`, or `1` for a timing violation with `fail_on_timing_violation = true` |
-| `FAIL` | The design cannot be synthesized, or the final netlist has latches beyond `expected_latches`, combinational loops, multiply-driven nets, or logic that never became cells. | `1` |
+| `WARN` | Timing is violated, the EDA tools reported actionable warnings, or the baseline turned out to be the same source. | `0` |
+| `FAIL` | The design cannot be synthesized, or the final netlist has latches beyond `expected_latches`, combinational loops, multiply-driven nets, or logic that never became cells; or timing is violated while `fail_on_timing_violation = true`. | `1` |
 | `ERROR` | No verdict: missing constraints, bad configuration, timeout, out of memory, or a crash. | `2` |
 
 Warnings known to be harmless are counted but don't cause `WARN`. A
@@ -90,8 +90,8 @@ set_false_path -from [get_ports test_mode_i]
 ```
 
 Files load in the order the Target lists them. A Target without SDC stops with
-an error before synthesis starts, and one whose SDC creates no clock fails when
-timing analysis begins. Booley sets no fanout limit: the library's limit applies, or 50 when it
+an error before synthesis starts, and one whose SDC creates no clock stops
+with an `ERROR` when the constraints are read. Booley sets no fanout limit: the library's limit applies, or 50 when it
 sets none. If very high-fanout nets dominate timing, set your own with
 `set_max_fanout <n> [current_design]`.
 
@@ -181,7 +181,7 @@ per Target), synthesis has two settings:
 [flows.synth]
 timeout_ms = 5400000
 expected_latches = 0               # intentional latches allowed before FAIL
-fail_on_timing_violation = false   # true: timing violations exit 1
+fail_on_timing_violation = false   # true: timing violations are FAIL (exit 1)
 ```
 
 Keep `fail_on_timing_violation = false` while the constraints are

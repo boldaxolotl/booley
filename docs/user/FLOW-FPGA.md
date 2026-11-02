@@ -61,11 +61,11 @@ critical path, Fmax), and the verdict card prints its path and the build log's.
 | Verdict | Meaning | Exit |
 |---|---|---:|
 | `PASS` | Routing completed, LUT and FF counts were found, setup and hold slack are both ≥ 0 on every clock, and there are no latches, combinational loops, or multi-driven nets. | `0` |
-| `FAIL` | Vivado rejected the RTL (a syntax or port error), or one of the above is not true; the failure line says which: `timing not met`, `critical conditions`, or `missing LUT/FF metrics`. | `1` |
-| `ERROR` | No verdict: Vivado missing, crashed, or timed out; a Target error such as a missing part or XDC; or a baseline that could not be compared. | `2` |
+| `FAIL` | Vivado rejected the RTL (a syntax or port error), setup or hold slack is negative (`timing not met`), or the design has latches, combinational loops, or multi-driven nets (`critical conditions`). | `1` |
+| `ERROR` | No verdict: Vivado missing, crashed, or timed out; routing did not complete or reported no resource or timing numbers; a Target error such as a missing part or XDC; or a baseline that could not be compared. | `2` |
 
 An XDC without `create_clock` gives Vivado nothing to time against, so no slack
-is reported and the run fails `timing not met`.
+is reported and the run ends in `ERROR` (missing timing evidence).
 
 An `FPGA:{target}` Goal in [Goal Mode](GOAL-MODE.md) is met only by a `PASS`;
 the Goal can add limits on resources and Fmax, absolute or relative to the Goal
@@ -94,7 +94,7 @@ pinout. Such a build produces no bitstream.
 
 ## Reusing earlier builds
 
-When every input matches an earlier build (sources, constraints, part, profile,
+When every input matches an earlier passing build (sources, constraints, part, profile,
 parameters, Target options, and tool versions), Booley reuses its results
 instead of running Vivado again; the row shows `cached`. Pass `--no-cache`, or
 ask the agent for a fresh build, to force a new one.

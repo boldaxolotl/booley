@@ -118,7 +118,7 @@ Each Test Run gets one verdict:
 | Pass / fail | An HDL testbench passes or fails by the [message it prints](#passfail-sentinels-and-cycle-counts). A Cocotb Target uses cocotb's result file, and assertion messages in the output can still fail a test. | `0` / `1` |
 | Inconclusive | The simulation ended cleanly without a pass or fail message, or a `--trace` run produced no usable waveform. It never counts as a pass. | `1` |
 | Timeout | The simulation ran past its time limit (`timeout_ms`, ten minutes by default). It counts as a failure: look for a deadlock in the RTL or testbench, or raise the limit if the test really needs longer. | `1` |
-| Error | Something other than the design stopped the test, such as a build failure or a tool crash; the result says nothing about the design. | `2` |
+| Error | An infrastructure problem stopped the test, such as a build timeout, a build failure with no recognised design error, a missing tool, or Pre-Sim Commands that can't start; the result says nothing about the design. An RTL compile error or a simulator crash is a failure instead. | `2` |
 
 A test that reads a `$readmemh` file that is missing and not declared in the
 Target fails as `missing_input`. A failing or timed-out
@@ -222,8 +222,8 @@ own. This catches a module that compiles only thanks to a define or include
 that the Target happens to supply. `standalone_frontend` chooses the compiler
 for that sweep: `auto` (default) uses Verilator when it is installed, otherwise
 Icarus. When that compiler differs from the Target's and can't parse something
-the Target build accepted, the module is reported as ungraded (exit `2`) rather
-than as a design failure.
+the Target build accepted, the module is reported as ungraded rather than as a
+design failure; if no other module fails, the run exits `2`.
 
 Both modes skip Pre-Sim Commands, and refuse options that only make sense when
 tests run, such as `--test`, `--trace` and `--no-kill`. A compile error in the
@@ -387,8 +387,8 @@ shown are the defaults. Coverage settings are on the
 ### Timeouts
 
 `timeout_ms` (or `--timeout` for one run) limits each simulation, and in
-`elab-only-standalone` mode the module sweep. Running out of time is a test
-failure. `build_timeout_ms` limits each simulator build, for normal runs,
+`elab-only-standalone` mode the module sweep. A simulation that runs out of
+time is a test failure (exit `1`); a sweep that runs out of time exits `2`. `build_timeout_ms` limits each simulator build, for normal runs,
 coverage and elaboration checks alike; it defaults to `3600000` (one hour), and
 running out of time is an error (exit `2`). Pre-Sim Commands have an
 independent fixed 600-second budget that neither setting changes.

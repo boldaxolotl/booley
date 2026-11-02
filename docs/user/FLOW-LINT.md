@@ -48,8 +48,8 @@ run ends with one verdict:
 
 The full list of findings is in `lint_report.json`, and each Target's complete
 linter output is in its log; the verdict card prints both paths. A `LINT:{target}`
-Goal is met only when that Target has no findings, whatever
-`warnings_as_errors` says.
+Goal is met only when that Target has no findings within the run's `--scope`,
+whatever `warnings_as_errors` says.
 
 ## Waivers and rules
 
