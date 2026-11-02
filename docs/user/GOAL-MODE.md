@@ -6,6 +6,12 @@ keep the Developer Agent within the limits you set, such as passing tests,
 area, and timing budgets, and the work is not done until Booley's own evidence
 shows every Goal is met.
 
+Goal Mode is most useful for performance, frequency, and area optimization,
+where you want to squeeze the most out of a design while it stays functionally
+correct. It also works well for building new features and modules. It is not
+much help for debugging; use [Interactive Mode](USAGE.md#interactive-mode) for
+that.
+
 ## How to use Goal Mode
 
 1. **Set up the Goals.** Open a Developer Agent session and type
