@@ -296,7 +296,7 @@ What differs from an SV Target:
   it, and its Test Variants carry `env` only. Tests that differ in seed or in
   Variant environment run in separate simulator processes; see
   [Seeds](TESTS.md#seeds-seed-default_seed).
-- **No sentinels** (see [pass/fail sentinels](FLOW-SIM.md#simulation--passfail-sentinels-flowssim)):
+- **No sentinels** (see [pass/fail sentinels](FLOW-SIM.md#passfail-sentinels-and-cycle-counts)):
   a missing or truncated `results.xml` is *inconclusive*, never a pass. RTL
   assertion output is still scanned.
 - **One test module per Target.** A cocotb Target names exactly one
@@ -326,7 +326,7 @@ As on any Target, a header-only or otherwise unqueryable waveform is rejected.
 Booley drives the dump itself, so `[flows.sim].trace_args` has no effect here:
 
 - **Icarus** gets `+trace`, which fires Booley's dump module, the same one the
-  [trace overlay](FLOW-SIM.md#how-booley-asks-for-a-waveform-flowssimtrace_args) supplies
+  [trace overlay](FLOW-SIM.md#waveforms) supplies
   to an SV Target.
 - **Verilator** gets `--trace --trace-file dump.vcd`, the flags of the C++
   harness cocotb supplies.

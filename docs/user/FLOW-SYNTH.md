@@ -1,160 +1,221 @@
 # ASIC synthesis (`synth`)
 
-`synth` gives a fast ASIC quality-of-results estimate (area, timing/Fmax,
-structural problems) to iterate RTL against. It is not tape-out synthesis or
-sign-off. It uses Yosys and OpenROAD on the built-in Nangate45 technology.
+`synth` maps a Target's RTL to standard cells on an
+[open 45 nm library](SUPPORTED-EDA-TOOLS.md) and
+reports area, cell count, per-clock timing and Fmax. It also fails the run on
+structural problems such as unintended latches and combinational loops. Use it
+while you change RTL to see whether a change makes the design smaller or
+faster, usually by comparing against another revision. It is an estimate, not
+sign-off: there is no clock tree, no routing and a single process corner, wire
+delays are estimated from placement, and power is not measured. Trust the
+direction and rough size of a change between two runs; expect absolute numbers
+to differ from your foundry flow. For what all Flows share (choosing Targets,
+options, logs, exit codes), see [Running Flows](FLOW_REFERENCE.md).
+
+## Running synthesis
+
+1. Check that the Project has a synthesis Target (`booley targets --for synth`
+   lists them) and that it has a timing constraints file defining at least one
+   clock. Project Setup normally creates both; see
+   [Timing constraints](#timing-constraints) to add them yourself.
+2. Ask the Developer Agent, naming the Target and, to compare, a git revision:
+
+    > *"Synthesize `synth_core` and compare area and Fmax with `main`."*
+    >
+    > *"Try the `max_frequency` profile on `synth_core` and tell me what Fmax it reaches."*
+
+3. The agent runs synthesis at the current code and, when you gave a revision,
+   again at that revision, then reports the area and timing of each with the
+   change in percent.
+
+To reproduce a run yourself inside the Sandbox:
 
 ```bash
-booley flow synth --target synth_soc
-booley flow synth --target synth_soc --baseline main   # compare with another revision
+booley flow synth --target synth_core --baseline main
 ```
-
-**Constraints.** Physical synthesis (the Target's `synth_mode`) needs a
-`file_type: SDC` fileset in the Target that creates at least one clock; Booley
-adds no timing constraints of its own. Logical synthesis skips STA and needs no
-SDC. Physical fanout limits come from OpenROAD's defaults, the library, or the
-Project's SDC. OpenROAD uses an implicit maximum fanout of 50 when neither the
-library nor the SDC sets a limit. For very large nets, set a suitable limit in
-the Target's SDC: `set_max_fanout <n> [current_design]`.
-
-Synthesis mode is Target-owned: there is no per-call `--synth-mode` option.
-
-Everyday options:
 
 | Option | Effect |
 |---|---|
-| `--baseline <git-ref>` | Compare with the baseline Target at another revision (the two Targets may differ). |
-| `--ppa-profile <compact\|balanced\|max_frequency>` | Use a clean built-in PPA profile for this call. It replaces the Target's advanced backend settings; expert flags below still apply on top. |
-| `--flatten` / `--no-flatten` | Override the Target's hierarchy flattening. |
-| `--frontend <sv2v\|slang>` | Override the Target's RTL frontend, mainly for diagnosis. |
+| `--baseline <git-ref>` | Also synthesize the Target at that revision and add the change in percent to every row. Shared rules: [Running Flows](FLOW_REFERENCE.md#common-options). |
+| `--ppa-profile <compact\|balanced\|max_frequency>` | Use this [optimization profile](#optimization-profiles) for this run. Default: the Target's `ppa_profile`, else `balanced`. |
+| `--flatten` / `--no-flatten` | Flatten the hierarchy before mapping, or keep it. Default: flatten. |
+| `--frontend <sv2v\|slang>` | Pick how SystemVerilog is read; switch only when the default fails. See [synth RTL frontend](SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang). |
 
-Expert options, for tuning experiments:
+## Reading results
 
-- Yosys/ABC: `--abc-recipe <default|balanced|fast>` or `--abc-script <script>`,
+The run prints one row per Target:
+
+| Column | Meaning |
+|---|---|
+| Area | Cell area in kGE: thousands of NAND2 gates of the same area. |
+| Crit path | Delay of the worst path on the slowest clock, in ps. |
+| Fmax | Highest frequency that clock's worst path would meet; the clock is named when there are several. |
+| Setup slack | Worst setup slack across clocks; negative means the constraints are not met. |
+| Δ | With `--baseline`: change from the baseline. |
+
+Below the table come the cell count, worst hold slack, the register-to-register
+Fmax, a warning count with the log path, and any failure reason. When the
+worst path starts at an input or ends at an output, a note says so: such a
+path's slack depends on the input and output delays in your constraints, not on
+the logic between registers, so fix those constraints rather than the RTL.
+Every clock's period, slack, critical path and Fmax is in the JSON report;
+field details are in
+[FLOW_REPORTS](../internals/FLOW_REPORTS.md#synth).
+
+| Verdict | Meaning | Exit |
+|---|---|---:|
+| `PASS` | Synthesis finished, the netlist is clean, timing is met. | `0` |
+| `WARN` | Timing is violated, the EDA tools reported actionable warnings, or the baseline turned out to be the same source. | `0`, or `1` for a timing violation with `fail_on_timing_violation = true` |
+| `FAIL` | The design cannot be synthesized, or the final netlist has latches beyond `expected_latches`, combinational loops, multiply-driven nets, or logic that never became cells. | `1` |
+| `ERROR` | No verdict: missing constraints, bad configuration, timeout, out of memory, or a crash. | `2` |
+
+Warnings known to be harmless are counted but don't cause `WARN`. A
+`SYNTH:{target}` Goal is met when the run finishes with a clean netlist and
+every area or timing threshold set on the Goal passes; see
+[Goal Mode](GOAL-MODE.md).
+
+## Timing constraints
+
+A synthesis Target reads its timing constraints from SDC files in a
+`file_type: SDC` fileset. At least one file must create a clock; Booley adds
+no constraints of its own, so the clock periods and I/O delays you write are
+what the timing numbers mean.
+
+```tcl
+# constraints/core.sdc
+create_clock -name clk_i -period 2.5 [get_ports clk_i]
+set_input_delay  -clock clk_i 0.0 [all_inputs]
+set_output_delay -clock clk_i 0.0 [all_outputs]
+set_false_path -from [get_ports test_mode_i]
+```
+
+Files load in the order the Target lists them. A Target without SDC stops with
+an error before synthesis starts, and one whose SDC creates no clock fails when
+timing analysis begins. Booley sets no fanout limit: the library's limit applies, or 50 when it
+sets none. If very high-fanout nets dominate timing, set your own with
+`set_max_fanout <n> [current_design]`.
+
+## Fast logical estimates
+
+By default a Target runs physical synthesis: mapping, then placement, timing
+repair and timing analysis. Set `synth_mode: logical` on the Target to stop
+after mapping. It runs much faster and needs no SDC, and reports mapped area
+and an estimated Fmax from the longest chain of mapped logic. That Fmax ignores
+placement and wires and is usually optimistic; every run prints that warning,
+and the Crit path column reads `logical estimate`.
+Use logical mode for quick area trends on large designs, and physical mode
+whenever timing matters. The mode belongs to the Target. There is
+no per-call `--synth-mode` option, so keep one Target per mode if you need
+both.
+
+## Optimization profiles
+
+A profile states what to optimize for. Set it on the Target as
+`ppa_profile`, or try one for a single run with `--ppa-profile`:
+
+| Profile | Intent | Placement utilization / density |
+|---|---|---|
+| `compact` | Smaller area. | 40% / 0.65 |
+| `balanced` | Default trade-off. | 50% / 0.80 |
+| `max_frequency` | Higher Fmax. | 50% / 0.80 |
+
+Each profile also uses its own logic-optimization script during mapping. A
+profile states intent, not a guaranteed result; compare runs to see which
+suits your design. Name the profile on the Target so results stay comparable over
+time. `--ppa-profile` replaces any expert settings on the Target for that run,
+so you see the clean profile.
+
+Expert options for tuning experiments; each one also exists as a Target
+setting under the same name with underscores:
+
+- Mapping: `--abc-recipe <default|balanced|fast>` or `--abc-script <script>`,
   `--generic-abc-before-mapping` / `--no-generic-abc-before-mapping`,
   `--abc-delay-ps <ps>`.
-- OpenROAD: `--utilization-pct <percent>`, `--placement-density <fraction>`,
-  `--repair-setup` / `--no-repair-setup`, `--repair-hold` / `--no-repair-hold`,
-  `--gate-cloning` / `--no-gate-cloning`, `--setup-margin-ns <ns>`,
-  `--repair-tns-percent <percent>`.
+- Placement and timing repair (physical mode only): `--utilization-pct <percent>`,
+  `--placement-density <fraction>`, `--repair-setup` / `--no-repair-setup`,
+  `--repair-hold` / `--no-repair-hold`, `--gate-cloning` / `--no-gate-cloning`,
+  `--setup-margin-ns <ns>`, `--repair-tns-percent <percent>`.
 
-**Verdict.** The report gives area, cells, per-clock timing and Fmax, latches,
-and warning counts. Combinational loops and multiple drivers in the final netlist
-fail the run. Other actionable warnings give a `warn` grade but still exit `0`;
-known-benign warnings are counted with a rationale. `SYNTH:{target}` is
-satisfied only when synthesis completes, the final structural check ran, and
-every configured threshold passes.
+After changing the mapping options, rerun the baseline with the same options;
+otherwise the comparison mixes two recipes.
+
+## Large memories
+
+Synthesizing a large RAM as flip-flops makes area and timing meaningless, and
+leaving it out lets synthesis delete the logic around it. Instead, a synthesis
+Target can swap in a Memory Timing Surrogate: a small standard-cell stand-in
+that keeps the memory's latency, reset behaviour and data dependence but not
+its capacity. The Target selects it with a define and a synthesis-only
+fileset, so simulation and lint keep the real memory:
+
+```yaml
+# <design>.core
+filesets:
+  synth_memory:
+    files:
+      - synth/ram_surrogate.sv: {file_type: systemVerilogSource}
+parameters:
+  SYNTH_MEMORY_SURROGATE: {datatype: bool, paramtype: vlogdefine, default: true}
+targets:
+  synth_core:
+    filesets: [rtl, timing_constraints, synth_memory]
+    parameters: [SYNTH_MEMORY_SURROGATE]
+```
+
+Every read-data bit of a valid surrogate depends, through registers only, on
+the write data, address, write enables and byte enables, with no combinational
+write-to-read arc. A surrogate whose read data depends only on the address or
+on constants lets synthesis delete the surrounding logic, so area and timing
+look better than they are.
+Project Setup checks each surrogate with a no-pruning probe against
+synthesis with the memory left out. Results then exclude the memory's own
+area, contents and internal timing; add the macro's figures from its
+datasheet when you need a total.
 
 ## Configuration (`[flows.synth]`)
 
+Besides the shared `enabled` and `timeout_ms` (default `1800000`, 30 minutes
+per Target), synthesis has two settings:
+
 ```toml
 [flows.synth]
-timeout_ms = 5400000       # per-config cap in ms (default 1800000 = 30 min)
-expected_latches = 0       # intentional latches to allow
-# fail_on_timing_violation = true    # negative slack becomes a design FAIL (exit 1)
+timeout_ms = 5400000
+expected_latches = 0               # intentional latches allowed before FAIL
+fail_on_timing_violation = false   # true: timing violations exit 1
 ```
 
-Persistent build-recipe inputs live on the selected Target:
+Keep `fail_on_timing_violation = false` while the constraints are
+placeholders. Turn it on once they are real, so a CI step or Goal that reads
+only the exit code doesn't treat a design missing timing as success.
+
+Everything about how the design is built lives on the Target in the `.core`
+file, not in `booley.toml`. A synthesis Target needs `tool: yosys`; the other
+`flow_options` are optional and shown with their defaults:
 
 ```yaml
 # <design>.core
 filesets:
   timing_constraints:
     files:
-      - util/syn/sdc/block.sdc: {file_type: SDC}
-  synth_memory:
-    files:
-      - synth/top_ram_timing_surrogate.sv: {file_type: systemVerilogSource}
-parameters:
-  SYNTH_MEMORY_SURROGATE:
-    datatype: bool
-    paramtype: vlogdefine
-    default: true
+      - constraints/core.sdc: {file_type: SDC}
 targets:
-  synth:
+  synth_core:
     flow_options:
       tool: yosys
-      frontend: sv2v            # sv2v (default) | slang
-      # slang_options: [--single-unit]
-      ppa_profile: balanced     # compact | balanced | max_frequency
-      synth_mode: physical      # physical (default) | logical
+      synth_mode: physical       # physical | logical
+      ppa_profile: balanced      # compact | balanced | max_frequency
       flatten: true
-      advanced_settings_yosys:
-        abc_recipe: balanced
-        # generic_abc_before_mapping: false
-        # abc_delay_ps: 3333
-      advanced_settings_openroad:
-        utilization_pct: 50
-        placement_density: 0.80
-    filesets: [rtl, timing_constraints, synth_memory]
-    parameters: [SYNTH_MEMORY_SURROGATE]
-    toplevel: top
+      frontend: sv2v             # sv2v | slang
+      # slang_options: [--single-unit]
+      # advanced_settings_yosys: {abc_recipe: balanced}
+      # advanced_settings_openroad: {utilization_pct: 50, placement_density: 0.80}
+    filesets: [rtl, timing_constraints]
+    toplevel: core
 ```
 
-`physical` runs Yosys followed by OpenROAD placement, optimization, parasitic
-estimation, and its embedded STA. Its `area_um2` is post-optimization area and
-`area_source` is `openroad_post_optimization`. Timing intent belongs in the
-Target's SDC fileset. A physical Target without SDC is rejected before EDA
-execution, and OpenROAD rejects an SDC that creates no clocks. Booley loads the
-authored files in Target order and adds no generated timing constraints.
-
-A memory timing surrogate is an ordinary Verilog/SystemVerilog source. Put it
-in a synthesis-only fileset and let the project's RTL select it through a typed
-`vlogdefine` owned by the synthesis Target, as above. Simulation and lint
-Targets keep the functional memory RTL by omitting both that fileset and that
-define. No manifest or custom FuseSoC file type is involved. Every read-data
-bit of the surrogate depends, through registers only, on the memory's write
-data, address, write enables, and byte-enables, combined bit-wise, with no
-combinational write-to-read arc. Read data driven only by the address or by
-constants lets synthesis delete the logic around the memory and understates
-area and Fmax; Project Setup checks each surrogate with a no-pruning probe
-against a black-box synthesis. The surrogate is a timing-boundary
-approximation: synthesis results exclude the memory's real capacity, contents,
-macro area, power, placement, and internal timing arcs.
-
-`logical` runs only Yosys mapping. It is much faster and gives a useful mapped
-area estimate plus `estimated_fmax_mhz`, calculated from ABC's longest mapped
-logic delay. The frequency is not STA and is probably inaccurate because it
-excludes placement and wire delays; Booley prints that warning with every
-logical estimate. Its `area_source` is `yosys_mapped`. SDC is not required or
-consumed in this mode. A non-empty
-`advanced_settings_openroad` table with `synth_mode: logical` is a configuration
-error because those settings could not affect the result.
-
-```tcl
-# util/syn/sdc/block.sdc
-create_clock -name clk_i -period 25.0 [get_ports clk_i]
-set_input_delay  -clock clk_i 0.0 [all_inputs]
-set_output_delay -clock clk_i 0.0 [all_outputs]
-set_false_path -from [get_ports mode_i]
-```
-
-For normal use, change `ppa_profile`; select `synth_mode: logical` only when the
-fast mapped-area / approximate-frequency trade-off is intentional. The Target's
-`advanced_settings_yosys` and `advanced_settings_openroad` subtables are
-backend-specific expert overrides.
-
-| Profile | Yosys mapping | OpenROAD utilization / density |
-| --- | --- | --- |
-| `compact` | one default liberty-aware ABC pass | 40% / 0.65 |
-| `balanced` | one balanced liberty-aware ABC pass | 50% / 0.80 |
-| `max_frequency` | one fast liberty-aware ABC pass | 50% / 0.80 |
-
-All profiles run `synth -noabc`, followed by `dfflibmap` and exactly one
-liberty-aware ABC pass.
-
-`balanced` is the default. Select a profile explicitly for stable PPA.
-`generic_abc_before_mapping = true` enables two ABC passes; establish a fresh
-physical baseline when changing the mapping recipe.
-
-Target `flow_options.slang_options` is passed to `read_slang` verbatim.
-`--single-unit` is the
-common one: slang compiles each file as its own compilation unit, so a repo whose
-macros come from a defines header included once at the top of the filelist (a
-convention sv2v and Verilator both honor) hits "unknown macro" errors without it.
-
-**`fail_on_timing_violation`** defaults `false`: synthesis succeeded
-structurally, and many projects synthesize against placeholder constraints, so a
-violation prints `RESULT: WARN -- timing VIOLATED` and exits 0. Turn it on once
-the SDC is real, or an rc-only consumer (Goal evidence consumer, CI step) reads a -2.6 ns
-design as success.
+`slang_options` passes options to the `slang` frontend unchanged. Add
+`--single-unit` when the RTL relies on macros from a header included only once
+at the top of the file list. `advanced_settings_yosys` and
+`advanced_settings_openroad` hold the expert options above; setting
+`advanced_settings_openroad` on a logical Target is an error, since it would
+have no effect. For naming and file types, see [Targets](TARGETS.md).

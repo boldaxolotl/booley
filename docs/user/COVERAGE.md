@@ -1,220 +1,183 @@
-# Simulation coverage
+# Coverage
 
-Coverage is part of the [`sim` Flow](FLOW-SIM.md): add `--coverage` to a
-Simulation run to collect it. `sim` can collect Verilator coverage (line, branch, expression, toggle,
-and cover properties) into a **Coverage Campaign**, check it against Coverage
-Criteria, and hand it to the Coverage Analyst for waiver candidates and
-testbench improvements.
+Coverage tells you how much of your RTL the tests actually exercise: which
+lines, branches, expressions, toggles, and cover properties were hit, and
+which never were. Use it to judge whether a testbench is thorough, to find
+logic no test reaches, or, in Goal Mode, to require a minimum coverage before a
+change counts as done. It is part of the [Simulation Flow](FLOW-SIM.md) and
+works only on Verilator Targets; an Icarus Target cannot collect coverage.
+Coverage does not replace pass/fail checks: a fully covered design can still
+be wrong.
 
-## How coverage is measured
+## Collecting coverage
 
-Coverage is measured per Target, per run:
+1. Make sure the Target simulates with Verilator and every testbench file in
+   its fileset carries the `tb` tag. An untagged testbench file is counted as
+   RTL and skews the numbers.
+2. Ask the agent for a coverage run, for example "Run sim_soc with coverage."
+   The agent runs `booley flow sim --target sim_soc --coverage` (short form
+   `--cov`). Without `--test`, the Target's whole test suite runs, minus the
+   tests skipped in `tests.toml`; with `--test`, only the
+   [Test Runs](FLOW-SIM.md#test-runs-test-variants-and-seeds) you name.
+3. Read the result (next section).
+4. To find out what is missing and why, ask the agent to run the
+   [Coverage Analyst](#analyzing-a-campaign) on the run.
 
-1. Each selected test runs in its own simulator process and writes its own
-   Verilator coverage database.
-2. Booley merges those databases into one result for the Target: a point is
-   covered if any test hit it. Per-test hit counts are kept, so you can see
-   which test covered what.
-3. Each metric's percentage is covered RTL points divided by eligible RTL
-   points. Testbench and generated code are reported but not scored. When
-   approved waivers apply (see [Collecting vs. gating](#collecting-vs-gating)),
-   waived points are left out of the count.
+If any selected Target uses Icarus, the whole run is refused before anything
+builds. Coverage runs only in the default `--mode simulate`. `--trace` can be
+combined with `--coverage`.
 
-What counts as RTL:
+## Reading results
 
-- Every file in the Target's resolved fileset **without** the `tb` tag. Tag
-  every testbench file `tb`; an untagged one is scored as RTL.
-- Only code elaborated under the testbench top gets coverage points. An RTL
-  module that is never instantiated can produce no points.
-- After collection, Booley warns about RTL files that produced no coverage
-  points (usually a module that is never instantiated). The warning does not
-  change the percentages. The check is per file and uses a simple text scan, so
-  it can miss a file or report one by mistake.
-- Points are per instance: a module instantiated four times contributes four
-  sets of points, and each instance must be exercised.
+Each Target gets its own **Coverage Campaign**: the coverage record of one
+Target in one run. The result shows a percentage for each metric, the
+thresholds you set (if any) and whether each was met, and the path of the
+Campaign's `coverage.json`, which you pass to the Coverage Analyst. Where the
+files live on disk is described in
+[Flow reports](../internals/FLOW_REPORTS.md).
 
-Each Target gets its own Coverage Campaign. Nothing is merged across Targets or
-across runs.
+How the numbers are counted:
 
-## Quick start
+- Each test writes its own coverage data, and Booley merges them: a point is
+  covered if any test hit it. Booley keeps which test hit what.
+- A metric's percentage is covered RTL points divided by all RTL points.
+  Testbench (`tb`-tagged) and generated code are reported but not counted.
+  [Approved waivers](#coverage-waivers) remove their points from the count.
+- Points are per instance: a module instantiated four times has four sets of
+  points, and each instance must be exercised.
+- Only code instantiated under the testbench top has points. Booley warns
+  about RTL files that produced no points at all (usually a module that is
+  never instantiated). The check is a simple per-file text scan, so it can
+  miss a file or flag one by mistake. The warning does not change any number.
+- Nothing is merged across Targets or across runs. To measure a combined
+  suite, run all its tests in one coverage run.
 
-```bash
-# 1. Collect coverage for the full suite
-booley flow sim --target sim_soc --coverage
-```
+Simulation results and coverage are judged separately: a failing test can
+still produce valid coverage, and a passing suite can miss a threshold. The
+exit code covers simulation and collection only:
 
-Then call the `coverage_analyst` Specialist from your Developer Agent session with
-`campaign="<reports>/sim/12/targets/sim_soc/coverage.json"` for Waiver Candidates
-and testbench improvements. The verdict card prints the exact
-`coverage.json` path to pass as `campaign`.
+| Exit | When |
+|---:|---|
+| `0` | No test failed and coverage was collected. A missed threshold also exits `0`; the result names the missed metric. |
+| `1` | A test failed. |
+| `2` | Coverage could not be trusted: the run was refused, collection failed, or evaluation was blocked (for example an invalid waiver or the wrong set of tests). |
 
-## Requirements
+With several Targets, each Target keeps its own results even when another
+Target decides the exit code.
 
-- Every selected Target must use Verilator. Selecting any Icarus Target rejects
-  the whole run before anything is built.
-- Only `--mode simulate` (the default). `--trace` can be combined with
-  `--coverage`.
-- Tests run one at a time, one simulator process per test (including cocotb).
-- Testbench properties such as excluding reset from coverage, or hooks for a
-  custom C++ main, live in the Target's `.core`. See
-  [Coverage configuration](#native-coverage-configuration).
+## Coverage Goals
 
-## Collecting vs. gating
-
-- Every coverage run applies the approved waivers: waived points are reported
-  `waived` and counted in `waived_points`, and they are left out of the eligible
-  points and percentages. An invalid approval file, or an approval that does not
-  match the collected points, blocks that Target's evaluation and exits 2, with
-  or without a Criterion. Fix the approvals or use `--no-waivers`. When
-  collection is incomplete (already exit 2), approvals are not matched against
-  the partial points and nothing is waived.
-- **Ungated** (no Coverage Criterion): Booley collects and stores the Campaign
-  with evaluation `not_requested`. Use it to explore.
-- **Gated** (Goal Mode with a `COVERAGE:{target}` Goal): Booley also checks
-  the thresholds. Only a persisted `pass` satisfies
-  the Criterion. A Goal remains unmet until strict evidence passes; see
-  [Coverage waivers at review](#coverage-waivers-at-review). The thresholds
-  alone decide the Goal: a Test Run that fails its checks does not make it
-  unmet, as long as the run still wrote its coverage data.
-- **Raw numbers** (`--no-waivers`): applies no approved waivers. With a
-  Coverage Criterion it needs `--diagnostic`; otherwise Booley exits 2 before
-  anything builds. The thresholds are then evaluated on raw numbers, and no
-  Criteria are recorded.
-
-Which tests run: the Test Runs you name with `--test`/`--tests-file`, otherwise the
-Target's registered suite minus `tests.toml` skips, the same as any `sim` run.
-A coverage run accepts every selector form, including several Test Runs of one
-Test (`--test stress+short --test stress+soak`, or `--test stress@x5`). Each
-Test Run is one simulator process with its own native database, and the
-merged coverage is the union over all of them. A
-Criterion's `tests` list never picks tests; it says which tests the evidence
-must come from. If what ran differs from that list, coverage is still collected
-but gated evaluation is blocked (suite mismatch), so pass the listed tests
-explicitly.
-
-## Coverage Criteria and waivers
-
-A coverage Goal declares thresholds per Target:
+Outside Goal Mode, a coverage run just collects and stores the Campaign; there
+are no thresholds to pass. In [Goal Mode](GOAL-MODE.md), a coverage Goal sets
+minimum percentages for one Target, for example "line coverage of sim_counter
+at least 90% and branch at least 80% over the whole suite":
 
 ```json
 {"family": "COVERAGE", "target": "sim_counter", "tests": "all",
  "metrics": {"line": 90, "branch": 80}}
 ```
 
-A human can waive points that are unreachable or out of scope; see
-[Approved coverage waivers](#approved-coverage-waivers).
+- Metrics are `line`, `branch`, `expression`, `toggle`, and `cover_property`.
+  Name at least one; each threshold is a number above 0 and at most 100.
+  Every threshold must be met. Booley compares exact values, so a displayed
+  89.996% rounded to 90.00% does not meet 90.
+- `tests` is `"all"` or a list of
+  [Test Run selectors](GOAL-MODE.md#simulation-cycle-count-and-coverage-goals), such as
+  `["reset", "stress+soak@x5"]`. It does not choose which tests run; it says
+  which tests the measurement must come from. If the run's tests differ,
+  coverage is still collected but the Goal is not evaluated, so run exactly
+  the listed tests.
+- The thresholds alone decide the Goal. A failed test does not make it unmet,
+  as long as the run still wrote its coverage data. Add a simulation Goal for
+  the same tests when they must also pass.
+- If a metric in the Goal has no RTL points at all, evaluation is blocked.
 
-## Coverage waivers at review
+To see coverage without waivers, add `--no-waivers`. When the Target has a
+coverage Goal, this also needs `--diagnostic`, and the run then records no Goal
+evidence.
 
-In Goal Mode, the Coverage Analyst's code screens Waiver Candidates and saves
-those ready for human review in the local Goal Record's `waiver-candidates.json`.
-An `unreachable` candidate needs a zero-hit point. A candidate carries no
-approval authority; only strict coverage evidence meets a Goal.
+## Coverage waivers
 
-Ask the Developer Agent to propose each needed candidate with
-`goal_propose_change(operation="create", kind="waiver", goal_key=...,
-candidate_id=..., rationale=...)`. Inspect the point, source, Campaign,
-coverage delta, and justification before approving or rejecting the exact
-proposal. The client form records your decision and reason; chat fallback
-records your quoted instruction. No candidate is accepted by default.
+Some coverage points can never be hit (dead defaults, tied-off inputs) or are
+deliberately out of scope. A waiver removes one such point from the count.
+Waivers are always approved by a human, so the agent can't raise coverage by
+waiving what it failed to test.
 
-Approval writes the bound waiver and any review proof into the configured
-[approval directory](#approved-coverage-waivers) and records the
-change in the Change Log. Rerun coverage to obtain fresh strict evidence;
-approval itself does not meet a Goal. A stale or invalid candidate needs a new
-Campaign and Analyst screening. A rejection is retained for that exact point
-and source content. Finish includes the approved changes and evidence in its
-Review Package, leaving merge to your separate instruction.
+In Goal Mode:
 
-## Results
+1. The Coverage Analyst proposes **Waiver Candidates**: points it believes are
+   unreachable or out of scope. A candidate counts for nothing on its own.
+2. The agent asks you to approve the candidates it needs. You see the point,
+   its source, the coverage change it would make, and the justification, and
+   you approve or reject each one with a reason. Nothing is approved by
+   default.
+3. Approving writes the waiver (and, for an unreachable point, a written review
+   argument as proof) into your [waiver directory](#configuration) and
+   records the change in the Goal's Change Log. A rejection is remembered for
+   that point until its source changes.
+4. Ask the agent to rerun coverage. Approval does not meet a Goal; only a new
+   run with the waiver applied does.
 
-Simulation, collection, and threshold evaluation are reported independently: a
-failing test can still yield valid, passing coverage, and a fully passing suite
-can miss a threshold. The exit code reflects simulation and collection:
+Every coverage run applies the approved waivers: waived points are reported
+as `waived` and left out of the percentages. If an approval file is invalid,
+or does not match the current RTL (for example the source changed), that Target's
+evaluation is blocked and the run exits `2`. Fix or remove the approval, or
+rerun with `--no-waivers`. If one approval for a Target is bad, none of that
+Target's approvals apply.
 
-| Exit | When |
-|---:|---|
-| `2` | Coverage could not be trusted: preflight rejection, collection or infrastructure failure, incompatible data, or blocked evaluation (e.g. an invalid waiver or a suite mismatch). |
-| `1` | A test failed. |
-| `0` | No test failed and coverage can be trusted. A missed threshold also exits `0`: the Coverage Criterion is recorded as not met and the verdict card names the missed metric. |
-
-With several Targets, each keeps its own simulation, collection, and evaluation
-results in the report even when another Target decides the exit code.
-
-## Where the evidence lives
-
-Each Target gets its own reference and nested Coverage Campaign under the run's
-numbered report directory (qualified Target selectors are percent-encoded):
-
-```text
-<reports>/sim/<N>/targets/<target>/
-  coverage.json              booley.coverage-campaign-reference/v1 pointer
-  simulation.json            the matching Target simulation results
-  campaign/
-    manifest.json            the enclosing Simulation Campaign
-    work-items/<item>/attempts/<attempt>/coverage-campaign/
-      coverage.json          current Coverage Campaign manifest
-      coverage-points.jsonl.gz
-      native/raw/            one Verilator database per Test Run
-      native/merged/         merged Verilator database
-      hooks/                 hook evidence, when collected
-```
-
-Pass the numbered Target-level `coverage.json` reference to the Coverage Analyst.
-It authenticates the nested Coverage Campaign and reads the matching completed Simulation result;
-it does not accept the nested manifest directly. Never edit or pass the point
-store directly, and keep the reference and enclosing Simulation Campaign
-together.
+You can also write approval files by hand; the format is under
+[Configuration](#configuration).
 
 ## Analyzing a Campaign
 
-`coverage_analyst` explains one Campaign: what is uncovered, likely reasons,
-which tests to add, and Waiver Candidates for human review.
+The **Coverage Analyst** is a Specialist that explains one Coverage Campaign:
+what is uncovered, the likely reasons, which tests to add, and in Goal Mode
+which points look like Waiver Candidates. Ask the agent, for example "Why is
+branch coverage on sim_soc so low?". Its model only reads the evidence: it
+never runs simulation, changes Goals, or approves waivers. Pick its model like
+any Specialist's, under [`[models]`](CONFIG.md#model-selection-models).
 
-Call the `coverage_analyst` Specialist from your Developer Agent session with `campaign="<exact coverage.json>"`.
-An optional `instruction` focuses it. Pick its model like any Specialist's,
-under [`[models]`](CONFIG.md#model-selection-models).
+To run it yourself inside the Sandbox, pass the `coverage.json` path from the
+result:
 
-It never runs simulation, changes Criteria, or approves waivers; in Goal
-Mode Booley records its candidates for
-[approval at review](#coverage-waivers-at-review). See
-[CLI-REFERENCE.md](CLI-REFERENCE.md#coverage_analyst).
+```bash
+booley specialist coverage_analyst --campaign <path to coverage.json>
+```
 
 ## Cleaning up completed Campaigns
 
-Raw Verilator coverage databases are large. Booley never deletes evidence
-automatically; prune an exact run explicitly:
+Coverage runs keep the raw Verilator databases, which are large. Booley never
+deletes them automatically. To free space, prune one run. Take both values
+from the `coverage.json` path in the result: for
+`<reports>/sim/12/targets/sim_soc/coverage.json`, the reports root is
+`<reports>` and the run number is `12`.
 
 ```bash
-# Drop one Target's raw/merged databases; the Campaign stays analyzable
+# Drop one Target's raw databases; the Campaign stays readable by the Analyst
 python -m booley.flows.sim.campaign_retention \
   --reports-root "$REPORTS_ROOT" --invocation 12 --native-target sim_soc
 
-# Remove the whole run (no re-analysis afterwards)
+# Remove the whole run; nothing can analyze it afterwards
 python -m booley.flows.sim.campaign_retention \
   --reports-root "$REPORTS_ROOT" --invocation 12 --full
 ```
 
 - `--full` refuses when later resumed runs depend on this one; add
-  `--include-dependents` to remove them together.
-- If reports live outside the standard Booley Directory locations, `--full` may ask
-  for `--project-data "$PROJECT_DATA"`.
-- Pruning refuses runs that are still active. `--full` also refuses files the run
-  did not produce; `--native-target` removes the Target's whole `native/` directory.
-  An interrupted cleanup is safe to retry with the same arguments.
+  `--include-dependents` to remove them too. It may ask for
+  `--project-data <Booley Directory>` when it has to recover an interrupted
+  run.
+- Runs that are still active are refused. An interrupted cleanup is safe to
+  retry with the same arguments.
 
 ## Configuration
 
-Coverage settings come from three places: the Target's `.core` definition,
-each coverage Goal, and an optional `[coverage.waivers]` table in
-`booley.toml`. Other Simulation settings are on the
-[`[flows.sim]` page](FLOW-SIM.md#configuration-flowssim).
+Coverage is collected only when a run asks for it; no setting turns it on.
+Other Simulation settings are on the
+[Simulation page](FLOW-SIM.md#configuration-flowssim).
 
-### Native coverage configuration
+### Testbench settings in the `.core`
 
-Collection is explicit (`booley flow sim --coverage`, permanent alias `--cov`,
-or MCP `coverage: true`). Configuration and Criteria never turn it on.
-Stable testbench properties belong to the Target's `.core` definition:
+Two optional settings live with the Target in its `.core` file:
 
 ```yaml
 targets:
@@ -228,38 +191,19 @@ targets:
           custom_main_hooks: [start_hook, write_hook]
 ```
 
-`reset_included` is boolean and defaults to `true`, counting initialization and
-reset. Set it to `false` only when each test can prove exactly one successful
-`booley_coverage_start()` after reset and before writing its database.
-`custom_main_hooks` applies only to project-authored C++ mains; generated-main,
-HDL-testbench, and Cocotb Targets omit it. A custom main must declare `write_hook`
-and call `booley_coverage_write()` exactly once on every normal terminal path.
-When reset is excluded, declare both hooks and call start before write. A
-`start_hook` declaration is invalid when reset is included. Unknown or duplicate
-hooks, missing declarations, and unproved calls are errors. These controls cannot
-be overridden in `[flows.sim]` or invocation flags.
+- `reset_included` (default `true`) counts initialization and reset. Set it to
+  `false` to leave reset out; each test must then call
+  `booley_coverage_start()` exactly once after reset.
+- `custom_main_hooks` is only for Targets with your own C++ `main`. Declare
+  `write_hook` and call `booley_coverage_write()` exactly once on every normal
+  exit path. With `reset_included: false`, also declare `start_hook` and call
+  start before write; `start_hook` is invalid when reset is included.
 
-A coverage Goal sets policy independently for each Target:
+Booley reports unknown, duplicate, or missing hooks as errors.
 
-```json
-{"family": "COVERAGE", "target": "sim_counter", "tests": "all",
- "metrics": {"line": 90, "branch": 80, "toggle": 75}}
-```
+### Waiver directory (`[coverage.waivers]`)
 
-Each Target must be explicit. `tests` is `all` or a nonempty list of
-[Test Run selectors](GOAL-MODE.md#simulation-cycle-count-and-coverage-goals), for example
-`["reset", "stress+soak@x5"]`. Metrics are `line`,
-`branch`, `expression`, `toggle`, and `cover_property`; select at least one.
-Each `min_pct` is a finite non-boolean number in `(0, 100]`. Thresholds combine
-with AND and use exact rational arithmetic; displayed rounding does not decide
-truth. Zero eligible points blocks evaluation. Only RTL-closure points enter
-denominators; testbench, generated, foreign, FSM, and covergroup records remain
-unscored. Simulation verdicts do not change coverage threshold truth, and a
-failed Test Run does not make a coverage Goal unmet.
-
-#### Approved coverage waivers
-
-The Booley Directory's `booley.toml` optionally selects one project-wide approval directory:
+Waivers cannot be approved until `booley.toml` names where approval files go:
 
 ```toml
 [coverage.waivers]
@@ -267,21 +211,21 @@ anchor = "project_data_repository"
 directory = "coverage-waivers"
 ```
 
-`anchor` is exactly `rtl_repository` or `project_data_repository`; the latter is
-the Booley Directory.
-`directory` is a safe relative path. Approval files mirror RTL paths: source
-`rtl/counter.sv` uses `coverage-waivers/rtl/counter.sv.toml`. A human-authored file
-has this shape (replace the placeholders with exact retained evidence):
+`anchor` is `project_data_repository` (the Booley Directory) or
+`rtl_repository` (the RTL repository). `directory` is a relative path below it.
+
+Approval files mirror RTL paths: waivers for `rtl/counter.sv` go in
+`coverage-waivers/rtl/counter.sv.toml`. A hand-written file looks like this:
 
 ```toml
 schema = "booley.coverage-waivers/v1"
 source = "rtl/counter.sv"
-source_sha256 = "sha256:<exact source SHA-256>"
+source_sha256 = "sha256:<SHA-256 of rtl/counter.sv>"
 
 [[approval]]
 id = "reserved-counter-branch"
 target = "acme:demo:counter:1#sim_counter"
-point_id = "<complete cp1: point identity from the Campaign>"
+point_id = "<point id from the Campaign>"
 reason = "excluded"
 justification = "Reserved behavior is intentionally excluded."
 approved_by = "verification-owner@example.test"
@@ -289,24 +233,13 @@ approved_at = "2026-09-09T09:00:00Z"
 approval_ref = "review:CR-1042"
 ```
 
-For `reason = "unreachable"`, add an `approval.proof` table with a `kind`, a
-safe `reference` relative to the approval directory, and exact `sha256` of the
-proof file. Use `kind = "formal"` for a formal-tool result and `kind = "review"`
-for a written human review argument, such as a Markdown file; review-time
-approval writes one as `proofs/<waiver-id>.md`. Lowercase `*.toml` paths below
-the approval directory are reserved for approval documents, so proof artifacts use another extension. Every non-TOML
-file below the directory must be named by a proof reference in a valid
-approval document; otherwise loading reports it as unreferenced. `excluded`
-cannot carry proof. Both reasons yield `waived`; only
-exact RTL points are waivable. Loading rejects unsafe paths/symlinks, malformed
-or duplicate approvals, stale sources, unknown Target identities, missing proofs,
-and candidate content. One unmatched or invalid approval blocks that Target's
-evaluation, and none of that Target's approvals apply. Analyst Waiver Candidates have no approval authority of their own and
-cannot be copied here by hand; they become approval files through a human-approved
-`goal_propose_change` waiver proposal (see [Coverage waivers at review](#coverage-waivers-at-review)).
-
-## Troubleshooting
-
-Resume refusals, Coverage Analyst input problems, collection and evaluation
-failures, and Waiver Candidate issues are covered in
-[Coverage Campaign diagnostics and retention](TROUBLESHOOTING.md#coverage-campaign-diagnostics-and-retention).
+- `reason` is `excluded` (out of scope) or `unreachable`. An `unreachable`
+  waiver also needs a `proof` table with `kind` (`formal` for a formal-tool
+  result, `review` for a written argument), `reference` (the proof file's path
+  relative to the waiver directory), and `sha256` of that file. `excluded`
+  takes no proof.
+- `.toml` files in the directory are approval files; proofs need another
+  extension, such as `.md`. Every other file in the directory must be named
+  by some approval's proof.
+- Waiver Candidates from the Analyst can't be copied in by hand; they become
+  approvals only through review in Goal Mode.

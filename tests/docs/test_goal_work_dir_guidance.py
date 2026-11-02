@@ -15,7 +15,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ROUTING_DOCUMENTS = (
     "src/booley/data/skills/booley-goal/SKILL.md",
     "src/booley/data/cheatsheet.md",
-    "docs/user/FLOW-SIM.md",
     "qa/shared/GOAL-CHILD.md",
 )
 
@@ -119,8 +118,6 @@ def test_agent_facing_guidance_names_only_interactive_tools(monkeypatch, capsys)
     sources += [warning, str(refusal.value)]
     for path in (*ROUTING_DOCUMENTS, "docs/user/GOAL-MODE.md"):
         text = (REPO_ROOT / path).read_text(encoding="utf-8")
-        # FLOW-SIM.md ends with `[flows.sim]` settings, which name C++ `main()`, not tools.
-        text = text.split("\n## Configuration", 1)[0]
         if path in ROUTING_DOCUMENTS:
             exclusions = re.findall(
                 r"([^.]+) (?:accept no `work_dir`\.|have no `work_dir` argument)",

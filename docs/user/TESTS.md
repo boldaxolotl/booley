@@ -1,91 +1,69 @@
-# Simulation tests
+# Tests
 
-Tests are part of the [`sim` Flow](FLOW-SIM.md): this page covers declaring
-them in `.booley/tests.toml`. [Test Runs, Test Variants and seeds](FLOW-SIM.md#test-runs-test-variants-and-seeds)
-covers choosing them when you run `sim`.
+A **Test** is one named scenario your testbench can run: `reset`, `irq`,
+`stress`. Booley only runs Tests that the Project registers for a sim Target
+in `tests.toml`, so you, the Developer Agent and every Flow refer to the same
+Test by the same name, and every pass or fail traces back to a declared
+configuration. Project Setup writes `tests.toml` from your repository's existing
+tests. After that you change it when you add a test, want to run a test in
+another configuration (a **Test Variant**), or need control over random seeds.
+How to run Tests and read their results is in [Simulation](FLOW-SIM.md).
 
-`tests.toml` says what to verify on each sim Target: the Target's **Tests**,
-how the testbench is told which Test to run, the **Test Variants** of a Test,
-and how a Test Run is seeded.
+A Target without any registered Tests still runs: Booley starts its testbench
+once with no Test selected, so the testbench runs whatever it runs by default.
 
-```toml
-[test_lists]                          # optional shared, reusable lists
-smoke = ["reset", "basic"]
+## Adding a Test
 
-[sim]                                 # keyed by .core Target name
-tests  = ["reset", "basic", "stress"]
-select = "+test_id={index}"           # one option token; {index} (0-based) or {name}
-skip   = ["stress"]                   # known-hangs to exclude from a full run
+1. Ask the agent to add the test, for example *"Add a test for FIFO overflow
+   to the `sim` Target."* The agent writes the testbench code and registers
+   the Test name in `tests.toml`.
+2. The agent runs `booley doctor`, which checks `tests.toml` and names the
+   entry and the rule for any mistake.
+3. Ask the agent to run it: *"Run `fifo_overflow` on `sim`."* A run of the
+   whole Target includes it from now on.
 
-[sim_fast]
-test_list = "smoke"                   # reference a shared list instead
-
-[cpu_core]                            # a CPU core selecting firmware per test
-tests  = ["hello.elf", "coremark.elf"]
-select = "--meminit=ram,{name}"       # getopt argument, not a plusarg
-```
-
-**Section keys.** A section key is a bare Target name (`sim`) or a qualified
-selector (`vlnv-suffix#name`, for example `["acme:uart:rx#sim"]`; quote it
-because of the colons). The qualifier matches the way `--target` does: any
-trailing segments of `vendor:library:name`, and a version is ignored. A Target
-uses the qualified key that names its core and otherwise the bare key with its
-name, whatever the order of the keys in the file. A section comes from one key
-only: a Target never reads another core's qualified section. Two keys naming
-one Target make the Simulation Flow refuse the run and `booley doctor` fail,
-naming both keys; a key that names no Target also fails `booley doctor`.
-
-A Target section holds only these keys. Any other key fails to load, and
-`booley doctor` names it:
-
-| Key | Meaning |
-|---|---|
-| `tests` | The Target's Tests, in order. |
-| `test_list` | The name of a shared `[test_lists]` entry to use as `tests`. A section sets `tests` or `test_list`, never both. |
-| `skip` | Tests that a run of the whole Target leaves out. |
-| `select` | The argument template that tells the testbench which Test to run. |
-| `env` | [Environment variables](#per-target-environment-env) for the Target's build and runs. |
-| `variants` | The [Test Variants](#test-variants-variants) of the Target's Tests. |
-| `seed` | The [seed argument template](#seeds-seed-default_seed). |
-| `default_seed` | The Target's [Default Seed](#seeds-seed-default_seed). |
-
-**Test names.** A Test name is not empty, is at most 512 UTF-8 bytes, is not
-`default`, does not start with `-`, and contains no whitespace, control
-character, `+`, `@`, `<`, `>`, quote or backslash. The same rule applies to Test Variant names. `+` and `@`
-are reserved because a Test Run is written `test+variant@seed`. A valid name
-can still contain characters that a shell interprets, such as `;`, `|`, `&`,
-`$`, `(`, `)` or `*`: quote such a name on the command line. A name appears
-at most once in a Target's `tests` list and at most once in its `skip` list.
-
-**`select`** is **exactly one option token** (no embedded whitespace). Two
-forms: a **plusarg** (`+…`), consumed by the testbench's `$value$plusargs`
-runtime; or a **getopt argument** (`-…` / `--…`), forwarded verbatim to the sim
-binary's own `main`: the form a CPU core needs when it selects boot software
-with e.g. `--meminit=ram,<elf>`, which no plusarg can express. The template
-must contain `{index}` (0-based) or `{name}`, and these are the only
-substitutions. It cannot start with `++` or `+-`, which a simulator reads as a
-different option. A Target without `select` uses `+test_id={index}`.
-
-`skip` drops known-hanging or known-failing tests from a plain
-`booley flow sim --target <target>` run. Naming a skipped test with
-`--test <name>` still runs it, and an all-skip target fails preflight rather
-than passing with zero tests. There is no per-invocation `--skip` option; pick
-a different suite with repeated `--test` options or `--tests-file`.
-
-## Test Variants (`variants`)
-
-A **Test Variant** is one Test with a fixed list of extra run-time arguments,
-extra environment variables, or both. Declare a Variant for every
-configuration of a Test that you want to run: a longer iteration count, a
-fault-injection mode, a verbose log. Booley has no option that passes
-free-form arguments to a run, so that every run is a configuration the Project
-declared.
+The testbench has to know which Test to run. For an HDL testbench Booley
+passes one argument per run that names the Test. By default it is
+`+test_id=<n>`, where `<n>` is the Test's 0-based position in the Target's
+list, and the testbench reads it with `$value$plusargs`. A testbench that
+expects something else, such as a Test name or a firmware image on the
+command line, gets its own `select` template. For a
+[Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) the Tests are
+the names of its cocotb test functions, and Booley selects them itself.
 
 ```toml
 [sim]
-select = "+test_id={name}"
 tests  = ["reset", "basic", "stress"]
+select = "+test={name}"               # pass the name instead of the position
 
+[cpu_core]                            # a CPU core that boots one firmware image per Test
+tests  = ["hello.elf", "coremark.elf"]
+select = "--meminit=ram,{name}"
+```
+
+## Skipping known-bad Tests (`skip`)
+
+`skip` lists Tests that hang or fail for a known reason. A run of the whole
+Target leaves them out, and naming a skipped Test explicitly still runs it.
+An all-skip target fails preflight rather than passing with zero tests.
+
+```toml
+[sim]
+tests = ["reset", "basic", "stress"]
+skip  = ["stress"]
+```
+
+## Test Variants (`variants`)
+
+A **Test Variant** is one Test run with a fixed set of extra run-time
+arguments, environment variables, or both: a longer iteration count, a
+fault-injection mode, a verbose log. Booley has no option that passes
+free-form arguments to a run, so every run is a configuration the Project
+declared and anyone can rerun it by name. To try a Test in a new
+configuration, ask the agent to add a Variant: *"Add a `soak` variant of
+`stress` with 100000 iterations."*
+
+```toml
 [sim.variants.stress]
 default = "short"
 short = ["+iters=1000"]
@@ -93,108 +71,128 @@ soak  = ["+iters=100000"]
 fault = { args = ["+err_rate=5"], env = { FAULT_MODE = "1" } }
 ```
 
-- The table `[<target>.variants.<test>]` belongs to one Test, which must be in
-  the Target's `tests`.
-- A Variant is a list of arguments, or a table with `args`, `env`, or both.
-  The list may be empty: `plain = []` is a Variant that adds nothing.
-- `default` is required and names one of the declared Variants. The bare Test
-  name means that Variant: `--test stress` and a run of the whole Target both
-  run `stress+short`. Every other Variant runs only when it is named, as in
-  `--test stress+soak`.
-- Each argument is one token that starts with `+` or `-` and contains no
-  whitespace. Like `select`, it cannot start with `++` or `+-`.
-- Variant arguments reach the simulator command after the `select` argument.
-  They are run-time inputs only: two Variants of a Test share one simulator
-  build.
+- One of the Variants is the `default`. The plain Test name means that
+  Variant: asking for `stress`, or running the whole Target, runs `stress`
+  with `short`. Every other Variant runs only when you name it.
+- Results name a Variant after its Test: `stress+soak` is Test `stress`,
+  Variant `soak`.
+- Variants change run-time inputs only, so all Variants of a Test share one
+  simulator build.
 
-A Variant cannot change what the Target or Booley already decides:
-
-- An argument cannot set the option of the `select` template, the option of
-  the `seed` template, or `+verilator+seed+`.
-- An argument cannot set a plusarg that the `.core` Target declares as a
-  parameter. The Target owns its parameter values.
-- `env` cannot set a [reserved name](#per-target-environment-env), nor a
-  variable that the same Target's `env` table sets.
-- On a [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) a Variant carries
-  `env` only. Arguments are refused there.
-
-`booley doctor` reports each of these as a `tests.toml` failure that names the
-Target, the Test and the Variant.
+A Variant cannot override what the Target or Booley already decides: the
+Test-selecting argument, the seed arguments, a plusarg the `.core` Target
+declares as a parameter, or a variable the Target's own
+[`env`](#per-target-environment-env) sets. On a Cocotb Target a Variant
+carries environment variables only. `booley doctor` names the Target, Test
+and Variant of any such conflict.
 
 ## Seeds (`seed`, `default_seed`)
 
-A **Test Run** is one Test Variant simulated with one seed. Its name is
-`test+variant@seed`, or `test@seed` for a Test without Variants: for example
-`stress+soak@42` or `reset@1`. Reports, run directories and Goals use this
-name.
+Booley gives every run an explicit random seed and records it, so a failure
+replays exactly. You can run a Test once at the Target's **Default Seed**,
+pin one seed, or run it N times with different seeds; see
+[Simulation](FLOW-SIM.md#test-runs-test-variants-and-seeds) for how to ask.
+One run of one Test Variant at one seed is a **Test Run**, and results name
+it by Test, Variant and seed: `stress+soak@42`, or `reset@1` for a Test
+without Variants.
 
-Booley passes the seed of every Test Run itself and never relies on a
-simulator's own default seed. How the seed reaches the simulation depends on
-the Target:
+How the seed reaches the simulation depends on the Target:
 
 | Target | What Booley passes |
 |---|---|
-| Verilator, HDL testbench | `+verilator+seed+<seed>`, and the rendered `seed` template when the Target declares one |
-| Icarus, HDL testbench | the rendered `seed` template; without a template the Target is **unseeded** |
-| Cocotb Target | cocotb's seed variable: `COCOTB_RANDOM_SEED` on cocotb 2.x, `RANDOM_SEED` on cocotb 1.x |
+| Verilator, HDL testbench | `+verilator+seed+<seed>`, plus the `seed` template when the Target declares one |
+| Icarus, HDL testbench | the `seed` template; without one the Target is **unseeded** |
+| Cocotb Target | cocotb's seed variable: `COCOTB_RANDOM_SEED` on cocotb 2.x, `RANDOM_SEED` on 1.x |
+| Any other simulator, HDL testbench | nothing; the Target is **unseeded** |
 
 ```toml
 [sim]
-tests = ["reset", "basic", "stress"]
-seed = "+seed={seed}"        # optional: the testbench reads its own seed argument
-default_seed = 7             # optional: this Target's Default Seed
+seed = "+seed={seed}"        # the testbench also reads its seed from +seed=
+default_seed = 7             # this Target's Default Seed; 1 when not set
 ```
 
-- **`seed`** is an argument template for a testbench that reads its seed from
-  an argument of its own. It is exactly one option token that starts with `+`
-  or `-`, contains the plain field `{seed}` exactly once and no other field,
-  and cannot start with `++` or `+-`. It cannot set the same option as
-  `select`, and it cannot be `+verilator+seed+`. Booley renders the seed as a
-  decimal number. A Cocotb Target cannot declare `seed`.
-- **`default_seed`** is the seed of a Test Run that names none. It is an
-  integer from 1 to 2147483647. Without it the **Default Seed** is `1`.
-- An **unseeded** Target cannot apply a seed. Its Test Runs are written
-  without `@seed`, and Booley refuses `--seed`, `test@seed`, `test@xN` and a
-  `default_seed` key for it. To seed an Icarus Target, declare a `seed`
-  template that the testbench reads.
+- **`seed`** is for a testbench that reads its seed from an argument of its
+  own. A Cocotb Target cannot declare it.
+- **`default_seed`** is the seed of a run that names none: a number from 1
+  to 2147483647. Set it when your existing regression uses a fixed seed
+  other than 1.
+- An **unseeded** Target cannot apply a seed, so Booley refuses any request
+  for one, and its results carry no seed. To seed an Icarus Target, give its
+  testbench a seed argument and declare the `seed` template.
 
-On the simulator command the arguments appear in this order: the Target's
-plusarg parameters, the `select` argument, the Variant's arguments, then the
-seed arguments. A Target plusarg that sets the same option as `select` or the
-`seed` template is left out, so that the testbench sees one value.
-
-`booley doctor` prints one line per sim Target that says how its Test Runs are
-seeded and with which Default Seed, or that they are unseeded and why. See
-[Seeds and Test Variants on the command line](FLOW-SIM.md#test-runs-test-variants-and-seeds)
-for `--test` and `--seed`.
+`booley doctor` prints one line per sim Target saying how its Test Runs are
+seeded and with which Default Seed, or that they are unseeded and why.
 
 ## Per-Target environment (`env`)
 
-Plenty of upstream testbenches are parameterized by an environment variable —
-a cocotb module that branches on `os.getenv("FLAVOR")`, an SV testbench whose
-C++ `main` reads a config var. Declare it per Target and Booley exports it into
-the simulator process:
+Some testbenches pick their configuration from an environment variable, such
+as a cocotb module that branches on `os.getenv("FLAVOR")`. Declare the
+variables per Target, and Booley sets them for both the build and the
+simulation:
 
 ```toml
 [sim_vanilla]
 tests = ["run_test_001"]
-env   = { FLAVOR = "vanilla" }        # NAME = "value", strings only
+env   = { FLAVOR = "vanilla" }
 
 [sim_small]
 tests = ["run_test_001"]
 env   = { FLAVOR = "small", NOC_DEBUG = "1" }
 ```
 
-The variables are exported in the shell that runs the build **and** the
-simulation, inside the Sandbox. [Pre-Sim
-Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands) see them but
-can't set them: their own exports die with their shell. Values must be quoted
-strings, and names must be
-shell-exportable identifiers (`[A-Za-z_][A-Za-z0-9_]*`). `--dry-run` previews
-the exact `export` lines.
+Values are quoted strings. [Pre-Sim
+Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands) see these
+variables but cannot set them. `--dry-run` shows the exact `export` lines.
+To vary a variable per Test instead of per Target, use a
+[Test Variant](#test-variants-variants).
 
-An `env` table, whether a Target's or a Test Variant's, cannot set a name
-that Booley or the simulator integration owns. These names fail to load:
-`MODULE`, `TESTCASE`, `TOPLEVEL`, `TOPLEVEL_LANG`, `RANDOM_SEED`,
-`LIBPYTHON_LOC`, `PYTHONPATH`, `LD_LIBRARY_PATH`, and every name that starts
-with `BOOLEY_`, `COCOTB_`, `PYGPI_` or `GPI_`.
+## `tests.toml` reference
+
+`tests.toml` lives in the Booley Directory (`.booley/` by default). Each
+section is named after a sim Target; the optional `[test_lists]` table holds
+named lists that several Targets can share.
+
+```toml
+[test_lists]
+smoke = ["reset", "basic"]
+
+[sim_fast]
+test_list = "smoke"
+```
+
+| Key | Meaning |
+|---|---|
+| `tests` | The Target's Tests, in order. |
+| `test_list` | Use a shared `[test_lists]` entry as `tests`. Set `tests` or `test_list`, not both. |
+| `skip` | Tests a run of the whole Target leaves out. |
+| `select` | The argument that tells an HDL testbench which Test to run. Default `+test_id={index}`. Not allowed on a Cocotb Target. |
+| `env` | Environment variables for the Target's build and runs. |
+| `variants` | The Test Variants of the Target's Tests, one `[<target>.variants.<test>]` table per Test. |
+| `seed` | The seed argument template. |
+| `default_seed` | The Target's Default Seed. Default `1`. |
+
+Any other key fails to load, and `booley doctor` names it.
+
+- **Section names.** A bare Target name (`[sim]`) applies to every core's
+  Target of that name. To pick one core's Target, quote a qualified name:
+  `["acme:uart:rx#sim"]`. It matches like `--target` does, and it wins over the
+  bare name. Two qualified sections that name one Target, or a section that
+  names no Target, fail `booley doctor`.
+- **Names.** A Test or Variant name has no whitespace, `+`, `@`, `<`, `>`,
+  quotes or backslashes, does not start with `-`, is not `default`, and
+  appears once per list. `booley doctor` prints the full rule.
+- **Arguments.** `select`, `seed` and every Variant argument are each one
+  token with no spaces, starting with `+` (a plusarg) or `-` (an argument for
+  the simulation binary's own `main`), and not with `++` or `+-`. `select`
+  uses `{index}` (0-based position in `tests`) or `{name}`; `seed` uses
+  `{seed}` exactly once and cannot be `+verilator+seed+`. `select` and `seed`
+  cannot set the same option.
+- **Argument order.** The simulator gets the Target's plusarg parameters, then
+  `select`, the Variant's arguments, and the seed arguments. A Target plusarg
+  that sets the same option as `select` or `seed` is dropped, so the
+  testbench sees one value.
+- **Environment.** Names are shell identifiers (`[A-Za-z_][A-Za-z0-9_]*`).
+  No `env` table can set `MODULE`, `TESTCASE`, `TOPLEVEL`, `TOPLEVEL_LANG`,
+  `RANDOM_SEED`, `LIBPYTHON_LOC`, `PYTHONPATH`, `LD_LIBRARY_PATH`, or a name
+  starting with `BOOLEY_`, `COCOTB_`, `PYGPI_` or `GPI_`: Booley and the
+  simulator integration own them.

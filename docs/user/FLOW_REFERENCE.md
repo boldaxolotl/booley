@@ -1,17 +1,15 @@
 # Running Flows
 
-> **Do you need this page?** For everyday work, [Usage](USAGE.md) is enough:
-> the Developer Agent runs Flows for you. Read on if you want to understand
-> Flows in depth, or run them yourself.
-
-Booley ships four built-in Flows. Each has its own page:
+A **Booley Flow** runs an EDA tool on one of your Targets the same way every
+time and turns the output into a verdict: pass, fail, or "could not tell". No
+LLM is involved, so you can trust a Flow's verdict as you would a script's.
+Booley ships four:
 
 - [Simulation (`sim`)](FLOW-SIM.md): build and run a Target's tests and report
   whether each one passed.
-    - [Simulation tests](TESTS.md): declare a sim Target's tests, Test Variants,
-      and seeds in `tests.toml`.
-    - [Simulation coverage](COVERAGE.md): measure how much of the RTL your
-      tests exercise, and find what they miss.
+    - [Tests](TESTS.md): declare a sim Target's tests, Test Variants, and seeds.
+    - [Coverage](COVERAGE.md): measure how much of the RTL your tests exercise,
+      and find what they miss.
 - [Lint (`lint`)](FLOW-LINT.md): check RTL for structural, semantic, and style
   problems.
 - [ASIC synthesis (`synth`)](FLOW-SYNTH.md): estimate ASIC area and timing
@@ -19,163 +17,160 @@ Booley ships four built-in Flows. Each has its own page:
 - [FPGA implementation (`fpga`)](FLOW-FPGA.md): implement the design for an
   FPGA and report resources and timing.
 
-This page covers what they share: running a Flow or a Specialist, following
-its progress, choosing Targets, and reading the result.
+This page covers what they share: choosing Targets, common options, following
+a run, and reading the result. It also covers **Specialists**, the LLM-powered
+helpers that review code or test your testbench.
 
-Related references:
-
-- [TARGETS.md](TARGETS.md): Targets and the `.core` files Flows build from.
-- [CONFIG.md](CONFIG.md): Project-wide `booley.toml` settings.
-- [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md): which EDA tools and versions
-  each Flow supports.
-- [CLI-REFERENCE.md](CLI-REFERENCE.md#booley-flows--specialists): every Flow and
-  Specialist, and the Goals each can satisfy.
-- [FLOW_REPORTS.md](../internals/FLOW_REPORTS.md): JSON report schemas and file
-  layouts, for scripts that consume Flow output.
+For everyday work [Usage](USAGE.md) is enough: the Developer Agent picks the
+Flow, Target, and options for you. Read on when you want to understand a
+result, or run a Flow yourself to check your setup or reproduce a problem.
 
 ## Running a Flow
 
-Normally you ask the Developer Agent to run a Flow. Name the
-Target, and for `sim` name the test (or ask for the Target's full suite). To
-reproduce or debug a run yourself, use the CLI inside the Sandbox:
+Ask the Developer Agent. Name the Target, and for simulation the test, or ask
+for the whole suite:
+
+> Lint `lint_soc`.
+
+> Run the `reset` test on `sim_soc`.
+
+> Synthesize `synth_soc` and compare the area with `main`.
+
+The agent replies with the verdict and the paths to the report and logs.
+
+To run a Flow yourself, use a container terminal (VS Code's terminal after
+**Reopen in Container**, or `booley session enter`):
 
 ```bash
+booley flow                                   # list the Flows
 booley flow lint  --target lint_soc
 booley flow sim   --target sim_soc --test reset
 booley flow synth --target synth_soc
 booley flow fpga  --target fpga_soc
-booley flow <name> --help          # the authoritative option list
+booley flow <name> --help                     # every option of one Flow
 ```
 
-### Live progress and logs
-
-Direct CLI runs show progress on **stderr**: a status line (Flow, Target,
-current step, elapsed time, age of the last output) plus the latest six output
-lines. Elapsed time is not a percentage or a health signal, and EDA tools may
-buffer their output.
-
-Redirected/non-TTY stderr, `TERM=dumb`, and short terminals use flushed newline
-records without terminal escapes or carriage-return rewrites. For example:
-
-```text
-[booley-progress] 2026-10-05T13:00:00Z synth Target=synth_soc stage=candidate: synthesis elapsed=0s transcript=/work/.booley/.runtime/flow-console/invocation-abc/tool-output.log
-[booley-progress] 2026-10-05T13:00:05Z synth Target=synth_soc stage=yosys elapsed=5s heartbeat (elapsed time; process health unknown)
-[booley-progress] 2026-10-05T13:00:05Z synth Target=synth_soc stage=yosys elapsed=5s output: Executing synthesis passes.
-```
-
-Each record has a UTC timestamp. Records announce each new step and add a
-heartbeat every five seconds with any new output lines. Current and baseline
-work are labeled separately.
-
-When Simulation runs several tests at once (`[jobs].max_heavy` above 1 with more
-than one test), each test is a lane. Its records and transcript labels also carry
-`lane=<tests>/<attempt>`, for example `lane=alpha/1a2b3c4d`, and each lane keeps its
-own six recent output lines, printed on the heartbeat, when that lane moves to
-another work unit, and at the end of the run.
-The heartbeat then shows `stage=lanes=<count>`, and a terminal shows one row per
-running lane. One test at a time keeps the single-stage format.
-
-Place presentation flags **after the Flow name**:
-
-```bash
-booley flow synth --target synth_soc --quiet
-```
-
-`-q`/`--quiet` suppresses new progress, live output and log footers, and creates
-no observation transcript. Verdicts, errors and admission notices still appear.
-For sim, `--verbose` (resume mismatch detail) and `--result-verbosity` (result
-detail) control result output, not live output.
-
-Log paths are printed before the run starts and repeated in a footer after the
-verdict. `tool-output.log` is the full append-only transcript; `run.log` is a
-capped snapshot.
-
-Paths are **inside the Sandbox**. Follow the exact printed transcript path from
-a second terminal attached to that existing Sandbox:
-
-```bash
-booley session enter -- tail -f /work/.booley/.runtime/flow-console/invocation-abc/tool-output.log
-```
-
-`run.log` is replaced as it updates; follow it with `tail -F`.
-
-Each invocation gets its own directory under the Project runtime's
-`flow-console/`. There is no automatic pruning: delete completed invocation
-directories you don't need, but leave any directory containing an
-`active` marker alone.
-Help, validation-only, dry-run and quiet calls create no transcript.
-
-Shell calls, including the Developer Agent's, print this progress to stderr
-even without a terminal. Pass `--quiet` for clean captured output.
+Your own runs never count as Goal evidence; only the agent's runs in Goal Mode
+do.
 
 ### Choosing Targets
 
-For sim, lint, synth, and fpga on CLI and MCP, omitting `--target` selects
-exactly one eligible Target, and that selection is announced. With zero or multiple
-eligible Targets, the run exits 2 and lists eligible selectors (`(none)` for zero).
-`sim --resume-from` takes its Target from the Campaign it resumes, independent
-of the current catalog.
+`booley targets` lists every Target; `booley targets --for <flow>` lists the
+ones a Flow can run. [TARGETS.md](TARGETS.md) explains what a Target is.
 
-- `booley targets` lists all Targets; `booley targets --for <flow>` lists
-  the ones a Flow can drive.
-- Select several Targets by repeating the flag, using commas, or both:
-  `--target a --target b,c` runs `a`, `b`, `c` in that order. Naming the same
-  Target twice is an error.
-- If two cores expose the same Target name, use the qualified selector printed
-  by `booley targets`, such as `lowrisc:ibex:ibex_top#lint`.
+If you leave out `--target` and the Project has exactly one eligible Target,
+the Flow runs it and the choice is announced. With zero or multiple eligible
+Targets, the run
+exits `2` and lists the eligible ones (`(none)` when there are none). A
+simulation resume (`sim --resume-from`) always uses the Target of the run it
+resumes.
+
+To run several Targets in one go, repeat the flag, use commas, or both:
+`--target a --target b,c` runs `a`, `b`, then `c`. Naming the same Target
+twice is an error.
+
+If two `.core` files declare the same Target name, use the longer name
+`booley targets` prints, such as `lowrisc:ibex:ibex_top#lint`.
 
 ### Common options
 
+Every built-in Flow accepts these. Options specific to one Flow are on its own
+page.
+
 | Option | Effect |
 |---|---|
-| `--target <name,...>` | Targets to run (see above). |
-| `-C/--project PATH` | Select the Project Root or worktree; nested paths discover their owning checkout. Omission preserves cwd discovery. |
-| `--report-dir <path>` | Write reports here instead of the default report root. |
-| `--diagnostic` | Run diagnostically without recording Goal evidence. |
-| `--dry-run` | Resolve and validate the work, print the plan, and stop. No EDA tool runs and no state changes. |
-| `--timeout DURATION` | Active-time budget per work unit (queue time is not counted). Overrides `[flows.<name>].timeout_ms`. Simulation builds instead use `[flows.sim].build_timeout_ms`, and Pre-Sim Commands use an independent fixed budget; see [Simulation timeouts](FLOW-SIM.md#simulation-build-pre-sim-and-run-timeouts). |
+| `--target <name,...>` | Targets to run (see [Choosing Targets](#choosing-targets)). |
+| `-C/--project PATH` | Run in another Project or worktree; see [Selecting a Project](CLI-REFERENCE.md#selecting-a-project). |
+| `--timeout DURATION` | Time limit per unit of work, for example `90s`, `30m`, or `1h30m`. Time spent waiting in the queue doesn't count. |
+| `--dry-run` | Print what would run and stop. No EDA tool runs. |
+| `--report-dir <path>` | Write reports here instead of the default location. |
+| `--diagnostic` | Mark the run as diagnostic so it never counts as Goal evidence. |
+| `-q/--quiet` | Hide live progress and log paths; show only the verdict and errors. |
 
-`--baseline <git-ref>` (synth, fpga) reruns the Flow at that commit for
-comparison. When the Project has a Paired Checkout, the baseline also needs
-the Booley Directory as it was then. Outside Goal Mode, Booley uses the
-merge-base of the Paired Checkout branch's recorded creation base with its
-HEAD, or its upstream if no base was recorded; it refuses when it has neither
-or the recorded base is invalid. A detached Paired Checkout uses its
-checked-out commit. Goal Mode uses the commit pinned at Goal entry. Progress
-output names the commit it chose.
+Without `--timeout`, a Flow uses `[flows.<name>].timeout_ms` from
+`booley.toml`, or its built-in default. Simulation builds have their own limit,
+`[flows.sim].build_timeout_ms`; see
+[Simulation timeouts](FLOW-SIM.md#timeouts).
+
+`synth` and `fpga` also take `--baseline <git-ref>`: they run the Flow a
+second time at that commit and report the difference, so you can see what a
+change cost in area or timing. In Goal Mode the baseline is the commit pinned
+when the Goal started. If your Booley Directory is a Git repository of its own
+(a Paired Checkout), the baseline run also uses the Target definitions from
+where your worktree branched off, so both runs build the same design. The
+progress output names the commit it chose.
+
+### Live progress and logs
+
+While a Flow runs in a terminal, a status line shows the Flow, Target, current
+step, elapsed time, and how long ago the tool last printed anything, followed
+by its latest six output lines. Elapsed time is not a percentage, and a quiet
+tool isn't necessarily stuck: EDA tools often buffer their output.
+
+When the output isn't a terminal, for example when redirected to a file or run
+from the agent's shell, Booley prints plain timestamped `[booley-progress]`
+lines instead: one per new step, plus one every five seconds with any new
+output.
+
+When Simulation runs several tests in parallel (`[jobs].max_heavy` above 1;
+see [Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs)), each running test
+gets its own progress row and output lines, labelled `lane=<test>/<attempt>`.
+
+Booley prints the log paths before the run starts and again after the verdict:
+
+- `tool-output.log`: the complete transcript of the EDA tool's output.
+- `run.log`: a capped snapshot of the latest output.
+
+The paths are inside the Sandbox. To follow a run from a second terminal:
+
+```bash
+booley session enter -- tail -f <printed tool-output.log path>
+```
+
+Use `tail -F` for `run.log`, because Booley replaces it as it updates.
+
+Transcripts collect under `.runtime/flow-console/` in the Booley Directory and
+are never cleaned up automatically. Delete finished ones when you need the space,
+but leave any directory that contains an `active` file: that run is still
+going. Quiet runs, dry runs, and `--help` create no transcript.
 
 ## Running a Specialist
 
-Inside the Sandbox:
+A **Specialist** is an LLM-powered helper the Developer Agent calls for one
+focused task, with a fresh context each time:
+
+- **Reviewer** reviews RTL or testbench code for one concern at a time, such as
+  bugs, protocol, or spec compliance.
+- **Mutation Tester** plants small bugs in the RTL and checks that your tests
+  catch them.
+- **Coverage Analyst** explains a coverage report and suggests what to test
+  next.
+
+A Specialist that judges one side of the RTL/testbench split can't see the
+other side. A reviewer looking at the testbench never reads the RTL, so it
+judges the tests against the spec rather than against what the RTL happens to
+do.
+
+Ask the agent, for example *"review the RTL for bugs"*. To run one yourself, in
+a container terminal:
 
 ```bash
-booley specialist
-booley specialist reviewer --help
-booley specialist reviewer --category rtl --focus bugs --scope rtl --timeout 30m
-booley specialist coverage_analyst --campaign reports/sim/12/targets/sim_soc/coverage.json
+booley specialist                             # list the Specialists
+booley specialist reviewer --help             # its options
+booley specialist reviewer --category rtl --focus bugs --scope rtl
 ```
 
-The optional separator in `booley specialist reviewer -- --scope "rtl,ip" ...`
-forwards arguments unchanged. Listings include enabled Project Specialists and
-exclude hidden endpoints. Host listing and help work; execution requires the
-Sandbox, for example `booley session enter -- booley specialist reviewer ...`.
+Specialists accept `-C/--project`, `--report-dir`, `--diagnostic`, and, where
+it applies, `--target`. Three options exist only on the command line:
 
-Specialists share `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target`
-where supported. Reports default to `mcp-tool-reports/` under the resolved Booley Directory, or the runtime directory when supplied; an explicit flag takes precedence.
-`--model` selects a tier subject to the Specialist floor and configured role pin;
-`--max-turns` accepts a positive integer. These and `--timeout` are CLI-only:
-MCP rejects `model`, `max_turns`, `timeout`, and `timeout_ms` for Specialists.
+- `--model light|standard|heavy` picks the model tier. A tier below the
+  Specialist's minimum is raised to that minimum.
+- `--max-turns N` caps the conversation length.
+- `--timeout DURATION` limits each model call, not the whole run.
 
-`--timeout DURATION` is a model-call budget, not a whole-invocation deadline.
-Use positive integer seconds (`90` or `90s`), minutes (`30m`), hours (`2h`),
-or descending combinations (`1h30m`, `1m30s`). Fractional values, signs,
-whitespace, millisecond suffixes, repeated units and zero totals are rejected.
-MCP parameters and `booley.toml` use milliseconds.
-
-Project selection works before or after the endpoint name for built-ins and
-visible Specialists: `booley flow -C ../other lint --target lint`, or
-`booley flow lint --target lint -C ../other`. A leading `--` separates the
-main CLI from the endpoint options; a subsequent `--` starts an opaque payload.
+Reports go to `mcp-tool-reports/` in the Booley Directory.
+[CLI-REFERENCE.md](CLI-REFERENCE.md#booley-flows--specialists) lists each
+Specialist's arguments and the Goals it can satisfy.
 
 ## Reading results
 
@@ -183,26 +178,27 @@ Every built-in Flow uses the same exit codes:
 
 | Exit | Meaning | What to do |
 |---:|---|---|
-| `0` | The Flow ran and the check passed. | Nothing. Advisory findings (such as lint warnings with `warnings_as_errors = false`) may still be reported. |
-| `1` | The Flow reached a design verdict and it failed. | Fix the RTL or testbench. |
-| `1` | Simulation was `inconclusive` (for example, no pass/fail sentinel after a clean run). The Criterion is skipped. | Repair the testbench verdict or missing evidence, then rerun. |
-| `2` | The Flow could not reach a verdict: bad configuration, missing tool, crash, tool or build timeout. | Fix the setup; the result says nothing about the design. |
+| `0` | The check passed. | Nothing. Advisory findings, such as lint warnings that aren't errors, may still be listed. |
+| `1` | The design failed the check, or a simulation was inconclusive. | Fix the RTL or testbench, then rerun. |
+| `2` | The Flow couldn't reach a verdict: bad configuration, missing tool, crash, or a tool or build timeout. | Fix the setup. The result says nothing about the design. |
 
-A simulation run timeout exits `1` and fails `SIM:{target}`; build, Elaboration
-Check and Pre-Sim Command timeouts exit `2`. See
-[Verdicts and Criteria](FLOW-SIM.md#verdicts-and-criteria).
+A simulation is **inconclusive** when it ends cleanly but without a pass or
+fail verdict, for example because the testbench never printed its pass
+message. A simulation that runs out of time exits `1`, but a build that runs
+out of time exits `2`. [Simulation results](FLOW-SIM.md#reading-results)
+has the details.
 
-The CLI prints a final verdict card: stdout on success, stderr on failure.
+**Reports.** Each run writes a JSON report and full logs under `flow-reports/`
+in the Booley Directory, or under `--report-dir`. The verdict and the report
+both give the exact paths. [FLOW_REPORTS.md](../internals/FLOW_REPORTS.md)
+describes the report files, for scripts that read them.
 
-**Reports.** Each run writes a structured JSON report and complete logs. By
-default they go under `flow-reports/` in the Booley Directory (Goal and
-Specialist runs use their runtime directory). `--report-dir` overrides this. Booley
-never writes reports into the RTL checkout. The verdict card and the report both
-point at the exact log and artifact paths, so you rarely need to go looking.
+**Dry runs.** `--dry-run` prints a JSON plan of each unit of work: Target,
+sources, constraints, parameters, and the exact commands. It exits `0` when
+everything can be planned and `2` otherwise, still showing the parts that
+could be planned. [Dry-run plan](../internals/FLOW_REPORTS.md#dry-run-plan)
+lists the fields.
 
-**Dry runs.** `--dry-run` prints a JSON plan listing each work unit: Target,
-sources, constraints, resolved parameters, and the exact commands it would run.
-It exits `0` when everything can be planned and `2` otherwise, keeping the valid
-parts of the plan for diagnosis. FuseSoC generators may run in a throwaway
-scratch directory when resolution needs them; the plan says so. Field
-details: [FLOW_REPORTS](../internals/FLOW_REPORTS.md#dry-run-plan).
+When a Flow fails for a reason you can't explain, see
+[Troubleshooting](TROUBLESHOOTING.md). If Booley itself seems wrong, report it
+as described in [When Booley itself misbehaves](USAGE.md#when-booley-itself-misbehaves).
