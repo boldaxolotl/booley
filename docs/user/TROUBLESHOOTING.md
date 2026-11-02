@@ -622,7 +622,7 @@ with `booley projects forget /exact/deleted/project`.
 ### Coverage Campaign diagnostics and retention
 
 To find a Campaign's files or prune them, see
-[Where the evidence lives](https://booley.dev/docs/coverage/#where-the-evidence-lives)
+[Coverage results](https://booley.dev/docs/coverage/#reading-results)
 and [Cleaning up completed Campaigns](https://booley.dev/docs/coverage/#cleaning-up-completed-campaigns).
 
 | Message | What to do |
@@ -724,7 +724,7 @@ capabilities.
   not approvals. Ask the Developer Agent to use `goal_propose_change(kind="waiver")` and
   inspect the exact candidate before deciding.
 - `[coverage.waivers] is not configured`: select the
-  [approval directory](https://booley.dev/docs/coverage/#approved-coverage-waivers) before approval.
+  [approval directory](https://booley.dev/docs/coverage/#waiver-directory-coveragewaivers) before approval.
   Configuration is protected during Goal Mode; arrange it before entry.
 - A proposal remains pending: a cancelled or invalid form makes no decision.
   Resume its exact proposal ID; if chat fallback is needed, give an explicit

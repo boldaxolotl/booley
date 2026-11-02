@@ -271,8 +271,8 @@ booley flow sim --target sim_counter --coverage
 Then call the `coverage_analyst` Specialist from your Developer Agent session with
 `campaign="<reports>/sim/12/targets/sim_counter/coverage.json"`.
 
-In Goal Mode, add a [coverage Goal](COVERAGE.md#native-coverage-configuration)
+In Goal Mode, add a [coverage Goal](COVERAGE.md#coverage-goals)
 for each Target that needs one. Only valid coverage evidence satisfies it.
 The Analyst may screen Waiver Candidates; approving one requires your decision
 through `goal_propose_change`. Rerun coverage after approval to obtain fresh
-strict evidence. See [coverage waivers at review](COVERAGE.md#coverage-waivers-at-review).
+strict evidence. See [coverage waivers](COVERAGE.md#coverage-waivers).

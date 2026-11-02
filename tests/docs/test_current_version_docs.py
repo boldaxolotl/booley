@@ -59,7 +59,7 @@ ALLOWLIST = (
         "docs/user/FLOW-SIM.md",
         "legacy-per-test",
         "A supported literal value selecting per-test build access.",
-        3,
+        1,
     ),
 )
 

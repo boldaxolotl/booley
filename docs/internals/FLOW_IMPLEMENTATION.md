@@ -297,7 +297,7 @@ active-Project cache.
 
 `[flows.sim]` holds execution and verdict policy; `tests.toml` holds the
 per-Target test list and run-time selector; the FuseSoC Target holds the build
-inputs and simulator choice. [FLOW-SIM.md](../user/FLOW-SIM.md#simulation--passfail-sentinels-flowssim)
+inputs and simulator choice. [FLOW-SIM.md](../user/FLOW-SIM.md#passfail-sentinels-and-cycle-counts)
 owns the exact simulation keys and defaults, while its
 [design-description section](../user/TARGETS.md#design-description-core)
 owns the `tests.toml` schema.
