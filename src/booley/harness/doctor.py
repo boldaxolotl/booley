@@ -178,6 +178,7 @@ from booley.targets.selection import (
 )
 
 if TYPE_CHECKING:
+    from booley.config.agent_app import AgentAppChoice
     from booley.harness import developer_probe
 
 _DRY_RUN_TIMEOUT_S = 60
@@ -2635,14 +2636,16 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     """Run credential checks when the invocation profile includes agents."""
     if not reporter.agent_check_enabled("agent credential checks"):
         return
-    if not _report_agent_app_choice(reporter):
+    reported, auto_choice = _report_agent_app_choice(reporter)
+    if not reported:
         return
     provider = _configured_provider(project)
     auth_policy = _configured_auth_policy(project)
     _warn_ignored_gateway_handoff(reporter)
     _check_gateway_model_pin(auth_policy, provider, reporter)
     if auth_policy == GATEWAY_AUTH:
-        _check_gateway_auth(provider, reporter)
+        # Under BOOLEY_AGENT_APP=auto the policy comes from the start's choice record.
+        _check_gateway_auth(provider, reporter, chosen_by_auto=auto_choice is not None)
         return
     try:
         plan = auth_token.credential_plan(provider, auth_policy)
@@ -2679,11 +2682,12 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     )
 
 
-def _report_agent_app_choice(reporter: _Reporter) -> bool:
+def _report_agent_app_choice(reporter: _Reporter) -> tuple[bool, AgentAppChoice | None]:
     """PASS the app ``BOOLEY_AGENT_APP=auto`` chose; FAIL when it cannot be honored.
 
-    Prints nothing for explicit values. Returns ``False`` after a FAIL, since
-    the remaining agent checks would only repeat it.
+    Prints nothing for explicit values. Returns whether the remaining agent
+    checks should run (``False`` after a FAIL, which they would only repeat)
+    and the ``auto`` choice, ``None`` for an explicit app.
     """
     from booley.config import agent_app
 
@@ -2691,11 +2695,11 @@ def _report_agent_app_choice(reporter: _Reporter) -> bool:
         choice = agent_app.auto_choice()
     except agent_app.AgentAppError as exc:
         reporter.fail_(str(exc), check_id="agent.credential-policy", subject="BOOLEY_AGENT_APP")
-        return False
+        return False, None
     if choice is not None:
         label = _AGENT_APP_LABELS[choice.app]
         reporter.pass_(f"Agent app: {label} chosen by BOOLEY_AGENT_APP=auto ({choice.reason})")
-    return True
+    return True, choice
 
 
 def _warn_ignored_gateway_handoff(reporter: _Reporter) -> None:
@@ -2737,24 +2741,13 @@ def _check_gateway_model_pin(auth_policy: str, provider: str, reporter: _Reporte
         )
 
 
-def _gateway_is_auto_fallback() -> bool:
-    """Whether ``BOOLEY_AGENT_APP=auto`` chose the gateway because no login was found.
+def _check_gateway_auth(provider: str, reporter: _Reporter, *, chosen_by_auto: bool) -> None:
+    """Grade the env-selected gateway policy: it routes Codex only and needs URL + token.
 
-    An explicit ``BOOLEY_PRIMARY_AUTH=gateway`` is a pinned policy, so a token
-    failure there stays a FAIL. The choice record is already validated by
-    :func:`_report_agent_app_choice`; an unreadable one counts as explicit.
+    *chosen_by_auto* means ``BOOLEY_AGENT_APP=auto`` picked the gateway because it
+    found no Claude or Codex login, so a token command that cannot print a token
+    yet is a warning. With an explicit app it stays a FAIL.
     """
-    from booley.config import agent_app
-
-    try:
-        choice = agent_app.auto_choice()
-    except agent_app.AgentAppError:
-        return False
-    return choice is not None and choice.policy == GATEWAY_AUTH
-
-
-def _check_gateway_auth(provider: str, reporter: _Reporter) -> None:
-    """Grade the env-selected gateway policy: it routes Codex only and needs URL + token."""
     if provider != auth_token.APP_CODEX:
         reporter.fail_(
             f"auth '{GATEWAY_AUTH}' routes Codex only; set [agent] provider = 'codex'",
@@ -2772,7 +2765,7 @@ def _check_gateway_auth(provider: str, reporter: _Reporter) -> None:
         try:
             run_token_command(settings.token_command)
         except GatewayTokenCommandError as exc:
-            if _gateway_is_auto_fallback():
+            if chosen_by_auto:
                 # Like a missing login under auth = 'auto': the user has not signed in
                 # yet, which is a warning, not a broken setup.
                 reporter.warn_(

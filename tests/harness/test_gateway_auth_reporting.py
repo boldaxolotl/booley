@@ -115,6 +115,7 @@ def test_doctor_gateway_failing_token_command_fails_quoting_stderr(gateway_env, 
     assert "SYNTHETIC_LEAKED_STDOUT" not in findings[0].message
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="gateway mode is container-only")
 def test_doctor_gateway_auto_fallback_without_token_warns(gateway_env, monkeypatch):
     """Under BOOLEY_AGENT_APP=auto the gateway is a fallback: no token yet is a warning."""
     from booley.config import agent_app

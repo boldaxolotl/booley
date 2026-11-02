@@ -28,5 +28,5 @@ document: Free browser demo
 codex login --device-auth</code></pre>
   <p>Then switch Booley to your account (with both signed in, it picks Claude Code):</p>
   <pre><code>python -m booley.harness.incontainer_register</code></pre>
-  <p>CODESPACES.md has the <a href="https://github.com/boldaxolotl/booley-prj-picorv32/blob/main/CODESPACES.md#or-use-your-own-claude-or-chatgpt-account">step-by-step sign-in</a>. To run Booley on your own machine instead, see the <a href="docs/install/">Install guide</a>.</p>
+  <p>CODESPACES.md has the <a href="https://github.com/boldaxolotl/booley-prj-picorv32/blob/main/CODESPACES.md#or-use-your-own-claude-or-chatgpt-account">step-by-step sign-in</a>. To run Booley on your own machine instead, see the <a href="../docs/install/">Install guide</a>.</p>
 </section>
