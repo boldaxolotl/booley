@@ -165,7 +165,26 @@ function startBridge(context) {
     });
 }
 
+// Recent VS Code opens its Chat panel in the secondary side bar the first time a
+// workspace opens. Booley's agent runs as a terminal CLI, so in a Sandbox the
+// panel only takes space. A devcontainer setting cannot hide it: the browser
+// lays out the window before the remote settings arrive. Close it once per
+// workspace instead, so a user who reopens it keeps it open.
+const CHAT_CLOSED_KEY = 'chatSideBarClosed';
+
+async function closeChatSideBarOnce(context) {
+    if (!REMOTES.has(vscode.env.remoteName)) { return; }
+    if (context.workspaceState.get(CHAT_CLOSED_KEY, false)) { return; }
+    await context.workspaceState.update(CHAT_CLOSED_KEY, true);
+    try {
+        await vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar');
+    } catch {
+        // Layout is cosmetic: an editor without the command keeps its default.
+    }
+}
+
 exports.activate = context => {
     startBridge(context);
+    void closeChatSideBarOnce(context);
     void new AttachController(context).open();
 };
