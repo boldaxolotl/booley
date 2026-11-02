@@ -132,7 +132,8 @@ runs them:
 | `fpga_` | fpga | `fpga_board` |
 
 The prefix matters for synth and fpga: both use FuseSoC's `generic` flow, so
-the name is the only thing that tells them apart. A bare `lint` is fine when
+the `synth_`/`fpga_` prefix decides which Flow runs the Target. Without a
+prefix, a Target whose tool is `vivado` counts as fpga. A bare `lint` is fine when
 there is only one lint Target. Doctor notes names that break the rule. Vendored
 upstream cores keep their own names.
 
@@ -140,7 +141,7 @@ Add a `default:` Target only when another core depends on this one. Booley
 doesn't list it as a Target you can run.
 
 A lint Target needs `flow: lint` and `flow_options.tool` set to `verilator` or
-`verible`. Other tools don't show up in `booley targets --for lint`.
+`verible` (`veriblelint` also works). Other tools don't show up in `booley targets --for lint`.
 For Python testbenches, see [Cocotb Targets](#cocotb-targets-python-testbenches).
 
 #### Verilator lint Target

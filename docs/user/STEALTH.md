@@ -19,7 +19,7 @@ all.
     enabled = true
     ```
 
-    For a new IP, `booley init --scaffold --stealth` does the same.
+    For a new IP, `booley init --scaffold <ip_name> --stealth` does the same.
 2. `booley init` hides `.booley/` from your repository and makes it a separate
    Git repository. Commit your Booley setup there, not in the RTL repo.
 3. Commit and push the RTL repo as usual; the hooks below do their work.
@@ -82,7 +82,7 @@ enabled = true
   attribution lines are still rejected.
 - **Words match whole identifier parts**, ignoring case. `_`, `-`, `.`, `/`, and
   case or letter-digit changes split a name into parts, so `ticket` matches
-  `ticket_fifo` and `GPT4` but not `Tickets` or `ticketing`.
+  `ticket_fifo` but not `Tickets` or `ticketing`, and `gpt` matches `GPT4`.
 - **AI vendor and product names match anywhere**: `claude`, `anthropic`,
   `codex`, `openai`, `chatgpt`, `copilot`, `gemini`, and `booley` match inside
   `myClaudeHelper` too.

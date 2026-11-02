@@ -49,8 +49,9 @@ for you:
 Don't fix this by hand: `git checkout -- .` keeps the CRLF endings.
 
 `booley doctor` checks line endings on every run, including a separate Booley
-Directory repository, and fails with the fix (usually `booley init`) if a
-fresh clone or a Git config change brings CRLF back. If it warns
+Directory repository, and fails with the fix (usually `booley init`) when files are checked out with
+CRLF again. It warns `git.autocrlf-risk` when a Git config change would bring
+CRLF back on the next checkout. If it warns
 `git.attributes-policy-unknown` instead, see
 [Doctor](DOCTOR.md#unknown-git-attributes-policy).
 
