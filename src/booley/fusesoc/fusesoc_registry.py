@@ -45,7 +45,7 @@ import yaml
 from fusesoc.capi2 import exprs as _fusesoc_exprs
 
 from booley.core.booley_dir import BOOLEY_DIR_NAME
-from booley.core.booley_dir_links import lexical_booley_path
+from booley.core.booley_dir_links import resolve_through_entry
 from booley.core.boundary import as_dict, is_str_list
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.core_projection import (
@@ -1066,14 +1066,15 @@ def canonical_project_path(project_root: Path | str, path: Path | str) -> str:
     the repository. Consumers that edit files or compare them with Git output
     need the tracked target path, not the resolution-link spelling. Paths that
     resolve outside the project stay absolute so they cannot masquerade as
-    project-owned files. A file behind a symlinked Booley Directory keeps its
-    ``.booley/...`` spelling; only that one entry link is followed.
+    project-owned files. A path spelled through a symlinked Booley Directory
+    keeps its ``.booley/...`` spelling; any other route into the entry's target
+    stays absolute.
     """
     root = Path(project_root).resolve()
     candidate = Path(path)
     if not candidate.is_absolute():
         candidate = root / candidate
-    resolved = lexical_booley_path(root / BOOLEY_DIR_NAME, candidate.resolve())
+    resolved = resolve_through_entry(root / BOOLEY_DIR_NAME, candidate)
     try:
         return resolved.relative_to(root).as_posix()
     except ValueError:

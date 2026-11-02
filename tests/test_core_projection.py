@@ -351,7 +351,8 @@ def test_isolated_registry_keeps_files_below_symlinked_booley_dir_lexical(
     """A fileset path under a linked ``.booley`` renders through the entry, not its target.
 
     Only the entry itself is followed: a link below it that points outside the
-    Project still renders as its physical path, so later checks refuse it.
+    Project, or a ``..`` route to the entry's target, still renders as its
+    physical path, so later checks refuse it.
     """
     root = tmp_path / "repo"
     root.mkdir()
@@ -372,6 +373,7 @@ def test_isolated_registry_keeps_files_below_symlinked_booley_dir_lexical(
         "    files:\n"
         "      - .booley/sim/main.cc: {file_type: cppSource}\n"
         "      - .booley/sim/escape.cc: {file_type: cppSource}\n"
+        "      - ../external-booley/sim/main.cc: {file_type: cppSource}\n"
         "targets: {}\n",
         encoding="utf-8",
     )
@@ -379,5 +381,6 @@ def test_isolated_registry_keeps_files_below_symlinked_booley_dir_lexical(
     text = reconcile_isolated_registry(root).written[0].read_text(encoding="utf-8")
 
     assert (root.resolve() / ".booley" / "sim" / "main.cc").as_posix() in text
-    assert (external.resolve() / "sim" / "main.cc").as_posix() not in text
+    # The ``..`` route into the target is not the entry: it keeps its physical path.
+    assert text.count((external.resolve() / "sim" / "main.cc").as_posix()) == 1
     assert outside.resolve().as_posix() in text

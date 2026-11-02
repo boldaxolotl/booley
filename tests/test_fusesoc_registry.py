@@ -2915,6 +2915,47 @@ class TestSymlinkedBooleyDirectory:
         assert ".booley/sim/tb_extra.sv" in real
         assert linked == real
 
+    def test_canonical_path_follows_only_the_entry_link(self, tmp_path: Path):
+        """Reaching the entry's target by any other route stays outside the Project."""
+        project = tmp_path / "project"
+        (project / "rtl").mkdir(parents=True)
+        external = symlinked_booley_dir(project, tmp_path / "external-booley")
+        (external / "sim").mkdir()
+        (external / "sim" / "a.cc").write_text("", encoding="utf-8")
+        symlink_or_skip(project / "rtl" / "sneaky.cc", external / "sim" / "a.cc")
+        physical = (external / "sim" / "a.cc").resolve().as_posix()
+
+        assert (
+            fusesoc_registry.canonical_project_path(project, ".booley/sim/a.cc")
+            == ".booley/sim/a.cc"
+        )
+        assert fusesoc_registry.canonical_project_path(project, "rtl/sneaky.cc") == physical
+        assert (
+            fusesoc_registry.canonical_project_path(project, "../external-booley/sim/a.cc")
+            == physical
+        )
+        assert (
+            fusesoc_registry.canonical_project_path(project, external / "sim" / "a.cc") == physical
+        )
+
+    @pytest.mark.parametrize("mode", sorted(_SYMLINK_MODES))
+    def test_link_below_entry_pointing_outside_still_escapes(self, tmp_path: Path, mode: str):
+        """Strict classification refuses a link below the entry that leaves the Project."""
+        project = _stealth_layout(tmp_path, mode, symlinked=True)
+        outside = tmp_path / "outside.sv"
+        outside.write_text("module o; endmodule\n", encoding="utf-8")
+        (project / ".booley" / "sim").mkdir()
+        symlink_or_skip(project / ".booley" / "sim" / "esc.sv", outside)
+        core = project / ".booley" / "cores" / "design.core"
+        declared = "- tb/tb_counter.sv: {file_type: systemVerilogSource}\n"
+        text = core.read_text(encoding="utf-8")
+        indent = text[: text.index(declared)].rsplit("\n", 1)[1]
+        extra = declared.replace("tb/tb_counter.sv", ".booley/sim/esc.sv")
+        core.write_text(text.replace(declared, declared + indent + extra), "utf-8")
+
+        with pytest.raises(FuseSocError, match=r"escapes Project Root: \.booley/sim/esc\.sv"):
+            fusesoc_registry.classified_sources(project, strict=True)
+
     @pytest.mark.parametrize("mode", sorted(_SYMLINK_MODES))
     def test_link_inside_core_root_pointing_outside_keeps_today_outcome(
         self, tmp_path: Path, mode: str

@@ -10,6 +10,7 @@ Stdlib-only so ``core`` and ``fusesoc`` can share it.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -36,3 +37,17 @@ def lexical_booley_path(booley_dir: Path | None, path: Path) -> Path:
         return booley_dir / path.relative_to(booley_dir.resolve())
     except ValueError:
         return path
+
+
+def resolve_through_entry(booley_dir: Path | None, path: Path) -> Path:
+    """Resolve *path*, keeping the entry spelling only when *path* is spelled through it.
+
+    A path lexically below *booley_dir* comes back as ``booley_dir / rel``, with
+    its links resolved. Any other route into the entry's target (another link,
+    ``..`` past the Project Root, the target's own absolute path) keeps its
+    physical path, so a boundary check still sees it as outside the Project.
+    """
+    resolved = path.resolve()
+    if booley_dir is not None and Path(os.path.normpath(path)).is_relative_to(booley_dir):
+        return lexical_booley_path(booley_dir, resolved)
+    return resolved

@@ -41,3 +41,32 @@ def test_lexical_booley_path_is_identity_unless_the_entry_is_a_link(tmp_path: Pa
     assert not is_booley_dir_entry(entry / "cores", entry)
     assert not is_booley_dir_entry(store, entry)
     assert not is_booley_dir_entry(entry, None)
+
+
+def test_resolve_through_entry_follows_only_the_entry_link(tmp_path: Path) -> None:
+    """Only a path spelled through the entry gets the entry spelling back.
+
+    Every other route into the entry's target (another link, ``..`` past the
+    Project Root, the target's absolute path) resolves to its physical path.
+    """
+    from booley.core.booley_dir_links import resolve_through_entry
+
+    project = tmp_path / "proj"
+    (project / "rtl").mkdir(parents=True)
+    store = tmp_path / "store"
+    (store / "sim").mkdir(parents=True)
+    (store / "sim" / "a.cc").write_text("", encoding="utf-8")
+    entry = project / ".booley"
+    symlink_or_skip(entry, store, target_is_directory=True)
+    symlink_or_skip(project / "rtl" / "sneaky.cc", store / "sim" / "a.cc")
+    physical = (store / "sim" / "a.cc").resolve()
+
+    assert resolve_through_entry(entry, entry / "sim" / "a.cc") == entry / "sim" / "a.cc"
+    assert resolve_through_entry(entry, entry / "x" / ".." / "sim" / "a.cc") == (
+        entry / "sim" / "a.cc"
+    )
+    assert resolve_through_entry(entry, project / "rtl" / "sneaky.cc") == physical
+    assert resolve_through_entry(entry, project / ".." / "store" / "sim" / "a.cc") == physical
+    assert resolve_through_entry(entry, store / "sim" / "a.cc") == physical
+    # No Booley Directory: a plain resolve.
+    assert resolve_through_entry(None, entry / "sim" / "a.cc") == physical
