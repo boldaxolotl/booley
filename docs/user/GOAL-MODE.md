@@ -51,91 +51,16 @@ arguments. The [Goal catalog](#goal-catalog) lists every Goal, and
 
 ## Threshold parameters
 
-<!-- BEGIN GENERATED: criteria-params -->
-`synth` and `fpga` Goals name each Target directly and accept metric thresholds. Four flavours apply per metric: two absolute, two relative to the Goal base commit:
+Synthesis, FPGA, and Cycle Count Goals can carry limits. A limit is either
+absolute, such as "at most 5,000 LUTs" or "Fmax at least 200 MHz", or relative
+to the code the Goal Mode started from, such as "area grows at most 10%" or
+"cycle count drops at least 8%". For a relative limit, Booley runs the same
+Target on the starting code and compares the two results. Describe the limits
+you want; the Developer Agent looks up the exact parameter names with
+`booley cheat --criteria`.
 
-| Flavour param suffix | Baseline? | Meaning |
-|----------------------|:---------:|---------|
-| `_max` | no | metric must stay **≤** the given value |
-| `_min` | no | metric must stay **≥** the given value |
-| `_increase_at_most` | yes | metric may grow **at most N%** above baseline |
-| `_reduce_at_least` | yes | metric must shrink **at least N%** below baseline |
-
-Percentage threshold values must include the `%` suffix (for example, `"cell_count_reduce_at_least": "8%"` inside `thresholds`).
-
-For a relative threshold on a new Target, set `baseline` to an existing Target. The baseline Target defaults to the candidate name and must exist at the Goal base commit. Booley runs it on base code and the candidate on current code. Missing or mismatched baseline evidence fails the check.
-
-Goal argument examples:
-
-```json
-{"family": "SYNTH", "target": "asic_small", "baseline": "asic_base",
- "thresholds": {"cell_count_reduce_at_least": "8%"}}
-```
-
-```json
-{"family": "FPGA", "target": "fpga_top", "thresholds": {"lut_count_max": 5000}}
-```
-
-**`SYNTH:{target}` (ASIC)**
-
-| Metric | _max | _min | _increase_at_most | _reduce_at_least |
-|--------|:---:|:---:|:---:|:---:|
-| `area` | — | — | ✓ | ✓ |
-| `area_kge` | ✓ | — | — | — |
-| `area_um2` | ✓ | — | — | — |
-| `cell_count` | ✓ | — | ✓ | ✓ |
-| `critical_path_ps` | ✓ | — | ✓ | ✓ |
-| `fmax_mhz` | — | ✓ | ✓ | ✓ |
-| `wire_count` | ✓ | — | ✓ | ✓ |
-
-> Absolute area caps pick a unit (`area_um2` / `area_kge`); the unit-agnostic `area` row carries the baseline-relative bounds only.
-
-> Mutually exclusive: `area_um2_max` ⊕ `area_kge_max`.
-
-> Mutually exclusive: `critical_path_ps_max` ⊕ `fmax_mhz_min`.
-
-**`FPGA:{target}` (FPGA)**
-
-| Metric | _max | _min | _increase_at_most | _reduce_at_least |
-|--------|:---:|:---:|:---:|:---:|
-| `bram_count` | ✓ | — | ✓ | ✓ |
-| `critical_path_ps` | ✓ | — | ✓ | ✓ |
-| `dsp_count` | ✓ | — | ✓ | ✓ |
-| `ff_count` | ✓ | — | ✓ | ✓ |
-| `fmax_mhz` | — | ✓ | — | — |
-| `lut_count` | ✓ | — | ✓ | ✓ |
-
-> Mutually exclusive: `critical_path_ps_max` ⊕ `fmax_mhz_min`.
-
-**`CYCLE_COUNT` of one Test Run**
-
-`CYCLE_COUNT:{target}` Goals name the Target with `target` and one Test Run with `test` (`test`, `test+variant`, or either with `@seed`); put bounds in `thresholds`. All thresholds for that Test Run must pass. Relative forms compare the same Test Run of the same Target at the Goal base commit.
-
-```json
-{"family": "CYCLE_COUNT", "target": "sim", "test": "smoke",
- "thresholds": {"cycle_count_max": 1000, "cycle_count_reduce_at_least": "8%"}}
-```
-
-| Parameter | Baseline? | Unit | Passing relation |
-|-----------|:---------:|------|------------------|
-| `cycle_count_max` | no | cycles | current ≤ threshold |
-| `cycle_count_min` | no | cycles | current ≥ threshold |
-| `cycle_count_increase_at_least` | yes | percent | signed change ≥ +N% |
-| `cycle_count_increase_at_most` | yes | percent | signed change ≤ +N% |
-| `cycle_count_reduce_at_least` | yes | percent | signed change ≤ -N% |
-| `cycle_count_reduce_at_most` | yes | percent | signed change ≥ -N% |
-| `cycle_count_increase_at_least_cycles` | yes | cycles | current - baseline ≥ N |
-| `cycle_count_increase_at_most_cycles` | yes | cycles | current - baseline ≤ N |
-| `cycle_count_reduce_at_least_cycles` | yes | cycles | baseline - current ≥ N |
-| `cycle_count_reduce_at_most_cycles` | yes | cycles | baseline - current ≤ N |
-
-A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when that exact test passes. Missing, malformed, duplicate, unnamed, failed, or inconclusive evidence fails closed. Without a `CYCLE_COUNT:{target}` Goal, existing Cycle Count records remain observational.
-
-Relative comparisons report an **observed Cycle Count change**. When declared workload inputs differ, review reports disclose the changes and do not attribute the result to RTL alone.
-<!-- END GENERATED: criteria-params -->
-
-For a SYNTH or FPGA Goal with a relative threshold (`*_increase_at_most`,
-`*_reduce_at_least`) whose evidence includes a baseline, the long
+For a SYNTH or FPGA Goal with a relative limit whose evidence includes a
+baseline, the long
 `booley goal status` view (one Goal), the `goal_status` tool, the Dashboard's
 Goal details and the Review Package also show the baseline revision and, per
 thresholded metric, `baseline → current` with the signed change and percentage,
