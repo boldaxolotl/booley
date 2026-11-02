@@ -206,6 +206,20 @@ figcaption b { color: var(--ink); font-weight: 650; }
 .shot .legend dt span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .shot .legend .lt { color: var(--ink); font-weight: 650; font-stretch: 92%; }
 .shot .legend dd { margin: 0; color: var(--ink-2); }
+/* real screenshot behind a spoiler under the caption; the site theme picks light or dark */
+.shot__real { margin-top: 10px; border: 1px solid var(--rule); }
+.shot__real > summary { cursor: pointer; list-style: none; display: flex; gap: 10px; align-items: center;
+  padding: 8px 12px; background: var(--fill); font: 650 15px/1.4 var(--sans); }
+.shot__real > summary::-webkit-details-marker { display: none; }
+.shot__real > summary::before { content: ""; border-left: 7px solid var(--mask); border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent; transition: transform .15s; }
+.shot__real[open] > summary::before { transform: rotate(90deg); }
+.shot__real[open] > summary { border-bottom: 1px solid var(--rule); }
+.shot__real-img { display: block; padding: 10px; }
+.shot__real-img img { display: block; width: 100%; height: auto; }
+.shot__real-img--dark, :root[data-theme="dark"] .shot__real-img--light { display: none; }
+:root[data-theme="dark"] .shot__real-img--dark { display: block; }
+@media (prefers-reduced-motion: reduce) { .shot__real > summary::before { transition: none; } }
 
 /* ---- Datasheet tables ---- */
 .tbl { margin: 26px 0 8px; overflow-x: auto; }
