@@ -1,10 +1,21 @@
 # Goal Mode
 
 Goal Mode gives one Developer Agent session mandatory, evidence-backed completion
-conditions. Open a Developer Agent session and type `/booley-goal` with the work
-you want done. The skill helps you choose a clean linked worktree, Goalsets,
-Targets, and ad-hoc Goals, then calls `goal_enter`. Booley creates a Goal Branch
-from the worktree's current HEAD and records that base for comparisons.
+conditions.
+
+## How to use Goal Mode
+
+1. **Set up the Goals.** Open a Developer Agent session and type
+   `/booley-goal` followed by the work you want done. The skill helps you
+   choose a clean linked worktree, Goalsets, Targets, and ad-hoc Goals, shows
+   you the final Goals, then calls `goal_enter`. Booley creates a Goal Branch
+   from the worktree's current HEAD and records that base for comparisons.
+2. **Clear the chat.** Once entry succeeds, clear the conversation (for
+   example `/clear`). The Goals live in the Goal Record, not in the chat, so
+   nothing is lost, and the work starts with a full context window.
+3. **Run `/booley-goal` again.** In the fresh chat, type `/booley-goal`. The
+   skill finds the active Goal Record with `goal_status`, then does the work
+   and gathers evidence until every Goal is met and it can finish.
 
 ## Goalsets and entry
 
