@@ -427,3 +427,7 @@ needs from that worktree before entry. The command creates the worktree and
 Worktree Booley Directory; it does not invoke these scripts automatically. Keep generated
 build outputs ignored and commit deliberate Project inputs before Goal entry.
 Hooks are Protected Inputs during Goal Mode.
+
+Goal Mode's baseline Jobs run `post-setup` (`.sh`, `.py`, or no suffix) in each
+fresh baseline checkout, with `BOOLEY_WORKTREE` set to that checkout. Write
+the hook so it is idempotent and builds only from files in the checkout.

@@ -53,6 +53,7 @@ from booley.goals.sim_baseline_store import (
 )
 from booley.goals.test_run_evidence import freshness_stamp
 from booley.goals.test_run_freezing import TargetPlans
+from booley.mcp.baseline_preparation import HOOK_PROOF, file_digest, run_post_setup_hook
 from booley.mcp.synth_baseline_execution import classify_synth, measure_synth, synth_job_class
 from booley.runtime import job_slots
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
@@ -147,6 +148,8 @@ def prove_base_contents(
     if GoalCheckout(root).head_sha() != record.base_sha:
         raise ValueError("baseline checkout is not at the Goal base commit")
     captured = require_dict(request["inputs"]["files"], field="entry input files")
+    hook = require_dict(request["post_setup"], field="baseline post-setup outputs")
+    generated = require_dict(hook["files"], field="baseline post-setup files")
     projections: dict[Path, Any] = {}
     proof: dict[str, str] = {}
     for name in _dependent_files(fingerprint, key):
@@ -173,8 +176,14 @@ def prove_base_contents(
             if os.fsencode(path.resolve().relative_to(repository).as_posix()) in projection.rows:
                 raise ValueError(f"versioned baseline dependency differs from base: {name}")
             proof[str(name)] = "entry-snapshot"
+        elif str(name) in generated and generated[str(name)] == file_digest(path):
+            # Untracked at base and written by the entry hook from base sources.
+            proof[str(name)] = HOOK_PROOF
         else:
-            raise ValueError(f"baseline dependency differs from base or is unavailable: {name}")
+            cause = f" ({hook['error']})" if hook["error"] else ""
+            raise ValueError(
+                f"baseline dependency differs from base or is unavailable: {name}{cause}"
+            )
     _check_captured_inputs(root, request)
     return {
         "base_sha": record.base_sha,
@@ -354,6 +363,11 @@ def _run_baseline_locked(
         request["scratch_parent"] = str(checkout.parent)
         request["owned_paired_checkout"] = (
             str(resolve_checkout_booley_dir(checkout)) if record.paired_project_base_sha else None
+        )
+        # Ownership is published before the hook, so an interrupted hook's checkout is reaped.
+        write_document(path, request)
+        request["post_setup"] = run_post_setup_hook(
+            checkout, slug=record.id, timeout_s=_remaining_seconds(path.parent)
         )
         write_document(path, request)
         units = tuple(family.parse_unit(row) for row in request["identity"]["runs"])
