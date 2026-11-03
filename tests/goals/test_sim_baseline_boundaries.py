@@ -6,6 +6,7 @@ report fact) rather than a silently accepted transition.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from copy import deepcopy
@@ -328,9 +329,30 @@ def test_supervisor_refuses_bad_arguments_and_unknown_jobs(baseline) -> None:
     assert jobs.main([str(path)]) == 2
 
 
-def test_supervisor_cancellation_unwinds_as_interruption() -> None:
-    with pytest.raises(InterruptedError, match="cancelled"):
-        jobs._cancel(15, None)
+def test_supervisor_cancellation_survives_os_error_handlers(baseline, monkeypatch) -> None:
+    """SIGTERM inside a step that maps OSError to a soft failure still ends the Job (#2656).
+
+    The post-setup hook's subprocess wrapper reports any OSError as a failed
+    hook; a cancellation it swallowed let the Job go on to run its simulator.
+    """
+    path, raw = _schedule(baseline)
+    continued = []
+
+    def interrupted_hook(_path, _request):
+        # SIGTERM lands inside the hook's subprocess wait, which maps OSError to a failed hook.
+        with contextlib.suppress(OSError):
+            jobs._cancel(15, None)
+        continued.append(True)  # would go on to measure the base
+        return []
+
+    monkeypatch.setattr(execution, "run_baseline", interrupted_hook)
+    monkeypatch.setattr(jobs.signal, "signal", lambda *_args: None)
+    assert jobs.main([str(path)]) == 2
+    assert not continued
+    report = read_document(path)
+    assert report["status"] == "unavailable" and "cancelled" in report["reason"]
+    job = job_records.read_record(raw["job_id"], Path(raw["jobs_root"]))
+    assert job is not None and job.status == job_records.STATUS_FAILED and job.ended_at
 
 
 def test_unstarted_worker_exit_is_published_without_a_pid(baseline) -> None:
