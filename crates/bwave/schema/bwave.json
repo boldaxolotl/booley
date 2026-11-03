@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:bwave:json-envelope:2",
+  "$id": "https://raw.githubusercontent.com/boldaxolotl/booley/v0.4.0/crates/bwave/schema/bwave.json",
   "title": "B-Wave --format json envelope",
   "description": "B-Wave JSON envelope revision 2; clock-grid diagnostics and stopped ranges are advisory. Obtain the emitted revision using bwave schema.",
   "type": "object",
