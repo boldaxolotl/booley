@@ -182,6 +182,40 @@ def test_read_only_wheel_mount_is_not_mutated() -> None:
     assert "rm -f /tmp/booley-installed-files.txt" in mount_region
 
 
+def _base_env(name: str) -> int:
+    """Return the integer value of a ``name=value`` ENV in the runtime base image."""
+    instructions = logical_instructions(_BASE_DOCKERFILE.read_text(encoding="utf-8"))
+    values = [
+        i.value.removeprefix(f"{name}=")
+        for i in instructions
+        if i.keyword == "ENV" and i.value.startswith(f"{name}=")
+    ]
+    assert len(values) == 1, f"expected one ENV {name}, found {values}"
+    return int(values[0])
+
+
+def test_claude_code_mcp_limits_outlast_booley_wait_windows() -> None:
+    """Issue #2627: Claude Code must not cut a Booley MCP call short.
+
+    MCP_TOOL_TIMEOUT stops the 60s kill; CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS
+    stops the 120s move to a background task. Both must outlast the longest
+    server-side wait (inline wait and the booley_poll ``wait_seconds`` cap).
+    """
+    from booley.mcp import catalog, server
+
+    longest_wait_ms = 1000 * max(
+        server._DEFAULT_JOB_INLINE_WAIT_SECONDS,
+        catalog._DEFAULT_JOB_POLL_WAIT_SECONDS,
+        server._POLL_WAIT_SECONDS_MAX,
+    )
+    assert _base_env("MCP_TOOL_TIMEOUT") == 7_200_000
+    auto_background_ms = _base_env("CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS")
+    assert auto_background_ms == 7_200_000
+    assert auto_background_ms > longest_wait_ms
+    # Claude Code clamps the setting to a 32-bit signed timer ceiling.
+    assert auto_background_ms <= 2**31 - 1
+
+
 def test_bwave_runtime_paths_are_created_as_one_layer_hard_links() -> None:
     dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
     bwave_start = dockerfile.index("# bwave — VCD waveform parser")
