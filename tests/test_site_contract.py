@@ -11,7 +11,6 @@ home-page illustration is stale.
 import html
 import importlib.util
 import re
-import tomllib
 from pathlib import Path
 
 from booley.goals.model import parse_goal_args
@@ -99,11 +98,11 @@ def test_description_is_the_readme_intro_paragraph():
     assert site_description.startswith(_plain(readme_intro))
 
 
-def test_demo_link_uses_the_contract_pinned_revision():
-    contract = ROOT / ".github/contracts/picorv32-demo.toml"
-    pin = tomllib.loads(contract.read_text())["project_ref"]
-
-    assert f"https://github.com/boldaxolotl/booley-prj-picorv32/blob/{pin}/README.md" in DEMOS
+def test_demo_clone_link_follows_the_demo_default_branch():
+    # Visitors clone the demo's latest default branch, like the Codespaces button;
+    # a commit-pinned link goes stale as the demo moves on.
+    assert "https://github.com/boldaxolotl/booley-prj-picorv32#readme" in DEMOS
+    assert "booley-prj-picorv32/blob/" not in DEMOS
 
 
 def test_readme_links_resolve_to_site_sections_and_pages():

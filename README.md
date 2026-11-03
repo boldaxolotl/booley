@@ -51,7 +51,7 @@ agent runs GPT-6 Luna on us after a quick GitHub sign-in. Connect your own
 Claude or ChatGPT account if you want a smarter model. The first launch takes
 3-4 minutes while the container image builds. [How the free demo works](https://booley.dev/demo/).
 
-Or **[follow the demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32/blob/e53c1896ab02595aa4ebb3a56b5aa7bd109177f9/README.md)** to run the demo locally, after you [install Booley](#installation).
+Or **[follow the demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32#readme)** to run the demo locally, after you [install Booley](#installation).
 
 ### Your own project
 
