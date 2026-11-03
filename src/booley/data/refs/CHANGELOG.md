@@ -9,6 +9,15 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- ASIC synthesis now works in a checkout reached through a symlink, such as a
+  Goal worktree under a GitHub Codespace's linked `.booley` entry. It used to
+  fail with "Extra RTL file not found" because the RTL, include and SDC paths
+  climbed out of the checkout.
+- When Goal Mode finishes, the agent now ends its reply with the Review
+  Package paths (`SUMMARY.md` and `review-package.json`), each on its own line
+  as a highlighted absolute path you can Ctrl+click in the editor terminal. It
+  also says so when no Goal changes were approved.
+
 - `booley doctor` now ends with one bold verdict line: all clear, the number of
   warnings to resolve or waive, or the number of failures to fix. A clean
   run's "no failures or warnings" line is bold green.
