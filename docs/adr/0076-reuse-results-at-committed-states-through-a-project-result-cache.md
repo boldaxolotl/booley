@@ -168,12 +168,16 @@ the user docs say so.**
 - **No large artifacts.** Waveforms, coverage databases and bitstreams are
   never stored. A request that needs one of them misses.
 - **Payload.** The verdict inputs the grader reads (logs, exit status,
-  standard output and error) and **every text report the Flow writes**, such
-  as hierarchical area, timing and utilization reports, so a hit is as
-  useful for investigation as a fresh run. The producer's UUID, date and
-  duration are recorded. An entry over the per-entry byte cap (default
-  64 MiB) is not stored, and the run prints which reports made it too
-  large. Each entry carries its full key material, and each read
+  standard output and error) are always stored. The other text reports the
+  Flow writes, such as hierarchical area, timing and utilization reports,
+  are added largest-last up to a per-entry byte cap (default 64 MiB), so a
+  hit is as useful for investigation as a fresh run. Reports that don't fit
+  are listed in the entry as omitted, and a request that needs an omitted
+  report misses. If the verdict inputs alone exceed the cap, nothing is
+  stored and the run prints why. The store's total byte cap (§7) is sized
+  for these larger entries. The producer's UUID, date and duration are
+  recorded; the duration counts from the moment the run holds its Job slot,
+  so queue time doesn't count against the time budget. Each entry carries its full key material, and each read
   verifies it and the entry's digest. The verdict and metrics are re-derived
   from the payload by the current code on every hit, and a different or
   failing re-derivation refuses the hit.
@@ -249,34 +253,63 @@ filler, a commit handed to the next agent session arrives with an empty
 cache, and the first session to run there pays full price.
 
 The filler is the planned `booley ci` command
-([roadmap](../internals/ROADMAP.md#continuous-integration-booley-ci)), not a separate
-cache command. Filling the cache and CI are the same operation: take a
-commit and evaluate a named set of Criteria on it. One engine does both.
+([roadmap](../internals/ROADMAP.md#continuous-integration-booley-ci)), not a
+separate cache command. Filling the cache and CI are the same operation: take
+a commit and evaluate a named set of Criteria on it. One engine does both.
+Any other clean-commit run still stores as well (§1).
 
-- **Input.** An RTL commit (default `HEAD`), the Booley Directory commit
-  (default its `HEAD`, recorded in the entry) and a named Criteria set.
-- **Where it runs.** A throwaway worktree at that commit, the same mechanism
-  as Goal baseline worktrees. That tree is clean by construction, so the
-  snapshots and the overlap rule (§1) hold without the agent keeping its own
-  checkout clean or idle.
-- **Locally,** `booley ci` runs in the background as low-priority Jobs, so it
-  doesn't take Job slots from the session's own work. It produces the same
-  verdict report as hosted CI: projects in stealth mode have no hosted CI, and a
-  failing run after a merge means `main` regressed. A Criterion run whose
-  entry already exists is served as a hit. Each completed pass stores, like
-  any clean-commit run.
-- **Triggers.** Manual, plus a Git `post-merge` hook on `main` that a
-  Project setting turns on or off. The hook fires when the local `main`
-  receives commits by a merge or fast-forward pull; a rebase pull or a reset
-  doesn't fire it, so those need a manual run.
+- **Input.** An RTL commit (default `HEAD`) and a named Criteria set. When
+  the Booley Directory is tracked inside the RTL tree, its commit is the RTL
+  commit. When it is its own repository (paired or standalone), its commit
+  defaults to that repository's `HEAD` and is recorded in the entry. A
+  Booley Directory that is neither can't be filled (§1).
+- **Worktrees.** Each Job gets its own throwaway checkout: a detached
+  worktree of the RTL repository at the RTL commit and, for a separate
+  Booley Directory repository, a detached worktree of it at its commit,
+  placed where the Booley Directory resolves. Live files are never copied
+  in. The Goal baseline worktree helper is not reused as it stands: it
+  mirrors the live Booley Directory, and for a Paired Checkout it picks the
+  fork point. Both participants are clean by construction, and one Job per
+  checkout satisfies the overlap rule (§1). The store is reached through the
+  Main Booley Directory (§7).
+- **Ignored files.** A fresh checkout has no non-Booley ignored files, so a
+  run must produce every ignored input it reads (through Pre-Sim Commands,
+  hooks or generators). A Target that needs a pre-existing ignored input,
+  such as firmware built outside Booley, fails in `booley ci`, and the report
+  names the missing path. A working checkout hits these entries only when
+  its ignored files pass the §1 lookup. Leftover build output from earlier
+  uncommitted work usually doesn't, so handoff hits are most reliable in a
+  fresh or cleaned checkout.
+- **Scheduling.** Locally, `booley ci` Jobs take the ordinary Job slots at
+  the lowest priority. A running Job is never preempted, so a long synth or
+  fpga run can delay the session's own work in that slot class. By default
+  at most one `booley ci` Job runs at a time per Project; a Project setting
+  changes that limit.
+- **Verdict.** Locally, `booley ci` produces the same verdict as hosted CI.
+  Projects in stealth mode have no hosted CI, and a failing run after a
+  merge means `main` regressed. An infrastructure error is a CI execution
+  error in both places and fails the run; nothing from that Job is stored.
+- **Hits in a verdict.** Only a verified hit (§6) counts toward a CI
+  verdict. An unverified hit runs fresh, as at Finish (§5), and that run is
+  its verification. Burn-in and sampled re-runs (§6) of an entry whose
+  producer checkout is gone run in a new `booley ci` checkout at the
+  entry's recorded commits.
+- **Relative Criteria** pin the merge-base commit, as the roadmap requires.
+  Locally, a verified entry at that commit serves the baseline: it is a
+  result at the pinned commit, not a comparison with an earlier CI verdict.
+- **Triggers.** Manual, plus a Git `post-merge` hook that a Project setting
+  turns on or off. Booley installs it where Git looks for hooks (`git
+  rev-parse --git-path hooks`, which honours `core.hooksPath`). The hook acts
+  only in the main checkout with `main` checked out, and fills only the new
+  tip, not intermediate commits. A newer fill request replaces a queued
+  older one. A rebase pull or a reset doesn't fire `post-merge`, so those
+  need a manual run. The hook runs on the host and starts `booley ci`
+  through the issued Sandbox, because the cache is unavailable without an
+  issued image (§2).
 - **On a hosted runner** (GitHub Actions), the same engine produces the CI
   verdict and keeps everything the roadmap lists, including failures and
-  large artifacts. Its results don't enter any local cache, because the host
-  id is in the key (§2).
-- **Failures differ.** In hosted CI an infrastructure error fails the run.
-  Locally it is skipped and reported, and nothing is stored.
-- **Relative Criteria** need a baseline at the merge base, usually `main`.
-  Locally that baseline is a hit once `main` has been filled.
+  large artifacts. Its results don't enter any local cache: there is no
+  import path, and the host id is in the key (§2).
 
 Rollout, the per-Flow serving gate and the knob-discovery sources for the
 enumeration test are in the implementation plan.
@@ -349,7 +382,10 @@ Each is bounded by the sampled re-runs (§6) and the kill switch.
   the cache for the Project until a human re-enables it.
 - The Vivado metrics cache is retired, which closes #2051.
 - Handoff hits depend on someone running `booley ci` at the commit, and the
-  cache work is blocked on the `booley ci` engine (§8).
+  cache work is blocked on the `booley ci` engine (§8). They are most
+  reliable in a fresh or cleaned checkout.
+- Background `booley ci` Jobs share the ordinary Job slots and can delay a
+  session's own runs; they are never preempted.
 - Hosted CI results are not reused locally. Reusing them across hosts is
   future work: it needs a host-independent key for image tools and a
   trusted way to import entries.
