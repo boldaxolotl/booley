@@ -742,6 +742,7 @@ async def _codex_run_subprocess(
     stdout_buf = bytearray()
     stderr_buf = bytearray()
     live_usage = CodexLiveUsage(params.model, on_event, session_root)
+    prompt_fed = False
 
     async def _drain_stderr() -> None:
         assert proc.stderr is not None
@@ -752,12 +753,13 @@ async def _codex_run_subprocess(
             stderr_buf.extend(chunk)
 
     async def _stream_and_drain() -> None:
+        nonlocal prompt_fed
         # The child exists: the start is confirmed. Inside the timeout/cancel
         # cleanup of ``_run_codex_work``, so the notice never outlives a kill.
         if on_start is not None:
             on_start()
         assert proc.stdin is not None
-        await _feed_prompt(proc.stdin, full_prompt)
+        prompt_fed = await _feed_prompt(proc.stdin, full_prompt)
 
         stderr_task = asyncio.create_task(_drain_stderr())
         try:
@@ -775,6 +777,12 @@ async def _codex_run_subprocess(
         proc,
         timeout_seconds=params.timeout_seconds,
     )
+    if not prompt_fed and proc.returncode == 0:
+        # A success would answer a truncated prompt; a non-zero exit is
+        # classified from Codex's own output by the caller.
+        raise AgentProviderError(
+            "Codex exited 0 before reading the whole prompt", provider="codex"
+        )
 
     return (
         bytes(stdout_buf).decode("utf-8", errors="replace"),
@@ -783,8 +791,8 @@ async def _codex_run_subprocess(
     )
 
 
-async def _feed_prompt(stdin: asyncio.StreamWriter, prompt: str) -> None:
-    """Write the prompt to Codex's stdin and close it.
+async def _feed_prompt(stdin: asyncio.StreamWriter, prompt: str) -> bool:
+    """Write the prompt to Codex's stdin and close it; return whether it all went.
 
     Codex may exit before reading stdin (a rejected token, a bad config). The
     pipe then breaks mid-write. That is not the failure to report: Codex's own
@@ -797,6 +805,8 @@ async def _feed_prompt(stdin: asyncio.StreamWriter, prompt: str) -> None:
         await stdin.wait_closed()
     except (BrokenPipeError, ConnectionResetError) as exc:
         logger.debug("Codex closed stdin before reading the whole prompt: %r", exc)
+        return False
+    return True
 
 
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:

@@ -8,7 +8,6 @@ the process boundary rather than Booley's internals.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import os
 import subprocess
@@ -136,8 +135,8 @@ def gateway_sandbox(tmp_path, monkeypatch):
     agent_config.set_agent_settings(None)
 
 
-def _params(tmp_path, **overrides):
-    return AgentCallParams(prompt="p", model="gpt-5.5", cwd=str(tmp_path), **overrides)
+def _params(tmp_path, prompt="p", **overrides):
+    return AgentCallParams(prompt=prompt, model="gpt-5.5", cwd=str(tmp_path), **overrides)
 
 
 async def _run_fake_codex(tmp_path, fake, auth_mode="gateway"):
@@ -377,8 +376,8 @@ def _use_token_command(monkeypatch, tmp_path, tokens):
 async def _backend_call(tmp_path, prompt="p"):
     """One real ``CodexBackend.call()`` through the gateway; returns the fake's report."""
     backend = cb.CodexBackend(auth_mode="gateway")
-    params = _params(tmp_path, transcript_path=tmp_path / "transcript.jsonl")
-    result = await backend.call(dataclasses.replace(params, prompt=prompt))
+    params = _params(tmp_path, prompt=prompt, transcript_path=tmp_path / "transcript.jsonl")
+    result = await backend.call(params)
     return json.loads(result.output)
 
 
@@ -414,32 +413,21 @@ async def test_gateway_auth_failure_reruns_token_command_once_and_retries_run(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "prompt",
+    # The fake rejects the token without reading stdin. A prompt larger than
+    # any OS pipe buffer always breaks the pipe mid-write; Booley must still
+    # classify the 401 from Codex's own output.
+    ["p", "x" * (4 * 1024 * 1024)],
+    ids=["short-prompt", "prompt-larger-than-pipe-buffer"],
+)
 async def test_gateway_repeated_auth_failure_stops_after_one_refresh(
-    gateway_sandbox, tmp_path, monkeypatch
+    gateway_sandbox, tmp_path, monkeypatch, prompt
 ):
     _, command_runs, launches = _use_token_command(monkeypatch, tmp_path, [_STALE_TOKEN])
 
     with pytest.raises(agent_errors.AgentAuthError):
-        await _backend_call(tmp_path)
-
-    assert count_runs(command_runs) == 2
-    assert count_runs(launches) == 2
-
-
-@pytest.mark.asyncio
-async def test_codex_exiting_before_reading_the_prompt_reports_its_own_failure(
-    gateway_sandbox, tmp_path, monkeypatch
-):
-    """A Codex that rejects the run before reading stdin closes the prompt pipe.
-
-    The prompt is larger than any OS pipe buffer, so the write cannot finish
-    before the fake exits. Booley must still classify Codex's exit output
-    (here: the 401) instead of surfacing the broken pipe.
-    """
-    _, command_runs, launches = _use_token_command(monkeypatch, tmp_path, [_STALE_TOKEN])
-
-    with pytest.raises(agent_errors.AgentAuthError):
-        await _backend_call(tmp_path, prompt="x" * (4 * 1024 * 1024))
+        await _backend_call(tmp_path, prompt=prompt)
 
     assert count_runs(command_runs) == 2
     assert count_runs(launches) == 2
