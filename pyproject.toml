@@ -65,7 +65,7 @@ dependencies = [
 test = [
     "cryptography==50.0.2",
     "hypothesis>=6.0",
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "pytest-asyncio==1.4.0",
     "pytest-xdist==3.8.0",
     "pytest-timeout==2.4.0",
@@ -84,7 +84,7 @@ dev = [
     # guard and the trusted CI scanner.
     "cryptography==50.0.2",
     "hypothesis>=6.0",
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "pytest-asyncio==1.4.0",
     # Run independent tests concurrently in CI. Linux keeps module/class
     # affinity; Windows uses work stealing to balance slower real-Git tests.
