@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -47,6 +49,11 @@ MCP_PROTOCOL_VERSION = "2026-07-28"
 TOOL_TIMEOUT_SECONDS = 600
 # Bound for detached baseline Jobs to unwind after cancellation.
 BASELINE_STOP_SECONDS = 60
+# A SIGTERM sent before the Job supervisor installs its handler is lost, so the
+# request is repeated; a Job still alive after the escalation point is killed
+# outright (the workspace is disposable, nothing it holds needs a clean unwind).
+BASELINE_RESIGNAL_SECONDS = 5
+BASELINE_KILL_FRACTION = 0.5
 _ENTRY = re.compile(r"^Goal Mode ([A-Za-z0-9-]+) entered in (.+)\.$", re.MULTILINE)
 _EXIT = re.compile(r"EXIT_CODE:\s*(-?\d+)")
 _RUN = re.compile(r"run_id=([^\s)]+)")
@@ -373,8 +380,10 @@ def stop_baseline_jobs(booley_dir: Path, *, timeout_s: float = BASELINE_STOP_SEC
     until it stamps a PID and can be signalled.
     """
     job_roots = [baseline_jobs_dir(booley_dir, family) for family in BASELINE_FAMILIES]
-    deadline = time.monotonic() + timeout_s
-    signalled: set[int] = set()
+    started = time.monotonic()
+    deadline = started + timeout_s
+    kill_at = started + timeout_s * BASELINE_KILL_FRACTION
+    last_signalled: dict[int, float] = {}
     while True:
         active = [
             record
@@ -384,12 +393,26 @@ def stop_baseline_jobs(booley_dir: Path, *, timeout_s: float = BASELINE_STOP_SEC
         ]
         if not active:
             return
+        now = time.monotonic()
         for record in active:
-            if record.pid is not None and record.pid not in signalled:
+            if record.pid is None:
+                continue
+            if now - last_signalled.get(record.pid, -BASELINE_RESIGNAL_SECONDS) < (
+                BASELINE_RESIGNAL_SECONDS
+            ):
+                continue
+            # Always ask politely first; only a Job that already saw SIGTERM is killed.
+            escalate = record.pid in last_signalled and now >= kill_at
+            last_signalled[record.pid] = now
+            group = ProcessGroup(record.pid)
+            if escalate:
+                # The driver runs only in the Linux CI image, so killpg is available.
+                with contextlib.suppress(OSError):
+                    os.killpg(group.id, signal.SIGKILL)
+            else:
                 # The supervisor leads its own process group; SIGTERM unwinds it.
-                request_group_termination(ProcessGroup(record.pid))
-                signalled.add(record.pid)
-        if time.monotonic() >= deadline:
+                request_group_termination(group)
+        if now >= deadline:
             names = ", ".join(sorted(record.run_id for record in active))
             raise GoalDriverError(f"baseline Jobs still running after {timeout_s:g}s: {names}")
         time.sleep(0.2)
