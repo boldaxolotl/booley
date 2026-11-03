@@ -1,6 +1,6 @@
 # Why
 
-[ARCHITECTURE.md](ARCHITECTURE.md) says *what* Booley is and *how* the pieces fit. This document says *why* the load-bearing pieces are the way they are: only the choices that would have produced a fundamentally different framework if made differently, with their costs stated honestly. These don't get revisited without rebuilding.
+[ARCHITECTURE.md](ARCHITECTURE.md) says *what* Booley is and *how* the pieces fit. This document says *why* the load-bearing pieces are the way they are: only the choices that would have produced a fundamentally different product if made differently, with their costs stated honestly. These don't get revisited without rebuilding.
 
 This doc assumes Booley's vocabulary — Target, Booley Flow, Specialist, EDA Provisioning, Goal Mode — rather than redefining it. [GLOSSARY.md](../GLOSSARY.md) is the glossary if a term is unfamiliar; you don't need to read ARCHITECTURE.md first.
 
@@ -30,7 +30,15 @@ VS Code is the interactive front end because it collapses three needs into one p
 - Sandbox sessions for free. The Dev Containers extension makes "open my repo *inside the Booley container*" a trivial, first-class operation. Interactive Mode's whole premise (chat with an agent that lives in the same sandbox the Booley Flows run in) falls out of an extension that already exists, rather than something we had to build.
 - It's a genuinely good editor. Hardware design is not pure delegation: you will read and edit RTL yourself between agent turns, and the agent and the human share one workspace instead of context-switching between EDA tools.
 
-Together these make VS Code the shell of an *agentic RTL IDE*: editor, sandboxed toolchain, and agent in one window. RTL work has never had an IDE. An ASIC engineer today lives in a code editor with a stack of terminals firing heavy EDA tools by hand, and this is where Booley builds one.
+Together these make VS Code the shell of Booley's ADE (below): agent sessions, sandboxed toolchain, and editor in one window. The editor is a pane in that window, not the center of it.
+
+## Why an ADE, not an IDE
+
+An IDE is built around a person typing code; the tools around the editor help that person. Booley's center is different. The Developer Agent writes the RTL and testbenches and drives the EDA tools; the engineer decides what to build, answers the agent's questions, and judges the evidence. Developer tools built that way have started calling themselves *agentic development environments* (ADEs): [Warp](https://www.warp.dev/articles/what-is-an-agentic-development-environment) coined the term for a terminal where agents are first-class, and [Orca](https://www.onorca.dev/) runs a fleet of coding agents in parallel, each in its own git worktree. Booley is an ADE for FPGA and ASIC development.
+
+Hardware changes what an ADE has to supply. A software ADE can trust the compiler and the test runner it finds in the repo. An RTL agent needs a pinned, sandboxed EDA stack, typed Booley Flows instead of hand-run Tcl, waveforms it can query, and acceptance it can't fake: area, timing, cycle counts, and coverage checked by Booley against fresh results. Those pieces are the rest of this document.
+
+The framing also decides what Booley builds next. Product work goes into supervising agents: running several sessions at once, showing Goal and Job progress, and making review fast. It does not go into editor features. VS Code already has a good editor, and an RTL engineer who wants to type the code themselves needs no agent environment for that.
 
 ## Why Goal Mode within Interactive Mode
 

@@ -7,7 +7,7 @@ document: Booley product datasheet
 <!-- Masthead: the part number is the one loud element on the page -->
   <section class="mast" aria-labelledby="part">
     <h1 class="mast__part" id="part">BOOLEY</h1>
-    <p class="mast__title">Open-source agentic RTL IDE for FPGA and ASIC work</p>
+    <p class="mast__title">Open-source Agentic Development Environment (ADE) for FPGA and ASIC work</p>
     <div class="mast__sub">
       <span>Package <strong>booley-rtl</strong> on PyPI. Works with Claude Code or Codex.</span>
     </div>
@@ -16,7 +16,7 @@ document: Booley product datasheet
   <div class="front">
     <section aria-labelledby="description" class="desc">
       <h2 class="sec" id="description"><span class="n">1</span>Description</h2>
-      <p>Booley turns Claude Code or Codex into a capable RTL assistant. It runs the Developer Agent in a sandbox, hands it real EDA tools, and checks its work against your acceptance criteria: passing tests, area and timing budgets, cycle counts, coverage, and more.</p>
+      <p>Booley is an agentic development environment (ADE) for hardware: you direct Claude Code or Codex agents while they do the RTL work. Booley runs each Developer Agent in a sandbox, hands it real EDA tools, and checks its work against your acceptance criteria: passing tests, area and timing budgets, cycle counts, coverage, and more.</p>
     </section>
 
     <div class="order" aria-labelledby="order-h">
@@ -46,8 +46,8 @@ document: Booley product datasheet
           <p>Configure the project once, and its Docker environment supplies the same pinned EDA stack, agent tooling, and system dependencies to everyone on the project (<a href="https://github.com/boldaxolotl/Booley/blob/main/docs/internals/WHY.md#why-docker">why Docker</a>).</p>
         </div>
         <div>
-          <h3>One VS Code window</h3>
-          <p>RTL work is usually scattered across editors, tool-specific commands, build environments, logs, and waveform viewers. Booley puts RTL, agent sessions, terminals, EDA runs, waveforms, and the Booley Dashboard side by side in one VS Code window.</p>
+          <h3>One window for all your agents</h3>
+          <p>RTL work is usually scattered across editors, tool-specific commands, build environments, logs, and waveform viewers. Booley puts your Developer Agent sessions, RTL, terminals, EDA runs, waveforms, and the Booley Dashboard side by side in one VS Code window, so you can direct several agents at once and see what each one is doing.</p>
         </div>
       </div>
       <div class="feat__col">
@@ -298,7 +298,7 @@ document: Booley product datasheet
         <tr><td data-l="Parameter">Architecture and design decisions</td><td data-l="Rating">Made by you</td><td data-l="Notes">Booley will not design hardware for you. You write the architecture and specs; it handles the grunt work.</td></tr>
         <tr><td data-l="Parameter">Operator experience</td><td data-l="Rating">Digital design required</td><td data-l="Notes">Booley assumes you can read RTL, judge a waveform, and know what a sane result looks like.</td></tr>
         <tr><td data-l="Parameter">HDL input</td><td data-l="Rating">SystemVerilog, Verilog</td><td data-l="Notes">VHDL and UVM are not supported.</td></tr>
-        <tr><td data-l="Parameter">IDE shell</td><td data-l="Rating">Stock VS Code</td><td data-l="Notes">No custom editor chrome yet. Native UI is on the <a href="https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ROADMAP.md#native-ide-surface-in-vs-code">roadmap</a>.</td></tr>
+        <tr><td data-l="Parameter">ADE shell</td><td data-l="Rating">Stock VS Code</td><td data-l="Notes">Agent sessions run in VS Code terminals beside the Booley Dashboard. Native agent-supervision UI is on the <a href="https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ROADMAP.md#native-ade-surface">roadmap</a>.</td></tr>
         <tr><td data-l="Parameter">Setup effort</td><td data-l="Rating">Once per project</td><td data-l="Notes">Complex flows or heavy licensed tools may need project-specific work. Every later session builds on it.</td></tr>
         <tr><td data-l="Parameter">Maturity</td><td data-l="Rating">Work in progress</td><td data-l="Notes">Expect occasional bugs and rough edges in the UI.</td></tr>
       </tbody>

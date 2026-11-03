@@ -1,7 +1,8 @@
 # Booley
 
-Booley is a Python framework for agentic FPGA/ASIC development, including
-simulation, synthesis, linting, and ticket workflows.
+Booley is an agentic development environment (ADE) for FPGA and ASIC
+development, written in Python: engineers direct sandboxed Developer Agents
+through simulation, synthesis, linting, and Goal workflows.
 
 ## Repository Rules
 

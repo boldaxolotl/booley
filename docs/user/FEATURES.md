@@ -1,11 +1,11 @@
 # Features
 
-Booley's core move is giving Developer Agents **one consistent interface to the EDA tools** through Booley Flows, the same for Claude Code and Codex and the same across the EDA tools each Flow supports, and wrapping the result in a single VS Code window. That makes Developer Agents more capable, but it also gives the engineer a faster, lower-friction RTL workflow. Every feature below builds on that foundation; the reasoning behind the load-bearing choices is in [WHY.md](../internals/WHY.md).
+Booley's core move is giving Developer Agents **one consistent interface to the EDA tools** through Booley Flows, the same for Claude Code and Codex and the same across the EDA tools each Flow supports, and wrapping the result in an agentic development environment (ADE): one VS Code window where you direct and supervise those agents. That makes Developer Agents more capable, but it also gives the engineer a faster, lower-friction RTL workflow. Every feature below builds on that foundation; the reasoning behind the load-bearing choices is in [WHY.md](../internals/WHY.md).
 
 New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, Target, Goal Mode)? The [context map](../../GLOSSARY-MAP.md) points to each canonical glossary and its rejected synonyms.
 
 - [Same Flows Across Developer Agents and EDA Tools](#same-flows-across-developer-agents-and-eda-tools)
-- [The Agentic RTL IDE](#the-agentic-rtl-ide)
+- [An Agentic Development Environment](#an-agentic-development-environment)
 - [Open Source](#open-source)
 - [Goal Mode](#goal-mode)
 - [Named Targets and Tests](#named-targets-and-tests)
@@ -33,13 +33,18 @@ A Booley Flow (`sim`, `lint`, `synth`, `fpga`) looks the same no matter which De
 
 The [supported EDA tools matrix](SUPPORTED-EDA-TOOLS.md) lists which EDA tools each Flow supports.
 
-## The Agentic RTL IDE
+## An Agentic Development Environment
 
-Booley is not only infrastructure for the Developer Agent. It is workflow infrastructure for the hardware engineer: editor, EDA tools, waveforms, run status, review evidence, and Developer Agent share a single VS Code window.
+An IDE is built around a person editing code. An ADE is built around a person directing agents that edit code. Booley is the second kind, for hardware: the Developer Agent writes RTL and testbenches and runs the EDA tools, and you set the direction, answer its questions, and judge the evidence.
 
-Work interactively through conversation—edit code, run Booley Flows, debug a failure, open a scoped waveform view (`bwave gui`, see [Waveform-Based Debug](#waveform-based-debug))—or let Goal sessions work unattended in container terminals alongside. In either mode, Booley removes the manual transitions among editor, build commands, logs, waveform viewer, and review artifacts. Less time spent on that plumbing means faster iterations and more opportunities to verify, refine, and optimize the design.
+Booley is not only infrastructure for the Developer Agent. It is workflow infrastructure for the hardware engineer: Developer Agent sessions, editor, EDA tools, waveforms, run status, and review evidence share a single VS Code window.
 
-Today that means stock VS Code chrome plus the Developer Agent chat and the Booley Flows it drives; native UI surfaces (Goal status, evidence status, Flow dashboards) are on the [roadmap](../internals/ROADMAP.md#native-ide-surface-in-vs-code), and the long-term direction is Booley as a **standalone agentic IDE**.
+- **Hands-on.** Work through conversation: ask for an edit, run Booley Flows, debug a failure, open a scoped waveform view (`bwave gui`, see [Waveform-Based Debug](#waveform-based-debug)). You can still read and edit RTL yourself between agent turns.
+- **Unattended.** Leave Goal sessions running in container terminals alongside, each on its own branch and worktree ([Parallel Sessions](#parallel-sessions)). The Booley Dashboard shows every session, Goal, and Job; you step in when an agent needs a decision and review the Review Package when it finishes.
+
+In either mode, Booley removes the manual transitions among editor, build commands, logs, waveform viewer, and review artifacts. Less time spent on that plumbing means faster iterations and more opportunities to verify, refine, and optimize the design.
+
+Today the shell is stock VS Code: agent sessions run in its terminals and the Booley Dashboard in its panel. Native agent-supervision UI (Goal status, evidence status, Flow dashboards, one-click review) is on the [roadmap](../internals/ROADMAP.md#native-ade-surface), and the long-term direction is Booley as a **standalone ADE**.
 
 ## Open Source
 

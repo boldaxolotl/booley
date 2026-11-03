@@ -12,8 +12,8 @@ Booley's output. Each item opens with a status tag:
 
 ## Verification Engineering
 
-**Planned.** Booley will grow from an agentic RTL-development framework into a
-tool that serves verification engineers as well as RTL design engineers. The
+**Planned.** Booley will grow from an agentic development environment (ADE) for RTL
+design into one that serves verification engineers as well as RTL design engineers. The
 verification workflow should build on a Project's existing SystemVerilog or
 cocotb environment and carry work from test execution through reproducible,
 machine-checkable evidence rather than treating the testbench only as support
@@ -283,8 +283,8 @@ from the agent:
 - A content-free mode ("Booley needs you") suits Projects whose names are
   confidential.
 
-## Native IDE Surface in VS Code
+## Native ADE Surface
 
-**Planned.** Booley turns VS Code into an *agentic RTL IDE*, but today that means the agent chat plus the Booley Flows it drives; the editor chrome itself is stock VS Code. The next step toward the framing is native UI that lives in the VS Code chrome rather than the terminal: a ticket/run panel, inline acceptance-criterion status, a Flow-run dashboard, and one-click waveform open. That turns "IDE" from an analogy into visible product.
+**Planned.** Booley is an agentic development environment, but today its agent-facing chrome is thin: Developer Agent sessions run in VS Code terminals, and the Booley Dashboard is the one native view of sessions, Goals, and Jobs. The next step is UI for supervising agents rather than editing code: a session and Goal panel, inline Goal and evidence status, a Flow-run view, one-click waveform open, and a review view for Review Packages. That turns "ADE" from a description into visible product.
 
-The end state of this direction is Booley as a **standalone agentic IDE**: a VS Code fork where the agentic RTL workflow *is* the product rather than an extension bolted onto someone else's editor. That's a long way off; the extension-based surface above is the path there.
+The end state of this direction is Booley as a **standalone ADE**: an app built around running and reviewing Developer Agent sessions, with the editor as one pane among many. Whether it embeds VS Code, forks it, or uses a lighter editor is open. That's a long way off; the VS Code-based surface above is the path there.
