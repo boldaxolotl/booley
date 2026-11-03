@@ -544,7 +544,10 @@ def test_stop_baseline_jobs_kills_a_job_that_ignores_termination(tmp_path, monke
     monkeypatch.setattr(driver.job_records, "list_records", lambda _root: [stuck])
     monkeypatch.setattr(driver.job_records, "is_active", lambda *_a: not killed)
     monkeypatch.setattr(driver, "request_group_termination", lambda _group: None)
-    monkeypatch.setattr(driver.os, "killpg", lambda pgid, sig: killed.append((pgid, sig)))
+    # os.killpg does not exist on Windows; the stub makes the test platform-neutral.
+    monkeypatch.setattr(
+        driver.os, "killpg", lambda pgid, sig: killed.append((pgid, sig)), raising=False
+    )
 
     driver.stop_baseline_jobs(tmp_path, timeout_s=10)
 
