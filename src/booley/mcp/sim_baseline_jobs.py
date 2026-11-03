@@ -254,9 +254,19 @@ def _reconcile_request(path: Path) -> None:
         reap_owned_checkout(request, job.pid)
 
 
+class BaselineCancelled(BaseException):
+    """A graceful Job cancellation (SIGTERM), unwinding owned checkout/child contexts.
+
+    A ``BaseException`` like ``KeyboardInterrupt``: a step that maps ``OSError``
+    or ``Exception`` to a soft failure, such as the post-setup hook's
+    subprocess wrapper, must not swallow it and let the Job go on to run its
+    simulator (#2656).
+    """
+
+
 def _cancel(_signal: int, _frame: object) -> None:
     """Unwind owned checkout/child contexts on a graceful Job cancellation."""
-    raise InterruptedError("baseline Job cancelled")
+    raise BaselineCancelled("baseline Job cancelled")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -297,7 +307,13 @@ def main(argv: list[str] | None = None) -> int:
         else:
             write_document(path, request | {"status": "complete", "results": results})
             job.status, job.exit_code = job_records.STATUS_DONE, 0
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+    except (
+        BaselineCancelled,
+        OSError,
+        ValueError,
+        RuntimeError,
+        subprocess.SubprocessError,
+    ) as exc:
         write_document(
             path, request | {"status": "unavailable", "reason": f"baseline unavailable: {exc}"}
         )
