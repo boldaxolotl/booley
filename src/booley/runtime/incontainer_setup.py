@@ -153,9 +153,10 @@ def desired_claude_entry() -> dict:
     # cap — without it Claude Code kills a call at 60s (measured on 2.1.205,
     # ADR 0027 amendment 2026-07-09), which is what forced 50s poll waits.
     # Belt-and-braces with the image-level MCP_TOOL_TIMEOUT ENV; same 2h as
-    # the Codex tool_timeout_sec below. The registration cannot stop Claude
-    # Code from auto-backgrounding a long call (120s by default); the image
-    # ENV CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS does that.
+    # the Codex tool_timeout_sec below. It also raises Claude Code's 300s
+    # no-progress idle timeout for HTTP servers. It cannot stop Claude Code
+    # from auto-backgrounding a long call (120s by default); the image ENV
+    # CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS does that.
     return {"type": "http", "url": http_url(), "timeout": _TOOL_TIMEOUT_SEC * 1000}
 
 

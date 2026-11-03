@@ -202,18 +202,20 @@ def test_claude_code_mcp_limits_outlast_booley_wait_windows() -> None:
     server-side wait (inline wait and the booley_poll ``wait_seconds`` cap).
     """
     from booley.mcp import catalog, server
+    from booley.runtime import incontainer_setup
 
     longest_wait_ms = 1000 * max(
         server._DEFAULT_JOB_INLINE_WAIT_SECONDS,
         catalog._DEFAULT_JOB_POLL_WAIT_SECONDS,
         server._POLL_WAIT_SECONDS_MAX,
     )
-    assert _base_env("MCP_TOOL_TIMEOUT") == 7_200_000
-    auto_background_ms = _base_env("CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS")
-    assert auto_background_ms == 7_200_000
-    assert auto_background_ms > longest_wait_ms
-    # Claude Code clamps the setting to a 32-bit signed timer ceiling.
-    assert auto_background_ms <= 2**31 - 1
+    # One 2h client cap everywhere: image ENVs and the registrar's per-server timeout.
+    registrar_timeout_ms = incontainer_setup.desired_claude_entry()["timeout"]
+    assert _base_env("MCP_TOOL_TIMEOUT") == registrar_timeout_ms
+    assert _base_env("CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS") == registrar_timeout_ms
+    assert registrar_timeout_ms > longest_wait_ms
+    # Claude Code clamps both settings to a 32-bit signed timer ceiling.
+    assert registrar_timeout_ms <= 2**31 - 1
 
 
 def test_bwave_runtime_paths_are_created_as_one_layer_hard_links() -> None:
