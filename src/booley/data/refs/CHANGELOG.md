@@ -9,6 +9,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley doctor` now ends with one bold verdict line: all clear, the number of
+  warnings to resolve or waive, or the number of failures to fix. A clean
+  run's "no failures or warnings" line is bold green.
 - Goal Mode now takes two invocations. `/booley-goal <request>` sets up the
   Goals and stops after entry; clear the chat, then type `/booley-goal start`
   to do the work (`$booley-goal` in Codex). `/booley-goal start` also
