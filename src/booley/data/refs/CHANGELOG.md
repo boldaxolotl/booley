@@ -92,8 +92,8 @@ can try Booley in a browser through a free GitHub Codespaces demo.
 - **booley.dev.** Booley has a project site at <https://booley.dev/> with
   Demos and Videos pages, a blog, and application note AN-001, "Same AI agent,
   same chip bug: 56 minutes with a shell, 21 with the right tools". The user
-  docs live at <https://booley.dev/docs/>, split into smaller pages with
-  search (press `/`), an "On this page" outline and light and dark themes.
+  docs live there too, split into smaller pages with search (press `/`), an
+  "On this page" outline and light and dark themes.
   Links Booley prints, the README and PyPI point there. Old
   `boldaxolotl.github.io/booley/` links redirect; links into a section that
   moved open its old page.
