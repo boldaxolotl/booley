@@ -183,7 +183,9 @@ _ASYNC_JOB_MCP_TOOLS = frozenset(
 # cache read. Do not raise past ~270s: besides the per-poll cache miss, the
 # client's HTTP layer kills a header-less (json_response=True) request at
 # ~300s no matter what the MCP-tool timeout is set to — see
-# _POLL_WAIT_SECONDS_MAX.
+# _POLL_WAIT_SECONDS_MAX. Interactive Claude Code also moves an MCP call to the
+# background after 120s by default; the image ENV
+# CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS lifts that past this wait (issue #2627).
 _DEFAULT_JOB_INLINE_WAIT_SECONDS = 240.0
 
 # Interactive MCP servers are Docker containers spawned by Codex/Claude tabs.
@@ -882,6 +884,8 @@ def _job_poll_wait_seconds() -> float:
 # 295s, ADR 0027 amendment 2026-07-09) regardless of MCP_TOOL_TIMEOUT. 270s
 # stays under that with margin — and also inside the Anthropic prompt-cache
 # TTL, so even a max-length poll costs the caller only a cheap cache read.
+# Claude Code's 120s default auto-background limit would cut a poll short too;
+# the image ENV CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS must stay above this ceiling.
 _POLL_WAIT_SECONDS_MAX = 270
 
 
