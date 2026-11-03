@@ -50,12 +50,14 @@ END_EVENT = "SessionEnd"
 ENDED = "ended"
 # The only Claude Code notifications that mean "waiting for the user".
 WAITING_NOTIFICATIONS = frozenset({"idle_prompt", "permission_prompt", "elicitation_dialog"})
-# Claude Code's Stop lists in-flight background work (a backgrounded MCP call,
-# shell, subagent, ...) as ``background_tasks``; the client resumes the turn
-# when that work finishes, so the session waits for it, not for the user.
+# Claude Code's Stop lists in-flight background work as ``background_tasks``.
+# These task types are finite work whose result resumes the turn, so the
+# session waits for them, not for the user. Shells and monitors are left out:
+# a dev server or log watcher may run for the whole session.
+AWAITED_TASK_TYPES = frozenset({"MCP task", "subagent", "workflow"})
 STOP_EVENT = "Stop"
+NOTIFICATION_EVENT = "Notification"
 IDLE_NOTIFICATION = "idle_prompt"
-BACKGROUND_LABEL = "background task"
 CLIENT_COMMAND = "claude"
 
 MAX_PAYLOAD_BYTES = 8 * 1024 * 1024
@@ -210,20 +212,23 @@ def _codex_chat_key(project: Path, proc_root: Path, pid: int) -> str | None:
 
 
 def _background_wait(payload: Mapping[str, object]) -> str:
-    """Label of the background work a Stop leaves in flight, or "" when there is none.
+    """Label of the awaited background work a Stop leaves in flight, or "".
 
-    The first task names the wait: an MCP task by its tool, anything else by its
-    type. Further tasks only add a count. Unusable client text falls back to a
-    generic label; it is presentation, never identity.
+    The first awaited task names the wait: by its tool when that is usable
+    text, otherwise by its type. Further awaited tasks only add a count.
     """
     tasks = payload.get("background_tasks")
-    if not isinstance(tasks, list) or not tasks:
+    awaited = [
+        task
+        for task in (tasks if isinstance(tasks, list) else [])
+        if isinstance(task, dict) and task.get("type") in AWAITED_TASK_TYPES
+    ]
+    if not awaited:
         return ""
-    first = tasks[0] if isinstance(tasks[0], dict) else {}
-    label = first.get("tool") or first.get("type")
-    if not isinstance(label, str) or not label.isprintable():
-        label = BACKGROUND_LABEL
-    more = f" +{len(tasks) - 1}" if len(tasks) > 1 else ""
+    label = awaited[0].get("tool")
+    if not isinstance(label, str) or not label or not label.isprintable():
+        label = awaited[0]["type"]
+    more = f" +{len(awaited) - 1}" if len(awaited) > 1 else ""
     return label[: MAX_TOOL_NAME - len(more)] + more
 
 
@@ -326,7 +331,7 @@ def _record_state(
     if waiting_on:
         _write(root, key, WAITING_TOOL, waiting_on, now, background=True)
         return True
-    idle = event == "Notification" and payload.get("notification_type") == IDLE_NOTIFICATION
+    idle = event == NOTIFICATION_EVENT and payload.get("notification_type") == IDLE_NOTIFICATION
     if idle and _waits_in_background(root, key):
         return False  # The turn ended earlier with background work still running.
     state = EVENT_STATES[event]

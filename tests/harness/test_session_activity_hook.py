@@ -499,46 +499,58 @@ def test_session_end_writes_the_end_marker_the_package_reads(tmp_path, client):
 
 def test_a_stop_that_leaves_background_work_waits_for_it_not_for_the_user(tmp_path):
     """Claude Code resumes the turn itself when a backgrounded MCP call returns."""
-    reviewer = {"id": "k1", "type": "MCP task", "status": "running", "server": "booley"}
-    stop = {
-        "hook_event_name": "Stop",
-        "session_id": "t",
-        "background_tasks": [{**reviewer, "tool": "reviewer"}],
-    }
-    assert hook.record("codex", stop, project=tmp_path, now=NOW)
-    signal = ActivityStore(tmp_path).read("codex:t")
+    proc = proc_tree(tmp_path / "proc", CHAIN)
+    project = tmp_path / "project"
+    key = claude_key(proc, 300)
+
+    def record(payload, at):
+        env = {"CLAUDE_PID": "300"}
+        return hook.record("claude", payload, project, at, env=env, proc_root=proc, pid=500)
+
+    reviewer = {"id": "k1", "type": "MCP task", "status": "running", "tool": "reviewer"}
+    stop = {"hook_event_name": "Stop", "background_tasks": [reviewer]}
+    assert record(stop, NOW)
+    signal = ActivityStore(project).read(key)
     assert (signal.state, signal.tool) == (activity.WAITING_TOOL, "reviewer")
     # The idle prompt ~60 s after the turn ended is not a question to the user.
-    idle = {
-        "hook_event_name": "Notification",
-        "session_id": "t",
-        "notification_type": "idle_prompt",
-    }
-    assert not hook.record("codex", idle, project=tmp_path, now=NOW + 60)
-    assert ActivityStore(tmp_path).read("codex:t").state == activity.WAITING_TOOL
-    # A Stop with nothing left in flight, then idle, does wait for the user.
-    assert hook.record("codex", {**stop, "background_tasks": []}, project=tmp_path, now=NOW + 61)
-    assert hook.record("codex", idle, project=tmp_path, now=NOW + 121)
-    assert ActivityStore(tmp_path).read("codex:t").state == activity.WAITING_USER
+    idle = {"hook_event_name": "Notification", "notification_type": "idle_prompt"}
+    assert not record(idle, NOW + 60)
+    assert ActivityStore(project).read(key).state == activity.WAITING_TOOL
+    # A Stop with nothing awaited left in flight, then idle, does wait for the user.
+    assert record({**stop, "background_tasks": []}, NOW + 61)
+    assert record(idle, NOW + 121)
+    assert ActivityStore(project).read(key).state == activity.WAITING_USER
 
 
 @pytest.mark.parametrize(
-    ("tasks", "label"),
+    ("tasks", "state", "label"),
     [
-        ([{"type": "MCP task", "tool": "reviewer"}, {"type": "shell"}], "reviewer +1"),
-        ([{"type": "shell", "command": "make sim"}], "shell"),
-        ([{"type": "MCP task", "tool": "bad\x1bname"}], "background task"),
-        (["not an object"], "background task"),
+        (
+            [{"type": "MCP task", "tool": "reviewer"}, {"type": "shell"}, {"type": "subagent"}],
+            activity.WAITING_TOOL,
+            "reviewer +1",
+        ),
+        ([{"type": "MCP task", "tool": "bad\x1bname"}], activity.WAITING_TOOL, "MCP task"),
+        ([{"type": "MCP task", "tool": ""}], activity.WAITING_TOOL, "MCP task"),
+        # A dev server or log watcher may outlive the session; it is not awaited.
+        (
+            [{"type": "shell", "command": "npm run dev"}, {"type": "monitor"}],
+            activity.WAITING_USER,
+            "",
+        ),
+        (["not an object"], activity.WAITING_USER, ""),
     ],
 )
-def test_background_wait_labels_are_bounded_client_text(tmp_path, tasks, label):
+def test_only_awaited_background_work_defers_the_user(tmp_path, tasks, state, label):
     stop = {"hook_event_name": "Stop", "session_id": "t", "background_tasks": tasks}
     assert hook.record("codex", stop, project=tmp_path, now=NOW)
-    assert ActivityStore(tmp_path).read("codex:t").tool == label
+    signal = ActivityStore(tmp_path).read("codex:t")
+    assert (signal.state, signal.tool) == (state, label)
 
 
 def test_a_question_replaces_a_background_wait(tmp_path):
-    stop = {"hook_event_name": "Stop", "session_id": "t", "background_tasks": [{"type": "shell"}]}
+    awaited = [{"type": "subagent"}]
+    stop = {"hook_event_name": "Stop", "session_id": "t", "background_tasks": awaited}
     assert hook.record("codex", stop, project=tmp_path, now=NOW)
     asking = {"hook_event_name": "PermissionRequest", "session_id": "t", "tool_name": "Bash"}
     assert hook.record("codex", asking, project=tmp_path, now=NOW + 1)
