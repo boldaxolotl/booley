@@ -28,7 +28,7 @@ from booley.dev_support.test_profiles import BWAVE_BUILD, native_test_problem
 
 SCHEMA_VERSION = 1
 PINNED_RUNNERS = {
-    "pytest": "9.1.1",
+    "pytest": "9.2.0",
     "pytest-asyncio": "1.4.0",
     "pytest-xdist": "3.8.0",
     "pytest-timeout": "2.4.0",
