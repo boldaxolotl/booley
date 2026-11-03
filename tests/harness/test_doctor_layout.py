@@ -98,6 +98,38 @@ def _finish_with(capsys, monkeypatch, *, fail: int = 0, warn: int = 0, extra: bo
     return exit_code, capsys.readouterr().out.splitlines()
 
 
+@pytest.mark.parametrize(
+    ("fail", "warn", "verdict"),
+    [
+        (0, 0, "  ✓ All clear. Booley is ready to use."),
+        (
+            0,
+            2,
+            "  ! 2 warnings. Resolve or explicitly waive every warning before calling setup clean.",
+        ),
+        (1, 1, "  ✗ 1 failure. Fix every failure before using Booley."),
+        (2, 0, "  ✗ 2 failures. Fix every failure before using Booley."),
+    ],
+)
+def test_finish_ends_with_one_verdict_line(fail, warn, verdict, capsys, monkeypatch):
+    # The outcome is the last line, after a blank one, so it stands apart from
+    # the check rows and the counts table.
+    _, lines = _finish_with(capsys, monkeypatch, fail=fail, warn=warn)
+    assert lines[-2:] == ["", verdict]
+
+
+def test_clean_verdict_and_summary_line_are_bold_green(capsys, monkeypatch):
+    _finish_with(capsys, monkeypatch)  # disables colors; turn them back on below
+    monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+    reporter = doctor._Reporter.create()
+    reporter.pass_("fine")
+    capsys.readouterr()
+    reporter.finish()
+    out = capsys.readouterr().out
+    assert colors.bold_green("no failures or warnings") in out
+    assert out.rstrip("\n").endswith(colors.bold_green("  ✓ All clear. Booley is ready to use."))
+
+
 @pytest.mark.parametrize("scenario", ["problems", "clean"])
 def test_finish_prints_problem_table_and_counts(scenario, capsys, monkeypatch):
     fails, warns = (1, 1) if scenario == "problems" else (0, 0)

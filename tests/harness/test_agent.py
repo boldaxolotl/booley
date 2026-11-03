@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 import logging
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,7 +25,7 @@ from booley.runtime.agent import (
     call_agent,
     extract_json,
 )
-from booley.runtime.agent_errors import AgentTimeoutError, TransientAPIError
+from booley.runtime.agent_errors import AgentProviderError, AgentTimeoutError, TransientAPIError
 
 
 def test_agent_notice_names_role_and_purpose_on_stderr(capsys):
@@ -373,6 +374,33 @@ class TestCodexBackend:
 
         process.kill.assert_called_once_with()
         process.wait.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_success_after_reading_part_of_the_prompt_is_a_failure(self, tmp_path: Path):
+        """Exit 0 after a broken prompt pipe would answer a truncated prompt."""
+        params = AgentCallParams(prompt="task", model="gpt-5", cwd=tmp_path)
+        reads_a_little = "import sys; sys.stdin.buffer.read(100); print('ok')"
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            reads_a_little,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        larger_than_pipe_buffer = "x" * (4 * 1024 * 1024)
+
+        with (
+            patch(
+                "booley.runtime._codex_backend._codex_spawn",
+                new_callable=AsyncMock,
+                return_value=(process, tmp_path),
+            ),
+            pytest.raises(AgentProviderError, match="before reading the whole prompt"),
+        ):
+            await _codex_run_subprocess(
+                [], params, full_prompt=larger_than_pipe_buffer, on_event=None
+            )
 
     @pytest.mark.asyncio
     async def test_external_cancellation_kills_codex_process(self, tmp_path: Path):
