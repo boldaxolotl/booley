@@ -17,7 +17,7 @@ document: Free browser demo
     <li>The Codespace runs on your GitHub account's free monthly Codespaces allowance. The first launch takes 3-4 minutes while the container image builds.</li>
     <li>The agent runs OpenAI's GPT-6 Luna through the Booley demo gateway, on the Booley maintainer's account. You run <code>booley-demo-claim</code> in a terminal: it shows a short notice, you agree and sign in with GitHub to get a demo token. The gateway logs usage numbers, never your prompts or code.</li>
     <li>Each GitHub account gets $1 of demo usage per month.</li>
-    <li><a href="https://github.com/boldaxolotl/booley-prj-picorv32/blob/main/CODESPACES.md">CODESPACES.md</a> opens in the Codespace and walks you through the rest.</li>
+    <li><a href="https://github.com/boldaxolotl/booley-prj-picorv32/blob/main/START-HERE.md">START-HERE.md</a> opens in the Codespace and walks you through the rest.</li>
   </ul>
 </section>
 
@@ -28,5 +28,5 @@ document: Free browser demo
 codex login --device-auth</code></pre>
   <p>Then switch Booley to your account (with both signed in, it picks Claude Code):</p>
   <pre><code>python -m booley.harness.incontainer_register</code></pre>
-  <p>CODESPACES.md has the <a href="https://github.com/boldaxolotl/booley-prj-picorv32/blob/main/CODESPACES.md#or-use-your-own-claude-or-chatgpt-account">step-by-step sign-in</a>. To run Booley on your own machine instead, see the <a href="../docs/install/">Install guide</a>.</p>
+  <p>START-HERE.md has the <a href="https://github.com/boldaxolotl/booley-prj-picorv32/blob/main/START-HERE.md#or-use-your-own-claude-or-chatgpt-account">step-by-step sign-in</a>. To run Booley on your own machine instead, see the <a href="../docs/install/">Install guide</a>.</p>
 </section>
