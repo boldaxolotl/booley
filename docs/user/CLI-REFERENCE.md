@@ -318,6 +318,7 @@ stops with exit code 2 and lists them. A resumed simulation (`--resume-from`) ke
 run it resumes. Runs you start yourself never count as Goal evidence.
 
 Options, exit codes, and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md);
+Specialists in [SPECIALISTS.md](SPECIALISTS.md);
 coverage runs and the Coverage Analyst in [COVERAGE.md](COVERAGE.md).
 
 If a command misbehaves or this page is wrong, see
