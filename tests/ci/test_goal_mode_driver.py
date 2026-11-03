@@ -506,3 +506,46 @@ def test_stop_baseline_jobs_reports_jobs_that_outlive_the_bound(tmp_path, monkey
     with pytest.raises(driver.GoalDriverError, match="sim-baseline-stuck"):
         driver.stop_baseline_jobs(tmp_path, timeout_s=0)
     assert signalled == [driver.ProcessGroup(4242)]
+
+
+def test_stop_baseline_jobs_repeats_termination_a_lost_signal_would_miss(
+    tmp_path, monkeypatch
+) -> None:
+    """A SIGTERM sent before the supervisor installs its handler is retried."""
+    from booley.runtime import job_records
+
+    stuck = job_records.JobRecord("sim-baseline-stuck", "sim_baseline", "now", 60, pid=4242)
+    signalled: list[driver.ProcessGroup] = []
+    clock = iter(range(0, 1000))
+    monkeypatch.setattr(driver.time, "monotonic", lambda: float(next(clock)))
+    monkeypatch.setattr(driver.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(driver, "BASELINE_RESIGNAL_SECONDS", 2)
+    monkeypatch.setattr(driver, "BASELINE_KILL_FRACTION", 1.0)
+    monkeypatch.setattr(driver.job_records, "list_records", lambda _root: [stuck])
+    # The Job only dies on its second termination request.
+    monkeypatch.setattr(driver.job_records, "is_active", lambda *_a: len(signalled) < 2)
+    monkeypatch.setattr(driver, "request_group_termination", signalled.append)
+
+    driver.stop_baseline_jobs(tmp_path, timeout_s=100)
+
+    assert signalled == [driver.ProcessGroup(4242)] * 2
+
+
+def test_stop_baseline_jobs_kills_a_job_that_ignores_termination(tmp_path, monkeypatch) -> None:
+    """A Job still alive past the escalation point is killed, not waited on."""
+    from booley.runtime import job_records
+
+    stuck = job_records.JobRecord("sim-baseline-stuck", "sim_baseline", "now", 60, pid=4242)
+    killed: list[tuple[int, int]] = []
+    clock = iter(range(0, 1000))
+    monkeypatch.setattr(driver.time, "monotonic", lambda: float(next(clock)))
+    monkeypatch.setattr(driver.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(driver, "BASELINE_RESIGNAL_SECONDS", 1)
+    monkeypatch.setattr(driver.job_records, "list_records", lambda _root: [stuck])
+    monkeypatch.setattr(driver.job_records, "is_active", lambda *_a: not killed)
+    monkeypatch.setattr(driver, "request_group_termination", lambda _group: None)
+    monkeypatch.setattr(driver.os, "killpg", lambda pgid, sig: killed.append((pgid, sig)))
+
+    driver.stop_baseline_jobs(tmp_path, timeout_s=10)
+
+    assert killed == [(4242, driver.signal.SIGKILL)]
