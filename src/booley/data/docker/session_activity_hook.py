@@ -50,6 +50,14 @@ END_EVENT = "SessionEnd"
 ENDED = "ended"
 # The only Claude Code notifications that mean "waiting for the user".
 WAITING_NOTIFICATIONS = frozenset({"idle_prompt", "permission_prompt", "elicitation_dialog"})
+# Claude Code's Stop lists in-flight background work as ``background_tasks``.
+# These task types are finite work whose result resumes the turn, so the
+# session waits for them, not for the user. Shells and monitors are left out:
+# a dev server or log watcher may run for the whole session.
+AWAITED_TASK_TYPES = frozenset({"MCP task", "subagent", "workflow"})
+STOP_EVENT = "Stop"
+NOTIFICATION_EVENT = "Notification"
+IDLE_NOTIFICATION = "idle_prompt"
 CLIENT_COMMAND = "claude"
 
 MAX_PAYLOAD_BYTES = 8 * 1024 * 1024
@@ -203,7 +211,43 @@ def _codex_chat_key(project: Path, proc_root: Path, pid: int) -> str | None:
     return None
 
 
-def _write(root: Path, key: str, state: str, tool: str, now: float) -> None:
+def _background_wait(payload: Mapping[str, object]) -> str:
+    """Label of the awaited background work a Stop leaves in flight, or "".
+
+    The first awaited task names the wait: by its tool when that is usable
+    text, otherwise by its type. Further awaited tasks only add a count.
+    """
+    tasks = payload.get("background_tasks")
+    awaited = [
+        task
+        for task in (tasks if isinstance(tasks, list) else [])
+        if isinstance(task, dict) and task.get("type") in AWAITED_TASK_TYPES
+    ]
+    if not awaited:
+        return ""
+    label = awaited[0].get("tool")
+    if not isinstance(label, str) or not label or not label.isprintable():
+        label = awaited[0]["type"]
+    more = f" +{len(awaited) - 1}" if len(awaited) > 1 else ""
+    return label[: MAX_TOOL_NAME - len(more)] + more
+
+
+def _waits_in_background(root: Path, key: str) -> bool:
+    """Whether the session's current signal is a Stop that left background work."""
+    path = root / _signal_filename(key)
+    try:
+        if path.is_symlink():
+            return False
+        with path.open("rb") as stream:
+            data = json.loads(stream.read(4096))
+    except (OSError, ValueError, UnicodeError):
+        return False
+    return isinstance(data, dict) and data.get("background") is True
+
+
+def _write(
+    root: Path, key: str, state: str, tool: str, now: float, *, background: bool = False
+) -> None:
     """Publish the session's signal with one atomic replacement."""
     root.mkdir(parents=True, exist_ok=True)
     path = root / _signal_filename(key)
@@ -221,6 +265,8 @@ def _write(root: Path, key: str, state: str, tool: str, now: float) -> None:
     }
     if tool:
         signal["tool"] = tool
+    if background:
+        signal["background"] = True
     # One staging name per process; the dot prefix and suffix keep it out of every reader.
     # No fsync: a signal lost to a crash only shows as unknown until the next event.
     temporary = root / f".{path.name}.{os.getpid()}.tmp"
@@ -274,6 +320,20 @@ def record(
     if event == END_EVENT:
         _write(root, key, ENDED, "", now)
         return True
+    return _record_state(root, key, event, payload, now)
+
+
+def _record_state(
+    root: Path, key: str, event: str, payload: Mapping[str, object], now: float
+) -> bool:
+    """Store the activity state one event means. Returns whether the store changed."""
+    waiting_on = _background_wait(payload) if event == STOP_EVENT else ""
+    if waiting_on:
+        _write(root, key, WAITING_TOOL, waiting_on, now, background=True)
+        return True
+    idle = event == NOTIFICATION_EVENT and payload.get("notification_type") == IDLE_NOTIFICATION
+    if idle and _waits_in_background(root, key):
+        return False  # The turn ended earlier with background work still running.
     state = EVENT_STATES[event]
     tool = payload.get("tool_name")
     named = state == WAITING_TOOL and isinstance(tool, str) and tool.isprintable()
