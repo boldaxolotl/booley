@@ -8,6 +8,11 @@ The writer is the standalone hook script the Sandbox Image installs
 (``booley/data/docker/session_activity_hook.py``); it cannot import this
 package, so it repeats the event table, key formats and file layout below.
 
+A Claude Code ``Stop`` that leaves awaited background work in flight (its
+``background_tasks``) is stored as waiting for a tool call with
+``background: true``; readers ignore that field, and only the hook uses it to
+keep a later idle notification from overwriting the wait.
+
 ``SessionEnd`` replaces the session's signal with an end marker: the same file
 and layout with state ``ended``. A marker is not activity (``read`` ignores
 it); the Session Registry uses it to hide and prune the session's row.
