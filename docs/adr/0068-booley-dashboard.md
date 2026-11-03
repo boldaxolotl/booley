@@ -400,3 +400,16 @@ Consequences:
 - A `worktree:` fallback row created by a real tool call cannot be ended by a hook and still waits out `quiet_after`.
 - Doctor's `goals.quiet-session` check does not read markers. Once maintenance prunes an ended row, it can warn within about a minute of `SessionEnd` instead of after `quiet_after`; the warning already says it is not evidence of abandonment.
 - Accepted inaccuracies: a tool call still in flight when `SessionEnd` fires moves `last_call_at` past the marker when it completes, and a still-running earlier hook (`Stop`) that finishes after `SessionEnd` replaces the marker. In both cases the row waits out `quiet_after`. A full activity store (`MAX_SIGNALS`) drops a `SessionEnd` for a key with no signal, which falls back the same way.
+
+## Amendments (2026-11-03): Background work after `Stop`
+
+A Goal Mode session that ended its turn while Claude Code ran a Booley Reviewer call in the background showed waiting for user input, although Claude Code resumes the turn on its own when that call returns. Claude Code's `Stop` input lists in-flight work as `background_tasks` (MCP tasks, shells, subagents, monitors, workflows, and others). This amendment supersedes the 2026-10-11 Event mapping rule "`Stop` means waiting for user input" for a `Stop` that lists background work.
+
+- **A `Stop` with awaited background work waits for it.** A `Stop` whose `background_tasks` holds an MCP task, subagent or workflow means waiting for tool call: finite work whose result resumes the turn. Shell and monitor tasks are not awaited, because a dev server or log watcher may run for the whole session. The signal names the first awaited task (by its tool when that is usable text, otherwise by its type) with `+N` for further awaited tasks, and carries `background: true`. A `Stop` without awaited background work, which includes every Codex `Stop` (Codex sends no `background_tasks`), still means waiting for user input. `session_crons` is not read: a scheduled wakeup may be hours away. This is still a client report: the Dashboard infers nothing from Booley calls or running Jobs.
+- **The idle prompt does not end the wait.** The `idle_prompt` notification, sent about 60 s after a turn ends, is ignored while the session's signal carries `background: true`. A permission prompt, elicitation or any other event replaces the signal as before.
+- **Freshness.** A background wait is a busy state, so it becomes unknown after 7200 s without a new event, like any other wait for a tool call.
+
+Consequences:
+
+- A background shell the agent does wait for, such as a test run, still shows waiting for user input after `Stop`.
+- The hook ships in the Sandbox Image; a session running an older image keeps the previous mapping until the image is rebuilt.
