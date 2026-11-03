@@ -224,11 +224,37 @@ def _resource_text(resources: Resources) -> Text:
     return text
 
 
+# Accents for the orientation header, so its facts do not read as one plain block.
+_ORIENTATION_ACCENTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r" · "), "dim"),
+    (re.compile(r"(?<![\w])connected\b"), "green"),
+    (re.compile(r"\bdisconnected\b|\blast seen\b"), SEMANTIC_STYLE["attention"]),
+    (re.compile(r"^Waiting for user input\b", re.M), "bold " + SEMANTIC_STYLE["attention"]),
+    (re.compile(r"^(?:Working|Waiting for tool call)\b[^·\n]*", re.M), _ACCENT),
+    (re.compile(r"^Activity unknown\b", re.M), "dim"),
+    (re.compile(r"WARNING: shared worktree|Shared-worktree attribution unavailable"), "yellow"),
+    (re.compile(r"^(?:Last Booley call|Session key):", re.M), _CHROME),
+    (re.compile(r"(?<=^Last Booley call: )[^ ·\n]+", re.M), _ACCENT),
+    (re.compile(r"(?<=^Session key: ).+", re.M), "dim"),
+)
+
+
 def _orientation_text(orientation: str) -> Text:
-    title, separator, details = orientation.partition("\n")
-    text = Text(title, style="bold " + _ACCENT)
-    # Keep detail lines outside the title's base style.
-    return Text.assemble(text, separator + details)
+    """Bold the title line, accent labels and states, and show Markdown headings as headings."""
+    text = Text()
+    for index, line in enumerate(orientation.split("\n")):
+        if index:
+            text.append("\n")
+        if index == 0:
+            text.append(line, style="bold " + _ACCENT)
+        elif line.startswith("## "):
+            # The Goal's terminal summary is Markdown; its headings become section labels.
+            text.append(line.removeprefix("## "), style="bold " + _CHROME)
+        else:
+            text.append(line)
+    for pattern, style in _ORIENTATION_ACCENTS:
+        text.highlight_regex(pattern, style=style)
+    return text
 
 
 def _health_text(snapshot: DashboardSnapshot) -> Text:
@@ -270,6 +296,15 @@ def _notices_text(snapshot: DashboardSnapshot) -> Text:
             text.append("\n")
         text.append(diagnostic)
     return text
+
+
+def _activity_text(line: str) -> Text:
+    """One Activity row: the row kind muted, the rest plain, a pending proposal flagged."""
+    kind, separator, rest = line.partition(": ")
+    if not separator:
+        return Text(line)
+    style = SEMANTIC_STYLE["attention"] if kind == "Pending proposal" else _CHROME
+    return Text.assemble((kind + separator, style), rest)
 
 
 def _goal_text(goal: GoalDetail) -> Text:
@@ -636,6 +671,8 @@ class DashboardApp(App[None]):
         # The overview's aligned column header and the list width it was fitted to.
         self._overview_header = Text()
         self._overview_width = 0
+        # Session detail list header: "Goals" in Goal Mode, else "Activity".
+        self._session_column = "Activity"
         # Table width the Jobs columns were fitted to; layout changes it after the first fit.
         self._jobs_fit_width = -1
         # Scroll offsets by (window, view, session, filter, detail selection).
@@ -863,7 +900,7 @@ class DashboardApp(App[None]):
         return (
             f"{info.handle} · {info.checkout} · {info.branch or 'branch unavailable'} · "
             f"{info.mode} · {info.connection} · Started {info.started}\n"
-            f"{info.activity} · {info.warning}\nLast Booley call: {info.last_call or '—'} "
+            f"{info.activity}{f' · {info.warning}' if info.warning else ''}\nLast Booley call: {info.last_call or '—'} "
             f"· {info.last_age}\nSession key: {info.key}"
         ), goal
 
@@ -1087,10 +1124,24 @@ class DashboardApp(App[None]):
             orientation += "\n" + goal.diagnostic
         if goal and goal.terminal_summary:
             orientation += "\n" + goal.terminal_summary
-        for key, content in self._session_activity(goal):
+        activity = self._session_activity(goal)
+        # Goal Mode lists Goals under the column header and Activity as its own
+        # section below; an Interactive session has only Activity, so it heads the list.
+        self._session_column = "Goals" if goal is not None else "Activity"
+        if goal is not None and activity:
+            keys += [sessions.HEADER_PREFIX + "gap", sessions.HEADER_PREFIX + "activity"]
+            cells += [Text(""), self._section_rule("Activity")]
+        for key, content in activity:
             keys.append(key)
-            cells.append(content)
+            cells.append(_activity_text(content))
         return orientation, keys, [(cell,) for cell in cells]
+
+    def _section_rule(self, title: str) -> Text:
+        """A full-width titled rule that separates one list section from the next."""
+        rule = f"── {title} "
+        return Text(
+            rule + "─" * max(0, self._list_width() - cell_len(rule)), style="bold " + _CHROME
+        )
 
     def _session_activity(self, goal: GoalView | None) -> list[tuple[str, str]]:
         activities = []
@@ -1352,7 +1403,7 @@ class DashboardApp(App[None]):
             return tuple(zip(JOB_COLUMNS, job_widths, strict=True))
         return {
             "overview": ((self._overview_header, None),),
-            "session": (("Goals and activity", None),),
+            "session": ((self._session_column, None),),
         }.get(self.navigation.view, self._list_columns_shown)
 
     def _refit_job_columns(self) -> None:

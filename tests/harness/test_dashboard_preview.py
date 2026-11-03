@@ -17,7 +17,7 @@ from textual.widgets import DataTable, Static
 
 from booley.criteria.presentation import CriterionPresentation
 from booley.harness.dashboard import app as dashboard_app
-from booley.harness.dashboard import model
+from booley.harness.dashboard import model, sessions
 from booley.harness.dashboard.app import DashboardApp
 from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
@@ -282,13 +282,35 @@ async def test_enter_from_preview_opens_unchanged_session_detail():
         assert app.navigation.view == "session"
         assert not app.query_one("#aside").display
         assert str(app.query_one("#orientation", Static).render()) == ORIENTATION
-        assert app.row_keys == [*GOAL_NAMES, "job:" + json.dumps(job.key), "call:0"]
+        assert app.row_keys == [
+            *GOAL_NAMES,
+            sessions.HEADER_PREFIX + "gap",
+            sessions.HEADER_PREFIX + "activity",
+            "job:" + json.dumps(job.key),
+            "call:0",
+        ]
 
 
 # Captured from the unmodified session detail of the fixture above.
 ORIENTATION = (
     "S1 · /work/a · goal/fixture · Goal Mode · connected · Started 5m ago\n"
-    "Working · 1m 40s · \n"
+    "Working · 1m 40s\n"
     "Last Booley call: sim · 5m ago\n"
     "Session key: codex:00"
 )
+
+
+def test_orientation_header_accents_labels_states_and_headings():
+    """The session header is not one plain block: labels, states and headings stand out."""
+    text = dashboard_app._orientation_text(
+        ORIENTATION.replace("Working · 1m 40s", "Waiting for user input · 2s")
+        + "\n## What changed\n- detail"
+    )
+    styled = {text.plain[span.start : span.end]: str(span.style) for span in text.spans}
+    assert styled["Waiting for user input"].startswith("bold ")
+    assert styled["Last Booley call:"] == styled["Session key:"] == dashboard_app._CHROME
+    assert styled["sim"] == dashboard_app._ACCENT
+    assert styled["connected"] == "green"
+    # The Markdown heading marker is dropped and the heading is styled as a label.
+    assert "## " not in text.plain
+    assert styled["What changed"] == "bold " + dashboard_app._CHROME
