@@ -64,7 +64,7 @@ dependencies = [
 [project.optional-dependencies]
 test = [
     "cryptography==50.0.2",
-    "hypothesis>=6.0",
+    "hypothesis>=6.170.14",
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "pytest-xdist==3.8.0",
@@ -86,7 +86,7 @@ dev = [
     # The repository-owned confidential vocabulary uses AES-GCM in its local
     # guard and the trusted CI scanner.
     "cryptography==50.0.2",
-    "hypothesis>=6.0",
+    "hypothesis>=6.170.14",
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     # Run independent tests concurrently in CI. Linux keeps module/class
