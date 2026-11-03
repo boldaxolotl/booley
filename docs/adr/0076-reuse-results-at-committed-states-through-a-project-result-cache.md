@@ -20,6 +20,7 @@ The most valuable repeats happen **at the same commit**:
 - a `main` measurement wanted as a baseline
 - the same commit in another worktree
 - Finish at a committed HEAD
+- a commit one agent session hands to the next, which starts work from it
 
 A full-authority design with a hermetic view was rejected as too complex and
 fragile (see Rejected alternatives). This ADR stores and serves only at clean
@@ -166,9 +167,13 @@ the user docs say so.**
   always run again.
 - **No large artifacts.** Waveforms, coverage databases and bitstreams are
   never stored. A request that needs one of them misses.
-- **Payload.** The verdict inputs the grader reads (reports, logs, exit
-  status, standard output and error), with the producer's UUID, date and
-  duration. Each entry carries its full key material, and each read
+- **Payload.** The verdict inputs the grader reads (logs, exit status,
+  standard output and error) and **every text report the Flow writes**, such
+  as hierarchical area, timing and utilization reports, so a hit is as
+  useful for investigation as a fresh run. The producer's UUID, date and
+  duration are recorded. An entry over the per-entry byte cap (default
+  64 MiB) is not stored, and the run prints which reports made it too
+  large. Each entry carries its full key material, and each read
   verifies it and the entry's digest. The verdict and metrics are re-derived
   from the payload by the current code on every hit, and a different or
   failing re-derivation refuses the hit.
@@ -237,6 +242,37 @@ that run is its verification.
   - Doctor's `--deep` self-tests run `--no-cache`, and `--deep` re-verifies
     tool manifests in full.
 
+### 8. Filling the cache: `booley ci` at a commit
+
+Agents iterate on uncommitted trees, which never store (§1). Without a
+filler, a commit handed to the next agent session arrives with an empty
+cache, and the first session to run there pays full price.
+
+The filler is the planned `booley ci` command
+([roadmap](../internals/ROADMAP.md#continuous-integration-booley-ci)), not a separate
+cache command. Filling the cache and CI are the same operation: take a
+commit and evaluate a named set of Criteria on it. One engine does both.
+
+- **Input.** An RTL commit (default `HEAD`), the Booley Directory commit
+  (default its `HEAD`, recorded in the entry) and a named Criteria set.
+- **Where it runs.** A throwaway worktree at that commit, the same mechanism
+  as Goal baseline worktrees. That tree is clean by construction, so the
+  snapshots and the overlap rule (§1) hold without the agent keeping its own
+  checkout clean or idle.
+- **Locally,** `booley ci` runs in the background as low-priority Jobs, so it
+  doesn't take Job slots from the session's own work. A Criterion run whose
+  entry already exists is skipped. Each completed pass stores, like any
+  clean-commit run. Its main local purpose is filling the cache; the verdict
+  report is a by-product, not a merge gate.
+- **On a hosted runner** (GitHub Actions), the same engine produces the CI
+  verdict and keeps everything the roadmap lists, including failures and
+  large artifacts. Its results don't enter any local cache, because the host
+  id is in the key (§2).
+- **Failures differ.** In hosted CI an infrastructure error fails the run.
+  Locally it is skipped and reported, and nothing is stored.
+- **Relative Criteria** need a baseline at the merge base, usually `main`.
+  Locally that baseline is a hit once `main` has been filled.
+
 Rollout, the per-Flow serving gate and the knob-discovery sources for the
 enumeration test are in the implementation plan.
 
@@ -280,6 +316,16 @@ Each is bounded by the sampled re-runs (§6) and the kill switch.
   another Target's tests would invalidate every entry.
 - **No build reuse at clean commits.** Every commit would trigger a full
   rebuild, which teaches users to avoid clean commits.
+- **Storing at uncommitted content states.** Keying every run by working-tree
+  content would let an agent's last run before a commit fill the cache. It
+  needs untracked files in the key, the §3 hygiene on every run, and many
+  more declined stores while agents edit during runs. Explicit filling
+  (§8) gets the handoff hits without it.
+- **Agent guidance to re-run every Criterion after committing.** It moves
+  the same runs from the next session to the committing one, in the
+  foreground, and depends on agents following it.
+- **A separate `booley cache warm` command.** It would duplicate `booley ci`
+  and add a second way to name a set of runs.
 
 ## Consequences
 
@@ -297,5 +343,10 @@ Each is bounded by the sampled re-runs (§6) and the kill switch.
 - A nondeterministic Target is never cached. A confirmed mismatch disables
   the cache for the Project until a human re-enables it.
 - The Vivado metrics cache is retired, which closes #2051.
+- Handoff hits depend on someone running `booley ci` at the commit, and the
+  cache work is blocked on the `booley ci` engine (§8).
+- Hosted CI results are not reused locally. Reusing them across hosts is
+  future work: it needs a host-independent key for image tools and a
+  trusted way to import entries.
 - Public material will describe the cache as reuse at clean commits on the
   same host, checked by sampling, and won't claim it is always correct.
