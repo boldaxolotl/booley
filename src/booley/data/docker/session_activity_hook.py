@@ -50,6 +50,12 @@ END_EVENT = "SessionEnd"
 ENDED = "ended"
 # The only Claude Code notifications that mean "waiting for the user".
 WAITING_NOTIFICATIONS = frozenset({"idle_prompt", "permission_prompt", "elicitation_dialog"})
+# Claude Code's Stop lists in-flight background work (a backgrounded MCP call,
+# shell, subagent, ...) as ``background_tasks``; the client resumes the turn
+# when that work finishes, so the session waits for it, not for the user.
+STOP_EVENT = "Stop"
+IDLE_NOTIFICATION = "idle_prompt"
+BACKGROUND_LABEL = "background task"
 CLIENT_COMMAND = "claude"
 
 MAX_PAYLOAD_BYTES = 8 * 1024 * 1024
@@ -203,7 +209,40 @@ def _codex_chat_key(project: Path, proc_root: Path, pid: int) -> str | None:
     return None
 
 
-def _write(root: Path, key: str, state: str, tool: str, now: float) -> None:
+def _background_wait(payload: Mapping[str, object]) -> str:
+    """Label of the background work a Stop leaves in flight, or "" when there is none.
+
+    The first task names the wait: an MCP task by its tool, anything else by its
+    type. Further tasks only add a count. Unusable client text falls back to a
+    generic label; it is presentation, never identity.
+    """
+    tasks = payload.get("background_tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return ""
+    first = tasks[0] if isinstance(tasks[0], dict) else {}
+    label = first.get("tool") or first.get("type")
+    if not isinstance(label, str) or not label.isprintable():
+        label = BACKGROUND_LABEL
+    more = f" +{len(tasks) - 1}" if len(tasks) > 1 else ""
+    return label[: MAX_TOOL_NAME - len(more)] + more
+
+
+def _waits_in_background(root: Path, key: str) -> bool:
+    """Whether the session's current signal is a Stop that left background work."""
+    path = root / _signal_filename(key)
+    try:
+        if path.is_symlink():
+            return False
+        with path.open("rb") as stream:
+            data = json.loads(stream.read(4096))
+    except (OSError, ValueError, UnicodeError):
+        return False
+    return isinstance(data, dict) and data.get("background") is True
+
+
+def _write(
+    root: Path, key: str, state: str, tool: str, now: float, *, background: bool = False
+) -> None:
     """Publish the session's signal with one atomic replacement."""
     root.mkdir(parents=True, exist_ok=True)
     path = root / _signal_filename(key)
@@ -221,6 +260,8 @@ def _write(root: Path, key: str, state: str, tool: str, now: float) -> None:
     }
     if tool:
         signal["tool"] = tool
+    if background:
+        signal["background"] = True
     # One staging name per process; the dot prefix and suffix keep it out of every reader.
     # No fsync: a signal lost to a crash only shows as unknown until the next event.
     temporary = root / f".{path.name}.{os.getpid()}.tmp"
@@ -274,6 +315,20 @@ def record(
     if event == END_EVENT:
         _write(root, key, ENDED, "", now)
         return True
+    return _record_state(root, key, event, payload, now)
+
+
+def _record_state(
+    root: Path, key: str, event: str, payload: Mapping[str, object], now: float
+) -> bool:
+    """Store the activity state one event means. Returns whether the store changed."""
+    waiting_on = _background_wait(payload) if event == STOP_EVENT else ""
+    if waiting_on:
+        _write(root, key, WAITING_TOOL, waiting_on, now, background=True)
+        return True
+    idle = event == "Notification" and payload.get("notification_type") == IDLE_NOTIFICATION
+    if idle and _waits_in_background(root, key):
+        return False  # The turn ended earlier with background work still running.
     state = EVENT_STATES[event]
     tool = payload.get("tool_name")
     named = state == WAITING_TOOL and isinstance(tool, str) and tool.isprintable()

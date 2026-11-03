@@ -400,3 +400,16 @@ Consequences:
 - A `worktree:` fallback row created by a real tool call cannot be ended by a hook and still waits out `quiet_after`.
 - Doctor's `goals.quiet-session` check does not read markers. Once maintenance prunes an ended row, it can warn within about a minute of `SessionEnd` instead of after `quiet_after`; the warning already says it is not evidence of abandonment.
 - Accepted inaccuracies: a tool call still in flight when `SessionEnd` fires moves `last_call_at` past the marker when it completes, and a still-running earlier hook (`Stop`) that finishes after `SessionEnd` replaces the marker. In both cases the row waits out `quiet_after`. A full activity store (`MAX_SIGNALS`) drops a `SessionEnd` for a key with no signal, which falls back the same way.
+
+## Amendments (2026-11-03): Background work after `Stop`
+
+A Goal Mode session that ended its turn while Claude Code ran a Booley Reviewer call in the background showed waiting for user input, although Claude Code resumes the turn on its own when that call returns. Claude Code's `Stop` input lists such in-flight work as `background_tasks` (MCP tasks, shells, subagents, monitors, workflows). This amendment supersedes the 2026-10-11 Event mapping rule "`Stop` means waiting for user input" for a `Stop` that lists background work.
+
+- **A `Stop` with background work waits for it.** A `Stop` whose `background_tasks` is non-empty means waiting for tool call. The signal names the first task (an MCP task by its tool, any other task by its type, `background task` when neither is usable text) with `+N` for further tasks, and carries `background: true`. An empty or missing list, and every Codex `Stop`, still mean waiting for user input. This is still a client report: the Dashboard infers nothing from Booley calls or running Jobs.
+- **The idle prompt does not end the wait.** The `idle_prompt` notification, sent about 60 s after a turn ends, is ignored while the session's signal carries `background: true`. A permission prompt, elicitation or any other event replaces the signal as before.
+- **Freshness.** A background wait is a busy state, so it becomes unknown after 7200 s without a new event, like any other wait for a tool call.
+
+Consequences:
+
+- Background work that never wakes the turn, such as a long-lived monitor, keeps the session out of Needs you until its next event or the freshness limit.
+- The hook ships in the Sandbox Image; a session running an older image keeps the previous mapping until the image is rebuilt.
