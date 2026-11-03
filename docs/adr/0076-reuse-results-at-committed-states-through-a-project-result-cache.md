@@ -260,10 +260,15 @@ commit and evaluate a named set of Criteria on it. One engine does both.
   snapshots and the overlap rule (§1) hold without the agent keeping its own
   checkout clean or idle.
 - **Locally,** `booley ci` runs in the background as low-priority Jobs, so it
-  doesn't take Job slots from the session's own work. A Criterion run whose
-  entry already exists is skipped. Each completed pass stores, like any
-  clean-commit run. Its main local purpose is filling the cache; the verdict
-  report is a by-product, not a merge gate.
+  doesn't take Job slots from the session's own work. It produces the same
+  verdict report as hosted CI: projects in stealth mode have no hosted CI, and a
+  failing run after a merge means `main` regressed. A Criterion run whose
+  entry already exists is served as a hit. Each completed pass stores, like
+  any clean-commit run.
+- **Triggers.** Manual, plus a Git `post-merge` hook on `main` that a
+  Project setting turns on or off. The hook fires when the local `main`
+  receives commits by a merge or fast-forward pull; a rebase pull or a reset
+  doesn't fire it, so those need a manual run.
 - **On a hosted runner** (GitHub Actions), the same engine produces the CI
   verdict and keeps everything the roadmap lists, including failures and
   large artifacts. Its results don't enter any local cache, because the host
