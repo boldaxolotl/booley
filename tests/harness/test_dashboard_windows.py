@@ -32,8 +32,8 @@ from tests.harness.test_dashboard import (
 
 # Goal keys in the order the session list must show them (failing first).
 GOAL_ORDER = ["g-failing", "g-recheck", "g-notrun", "g-checking", "g-passing"]
-# The session list starts with its five Goals, then a spacer and the Activity
-# section header, the pending proposal row, then the running Jobs owned by the session.
+# The session list starts with its five Goals, then a spacer and the
+# Booley activity rule, the pending proposal row, then the running Jobs owned by the session.
 PROPOSAL_ROW = len(GOAL_ORDER) + 2
 JOB_ROW = PROPOSAL_ROW + 1
 
@@ -448,19 +448,19 @@ async def test_list_header_is_set_per_view():
         assert overview.split()[-1] == "Activity"
         await open_session(app, pilot, "codex:00")
         assert column_label(app) == "Goals"
-        # Goals and Activity are separate sections: a spacer and an Activity rule
+        # Goals and Booley activity are separate sections: a spacer and a titled rule
         # sit between them, and neither can take the cursor.
-        gap = app.row_keys.index(sessions.HEADER_PREFIX + "gap")
+        gap = app.row_keys.index(sessions.HEADER_PREFIX + "spacer")
         assert gap == len(GOAL_ORDER)
-        assert app.row_keys[gap + 1] == sessions.HEADER_PREFIX + "activity"
+        assert app.row_keys[gap + 1] == sessions.HEADER_PREFIX + "booley-activity"
         assert {gap, gap + 1} <= table_of(app).header_rows
         rule = table_of(app).get_row_at(gap + 1)[0].plain
-        assert rule.startswith("── Activity ─")
+        assert rule.startswith("── Booley activity ─")
         await pilot.press("escape")
         await pilot.pause()
-        # S2 runs no Goal: Activity heads its list and needs no section rule.
+        # S2 runs no Goal: Booley activity heads its list and needs no section rule.
         await open_session(app, pilot, "codex:01")
-        assert column_label(app) == "Activity"
+        assert column_label(app) == "Booley activity"
         assert not any(key.startswith(sessions.HEADER_PREFIX) for key in app.row_keys)
         await pilot.press("escape")
         await pilot.pause()

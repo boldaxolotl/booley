@@ -284,8 +284,8 @@ async def test_enter_from_preview_opens_unchanged_session_detail():
         assert str(app.query_one("#orientation", Static).render()) == ORIENTATION
         assert app.row_keys == [
             *GOAL_NAMES,
-            sessions.HEADER_PREFIX + "gap",
-            sessions.HEADER_PREFIX + "activity",
+            sessions.HEADER_PREFIX + "spacer",
+            sessions.HEADER_PREFIX + "booley-activity",
             "job:" + json.dumps(job.key),
             "call:0",
         ]
@@ -300,17 +300,28 @@ ORIENTATION = (
 )
 
 
-def test_orientation_header_accents_labels_states_and_headings():
-    """The session header is not one plain block: labels, states and headings stand out."""
-    text = dashboard_app._orientation_text(
-        ORIENTATION.replace("Working · 1m 40s", "Waiting for user input · 2s")
-        + "\n## What changed\n- detail"
+def test_session_header_accents_facts_but_not_agent_written_summary():
+    """Header facts carry accents; the agent-written summary stays plain but for headings."""
+    rows = [session_row(0, "wt0", work_dir="/work/a", branch="goal/fixture", calls=ONE_CALL)]
+    goal = replace(
+        goal_view("wt0", "active", met=1, goals=(0,) * 2, pending_proposals=0),
+        terminal_summary="## What changed\n- Working bus connected · Session key: x",
     )
-    styled = {text.plain[span.start : span.end]: str(span.style) for span in text.spans}
-    assert styled["Waiting for user input"].startswith("bold ")
-    assert styled["Last Booley call:"] == styled["Session key:"] == dashboard_app._CHROME
-    assert styled["sim"] == dashboard_app._ACCENT
-    assert styled["connected"] == "green"
-    # The Markdown heading marker is dropped and the heading is styled as a label.
-    assert "## " not in text.plain
-    assert styled["What changed"] == "bold " + dashboard_app._CHROME
+    activity = {"codex:00": Activity(WAITING_USER, stamp(100))}
+    app = DashboardApp(lambda: snapshot_of(rows, goals=[goal], activity=activity))
+    app.snapshot = snapshot_of(rows, goals=[goal], activity=activity)
+    app.navigation = replace(app.navigation, view="session", session="codex:00")
+    text, _, _ = app._content()
+
+    def style_of(fragment, start=0):
+        offset = text.plain.index(fragment, start)
+        return {str(span.style) for span in text.spans if span.start <= offset < span.end}
+
+    assert "bold" in " ".join(style_of("Waiting for user input"))
+    assert "bold" in " ".join(style_of("S1"))  # The title line stands out.
+    for fragment in ("Last Booley call:", "Session key:", "connected", "sim"):
+        assert style_of(fragment), fragment
+    # The Markdown heading marker is dropped; the heading is styled as a label.
+    assert "## " not in text.plain and style_of("What changed")
+    summary = text.plain.index("- Working")
+    assert not style_of("- Working bus connected · Session key: x", summary)

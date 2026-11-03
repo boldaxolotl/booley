@@ -46,7 +46,13 @@ from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.review.goal_package import observation_facts
 from booley.runtime.handles import job_prefix
 from booley.runtime.pid import ProcessState
-from booley.runtime.session_activity import UNKNOWN, WAITING_TOOL, Activity
+from booley.runtime.session_activity import (
+    UNKNOWN,
+    WAITING_TOOL,
+    WAITING_USER,
+    WORKING,
+    Activity,
+)
 from booley.runtime.timefmt import format_age, format_clock, format_duration, parse_timestamp
 
 logger = logging.getLogger(__name__)
@@ -224,36 +230,48 @@ def _resource_text(resources: Resources) -> Text:
     return text
 
 
-# Accents for the orientation header, so its facts do not read as one plain block.
-_ORIENTATION_ACCENTS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r" · "), "dim"),
-    (re.compile(r"(?<![\w])connected\b"), "green"),
-    (re.compile(r"\bdisconnected\b|\blast seen\b"), SEMANTIC_STYLE["attention"]),
-    (re.compile(r"^Waiting for user input\b", re.M), "bold " + SEMANTIC_STYLE["attention"]),
-    (re.compile(r"^(?:Working|Waiting for tool call)\b[^·\n]*", re.M), _ACCENT),
-    (re.compile(r"^Activity unknown\b", re.M), "dim"),
-    (re.compile(r"WARNING: shared worktree|Shared-worktree attribution unavailable"), "yellow"),
-    (re.compile(r"^(?:Last Booley call|Session key):", re.M), _CHROME),
-    (re.compile(r"(?<=^Last Booley call: )[^ ·\n]+", re.M), _ACCENT),
-    (re.compile(r"(?<=^Session key: ).+", re.M), "dim"),
-)
+# Session activity states, styled so the one that needs the human stands out.
+_ACTIVITY_STYLE = {
+    WAITING_USER: "bold " + SEMANTIC_STYLE["attention"],
+    WORKING: _ACCENT,
+    WAITING_TOOL: _ACCENT,
+    UNKNOWN: "dim",
+}
+# Header of the session list's second section: the Booley calls, Jobs and
+# proposals of the session (not its hook-reported Session activity).
+BOOLEY_ACTIVITY = "Booley activity"
 
 
-def _orientation_text(orientation: str) -> Text:
-    """Bold the title line, accent labels and states, and show Markdown headings as headings."""
+def _orientation_text(orientation: str | Text) -> Text:
+    """Bold the title line of a plain orientation; a styled one is shown as built."""
+    if isinstance(orientation, Text):
+        return orientation
+    title, separator, details = orientation.partition("\n")
+    text = Text(title, style="bold " + _ACCENT)
+    # Keep detail lines outside the title's base style.
+    return Text.assemble(text, separator + details)
+
+
+def _join(*parts: str | tuple[str, str], style: str = "") -> Text:
+    """Parts joined by dimmed `` · `` separators; a part may be ``(text, style)`` over ``style``."""
+    # Each part carries the style itself: Textual ignores a Text's base style.
     text = Text()
-    for index, line in enumerate(orientation.split("\n")):
+    for index, part in enumerate(parts):
+        if index:
+            text.append(" · ", style="dim")
+        content, own = (part, "") if isinstance(part, str) else part
+        text.append(content, style=f"{style} {own}".strip())
+    return text
+
+
+def _markdown_lines(markdown: str) -> Text:
+    """Agent-written Markdown, kept verbatim except headings, which become bold labels."""
+    text = Text()
+    for index, line in enumerate(markdown.split("\n")):
         if index:
             text.append("\n")
-        if index == 0:
-            text.append(line, style="bold " + _ACCENT)
-        elif line.startswith("## "):
-            # The Goal's terminal summary is Markdown; its headings become section labels.
-            text.append(line.removeprefix("## "), style="bold " + _CHROME)
-        else:
-            text.append(line)
-    for pattern, style in _ORIENTATION_ACCENTS:
-        text.highlight_regex(pattern, style=style)
+        heading = re.fullmatch(r"#{1,6} (.+)", line)
+        text.append(*((heading[1], "bold " + _CHROME) if heading else (line,)))
     return text
 
 
@@ -298,13 +316,10 @@ def _notices_text(snapshot: DashboardSnapshot) -> Text:
     return text
 
 
-def _activity_text(line: str) -> Text:
-    """One Activity row: the row kind muted, the rest plain, a pending proposal flagged."""
-    kind, separator, rest = line.partition(": ")
-    if not separator:
-        return Text(line)
+def _activity_row(kind: str, line: str) -> Text:
+    """One Booley activity row: its kind muted (a pending proposal flagged), the rest plain."""
     style = SEMANTIC_STYLE["attention"] if kind == "Pending proposal" else _CHROME
-    return Text.assemble((kind + separator, style), rest)
+    return Text.assemble((kind + ": ", style), line)
 
 
 def _goal_text(goal: GoalDetail) -> Text:
@@ -671,8 +686,8 @@ class DashboardApp(App[None]):
         # The overview's aligned column header and the list width it was fitted to.
         self._overview_header = Text()
         self._overview_width = 0
-        # Session detail list header: "Goals" in Goal Mode, else "Activity".
-        self._session_column = "Activity"
+        # List width the session view's section rule was drawn for.
+        self._fitted_width = 0
         # Table width the Jobs columns were fitted to; layout changes it after the first fit.
         self._jobs_fit_width = -1
         # Scroll offsets by (window, view, session, filter, detail selection).
@@ -880,6 +895,12 @@ class DashboardApp(App[None]):
             self.call_after_refresh(self.render_snapshot)
 
     def _session(self) -> tuple[str, GoalView | None]:
+        """The session's orientation header as plain text, and its Goal."""
+        header, goal = self._session_header()
+        return header.plain, goal
+
+    def _session_header(self) -> tuple[Text, GoalView | None]:
+        """The session's orientation header, styled fact by fact, and its Goal."""
         row = next(
             (
                 row
@@ -890,19 +911,34 @@ class DashboardApp(App[None]):
         )
         connected = row is not None
         row = row or self._known_sessions.get(self.navigation.session or "")
+        attention = SEMANTIC_STYLE["attention"]
         if row is None:
-            return (
-                f"{self._session_handle(self.navigation.session or '')} disconnected"
-                " · retained Jobs remain available"
+            handle = self._session_handle(self.navigation.session or "")
+            return _join(
+                (f"{handle} ", "bold " + _ACCENT),
+                ("disconnected", attention),
+                "retained Jobs remain available",
             ), None
         goal = self._goal_for_session(row.attribution)
         info = self._orientation(row, goal, connected=connected)
-        return (
-            f"{info.handle} · {info.checkout} · {info.branch or 'branch unavailable'} · "
-            f"{info.mode} · {info.connection} · Started {info.started}\n"
-            f"{info.activity}{f' · {info.warning}' if info.warning else ''}\nLast Booley call: {info.last_call or '—'} "
-            f"· {info.last_age}\nSession key: {info.key}"
-        ), goal
+        state = self.snapshot.activity.get(info.key, Activity()).state
+        connection_style = "green" if info.connection == "connected" else attention
+        header = _join(
+            info.handle,
+            info.checkout,
+            info.branch or "branch unavailable",
+            info.mode,
+            (info.connection, connection_style),
+            f"Started {info.started}",
+            style="bold " + _ACCENT,
+        )
+        header.append("\n")
+        activity = (info.activity, _ACTIVITY_STYLE.get(state, ""))
+        header.append_text(_join(activity, *([(info.warning, "yellow")] if info.warning else [])))
+        header.append_text(Text.assemble("\n", ("Last Booley call: ", _CHROME)))
+        header.append_text(_join((info.last_call or "—", _ACCENT), info.last_age))
+        header.append_text(Text.assemble("\n", ("Session key: ", _CHROME), (info.key, "dim")))
+        return header, goal
 
     def _orientation(
         self, row: SessionRow, goal: GoalView | None, *, connected: bool
@@ -1086,7 +1122,7 @@ class DashboardApp(App[None]):
         hint = f" {running} running — choose Running above." if running else ""
         return f"No finished Jobs{scope} yet.{hint}"
 
-    def _content(self) -> tuple[str, list[str], list[tuple[object, ...]]]:
+    def _content(self) -> tuple[str | Text, list[str], list[tuple[object, ...]]]:
         nav = self.navigation
         if nav.view == "overview":
             return self._overview()
@@ -1104,8 +1140,9 @@ class DashboardApp(App[None]):
             return self._session_content()
         return nav.view.title(), [], []
 
-    def _session_content(self) -> tuple[str, list[str], list[tuple[object, ...]]]:
-        orientation, goal = self._session()
+    def _session_content(self) -> tuple[Text, list[str], list[tuple[object, ...]]]:
+        orientation, goal = self._session_header()
+        self._fitted_width = 0  # Set again only when a section rule is drawn.
         keys, cells = [], []
         if goal is not None:
             ordered = sorted(
@@ -1121,44 +1158,48 @@ class DashboardApp(App[None]):
             keys.extend(item.key for item in ordered)
             cells.extend(_goal_text(item) for item in ordered)
         if goal and goal.diagnostic:
-            orientation += "\n" + goal.diagnostic
+            orientation.append("\n" + goal.diagnostic)
         if goal and goal.terminal_summary:
-            orientation += "\n" + goal.terminal_summary
+            orientation.append("\n")
+            orientation.append_text(_markdown_lines(goal.terminal_summary))
         activity = self._session_activity(goal)
-        # Goal Mode lists Goals under the column header and Activity as its own
-        # section below; an Interactive session has only Activity, so it heads the list.
-        self._session_column = "Goals" if goal is not None else "Activity"
-        if goal is not None and activity:
-            keys += [sessions.HEADER_PREFIX + "gap", sessions.HEADER_PREFIX + "activity"]
-            cells += [Text(""), self._section_rule("Activity")]
+        if goal is not None:
+            # Goals head the list; Booley activity is its own section below a
+            # spacer and a titled rule, both unselectable header rows.
+            keys += [sessions.HEADER_PREFIX + "spacer", sessions.HEADER_PREFIX + "booley-activity"]
+            cells += [Text(""), self._section_rule(BOOLEY_ACTIVITY)]
+            if not activity:
+                keys.append(sessions.HEADER_PREFIX + "no-booley-activity")
+                cells.append(Text("No Booley activity yet", style="dim"))
         for key, content in activity:
             keys.append(key)
-            cells.append(_activity_text(content))
+            cells.append(content)
         return orientation, keys, [(cell,) for cell in cells]
 
     def _section_rule(self, title: str) -> Text:
-        """A full-width titled rule that separates one list section from the next."""
+        """A titled rule as wide as the list, separating one list section from the next."""
+        self._fitted_width = self._list_width()
         rule = f"── {title} "
         return Text(
-            rule + "─" * max(0, self._list_width() - cell_len(rule)), style="bold " + _CHROME
+            rule + "─" * max(0, self._fitted_width - cell_len(rule)), style="bold " + _CHROME
         )
 
-    def _session_activity(self, goal: GoalView | None) -> list[tuple[str, str]]:
+    def _session_activity(self, goal: GoalView | None) -> list[tuple[str, Text]]:
+        """The session's pending proposals, unfinished Jobs and recent Booley calls."""
         activities = []
         if goal and goal.status:
             activities.extend(
                 (
                     "proposal:" + view.proposal.id,
-                    "Pending proposal: " + proposal_summary(proposal_presentation(view)),
+                    _activity_row(
+                        "Pending proposal", proposal_summary(proposal_presentation(view))
+                    ),
                 )
                 for view in goal.status.proposals
                 if view.state == "pending" and not view.closed_by_abandonment
             )
         activities.extend(
-            (
-                "job:" + json.dumps(job.key),
-                f"Running Job: {self._job_line(job)}",
-            )
+            ("job:" + json.dumps(job.key), _activity_row("Running Job", self._job_line(job)))
             for job in self.snapshot.jobs.jobs
             if self._owned_by(job, self.navigation.session)
             and job.state not in TERMINAL_JOB_STATES
@@ -1172,10 +1213,14 @@ class DashboardApp(App[None]):
             None,
         )
         if session:
+            now = self.snapshot.observed_at
             activities.extend(
                 (
                     "call:" + str(index),
-                    f"Booley call: {call.tool} · {call.outcome} · {format_clock(call.at, now=self.snapshot.observed_at)}",
+                    _activity_row(
+                        "Booley call",
+                        f"{call.tool} · {call.outcome} · {format_clock(call.at, now=now)}",
+                    ),
                 )
                 for index, call in enumerate(session.calls[-10:])
             )
@@ -1366,11 +1411,12 @@ class DashboardApp(App[None]):
             table.scroll_to(y=first if row < top else row - visible + 1, animate=False)
 
     def _refit_overview(self) -> None:
-        """Fit the overview again when layout gave the list another width."""
-        if (
-            self.is_running
-            and self.navigation.view == "overview"
-            and self._overview_width != self._list_width()
+        """Fit the overview, or a session's section rule, again when layout changed the width."""
+        if not self.is_running:
+            return
+        view = self.navigation.view
+        if (view == "overview" and self._overview_width != self._list_width()) or (
+            view == "session" and self._fitted_width and self._fitted_width != self._list_width()
         ):
             self.render_snapshot()
 
@@ -1403,7 +1449,7 @@ class DashboardApp(App[None]):
             return tuple(zip(JOB_COLUMNS, job_widths, strict=True))
         return {
             "overview": ((self._overview_header, None),),
-            "session": ((self._session_column, None),),
+            "session": (("Goals" if self._session()[1] else BOOLEY_ACTIVITY, None),),
         }.get(self.navigation.view, self._list_columns_shown)
 
     def _refit_job_columns(self) -> None:
