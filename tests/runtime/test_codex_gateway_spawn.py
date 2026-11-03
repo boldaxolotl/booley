@@ -135,8 +135,8 @@ def gateway_sandbox(tmp_path, monkeypatch):
     agent_config.set_agent_settings(None)
 
 
-def _params(tmp_path, **overrides):
-    return AgentCallParams(prompt="p", model="gpt-5.5", cwd=str(tmp_path), **overrides)
+def _params(tmp_path, prompt="p", **overrides):
+    return AgentCallParams(prompt=prompt, model="gpt-5.5", cwd=str(tmp_path), **overrides)
 
 
 async def _run_fake_codex(tmp_path, fake, auth_mode="gateway"):
@@ -373,10 +373,11 @@ def _use_token_command(monkeypatch, tmp_path, tokens):
     return command, command_counter, launches
 
 
-async def _backend_call(tmp_path):
+async def _backend_call(tmp_path, prompt="p"):
     """One real ``CodexBackend.call()`` through the gateway; returns the fake's report."""
     backend = cb.CodexBackend(auth_mode="gateway")
-    result = await backend.call(_params(tmp_path, transcript_path=tmp_path / "transcript.jsonl"))
+    params = _params(tmp_path, prompt=prompt, transcript_path=tmp_path / "transcript.jsonl")
+    result = await backend.call(params)
     return json.loads(result.output)
 
 
@@ -412,13 +413,21 @@ async def test_gateway_auth_failure_reruns_token_command_once_and_retries_run(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "prompt",
+    # The fake rejects the token without reading stdin. A prompt larger than
+    # any OS pipe buffer always breaks the pipe mid-write; Booley must still
+    # classify the 401 from Codex's own output.
+    ["p", "x" * (4 * 1024 * 1024)],
+    ids=["short-prompt", "prompt-larger-than-pipe-buffer"],
+)
 async def test_gateway_repeated_auth_failure_stops_after_one_refresh(
-    gateway_sandbox, tmp_path, monkeypatch
+    gateway_sandbox, tmp_path, monkeypatch, prompt
 ):
     _, command_runs, launches = _use_token_command(monkeypatch, tmp_path, [_STALE_TOKEN])
 
     with pytest.raises(agent_errors.AgentAuthError):
-        await _backend_call(tmp_path)
+        await _backend_call(tmp_path, prompt=prompt)
 
     assert count_runs(command_runs) == 2
     assert count_runs(launches) == 2
