@@ -7,7 +7,7 @@ document: Booley product datasheet
 <!-- Masthead: the part number is the one loud element on the page -->
   <section class="mast" aria-labelledby="part">
     <h1 class="mast__part" id="part">BOOLEY</h1>
-    <p class="mast__title">Open-source agentic development environment (ADE) for FPGA and ASIC work</p>
+    <p class="mast__title">Open-source Agentic Development Environment (ADE) for FPGA and ASIC work</p>
     <div class="mast__sub">
       <span>Package <strong>booley-rtl</strong> on PyPI. Works with Claude Code or Codex.</span>
     </div>

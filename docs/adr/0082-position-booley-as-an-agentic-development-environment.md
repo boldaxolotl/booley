@@ -19,8 +19,10 @@ running parallel coding agents in separate worktrees.
 ## Decision
 
 Booley is an **agentic development environment (ADE) for FPGA and ASIC
-development**. The tagline is "The open-source ADE for FPGA and ASIC
-development". The product name, the `booley-rtl` package, and the CLI stay as
+development**. The tagline is "The open-source Agentic Development
+Environment (ADE) for FPGA and ASIC development". The term is new and unknown in
+hardware, so taglines and first mentions spell it out; bare "ADE" is used
+only after that. The product name, the `booley-rtl` package, and the CLI stay as
 they are.
 
 The glossary lists "IDE" and "agentic RTL IDE" as terms to avoid for the

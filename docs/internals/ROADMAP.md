@@ -12,7 +12,8 @@ Booley's output. Each item opens with a status tag:
 
 ## Verification Engineering
 
-**Planned.** Booley will grow from an ADE for RTL design into one that serves verification engineers as well as RTL design engineers. The
+**Planned.** Booley will grow from an agentic development environment (ADE) for RTL
+design into one that serves verification engineers as well as RTL design engineers. The
 verification workflow should build on a Project's existing SystemVerilog or
 cocotb environment and carry work from test execution through reproducible,
 machine-checkable evidence rather than treating the testbench only as support
