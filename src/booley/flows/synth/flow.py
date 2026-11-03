@@ -992,6 +992,24 @@ def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _work_path(path: Path, work_dir: Path) -> Path:
+    """Spell a resolved Target file the way the tools see it from *work_dir*.
+
+    Target files come back resolved (physical), and the tools run in the
+    physical *work_dir*. Both sides must match, or a checkout reached through
+    a link (a Codespace Goal worktree under the symlinked ``.booley`` entry)
+    yields a relative path that climbs out of the checkout. A file behind the
+    checkout's own linked ``.booley`` entry stays named through the entry,
+    which is what ``/work`` shows in the Sandbox.
+    """
+    return lexical_booley_path(work_dir.resolve() / BOOLEY_DIR_NAME, path.resolve())
+
+
+def _work_relpath(path: Path, work_dir: Path) -> str:
+    """The POSIX path of *path* relative to the physical *work_dir* (see :func:`_work_path`)."""
+    return posix_relpath(_work_path(path, work_dir), work_dir.resolve())
+
+
 class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     """Run ASIC synthesis for one or more Targets with optional baseline comparison."""
 
@@ -1066,10 +1084,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         if top:
             cmd.extend(["-t", top])
         for f in resolved.rtl_hdl_source_files:
-            rel = posix_relpath(f.absolute(resolved.build_root), work_dir)
-            cmd.extend(["--extra-rtl", rel])
+            cmd.extend(["--extra-rtl", _work_relpath(f.absolute(resolved.build_root), work_dir)])
         for inc in resolved.rtl_include_dirs:
-            cmd.extend(["--inc-dir", posix_relpath(inc, work_dir)])
+            cmd.extend(["--inc-dir", _work_relpath(inc, work_dir)])
         return top
 
     def _append_sta_constraint_args(
@@ -1088,12 +1105,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         # treatment as --extra-rtl — each is a path relative to the worktree,
         # resolved against /work inside the sandbox.
         for sdc_file in resolved.sdc_files:
-            # A stealth core's SDC behind a symlinked Booley Directory entry stays
-            # named through the entry, which is what /work shows in the Sandbox.
-            path = lexical_booley_path(
-                work_dir.resolve() / BOOLEY_DIR_NAME,
-                sdc_file.absolute(resolved.build_root).resolve(),
-            )
+            path = _work_path(sdc_file.absolute(resolved.build_root), work_dir)
             try:
                 path.relative_to(work_dir.resolve())
             except ValueError as exc:
@@ -1109,8 +1121,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 raise BoundaryError(
                     f"synth: Target {target!r} SDC file is not readable: {path}: {exc}"
                 ) from exc
-            rel = posix_relpath(path, work_dir)
-            cmd.extend(["--sta-sdc", rel])
+            cmd.extend(["--sta-sdc", _work_relpath(path, work_dir)])
         if not resolved.sdc_files:
             raise BoundaryError(
                 f"synth: physical Target {target!r} has no timing constraints. "
@@ -2022,14 +2033,14 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     ) -> tuple[str, ...]:
         """Replace disposable staged paths with their Target-owned names."""
         replacements = {
-            posix_relpath(item.absolute(planned.resolved.build_root), root): Path(
+            _work_relpath(item.absolute(planned.resolved.build_root), root): Path(
                 item.name
             ).as_posix()
             for item in planned.resolved.files
         }
         replacements.update(
             {
-                posix_relpath(item.absolute(planned.resolved.build_root).parent, root): (
+                _work_relpath(item.absolute(planned.resolved.build_root).parent, root): (
                     Path(item.name).parent.as_posix()
                 )
                 for item in planned.resolved.files
