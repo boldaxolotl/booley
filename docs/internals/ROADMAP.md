@@ -227,6 +227,52 @@ Targets.
 - Coverage-driven verification: functional coverage collection and hole analysis to guide stimulus generation
 - FPGA synthesis and PnR beyond AMD Vivado (Intel); Vivado already ships as the EDA tool driven by the built-in [`fpga`](FLOW_IMPLEMENTATION.md#fpga) Flow
 
+## Best-of-N Goal Runs
+
+**Planned.** Hardware Goals are measured, not judged: Fmax, area, Cycle Count,
+coverage, and pass/fail come from fresh Booley Flow results. That makes
+fan-out cheap to evaluate. One Goalset starts N Goal Mode sessions, each in its
+own linked worktree with its own Developer Agent. Sessions may differ in model,
+provider, effort, or a short strategy hint ("pipeline the multiplier",
+"retime the adder tree").
+
+Each session finishes with its own Review Package. Booley then re-runs the
+Goals at each candidate's final commit and ranks the candidates by those
+results: first by Goals met, then by a primary metric the user picks when
+starting (for example area or Fmax), then by diff size. The user reviews the
+ranking and the winner's Review Package and merges by hand, as today. Booley
+never merges a candidate itself.
+
+Constraints: cost grows N-fold, so the fan-out size is explicit and capped.
+Concurrent sessions share `[jobs]` limits, commercial EDA license seats, and
+model-provider rate limits, so the scheduler must queue rather than fail. An
+optional early stop cancels the remaining sessions once one meets every Goal.
+Losing candidates stay available for inspection until the user cleans them
+up, which needs a worktree removal command Booley does not have yet.
+
+## Notifications
+
+**Planned.** Goal Mode sessions and slow Booley Flows run for hours. Today the
+only signal is the Dashboard's NEEDS YOU group, so the user has to keep
+watching it. Booley should push a short notice to the desktop, a phone, or
+email when a Goal is met, a Goal change needs a human decision, a session
+stops or crashes, or a long Flow job finishes or fails.
+
+The hard part is security. A notification service is a path out of the
+Sandbox, and the Sandbox must not gain one. Push services such as ntfy.sh stay
+off the egress allowlist. Notifications therefore come from the host, never
+from the agent:
+
+- A host-side process watches Booley's own records (Goal records, job records,
+  session state) and sends the notice. The agent has no tool that sends one.
+- Message text comes from fixed templates filled with Booley-owned fields:
+  event kind, Goal status, durations, and a Project label the user chose.
+  Agent-written text, file contents, and agent-chosen paths never appear.
+- Notices are rate-limited and coalesced, so an agent cannot encode data in
+  the timing or number of events it triggers.
+- A content-free mode ("Booley needs you") suits Projects whose names are
+  confidential.
+
 ## Native IDE Surface in VS Code
 
 **Planned.** Booley turns VS Code into an *agentic RTL IDE*, but today that means the agent chat plus the Booley Flows it drives; the editor chrome itself is stock VS Code. The next step toward the framing is native UI that lives in the VS Code chrome rather than the terminal: a ticket/run panel, inline acceptance-criterion status, a Flow-run dashboard, and one-click waveform open. That turns "IDE" from an analogy into visible product.
