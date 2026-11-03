@@ -110,7 +110,7 @@ from booley.harness import (
     doctor_sim_dump as sim_dump,
 )
 from booley.harness import terminal_status as ts
-from booley.harness.colors import dim, yellow
+from booley.harness.colors import bold, bold_green, bold_red, dim, yellow
 from booley.harness.setup import readiness
 from booley.harness.setup.common import info
 from booley.harness.setup.docker_image import DOCKER_IMAGE, FLAVOR_IMAGES
@@ -633,10 +633,7 @@ class _Reporter:
         if self.profile.deep:
             assert self.agent_calls is not None
             print(f"  {_agent_usage_summary(self.agent_calls)}")
-        if self.counts["warn"]:
-            print(
-                yellow("  Resolve or explicitly waive every warning before calling setup clean.")
-            )
+        self._print_verdict()
         assert self.findings is not None
         return DiagnosticReport(tuple(self.findings)).health.exit_code
 
@@ -662,13 +659,37 @@ class _Reporter:
                 "\n".join(render_table(("Status", "Check", "ID"), rows, max_widths={1: 72, 2: 48}))
             )
         else:
-            print(ts.status_line(ts.LineStatus.PASS, "no failures or warnings"))
+            print(ts.status_line(ts.LineStatus.PASS, bold_green("no failures or warnings")))
         print()
         count_rows = [
             [f"{ts.glyph(_LINE_STATUS[kind])} {label}", str(self.counts[kind])]
             for kind, label in _COUNT_LABELS
         ]
         print("\n".join(render_table(("Status", "Count"), count_rows)))
+
+    def _print_verdict(self) -> None:
+        """End the run with one bold line naming the outcome.
+
+        It is the last line on screen, so the result does not blend into the
+        check rows above it.
+        """
+        fails, warns = self.counts["fail"], self.counts["warn"]
+        print()
+        if fails:
+            noun = "failure" if fails == 1 else "failures"
+            print(bold_red(f"  ✗ {fails} {noun}. Fix every failure before using Booley."))
+        elif warns:
+            noun = "warning" if warns == 1 else "warnings"
+            print(
+                bold(
+                    yellow(
+                        f"  ! {warns} {noun}. Resolve or explicitly waive every warning"
+                        " before calling setup clean."
+                    )
+                )
+            )
+        else:
+            print(bold_green("  ✓ All clear. Booley is ready to use."))
 
     def result(self, exit_code: int) -> DoctorRunResult:
         """Freeze the accumulated findings after :meth:`finish`."""
