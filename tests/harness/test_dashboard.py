@@ -163,7 +163,7 @@ async def test_handles_name_every_dashboard_surface_and_full_keys_only_in_detail
         assert "codex:00" not in str(app._content()[2])
         await open_session(app, pilot, "codex:00")
         orientation, _, rows = app._content()
-        assert orientation.startswith("S1 ·")
+        assert str(orientation).startswith("S1 ·")
         assert "Session key: codex:00" in orientation
         assert "J-SIM1" in str(rows)
         await pilot.press("right")
