@@ -472,6 +472,16 @@ ENV BOOLEY_CONTAINER=1
 # spec predates it.
 ENV MCP_TOOL_TIMEOUT=7200000
 
+# Separately, interactive Claude Code moves any MCP call still running after
+# 120s into a background task (CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS, default
+# 120000). Booley's inline wait (240s) and booley_poll ceiling (270s) are
+# longer, so a heavy call was backgrounded mid-wait and its notification
+# carried only RUNNING. 2h matches MCP_TOOL_TIMEOUT: past every server-side
+# wait, so a call is never auto-backgrounded, while Ctrl+B still works (0
+# would disable the background wrapper entirely). Claude Code clamps the value
+# only to [0, 2^31-1] ms (checked on 2.1.317), so 2h is honored as written.
+ENV CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=7200000
+
 # The stable image must never accidentally acquire candidate application code.
 RUN python -c 'import importlib.util; assert importlib.util.find_spec("booley") is None' \
     && yosys -V \
