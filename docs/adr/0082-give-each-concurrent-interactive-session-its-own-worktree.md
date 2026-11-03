@@ -51,7 +51,7 @@ flag, which still passes through to the CLI unchanged.
   in use, in which case Booley creates a worktree for it. The main checkout is
   in use when either:
   - another `booley chat` holds the main-checkout lock, an exclusive lock that
-    `booley chat` takes on a file in the shared part of the Booley Directory
+    `booley chat` takes on a file in Common Booley State
     and holds for the session's lifetime; or
   - the Session Registry has a live Session whose checkout is `/work`. This
     catches a plain `claude` tab or the VS Code agent panel, which take no
@@ -164,11 +164,11 @@ When the agent exits, the parent asks: keep or discard.
 
 - `list` shows each worktree's branch, Booley Directory kind, uncommitted and
   unmerged work, live Session, active Goal Record, and last-used time.
-  Last-used is a stamp in the shared part, updated on every launch and Booley
+  Last-used is a stamp in Common Booley State, updated on every launch and Booley
   tool call from that worktree; Session Registry rows expire too soon to serve.
 - `rm` performs the removal procedure that is manual today, in order:
   evidence (including `handoffs/`, `reviewer-evidence/`, Flow reports and
-  traces) moves to the shared part, a Paired Checkout is removed before its
+  traces) moves to Common Booley State, a Paired Checkout is removed before its
   outer worktree, populated submodules are handled, then the worktree is
   removed. Branches are kept.
 - `rm` refuses, unless forced, on a live Session, an active Goal Record,
@@ -181,30 +181,33 @@ When the agent exits, the parent asks: keep or discard.
 Existing worktrees need no migration. Detached ones are listed as detached;
 `rm` and `gc` treat their HEAD commits as unmerged until they are on a branch.
 
-### Shared and per-worktree Booley Directory
+### Common and Checkout Booley State
 
 The Booley Directory is split explicitly into two parts, and every path in it
-belongs to exactly one:
+belongs to exactly one. The names follow git, whose common dir is shared by
+every worktree while each worktree keeps its own per-checkout files.
 
-- **Shared**: one per Project, in the Main Booley Directory, used by every
-  checkout. It holds state that coordinates sessions and Jobs or that is a
-  cache safe to share.
-- **Per-worktree**: one per checkout, in that checkout's Worktree Booley
+- **Common Booley State**: one per Project, in the Main Booley Directory,
+  used by every checkout. It holds state that coordinates sessions and Jobs
+  or that is a cache safe to share.
+- **Checkout Booley State**: one per checkout, in that checkout's Booley
   Directory. It holds configuration versioned with the code and results tied
-  to one checkout.
+  to one checkout. The Main Booley Directory holds the main checkout's
+  Checkout Booley State next to the Common Booley State; a Worktree Booley
+  Directory holds only Checkout Booley State.
 
 One rule decides which directory a caller gets:
 
 - `BOOLEY_DIR`, `[project].dir`, or walk-up selects the Project. It may name
   any Booley Directory of that Project.
-- The shared resolver maps that selection to the Main Booley Directory through
+- The common resolver maps that selection to the Main Booley Directory through
   the git common dir, from any checkout.
-- The per-worktree resolver returns the Booley Directory of the checkout being
+- The checkout resolver returns the Booley Directory of the checkout being
   worked on (`resolve_checkout_booley_dir`).
 
 So commands Booley runs for a checkout (Pre-Sim Commands, the post-setup
 hook) get one directory in `BOOLEY_DIR`, the checkout's own, and a Booley
-command they start still reaches shared state in main. The path-by-path
+command they start still reaches Common Booley State in main. The path-by-path
 classification is in
 [Appendix: Booley Directory split](#appendix-booley-directory-split).
 
@@ -265,39 +268,39 @@ shows the session handle, which now equals the worktree name.
 - The peer's cwd now selects a call's checkout. ADR 0068 needs an amendment
   for this and for handle retention and allocation.
 - Code that resolves the Booley Directory must say which part it wants. Doctor
-  can then check that no shared path exists inside a Worktree Booley
+  can then check that no Common Booley State path exists inside a Worktree Booley
   Directory.
 
 ## Appendix: Booley Directory split
 
 ### Classification
 
-Per-worktree paths are versioned with the RTL, or tied to one checkout's
-sources. Everything else is shared.
+Checkout Booley State is versioned with the RTL, or tied to one checkout's
+sources. Everything else is Common Booley State.
 
 | Part | Paths (relative to the Booley Directory) | Why |
 |---|---|---|
-| Per-worktree | `booley.toml`, `tests.toml`, `criteria.toml`, `doctor-waivers.toml`, `configs.toml`, `cores/`, `hooks/`, `generators/`, `mcp_tools/`, `selftest/`, `AGENTS.md`, `FUSESOC_IGNORE`, `goals/history/`, `tickets/history/` | Versioned configuration; it changes with the code on the worktree's branch |
-| Per-worktree | `.runtime/edalize/` and its `.locks/`, `.runtime/python-artifacts/`, `flow-reports/`, `mcp-tool-reports/`, `tmp/setup/` | Build trees and Flow evidence for one checkout's sources; concurrent writers must not collide |
-| Shared | `goals/<id>/`, `runtime/jobs/slots/`, `runtime/job-handles/`, `runtime/sessions/` (registry and handle map), `runtime/session_activity/`, `runtime/dashboard-task.lock`, `.interactive_logs/`, the main-checkout lock, worktree last-used stamps and conversation records | Coordinates sessions and Jobs across the whole Sandbox |
-| Shared | `runtime/doctor_stamp.json`, `runtime/doctor_deep_stamp.json`, Doctor probes, `runtime/upgrade_review.json` | Describes the Sandbox and installed package, not the code |
-| Shared | `.runtime/compiler-cache/`, `result-cache/` (ADR 0076) | Content-addressed or keyed by committed state; safe and useful to share |
-| Shared | `worktrees/` and `worktrees/.locks`, `.baseline-wt-*`, `directory-layout.lock`, `.directory-relocation.json` | Registry and scratch for every checkout |
-| Shared | `findings.jsonl`, `BOOLEY-FEEDBACK.md`, `setup-evidence/`, `reviewer-evidence/`, `reviewer-state/`, `handoffs/`, `tickets/` runtime state | Project-wide logs and evidence; Reviewer state is already keyed by checkout |
-| Shared, read from main | `goalsets/` | The glossary makes the Main Booley Directory the owner of Goalsets, and Goal entry reads them from main (`goals/entry.py:352,536`) |
-| Shared, built from main | `docker/` | Versioned, but the Project has one Sandbox image; a worktree's copy cannot change the running image |
+| Checkout | `booley.toml`, `tests.toml`, `criteria.toml`, `doctor-waivers.toml`, `configs.toml`, `cores/`, `hooks/`, `generators/`, `mcp_tools/`, `selftest/`, `AGENTS.md`, `FUSESOC_IGNORE`, `goals/history/`, `tickets/history/` | Versioned configuration; it changes with the code on the worktree's branch |
+| Checkout | `.runtime/edalize/` and its `.locks/`, `.runtime/python-artifacts/`, `flow-reports/`, `mcp-tool-reports/`, `tmp/setup/` | Build trees and Flow evidence for one checkout's sources; concurrent writers must not collide |
+| Common | `goals/<id>/`, `runtime/jobs/slots/`, `runtime/job-handles/`, `runtime/sessions/` (registry and handle map), `runtime/session_activity/`, `runtime/dashboard-task.lock`, `.interactive_logs/`, the main-checkout lock, worktree last-used stamps and conversation records | Coordinates sessions and Jobs across the whole Sandbox |
+| Common | `runtime/doctor_stamp.json`, `runtime/doctor_deep_stamp.json`, Doctor probes, `runtime/upgrade_review.json` | Describes the Sandbox and installed package, not the code |
+| Common | `.runtime/compiler-cache/`, `result-cache/` (ADR 0076) | Content-addressed or keyed by committed state; safe and useful to share |
+| Common | `worktrees/` and `worktrees/.locks`, `.baseline-wt-*`, `directory-layout.lock`, `.directory-relocation.json` | Registry and scratch for every checkout |
+| Common | `findings.jsonl`, `BOOLEY-FEEDBACK.md`, `setup-evidence/`, `reviewer-evidence/`, `reviewer-state/`, `handoffs/`, `tickets/` runtime state | Project-wide logs and evidence; Reviewer state is already keyed by checkout |
+| Common, read from main | `goalsets/` | The glossary makes the Main Booley Directory the owner of Goalsets, and Goal entry reads them from main (`goals/entry.py:352,536`) |
+| Common, built from main | `docker/` | Versioned, but the Project has one Sandbox image; a worktree's copy cannot change the running image |
 
 ### Resolution
 
-- Shared paths resolve through one function that returns the Main Booley
+- Common Booley State resolves through one function that returns the Main Booley
   Directory, by way of the git common dir, from the Project that `BOOLEY_DIR`,
   `[project].dir`, or walk-up selected. `goals/input_identity.py`
   `main_booley_dir_entry` does the git-common-dir step today but ignores the
   environment; the new resolver must not.
-- Per-worktree paths resolve through `resolve_checkout_booley_dir`.
+- Checkout Booley State resolves through `resolve_checkout_booley_dir`.
 - Walk-up resolution of runtime state, `Path.cwd() / ".booley"`, and literal
   `<root>/.booley` paths are retired.
-- Snapshot creation copies only per-worktree paths (an allowlist), replacing
+- Snapshot creation copies only Checkout Booley State (an allowlist), replacing
   today's exclusion list.
 
 ### Defects this fixes
@@ -336,7 +339,7 @@ becomes common.
 8. **Both.** The post-setup hook gets `BOOLEY_DIR` set to the checkout's
    directory (`runtime/project_prepare.py:77`), and today's resolvers then
    treat that copy as the whole Project, so Booley commands run by the hook
-   resolve shared state per worktree. The resolution rule above fixes this
+   resolve Common Booley State per worktree. The resolution rule above fixes this
    without changing what the hook receives.
 9. **Sandbox.** A single Reviewer run writes state per checkout
    (`specialists/reviewer.py:944`) and evidence to main (`:1693`).
