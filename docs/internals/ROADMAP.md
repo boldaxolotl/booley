@@ -157,6 +157,16 @@ history in `.booley/`, with no hosted checks or files in the RTL
 repository. Execution and reporting differ; Criteria, baselines, and regression
 limits stay the same.
 
+`booley ci` also fills the local [Result
+Cache](../adr/0076-reuse-results-at-committed-states-through-a-project-result-cache.md#8-filling-the-cache-booley-ci-at-a-commit).
+It takes a commit (default `HEAD`) and runs each Job in its own throwaway
+checkout at that commit, so the tree is clean. Locally it runs at the lowest Job
+priority (one Job at a time by default), reports the same verdict as hosted CI,
+counts only verified cache hits, and stores each pass. It runs manually or from
+a configurable `post-merge` hook on `main`. The next agent session starting from
+that commit then gets hits instead of paying for the same runs. Hosted results
+stay on the runner; reusing them across hosts is future work.
+
 ## GitHub Issues in Ticket Mode
 
 **Planned.** GitHub Issues should be first-class Ticket sources alongside the
