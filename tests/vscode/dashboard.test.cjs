@@ -20,20 +20,36 @@ function fakeEditor(options, records, settings) {
     const root = { fsPath: '/work' };
     const output = { appendLine: line => log.push(line), show() {}, dispose() {} };
     const listen = name => fn => { listeners[name] = fn; return { dispose() {} }; };
+    class TabInputText { constructor(uri) { this.uri = uri; } }
+    // Editor tabs the window has open; `records.tabs` lets a test add one later.
+    const group = { viewColumn: 1, tabs: records.tabs };
+    for (const file of options.tabs || []) {
+        group.tabs.push({ input: new TabInputText(fileUri(file)), isActive: true });
+    }
     return {
         TerminalExitReason: {Shutdown: 1, Process: 2, User: 3, Extension: 4},
+        TabInputText,
         env: { remoteName: remote, sessionId: 'fixture-window' },
-        commands: { executeCommand: async id => {
-            commands.push(id);
+        commands: { executeCommand: async (id, ...args) => {
+            commands.push(args.length ? [id, args[0].fsPath, args[1]] : id);
             if (options.commandFails) { throw new Error('unknown command'); }
         } },
+        languages: {
+            // Enough glob for the fixtures: `**/` prefix and `*` within a name.
+            match: (selector, document) => {
+                const body = selector.pattern.replace(/^\*\*\//, '')
+                    .replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*');
+                return new RegExp(`(^|/)${body}$`).test(document.uri.fsPath) ? 10 : 0;
+            },
+        },
         workspace: {
             isTrusted: trusted,
             workspaceFolders: [{ uri: root }],
             getConfiguration: name => ({
-                get: () => settings.protocol,
+                get: () => name === 'workbench' ? settings.associations : settings.protocol,
                 inspect: () => ({ defaultValue: 'off', globalValue: settings.permission }),
             }),
+            openTextDocument: async uri => ({ uri }),
             onDidGrantWorkspaceTrust: listen('trust'),
             onDidChangeConfiguration: listen('config'),
         },
@@ -53,15 +69,29 @@ function fakeEditor(options, records, settings) {
                 return new Promise(resolve => { record.resolve = resolve; });
             },
             onDidCloseTerminal: listen('close'),
+            tabGroups: {
+                get all() { return [group]; },
+                close: async tab => {
+                    records.closedTabs.push(tab.input.uri.fsPath);
+                    group.tabs.splice(group.tabs.indexOf(tab), 1);
+                },
+                onDidChangeTabs: listen('tabs'),
+            },
         },
     };
 }
 
+function fileUri(fsPath) {
+    return { fsPath, toString: () => `file://${fsPath}` };
+}
+
 function fixture(options = {}) {
     const {enabled = true, error, raw, delayed = false} = options;
-    const records = {log: [], terminals: [], calls: [], listeners: {}, commands: [], messages: []};
+    const records = {log: [], terminals: [], calls: [], listeners: {}, commands: [], messages: [],
+        tabs: [], closedTabs: []};
     const {log, terminals, calls, listeners} = records;
-    const settings = {protocol: options.protocol ?? 1, permission: options.permission};
+    const settings = {protocol: options.protocol ?? 1, permission: options.permission,
+        associations: options.associations};
     const vscode = fakeEditor(options, records, settings);
     let complete;
     function execFile(command, args, options, callback) {
@@ -86,7 +116,8 @@ function fixture(options = {}) {
         update: async (key, value) => { state.set(key, value); },
     } };
     module.exports.activate(context);
-    return { calls, commands: records.commands, messages: records.messages, context, log, terminals, listeners, vscode, settings, complete: () => complete(),
+    return { calls, commands: records.commands, messages: records.messages, context,
+        tabs: records.tabs, closedTabs: records.closedTabs, log, terminals, listeners, vscode, settings, complete: () => complete(),
         reactivate: () => module.exports.activate({subscriptions: [], workspaceState: context.workspaceState}) };
 }
 
@@ -317,4 +348,56 @@ test('Open after the Dashboard exited reveals nothing, and exit handling still r
     f.messages[0].resolve('Open');
     await tick();
     assert.equal(terminal.shown, false);
+});
+
+const START_HERE = '/work/.booley/START-HERE.md';
+const PREVIEW = { '**/START-HERE.md': 'vscode.markdown.preview.editor' };
+const OPEN_PREVIEW = ['vscode.openWith', START_HERE, 'vscode.markdown.preview.editor'];
+const withoutChatClose = commands => commands.filter(id => id !== 'workbench.action.closeAuxiliaryBar');
+
+test('a Codespace reopens a startup text tab with its editor association', async () => {
+    const f = fixture({ remote: 'codespaces', tabs: [START_HERE, '/work/README.md'],
+        associations: { ...PREVIEW, '*.v': 'default' } });
+    await tick(); await tick();
+    assert.deepEqual(withoutChatClose(f.commands), [OPEN_PREVIEW]);
+    assert.deepEqual(f.closedTabs, [START_HERE]);
+});
+
+test('a file name pattern without a slash matches like VS Code does', async () => {
+    const f = fixture({ remote: 'codespaces', tabs: [START_HERE],
+        associations: { 'START-HERE.md': 'vscode.markdown.preview.editor' } });
+    await tick(); await tick();
+    assert.deepEqual(withoutChatClose(f.commands), [OPEN_PREVIEW]);
+});
+
+test('a startup tab that opens just after activation is reopened too', async () => {
+    const f = fixture({ remote: 'codespaces', associations: PREVIEW });
+    await tick();
+    f.tabs.push({ input: new f.vscode.TabInputText(fileUri(START_HERE)), isActive: true });
+    f.listeners.tabs();
+    await tick(); await tick();
+    assert.deepEqual(withoutChatClose(f.commands), [OPEN_PREVIEW]);
+});
+
+test('associations are applied once per workspace and only in a Codespace', async () => {
+    const f = fixture({ remote: 'codespaces', tabs: [START_HERE], associations: PREVIEW });
+    await tick(); await tick();
+    f.tabs.push({ input: new f.vscode.TabInputText(fileUri(START_HERE)), isActive: true });
+    f.reactivate();
+    await tick(); await tick();
+    assert.deepEqual(withoutChatClose(f.commands), [OPEN_PREVIEW]);
+    for (const remote of ['dev-container', undefined]) {
+        const other = fixture({ remote, tabs: [START_HERE], associations: PREVIEW });
+        await tick(); await tick();
+        assert.deepEqual(withoutChatClose(other.commands), []);
+    }
+});
+
+test('a failed reopen keeps the text tab open', async () => {
+    const f = fixture({ remote: 'codespaces', tabs: [START_HERE], associations: PREVIEW,
+        commandFails: true });
+    await tick(); await tick();
+    assert.deepEqual(withoutChatClose(f.commands), [OPEN_PREVIEW]);
+    assert.deepEqual(f.closedTabs, []);
+    assert.equal(f.tabs.length, 1);
 });

@@ -30,6 +30,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 - VS Code's Chat side bar no longer takes a third of the window when you first
   open a Sandbox or GitHub Codespace. The Booley Sandbox Integration extension
   closes it once per workspace; reopen it any time and it stays open.
+- In a GitHub Codespace, files the Codespace opens at startup now honor their
+  `workbench.editorAssociations` entry, so a getting-started Markdown file
+  opens rendered instead of as source text. Codespaces opens them before the
+  container's settings load; the Booley Sandbox Integration extension reopens
+  them once with the associated editor.
 - Booley MCP servers that Booley starts for its own agents no longer add rows
   to the Dashboard's Sessions view, and `booley doctor --deep`'s developer probe
   no longer starts a Booley MCP server or offers tools.
