@@ -17,7 +17,7 @@ from textual.widgets import DataTable, Static
 
 from booley.criteria.presentation import CriterionPresentation
 from booley.harness.dashboard import app as dashboard_app
-from booley.harness.dashboard import model
+from booley.harness.dashboard import model, sessions
 from booley.harness.dashboard.app import DashboardApp
 from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
@@ -282,13 +282,46 @@ async def test_enter_from_preview_opens_unchanged_session_detail():
         assert app.navigation.view == "session"
         assert not app.query_one("#aside").display
         assert str(app.query_one("#orientation", Static).render()) == ORIENTATION
-        assert app.row_keys == [*GOAL_NAMES, "job:" + json.dumps(job.key), "call:0"]
+        assert app.row_keys == [
+            *GOAL_NAMES,
+            sessions.HEADER_PREFIX + "spacer",
+            sessions.HEADER_PREFIX + "booley-activity",
+            "job:" + json.dumps(job.key),
+            "call:0",
+        ]
 
 
 # Captured from the unmodified session detail of the fixture above.
 ORIENTATION = (
     "S1 · /work/a · goal/fixture · Goal Mode · connected · Started 5m ago\n"
-    "Working · 1m 40s · \n"
+    "Working · 1m 40s\n"
     "Last Booley call: sim · 5m ago\n"
     "Session key: codex:00"
 )
+
+
+def test_session_header_accents_facts_but_not_agent_written_summary():
+    """Header facts carry accents; the agent-written summary stays plain but for headings."""
+    rows = [session_row(0, "wt0", work_dir="/work/a", branch="goal/fixture", calls=ONE_CALL)]
+    goal = replace(
+        goal_view("wt0", "active", met=1, goals=(0,) * 2, pending_proposals=0),
+        terminal_summary="## What changed\n- Working bus connected · Session key: x",
+    )
+    activity = {"codex:00": Activity(WAITING_USER, stamp(100))}
+    app = DashboardApp(lambda: snapshot_of(rows, goals=[goal], activity=activity))
+    app.snapshot = snapshot_of(rows, goals=[goal], activity=activity)
+    app.navigation = replace(app.navigation, view="session", session="codex:00")
+    text, _, _ = app._content()
+
+    def style_of(fragment, start=0):
+        offset = text.plain.index(fragment, start)
+        return {str(span.style) for span in text.spans if span.start <= offset < span.end}
+
+    assert "bold" in " ".join(style_of("Waiting for user input"))
+    assert "bold" in " ".join(style_of("S1"))  # The title line stands out.
+    for fragment in ("Last Booley call:", "Session key:", "connected", "sim"):
+        assert style_of(fragment), fragment
+    # The Markdown heading marker is dropped; the heading is styled as a label.
+    assert "## " not in text.plain and style_of("What changed")
+    summary = text.plain.index("- Working")
+    assert not style_of("- Working bus connected · Session key: x", summary)
