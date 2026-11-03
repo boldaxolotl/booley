@@ -260,7 +260,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
             "",
             "**Goal Mode:** the Review Goal fixes scope and spec, so `scope`, `spec` and "
             "`steer` are refused. Declare each Review Goal with exactly one `target` or "
-            "`paths` (see the Goal catalog).",
+            "`paths` (see `booley cheat --goals`).",
             "",
             "**Verify fixes (both modes):** after fixing findings, call `reviewer` with "
             "`verify=true` (CLI: `--verify`). It rechecks only the latest review's open "
