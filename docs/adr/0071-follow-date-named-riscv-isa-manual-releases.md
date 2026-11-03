@@ -12,17 +12,16 @@ volumes and their release. Each download has its own SHA-256 pin; a checksum mis
 image build. Refreshes change the release argument and all four hashes together, keeping installed
 filenames stable. The debug specification and psABI retain their existing independent pins.
 
-The release toolchain currency audit compares `ISA_MANUAL_RELEASE` in `Dockerfile.riscv` with the
-newest published, non-draft, non-prerelease tag consisting of exactly eight date digits. Inspect all
-release pages: GitHub's `latest` endpoint can point to a per-merge snapshot. Select the greatest date
-as of the audit, and keep that baseline for the rest of the Booley release. Equal is **current**;
-a newer date-named release that passes acceptance is a **routine update**; one that fails acceptance
-is **held**, with a follow-up issue naming the failure. The pin is reviewed once per Booley release;
-new per-merge snapshots alone never trigger an update.
+A refresh compares `ISA_MANUAL_RELEASE` in `Dockerfile.riscv` with the newest published, non-draft,
+non-prerelease tag consisting of exactly eight date digits. Inspect all release pages: GitHub's
+`latest` endpoint can point to a per-merge snapshot. A newer date-named release lands in its own
+dependency-update PR, independent of Booley releases; one that fails acceptance is held at the
+current pin, with a follow-up issue naming the failure. New per-merge snapshots alone never trigger
+an update. A Booley release never refreshes the pin: it ships the pin already on `main`.
 
 Acceptance requires checksum-verified downloads of all four assets, the RISC-V image build, and
 the session runtime contract's required document paths. Doctor's offline-document probe must also
-agree with that file set. Audit findings record the selected release and any held reason.
+agree with that file set. The refresh PR records the selected release; a held issue records the reason.
 
 ---
 status: accepted
@@ -32,11 +31,13 @@ status: accepted
 
 - Per-merge `riscv-isa-release-<sha>-<date>` snapshots were rejected because they change several times
   a week and can include draft content. Their freshness does not make them ratified releases.
-- A fixed pin refreshed only on demand was rejected because release audits would have no currency
-  baseline and the offline reference could lag newly ratified content indefinitely.
+- A fixed pin refreshed only on demand was rejected because the offline reference could lag newly
+  ratified content indefinitely.
 - Unpinned `latest` downloads were rejected because builds would be irreproducible and could select
   the wrong channel.
-- Automated refresh jobs are deferred; each refresh is a normal reviewed change at release time.
+- Reviewing the pin once per Booley release, in a toolchain-refresh PR before the release branch,
+  was replaced by independent update PRs: bumping dependencies while preparing a release put untested
+  changes into the release. Each refresh is still a normal reviewed change.
 
 ## Consequences
 
