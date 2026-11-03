@@ -6,10 +6,11 @@ LLM is involved, so you can trust a Flow's verdict as you would a script's.
 Booley ships four:
 
 - [Simulation (`sim`)](FLOW-SIM.md): build and run a Target's tests and report
-  whether each one passed.
-    - [Tests](TESTS.md): declare a sim Target's tests, Test Variants, and seeds.
-    - [Coverage](COVERAGE.md): measure how much of the RTL your tests exercise,
-      and find what they miss.
+  whether each one passed. Two companion guides cover simulation topics:
+    - [Tests](TESTS.md): guide to declaring a sim Target's tests, Test
+      Variants, and seeds.
+    - [Coverage](COVERAGE.md): guide to measuring how much of the RTL your
+      tests exercise, and finding what they miss.
 - [Lint (`lint`)](FLOW-LINT.md): check RTL for structural, semantic, and style
   problems.
 - [ASIC synthesis (`synth`)](FLOW-SYNTH.md): estimate ASIC area and timing
@@ -18,8 +19,9 @@ Booley ships four:
   FPGA and report resources and timing.
 
 This page covers what they share: choosing Targets, common options, following
-a run, and reading the result. It also covers **Specialists**, the LLM-powered
-helpers that review code or test your testbench.
+a run, and reading the result. **Specialists**, the LLM-powered helpers that
+review code or test your testbench, have their own page:
+[Specialists](SPECIALISTS.md).
 
 For everyday work [Usage](USAGE.md) is enough: the Developer Agent picks the
 Flow, Target, and options for you. Read on when you want to understand a
@@ -102,10 +104,19 @@ progress output names the commit it chose.
 
 ### Live progress and logs
 
-While a Flow runs in a terminal, a status line shows the Flow, Target, current
-step, elapsed time, and how long ago the tool last printed anything, followed
-by its latest six output lines. Elapsed time is not a percentage, and a quiet
-tool isn't necessarily stuck: EDA tools often buffer their output.
+When you run a Flow yourself with `booley flow`, Booley keeps a small live
+panel at the bottom of your terminal and redraws it in place. Its first line
+names the Flow, Target, and current step, then the elapsed time and how long ago
+the EDA tool last printed anything:
+
+```text
+synth · synth_soc · repair_timing   4m 10s   last output 12s ago
+```
+
+Below it are the tool's latest six output lines. Elapsed time is not a
+percentage, and a quiet tool isn't necessarily stuck: EDA tools often buffer
+their output. `-q/--quiet` hides the panel. When the agent runs a Flow, you see
+its verdict instead, not this panel.
 
 When the output isn't a terminal, for example when redirected to a file or run
 from the agent's shell, Booley prints plain timestamped `[booley-progress]`
@@ -133,44 +144,6 @@ Transcripts collect under `.runtime/flow-console/` in the Booley Directory and
 are never cleaned up automatically. Delete finished ones when you need the space,
 but leave any directory that contains an `active` file: that run is still
 going. Quiet runs, dry runs, and `--help` create no transcript.
-
-## Running a Specialist
-
-A **Specialist** is an LLM-powered helper the Developer Agent calls for one
-focused task, with a fresh context each time:
-
-- **Reviewer** reviews RTL or testbench code for one concern at a time, such as
-  bugs, protocol, or spec compliance.
-- **Mutation Tester** plants small bugs in the RTL and checks that your tests
-  catch them.
-- **Coverage Analyst** explains a coverage report and suggests what to test
-  next.
-
-A Specialist that judges one side of the RTL/testbench split can't see the
-other side. A reviewer looking at the testbench never reads the RTL, so it
-judges the tests against the spec rather than against what the RTL happens to
-do.
-
-Ask the agent, for example *"review the RTL for bugs"*. To run one yourself, in
-a container terminal:
-
-```bash
-booley specialist                             # list the Specialists
-booley specialist reviewer --help             # its options
-booley specialist reviewer --category rtl --focus bugs --scope rtl
-```
-
-Specialists accept `-C/--project`, `--report-dir`, `--diagnostic`, and, where
-it applies, `--target`. Three options exist only on the command line:
-
-- `--model light|standard|heavy` picks the model tier. A tier below the
-  Specialist's minimum is raised to that minimum.
-- `--max-turns N` caps the conversation length.
-- `--timeout DURATION` limits each model call, not the whole run.
-
-Reports go to `mcp-tool-reports/` in the Booley Directory.
-[CLI-REFERENCE.md](CLI-REFERENCE.md#booley-flows--specialists) lists each
-Specialist's arguments and the Goals it can satisfy.
 
 ## Reading results
 
