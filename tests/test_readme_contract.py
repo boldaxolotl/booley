@@ -1,7 +1,6 @@
 """User-facing README wording and ordering contracts."""
 
 import re
-import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,12 +42,11 @@ def test_demo_leads_with_the_codespaces_badge():
     assert section.index(badge) < section.index("[follow the demo repository's README]")
 
 
-def test_demo_links_the_pinned_demo_readme():
-    contract = ROOT / ".github/contracts/picorv32-demo.toml"
-    pin = tomllib.loads(contract.read_text())["project_ref"]
+def test_demo_links_the_latest_demo_readme():
+    # The link follows the demo's default branch, like the Codespaces badge.
     assert (
         "**[follow the demo repository's README]"
-        f"(https://github.com/boldaxolotl/booley-prj-picorv32/blob/{pin}/README.md)** "
+        "(https://github.com/boldaxolotl/booley-prj-picorv32#readme)** "
         "to run the demo locally, after you [install Booley](#installation)."
     ) in _demo_section()
 

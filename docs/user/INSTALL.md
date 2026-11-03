@@ -12,7 +12,7 @@ supported. Designs must be SystemVerilog or Verilog: VHDL and UVM are not
 supported. You need:
 
 - Python 3.11+
-- [Git 2.37.2+](https://git-scm.com/downloads)
+- [Git 2.37.2+](https://git-scm.com/downloads/)
 - [Docker](https://www.docker.com/), with about **4 GB** free for the image
   (**6 GB** with the RISC-V toolchain) plus room for build artifacts
 - [VS Code](https://code.visualstudio.com/) 1.109 or newer

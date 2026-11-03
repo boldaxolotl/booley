@@ -33,7 +33,7 @@ change.
 
 ## Design description (`.core`)
 
-A `.core` file ([FuseSoC CAPI2 format](https://fusesoc.readthedocs.io/en/stable/user/build_system/core_file.html))
+A `.core` file ([FuseSoC CAPI2 format](https://fusesoc.readthedocs.io/en/stable/user/build_system/core_files.html))
 groups source files into **filesets**, declares typed **parameters**, and
 names the **targets** that combine them:
 

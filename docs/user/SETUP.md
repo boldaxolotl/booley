@@ -50,7 +50,7 @@ testbench edits:
 | [Caliptra](https://github.com/chipsalliance/caliptra-rtl) | Hardware root of trust: SoC with a RISC-V core and firmware | Verilator testbench and firmware scripts | [booley-prj-caliptra](https://github.com/boldaxolotl/booley-prj-caliptra) |
 | [Ibex](https://github.com/lowRISC/ibex) | RV32 CPU core | FuseSoC | — |
 | [biRISC-V](https://github.com/ultraembedded/biriscv) | Dual-issue RV32 CPU core | Makefiles | — |
-| [OpenC910](https://github.com/T-Head-Semi/openc910) | Out-of-order RV64GC core, 415 K LOC | Vendor test runner | — |
+| [OpenC910](https://github.com/XUANTIE-RV/openc910) | Out-of-order RV64GC core, 415 K LOC | Vendor test runner | — |
 | [verilog-pcie](https://github.com/alexforencich/verilog-pcie) | PCIe interface IP | cocotb under pytest | — |
 | [taxi](https://github.com/fpganinja/taxi) | 10G Ethernet MAC | cocotb under pytest | — |
 
