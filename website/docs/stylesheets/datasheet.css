@@ -233,8 +233,6 @@ td.st { white-space: nowrap; }
 .st-ok::before, .st-wip::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 8px; vertical-align: 1px; }
 .st-ok::before { background: var(--mask); }
 .st-wip::before { border: 1.5px solid var(--ink-2); width: 5px; height: 5px; }
-.tbl__notes { font: 400 13.5px/1.45 var(--sans); color: var(--ink-2); margin: 8px 0 0; padding: 0; list-style: none; }
-.tbl__notes li { margin-bottom: 3px; }
 
 /* absolute maximum ratings: the honesty table */
 .amr td:nth-child(2) { font-weight: 600; }
@@ -325,20 +323,53 @@ h1 { font: 700 clamp(32px, 4.2vw, 50px)/1.08 var(--sans); font-stretch: 86%; let
 .lede { max-width: 62ch; margin: 0 0 8px; }
 
 /* ---- Typical procedure: numbered steps, green square step numbers ---- */
-.proc { list-style: none; counter-reset: step; margin: 0; padding: 0; border: 1px solid var(--rule); max-width: 760px; }
-.proc li { counter-increment: step; display: grid; grid-template-columns: 2.2em 1fr; gap: 12px; align-items: baseline;
-  padding: 10px 14px; border-top: 1px solid var(--rule-soft); font: 400 16px/1.5 var(--sans); }
-.proc li:first-child { border-top: 0; }
-.proc li::before { content: counter(step); font: 700 14px/1.6 var(--sans); color: var(--mask-ink); background: var(--mask);
-  text-align: center; min-width: 1.75em; }
-.proc__h { margin: 0; max-width: 760px; background: var(--fill); border: 1px solid var(--rule); border-bottom: 0; padding: 7px 14px; font: 650 15px/1.3 var(--sans); }
-.proc__f { max-width: 760px; border: 1px solid var(--rule); border-top: 0; padding: 8px 14px; font: 400 14px/1.45 var(--sans); color: var(--ink-2); }
-td.lnk a { white-space: nowrap; }
-/* "Open in GitHub Codespaces" badge under a table row's project link */
-.cs-badge { display: inline-block; max-width: 100%; margin-top: 8px; }
-.cs-badge img { display: block; max-width: 100%; height: auto; }
-sup.fn { font: 600 11px/0 var(--sans); }
-sup.fn a { text-decoration: none; padding: 0 1px; }
+/* ---- Demos page ----
+   Buttons (.cta), the browser-demo band (.try) and the design cards (.kits). */
+.cta { display: inline-flex; align-items: center; gap: 12px; padding: 16px 26px; border-radius: 3px;
+  background: var(--mask); color: var(--mask-ink); font: 700 19px/1 var(--sans); font-stretch: 90%;
+  text-decoration: none; box-shadow: 0 2px 0 var(--shadow); transition: transform 0.08s, box-shadow 0.08s; }
+.cta:hover { color: var(--mask-ink); transform: translateY(-1px); box-shadow: 0 4px 10px var(--shadow); }
+.cta:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+.cta svg { width: 1.1em; height: 1.1em; flex: none; }
+.cta--sm { font-size: 16px; padding: 11px 18px; }
+/* Inverted: sits on a --mask band */
+.cta--inv, .cta--inv:hover { background: var(--mask-ink); color: var(--mask); }
+.cta--inv:focus-visible { outline-color: var(--mask-ink); }
+/* Outline: secondary action */
+.cta--line, .cta--line:hover { background: transparent; color: var(--ink); border: 1.5px solid var(--ink); box-shadow: none; }
+.cta--line:hover { color: var(--mask); border-color: var(--mask); }
+@media (prefers-reduced-motion: reduce) { .cta { transition: none; } .cta:hover { transform: none; } }
+.try { display: grid; grid-template-columns: 1.4fr 1fr; gap: 28px; align-items: center; margin: 28px 0 0;
+  padding: 34px 36px; background: var(--mask); color: var(--mask-ink); }
+.try__h { font: 750 30px/1.1 var(--sans); font-stretch: 86%; margin: 0 0 10px; }
+.try p { margin: 0; max-width: 52ch; }
+.try a:not(.cta) { color: var(--mask-ink); }
+.try .try__go { display: flex; flex-wrap: wrap; gap: 14px 20px; align-items: center; margin-top: 20px; }
+.try__facts { margin: 0; font: 500 15px/1.45 var(--sans); }
+.try__facts div { display: grid; grid-template-columns: 6.5em 1fr; gap: 8px; padding: 8px 0;
+  border-top: 1px solid color-mix(in srgb, var(--mask-ink) 30%, transparent); }
+.try__facts div:first-child { border-top: 0; }
+.try__facts dt { font-weight: 700; }
+.try__facts dd { margin: 0; }
+.kits { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-top: 10px; }
+.kit { display: flex; flex-direction: column; border: 1px solid var(--rule); padding: 22px 24px; }
+.kit--start { border: 2px solid var(--mask); }
+.kit p { margin: 0; }
+.kit__tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.kit__h { font: 750 26px/1 var(--sans); font-stretch: 86%; margin: 12px 0 8px; }
+.kit .kit__go { display: flex; flex-wrap: wrap; gap: 12px; margin-top: auto; padding-top: 18px; }
+.tag { display: inline-block; padding: 5px 8px; border: 1px solid var(--rule); color: var(--ink-2);
+  font: 650 12px/1 var(--sans); letter-spacing: 0.06em; text-transform: uppercase; }
+.tag--ok { background: var(--ok-fill); border-color: var(--mask); color: var(--mask); }
+.spec { margin: 14px 0 0; font: 400 14px/1.45 var(--sans); }
+.spec div { display: grid; grid-template-columns: 38% 1fr; gap: 12px; padding: 6px 0; border-top: 1px solid var(--rule-soft); }
+.spec div:last-child { border-bottom: 1px solid var(--rule-soft); }
+.spec dt { font-weight: 650; color: var(--ink-2); }
+.spec dd { margin: 0; }
+@media (max-width: 860px) {
+  .try, .kits { grid-template-columns: 1fr; }
+  .try { padding: 26px 22px; }
+}
 /* ---- Video cards: two-up on desktop, one column below 860 px ---- */
 .vids { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 12px; }
 .vid { border: 1px solid var(--rule); border-top: 6px solid var(--mask); padding: 18px 20px 16px;
@@ -361,9 +392,6 @@ sup.fn a { text-decoration: none; padding: 0 1px; }
 }
 @media (max-width: 860px) {
   .strip { padding-top: 28px; }
-}
-@media (max-width: 600px) {
-  td.lnk a { white-space: normal; overflow-wrap: anywhere; }
 }
 
 /* ---- Term tooltips ----
