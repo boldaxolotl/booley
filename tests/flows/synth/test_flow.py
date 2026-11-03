@@ -59,6 +59,7 @@ from booley.flows.synth.mode import SynthMode
 from booley.flows.synth.recipe import (
     BASELINE_REF_PARAM,
     default_recipe_args,
+    resolve_synth_mode,
     synthesis_recipe_changes,
     synthesis_recipe_snapshot,
     synthesis_recipe_snapshot_fingerprint,
@@ -3171,6 +3172,49 @@ class TestBuildSynthCmd:
         sta = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--sta-sdc"]
         assert any(s.endswith("constraints/dut.sdc") for s in sta)
         assert not any(Path(s).is_absolute() for s in sta)
+
+    def test_paths_resolve_from_a_worktree_behind_a_linked_ancestor(self, tmp_path: Path):
+        """A Codespace Goal worktree sits under the symlinked ``.booley`` entry.
+
+        ``/workspaces/picorv32/.booley/worktrees/zbb`` is physically
+        ``/workspaces/booley-prj-picorv32/worktrees/zbb``. Resolved source
+        paths are physical, so a relative path taken against the linked
+        spelling climbed out of the checkout (``../../../../booley-prj-...``)
+        and synthesis reported "Extra RTL file not found".
+        """
+        physical = tmp_path / "workspaces" / "booley-prj" / "worktrees" / "zbb"
+        physical.mkdir(parents=True)
+        project = tmp_path / "workspaces" / "picorv32"
+        project.mkdir()
+        symlink_or_skip(project / ".booley", physical.parent.parent)
+        work_dir = project / ".booley" / "worktrees" / "zbb"
+        resolved = _with_synth_mode(_fake_synth_resolved(work_dir), "physical")
+        for item in resolved.files:  # every staged file exists, as after FuseSoC setup
+            path = resolved.build_root / item.name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+
+        flow = AsicSynthesizeFlow()
+        cmd: list[str] = []
+        flow._append_rtl_source_args(cmd, resolved, work_dir)
+        flow._append_sta_constraint_args(
+            cmd,
+            resolved,
+            "lite",
+            work_dir,
+            resolve_synth_mode(resolved.flow_options, target="lite"),
+        )
+
+        # Every path is inside the checkout and names the file the Target means,
+        # as seen from the physical working directory the tools run in.
+        expected = {item.absolute(resolved.build_root) for item in resolved.files}
+        for flag in ("--extra-rtl", "--inc-dir", "--sta-sdc"):
+            values = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == flag]
+            assert values, flag
+            for value in values:
+                assert not value.startswith("../"), (flag, value)
+                target = (work_dir.resolve() / value).resolve()
+                assert target in expected or any(p.parent == target for p in expected), value
 
     def test_physical_target_without_sdc_hard_errors(
         self,
