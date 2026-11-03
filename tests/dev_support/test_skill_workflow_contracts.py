@@ -826,6 +826,16 @@ def test_goal_skill_links_packaged_review_and_names_only_public_goal_tools():
     assert "$booley-goal" in metadata
 
 
+def test_goal_review_ends_with_openable_review_package_paths():
+    # The human never sees tool output, so the paths must be in the reply itself,
+    # absolute (the editor terminal links them) and highlighted.
+    text = " ".join(_skill_text("booley-goal", "review.md").split())
+    assert "**Review Package summary:** `<summary>`" in text
+    assert "**Review Package data:** `<package>`" in text
+    assert "the absolute path as inline code" in text
+    assert "the human does not see tool output" in text
+
+
 def test_heal_requires_user_decision_for_ticket_leftovers():
     skill = " ".join(_skill_text("booley-heal").split())
     assert "Treat every `tickets.leftover-*` finding as a user decision" in skill
