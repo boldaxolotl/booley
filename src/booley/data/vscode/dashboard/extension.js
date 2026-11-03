@@ -202,8 +202,73 @@ async function closeChatSideBarOnce(context) {
     }
 }
 
+// GitHub Codespaces opens `customizations.codespaces.openFiles` before the
+// remote settings arrive, so a `workbench.editorAssociations` entry (such as a
+// getting-started Markdown file that should open rendered) is skipped for
+// those first tabs; reopening the file later honors it. Once the settings are
+// here, reopen each such text tab with its associated editor. This runs once
+// per workspace and only for tabs opened in the first minute, so a file the
+// user later opens as plain text on purpose stays that way.
+const ASSOCIATIONS_APPLIED_KEY = 'startupEditorAssociationsApplied';
+const ASSOCIATION_WINDOW_MS = 60000;
+
+// The association view type for *uri*, or undefined. A pattern without a slash
+// matches the file name, as VS Code's own editor resolver does.
+async function associatedViewType(uri, entries) {
+    let document;
+    try {
+        document = await vscode.workspace.openTextDocument(uri);
+    } catch {
+        return undefined;
+    }
+    for (const [pattern, viewType] of entries) {
+        const glob = pattern.includes('/') ? pattern : `**/${pattern}`;
+        if (vscode.languages.match({ pattern: glob }, document) > 0) { return viewType; }
+    }
+    return undefined;
+}
+
+async function applyStartupEditorAssociations(context) {
+    if (vscode.env.remoteName !== 'codespaces') { return; }
+    if (context.workspaceState.get(ASSOCIATIONS_APPLIED_KEY, false)) { return; }
+    await context.workspaceState.update(ASSOCIATIONS_APPLIED_KEY, true);
+    const deadline = Date.now() + ASSOCIATION_WINDOW_MS;
+    const handled = new Set();
+    const sweep = async () => {
+        const associations = vscode.workspace.getConfiguration('workbench').get('editorAssociations') || {};
+        const entries = Object.entries(associations)
+            .filter(([, viewType]) => typeof viewType === 'string' && viewType !== 'default');
+        if (entries.length === 0) { return; }
+        for (const group of vscode.window.tabGroups.all) {
+            for (const tab of group.tabs) {
+                if (!(tab.input instanceof vscode.TabInputText)) { continue; }
+                const uri = tab.input.uri;
+                if (handled.has(uri.toString())) { continue; }
+                handled.add(uri.toString());
+                const viewType = await associatedViewType(uri, entries);
+                if (viewType === undefined) { continue; }
+                try {
+                    await vscode.commands.executeCommand('vscode.openWith', uri, viewType,
+                        { viewColumn: group.viewColumn, preserveFocus: !tab.isActive });
+                    await vscode.window.tabGroups.close(tab);
+                } catch {
+                    // Cosmetic: the text editor stays open if the view cannot.
+                }
+            }
+        }
+    };
+    await sweep();
+    // openFiles may land after activation; watch briefly for those tabs.
+    const watcher = vscode.window.tabGroups.onDidChangeTabs(() => {
+        if (Date.now() > deadline) { watcher.dispose(); return; }
+        void sweep();
+    });
+    context.subscriptions.push(watcher);
+}
+
 exports.activate = context => {
     startBridge(context);
     void closeChatSideBarOnce(context);
+    void applyStartupEditorAssociations(context);
     void new AttachController(context).open();
 };
