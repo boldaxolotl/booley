@@ -757,10 +757,7 @@ async def _codex_run_subprocess(
         if on_start is not None:
             on_start()
         assert proc.stdin is not None
-        proc.stdin.write(full_prompt.encode("utf-8"))
-        await proc.stdin.drain()
-        proc.stdin.close()
-        await proc.stdin.wait_closed()
+        await _feed_prompt(proc.stdin, full_prompt)
 
         stderr_task = asyncio.create_task(_drain_stderr())
         try:
@@ -784,6 +781,22 @@ async def _codex_run_subprocess(
         bytes(stderr_buf).decode("utf-8", errors="replace"),
         proc.returncode,
     )
+
+
+async def _feed_prompt(stdin: asyncio.StreamWriter, prompt: str) -> None:
+    """Write the prompt to Codex's stdin and close it.
+
+    Codex may exit before reading stdin (a rejected token, a bad config). The
+    pipe then breaks mid-write. That is not the failure to report: Codex's own
+    stdout, stderr, and exit code are, so a broken pipe only ends the feed.
+    """
+    try:
+        stdin.write(prompt.encode("utf-8"))
+        await stdin.drain()
+        stdin.close()
+        await stdin.wait_closed()
+    except (BrokenPipeError, ConnectionResetError) as exc:
+        logger.debug("Codex closed stdin before reading the whole prompt: %r", exc)
 
 
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
