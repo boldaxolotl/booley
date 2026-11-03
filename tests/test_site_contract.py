@@ -277,7 +277,7 @@ def test_docs_landing_table_lists_every_user_doc_in_sidebar_order():
     for row in rows:
         group = re.search(r'<th scope="rowgroup" rowspan="(\d+)">([^<]+)</th>', row)
         if group:
-            sections.append((group.group(2), int(group.group(1))))
+            sections.append((html.unescape(group.group(2)), int(group.group(1))))
         link = re.search(
             r'<td>(<span class="docs__tree"[^>]*>└</span>)?<a href="([^"]+)">([^<]+)</a>', row
         )
