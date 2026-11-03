@@ -39,7 +39,7 @@ dependencies = [
     "edalize==0.6.8",
     "fusesoc==2.4.7",
     "httpx>=0.28",
-    "httpx-sse>=0.4",
+    "httpx-sse>=0.4.3",
     "Jinja2>=3.1.6",
     "jsonschema>=4.0",
     "libcst>=1.9.0",
@@ -70,6 +70,9 @@ test = [
     "pytest-xdist==3.8.0",
     "pytest-timeout==2.4.0",
     "pytest-cov==7.1.0",
+    # coverage.py 7.17.1 breaks SIGINT exit codes under patch = ["subprocess"]
+    # (tests expecting 130 get 1); hold 7.17.0 until upstream is fixed.
+    "coverage==7.17.0",
     "diff-cover==10.6.0",
 ]
 quality = [
@@ -97,6 +100,9 @@ dev = [
     # Exact pin: pytest-cov owns xdist data collection/combining, while its
     # subprocess support depends on coverage.py's configured patch mechanism.
     "pytest-cov==7.1.0",
+    # coverage.py 7.17.1 breaks SIGINT exit codes under patch = ["subprocess"]
+    # (tests expecting 130 get 1); hold 7.17.0 until upstream is fixed.
+    "coverage==7.17.0",
     # CI quality gates. Exact pins keep local and hosted results reproducible;
     # the quality extra repeats these pins for a smaller hosted install.
     "diff-cover==10.6.0",

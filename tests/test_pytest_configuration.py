@@ -278,6 +278,7 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     command = coverage_step["run"]
 
     assert "pytest-cov==7.1.0" in dev_dependencies
+    assert "coverage==7.17.0" in dev_dependencies
     assert coverage_config["patch"] == ["subprocess"]
     assert "coverage run" not in command
     assert "pytest tests/" in command
