@@ -261,7 +261,9 @@ def _run_case(
     durations: dict[str, float] | None = None,
     github: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\nasyncio_default_fixture_loop_scope = function\n", encoding="utf-8"
+    )
     (tmp_path / "test_case.py").write_text(
         f"import time\nimport pytest\n{marker}\ndef test_case({arguments}):\n    {body}\n",
         encoding="utf-8",
