@@ -20,6 +20,7 @@ The most valuable repeats happen **at the same commit**:
 - a `main` measurement wanted as a baseline
 - the same commit in another worktree
 - Finish at a committed HEAD
+- a commit one agent session hands to the next, which starts work from it
 
 A full-authority design with a hermetic view was rejected as too complex and
 fragile (see Rejected alternatives). This ADR stores and serves only at clean
@@ -166,9 +167,17 @@ the user docs say so.**
   always run again.
 - **No large artifacts.** Waveforms, coverage databases and bitstreams are
   never stored. A request that needs one of them misses.
-- **Payload.** The verdict inputs the grader reads (reports, logs, exit
-  status, standard output and error), with the producer's UUID, date and
-  duration. Each entry carries its full key material, and each read
+- **Payload.** The verdict inputs the grader reads (logs, exit status,
+  standard output and error) are always stored. The other text reports the
+  Flow writes, such as hierarchical area, timing and utilization reports,
+  are added largest-last up to a per-entry byte cap (default 64 MiB), so a
+  hit is as useful for investigation as a fresh run. Reports that don't fit
+  are listed in the entry as omitted, and a request that needs an omitted
+  report misses. If the verdict inputs alone exceed the cap, nothing is
+  stored and the run prints why. The store's total byte cap (§7) is sized
+  for these larger entries. The producer's UUID, date and duration are
+  recorded; the duration counts from the moment the run holds its Job slot,
+  so queue time doesn't count against the time budget. Each entry carries its full key material, and each read
   verifies it and the entry's digest. The verdict and metrics are re-derived
   from the payload by the current code on every hit, and a different or
   failing re-derivation refuses the hit.
@@ -237,6 +246,71 @@ that run is its verification.
   - Doctor's `--deep` self-tests run `--no-cache`, and `--deep` re-verifies
     tool manifests in full.
 
+### 8. Filling the cache: `booley ci` at a commit
+
+Agents iterate on uncommitted trees, which never store (§1). Without a
+filler, a commit handed to the next agent session arrives with an empty
+cache, and the first session to run there pays full price.
+
+The filler is the planned `booley ci` command
+([roadmap](../internals/ROADMAP.md#continuous-integration-booley-ci)), not a
+separate cache command. Filling the cache and CI are the same operation: take
+a commit and evaluate a named set of Criteria on it. One engine does both.
+Any other clean-commit run still stores as well (§1).
+
+- **Input.** An RTL commit (default `HEAD`) and a named Criteria set. When
+  the Booley Directory is tracked inside the RTL tree, its commit is the RTL
+  commit. When it is its own repository (paired or standalone), its commit
+  defaults to that repository's `HEAD` and is recorded in the entry. A
+  Booley Directory that is neither can't be filled (§1).
+- **Worktrees.** Each Job gets its own throwaway checkout: a detached
+  worktree of the RTL repository at the RTL commit and, for a separate
+  Booley Directory repository, a detached worktree of it at its commit,
+  placed where the Booley Directory resolves. Live files are never copied
+  in. The Goal baseline worktree helper is not reused as it stands: it
+  mirrors the live Booley Directory, and for a Paired Checkout it picks the
+  fork point. Both participants are clean by construction, and one Job per
+  checkout satisfies the overlap rule (§1). The store is reached through the
+  Main Booley Directory (§7).
+- **Ignored files.** A fresh checkout has no non-Booley ignored files, so a
+  run must produce every ignored input it reads (through Pre-Sim Commands,
+  hooks or generators). A Target that needs a pre-existing ignored input,
+  such as firmware built outside Booley, fails in `booley ci`, and the report
+  names the missing path. A working checkout hits these entries only when
+  its ignored files pass the §1 lookup. Leftover build output from earlier
+  uncommitted work usually doesn't, so handoff hits are most reliable in a
+  fresh or cleaned checkout.
+- **Scheduling.** Locally, `booley ci` Jobs take the ordinary Job slots at
+  the lowest priority. A running Job is never preempted, so a long synth or
+  fpga run can delay the session's own work in that slot class. By default
+  at most one `booley ci` Job runs at a time per Project; a Project setting
+  changes that limit.
+- **Verdict.** Locally, `booley ci` produces the same verdict as hosted CI.
+  Projects in stealth mode have no hosted CI, and a failing run after a
+  merge means `main` regressed. An infrastructure error is a CI execution
+  error in both places and fails the run; nothing from that Job is stored.
+- **Hits in a verdict.** Only a verified hit (§6) counts toward a CI
+  verdict. An unverified hit runs fresh, as at Finish (§5), and that run is
+  its verification. Burn-in and sampled re-runs (§6) of an entry whose
+  producer checkout is gone run in a new `booley ci` checkout at the
+  entry's recorded commits.
+- **Relative Criteria** pin the merge-base commit, as the roadmap requires.
+  Locally, a verified entry at that commit serves the baseline: it is a
+  result at the pinned commit, not a comparison with an earlier CI verdict.
+- **Triggers.** Manual, plus a Git `post-merge` hook that a Project setting
+  turns on or off. Booley installs it where Git looks for hooks (`git
+  rev-parse --git-path hooks`, which honours `core.hooksPath`). The hook acts
+  only in the main checkout with `main` checked out, and fills only the new
+  tip, not intermediate commits. A newer fill request replaces a queued
+  older one. A rebase pull or a reset doesn't fire `post-merge`, so those
+  need a manual run. The hook runs on the host and starts `booley ci`
+  through the issued Sandbox, because the cache is unavailable without an
+  issued image (§2).
+- **On a hosted runner** (GitHub Actions), the same engine produces the CI
+  verdict and keeps everything the roadmap lists, including failures and
+  large artifacts. Its results don't enter any local cache: there is no
+  import path, and the host id is in the key (§2).
+
 Rollout, the per-Flow serving gate and the knob-discovery sources for the
 enumeration test are in the implementation plan.
 
@@ -280,6 +354,16 @@ Each is bounded by the sampled re-runs (§6) and the kill switch.
   another Target's tests would invalidate every entry.
 - **No build reuse at clean commits.** Every commit would trigger a full
   rebuild, which teaches users to avoid clean commits.
+- **Storing at uncommitted content states.** Keying every run by working-tree
+  content would let an agent's last run before a commit fill the cache. It
+  needs untracked files in the key, the §3 hygiene on every run, and many
+  more declined stores while agents edit during runs. Explicit filling
+  (§8) gets the handoff hits without it.
+- **Agent guidance to re-run every Criterion after committing.** It moves
+  the same runs from the next session to the committing one, in the
+  foreground, and depends on agents following it.
+- **A separate `booley cache warm` command.** It would duplicate `booley ci`
+  and add a second way to name a set of runs.
 
 ## Consequences
 
@@ -297,5 +381,13 @@ Each is bounded by the sampled re-runs (§6) and the kill switch.
 - A nondeterministic Target is never cached. A confirmed mismatch disables
   the cache for the Project until a human re-enables it.
 - The Vivado metrics cache is retired, which closes #2051.
+- Handoff hits depend on someone running `booley ci` at the commit, and the
+  cache work is blocked on the `booley ci` engine (§8). They are most
+  reliable in a fresh or cleaned checkout.
+- Background `booley ci` Jobs share the ordinary Job slots and can delay a
+  session's own runs; they are never preempted.
+- Hosted CI results are not reused locally. Reusing them across hosts is
+  future work: it needs a host-independent key for image tools and a
+  trusted way to import entries.
 - Public material will describe the cache as reuse at clean commits on the
   same host, checked by sampling, and won't claim it is always correct.
