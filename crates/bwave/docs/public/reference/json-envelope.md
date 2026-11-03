@@ -9,7 +9,7 @@ commands; only the `data` field varies.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/boldaxolotl/booley/9f6ee6a81995e7b45d79da37f58744cce1034585/crates/bwave/schema/bwave.json",
+  "$schema": "https://raw.githubusercontent.com/boldaxolotl/booley/v0.4.0/crates/bwave/schema/bwave.json",
   "command": "<subcommand>",
   "data":    { ... },
   "warnings": ["..."]
@@ -161,7 +161,7 @@ A clean run has `"warnings": []`.
 ## Schema versioning
 
 The `$schema` URL identifies the exact payload schema:
-`.../v0.3.0/crates/bwave/schema/bwave.json`. Use that URL to validate
+`.../v0.4.0/crates/bwave/schema/bwave.json`. Use that URL to validate
 a stored payload, or `bwave schema` for the installed schema.
 
 For local validation:

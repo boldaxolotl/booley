@@ -9,564 +9,476 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
-- ASIC synthesis now works in a checkout reached through a symlink, such as a
-  Goal worktree under a GitHub Codespace's linked `.booley` entry. It used to
-  fail with "Extra RTL file not found" because the RTL, include and SDC paths
-  climbed out of the checkout.
-- When Goal Mode finishes, the agent now ends its reply with the Review
-  Package paths (`SUMMARY.md` and `review-package.json`), each on its own line
-  as a highlighted absolute path you can Ctrl+click in the editor terminal. It
-  also says so when no Goal changes were approved.
+## 0.4.0 - 04 NOV 2026
 
-- `booley doctor` now ends with one bold verdict line: all clear, the number of
-  warnings to resolve or waive, or the number of failures to fix. A clean
-  run's "no failures or warnings" line is bold green.
-- Goal Mode now takes two invocations. `/booley-goal <request>` sets up the
-  Goals and stops after entry; clear the chat, then type `/booley-goal start`
-  to do the work (`$booley-goal` in Codex). `/booley-goal start` also
-  resumes a Goal Mode after a crash or reconnection.
-- `booley cheat --goals` now also prints the Goal catalog and threshold
-  parameters, which moved there from the separate Criteria section.
-  `--criteria` still works as an alias.
-- When you open a terminal in a fresh Sandbox or GitHub Codespace, the
-  Dashboard no longer takes over the panel a moment later. When a terminal is already open, the
-  Booley Sandbox Integration extension starts the Dashboard in its own tab and
-  shows a "Booley Dashboard is ready" notification with an Open button.
-- In a Codespace that falls back to the demo gateway (`BOOLEY_AGENT_APP=auto`
-  with no Claude or Codex login), `booley doctor` now warns instead of failing
-  while the gateway token is still missing. With an explicit agent app
-  (`BOOLEY_AGENT_APP=codex`), a missing gateway token still fails.
-- VS Code's Chat side bar no longer takes a third of the window when you first
-  open a Sandbox or GitHub Codespace. The Booley Sandbox Integration extension
-  closes it once per workspace; reopen it any time and it stays open.
-- In a GitHub Codespace, files the Codespace opens at startup now honor their
-  `workbench.editorAssociations` entry, so a getting-started Markdown file
-  opens rendered instead of as source text. Codespaces opens them before the
-  container's settings load; the Booley Sandbox Integration extension reopens
-  them once with the associated editor.
-- Booley MCP servers that Booley starts for its own agents no longer add rows
-  to the Dashboard's Sessions view, and `booley doctor --deep`'s developer probe
-  no longer starts a Booley MCP server or offers tools.
-- Text-only Codex Specialists such as `coverage_analyst` no longer fail with
-  "Text-only analysis requires the exact model in the Codex models cache" when
-  the Codex models cache is missing or lacks the model. They now run without
-  tools.
-- The user docs were trimmed to current, user-facing content: retired and
-  internal-only detail moved out or was cut, and several reference pages were
-  condensed.
-- Installation now has its own page on the docs site: the
-  [Install guide](https://booley.dev/docs/install/) covers requirements,
-  install, upgrade, and Host Bootstrap. Host Bootstrap moved there from Setup,
-  and the README keeps only the two install commands and a link.
-- `booley targets` now prints an aligned table with a header row, one group row
-  per `.core` file, and a `✓` Doctor column that replaces the old `Dr` marker.
-  The FLOW column shows the Booley Flows that can drive each Target (the
-  edalize flow moves to a `.core flow` row in `booley targets <name>`). Piped
-  output is plain aligned text; `--json` is unchanged.
-- B-Wave `-s` globs now also match relative to the common scope that
-  `bwave list` prints, in every command and in `bwave gui`: with
-  `# scope: TOP.tb`, `-s 'dut.*'` finds `TOP.tb.dut.*` at any depth below
-  `dut`, and still nothing outside the scope. `*`-led globs and bare-name
-  suffix matches select what they did before; a full-path glob gains a signal
-  only when the scope's own name repeats below it. A glob that matches nothing
-  now adds `did you mean '<full-path glob>'?` to its error when it matches
-  below another scope.
-- `BOOLEY_AGENT_APP=auto` (hand-written Sandbox specs, such as a Codespace) now
-  picks the agent app from the user's credentials at every start: Claude, then
-  Codex, then a configured gateway, then Claude with its login offered. A user's
-  own credential beats the gateway. Specialists, the MCP server, `booley chat` and
-  Doctor follow the registrar's choice, Doctor reports it and why, and `auto`
-  outside a Sandbox is refused. Explicit `claude`, `codex` and `none` are unchanged.
-- Codex `gpt-6-astra` runs are now costed at Astra's own price instead of
-  `gpt-5.6-sol`'s, so their cost readouts rise. Unknown GPT model ids now fall
-  back to the Astra price.
-- `booley init --scaffold <name> --stealth` now scaffolds a hidden-footprint
-  Project: `[stealth] enabled = true` and the design and Doctor selftest cores
-  under `.booley/cores/`, so nothing Booley-authored reaches the RTL repository.
-  Doctor gains the `stealth.scaffold-core-tracked` WARN for a scaffold Project
-  switched to Stealth Mode with its scaffold cores still tracked at the root; it
-  names each core and the move. Without `--stealth` the scaffold is unchanged.
-
-- Doctor's attached-window checks (the Viewer Bridge and the installed
-  VaporView version) now run when a VS Code window is attached to the Sandbox.
-  Before, they always skipped with "no VS Code extension host attached", so
-  Doctor stayed green even when VaporView was missing.
-- VaporView now installs in local Sandboxes. The Sandbox Image bundles the
-  verified VaporView 1.6.0 build (with its GPL-3.0 license and source pointer
-  under `/usr/local/share/booley/licenses/vaporview/`), and the generated
-  devcontainer spec installs it from
-  `/usr/local/libexec/booley/vaporview-1.6.0.vsix`, so it needs no network and
-  VS Code does not auto-update it. Doctor reports existing Sandboxes as
-  devcontainer drift; refresh the Sandbox to pick up the bundled build.
-
-- Goal entry and Goal changes now refuse a Goal that names a Test its Target
-  skips in `tests.toml`, instead of freezing Test Runs that never count; Goal
-  status names a Test skipped after entry as skipped, not as gone. Remove the
-  Test from `skip` or drop the Goal.
-- The mutation tester now exposes a Target's `copyto` runtime inputs in the
-  configured `run_cwd` for the baseline and every mutant run, as `booley flow sim`
-  does, and removes them afterwards. A testbench that opens a data file no longer
-  fails its baseline, and a declared `$readmemh` input that was not staged makes
-  the run inconclusive instead of a detected mutant.
-- On Windows, cancelling a queued Job no longer reports it as running when the
-  withdrawal briefly raced the Job's own read of its slot entry. If the slot entry
-  stays locked, the Job is still cancelled and reported as running, and the refused
-  withdrawal is logged.
-- Project Setup's Memory Timing Surrogate guidance now requires every
-  read-data bit to depend, through registers only and bit-wise, on the
-  memory's write data, address, write enables, and byte-enables, and adds a
-  no-pruning probe against a black-box synthesis. Surrogates built under the
-  earlier rule, with read data from the address or constants, may let
-  synthesis delete the surrounding logic and understate area and Fmax.
-  Projects with a surrogate should re-run setup's surrogate validation
-  (Project Configuration step) and fix any surrogate that fails the probe.
-- Parallel Simulation tests no longer show their progress lines under another test's
-  stage or drop them, and one test starting a command no longer clears another test's
-  recent output. Records and transcript labels now carry `lane=<tests>/<attempt>`
-  while tests run at once; a single test at a time prints as before.
-- `tests.toml` sections now match Targets by identity. In a Project with several
-  cores that declare the same Target name, a Target no longer picks up another
-  core's section: a qualified key (`["vendor:lib:core#sim"]`) serves only the
-  core it names, and a bare key serves Targets without a qualified key, in any
-  file order. Two keys naming one Target make the Simulation Flow refuse the run,
-  and `booley doctor` fails them and any key that names no Target. A stale
-  qualified key, for example after a core rename, no longer falls back to the
-  bare section: Doctor fails it as dead. Keep one key per Target.
-- Templated `[flows.sim].run_cwd` cleanup now also removes the empty parent directories
-  Booley created to reach the attempt directory, stopping at the template root and at any
-  directory it did not create, and templated attempt run-lock files are no longer left in
-  `.runtime/simulation-run-locks/`. Directories and lock files left by earlier runs stay.
-- `[models.roles]` accepts only the Specialist roles `reviewer`, `mutation_tester`
-  and `coverage_analyst`. The `developer`, `recovery` and `triage_report` pins
-  no longer change any model (nothing reads them); such a pin now fails
-  `booley doctor`, and commands that load agent settings refuse it until you delete
-  the line (`booley shell` warns and falls back to Sandbox defaults, including the
-  default image).
-- On Windows, a Simulation Campaign no longer stops with "child execution cancelled
-  before result publication" when a Job Slot token read or lease renewal races a
-  concurrent rewrite. Token reads and rewrites use the same bounded sharing-error
-  retry as other protocol files, and a token that stays unreadable is never treated
-  as absent. A campaign cancellation now names its cause (stop requested, lease lost,
-  or token missing) and the slot or lane.
-- On Windows, a simulation baseline Job's request and Job record are now read and
-  written through the short sharing errors a concurrent replace causes, so a baseline
-  no longer reports "interrupted or unavailable" because a read raced a write. A Job
-  record that stays unreadable is reported with its cause instead of as absent, and
-  the Job record is written before the baseline is published as `pending`.
-- `booley cleanup apply --run-id <id>` now removes the whole marker-guarded Setup
-  run root (`tmp/setup/<id>/` in the Booley Directory) after snapshotting Findings attachments
-  that point into it; `booley cleanup preview --run-id <id>` lists its files.
-  `booley cleanup record` and the `--digest`, `--retention` and
-  `--cache-disposition` options are removed, and plan row 22 (build-cache
-  disposition) is gone. Setup cleanup removes nothing outside the run root, such
-  as Doctor scratch written elsewhere. Run roots created by older versions have
-  no marker and are refused; delete them by hand.
-- When a Simulation Campaign's Pre-Sim evidence fails re-authentication, the report
-  card no longer keeps the `Candidate:` and `Cycle Count baseline:` headings without
-  their firing lines. The card and `sim.json` now come from one projection.
-- Compiler-cache settings (`[flows.sim.compiler_cache]`) are now read like the other
-  `[flows.sim]` settings, so an unreadable `booley.toml` no longer fails Simulation
-  preparation (invalid `enabled` or `max_size` values still do). The cache root is
-  the issued `BOOLEY_COMPILER_CACHE_ROOT` as given. When it is unset, including
-  outside a Sandbox where builds previously cached under the host Booley Directory,
-  builds compile uncached with a `booley session refresh` warning.
-- Coverage finds RTL sources without coverage points with a lexical scan at
-  Preflight instead of a Verilator declaration dump. User `--dumpi-*` Verilator
-  options now pass through to coverage builds. `COV_RTL_SOURCE_DISCOVERY_INCOMPLETE`
-  no longer appears, and `` `line `` directives or token joins no longer suppress
-  `COV_RTL_SOURCE_WITHOUT_POINTS`. The Analyst `zero_point_sources` view and
-  overview drop `discovery_status`, `comparison_status` and `unusable_findings`,
-  and the verdict card omits the source line when there are no gaps. A coverage
-  Simulation Campaign interrupted before the upgrade cannot be resumed because
-  its command model changed; collect it again.
-- Deep Doctor now keeps only the latest completed deep attempt: a failed or
-  incomplete attempt makes deep status due until the next qualifying run, reports one
-  "latest deep attempt failed" reason, and `deep_status` no longer includes
-  `last_success`, the per-reason `checks` list, or the `latest-attempt-not-qualified` code. Existing deep records are replaced by the next deep run.
-- The Reviewer no longer fails when a Claude agent reports its findings through
-  `ReportFindings` more than once. Each `ReportFindings` finding must now match an
-  issue at the same file and line in the final issues JSON, instead of the two
-  channels being compared by issue counts. The run still fails when a
-  reported finding is missing from the JSON or, when it carries a severity, rated
-  lower there. A `ReportFindings` verdict (`CONFIRMED`/`PLAUSIBLE`) no longer
-  counts as a severity.
-- `sim` with a relative Cycle Count Goal (for example
-  `cycle_count_increase_at_most: "10%"`) no longer fails planning with
-  `fatal: '.../.baseline-wt-...' already exists`. One run now checks out the
-  baseline revision once and uses that checkout for Target authorization,
-  planning, and the baseline Simulation.
-- `sim` with relative Cycle Count Goals on two or more Tests of one Target no
-  longer fails with `prerequisite identities must be unique`. The candidate now
-  links each Test's work item in the shared baseline campaign; that campaign
-  runs once, and campaign resume accepts it.
-- In a Goal Mode or MCP `sim` run, the Cycle Count baseline now builds and runs
-  in the baseline checkout. Its build and launch commands used to start in the
-  candidate checkout, so the baseline build failed (`No such file or
-  directory`) and the relative Cycle Count Goal reported "Cycle Count
-  prerequisite has no cycle observation".
-- A relative Cycle Count Goal (for example `cycle_count_increase_at_most: "10%"`)
-  can now be met in Goal Mode. Its baseline observation used to stay
-  `mismatched`, so the Goal stayed unmet with "baseline Cycle Count evidence is
-  unavailable or invalid" even when the baseline ran: acceptance found the
-  baseline Target only through Criterion fields that Goal entry does not write.
-- When `booley init` retires the old hook files in the Booley Directory's `hooks/`,
-  a modified copy is now renamed to `<name>.pre-booley` (was
-  `<name>.pre-booley.<digest>`). If that name already exists, the file stays in
-  place with a warning, and a symlink or directory at a retired name is preserved
-  with a warning. A failed hook step no longer rolls back earlier changes; fix the
-  cause and rerun `booley init`, which finishes the reconciliation.
-- Native-only coverage pruning (`--native-target`) now deletes the Target's whole
-  `native/` directory, including files Booley did not record, after writing the
-  `pruning` availability sidecar; it no longer re-hashes native files or uses a
-  `.native-pruned/` quarantine. An interrupted `--full` prune finishes whenever
-  `.pruned-N` holds `.prune.json`. If an older interrupted native prune
-  (`availability.json` status `pruning`) left a `.native-pruned/` directory,
-  delete it by hand before retrying: a retry no longer looks there and records
-  `pruned`, and `--full` refuses the leftover directory.
-
-- Verilator `make_options` and ambient Make variables (`OBJCACHE`, `CCACHE_*`,
-  `MAKEFLAGS`, and the like) are no longer rejected. Booley passes them through
-  to Make and its managed compiler-cache environment is unchanged; a Make
-  override of a managed name replaces Booley's value and may reduce cache hits
-  or relocate the cache.
-
-- SIM Goal baseline observations now run with initialization's directory-only
-  scratch ignore rule. An unignored baseline scratch directory identifies the
-  expected `/.baseline-wt-*/` rule and the selected `.gitignore` policy file.
-  Existing scratch symlinks are refused before baseline creation.
-
-- The idle reaper keeps Sandboxes while a client Docker exec is running, including
-  editor and terminal attachments, even when the Booley activity heartbeat is stale
-  or absent. Inspection failures keep the Sandbox for that pass; after the exec
-  ends, the existing idle timeout applies without a new grace interval.
-
-- Under `auto`, issued Sandboxes now forward an exported `ANTHROPIC_API_KEY`, matching host and ephemeral Sandbox behavior; this can bill per token. Set `[agent] auth = "subscription"` to use subscription credentials instead. `booley auth --status` reports the selected Project/app policy and fails when its credential is missing; Doctor FAILs when a non-`auto` policy lacks its credential.
-
-- Deep Doctor now qualifies when only the expected upgrade-review warning remains,
-  names other warning blockers without calling them failures, and preserves that
-  evidence through acknowledgment. Exact already-current acknowledgment retries
-  succeed without rewriting review state.
-
-- Session commands consistently reuse and report VS Code-owned Sandboxes; CLI
-  teardown and rebuild refuse editor ownership and point to Dev Containers.
-
-
-- Deep Doctor now warns when a simulation bad overlay fails to build, and requires
-  an observed behavioral Test failure before accepting the bad case.
-
-- Specialist category snapshots hide opposite-category sources per file, including
-  shared-directory sources and Booley-owned copies; category isolation requires a
-  usable core and removes unscoped unregistered source copies conservatively.
-  Untagged C/C++ Sim harness inputs count as testbench sources and cannot be mutation
-  scope; Doctor identifies their missing TB tags. Reviewer accepts explicitly scoped
-  C/C++ testbench sources and headers in Interactive Mode, refuses explicit
-  opposite-category scope in either mode, keeps Goal support-file review, and lists
-  Interactive source kinds in refusal messages.
-
-- Sandbox refresh now reconciles specification changes, reports kept/replaced/rollback outcomes, and removes transaction-owned failed or superseded images.
-
-- The Dashboard opens by default on trusted VS Code Sandbox attachment through
-  an image-bundled workspace extension. Existing opt-outs remain respected;
-  run host `booley init` and rebuild/reopen the Sandbox after upgrading.
-
-- Newly scaffolded Verilator SystemVerilog projects now produce non-empty simulation traces and avoid Doctor's `sim.trace-unavailable` warning.
-- Goal evidence fields in saved state now recover automatically from selected
-  valid immutable producer observations when Booley reads or saves Goal state.
-  Goal status reports remaining evidence or validation problems without treating
-  outdated saved evidence fields as an evidence conflict.
-
-- CLI Flows and Specialists warn when their results cannot record active Goal
-  evidence; recording requires Goal-bound Developer Agent MCP calls with `work_dir`.
-  Unbound Flow/Specialist reports omit `criterion_key` and `criterion_met`; report
-  readers must use optional-key access. Rerun `booley init` in each existing
-  checkout and commit its managed ignore backfill for Specialist reports and state.
-
-- Immutable-mode Pre-Sim Commands now run in the Project Root as documented,
-  including shared and ordinary Simulation Campaign launches with `run_cwd` set.
-  Hooks that relied on the previous working directory should
-  `cd "$BOOLEY_RUN_CWD"` explicitly.
-
-- Feedback additions now allocate distinct IDs across processes, and triage, filed stamps, and attachment materialization retain concurrent log additions through publication. Commands selecting a legacy duplicate ID refuse it and list its matches; busy writers fail after a bounded wait.
-
-- `booley help` (including `help -h` and `help --help`) now shows the same
-  top-level help as `booley --help`. Public commands are grouped as Sandbox,
-  either location, and host-only, with alphabetical ordering within each group.
-  `targets` works in either location; full detail resolution requires the Sandbox.
-  Flow and Specialist listing and execution are Sandbox-only, while their
-  help pages remain readable on the host in an initialized Project. Skill
-  adapters `goal`, `session`, `feedback`, `cleanup`, and `upgrade` remain
-  callable but are omitted from top-level help; use `booley cheat --skills`
-  for guided workflows.
-
-- `booley cheat` now lists available sections, like `booley cheat --list`.
-  Use combinable section flags to print selected sections, or `booley cheat --all`
-  for the whole cheatsheet.
-
-- Doctor treats unavailable sibling attributes and unsupported system-attributes
-  discovery as unknown policy, rather than a conflict with a valid local rule.
-  Existing attributes and worktree registrations are preserved; new shared
-  defaults are deferred. `git.attributes-policy-unknown` can remain a warning
-  on supported older Git or in Sandboxes without sibling access. Normal init
-  remains nonfatal, but unknown-only `init --check` exits 1 and Doctor remains
-  unclean until inspection is complete or the limitation is explicitly waived.
-  Existing `git.line-endings-unreadable` waivers do not cover this new warning.
-
-- The Booley Directory is now `.booley/`; use `BOOLEY_DIR` and
-  `booley.runtime.booley_dir`. Full `booley init` migrates the previous directory
-  and repairs linked RTL worktrees and Paired Checkouts. Finish or abandon all
-  occupying Goal Modes and stop affected Sandboxes/consumers before migrating.
-  `init --check` and Doctor report pending migration without moving files.
-  Retired selection variables and the older embedded-source/project layout
-  produce explicit errors. Historical Goal evidence remains unchanged.
-  Review and commit tracked renames in each retained checkout; create a branch
-  for a detached worktree before committing. Init does not stage or commit them.
-  Migrate **each existing clone before pulling** a Project's tracked rename
-  commit. Fresh clones can check out the current layout directly.
-
-  If a pull already left both `.booley_project/` and `.booley/`, init refuses
-  unchanged. Do not `git add -A`: removed old ignore rules may expose local
-  runtime/Goal/worktree state. Stop consumers and back up both trees and Git
-  state. If the new directory is proven to contain only current tracked files,
-  park it intact at a unique sibling location outside every checkout. Preserve
-  the old directory and its worktrees. Restore pre-pull tracked inputs there
-  from the recorded previous commit if an occupying Goal must first be finished
-  with the previous Booley version. Once inactive, manually reconcile the parked
-  current tracked inputs into the old container without overwriting local state;
-  then run full init with only the old directory present. Verify tracked inputs,
-  Goal inspection and both repositories' worktree registrations before retiring
-  any backup. Any collision, extra state or uncertainty requires human
-  reconciliation; Booley never deletes or automatically combines these trees.
-  Interrupted migration retains its journal. If retry reports changed Git
-  identities, HEADs, metadata or conflicting files, stop external writers and
-  preserve the trees, Git metadata and journal before manually reconciling the
-  named conflicts. Do not delete the journal, prune worktrees or reset history
-  to bypass verification; rerun init only after the captured identities and
-  preserved local state have been reconciled.
-
-- Doctor defers generated cocotb test IDs, including generating function base
-  names, to run-time results. An absent ID now lists cocotb's reported IDs in
-  Simulation Flow diagnostics, including zero-match filters at compact verbosity.
-
-- Goals use one name everywhere, such as `SIM:sim_core` and `REVIEW:rtl_bugs`.
-  Goal arguments now require uppercase capabilities (`family: "SIM"`). Existing
-  Goal Records and pending proposals retain their stored identities. Project-owned
-  Goalsets stay untouched; translate their intent using the current tool schema.
-
-- `booley doctor` now fails a Doctor-selected Target whose `.core`
-  `flow_options` sets `defines`. No Flow ever applied that key; declare defines
-  as `vlogdefine` parameters instead. Simulation Campaigns no longer record it,
-  so resuming a Campaign planned with a list or string `flow_options.defines`
-  reports a workload change that names the cause; re-plan it.
-- `booley doctor` no longer stops with a `TypeError` when the in-Sandbox activity
-  hooks or Dashboard extension are missing or out of date, or when a simulation
-  Target has untagged C/C++ harness files. It now reports a WARN with a waivable
-  check ID: `sandbox.activity-hooks-unavailable`,
-  `sandbox.dashboard-extension-unavailable`, or `sim.harness-untagged` (subject:
-  the Target name).
-- A parallel Simulation Campaign no longer fails with `heavy lease lost for child
-  execution` after a work item passed. Another lane could reclaim the finished
-  work item's Job Slot in the moment between recording it finished and the final
-  lease check; the lease is now checked before the work item is recorded finished.
-- The user guide is split into smaller pages. Goal Mode, the CLI reference,
-  each Flow, Simulation tests and coverage, Targets, the Sandbox, Stealth Mode, and Windows
-  first-run problems now have their own pages, and Troubleshooting is grouped by
-  area. Links printed by earlier releases that name a section that moved open
-  the old page instead of that section; Config's "Where each setting lives"
-  table lists the new homes.
-- The project site and user docs moved to <https://booley.dev/>. Links Booley
-  prints, the README, and the PyPI project links now point there. Old
-  `boldaxolotl.github.io/booley/` links redirect to the same page.
-- `bwave gui` now drives VaporView 1.6.0 through a Viewer Bridge that the
-  Booley Sandbox Integration extension runs in every attached Sandbox window,
-  instead of VaporView's WCP port. Scoped views keep groups, radix and color suffixes,
-  `--time` markers, `--cursor`, `--append`, and readback; markers are now read
-  back too, and a lone `--cursor` scrolls into view. With several windows
-  attached, a command typed in a window's terminal targets that window.
-  `bwave gui -t` or `--cursor` without signals keeps the rows on screen and
-  only moves the time window and markers, and a `--time` end past the trace
-  is clamped to the trace end. Existing Sandboxes must be refreshed: their
-  spec pins VaporView 1.5.4 and installs the Booley Sandbox Integration
-  extension only with the Dashboard, and Doctor reports that drift. Doctor's
-  WCP port check is replaced by a check that an attached window's Viewer
-  Bridge answers with VaporView ready.
+Booley, until now "the open-source agentic RTL IDE", now describes itself as
+the open-source Agentic Development Environment (ADE) for FPGA and ASIC
+development. Only the positioning changed: it is the same product, and the
+package, CLI and name stay the same. Goal Mode replaces Ticket Mode, and you
+can try Booley in a browser through a free GitHub Codespaces demo.
 
 ### Major features
 
-- **Goal Mode is the workflow for evidence-backed RTL work.** Open an agent
-  session in the Sandbox and use `/booley-goal` to translate Project Goalsets,
-  work in a linked worktree and Goal Branch, and gather Flow and Specialist
-  evidence. Every Goal is mandatory; only a human can approve Goal changes.
-  Finish returns a Review Package and Session Summary. Open done-review
-  findings remain visible; Finish and abandonment use explicit record and
-  operation IDs for recoverable retries.
-- **Sandbox Dashboard.** Sessions, Goals, and Jobs are visible through
-  `booley dashboard` and the default VS Code folder-attachment task. Each
-  session shows whether its agent is working, waiting for a tool call, or
-  waiting for your input, as reported by Claude Code and Codex lifecycle
-  hooks in the Sandbox Image. Report, artifact, and evidence paths open in
-  the editor on click.
-- **Test Variants and seeded Test Runs** (#1233). A Project declares each
-  extra run-time configuration of a Test as a Test Variant in `tests.toml`
-  (`[<target>.variants.<test>]`: arguments, environment, and a required
-  `default`), and every Test Run of a seeded Target has an explicit, recorded
-  seed. A Test Run is written `test[+variant][@seed]`.
-  - `booley flow sim --test` accepts `test`, `test+variant`, `test@seed`,
-    `test+variant@seed`, and `test[+variant]@xN` for N drawn seeds. The new
-    `--seed N|random` sets or draws the seed of every selected Test Run. The
-    `sim` MCP tool takes the same `test` forms and a `seed` argument.
-  - Booley passes the seed itself: `+verilator+seed+<seed>` on Verilator,
-    cocotb's seed variable on Cocotb Targets, and the new `tests.toml` `seed`
-    argument template on Verilator and Icarus. An Icarus HDL-testbench Target
-    without a `seed` template is unseeded and refuses every seed. A seeded
-    Target can set its own `default_seed`.
-  - Reports list each Test Run with its outcome and print, for every failed
-    Test Run, the command that reruns it with the same seed. `simulation.json`
-    gains `test_runs[]` rows.
-  - Coverage runs accept every selector form, including several Test Runs of
-    one Test; the merged coverage is their union.
+- **Goal Mode replaces Ticket Mode.** Ticket Mode was too heavy, took too
+  long to set up and brought too many bugs. Goal Mode runs inside your own
+  agent session: open one in the Sandbox and type `/booley-goal <request>`
+  (`$booley-goal` in Codex). The agent turns the request and the Project's
+  Goalsets into Goals, such as `SIM:sim_core` or `REVIEW:rtl_bugs`, and
+  works on a Goal Branch in its own linked worktree.
+  Every Goal is mandatory, and only a human can approve a Goal change. Clear
+  the chat and type `/booley-goal start` to do the work; the same command
+  resumes after a crash or reconnection. Finish produces a Review Package and
+  a Session Summary, and the agent ends with their paths.
+  - Flow and Specialist results count as Goal evidence only when they come
+    from Goal-bound MCP calls. `goal_status`, `booley goal status`, the
+    Dashboard and the Review Package show every Goal, its evidence and any
+    open review findings. With no active Goal, status shows the last ended
+    Goal and its Review Package.
+  - Relative SIM, SYNTH and FPGA Goals measure a baseline at the Goal's base
+    commit in a background Job. Status shows `baseline → current (delta, %)`
+    and, for each frozen Test Run, how it changed since the baseline. Baseline
+    Jobs run the Project's `.booley/hooks/post-setup` hook first and never
+    delay your own runs.
+  - A Review Goal names one `target` or `paths`. After you fix a clean
+    review's findings, `reviewer --verify [--waive ID "reason"]` re-checks
+    only those findings.
+  - `[project].protected_inputs` lists extra tracked files, globs or
+    directories, such as a `Makefile` or firmware, that a Goal must not
+    change. Editing one discards affected evidence and blocks Finish until you
+    restore it.
+  - `booley worktree new <name>` creates a worktree under `.booley/worktrees/`
+    with submodules filled in offline. Goal Mode uses it, and you can use it
+    for parallel work. It works in Stealth Mode and with a Paired Checkout.
+- **Free GitHub Codespaces demo.** Click "Open in GitHub Codespaces" in the
+  README Quick Start or on <https://booley.dev/demos/> and run a Goal on the
+  PicoRV32 demo with nothing installed. The demo fits GitHub's free monthly
+  Codespaces allowance; the first start takes 3 to 4 minutes. After a GitHub
+  sign-in, `booley-demo-claim` gets sponsored GPT-6 Luna tokens, or you can
+  sign in with your own Claude or ChatGPT account. <https://booley.dev/demo/>
+  lists the limits.
+- **Sandbox Dashboard.** `booley dashboard` shows Sessions and Jobs, each in
+  its own window with its own selection, scroll and history. Sessions are
+  grouped by whether their agent is working, waiting for a tool call, or
+  waiting for you, as reported by Claude Code and Codex hooks in the Sandbox
+  Image. Jobs show their EDA tool, CPU time and peak memory, and can be
+  filtered. Sessions and Jobs have short handles such as `S17` and `J-SIM25`
+  that `booley chat` also uses. Navigate with the arrow keys, Enter and Esc; a
+  terminal at least 120 columns wide gets a preview pane. Report, artifact
+  and evidence paths open in the editor on click. The Dashboard opens in its
+  own editor tab when you attach VS Code to a Sandbox or open a Codespace.
+- **Test Variants and seeded Test Runs** (#1233). `tests.toml` declares extra
+  run-time configurations of a Test as Test Variants
+  (`[<target>.variants.<test>]`: arguments, environment and a required
+  `default`), and every Test Run of a seeded Target has a recorded seed. A
+  Test Run is written `test[+variant][@seed]`.
+  - `booley flow sim --test` and the `sim` MCP tool accept `test`,
+    `test+variant`, `test@seed`, `test+variant@seed` and `test[+variant]@xN`
+    for N drawn seeds. `--seed N|random` (MCP `seed`) sets or draws the seed
+    of every selected Test Run.
+  - Booley passes the seed: `+verilator+seed+<seed>` on Verilator, cocotb's
+    seed variable on Cocotb Targets, and the new `tests.toml` `seed` template
+    on Verilator and Icarus. An Icarus HDL-testbench Target without a `seed`
+    template is unseeded and refuses seeds. A Target can set `default_seed`.
+  - Reports list every Test Run and print a rerun command, with its seed, for
+    each failure. `simulation.json` gains `test_runs[]` rows. Coverage runs
+    accept every selector form and merge their Test Runs.
   - Pre-Sim Commands receive `BOOLEY_TEST_RUN_NAMES`, and for a single Test
     Run `BOOLEY_TEST_RUN_NAME`, `BOOLEY_TEST_VARIANT` and `BOOLEY_TEST_SEED`.
-    `BOOLEY_TEST_NAME` and `BOOLEY_TEST_NAMES` keep the bare Test names.
-  - Doctor prints how each sim Target's Test Runs are seeded.
-- **Goals can require Test Runs** (#1233). A simulation Goal takes an optional
-  `test` selector, including `test+variant@xN` for N seeds that must all
-  pass. Cycle Count Goals accept `test`, `test+variant` and `@seed` in `test`;
-  coverage Goals accept selectors, `@xN` included, in `tests`. Goal Mode
-  resolves these Goals to exact Test Runs at entry and freezes them, so later
-  `tests.toml` edits to defaults cannot change what a Goal requires. Seeds of
-  a multi-seed Goal can pass over several runs and Simulation Campaigns. A
-  failed Test Run stays failed until the code changes. A coverage Goal is
-  decided by its coverage floors alone, whether or not the Test Runs that
-  measured it passed. Adding such a Goal,
-  pinning a seed or changing N needs human approval. `goal_status`, the
-  Dashboard and the Review Package show each Goal's frozen Test Runs, and
-  failures come with rerun commands.
+    Doctor prints how each Simulation Target seeds its Test Runs.
+  - Simulation and coverage Goals take the same selectors, `@xN` included.
+    Goal Mode freezes the exact Test Runs at entry, so later `tests.toml`
+    edits cannot change what a Goal requires. A failed Test Run stays failed
+    until the code changes.
+- **booley.dev.** Booley has a project site at <https://booley.dev/> with
+  Demos and Videos pages, a blog, and application note AN-001, "Same AI agent,
+  same chip bug: 56 minutes with a shell, 21 with the right tools". The user
+  docs live at <https://booley.dev/docs/>, split into smaller pages with
+  search (press `/`), an "On this page" outline and light and dark themes.
+  Links Booley prints, the README and PyPI point there. Old
+  `boldaxolotl.github.io/booley/` links redirect; links into a section that
+  moved open its old page.
+
+### Regular features
+
+- `BOOLEY_AGENT_APP=auto` (hand-written Sandbox specs, such as a Codespace)
+  picks the agent app at every start: Claude, then Codex, then a configured
+  gateway, then Claude with its login offered. Specialists, the MCP server,
+  `booley chat` and Doctor follow that choice, and Doctor says why. `auto`
+  outside a Sandbox is refused.
+- **Sandboxes without the egress proxy.** Host `config.toml` `[sandbox]
+  egress = "unproxied"` (default `proxy`) runs Sandboxes on a plain Docker
+  network; it cannot be combined with an `egress_allowlist`. Host Bootstrap
+  then stops running the proxy and removes it once no Sandbox uses it.
+  In-Sandbox Doctor WARNs `sandbox.unproxied`; host Doctor WARNs
+  `host.sandbox-egress-mismatch` for a running Sandbox in the other mode.
+  After changing the setting, run `booley init --seed` and rebuild.
+- **Live Flow progress.** `booley flow synth|fpga|sim|lint` shows a compact
+  status row with the Flow, Target, step, elapsed time and latest tool output,
+  with one row per parallel lane. Redirected output gets timestamped
+  `[booley-progress]` heartbeats. `-q/--quiet` shows only the verdict and
+  errors. Synthesis and FPGA runs end with a per-Target table (Δ columns with
+  `--baseline`), and Simulation ends with a Test, Result, Cycles, Time and
+  Build table.
+- **`booley resources`.** Booley records each Flow command's peak memory,
+  temporary-directory size, CPU and wall time in
+  `.booley/runtime/resources/history.json`. `booley resources [--json]`
+  prints min, median and max per Target, phase and Test Run. Each Flow
+  command now gets a private `TMPDIR` that is removed afterwards.
+- **B-Wave clock analysis.** The new `bwave overview` prints the sampling
+  clock's verdict, any stretches where it stops, and trace metadata. Literal
+  `find` and `sample` triggers skip cycles inside a clock stop unless you pass
+  `--include-stopped`, and `--sample-mode pre-edge` reads values just before
+  each edge. `signal`, `wave` and `distance` gain `--format json`.
+- `bwave gui` now drives VaporView 1.6.0 through a Viewer Bridge that the
+  Booley Sandbox Integration extension runs in every attached window, instead
+  of VaporView's WCP port. Scoped views keep groups, radix and color
+  suffixes, `--time` markers, `--cursor`, `--append` and readback; markers are
+  read back too. With several windows attached, a command targets the window
+  whose terminal you typed it in. `-t` or `--cursor` without signals only
+  moves the time window and markers. VaporView now installs from the Sandbox
+  Image, with no network and no auto-update.
+- B-Wave `-s` globs also match relative to the common scope `bwave list`
+  prints: with `# scope: TOP.tb`, `-s 'dut.*'` finds `TOP.tb.dut.*`. A glob
+  that matches nothing suggests the full-path glob that would.
+- The MCP server picks up `booley.toml` and custom-endpoint changes without a
+  Sandbox restart. Disabled Flows and Specialists leave the tool list,
+  re-enabled and custom tools appear, and clients are told to reload. An
+  invalid configuration fails closed.
+- `booley init --scaffold --synth-mode logical|physical` sets the scaffold's
+  ASIC synthesis mode (default `physical`; a logical scaffold has no SDC).
+  `booley init --scaffold <name> --stealth` keeps the scaffold's cores under
+  `.booley/cores/`, so nothing Booley-authored reaches the RTL repository.
+- `booley projects forget <root>` lists the Docker images, state volumes,
+  containers and networks the Project still holds, with sizes. `--purge`
+  removes its unused images and state volumes, including the agent login copy
+  and history, and says why it kept anything. `booley init` removes Project
+  images its rebuild replaced.
+
+### Quality of life
+
+- `booley doctor` groups checks under section headers with one status glyph
+  and ends with problem tables and one bold verdict line. Init, bootstrap,
+  `auth --status`, `feedback list`, `eda … list`, `flow`/`specialist`
+  listings, `goal status` and `booley targets` print aligned tables, and
+  `booley cheat` fits the terminal. Piped output is plain; `--json` is
+  unchanged.
+- `booley targets` adds a group row per `.core` file, a `✓` Doctor column, and
+  a FLOW column listing the Booley Flows that can drive each Target.
+- Project commands accept `-C/--project PATH`, and Flows and Specialists take
+  `--timeout DURATION` in human units. Commands that need a Project refuse up
+  front outside one.
+- When `--target` is omitted, `flow sim`, `lint`, `synth` and `fpga` pick the
+  only eligible Target and say so; with none or several they exit 2 and list
+  the eligible Targets.
+- Flow and Specialist `--help` uses CLI spelling, groups options into Common,
+  Output, Flow-specific and Expert sections, says what each default does, and
+  ends with an example.
+- `booley help` matches `booley --help`, which groups commands by where they
+  run. Bare `booley` on the host prints help and a getting-started hint.
+  `booley cheat` lists its sections; `--all` prints everything, and `--goals`
+  includes the Goal catalog.
+- `booley --version` shows the commit date, for example
+  `booley 0.4.0 (d4c94dc35, 2026-10-26)`.
+- `booley chat` passes extra arguments to the agent CLI, for example
+  `booley chat resume --last` (Codex) or `booley chat --resume <id>` (Claude).
+- The Dashboard and CLI show durations as `10m 00s`, ages as `Started 10m ago`
+  and local clock times. JSON and report fields are unchanged.
+- `booley init` on an unmodified clone of a published `booley-prj-*` Project
+  reports the Project ready instead of sending you to `/booley-setup`.
+- Setup's Step 0 asks its questions in plain English with a hardware glossary
+  and one confirmation block for the defaults; "Keep Booley out of your git
+  history?" sets Stealth Mode. Bootstrap warns, with install links, when
+  neither Claude Code nor Codex is on the host.
+- Project Setup's Memory Timing Surrogate guidance now requires every read-data
+  bit to depend, through registers, on the memory's write data, address and
+  enables, and adds a no-pruning probe. A surrogate built under the old rule
+  can let synthesis delete logic and understate area and Fmax: re-run setup's
+  surrogate validation and fix any surrogate that fails.
+- In a Codespace or any Sandbox without a seeded host agent config, Claude
+  Code and Codex skip onboarding, login and folder-trust prompts when a
+  credential is present, and no longer try to update themselves.
+- Local Sandboxes install the Verilog-HDL and Live Preview extensions from the
+  Sandbox Image; before, the locked-down network blocked them. VS Code's Chat
+  side bar is closed once per workspace, and Codespace startup files open
+  with their associated editor, so a getting-started Markdown file opens
+  rendered.
+- Cost readouts price `gpt-6-astra`, `gpt-6-luna` and `claude-haiku-5-5` at
+  their own rates; they used to show $0.00 or the Haiku 4.5 price. Unknown
+  `gpt-*` models are costed at the Astra rate.
+- Doctor adds WARNs for: Git excludes hiding Project inputs
+  (`project.inputs-ignored`), a `copyto` input that overwrites another file
+  (`sim.runtime-input-collision`), a Sandbox Git identity that differs from
+  `[agent.git]` (`sandbox.git-identity-override`, `sandbox.gitconfig-identity`),
+  oversized MCP handle maps (`handles.map-size`), and a Stealth scaffold whose
+  cores are still tracked (`stealth.scaffold-core-tracked`). Many directory
+  symlinks to one ancestor now produce one FAIL with examples.
+- In a Codespace on the demo gateway, a missing gateway token is a Doctor WARN
+  instead of a FAIL. With an explicit `BOOLEY_AGENT_APP`, it still fails.
+- Mutation Tester `--dry-run` explains how `--count auto` was computed.
+- Job reports carry per-Target coverage percentages and up to 20 lint
+  findings, so MCP clients need not open the full reports.
+- Persistent pipx, uv tool and ordinary wheel venv installs can be the
+  canonical host installation. The README leads with pipx.
+- The user docs were rewritten for the engineer using Booley, with an Install
+  guide and a new Specialists page, and checked against the code.
+- The RISC-V Sandbox Image ships the unprivileged and privileged ISA manuals
+  from upstream release `20250508`, as `riscv-isa-unprivileged.{pdf,html}`
+  and `riscv-isa-privileged.{pdf,html}` under `/opt/riscv-docs`. References
+  to `riscv-isa-manual.{pdf,html}` must name a volume.
 
 ### Bug fixes
 
-- Synchronous B-Wave `find`, `sample`, and `distance` events now use
-  clock-edge sampled values and sampling-cycle labels, suppressing
-  between-edge glitches while preserving raw `--async` events. The first
-  eligible sample is baseline for edge keywords; querying rising/falling/change
-  on the sampling clock yields no synchronous events. Use literal high to
-  capture each sampling edge. Literal `distance` counts every held matching
-  sample, so sustained levels contribute consecutive-cycle pairs.
+- A Project whose `.booley` is a symlink, as in a GitHub Codespace or a
+  Booley Directory kept in its own clone, now works throughout: Sandbox start,
+  Targets and Stealth cores, Simulation and coverage (including agent `sim`
+  calls), synthesis, Goal Mode, Pre-Sim hooks, deep Doctor and the
+  Specialists. Only the `.booley` entry itself may be a link.
+- Goal worktrees and `booley worktree new` fill in the Project's git
+  submodules offline, so baseline checkouts no longer fail with "submodule …
+  not found in source Project".
+- `sim` with relative Cycle Count limits now works: it no longer fails
+  planning with `.baseline-wt-... already exists` or `prerequisite identities
+  must be unique`, builds the baseline in the baseline checkout, and can meet
+  the limit.
+- `booley session refresh` no longer aborts on an untagged Docker image, and
+  `session up` no longer fails with "Sandbox Project identity disagrees" or
+  re-runs automatic Doctor on every start. `session` commands from a linked
+  worktree find the owning Project's Sandbox.
+- `booley init --check` and `--check-only` list everything a full init would
+  do, with a matching exit code. `booley bootstrap --check-only` runs every
+  safe check and exits 1 for pending work, 2 for a blocker. A failed
+  line-ending step names the real cause.
+- `booley init` and other writers into Sandbox-writable paths no longer write
+  through a symlink, keep numbered backups (`.1`, `.2`, …), write atomically
+  and never widen file modes.
+- Reviewer runs and `booley feedback` no longer leave a versioned Booley
+  Directory dirty once the `booley init` ignore backfill in Upgrade notes is
+  committed.
+- The Mutation Tester no longer leaves a mutant in your RTL after a cancelled
+  or killed run, and no longer moves testbench directories out of the live
+  worktree. It passes a Target's `copyto` inputs, plusarg defaults and `env`
+  to every run, applies a qualified `--target`'s Criterion settings, and
+  handles testbench tags on symlinked sources.
+- Verilator and Icarus no longer kill themselves with exit 143 when Booley is
+  PID 1, which showed up as `COV_RAW_FILE_MISSING`.
+- `str` and `file` vlogparams reach Yosys, sv2v, Verilator and Icarus as
+  strings. Vivado refuses a string override before running. Cached results
+  that used string parameters are invalidated.
+- ASIC synthesis no longer fails when Yosys warned about a combinational loop
+  that its final check no longer finds; the warning becomes a WARN.
+- Lint, synthesis and FPGA runs over several Targets no longer show one
+  Target's log under another.
+- A background `sim` Job polled through MCP reports its live stage instead of
+  staying at `starting`. Losing one work item's Job Slot in a parallel
+  Simulation Campaign stops only that item, and a passed item no longer fails
+  with `heavy lease lost`. Parallel tests' progress lines stay under their
+  own test.
+- After a cocotb 2.x batch times out, finished tests keep their real
+  outcomes, without duplicates. A traced Cocotb run on Verilator records
+  `verilator` as its simulator.
+- A traced Icarus run with `trace_args` set no longer exits 2, and it no longer
+  reports `TRACE_OK` for a stale trace file.
+- In Stealth Mode, `flow sim --trace` works for a Target from a
+  repository-native `.core`.
+- A bare-string `[flows.sim].pre_run_commands` is refused in preflight instead
+  of being split into characters. Immutable-mode Pre-Sim Commands run in the
+  Project Root as documented, including with `run_cwd`; a hook that relied on
+  the old directory should `cd "$BOOLEY_RUN_CWD"`.
+- `tests.toml` sections match Targets by identity: a qualified key serves only
+  its core, a bare key serves Targets without one, and Doctor fails duplicate
+  or dead keys.
+- Compiler-cache settings no longer fail Simulation when `booley.toml` is
+  unreadable. Without `BOOLEY_COMPILER_CACHE_ROOT`, builds run uncached with a
+  warning. Verilator `make_options` and Make variables such as `OBJCACHE` and
+  `MAKEFLAGS` are no longer rejected.
+- Templated `run_cwd` cleanup removes the empty parents Booley created and no
+  longer leaves run-lock files.
+- B-Wave: physical time bounds and tokens convert exactly and pick the right
+  clock edge, including on phase-offset clocks; `wave --async` windows are no
+  longer empty; synchronous `find`, `sample` and `distance` use clock-edge
+  values and ignore glitches between edges; `--format json` carries the same
+  warnings as text output.
+- Doctor no longer stops with a `TypeError` when the activity hooks or
+  Dashboard extension are missing or when a Target has untagged C/C++
+  harness files; it WARNs instead. Doctor's attached-window checks now run.
+  In a Codespace it accepts `~/.ssh/authorized_keys` and a symlinked
+  `BOOLEY_DIR`. Host `doctor --deep` no longer fails simulation checks on
+  Booley's own `/booley-project` alias.
+- Deep Doctor warns when a simulation bad overlay fails to build and requires
+  a behavioral failure to accept it. It no longer blocks on the expected
+  upgrade-review warning.
+- The Reviewer no longer fails when a Claude agent reports findings through
+  `ReportFindings` more than once.
+- Text-only Codex Specialists such as `coverage_analyst` no longer need the
+  model in the Codex models cache. When Codex exits early, Booley reports
+  Codex's error instead of `BrokenPipeError`.
+- Interactive Claude Code no longer moves long Booley MCP calls into the
+  background after 120 seconds.
+- Nested Codex homes link the real login instead of copying it, so token
+  refreshes reach it; temp directories from killed runs are swept.
+- `booley auth` checks permissions before writing and no longer reports
+  success before failing.
+- A command that cannot start prints `command not found` (127) or
+  `permission denied` (126) instead of a traceback. Start notices appear only
+  after the process starts.
+- Quiet image builds print each progress line once.
+- Booley MCP servers that Booley starts for its own agents no longer appear
+  in the Dashboard.
+- The idle reaper keeps a Sandbox while an editor or terminal is attached.
+  Session commands reuse VS Code-owned Sandboxes and refuse to tear them down.
+- Elab-only Simulation of standalone modules is no longer confused by `/*` or
+  `//` inside string literals.
+- Feedback IDs stay unique across processes.
+- Booley finds VaporView and VS Code settings under `~/.vscode-remote`
+  (Codespaces) and `~/.vscode-server-insiders`.
+- `booley projects prune-keepers` prints `Nothing to release.` when no keeper
+  is eligible.
+- On Windows, reads and writes of Job, Simulation, Session, Goal and Doctor
+  files retry through brief sharing errors instead of reporting the file
+  missing, so Campaigns, baselines and cancellations no longer fail spuriously.
+
+### Internal work
+
+- Ticket Mode was removed (about 128,000 lines). Shared Flow loading, agent
+  execution and waiver storage moved to their active owners;
+  `booley.ticket_board` is gone.
+- Simplification campaign: Goal Records, campaigns, coverage, image
+  lifecycle, the CLI parser and MCP were slimmed, and formats that no release
+  ever wrote were removed.
+- The Codespaces demo's sponsored tokens go through an OpenAI-compatible
+  gateway. Inside a Sandbox, `BOOLEY_PRIMARY_AUTH=gateway` with
+  `BOOLEY_GATEWAY_URL` and `BOOLEY_GATEWAY_TOKEN` or
+  `BOOLEY_GATEWAY_TOKEN_COMMAND` routes Codex, `booley chat` and Codex
+  Specialists through it. This is plumbing for the demo.
+- QA missions were reworked for Goal Mode, and CI drives the PicoRV32 demo
+  through a Goal.
+- CI: test timing and failure evidence, a guard against suppressed
+  assertions, sharded Ubuntu suites, a narrower job set for docs-only PRs, and
+  a weekly worktree-mount acceptance job.
+- Designs: Goal Mode and the Dashboard (ADRs 0067, 0068), Test Variants (ADR
+  0072), the Result Cache (ADR 0076), and one worktree per Interactive session
+  (ADR 0082, proposed).
 
 ### Upgrade notes
 
-- Existing Review Goal evidence may need to be refreshed once after upgrading;
-  re-run the Reviewer if it is reported stale.
-
-- **Test Runs of seeded Targets now have a seed, and the Default Seed is 1**
-  (#1233). On Verilator and Cocotb Targets, a run that names no seed is
-  simulated with seed `1` instead of the simulator's own default, so
-  testbenches that use random values can see different stimulus than before
-  the upgrade. To keep a Target on another fixed seed, set `default_seed` in
-  its `tests.toml` section. Icarus HDL-testbench Targets are unchanged until
-  they declare a `seed` template.
-- **`tests.toml` is validated more strictly** (#1233). `booley doctor` reports
-  the first entry that fails to load, so run it again after each fix until
-  `tests.toml` loads. Fix these before the next run:
-  - A Test name must not be empty or `default`, must not start with `-`, and
-    must not contain whitespace, a control character, `+`, `@`, `<`, `>`, a
-    quote or a backslash. Rename such Tests and adapt the testbench or the
-    `select` template. A Test may appear only once in a Target's `tests` and
-    once in its `skip` list.
+- **Ticket Mode is gone.** `booley run` and `booley board` print a pointer to
+  `/booley-goal` and exit 2; the Ticket skills are replaced by `/booley-goal`.
+  Doctor WARNs `tickets.leftover-board` on nonempty
+  `tickets/{board,state,logs,locks,waiver-candidates}`: keep what you need,
+  then delete them. `tickets.leftover-guidance` covers `ticket_creation.md`
+  and `ticket_defaults.md`; move edited rules into Goalsets. `tickets/history/`
+  is untouched. `[developer]`, `[developer.auto_retry]` and
+  `[jobs].max_tickets` are ignored; Doctor WARNs until you delete them.
+- **The Booley Directory is now `.booley/`.** Use `BOOLEY_DIR` and
+  `booley.runtime.booley_dir`. Run full `booley init` in **each existing
+  clone before pulling** a Project's rename commit; it migrates the old
+  directory and repairs linked worktrees and Paired Checkouts. Stop running
+  Sandboxes first. `init --check` and Doctor report a pending migration.
+  Review and commit the tracked renames in each checkout; init does not stage
+  them. If a pull already left both `.booley_project/` and `.booley/`, init
+  refuses unchanged. Do not `git add -A`: removed old ignore rules may expose
+  local runtime, Goal and worktree state. Stop consumers and back up both trees
+  and Git state. If the new directory holds only current tracked files, park
+  it intact at a unique location outside every checkout, and keep the old
+  directory and its worktrees. Then reconcile the parked tracked inputs into
+  the old directory by hand, without overwriting local state, and run full
+  init with only the old directory present. Verify tracked inputs, Goal
+  inspection and both repositories' worktree registrations before retiring
+  any backup. Booley never deletes or merges these trees itself. An
+  interrupted migration keeps its journal: if a retry reports changed Git
+  identities, HEADs or conflicting files, stop other writers, preserve the
+  trees, Git metadata and journal, and reconcile the named conflicts before
+  rerunning init. Do not delete the journal, prune worktrees or reset history
+  to get past verification.
+- **Refresh every Sandbox** after `booley bootstrap --update`: run
+  `booley init`, then `booley session refresh` in each Project. The Sandbox
+  now carries its image ID and is refused at start until refreshed. The
+  refresh brings the Dashboard hooks, the bundled VaporView 1.6.0 and VS Code
+  extensions, and drops the Claude Code, Codex and Tcl VS Code extensions;
+  the agent CLI in the terminal is the agent surface. Doctor reports any
+  remaining drift.
+- **Seeded Targets now default to seed 1** (#1233). Verilator and Cocotb runs
+  that name no seed use seed `1` instead of the simulator's default, so
+  random stimulus can change. Set `default_seed` to keep another seed.
+  Icarus HDL-testbench Targets are unchanged until they declare a `seed`
+  template.
+- **`tests.toml` is stricter** (#1233). Rerun `booley doctor` after each fix
+  until it loads:
+  - A Test name must not be empty or `default`, start with `-`, exceed 512
+    bytes, or contain whitespace, a control character, `+`, `@`, `<`, `>`, a
+    quote or a backslash. A Test appears at most once in `tests` and once in
+    `skip`.
   - A Target section accepts only `tests`, `test_list`, `skip`, `select`,
-    `env`, `seed`, `default_seed` and `variants`. Remove or rename any other
-    key; unknown keys used to be ignored.
-  - A Target's `env` table may not set `MODULE`, `TESTCASE`, `TOPLEVEL`,
-    `TOPLEVEL_LANG`, `RANDOM_SEED`, `LIBPYTHON_LOC`, `PYTHONPATH`,
-    `LD_LIBRARY_PATH`, or any `BOOLEY_*`, `COCOTB_*`, `PYGPI_*` or `GPI_*`
-    name. Booley and the simulator integration own these. To fix a seed, use
-    `default_seed` instead of `RANDOM_SEED` or `COCOTB_RANDOM_SEED`.
-  - A `select` template must contain `{index}` or `{name}`, and may not start
-    with `++` or `+-`.
-- **Simulation run directories and coverage file names changed** (#1233).
-  Per-run directories and coverage run ids are named by Test Run, so on a
-  seeded Target they gained `@seed` (`tests/reset@1/`, `run:001:reset@1`). A
-  Cocotb batch that is not the default suite at the Default Seed is written
-  to `tests/batch-<hex>/`. Update scripts that build these paths; read them
-  from `report.json` and `simulation.json` instead.
-- **Simulation and Coverage Campaigns written by Booley 0.3.0 are no longer read**
-  (#2342, #2421). Booley no longer resumes, inspects, prunes, analyzes or uses as a
-  Cycle Count baseline a Simulation Campaign written by 0.3.0, and no longer reads
-  its results or `simulation.json`. Goal completion that selected evidence from
-  such a Campaign also stops, and Goal status reports that Campaign as
-  unreadable with the same message. Each stops with an error such as `Simulation
-  Campaign manifest booley.simulation-campaign-manifest/v1 was written by Booley
-  0.3.0 and is no longer supported; delete the Simulation invocation directory
-  <path> by hand`. Delete that directory by hand. Coverage analysis, retention
-  pruning and the other Coverage Campaign readers likewise stop on a Coverage
-  Campaign written by 0.3.0, with an error containing
-  `COV_SCHEMA_VERSION_UNSUPPORTED: Unsupported Coverage Campaign schema; delete the
-  Coverage Campaign directory <path> or recollect coverage with this Booley version`.
-  Delete the named directory by hand, or collect coverage again. A Coverage
-  Campaign that a 0.3.0 Simulation Campaign recorded through a `coverage.json`
-  reference is refused as `coverage_campaign storage contract is invalid`; delete
-  that Simulation invocation directory. `.runtime/campaign-child-executions/`
-  under the Booley Directory is no longer used; you can delete it.
-- **Active Goal Modes need one more Simulation Flow run** (#1233). A Goal
-  Record that is active across the upgrade has no frozen Test Runs. Booley
-  freezes them on the next Flow run or status read, and simulation, Cycle
-  Count and coverage evidence recorded before the upgrade does not count:
-  `goal_status` shows `goal-test-run-ledger-missing` until the Flow has run
-  again.
-- **An older Booley cannot read a Goal Record written by this version**
-  (#1233). The record carries the frozen Test Runs, and an older Booley
-  refuses it as written by a newer Booley. This holds for finished and
-  abandoned Goal Records too.
-- **A partial run no longer makes a Target's simulation Goal unmet** (#1233).
-  `SIM:{target}` is met when every frozen Test Run has passed at the
-  current file contents. Running a few Tests with `--test` adds their
-  outcomes and leaves the others as they were. A failed Test Run now stays
-  failed until the code changes, even if a later run at the same contents
-  passes.
-- **A run stopped by an infrastructure problem is graded `error`** (#1233) in
-  the per-Test-Run report rows, on every path, instead of `fail` or
-  `inconclusive`.
-- **Mutation Tester runs receive the Target's plusarg defaults and `env`
-  table** (#1233), as ordinary simulation runs do, and run each Test as its
-  default Test Variant at the Default Seed. Mutation scores of Targets that
-  rely on those inputs can change.
-- **One request runs at most 1000 Test Runs of one Target** (#1233). A larger
-  request is refused; split it.
-
-- Dashboard session activity needs the Sandbox Image's lifecycle hooks. Run
-  `booley bootstrap --update`, then `booley init` and `booley session refresh`
-  in each Project; until then sessions show `activity unknown` and Doctor
-  warns inside the Sandbox.
-
-- Removed retired Ticket workflow internals and Console implementation. Shared Flow loading, agent execution, verification freshness, and waiver candidate storage now live with their active owners. External extensions importing `booley.ticket_board` must update their imports; the package has been removed. Goal Mode and Interactive recording keep their persisted formats.
-
-- Ticket Mode commands `booley run` and `booley board` are removed from the
-  public command surface. Each prints a pointer to `/booley-goal` and exits 2.
-  The Ticket creation and triage skills are replaced by `/booley-goal`.
-- Doctor WARNs on nonempty `tickets/{board,state,logs,locks,waiver-candidates}`
-  with `tickets.leftover-board`; preserve needed work before deleting them.
-  `tickets/history/` stays untouched and silent. `tickets.leftover-guidance`
-  suggests deleting unchanged shipped `ticket_creation.md`/`ticket_defaults.md`,
-  or moving edited rules into Goalsets before deleting the files.
-- `[developer]`, including `[developer.auto_retry]`, and `[jobs].max_tickets`
-  are ignored. Doctor WARNs with delete fixes; remove these settings.
-- Initialization adds a Booley-owned Dashboard task to `.vscode/tasks.json`
-  and enables automatic tasks for attachment by default. Opt out with
-  `[sandbox].dashboard = false`; reconciliation removes unchanged owned copies
-  while preserving user-edited tasks. Tracked `.vscode/tasks.json` files are
-  preserved with an informational notice; add the Dashboard task yourself or
-  opt out with `[sandbox].dashboard = false`.
-- New non-Stealth initialization keeps RTL-owned Goal history eligible for commits.
-  Existing explicit Git exclusions remain in place; excluded, Stealth, or Paired
-  Checkout summaries stay local, and completion reports skipped publication. Project
-  configuration remains untracked until you commit it; initialization makes
-  these paths eligible without staging or committing them.
-
-### Installation
-
-- Persistent pipx, uv tool, and ordinary wheel venv installs can become the
-  canonical host installation. The README now leads with pipx on PEP 668
-  distributions. Other identities still require `booley bootstrap --update`;
-  source/editable, temporary, and ephemeral installs remain ineligible.
+    `env`, `seed`, `default_seed` and `variants`.
+  - `env` may not set `MODULE`, `TESTCASE`, `TOPLEVEL`, `TOPLEVEL_LANG`,
+    `RANDOM_SEED`, `LIBPYTHON_LOC`, `PYTHONPATH`, `LD_LIBRARY_PATH`, or any
+    `BOOLEY_*`, `COCOTB_*`, `PYGPI_*` or `GPI_*` name. Use `default_seed`
+    instead of `RANDOM_SEED`.
+  - `select` must contain `{index}` or `{name}` and may not start with `++`
+    or `+-`.
+  - Empty `pre_run_commands` entries, empty toplevels and `copyto`
+    destinations outside the run directory are refused.
+- **Simulation paths changed** (#1233). Run directories and coverage run IDs
+  are named by Test Run, so seeded Targets gain `@seed`
+  (`tests/reset@1/`, `run:001:reset@1`). Read paths from `report.json` and
+  `simulation.json` instead of building them.
+- **0.3.0 Simulation and Coverage Campaigns are no longer read** (#2342,
+  #2421). Resume, inspect, prune, analyze and Cycle Count baselines stop with
+  an error naming the directory; delete it by hand or collect again. You can
+  delete `.runtime/campaign-child-executions/`.
+- **Simulation grading** (#1233): an infrastructure stop is graded `error`;
+  Mutation Tester scores can change now that runs use the Target's plusarg
+  defaults and `env`; one request runs at most 1000 Test Runs of a Target.
+- Doctor fails `.core` `flow_options.defines`, which no Flow ever applied;
+  declare `vlogdefine` parameters instead and re-plan Campaigns that used it.
+- `[models.roles]` accepts only `reviewer`, `mutation_tester` and
+  `coverage_analyst`. Delete `developer`, `recovery`, `triage_report` and
+  `tb_coder` pins; Doctor and agent commands refuse them. The hidden
+  `tb_coder` Specialist is removed.
+- `--work-dir`, `--project-root` and `--timeout-ms` still work but print a
+  notice; switch to `-C/--project` and `--timeout`. The hidden top-level
+  `--board/-b`, `--cheat` and `--doctor` flags are removed. `goal`,
+  `session`, `feedback`, `cleanup` and `upgrade` are no longer listed in
+  top-level help; `booley cheat --skills` shows them.
+- Scripts that grep Doctor's `[PASS]` or `=== X ===` text, or init's `[!!]`
+  and `[XX]` markers, must change; use `--json` where available.
+- B-Wave JSON output is schema revision 2. Literal match counts change on
+  gated clocks.
+- Under `[agent] auth = "auto"`, Sandboxes forward an exported
+  `ANTHROPIC_API_KEY`, which bills per token. Set
+  `[agent] auth = "subscription"` to avoid that.
+  `booley auth --status` and Doctor fail when the selected credential is
+  missing.
+- With a symlinked `.booley`, run `booley init` once to pin its target, and
+  `booley init --repin-booley-dir` after you retarget the link. Doctor FAILs
+  `project.booley-dir-pin` otherwise.
+- Rerun `booley init` in each checkout and commit its ignore backfill for
+  Specialist reports and state. New non-Stealth Projects keep Goal history
+  eligible for commits; init never stages or commits it.
+- Booley adds a Dashboard task to `.vscode/tasks.json`; opt out with
+  `[sandbox].dashboard = false`. A tracked `tasks.json` is left alone.
+- Doctor treats unreadable sibling Git attributes as unknown policy;
+  `git.attributes-policy-unknown` can stay a WARN on older Git, and
+  `init --check` exits 1 until it is resolved or waived. Existing
+  `git.line-endings-unreadable` waivers do not cover it.
+- `booley cleanup apply --run-id <id>` removes the whole Setup run root;
+  `booley cleanup record` and its `--digest`, `--retention` and
+  `--cache-disposition` options are removed. Delete run roots from older
+  versions by hand.
+- Coverage finds RTL files without coverage points by a lexical scan; the
+  Analyst's `zero_point_sources` view drops `discovery_status`,
+  `comparison_status` and `unusable_findings`.
+- Deep Doctor keeps only the latest attempt; `deep_status` drops
+  `last_success`, `checks` and `latest-attempt-not-qualified`.
+- Native-only coverage pruning deletes the whole `native/` directory. Delete
+  any `.native-pruned/` left by an older interrupted prune before retrying.
+- Hook files retired by `booley init` are renamed `<name>.pre-booley`.
+- Unbound Flow and Specialist reports omit `criterion_key` and
+  `criterion_met`; read them as optional.
+- Doctor defers generated cocotb test IDs to run time.
+- Known issue (#1529): the Sandbox shares writable Git metadata, so a
+  Developer Agent can plant commands that later run as you when host Git
+  runs, including from Doctor. SECURITY.md lists precautions.
 
 ## 0.3.0 - 05 OCT 2026
 
@@ -711,11 +623,6 @@ adding new features.
   the running Booley version and Sandbox Image (`docs/user/DOCTOR.md`).
 
 ### Quality of life
-
-- The RISC-V Sandbox Image now includes separate unprivileged and privileged
-  ISA manuals from the date-named upstream release `20250508`. Offline names
-  are `riscv-isa-unprivileged.{pdf,html}` and `riscv-isa-privileged.{pdf,html}`;
-  custom references to `riscv-isa-manual.{pdf,html}` must select a volume.
 
 - "Sandbox" replaces "Session Runtime" in output, diagnostics, and docs.
   `booley cheat --sandbox` is the main flag; `--runtime` remains an alias.

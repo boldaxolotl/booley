@@ -2,16 +2,16 @@
 //!
 //! Every JSON emission goes through `emit_json`, which wraps a typed
 //! payload in the canonical `{$schema, command, data, warnings}` envelope.
-//! The schema URL is pinned to an immutable commit; the schema itself lives at
+//! The schema URL is pinned to the release tag; the schema itself lives at
 //! `schema/bwave.json` and is served by the `bwave schema` subcommand.
 
 use std::io::{self, BufWriter, Write};
 
 use serde::Serialize;
 
-/// Immutable commit containing this schema revision; update after committing schema changes.
+/// Pinned `$schema` URL. Bump alongside the git tag at release-cut time.
 pub const SCHEMA_URL: &str =
-    "https://raw.githubusercontent.com/boldaxolotl/booley/9f6ee6a81995e7b45d79da37f58744cce1034585/crates/bwave/schema/bwave.json";
+    "https://raw.githubusercontent.com/boldaxolotl/booley/v0.4.0/crates/bwave/schema/bwave.json";
 
 /// Canonical envelope. Every `--format json` payload is wrapped in this shape.
 #[derive(Serialize)]
