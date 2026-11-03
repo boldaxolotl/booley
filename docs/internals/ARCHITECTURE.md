@@ -9,7 +9,7 @@ The executable package-direction design and its legacy cycle baseline live in th
 
 ## Overview
 
-Booley makes EDA workflows drivable by LLM agents without trusting the agents' claims. It wraps heterogeneous toolchains as **Booley Flows** with structured inputs and machine-checkable results, then exposes those Flows and LLM-backed **Specialists** through MCP.
+Booley is an agentic development environment (ADE) for FPGA and ASIC development ([why](WHY.md#why-an-ade-not-an-ide)). Underneath, it makes EDA workflows drivable by LLM agents without trusting the agents' claims. It wraps heterogeneous toolchains as **Booley Flows** with structured inputs and machine-checkable results, then exposes those Flows and LLM-backed **Specialists** through MCP.
 
 Everything executes in a containerized **Sandbox**, one per opened project folder. Two modes share that runtime and the same `.booley/` configuration:
 

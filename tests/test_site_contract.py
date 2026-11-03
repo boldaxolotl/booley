@@ -91,10 +91,9 @@ def test_quick_start_commands_match_the_install_guide_block():
 
 
 def test_description_is_the_readme_intro_paragraph():
-    readme_intro = (
-        "Booley turns Claude Code or Codex"
-        + README.split("Booley turns Claude Code or Codex", 1)[1].split("\n\n", 1)[0]
-    )
+    # The intro paragraph opens with the product's ADE positioning sentence.
+    intro_opener = "Booley is an agentic development environment"
+    readme_intro = intro_opener + README.split(intro_opener, 1)[1].split("\n\n", 1)[0]
     site_description = _plain(_site_section("description"))
 
     assert site_description.startswith(_plain(readme_intro))

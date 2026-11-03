@@ -125,7 +125,7 @@ def figure_html() -> str:
         '  <div class="shot__frame">\n'
         f"{window}{legend}"
         "  </div>\n"
-        '  <figcaption id="fig1cap"><b>Figure 1.</b> Booley in VS Code (illustration).</figcaption>\n'
+        '  <figcaption id="fig1cap"><b>Figure 1.</b> Booley in VS Code: two Developer Agents work in parallel while the Booley Dashboard tracks their sessions, Goals, and Jobs (illustration).</figcaption>\n'
         f"{real_screenshot_html()}"
         "</figure>\n"
     )
