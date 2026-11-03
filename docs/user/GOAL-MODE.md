@@ -4,7 +4,9 @@ Goal Mode gives one Developer Agent session mandatory, evidence-backed completio
 conditions. It is the recommended way to run long, unattended work: the Goals
 keep the Developer Agent within the limits you set, such as passing tests,
 area, and timing budgets, and the work is not done until Booley's own evidence
-shows every Goal is met.
+shows every Goal is met. Because nobody steers the agent once it starts, it
+needs a detailed specification up front (see step 1 of
+[How to use Goal Mode](#how-to-use-goal-mode)).
 
 Goal Mode is most useful for performance, frequency, and area optimization,
 where you want to squeeze the most out of a design while it stays functionally
@@ -14,13 +16,24 @@ that.
 
 ## How to use Goal Mode
 
-1. **Set up the Goals.** Open a Developer Agent session and type
-   `/booley-goal` followed by the work you want done. The skill helps you
-   choose a clean linked worktree, [Goalsets](#goalsets), Targets, and ad-hoc
-   Goals. Then it stops and shows you the final Goals; review them, ask for
-   changes, and confirm. Only after you confirm does it enter Goal Mode: Booley
-   creates a Goal Branch from the worktree's current HEAD and records that base
-   for comparisons. The skill stops there.
+1. **Describe the work in detail.** Open a Developer Agent session and type
+   `/booley-goal` followed by a detailed specification of the work, or a path
+   to a spec file in the repository. Once Goal Mode starts, the agent works
+   unattended. Anything the spec leaves out, it has to guess, and the Goals
+   only check what they measure. A good spec covers:
+
+    - what to build or change, and why;
+    - interfaces: ports, registers, protocols, and timing;
+    - expected behavior, including corner cases and error handling;
+    - limits: area, timing, cycle counts, and what must not change;
+    - how to verify it: which tests to add or which existing tests must pass.
+
+    The skill then helps you choose a clean linked worktree,
+    [Goalsets](#goalsets), Targets, and ad-hoc Goals. Then it stops and shows
+    you the final Goals; review them, ask for changes, and confirm. Only after
+    you confirm does it enter Goal Mode: Booley creates a Goal Branch from the
+    worktree's current HEAD and records that base for comparisons. The skill
+    stops there.
 2. **Clear the chat.** Once entry succeeds, type `/clear`. The Goals live in
    the Goal Record, not in the chat, so nothing is lost, and the work starts
    with a full context window.
@@ -39,24 +52,36 @@ A Goal is one condition the work must meet before it counts as done, such as
 mandatory. The Developer Agent cannot declare a Goal met: Booley checks it
 against fresh results from its own Flows and Specialists.
 
-The main groups of Goals are:
+Goals come in four groups:
 
-- **Lint and compile:** the linter passes and the RTL elaborates cleanly.
+- **Lint and compile:** the linter passes and the RTL elaborates cleanly (see
+  the table below).
 - **Simulation:** tests pass, a test finishes within a cycle budget, coverage
-  reaches its floors, and mutation testing kills enough mutants.
+  reaches its floors, and mutation testing kills enough mutants. See
+  [Simulation, Cycle Count, and coverage Goals](#simulation-cycle-count-and-coverage-goals).
 - **Implementation:** ASIC synthesis or FPGA implementation stays within area,
-  resource, and timing limits, as absolute values or relative to the code you
-  started from.
+  resource, and timing limits. See [Thresholds](#thresholds).
 - **Review:** an AI Reviewer checks the RTL or testbench for bugs, spec
-  compliance, protocol, security, optimization, or code style.
+  compliance, protocol, security, optimization, or code style. See
+  [Review Goals](#review-goals).
+
+| Goal | Met when |
+|---|---|
+| `LINT:<target>` | The Target's linter passes with no unwaived findings |
+| `ELAB:<target>` | The RTL and testbench compile and elaborate cleanly, without simulating |
 
 Each Goal has a short name such as `SIM:sim_fifo` or `REVIEW:rtl_bugs`, with
 details in parentheses, for example `SYNTH:synth_fifo (area increase ≤ 10%)`.
-You describe Goals in plain words; the Developer Agent writes the exact
-arguments. The [Goal catalog](#goal-catalog) lists every Goal, and
-`booley cheat --goals` prints the threshold parameters.
+`<target>` is the Target's name, or its qualified selector when the name is
+not unique. You describe Goals in plain words; the Developer Agent writes the
+exact arguments. `booley cheat --goals` prints every Goal with its parameters.
 
 ## Thresholds
+
+| Goal | Met when |
+|---|---|
+| `SYNTH:<target>` | ASIC synthesis completes within its area and timing limits |
+| `FPGA:<target>` | FPGA implementation completes within its resource and timing limits |
 
 Synthesis, FPGA, and Cycle Count Goals can carry limits. A limit is either
 absolute, such as "at most 5,000 LUTs" or "Fmax at least 200 MHz", or relative
@@ -76,6 +101,13 @@ being seen failing, since such a test may not check anything. This comparison
 is for your review only: it never decides whether a Goal is met.
 
 ## Simulation, Cycle Count, and coverage Goals
+
+| Goal | Met when |
+|---|---|
+| `SIM:<target>` | The Goal's tests pass in RTL simulation |
+| `CYCLE_COUNT:<target>` | A named test passes and its Cycle Count meets every limit |
+| `COVERAGE:<target>` | A coverage run reaches the coverage floors |
+| `MUTATION:<target>` | Mutation testing kills at least the minimum share of mutants |
 
 Simulation, Cycle Count, and coverage Goals can say exactly how a test must
 run. You can ask for a test to run several times with different random seeds,
@@ -133,6 +165,34 @@ frozen Test Runs with their outcomes, the parts still pending, the Test Runs
 resolved after entry, and a rerun command for every failed Test Run. The
 Review Package lists the same, and later runs do not change a saved package.
 
+## Review Goals
+
+A Review Goal asks an AI Reviewer to check the RTL or testbench for one focus:
+
+| Goal | What the Reviewer checks |
+|---|---|
+| `REVIEW:rtl_spec` | The RTL matches the spec, no more and no less |
+| `REVIEW:rtl_bugs` | Bug patterns, synthesis hazards, and `ifdef`/config consistency |
+| `REVIEW:rtl_protocol` | Bus and protocol compliance, and clock-domain crossings (CDC) |
+| `REVIEW:rtl_security` | Resistance to fault injection and simple power or timing analysis, and secret exposure |
+| `REVIEW:rtl_optimization` | Dead code and missed power, performance, or area wins |
+| `REVIEW:rtl_code_style` | Comments, naming, readability, and assertion coverage |
+| `REVIEW:tb_quality` | Testbench false passes, coverage gaps, and code quality |
+
+Each Review Goal covers either a Target's files or a list of paths, and asks
+for one of two verdicts:
+
+- **`done`**: the review just has to run. Its findings are advisory. They go
+  into the Review Package for you to read, and they do not block Finish.
+- **`clean`**: no finding may stay open. The Developer Agent fixes each one,
+  then asks the Reviewer to check the fixes again. To skip a finding, the agent
+  gives a reason, and the Reviewer decides whether to accept it. If the
+  findings are still open after a few rounds, the agent asks you to change
+  the Goal or abandon it.
+
+Editing a file after it was reviewed makes that review out of date, so the
+review has to run again.
+
 ## Working with evidence
 
 Only Booley's own Flows and Specialists can meet a Goal. The Developer Agent
@@ -172,10 +232,9 @@ why, and Booley builds the Review Package: the diff against the starting code,
 the final Goals and their evidence, the Change Log, open review findings,
 Target and constraint changes, and the Session Summary.
 
-A `clean` review requires no open findings. A `done` review is advisory:
-findings remain in the package and do not require a second approval to Finish.
-Read the package before deciding what to merge. Completion keeps the Goal
-Branch and worktree; merge, publication, and cleanup need separate instructions.
+Read the Review Package before deciding what to merge; open `done` findings
+are listed there. Completion keeps the Goal Branch and worktree; merge,
+publication, and cleanup need separate instructions.
 
 Local Goal Records live under `.booley/goals/<goal-id>/`. Outside
 Stealth, Finish commits the Session Summary under
@@ -217,42 +276,6 @@ worktree without an active Goal Mode, `booley goal status` also shows its most
 recently ended Goal Record: Goal id, state, end time, the
 failure reason of a failed record, and the Session Summary and Review Package
 paths when those files exist.
-
-## Goal catalog
-
-Every supported Goal has the same name in status, proposals, the Dashboard and
-Review Package. `{target}` is its bare name when unique, or its qualified selector otherwise.
-
-<!-- BEGIN GENERATED: criteria -->
-| Goal | Requirement | Evidence producer |
-|------|-------------|-------------------|
-| `LINT:{target}` | The Target's linter passes with no unwaived findings | `lint` |
-| `SIM:{target}` | RTL simulation passes all tests | `sim` |
-| `ELAB:{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `sim` (`mode="elab-only"`) |
-| `SYNTH:{target}` | ASIC synthesis completes within area/timing budgets | `synth` |
-| `FPGA:{target}` | FPGA implementation completes within resource/timing budgets | `fpga` |
-| `CYCLE_COUNT:{target}` | A named test passes and its observed Cycle Count meets every declared threshold | `sim` |
-| `COVERAGE:{target}` | Native Coverage Campaign policy for one Simulation Target | `sim` (`coverage=true`) |
-| `MUTATION:{target}` | Mutation testing achieves minimum kill rate | `mutation_tester` |
-| `REVIEW:rtl_spec` | RTL review: spec compliance (RTL matches the Goal/spec, no more, no less) | `reviewer` (`category="rtl"`, `focus="spec"`) |
-| `REVIEW:rtl_bugs` | RTL review: bug patterns, synthesis hazards, and ifdef/config consistency (the RTL as hardware, not against the spec) | `reviewer` (`category="rtl"`, `focus="bugs"`) |
-| `REVIEW:rtl_protocol` | RTL review: bus/protocol compliance and clock-domain crossings (CDC) | `reviewer` (`category="rtl"`, `focus="protocol"`) |
-| `REVIEW:rtl_security` | RTL review: hardware attack resistance to fault injection, simple power/timing analysis, and secret exposure (post-sim) | `reviewer` (`category="rtl"`, `focus="security"`) |
-| `REVIEW:rtl_optimization` | RTL review: unused/dead code and missed power/performance/area wins, strict improvements only (post-sim) | `reviewer` (`category="rtl"`, `focus="optimization"`) |
-| `REVIEW:rtl_code_style` | RTL review: comments, naming, readability, and assertion coverage (post-sim) | `reviewer` (`category="rtl"`, `focus="code_style"`) |
-| `REVIEW:tb_quality` | Source-scoped TB review: false-pass detection, coverage gaps, and TB code quality | `reviewer` (`category="tb"`, `focus="quality"`) |
-
-`{target}` is the bare Target name when unique, or its qualified selector otherwise. Details (thresholds, tests, baseline,
-review verdict and spec) follow the name in parentheses. Review Goals require
-`clean` or `done`; the name is identical for both requirements.
-Each Review Goal also names exactly one scope: `target` (that Target's RTL or TB
-files plus dependencies) or `paths` (files relative to the Goal worktree). Examples:
-`{"family":"REVIEW","review":"rtl_bugs","verdict":"clean","target":"top"}`,
-`{"family":"REVIEW","review":"tb_quality","verdict":"done","paths":["tb/top_tb.sv"]}`.
-
-Goal argument `family` uses the uppercase capability before the colon.
-Internal evidence keys and Project-defined evidence bindings are not Goal names.
-<!-- END GENERATED: criteria -->
 
 ## Goalsets
 

@@ -9,6 +9,7 @@ can only be updated from one place.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -32,15 +33,15 @@ _ENDPOINTS = builtin_endpoint_catalog()
 # Docs that embed a committed copy of the generated block (base render, no
 # project criteria). cheatsheet.md is also spliced live by `booley cheat`, but its
 # committed copy must still match so the raw file is correct.
-_EMBEDDED_DOCS = [
-    REPO_ROOT / "docs" / "user" / "GOAL-MODE.md",
-    cheatsheet_path(),
-]
+_EMBEDDED_DOCS = [cheatsheet_path()]
 
 REGEN_HINT = (
     "Regenerate with: python -m booley.dev_support.criteria_reference "
-    "docs/user/GOAL-MODE.md src/booley/data/cheatsheet.md"
+    "src/booley/data/cheatsheet.md"
 )
+
+_GOAL_MODE_GUIDE = REPO_ROOT / "docs" / "user" / "GOAL-MODE.md"
+_CATALOG_ROW = re.compile(r"^\| `([^`]+)` \|", re.MULTILINE)
 
 
 @pytest.mark.parametrize("doc", _EMBEDDED_DOCS, ids=lambda p: p.name)
@@ -53,6 +54,20 @@ def test_committed_block_matches_source(doc: Path) -> None:
     assert committed == render_goal_reference(_ENDPOINTS), (
         f"{doc.name} criteria block is stale. {REGEN_HINT}"
     )
+
+
+def test_goal_mode_guide_names_every_goal() -> None:
+    """The user guide spreads hand-written Goal tables across its sections.
+
+    It carries no generated copy, so a new Goal must still be added there by hand.
+    """
+    from booley.goals.reference import render_goal_reference
+
+    names = _CATALOG_ROW.findall(render_goal_reference(_ENDPOINTS))
+    assert names, "catalog render produced no Goal rows"
+    guide = _GOAL_MODE_GUIDE.read_text(encoding="utf-8")
+    missing = [name for name in names if f"`{name.replace('{target}', '<target>')}`" not in guide]
+    assert missing == [], f"GOAL-MODE.md does not list these Goals: {missing}"
 
 
 # GOAL-MODE.md links to `booley cheat --goals` for the full threshold tables
