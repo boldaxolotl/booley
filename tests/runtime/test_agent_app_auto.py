@@ -174,6 +174,51 @@ def test_consumers_keep_the_start_choice_when_a_credential_appears_later(
     assert config_agent.env_auth_handoff() == "gateway"
 
 
+def test_signing_in_after_a_gateway_start_discards_the_stale_health_result(
+    sandbox, monkeypatch, capsys
+):
+    """A Doctor result graded against the old app must not read as current health.
+
+    Codespaces visitor: the first start chose the gateway and Doctor WARNed about
+    its missing token; the visitor then signed in and re-ran the registrar.
+    """
+    from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
+    from booley.runtime import health
+    from booley.runtime.booley_dir import reset_cache
+
+    booley_dir = sandbox.project / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text('[project]\nname="auto-health"\n')
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    report = health.report_path(booley_dir)
+
+    def publish_token_warning() -> None:
+        finding = DiagnosticFinding(
+            Severity.WARN, "gateway token command exited 1", check_id="agent.gateway-token"
+        )
+        health.publish_result(
+            sandbox.project,
+            trigger="test",
+            duration_s=0,
+            diagnostics=DiagnosticReport((finding,)),
+            transcript="",
+        )
+
+    _give("gateway", sandbox.home, monkeypatch)
+    _start(capsys)
+    publish_token_warning()
+
+    _start(capsys)  # an unchanged choice keeps the result
+    assert report.exists()
+
+    _give("codex-api-key", sandbox.home, monkeypatch)  # the visitor signs in
+    assert "app:codex (BOOLEY_AGENT_APP=auto: " in _start(capsys)
+    assert not report.exists()
+    assert health.due_reason(sandbox.project) == "no automatic Doctor result"
+    reset_cache()
+
+
 @pytest.mark.parametrize(
     "credential,gateway_policy",
     [("claude-api-key", None), ("codex-api-key", None), ("codex-api-key", "gateway")],

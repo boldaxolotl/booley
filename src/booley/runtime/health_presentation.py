@@ -40,7 +40,21 @@ def count_line(snapshot: health.HealthSnapshot | None) -> CompactLine:
 
 
 def brief_message(snapshot: health.HealthSnapshot) -> str:
-    """Render an already-read snapshot; never reload a report while formatting."""
+    """Render an already-read snapshot; never reload a report while formatting.
+
+    A stale snapshot leads with its staleness, so no reader takes old findings
+    for current health.
+    """
+    if snapshot.due is not None:
+        return (
+            f"Automatic Doctor result is out of date ({snapshot.due}); run `booley doctor` "
+            f"for current health. Last result: {_findings_message(snapshot)}"
+        )
+    return _findings_message(snapshot)
+
+
+def _findings_message(snapshot: health.HealthSnapshot) -> str:
+    """Render the snapshot's findings and transcript path, without freshness."""
     assessment = snapshot.assessment
     if assessment.clean:
         return f"Automatic Doctor is clean. Full report: {snapshot.transcript}"

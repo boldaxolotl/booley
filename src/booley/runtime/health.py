@@ -20,7 +20,7 @@ from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.audit.health import HealthSnapshot
 from booley.core.boundary import as_dict
 from booley.runtime import doctor_stamp
-from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.runtime.atomic_files import atomic_replace_bytes, durable_unlink
 from booley.runtime.booley_dir import contains, resolve_booley_dir
 from booley.runtime.file_lock import try_file_lock
 from booley.runtime.filesystem_utils import read_file_bytes
@@ -255,6 +255,15 @@ def publish_result(
     return payload
 
 
+def discard_result(project_root: Path) -> bool:
+    """Drop the stored observation so the next automatic check is due.
+
+    For changes Doctor's fingerprint cannot see, such as the agent sign-in the
+    in-Sandbox registrar resolves. Returns whether a result existed.
+    """
+    return durable_unlink(report_path(resolve_booley_dir(project_root)))
+
+
 def _load_announcements(path: Path) -> dict[str, str]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -269,12 +278,14 @@ def consume_changed_snapshot(
     channel: str,
     issues_only: bool = False,
 ) -> HealthSnapshot | None:
-    """Return a changed observation once per reporting channel.
+    """Return a changed, current observation once per reporting channel.
 
-    An ``issues_only`` channel neither reports nor records clean observations.
+    A stale observation is neither reported nor recorded: its findings may no
+    longer hold, and the recheck that is due decides what to announce. An
+    ``issues_only`` channel neither reports nor records clean observations.
     """
     snapshot = read_health(project_root)
-    if snapshot is None:
+    if snapshot is None or snapshot.due is not None:
         return None
     if issues_only and snapshot.assessment.clean:
         return None

@@ -48,7 +48,8 @@ def _result(severity: Severity) -> doctor.DoctorRunResult:
     return reporter.result(reporter.finish())
 
 
-def _write(root, directory, result, *, age=timedelta()):
+def _write(root, directory, result, *, age=None):
+    """Publish *result*; *age* backdates it from NOW, otherwise it stays current."""
     document = health.publish_result(
         root,
         trigger="test",
@@ -56,7 +57,8 @@ def _write(root, directory, result, *, age=timedelta()):
         diagnostics=result.diagnostics,
         transcript="probe text\n",
     )
-    document["checked_at"] = rfc3339_from_datetime(NOW - age)
+    if age is not None:
+        document["checked_at"] = rfc3339_from_datetime(NOW - age)
     health.report_path(directory).write_text(json.dumps(document))
     return document
 
@@ -289,6 +291,9 @@ def test_stale_observation_reaches_doctor_mcp_and_dashboard(project, monkeypatch
     assert snapshot.due == expired
     message = health_presentation.brief_message(snapshot)
     assert "1 FAIL" in message
+    # Stale findings are never presented as current health.
+    assert message.startswith(f"Automatic Doctor result is out of date ({expired}); ")
+    assert "run `booley doctor`" in message
 
     # Doctor's session start schedules a recheck rather than announcing stale findings.
     cli._report_session_health(root)
@@ -298,6 +303,9 @@ def test_stale_observation_reaches_doctor_mcp_and_dashboard(project, monkeypatch
     assert tuple(line.text for line in dashboard.health_lines(root, directory)) == (
         "Doctor: 1 FAIL · recheck due",
     )
+    # A Flow result gains no HEALTH WARNING built from stale findings.
+    content = [server.TextContent(type="text", text="Flow result")]
+    assert server._prepend_changed_health_alert(content) == content
     assert not (health.state_dir(directory) / "announcements.json").exists()
 
 
@@ -327,10 +335,12 @@ def test_dashboard_compact_line_preserves_verbose_brief(tmp_path, monkeypatch):
             "Doctor: 1 FAIL · 1 WARN",
         ),
         (clean, f"Automatic Doctor is clean. Full report: {transcript}", "Doctor: OK"),
-        # A due result keeps the verbose brief unchanged; only the compact line gains the marker.
+        # A due result leads the verbose brief with its staleness; the compact line gains a marker.
         (
             replace(mixed, due="expired"),
-            f"Automatic Doctor found 1 FAIL, 1 WARN: broken machinery; review needed. Full report: {transcript}",
+            "Automatic Doctor result is out of date (expired); run `booley doctor` for current"
+            " health. Last result: Automatic Doctor found 1 FAIL, 1 WARN: broken machinery;"
+            f" review needed. Full report: {transcript}",
             "Doctor: 1 FAIL · 1 WARN · recheck due",
         ),
     ):
