@@ -927,6 +927,27 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Issue #2681: the validations run concurrently and, with the image
+      # builds, share the runner's `/` (RUNNER_TEMP and the Docker root), which
+      # has run out of space mid-group. Drop preinstalled toolchains this job
+      # never uses. /opt/hostedtoolcache itself stays: setup-python resolves
+      # Python from it. This sits before the duration clock on purpose.
+      - name: Free unused runner disk
+        shell: bash
+        run: |
+          echo "::group::Free disk before cleanup"
+          df -h
+          echo "::endgroup::"
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL
+          echo "::group::Free disk after cleanup"
+          df -h
+          echo "::endgroup::"
+
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
@@ -1183,6 +1204,10 @@ jobs:
             exit "${status}"
           fi
 
+      - name: Log free disk before image validations
+        shell: bash
+        run: df -h /
+
       # GitHub's native parallel group retains a separate log and exit status
       # for every validation while sharing the already-loaded candidate image.
       - parallel:
@@ -1418,6 +1443,32 @@ jobs:
               -o cache_dir=/validation-tmp/pytest-cache &&
               python /work/.github/scripts/assert_junit.py /validation-tmp/goal-mode.xml
               --label goal-mode --min-tests 1 --max-skips 0"
+
+      # Snapshot after the group, whatever its outcome. Validation containers
+      # run with --rm, so their own writable-layer use (for example Verilator's
+      # /tmp) is already gone here: a small scratch size does not clear a
+      # validation, and the runner's "Free space left" warning plus the free
+      # space logged before the group bracket the peak. Reporting never fails
+      # the job, and each slow command is capped to stay inside the budget.
+      - name: Log disk use after image validations
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          df -h /
+          shopt -s nullglob
+          # Only existing directories: the group may not have run, and the
+          # RISC-V evidence directory exists only on the RISC-V lane.
+          scratch=()
+          for dir in "${RUNNER_TEMP}"/bwave-smoke/* "${RUNNER_TEMP}"/riscv-image-evidence; do
+            [[ -d "${dir}" ]] && scratch+=("${dir}")
+          done
+          # Validations write as root or the image's agent user.
+          if (( ${#scratch[@]} )); then
+            sudo timeout 10 du -sh -- "${scratch[@]}"
+          fi
+          timeout 10 docker system df
+          exit 0
 
       - name: Run pinned Ibex lint demo
         if: needs.changes.outputs.riscv_image == 'true'
