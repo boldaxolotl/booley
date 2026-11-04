@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -73,7 +73,7 @@ from booley.goals.review_package import (
     presentation_observations,
 )
 from booley.goals.state_store import load_goal_state
-from booley.goals.status import build_status
+from booley.goals.status import GoalStatus, build_status
 from booley.goals.target_changes import (
     project_target_changes,
     resolved_goal_targets,
@@ -268,7 +268,7 @@ def _freeze(
         raise LifecycleError("resolve pending Goal proposals before finish")
     if not operation.request.summary.strip():
         raise LifecycleError("finish requires a nonblank Session Summary")
-    package, capture = _build_frozen_package(operation, record, env, selection)
+    package, capture = _build_frozen_package(operation, record, env, selection, status.goals)
     if select_inputs(record, operation.root) != selection:
         raise LifecycleError("input participants moved while freezing completion")
     require_clean(selection, retained=retained_outputs(operation))
@@ -342,10 +342,11 @@ def _build_frozen_package(
     record: GoalRecord,
     env: FinishEnvironment,
     selection: InputSelection,
+    statuses: Sequence[GoalStatus],
 ) -> tuple[GoalCompletionPackage, dict[str, Any]]:
     """Keep classification and resolver failures at the Finish lifecycle boundary."""
     try:
-        return _build_frozen_package_checked(operation, record, env, selection)
+        return _build_frozen_package_checked(operation, record, env, selection, statuses)
     except LifecycleError:
         raise
     except RESOLVER_ERRORS as exc:
@@ -357,6 +358,7 @@ def _build_frozen_package_checked(
     record: GoalRecord,
     env: FinishEnvironment,
     selection: InputSelection,
+    statuses: Sequence[GoalStatus],
 ) -> tuple[GoalCompletionPackage, dict[str, Any]]:
     state = load_goal_state(operation.store, record)
     generated = (
@@ -399,7 +401,7 @@ def _build_frozen_package_checked(
             resolved_goal_targets(final.root, record),
         )
         package = build_goal_package(
-            context, record, state, operation.store.booley_dir, omitted_inputs=omitted
+            context, record, state, operation.store.booley_dir, statuses, omitted_inputs=omitted
         )
     return GoalCompletionPackage.from_json(
         {**package.to_json(), "earlier_attempts": earlier_attempt_facts(operation)}
