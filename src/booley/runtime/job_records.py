@@ -110,6 +110,10 @@ class JobRecord:
     binding: dict[str, Any] | None = None
     process_identity: dict[str, Any] | None = None
     ended_at: str | None = None
+    # The agent that started the Job (see ``booley.mcp.job_ownership``) and when
+    # that owner first read the final result; None for records that predate them.
+    owner: str | None = None
+    read_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -223,8 +227,13 @@ def delete_record(run_id: str, root: Path | None) -> None:
         logger.debug("Failed to remove job record %s", run_id, exc_info=True)
 
 
-def list_records(root: Path | None) -> list[JobRecord]:
-    """Return every job record on disk (unordered). Empty when none."""
+def list_records(root: Path | None, *, skip_malformed: bool = False) -> list[JobRecord]:
+    """Return every job record on disk (unordered). Empty when none.
+
+    A malformed record raises ``JobRecordError`` (fences fail closed) unless
+    *skip_malformed*, which a read-only listing uses to keep one bad record from
+    hiding the rest.
+    """
     records_root = root
     if records_root is None or not records_root.is_dir():
         return []
@@ -234,6 +243,11 @@ def list_records(root: Path | None) -> list[JobRecord]:
             rec = read_record(path.stem, records_root)
         except OSError as exc:
             logger.warning("Skipping unreadable job record %s: %s", path, exc)
+            continue
+        except JobRecordError as exc:
+            if not skip_malformed:
+                raise
+            logger.warning("Skipping malformed job record %s: %s", path, exc)
             continue
         if rec is not None:
             out.append(rec)

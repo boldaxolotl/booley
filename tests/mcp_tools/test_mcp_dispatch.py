@@ -1470,13 +1470,12 @@ class TestAsyncJobDispatch:
         assert f"{default_wait_seconds:g}s" in props["wait_seconds"]["description"]
         assert "wait_seconds" not in endpoint_def["schema"]["required"]
 
-    def test_poll_missing_run_id(self, _report_env):
+    def test_poll_without_run_id_has_nothing_to_wait_for(self, _report_env):
         import asyncio
 
         jobs = _JobManager(_FakeLifetime())
         out = asyncio.run(_dispatch_poll({}, jobs))
-        assert "Provide a 'run_id'" in _text(out)
-        assert out.is_error is True
+        assert "NOTHING TO WAIT FOR" in _text(out)
 
     def test_poll_unknown_run_id(self, _report_env):
         import asyncio

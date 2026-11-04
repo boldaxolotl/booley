@@ -18,18 +18,20 @@ _REPORT_MCP_TOOL_NAME = "booley_report"
 POLL_MCP_TOOL_NAME = "booley_poll"
 
 _POLL_MCP_TOOL_DESCRIPTION = (
-    "Check on a long-running endpoint (sim / fpga / synth / reviewer / mutation_tester / "
-    "coverage_analyst) that was started in the background. When such an endpoint takes "
-    "longer than the inline wait, its call returns a 'run_id' instead of the result; pass "
-    "that run_id here to get the current status. Pass 'wait_seconds' (0-270) to long-poll: "
-    "the call blocks up to that long for the run to finish, turning a poll-loop into one "
-    "blocking call; if the run is still going afterwards it returns 'RUNNING' — call again "
-    "to keep waiting. Prefer few long polls over many short ones. Claude and Codex: omit "
-    "'wait_seconds' to use the Sandbox's configured poll window. Codex: if its programmatic "
-    "exec yields while this MCP call is still running, keep waiting on the same running cell"
-    " in short slices; do not start another booley_poll call. When the run finishes it "
+    "Wait for long-running endpoints (sim / fpga / synth / reviewer / mutation_tester / "
+    "coverage_analyst) that were started in the background. When such an endpoint takes "
+    "longer than the inline wait, its call returns a 'run_id' instead of the result. With "
+    "several Jobs running, call with no run_id: it returns the full result of the first of "
+    "your Jobs to finish (or one that finished but whose result you have not read), lists "
+    "your other Jobs, and answers at once when there is nothing to wait for. Pass a run_id "
+    "only to wait for one specific Job. Pass 'wait_seconds' (0-270) to long-poll: the call "
+    "blocks up to that long, turning a poll-loop into one blocking call; if nothing has "
+    "finished afterwards it returns 'RUNNING' — call again to keep waiting. Claude and "
+    "Codex: omit 'wait_seconds' to use the Sandbox's configured poll window. Codex: if its "
+    "programmatic exec yields while this MCP call is still running, keep waiting on the same "
+    "running cell in short slices; do not start another booley_poll call. A finished Job "
     "returns the full result (EXIT_CODE + report), exactly as the original call would have. "
-    "Safe to call across a server restart: the job is tracked on disk, so a poll always "
+    "Safe to call across a server restart: Jobs are tracked on disk, so a poll always "
     "returns a definite answer."
 )
 _CANCEL_MCP_TOOL_NAME = "booley_cancel"
@@ -221,7 +223,11 @@ def _poll_mcp_tool_def() -> dict[str, Any]:
             "properties": {
                 "run_id": {
                     "type": "string",
-                    "description": ("The run_id returned by an endpoint that reported RUNNING."),
+                    "description": (
+                        "Optional. The run_id returned by an endpoint that reported RUNNING, "
+                        "to wait for that one Job. Omit to wait for the first of your Jobs "
+                        "to finish."
+                    ),
                 },
                 "wait_seconds": {
                     "type": "integer",
@@ -237,7 +243,7 @@ def _poll_mcp_tool_def() -> dict[str, Any]:
                     ),
                 },
             },
-            "required": ["run_id"],
+            "required": [],
             "additionalProperties": False,
         },
     }

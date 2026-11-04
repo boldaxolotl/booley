@@ -166,9 +166,14 @@ what happened.
 ## Waiting on long runs
 
 Setup's real runs are minutes to hours — a sim suite, `booley doctor --deep`, an
-ASIC synth — and **Booley emits no completion notification**. Nothing will nudge
-you when one ends. Parking on "standing by" is never a correct state: if you are
-waiting, you are polling.
+ASIC synth. Flows and Specialists started through MCP tools are Jobs: with several
+running, call `booley_poll` with no `run_id` to receive whichever of your Jobs
+finishes first, and never wait with `sleep` loops or log tails. A sub-agent
+shares its parent's client, so it waits for its own Jobs by `run_id`. The cadence
+below is for CLI processes (`booley flow`, `booley doctor --deep`), which have no
+`run_id` and **emit no completion notification**. Nothing will nudge you when one
+ends. Parking on "standing by" is never a correct state: if you are waiting, you
+are polling.
 
 - **Start it detached.** Run the command in the background with stdout and
   stderr redirected beneath the current run's scratch root,

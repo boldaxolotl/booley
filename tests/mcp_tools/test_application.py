@@ -241,7 +241,7 @@ def test_live_status_preserves_independent_names_and_observation_precedes_import
     reset_cache()
     seen, imports = [], []
 
-    async def status(name, arguments, jobs, names):
+    async def status(name, arguments, jobs, names, *, caller=None):
         seen.append(set(names))
         return [SimpleNamespace(text="ready")]
 
