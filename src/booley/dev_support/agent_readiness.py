@@ -32,6 +32,7 @@ PINNED_RUNNERS = {
     "pytest-asyncio": "1.4.0",
     "pytest-xdist": "3.8.0",
     "pytest-timeout": "2.4.0",
+    "pytest-repeat": "0.9.4",
     "pytest-cov": "7.1.0",
     "coverage": "7.17.0",
     "ruff": "0.17.2",

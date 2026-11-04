@@ -518,6 +518,34 @@ def test_matrix_enforces_the_ci_duration_budget() -> None:
     assert all("--timeout=60" in step["run"] for step in pytest_steps)
 
 
+def test_flake_stress_repeats_changed_modules_on_linux_and_windows() -> None:
+    """Changed test modules repeat across workers on both OS families before merge."""
+    workflow = _test_workflow()
+    job = workflow["jobs"]["flake-stress"]
+    classify = _named_step(workflow["jobs"]["changes"], "Classify changed paths")
+    stress = _named_step(job, "Repeat changed test modules")
+    command = " ".join(stress["run"].split())
+    shard = _named_step(workflow["jobs"]["test"], "Run duration-balanced shard")
+
+    assert classify["env"]["HEAD_REF"] == "${{ github.head_ref }}"
+    assert '--head-ref "${HEAD_REF}"' in classify["run"]
+    assert {(leg["os"], leg["python"]) for leg in job["strategy"]["matrix"]["include"]} == {
+        ("ubuntu-latest", "3.14"),
+        ("windows-latest", "3.14"),
+    }
+    assert stress["shell"] == "bash"
+    assert stress["env"]["STRESS_MODULES"] == "${{ needs.changes.outputs.stress_modules }}"
+    assert stress["env"]["STRESS_COUNT"] == "${{ needs.changes.outputs.stress_count }}"
+    assert '"${modules[@]}"' in command
+    assert '--count="${STRESS_COUNT}"' in command
+    assert "-n 4 --dist=load " in command
+    assert "--timeout=60" in command
+    assert stress["env"]["HEADROOM"] in shard["run"]  # same Windows headroom gate
+    assert _named_step(job, "Publish pytest evidence")["uses"] == (
+        "./.github/actions/publish-pytest-evidence"
+    )
+
+
 def test_pr_compatibility_matrix_is_pairwise() -> None:
     workflow = _test_workflow()
     jobs = workflow["jobs"]

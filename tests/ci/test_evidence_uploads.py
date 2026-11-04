@@ -165,6 +165,7 @@ def _assert_uploads(workflow: dict, tmp_path: Path, actions: dict | None = None)
         "release-semantic",
         "docs-check",
         "test",
+        "flake-stress",
         "coverage-shards",
         "bwave-integration",
         "sidecar-smoke",

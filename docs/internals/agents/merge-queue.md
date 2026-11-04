@@ -120,7 +120,9 @@ or `required_checks_missing` (exit 1), `timeout` (exit 124), and
 `observation_error` (exit 2). Only required checks reported as `pass` satisfy
 CI. Pending, skipped, or neutral checks remain unresolved; a cancelled required
 check is actionable. The expected head is checked before and after each status
-read, and results from an explicitly different head are ignored.
+read, and results from an explicitly different head are ignored. An abbreviated
+expected head (at least seven hex digits) is expanded to the PR head it
+prefixes on the first read; a non-matching prefix reports `head_changed`.
 
 Because required contexts can register after their workflows start, the watcher
 matches each absent context to its Actions producer by exact expected head,
@@ -192,7 +194,11 @@ evidence. The watcher relies on the configured `queued`,
 bot status comments. Queue head updates are expected. An old failed attempt
 does not stop a newer pending or same-head retry. Likewise, a `dequeued` label
 beside `queued` or `merge-queue-checking` is the previous attempt's leftover
-during a requeue, not a new dequeue.
+during a requeue, not a new dequeue. A lone `dequeued` label applied before the
+newest control comment, when that comment is a queue command, is the same
+leftover: the watcher keeps waiting and reports `dequeued` only if the label is
+still that old at a poll ten minutes later. A label applied after the queue
+command is reported at once.
 
 Cancellation is `cancelled` (exit 130 for SIGINT or 143 for SIGTERM).
 
