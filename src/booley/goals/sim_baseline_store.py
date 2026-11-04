@@ -224,7 +224,7 @@ def _capture_protected(
 
     root = Path(record.worktree_path).resolve()
     project = resolve_checkout_booley_dir(root)
-    roots = ProtectedInputRoots(root, booley_dir)
+    roots = ProtectedInputRoots.for_goal(record, root, booley_dir)
     main = roots.main_checkout()
     paths = sorted(record.protected_paths, key=lambda value: not value.startswith("worktree:"))
     for encoded in paths:

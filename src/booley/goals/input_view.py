@@ -485,9 +485,7 @@ def _capture_nonversioned(view: CommittedView, record: GoalRecord, control_proje
                 view.observations.append(
                     {"path": str(path), "classification": "AbsentProjectSnapshot"}
                 )
-    roots = ProtectedInputRoots(view.selection.rtl, control_project).with_input_paths(
-        record.input_paths
-    )
+    roots = ProtectedInputRoots.for_goal(record, view.selection.rtl, control_project)
     main = roots.main_checkout()
     for encoded in record.protected_paths:
         path = roots.absolute(ProtectedPath.decode(encoded), main)

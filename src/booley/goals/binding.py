@@ -33,13 +33,7 @@ from booley.goals.generated_artifacts import goal_target_surface
 from booley.goals.model import GoalRecord, GoalRecordFormatError, GoalState, WorktreeIdentity
 from booley.goals.paths import GoalIdError, record_paths, validate_goal_id
 from booley.goals.proposals import ProposalError
-from booley.goals.protected_inputs import (
-    ProtectedInputError,
-    ProtectedInputRoots,
-    ProtectedPath,
-    ProtectedSnapshot,
-    snapshot_protected_inputs,
-)
+from booley.goals.protected_inputs import ProtectedPath, ProtectedSnapshot, check_goal_inputs
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.goals.target_surface import TargetSurfaceError
 from booley.goals.test_run_freezing import ensure_test_run_resolutions
@@ -113,16 +107,16 @@ class GoalRunBinding:
         return dict(self.start_surfaces).get(target)
 
     def start_snapshot(self) -> ProtectedSnapshot:
-        """The protected inputs as the run started."""
+        """The protected inputs as the run started.
+
+        It holds paths and digests only: the digests hash the declared capture,
+        which the stored format has no field for.
+        """
         return ProtectedSnapshot(
             tuple(ProtectedPath.decode(path) for path in self.protected_paths),
             self.start_digest,
             self.start_head_digest,
         )
-
-    def protected_roots(self) -> ProtectedInputRoots:
-        """Where the protected inputs of this run are read from."""
-        return ProtectedInputRoots(self.worktree_root, self.booley_dir)
 
     def to_json(self) -> dict[str, Any]:
         """The JSON object a job record stores."""
@@ -234,10 +228,9 @@ def bind_run(
     Refuses (:class:`GoalBindingError`) when the worktree hosts no Goal Mode,
     when its record is ``entering`` or ``finishing`` or cannot be read, when
     HEAD is not on the record's Goal Branch (a removed and re-created
-    worktree inherits the record by name, not by branch), and when the
-    protected inputs cannot be read. Protected inputs that already differ
-    from the entry snapshot do not refuse the run; they make it ineligible to
-    publish (:attr:`GoalRunBinding.eligible`). The ``target_surface`` of every
+    worktree inherits the record by name, not by branch). Protected inputs
+    that already differ from the entry snapshot, or cannot be inspected, do
+    not refuse the run; they make it ineligible to publish (:attr:`GoalRunBinding.eligible`). The ``target_surface`` of every
     bound Target is captured too, so publication can tell a Target declaration
     that changed while the run executed (*surface* resolves it).
     """
@@ -252,11 +245,10 @@ def bind_run(
         except ProposalError as exc:
             raise GoalBindingError(str(exc)) from exc
         record = _on_goal_branch_with_test_runs(store, record, root)
-        try:
-            snapshot = snapshot_protected_inputs(ProtectedInputRoots(root, store.booley_dir))
-        except ProtectedInputError as exc:
-            raise GoalBindingError(f"cannot read the protected inputs of {root}: {exc}") from exc
-        reason = protected_drift(record, snapshot)
+        check = check_goal_inputs(record, root, store.booley_dir)
+        # Inputs that cannot be judged leave no snapshot; the run is ineligible and
+        # publication refuses it before reading the start digests.
+        start = check.snapshot or ProtectedSnapshot.at_entry(record)
         return GoalRunBinding(
             booley_dir=store.booley_dir,
             record_id=record.id,
@@ -268,11 +260,11 @@ def bind_run(
             spec_revisions=tuple(
                 sorted((goal.spec.key, goal.spec_revision) for goal in record.goals)
             ),
-            protected_paths=snapshot.encoded_paths,
-            start_digest=snapshot.working_digest,
-            start_head_digest=snapshot.head_digest,
-            eligible=not reason,
-            ineligible_reason=reason,
+            protected_paths=start.encoded_paths,
+            start_digest=start.working_digest,
+            start_head_digest=start.head_digest,
+            eligible=not check.violations,
+            ineligible_reason="; ".join(check.violations),
             start_surfaces=_start_surfaces(root, record, surface),
         )
 
@@ -319,17 +311,6 @@ def checkout_drift(store: GoalStore, binding: GoalRunBinding) -> str:
         return f"{binding.worktree_root} is no longer the worktree the run was admitted in"
     if head != branch_ref(binding.goal_branch):
         return f"the worktree is on {head or 'a detached HEAD'}, not Goal Branch {binding.goal_branch}"
-    return ""
-
-
-def protected_drift(record: GoalRecord, snapshot: ProtectedSnapshot) -> str:
-    """Why *snapshot* differs from *record*'s entry snapshot; empty when it does not."""
-    if snapshot.encoded_paths != record.protected_paths:
-        return "protected inputs resolve to different files than at entry"
-    if snapshot.working_digest != record.protected_digest:
-        return "a protected input differs from its state at entry"
-    if snapshot.head_digest != record.protected_head_digest:
-        return "a protected input differs from its state at entry in HEAD"
     return ""
 
 
