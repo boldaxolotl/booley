@@ -37,19 +37,50 @@ class TestResolve:
     def test_family_fallback_over_costs_rather_than_zeroing(self):
         """An unrecognised Opus resolves to the priciest family member, not free."""
         p = resolve("claude-opus-9-turbo")
-        assert p is MODEL_PRICING["claude-fable-5"]
+        assert p is MODEL_PRICING["claude-fable-5-1"]
 
     @pytest.mark.parametrize(
         ("model", "expected_key"),
         [
-            ("claude-sonnet-42", "claude-sonnet-5"),
+            ("claude-sonnet-42", "claude-sonnet-5-5"),
             ("claude-haiku-99", "claude-haiku-4-5"),
-            ("some-fable-build", "claude-fable-5"),
+            ("some-fable-build", "claude-fable-5-1"),
             ("internal-mythos-x", "claude-mythos-5"),
         ],
     )
     def test_family_fallbacks(self, model: str, expected_key: str):
         assert resolve(model) is MODEL_PRICING[expected_key]
+
+    @pytest.mark.parametrize(
+        ("model", "prices", "window"),
+        [
+            # Anthropic pricing page, checked 2026-11-04.
+            ("claude-fable-5-1", (10.00, 50.00, 0.25, 12.50), 1_000_000),
+            ("claude-opus-5-5", (4.00, 20.00, 0.20, 5.00), 1_000_000),
+            ("claude-sonnet-5-5", (2.00, 10.00, 0.10, 2.50), 1_000_000),
+            # Sonnet 5: $2/$10 is the standard price, not an introductory one.
+            ("claude-sonnet-5", (2.00, 10.00, 0.20, 2.50), 1_000_000),
+            # OpenAI pricing page, checked 2026-11-04.
+            ("gpt-6.1-sol", (2.00, 10.00, 0.10, 2.50), None),
+        ],
+    )
+    def test_published_rows(self, model, prices, window):
+        row = resolve(model)
+        assert row is MODEL_PRICING[model]
+        assert (row.input, row.output, row.cache_read, row.cache_write) == pytest.approx(prices)
+        assert context_limit(model) == window
+
+    def test_dated_snapshot_of_current_model_resolves_to_its_row(self):
+        """A snapshot must not be priced as the older, shorter-named model."""
+        assert resolve("claude-opus-5-5-20261101") is MODEL_PRICING["claude-opus-5-5"]
+
+    @pytest.mark.parametrize(
+        "model",
+        ["claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "gpt-5.6-sol", "gpt-5.6-luna"],
+    )
+    def test_retired_rows_remain(self, model):
+        """Historical runs keep their own prices."""
+        assert model in MODEL_PRICING
 
     def test_unknown_returns_none(self):
         assert resolve("totally-unknown-model") is None
@@ -123,6 +154,23 @@ class TestTableInvariants:
     @pytest.mark.parametrize("name", sorted(MODEL_PRICING))
     def test_output_costs_more_than_input(self, name: str):
         assert MODEL_PRICING[name].output > MODEL_PRICING[name].input
+
+    def test_every_default_tier_model_has_its_own_row(self, tmp_path, monkeypatch):
+        """A default model without its own row would be priced as another model."""
+        from booley.config import agent as agent_config
+
+        for var in ("BOOLEY_PRIMARY_PROVIDER", "BOOLEY_PRIMARY_AUTH", "BOOLEY_DIR"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(agent_config, "_inside_container", lambda: False)
+        project_data = tmp_path / ".booley"
+        project_data.mkdir()
+        for provider in ("claude", "codex"):
+            monkeypatch.setattr(agent_config, "_agent_settings", None)
+            (project_data / "booley.toml").write_text(f'[agent]\nprovider = "{provider}"\n')
+            agent_config.load_agent_settings(tmp_path)
+            settings = agent_config.get_agent_settings()
+            for tier in ("heavy", "standard", "light"):
+                assert settings.model_for_tier(tier) in MODEL_PRICING
 
 
 class TestContextLimit:
