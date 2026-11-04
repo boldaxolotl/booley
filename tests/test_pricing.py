@@ -39,48 +39,51 @@ class TestResolve:
         p = resolve("claude-opus-9-turbo")
         assert p is MODEL_PRICING["claude-fable-5-1"]
 
-    @pytest.mark.parametrize(
-        ("model", "expected_key"),
-        [
-            ("claude-sonnet-42", "claude-sonnet-5-5"),
-            ("claude-haiku-99", "claude-haiku-4-5"),
-            ("some-fable-build", "claude-fable-5-1"),
-            ("internal-mythos-x", "claude-mythos-5"),
-        ],
-    )
-    def test_family_fallbacks(self, model: str, expected_key: str):
-        assert resolve(model) is MODEL_PRICING[expected_key]
+    def test_family_fallbacks(self):
+        """An unrecognised id resolves to its family's current (or priciest) row."""
+        expected = {
+            "claude-sonnet-42": "claude-sonnet-5-5",
+            "claude-haiku-99": "claude-haiku-4-5",
+            "some-fable-build": "claude-fable-5-1",
+            "internal-mythos-x": "claude-mythos-5",
+        }
+        for model, expected_key in expected.items():
+            assert resolve(model) is MODEL_PRICING[expected_key], model
 
-    @pytest.mark.parametrize(
-        ("model", "prices", "window"),
-        [
-            # Anthropic pricing page, checked 2026-11-04.
-            ("claude-fable-5-1", (10.00, 50.00, 0.25, 12.50), 1_000_000),
-            ("claude-opus-5-5", (4.00, 20.00, 0.20, 5.00), 1_000_000),
-            ("claude-sonnet-5-5", (2.00, 10.00, 0.10, 2.50), 1_000_000),
+    def test_published_rows(self):
+        """Prices and windows as published: Anthropic and OpenAI pages, checked 2026-11-04."""
+        # model: ((input, output, cache_read, cache_write), context window)
+        published = {
+            "claude-fable-5-1": ((10.00, 50.00, 0.25, 12.50), 1_000_000),
+            "claude-opus-5-5": ((4.00, 20.00, 0.20, 5.00), 1_000_000),
+            "claude-sonnet-5-5": ((2.00, 10.00, 0.10, 2.50), 1_000_000),
             # Sonnet 5: $2/$10 is the standard price, not an introductory one.
-            ("claude-sonnet-5", (2.00, 10.00, 0.20, 2.50), 1_000_000),
-            # OpenAI pricing page, checked 2026-11-04.
-            ("gpt-6.1-sol", (2.00, 10.00, 0.10, 2.50), None),
-        ],
-    )
-    def test_published_rows(self, model, prices, window):
-        row = resolve(model)
-        assert row is MODEL_PRICING[model]
-        assert (row.input, row.output, row.cache_read, row.cache_write) == pytest.approx(prices)
-        assert context_limit(model) == window
+            "claude-sonnet-5": ((2.00, 10.00, 0.20, 2.50), 1_000_000),
+            "gpt-6.1-sol": ((2.00, 10.00, 0.10, 2.50), None),
+        }
+        for model, (prices, window) in published.items():
+            row = resolve(model)
+            assert row is MODEL_PRICING[model], model
+            assert (row.input, row.output, row.cache_read, row.cache_write) == pytest.approx(
+                prices
+            ), model
+            assert context_limit(model) == window, model
 
     def test_dated_snapshot_of_current_model_resolves_to_its_row(self):
         """A snapshot must not be priced as the older, shorter-named model."""
         assert resolve("claude-opus-5-5-20261101") is MODEL_PRICING["claude-opus-5-5"]
 
-    @pytest.mark.parametrize(
-        "model",
-        ["claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "gpt-5.6-sol", "gpt-5.6-luna"],
-    )
-    def test_retired_rows_remain(self, model):
+    def test_retired_rows_remain(self):
         """Historical runs keep their own prices."""
-        assert model in MODEL_PRICING
+        retired = [
+            "claude-fable-5",
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "gpt-5.6-sol",
+            "gpt-5.6-luna",
+        ]
+        for model in retired:
+            assert model in MODEL_PRICING, model
 
     def test_unknown_returns_none(self):
         assert resolve("totally-unknown-model") is None
