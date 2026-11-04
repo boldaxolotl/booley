@@ -34,8 +34,9 @@ def synchronize(root: Path = DEFAULT_ROOT, packaged: Path = DEFAULT_PACKAGED) ->
 def _require_unreleased_first(text: str) -> None:
     """Require ``## Unreleased`` as the first section, empty or not.
 
-    Release prep drafts the dated entry directly below it, and upgrade review
-    reads pending entries from it, so a release must never remove the heading.
+    Parallel PRs append bullets under it (``CHANGELOG.md merge=union``) and
+    release prep drafts the dated entry directly below it, so a release must
+    never remove the heading.
     """
     first = SECOND_LEVEL_HEADING.search(text)
     observed = first.group(0).rstrip("\r") if first else None

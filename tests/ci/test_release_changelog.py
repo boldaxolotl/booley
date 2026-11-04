@@ -113,7 +113,7 @@ def test_validate_rejects_dated_heading_above_version(tmp_path: Path) -> None:
     ],
 )
 def test_validate_requires_unreleased_as_first_section(tmp_path: Path, text: str) -> None:
-    """Release 0.4.0 dropped the empty heading and broke upgrade review on main."""
+    """Release 0.4.0 dropped the empty heading, which broke a changelog test on main."""
     checker = _load()
     root = tmp_path / "CHANGELOG.md"
     packaged = tmp_path / "packaged.md"
