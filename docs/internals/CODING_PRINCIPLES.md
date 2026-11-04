@@ -165,6 +165,21 @@ optional tool or licensed environment is unavailable, skip explicitly with the
 missing prerequisite; required suites assert their expected execution rather
 than accepting silent skips.
 
+Tests that touch time, processes, or the filesystem also:
+
+- Wait by polling a condition against a deadline, then assert; a fixed `sleep`
+  followed by an assertion is a race.
+- Size inner deadlines (`subprocess.run(timeout=...)`, poll loops) from the
+  suite's timeout budget rather than a tight literal; Windows runners are
+  several times slower than a developer machine.
+- Bind port 0 and read back the assigned port.
+- Pass on Windows or skip there with the reason: guard POSIX-only signals
+  (`SIGKILL`, `SIGHUP`), file modes, and symlinks, and close handles before
+  deleting or renaming files.
+- Exercise new process, signal, or cancellation code with a repeated run
+  (`pytest --count=20 -n 4`) before review; the `flake-stress` CI job repeats
+  changed test modules on pull requests.
+
 ## Proportion
 
 ### 17. No bloat
