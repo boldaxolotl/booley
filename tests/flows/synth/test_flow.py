@@ -2716,6 +2716,142 @@ class TestBaselineFlow:
         )
         assert progress["complete"] is True
 
+    def _paired_baseline_flow(self, tmp_path: Path) -> AsicSynthesizeFlow:
+        """A flow for candidate ``lite`` paired with baseline selector ``synth_before``."""
+        flow = AsicSynthesizeFlow()
+        flow.parse_args(
+            [
+                "--target",
+                "lite",
+                "--work-dir",
+                str(tmp_path),
+                "--baseline",
+                "v1.0",
+                "--report-dir",
+                str(tmp_path / "reports"),
+            ]
+        )
+        flow.read_state()
+        flow.state.init_criteria(
+            {"synthesis_ok_lite": True},
+            criterion_params={"synthesis_ok_lite": {BASELINE_TARGET_PARAM: "synth_before"}},
+        )
+        return flow
+
+    def _run_paired_baseline(
+        self,
+        flow: AsicSynthesizeFlow,
+        *,
+        baseline_timing: str | None,
+    ) -> EndpointOutcome:
+        """Run the paired flow; the baseline writes *baseline_timing* (or nothing).
+
+        The baseline worktree is deleted on exit, like the real one, so a
+        published copy has to outlive it.
+        """
+
+        @contextmanager
+        def vanishing_worktree(project_root: Path, ref: str, *, paired_project):
+            del ref, paired_project
+            wt = Path(project_root) / ".booley" / ".baseline-wt-vanishing"
+            wt.mkdir(parents=True, exist_ok=True)
+            try:
+                yield wt
+            finally:
+                shutil.rmtree(wt)
+
+        def run_one(target: str):
+            metrics = SynthMetrics(area_kge=12.0, cells=100, wns_ns=0.2)
+            text = "candidate timing" if target == "lite" else baseline_timing
+            if text is not None:
+                timing_dir = flow._synth_build_dir(target) / "reports" / "timing"
+                timing_dir.mkdir(parents=True, exist_ok=True)
+                (timing_dir / "overall.rpt").write_text(text, encoding="utf-8")
+                metrics.dirs = flow._artifact_dirs(target, SynthMode.PHYSICAL)
+            return metrics, f"{target} complete"
+
+        with (
+            patch("booley.flows.synth.flow.baseline_worktree", vanishing_worktree),
+            patch("booley.flows.synth.flow.git_short_sha", return_value="abc1234"),
+            patch.object(flow, "_run_single_config", side_effect=run_one),
+        ):
+            return flow._run()
+
+    @staticmethod
+    def _lite_report(flow: AsicSynthesizeFlow) -> dict:
+        return json.loads((flow.args.report_dir / "synth_lite.json").read_text(encoding="utf-8"))
+
+    def test_baseline_timing_reports_are_published_beside_candidate(
+        self, state_file: Path, tmp_path: Path
+    ):
+        flow = self._paired_baseline_flow(tmp_path)
+
+        result = self._run_paired_baseline(flow, baseline_timing="baseline timing")
+
+        assert result.exit_code == EXIT_SUCCESS
+        published = flow.reserve_invocation_dir() / "artifacts" / "synth_lite"
+        assert (published / "baseline_timing" / "overall.rpt").read_text(
+            encoding="utf-8"
+        ) == "baseline timing"
+        assert (published / "timing" / "overall.rpt").read_text(
+            encoding="utf-8"
+        ) == "candidate timing"
+        report = self._lite_report(flow)
+        pointer = report["artifacts"]["baseline_timing"]
+        assert pointer == "reports/synth/1/artifacts/synth_lite/baseline_timing"
+        assert (tmp_path / pointer).is_dir()
+        assert "timing_unavailable" not in report["baseline"]
+
+    def test_baseline_without_timing_reports_says_so_and_keeps_verdict(
+        self, state_file: Path, tmp_path: Path
+    ):
+        flow = self._paired_baseline_flow(tmp_path)
+
+        result = self._run_paired_baseline(flow, baseline_timing=None)
+
+        assert result.exit_code == EXIT_SUCCESS
+        report = self._lite_report(flow)
+        assert report["passed"] is True
+        assert report["implementation"]["status"]["grade"] == "pass"
+        published = flow.reserve_invocation_dir() / "artifacts" / "synth_lite"
+        assert not (published / "baseline_timing").exists()
+        assert "baseline_timing" not in report["artifacts"]
+        assert (
+            report["baseline"]["timing_unavailable"] == "baseline run produced no timing reports"
+        )
+
+    def test_baseline_timing_publication_failure_is_a_warning(
+        self, state_file: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        flow = self._paired_baseline_flow(tmp_path)
+        real_publish = artifacts.publish_file
+
+        def failing_publish(invocation_dir, components, source, **kwargs):
+            if "baseline_timing" in components:
+                raise OSError("disk full")
+            return real_publish(invocation_dir, components, source, **kwargs)
+
+        with (
+            caplog.at_level("WARNING", logger="booley.flows.synth.flow"),
+            patch.object(artifacts, "publish_file", failing_publish),
+        ):
+            result = self._run_paired_baseline(flow, baseline_timing="baseline timing")
+
+        assert result.exit_code == EXIT_SUCCESS
+        assert any(
+            record.levelname == "WARNING" and "baseline synth timing" in record.getMessage()
+            for record in caplog.records
+        )
+        published = flow.reserve_invocation_dir() / "artifacts" / "synth_lite"
+        assert not (published / "baseline_timing").exists()
+        report = self._lite_report(flow)
+        assert "baseline_timing" not in report["artifacts"]
+        assert report["artifacts"]["timing"] == "reports/synth/1/artifacts/synth_lite/timing"
+        assert (
+            report["baseline"]["timing_unavailable"]
+            == "baseline timing reports could not be published"
+        )
+
     def test_aggregate_cannot_report_pass_with_baseline_infra_error(self, flow_and_state):
         flow, _ = flow_and_state
         current = SynthMetrics(
