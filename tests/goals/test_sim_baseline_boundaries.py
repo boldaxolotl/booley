@@ -19,6 +19,7 @@ from booley.flows.test_runs import test_run_document
 from booley.goals.checkout import CheckoutError
 from booley.goals.sim_baseline_store import (
     SCHEMA,
+    baseline_observations,
     cache_path,
     cached_result,
     read_document,
@@ -28,7 +29,7 @@ from booley.goals.sim_baseline_store import (
     validate_results,
     write_document,
 )
-from booley.goals.sim_transitions import baseline_observations, seen_failing
+from booley.goals.sim_transitions import seen_failing
 from booley.mcp import sim_baseline_execution as execution
 from booley.mcp import sim_baseline_jobs as jobs
 from booley.runtime import job_records
@@ -159,7 +160,7 @@ def test_identity_mismatch_and_foreign_target_proof_are_reported(baseline) -> No
 
 def test_current_evidence_of_another_revision_or_missing_stamp_is_unavailable(baseline) -> None:
     from booley.goals.freshness import DEFAULT_RESOLVERS
-    from booley.goals.sim_transitions import _current_outcomes
+    from booley.goals.sim_transitions import _current_reason
 
     goal = sim_goals(baseline.record)[0]
     current = {
@@ -167,10 +168,8 @@ def test_current_evidence_of_another_revision_or_missing_stamp_is_unavailable(ba
         "detail": {},
         "sequence": 1,
     }
-    outcomes = _current_outcomes(
-        baseline.record, goal, current, [current], baseline.worktree, DEFAULT_RESOLVERS
-    )
-    assert outcomes == ({}, "current evidence is from another Goal revision")
+    reason = _current_reason(baseline.record, goal, current, baseline.worktree, DEFAULT_RESOLVERS)
+    assert reason == "current evidence is from another Goal revision"
     # Current evidence without a contents stamp can never have been seen failing.
     assert seen_failing(baseline.record, goal, SMOKE_RUN, current, [current]) is False
 

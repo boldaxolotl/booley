@@ -161,6 +161,36 @@ def _build_status(
     )
 
 
+def _with_baselines(
+    status: GoalStatus,
+    goal: RecordedGoal,
+    record: GoalRecord,
+    evidence: Mapping[str, Any] | None,
+    history: list[dict[str, Any]],
+    store: GoalStore,
+    root: Path,
+    resolvers: GoalFreshnessResolvers,
+) -> GoalStatus:
+    """Attach the SIM baseline transitions or the relative SYNTH baseline status."""
+    if goal.spec.family is GoalFamily.SIM:
+        from booley.goals.sim_transitions import goal_transitions
+
+        assert status.test_runs is not None
+        transitions = goal_transitions(
+            store.booley_dir, record, goal, evidence, history, root, resolvers, status.test_runs
+        )
+        status = replace(status, sim_transitions=tuple(transitions))
+    if is_relative_synth(goal):
+        from booley.goals.sim_baseline_store import SYNTH_BASELINE, baseline_observations
+
+        seen = baseline_observations(store.booley_dir, record, goal, SYNTH_BASELINE)
+        status = replace(
+            status,
+            synth_baseline={"status": seen["status"], "reason": str(seen.get("reason", ""))},
+        )
+    return status
+
+
 def _goal_statuses(
     record: GoalRecord,
     state: DevelopmentState,
@@ -194,22 +224,7 @@ def _goal_statuses(
                 evidence_summary="evidence is incomplete",
                 reason=unaccounted[key],
             )
-        if goal.spec.family is GoalFamily.SIM:
-            from booley.goals.sim_transitions import goal_transitions
-
-            transitions = goal_transitions(
-                store.booley_dir, record, goal, evidence, history, root, resolvers
-            )
-            status = replace(status, sim_transitions=tuple(transitions))
-        if is_relative_synth(goal):
-            from booley.goals.sim_baseline_store import SYNTH_BASELINE
-            from booley.goals.sim_transitions import baseline_observations
-
-            seen = baseline_observations(store.booley_dir, record, goal, SYNTH_BASELINE)
-            status = replace(
-                status,
-                synth_baseline={"status": seen["status"], "reason": str(seen.get("reason", ""))},
-            )
+        status = _with_baselines(status, goal, record, evidence, history, store, root, resolvers)
         statuses.append(status)
     return tuple(statuses)
 
