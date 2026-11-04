@@ -198,23 +198,23 @@ table. Each provider has defaults, so most Projects need no `[models]` at all:
 
 | Tier | Claude | Codex |
 |---|---|---|
-| `heavy` | `claude-fable-5` | `gpt-6-astra` |
-| `standard` | `claude-opus-4-8` | `gpt-5.6-sol` |
-| `light` | `claude-sonnet-5` | `gpt-5.6-luna` |
+| `heavy` | `claude-fable-5-1` | `gpt-6-astra` |
+| `standard` | `claude-opus-5-5` | `gpt-6.1-sol` |
+| `light` | `claude-sonnet-5-5` | `gpt-6-luna` |
 
 Override a tier to move everything on it at once. Tiers you leave out keep the
 default:
 
 ```toml
 [models]
-standard = "claude-fable-5"
+standard = "claude-fable-5-1"
 ```
 
 ### Pinning one Specialist (`[models.roles]`)
 
 ```toml
 [models.roles]
-reviewer = "claude-fable-5"
+reviewer = "claude-fable-5-1"
 mutation_tester = "light"   # a tier name follows that tier
 ```
 
