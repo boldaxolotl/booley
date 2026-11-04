@@ -344,7 +344,7 @@ def test_second_session_reuses_pending_and_complete_request(synth, monkeypatch):
         synth.control, second, launch=lambda path, _request: launched.append(path)
     )
     assert launched == [] and len(_requests(synth)) == 1, "complete request is reused"
-    from booley.goals.sim_transitions import baseline_observations
+    from booley.goals.sim_baseline_store import baseline_observations
 
     goal = _synth_family().goals(second)[0]
     seen = baseline_observations(synth.control, second, goal, _synth_family())
