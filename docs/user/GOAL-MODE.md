@@ -209,14 +209,18 @@ constraint files (`.sdc`, `.xdc`).
 
 Booley has no per-run override for a Target's parameters or defines: the
 Target owns their values. (Per-run synthesis options such as
-`--ppa-profile` are separate; see [ASIC synthesis](FLOW-SYNTH.md).) To
-compare results with one parameter changed, such as synthesis with a
-feature turned off, the Developer Agent adds a sibling Target to the
-`.core` file that differs from the original only in that parameter. No Goal
-names the sibling, so the agent runs it diagnostically. It does not edit an
-existing Target's parameters and revert them afterwards. The sibling Target
-appears under Target changes in the Review Package, so before finishing the
-agent removes it, or keeps it and explains why in the Session Summary.
+`--ppa-profile` are separate; see
+[ASIC synthesis](FLOW-SYNTH.md#optimization-profiles).) To compare results
+with one parameter changed, such as synthesis with a feature turned off, the
+Developer Agent adds a sibling Target to the `.core` file that differs from
+the original only in that parameter. No Goal names the sibling, so the agent
+runs it as a diagnostic run, which records no Goal evidence. It does not edit
+an existing Target's parameters and revert them afterwards, because a
+temporary edit can replace a Goal's evidence with a result for a setup no
+Goal asked for. If the `.core` file is a protected file, the agent asks you
+first. A sibling still present at Finish appears under Target changes in the
+Review Package, so before finishing the agent removes it, or keeps it and
+explains why in the Session Summary.
 
 ## Changes and human decisions
 
