@@ -1074,10 +1074,11 @@ class DevelopmentState:
                 entry.updated_at = now
                 reset_keys.append(key)
                 continue
-            # Clear exhausted verify_attempts on unmet review criteria whose
-            # category matches: the verify counter must be refreshed when code
-            # changes. total_verify_cycles is NOT cleared — it tracks cumulative
-            # attempts across all coder fixes to detect stale-finding impasses.
+            # Clear exhausted verify_attempts on unmet criteria whose category
+            # matches (only review criteria carry the counter): it must be
+            # refreshed when code changes. total_verify_cycles is NOT cleared —
+            # it tracks cumulative attempts across all coder fixes to detect
+            # stale-finding impasses.
             if belongs and not entry.met and entry.detail.get("verify_attempts"):
                 entry.detail.pop("verify_attempts", None)
                 entry.updated_at = now
