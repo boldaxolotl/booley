@@ -59,21 +59,86 @@ ADR_0082_SAMPLES = {
 
 
 def test_adr_0082_paths_are_classified():
-    from booley.core.booley_dir_parts import BOOLEY_DIR_PATHS, BooleyDirPart, booley_dir_part
+    from booley.core.booley_dir_parts import BooleyDirPart, booley_dir_part
 
     for path, expected in ADR_0082_SAMPLES.items():
         assert booley_dir_part(path) is BooleyDirPart(expected), path
-    # Every pattern in the table carries a real part.
-    assert set(BOOLEY_DIR_PATHS.values()) == set(BooleyDirPart)
     # The deepest matching pattern wins, and a Windows spelling classifies like POSIX.
     assert booley_dir_part(PurePosixPath("goals/history/x")) is BooleyDirPart.CHECKOUT
     assert booley_dir_part(PureWindowsPath("goals", "history", "x")) is BooleyDirPart.CHECKOUT
     assert booley_dir_part(PureWindowsPath("goals", "G1", "x")) is BooleyDirPart.COMMON
 
 
+# Paths other Booley modules write, beyond the ADR appendix rows.
+WRITTEN_PATH_SAMPLES = {
+    "pipeline.toml": "checkout",
+    "tools/t.toml": "checkout",
+    "rtl_style_guide.md": "checkout",
+    "tb_style_guide.md": "checkout",
+    ".git/HEAD": "checkout",
+    ".gitignore": "checkout",
+    ".gitattributes": "checkout",
+    ".managed/x": "checkout",
+    ".runtime/syn/x": "checkout",
+    ".runtime/simulation-run-locks/x": "checkout",
+    ".runtime/flow-console/x": "checkout",
+    ".runtime/mutation_tester/x": "checkout",
+    ".runtime/flow-reports/x": "checkout",
+    ".runtime/mcp-tool-reports/x": "checkout",
+    ".runtime/display.jsonl": "checkout",
+    ".runtime/prompts/x": "checkout",
+    "tmp/fusesoc-isolated-cores/x": "checkout",
+    "runtime/dashboard-task.json": "common",
+    "runtime/upgrade_review.lock": "common",
+    "runtime/doctor/x": "common",
+    "runtime/developer_probe.json": "common",
+    "runtime/synth_probe.json": "common",
+    "tmp/doctor/x": "common",
+    "runtime/resources/x": "common",
+    ".runtime/executions/x": "common",
+    ".runtime/jobs/x": "common",
+    ".runtime/findings.lock": "common",
+    ".runtime/sessions/x": "common",
+    ".runtime/transcripts/x": "common",
+    "findings.jsonl.tmp": "common",
+    "SETUP-REPORT.md": "common",
+    "FEEDBACK-REPORT.md": "common",
+    "SETUP-PLAN.md": "common",
+    "PARITY-REPORT.md": "common",
+    "parity/x": "common",
+    "plans/x": "common",
+    "logs/x": "common",
+    "human-logs/x.md": "common",
+}
+
+# Atomic-write temporaries take the part of the file they replace.
+TEMP_FILE_SAMPLES = {
+    "runtime/.doctor_stamp.json.1234.tmp": "common",
+    "runtime/.upgrade_review.json.k3j2h1.tmp": "common",
+    ".booley.toml.ab12cd.tmp": "checkout",
+    ".gitignore.ab12cd.tmp": "checkout",
+    ".directory-relocation.json.ab12cd.tmp": "common",
+}
+
+
+def test_written_paths_and_temp_files_are_classified():
+    from booley.core.booley_dir_parts import BooleyDirPart, booley_dir_part
+
+    for path, expected in {**WRITTEN_PATH_SAMPLES, **TEMP_FILE_SAMPLES}.items():
+        assert booley_dir_part(path) is BooleyDirPart(expected), path
+
+
 def test_unclassified_path_is_rejected():
     from booley.core.booley_dir_parts import UnclassifiedBooleyPathError, booley_dir_part
 
-    for path in ("not-booley/x", "runtime", ".runtime", "tmp", "../booley.toml", "/booley.toml"):
+    for path in (
+        "not-booley/x",
+        "runtime",
+        ".runtime",
+        "tmp",
+        "../booley.toml",
+        "/booley.toml",
+        ".unknown.1234.tmp",
+    ):
         with pytest.raises(UnclassifiedBooleyPathError):
             booley_dir_part(path)

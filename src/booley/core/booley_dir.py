@@ -264,29 +264,40 @@ def _owning_checkout(selected: Path) -> Path | None:
     return None
 
 
-def _main_booley_dir(selected: Path) -> Path | None:
-    """Map a selected Booley Directory to the Main one, or ``None`` to keep it.
+def _main_checkout_root(checkout: Path) -> Path | None:
+    """Return the main checkout of *checkout*'s repository, or ``None`` if unreadable.
 
-    ``None`` means the selection already is main or the Git topology cannot be
-    read (outside Git, stale pointer, bare repository or submodule). A malformed
-    marker or retired migration pointer raises ``BooleyLayoutError``.
+    A bare repository, submodule or separate git dir has no ``.git`` directory
+    to take the main checkout from. A malformed marker or retired migration
+    pointer raises ``BooleyLayoutError``.
     """
-    checkout = _owning_checkout(selected)
-    if checkout is None:
-        return None
     try:
         common = git_common_directory(checkout)
     except OSError:
         return None
     if common is not None and not common.is_dir():
         logger.warning("Git pointer %s names a missing repository", checkout / ".git")
-    if common is None or common.name != ".git" or not common.is_dir():
+        return None
+    if common is None or common.name != ".git":
+        return None
+    return common.parent
+
+
+def _main_booley_dir(selected: Path) -> Path | None:
+    """Map a selected Booley Directory to the Main one, or ``None`` to keep it.
+
+    ``None`` means the selection already is main or the Git topology cannot be
+    read (outside Git, stale pointer, bare repository or submodule).
+    """
+    checkout = _owning_checkout(selected)
+    main_root = None if checkout is None else _main_checkout_root(checkout)
+    if checkout is None or main_root is None:
         return None
     # Only the checkout's own Booley Directory is remapped, never a stray BOOLEY_DIR.
     directory = selected.resolve()
     if resolve_authoritative_booley_dir(checkout).resolve() != directory:
         return None
-    main = resolve_authoritative_booley_dir(common.parent)
+    main = resolve_authoritative_booley_dir(main_root)
     if main.resolve() == directory or not main.is_dir():
         return None
     return main

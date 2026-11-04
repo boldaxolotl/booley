@@ -694,6 +694,48 @@ class TestCommonBooleyDir:
         stale = tmp_path / "stale"
         (stale / ".booley").mkdir(parents=True)
         (stale / ".booley" / "booley.toml").write_text("", encoding="utf-8")
-        (stale / ".git").write_text(f"gitdir: {tmp_path / 'gone' / 'worktrees' / 'x'}\n")
+        (stale / ".git").write_text(
+            f"gitdir: {tmp_path / 'gone' / 'worktrees' / 'x'}\n", encoding="utf-8"
+        )
 
         assert _common(stale) == stale / ".booley"
+
+    def test_stray_booley_dir_is_not_remapped(self, tmp_path, monkeypatch):
+        _isolate_git(tmp_path, monkeypatch)
+        main = _main_project(tmp_path)
+        worktree = _snapshot(main)
+        stray = worktree / "elsewhere"
+        stray.mkdir()
+        (stray / "booley.toml").write_text("", encoding="utf-8")
+        monkeypatch.setenv("BOOLEY_DIR", str(stray))
+
+        assert _common(worktree) == stray
+
+    def test_main_without_booley_dir_keeps_selection(self, tmp_path, monkeypatch):
+        _isolate_git(tmp_path, monkeypatch)
+        from tests.project_runtime_git_support import git
+
+        main = tmp_path / "main"
+        _init_repo(main)
+        (main / "README.md").write_text("fixture\n", encoding="utf-8")
+        _commit_all(main)
+        linked = tmp_path / "linked"
+        git(main, "worktree", "add", "-q", "--detach", str(linked))
+        (linked / ".booley").mkdir()
+        (linked / ".booley" / "booley.toml").write_text("", encoding="utf-8")
+
+        assert _common(linked) == linked / ".booley"
+
+    def test_bare_repository_worktree_keeps_selection(self, tmp_path, monkeypatch):
+        _isolate_git(tmp_path, monkeypatch)
+        from tests.project_runtime_git_support import git
+
+        source = _main_project(tmp_path)
+        bare = tmp_path / "bare.git"
+        git(tmp_path, "clone", "-q", "--bare", str(source), str(bare))
+        worktree = tmp_path / "bare-wt"
+        git(bare, "worktree", "add", "-q", "--detach", str(worktree))
+        (worktree / ".booley").mkdir()
+        (worktree / ".booley" / "booley.toml").write_text("", encoding="utf-8")
+
+        assert _common(worktree) == worktree / ".booley"

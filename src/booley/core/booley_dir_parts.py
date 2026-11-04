@@ -17,7 +17,7 @@ Stdlib-only.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from enum import StrEnum
 from fnmatch import fnmatchcase
 from pathlib import PurePath
@@ -38,7 +38,8 @@ class UnclassifiedBooleyPathError(ValueError):
 _COMMON = BooleyDirPart.COMMON
 _CHECKOUT = BooleyDirPart.CHECKOUT
 
-# ADR 0082 appendix rows first, then the paths the audit added.
+# ADR 0082 appendix rows first, then paths other Booley modules write (see the
+# runtime/, mcp/, doctor and setup writers).
 BOOLEY_DIR_PATHS: Mapping[str, BooleyDirPart] = MappingProxyType(
     {
         # Checkout: versioned with the RTL.
@@ -62,11 +63,13 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirPart] = MappingProxyType(
         "flow-reports/": _CHECKOUT,
         "mcp-tool-reports/": _CHECKOUT,
         "tmp/setup/": _CHECKOUT,
-        # Checkout, audit additions.
+        # Checkout, written by other Booley modules.
         "pipeline.toml": _CHECKOUT,
         "tools/": _CHECKOUT,
         "rtl_style_guide.md": _CHECKOUT,
         "tb_style_guide.md": _CHECKOUT,
+        # A Paired Checkout's own ``.git`` pointer file is per checkout; the main
+        # Versioned Booley Directory's object store is reached through git, not this table.
         ".git/": _CHECKOUT,
         ".gitignore": _CHECKOUT,
         ".gitattributes": _CHECKOUT,
@@ -106,7 +109,7 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirPart] = MappingProxyType(
         "tickets/": _COMMON,
         "goalsets/": _COMMON,
         "docker/": _COMMON,
-        # Common, audit additions.
+        # Common, written by other Booley modules.
         "runtime/dashboard-task.json": _COMMON,
         "runtime/upgrade_review.lock": _COMMON,
         "runtime/doctor/": _COMMON,
@@ -127,6 +130,7 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirPart] = MappingProxyType(
         "parity/": _COMMON,
         "plans/": _COMMON,
         "logs/": _COMMON,
+        "human-logs/": _COMMON,  # Markdown copies of .runtime/transcripts/
     }
 )
 
@@ -152,13 +156,38 @@ def booley_dir_part(relative: str | PurePath) -> BooleyDirPart:
     path = PurePath(relative)
     if path.anchor or ".." in path.parts:
         raise UnclassifiedBooleyPathError(f"not relative to the Booley Directory: {relative}")
-    parts = tuple(part for part in path.parts if part != ".")
+    segments = tuple(segment for segment in path.parts if segment != ".")
+    best = _best_part(segments)
+    # An atomic write's temporary file (``.<name>.<pid>.tmp``) belongs to ``<name>``.
+    for target in _temp_file_targets(segments[-1] if segments else ""):
+        if best is not None:
+            break
+        best = _best_part((*segments[:-1], target))
+    if best is None:
+        raise UnclassifiedBooleyPathError(f"unclassified Booley Directory path: {relative}")
+    return best
+
+
+def _temp_file_targets(leaf: str) -> Iterator[str]:
+    """Yield the names a ``.<name>.<suffix...>`` temporary file may be writing, longest first.
+
+    ``<name>`` is tried bare (``booley.toml``) and dotted (``.gitignore``).
+    """
+    if not leaf.startswith("."):
+        return
+    candidate = leaf[1:]
+    while "." in candidate:
+        candidate = candidate.rsplit(".", 1)[0]
+        yield candidate
+        yield f".{candidate}"
+
+
+def _best_part(segments: tuple[str, ...]) -> BooleyDirPart | None:
+    """Return the part of the deepest table pattern covering *segments*, if any."""
     best_depth = 0
     best: BooleyDirPart | None = None
     for pattern, part in BOOLEY_DIR_PATHS.items():
-        depth = _covering_depth(pattern, parts)
+        depth = _covering_depth(pattern, segments)
         if depth is not None and depth > best_depth:
             best_depth, best = depth, part
-    if best is None:
-        raise UnclassifiedBooleyPathError(f"unclassified Booley Directory path: {relative}")
     return best
