@@ -277,16 +277,20 @@ Read the Mergify status and underlying Actions failure, then:
   failure, fix it and obtain another ordinary green PR run before requeueing.
 - For a confirmed infrastructure interruption, requeue unchanged with the
   command above.
-- For a known flake, requeue unchanged once without asking. A failure is a
-  known flake when the PR's diff does not touch the failing test or the code it
-  exercises, and either an open issue describes the same failure or the latest
-  `main` run of that job fails the same way. File a `bug`, `ci` issue with the
-  run link, test ID, and error first when none exists, and link it in the PR. A
-  second failure of the same flake on the same PR is a repeated interruption.
+- For a known flake, requeue unchanged once. A failure is a known flake when
+  the PR's diff does not touch the failing test or the code it exercises, and
+  either an open issue describes the same failure or recent `main` runs of that
+  job show it alongside green runs. Match a crashed worker or a duration-budget
+  overrun by job and error signature instead of a test ID. When no issue
+  exists, first file a `bug`, `ci`, `needs-triage` issue with the run link,
+  test ID or job, and error, scanned as `AGENTS.md` requires. When `main`'s
+  latest run of that job fails the same way, `main` has regressed: report it
+  instead of requeueing. A second failure of the same flake on the same PR is a
+  repeated interruption.
 - For an unexplained or repeated interruption, report an incident; do not retry
   until it happens to pass.
 
-Record the cause in the PR. Recovery ends when the fixed or confirmed-transient
+Record the cause, with any flake issue link, in the PR. Recovery ends when the fixed or confirmed-transient
 candidate has been queued once.
 
 ## Finish after merge
