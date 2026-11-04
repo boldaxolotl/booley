@@ -10,6 +10,13 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
+from ci_flake_stress import (
+    StressPlan,
+    changed_test_modules,
+    module_costs,
+    plan_stress,
+    stress_enabled,
+)
 from docker_base_contract import stable_base_inputs
 from picorv32_ci_inputs import RISCV_IMAGE_FILES, RISCV_IMAGE_PREFIXES
 
@@ -46,7 +53,11 @@ CONDITIONAL_JOBS = (
     "package-artifacts",
     "sidecar-smoke",
     "bwave-smoke",
+    "flake-stress",
 )
+# Selected by the pull request's changed test modules (ci_flake_stress.py),
+# never by path categories, so a workflow or full-CI change does not force it.
+STRESS_JOB = "flake-stress"
 ALWAYS_JOBS = ("changes", "release-semantic")
 ALL_JOBS = (*ALWAYS_JOBS, *CONDITIONAL_JOBS)
 # A path whose classification is a subset of this is a documentation path:
@@ -175,11 +186,12 @@ def _boolean(value: str) -> bool:
     return normalized == "true"
 
 
-def _changed_paths(raw: bytes) -> list[str]:
+def _diff_entries(raw: bytes) -> list[tuple[str, tuple[str, ...]]]:
+    """Parse `git diff --name-status -z` into (status, paths) records."""
     fields = raw.split(b"\0")
     if fields and not fields[-1]:
         fields.pop()
-    paths: list[str] = []
+    entries: list[tuple[str, tuple[str, ...]]] = []
     index = 0
     while index < len(fields):
         status = fields[index].decode("ascii")
@@ -187,12 +199,13 @@ def _changed_paths(raw: bytes) -> list[str]:
         path_count = 2 if status[:1] in {"R", "C"} else 1
         if index + path_count > len(fields):
             raise ValueError("malformed NUL-delimited git diff")
-        paths.extend(
+        paths = tuple(
             field.decode("utf-8", errors="surrogateescape")
             for field in fields[index : index + path_count]
         )
+        entries.append((status, paths))
         index += path_count
-    return paths
+    return entries
 
 
 def _documentation_categories(path: str) -> set[str]:
@@ -282,9 +295,15 @@ def classify(
     return categories
 
 
-def required_jobs(categories: set[str]) -> set[str]:
+def required_jobs(categories: set[str], *, stress: bool = False) -> set[str]:
+    """Return the jobs a change needs; ``stress`` adds the flake-stress job."""
+    jobs = _category_jobs(categories)
+    return jobs | {STRESS_JOB} if stress else jobs
+
+
+def _category_jobs(categories: set[str]) -> set[str]:
     if categories & {"full", "workflow", "packaging", "release"}:
-        return set(ALL_JOBS)
+        return set(ALL_JOBS) - {STRESS_JOB}
     jobs = set(ALWAYS_JOBS)
     if "docs" in categories:
         jobs.add("docs-check")
@@ -430,12 +449,13 @@ def _diff_base(repo: Path, base: str, head: str, event_name: str) -> str:
 def _write_outputs(
     destination: Path,
     categories: set[str],
+    stress: StressPlan,
     base: str,
     windows_shard_count: int,
     linux_shard_count: int,
     linux_scheduler: str,
 ) -> None:
-    jobs = required_jobs(categories)
+    jobs = required_jobs(categories, stress=bool(stress.modules))
     with destination.open("a", encoding="utf-8") as stream:
         for category in CATEGORIES:
             print(f"{category}={'true' if category in categories else 'false'}", file=stream)
@@ -452,6 +472,8 @@ def _write_outputs(
         )
         print(f"required_jobs={','.join(job for job in ALL_JOBS if job in jobs)}", file=stream)
         print(f"diff_base={base}", file=stream)
+        print(f"stress_modules={json.dumps(stress.modules)}", file=stream)
+        print(f"stress_count={stress.count}", file=stream)
 
 
 def _validate_dispatch_options(args: argparse.Namespace) -> None:
@@ -508,7 +530,26 @@ def _parse_args() -> argparse.Namespace:
         default="",
     )
     parser.add_argument("--riscv-measurement", choices=RISCV_MEASUREMENT_ARMS, default="automatic")
+    parser.add_argument("--head-ref", default="", help="pull request head branch")
     return parser.parse_args()
+
+
+def _stress_plan(
+    repo: Path, entries: list[tuple[str, tuple[str, ...]]], event_name: str, head_ref: str
+) -> StressPlan:
+    """Plan flake-stress for ordinary pull requests and announce capped modules."""
+    if not stress_enabled(event_name, head_ref):
+        return StressPlan((), 0, ())
+    modules = changed_test_modules(entries, repo)
+    if not modules:
+        return StressPlan((), 0, ())
+    plan = plan_stress(modules, module_costs(modules, repo))
+    if plan.unstressed:
+        print(
+            "::notice title=flake-stress cap::not repeating "
+            f"{len(plan.unstressed)} changed test module(s): {', '.join(plan.unstressed)}"
+        )
+    return plan
 
 
 def main() -> int:
@@ -516,7 +557,9 @@ def main() -> int:
     try:
         _validate_dispatch_options(args)
         base = _diff_base(args.repo, args.base, args.head, args.event_name)
-        paths = _changed_paths(_git_diff(args.repo, base, args.head))
+        entries = _diff_entries(_git_diff(args.repo, base, args.head))
+        paths = [path for _status, entry_paths in entries for path in entry_paths]
+        stress = _stress_plan(args.repo, entries, args.event_name, args.head_ref)
         if args.windows_shard_benchmark or args.linux_shard_benchmark:
             categories = {"python_source"}
         else:
@@ -526,6 +569,7 @@ def main() -> int:
         _write_outputs(
             args.github_output,
             categories,
+            stress,
             base,
             args.windows_shard_count,
             args.linux_shard_count,
@@ -535,6 +579,7 @@ def main() -> int:
         print(f"error: {error}", file=sys.stderr)
         return 2
     print(f"CI categories: {','.join(sorted(categories))}")
+    print(f"flake-stress: {stress.count}x {' '.join(stress.modules) or '(none)'}")
     return 0
 
 

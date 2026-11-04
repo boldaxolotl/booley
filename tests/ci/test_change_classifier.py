@@ -14,7 +14,7 @@ import yaml
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
-from ci_changes import ALL_JOBS, build_test_matrix, classify, required_jobs
+from ci_changes import ALL_JOBS, STRESS_JOB, build_test_matrix, classify, required_jobs
 from picorv32_ci_inputs import RISCV_IMAGE_FILES
 
 _CLASSIFIER = _ROOT / ".github/scripts/ci_changes.py"
@@ -81,6 +81,7 @@ def _run_classifier(
     windows_shard_benchmark: bool = False,
     riscv_measurement: str | None = None,
     linux_options: dict[str, str] | None = None,
+    head_ref: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     output = repo / "github-output.txt"
     command = [
@@ -107,6 +108,8 @@ def _run_classifier(
         command.extend(("--riscv-measurement", riscv_measurement))
     for option, value in (linux_options or {}).items():
         command.extend((f"--linux-{option}", value))
+    if head_ref is not None:
+        command.extend(("--head-ref", head_ref))
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     return result, output
 
@@ -122,6 +125,7 @@ def _classify(
     windows_shard_benchmark: bool = False,
     riscv_measurement: str | None = None,
     linux_options: dict[str, str] | None = None,
+    head_ref: str | None = None,
 ) -> dict[str, str]:
     result, output = _run_classifier(
         repo,
@@ -133,6 +137,7 @@ def _classify(
         windows_shard_benchmark=windows_shard_benchmark,
         riscv_measurement=riscv_measurement,
         linux_options=linux_options,
+        head_ref=head_ref,
     )
     assert result.returncode == 0, result.stderr
     return dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
@@ -582,7 +587,7 @@ _NOT_SELECTED_BY_SOURCE = {
 def test_non_documentation_changes_keep_their_job_sets(
     paths: list[str], unselected: set[str]
 ) -> None:
-    assert required_jobs(classify(paths)) == set(ALL_JOBS) - unselected
+    assert required_jobs(classify(paths)) == set(ALL_JOBS) - {STRESS_JOB} - unselected
 
 
 def test_aggregate_waits_for_every_conditional_job() -> None:
@@ -590,6 +595,52 @@ def test_aggregate_waits_for_every_conditional_job() -> None:
     workflow = yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
 
     assert set(ALL_JOBS) <= set(workflow["jobs"]["ci-required"]["needs"])
+
+
+def _pull_request(tmp_path: Path) -> tuple[Path, str]:
+    """Return a repository whose merge head adds, modifies and deletes test modules."""
+    repo, _ = _repository(tmp_path)
+    _write(repo, "tests/unit/test_kept.py")
+    _write(repo, "tests/unit/test_gone.py")
+    _commit(repo, "seed tests")
+    _git(repo, "checkout", "-b", "feature")
+    _write(repo, "tests/unit/test_kept.py", "changed\n")
+    _write(repo, "tests/unit/test_new.py")
+    (repo / "tests/unit/test_gone.py").unlink()
+    _commit(repo, "change tests")
+    _git(repo, "checkout", "main")
+    return repo, _merge(repo, "feature")
+
+
+def test_pull_request_test_changes_require_flake_stress(tmp_path: Path) -> None:
+    repo, head = _pull_request(tmp_path)
+
+    outputs = _classify(repo, "", head, event_name="pull_request", head_ref="codex/feature")
+
+    assert json.loads(outputs["stress_modules"]) == [
+        "tests/unit/test_kept.py",
+        "tests/unit/test_new.py",
+    ]
+    assert outputs["stress_count"] == "10"
+    assert _jobs(outputs)[STRESS_JOB] is True
+    assert STRESS_JOB in _required(outputs)
+
+
+@pytest.mark.parametrize(
+    ("event_name", "head_ref"),
+    [("pull_request", "mergify/merge-queue/5f9ee8efb7"), ("push", None)],
+)
+def test_queue_drafts_and_pushes_skip_flake_stress(
+    tmp_path: Path, event_name: str, head_ref: str | None
+) -> None:
+    repo, head = _pull_request(tmp_path)
+
+    outputs = _classify(repo, f"{head}^", head, event_name=event_name, head_ref=head_ref)
+
+    assert outputs["stress_modules"] == "[]"
+    assert _jobs(outputs)[STRESS_JOB] is False
+    assert STRESS_JOB not in _required(outputs)
+    assert "test" in _required(outputs)
 
 
 @pytest.mark.parametrize(
@@ -863,7 +914,10 @@ def test_both_changelog_paths_are_release_inputs(tmp_path: Path) -> None:
     outputs = _classify(repo, base, head)
 
     assert outputs["release"] == "true"
-    assert _required(outputs) == set(_jobs(outputs)) | {"changes", "release-semantic"}
+    assert _required(outputs) == set(_jobs(outputs)) - {STRESS_JOB} | {
+        "changes",
+        "release-semantic",
+    }
 
 
 def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None:

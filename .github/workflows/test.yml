@@ -95,6 +95,8 @@ jobs:
       test_matrix: ${{ steps.classify.outputs.test_matrix }}
       linux_shard_count: ${{ steps.classify.outputs.linux_shard_count }}
       linux_scheduler: ${{ steps.classify.outputs.linux_scheduler }}
+      stress_modules: ${{ steps.classify.outputs.stress_modules }}
+      stress_count: ${{ steps.classify.outputs.stress_count }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -110,10 +112,13 @@ jobs:
           FORCE_ALL: >-
             ${{ github.event_name != 'pull_request' && !inputs.windows_shard_benchmark && !inputs.linux_shard_benchmark }}
           HEAD_SHA: ${{ github.sha }}
+          # Mergify's queue drafts use mergify/merge-queue/ branches; the
+          # classifier skips flake-stress for them.
+          HEAD_REF: ${{ github.head_ref }}
         run: >-
           python .github/scripts/ci_changes.py
           --repo . --base "${BASE_SHA}" --head "${HEAD_SHA}"
-          --event-name "${EVENT_NAME}"
+          --event-name "${EVENT_NAME}" --head-ref "${HEAD_REF}"
           --windows-shard-count "${{ inputs.windows_shard_count || '10' }}"
           --windows-shard-benchmark "${{ inputs.windows_shard_benchmark || false }}"
           --linux-shard-count "${{ inputs.linux_shard_count || '2' }}"
@@ -414,6 +419,65 @@ jobs:
           publish-timing: ${{ matrix.mode == 'full' }}
           shard-group: ${{ matrix.group }}
           shard-index: ${{ matrix.shard_index }}
+
+  # Repeat the test modules a pull request adds or modifies so a flaky test
+  # fails here instead of in the merge queue. ci_flake_stress.py selects the
+  # modules and the repeat count (with its cost cap); pushes, manual runs and
+  # Mergify queue drafts never select this job. Plain load distribution
+  # spreads each test's repetitions across workers to expose shared state.
+  flake-stress:
+    needs: changes
+    if: fromJSON(needs.changes.outputs.jobs)['flake-stress']
+    name: flake-stress / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      PYTHONFAULTHANDLER: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-3.14
+            os: ubuntu-latest
+            python: "3.14"
+          - name: windows-3.14
+            os: windows-latest
+            python: "3.14"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install package with test dependencies
+        run: pip install -e ".[test]"
+
+      # Native B-Wave tests need the Rust binary and run in bwave-integration;
+      # the classifier already drops modules marked native as a whole.
+      - name: Repeat changed test modules
+        shell: bash
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+          BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
+          STRESS_MODULES: ${{ needs.changes.outputs.stress_modules }}
+          STRESS_COUNT: ${{ needs.changes.outputs.stress_count }}
+          HEADROOM: ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }}
+        run: |
+          # NUL-delimited: Windows Python would turn "\n" into "\r\n".
+          mapfile -d '' -t modules < <(python -c 'import json, os, sys; sys.stdout.write("\0".join(json.loads(os.environ["STRESS_MODULES"])))')
+          # shellcheck disable=SC2086 # HEADROOM holds zero or two options.
+          pytest "${modules[@]}" -q --tb=short -n 4 --dist=load \
+            --count="${STRESS_COUNT}" --basetemp "${RUNNER_TEMP}/pytest" \
+            -m "not native_bwave" --timeout=60 ${HEADROOM} \
+            --durations=30 --junitxml="${RUNNER_TEMP}/junit.xml"
+
+      - name: Publish pytest evidence
+        if: always()
+        uses: ./.github/actions/publish-pytest-evidence
+        with:
+          label: flake-stress-${{ matrix.name }}
 
   coverage-shards:
     needs: changes
@@ -1530,6 +1594,7 @@ jobs:
       - package-artifacts
       - sidecar-smoke
       - bwave-smoke
+      - flake-stress
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
