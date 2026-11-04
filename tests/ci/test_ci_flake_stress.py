@@ -13,7 +13,7 @@ from ci_flake_stress import (
     MAX_COUNT,
     StressPlan,
     changed_test_modules,
-    load_module_costs,
+    module_costs,
     plan_stress,
     stress_enabled,
 )
@@ -47,6 +47,8 @@ def test_selects_surviving_test_modules_and_marks_added_ones(tmp_path: Path) -> 
         encoding="utf-8",
     )
     (tmp_path / "tests/bwave/test_broken.py").write_text("def broken(:\n", encoding="utf-8")
+    # A newline in a path could forge an Actions log command; no file is needed.
+    entries.append(("A", ("tests/ci/test_x\n::error::forged_test.py",)))
 
     assert changed_test_modules(entries, tmp_path) == {
         "tests/ci/test_new.py": True,
@@ -102,17 +104,30 @@ def test_unaffordable_change_stresses_nothing_and_reports_it() -> None:
     assert plan == StressPlan((), 0, ("tests/test_huge.py",))
 
 
-def test_checked_in_timing_model_yields_module_costs() -> None:
-    costs = load_module_costs()
+def test_cost_charges_recorded_time_and_the_default_per_unrecorded_function(
+    tmp_path: Path,
+) -> None:
+    module = tmp_path / "tests/test_mixed.py"
+    module.parent.mkdir()
+    module.write_text(
+        "def test_slow(n): pass\ndef test_fast(): pass\ndef helper(): pass\n"
+        "class TestGroup:\n    def test_member(self): pass\n",
+        encoding="utf-8",
+    )
+    model = tmp_path / "timings.json"
+    model.write_text(
+        '{"schema": 1, "default_seconds": 0.5, "tests": {'
+        '"tests/test_mixed.py::test_slow[1]": 30.0, "tests/test_mixed.py::test_slow[2]": 20.0,'
+        '"tests/test_other.py::test_fast": 99.0}}',
+        encoding="utf-8",
+    )
 
-    assert costs
-    assert all(module.startswith("tests/") and "::" not in module for module in costs)
-    assert all(seconds > 0 for seconds in costs.values())
+    assert module_costs(["tests/test_mixed.py"], tmp_path, model) == {"tests/test_mixed.py": 51.0}
 
 
 def test_malformed_timing_model_is_rejected(tmp_path: Path) -> None:
     model = tmp_path / "timings.json"
-    model.write_text('{"schema": 1}', encoding="utf-8")
+    model.write_text('{"schema": 1, "default_seconds": 1.0}', encoding="utf-8")
 
-    with pytest.raises(ValueError, match="no tests mapping"):
-        load_module_costs(model)
+    with pytest.raises(ValueError, match="tests must be an object"):
+        module_costs(["tests/test_a.py"], tmp_path, model)

@@ -13,7 +13,7 @@ from pathlib import Path
 from ci_flake_stress import (
     StressPlan,
     changed_test_modules,
-    load_module_costs,
+    module_costs,
     plan_stress,
     stress_enabled,
 )
@@ -543,7 +543,7 @@ def _stress_plan(
     modules = changed_test_modules(entries, repo)
     if not modules:
         return StressPlan((), 0, ())
-    plan = plan_stress(modules, load_module_costs())
+    plan = plan_stress(modules, module_costs(modules, repo))
     if plan.unstressed:
         print(
             "::notice title=flake-stress cap::not repeating "

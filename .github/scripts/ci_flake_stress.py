@@ -9,10 +9,10 @@ Modules marked ``native_bwave`` as a whole are skipped: they need the Rust
 binary and run only in bwave-integration, and the job deselects that marker.
 
 Cost cap: one repeat count serves the whole job, sized so the estimated serial
-Windows test time stays within ``BUDGET_SECONDS``. A module's estimate is its
-recorded slow-test time in the Windows timing model, floored at
-``MODULE_FLOOR_SECONDS`` (new modules have no history). The count is at most
-``MAX_COUNT``. When even ``MIN_COUNT`` repeats of every changed module would
+Windows test time stays within ``BUDGET_SECONDS``. The Windows timing model
+records only slow tests, so each test function costs its recorded time or the
+model's default, floored per module at ``MODULE_FLOOR_SECONDS``. The count is
+at most ``MAX_COUNT``. When even ``MIN_COUNT`` repeats of every changed module would
 exceed the budget (a broad refactor), only the added modules are stressed; if
 they still do not fit, nothing is stressed. ``unstressed`` names the modules
 the cap dropped so the classifier can report them.
@@ -21,10 +21,11 @@ the cap dropped so the classifier can report them.
 from __future__ import annotations
 
 import ast
-import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+
+from ci_test_shards import load_timings
 
 MAX_COUNT = 10
 MIN_COUNT = 3
@@ -60,20 +61,25 @@ def _is_test_module(path: str) -> bool:
     """Match pytest's default ``python_files`` patterns under tests/."""
     name = PurePosixPath(path).name
     return (
-        path.startswith("tests/")
+        path.isprintable()  # a newline in a path could forge an Actions log command
+        and path.startswith("tests/")
         and not path.startswith(_EXCLUDED_PREFIXES)
         and name.endswith(".py")
         and (name.startswith("test_") or name.endswith("_test.py"))
     )
 
 
+def _parse(source: Path) -> ast.Module | None:
+    try:
+        return ast.parse(source.read_bytes(), filename=str(source))
+    except SyntaxError:
+        return None  # stress it anyway so pytest reports the broken module
+
+
 def _marked_native(source: Path) -> bool:
     """Return whether a module-level ``pytestmark`` applies ``native_bwave``."""
-    try:
-        tree = ast.parse(source.read_bytes(), filename=str(source))
-    except SyntaxError:
-        return False  # stress it anyway so pytest reports the broken module
-    return any(
+    tree = _parse(source)
+    return tree is not None and any(
         isinstance(node, ast.Assign)
         and any(
             isinstance(target, ast.Name) and target.id == "pytestmark" for target in node.targets
@@ -102,17 +108,39 @@ def changed_test_modules(
     return modules
 
 
-def load_module_costs(model_path: Path = TIMING_MODEL) -> dict[str, float]:
-    """Sum the Windows timing model's recorded test seconds per module."""
-    model = json.loads(model_path.read_text(encoding="utf-8"))
-    tests = model.get("tests") if isinstance(model, dict) else None
-    if not isinstance(tests, dict):
-        raise ValueError(f"{model_path} has no tests mapping")
-    costs: dict[str, float] = {}
-    for node_id, seconds in tests.items():
-        module = node_id.split("::", 1)[0]
-        costs[module] = costs.get(module, 0.0) + float(seconds)
-    return costs
+def _is_test(node: ast.stmt) -> bool:
+    return isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name.startswith(
+        "test"
+    )
+
+
+def _test_functions(tree: ast.Module | None) -> list[str]:
+    """Node-ID suffixes of the test functions pytest collects by default."""
+    names: list[str] = []
+    for node in tree.body if tree else ():
+        if _is_test(node):
+            names.append(node.name)
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            names.extend(f"{node.name}::{item.name}" for item in node.body if _is_test(item))
+    return names
+
+
+def module_costs(
+    modules: Iterable[str], repo: Path, model_path: Path = TIMING_MODEL
+) -> dict[str, float]:
+    """Estimate each module's serial Windows seconds for one repetition."""
+    timings = load_timings(model_path)
+    recorded: dict[str, float] = {}  # parametrized cases summed per function
+    for node_id, seconds in timings.tests.items():
+        function = node_id.split("[", 1)[0]
+        recorded[function] = recorded.get(function, 0.0) + seconds
+    return {
+        module: sum(
+            recorded.get(f"{module}::{name}", timings.default_seconds)
+            for name in _test_functions(_parse(repo / module))
+        )
+        for module in modules
+    }
 
 
 def _fitting_count(modules: Iterable[str], costs: Mapping[str, float]) -> int:
