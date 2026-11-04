@@ -35,6 +35,17 @@ _UNHEALTHY_RETRY_AGE = timedelta(days=1)
 
 
 @dataclass(frozen=True, slots=True)
+class Invalidation:
+    """A change Doctor's input fingerprint cannot see, and when it happened.
+
+    Any observation whose Doctor run started at or before *at* no longer holds.
+    """
+
+    at: datetime
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class HealthSnapshot:
     """One validated observation and freshness decision, detached from the reader."""
 
@@ -109,12 +120,20 @@ def freshness_reason(
     inputs_changed: bool,
     checked_at: datetime | None,
     now: datetime,
+    started_at: datetime | None = None,
+    invalidation: Invalidation | None = None,
 ) -> str | None:
-    """Evaluate input drift, then age, for one validated prior observation."""
+    """Evaluate input drift, then invalidation, then age, for one prior observation.
+
+    *started_at* is when the observing Doctor run began; an older report without
+    it falls back to *checked_at*.
+    """
     if inputs_changed:
         return "Doctor inputs changed"
     if checked_at is None:
         return "automatic Doctor timestamp unreadable"
+    if invalidation is not None and (started_at or checked_at) <= invalidation.at:
+        return f"{invalidation.reason} since this check"
     max_age = (
         _HEALTHY_MAX_AGE
         if diagnostics.health.clean or _has_only_upgrade_review_findings(diagnostics)

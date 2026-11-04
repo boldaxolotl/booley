@@ -174,6 +174,60 @@ def test_consumers_keep_the_start_choice_when_a_credential_appears_later(
     assert config_agent.env_auth_handoff() == "gateway"
 
 
+def test_signing_in_after_a_gateway_start_makes_the_stored_health_result_due(
+    sandbox, monkeypatch, capsys
+):
+    """A Doctor result graded against the old app must not read as current health.
+
+    Codespaces visitor: the first start chose the gateway and Doctor WARNed about
+    its missing token; the visitor then signed in and re-ran the registrar. A
+    result from a run that started before the sign-in stays due even when it
+    lands afterwards (an automatic Doctor still in flight).
+    """
+    from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
+    from booley.runtime import health
+    from booley.runtime.booley_dir import reset_cache
+
+    booley_dir = sandbox.project / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text('[project]\nname="auto-health"\n')
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+
+    def publish_token_warning(started_at: str) -> None:
+        finding = DiagnosticFinding(
+            Severity.WARN, "gateway token command exited 1", check_id="agent.gateway-token"
+        )
+        health.publish_result(
+            sandbox.project,
+            trigger="test",
+            duration_s=0,
+            diagnostics=DiagnosticReport((finding,)),
+            transcript="",
+            started_at=started_at,
+        )
+
+    _give("gateway", sandbox.home, monkeypatch)
+    _start(capsys)
+    in_flight_start = health.run_start_stamp()
+    publish_token_warning(in_flight_start)
+
+    _start(capsys)  # an unchanged choice keeps the result current
+    assert health.due_reason(sandbox.project) is None
+
+    _give("codex-api-key", sandbox.home, monkeypatch)  # the visitor signs in
+    assert "app:codex (BOOLEY_AGENT_APP=auto: " in _start(capsys)
+    changed = "agent app changed since this check"
+    assert health.due_reason(sandbox.project) == changed
+
+    publish_token_warning(in_flight_start)  # the in-flight run lands late
+    assert health.due_reason(sandbox.project) == changed
+
+    publish_token_warning(health.run_start_stamp())  # a run started after the sign-in
+    assert health.due_reason(sandbox.project) is None
+    reset_cache()
+
+
 @pytest.mark.parametrize(
     "credential,gateway_policy",
     [("claude-api-key", None), ("codex-api-key", None), ("codex-api-key", "gateway")],

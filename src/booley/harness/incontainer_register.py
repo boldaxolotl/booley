@@ -8,7 +8,7 @@ from pathlib import Path
 
 from booley.config import agent_app
 from booley.config.gateway import GATEWAY_AUTH, GatewayConfigError, gateway_settings_from_env
-from booley.runtime import atomic_files, auth_token, incontainer_setup
+from booley.runtime import atomic_files, auth_token, health, incontainer_setup
 from booley.runtime.booley_dir import resolve_booley_dir
 
 
@@ -123,27 +123,54 @@ def resolve_auto_choice() -> agent_app.AgentAppChoice:
     )
 
 
-def _publish_auto_choice() -> agent_app.AgentAppChoice | None:
-    """Resolve and publish this start's ``auto`` choice; ``None`` unless ``auto``.
+def _read_record() -> bytes | None:
+    """The published ``auto`` choice record's bytes, or ``None`` when unreadable."""
+    try:
+        return agent_app.record_path().read_bytes()
+    except OSError:
+        return None
 
-    The previous start's record goes first, so a failed resolution leaves none
-    and consumers refuse instead of trusting a stale choice.
+
+def _publish_auto_choice() -> tuple[agent_app.AgentAppChoice | None, bool]:
+    """Resolve and publish this start's ``auto`` choice.
+
+    Returns the choice (``None`` unless ``auto``) and whether it differs from the
+    record it replaced. The previous record goes first, so a failed resolution
+    leaves none and consumers refuse instead of trusting a stale choice.
     """
     if not agent_app.auto_requested():
-        return None
+        return None, False
+    previous = _read_record()
     atomic_files.durable_unlink(agent_app.record_path())
     choice = resolve_auto_choice()
-    atomic_files.atomic_replace_bytes(agent_app.record_path(), agent_app.encode(choice))
-    return choice
+    encoded = agent_app.encode(choice)
+    atomic_files.atomic_replace_bytes(agent_app.record_path(), encoded)
+    return choice, encoded != previous
+
+
+def _invalidate_health() -> str:
+    """Make automatic Doctor due after an agent-app change its fingerprint cannot see.
+
+    Doctor grades the chosen app's credentials, so a stored result from before
+    a sign-in can report a credential FAIL or WARN that no longer holds.
+    """
+    try:
+        health.invalidate(Path.cwd(), reason="agent app changed")
+    except Exception:  # noqa: BLE001 -- post-start health is advisory
+        return " health-invalidation:failed"
+    return ""
 
 
 def main() -> None:
     """Start mechanisms, apply registration, and launch advisory Harness policy."""
     try:
-        choice = _publish_auto_choice()
+        choice, choice_changed = _publish_auto_choice()
     except agent_app.AgentAppError as exc:
         print(f"error: registration refused: {exc}", file=sys.stderr)
         sys.exit(1)
+    # Right after the record changes, so no run that already sees the new app is
+    # marked stale.
+    invalidation = _invalidate_health() if choice_changed else ""
     app = choice.app if choice else os.environ.get("BOOLEY_AGENT_APP", "none")
     server = (
         "skipped" if app == "none" else incontainer_setup.ensure_http_server(mode="interactive")
@@ -157,11 +184,11 @@ def main() -> None:
         print(f"error: registration refused: {exc}", file=sys.stderr)
         status = "refused"
     upgrade = observe_upgrade()
-    health = launch_auto_doctor()
+    doctor_launch = launch_auto_doctor()
     chosen = f" app:{choice.app} (BOOLEY_AGENT_APP=auto: {choice.reason})" if choice else ""
     print(
-        f"booley incontainer-register: server:{server} upgrade:{upgrade} health:{health} "
-        f"{status}{chosen}",
+        f"booley incontainer-register: server:{server} upgrade:{upgrade} health:{doctor_launch} "
+        f"{status}{chosen}{invalidation}",
         file=sys.stderr,
     )
     if status == "refused":

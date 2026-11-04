@@ -24,13 +24,14 @@ from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.booley_dir import contains, resolve_booley_dir
 from booley.runtime.file_lock import try_file_lock
 from booley.runtime.filesystem_utils import read_file_bytes
-from booley.runtime.timefmt import parse_timestamp, utc_now_rfc3339
+from booley.runtime.timefmt import parse_timestamp, rfc3339_from_datetime, utc_now_rfc3339
 
 _STATE_DIR = Path("runtime") / "doctor"
 _REPORT_NAME = "last.json"
 _TRANSCRIPT_NAME = "last.log"
 _ANNOUNCEMENTS_NAME = "announcements.json"
 _ANNOUNCE_LOCK_NAME = "announcements.lock"
+_INVALIDATION_NAME = "invalidated.json"
 _INPUT_LABELS = {
     "booley_toml_sha256": "booley.toml",
     "doctor_waivers_sha256": "doctor-waivers.toml",
@@ -155,6 +156,20 @@ def _input_change_reason(recorded: object, current: dict[str, Any]) -> str:
     return f"{generic}: {', '.join(shown)}" if shown else generic
 
 
+def _load_invalidation(booley_dir: Path) -> policy.Invalidation | None:
+    """The latest recorded invalidation, or ``None`` when absent or unreadable."""
+    try:
+        data = json.loads(read_file_bytes(state_dir(booley_dir) / _INVALIDATION_NAME))
+    except (OSError, ValueError):
+        return None
+    data = as_dict(data)
+    at = _parse_time(data.get("at")) if data is not None else None
+    reason = data.get("reason") if data is not None else None
+    if at is None or not isinstance(reason, str) or not reason:
+        return None
+    return policy.Invalidation(at, reason)
+
+
 def read_health(project_root: Path, *, now: datetime | None = None) -> HealthSnapshot | None:
     """Read one report, validate its health interpretation, then assess its freshness.
 
@@ -173,6 +188,8 @@ def read_health(project_root: Path, *, now: datetime | None = None) -> HealthSna
             inputs_changed=document.get("fingerprint") != current,
             checked_at=_parse_time(document.get("checked_at")),
             now=now or datetime.now(tz=UTC),
+            started_at=_parse_time(document.get("started_at")),
+            invalidation=_load_invalidation(booley_dir),
         )
         if due == "Doctor inputs changed":
             due = _input_change_reason(document.get("fingerprint"), current)
@@ -226,11 +243,13 @@ def publish_result(
     diagnostics: DiagnosticReport,
     transcript: str,
     deep_status: dict[str, Any] | None = None,
+    started_at: str | None = None,
 ) -> dict[str, Any]:
     """Atomically persist one already-completed structured Doctor result.
 
     Counts, cleanliness and exit code are derived from the findings, so a
-    published report can never contradict itself.
+    published report can never contradict itself. *started_at* (RFC 3339) is
+    when the Doctor run began; it decides whether a later invalidation covers it.
     """
     from booley.runtime import runtime_context
 
@@ -239,6 +258,7 @@ def publish_result(
     payload = {
         "schema": 1,
         "checked_at": utc_now_rfc3339(),
+        "started_at": started_at,
         "duration_s": round(duration_s, 3),
         "trigger": trigger,
         "runtime": "session-runtime" if runtime_context.inside_session_runtime() else "host",
@@ -255,6 +275,26 @@ def publish_result(
     return payload
 
 
+def run_start_stamp() -> str:
+    """Stamp a Doctor run's start for ``publish_result(started_at=...)``.
+
+    Microsecond resolution orders a run against an invalidation in the same second.
+    """
+    return rfc3339_from_datetime(datetime.now(tz=UTC), microseconds=True)
+
+
+def invalidate(project_root: Path, *, reason: str) -> None:
+    """Make every observation from a Doctor run started before now due for a recheck.
+
+    For changes Doctor's fingerprint cannot see, such as the agent sign-in the
+    in-Sandbox registrar resolves. A run already in flight is covered too: it
+    started before this call, so its late result is still due.
+    """
+    booley_dir = resolve_booley_dir(project_root)
+    document = {"at": run_start_stamp(), "reason": reason}
+    _atomic_write(state_dir(booley_dir) / _INVALIDATION_NAME, json.dumps(document) + "\n")
+
+
 def _load_announcements(path: Path) -> dict[str, str]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -269,12 +309,14 @@ def consume_changed_snapshot(
     channel: str,
     issues_only: bool = False,
 ) -> HealthSnapshot | None:
-    """Return a changed observation once per reporting channel.
+    """Return a changed, current observation once per reporting channel.
 
-    An ``issues_only`` channel neither reports nor records clean observations.
+    A stale observation is neither reported nor recorded: its findings may no
+    longer hold, and the recheck that is due decides what to announce. An
+    ``issues_only`` channel neither reports nor records clean observations.
     """
     snapshot = read_health(project_root)
-    if snapshot is None:
+    if snapshot is None or snapshot.due is not None:
         return None
     if issues_only and snapshot.assessment.clean:
         return None

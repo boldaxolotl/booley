@@ -22,6 +22,7 @@ from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.timefmt import format_duration
 
 _RUN_LOCK_NAME = "auto.lock"
+_MAX_PASSES = 2
 Progress = Callable[[str], None]
 
 
@@ -51,6 +52,7 @@ def _execute(
     from booley.harness.doctor import run_doctor_result
 
     output = io.StringIO()
+    started_at = health.run_start_stamp()
     started = time.monotonic()
     deep_status = None
     try:
@@ -75,6 +77,7 @@ def _execute(
         diagnostics=diagnostics,
         transcript=output.getvalue(),
         deep_status=deep_status,
+        started_at=started_at,
     )
     (progress or _ignore_progress)(
         f"completed in {format_duration(duration_s)}; transcript: {health.transcript_path(booley_dir)}"
@@ -95,17 +98,21 @@ def run_if_due(
         with health.try_state_lock(lock_path) as acquired:
             if not acquired:
                 return None
-            reason = health.due_reason(project_root)
-            if reason is None:
-                return None
-            emit_progress = progress or _ignore_progress
-            emit_progress(f"starting ({reason})")
-            report = _execute(
-                project_root,
-                booley_dir,
-                trigger,
-                progress=emit_progress,
-            )
+            report = None
+            # A second pass covers a change made while the first ran, such as a
+            # sign-in whose registrar could not start its own run under this lock.
+            for _attempt in range(_MAX_PASSES):
+                reason = health.due_reason(project_root)
+                if reason is None:
+                    break
+                emit_progress = progress or _ignore_progress
+                emit_progress(f"starting ({reason})")
+                report = _execute(
+                    project_root,
+                    booley_dir,
+                    trigger,
+                    progress=emit_progress,
+                )
         return report
     except Exception:  # noqa: BLE001 — lifecycle advisory must never block a session startup
         return None
