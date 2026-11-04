@@ -16,6 +16,18 @@ workflow remains the complete OS-by-Python backstop. This is deliberately a
 pairwise PR policy, not equivalent to running the complete suite on every
 combination before merge.
 
+## Flake stress
+
+The `flake-stress` job repeats the test modules a pull request adds or
+modifies on Ubuntu and Windows with Python 3.14 (`pytest --count=N -n 4
+--dist=load`, Windows keeping its timeout-headroom gate). Any failed repetition
+fails `ci-required`. Pushes, manual runs and Mergify queue drafts skip it.
+`.github/scripts/ci_flake_stress.py` picks the modules and sizes `N` (at most
+10) from this directory's Windows timing model. A broad change falls back to
+its added modules or skips the job, and a notice on the `changes` job names
+each module left out. Run `pytest <module> --count=10 -n 4 --dist=load`
+to reproduce a failure locally.
+
 ## Shard safety
 
 `.github/scripts/ci_pytest_shard.py` collects the eligible tests on every

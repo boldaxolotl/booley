@@ -69,6 +69,7 @@ test = [
     "pytest-asyncio==1.4.0",
     "pytest-xdist==3.8.0",
     "pytest-timeout==2.4.0",
+    "pytest-repeat==0.9.4",
     "pytest-cov==7.1.0",
     # coverage.py 7.17.1 breaks SIGINT exit codes under patch = ["subprocess"]
     # (tests expecting 130 get 1); hold 7.17.0 until upstream is fixed.
@@ -97,6 +98,9 @@ dev = [
     # Bounds every test's wall-clock so a wedged subprocess/stall test fails
     # loudly instead of hanging the whole suite (default applied in tests/conftest.py).
     "pytest-timeout==2.4.0",
+    # --count=N repeats tests; the flake-stress CI job uses it to catch flaky
+    # changed tests before merge. Inert without --count.
+    "pytest-repeat==0.9.4",
     # Exact pin: pytest-cov owns xdist data collection/combining, while its
     # subprocess support depends on coverage.py's configured patch mechanism.
     "pytest-cov==7.1.0",
