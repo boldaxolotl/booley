@@ -5,8 +5,8 @@ provided by :func:`resolve`.
 
 Rates are USD per million tokens, taken from Anthropic/OpenAI list pricing.
 Cache reads bill at the model's published multiplier (0.1x input unless the
-row says otherwise), cache writes at 1.25x input for the default
-5-minute TTL (a 1h TTL is 2x, which Booley does not request).
+row says otherwise), cache writes at 1.25x input for the default 5-minute TTL
+(a 1h TTL is 2x, which Booley does not request).
 """
 
 from __future__ import annotations
@@ -56,9 +56,9 @@ def _anthropic(
 # Retired models stay listed: historical runs are re-costed from their recorded
 # model id, and a project can still pin one via [models].
 #
-# NOTE: claude-haiku-5-5 (above 100K input), gpt-6-astra (above 272K input),
-# gpt-6.1-sol (above 272K input) and gpt-6-luna (above 272K input) carry long-context surcharges that this table
-# does not model, so readouts for very long prompts under-estimate.
+# NOTE: claude-haiku-5-5 (above 100K input), gpt-6-astra, gpt-6.1-sol and
+# gpt-6-luna (each above 272K input) carry long-context surcharges that this
+# table does not model, so readouts for very long prompts under-estimate.
 MODEL_PRICING: dict[str, ModelPricing] = {
     # --- Anthropic ---
     # Current defaults (Anthropic pricing page, checked 2026-11-04).
@@ -90,13 +90,14 @@ MODEL_PRICING: dict[str, ModelPricing] = {
 }
 
 # Family fallbacks for ids we don't recognise exactly (e.g. a dated snapshot of
-# a model released after this table was written). Each maps to a table key
-# whose price is the most expensive in that family, so an unknown id is
-# over-costed rather than silently reported as free. An unknown GPT id resolves
-# to the most expensive known GPT row (a floor: a newer model may list higher).
-# A Claude family token maps to a current row at least as expensive as that
-# family's current model; opus keeps borrowing the Fable row so an unknown Opus
-# is over-costed, never free.
+# a model released after this table was written), so an unknown id is never
+# silently reported as free. Each family maps to a row as follows:
+# - fable, sonnet: the family's current model, so a new snapshot is priced
+#   like the model it most likely succeeds.
+# - opus: the Fable row, a premium rate that exceeds Opus on input and output
+#   (cache reads can be cheaper than older Opus rows, so this is an estimate).
+# - mythos, haiku, gpt-: the most expensive known row (a floor: a newer model
+#   may list higher).
 _FAMILY_FALLBACK: tuple[tuple[str, str], ...] = (
     ("fable", "claude-fable-5-1"),
     ("mythos", "claude-mythos-5"),
