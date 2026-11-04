@@ -200,19 +200,12 @@ class GoalWaiverService:
             raise ProposalError("candidate is not eligible for this exact source/Campaign point")
 
     def _refuse_protected(self, destination: Path, record: GoalRecord) -> None:
-        from booley.goals.protected_inputs import (
-            ProtectedInputError,
-            ProtectedInputRoots,
-            ProtectedPath,
-        )
+        from booley.goals.protected_inputs import ProtectedInputRoots
 
-        try:
-            roots = ProtectedInputRoots.for_goal(
-                record, Path(record.worktree_path), self.booley_dir
-            )
-        except (ProtectedInputError, ValueError, OSError, RuntimeError) as exc:
-            raise ProposalError(f"protected inputs cannot be inspected: {exc}") from exc
+        roots = ProtectedInputRoots(Path(record.worktree_path), self.booley_dir)
         # Persisted resolved paths are authoritative; decode through their recorded roots.
+        from booley.goals.protected_inputs import ProtectedPath
+
         for encoded in record.protected_paths:
             path = roots.absolute(ProtectedPath.decode(encoded), roots.main_checkout())
             if path is not None and any(
