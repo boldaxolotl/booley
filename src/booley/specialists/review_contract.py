@@ -35,6 +35,16 @@ class ReviewScopeContract:
             PurePosixPath(path).suffix.lower() in _CPP_SUFFIXES for path in self.support_files
         )
 
+    @property
+    def simulation_sources(self) -> tuple[str, ...]:
+        """Sorted scoped HDL, cocotb, and C/C++ files; Goal support files are omitted."""
+        cpp = {
+            path
+            for path in self.support_files
+            if PurePosixPath(path).suffix.lower() in _CPP_SUFFIXES
+        }
+        return tuple(sorted(self.cocotb_files | self.hdl_files | cpp))
+
     def is_cocotb_file(self, path: str) -> bool:
         """Return whether *path* is a Python testbench in this scope."""
         return _normalize(path) in self.cocotb_files
