@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.audit.diagnostic_results import DiagnosticFinding, Severity
+from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.harness import auto_doctor, doctor
 from booley.runtime import doctor_stamp, health, health_presentation
 from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
@@ -374,6 +374,32 @@ def test_run_if_due_records_once_then_stays_current(tmp_path: Path, monkeypatch)
     assert deliveries == []
     assert health.load_report(tmp_path) is not None
     assert progress == ["starting (no automatic Doctor result)"]
+
+
+def test_run_if_due_reruns_once_after_a_change_made_during_its_run(tmp_path: Path, monkeypatch):
+    """A sign-in mid-run cannot start its own run under the lock; this worker reruns."""
+    _project(tmp_path)
+    calls = []
+
+    def execute(root, _booley_dir, trigger, **_kwargs):
+        started_at = health.run_start_stamp()
+        calls.append(trigger)
+        if len(calls) == 1:
+            health.invalidate(root, reason="agent app changed")
+        return health.publish_result(
+            root,
+            trigger=trigger,
+            duration_s=0,
+            diagnostics=DiagnosticReport(),
+            transcript="",
+            started_at=started_at,
+        )
+
+    monkeypatch.setattr(auto_doctor, "_execute", execute)
+
+    assert auto_doctor.run_if_due(tmp_path, trigger="test") is not None
+    assert calls == ["test", "test"]
+    assert health.due_reason(tmp_path) is None
 
 
 def test_containment_alias_core_exclusion(tmp_path, monkeypatch):

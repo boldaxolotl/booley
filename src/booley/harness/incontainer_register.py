@@ -148,16 +148,17 @@ def _publish_auto_choice() -> tuple[agent_app.AgentAppChoice | None, bool]:
     return choice, encoded != previous
 
 
-def discard_stale_health(project_root: Path | None = None) -> None:
+def _invalidate_health() -> str:
     """Make automatic Doctor due after an agent-app change its fingerprint cannot see.
 
     Doctor grades the chosen app's credentials, so a stored result from before
     a sign-in can report a credential FAIL or WARN that no longer holds.
     """
     try:
-        health.discard_result(project_root or Path.cwd())
+        health.invalidate(Path.cwd(), reason="agent app changed")
     except Exception:  # noqa: BLE001 -- post-start health is advisory
-        return
+        return " health-invalidation:failed"
+    return ""
 
 
 def main() -> None:
@@ -180,13 +181,12 @@ def main() -> None:
         print(f"error: registration refused: {exc}", file=sys.stderr)
         status = "refused"
     upgrade = observe_upgrade()
-    if choice_changed:
-        discard_stale_health()
+    invalidation = _invalidate_health() if choice_changed else ""
     doctor_launch = launch_auto_doctor()
     chosen = f" app:{choice.app} (BOOLEY_AGENT_APP=auto: {choice.reason})" if choice else ""
     print(
         f"booley incontainer-register: server:{server} upgrade:{upgrade} health:{doctor_launch} "
-        f"{status}{chosen}",
+        f"{status}{chosen}{invalidation}",
         file=sys.stderr,
     )
     if status == "refused":

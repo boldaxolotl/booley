@@ -7,7 +7,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
-from booley.audit.health import finding_documents, freshness_reason, parse_diagnostics
+from booley.audit.health import (
+    Invalidation,
+    finding_documents,
+    freshness_reason,
+    parse_diagnostics,
+)
 
 NOW = datetime(2026, 10, 12, 12, tzinfo=UTC)
 EXPIRED = "automatic Doctor result expired"
@@ -65,6 +70,28 @@ def test_input_drift_precedes_age_and_an_unreadable_timestamp():
         freshness_reason(diagnostics, inputs_changed=False, checked_at=None, now=NOW)
         == "automatic Doctor timestamp unreadable"
     )
+
+
+def test_invalidation_covers_runs_started_at_or_before_it():
+    diagnostics = _report(Severity.WARN)
+    change = Invalidation(NOW - timedelta(minutes=5), "agent app changed")
+
+    def due(started_at, *, inputs_changed=False):
+        return freshness_reason(
+            diagnostics,
+            inputs_changed=inputs_changed,
+            checked_at=NOW,  # published after the change either way
+            now=NOW,
+            started_at=started_at,
+            invalidation=change,
+        )
+
+    assert due(change.at - timedelta(seconds=1)) == "agent app changed since this check"
+    assert due(change.at) == "agent app changed since this check"
+    assert due(change.at + timedelta(microseconds=1)) is None
+    # A report without a start time falls back to when it was checked.
+    assert due(None) is None
+    assert due(change.at, inputs_changed=True) == "Doctor inputs changed"
 
 
 def test_persisted_findings_parse_back_to_the_same_interpretation():

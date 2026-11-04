@@ -782,8 +782,13 @@ def _booley_dir_pin_failure(
     return None
 
 
-def record_manual_result(project_root: Path, result: DoctorRunResult) -> dict[str, Any] | None:
-    """Make a manual in-Sandbox Doctor result current for interactive reporting."""
+def record_manual_result(
+    project_root: Path, result: DoctorRunResult, *, started_at: str | None = None
+) -> dict[str, Any] | None:
+    """Make a manual in-Sandbox Doctor result current for interactive reporting.
+
+    *started_at* (RFC 3339) is when the run began; see ``health.publish_result``.
+    """
     if not result.health_evidence:
         return None
     transcript = "\n".join(
@@ -797,6 +802,7 @@ def record_manual_result(project_root: Path, result: DoctorRunResult) -> dict[st
             diagnostics=result.diagnostics,
             transcript=transcript + "\n",
             deep_status=result.deep_status.to_document() if result.deep_status else None,
+            started_at=started_at,
         )
     except OSError:
         # No resolvable Project or unwritable state: there is nowhere to record it.
@@ -817,11 +823,12 @@ def run_doctor(args: argparse.Namespace, project_root: Path) -> int:
     except BooleyLayoutError as exc:
         print(ts.status_line(ts.LineStatus.FAIL, str(exc)))
         return 2
+    started_at = health.run_start_stamp()
     result = run_doctor_result(args, project_root)
     if runtime_context.inside_session_runtime():
         # Advisory publication must never change the manual result.
         with contextlib.suppress(Exception):
-            record_manual_result(project_root, result)
+            record_manual_result(project_root, result, started_at=started_at)
     return result.exit_code
 
 
