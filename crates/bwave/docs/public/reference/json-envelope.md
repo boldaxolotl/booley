@@ -225,4 +225,4 @@ by `--limit`.
 | `stats` | `time_in_state_clocked_cycles` and `time_in_state_stopped_cycles` maps, beside tick/ns occupancy. |
 
 `bwave schema` prints the exact grammar. The emitted `$schema` URL pins it to
-an immutable commit.
+the Booley release tag that built the binary.

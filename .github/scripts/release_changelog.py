@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -19,12 +20,30 @@ from booley.runtime.changelog import (
 
 DEFAULT_ROOT = REPOSITORY_ROOT / "CHANGELOG.md"
 DEFAULT_PACKAGED = REPOSITORY_ROOT / "src" / "booley" / "data" / "refs" / "CHANGELOG.md"
+UNRELEASED_HEADING = "## Unreleased"
+# Any second-level heading; CRLF files keep their "\r" inside the match.
+SECOND_LEVEL_HEADING = re.compile(r"^## .*$", re.MULTILINE)
 
 
 def synchronize(root: Path = DEFAULT_ROOT, packaged: Path = DEFAULT_PACKAGED) -> None:
     """Make the packaged mirror byte-identical to the canonical changelog."""
     packaged.parent.mkdir(parents=True, exist_ok=True)
     packaged.write_bytes(root.read_bytes())
+
+
+def _require_unreleased_first(text: str) -> None:
+    """Require ``## Unreleased`` as the first section, empty or not.
+
+    Release prep drafts the dated entry directly below it, and upgrade review
+    reads pending entries from it, so a release must never remove the heading.
+    """
+    first = SECOND_LEVEL_HEADING.search(text)
+    observed = first.group(0).rstrip("\r") if first else None
+    if observed != UNRELEASED_HEADING:
+        raise ChangelogError(
+            f"the first changelog section must be {UNRELEASED_HEADING!r} (keep it, even empty, "
+            f"above the newest release); found {observed!r}"
+        )
 
 
 def validate(
@@ -34,7 +53,7 @@ def validate(
     target: str | None = None,
     notes_file: Path | None = None,
 ) -> None:
-    """Validate ordering, mirror equality, VERSION bound, target presence, and notes.
+    """Validate mirror equality, Unreleased heading, ordering, VERSION bound, target, and notes.
 
     ``VERSION`` is read from the directory holding ``root``.
     """
@@ -43,6 +62,7 @@ def validate(
     if root_bytes != packaged_bytes:
         raise ChangelogError(f"packaged changelog {packaged} differs from {root}")
     text = root_bytes.decode("utf-8")
+    _require_unreleased_first(text)
     releases = parse_releases(text)
     version = parse_stable_version((root.parent / "VERSION").read_text(encoding="utf-8").strip())
     # parse_releases enforces newest-first order, so the first entry is the newest.

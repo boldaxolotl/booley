@@ -20,7 +20,9 @@ def _load():
 
 
 def _text() -> str:
-    return "# Changelog\n\n## 1.2.0 - 31 AUG 2026\n\n### Bug fixes\n\n- Fixed it.\n"
+    return (
+        "# Changelog\n\n## Unreleased\n\n## 1.2.0 - 31 AUG 2026\n\n### Bug fixes\n\n- Fixed it.\n"
+    )
 
 
 def test_sync_and_validate_require_byte_identical_mirror(tmp_path: Path) -> None:
@@ -95,6 +97,33 @@ def test_validate_rejects_dated_heading_above_version(tmp_path: Path) -> None:
     (tmp_path / "VERSION").write_text("1.1.0\n", encoding="utf-8")
 
     with pytest.raises(checker.ChangelogError, match=r"1\.2\.0 - 31 AUG 2026.*VERSION 1\.1\.0"):
+        checker.validate(root, packaged)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(_text().replace("## Unreleased\n\n", ""), id="removed"),
+        pytest.param(
+            _text()
+            .replace("## Unreleased\n\n", "")
+            .replace("- Fixed it.\n", "- Fixed it.\n\n## Unreleased\n"),
+            id="below-release",
+        ),
+    ],
+)
+def test_validate_requires_unreleased_as_first_section(tmp_path: Path, text: str) -> None:
+    """Release 0.4.0 dropped the empty heading and broke upgrade review on main."""
+    checker = _load()
+    root = tmp_path / "CHANGELOG.md"
+    packaged = tmp_path / "packaged.md"
+    root.write_text(text, encoding="utf-8")
+    packaged.write_text(text, encoding="utf-8")
+    (tmp_path / "VERSION").write_text("1.2.0\n", encoding="utf-8")
+
+    with pytest.raises(
+        checker.ChangelogError, match=r"first changelog section must be '## Unreleased'"
+    ):
         checker.validate(root, packaged)
 
 
