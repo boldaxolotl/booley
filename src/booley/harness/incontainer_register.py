@@ -168,6 +168,9 @@ def main() -> None:
     except agent_app.AgentAppError as exc:
         print(f"error: registration refused: {exc}", file=sys.stderr)
         sys.exit(1)
+    # Right after the record changes, so no run that already sees the new app is
+    # marked stale.
+    invalidation = _invalidate_health() if choice_changed else ""
     app = choice.app if choice else os.environ.get("BOOLEY_AGENT_APP", "none")
     server = (
         "skipped" if app == "none" else incontainer_setup.ensure_http_server(mode="interactive")
@@ -181,7 +184,6 @@ def main() -> None:
         print(f"error: registration refused: {exc}", file=sys.stderr)
         status = "refused"
     upgrade = observe_upgrade()
-    invalidation = _invalidate_health() if choice_changed else ""
     doctor_launch = launch_auto_doctor()
     chosen = f" app:{choice.app} (BOOLEY_AGENT_APP=auto: {choice.reason})" if choice else ""
     print(
