@@ -270,26 +270,8 @@ How it differs from an SV Target:
   the full matrix, a common choice is every module on the default variant,
   plus only the modules that exercise the difference on the other variants.
 - **Icarus or Verilator only.** Commercial simulators can't run Cocotb Targets.
-
-### Tracing a Cocotb Target
-
-`booley flow sim --target <target> --trace` works on a Cocotb Target with no
-trace setup in the `.core`. The simulator writes a VCD, and Booley converts it
-to FST after the run. If the conversion fails, the VCD is kept as `trace.vcd`
-in the Target's simulation work directory, next to the error output.
-[`[flows.sim].trace_args`](FLOW-SIM.md#waveforms)
-has no effect here: Booley drives the dump itself.
-
-On a Verilator Cocotb Target, `verilator_options` may contain `--trace` or
-`--trace-vcd`, or no trace flag at all. `--trace-fst` makes a traced run fail
-with:
-
-```text
-Cocotb Target '<target>' requests native FST tracing, but the Cocotb run-half currently owns a VCD dump; use a VCD trace recipe for this Target
-```
-
-Replace `--trace-fst` with `--trace`, and remove any `-DVM_TRACE_FMT_FST`
-define along with it.
+- **Tracing needs no `.core` setup.** See
+  [Tracing a Cocotb Target](FLOW-SIM.md#tracing-a-cocotb-target).
 
 ## Flat and vendored repos
 

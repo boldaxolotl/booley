@@ -65,6 +65,13 @@ still running, or that there is nothing to wait for. Pass a `run_id` to wait for
 one specific Job. Jobs started by another agent session or by a nested
 Specialist are not included.
 
+### Resource use
+
+Booley measures every Job's peak memory and time. `booley resources` shows the
+recent range for each Target, which tells you how many heavy Jobs fit side by
+side (`max_heavy`) and how much memory to reserve for each (`heavy_memory`).
+See [Job resource history](CONFIG.md#job-resource-history).
+
 ### Choosing Targets
 
 `booley targets` lists every Target; `booley targets --for <flow>` lists the
@@ -165,9 +172,9 @@ Every built-in Flow uses the same exit codes:
 | `1` | The design failed the check, or a simulation was inconclusive. | Fix the RTL or testbench, then rerun. |
 | `2` | The Flow couldn't reach a verdict: bad configuration, missing tool, crash, or a tool or build timeout. | Fix the setup. The result says nothing about the design. |
 
-A simulation is **inconclusive** when it ends cleanly but without a pass or
-fail verdict, for example because the testbench never printed its pass
-message. A simulation that runs out of time exits `1`, but a build that runs
+A simulation is **inconclusive** when the simulator exits with code `0` but
+without a pass or fail verdict, for example because the testbench never
+printed its pass message. A simulation that runs out of time exits `1`, but a build that runs
 out of time exits `2`. [Simulation results](FLOW-SIM.md#reading-results)
 has the details.
 
