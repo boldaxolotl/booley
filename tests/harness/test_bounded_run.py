@@ -95,7 +95,8 @@ def test_bounded_run_kills_the_child_when_the_wait_is_interrupted(tmp_path, monk
         node_suite.run_bounded(
             _stub_command("import time; time.sleep(60)"), bound_s=30, output_dir=tmp_path
         )
-    (child,) = spawned
+    # Windows cleanup also launches taskkill through the patched Popen; ours is first.
+    child = spawned[0]
     assert child.poll() is not None
 
 
