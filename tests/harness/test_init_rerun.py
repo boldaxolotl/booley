@@ -151,6 +151,23 @@ def _current_nonstealth_init(repo: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.mark.timeout(120)
+def test_every_path_init_creates_is_classified(repo):
+    """Every file and empty directory of a full (default, Stealth) init has a Booley State part."""
+    from booley.core.booley_dir_parts import booley_dir_part
+
+    assert _run_full_init(repo) == 0
+    booley = repo / ".booley"
+    created = [
+        path
+        for path in booley.rglob("*")
+        if path.is_file() or (path.is_dir() and not any(path.iterdir()))
+    ]
+    assert created, "init created nothing under the Booley Directory"
+    for path in created:
+        booley_dir_part(path.relative_to(booley))
+
+
+@pytest.mark.timeout(120)
 def test_nonstealth_init_reports_global_ignored_booley_paths(repo, monkeypatch, capsys):
     _current_nonstealth_init(repo, monkeypatch)
     ignores = repo.parent / "global ignores"
