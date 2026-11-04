@@ -277,10 +277,10 @@ recently ended Goal Record: Goal id, state, end time, the
 failure reason of a failed record, and the Session Summary and Review Package
 paths when those files exist.
 
-In this worktree's own active Goal Mode, `booley goal status` and `goal_status`
-also name each repository whose uncommitted changes would block Finish. With a
-Paired Checkout, `.booley` is its own Git repository on its own branch, so
-commit changes there as well.
+Run from a Goal's worktree, `booley goal status` also names each repository
+whose uncommitted changes would block Finish. When the worktree's `.booley` is a
+Paired Checkout (its own Git repository on its own branch), the agent must
+commit changes there as well; ask it to if the status names that repository.
 
 ## Goalsets
 

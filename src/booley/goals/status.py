@@ -365,8 +365,11 @@ def _with_uncommitted(store: GoalStore, view: GoalStatusView, root: Path) -> Goa
     """Add what Finish's cleanliness check would refuse; a failed check is reported, not raised."""
     try:
         return replace(view, uncommitted=uncommitted_for_finish(store, view.record.id, root))
-    except (LifecycleError, FileCommitError, GoalStoreError, OSError) as exc:
-        return replace(view, uncommitted_error=str(exc))
+    except (LifecycleError, FileCommitError, GoalStoreError, OSError, ValueError) as exc:
+        # ValueError covers a corrupt operation request read on the way (JSON or
+        # boundary errors). Git's multi-line stderr becomes one line, so no
+        # continuation line can be mistaken for a status row.
+        return replace(view, uncommitted_error=" ".join(str(exc).split()))
 
 
 def _brought_up_to_date(

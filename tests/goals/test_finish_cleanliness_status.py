@@ -147,6 +147,16 @@ def test_status_exempts_retained_summary_of_revalidated_attempt(layout):
     assert finish_goal(request(complete), environment(complete))["status"] == "finished"
 
 
+def test_status_names_a_repository_with_an_edited_tracked_file(goal_mode):
+    # An edit of a committed file takes Finish's pin-comparison pass, not the
+    # untracked-file pass the other tests exercise.
+    worktree = goal_mode.worktree
+    (worktree / "rtl.v").write_text("module top; wire edited; endmodule\n", encoding="utf-8")
+    text, record = goal_status(goal_mode)
+    assert record["uncommitted"] == [{"path": str(worktree), "paired_checkout": False}]
+    assert f"WARNING: uncommitted changes in {worktree} block Finish" in text
+
+
 def test_status_reports_an_uncheckable_worktree_as_a_warning(goal_mode, monkeypatch):
     from booley.goals import input_view
 
@@ -162,3 +172,25 @@ def test_status_reports_an_uncheckable_worktree_as_a_warning(goal_mode, monkeypa
     assert "WARNING: uncommitted changes cannot be checked: git status failed" in text
     assert record["uncommitted"] is None
     assert "git status failed" in record["uncommitted_error"]
+
+
+@pytest.mark.parametrize("failure", [FileCommitError, ValueError])
+def test_status_keeps_its_rows_when_the_check_fails_with_multiline_text(
+    goal_mode, monkeypatch, failure
+):
+    # A corrupt operation record surfaces as ValueError (JSON or boundary errors);
+    # git's stderr spans lines. Either way status stays a single warning line.
+    from booley.goals import input_view
+
+    real = input_view.raw_git
+
+    def failing(root, *args, **kwargs):
+        if args[:1] == ("status",):
+            raise failure("first line\nfatal: second line")
+        return real(root, *args, **kwargs)
+
+    monkeypatch.setattr(input_view, "raw_git", failing)
+    text, record = goal_status(goal_mode)
+    assert record["uncommitted"] is None
+    assert record["uncommitted_error"] == "first line fatal: second line"
+    assert not any(line.startswith("fatal:") for line in text.splitlines())

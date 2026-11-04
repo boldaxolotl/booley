@@ -99,7 +99,7 @@ def goal_mode_rules(
                 "This worktree's Booley Directory is a Paired Checkout: a separate Git "
                 "repository on its own branch. Commit changes there (cores, `tests.toml`, "
                 "other Booley Directory files) in that repository before finishing; "
-                "`goal_status` names each repository with uncommitted changes.",
+                "`goal_status` names each repository whose uncommitted changes would block Finish.",
             )
             if paired_checkout
             else ()
