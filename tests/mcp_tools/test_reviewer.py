@@ -1738,6 +1738,8 @@ class TestPromptConstruction:
         assert f"## {label} style guide\n" in system
         assert f"## {label} style guide — project overlay" in system
         assert "Signal names MUST carry a `u_` prefix." in system
+        # The overlay text is passed through byte-for-byte.
+        assert overlay.read_text() in system
         # Overlay must follow the packaged guide so precedence reads correctly.
         assert system.index(f"## {label} style guide\n") < system.index(
             f"## {label} style guide — project overlay"

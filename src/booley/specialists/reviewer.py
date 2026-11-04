@@ -61,6 +61,7 @@ from booley.specialists.verification_freshness import refresh_verification_fresh
 from booley.targets.flow_names import config_section
 
 from .review_contract import ReviewContractError, ReviewScopeContract, resolve_review_scope
+from .review_simulators import render_simulation_context, resolve_scope_simulators
 from .specialist import Specialist
 
 logger = logging.getLogger(__name__)
@@ -931,6 +932,7 @@ class ReviewerSpecialist(Specialist):
         self._goal_mode = False
         self._resolved_scope: list[str] | None = None
         self._goal_target_surface: dict[str, Any] | None = None
+        self._simulation_context: str | None = None
         self._verify_prior: dict[str, Any] = {}
         self._sampled_contract: dict[str, Any] | None = None
         self._review_state_bytes: bytes | None = None
@@ -1470,6 +1472,7 @@ match the strength of the evidence.
         # Change-type severity policy (TB only — the RTL guides carry no
         # coverage-expansion checks to relax).
         if self.args.category == "tb":
+            sections.append(self._simulation_context_section())
             project_policy = self._build_tb_project_policy_section()
             if project_policy:
                 sections.append(project_policy)
@@ -1493,6 +1496,19 @@ match the strength of the evidence.
         if not spec_content:
             return ""
         return f"## Specification (source: {spec_source})\n\n{spec_content}\n"
+
+    def _simulation_context_section(self) -> str:
+        """Render which simulator runs each scoped file (resolved once per invocation).
+
+        The TB guides mark single-simulator rules ``[<Simulator> only]``; this
+        section is the only fact the Reviewer has to decide whether they apply.
+        """
+        if self._simulation_context is None:
+            work_dir = Path(self.args.work_dir) if self.args.work_dir else Path.cwd()
+            self._simulation_context = render_simulation_context(
+                resolve_scope_simulators(work_dir, self._parse_scope())
+            )
+        return self._simulation_context
 
     def _build_tb_project_policy_section(self) -> str:
         """Render project-configured simulation contracts for TB review."""
@@ -1676,6 +1692,7 @@ object, even after calling the capability.
         self._sampled_contract = None
         self._resolved_scope = None
         self._goal_target_surface = None
+        self._simulation_context = None
         self._review_run_id = f"{self._invocation_id}-{uuid4().hex}"
         self._review_evidence_written = False
         try:
@@ -2274,6 +2291,7 @@ object, even after calling the capability.
             if spec_section:
                 sections.append(spec_section)
             if self.args.category == "tb":
+                sections.append(self._simulation_context_section())
                 sections.append(self._build_tb_project_policy_section())
 
         sections.append("## Original findings to verify\n")

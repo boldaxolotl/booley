@@ -11,6 +11,7 @@ Everything you need is in this prompt or in the TB sources:
 
 - **## Specification** — the change-request text, or the external spec the request names. This is your source of truth for what the DUT is supposed to do: the numbers checks 9 and 18 look for, the modes check 5 looks for, the domain check 4 looks for. Read it before the checklist.
 - **Change-request type policy** — when present, it overrides the severity of the coverage-expansion checks named there.
+- **## Simulation Context** — the simulator that runs each scoped file, resolved from the Project's simulation Targets. It is authoritative and governs every rule or check marked `[<Simulator> only]`: report one only for a file whose simulators include that simulator; for a file whose simulator is unknown, report it at most with disposition `advisory`. Never infer the simulator from Makefiles, scripts, or other build files.
 - **## Project Simulation Contract** — when present, its configured verdict
   sentinels and trace files override the generic defaults in this guide.
 - **## Enforced Diff Boundary** — when present, only its added/modified line
@@ -62,7 +63,7 @@ Severity/confidence definitions same as RTL Reviewer Specialists. Prefer fewer, 
 |---|-------|----------|
 | 9 | **Expected model is not independent** | Golden-reference function or expected-value logic derives expected outputs from the same implementation assumptions as the stimulus/check path instead of from the spec. A shared mistake in encoding tables, state transitions, or field packing passes both — the TB is testing internal consistency, not correctness against the spec. Look for: expected values built from actual outputs, shared helper logic between stimulus and expected paths, duplicated packing assumptions without literal sentinel vectors, or expected values that change when the TB plumbing changes |
 | 10 | **Timeout missing/ineffective** | No `fork/join_any/disable fork`; timeout >1M cycles; test reports PASS after timeout (missing `timed_out` guard) |
-| 11 | **Randomization domain** | Values outside legal range; off-by-one on range max; missing rejection sampling for large ranges |
+| 11 | **Randomization domain** | Values outside legal range; off-by-one on range max; missing rejection sampling for large ranges [Vivado xsim only] |
 | 12 | **Error counter ignored** | `error_cnt` incremented but never used in PASS/FAIL verdict |
 | 13 | **No edge-case vectors** | Only random inputs, no deterministic boundary testing (0, max, near-overflow, identity, asymmetric). Every TB must include explicit edge-case vectors — random alone cannot reliably hit spec-critical boundaries |
 | 14 | **No randomized test vectors** | Only deterministic/hand-picked inputs, no `$urandom` or equivalent. Every TB must include randomized vectors to exercise the interior of the input space and catch unexpected interactions that fixed vectors miss |
@@ -71,7 +72,7 @@ Severity/confidence definitions same as RTL Reviewer Specialists. Prefer fewer, 
 | 17 | **Same-edge DUT output sampling race** | TB checks registered DUT outputs immediately after `@(posedge clk)`, `@(posedge rst)`, or inside `always @(posedge clk or posedge rst)` without a clocking-block input skew or small settle delay. RTL nonblocking assignments settle in the NBA region, so same-edge TB checks can see prior values and falsely fail. Reset monitors must wait `#1` or use an equivalent sampling scheme, then confirm reset is still asserted before checking reset outputs |
 | 18 | **Spec numeric contract not asserted** | Spec-to-TB traceability: every numeric contract the spec states — latency in cycles, cycle/throughput budgets, field and parameter widths, counter limits, and worked example input→output vectors — must appear as an explicit TB assertion or expected-value check. Look for: spec-stated numbers absent from the TB entirely; a latency or width that is only implicit in loop bounds or `#delays` instead of asserted; spec example vectors missing from the deterministic test cases. A TB that never encodes the spec's own numbers can only test self-consistency |
 
-### MAJOR — Icarus Verilog Compatibility (3 checks, only when the `sim` Target uses Icarus — `flow_options.tool = "icarus"`/`"iverilog"` in the `.core`)
+### MAJOR — Icarus Verilog Compatibility [Icarus only] (3 checks, applied only to files whose Simulation Context lists Icarus)
 
 | # | Check | Look for |
 |---|-------|----------|
