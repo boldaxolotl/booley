@@ -174,8 +174,8 @@ integer total_failed;
 ```
 
 End simulation with `$finish`, not `$stop`; `$stop` suspends a simulation instead
-of ending it. In batch runs a simulator either aborts with an error exit status
-(Verilator) or waits at an interactive prompt until the sim timeout, and the
+of ending it. In batch runs a simulator may abort with an error exit status
+(Verilator) or wait at an interactive prompt until the sim timeout, and the
 verdict sentinel may never print.
 
 Every TB must print a human summary, then a machine-readable verdict sentinel,

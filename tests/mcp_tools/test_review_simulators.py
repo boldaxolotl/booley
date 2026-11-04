@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.fusesoc.fusesoc_registry import canonical_project_path
 from booley.specialists.review_simulators import (
     ScopeSimulators,
     render_simulation_context,
@@ -42,6 +43,11 @@ filesets:
     files:
       - tb/tb_legacy.sv: {file_type: systemVerilogSource}
     tags: [tb]
+  tb_xsim:
+    files:
+      - tb/tb_xsim.sv: {file_type: systemVerilogSource}
+      - tb/test_cocotb.py: {file_type: user}
+    tags: [tb]
   tb_lint:
     files:
       - tb/tb_lint_only.sv: {file_type: systemVerilogSource}
@@ -68,6 +74,12 @@ targets:
       tool: iverilog
     filesets: [rtl, tb_iv]
     toplevel: tb_iv
+  sim_xsim:
+    flow: sim
+    flow_options:
+      tool: xsim
+    filesets: [rtl, tb_xsim]
+    toplevel: tb_xsim
   sim_legacy:
     default_tool: verilator
     filesets: [rtl, tb_legacy]
@@ -83,7 +95,7 @@ targets:
 
 @pytest.fixture()
 def project(tmp_path: Path) -> Path:
-    write_core(tmp_path, _CORE.replace("", ""))
+    write_core(tmp_path, _CORE)
     return tmp_path
 
 
@@ -106,6 +118,15 @@ def test_sim_targets_map_files_to_simulators(project: Path) -> None:
     }
     assert not sims.unresolved
     assert sims.skipped == ()
+
+
+def test_xsim_target_and_cocotb_file_resolve(project: Path) -> None:
+    sims = resolve_scope_simulators(project, ["tb/tb_xsim.sv", "tb/test_cocotb.py"])
+
+    assert _by_path(sims) == {
+        "tb/tb_xsim.sv": ("Vivado xsim",),
+        "tb/test_cocotb.py": ("Vivado xsim",),
+    }
 
 
 def test_legacy_verilator_target_counts_as_simulation(project: Path) -> None:
@@ -172,7 +193,29 @@ def test_uninspectable_target_marks_context_incomplete(
     assert _by_path(sims) == {"tb/tb_ice.sv": (), "tb/tb_ver.sv": ("Verilator",)}
     assert len(sims.skipped) == 1
     assert "sim_ice" in sims.skipped[0]
-    assert "may be incomplete" in render_simulation_context(sims)
+    text = render_simulation_context(sims)
+    assert "may be incomplete" in text
+    # An uninspected Target must not be reported as "no Target uses this file".
+    assert "- tb/tb_ice.sv: unknown (no inspected simulation Target uses this file)" in text
+    assert "no simulation Target uses" not in text
+
+
+def test_unresolvable_scoped_path_reports_unknown(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = canonical_project_path
+
+    def loopy(root, path):
+        if str(path) == "tb/tb_ver.sv":
+            raise OSError("symlink loop")
+        return real(root, path)
+
+    monkeypatch.setattr("booley.specialists.review_simulators.canonical_project_path", loopy)
+
+    sims = resolve_scope_simulators(project, ["tb/tb_ver.sv"])
+
+    assert sims.unresolved
+    assert _by_path(sims) == {"tb/tb_ver.sv": ()}
 
 
 def test_render_lists_files_and_limits_marked_rules() -> None:

@@ -2548,12 +2548,16 @@ class TestTbQualityPrompt:
         assert "[Icarus only]" in system
         assert "Icarus exposes" not in system
         assert 'flow_options.tool = "icarus"' not in system
-        assert "## Simulation Context" in system
+        assert "**## Simulation Context**" in system
 
         # The Vivado xsim bug rule and check 11's clause are marked.
         urandom = system.index("Never use `$urandom_range()`")
         assert "[Vivado xsim only]" in system[urandom - 200 : urandom + 200]
-        assert "missing rejection sampling for large ranges [Vivado xsim only]" in system
+        # The mark covers that clause alone, not the rest of check 11.
+        assert (
+            "`[Vivado xsim only]` for this clause alone: missing rejection sampling for large ranges"
+            in system
+        )
 
         # `$stop` is wrong on every simulator: its reason names no single one.
         stop = system.index("End simulation with `$finish`, not `$stop`")
@@ -3703,7 +3707,7 @@ def _tb_endpoint(project: Path, scope: str) -> ReviewerSpecialist:
 
 
 def _simulation_context(prompt: str) -> str:
-    """Return the ``## Simulation Context`` section of *prompt* (empty when absent)."""
+    """Return the ``## Simulation Context`` section of *prompt* (asserted present)."""
     assert "## Simulation Context" in prompt, prompt
     section = prompt.split("## Simulation Context", 1)[1]
     return section.split("\n## ", 1)[0]
@@ -3732,7 +3736,10 @@ class TestTbSimulationContext:
         project = _sim_project(tmp_path, _ICARUS_SELECTION)
         prompt = _tb_endpoint(project, "tb/tb_counter.sv")._build_prompt()
 
-        assert "tb/tb_counter.sv: Icarus" in _simulation_context(prompt)
+        file_lines = [
+            line for line in _simulation_context(prompt).splitlines() if line.startswith("- tb/")
+        ]
+        assert file_lines == ["- tb/tb_counter.sv: Icarus"]
 
     def test_verify_prompt_carries_simulation_context(self, tmp_path: Path, state_file: Path):
         project = _sim_project(tmp_path)

@@ -32,6 +32,7 @@ _SIMULATOR_LABELS = {
 }
 
 _NO_TARGET_REASON = "no simulation Target uses this file"
+_NO_INSPECTED_TARGET_REASON = "no inspected simulation Target uses this file"
 _UNRESOLVED_REASON = "the Project's Targets could not be resolved"
 
 
@@ -39,7 +40,8 @@ _UNRESOLVED_REASON = "the Project's Targets could not be resolved"
 class ScopeSimulators:
     """Simulators resolved for each scoped file of one review."""
 
-    # (scoped path in caller spelling, sorted simulator labels); no labels = unknown.
+    # (scoped path as normalized by the review scope contract, sorted simulator
+    # labels); no labels = unknown.
     files: tuple[tuple[str, tuple[str, ...]], ...]
     # The Target catalog itself could not be built or listed.
     unresolved: bool = False
@@ -54,12 +56,14 @@ def _label(eda_tool: str | None) -> str | None:
 
 
 def _is_simulation_target(handle: TargetHandle) -> bool:
+    """Whether the Simulation Flow runs *handle*.
+
+    ``flow: sim`` Targets count whatever their EDA tool (xsim, Xcelium, ...);
+    flowless legacy Targets count only when ``flow_can_drive`` says the Flow can
+    drive them (Verilator, Icarus). Other flowless legacy tools are not
+    simulation Targets, so their files stay unknown: the safe, advisory-only side.
+    """
     return handle.flow == "sim" or flow_can_drive("sim", handle)
-
-
-def _normalize(project_root: Path, path: str) -> str:
-    """Spell *path* the way ``canonical_project_path`` spells Target inputs."""
-    return canonical_project_path(project_root, path.replace("\\", "/").removeprefix("./"))
 
 
 def resolve_scope_simulators(project_root: Path, scope: Sequence[str]) -> ScopeSimulators:
@@ -88,18 +92,25 @@ def resolve_scope_simulators(project_root: Path, scope: Sequence[str]) -> ScopeS
     for handle in handles:
         try:
             inspection = catalog.inspect(handle)
+            inputs = [canonical_project_path(root, item.path) for item in inspection.inputs]
         except Exception as exc:  # noqa: BLE001 — one broken Target must not hide the others
             logger.warning("Cannot inspect simulation Target %s: %s", handle.identity, exc)
             skipped.append(handle.identity)
             continue
-        label = _label(inspection.eda_tool or handle.eda_tool)
-        for item in inspection.inputs:
-            bucket = labels_by_path.setdefault(canonical_project_path(root, item.path), set())
+        label = _label(inspection.eda_tool)
+        for path in inputs:
+            bucket = labels_by_path.setdefault(path, set())
             if label:
                 bucket.add(label)
-    files = tuple(
-        (path, tuple(sorted(labels_by_path.get(_normalize(root, path), ())))) for path in paths
-    )
+    try:
+        # Scoped paths are already normalized by the scope contract.
+        files = tuple(
+            (path, tuple(sorted(labels_by_path.get(canonical_project_path(root, path), ()))))
+            for path in paths
+        )
+    except Exception as exc:  # noqa: BLE001 — e.g. a symlink loop; never block a review
+        logger.warning("Simulator resolution for the review scope failed: %s", exc)
+        return ScopeSimulators(files=unknown, unresolved=True)
     return ScopeSimulators(files=files, skipped=tuple(skipped))
 
 
@@ -110,7 +121,12 @@ def render_simulation_context(sims: ScopeSimulators) -> str:
         if labels:
             lines.append(f"- {path}: {', '.join(labels)}")
         else:
-            reason = _UNRESOLVED_REASON if sims.unresolved else _NO_TARGET_REASON
+            if sims.unresolved:
+                reason = _UNRESOLVED_REASON
+            elif sims.skipped:
+                reason = _NO_INSPECTED_TARGET_REASON
+            else:
+                reason = _NO_TARGET_REASON
             lines.append(f"- {path}: unknown ({reason})")
     lines.append("")
     if sims.skipped:
