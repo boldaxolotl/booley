@@ -543,3 +543,157 @@ def test_crossed_booley_dir_entry_names_only_the_entry(tmp_path, monkeypatch, ca
     path, expected = _crossing_case(tmp_path, case)
 
     assert crossed_booley_dir_entry(path) == expected
+
+
+# ---------------------------------------------------------------------------
+# Common (Main) Booley Directory resolver (#2600, ADR 0082)
+# ---------------------------------------------------------------------------
+
+
+def _common(start: Path | None = None) -> Path:
+    """Call the Common resolver, importing it lazily so each test fails in its body."""
+    from booley.runtime.booley_dir import resolve_common_booley_dir
+
+    return resolve_common_booley_dir(start)
+
+
+def _isolate_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep fixture repositories independent of the developer's Git configuration."""
+    empty = tmp_path / "empty-git-config"
+    empty.touch()
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+
+
+def _init_repo(root: Path) -> None:
+    from tests.project_runtime_git_support import git
+
+    root.mkdir(parents=True, exist_ok=True)
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.name", "Fixture")
+    git(root, "config", "user.email", "fixture@example.invalid")
+
+
+def _commit_all(root: Path) -> None:
+    from tests.project_runtime_git_support import git
+
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "fixture")
+
+
+def _main_project(tmp_path: Path, *, relative: str = ".booley", toml: str = "") -> Path:
+    """A committed Git checkout whose Main Booley Directory is ``<root>/<relative>``."""
+    main = tmp_path / "main"
+    _init_repo(main)
+    (main / relative).mkdir(parents=True)
+    (main / relative / "booley.toml").write_text("", encoding="utf-8")
+    (main / "README.md").write_text("fixture\n", encoding="utf-8")
+    if toml:
+        (main / "booley.toml").write_text(toml, encoding="utf-8")
+    if relative == ".booley":
+        (main / ".gitignore").write_text(".booley/\n", encoding="utf-8")
+    _commit_all(main)
+    return main
+
+
+def _snapshot(main: Path, *, relative: str = ".booley") -> Path:
+    """A linked worktree carrying a copy (Snapshot) of the Booley Directory."""
+    import shutil
+
+    from tests.project_runtime_git_support import git
+
+    worktree = main / relative / "worktrees" / "s1"
+    git(main, "worktree", "add", "-q", "--detach", str(worktree))
+    shutil.copytree(
+        main / relative,
+        worktree / relative,
+        ignore=shutil.ignore_patterns("worktrees"),
+        dirs_exist_ok=True,
+    )
+    return worktree
+
+
+def _paired_checkout(main: Path) -> Path:
+    """A linked worktree whose ``.booley`` is a worktree of the Versioned Booley Directory."""
+    from tests.project_runtime_git_support import git
+
+    versioned = main / ".booley"
+    _init_repo(versioned)
+    (versioned / ".gitignore").write_text("worktrees/\n", encoding="utf-8")
+    _commit_all(versioned)
+    worktree = main.parent / "paired"
+    git(main, "worktree", "add", "-q", "--detach", str(worktree))
+    git(versioned, "worktree", "add", "-q", "--detach", str(worktree / ".booley"))
+    return worktree
+
+
+class TestCommonBooleyDir:
+    def test_from_main_checkout(self, tmp_path, monkeypatch):
+        _isolate_git(tmp_path, monkeypatch)
+        main = _main_project(tmp_path)
+
+        assert _common(main) == main / ".booley"
+        reset_cache()
+        monkeypatch.setenv("BOOLEY_DIR", str(main / ".booley"))
+        assert _common() == main / ".booley"
+
+    def test_from_linked_worktree_snapshot(self, tmp_path, monkeypatch):
+        _isolate_git(tmp_path, monkeypatch)
+        main = _main_project(tmp_path)
+        worktree = _snapshot(main)
+        (worktree / "sub").mkdir()
+
+        assert resolve_booley_dir(worktree / "sub") == worktree / ".booley"
+        reset_cache()
+        assert _common(worktree / "sub") == main / ".booley"
+        reset_cache()
+        monkeypatch.setenv("BOOLEY_DIR", str(worktree / ".booley"))
+        assert _common() == main / ".booley"
+        reset_cache()
+        monkeypatch.setenv("BOOLEY_DIR", str(main / ".booley"))
+        assert _common() == main / ".booley"
+
+    def test_from_paired_checkout(self, tmp_path, monkeypatch):
+        _isolate_git(tmp_path, monkeypatch)
+        main = _main_project(tmp_path)
+        worktree = _paired_checkout(main)
+
+        assert resolve_booley_dir(worktree) == worktree / ".booley"
+        reset_cache()
+        assert _common(worktree) == main / ".booley"
+        reset_cache()
+        monkeypatch.setenv("BOOLEY_DIR", str(worktree / ".booley"))
+        assert _common() == main / ".booley"
+        reset_cache()
+        monkeypatch.setenv("BOOLEY_DIR", str(main / ".booley"))
+        assert _common() == main / ".booley"
+
+    def test_honors_relocated_project_dir(self, tmp_path, monkeypatch):
+        _isolate_git(tmp_path, monkeypatch)
+        main = _main_project(tmp_path, relative="hw/booley", toml='[project]\ndir = "hw/booley"\n')
+        worktree = _snapshot(main, relative="hw/booley")
+
+        assert _common(main) == main / "hw" / "booley"
+        reset_cache()
+        assert _common(worktree) == main / "hw" / "booley"
+
+    def test_outside_git_keeps_selection(self, tmp_path, monkeypatch):
+        _isolate_git(tmp_path, monkeypatch)
+        plain = tmp_path / "plain"
+        (plain / ".booley").mkdir(parents=True)
+        (plain / ".booley" / "booley.toml").write_text("", encoding="utf-8")
+
+        assert _common(plain) == plain / ".booley"
+        reset_cache()
+        monkeypatch.setenv("BOOLEY_DIR", str(plain / ".booley"))
+        assert _common() == plain / ".booley"
+
+    def test_unreadable_git_common_dir_keeps_selection(self, tmp_path, monkeypatch):
+        _isolate_git(tmp_path, monkeypatch)
+        stale = tmp_path / "stale"
+        (stale / ".booley").mkdir(parents=True)
+        (stale / ".booley" / "booley.toml").write_text("", encoding="utf-8")
+        (stale / ".git").write_text(f"gitdir: {tmp_path / 'gone' / 'worktrees' / 'x'}\n")
+
+        assert _common(stale) == stale / ".booley"
