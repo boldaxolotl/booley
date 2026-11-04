@@ -19,6 +19,7 @@ from booley.flows.synth.timing import StaTimingConfig
 from .reporting import (
     perclock_timing_tcl,
     reg2reg_timing_tcl,
+    top_paths_report_tcl,
 )
 
 # Nangate45 physical conventions from the OpenROAD reference flow @ a008522d8.
@@ -127,21 +128,24 @@ def _pre_repair_snapshot_tcl(config: StaTimingConfig, pre_rpt: str, pre_csv: str
     """
     if not _timing_repair_enabled(config):
         return ""
+    count = config.report_paths
     return (
         'puts "BOOLEY_STAGE: sta_report_pre_repair"\n'
-        f"report_checks -path_delay max -sort_by_slack -group_count 1 > {{{pre_rpt}}}\n"
-        "set _pre_paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count 1]\n"
+        "set _pre_paths [find_timing_paths -path_delay max -sort_by_slack "
+        f"-group_path_count {count}]\n"
         f"set _pre_csv [open {{{pre_csv}}} w]\n"
-        "foreach _pp $_pre_paths {\n"
+        "set _pre_slacks {}\n"
+        f"foreach _pp [lrange $_pre_paths 0 {count - 1}] {{\n"
         "  set _slk [get_property $_pp slack]\n"
         '  puts $_pre_csv [format "%s,%s,%.6f" '
         "[get_property [get_property $_pp startpoint] full_name] "
         "[get_property [get_property $_pp endpoint] full_name] $_slk]\n"
-        '  puts [format "STA_PRE_REPAIR_WORST_SLACK_NS: %.6f" $_slk]\n'
-        "  break\n"
+        "  lappend _pre_slacks $_slk\n"
         "}\n"
         "close $_pre_csv\n"
-        "flush stdout\n"
+        "if {[llength $_pre_slacks] > 0} {\n"
+        '  puts [format "STA_PRE_REPAIR_WORST_SLACK_NS: %.6f" [lindex $_pre_slacks 0]]\n'
+        "}\n" + top_paths_report_tcl("_pre_slacks", count, "", pre_rpt) + "flush stdout\n"
     )
 
 
@@ -166,7 +170,9 @@ def write_openroad_script(
     controlled by ``config.repair_timing`` and ``config.repair_hold``. No
     trailing ``exit`` — the
     ``-exit`` flag preserves the nonzero-on-error semantics required by
-    physical mode. Reports land at stable ``overall{,.csv}.rpt`` paths.
+    physical mode. Reports land at stable ``overall{,.csv}.rpt`` paths and list
+    the worst ``config.report_paths`` setup paths, worst first; the
+    ``STA_*_SLACK_NS`` markers stay the single worst path's slack.
     """
     script_path = work_dir / "run_openroad.tcl"
     util = config.utilization_pct
@@ -181,7 +187,9 @@ def write_openroad_script(
     out_verilog = f"openroad_{design_name}.v"
     rpt = (report_dir / "overall.rpt").as_posix()
     csv = (report_dir / "overall.csv.rpt").as_posix()
-    reg2reg_block = reg2reg_timing_tcl((report_dir / "reg2reg.rpt").as_posix())
+    count = config.report_paths
+    reg2reg_block = reg2reg_timing_tcl((report_dir / "reg2reg.rpt").as_posix(), report_paths=count)
+    final_report_block = top_paths_report_tcl("slacks", count, "", rpt)
     perclock_block = perclock_timing_tcl()
 
     repair_timing_line = _repair_timing_tcl(config)
@@ -231,19 +239,21 @@ estimate_parasitics -placement
 {pre_repair_block}{repair_timing_line}puts "BOOLEY_STAGE: sta_report"
 report_design_area
 write_verilog {{{out_verilog}}}
-report_checks -path_delay max -sort_by_slack -group_count 1 > {{{rpt}}}
-set paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count 1]
+set paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count {count}]
 set csv_out [open {{{csv}}} w]
-foreach path $paths {{
+set slacks {{}}
+foreach path [lrange $paths 0 {count - 1}] {{
   set startpoint_name [get_property [get_property $path startpoint] full_name]
   set endpoint_name [get_property [get_property $path endpoint] full_name]
   set slack [get_property $path slack]
   puts $csv_out [format "%s,%s,%.6f" $startpoint_name $endpoint_name $slack]
-  puts [format "STA_WORST_SLACK_NS: %.6f" $slack]
-  break
+  lappend slacks $slack
 }}
 close $csv_out
-{perclock_block}{reg2reg_block}""".lstrip()
+if {{[llength $slacks] > 0}} {{
+  puts [format "STA_WORST_SLACK_NS: %.6f" [lindex $slacks 0]]
+}}
+{final_report_block}{perclock_block}{reg2reg_block}""".lstrip()
     script_path.write_text(script, encoding="utf-8")
     return script_path
 

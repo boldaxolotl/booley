@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from booley.flows.synth.timing import (
+    DEFAULT_TIMING_REPORT_PATHS,
     StaTimingConfig,
     parse_perclock,
     parse_sdc_clock_periods_ps,
@@ -18,7 +19,39 @@ _REG2REG_SLACK_RE = re.compile(r"STA_REG2REG_SLACK_NS:\s*([-+]?\d+(?:\.\d+)?)")
 _STA_CLOCK_PERIOD_RE = re.compile(r"STA_CLOCK_PERIOD_NS:\s*([-+]?\d+(?:\.\d+)?)")
 
 
-def reg2reg_timing_tcl(report_path: str | None = None) -> str:
+def top_paths_report_tcl(slacks_var: str, count: int, report_args: str, report_path: str) -> str:
+    """Tcl writing a text ``report_checks`` that holds the global worst *count* paths.
+
+    ``report_checks -group_count N`` applies N per path group (each clock, SDC
+    ``group_path``, async and gating group), so on its own it can list N x G
+    paths. Capping it with ``-slack_max`` at the slack of the last kept path
+    makes the text report hold the same worst *count* paths as the CSV (plus
+    exact ties). With no paths the report runs uncapped and says "No paths".
+
+    ``$slacks_var`` must hold the kept paths' slacks as plain numbers, worst
+    first: ``report_checks`` frees the path objects ``find_timing_paths``
+    returned, so touching them afterwards crashes OpenROAD.
+    """
+    base = " ".join(
+        part
+        for part in (
+            f"report_checks -path_delay max -sort_by_slack -group_count {count}",
+            report_args,
+        )
+        if part
+    )
+    return (
+        f"if {{[llength ${slacks_var}] > 0}} {{\n"
+        f"  {base} -slack_max [lindex ${slacks_var} end] > {{{report_path}}}\n"
+        "} else {\n"
+        f"  {base} > {{{report_path}}}\n"
+        "}\n"
+    )
+
+
+def reg2reg_timing_tcl(
+    report_path: str | None = None, *, report_paths: int = DEFAULT_TIMING_REPORT_PATHS
+) -> str:
     """Tcl that prints the worst register-to-register setup slack.
 
     Physical mode emits this alongside the overall worst path so the internal
@@ -28,12 +61,14 @@ def reg2reg_timing_tcl(report_path: str | None = None) -> str:
     it, hiding the true reg->reg Fmax.  Restricting ``find_timing_paths`` to
     ``all_registers`` on both ends reports the internal path directly.
 
-    ``report_path``, when given, also dumps the *full* reg->reg path detail
-    (gate-by-gate arrival table) there.  Without it the reg->reg Fmax number
-    was surfaced but the path behind it was not: ``overall.rpt`` holds only the
-    single worst overall path, which on an I/O-bound design is a pad-to-pad
-    feed-through — useless for deciding what RTL to pipeline.  Digging the
-    reg->reg path out then meant re-running timing analysis by hand.
+    ``report_path``, when given, also dumps the reg->reg path detail
+    (gate-by-gate arrival table) for the worst ``report_paths`` paths there.
+    Without it the reg->reg Fmax number was surfaced but the path behind it was
+    not: ``overall.rpt`` lists the worst overall paths, which on an I/O-bound
+    design are pad-to-pad feed-throughs — useless for deciding what RTL to
+    pipeline.  Digging the reg->reg path out then meant re-running timing
+    analysis by hand.  ``STA_REG2REG_SLACK_NS`` is always the single worst
+    path's slack, whatever ``report_paths`` is.
 
     Wrapped in ``catch``: a purely combinational design (no registers) or an
     timer without ``all_registers`` degrades to *no* marker rather than
@@ -44,19 +79,20 @@ def reg2reg_timing_tcl(report_path: str | None = None) -> str:
     """
     report_block = ""
     if report_path is not None:
+        # The guard below ensures the slack list is non-empty, so the cap is valid.
         report_block = (
             "  catch {report_checks -path_delay max -sort_by_slack "
-            "-group_count 1 -from [all_registers] -to [all_registers] "
-            f"-format full > {{{report_path}}}}}\n"
+            f"-group_count {report_paths} -from [all_registers] -to [all_registers] "
+            f"-format full -slack_max [lindex $_r2r_slacks end] > {{{report_path}}}}}\n"
         )
     return (
         "if {![catch {set _r2r [find_timing_paths -path_delay max "
-        "-sort_by_slack -group_path_count 1 -from [all_registers] "
+        f"-sort_by_slack -group_path_count {report_paths} -from [all_registers] "
         "-to [all_registers]]}] && [llength $_r2r] > 0} {\n"
-        "  foreach _p $_r2r {\n"
-        '    puts [format "STA_REG2REG_SLACK_NS: %.6f" [get_property $_p slack]]\n'
-        "    break\n"
-        "  }\n"
+        "  set _r2r_slacks {}\n"
+        f"  foreach _p [lrange $_r2r 0 {report_paths - 1}] "
+        "{ lappend _r2r_slacks [get_property $_p slack] }\n"
+        '  puts [format "STA_REG2REG_SLACK_NS: %.6f" [lindex $_r2r_slacks 0]]\n'
         f"{report_block}"
         "}\n"
     )

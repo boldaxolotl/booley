@@ -26,7 +26,7 @@ from booley.flows.synth.backends.yosys.core import (  # Core synthesis functions
     synth_timing_config,
 )
 from booley.flows.synth.mode import SYNTH_MODE_CHOICES, SynthMode
-from booley.flows.synth.timing import StaTimingConfig
+from booley.flows.synth.timing import DEFAULT_TIMING_REPORT_PATHS, StaTimingConfig
 from booley.flows.target_parameters import ParameterValue
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.shared_infra import (
@@ -216,6 +216,7 @@ def _resolve_syn_timing(
         gate_cloning=openroad.gate_cloning,
         setup_margin_ns=openroad.setup_margin_ns,
         repair_tns_percent=openroad.repair_tns_percent,
+        report_paths=args.timing_report_paths,
         legacy_utilization_fallback=legacy_utilization_fallback,
         legacy_repair_fallback=legacy_repair_fallback,
         project_root=project_root,
@@ -489,6 +490,14 @@ def _add_timing_args(parser: argparse.ArgumentParser) -> None:
         help="STA constraint SDC file (repeatable; the FuseSoC "
         "synth path forwards one per file in the Target's "
         "file_type:SDC fileset, concatenated last-wins)",
+    )
+    parser.add_argument(
+        "--timing-report-paths",
+        type=int,
+        default=DEFAULT_TIMING_REPORT_PATHS,
+        metavar="N",
+        help="Worst setup paths listed by each diagnostic timing report; the "
+        "Flow forwards [flows.synth].timing_report_paths and validates it",
     )
     parser.add_argument(
         "--utilization-pct",

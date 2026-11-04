@@ -41,6 +41,7 @@ from booley.flows.synth.backends.yosys.parsing import (
 from booley.flows.synth.mode import SYNTH_MODE_CHOICES, SynthMode
 from booley.flows.synth.timing import (
     DEFAULT_STA_UTILIZATION_PCT,
+    DEFAULT_TIMING_REPORT_PATHS,
     StaTimingConfig,
     detect_clock_port,
 )
@@ -756,6 +757,7 @@ def synth_timing_config(
     gate_cloning: bool = False,
     setup_margin_ns: float = 0.0,
     repair_tns_percent: float | None = None,
+    report_paths: int = DEFAULT_TIMING_REPORT_PATHS,
     legacy_utilization_fallback: bool | None = None,
     legacy_repair_fallback: bool | None = None,
     project_root: Path | None = None,
@@ -812,4 +814,5 @@ def synth_timing_config(
         gate_cloning=gate_cloning,
         setup_margin_ns=setup_margin_ns,
         repair_tns_percent=repair_tns_percent,
+        report_paths=report_paths,
     )

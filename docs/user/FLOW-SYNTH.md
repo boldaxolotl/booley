@@ -134,7 +134,9 @@ setting under the same name with underscores:
 - Placement and timing repair (physical mode only): `--utilization-pct <percent>`,
   `--placement-density <fraction>`, `--repair-setup` / `--no-repair-setup`,
   `--repair-hold` / `--no-repair-hold`, `--gate-cloning` / `--no-gate-cloning`,
-  `--setup-margin-ns <ns>`, `--repair-tns-percent <percent>`.
+  `--setup-margin-ns <ns>`, `--repair-tns-percent <percent>`. How many paths the
+  timing reports list is a project setting, not a Target setting; see
+  [Configuration](#configuration-flowssynth).
 
 After changing the mapping options, rerun the baseline with the same options;
 otherwise the comparison mixes two recipes.
@@ -175,18 +177,26 @@ datasheet when you need a total.
 ## Configuration (`[flows.synth]`)
 
 Besides the shared `enabled` and `timeout_ms` (default `1800000`, 30 minutes
-per Target), synthesis has two settings:
+per Target), synthesis has three settings:
 
 ```toml
 [flows.synth]
 timeout_ms = 5400000
 expected_latches = 0               # intentional latches allowed before FAIL
 fail_on_timing_violation = false   # true: timing violations are FAIL (exit 1)
+timing_report_paths = 10           # worst setup paths listed per timing report
 ```
 
 Keep `fail_on_timing_violation = false` while the constraints are
 placeholders. Turn it on once they are real, so a CI step or Goal that reads
 only the exit code doesn't treat a design missing timing as success.
+
+`timing_report_paths` (integer, at least 1; a smaller value stops the run
+with a configuration error) sets how many setup paths the timing reports in
+`reports/timing/` list: `overall.rpt`, `overall.csv.rpt`, the `pre_repair`
+pair, and `reg2reg.rpt`. Each lists the worst path to each of the N worst
+endpoints, worst first. Worst slack, critical path, Fmax, and the verdict
+still come from the single worst path.
 
 Everything about how the design is built lives on the Target in the `.core`
 file, not in `booley.toml`. A synthesis Target needs `tool: yosys`; the other

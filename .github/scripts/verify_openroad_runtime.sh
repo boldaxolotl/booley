@@ -256,3 +256,29 @@ run_openroad() {
 run_openroad "repair-off"
 run_openroad "repair-on"
 grep -Fq "BOOLEY_STAGE: repair_timing" "$work/openroad-repair-on.log"
+
+# Top-N timing reports (default N = 10): the CSVs list several worst-first
+# paths, the first one matches the worst-slack marker, and the text report is
+# capped to the same paths (at most the CSV count plus exact ties).
+python - "$work" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+work = Path(sys.argv[1])
+log = (work / "openroad-repair-on.log").read_text(encoding="utf-8")
+reports = work / "repair-on" / "reports"
+for csv_name, text_name, marker in (
+    ("overall.csv.rpt", "overall.rpt", "STA_WORST_SLACK_NS"),
+    ("pre_repair.csv.rpt", "pre_repair.rpt", "STA_PRE_REPAIR_WORST_SLACK_NS"),
+):
+    rows = (reports / csv_name).read_text(encoding="utf-8").splitlines()
+    slacks = [float(row.rsplit(",", 1)[1]) for row in rows]
+    assert 2 <= len(slacks) <= 10, (csv_name, len(slacks))
+    assert slacks == sorted(slacks), (csv_name, slacks)
+    logged = re.search(rf"^{marker}: (\S+)$", log, re.MULTILINE)
+    assert logged and float(logged.group(1)) == slacks[0], (marker, slacks[0])
+    listed = (reports / text_name).read_text(encoding="utf-8").count("slack (")
+    ties = sum(slack == slacks[-1] for slack in slacks)
+    assert len(slacks) <= listed <= len(slacks) + ties, (text_name, listed, len(slacks))
+PY

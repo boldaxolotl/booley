@@ -30,7 +30,7 @@ from typing import Any, ClassVar
 
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.booley_layout import BOOLEY_DIR_NAME
-from booley.core.boundary import BoundaryError, require_bool
+from booley.core.boundary import BoundaryError, require_bool, require_positive_int
 from booley.core.build_paths import work_root_for
 from booley.evidence.fields import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
 from booley.evidence.timing import (
@@ -216,6 +216,22 @@ def _fail_on_timing_violation(work_dir: Path) -> bool:
         default=False,
         field="[flows.synth] 'fail_on_timing_violation'",
     )
+
+
+def _timing_report_paths(work_dir: Path) -> int | None:
+    """``[flows.synth].timing_report_paths`` — worst setup paths per timing report.
+
+    ``None`` when unset, so the backend default applies and the configure argv
+    stays unchanged. The count is a report-size policy, not a recipe input: it
+    must not enter the recipe fingerprint (Goal criteria pin it), which is why
+    it lives here and not in a Target's ``advanced_settings_openroad``.
+
+    Raises ``BoundaryError`` on anything but an integer of at least 1.
+    """
+    raw = _load_flow_config(work_dir).get("timing_report_paths")
+    if raw is None:
+        return None
+    return require_positive_int(raw, field="[flows.synth] 'timing_report_paths'")
 
 
 # Standard-cell NAND2_X1 equivalent conversion for Nangate.
@@ -1037,9 +1053,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         "recipe knobs belong in the selected .core Target's flow_options. "
         "Per-call flags can override ppa_profile, flatten, frontend, and expert "
         "backend settings; synth_mode remains Target-owned. [flows.synth] in "
-        "booley.toml is only for enablement and verdict "
-        "policy such as enabled, timeout_ms, expected_latches, and "
-        "fail_on_timing_violation."
+        "booley.toml is only for enablement, verdict, and report "
+        "policy such as enabled, timeout_ms, expected_latches, "
+        "fail_on_timing_violation, and timing_report_paths."
     )
     cli_help: ClassVar[CliHelp | None] = CliHelp(
         summary=(
@@ -1052,6 +1068,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         example="booley flow synth --target synth_soc --baseline main",
     )
     code_modifying: bool = False
+    # ``[flows.synth].timing_report_paths``, latched by ``_resolve_run_policy``.
+    _timing_report_paths: int | None = None
     # Minimum outer MCP kill budget (seconds). mcp_server scales this floor by
     # per-target timeout, matrix width, and baseline/current pass count.
     default_timeout: ClassVar[int] = 7200
@@ -1227,6 +1245,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         self._append_sta_constraint_args(cmd, resolved, target, work_dir, synth_mode)
         self._append_typed_param_args(cmd, resolved, target, top)
         self._append_synth_recipe_args(cmd, resolved, target)
+        if self._timing_report_paths is not None:
+            cmd.extend(["--timing-report-paths", str(self._timing_report_paths)])
         cmd.extend(["-w", target])
         return _PlannedSynthRecipe(tuple(cmd), resolved)
 
@@ -1940,6 +1960,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             return "synth is disabled ([flows.synth].enabled = false)."
         try:
             self._timing_violation_is_fatal = _fail_on_timing_violation(self.args.work_dir)
+            self._timing_report_paths = _timing_report_paths(self.args.work_dir)
         except BoundaryError as exc:
             return f"synth: {exc}"
         return None
