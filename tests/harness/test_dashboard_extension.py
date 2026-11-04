@@ -15,6 +15,7 @@ from xml.etree import ElementTree
 import pytest
 
 from booley.runtime import dashboard_extension, devcontainer
+from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
 
 
 def test_vsix_is_deterministic_and_contains_installable_workspace_manifest(tmp_path):
@@ -66,37 +67,102 @@ def test_every_sandbox_app_gets_the_image_local_extension():
         assert "task.allowAutomaticTasks" not in settings["settings"]
 
 
-def test_workspace_extension_lifecycle_in_node():
+# --- Node suites: one bounded runner for every `node --test` file -------------
+
+# Passed as `node --test --test-timeout`. Under node's default per-file
+# isolation the timeout also bounds the whole test file (node reports the file,
+# not the stuck subtest; the stuck subtest is the one after the last `ok` line),
+# so it must be generous. Normal Windows runs take 3.4-5.1 s.
+_NODE_TEST_TIMEOUT_MS = 60_000
+
+# Wall-clock bound for the whole `node` process, above the node timeout so node
+# normally reports a stall first. It still catches stalls node cannot see, such
+# as a hang in node startup before the file's child process runs. About 15x the
+# slowest passing Windows run.
+_NODE_SUITE_BOUND_S = 75
+
+# pytest-timeout budget for the node suite tests. Derivation:
+# - Kill: the bound plus up to 27 s of `kill_process_tree` on Windows (graceful
+#   taskkill <= 10 s + 2 s grace + forced taskkill <= 10 s + 5 s final wait)
+#   is 102 s, under 180 s, so a stall fails through the bound with node's
+#   output rather than through a pytest-timeout thread kill of the worker.
+# - Headroom: the strictest Windows fail limit is `--timeout-headroom=0.5` in
+#   full-python-matrix.yml, i.e. 90 s. The 75 s bound leaves 15 s for setup
+#   and teardown, so the bound fires before any headroom failure.
+_NODE_SUITE_PYTEST_TIMEOUT_S = 180
+
+
+def _read_output(path: Path) -> str:
+    """Return the text a child wrote to ``path`` (node writes UTF-8)."""
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def run_bounded(command: list[str], *, bound_s: float, output_dir: Path) -> tuple[int, str, str]:
+    """Run ``command`` for at most ``bound_s`` seconds; return (code, stdout, stderr).
+
+    Output goes to files under ``output_dir`` rather than pipes, so no reader
+    can block on a handle that a surviving grandchild still holds (the
+    Windows hang behind #1202). On expiry the whole process tree is killed
+    and the test fails with whatever the command wrote so far; the plain
+    ``subprocess.run(timeout=...)`` ``TimeoutExpired`` omits that output.
+    """
+    stdout_path = output_dir / "stdout.txt"
+    stderr_path = output_dir / "stderr.txt"
+    with stdout_path.open("wb") as stdout_file, stderr_path.open("wb") as stderr_file:
+        proc = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            **popen_new_group_kwargs(),
+        )
+        try:
+            proc.wait(timeout=bound_s)
+        except subprocess.TimeoutExpired:
+            kill_process_tree(proc)
+            pytest.fail(
+                f"{' '.join(command[1:])} exceeded its {bound_s:g} s bound.\n"
+                f"stdout:\n{_read_output(stdout_path) or '(nothing)'}\n"
+                f"stderr:\n{_read_output(stderr_path) or '(nothing)'}"
+            )
+    return proc.returncode, _read_output(stdout_path), _read_output(stderr_path)
+
+
+def _run_node_suite(script_name: str, *, missing_node_message: str, output_dir: Path) -> None:
+    """Run ``tests/vscode/<script_name>`` with ``node --test`` under the shared bounds."""
     node = shutil.which("node")
     if node is None:
         if os.environ.get("CI"):
-            pytest.fail("CI must run the Dashboard lifecycle suite: install Node.js")
-        pytest.skip("Node.js is required for the Dashboard extension lifecycle suite")
-    script = Path(__file__).parents[1] / "vscode/dashboard.test.cjs"
-    result = subprocess.run(
-        [node, "--test", str(script)], capture_output=True, text=True, timeout=30, check=False
+            pytest.fail(f"CI must run the {missing_node_message}: install Node.js")
+        pytest.skip(f"Node.js is required for the {missing_node_message}")
+    script = Path(__file__).parents[1] / "vscode" / script_name
+    code, out, err = run_bounded(
+        [node, "--test", f"--test-timeout={_NODE_TEST_TIMEOUT_MS}", str(script)],
+        bound_s=_NODE_SUITE_BOUND_S,
+        output_dir=output_dir,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert code == 0, out + err
+
+
+@pytest.mark.timeout(_NODE_SUITE_PYTEST_TIMEOUT_S)
+def test_workspace_extension_lifecycle_in_node(tmp_path):
+    _run_node_suite(
+        "dashboard.test.cjs",
+        missing_node_message="Dashboard lifecycle suite",
+        output_dir=tmp_path,
+    )
 
 
 @pytest.mark.skipif(
     sys.platform == "win32", reason="the bridge serves Unix sockets inside Linux Sandboxes"
 )
-def test_vaporview_bridge_in_node():
-    node = shutil.which("node")
-    if node is None:
-        if os.environ.get("CI"):
-            pytest.fail("CI must run the VaporView bridge suite: install Node.js")
-        pytest.skip("Node.js is required for the VaporView bridge suite")
-    script = Path(__file__).parents[1] / "vscode/vaporview_bridge.test.cjs"
-    result = subprocess.run(
-        [node, "--test", "--test-timeout=20000", str(script)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
+@pytest.mark.timeout(_NODE_SUITE_PYTEST_TIMEOUT_S)
+def test_vaporview_bridge_in_node(tmp_path):
+    _run_node_suite(
+        "vaporview_bridge.test.cjs",
+        missing_node_message="VaporView bridge suite",
+        output_dir=tmp_path,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_disabled_dashboard_keeps_the_viewer_bridge_but_never_opens_the_dashboard():
