@@ -237,6 +237,53 @@ def test_run_admission_publication_and_finish_restore(layout):
     assert finish_goal(request(layout), environment(layout))["status"] == "finished"
 
 
+def test_start_snapshot_reports_declared_input_change_like_status(layout):
+    configure(layout, ["Makefile"])
+    enter(layout)
+    (layout.worktree / "Makefile").write_bytes(b"all:\n\tfalse\n")
+
+    binding = bind_run(GoalStore(layout.control), layout.worktree, "edited")
+
+    assert "worktree:Makefile" in binding.protected_paths
+    assert not binding.eligible
+    assert binding.ineligible_reason == "; ".join(warnings(layout))
+    assert "Makefile" in binding.ineligible_reason
+
+
+def test_admitted_start_snapshot_detects_a_rebaselined_declared_input(layout):
+    from dataclasses import replace
+
+    configure(layout, ["Makefile"])
+    enter(layout)
+    admitted = bind_run(GoalStore(layout.control), layout.worktree, "admitted")
+    path = layout.worktree / "Makefile"
+    original = path.read_bytes()
+    path.write_bytes(b"all:\n\tfalse\n")
+    store = GoalStore(layout.control)
+    record = store.load(layout.record.id)
+    edited = snapshot_protected_inputs(
+        ProtectedInputRoots(layout.worktree, layout.control).with_input_paths(record.input_paths)
+    )
+    path.write_bytes(original)
+    with store.record_lock(record.id) as lock:
+        store.save(
+            lock,
+            replace(
+                record,
+                protected_paths=edited.encoded_paths,
+                protected_digest=edited.working_digest,
+                protected_head_digest=edited.head_digest,
+                declared_protected_inputs=edited.declared,
+            ),
+        )
+
+    with (
+        pytest.raises(EvidenceDiscarded, match="protected-input baseline changed"),
+        PublicationGate(admitted).publishing(set()),
+    ):
+        pass
+
+
 @pytest.mark.parametrize("drift", ["type", "parent redirect"])
 def test_file_type_and_parent_redirect_are_detected(layout, tmp_path, drift):
     configure(layout, ["firmware/a.c"], {"firmware/a.c": b"a"})
