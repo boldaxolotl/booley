@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 
 import pytest
 
@@ -251,8 +252,6 @@ def test_start_snapshot_reports_declared_input_change_like_status(layout):
 
 
 def test_admitted_start_snapshot_detects_a_rebaselined_declared_input(layout):
-    from dataclasses import replace
-
     configure(layout, ["Makefile"])
     enter(layout)
     admitted = bind_run(GoalStore(layout.control), layout.worktree, "admitted")

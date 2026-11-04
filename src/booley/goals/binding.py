@@ -226,11 +226,12 @@ def bind_run(
     """Bind run *invocation_id* in *work_dir* to the worktree's active Goal Mode.
 
     Refuses (:class:`GoalBindingError`) when the worktree hosts no Goal Mode,
-    when its record is ``entering`` or ``finishing`` or cannot be read, when
-    HEAD is not on the record's Goal Branch (a removed and re-created
+    when its record is ``entering`` or ``finishing`` or cannot be read, and
+    when HEAD is not on the record's Goal Branch (a removed and re-created
     worktree inherits the record by name, not by branch). Protected inputs
     that already differ from the entry snapshot, or cannot be inspected, do
-    not refuse the run; they make it ineligible to publish (:attr:`GoalRunBinding.eligible`). The ``target_surface`` of every
+    not refuse the run; they make it ineligible to publish
+    (:attr:`GoalRunBinding.eligible`). The ``target_surface`` of every
     bound Target is captured too, so publication can tell a Target declaration
     that changed while the run executed (*surface* resolves it).
     """
@@ -247,8 +248,16 @@ def bind_run(
         record = _on_goal_branch_with_test_runs(store, record, root)
         check = check_goal_inputs(record, root, store.booley_dir)
         # Inputs that cannot be judged leave no snapshot; the run is ineligible and
-        # publication refuses it before reading the start digests.
-        start = check.snapshot or ProtectedSnapshot.at_entry(record)
+        # publication refuses it before reading the start values. The entry baseline is
+        # copied as stored: decoding a malformed stored path here must not fail the bind.
+        if check.snapshot is None:
+            start_paths = record.protected_paths
+            start_digest = record.protected_digest or ""
+            start_head_digest = record.protected_head_digest or ""
+        else:
+            start_paths = check.snapshot.encoded_paths
+            start_digest = check.snapshot.working_digest
+            start_head_digest = check.snapshot.head_digest
         return GoalRunBinding(
             booley_dir=store.booley_dir,
             record_id=record.id,
@@ -260,9 +269,9 @@ def bind_run(
             spec_revisions=tuple(
                 sorted((goal.spec.key, goal.spec_revision) for goal in record.goals)
             ),
-            protected_paths=start.encoded_paths,
-            start_digest=start.working_digest,
-            start_head_digest=start.head_digest,
+            protected_paths=start_paths,
+            start_digest=start_digest,
+            start_head_digest=start_head_digest,
             eligible=not check.violations,
             ineligible_reason="; ".join(check.violations),
             start_surfaces=_start_surfaces(root, record, surface),

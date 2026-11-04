@@ -192,9 +192,11 @@ class ProtectedInputRoots:
     def for_goal(cls, record: GoalRecord, worktree: Path, booley_dir: Path) -> ProtectedInputRoots:
         """The one roots factory for a Goal: labels as entered, reads through *worktree*.
 
-        Every Goal surface (entry, run binding, publication, Goal changes, status,
+        Every Goal drift check (entry, run binding, publication, Goal changes, status,
         Finish) builds its roots here, so they label protected paths the way the
-        entry baseline did and cannot disagree about one filesystem state.
+        entry baseline did and cannot disagree about one filesystem state. The
+        waiver destination check (``mcp/goal_waivers.py``) only locates paths and
+        keeps plain roots, so legacy apply recovery needs no saved input paths.
         Errors (:class:`InputIdentityError`, :class:`ProtectedInputError`) propagate.
         """
         return cls(worktree, booley_dir).with_input_paths(record.input_paths)
@@ -426,6 +428,14 @@ def _digest_inputs(
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+@dataclass(frozen=True)
+class ProtectedCheck:
+    """A Goal's protected-input verdict and the snapshot it was judged on."""
+
+    violations: tuple[str, ...]
+    snapshot: ProtectedSnapshot | None
+
+
 @repository_facts()
 def protected_input_violations(
     recorded_paths: Sequence[str],
@@ -446,25 +456,23 @@ def protected_input_violations(
         head_digest,
         declared,
     )
-    return _drift_against(baseline, roots)[0]
+    return list(_drift_against(baseline, roots).violations)
 
 
-def _drift_against(
-    baseline: ProtectedSnapshot, roots: ProtectedInputRoots
-) -> tuple[list[str], ProtectedSnapshot | None]:
+def _drift_against(baseline: ProtectedSnapshot, roots: ProtectedInputRoots) -> ProtectedCheck:
     """Violations of *baseline* under *roots*, with the snapshot they were judged on.
 
     The snapshot is ``None`` when the declaration rules changed, which is
     reported before any file is read.
     """
-    rules = _declaration_change(baseline, roots)
+    rules = _declaration_violations(baseline, roots)
     if rules:
-        return rules, None
+        return ProtectedCheck(tuple(rules), None)
     snapshot = snapshot_protected_inputs(roots)
-    return snapshot_violations(baseline, snapshot), snapshot
+    return ProtectedCheck(tuple(snapshot_violations(baseline, snapshot)), snapshot)
 
 
-def _declaration_change(baseline: ProtectedSnapshot, roots: ProtectedInputRoots) -> list[str]:
+def _declaration_violations(baseline: ProtectedSnapshot, roots: ProtectedInputRoots) -> list[str]:
     """The violations when the declared-input rules differ from *baseline*'s; else empty."""
     declared = baseline.declared
     if declared is None:
@@ -500,14 +508,6 @@ def snapshot_violations(baseline: ProtectedSnapshot, current: ProtectedSnapshot)
     return []
 
 
-@dataclass(frozen=True)
-class ProtectedCheck:
-    """A Goal's protected-input verdict and the snapshot it was judged on."""
-
-    violations: tuple[str, ...]
-    snapshot: ProtectedSnapshot | None
-
-
 @repository_facts()
 def check_goal_inputs(record: GoalRecord, worktree: Path, booley_dir: Path) -> ProtectedCheck:
     """Compare *record*'s protected inputs with *worktree* now: the one Goal drift check.
@@ -519,10 +519,9 @@ def check_goal_inputs(record: GoalRecord, worktree: Path, booley_dir: Path) -> P
     """
     try:
         roots = ProtectedInputRoots.for_goal(record, worktree, booley_dir)
-        violations, snapshot = _drift_against(ProtectedSnapshot.at_entry(record), roots)
+        return _drift_against(ProtectedSnapshot.at_entry(record), roots)
     except (ProtectedInputError, OSError, ValueError, RuntimeError) as exc:
         return ProtectedCheck((f"protected inputs cannot be inspected: {exc}",), None)
-    return ProtectedCheck(tuple(violations), snapshot)
 
 
 def _declared_rules(roots: ProtectedInputRoots) -> tuple[str, ...]:
