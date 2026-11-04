@@ -197,13 +197,20 @@ def _goal_statuses(
         if goal.spec.family is GoalFamily.SIM:
             from booley.goals.sim_transitions import goal_transitions
 
+            assert status.test_runs is not None
             transitions = goal_transitions(
-                store.booley_dir, record, goal, evidence, history, root, resolvers
+                store.booley_dir,
+                record,
+                goal,
+                evidence,
+                history,
+                root,
+                resolvers,
+                status.test_runs,
             )
             status = replace(status, sim_transitions=tuple(transitions))
         if is_relative_synth(goal):
-            from booley.goals.sim_baseline_store import SYNTH_BASELINE
-            from booley.goals.sim_transitions import baseline_observations
+            from booley.goals.sim_baseline_store import SYNTH_BASELINE, baseline_observations
 
             seen = baseline_observations(store.booley_dir, record, goal, SYNTH_BASELINE)
             status = replace(

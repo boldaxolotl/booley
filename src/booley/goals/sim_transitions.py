@@ -10,24 +10,10 @@ from typing import Any
 from booley.flows.test_runs import TestRun
 from booley.goals.freshness import GoalFreshnessResolvers
 from booley.goals.model import GoalRecord, RecordedGoal
-from booley.goals.sim_baseline_store import (
-    SIM_BASELINE,
-    BaselineFamily,
-    entry_inputs,
-    read_document,
-    request_identity,
-    request_path,
-    validate_results,
-)
-from booley.goals.test_run_evidence import (
-    HistoryScope,
-    freshness_stamp,
-    matching_rows,
-    run_outcomes,
-)
+from booley.goals.sim_baseline_store import baseline_observations
+from booley.goals.test_run_evidence import freshness_stamp, matching_rows
 from booley.goals.test_run_freezing import TargetPlanError, TargetPlans
-from booley.runtime import job_records
-from booley.runtime.pid import is_pid_alive
+from booley.goals.test_run_status import TestRunJudgement
 
 
 def transition_for(
@@ -102,35 +88,6 @@ def seen_failing(
     return False
 
 
-def baseline_observations(
-    project: Path,
-    record: GoalRecord,
-    goal: RecordedGoal,
-    family: BaselineFamily = SIM_BASELINE,
-) -> dict[str, Any]:
-    """Read an independent request; dead Jobs never remain pending indefinitely."""
-    try:
-        inputs = entry_inputs(project, record)
-        identity = request_identity(project, record, goal, inputs, family)
-        path = request_path(project, identity, family)
-        if not path.exists():
-            return {"status": "pending", "reason": "baseline has not been scheduled yet"}
-        raw = read_document(path, family)
-        if raw.get("identity") != identity:
-            raise ValueError("baseline request identity differs")
-        validate_results(project, raw, family)
-        if raw.get("status") == "pending":
-            job = job_records.read_record(raw["job_id"], Path(raw["jobs_root"]))
-            if job is None or not job_records.is_active(job, is_pid_alive):
-                return {
-                    "status": "unavailable",
-                    "reason": "baseline Job interrupted or unavailable",
-                }
-        return raw
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        return {"status": "unavailable", "reason": f"baseline evidence cannot be read: {exc}"}
-
-
 def goal_transitions(
     project: Path,
     record: GoalRecord,
@@ -139,13 +96,26 @@ def goal_transitions(
     history: Sequence[Mapping[str, Any]],
     root: Path,
     resolvers: GoalFreshnessResolvers,
+    judgement: TestRunJudgement,
 ) -> list[dict[str, Any]]:
-    """Compare only exact Test Runs observed at today's dependent contents."""
+    """Compare only exact Test Runs observed at today's dependent contents.
+
+    The current outcomes are the Goal's *judgement*, which already folded them;
+    this only decides whether they apply to today's contents.
+    """
     resolution = record.test_run_resolution(goal.spec.key)
     if resolution is None:
         return []
     baseline = baseline_observations(project, record, goal)
-    finals, reason = _current_outcomes(record, goal, current, history, root, resolvers)
+    reason = _current_reason(record, goal, current, root, resolvers)
+    finals = (
+        {}
+        if reason
+        else {
+            (run.name, run.fingerprint): view.outcome
+            for run, view in zip(resolution.test_runs, judgement.runs, strict=True)
+        }
+    )
     indexed = {(row["name"], row["fingerprint"]): row for row in baseline.get("results", [])}
     target_identity = _target_identity(root, goal)
     rows: list[dict[str, Any]] = []
@@ -185,22 +155,22 @@ def _target_identity(root: Path, goal: RecordedGoal) -> str | None:
         return None
 
 
-def _current_outcomes(
+def _current_reason(
     record: GoalRecord,
     goal: RecordedGoal,
     current: Mapping[str, Any] | None,
-    history: Sequence[Mapping[str, Any]],
     root: Path,
     resolvers: GoalFreshnessResolvers,
-) -> tuple[dict[tuple[str, str], str], str]:
+) -> str:
+    """Why the current evidence does not apply to today's contents; empty when it does."""
     if current is None:
-        return {}, "no current Test Run evidence"
+        return "no current Test Run evidence"
     identity = current["goal_identity"]
     if (
         identity["record_id"] != record.id
         or identity["spec_revisions"].get(goal.spec.key) != goal.spec_revision
     ):
-        return {}, "current evidence is from another Goal revision"
+        return "current evidence is from another Goal revision"
     try:
         detail = {
             "_source_fingerprint": {
@@ -209,15 +179,7 @@ def _current_outcomes(
         }
         stamp = freshness_stamp(goal.spec.key, detail)
         if stamp is None or freshness_stamp(goal.spec.key, current["detail"]) != stamp:
-            return {}, "current evidence is stale or has no dependent-contents fingerprint"
-        resolution = record.test_run_resolution(goal.spec.key)
-        runs = run_outcomes(
-            HistoryScope.of(record, goal),
-            () if resolution is None else resolution.test_runs,
-            current["detail"],
-            history,
-            before=current["sequence"],
-        )
-        return {(run["name"], run["fingerprint"]): run["outcome"] for run in runs}, ""
+            return "current evidence is stale or has no dependent-contents fingerprint"
     except (OSError, ValueError, RuntimeError) as exc:
-        return {}, f"current evidence is unavailable: {exc}"
+        return f"current evidence is unavailable: {exc}"
+    return ""

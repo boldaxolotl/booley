@@ -352,6 +352,7 @@ def metric_package(layout, monkeypatch, family, key, detail, params=None):
     from booley.criteria.state import CriterionEntry, DevelopmentState
     from booley.goals import review_package
     from booley.goals.model import GoalFamily
+    from booley.goals.status import GoalStatus
     from booley.review.goal_package import GoalReviewContext
 
     # Opaque keys exercise package compatibility, not Goal entry policy.
@@ -380,6 +381,8 @@ def metric_package(layout, monkeypatch, family, key, detail, params=None):
     }
     monkeypatch.setattr(review_package, "selected_observations", lambda *_: {key: observation})
     monkeypatch.setattr(review_package, "validated_evidence_records", lambda *_: [observation])
+    # The Goal's status row, as Finish's own status would carry it.
+    statuses = (GoalStatus(key, "met", "", sim_transitions=()),)
     context = GoalReviewContext(
         record.to_json(),
         record.base_sha,
@@ -392,7 +395,9 @@ def metric_package(layout, monkeypatch, family, key, detail, params=None):
         [],
         {},
     )
-    return review_package.build_goal_package(context, record, state, layout.control), state
+    return review_package.build_goal_package(
+        context, record, state, layout.control, statuses
+    ), state
 
 
 @pytest.mark.parametrize(("family", "key", "detail", "expected"), metric_cases())

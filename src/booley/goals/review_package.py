@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -20,6 +21,7 @@ from booley.goals.paths import record_paths
 from booley.goals.presentation import goal_presentation
 from booley.goals.proposals import digest, list_proposals
 from booley.goals.recorder import GOAL_SCOPE
+from booley.goals.status import GoalStatus
 from booley.goals.store import GoalStore
 from booley.goals.test_run_evidence import HistoryScope, contributing_observations, outcomes_decide
 from booley.review.goal_package import GoalCompletionPackage, GoalReviewContext
@@ -44,6 +46,7 @@ def build_goal_package(
     record: GoalRecord,
     state: DevelopmentState,
     booley_dir: Path,
+    statuses: Sequence[GoalStatus],
     *,
     omitted_inputs: frozenset[str] = frozenset(),
 ) -> GoalCompletionPackage:
@@ -53,7 +56,7 @@ def build_goal_package(
     records = validated_evidence_records(GOAL_SCOPE, Path(context.log_dir), state, {})
     indexed = {row["sequence"]: row for row in records}
     rows = _package_rows(context, record, state, selected, indexed)
-    _add_baseline_reports(rows, record, selected, records, booley_dir)
+    _add_baseline_reports(rows, record, statuses)
     transactions = _transactions(
         Path(context.log_dir), state, indexed, omitted_inputs=omitted_inputs
     )
@@ -97,31 +100,20 @@ def _link_transactions(rows: list[dict[str, Any]], transactions: list[dict[str, 
 
 
 def _add_baseline_reports(
-    rows: list[dict[str, Any]],
-    record: GoalRecord,
-    selected: dict[str, dict[str, Any]],
-    records: list[dict[str, Any]],
-    booley_dir: Path,
+    rows: list[dict[str, Any]], record: GoalRecord, statuses: Sequence[GoalStatus]
 ) -> None:
-    """Freeze observational SIM reports without contributing completion authority."""
-    from booley.goals.freshness import DEFAULT_RESOLVERS
+    """Freeze the SIM reports Finish's own status carried, without completion authority."""
     from booley.goals.sim_baseline_store import sim_goals
-    from booley.goals.sim_transitions import goal_transitions, transition_summary
+    from booley.goals.sim_transitions import transition_summary
 
+    by_key = {status.key: status for status in statuses}
     for goal in sim_goals(record):
-        transitions = goal_transitions(
-            booley_dir,
-            record,
-            goal,
-            selected.get(goal.spec.key),
-            records,
-            Path(record.worktree_path),
-            DEFAULT_RESOLVERS,
-        )
+        transitions = by_key[goal.spec.key].sim_transitions
+        assert transitions is not None
         row = next(row for row in rows if row["key"] == goal.spec.key)
         row["simulation_baseline"] = {
             "summary": transition_summary(transitions),
-            "runs": transitions,
+            "runs": list(transitions),
             "attention": [
                 run["name"]
                 for run in transitions
