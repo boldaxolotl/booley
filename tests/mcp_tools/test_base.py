@@ -12,11 +12,8 @@ from unittest import mock
 
 import pytest
 
-from booley.criteria.state import (
-    CATEGORY_RTL,
-    CATEGORY_TB,
-    DevelopmentState,
-)
+from booley.criteria.categories import CATEGORY_RTL, CATEGORY_TB
+from booley.criteria.state import DevelopmentState
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.endpoint_diff import _classify_files, read_source_dirs_from_toml
 from booley.flows.endpoint_events import _write_display_event
@@ -1488,6 +1485,42 @@ class TestCriteriaInvalidation:
         assert "sim_pass_lite" in reset
         assert "coverage_toggle" in reset
         assert "coverage_branch" in reset
+
+    def test_code_modifying_tb_diff_resets_coverage_and_mutation_score(self, tmp_path: Path):
+        """A Project tool (no modifies_category) classifying a TB diff resets TB-dependent Criteria."""
+        logs_dir = tmp_path / "logs" / "test"
+        state_file = logs_dir / ".runtime" / "booley_state.json"
+        st = DevelopmentState.load(state_file)
+        st.slug = "test"
+        st.init_criteria(
+            {"coverage_toggle": True, "mutation_score_default": True, "lint_clean_lite": True},
+            strict=True,
+        )
+        for key in ("coverage_toggle", "mutation_score_default", "lint_clean_lite"):
+            st.set_criterion(key, True)
+        st.save()
+
+        env = _env_with_state(state_file)
+        env["BOOLEY_LOGS_DIR"] = str(logs_dir)
+        endpoint = ConcreteMcpTool(code_modifying=True)
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(ConcreteMcpTool, "classify_git_diff", return_value={CATEGORY_TB}),
+        ):
+            exit_code = endpoint.main([])
+        assert exit_code == EXIT_SUCCESS
+        st2 = DevelopmentState.load(state_file)
+        assert st2.is_met("coverage_toggle") is False
+        assert st2.is_met("mutation_score_default") is False
+        assert st2.is_met("lint_clean_lite") is True
+        records = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in (logs_dir / "acceptance" / "evidence").glob("*/record.json")
+        ]
+        assert sorted((record["criterion"], record["reason"]) for record in records) == [
+            ("coverage_toggle", "source-invalidated"),
+            ("mutation_score_default", "source-invalidated"),
+        ]
 
     def test_non_code_modifying_no_reset(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
