@@ -25,7 +25,7 @@ from booley.review.goal_package import (
 )
 
 # Changed files listed in the Finish overview; the rest are counted and left to the full briefing.
-DIFF_LINES_SHOWN = 20
+_DIFF_LINES_SHOWN = 20
 _ATTEMPT_SCHEMA = "booley.goal-finish-attempt/v3"
 
 
@@ -204,15 +204,13 @@ def _goal_lines(row: dict[str, Any], presenter: Callable[[object], str]) -> list
     lines: list[str] = []
     selected = row["selected_observation"]
     lines += [
-        f"- {presenter(row['spec'])}: met and fresh; {row['metric']}"
-        + ("; bound Target modified" if row["modified_target"] else ""),
+        _goal_headline(row, presenter),
         f"  Evidence {selected['sequence']} ({row['observation_sha256']}), producer {selected['producer']}, invocation {selected['invocation_id']}, recorded {selected['recorded_at']}, spec revision {row['spec_revision']}.",
     ]
     baseline = row.get("simulation_baseline")
     if baseline is not None:
         lines.append("  Baseline -> final: " + baseline["summary"])
-        if baseline["attention"]:
-            lines.append("  Review attention: " + ", ".join(baseline["attention"]))
+        lines += _attention_lines(baseline)
     detail = selected["detail"]
     lines += _open_finding_lines(detail)
     if row["original_observations"]:
@@ -230,6 +228,20 @@ def _goal_lines(row: dict[str, Any], presenter: Callable[[object], str]) -> list
             )
         )
     return lines
+
+
+def _goal_headline(row: dict[str, Any], present: Callable[[object], str]) -> str:
+    """The Goal's one-line verdict, shared by the briefing and the overview."""
+    return f"- {present(row['spec'])}: met and fresh; {row['metric']}" + (
+        "; bound Target modified" if row["modified_target"] else ""
+    )
+
+
+def _attention_lines(baseline: dict[str, Any]) -> list[str]:
+    """The simulation baseline's Review attention line, when it has any."""
+    if not baseline["attention"]:
+        return []
+    return ["  Review attention: " + ", ".join(baseline["attention"])]
 
 
 def _open_finding_lines(detail: dict[str, Any]) -> list[str]:
@@ -262,22 +274,19 @@ def render_goal_overview(
     ]
     for row in facts["goals"]:
         selected = row["selected_observation"]
-        lines.append(
-            f"- {present(row['spec'])}: met and fresh; {row['metric']}"
-            + ("; bound Target modified" if row["modified_target"] else "")
-        )
+        lines.append(_goal_headline(row, present))
         lines += _open_finding_lines(selected["detail"])
         baseline = row.get("simulation_baseline")
-        if baseline is not None and baseline["attention"]:
-            lines.append("  Review attention: " + ", ".join(baseline["attention"]))
+        if baseline is not None:
+            lines += _attention_lines(baseline)
     lines += ["", *_diff_overview(facts["diff_summary"]), "", *_target_overview(facts)]
     decisions = facts["proposal_decisions"]
     lines += [
         "",
         f"Goal Changes: {len(facts['change_log'])}",
         f"Decisions: {len(decisions)} ({len(facts['applied_proposal_decisions'])} applied, "
-        f"{len(facts['rejected_proposal_decisions'])} rejected, "
-        f"{len(facts['agent_recorded_decisions'])} agent-recorded)",
+        f"{len(facts['rejected_proposal_decisions'])} rejected); "
+        f"{len(facts['agent_recorded_decisions'])} agent-recorded",
     ]
     if "unsettled_campaigns" in facts:
         unsettled = require_list(facts["unsettled_campaigns"], field="unsettled_campaigns")
@@ -286,7 +295,7 @@ def render_goal_overview(
 
 
 def _diff_overview(rows: list[dict[str, Any]]) -> list[str]:
-    """Counts by kind, then at most :data:`DIFF_LINES_SHOWN` changed files."""
+    """Counts by kind, then at most :data:`_DIFF_LINES_SHOWN` changed files."""
     if not rows:
         return ["Diff summary: no files changed"]
     counts = {kind: sum(row["change"] == kind for row in rows) for kind in ("added", "modified")}
@@ -294,10 +303,10 @@ def _diff_overview(rows: list[dict[str, Any]]) -> list[str]:
     lines = [
         f"Diff summary: {len(rows)} {'file' if len(rows) == 1 else 'files'} changed ({counts['added']} added, "
         f"{counts['modified']} modified, {removed} removed)",
-        *(f"- {row['change']} {row['path']}" for row in rows[:DIFF_LINES_SHOWN]),
+        *(f"- {row['change']} {row['path']}" for row in rows[:_DIFF_LINES_SHOWN]),
     ]
-    if len(rows) > DIFF_LINES_SHOWN:
-        lines.append(f"- ... and {len(rows) - DIFF_LINES_SHOWN} more in the full briefing")
+    if len(rows) > _DIFF_LINES_SHOWN:
+        lines.append(f"- ... and {len(rows) - _DIFF_LINES_SHOWN} more in the full briefing")
     return lines
 
 
@@ -321,8 +330,8 @@ def finished_overview(booley_dir: Path, record_id: str, operation_id: str) -> st
 
     Reads the attempt's independent authority (written before ``attempt.json``,
     so it exists even when a crash left no artifact) and names the files the
-    finish wrote. A load failure falls back to the stored response message;
-    rendering errors are not caught.
+    finish wrote. A load or render failure returns None so the caller falls
+    back to the stored response message.
     """
     paths = record_paths(booley_dir, record_id)
     directory = paths.root / "operations" / operation_id
@@ -336,21 +345,23 @@ def finished_overview(booley_dir: Path, record_id: str, operation_id: str) -> st
         package = GoalCompletionPackage.from_json(frozen["package"])
         history, skipped, branch = frozen["path"], frozen["skip_publication"], frozen["branch"]
         names = optional_names(paths.root)
-    except (OSError, ValueError, KeyError, GoalPackageError):
+        published = (
+            f"Not published: {skipped}"
+            if skipped is not None
+            else f"Published: {history} on Goal Branch {branch.removeprefix('refs/heads/')}"
+        )
+        briefing = [
+            f"Full briefing: {paths.summary_file}",
+            published,
+            f"Review Package data: {paths.review_package_file}",
+        ]
+        return render_goal_overview(
+            package, present=lambda raw: present_spec(raw, names=names), briefing=briefing
+        )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, GoalPackageError):
+        # A finish that already succeeded must not look failed because its
+        # summary cannot be drawn; callers fall back to the stored message.
         return None
-    published = (
-        f"Not published: {skipped}"
-        if skipped is not None
-        else f"Published: {history} on Goal Branch {branch.removeprefix('refs/heads/')}"
-    )
-    briefing = [
-        f"Full briefing: {paths.summary_file}",
-        published,
-        f"Review Package data: {paths.review_package_file}",
-    ]
-    return render_goal_overview(
-        package, present=lambda raw: present_spec(raw, names=names), briefing=briefing
-    )
 
 
 def render_goal_html(

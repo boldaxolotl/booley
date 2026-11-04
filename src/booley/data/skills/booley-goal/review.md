@@ -23,8 +23,8 @@ changes, constraint edits, and Test Runs.
    testbench does not special-case a frozen seed.
 5. Present a concise account of the result, then end with the paths Finish
    returned (`<summary>` is the reply's `Full briefing` path, `<package>` its
-   `Review Package data` path), so the human can open them. Put each on its own line: a bold
-   label, then the absolute path as inline code, with nothing after it.
+   `Review Package data` path), so the human can open them. Put each on its own
+   line: a bold label, then the absolute path as inline code, with nothing after it.
 
    ```markdown
    **Review Package summary:** `<summary>`
