@@ -18,7 +18,7 @@ commands; only the `data` field varies.
 
 | Field | Type | Notes |
 |---|---|---|
-| `$schema` | string | URL of the JSON Schema this payload conforms to. Pinned to the schema commit. |
+| `$schema` | string | URL of the JSON Schema this payload conforms to. Pinned to the Booley release tag that built the binary. |
 | `command` | string | Subcommand name. One of the eight supported JSON commands. |
 | `data` | object | Per-command payload. See per-command docs for the shape. |
 | `warnings` | array of string | Diagnostics that text mode would emit to stderr as `# WARNING: ...` lines. Empty array on clean runs. |
@@ -225,4 +225,4 @@ by `--limit`.
 | `stats` | `time_in_state_clocked_cycles` and `time_in_state_stopped_cycles` maps, beside tick/ns occupancy. |
 
 `bwave schema` prints the exact grammar. The emitted `$schema` URL pins it to
-an immutable commit.
+the Booley release tag that built the binary.
