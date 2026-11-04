@@ -1856,19 +1856,32 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             report["run_id"] = run_id
         safe_target = synth_target_report_slug(target)
         report_path = report_dir / f"synth_{safe_target}.json"
+        self._add_report_artifacts(report, report_dir, report_path, target, metrics)
+        published = self._publisher().publish_report(implementation, report)
+        return ImplementationReport(published.payload["implementation"])
+
+    def _add_report_artifacts(
+        self,
+        report: dict[str, Any],
+        report_dir: Path,
+        report_path: Path,
+        target: str,
+        metrics: SynthMetrics,
+    ) -> None:
+        """Set ``report["artifacts"]``: this file, the run log, and preserved evidence."""
         # The run.log pointer lived only in the stdout ``log:`` line, which the
         # MCP layer tail-truncates; ``reports`` was already here but not the log
         # itself. Both now travel together in the shared ``artifacts`` shape,
         # alongside this file's own path.
-        preserved = self._snapshot_report_artifacts(report_dir, safe_target, metrics)
+        preserved = self._snapshot_report_artifacts(
+            report_dir, synth_target_report_slug(target), metrics
+        )
         report["artifacts"] = {
             "report": posix_relpath(report_path, self.args.work_dir),
             **preserved,
         }
         if "baseline" in report:
             self._add_baseline_timing_pointer(report, target)
-        published = self._publisher().publish_report(implementation, report)
-        return ImplementationReport(published.payload["implementation"])
 
     def _add_baseline_timing_pointer(self, report: dict[str, Any], target: str) -> None:
         """Name the published baseline timing reports, or say why there are none."""

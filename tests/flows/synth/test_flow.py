@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import time
 import tomllib
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -2716,13 +2717,14 @@ class TestBaselineFlow:
         )
         assert progress["complete"] is True
 
-    def _paired_baseline_flow(self, tmp_path: Path) -> AsicSynthesizeFlow:
-        """A flow for candidate ``lite`` paired with baseline selector ``synth_before``."""
+    def _paired_baseline_flow(
+        self, tmp_path: Path, candidates: Sequence[str] = ("lite",)
+    ) -> AsicSynthesizeFlow:
+        """A flow for *candidates*, each paired with baseline selector ``synth_before``."""
         flow = AsicSynthesizeFlow()
         flow.parse_args(
             [
-                "--target",
-                "lite",
+                *(arg for candidate in candidates for arg in ("--target", candidate)),
                 "--work-dir",
                 str(tmp_path),
                 "--baseline",
@@ -2733,8 +2735,11 @@ class TestBaselineFlow:
         )
         flow.read_state()
         flow.state.init_criteria(
-            {"synthesis_ok_lite": True},
-            criterion_params={"synthesis_ok_lite": {BASELINE_TARGET_PARAM: "synth_before"}},
+            {f"synthesis_ok_{candidate}": True for candidate in candidates},
+            criterion_params={
+                f"synthesis_ok_{candidate}": {BASELINE_TARGET_PARAM: "synth_before"}
+                for candidate in candidates
+            },
         )
         return flow
 
@@ -2762,7 +2767,7 @@ class TestBaselineFlow:
 
         def run_one(target: str):
             metrics = SynthMetrics(area_kge=12.0, cells=100, wns_ns=0.2)
-            text = "candidate timing" if target == "lite" else baseline_timing
+            text = baseline_timing if target == "synth_before" else "candidate timing"
             if text is not None:
                 timing_dir = flow._synth_build_dir(target) / "reports" / "timing"
                 timing_dir.mkdir(parents=True, exist_ok=True)
@@ -2801,6 +2806,24 @@ class TestBaselineFlow:
         assert pointer == "reports/synth/1/artifacts/synth_lite/baseline_timing"
         assert (tmp_path / pointer).is_dir()
         assert "timing_unavailable" not in report["baseline"]
+
+    def test_shared_baseline_timing_is_published_for_every_paired_candidate(
+        self, state_file: Path, tmp_path: Path
+    ):
+        flow = self._paired_baseline_flow(tmp_path, candidates=("lite", "heavy"))
+
+        result = self._run_paired_baseline(flow, baseline_timing="baseline timing")
+
+        assert result.exit_code == EXIT_SUCCESS
+        for candidate in ("lite", "heavy"):
+            report = json.loads(
+                (flow.args.report_dir / f"synth_{candidate}.json").read_text(encoding="utf-8")
+            )
+            pointer = report["artifacts"]["baseline_timing"]
+            assert pointer == f"reports/synth/1/artifacts/synth_{candidate}/baseline_timing"
+            assert (tmp_path / pointer / "overall.rpt").read_text(
+                encoding="utf-8"
+            ) == "baseline timing"
 
     def test_baseline_without_timing_reports_says_so_and_keeps_verdict(
         self, state_file: Path, tmp_path: Path
