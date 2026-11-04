@@ -342,6 +342,83 @@ def enter_shared_role_aliases(layout, tmp_path, monkeypatch):
     return control
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX namespace-spelling fixture uses symlinks")
+def test_aliased_project_freezes_the_baseline_report_finish_checked(layout, tmp_path, monkeypatch):
+    """The package's SIM baseline report is the transition list Finish's own status carried."""
+    from booley.core.booley_dir import reset_cache
+    from booley.goals import finish as finish_module
+    from booley.goals.entry import EntryEnvironment, EntryRequest, enter_goal_mode
+    from booley.goals.model import parse_goal_args
+    from booley.goals.sim_transitions import transition_summary
+    from tests.goals.conftest import SMOKE_RUN, TOP_CORE, run_row
+    from tests.goals.test_test_run_evidence import _record
+
+    shutil.rmtree(layout.worktree / ".booley")
+    (layout.worktree / "top.core").write_text(TOP_CORE)
+    (layout.worktree / "rtl.v").write_bytes(b"module top; endmodule\n")
+    git(layout.worktree, "add", "top.core", "rtl.v")
+    git(layout.worktree, "commit", "-qm", "runtime Target")
+    (layout.control / "booley.toml").write_text("[stealth]\nenabled=false\n")
+    (layout.control / "tests.toml").write_text('[top]\ntests=["smoke"]\n')
+    project, control = model_shared_root_spellings(layout.control, tmp_path, monkeypatch)
+    physical = layout.control
+    monkeypatch.setenv("BOOLEY_DIR", str(project))
+    reset_cache()
+    layout.control = control
+    layout.record = enter_goal_mode(
+        EntryRequest(
+            layout.worktree,
+            "aliased",
+            parse_goal_args(
+                [{"family": "LINT", "target": "top"}, {"family": "SIM", "target": "top"}]
+            ),
+        ),
+        EntryEnvironment(control, routing_guidance="Explicit test routing guidance."),
+    ).record
+    publish(layout)
+    _record(layout, "final", [run_row(SMOKE_RUN)])
+    # Finish reaches the Booley Directory through its physical spelling; the cached
+    # spelling from recording would hide the bug, so drop it.
+    monkeypatch.setenv("BOOLEY_DIR", str(physical))
+    reset_cache()
+    checked = []
+    real_status = finish_module.build_status
+
+    def spy(*args, **kwargs):
+        checked.append(real_status(*args, **kwargs))
+        return checked[-1]
+
+    monkeypatch.setattr(finish_module, "build_status", spy)
+    result = finish_goal(request(layout), environment(layout))
+    assert result["status"] == "finished"
+    sim = next(row for row in checked[0].goals if row.sim_transitions)
+    package = json.loads(Path(result["package"]).read_bytes())
+    report = next(row for row in package["goals"] if row["key"] == sim.key)["simulation_baseline"]
+    assert sim.sim_transitions[0]["current"] == "passed"
+    assert report["runs"] == [dict(row) for row in sim.sim_transitions]
+    assert report["summary"] == transition_summary(sim.sim_transitions)
+
+
+def test_finish_derives_sim_transitions_once_per_goal(layout, monkeypatch):
+    """The Review Package reuses the transitions Finish's status carried; none are recomputed."""
+    from booley.goals import sim_transitions
+    from tests.goals.conftest import SIM_KEY, enter_goals, run_row
+    from tests.goals.test_test_run_evidence import _record
+
+    layout.record = enter_goals(layout, [{"family": "SIM", "target": "top"}])
+    _record(layout, "final", [run_row()])
+    calls = []
+    real = sim_transitions.goal_transitions
+
+    def counted(*args, **kwargs):
+        calls.append(args[2].spec.key)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sim_transitions, "goal_transitions", counted)
+    assert finish_goal(request(layout), environment(layout))["status"] == "finished"
+    assert calls == [SIM_KEY]
+
+
 def model_shared_root_spellings(root, tmp_path, monkeypatch):
     """Model two bind spellings with actual shared identities and unchanged file bytes."""
     aliases = [tmp_path / name for name in ("project-mount", "control-mount")]

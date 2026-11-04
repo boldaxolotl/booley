@@ -9,12 +9,12 @@ from types import SimpleNamespace
 import pytest
 
 from booley.goals.sim_baseline_store import (
+    baseline_observations,
     entry_inputs,
     request_identity,
     request_path,
     sim_goals,
 )
-from booley.goals.sim_transitions import baseline_observations
 from booley.mcp import sim_baseline_jobs
 from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
 from booley.runtime import job_records
