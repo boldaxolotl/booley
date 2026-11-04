@@ -225,7 +225,9 @@ do not repeat it
 when no deep-relevant input changed. Deep
 checks can take minutes or tens of minutes. Run a long invocation in a managed
 background session or detached with output redirected to a file, then poll it;
-do not abandon it while waiting. Read the final output unabridged.
+do not abandon it while waiting. Flows and Specialists started through MCP tools
+are Jobs: with several running, call `booley_poll` with no `run_id` to receive
+whichever of your Jobs finishes first. Read the final output unabridged.
 
 Repair deep findings through the same classify → diagnose → repair loop. A
 failed deep simulation, lint, or synthesis smoke can be build-system
