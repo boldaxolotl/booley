@@ -88,7 +88,8 @@ _NODE_SUITE_BOUND_S = 75
 #   output rather than through a pytest-timeout thread kill of the worker.
 # - Headroom: the strictest Windows fail limit is `--timeout-headroom=0.5` in
 #   full-python-matrix.yml, i.e. 90 s. The 75 s bound leaves 15 s for setup
-#   and teardown, so the bound fires before any headroom failure.
+#   and teardown, so a run that passes is capped near the bound, under that limit.
+#   (Headroom only judges passing tests; a stall fails through the bound.)
 _NODE_SUITE_PYTEST_TIMEOUT_S = 180
 
 
@@ -116,10 +117,17 @@ def run_bounded(command: list[str], *, bound_s: float, output_dir: Path) -> tupl
             stderr=stderr_file,
             **popen_new_group_kwargs(),
         )
+        timed_out = False
         try:
             proc.wait(timeout=bound_s)
         except subprocess.TimeoutExpired:
-            kill_process_tree(proc)
+            timed_out = True
+        finally:
+            # Also reached on KeyboardInterrupt or a pytest-timeout abort: the
+            # child runs in its own process group, so nothing else would stop it.
+            if proc.poll() is None:
+                kill_process_tree(proc)
+        if timed_out:
             pytest.fail(
                 f"{' '.join(command[1:])} exceeded its {bound_s:g} s bound.\n"
                 f"stdout:\n{_read_output(stdout_path) or '(nothing)'}\n"
@@ -128,13 +136,13 @@ def run_bounded(command: list[str], *, bound_s: float, output_dir: Path) -> tupl
     return proc.returncode, _read_output(stdout_path), _read_output(stderr_path)
 
 
-def _run_node_suite(script_name: str, *, missing_node_message: str, output_dir: Path) -> None:
+def _run_node_suite(script_name: str, *, suite_label: str, output_dir: Path) -> None:
     """Run ``tests/vscode/<script_name>`` with ``node --test`` under the shared bounds."""
     node = shutil.which("node")
     if node is None:
         if os.environ.get("CI"):
-            pytest.fail(f"CI must run the {missing_node_message}: install Node.js")
-        pytest.skip(f"Node.js is required for the {missing_node_message}")
+            pytest.fail(f"CI must run the {suite_label}: install Node.js")
+        pytest.skip(f"Node.js is required for the {suite_label}")
     script = Path(__file__).parents[1] / "vscode" / script_name
     code, out, err = run_bounded(
         [node, "--test", f"--test-timeout={_NODE_TEST_TIMEOUT_MS}", str(script)],
@@ -148,7 +156,7 @@ def _run_node_suite(script_name: str, *, missing_node_message: str, output_dir: 
 def test_workspace_extension_lifecycle_in_node(tmp_path):
     _run_node_suite(
         "dashboard.test.cjs",
-        missing_node_message="Dashboard lifecycle suite",
+        suite_label="Dashboard lifecycle suite",
         output_dir=tmp_path,
     )
 
@@ -160,7 +168,7 @@ def test_workspace_extension_lifecycle_in_node(tmp_path):
 def test_vaporview_bridge_in_node(tmp_path):
     _run_node_suite(
         "vaporview_bridge.test.cjs",
-        missing_node_message="VaporView bridge suite",
+        suite_label="VaporView bridge suite",
         output_dir=tmp_path,
     )
 
