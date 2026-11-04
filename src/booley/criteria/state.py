@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from booley.core.boundary import BoundaryError, require_dict, require_list
-from booley.criteria.categories import CATEGORY_RTL, CATEGORY_TB
+from booley.criteria.categories import verification_fingerprint_categories
 from booley.criteria.cycle_count import build_cycle_comparison
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 
@@ -326,44 +326,6 @@ def _collect_recipe_evidence(entry: CriterionEntry) -> _RecipeEvidence:
         changes,
         basis_changes,
     )
-
-
-# Well-known category prefixes: criteria whose key starts with these
-# are auto-tagged into the corresponding categories.
-# A prefix may map to multiple categories — e.g. sim_ criteria depend on
-# both RTL correctness and TB correctness, so RTL changes must also
-# invalidate simulation results.
-_CATEGORY_PREFIXES: dict[str, frozenset[str]] = {
-    "lint_": frozenset({CATEGORY_RTL}),
-    "synthesis_": frozenset({CATEGORY_RTL}),
-    "fpga_impl_": frozenset({CATEGORY_RTL}),
-    "sim_": frozenset({CATEGORY_RTL, CATEGORY_TB}),
-    "cycle_count_": frozenset({CATEGORY_RTL, CATEGORY_TB}),
-    "coverage_": frozenset({CATEGORY_RTL}),
-    # Exact key (prefix matching still applies): the standalone-elaboration
-    # sweep is an RTL structural check, so an RTL edit must reset its met
-    # status — a stale green would defeat the every-attempt re-verification.
-    "elaborate_standalone": frozenset({CATEGORY_RTL}),
-    # review_rtl / review_tb are handled through _REVIEW_CATEGORY below so
-    # their persisted receipt/findings survive synchronous invalidation.
-}
-
-# Review criteria belong to a category but are kept separate from ordinary
-# prefix resets because their receipt/findings remain useful after they become
-# stale. `_clean` reviews also track verify_attempts, which must be cleared when
-# the underlying code changes.
-_REVIEW_CATEGORY: dict[str, str] = {
-    "review_tb_": CATEGORY_TB,
-    "review_rtl_": CATEGORY_RTL,
-}
-
-
-def _infer_categories(key: str) -> frozenset[str]:
-    """Infer categories from criterion key prefix (may be multiple)."""
-    for prefix, cats in _CATEGORY_PREFIXES.items():
-        if key.startswith(prefix):
-            return cats
-    return frozenset()
 
 
 class StatePersistence(Protocol):
@@ -1087,9 +1049,11 @@ class DevelopmentState:
         """Reset all criteria belonging to *category* to unmet.
 
         A criterion belongs to a category if its explicit ``category_map``
-        entry matches, **or** any of its inferred categories (from prefix)
-        matches.  This means ``sim_*`` criteria are reset by both RTL and
-        TB resets, since simulations depend on both.
+        entry matches; without such an entry its categories come from the
+        canonical table in :mod:`booley.criteria.categories` (the one Goal
+        freshness uses). So ``sim_*`` criteria are reset by both RTL and TB
+        resets, and ``coverage_*`` / ``mutation_score_*`` by RTL, TB and
+        campaign resets.
 
         Returns list of keys that were actually reset.
         """
@@ -1103,31 +1067,21 @@ class DevelopmentState:
             if override:
                 belongs = category == override
             else:
-                belongs = category in _infer_categories(key)
-                if not belongs:
-                    belongs = any(
-                        key.startswith(prefix) and review_category == category
-                        for prefix, review_category in _REVIEW_CATEGORY.items()
-                    )
+                belongs = category in verification_fingerprint_categories(key)
             if belongs and entry.met:
                 entry.met = False
                 entry.stale = True
                 entry.updated_at = now
                 reset_keys.append(key)
                 continue
-            # Clear exhausted verify_attempts for review criteria whose
-            # category matches, even though reviews are excluded from
-            # _CATEGORY_PREFIXES (they must not have met reset, but the
-            # verify counter must be refreshed when code changes).
-            # total_verify_cycles is NOT cleared — it tracks cumulative
+            # Clear exhausted verify_attempts on unmet review criteria whose
+            # category matches: the verify counter must be refreshed when code
+            # changes. total_verify_cycles is NOT cleared — it tracks cumulative
             # attempts across all coder fixes to detect stale-finding impasses.
             if belongs and not entry.met and entry.detail.get("verify_attempts"):
-                for prefix, cat in _REVIEW_CATEGORY.items():
-                    if key.startswith(prefix) and cat == category:
-                        entry.detail.pop("verify_attempts", None)
-                        entry.updated_at = now
-                        reset_keys.append(key)
-                        break
+                entry.detail.pop("verify_attempts", None)
+                entry.updated_at = now
+                reset_keys.append(key)
         # Internal `_report_submitted` follows the code/tb state -- if a code-
         # modifying Specialist invalidated anything, the previously submitted report
         # is now stale and must be resubmitted reflecting the new state.
