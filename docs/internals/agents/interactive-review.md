@@ -45,7 +45,7 @@ under the updated policy. A provisional pass alone cannot meet a Goal.
 
 Commit the changes and provide a Session Summary before `goal_finish`. Finish
 requires every Goal met with fresh evidence at a clean committed HEAD and no
-Protected Input violation. It presents the Review Package in chat; HTML is
+Protected Input violation. It replies with a short summary and the path of the full Review Package briefing; HTML is
 available on request. Finish does not merge or clean up the worktree. Outside
 Stealth it publishes a history summary when the destination is usable; local-only
 publication is reported explicitly.
