@@ -168,6 +168,29 @@ Editing one blocks Finish until reverted and discards affected evidence. Never
 weaken tests or Targets to meet a Goal. Target and constraint edits appear in
 the Review Package.
 
+Booley has no per-call parameter or define override, by design: the Target
+owns its parameter values, so a run with other values needs another Target.
+For an A/B experiment on a build-time parameter, such as synthesizing the
+same RTL with a feature turned off, add a sibling Target to the Project's
+cores: copy the original Target's entry and change only the parameter under
+test, for example `parameters: [ENABLE_X=0]`, under a name such as
+`synth_core_noopt` for `synth_core`. A simulation sibling also needs its own
+`tests.toml` section to run the same Tests; to vary run-time arguments,
+declare a Test Variant instead. If the entry rules list the file you would
+edit as a Protected Input, do not edit it; ask the human. No Goal binds the
+sibling, so run it through a Goal-bound call with `work_dir` and
+`diagnostic=true`; without `diagnostic` the run is refused. Like any
+`.core` or `tests.toml` edit, adding it makes evidence covering that file
+stale. Remove it by restoring the file's exact earlier bytes, then check
+`goal_status`; if you keep it, rerun the stale Goals. The sibling is a
+Target change in the Review Package: before `goal_finish`, remove it, or
+keep it and say why in the Session Summary. Either way, name the experiment
+and its result there. Never edit an existing Target's parameters and revert
+them to run an experiment: that Target still binds its Goals, so a run
+during the edit records Goal evidence for a configuration no Goal asked
+for, and the Review Package, which compares only the starting and final
+commits, shows no trace of the edit.
+
 If work is blocked by missing intent or an unmet Goal, explain the evidence
 and the decision needed. Continue independent work when possible. If the cause
 is Booley machinery or documentation, use `/booley-feedback` for diagnosis and

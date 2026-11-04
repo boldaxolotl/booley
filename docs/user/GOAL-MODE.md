@@ -207,6 +207,17 @@ Some Project files decide how evidence is produced: `booley.toml`,
 revert it. The Review Package flags edits to `.core` files, `tests.toml`, and
 constraint files (`.sdc`, `.xdc`).
 
+Booley has no per-run override for a Target's parameters or defines: the
+Target owns their values. (Per-run synthesis options such as
+`--ppa-profile` are separate; see [ASIC synthesis](FLOW-SYNTH.md).) To
+compare results with one parameter changed, such as synthesis with a
+feature turned off, the Developer Agent adds a sibling Target to the
+`.core` file that differs from the original only in that parameter. No Goal
+names the sibling, so the agent runs it diagnostically. It does not edit an
+existing Target's parameters and revert them afterwards. The sibling Target
+appears under Target changes in the Review Package, so before finishing the
+agent removes it, or keeps it and explains why in the Session Summary.
+
 ## Changes and human decisions
 
 Once Goal Mode starts, the Developer Agent cannot change the Goals on its own.
