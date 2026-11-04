@@ -147,8 +147,12 @@ The exact FlexNet server identifier advertised by the license manager and mapped
 _Avoid_: server hostname, DNS name, upstream address
 
 **Job**:
-A background run of a Booley Flow or Specialist, tracked by a `run_id` through the submit → poll contract from submission to a terminal result. A Job that starts immediately and finishes quickly completes inline, reading like a synchronous call; one that waits for a slot surfaces a QUEUED state first and can be withdrawn by `run_id` while it waits.
+A run of a Booley Flow or Specialist, tracked by a Job record and its `run_id` from submission to a terminal result. A Developer Agent's Job goes through the submit → poll contract: one that starts immediately and finishes quickly completes inline, reading like a synchronous call; one that waits for a slot surfaces a QUEUED state first and can be withdrawn by `run_id` while it waits. A human's Job runs in the foreground of a Sandbox shell or detached from the Booley Dashboard.
 _Avoid_: task, process, async call
+
+**Standalone Job**:
+A Job with no owning session, started by a human from a Sandbox shell or the Booley Dashboard. It takes Job slots like any other Job, writes `job.log`, and never records, satisfies, or invalidates Goal evidence.
+_Avoid_: human run, dashboard job, manual job
 
 **Job Class**:
 The admission category of a Job, determined by which scarce resource it consumes: EDA work inside the Sandbox (`heavy`) or model-API-bound Specialist work (`light`). Each class has a configurable concurrency cap; excess work queues without preempting running work, and a full queue refuses admission. Queue priority comes from the requester role, independently of class: `interactive` sorts ahead of other requester roles; unknown persisted roles retain a fallback priority.
@@ -310,7 +314,7 @@ _Avoid_: regex, marker, exit-code-only verdict
 ### Presentation
 
 **Booley Dashboard**:
-The read-only terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, and health signals in that Sandbox.
+The terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, Targets, and health signals in that Sandbox, from which a human can also launch Booley Flows and built-in Specialists as Standalone Jobs.
 _Avoid_: control room, console, monitor
 
 **Session activity**:
