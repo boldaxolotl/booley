@@ -10,7 +10,6 @@ is both less likely and attributable.
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -66,8 +65,12 @@ def test_runner_disk_is_freed_before_image_builds() -> None:
     removal = script.index("sudo rm -rf")
     assert script.count("df -h") >= 2
     assert script.index("df -h") < removal < script.rindex("df -h")
-    # setup-python resolves Python from the toolcache: only CodeQL may go.
-    assert not re.search(r"/opt/hostedtoolcache\s*(\\|$)", script, re.MULTILINE)
+    # setup-python resolves Python from the toolcache: only CodeQL may go, so
+    # no removal target may be the toolcache itself, its trailing-slash form,
+    # or a glob over its entries.
+    removed = script[removal:].split("echo ", 1)[0].replace("\\\n", " ").split()[3:]
+    toolcache = [path for path in removed if path.startswith("/opt/hostedtoolcache")]
+    assert toolcache == ["/opt/hostedtoolcache/CodeQL"], toolcache
 
 
 def test_free_disk_is_logged_around_image_validations() -> None:
@@ -80,13 +83,11 @@ def test_free_disk_is_logged_around_image_validations() -> None:
     assert after.get("name") == _AFTER_STEP
     assert after.get("if") == "always()"
     assert "df -h /" in after["run"]
-    assert "du -sh" in after["run"]
-    assert '"${RUNNER_TEMP}"/bwave-smoke/*' in after["run"]
 
 
 def _run_report(tmp_path: Path, runner_temp: Path) -> subprocess.CompletedProcess[str]:
     steps = _steps()
-    script = re.sub(r"\$\{\{[^}]*\}\}", "1", steps[_index(steps, _AFTER_STEP)]["run"])
+    script = steps[_index(steps, _AFTER_STEP)]["run"]
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name, body in (("sudo", _FAKE_SUDO), ("timeout", _FAKE_TIMEOUT), ("docker", _FAKE_DOCKER)):
@@ -96,7 +97,8 @@ def _run_report(tmp_path: Path, runner_temp: Path) -> subprocess.CompletedProces
     return subprocess.run(
         ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
         env={
-            **os.environ,
+            # BASH_ENV would make a non-interactive bash source a host file.
+            **{key: value for key, value in os.environ.items() if key != "BASH_ENV"},
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
             "RUNNER_TEMP": str(runner_temp),
         },
@@ -120,11 +122,26 @@ def test_disk_report_after_validations_never_fails(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "bwave-smoke/verilator" in result.stdout
     assert "bwave-smoke/openroad" in result.stdout
+    # The RISC-V evidence directory is absent on this lane: it is filtered out
+    # rather than handed to du, which would fail on it.
+    assert "riscv-image-evidence" not in result.stdout + result.stderr
+    assert "No such file" not in result.stderr
 
-    # The group may never have started: no scratch directory, still exit 0.
+    # The RISC-V lane: its evidence directory is reported as well.
+    (runner_temp / "riscv-image-evidence").mkdir()
     second = tmp_path / "second"
     second.mkdir()
+    result = _run_report(second, runner_temp)
+    assert result.returncode == 0, result.stderr
+    assert "riscv-image-evidence" in result.stdout
+
+    # The group may never have started: no scratch directory, still exit 0 and
+    # no du call on an empty list.
+    third = tmp_path / "third"
+    third.mkdir()
     empty_runner_temp = tmp_path / "empty-runner"
     empty_runner_temp.mkdir()
-    result = _run_report(second, empty_runner_temp)
+    result = _run_report(third, empty_runner_temp)
     assert result.returncode == 0, result.stderr
+    assert "bwave-smoke" not in result.stdout
+    assert "du:" not in result.stderr

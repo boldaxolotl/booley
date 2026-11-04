@@ -931,12 +931,13 @@ jobs:
       # builds, share the runner's `/` (RUNNER_TEMP and the Docker root), which
       # has run out of space mid-group. Drop preinstalled toolchains this job
       # never uses. /opt/hostedtoolcache itself stays: setup-python resolves
-      # Python from it. This sits before the duration clock on purpose.
+      # Python from it. This sits before the duration clock on purpose, so the
+      # cleanup time does not count against the test-phase duration budget.
       - name: Free unused runner disk
         shell: bash
         run: |
           echo "::group::Free disk before cleanup"
-          df -h
+          df -h || true
           echo "::endgroup::"
           sudo rm -rf \
             /usr/local/lib/android \
@@ -945,7 +946,7 @@ jobs:
             /usr/local/.ghcup \
             /opt/hostedtoolcache/CodeQL
           echo "::group::Free disk after cleanup"
-          df -h
+          df -h || true
           echo "::endgroup::"
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -1446,10 +1447,10 @@ jobs:
 
       # Snapshot after the group, whatever its outcome. Validation containers
       # run with --rm, so their own writable-layer use (for example Verilator's
-      # /tmp) is already gone here: a small scratch size does not clear a
-      # validation, and the runner's "Free space left" warning plus the free
-      # space logged before the group bracket the peak. Reporting never fails
-      # the job, and each slow command is capped to stay inside the budget.
+      # /tmp) is already gone here and the sizes below can understate the peak.
+      # The df taken before the group and the runner's "Free space left"
+      # warning bound that peak. Reporting never fails the job, and each slow
+      # command is capped to stay inside the budget.
       - name: Log disk use after image validations
         if: always()
         shell: bash
