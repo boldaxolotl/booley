@@ -4,11 +4,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from booley.goals.model import GoalRecord
-from booley.goals.protected_inputs import (
-    ProtectedInputError,
-    ProtectedInputRoots,
-    protected_input_violations,
-)
+from booley.goals.protected_inputs import check_goal_inputs
 from booley.runtime.git_facts import repository_facts
 
 
@@ -17,18 +13,7 @@ def protected_warnings(record: GoalRecord, booley_dir: Path, work_dir: Path) -> 
     """Compare resolver paths, working contents, then tracked HEAD contents."""
     if not work_dir.is_dir():
         return (f"Goal worktree missing or unavailable: {work_dir}",)
-    try:
-        return tuple(
-            protected_input_violations(
-                record.protected_paths,
-                record.protected_digest or "",
-                record.protected_head_digest or "",
-                ProtectedInputRoots(work_dir, booley_dir).with_input_paths(record.input_paths),
-                record.declared_protected_inputs,
-            )
-        )
-    except (ProtectedInputError, OSError, ValueError) as exc:
-        return (f"protected inputs cannot be inspected: {exc}",)
+    return check_goal_inputs(record, work_dir, booley_dir).violations
 
 
 def goal_warnings(

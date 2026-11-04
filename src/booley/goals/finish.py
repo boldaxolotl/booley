@@ -717,9 +717,7 @@ def _inputs_unchanged(
         record.protected_paths,
         record.protected_digest,
         record.protected_head_digest,
-        ProtectedInputRoots(operation.root, operation.store.booley_dir).with_input_paths(
-            record.input_paths
-        ),
+        ProtectedInputRoots.for_goal(record, operation.root, operation.store.booley_dir),
         record.declared_protected_inputs,
     )
     return not violations and observations_unchanged(

@@ -393,7 +393,7 @@ def _drive_entry(
     _boundary(env, "branch_created")
     _checkout_goal_branch(checkout, record)
     _boundary(env, "checked_out")
-    roots = ProtectedInputRoots(checkout.root, store.booley_dir)
+    roots = ProtectedInputRoots.for_goal(record, checkout.root, store.booley_dir)
     snapshot = _snapshot(roots)
     record = _save(
         store,

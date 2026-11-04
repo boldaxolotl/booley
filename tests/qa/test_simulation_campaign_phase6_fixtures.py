@@ -12,11 +12,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.goals.conftest import INPUT_PATHS, git
+from tests.goals.conftest import git
 
 from booley.criteria.evidence_ledger import AcceptanceTransaction, record_or_verify_transaction
 from booley.criteria.state import DevelopmentState
 from booley.goals.binding import bind_run
+from booley.goals.input_view import capture_path_roots
 from booley.goals.model import (
     GoalRecord,
     GoalSpec,
@@ -142,6 +143,8 @@ def _goal_worktree(tmp_path: Path) -> tuple[Path, Path]:
     control.mkdir()
     worktree = tmp_path / "worktree"
     git(main, "worktree", "add", "-q", "-b", "goal/qa-campaign-20260922", str(worktree))
+    # The record's input paths name the worktree's own Booley Directory, so it must exist.
+    (worktree / ".booley").mkdir()
     return control, worktree
 
 
@@ -182,7 +185,7 @@ def _goal_state(tmp_path: Path) -> tuple[DevelopmentState, GoalProjection, dict[
         protected_paths=snapshot.encoded_paths,
         protected_digest=snapshot.working_digest,
         protected_head_digest=snapshot.head_digest,
-        input_paths=INPUT_PATHS,
+        input_paths=capture_path_roots(worktree, control),
         input_topology_digest="sha256:" + "e" * 64,
     )
     with store.worktree_lock(identity) as lock:
