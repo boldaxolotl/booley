@@ -319,7 +319,11 @@ def _enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResul
     return EntryResult(
         active,
         warnings,
-        goal_mode_rules(active.declared_protected_inputs, routing_guidance=env.routing_guidance),
+        goal_mode_rules(
+            active.declared_protected_inputs,
+            routing_guidance=env.routing_guidance,
+            paired_checkout=active.paired_project_base_sha is not None,
+        ),
         recovered,
     )
 

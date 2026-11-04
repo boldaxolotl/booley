@@ -19,6 +19,7 @@ from booley.goals.format import (
     proposal_lines,
     synth_baseline_lines,
     test_run_section,
+    uncommitted_lines,
 )
 from booley.goals.sim_transitions import transition_summary
 from booley.goals.status import GoalStatus, GoalStatusView
@@ -63,6 +64,7 @@ def _view_lines(view: GoalStatusView, compact: bool) -> list[str]:
     lines = [f"{view.record.id} ({view.record.state.value}) · {view.met}/{len(view.goals)} met"]
     if view.warning:
         lines.append(view.warning)
+    lines += uncommitted_lines(view)
     if not compact:
         lines += _facts_block(view)
     # Cells are single-line (a `render_table` precondition) and never cut: agents read

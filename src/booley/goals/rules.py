@@ -4,7 +4,8 @@ Entry returns this text with the Goal list, and ``goal_status(rules=true)``
 returns it again after the agent's context is compacted, so it is written for
 an agent reading it cold. Projects add their own rules in ``AGENTS.md``, not
 here. The protected-input list comes from :mod:`booley.goals.protected_inputs`
-so the rules and the check cannot drift apart.
+so the rules and the check cannot drift apart. A Goal whose Booley Directory is
+a Paired Checkout also gets the statement that it needs its own commit.
 """
 
 from __future__ import annotations
@@ -48,8 +49,17 @@ def work_dir_guidance(
     )
 
 
-def goal_mode_rules(declared: DeclaredCapture | None = None, *, routing_guidance: str) -> str:
-    """The Goal Mode rules as Markdown bullets, ending with a newline."""
+def goal_mode_rules(
+    declared: DeclaredCapture | None = None,
+    *,
+    routing_guidance: str,
+    paired_checkout: bool = False,
+) -> str:
+    """The Goal Mode rules as Markdown bullets, ending with a newline.
+
+    *paired_checkout* adds the statement that the worktree's Booley Directory is a
+    separate Git repository whose changes need their own commit.
+    """
     protected = ", ".join(f"`{name}`" for name in PROTECTED_INPUT_NAMES)
     if declared is not None:
         protected += "; Project-declared files: " + ", ".join(
@@ -84,6 +94,16 @@ def goal_mode_rules(declared: DeclaredCapture | None = None, *, routing_guidance
         "evidence is reported and never changes a Goal or blocks Finish.",
         "Finish needs every Goal met at a clean, committed HEAD plus a Session "
         "Summary. Commit your work on the Goal Branch.",
+        *(
+            (
+                "This worktree's Booley Directory is a Paired Checkout: a separate Git "
+                "repository on its own branch. Commit changes there (cores, `tests.toml`, "
+                "other Booley Directory files) in that repository before finishing; "
+                "`goal_status` names each repository with uncommitted changes.",
+            )
+            if paired_checkout
+            else ()
+        ),
         "Check `goal_status` when unsure; `goal_status(rules=true)` repeats these rules.",
     )
     return LIFECYCLE_RETRY_RULE + "\n" + "".join(f"- {bullet}\n" for bullet in bullets)

@@ -272,6 +272,26 @@ def test_run_lines(goal: GoalStatus) -> list[str]:
     return lines
 
 
+def uncommitted_lines(view: GoalStatusView) -> list[str]:
+    """Warnings naming each repository whose uncommitted changes would block Finish.
+
+    No word after ``WARNING:`` may be a Goal status, which the Goal Mode driver
+    reads from status rows.
+    """
+    if view.uncommitted_error:
+        return [f"WARNING: uncommitted changes cannot be checked: {view.uncommitted_error}"]
+    return [
+        f"WARNING: uncommitted changes in {repository.path}"
+        + (
+            " (Paired Checkout: its own Git repository and branch)"
+            if repository.paired_checkout
+            else ""
+        )
+        + " block Finish; commit them in that repository"
+        for repository in view.uncommitted or ()
+    ]
+
+
 def synth_baseline_lines(goal: GoalStatus) -> list[str]:
     """One line for a relative SYNTH Goal's baseline Job: pending, complete or unavailable."""
     if goal.synth_baseline is None:
@@ -322,6 +342,8 @@ def render_status(
         )
         if view.warning:
             console.print(view.warning)
+        for line in uncommitted_lines(view):
+            console.print(line, soft_wrap=True)
         if compact:
             for goal in view.goals:
                 name = goal_name(goal)

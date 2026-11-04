@@ -17,12 +17,15 @@ from booley.goals.apply_barrier import pending_applies
 from booley.goals.change_policy import conflict
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_ref
 from booley.goals.evidence_projection import selected_candidates
+from booley.goals.finish_cleanliness import uncommitted_for_finish
 from booley.goals.format import format_criterion_metric, format_met_goal_metric
 from booley.goals.freshness import (
     DEFAULT_RESOLVERS,
     GoalFreshnessResolvers,
     evaluate_goal_freshness,
 )
+from booley.goals.input_view import UncommittedRepository
+from booley.goals.lifecycle import LifecycleError
 from booley.goals.model import GoalFamily, GoalRecord, RecordedGoal
 from booley.goals.paths import record_paths
 from booley.goals.presentation import GoalPresentation, goal_presentation
@@ -35,6 +38,7 @@ from booley.goals.test_run_goals import names_test_runs
 from booley.goals.test_run_status import TestRunJudgement, judge_test_runs
 from booley.goals.warnings import goal_warnings, protected_warnings
 from booley.runtime.git_facts import repository_facts
+from booley.runtime.history_commit import FileCommitError
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +73,11 @@ class GoalStatusView:
     proposals: tuple[ProposalView, ...] = ()
     proposal_conflicts: tuple[tuple[str, str], ...] = ()
     interrupted_applies: tuple[str, ...] = ()
+    #: Repositories whose uncommitted changes would block Finish; ``None`` when
+    #: not checked (not the caller's own ACTIVE record) or when the check failed.
+    uncommitted: tuple[UncommittedRepository, ...] | None = None
+    #: Why the check could not be made, else ``""``.
+    uncommitted_error: str = ""
 
     @property
     def met(self) -> int:
@@ -344,7 +353,20 @@ def select_status(
         )
         for rec in records
     )
+    if record is not None and found is not None:
+        views = tuple(
+            _with_uncommitted(store, view, found[0]) if view.record.id == record.id else view
+            for view in views
+        )
     return GoalStatusSelection(views, project_wide=record is None)
+
+
+def _with_uncommitted(store: GoalStore, view: GoalStatusView, root: Path) -> GoalStatusView:
+    """Add what Finish's cleanliness check would refuse; a failed check is reported, not raised."""
+    try:
+        return replace(view, uncommitted=uncommitted_for_finish(store, view.record.id, root))
+    except (LifecycleError, FileCommitError, GoalStoreError, OSError) as exc:
+        return replace(view, uncommitted_error=str(exc))
 
 
 def _brought_up_to_date(
