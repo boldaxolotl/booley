@@ -11,7 +11,8 @@ import signal
 import subprocess
 import time
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol
 from urllib.parse import quote
@@ -45,9 +46,13 @@ IMMEDIATE_ERROR = re.compile(
     r"(?:auth|permission|forbidden|unauthor|invalid|unknown field|schema)", re.I
 )
 # Mergify labels configured in .mergify.yml. On a requeue Mergify adds the
-# active labels before it removes the prior attempt's dequeued label.
+# active labels before it removes the prior attempt's dequeued label, and for a
+# few seconds after the queue command it still shows only that stale label.
 DEQUEUED_LABEL = "dequeued"
 ACTIVE_QUEUE_LABELS = frozenset({"queued", "merge-queue-checking"})
+# How long a dequeued label older than the newest queue command is tolerated
+# before the watcher concludes Mergify never acted on that command.
+STALE_DEQUEUE_GRACE_SECONDS = QUEUE_POLL_SECONDS
 NO_CHECKS_REPORTED = re.compile(r"^no checks reported on .+ branch$", re.I)
 NONTERMINAL_PRODUCER_STATUSES = {
     "action_required",
@@ -111,6 +116,7 @@ class Comment:
     identifier: str
     body: str
     author: str | None = None
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -150,6 +156,8 @@ class Snapshot:
     mergify_state: str | None = None
     comments: tuple[Comment, ...] = ()
     producer_runs: tuple[ProducerRun, ...] = ()
+    # When the current dequeued label was applied; read only for a lone label.
+    dequeued_at: datetime | None = None
 
 
 class Outcome(StrEnum):
@@ -181,6 +189,8 @@ class Decision:
 class QueueMemory:
     baseline_comment_ids: set[str] = field(default_factory=set)
     initialized: bool = False
+    # Monotonic time of the first observation of a stale dequeued label.
+    stale_dequeue_since: float | None = None
 
 
 @dataclass
@@ -270,6 +280,28 @@ def _optional_int(value: Any, field_name: str) -> int | None:
         raise WatchError(f"invalid {field_name} value") from error
 
 
+def _instant(value: Any, field_name: str) -> datetime:
+    """Parse a GitHub RFC 3339 timestamp into an aware datetime."""
+    text = _text(value, field_name)
+    assert text is not None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as error:
+        raise WatchError(f"invalid {field_name} value") from error
+    if parsed.tzinfo is None:
+        raise WatchError(f"invalid {field_name} value")
+    return parsed
+
+
+def _flatten_pages(value: Any, field_name: str) -> list[Any]:
+    """Flatten either a normal or gh --paginate --slurp list response."""
+    pages = _json_list(value, field_name)
+    try:
+        return [entry for page in pages for entry in require_list(page, field=field_name)]
+    except BoundaryError:
+        return pages
+
+
 def _parse_check(raw: Any, field_name: str) -> Check:
     entry = _json_object(raw, field_name)
     name = _text(entry.get("name"), f"{field_name}.name")
@@ -295,12 +327,7 @@ def _parse_check(raw: Any, field_name: str) -> Check:
 
 
 def _parse_comments(value: Any) -> tuple[Comment, ...]:
-    """Flatten either a normal or gh --paginate --slurp response."""
-    pages = _json_list(value, "comments")
-    try:
-        entries = [entry for page in pages for entry in require_list(page, field="comment page")]
-    except BoundaryError:
-        entries = pages
+    entries = _flatten_pages(value, "comments")
     comments: list[Comment] = []
     for index, raw in enumerate(entries):
         entry = _json_object(raw, f"comments[{index}]")
@@ -317,8 +344,28 @@ def _parse_comments(value: Any) -> tuple[Comment, ...]:
         if author_value is not None:
             author_entry = _json_object(author_value, f"comments[{index}].author")
             author = _text(author_entry.get("login"), f"comments[{index}].author.login")
-        comments.append(Comment(comment_id, body, author))
+        created_raw = entry.get("created_at", entry.get("createdAt"))
+        created_at = None
+        if created_raw is not None:
+            created_at = _instant(created_raw, f"comments[{index}].created_at")
+        comments.append(Comment(comment_id, body, author, created_at))
     return tuple(comments)
+
+
+def _parse_dequeued_at(value: Any) -> datetime | None:
+    """Return when the dequeued label was most recently applied, if ever."""
+    latest: datetime | None = None
+    for index, raw in enumerate(_flatten_pages(value, "issue events")):
+        entry = _json_object(raw, f"issue events[{index}]")
+        if entry.get("event") != "labeled":
+            continue
+        label = _json_object(entry.get("label"), f"issue events[{index}].label")
+        name = _text(label.get("name"), f"issue events[{index}].label.name")
+        if name.lower() != DEQUEUED_LABEL:
+            continue
+        applied = _instant(entry.get("created_at"), f"issue events[{index}].created_at")
+        latest = applied if latest is None else max(latest, applied)
+    return latest
 
 
 def _parse_rollup(value: Any) -> str | None:
@@ -573,6 +620,10 @@ class GhTransport:
         path = f"repos/{repo}/issues/{pr}/comments?per_page=100"
         return self._read(["api", "--paginate", "--slurp", path], deadline)
 
+    def _label_events(self, repo: str, pr: int, deadline: float) -> Any:
+        path = f"repos/{repo}/issues/{pr}/events?per_page=100"
+        return self._read(["api", "--paginate", "--slurp", path], deadline)
+
     def ci_snapshot(self, repo: str, pr: int, deadline: float) -> Snapshot:
         first = self._pull(repo, pr, deadline)
         first_obj = _json_object(first, "pull request")
@@ -617,7 +668,12 @@ class GhTransport:
         pull = self._pull(repo, pr, deadline)
         checks = self._checks(repo, pr, deadline)
         comments = self._comments(repo, pr, deadline)
-        return _snapshot_from_json(pull, checks, comments, require_comments=True)
+        snapshot = _snapshot_from_json(pull, checks, comments, require_comments=True)
+        if _lone_dequeued_label(snapshot):
+            # Only this state needs the label's age, so ordinary polls stay cheap.
+            dequeued_at = _parse_dequeued_at(self._label_events(repo, pr, deadline))
+            snapshot = replace(snapshot, dequeued_at=dequeued_at)
+        return snapshot
 
 
 class HeadChangedError(WatchError):
@@ -779,7 +835,43 @@ def _control_comments(comments: Iterable[Comment]) -> tuple[Comment, ...]:
     )
 
 
-def _queue_terminal(snapshot: Snapshot, memory: QueueMemory) -> Decision | None:
+def _lone_dequeued_label(snapshot: Snapshot) -> bool:
+    """A dequeued label beside an active label is a requeue leftover, never terminal."""
+    return DEQUEUED_LABEL in snapshot.labels and not snapshot.labels & ACTIVE_QUEUE_LABELS
+
+
+def _dequeued_label_predates_queue_command(
+    snapshot: Snapshot, controls: Sequence[Comment]
+) -> bool:
+    """Whether the dequeued label was applied before the newest control, a queue command.
+
+    GitHub lists issue comments in ascending order, so the last control is the
+    newest. Missing timestamps fail toward reporting the dequeue.
+    """
+    if not controls or snapshot.dequeued_at is None:
+        return False
+    newest = controls[-1]
+    last_command = CONTROL_COMMAND.findall(newest.body)[-1].lower()
+    if last_command != "queue" or newest.created_at is None:
+        return False
+    return snapshot.dequeued_at < newest.created_at
+
+
+def _is_dequeued(
+    snapshot: Snapshot, controls: Sequence[Comment], memory: QueueMemory, now: float
+) -> bool:
+    """Report a dequeue unless the label is a bounded-age leftover of a requeue."""
+    if not _lone_dequeued_label(snapshot):
+        memory.stale_dequeue_since = None
+        return False
+    if not _dequeued_label_predates_queue_command(snapshot, controls):
+        return True
+    if memory.stale_dequeue_since is None:
+        memory.stale_dequeue_since = now
+    return now - memory.stale_dequeue_since >= STALE_DEQUEUE_GRACE_SECONDS
+
+
+def _queue_terminal(snapshot: Snapshot, memory: QueueMemory, now: float) -> Decision | None:
     controls = _control_comments(snapshot.comments)
     new_controls = [
         item for item in controls if item.identifier not in memory.baseline_comment_ids
@@ -788,7 +880,7 @@ def _queue_terminal(snapshot: Snapshot, memory: QueueMemory) -> Decision | None:
         return Decision(Outcome.COMPETING_CONTROL, True)
     if snapshot.merged_at or snapshot.state == "closed":
         return Decision(Outcome.MERGED if snapshot.merged_at else Outcome.CLOSED, True)
-    if DEQUEUED_LABEL in snapshot.labels and not snapshot.labels & ACTIVE_QUEUE_LABELS:
+    if _is_dequeued(snapshot, controls, memory, now):
         return Decision(Outcome.DEQUEUED, True)
     current = _latest_checks(snapshot.checks, snapshot.head_sha)
     failures = tuple(check for check in current if check.bucket in {"fail", "cancel"})
@@ -799,9 +891,11 @@ def _queue_terminal(snapshot: Snapshot, memory: QueueMemory) -> Decision | None:
     return None
 
 
-def classify_queue(snapshot: Snapshot, memory: QueueMemory, *, remaining_seconds: int) -> Decision:
+def classify_queue(
+    snapshot: Snapshot, memory: QueueMemory, *, remaining_seconds: int, now: float
+) -> Decision:
     """Classify queue state, preserving uncertainty until the next observation."""
-    terminal = _queue_terminal(snapshot, memory)
+    terminal = _queue_terminal(snapshot, memory, now)
     if terminal is not None:
         return terminal
     wait = min(QUEUE_POLL_SECONDS, max(0, remaining_seconds))
@@ -869,6 +963,18 @@ def _result_with_links(
     )
 
 
+def _resolve_expected_head(expected_head: str, observed_head: str | None) -> str:
+    """Expand an abbreviated or uppercase expected SHA to the PR head it prefixes.
+
+    A prefix that does not match stays as given, so classification reports the
+    head change.
+    """
+    expected = expected_head.lower()
+    if observed_head is not None and observed_head.lower().startswith(expected):
+        return observed_head
+    return expected
+
+
 def _watch_ci(
     transport: Transport,
     clock: Clock,
@@ -882,6 +988,7 @@ def _watch_ci(
     memory = CiMemory()
     snapshot: Snapshot | None = None
     while clock.monotonic() < deadline:
+        first_read = snapshot is None
         try:
             snapshot = transport.ci_snapshot(repo, pr, deadline)
         except HeadChangedError as error:
@@ -892,6 +999,9 @@ def _watch_ci(
                 clock,
                 transport,
             )
+        if first_read:
+            # Resolve once: later reads must match the full SHA exactly.
+            expected_head = _resolve_expected_head(expected_head, snapshot.head_sha)
         decision = classify_ci(snapshot, expected_head)
         if decision.terminal:
             return _result_with_links(decision, snapshot, started, clock, transport)
@@ -930,6 +1040,7 @@ def _watch_queue(
             snapshot,
             memory,
             remaining_seconds=max(0, int(deadline - clock.monotonic())),
+            now=clock.monotonic(),
         )
         if decision.terminal:
             return _result_with_links(decision, snapshot, started, clock, transport)

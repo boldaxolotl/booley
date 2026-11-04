@@ -188,6 +188,7 @@ def snapshot(
     mergify_state: str | None = None,
     comments: tuple[watch_pr.Comment, ...] = (),
     producer_runs: tuple[watch_pr.ProducerRun, ...] = (),
+    dequeued_at: str | None = None,
 ) -> watch_pr.Snapshot:
     if required_check_names is None:
         required_check_names = {item.name for item in checks}
@@ -202,6 +203,7 @@ def snapshot(
         mergify_state,
         comments,
         producer_runs,
+        watch_pr._instant(dequeued_at, "dequeued_at") if dequeued_at else None,
     )
 
 
@@ -485,6 +487,14 @@ def test_ci_ignores_failure_from_an_old_head() -> None:
     assert decision.outcome == "pending"
 
 
+def test_ci_expands_an_abbreviated_expected_head() -> None:
+    transport = FakeTransport(ci=[snapshot(checks=(check(bucket="pass", head_sha=HEAD),))])
+
+    result = run_watch(transport, FakeClock(), mode="ci", expected_head=HEAD[:9].upper())
+
+    assert result.outcome == "ci_passed"
+
+
 def test_ci_returns_head_change_and_closure() -> None:
     assert watch_pr.classify_ci(snapshot(head=NEXT_HEAD), HEAD).outcome == "head_changed"
     assert watch_pr.classify_ci(snapshot(state="closed"), HEAD).outcome == "closed"
@@ -568,7 +578,7 @@ def test_queue_does_not_treat_old_failure_as_current_attempt() -> None:
 def test_queue_terminal_states(state: watch_pr.Snapshot, expected: str) -> None:
     memory = watch_pr.QueueMemory(initialized=True)
 
-    assert watch_pr.classify_queue(state, memory, remaining_seconds=600).outcome == expected
+    assert watch_pr.classify_queue(state, memory, remaining_seconds=600, now=0).outcome == expected
 
 
 def test_requeue_ignores_stale_dequeued_label_and_waits_for_merge() -> None:
@@ -591,7 +601,121 @@ def test_dequeued_label_beside_active_queue_label_stays_pending(active: str) -> 
     memory = watch_pr.QueueMemory(initialized=True)
     state = snapshot(labels={active, "dequeued"})
 
-    assert watch_pr.classify_queue(state, memory, remaining_seconds=600).outcome == "pending"
+    assert (
+        watch_pr.classify_queue(state, memory, remaining_seconds=600, now=0).outcome == "pending"
+    )
+
+
+def queue_command(created_at: str, body: str = "@mergifyio queue default") -> watch_pr.Comment:
+    return watch_pr.Comment("9", body, "owner", watch_pr._instant(created_at, "created_at"))
+
+
+def test_requeue_ignores_dequeued_label_that_predates_the_queue_command() -> None:
+    """Right after a requeue Mergify still shows only the prior attempt's label."""
+    requeue = (queue_command("2026-11-03T10:00:05Z"),)
+    transport = FakeTransport(
+        queue=[
+            snapshot(labels={"dequeued"}, comments=requeue, dequeued_at="2026-11-03T09:40:00Z"),
+            snapshot(labels={"queued"}, comments=requeue),
+            snapshot(state="merged", merged_at="2026-11-03T11:00:00Z", comments=requeue),
+        ]
+    )
+
+    result = run_watch(transport, FakeClock(), mode="queue", timeout=2000)
+
+    assert result.outcome == "merged"
+
+
+def test_stale_dequeued_label_is_reported_once_the_grace_expires() -> None:
+    """Mergify never acted on the queue command, so the PR really is dequeued."""
+    stale = snapshot(
+        labels={"dequeued"},
+        comments=(queue_command("2026-11-03T10:00:05Z"),),
+        dequeued_at="2026-11-03T09:40:00Z",
+    )
+    clock = FakeClock()
+
+    result = run_watch(FakeTransport(queue=[stale, stale]), clock, mode="queue", timeout=2000)
+
+    assert result.outcome == "dequeued"
+    assert clock.sleeps == [600]
+
+
+@pytest.mark.parametrize(
+    "command", ["@mergifyio queue default", "@mergifyio dequeue"], ids=["requeued", "dequeue"]
+)
+def test_dequeued_label_newer_than_last_control_ends_watch(command: str) -> None:
+    state = snapshot(
+        labels={"dequeued"},
+        comments=(queue_command("2026-11-03T10:00:05Z", command),),
+        dequeued_at="2026-11-03T10:20:00Z",
+    )
+    memory = watch_pr.QueueMemory(baseline_comment_ids={"9"}, initialized=True)
+
+    assert (
+        watch_pr.classify_queue(state, memory, remaining_seconds=600, now=0).outcome == "dequeued"
+    )
+
+
+def test_queue_snapshot_reads_label_events_only_for_a_lone_dequeued_label() -> None:
+    transport = watch_pr.GhTransport(clock=FakeClock())
+    labels = iter([[{"name": "queued"}], [{"name": "dequeued"}]])
+    event_reads: list[str] = []
+    events = [
+        [
+            {
+                "event": "labeled",
+                "label": {"name": "dequeued"},
+                "created_at": "2026-11-03T09:00:00Z",
+            },
+            {
+                "event": "unlabeled",
+                "label": {"name": "dequeued"},
+                "created_at": "2026-11-03T09:30:00Z",
+            },
+            {
+                "event": "labeled",
+                "label": {"name": "dequeued"},
+                "created_at": "2026-11-03T09:40:00Z",
+            },
+            {
+                "event": "labeled",
+                "label": {"name": "queued"},
+                "created_at": "2026-11-03T09:50:00Z",
+            },
+            {"event": "closed", "created_at": "2026-11-03T09:55:00Z"},
+        ]
+    ]
+    comment = {
+        "id": 9,
+        "body": "@mergifyio queue default",
+        "user": {"login": "owner"},
+        "created_at": "2026-11-03T10:00:05Z",
+    }
+    transport._pull = lambda *_args: {  # type: ignore[method-assign]
+        "url": URL,
+        "state": "OPEN",
+        "mergedAt": None,
+        "headRefOid": HEAD,
+        "labels": next(labels),
+        "statusCheckRollup": [],
+    }
+    transport._checks = lambda *_args: []  # type: ignore[method-assign]
+    transport._comments = lambda *_args: [[comment]]  # type: ignore[method-assign]
+
+    def label_events(*_args: object) -> list[list[dict[str, object]]]:
+        event_reads.append("read")
+        return events
+
+    transport._label_events = label_events  # type: ignore[method-assign]
+
+    queued = transport.queue_snapshot("example/repo", 7, 100)
+    dequeued = transport.queue_snapshot("example/repo", 7, 100)
+
+    assert queued.dequeued_at is None
+    assert dequeued.dequeued_at == watch_pr._instant("2026-11-03T09:40:00Z", "t")
+    assert dequeued.comments[0].created_at == watch_pr._instant("2026-11-03T10:00:05Z", "t")
+    assert event_reads == ["read"]
 
 
 def test_queue_transient_label_inconsistency_stays_pending() -> None:
