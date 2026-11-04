@@ -223,7 +223,7 @@ def _timing_report_paths(work_dir: Path) -> int | None:
 
     ``None`` when unset, so the backend default applies and the configure argv
     stays unchanged. The count is a report-size policy, not a recipe input: it
-    must not enter the recipe fingerprint (Goal criteria pin it), which is why
+    must not enter the recipe fingerprint (Goal Criteria pin it), which is why
     it lives here and not in a Target's ``advanced_settings_openroad``.
 
     Raises ``BoundaryError`` on anything but an integer of at least 1.
@@ -1069,7 +1069,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     )
     code_modifying: bool = False
     # ``[flows.synth].timing_report_paths``, latched by ``_resolve_run_policy``.
-    _timing_report_paths: int | None = None
+    _report_path_count: int | None = None
     # Minimum outer MCP kill budget (seconds). mcp_server scales this floor by
     # per-target timeout, matrix width, and baseline/current pass count.
     default_timeout: ClassVar[int] = 7200
@@ -1245,8 +1245,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         self._append_sta_constraint_args(cmd, resolved, target, work_dir, synth_mode)
         self._append_typed_param_args(cmd, resolved, target, top)
         self._append_synth_recipe_args(cmd, resolved, target)
-        if self._timing_report_paths is not None:
-            cmd.extend(["--timing-report-paths", str(self._timing_report_paths)])
+        if self._report_path_count is not None:
+            cmd.extend(["--timing-report-paths", str(self._report_path_count)])
         cmd.extend(["-w", target])
         return _PlannedSynthRecipe(tuple(cmd), resolved)
 
@@ -1960,7 +1960,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             return "synth is disabled ([flows.synth].enabled = false)."
         try:
             self._timing_violation_is_fatal = _fail_on_timing_violation(self.args.work_dir)
-            self._timing_report_paths = _timing_report_paths(self.args.work_dir)
+            self._report_path_count = _timing_report_paths(self.args.work_dir)
         except BoundaryError as exc:
             return f"synth: {exc}"
         return None

@@ -45,9 +45,9 @@ if {[llength $_pre_slacks] > 0} {
   puts [format "STA_PRE_REPAIR_WORST_SLACK_NS: %.6f" [lindex $_pre_slacks 0]]
 }
 if {[llength $_pre_slacks] > 0} {
-  report_checks -path_delay max -sort_by_slack -group_count 10 -slack_max [lindex $_pre_slacks end] > {<WORK>/reports/timing/pre_repair.rpt}
+  report_checks -path_delay max -sort_by_slack -group_path_count 10 -slack_max [expr {[lindex $_pre_slacks end] + 1e-6}] > {<WORK>/reports/timing/pre_repair.rpt}
 } else {
-  report_checks -path_delay max -sort_by_slack -group_count 10 > {<WORK>/reports/timing/pre_repair.rpt}
+  report_checks -path_delay max -sort_by_slack -group_path_count 10 > {<WORK>/reports/timing/pre_repair.rpt}
 }
 flush stdout
 puts "BOOLEY_STAGE: repair_timing"
@@ -71,9 +71,9 @@ if {[llength $slacks] > 0} {
   puts [format "STA_WORST_SLACK_NS: %.6f" [lindex $slacks 0]]
 }
 if {[llength $slacks] > 0} {
-  report_checks -path_delay max -sort_by_slack -group_count 10 -slack_max [lindex $slacks end] > {<WORK>/reports/timing/overall.rpt}
+  report_checks -path_delay max -sort_by_slack -group_path_count 10 -slack_max [expr {[lindex $slacks end] + 1e-6}] > {<WORK>/reports/timing/overall.rpt}
 } else {
-  report_checks -path_delay max -sort_by_slack -group_count 10 > {<WORK>/reports/timing/overall.rpt}
+  report_checks -path_delay max -sort_by_slack -group_path_count 10 > {<WORK>/reports/timing/overall.rpt}
 }
 if {[llength [info commands foreach_in_collection]] == 0} {
   proc foreach_in_collection {_var _coll _body} {
@@ -100,5 +100,5 @@ if {![catch {set _r2r [find_timing_paths -path_delay max -sort_by_slack -group_p
   set _r2r_slacks {}
   foreach _p [lrange $_r2r 0 9] { lappend _r2r_slacks [get_property $_p slack] }
   puts [format "STA_REG2REG_SLACK_NS: %.6f" [lindex $_r2r_slacks 0]]
-  catch {report_checks -path_delay max -sort_by_slack -group_count 10 -from [all_registers] -to [all_registers] -format full -slack_max [lindex $_r2r_slacks end] > {<WORK>/reports/timing/reg2reg.rpt}}
+  catch {report_checks -path_delay max -sort_by_slack -group_path_count 10 -from [all_registers] -to [all_registers] -format full -slack_max [expr {[lindex $_r2r_slacks end] + 1e-6}] > {<WORK>/reports/timing/reg2reg.rpt}}
 }

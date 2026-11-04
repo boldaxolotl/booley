@@ -19,30 +19,35 @@ _REG2REG_SLACK_RE = re.compile(r"STA_REG2REG_SLACK_NS:\s*([-+]?\d+(?:\.\d+)?)")
 _STA_CLOCK_PERIOD_RE = re.compile(r"STA_CLOCK_PERIOD_NS:\s*([-+]?\d+(?:\.\d+)?)")
 
 
-def top_paths_report_tcl(slacks_var: str, count: int, report_args: str, report_path: str) -> str:
+def slack_cap_tcl(slacks_var: str) -> str:
+    """Tcl option capping ``report_checks`` at the slack of the last kept path.
+
+    ``get_property slack`` returns the slack rounded to six decimals, while
+    ``-slack_max`` compares against the unrounded value. When the rounding goes
+    down, the cap would drop the last kept path (and with one path, every
+    path). One printed unit (1e-6 ns) of margin keeps it; a path that near-ties
+    with the last kept one may then also be listed.
+    """
+    return f"-slack_max [expr {{[lindex ${slacks_var} end] + 1e-6}}]"
+
+
+def top_paths_report_tcl(slacks_var: str, count: int, report_path: str) -> str:
     """Tcl writing a text ``report_checks`` that holds the global worst *count* paths.
 
-    ``report_checks -group_count N`` applies N per path group (each clock, SDC
-    ``group_path``, async and gating group), so on its own it can list N x G
-    paths. Capping it with ``-slack_max`` at the slack of the last kept path
-    makes the text report hold the same worst *count* paths as the CSV (plus
-    exact ties). With no paths the report runs uncapped and says "No paths".
+    ``report_checks -group_path_count N`` applies N per path group (each clock,
+    SDC ``group_path``, async and gating group), so on its own it can list
+    N x G paths. Capping it with ``-slack_max`` at the slack of the last kept
+    path makes the text report hold the same worst *count* paths as the CSV
+    (plus near ties). With no paths the report runs uncapped and says "No paths".
 
     ``$slacks_var`` must hold the kept paths' slacks as plain numbers, worst
     first: ``report_checks`` frees the path objects ``find_timing_paths``
     returned, so touching them afterwards crashes OpenROAD.
     """
-    base = " ".join(
-        part
-        for part in (
-            f"report_checks -path_delay max -sort_by_slack -group_count {count}",
-            report_args,
-        )
-        if part
-    )
+    base = f"report_checks -path_delay max -sort_by_slack -group_path_count {count}"
     return (
         f"if {{[llength ${slacks_var}] > 0}} {{\n"
-        f"  {base} -slack_max [lindex ${slacks_var} end] > {{{report_path}}}\n"
+        f"  {base} {slack_cap_tcl(slacks_var)} > {{{report_path}}}\n"
         "} else {\n"
         f"  {base} > {{{report_path}}}\n"
         "}\n"
@@ -82,8 +87,8 @@ def reg2reg_timing_tcl(
         # The guard below ensures the slack list is non-empty, so the cap is valid.
         report_block = (
             "  catch {report_checks -path_delay max -sort_by_slack "
-            f"-group_count {report_paths} -from [all_registers] -to [all_registers] "
-            f"-format full -slack_max [lindex $_r2r_slacks end] > {{{report_path}}}}}\n"
+            f"-group_path_count {report_paths} -from [all_registers] -to [all_registers] "
+            f"-format full {slack_cap_tcl('_r2r_slacks')} > {{{report_path}}}}}\n"
         )
     return (
         "if {![catch {set _r2r [find_timing_paths -path_delay max "

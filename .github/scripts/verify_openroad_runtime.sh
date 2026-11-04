@@ -258,8 +258,9 @@ run_openroad "repair-on"
 grep -Fq "BOOLEY_STAGE: repair_timing" "$work/openroad-repair-on.log"
 
 # Top-N timing reports (default N = 10): the CSVs list several worst-first
-# paths, the first one matches the worst-slack marker, and the text report is
-# capped to the same paths (at most the CSV count plus exact ties).
+# paths, the first one matches the worst-slack marker, and the text report
+# lists every CSV endpoint. It is capped to the same paths: the CSV count plus
+# a few near ties (the cap carries a 1e-6 rounding margin).
 python - "$work" <<'PY'
 import re
 import sys
@@ -268,17 +269,31 @@ from pathlib import Path
 work = Path(sys.argv[1])
 log = (work / "openroad-repair-on.log").read_text(encoding="utf-8")
 reports = work / "repair-on" / "reports"
+
+
+def require(condition, message):
+    # An explicit exit, not assert: python -O must not turn the check off.
+    if not condition:
+        sys.exit(f"top-N timing report check failed: {message}")
+
+
 for csv_name, text_name, marker in (
     ("overall.csv.rpt", "overall.rpt", "STA_WORST_SLACK_NS"),
     ("pre_repair.csv.rpt", "pre_repair.rpt", "STA_PRE_REPAIR_WORST_SLACK_NS"),
 ):
     rows = (reports / csv_name).read_text(encoding="utf-8").splitlines()
     slacks = [float(row.rsplit(",", 1)[1]) for row in rows]
-    assert 2 <= len(slacks) <= 10, (csv_name, len(slacks))
-    assert slacks == sorted(slacks), (csv_name, slacks)
+    require(2 <= len(slacks) <= 10, f"{csv_name} lists {len(slacks)} paths")
+    require(slacks == sorted(slacks), f"{csv_name} is not worst first: {slacks}")
     logged = re.search(rf"^{marker}: (\S+)$", log, re.MULTILINE)
-    assert logged and float(logged.group(1)) == slacks[0], (marker, slacks[0])
-    listed = (reports / text_name).read_text(encoding="utf-8").count("slack (")
-    ties = sum(slack == slacks[-1] for slack in slacks)
-    assert len(slacks) <= listed <= len(slacks) + ties, (text_name, listed, len(slacks))
+    require(logged and float(logged.group(1)) == slacks[0], f"{marker} is not row 1")
+    text = (reports / text_name).read_text(encoding="utf-8")
+    listed = text.count("slack (")
+    require(
+        len(slacks) <= listed <= len(slacks) + 2,
+        f"{text_name} lists {listed} paths for {len(slacks)} CSV rows",
+    )
+    for row in rows:
+        endpoint = row.split(",")[1]
+        require(endpoint in text, f"{text_name} misses CSV endpoint {endpoint}")
 PY

@@ -145,7 +145,7 @@ def _pre_repair_snapshot_tcl(config: StaTimingConfig, pre_rpt: str, pre_csv: str
         "close $_pre_csv\n"
         "if {[llength $_pre_slacks] > 0} {\n"
         '  puts [format "STA_PRE_REPAIR_WORST_SLACK_NS: %.6f" [lindex $_pre_slacks 0]]\n'
-        "}\n" + top_paths_report_tcl("_pre_slacks", count, "", pre_rpt) + "flush stdout\n"
+        "}\n" + top_paths_report_tcl("_pre_slacks", count, pre_rpt) + "flush stdout\n"
     )
 
 
@@ -189,7 +189,7 @@ def write_openroad_script(
     csv = (report_dir / "overall.csv.rpt").as_posix()
     count = config.report_paths
     reg2reg_block = reg2reg_timing_tcl((report_dir / "reg2reg.rpt").as_posix(), report_paths=count)
-    final_report_block = top_paths_report_tcl("slacks", count, "", rpt)
+    final_report_block = top_paths_report_tcl("slacks", count, rpt)
     perclock_block = perclock_timing_tcl()
 
     repair_timing_line = _repair_timing_tcl(config)

@@ -194,8 +194,9 @@ only the exit code doesn't treat a design missing timing as success.
 `timing_report_paths` (integer, at least 1; a smaller value stops the run
 with a configuration error) sets how many setup paths the timing reports in
 `reports/timing/` list: `overall.rpt`, `overall.csv.rpt`, the `pre_repair`
-pair, and `reg2reg.rpt`. Each lists the worst path to each of the N worst
-endpoints, worst first. Worst slack, critical path, Fmax, and the verdict
+pair (written only when timing repair runs), and `reg2reg.rpt` (only when the
+design has registers). Each lists the worst path to each of the N worst
+endpoints, worst first; a design with fewer paths lists those it has. Worst slack, critical path, Fmax, and the verdict
 still come from the single worst path.
 
 Everything about how the design is built lives on the Target in the `.core`

@@ -180,8 +180,8 @@ class TestWriteScript:
         # text report capped at the last kept path's slack.
         query = "set paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count 10]"
         capped = (
-            "report_checks -path_delay max -sort_by_slack -group_count 10 "
-            "-slack_max [lindex $slacks end] > "
+            "report_checks -path_delay max -sort_by_slack -group_path_count 10 "
+            "-slack_max [expr {[lindex $slacks end] + 1e-6}] > "
         )
         assert query in text
         assert capped in text
@@ -198,8 +198,10 @@ class TestWriteScript:
         reports = self._lines(text, "report_checks")
         # overall and pre-repair: capped plus the "No paths" fallback; reg2reg: capped.
         assert len(reports) == 5
-        assert all("-group_count 3 " in line for line in reports)
-        assert sum("-slack_max" in line for line in reports) == 3
+        assert all("-group_path_count 3 " in line for line in reports)
+        # The cap carries the rounding margin (get_property slack is rounded).
+        cap = "-slack_max [expr {[lindex"
+        assert sum(cap in line and "+ 1e-6}]" in line for line in reports) == 3
         assert sum("reg2reg.rpt" in line for line in reports) == 1
         assert sum("pre_repair.rpt" in line for line in reports) == 2
         assert sum("overall.rpt" in line for line in reports) == 2
@@ -211,7 +213,8 @@ class TestWriteScript:
         assert "foreach path [lrange $paths 0 2] {" in text
         assert "foreach _pp [lrange $_pre_paths 0 2] {" in text
         assert "foreach _p [lrange $_r2r 0 2] {" in text
-        assert "-group_count 10" not in text
+        assert "-group_path_count 10" not in text
+        assert "-group_count" not in text
 
     def test_worst_slack_markers_stay_single_path(self, tmp_path):
         text = self._write(tmp_path, report_paths=4)
