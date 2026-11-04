@@ -233,7 +233,7 @@ class Specialist(McpTool):
             cfg = get_agent_settings()
             return cfg.model_for_role(self.name, tier)
         except (ImportError, AttributeError):
-            return _DEFAULT_TIER_MODELS.get(tier, "claude-opus-4-8")
+            return _DEFAULT_TIER_MODELS[tier]
 
     def _resolve_effort(self) -> str | None:
         """Resolve reasoning effort for the active tier."""
