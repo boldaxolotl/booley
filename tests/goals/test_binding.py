@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from booley.core.booley_dir import reset_cache
 from booley.goals.binding import GoalBindingError, GoalRunBinding, bind_run
 from booley.goals.entry import EntryEnvironment, EntryRequest, enter_goal_mode
 from booley.goals.model import GoalState, parse_goal_args
 from booley.goals.paths import record_paths
+from booley.goals.status import build_status
 from booley.goals.store import GoalStore
+from booley.goals.warnings import protected_warnings
+from tests.conftest import symlink_or_skip
 from tests.goals.conftest import LINT_KEY, SIM_KEY, git
+from tests.goals.test_declared_inputs import configure, enter
+from tests.goals.test_finish_inputs import mount_spelling
 
 
 class _Crash(BaseException):
@@ -89,6 +96,87 @@ def test_protected_input_changed_before_the_run_binds_ineligible(
 
     assert binding.eligible is False
     assert "differs from its state at entry" in binding.ineligible_reason
+
+
+@pytest.mark.parametrize("edited", [False, True], ids=["unchanged", "edited"])
+@pytest.mark.parametrize(
+    "spelling", ["entry-alias", "second-alias", "physical", "mount", "entered-physical"]
+)
+def test_binding_and_goal_status_agree_through_worktree_aliases(
+    layout: SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    spelling: str,
+    edited: bool,
+) -> None:
+    """Run binding and ``goal_status`` read one verdict however the worktree is spelled.
+
+    The Project names its Booley Directory by an absolute path written through
+    symlink alias ``alias1``, and declares ``Makefile`` as a protected input. The
+    Goal is entered through ``alias1``, except in ``entered-physical``, which enters
+    through the physical path so the entry labels come from the saved input paths
+    and not from the override's own spelling. Each case then checks through its
+    own spelling.
+    """
+    if os.name == "nt" and spelling == "mount":
+        pytest.skip("POSIX namespace-spelling fixture uses symlinks")
+    physical = layout.worktree
+    aliases = {}
+    for name in ("alias1", "alias2"):
+        alias = tmp_path / name
+        symlink_or_skip(alias, tmp_path, target_is_directory=True)
+        aliases[name] = alias / physical.relative_to(tmp_path)
+    configure(layout, ["Makefile"])
+    (physical / "booley.toml").write_text(
+        f"[project]\ndir = '{(aliases['alias1'] / '.booley').as_posix()}'\n", encoding="utf-8"
+    )
+    git(physical, "add", "booley.toml")
+    git(physical, "commit", "-qm", "name the Booley Directory through an alias")
+    reset_cache()
+    if spelling != "entered-physical":
+        layout.worktree = aliases["alias1"]
+    enter(layout)
+    if edited:
+        (physical / "Makefile").write_text("all:\n\tfalse\n", encoding="utf-8")
+
+    checked = layout
+    work_dir = {
+        "entry-alias": aliases["alias1"],
+        "second-alias": aliases["alias2"],
+        "physical": physical,
+        "mount": physical,
+        "entered-physical": physical,
+    }[spelling]
+    if spelling == "mount":
+        checked = mount_spelling(layout, tmp_path, monkeypatch)
+        work_dir = checked.worktree
+    reset_cache()
+
+    store = GoalStore(checked.control)
+    binding = bind_run(store, work_dir, "run-1")
+    record = store.load(layout.record.id)
+    reasons = protected_warnings(record, checked.control, work_dir)
+    status_warning = build_status(store, record, work_dir=work_dir).warning
+
+    assert binding.eligible == (reasons == ())
+    assert binding.ineligible_reason == "; ".join(reasons)
+    assert edited == bool(reasons)
+    status_lines = status_warning.splitlines()
+    assert all(f"WARNING: {reason}" in status_lines for reason in reasons)
+    assert edited or "protected input" not in status_warning
+
+
+def test_malformed_stored_protected_path_binds_ineligible(goal_mode: SimpleNamespace) -> None:
+    store = _store(goal_mode)
+    record = store.load(goal_mode.record.id)
+    with store.record_lock(record.id) as lock:
+        store.save(lock, replace(record, protected_paths=("bogus:x",)))
+
+    binding = bind_run(store, goal_mode.worktree, "run-1")
+
+    assert binding.eligible is False
+    assert binding.protected_paths == ("bogus:x",)
+    assert "protected inputs cannot be inspected" in binding.ineligible_reason
 
 
 def test_wrong_branch_is_refused(goal_mode: SimpleNamespace) -> None:

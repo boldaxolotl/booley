@@ -44,12 +44,17 @@ from contextlib import ExitStack, contextmanager
 
 from booley.flows.execution_persistence import AcceptanceRecordingError, EvidenceDiscarded
 from booley.goals.apply_barrier import require_no_apply
-from booley.goals.binding import GoalRunBinding, checkout_drift, protected_drift
+from booley.goals.binding import GoalRunBinding, checkout_drift
 from booley.goals.model import GoalRecord, GoalState
 from booley.goals.paths import record_paths
 from booley.goals.presentation import goal_presentation
 from booley.goals.proposals import ProposalError
-from booley.goals.protected_inputs import ProtectedInputError, snapshot_protected_inputs
+from booley.goals.protected_inputs import (
+    ProtectedInputError,
+    ProtectedSnapshot,
+    check_goal_inputs,
+    snapshot_violations,
+)
 from booley.goals.store import GoalRecordNotFoundError, GoalStore, GoalStoreError
 
 __all__ = ["EvidenceDiscarded", "PublicationGate"]
@@ -140,9 +145,7 @@ class PublicationGate:
             raise EvidenceDiscarded(str(exc)) from exc
         if record.state is not GoalState.ACTIVE:
             raise EvidenceDiscarded(f"Goal Mode {record.state.value}")
-        if record.revision != binding.record_revision and protected_drift(
-            record, binding.start_snapshot()
-        ):
+        if record.revision != binding.record_revision and self._baseline_moved(record):
             raise EvidenceDiscarded(
                 "the Goal Mode's protected-input baseline changed during the run"
             )
@@ -162,11 +165,23 @@ class PublicationGate:
                     f"Goal {goal_presentation(next(goal.spec for goal in record.goals if goal.spec.key == key)).text} changed during the run"
                 )
 
-    def _check_protected_inputs_now(self, record: GoalRecord) -> None:
+    def _baseline_moved(self, record: GoalRecord) -> bool:
+        """Whether the record's entry baseline differs from the one the run was admitted under."""
         try:
-            snapshot = snapshot_protected_inputs(self.binding.protected_roots())
+            return bool(
+                snapshot_violations(
+                    self.binding.start_snapshot(), ProtectedSnapshot.at_entry(record)
+                )
+            )
         except ProtectedInputError as exc:
             raise EvidenceDiscarded(f"protected inputs cannot be read: {exc}") from exc
-        reason = protected_drift(record, snapshot)
-        if reason:
-            raise EvidenceDiscarded(f"protected input changed during the run: {reason}")
+
+    def _check_protected_inputs_now(self, record: GoalRecord) -> None:
+        binding = self.binding
+        violations = check_goal_inputs(
+            record, binding.worktree_root, binding.booley_dir
+        ).violations
+        if violations:
+            raise EvidenceDiscarded(
+                f"protected input changed during the run: {'; '.join(violations)}"
+            )
