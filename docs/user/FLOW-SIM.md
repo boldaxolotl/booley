@@ -1,8 +1,10 @@
 # Simulation (`sim`)
 
-`sim` builds a simulation Target and runs its Tests, then reports which ones
-passed. The Target decides the simulator (Verilator or Icarus) and the kind of
-testbench (HDL or cocotb). Use it to check that a change still passes its
+The simulation Flow, `sim`, simulates your design with one of the supported
+simulator EDA tools: Verilator or Icarus (see
+[Supported EDA tools](SUPPORTED-EDA-TOOLS.md)). Each simulation Target picks its
+simulator and kind of testbench (HDL or cocotb) and declares the Tests to run;
+`sim` reports which ones passed. Use it to check that a change still passes its
 tests, to reproduce a failure with a waveform, or, with an
 [elaboration check](#elaboration-checks), to see quickly whether the design
 still compiles. It does not catch style problems or estimate area and timing:
@@ -11,7 +13,9 @@ use [Lint](FLOW-LINT.md) and [ASIC synthesis](FLOW-SYNTH.md) for those.
 What all Flows share (choosing Targets, common options, live progress, exit
 codes) is in [Running Flows](FLOW_REFERENCE.md). How to declare a Target's
 Tests, Test Variants and seeds is in [Tests](TESTS.md); measuring how much RTL
-the tests exercise is in [Coverage](COVERAGE.md).
+the tests exercise is in [Coverage](COVERAGE.md); checking that the tests
+catch planted bugs is the Mutation Tester's job in
+[Specialists](SPECIALISTS.md).
 
 ## Running a simulation
 
@@ -21,11 +25,11 @@ the tests exercise is in [Coverage](COVERAGE.md).
 2. Ask the Developer Agent to run the tests, naming the Target and, if you
    want, the tests:
 
-    > *"Run the sim tests on `sim_soc`."*
+    > *"Run simulation: all tests on the `sim_soc` Target."*
     >
-    > *"Run `irq` and `reset` on `sim_soc`."*
+    > *"Run the `irq` and `reset` tests on the `sim_soc` Target."*
     >
-    > *"Run `stress` with 20 random seeds."*
+    > *"Run the `stress` test with 20 random seeds on the `sim_soc` Target."*
 
 3. The agent reports each Test Run as passed or failed, with the path to its
    log. When a test fails, it reads the log, and it can rerun that one Test
@@ -39,7 +43,7 @@ the tests exercise is in [Coverage](COVERAGE.md).
 To reproduce a run yourself inside the Sandbox:
 
 ```bash
-booley flow sim --target sim_soc                        # the whole suite
+booley flow sim --target sim_soc                        # all tests for this Target
 booley flow sim --target sim_soc --test reset --test irq
 booley flow sim --target sim_soc --test stress@x20      # 20 random seeds
 booley flow sim --target sim_soc --test irq --trace     # with a waveform
@@ -115,15 +119,10 @@ Each Test Run gets one verdict:
 
 | Verdict | Meaning | Exit |
 |---|---|---:|
-| Pass / fail | An HDL testbench passes or fails by the [message it prints](#passfail-sentinels-and-cycle-counts). A Cocotb Target uses cocotb's result file, and assertion messages in the output can still fail a test. | `0` / `1` |
-| Inconclusive | The simulation ended cleanly without a pass or fail message, or a `--trace` run produced no usable waveform. It never counts as a pass. | `1` |
+| Pass / fail | An HDL testbench passes or fails by the [message it prints](#passfail-sentinels-and-cycle-counts). A Cocotb Target uses cocotb's result file. Either way, [error and assertion messages](#passfail-sentinels-and-cycle-counts) in the output fail a test even when it printed its pass message, and so does a nonzero simulator exit code. A test also fails when it reads a `$readmemh` file that is missing and not declared in the Target (reported as `missing_input`; [declare it with `copyto`](TARGETS.md#design-description-core)), or when a [Pre-Sim Command](#pre-sim-commands-flowssimpre_run_commands) preparing it fails or times out. | `0` / `1` |
+| Inconclusive | The simulator exited with code `0` without printing a pass or fail message, or a `--trace` run produced no usable waveform. It never counts as a pass. | `1` |
 | Timeout | The simulation ran past its time limit (`timeout_ms`, ten minutes by default). It counts as a failure: look for a deadlock in the RTL or testbench, or raise the limit if the test really needs longer. | `1` |
 | Error | An infrastructure problem stopped the test, such as a build timeout, a build failure with no recognised design error, a missing tool, or Pre-Sim Commands that can't start; the result says nothing about the design. An RTL compile error or a simulator crash is a failure instead. | `2` |
-
-A test that reads a `$readmemh` file that is missing and not declared in the
-Target fails as `missing_input`. A failing or timed-out
-[Pre-Sim Command](#pre-sim-commands-flowssimpre_run_commands) fails the tests
-it was preparing.
 
 Each Test Run's full simulator output is in `tests/<test run>/run.log` under
 the Target's report directory (a Cocotb Target has one `tests/batch…/`
@@ -137,10 +136,10 @@ Goal needs, and how seeds are frozen, is in
 
 ## Pass/fail sentinels and cycle counts
 
-A simulation that ends cleanly hasn't necessarily passed: a testbench can call
-`$finish` early or never check anything. So for an HDL testbench Booley looks
-for a pass or fail message, a **sentinel**, in the simulator output. By default
-these are `[SIM_RESULT] PASSED` and `[SIM_RESULT] FAILED`:
+A simulation that exits with code `0` hasn't necessarily passed: a testbench
+can call `$finish` early or never check anything. So for an HDL testbench
+Booley looks for a pass or fail message, a **sentinel**, in the simulator
+output. By default these are `[SIM_RESULT] PASSED` and `[SIM_RESULT] FAILED`:
 
 ```systemverilog
 $display("[SIM_RESULT] PASSED");
@@ -161,21 +160,47 @@ contain the default pass sentinel; a custom one it can't find is only a note,
 because the testbench may build the message at run time. A Cocotb Target takes
 its verdicts from cocotb, so sentinels don't apply to it.
 
-**Cycle counts.** A testbench can also report how many cycles a test took by
-printing `[SIM_CYCLES] <test> <count>`, for example `[SIM_CYCLES] coremark 12345`.
+**Error and assertion messages.** A pass sentinel isn't enough on its own.
+A test also fails, on any simulator and testbench kind, when its output
+contains `$error`, `$fatal`, `] Error:` or `Fatal:`, a line with `Assertion`
+and `FAILED` or `ERROR`, or a line starting with `ERROR: `. This catches SVA
+assertions that fire while the testbench still reports success. If your
+testbench prints such words as ordinary text, reword those messages.
+
+**Cycle counts.** Cycle count is the performance number for RTL work: a
+faster divider or a better branch predictor shows up as fewer cycles for the
+same test. The simulator can't tell Booley that number, because only the
+testbench knows which cycles count (say, from the benchmark's start to its
+end, not the reset sequence). So the testbench reports it by printing
+`[SIM_CYCLES] <test> <count>`, for example `[SIM_CYCLES] coremark 12345`.
+Without it, Booley has no cycle count for the test, and a `CYCLE_COUNT` Goal
+on it stays unmet.
 `cycle_sentinels` replaces that prefix with one your testbench already prints,
 such as `["CoreMark completed in:"]` for `CoreMark completed in: coremark 12345`.
 Counts appear as `cycles=N` on the verdict card and in the report, also for
 Cocotb Targets. They are informational unless a `CYCLE_COUNT` Goal sets
-[thresholds](GOAL-MODE.md#thresholds) on them.
+[thresholds](GOAL-MODE.md#thresholds) on them, such as "at most 12,000
+cycles" or "cycle count drops at least 8%" against the code the Goal started
+from.
 
 ## Waveforms
 
-Ask the agent to rerun a failing test with a waveform, or pass `--trace`. The
-agent reads the waveform itself with B-Wave, and can open the part you care
-about in VS Code ([Viewing waveforms](USAGE.md#viewing-waveforms)). A traced run
+Ask the agent to rerun a failing test with a waveform, or pass `--trace`.
+Then ask the agent what happened in that run, for example why a test failed
+or when a signal changed, and it answers by reading the waveform with B-Wave.
+It can also open the part you care about in VS Code
+([Viewing waveforms](USAGE.md#viewing-waveforms)). A traced run
 that produces no fresh, readable waveform is inconclusive rather than passing
 silently.
+
+Booley stores every waveform as FST, a compact format that B-Wave and common
+viewers (GTKWave, VaporView) read. The simulator can write either format:
+
+- **FST**: Booley uses the file as it is.
+- **VCD**: Booley converts it to FST for you. With Verilator the conversion
+  runs while the test runs, so the full VCD never lands on disk. Icarus and
+  Cocotb Targets write the VCD first and Booley converts it after the run
+  (Verilator does the same on Windows).
 
 How tracing is switched on depends on the Target:
 
@@ -183,8 +208,10 @@ How tracing is switched on depends on the Target:
   no changes.
 - **Verilator**: Booley builds with tracing and passes `+trace` and
   `+tracefile=<file>` to the simulation, which the Target's C++ `main()` must
-  handle.
-- **Cocotb Target**: see [Tracing a Cocotb Target](TARGETS.md#tracing-a-cocotb-target).
+  handle. A Target built with `--trace-fst` writes FST directly; otherwise
+  the dump is VCD.
+- **Cocotb Target**: Booley drives the dump itself; see
+  [Tracing a Cocotb Target](#tracing-a-cocotb-target).
 
 If your Verilator `main()` takes other options, declare them in `trace_args`.
 `{file}` becomes the waveform path, and the list replaces the default pair.
@@ -206,9 +233,30 @@ trace_files = ["fpu.vcd"]   # .fst also works; globs are allowed
 
 Booley looks for each entry in the [run directory](#sim-working-directory-flowssimrun_cwd),
 then the trace directory, then the build directory, and only when its own
-waveform file is missing. The file must be written by the current run. A VCD
-of up to 2 GiB is converted to FST; a larger one is kept for diagnosis but not
-accepted, so narrow the dump.
+waveform file is missing. The file must be written by the current run. An FST
+file is used as it is. A VCD file is converted after the run, and only up to
+2 GiB: a larger one is kept for diagnosis but doesn't count as a waveform.
+Narrow the dump, dump FST instead, or convert it yourself with `bwave build`.
+
+### Tracing a Cocotb Target
+
+`booley flow sim --target <target> --trace` works on a Cocotb Target with no
+trace setup in the `.core`. The simulator writes a VCD, and Booley converts it
+to FST after the run. If the conversion fails, the VCD is kept as `trace.vcd`
+in the Target's simulation work directory, next to the error output.
+[`[flows.sim].trace_args`](#waveforms)
+has no effect here: Booley drives the dump itself.
+
+On a Verilator Cocotb Target, `verilator_options` may contain `--trace` or
+`--trace-vcd`, or no trace flag at all. `--trace-fst` makes a traced run fail
+with:
+
+```text
+Cocotb Target '<target>' requests native FST tracing, but the Cocotb run-half currently owns a VCD dump; use a VCD trace recipe for this Target
+```
+
+Replace `--trace-fst` with `--trace`, and remove any `-DVM_TRACE_FMT_FST`
+define along with it.
 
 ## Elaboration checks
 
@@ -254,7 +302,13 @@ booley flow sim --resume-from <manifest.json>
     | Testbench | Unit of work | On resume |
     |---|---|---|
     | HDL | one Test Run | Only Test Runs without a result run again. |
-    | cocotb | the whole batch | An interrupted batch reruns all its tests. |
+    | cocotb | the whole batch | Finished batches are skipped; an interrupted batch reruns all its tests. |
+
+    A Cocotb batch is every test that shares a seed and Test Variant, run in
+    one simulator process. Resuming a Cocotb Target doesn't start it from
+    scratch: only the interrupted batch runs again, and the batches that
+    finished are kept. A run with several seeds (`@x20`) or Test Variants has
+    several batches.
 
 - A `--coverage` run resumes only if it was interrupted while publishing its
   results. Otherwise Booley refuses (exit `2`). Start a new `booley flow sim --coverage` run instead:
@@ -337,16 +391,28 @@ creates a private directory for each attempt and removes it afterwards, and
 tests can run in parallel. `{target}`, `{test}` and `{campaign}` are also
 available.
 
-## Build reuse and compiler cache
+## Build reuse
 
 A repeat run skips the build when nothing that goes into it has changed:
-sources, cores, toolchain, flags and environment. Verilator's C++ compilation
-also uses a compiler cache (ccache) that survives Sandbox rebuilds and is
-shared with Goal worktrees, so a rebuild after a small change is quicker. Cocotb
-Targets always rebuild. Each Target's result says why a build was or wasn't
-reused.
+sources, cores, toolchain, flags and environment. Cocotb Targets always
+rebuild. Each Target's result says why a build was or wasn't reused.
 
-To inspect or empty the cache, run inside the Sandbox:
+## Verilator builds
+
+Verilator turns the design into C++ that has to be compiled, which is often
+the slowest part of a run. Booley speeds that up in two ways.
+
+**Parallel compilation.** Booley compiles the model with several jobs at once.
+It splits the Sandbox's CPUs between the `max_heavy` builds that may run at
+the same time, and allows about one compile job per GiB of `heavy_memory`
+(both in [`[jobs]`](CONFIG.md#jobs--concurrency-jobs)). A `-j` in the
+Target's `make_options` overrides this.
+
+**Compiler cache.** The C++ compilation uses ccache, so a rebuild after a
+small change is quicker. The cache is kept in the Project's Booley Directory,
+so it survives Sandbox rebuilds and is shared by every checkout of the Project
+in the Sandbox, including Goal worktrees. To inspect or empty it, run inside
+the Sandbox:
 
 ```sh
 CCACHE_DIR=/booley-project/.runtime/compiler-cache/ccache ccache --show-stats
