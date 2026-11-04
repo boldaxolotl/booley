@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from booley.criteria.evidence_ledger import canonical_json, validated_evidence_records
 from booley.criteria.state import DevelopmentState
@@ -21,10 +21,12 @@ from booley.goals.paths import record_paths
 from booley.goals.presentation import goal_presentation
 from booley.goals.proposals import digest, list_proposals
 from booley.goals.recorder import GOAL_SCOPE
-from booley.goals.status import GoalStatus
 from booley.goals.store import GoalStore
 from booley.goals.test_run_evidence import HistoryScope, contributing_observations, outcomes_decide
 from booley.review.goal_package import GoalCompletionPackage, GoalReviewContext
+
+if TYPE_CHECKING:
+    from booley.goals.status import GoalStatus
 
 
 def completion_authority_digest(record: GoalRecord, state: DevelopmentState, project: Path) -> str:
@@ -50,7 +52,10 @@ def build_goal_package(
     *,
     omitted_inputs: frozenset[str] = frozenset(),
 ) -> GoalCompletionPackage:
-    """Freeze exact selected rows, linked originals and all proposal decisions."""
+    """Freeze exact selected rows, linked originals and all proposal decisions.
+
+    *statuses* is the Goal status Finish checked; SIM baseline reports come from it.
+    """
     paths = record_paths(booley_dir, record.id)
     selected = selected_observations(record, state, booley_dir)
     records = validated_evidence_records(GOAL_SCOPE, Path(context.log_dir), state, {})

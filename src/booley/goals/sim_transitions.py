@@ -13,6 +13,7 @@ from booley.goals.model import GoalRecord, RecordedGoal
 from booley.goals.sim_baseline_store import baseline_observations
 from booley.goals.test_run_evidence import freshness_stamp, matching_rows
 from booley.goals.test_run_freezing import TargetPlanError, TargetPlans
+from booley.goals.test_run_resolution import TestRunResolution
 from booley.goals.test_run_status import TestRunJudgement
 
 
@@ -100,22 +101,14 @@ def goal_transitions(
 ) -> list[dict[str, Any]]:
     """Compare only exact Test Runs observed at today's dependent contents.
 
-    The current outcomes are the Goal's *judgement*, which already folded them;
-    this only decides whether they apply to today's contents.
+    The current outcomes are the Goal's *judgement*; this decides whether they apply.
     """
     resolution = record.test_run_resolution(goal.spec.key)
     if resolution is None:
         return []
     baseline = baseline_observations(project, record, goal)
     reason = _current_reason(record, goal, current, root, resolvers)
-    finals = (
-        {}
-        if reason
-        else {
-            (run.name, run.fingerprint): view.outcome
-            for run, view in zip(resolution.test_runs, judgement.runs, strict=True)
-        }
-    )
+    finals = {} if reason else _judged_outcomes(resolution, judgement)
     indexed = {(row["name"], row["fingerprint"]): row for row in baseline.get("results", [])}
     target_identity = _target_identity(root, goal)
     rows: list[dict[str, Any]] = []
@@ -145,6 +138,16 @@ def goal_transitions(
         row["baseline_proof"] = before.get("proof")
         rows.append(row)
     return rows
+
+
+def _judged_outcomes(
+    resolution: TestRunResolution, judgement: TestRunJudgement
+) -> dict[tuple[str, str], str]:
+    """Pair each frozen Test Run with the outcome the Goal's judgement folded for it."""
+    return {
+        (run.name, run.fingerprint): view.outcome
+        for run, view in zip(resolution.test_runs, judgement.runs, strict=True)
+    }
 
 
 def _target_identity(root: Path, goal: RecordedGoal) -> str | None:
