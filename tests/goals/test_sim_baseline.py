@@ -18,6 +18,7 @@ from booley.goals.paths import record_paths
 from booley.goals.sim_baseline_store import (
     INPUTS_FILE,
     baseline_jobs_dir,
+    baseline_observations,
     entry_inputs,
     read_document,
     request_identity,
@@ -25,10 +26,7 @@ from booley.goals.sim_baseline_store import (
     sim_goals,
     write_document,
 )
-from booley.goals.sim_transitions import (
-    baseline_observations,
-    transition_summary,
-)
+from booley.goals.sim_transitions import transition_summary
 from booley.goals.state_store import load_goal_state
 from booley.goals.status import build_status
 from booley.goals.store import GoalStore
@@ -641,6 +639,8 @@ def test_review_package_highlights_new_never_seen_failing_and_dashboard_matches(
     package = json.loads(Path(result["package"]).read_bytes())
     report = package["goals"][0]["simulation_baseline"]
     assert report["summary"] == summary
+    status = build_status(store, baseline.record).goals[0]
+    assert report["runs"] == [dict(row) for row in status.sim_transitions]
     assert report["attention"] == [new.name]
     assert "Review attention: new_test@1" in result["message"]
     terminal = project_goal(store, store.load(baseline.record.id))
@@ -940,14 +940,19 @@ def test_initialized_directory_policy_runs_baseline_and_reports_transition(
     assert policy.read_bytes() == before
 
 
-def test_current_transition_uses_history_fold(baseline):
+def test_current_transition_uses_judged_outcomes(baseline):
     from booley.goals.sim_transitions import goal_transitions
+    from booley.goals.test_run_status import judge_test_runs
 
     _record(baseline, "failed", [run_row(SMOKE_RUN, "fail")])
     _record(baseline, "passed", [run_row()])
     history = _history(baseline)
     for row in history:
         row["detail"].pop("test_run_ledger", None)
+    goal = sim_goals(baseline.record)[0]
+    judgement = judge_test_runs(
+        goal, baseline.record, history[-1], history, TargetPlans(baseline.worktree)
+    )
     rows = goal_transitions(
         baseline.control,
         baseline.record,
@@ -956,6 +961,7 @@ def test_current_transition_uses_history_fold(baseline):
         history,
         baseline.worktree,
         DEFAULT_RESOLVERS,
+        judgement,
     )
     assert rows[0]["current"] == "failed"
 

@@ -6,6 +6,10 @@ configurations.
 
 Project-specific overlays may be supplied by the caller or change-request context.
 
+Rules marked `[<Simulator> only]` exist because of that simulator's behavior;
+apply them only to testbenches that run on it. All other rules apply on every
+simulator.
+
 ---
 
 ## 1. Module Layout
@@ -52,8 +56,9 @@ repeat (10) @(posedge clk); // settle after reset
 ### 2.1 Clocking Block (Required for Synchronous Stimulus & Sampling)
 
 Drive and sample synchronous signals through a clocking block. Bare blocking
-assigns or reads after `@(posedge clk)` race the RTL Active/NBA regions; Icarus
-exposes this, trace dumpers can hide it.
+assigns or reads after `@(posedge clk)` race the RTL Active/NBA regions. Whether
+the race shows depends on simulator scheduling, so a testbench that passes on
+one simulator can fail on another; trace dumpers can hide it.
 
 ```systemverilog
 clocking cb @(posedge clk);
@@ -168,8 +173,10 @@ integer total_passed;
 integer total_failed;
 ```
 
-End simulation with `$finish`, not `$stop`; `$stop` pauses Icarus and causes
-sim timeouts.
+End simulation with `$finish`, not `$stop`; `$stop` suspends a simulation instead
+of ending it. In batch runs a simulator may abort with an error exit status
+(Verilator) or wait at an interactive prompt until the sim timeout, and the
+verdict sentinel may never print.
 
 Every TB must print a human summary, then a machine-readable verdict sentinel,
 then `$finish`. Booley uses the sentinel instead of unreliable simulator return
@@ -205,16 +212,17 @@ edge-case-only misses interior interactions.
 
 ### Randomized Input Generation
 
-- 32-bit values: rejection sample with `$urandom()` in a `do/while` loop.
-- 64-bit values: rejection sample with `{$urandom(), $urandom()}`.
 - Keep random values inside the valid input domain.
+- 32-bit values: rejection sampling with `$urandom()` in a `do/while` loop is the
+  portable way to do so.
+- 64-bit values: rejection sampling with `{$urandom(), $urandom()}`.
 
-Never use `$urandom_range()` for large ranges (max > ~2^30). Vivado xsim can
-generate values outside the specified range. `$urandom_range()` is acceptable
-only for small ranges, e.g. `$urandom_range(255)`.
+`[Vivado xsim only]` Never use `$urandom_range()` for large ranges (max > ~2^30).
+Vivado xsim can generate values outside the specified range. `$urandom_range()`
+is acceptable only for small ranges, e.g. `$urandom_range(255)`.
 
 ```systemverilog
-// BAD - Vivado bug can generate values > max:
+// BAD on Vivado xsim - can generate values > max:
 automatic int unsigned val = $urandom_range(LARGE_Q - 1);
 
 // GOOD - rejection sampling:

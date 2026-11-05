@@ -22,7 +22,7 @@ Project-specific overlays may be supplied by the caller or change-request contex
 | Consistent naming within a module — no mixing naming styles for the same kind of signal | MINOR |
 | No magic numbers — derive constants from existing parameters | MINOR |
 | No redundant localparams that duplicate package constants | MINOR |
-| No ascending bit ranges `[lo:hi]` in ports or signals — use descending `[N-1:0]`. Ascending ranges cause silent data corruption under cocotb/VPI (integer conversion assumes left index is MSB) | CRITICAL |
+| No ascending bit ranges `[lo:hi]` in ports or signals — use descending `[N-1:0]`. Ascending ranges invert bit order relative to the descending convention used everywhere else, and VPI-based testbenches such as cocotb assume the left index is the MSB when converting an integer | CRITICAL |
 
 ## 3. Ifdef & Conditional Compilation
 

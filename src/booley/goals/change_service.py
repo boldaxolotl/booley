@@ -10,7 +10,6 @@ from typing import Any, Literal, cast
 from booley.core.process_identity import ProcessIdentity
 from booley.goals.apply import ChangeEnvironment, decide, recover
 from booley.goals.apply_barrier import require_no_apply
-from booley.goals.binding import protected_drift
 from booley.goals.change_policy import conflict, prepare_params, translate_after, validate_kind
 from booley.goals.changes import Approval, ChangeKind
 from booley.goals.checkout import GoalCheckout, branch_ref
@@ -26,7 +25,7 @@ from booley.goals.proposals import (
     save_new,
     text,
 )
-from booley.goals.protected_inputs import ProtectedInputRoots, snapshot_protected_inputs
+from booley.goals.protected_inputs import check_goal_inputs
 from booley.goals.state_store import load_goal_state
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -168,8 +167,6 @@ def _require_inputs(record: GoalRecord, env: ChangeEnvironment) -> None:
         raise ProposalError("Goal Mode must be active on its recorded Goal Branch")
     if env.store.identify_worktree(root) != record.worktree:
         raise ProposalError("the recorded Worktree Identity changed")
-    reason = protected_drift(
-        record, snapshot_protected_inputs(ProtectedInputRoots(root, env.entry.booley_dir))
-    )
-    if reason:
-        raise ProposalError(reason)
+    violations = check_goal_inputs(record, root, env.entry.booley_dir).violations
+    if violations:
+        raise ProposalError("; ".join(violations))
