@@ -181,3 +181,36 @@ def test_kill_process_tree_kills_descendants_after_wrapper_exits():
         (123, 0),
         (123, signal.SIGKILL),
     ]
+
+
+def test_run_captured_bounded_kills_the_tree_when_interrupted():
+    """A KeyboardInterrupt mid-wait must not leave the child running."""
+    started: list[subprocess.Popen] = []
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        started.append(proc)
+        return proc
+
+    def interrupted(self, *args, **kwargs):
+        raise KeyboardInterrupt
+
+    with (
+        patch.object(platform_paths.subprocess, "Popen", recording_popen),
+        patch.object(real_popen, "communicate", interrupted),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        platform_paths.run_captured_bounded(
+            [sys.executable, "-c", "import time; time.sleep(60)"], timeout=30
+        )
+
+    (proc,) = started
+    try:
+        # kill_process_tree already ran; the child is dead or about to be reaped.
+        assert proc.wait(timeout=15) is not None
+    finally:
+        proc.kill()
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                pipe.close()
