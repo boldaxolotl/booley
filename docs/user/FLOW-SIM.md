@@ -128,6 +128,14 @@ sim_soc: FAIL (Simulation Campaign 3f2a9c1e-…)
     booley flow sim --target sim_soc --test=stress+soak@846930886
 ```
 
+The two paths:
+
+- **`manifest`** is the run's plan, written before anything runs: the Target,
+  the Test Runs with their seeds, the builds and the source files. You need
+  it only to [resume an interrupted run](#resuming-an-interrupted-run).
+- **`report`** is a copy of the newest run's `report.json`, and the next run
+  overwrites it. The run's own copy is `sim/12/report.json`.
+
 Each Test Run gets one verdict:
 
 | Verdict | Meaning | Exit |
@@ -139,8 +147,7 @@ Each Test Run gets one verdict:
 
 The card doesn't print log or waveform paths. Each run has its own numbered
 directory (`sim/12/` above; see [Running Flows](FLOW_REFERENCE.md#reading-results)).
-`sim.json` on the `report:` line is a copy of the newest run's report and is
-overwritten by the next run. These are the files to open, relative to
+These are the files to open, relative to
 `sim/<N>/targets/<target>/`:
 
 | File | What it holds |

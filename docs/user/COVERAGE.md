@@ -75,13 +75,8 @@ The first line has three verdicts:
   displayed 50%; minimum 80%)`. `BLOCKED` gives a code, such as an invalid
   [waiver](#coverage-waivers).
 
-The two paths are the same for every `sim` run, with or without coverage:
-
-- **`manifest`** is the run's plan, written before anything runs: which Test
-  Runs, builds and source files it covers. You need it only to
-  [resume an interrupted run](FLOW-SIM.md#resuming-an-interrupted-run).
-- **`report`** is a copy of the newest run's `report.json`. The next run
-  overwrites it; the run's own copy is `sim/12/report.json`.
+The `manifest` and `report` paths are the same as in any `sim` run; see
+[Simulation results](FLOW-SIM.md#reading-results).
 
 ### Where the numbers are
 
