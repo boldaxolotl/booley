@@ -358,10 +358,14 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
     && test ! -e "$CLAUDE_MUSL" \
     && ln -s /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -s /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/codex \
-    && test "$(claude --version | awk '{print $1}')" = "2.1.285" \
-    && test "$(codex --version | awk '{print $2}')" = "0.160.0" \
     && command -v bwrap \
     && rm -rf /var/lib/apt/lists/*
+
+# The manifest (and its lock) is the only source of the agent CLI versions: the
+# installed CLIs must report exactly the versions it pins.
+RUN agent_cli_pin() { python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["dependencies"][sys.argv[2]])' /opt/agent-clis/package.json "$1"; } \
+    && test "$(claude --version | awk '{print $1}')" = "$(agent_cli_pin @anthropic-ai/claude-code)" \
+    && test "$(codex --version | awk '{print $2}')" = "$(agent_cli_pin @openai/codex)"
 
 # The container's network namespace is not the whole agent boundary: both
 # clients can expose provider-hosted web MCP tools whose requests never originate
