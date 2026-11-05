@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from booley.config.settings import InteractiveConfig
 from booley.runtime.devcontainer import EGRESS_NETWORK, PROXY_PORT, UNPROXIED_NETWORK
+from booley.runtime.platform_paths import run_captured_bounded
 
 if TYPE_CHECKING:
     from booley.runtime.image_identity import Comparison, ImageMetadata
@@ -60,19 +61,17 @@ def _run_docker(
     timeout: int = _DOCKER_TIMEOUT,
     executable: str = "docker",
 ) -> subprocess.CompletedProcess:
-    """Run ``docker <args>`` capturing output. Never raises on non-zero exit.
+    """Run ``docker <args>`` capturing text output. Never raises on non-zero exit.
+
+    Honors *timeout* even when a descendant of the Docker CLI keeps the output
+    pipe open: the CLI runs in its own process group, which is killed as a
+    whole on timeout (``subprocess.TimeoutExpired``). Because of the new
+    session the CLI has no controlling terminal. Raises ``FileNotFoundError``
+    when *executable* is absent.
 
     Tests patch this single function to simulate the Docker CLI.
     """
-    return subprocess.run(
-        [executable, *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        check=False,
-    )
+    return run_captured_bounded([executable, *args], timeout=timeout)
 
 
 # ---------------------------------------------------------------------------

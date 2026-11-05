@@ -58,12 +58,18 @@ from booley.harness.setup.project_git_hook_reconcile import (
 from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
 from tests.conftest import symlink_or_skip
 from tests.harness.booley_dir_support import select_booley_dir
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
 
 
 def _git_init(root: Path) -> None:
-    subprocess.run(["git", "init", "-q", str(root)], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "init", "-q", str(root)],
+        capture_output=True,
+        check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
 
 
 def _autocrlf(root: Path) -> str:
@@ -72,6 +78,7 @@ def _autocrlf(root: Path) -> str:
         capture_output=True,
         text=True,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return proc.stdout.strip()
 
@@ -82,6 +89,7 @@ def _local_autocrlf(root: Path) -> str:
         capture_output=True,
         text=True,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return proc.stdout.strip()
 
@@ -102,6 +110,7 @@ def _git_commit(root: Path) -> None:
         ],
         capture_output=True,
         check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
@@ -968,6 +977,7 @@ class TestLineEndingsStep:
             ["git", "-C", str(root), "add", "-f", name],
             capture_output=True,
             check=True,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
 
     def test_lf_tree_passes(self, tmp_path: Path):
@@ -1361,6 +1371,7 @@ class TestLineEndingsAutoFix:
             ["git", "-C", str(tmp_path), "config", "core.autocrlf", "true"],
             capture_output=True,
             check=True,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
         TestLineEndingsStep._add_file(tmp_path, "a.v", b"module a;\nendmodule\n")
         _git_commit(tmp_path)
@@ -1369,6 +1380,7 @@ class TestLineEndingsAutoFix:
             ["git", "-C", str(tmp_path), "checkout", "--", "a.v"],
             capture_output=True,
             check=True,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
         assert (tmp_path / "a.v").read_bytes() == b"module a;\r\nendmodule\r\n"
         return tmp_path

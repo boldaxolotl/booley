@@ -7,6 +7,7 @@ import shutil
 import subprocess
 
 import pytest
+from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.runtime.test_session_issuance import _install_trusted_validator
 
 from booley.audit.diagnostic_results import Severity
@@ -15,6 +16,12 @@ from booley.eda.provisioning import authority
 from booley.runtime import devcontainer as dc
 from booley.runtime import inspection, runtime_context, session_issuance
 from booley.runtime.booley_dir import reset_cache
+
+
+@pytest.fixture(autouse=True)
+def _docker_helper_uses_subprocess_run(monkeypatch):
+    """This module fakes the Docker CLI through ``subprocess.run``."""
+    route_docker_helper_through_subprocess_run(monkeypatch)
 
 
 def _configured_project(tmp_path, monkeypatch, *, active: bool):
