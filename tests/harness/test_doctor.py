@@ -116,14 +116,6 @@ name = "unit"
 
 [flows.synth]
 
-[sources.rtl]
-source_dirs = ["rtl"]
-include_dirs = []
-
-[sources.testbench]
-source_dirs = ["tb"]
-include_dirs = []
-
 {sandbox_section}
 """.lstrip().replace("{sandbox_section}", sandbox_section)
     (booley_dir / "booley.toml").write_text(
@@ -8506,6 +8498,28 @@ def test_doctor_renders_removed_documentation_item_with_fix(
     glyph = {"WARN": "!", "FAIL": "✗"}[severity]
     assert any(line.startswith(f"  {glyph}  ") and item in line for line in output.splitlines())
     assert fix in output
+
+
+def test_doctor_warns_on_unused_sources_and_preflight_checks(tmp_path, monkeypatch, capsys):
+    """Doctor renders WARNs for the retired `[sources]` table and `preflight_checks`."""
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    toml_path = booley_dir / "booley.toml"
+    text = toml_path.read_text(encoding="utf-8")
+    assert 'name = "unit"\n' in text
+    text = text.replace('name = "unit"\n', 'name = "unit"\npreflight_checks = ["lint"]\n', 1)
+    toml_path.write_text(
+        text + '\n[sources.testbench]\nsource_dirs = ["tb"]\n', encoding="utf-8"
+    )
+
+    result = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+    output = colors.strip_ansi(capsys.readouterr().out)
+    warn_lines = [line for line in output.splitlines() if line.startswith("  !  ")]
+    assert result == 0
+    assert any("[sources]" in line for line in warn_lines)
+    assert ".core" in output
+    assert any("[project].preflight_checks" in line for line in warn_lines)
 
 
 @pytest.mark.parametrize("key", ["idle_timeout_seconds", "max_sessions", "egress_allowlist"])
