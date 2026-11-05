@@ -17,6 +17,14 @@ from booley.runtime.booley_dir import (
     resolve_checkout_booley_dir,
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
+from tests.booley_checkouts_support import (
+    commit_all,
+    init_repo,
+    isolate_git,
+    main_project,
+    paired_checkout,
+    snapshot,
+)
 from tests.conftest import symlink_or_skip
 
 
@@ -557,81 +565,10 @@ def _common(start: Path | None = None) -> Path:
     return resolve_common_booley_dir(start)
 
 
-def _isolate_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep fixture repositories independent of the developer's Git configuration."""
-    empty = tmp_path / "empty-git-config"
-    empty.touch()
-    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-
-
-def _init_repo(root: Path) -> None:
-    from tests.project_runtime_git_support import git
-
-    root.mkdir(parents=True, exist_ok=True)
-    git(root, "init", "-q", "-b", "main")
-    git(root, "config", "user.name", "Fixture")
-    git(root, "config", "user.email", "fixture@example.invalid")
-
-
-def _commit_all(root: Path) -> None:
-    from tests.project_runtime_git_support import git
-
-    git(root, "add", "-A")
-    git(root, "commit", "-qm", "fixture")
-
-
-def _main_project(tmp_path: Path, *, relative: str = ".booley", toml: str = "") -> Path:
-    """A committed Git checkout whose Main Booley Directory is ``<root>/<relative>``."""
-    main = tmp_path / "main"
-    _init_repo(main)
-    (main / relative).mkdir(parents=True)
-    (main / relative / "booley.toml").write_text("", encoding="utf-8")
-    (main / "README.md").write_text("fixture\n", encoding="utf-8")
-    if toml:
-        (main / "booley.toml").write_text(toml, encoding="utf-8")
-    if relative == ".booley":
-        (main / ".gitignore").write_text(".booley/\n", encoding="utf-8")
-    _commit_all(main)
-    return main
-
-
-def _snapshot(main: Path, *, relative: str = ".booley") -> Path:
-    """A linked worktree carrying a copy (Snapshot) of the Booley Directory."""
-    import shutil
-
-    from tests.project_runtime_git_support import git
-
-    worktree = main / relative / "worktrees" / "s1"
-    git(main, "worktree", "add", "-q", "--detach", str(worktree))
-    shutil.copytree(
-        main / relative,
-        worktree / relative,
-        ignore=shutil.ignore_patterns("worktrees"),
-        dirs_exist_ok=True,
-    )
-    return worktree
-
-
-def _paired_checkout(main: Path) -> Path:
-    """A linked worktree whose ``.booley`` is a worktree of the Versioned Booley Directory."""
-    from tests.project_runtime_git_support import git
-
-    versioned = main / ".booley"
-    _init_repo(versioned)
-    (versioned / ".gitignore").write_text("worktrees/\n", encoding="utf-8")
-    _commit_all(versioned)
-    worktree = main.parent / "paired"
-    git(main, "worktree", "add", "-q", "--detach", str(worktree))
-    git(versioned, "worktree", "add", "-q", "--detach", str(worktree / ".booley"))
-    return worktree
-
-
 class TestCommonBooleyDir:
     def test_from_main_checkout(self, tmp_path, monkeypatch):
-        _isolate_git(tmp_path, monkeypatch)
-        main = _main_project(tmp_path)
+        isolate_git(tmp_path, monkeypatch)
+        main = main_project(tmp_path)
 
         assert _common(main) == main / ".booley"
         reset_cache()
@@ -639,9 +576,9 @@ class TestCommonBooleyDir:
         assert _common() == main / ".booley"
 
     def test_from_linked_worktree_snapshot(self, tmp_path, monkeypatch):
-        _isolate_git(tmp_path, monkeypatch)
-        main = _main_project(tmp_path)
-        worktree = _snapshot(main)
+        isolate_git(tmp_path, monkeypatch)
+        main = main_project(tmp_path)
+        worktree = snapshot(main)
         (worktree / "sub").mkdir()
 
         assert resolve_booley_dir(worktree / "sub") == worktree / ".booley"
@@ -655,9 +592,9 @@ class TestCommonBooleyDir:
         assert _common() == main / ".booley"
 
     def test_from_paired_checkout(self, tmp_path, monkeypatch):
-        _isolate_git(tmp_path, monkeypatch)
-        main = _main_project(tmp_path)
-        worktree = _paired_checkout(main)
+        isolate_git(tmp_path, monkeypatch)
+        main = main_project(tmp_path)
+        worktree = paired_checkout(main)
 
         assert resolve_booley_dir(worktree) == worktree / ".booley"
         reset_cache()
@@ -670,16 +607,16 @@ class TestCommonBooleyDir:
         assert _common() == main / ".booley"
 
     def test_honors_relocated_project_dir(self, tmp_path, monkeypatch):
-        _isolate_git(tmp_path, monkeypatch)
-        main = _main_project(tmp_path, relative="hw/booley", toml='[project]\ndir = "hw/booley"\n')
-        worktree = _snapshot(main, relative="hw/booley")
+        isolate_git(tmp_path, monkeypatch)
+        main = main_project(tmp_path, relative="hw/booley", toml='[project]\ndir = "hw/booley"\n')
+        worktree = snapshot(main, relative="hw/booley")
 
         assert _common(main) == main / "hw" / "booley"
         reset_cache()
         assert _common(worktree) == main / "hw" / "booley"
 
     def test_outside_git_keeps_selection(self, tmp_path, monkeypatch):
-        _isolate_git(tmp_path, monkeypatch)
+        isolate_git(tmp_path, monkeypatch)
         plain = tmp_path / "plain"
         (plain / ".booley").mkdir(parents=True)
         (plain / ".booley" / "booley.toml").write_text("", encoding="utf-8")
@@ -690,7 +627,7 @@ class TestCommonBooleyDir:
         assert _common() == plain / ".booley"
 
     def test_unreadable_git_common_dir_keeps_selection(self, tmp_path, monkeypatch):
-        _isolate_git(tmp_path, monkeypatch)
+        isolate_git(tmp_path, monkeypatch)
         stale = tmp_path / "stale"
         (stale / ".booley").mkdir(parents=True)
         (stale / ".booley" / "booley.toml").write_text("", encoding="utf-8")
@@ -701,9 +638,9 @@ class TestCommonBooleyDir:
         assert _common(stale) == stale / ".booley"
 
     def test_stray_booley_dir_is_not_remapped(self, tmp_path, monkeypatch):
-        _isolate_git(tmp_path, monkeypatch)
-        main = _main_project(tmp_path)
-        worktree = _snapshot(main)
+        isolate_git(tmp_path, monkeypatch)
+        main = main_project(tmp_path)
+        worktree = snapshot(main)
         stray = worktree / "elsewhere"
         stray.mkdir()
         (stray / "booley.toml").write_text("", encoding="utf-8")
@@ -712,13 +649,13 @@ class TestCommonBooleyDir:
         assert _common(worktree) == stray
 
     def test_main_without_booley_dir_keeps_selection(self, tmp_path, monkeypatch):
-        _isolate_git(tmp_path, monkeypatch)
+        isolate_git(tmp_path, monkeypatch)
         from tests.project_runtime_git_support import git
 
         main = tmp_path / "main"
-        _init_repo(main)
+        init_repo(main)
         (main / "README.md").write_text("fixture\n", encoding="utf-8")
-        _commit_all(main)
+        commit_all(main)
         linked = tmp_path / "linked"
         git(main, "worktree", "add", "-q", "--detach", str(linked))
         (linked / ".booley").mkdir()
@@ -727,10 +664,10 @@ class TestCommonBooleyDir:
         assert _common(linked) == linked / ".booley"
 
     def test_bare_repository_worktree_keeps_selection(self, tmp_path, monkeypatch):
-        _isolate_git(tmp_path, monkeypatch)
+        isolate_git(tmp_path, monkeypatch)
         from tests.project_runtime_git_support import git
 
-        source = _main_project(tmp_path)
+        source = main_project(tmp_path)
         bare = tmp_path / "bare.git"
         git(tmp_path, "clone", "-q", "--bare", str(source), str(bare))
         worktree = tmp_path / "bare-wt"

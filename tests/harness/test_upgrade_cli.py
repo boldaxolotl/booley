@@ -8,8 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from booley.harness import upgrade_cli, upgrade_review
+from booley.harness import incontainer_register, upgrade_cli, upgrade_review
 from booley.harness.booley import _build_parser
+from booley.harness.dashboard import model as dashboard
+from booley.runtime.booley_dir import reset_cache
+from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 
 
 def _project(tmp_path: Path) -> Path:
@@ -176,3 +179,32 @@ def test_acknowledge_first_and_repeat_contract(tmp_path, monkeypatch, capsys, js
     assert upgrade_cli.run(args, tmp_path) == 2
     output = capsys.readouterr()
     assert "pending target changed" in (output.out if json_output else output.err)
+
+
+@pytest.mark.parametrize("runtime", RUNTIMES)
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_acknowledge_from_worktree_clears_main_review(
+    tmp_path: Path, monkeypatch, capsys, layout, runtime
+) -> None:
+    """The upgrade review is Common Booley State: one record serves every checkout."""
+    main, worktree = linked_worktree(tmp_path, monkeypatch, layout=layout, runtime=runtime)
+    common = main / ".booley"
+    (common / "runtime").mkdir(exist_ok=True)
+    (common / "runtime" / "doctor_stamp.json").write_text(
+        json.dumps({"booley_version": "1.0.0"}), encoding="utf-8"
+    )
+    monkeypatch.setattr("booley.__version__", "1.2.3")
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text("# Changelog\n\n## 1.2.3 - 31 AUG 2026\n\n- Review.\n", encoding="utf-8")
+    monkeypatch.setattr(upgrade_review, "changelog_path", lambda: changelog)
+    assert upgrade_review.observe(common).condition is upgrade_review.ReviewCondition.PENDING
+    reset_cache()
+    args = _build_parser().parse_args(["upgrade", "acknowledge", "--expected-target", "1.2.3"])
+
+    assert upgrade_cli.run(args, worktree) == 0
+
+    reset_cache()
+    assert upgrade_review.read_status(common).condition is upgrade_review.ReviewCondition.CURRENT
+    assert incontainer_register.observe_upgrade(main) == "current"
+    assert not any("Upgrade review" in line.text for line in dashboard.health_lines(main, common))
+    assert not (worktree / ".booley" / "runtime" / "upgrade_review.json").exists()

@@ -163,7 +163,12 @@ def test_project_alias_doctor_executes_real_simulation(
 
 def _project(root):
     directory = _write_project(root, seed_interactive=False)
-    return SimpleNamespace(project_root=root, booley_dir=directory, booley_toml={"flows": {}})
+    return SimpleNamespace(
+        project_root=root,
+        booley_dir=directory,
+        common_booley_dir=directory,
+        booley_toml={"flows": {}},
+    )
 
 
 def test_disabled_capabilities_and_fpga_exclusion_do_not_require_checks(tmp_path, monkeypatch):

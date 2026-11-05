@@ -20,6 +20,7 @@ from booley.mcp import (
 from booley.runtime import health, health_presentation
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.timefmt import rfc3339_from_datetime
+from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 
 NOW = datetime(2026, 10, 12, 12, tzinfo=UTC)
 
@@ -386,3 +387,20 @@ def test_upgrade_review_fingerprint_survives_transient_sharing_error(project, mo
     attempts = hold_opens(monkeypatch, {review: 1})
     assert health.read_health(root, now=NOW).due is None
     assert attempts[review] == 2
+
+
+@pytest.mark.parametrize("runtime", RUNTIMES)
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_published_result_is_current_in_every_checkout(tmp_path, monkeypatch, layout, runtime):
+    """One automatic Doctor result serves main and its worktrees, whoever published it."""
+    main, worktree = linked_worktree(tmp_path, monkeypatch, layout=layout, runtime=runtime)
+    clean = _result(Severity.PASS)
+    for publisher, reader in ((worktree, main), (main, worktree)):
+        health.publish_result(
+            publisher, trigger="test", duration_s=0, diagnostics=clean.diagnostics, transcript=""
+        )
+        reset_cache()  # the reader is another process in real use
+        assert health.due_reason(reader) is None
+        assert health.load_report(reader) is not None
+        assert not health.state_dir(worktree / ".booley").exists()
+        reset_cache()

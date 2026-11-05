@@ -16,6 +16,7 @@ from booley.feedback import cli
 from booley.feedback.findings import read_log
 from booley.feedback.storage import feedback_storage_dir
 from booley.runtime import booley_dir as booley_dir_mod
+from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 
 
 @pytest.fixture
@@ -571,3 +572,41 @@ def test_ambiguous_export_preserves_existing_output(run, legacy_duplicate_log, t
     assert capsys.readouterr().out == ""
     assert target.read_text() == "prior export"
     assert legacy_duplicate_log.read_bytes() == before
+
+
+@pytest.mark.parametrize("runtime", RUNTIMES)
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_worktree_feedback_writes_main_findings(tmp_path, monkeypatch, layout, runtime):
+    """Findings are Common Booley State; the shared log redacts every checkout's paths."""
+    from booley.harness import feedback_view
+
+    main, worktree = linked_worktree(tmp_path, monkeypatch, layout=layout, runtime=runtime)
+
+    def feedback(*argv):
+        parser = argparse.ArgumentParser()
+        cli.add_subparser(parser.add_subparsers(dest="command"))
+        args = parser.parse_args(["feedback", *argv])
+        return cli.run(args, worktree, list_view=feedback_view.render_listing)
+
+    title = f"fails in {main} and in {worktree}"
+    added = feedback(
+        "add",
+        "--title",
+        title,
+        "--bucket",
+        "booley",
+        "--repro",
+        "booley flow sim",
+        "--observed",
+        "exit 2",
+        "--expected",
+        "a result",
+    )
+    assert added == 0
+    exported = tmp_path / "exported.md"
+    assert feedback("export", "--all", "--output", str(exported)) == 0
+
+    assert [entry.title for entry in read_log(main / ".booley").entries] == [title]
+    assert not (worktree / ".booley" / "findings.jsonl").exists()
+    body = exported.read_text(encoding="utf-8")
+    assert str(main) not in body and str(worktree) not in body

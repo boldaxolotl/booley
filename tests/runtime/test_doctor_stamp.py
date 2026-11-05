@@ -201,59 +201,6 @@ class TestCheckStamp:
         assert "unreadable" in msg
 
 
-class TestWarnIfStale:
-    def test_emits_nag_for_unstamped_project(self, tmp_path, monkeypatch):
-        booley_dir = _write_project(tmp_path)
-        monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
-        reset_cache()
-        emitted: list[str] = []
-
-        doctor_stamp.warn_if_stale(tmp_path, emitted.append)
-
-        assert len(emitted) == 1
-        assert "booley doctor" in emitted[0]
-
-    def test_quiet_when_stamp_is_fresh(self, tmp_path, monkeypatch):
-        booley_dir = _write_project(tmp_path)
-        monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
-        reset_cache()
-        doctor_stamp.record_clean_run(booley_dir, tmp_path, deep=False)
-        emitted: list[str] = []
-
-        doctor_stamp.warn_if_stale(tmp_path, emitted.append)
-
-        assert emitted == []
-
-    def test_emphasizes_version_drift_at_emission_boundary(self, tmp_path, monkeypatch):
-        booley_dir = _write_project(tmp_path)
-        monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
-        reset_cache()
-        monkeypatch.setattr("booley.__version__", "1.0.0")
-        doctor_stamp.record_clean_run(booley_dir, tmp_path, deep=False)
-        monkeypatch.setattr("booley.__version__", "2.0.0")
-        emitted: list[str] = []
-
-        doctor_stamp.warn_if_stale(
-            tmp_path,
-            emitted.append,
-            emphasize_action=lambda text: f"<bright-amber>{text}</bright-amber>",
-        )
-
-        assert emitted[0].startswith("<bright-amber>")
-        assert emitted[0].endswith("</bright-amber>")
-
-    def test_never_raises_when_booley_dir_unresolvable(self, tmp_path, monkeypatch):
-        def boom(_start=None):
-            raise FileNotFoundError("no project")
-
-        monkeypatch.setattr(doctor_stamp, "resolve_booley_dir", boom)
-        emitted: list[str] = []
-
-        doctor_stamp.warn_if_stale(tmp_path, emitted.append)  # must not raise
-
-        assert emitted == []
-
-
 def test_stamp_read_survives_transient_sharing_error(tmp_path, monkeypatch):
     from tests.sharing_error_support import hold_opens
 
