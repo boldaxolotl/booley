@@ -110,3 +110,41 @@ def test_contract_uses_the_exporter_function(monkeypatch) -> None:
 
     assert docker_base_contract.contract_contents("pyproject.toml", b"x = 1\n") == b"sentinel\n"
     assert seen == ["x = 1\n"]
+
+
+def test_exporter_writes_lf_requirements_in_process(tmp_path: Path) -> None:
+    from booley.data.docker import export_project_dependencies as exporter
+
+    pyproject = tmp_path / "pyproject.toml"
+    requirements = tmp_path / "requirements.txt"
+    pyproject.write_text(_PYPROJECT, encoding="utf-8")
+
+    exporter.export_project_dependencies(pyproject, requirements)
+
+    assert requirements.read_bytes() == b"plain>=1.2\nmarker-pkg==3; sys_platform == 'win32'\n"
+
+
+def test_exporter_main_reports_unreadable_input_in_process(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from booley.data.docker import export_project_dependencies as exporter
+
+    missing = tmp_path / "missing.toml"
+    destination = tmp_path / "requirements.txt"
+    monkeypatch.setattr(sys, "argv", ["exporter", str(missing), str(destination)])
+
+    assert exporter.main() == 2
+    assert "error:" in capsys.readouterr().err
+    assert not destination.exists()
+
+
+def test_exporter_main_succeeds_in_process(tmp_path: Path, monkeypatch) -> None:
+    from booley.data.docker import export_project_dependencies as exporter
+
+    pyproject = tmp_path / "pyproject.toml"
+    destination = tmp_path / "requirements.txt"
+    pyproject.write_text(_PYPROJECT, encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["exporter", str(pyproject), str(destination)])
+
+    assert exporter.main() == 0
+    assert destination.read_text(encoding="utf-8").startswith("plain>=1.2\n")
