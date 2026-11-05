@@ -619,6 +619,9 @@ def test_contract_ignores_project_metadata_outside_runtime_dependencies(tmp_path
     for edited in edits:
         (repo / "pyproject.toml").write_text(edited, encoding="utf-8")
         assert _fingerprint(repo) == first
+    # Line endings are not a dependency change (a Windows checkout may use CRLF).
+    (repo / "pyproject.toml").write_bytes(_PYPROJECT.replace("\n", "\r\n").encode())
+    assert _fingerprint(repo) == first
 
 
 def test_contract_tracks_runtime_dependency_changes(tmp_path: Path) -> None:
@@ -706,9 +709,11 @@ def test_base_publish_job_is_gated_on_the_publish_decision() -> None:
     assert "--github-output" in commands
     assert gate["outputs"] == {"publish": "${{ steps.decide.outputs.publish }}"}
     assert publish["needs"] == "stable-base-contract"
-    assert publish["if"] == (
-        "github.event_name == 'workflow_dispatch' || "
-        "needs.stable-base-contract.outputs.publish == 'true'"
+    # Fail toward rebuilding: a failed gate must not skip the build, even on a manual run.
+    assert " ".join(publish["if"].split()) == (
+        "${{ !cancelled() && (github.event_name == 'workflow_dispatch' "
+        "|| needs.stable-base-contract.result != 'success' "
+        "|| needs.stable-base-contract.outputs.publish == 'true') }}"
     )
     # Path filters cannot read content, so pyproject.toml still starts the workflow.
     assert "pyproject.toml" in workflow[True]["push"]["paths"]

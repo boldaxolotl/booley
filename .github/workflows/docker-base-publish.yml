@@ -63,8 +63,14 @@ jobs:
 
   build-publish-smoke:
     needs: stable-base-contract
-    # A manual run is an explicit refresh request and always publishes.
-    if: github.event_name == 'workflow_dispatch' || needs.stable-base-contract.outputs.publish == 'true'
+    # Fail toward rebuilding: publish unless the gate ran and said the published
+    # base is current. A manual run is an explicit refresh request and always
+    # publishes, even when the gate job fails; !cancelled() keeps a failed gate
+    # from implicitly skipping this job.
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'workflow_dispatch'
+      || needs.stable-base-contract.result != 'success'
+      || needs.stable-base-contract.outputs.publish == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:

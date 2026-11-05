@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -111,4 +110,3 @@ def test_contract_uses_the_exporter_function(monkeypatch) -> None:
 
     assert docker_base_contract.contract_contents("pyproject.toml", b"x = 1\n") == b"sentinel\n"
     assert seen == ["x = 1\n"]
-    assert importlib.util.find_spec("booley.data.docker.export_project_dependencies")

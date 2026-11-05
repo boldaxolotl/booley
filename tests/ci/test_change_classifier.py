@@ -488,6 +488,15 @@ def test_unparsable_project_metadata_keeps_stable_base(tmp_path: Path) -> None:
     assert outputs["stable_base"] == "true"
 
 
+def test_deleted_project_metadata_keeps_stable_base(tmp_path: Path) -> None:
+    repo, _seed = _repository(tmp_path)
+    _write(repo, "pyproject.toml", _PROJECT_METADATA)
+    base = _commit(repo, "metadata")
+    (repo / "pyproject.toml").unlink()
+
+    assert _classify(repo, base, _commit(repo, "delete metadata"))["stable_base"] == "true"
+
+
 @pytest.mark.parametrize(
     ("path", "stable_base"),
     [

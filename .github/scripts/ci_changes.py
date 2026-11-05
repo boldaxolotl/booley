@@ -442,9 +442,12 @@ def _contract_neutral_paths(
     """
     if ("M", (PROJECT_METADATA,)) not in entries:
         return frozenset()
+    # A git failure is an infrastructure fault and propagates to exit 2.
+    before_blob = _git_blob(repo, base, PROJECT_METADATA)
+    after_blob = _git_blob(repo, head, PROJECT_METADATA)
     try:
-        before = contract_contents(PROJECT_METADATA, _git_blob(repo, base, PROJECT_METADATA))
-        after = contract_contents(PROJECT_METADATA, _git_blob(repo, head, PROJECT_METADATA))
+        before = contract_contents(PROJECT_METADATA, before_blob)
+        after = contract_contents(PROJECT_METADATA, after_blob)
     except ValueError:
         return frozenset()
     return frozenset({PROJECT_METADATA}) if before == after else frozenset()
