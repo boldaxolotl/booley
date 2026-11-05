@@ -122,6 +122,46 @@ def test_unknown_tables_have_stable_warning_identity_and_migration_hint() -> Non
     assert "settings are ignored" in audit.findings[1].message
 
 
+def test_retired_sources_table_warns_with_core_hint() -> None:
+    """`[sources]` is retired: nothing reads it, so Doctor must say so."""
+    audit = project_schema.audit_known_tables({"sources": {"testbench": {"source_dirs": ["tb"]}}})
+
+    assert "sources" not in project_schema.KNOWN_BOOLEY_TOML_TABLES
+    assert audit.is_valid
+    assert len(audit.findings) == 1
+    finding = audit.findings[0]
+    assert finding.severity is config_common.ConfigFindingSeverity.WARN
+    assert finding.check_id == "config.unknown-table"
+    assert finding.subject == "sources"
+    assert "[sources] is no longer used" in finding.message
+    assert ".core" in finding.message
+
+
+def test_project_preflight_checks_warns_as_unused() -> None:
+    """`[project].preflight_checks` has no reader; warn on it, and only on it."""
+    audit = project_schema.audit_project_table(
+        {"project": {"name": "demo", "preflight_checks": ["lint"]}}
+    )
+
+    assert audit.is_valid
+    warnings = [
+        finding
+        for finding in audit.findings
+        if finding.severity is config_common.ConfigFindingSeverity.WARN
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].check_id == "config.project-metadata"
+    assert warnings[0].subject == "project.preflight_checks"
+    assert "[project].preflight_checks is unused" in warnings[0].message
+
+    clean = project_schema.audit_project_table({"project": {"name": "demo"}})
+    assert not [
+        finding
+        for finding in clean.findings
+        if finding.severity is config_common.ConfigFindingSeverity.WARN
+    ]
+
+
 def test_project_metadata_is_advisory_and_preserves_warning_identity() -> None:
     audit = project_schema.audit_project_table(
         {"project": {"name": "  ", "description": "duplicate"}}

@@ -26,7 +26,6 @@ KNOWN_BOOLEY_TOML_TABLES = frozenset(
         "jobs",
         "interactive",
         "feedback",
-        "sources",
         "goals",
         "eda",
         "stealth",
@@ -55,6 +54,10 @@ RETIRED_BOOLEY_TOML_TABLES = {
         "settings to [specialists.*]"
     ),
     "fusesoc": "removed in ADR 0030 — Target scoping now lives in .core files",
+    "sources": (
+        "file sources come from the .core description (testbench filesets carry "
+        "tags: [tb]); delete this table"
+    ),
 }
 
 
@@ -150,14 +153,25 @@ def audit_project_table(data: Mapping[str, Any]) -> ConfigTableAudit:
                 "in the .core and delete this duplicate"
             )
         )
+    if "preflight_checks" in project:
+        # The subject lets a waiver target this WARN alone; a waiver without a
+        # subject still matches every project-metadata WARN.
+        findings.append(
+            _project_warning(
+                "booley.toml [project].preflight_checks is unused; nothing runs "
+                "these checks — delete this key",
+                subject="project.preflight_checks",
+            )
+        )
     return ConfigTableAudit(tuple(findings))
 
 
-def _project_warning(message: str) -> ConfigFinding:
+def _project_warning(message: str, *, subject: str | None = None) -> ConfigFinding:
     return ConfigFinding(
         ConfigFindingSeverity.WARN,
         message,
         check_id="config.project-metadata",
+        subject=subject,
     )
 
 
