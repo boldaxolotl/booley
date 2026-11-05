@@ -3056,6 +3056,18 @@ def _rotation_free_state(
     return api_key, env_token, stored
 
 
+def _host_login_can_rotate(provider: str) -> bool:
+    """Whether a host-side login may hold *provider*'s refresh token too.
+
+    On the host the agents use the host login itself. In a Sandbox only a
+    credential seeded from the host shares its refresh token, and Booley
+    binds that seed at the app's sidecar path.
+    """
+    if not runtime_context.inside_session_runtime():
+        return True
+    return Path(dc._APP_CREDS_SEED_TARGET[provider]).is_file()
+
+
 def _check_oauth_token(
     provider: str,
     _pass: Check,
@@ -3079,6 +3091,8 @@ def _check_oauth_token(
     Stays a WARN (see :class:`_Reporter`) under automatic credential selection:
     it names a real, reachable failure mode with a one-command remedy. An
     explicit ``auth = "subscription"`` accepts that tradeoff, so it is a NOTE.
+    In a Sandbox without the app's seed sidecar the login was made inside it, no
+    host-side login shares its refresh token, and the finding is a NOTE too.
     Only the *other* provider's line is dropped -- see :func:`_configured_provider`.
     """
     note_sink = _note or _pass
@@ -3097,6 +3111,12 @@ def _check_oauth_token(
     api_key, env_token, stored = _rotation_free_state(provider, policy, plan)
 
     if not api_key and not env_token and not stored:
+        if not _host_login_can_rotate(provider):
+            note_sink(
+                f"{label}: no rotation-free credential; agents use a refreshing login made "
+                "inside the Sandbox, which no host-side login can revoke"
+            )
+            return
         message = (
             f"{label}: no rotation-free credential; agents use a refreshing one, which a "
             "host-side login can revoke mid-run"
@@ -3219,15 +3239,25 @@ def _check_subscription_creds_health(
                 )
             )
         else:
+            if _host_login_can_rotate(app):
+                suffix, fix = (
+                    ") and refresh fails once the host has rotated the shared refresh token — agents then crash at launch",
+                    f"booley auth --app {app}  (or refresh the host login and recreate the container)",
+                )
+            else:
+                suffix, fix = (
+                    ") and must refresh when an agent starts — agents crash at launch if that refresh fails",
+                    "sign in again inside the Sandbox: run claude and use /login",
+                )
             _warn(
                 _subscription_expiry_message(
                     expiry,
                     now,
                     f"subscription login at {creds_path} is expired (",
-                    ") and refresh fails once the host has rotated the shared refresh token — agents then crash at launch",
+                    suffix,
                     display_overrides=display_overrides,
                 ),
-                f"booley auth --app {app}  (or refresh the host login and recreate the container)",
+                fix,
             )
     elif expiry is not None:
         _pass(

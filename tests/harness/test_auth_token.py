@@ -17,7 +17,8 @@ import pytest
 
 from booley.harness import auth_cmd
 from booley.harness import booley as tlr
-from booley.runtime import auth_token, issuance_invalidation, session_runtime
+from booley.runtime import auth_token, issuance_invalidation, runtime_context, session_runtime
+from booley.runtime import devcontainer as dc
 from booley.runtime.platform_paths import docker_mount_path
 
 _TOKEN = "sk-ant-oat01-abcdef123456"  # claude: one-year setup-token
@@ -345,6 +346,75 @@ class TestInjection:
         assert f"CLAUDE_CODE_OAUTH_TOKEN={_TOKEN}" in body
 
 
+class TestRotationRiskVenue:
+    """A host login shares the refresh token only on the host or in a seeded Sandbox."""
+
+    _NOTE = "login made inside the Sandbox"
+
+    @pytest.mark.parametrize(
+        ("app", "policy", "in_sandbox", "seed_app", "expected"),
+        [
+            pytest.param("claude", "auto", True, None, "sandbox-note", id="unseeded-claude"),
+            pytest.param("codex", "auto", True, None, "sandbox-note", id="unseeded-codex"),
+            pytest.param("codex", "auto", True, "claude", "sandbox-note", id="other-app-seed"),
+            pytest.param(
+                "claude", "subscription", True, None, "sandbox-note", id="unseeded-subscription"
+            ),
+            pytest.param("claude", "auto", True, "claude", "warn", id="seeded-claude"),
+            pytest.param(
+                "claude", "subscription", True, "claude", "accepted-note", id="seeded-subscription"
+            ),
+            pytest.param("codex", "auto", True, "codex", "warn", id="seeded-codex"),
+            pytest.param("claude", "auto", False, None, "warn", id="host-claude"),
+            pytest.param("codex", "auto", False, None, "warn", id="host-codex"),
+        ],
+    )
+    def test_rotation_risk_by_venue_and_seed(
+        self, isolated_home, monkeypatch, tmp_path, app, policy, in_sandbox, seed_app, expected
+    ):
+        from booley.harness import doctor
+
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: in_sandbox)
+        monkeypatch.setattr(
+            doctor.host_environment,
+            "inspect_agent_installation",
+            lambda _app: doctor.host_environment.AgentInstallation(True, None),
+        )
+        for name in (auth_token.APP_CLAUDE, auth_token.APP_CODEX):
+            seed = tmp_path / "seed" / name
+            monkeypatch.setitem(dc._APP_CREDS_SEED_TARGET, name, str(seed))
+            if name == seed_app:
+                seed.parent.mkdir(exist_ok=True)
+                seed.write_text("{}")
+        reporter = doctor._Reporter.create()
+
+        doctor._check_oauth_token(
+            app,
+            reporter.pass_,
+            reporter.warn_,
+            reporter.skip_,
+            policy,
+            _note=reporter.note_,
+        )
+
+        warns = [f for f in reporter.findings if f.check_id == "agent.rotation-risk"]
+        sandbox_notes = [f for f in reporter.findings if self._NOTE in f.message]
+        label = {"claude": "Claude Code", "codex": "Codex"}[app]
+        if expected == "warn":
+            assert [f.fix for f in warns] == [f"booley auth --app {app}"]
+            assert "host-side login can revoke mid-run" in warns[0].message
+            assert sandbox_notes == []
+            return
+        assert warns == []
+        if expected == "accepted-note":
+            assert sandbox_notes == []
+            assert any("accepted by explicit auth" in f.message for f in reporter.findings)
+            return
+        assert [(f.severity, f.message.startswith(f"{label}:")) for f in sandbox_notes] == [
+            (doctor.Severity.NOTE, True)
+        ]
+
+
 class TestDoctorCheck:
     """The check that would have caught the 40-task void run before it started."""
 
@@ -352,6 +422,8 @@ class TestDoctorCheck:
     def _run(monkeypatch, *, claude=True, codex=False, provider="claude"):
         from booley.harness import doctor
 
+        # Host venue, pinned: in a Sandbox the rotation WARN depends on the seed sidecar.
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
         monkeypatch.setattr(
             doctor.host_environment,
             "inspect_agent_installation",
@@ -368,13 +440,13 @@ class TestDoctorCheck:
         )
         return sink
 
-    def test_warns_when_only_rotating_creds(self, home, monkeypatch):
+    def test_warns_when_only_rotating_creds(self, isolated_home, monkeypatch):
         sink = self._run(monkeypatch)
 
         assert sink["pass"] == []
         assert any("revoke" in m for m in sink["warn"])
 
-    def test_passes_with_stored_token(self, home, monkeypatch):
+    def test_passes_with_stored_token(self, isolated_home, monkeypatch):
         auth_token.store_token(_TOKEN)
 
         sink = self._run(monkeypatch)
@@ -382,7 +454,7 @@ class TestDoctorCheck:
         assert sink["warn"] == []
         assert any("rotation-free" in m for m in sink["pass"])
 
-    def test_exported_api_key_satisfies_the_check(self, home, monkeypatch):
+    def test_exported_api_key_satisfies_the_check(self, isolated_home, monkeypatch):
         # An API key never rotates AND outranks everything else, so warning
         # "no rotation-free credential" (and steering to `booley auth`, whose
         # token the key would override) was doubly wrong.
@@ -393,7 +465,7 @@ class TestDoctorCheck:
         assert sink["warn"] == []
         assert any("API key" in m and "rotation-free" in m for m in sink["pass"])
 
-    def test_api_key_pass_names_the_outranked_stored_token(self, home, monkeypatch):
+    def test_api_key_pass_names_the_outranked_stored_token(self, isolated_home, monkeypatch):
         auth_token.store_token(_TOKEN)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
 
@@ -402,14 +474,14 @@ class TestDoctorCheck:
         assert any("outranks" in m for m in sink["pass"])
 
     @pytest.mark.skipif(os.name == "nt", reason="Windows ACLs are not POSIX mode bits")
-    def test_warns_when_stored_token_is_world_readable(self, home, monkeypatch):
+    def test_warns_when_stored_token_is_world_readable(self, isolated_home, monkeypatch):
         auth_token.store_token(_TOKEN).chmod(0o644)
 
         sink = self._run(monkeypatch)
 
         assert any("readable by others" in m for m in sink["warn"])
 
-    def test_codex_is_checked_on_a_codex_project(self, home, monkeypatch):
+    def test_codex_is_checked_on_a_codex_project(self, isolated_home, monkeypatch):
         # Claude covered, Codex not: on a codex project the warning is Codex's.
         auth_token.store_token(_TOKEN, auth_token.APP_CLAUDE)
 
@@ -418,7 +490,7 @@ class TestDoctorCheck:
         assert any("Codex" in m for m in sink["warn"])
         assert not any("Claude" in m for m in sink["warn"])
 
-    def test_codex_passes_with_stored_api_key(self, home, monkeypatch):
+    def test_codex_passes_with_stored_api_key(self, isolated_home, monkeypatch):
         auth_token.store_token(_API_KEY, auth_token.APP_CODEX)
 
         sink = self._run(monkeypatch, claude=True, codex=True, provider="codex")
@@ -426,7 +498,7 @@ class TestDoctorCheck:
         assert sink["warn"] == []
         assert len(sink["pass"]) == 1
 
-    def test_skips_when_the_selected_app_is_absent(self, home, monkeypatch):
+    def test_skips_when_the_selected_app_is_absent(self, isolated_home, monkeypatch):
         sink = self._run(monkeypatch, claude=False, codex=False)
 
         assert sink["skip"] and not sink["warn"]
@@ -438,7 +510,7 @@ class TestDoctorCheckIsProviderGated:
     credentials no Booley run would ever read -- unactionable noise that erodes
     trust in the warning that IS real."""
 
-    def test_unused_provider_is_not_audited(self, home, monkeypatch):
+    def test_unused_provider_is_not_audited(self, isolated_home, monkeypatch):
         # Both apps installed; only Claude is configured and covered.
         auth_token.store_token(_TOKEN, auth_token.APP_CLAUDE)
 
@@ -448,14 +520,14 @@ class TestDoctorCheckIsProviderGated:
         assert len(sink["pass"]) == 1
         assert "Claude" in sink["pass"][0]
 
-    def test_configured_provider_still_warns(self, home, monkeypatch):
+    def test_configured_provider_still_warns(self, isolated_home, monkeypatch):
         # The kept warning: it names a real failure mode with a real remedy.
         sink = TestDoctorCheck._run(monkeypatch, claude=True, codex=True, provider="claude")
 
         assert any("Claude" in m and "revoke" in m for m in sink["warn"])
         assert not any("Codex" in m for m in sink["warn"])
 
-    def test_skip_names_the_configured_provider(self, home, monkeypatch):
+    def test_skip_names_the_configured_provider(self, isolated_home, monkeypatch):
         # Codex configured but never installed: say so, don't claim "no agent app".
         sink = TestDoctorCheck._run(monkeypatch, claude=True, codex=False, provider="codex")
 
