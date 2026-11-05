@@ -903,16 +903,28 @@ def _healthy_doctor_backend(monkeypatch):
 
 @pytest.mark.parametrize("deep", [False, True])
 def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
+    from booley.harness import developer_probe
+
     booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     _healthy_doctor_backend(monkeypatch)
-    probe_calls = []
+    _set_venue(monkeypatch, True)
+    monkeypatch.setattr(doctor, "_run_deep_checks", lambda *a, **k: None)
+    monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *a, **k: None)
+    rss_calls, model_calls = [], []
 
-    def probe(project, _pass, _skip, _fail, *, completeness=None):
-        probe_calls.append(project.project_root)
-        _pass("Specialist provider live authorization check completed successfully")
+    def measure(root):
+        rss_calls.append(root)
+        return developer_probe.ProbeMeasurement(
+            _GIB, True, developer_probe.ProbeUsage(1, 0, 1, 0.0)
+        )
 
-    monkeypatch.setattr(doctor, "_run_developer_probe", probe)
+    def probe(_root, model, **_kw):
+        model_calls.append(model)
+        return developer_probe.ProbeUsage(1, 0, 1, 0.0)
+
+    monkeypatch.setattr(developer_probe, "measure_developer_rss", measure)
+    monkeypatch.setattr(developer_probe, "probe_model_access", probe, raising=False)
     doctor.run_doctor_result(
         argparse.Namespace(verbose=False, deep=deep), tmp_path, record_clean=False
     )
@@ -923,7 +935,9 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
     assert (
         "Specialist provider live authorization check completed successfully" in output
     ) is deep
-    assert probe_calls == ([tmp_path] if deep else [])
+    # Plain Doctor never calls a model; deep Doctor probes each distinct non-light model.
+    assert rss_calls == ([tmp_path] if deep else [])
+    assert bool(model_calls) is deep
 
 
 def test_doctor_deep_host_preserves_probe_skip(tmp_path, monkeypatch, capsys):
