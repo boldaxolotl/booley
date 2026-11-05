@@ -41,6 +41,8 @@ from booley.runtime.booley_dir import reset_cache
 from booley.runtime.image_lifecycle import LifecycleResult
 from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
 from tests.conftest import symlink_or_skip
+from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 HAND_EDIT = "# HAND EDIT — must survive re-init\n"
 
@@ -69,12 +71,33 @@ def _filesystem_snapshot(root: Path) -> dict[Path, tuple[bytes, int]]:
     }
 
 
+def _isolate_docker(monkeypatch) -> None:
+    """Keep Init off the Docker CLI.
+
+    Init's Sandbox git-version probe returns ``None`` ("unknown version", what
+    every run without the image gets), and any other route to the shared Docker
+    CLI helper fails the test instead of starting ``docker``.
+    """
+    monkeypatch.setattr(init_cmd, "_sandbox_git_version", lambda *_args, **_kwargs: None)
+    forbid_docker_cli(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _no_docker_cli(monkeypatch):
+    """Every test in this module runs without Docker (also catches swallowed calls)."""
+    _isolate_docker(monkeypatch)
+    yield
+    assert_docker_cli_unused()
+
+
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch) -> Path:
     """A scratch git repo with isolated HOME and no docker/vscode/systemctl."""
     root = tmp_path / "proj"
     root.mkdir()
-    subprocess.run(["git", "init", str(root)], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "init", str(root)], capture_output=True, check=True, timeout=SUBPROCESS_TIMEOUT_S
+    )
 
     home = tmp_path / "home"
     home.mkdir()
@@ -127,6 +150,7 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     pdk_root = tmp_path / "pdk"
     pdk_root.mkdir()
     monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: pdk_root)
+    _isolate_docker(monkeypatch)
     return root
 
 
@@ -960,8 +984,15 @@ def _assert_applied_backfills(repo: Path, target: Path, missing: list[str]) -> N
         "tests.toml",
         "FUSESOC_IGNORE",
     }
-    outer = subprocess.check_output(["git", "-C", str(repo), "symbolic-ref", "HEAD"])
-    assert subprocess.check_output(["git", "-C", str(target), "symbolic-ref", "HEAD"]) == outer
+    outer = subprocess.check_output(
+        ["git", "-C", str(repo), "symbolic-ref", "HEAD"], timeout=SUBPROCESS_TIMEOUT_S
+    )
+    assert (
+        subprocess.check_output(
+            ["git", "-C", str(target), "symbolic-ref", "HEAD"], timeout=SUBPROCESS_TIMEOUT_S
+        )
+        == outer
+    )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission repair")
@@ -1369,3 +1400,26 @@ def test_refused_fusesoc_ignore_marker_warns(tmp_path, capsys):
     assert not destination.exists()
     assert "refusing symlinked" in capsys.readouterr().out
     assert (ctx.results[-1].name, ctx.results[-1].status) == ("booley_dir", "warn")
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="the hanging docker stub is a POSIX shell script; the module's "
+    "_run_docker guard covers Windows",
+)
+def test_full_init_starts_no_docker_process(repo, tmp_path, monkeypatch):
+    """Init never launches ``docker``, even when one on PATH would hang.
+
+    Catches any route to Docker that bypasses the shared ``_run_docker`` helper
+    (which the module's guard already forbids).
+    """
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    marker = tmp_path / "docker-was-started"
+    stub = stub_dir / "docker"
+    stub.write_text(f"#!/bin/sh\ntouch '{marker}'\nexec sleep 20\n", encoding="utf-8")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{stub_dir}{os.pathsep}{os.environ['PATH']}")
+
+    assert _run_full_init(repo) == 0
+    assert not marker.exists(), "Init started the docker executable"

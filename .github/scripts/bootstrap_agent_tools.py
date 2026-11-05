@@ -45,8 +45,9 @@ def main(argv: list[str] | None = None) -> int:
     with environment.with_name(f".{environment.name}.lock").open("a+", encoding="utf-8") as lock:
         wait_for_file_lock(lock, timeout_s=LOCK_WAIT_SECONDS)
         python = readiness.venv_python(environment)
-        if not readiness.validate_environment(environment, args.fingerprint, python)[0]:
-            _rebuild(environment, root, args.fingerprint, readiness.PINNED_RUNNERS)
+        pins = readiness.runner_pins(root)
+        if not readiness.validate_environment(environment, args.fingerprint, python, pins)[0]:
+            _rebuild(environment, root, args.fingerprint, pins)
     return 0
 
 

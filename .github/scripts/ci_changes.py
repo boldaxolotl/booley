@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import subprocess
 import sys
@@ -17,7 +18,7 @@ from ci_flake_stress import (
     plan_stress,
     stress_enabled,
 )
-from docker_base_contract import stable_base_inputs
+from docker_base_contract import PROJECT_METADATA, contract_contents, stable_base_inputs
 from picorv32_ci_inputs import RISCV_IMAGE_FILES, RISCV_IMAGE_PREFIXES
 
 CATEGORIES = (
@@ -38,6 +39,7 @@ CATEGORIES = (
     "packaging",
     "workflow",
     "release",
+    "ci_tooling",
     "full",
 )
 CONDITIONAL_JOBS = (
@@ -53,12 +55,24 @@ CONDITIONAL_JOBS = (
     "package-artifacts",
     "sidecar-smoke",
     "bwave-smoke",
+    "scanner-smoke",
     "flake-stress",
 )
 # Selected by the pull request's changed test modules (ci_flake_stress.py),
 # never by path categories, so a workflow or full-CI change does not force it.
 STRESS_JOB = "flake-stress"
 ALWAYS_JOBS = ("changes", "release-semantic")
+CI_TOOLING_JOBS = (
+    "package-artifacts",
+    "sidecar-smoke",
+    "bwave-smoke",
+    "scanner-smoke",
+    "lint",
+    "test",
+    "test-verify",
+    "coverage-shards",
+    "coverage",
+)
 ALL_JOBS = (*ALWAYS_JOBS, *CONDITIONAL_JOBS)
 # A path whose classification is a subset of this is a documentation path:
 # README, website and documentation content that the narrow `docs-check` job
@@ -92,6 +106,9 @@ _PACKAGING_FILES = {
     "setup.cfg",
     "setup.py",
 }
+# Pins for the CI-only tools that workflows install (never the project itself).
+_CI_REQUIREMENTS_DIR = ".github/ci/"
+_CI_REQUIREMENTS_NAME = "requirements-*.txt"
 _IMAGE_TEST_PREFIXES = ("tests/docker/", "tests/smoke/")
 _IMAGE_TEST_FILES = {"tests/bwave/test_waveform_store_streaming.py"}
 _RELEASE_SENSITIVE_PREFIXES = (
@@ -183,6 +200,15 @@ def _release_image_categories(path: str) -> tuple[str, ...]:
     return tuple(categories)
 
 
+def _ci_tooling_categories(path: str) -> tuple[str, ...]:
+    directory, _, name = path.rpartition("/")
+    if directory + "/" == _CI_REQUIREMENTS_DIR and fnmatch.fnmatchcase(
+        name, _CI_REQUIREMENTS_NAME
+    ):
+        return ("ci_tooling",)
+    return ()
+
+
 def _boolean(value: str) -> bool:
     normalized = value.casefold()
     if normalized not in {"true", "false"}:
@@ -232,7 +258,7 @@ def _documentation_categories(path: str) -> set[str]:
     return set()
 
 
-def _path_categories(path: str) -> set[str]:
+def _path_categories(path: str, *, contract_neutral: bool = False) -> set[str]:
     categories = _documentation_categories(path)
     if path in _PACKAGING_FILES:
         categories.add("packaging")
@@ -264,10 +290,11 @@ def _path_categories(path: str) -> set[str]:
         categories.add("release_sensitive")
         categories.add("standard_image")
         categories.add("riscv_image")
-    if path in _STABLE_BASE_FILES | _STABLE_BASE_ORCHESTRATION_FILES:
+    if not contract_neutral and path in _STABLE_BASE_FILES | _STABLE_BASE_ORCHESTRATION_FILES:
         categories.add("stable_base")
     if path.startswith((".github/workflows/", ".github/actions/", ".github/scripts/")):
         categories.add("workflow")
+    categories.update(_ci_tooling_categories(path))
     if path in {
         ".github/workflows/publish.yml",
         ".github/workflows/docker-publish.yml",
@@ -279,11 +306,16 @@ def _path_categories(path: str) -> set[str]:
 
 
 def classify(
-    paths: Iterable[str], *, force_all: bool = False, riscv_measurement: str = "automatic"
+    paths: Iterable[str],
+    *,
+    force_all: bool = False,
+    riscv_measurement: str = "automatic",
+    contract_neutral: frozenset[str] = frozenset(),
 ) -> set[str]:
+    """Classify changed paths; ``contract_neutral`` paths never select the stable base."""
     categories: set[str] = set()
     for path in paths:
-        path_categories = _path_categories(path)
+        path_categories = _path_categories(path, contract_neutral=path in contract_neutral)
         if not path_categories:
             categories.add("full")
         categories.update(path_categories)
@@ -331,6 +363,11 @@ def _category_jobs(categories: set[str]) -> set[str]:
         jobs.update({"package-artifacts", "bwave-smoke"})
     if "sidecar" in categories:
         jobs.add("sidecar-smoke")
+    if "ci_tooling" in categories:
+        # The jobs that install the pinned tools, plus the Python lane whose
+        # tests keep the requirements files in step with pyproject.toml. Not
+        # `full`/`release`: a pin bump needs no docs, site, or Rust jobs.
+        jobs.update(CI_TOOLING_JOBS)
     return jobs
 
 
@@ -418,6 +455,38 @@ def _git_diff(repo: Path, base: str, head: str) -> bytes:
     if result.returncode != 0:
         raise ValueError(result.stderr.decode(errors="replace").strip() or "git diff failed")
     return result.stdout
+
+
+def _git_blob(repo: Path, revision: str, path: str) -> bytes:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{revision}:{path}"], capture_output=True, check=False
+    )
+    if result.returncode != 0:
+        raise ValueError(result.stderr.decode(errors="replace").strip() or "git show failed")
+    return result.stdout
+
+
+def _contract_neutral_paths(
+    repo: Path, base: str, head: str, entries: list[tuple[str, tuple[str, ...]]]
+) -> frozenset[str]:
+    """Return modified stable-base inputs whose contract contribution is unchanged.
+
+    Only the project metadata file is examined (#2553): an edit outside its
+    runtime dependencies leaves the base image contract, and so the published
+    base, valid. Unexportable metadata is never neutral, so the contract step
+    reports the real error instead of the classifier failing on file contents.
+    """
+    if ("M", (PROJECT_METADATA,)) not in entries:
+        return frozenset()
+    # A git failure is an infrastructure fault and propagates to exit 2.
+    before_blob = _git_blob(repo, base, PROJECT_METADATA)
+    after_blob = _git_blob(repo, head, PROJECT_METADATA)
+    try:
+        before = contract_contents(PROJECT_METADATA, before_blob)
+        after = contract_contents(PROJECT_METADATA, after_blob)
+    except ValueError:
+        return frozenset()
+    return frozenset({PROJECT_METADATA}) if before == after else frozenset()
 
 
 def _pull_request_base(repo: Path, head: str) -> str:
@@ -568,7 +637,10 @@ def main() -> int:
             categories = {"python_source"}
         else:
             categories = classify(
-                paths, force_all=args.force_all, riscv_measurement=args.riscv_measurement
+                paths,
+                force_all=args.force_all,
+                riscv_measurement=args.riscv_measurement,
+                contract_neutral=_contract_neutral_paths(args.repo, base, args.head, entries),
             )
         _write_outputs(
             args.github_output,

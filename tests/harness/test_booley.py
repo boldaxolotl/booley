@@ -414,6 +414,7 @@ def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch,
 
 
 def test_session_up_observes_upgrade_before_runtime_start(tmp_path, monkeypatch):
+    from booley.harness import doctor
     from booley.runtime import session_runtime
 
     events: list[str] = []
@@ -429,6 +430,10 @@ def test_session_up_observes_upgrade_before_runtime_start(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(health, "due_reason", lambda _root: None)
     monkeypatch.setattr(tlr, "_report_session_health", lambda *_args, **_kwargs: None)
+    # The deep status would probe the Sandbox through Docker.
+    monkeypatch.setattr(
+        doctor, "observe_deep_status", lambda *_a, **_kw: MagicMock(render=lambda: "deep")
+    )
 
     assert tlr._session_up(tlr._build_parser().parse_args(["session", "up"]), tmp_path) == 0
     assert events == ["observe", "up"]

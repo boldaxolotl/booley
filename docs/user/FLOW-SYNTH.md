@@ -43,7 +43,19 @@ booley flow synth --target synth_core --baseline main
 
 ## Reading results
 
-The run prints one row per Target:
+The run prints one row per Target, for example with `--baseline main`:
+
+```text
+baseline: main
+  Target       Area       Δ       Crit path   Δ       Fmax      Setup slack   Time    Status
+  ──────────   ────────   ─────   ─────────   ─────   ───────   ───────────   ─────   ──────
+  synth_core   45.2 kGE   +2.7%   2,380 ps    +3.5%   420 MHz   +0.120 ns     61.0s   PASS
+
+  synth_core: 12,345 cells, hold slack +0.020 ns, reg2reg Fmax 400 MHz
+  synth_core: log: .booley/flow-reports/synth/3/artifacts/synth_synth_core/run.log
+
+RESULT: PASS
+```
 
 | Column | Meaning |
 |---|---|
@@ -58,9 +70,20 @@ Fmax, a warning count with the log path, and any failure reason. When the
 worst path starts at an input or ends at an output, a note says so: such a
 path's slack depends on the input and output delays in your constraints, not on
 the logic between registers, so fix those constraints rather than the RTL.
-Every clock's period, slack, critical path and Fmax is in the JSON report;
-field details are in
-[FLOW_REPORTS](../internals/FLOW_REPORTS.md#synth).
+
+Everything else is in the run's numbered directory (`synth/3/` above; see
+[Reading results](FLOW_REFERENCE.md#reading-results) for where it lives):
+
+| File | What it holds |
+|---|---|
+| `targets/<target>.json` | The Target's results. `area_kge` and `cells`; `per_clock`, one entry per clock with its `period_ns`, setup slack `wns_ns`, hold slack `whs_ns`, `critical_path_ps` and `fmax_mhz`; `reg2reg_fmax_mhz`; `conditions` with the latch, combinational-loop and multiply-driven counts; `total_warnings` and `warning_summary`, the warnings grouped with a few sample messages. With `--baseline`: `baseline` (the same metrics at that revision), and `delta_pct` (area) and `timing_delta_pct` (critical path) in percent. A logical-mode run has `estimated_fmax_mhz` instead of clock timing. |
+| `artifacts/synth_<target>/run.log` | The full Yosys and OpenROAD output: every warning and error. |
+| `artifacts/synth_<target>/timing/` | The STA reports, physical mode only (see [`timing_report_paths`](#configuration-flowssynth)). |
+| `artifacts/synth_<target>/baseline_timing/` | With `--baseline`: the baseline run's STA reports. |
+
+`flow-reports/synth_<target>.json`, next to `synth/`, is a copy of the latest
+run's `targets/<target>.json`. A VLNV-qualified Target selector becomes a
+sanitized file name with a hash suffix.
 
 | Verdict | Meaning | Exit |
 |---|---|---:|
@@ -193,7 +216,7 @@ only the exit code doesn't treat a design missing timing as success.
 
 `timing_report_paths` (integer, at least 1; a smaller value stops the run
 with a configuration error) sets how many setup paths the timing reports in
-`reports/timing/` list: `overall.rpt`, `overall.csv.rpt`, the `pre_repair`
+`artifacts/synth_<target>/timing/` list: `overall.rpt`, `overall.csv.rpt`, the `pre_repair`
 pair (written only when timing repair runs), and `reg2reg.rpt` (only when the
 design has registers). Each lists the worst path to each of the N worst
 endpoints, worst first; a design with fewer paths lists those it has. Worst slack, critical path, Fmax, and the verdict

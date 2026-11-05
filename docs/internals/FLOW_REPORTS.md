@@ -2,8 +2,9 @@
 
 This is the file-level reference for what the built-in `sim`, `lint`, `synth`,
 and `fpga` Flows write to disk: where the reports go, which JSON fields they
-contain, and how simulation Campaigns are laid out. Read it if you write a
-script or tool that consumes Flow output.
+contain, and how simulation Campaigns are laid out. It is for contributors
+changing what the Flows write or code that reads it. The user docs explain the
+files a person opens; keep them consistent with this page.
 
 | Document | Covers |
 |---|---|
@@ -183,11 +184,22 @@ unavailable` instead; the verdict and Criteria are unaffected.
 
 | Field | Contents |
 |---|---|
-| `target`, `target_identity`, `tb_top`, `eda_tool` | Target selector, its full FuseSoC identity, the testbench top, and the simulator. |
-| `passed`, `complete`, `elapsed_s` | Target verdict, whether the run finished writing its results, and duration. `complete: false` means the run was interrupted while publishing and can be resumed. |
-| `phase_timings_s` | Seconds spent in `setup`, `pre_sim`, `build`, `run`, `result_processing`, `publication`, and `unattributed`, with `execution_total` and `total`. |
+| `$schema`, `flow`, `mode` | Schema id, `sim`, and `simulate`. |
+| `target`, `target_identity` | Target selector and its full FuseSoC identity. |
+| `passed`, `inconclusive`, `complete` | Target verdict, whether it was inconclusive, and whether the run finished writing its results. `complete: false` means the run was interrupted while publishing and can be resumed. |
 | `tests[]` | One entry per test (see below). |
 | `test_runs[]` | One row per Test Run: `name`, `test`, `variant`, `seed`, `args`, `env`, `fingerprint`, and `grade` (`pass`, `fail`, `error`, or `inconclusive`). `test` is null for the unnamed invocation; `variant` and `seed` are null when the run has none. |
+| `campaign_id`, `campaign_manifest` | The Simulation Campaign and a reference to its `manifest.json`. Per-Test-Run logs and waveforms live in the Campaign's work items, not in this file. |
+| `coverage_campaign`, `collection`, `evaluation` | Coverage runs only: a reference to the Target's `coverage.json` and the collection and evaluation statuses. |
+
+Reports from the older single-pass writer (`SimulateFlow._write_target_report`;
+normal CLI and MCP runs go through the Simulation Campaign instead) carry these
+fields in place of the Campaign ones:
+
+| Field | Contents |
+|---|---|
+| `tb_top`, `eda_tool`, `elapsed_s` | The testbench top, the simulator, and duration. |
+| `phase_timings_s` | Seconds spent in `setup`, `pre_sim`, `build`, `run`, `result_processing`, `publication`, and `unattributed`, with `execution_total` and `total`. |
 | `compile_command`, `fileset` | The build command and the resolved `rtl` and `tb` source lists. |
 | `artifacts` | The report, per-test run logs, result files, and waveforms from this run. |
 
@@ -257,6 +269,55 @@ be trusted: `valid` when collection completed normally, otherwise `invalid`
 with the reason, and empty rollups. Keep the Target reference, selected attempt,
 and enclosing Simulation Campaign together.
 
+Each `rollups` entry (and each per-source entry in `source_rollups`, keyed by
+`source`) has `metric`, `semantics` (one sentence on what one point means),
+`total_points`, `eligible_points`, `covered_points`, `waived_points`, and
+`percent` (covered / eligible, rounded to 2 decimals, `null` when nothing is
+eligible). A metric with no points is omitted. For example:
+
+```json
+{"metric": "branch", "total_points": 810, "eligible_points": 732,
+ "covered_points": 565, "waived_points": 0, "percent": 77.19, "semantics": "…"}
+```
+
+#### Point store
+
+`coverage-points.jsonl.gz` is gzipped JSON Lines. The first line is a header,
+`{"$schema": "booley.coverage-points/v1", "campaign_id": …, "target_identity": …}`;
+every other line is one coverage point:
+
+```json
+{
+  "id": "cp1:…",
+  "identity": {
+    "metric": "toggle",
+    "location": {"source": "rtl/fifo.sv",
+                 "start": {"line": 42, "column": 17}, "end": {"line": 42, "column": 17}},
+    "hierarchy": "TOP.tb.dut.u_fifo",
+    "subject": {"signal_bit_direction": "wr_ptr[2]:1->0"},
+    "collector": {"record_type": "toggle", "native_key": "…"}
+  },
+  "hits_by_run": {"run:002:stress@1": 3},
+  "disposition": {"kind": "eligible"}
+}
+```
+
+| Field | Contents |
+|---|---|
+| `id` | Stable point id: `cp1:` plus the base64url of the canonical `identity` JSON. Waivers and Waiver Candidates name points by it. |
+| `identity.metric` | `line`, `branch`, `expression`, `toggle`, `cover_property`, or the unscored `fsm` / `covergroup`. |
+| `identity.location` | Project-relative `source` and the start/end line and column Verilator reported. |
+| `identity.hierarchy` | Instance path; points are per instance. |
+| `identity.subject` | One key per metric: `basic_block` (line), `outcome` (branch: `if`, `else`, a case item; expression: the term combination, e.g. `(rst_ni==0) => 1`), `signal_bit_direction` (toggle: `signal[bit]:0->1`), `cover_property`, `native_fsm`, `native_covergroup`. |
+| `identity.collector` | Verilator's `record_type` and raw record key, for tracing a point back to the native database. |
+| `hits_by_run` | Hit count per Test Run id (`run:<NNN>:<test run>`); runs with zero hits are omitted, so an uncovered point has `{}`. |
+| `disposition` | `kind` is `eligible` (scored RTL), `unscored` (a `testbench`, `generated` or `foreign` source, or an unscored metric), or `waived`; a waived point also carries `reason`, `waiver_id`, `waiver_file`, `waiver_fingerprint` and `provenance`. |
+
+Booley code reads points through the manifest
+(`booley.flows.sim.coverage_campaign_store`), which checks the store's size and
+digest. `docs/user/COVERAGE.md` gives users `zcat | jq` commands that open the
+store directly for a quick look; keep those consistent with this format.
+
 In `report.json`, `detail.targets[<target>]` keeps each Target's `simulation`,
 `collection`, and `evaluation` results even when another Target decided the
 exit code. `coverage_campaign` points to the Target-level reference once it
@@ -288,9 +349,12 @@ Project source files.
 ### Coverage retention
 
 `python -m booley.flows.sim.campaign_retention` deletes the evidence of one
-exact run. Nothing is ever deleted automatically. Usage is in
-[COVERAGE.md](../user/COVERAGE.md#cleaning-up-completed-campaigns); the
-algorithm is in
+exact run. Nothing is ever deleted automatically. User docs tell people to
+delete finished run folders directly ([Cleaning up reports](../user/FLOW_REFERENCE.md#cleaning-up-reports));
+this command is the guarded version, for tooling and for removing a run that
+others depend on. Run it as
+`python -m booley.flows.sim.campaign_retention --reports-root <root> --invocation <N>`
+with one of the options below. The algorithm is in
 [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#exact-report-retention).
 
 - **`--native-target <target>`** removes that Target's `native/` directory (raw and

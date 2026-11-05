@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 from booley.runtime import qa_skill_selection as selection
 
@@ -21,8 +22,18 @@ def _checkout(tmp_path: Path) -> Path:
         skill = root / "qa" / name
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("# QA\n", encoding="utf-8")
-    subprocess.run(["git", "init", "-b", "feature", str(root)], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(root), "add", "."], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "-b", "feature", str(root)],
+        check=True,
+        capture_output=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "add", "."],
+        check=True,
+        capture_output=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
     subprocess.run(
         [
             "git",
@@ -38,6 +49,7 @@ def _checkout(tmp_path: Path) -> Path:
         ],
         check=True,
         capture_output=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return root
 

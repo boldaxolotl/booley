@@ -64,7 +64,7 @@ jobs:
       - name: Build wheel
         id: wheel
         run: |
-          pip install build==1.6.1
+          pip install -r .github/ci/requirements-build.txt
           PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import BuildProfile, write_build_stamp; write_build_stamp(Path.cwd(), profile=BuildProfile.RUNTIME_IMAGE)'
           trap 'rm -f src/booley/_build_commit.py' EXIT
           rm -rf build/
@@ -424,7 +424,7 @@ jobs:
       # into the isolated home's user site with the base interpreter.
       - name: Build official-release wheel from the candidate
         run: |
-          pip install build==1.6.1
+          pip install -r .github/ci/requirements-build.txt
           PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import BuildProfile, write_build_stamp; write_build_stamp(Path.cwd(), profile=BuildProfile.OFFICIAL_RELEASE)'
           trap 'rm -f src/booley/_build_commit.py' EXIT
           rm -rf build/

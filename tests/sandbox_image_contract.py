@@ -21,6 +21,15 @@ _OVERLAY_DOCKERFILE = "src/booley/data/docker/Dockerfile.wheel"
 _RISCV_DOCKERFILE = "src/booley/data/docker/Dockerfile.riscv"
 _BUILD_ACTION = "docker/build-push-action@"
 _VERSION = re.compile(r"[0-9]+(?:\.[0-9]+)+")
+_PIN_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+_REQUIREMENTS_PATH = "src/booley/data/docker/base-python-requirements.txt"
+# Shell expression that reads the cocotb pin from the requirements file; the
+# Dockerfile and the production smoke step differ only in where the file lives.
+_COCOTB_PIN_EXPRESSION = "$(sed -n 's/^cocotb==//p' {path})"
+_DOCKERFILE_COCOTB_PROBE = _COCOTB_PIN_EXPRESSION.format(
+    path="/tmp/booley-build/base-python-requirements.txt"
+)
+_WORKFLOW_COCOTB_PROBE = _COCOTB_PIN_EXPRESSION.format(path=f"/work/{_REQUIREMENTS_PATH}")
 _INVENTORY_LABEL = "io.booley.runtime-base.package-inventory"
 _INVENTORY_PATH = "/usr/local/share/booley/base-package-inventory.json"
 
@@ -60,6 +69,8 @@ class ContractSources:
     test_workflow: dict[str, Any]
     release_workflow: dict[str, Any]
     base_workflow: dict[str, Any]
+    base_python_requirements: str
+    session_runtime_contract: str
     session_runtime: dict[str, Any]
     verilator_identity: tuple[str, str]
 
@@ -88,10 +99,11 @@ _RUNTIME_ROLES = {
     ),
     "cocotb": RuntimeRole(
         "Cocotb",
-        "Dockerfile.base:pip requirement",
+        "base-python-requirements.txt:cocotb pin",
         (
             "Dockerfile.base:cocotb-config build assertion",
             "test.yml:bwave-smoke:cocotb-config production probe",
+            "session-runtime.toml:EDA command diagnostics cocotb probe",
         ),
     ),
 }
@@ -99,6 +111,9 @@ _RUNTIME_ROLES = {
 
 def load_sources(repo: Path) -> ContractSources:
     docker_dir = repo / "src/booley/data/docker"
+    session_runtime_contract = (repo / ".github/contracts/session-runtime.toml").read_text(
+        encoding="utf-8"
+    )
     return ContractSources(
         base_dockerfile=(docker_dir / "Dockerfile.base").read_text(encoding="utf-8"),
         candidate_dockerfile=(docker_dir / "Dockerfile.substrate").read_text(encoding="utf-8"),
@@ -107,11 +122,39 @@ def load_sources(repo: Path) -> ContractSources:
         test_workflow=_load_yaml(repo / ".github/workflows/test.yml"),
         release_workflow=_load_yaml(repo / ".github/workflows/docker-publish.yml"),
         base_workflow=_load_yaml(repo / ".github/workflows/docker-base-publish.yml"),
-        session_runtime=tomllib.loads(
-            (repo / ".github/contracts/session-runtime.toml").read_text(encoding="utf-8")
-        ),
+        base_python_requirements=(repo / _REQUIREMENTS_PATH).read_text(encoding="utf-8"),
+        session_runtime_contract=session_runtime_contract,
+        session_runtime=tomllib.loads(session_runtime_contract),
         verilator_identity=(PINNED_VERILATOR.tag, PINNED_VERILATOR.commit),
     )
+
+
+def base_python_pins(contents: str) -> dict[str, str]:
+    """Parse the base image requirements file: blank, comment, or ``name==version`` lines.
+
+    The Dockerfile ``sed`` extraction and the acceptance gate read the same file
+    with simple patterns, so only canonical lowercase names and exact numeric
+    versions are accepted, one pin per package.
+    """
+    pins: dict[str, str] = {}
+    for number, raw in enumerate(contents.splitlines(), start=1):
+        line = raw  # no stripping: the sed and regex readers see surrounding blanks
+        if not line.strip() or line.startswith("#"):
+            continue
+        name, separator, version = line.partition("==")
+        if (
+            not separator
+            or _PIN_NAME.fullmatch(name) is None
+            or _VERSION.fullmatch(version) is None
+        ):
+            raise ValueError(
+                f"base-python-requirements.txt line {number}: expected "
+                f"'name==version' with a lowercase name and an exact version, found {line!r}"
+            )
+        if name in pins:
+            raise ValueError(f"base-python-requirements.txt line {number}: duplicate pin {name!r}")
+        pins[name] = version
+    return pins
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -672,13 +715,16 @@ def _session_runtime_verilator_probe(contract: dict[str, Any]) -> tuple[str, str
 
 def _cocotb_role_errors(sources: ContractSources) -> list[str]:
     role = _RUNTIME_ROLES["cocotb"]
+    pins = base_python_pins(sources.base_python_requirements)
     authority = _unique_version(
-        f"{role.name} authority {role.authority}",
-        _cocotb_requirements(sources.base_dockerfile),
+        f"{role.name} authority {role.authority}", (pins["cocotb"],) if "cocotb" in pins else ()
     )
-    build_evidence = _unique_version(
-        "Cocotb build probe Dockerfile.base:cocotb-config",
-        _cocotb_assertions(sources.base_dockerfile),
+    errors = _derived_probe_errors(
+        role,
+        authority,
+        _cocotb_build_expressions(sources.base_dockerfile),
+        _DOCKERFILE_COCOTB_PROBE,
+        role.probes[0],
     )
     smoke = find_step(
         "test.yml",
@@ -687,13 +733,62 @@ def _cocotb_role_errors(sources: ContractSources) -> list[str]:
         name="Run cocotb Icarus/Verilator production-image flows",
     )
     image, command = _docker_run(smoke)
-    errors = _version_pair_errors(role, authority, build_evidence, role.probes[0])
     if image != "booley-test":
         errors.append(f"Cocotb exact role: production probe image is {image!r}, not 'booley-test'")
-    smoke_evidence, flow_errors = _cocotb_smoke_evidence(command)
+    smoke_expressions, flow_errors = _cocotb_smoke_evidence(command)
     errors.extend(flow_errors)
-    errors.extend(_version_pair_errors(role, authority, smoke_evidence, role.probes[1]))
+    errors.extend(
+        _derived_probe_errors(
+            role, authority, smoke_expressions, _WORKFLOW_COCOTB_PROBE, role.probes[1]
+        )
+    )
+    session_versions = _session_cocotb_versions(sources.session_runtime_contract)
+    errors.extend(
+        _version_pair_errors(
+            role,
+            authority,
+            _unique_version("Cocotb session probe session-runtime.toml", session_versions),
+            role.probes[2],
+        )
+    )
     return errors
+
+
+def _derived_probe_errors(
+    role: RuntimeRole,
+    authority: str,
+    expressions: tuple[str, ...],
+    expected: str,
+    locator: str,
+) -> list[str]:
+    """Require the probe to compare against the requirements file, not a literal."""
+    if expressions == (expected,):
+        return []
+    return [
+        f"{role.name} {role.constraint} role: {locator}={expressions!r} must derive the "
+        f"version as {expected!r} from {role.authority} (pinned {authority!r})"
+    ]
+
+
+def _cocotb_build_expressions(contents: str) -> tuple[str, ...]:
+    return tuple(
+        match.group(1)
+        for instruction in logical_instructions(contents)
+        if instruction.keyword == "RUN"
+        for match in re.finditer(r'cocotb-config --version\)"\s*=\s*"([^"]*)"', instruction.value)
+    )
+
+
+def _session_cocotb_versions(contents: str) -> tuple[str, ...]:
+    probes = tomllib.loads(contents)["common"]["probe"]
+    return tuple(
+        match.group(1)
+        for probe in probes
+        if probe["name"] == "EDA command diagnostics"
+        for match in re.finditer(
+            r'^test "\$\(cocotb-config --version\)" = "([^"]*)"$', probe["command"], re.MULTILINE
+        )
+    )
 
 
 def _docker_run(step: WorkflowStep) -> tuple[str, tuple[str, ...]]:
@@ -710,7 +805,7 @@ def _docker_run(step: WorkflowStep) -> tuple[str, tuple[str, ...]]:
     return fields[index], tuple(fields[index + 1 :])
 
 
-def _cocotb_smoke_evidence(command: tuple[str, ...]) -> tuple[str, list[str]]:
+def _cocotb_smoke_evidence(command: tuple[str, ...]) -> tuple[tuple[str, ...], list[str]]:
     if len(command) != 3 or command[:2] != ("bash", "-c"):
         raise ValueError("Cocotb production probe test.yml: expected a bash -c command")
     segments = _shell_segments(command[2])
@@ -732,7 +827,7 @@ def _cocotb_smoke_evidence(command: tuple[str, ...]) -> tuple[str, list[str]]:
         )
         if expected not in segments:
             errors.append(f"Cocotb exact role: production probe is missing {target} Simulation")
-    return _unique_version("Cocotb production probe test.yml:cocotb-config", versions), errors
+    return versions, errors
 
 
 def _shell_segments(command: str) -> tuple[tuple[str, ...], ...]:
@@ -777,24 +872,6 @@ def _single_default(locator: str, contents: str, name: str) -> str:
         return dockerfile_syntax.argument_default(contents, name)
     except ValueError as error:
         raise ValueError(f"{locator}: {error}") from error
-
-
-def _cocotb_requirements(contents: str) -> tuple[str, ...]:
-    return tuple(
-        match.group(1)
-        for instruction in logical_instructions(contents)
-        if instruction.keyword == "RUN"
-        for match in re.finditer(r"(?:^|[\s\"'])cocotb==([^\s\"']+)", instruction.value)
-    )
-
-
-def _cocotb_assertions(contents: str) -> tuple[str, ...]:
-    return tuple(
-        match.group(1)
-        for instruction in logical_instructions(contents)
-        if instruction.keyword == "RUN"
-        for match in re.finditer(r'cocotb-config --version\)"\s*=\s*"([^\"]+)"', instruction.value)
-    )
 
 
 def _unique_version(locator: str, values: tuple[str, ...]) -> str:

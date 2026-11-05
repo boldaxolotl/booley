@@ -306,25 +306,48 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     assert changed_line_step["env"]["BASE_SHA"] == "${{ needs.changes.outputs.diff_base }}"
 
 
+def _requirement_names(relative: str) -> set[str]:
+    """Return the distribution names a CI requirements file installs, following nested ``-r``."""
+    path = REPOSITORY_ROOT / relative
+    names: set[str] = set()
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if line.startswith("-r "):
+            nested = (path.parent / line.removeprefix("-r ").strip()).relative_to(REPOSITORY_ROOT)
+            names |= _requirement_names(nested.as_posix())
+        elif line:
+            names.add(re.split(r"[=<>!~\s]", line, maxsplit=1)[0].lower())
+    return names
+
+
 def test_image_pytest_commands_install_configured_plugins() -> None:
     """Image validations can load strict repository pytest configuration."""
     workflow = _test_workflow()
     validations = next(
         step["parallel"] for step in workflow["jobs"]["bwave-smoke"]["steps"] if "parallel" in step
     )
+    plain = ".github/ci/requirements-runners.txt"
+    release = ".github/ci/requirements-runners-release.txt"
 
     for validation in validations:
         command = validation["run"]
         if "pytest" in command and "docker run" in command:
-            assert "pytest-asyncio" in command, validation["name"]
+            expected = release if "coverage-release" in command else plain
+            assert f"pip install --break-system-packages -r /work/{expected}" in command, (
+                validation["name"]
+            )
+            required = {"pytest", "pytest-asyncio"}
+            if expected == release:
+                required |= {"pytest-timeout", "hypothesis"}
+            assert required <= _requirement_names(expected), validation["name"]
 
     host_install = next(
         step
         for step in workflow["jobs"]["bwave-smoke"]["steps"]
         if step.get("name") == "Install host-side test dependencies"
     )
-    assert "pytest==9.2.0" in host_install["run"]
-    assert "pytest-asyncio" in host_install["run"]
+    assert f"pip install -r {plain}" in host_install["run"]
+    assert {"pytest", "pytest-asyncio"} <= _requirement_names(plain)
 
 
 def test_bwave_smoke_enforces_cached_path_duration_budget() -> None:

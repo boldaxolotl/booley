@@ -20,10 +20,18 @@ from booley.specialists.specialist_workspace import (
     isolated_agent_workspace,
     restore_result_paths,
 )
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 
 def _git(args: list[str], cwd: Path) -> None:
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -668,7 +676,9 @@ targets:
 
 def _cpp_source_status(repo):
     return subprocess.check_output(
-        ["git", "status", "--porcelain", "--", "shared", "tracked.sv"], cwd=repo
+        ["git", "status", "--porcelain", "--", "shared", "tracked.sv"],
+        cwd=repo,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
@@ -735,6 +745,7 @@ def _assert_cpp_review_snapshot(params, repo, visible, hidden, category):
                 cwd=root,
                 capture_output=True,
                 check=False,
+                timeout=SUBPROCESS_TIMEOUT_S,
             ).returncode
             != 0
         )

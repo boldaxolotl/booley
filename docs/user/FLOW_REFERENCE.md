@@ -6,9 +6,8 @@ LLM is involved, so you can trust a Flow's verdict as you would a script's.
 Booley ships four:
 
 - [Simulation (`sim`)](FLOW-SIM.md): build and run a Target's tests and report
-  whether each one passed. Two companion guides cover simulation topics:
-    - [Tests](TESTS.md): guide to declaring a sim Target's tests, Test
-      Variants, and seeds.
+  whether each one passed. A Target's Tests, Test Variants and seeds are
+  declared in [`tests.toml`](TESTS.md). A companion guide covers coverage:
     - [Coverage](COVERAGE.md): guide to measuring how much of the RTL your
       tests exercise, and finding what they miss.
 - [Lint (`lint`)](FLOW-LINT.md): check RTL for structural, semantic, and style
@@ -180,16 +179,32 @@ has the details.
 
 **Reports.** Each run writes a JSON report and full logs under `flow-reports/`
 in the Booley Directory (Goal runs use the Goal's runtime directory), or under
-`--report-dir`. The verdict and the report
-both give the exact paths. [FLOW_REPORTS.md](../internals/FLOW_REPORTS.md)
-describes the report files, for scripts that read them.
+`--report-dir`. Each run gets the next number under its Flow's directory, such
+as `flow-reports/sim/12/`, with the run's `report.json` at the top. Each
+Flow's page says which files in it to open.
 
 **Dry runs.** `--dry-run` prints a JSON plan of each unit of work: Target,
 sources, constraints, parameters, and the exact commands. It exits `0` when
 everything can be planned and `2` otherwise, still showing the parts that
-could be planned. [Dry-run plan](../internals/FLOW_REPORTS.md#dry-run-plan)
-lists the fields.
+could be planned.
 
 When a Flow fails for a reason you can't explain, see
 [Troubleshooting](TROUBLESHOOTING.md). If Booley itself seems wrong, report it
 as described in [When Booley itself misbehaves](USAGE.md#when-booley-itself-misbehaves).
+
+### Cleaning up reports
+
+Booley keeps reports until they are deleted. Where they go decides who
+deletes them:
+
+| Run started by | Reports | Cleaned up |
+|---|---|---|
+| A Goal | The Goal Record, in the main checkout's Booley Directory | Automatically, once the Goal has ended and its worktree and Goal Branch are gone. |
+| The agent in Interactive Mode | `.interactive_logs/<session>/` in the Booley Directory of the checkout the session runs in | With the worktree, for a session in a linked worktree. |
+| You, from the CLI | `flow-reports/` in the Booley Directory of the checkout you run in, or `--report-dir` | With the worktree, for a run in a linked worktree. |
+
+In the main checkout nothing removes them, and coverage runs in particular
+grow to gigabytes. Delete the run folders under `flow-reports/` and the
+sessions under `.interactive_logs/` you don't need, when no run is active. Keep a run you may
+still [resume](FLOW-SIM.md#resuming-an-interrupted-run), and the run a
+resumed run continued from.

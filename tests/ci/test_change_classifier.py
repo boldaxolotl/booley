@@ -16,6 +16,7 @@ sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
 from ci_changes import ALL_JOBS, STRESS_JOB, build_test_matrix, classify, required_jobs
 from picorv32_ci_inputs import RISCV_IMAGE_FILES
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 _CLASSIFIER = _ROOT / ".github/scripts/ci_changes.py"
 _AGGREGATOR = _ROOT / ".github/scripts/ci_required.py"
@@ -36,18 +37,22 @@ def _git(repo: Path, *args: str) -> str:
         capture_output=True,
         check=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return result.stdout.strip()
 
 
 def _commit(repo: Path, message: str) -> str:
     env = _git_identity_env()
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=env)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "-A"], check=True, env=env, timeout=SUBPROCESS_TIMEOUT_S
+    )
     subprocess.run(
         ["git", "-C", str(repo), "commit", "-m", message],
         check=True,
         capture_output=True,
         env=env,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return _git(repo, "rev-parse", "HEAD")
 
@@ -58,6 +63,7 @@ def _merge(repo: Path, branch: str) -> str:
         check=True,
         capture_output=True,
         env=_git_identity_env(),
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return _git(repo, "rev-parse", "HEAD")
 
@@ -110,7 +116,9 @@ def _run_classifier(
         command.extend((f"--linux-{option}", value))
     if head_ref is not None:
         command.extend(("--head-ref", head_ref))
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        command, capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT_S
+    )
     return result, output
 
 
@@ -445,11 +453,65 @@ def test_stable_base_input_requests_local_compatibility_build(tmp_path: Path) ->
     }
 
 
+_PROJECT_METADATA = """\
+[project]
+name = "demo"
+dependencies = ["alpha>=1.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+"""
+
+
+def _project_metadata_change(tmp_path: Path, edited: str) -> dict[str, str]:
+    repo, _seed = _repository(tmp_path)
+    _write(repo, "pyproject.toml", _PROJECT_METADATA)
+    base = _commit(repo, "metadata")
+    _write(repo, "pyproject.toml", edited)
+    return _classify(repo, base, _commit(repo, "edit metadata"))
+
+
+def test_extras_only_project_metadata_change_skips_stable_base(tmp_path: Path) -> None:
+    outputs = _project_metadata_change(
+        tmp_path, _PROJECT_METADATA.replace("pytest>=8", "pytest>=9")
+    )
+
+    assert outputs["stable_base"] == "false"
+    assert outputs["build_stable_base"] == "false"
+    assert outputs["packaging"] == "true"
+
+
+def test_runtime_dependency_change_selects_stable_base(tmp_path: Path) -> None:
+    outputs = _project_metadata_change(
+        tmp_path, _PROJECT_METADATA.replace("alpha>=1.0", "alpha>=2")
+    )
+
+    assert outputs["stable_base"] == "true"
+    assert outputs["build_stable_base"] == "true"
+
+
+def test_unparsable_project_metadata_keeps_stable_base(tmp_path: Path) -> None:
+    outputs = _project_metadata_change(tmp_path, "[project\nbroken")
+
+    assert outputs["stable_base"] == "true"
+
+
+def test_deleted_project_metadata_keeps_stable_base(tmp_path: Path) -> None:
+    repo, _seed = _repository(tmp_path)
+    _write(repo, "pyproject.toml", _PROJECT_METADATA)
+    base = _commit(repo, "metadata")
+    (repo / "pyproject.toml").unlink()
+
+    assert _classify(repo, base, _commit(repo, "delete metadata"))["stable_base"] == "true"
+
+
 @pytest.mark.parametrize(
     ("path", "stable_base"),
     [
         # #829: the base inventory helper's bytes are a base compatibility input.
         ("src/booley/data/docker/base_package_inventory.py", True),
+        # The pinned Python package set is installed by the base image.
+        ("src/booley/data/docker/base-python-requirements.txt", True),
         # The contract gates every image lane but not the base.
         (".github/contracts/session-runtime.toml", False),
     ],
@@ -529,6 +591,7 @@ _NOT_SELECTED_BY_SOURCE = {
     "bwave-integration",
     "bwave-smoke",
     "rust-test",
+    "scanner-smoke",
     "sidecar-smoke",
 }
 
@@ -588,6 +651,37 @@ def test_non_documentation_changes_keep_their_job_sets(
     paths: list[str], unselected: set[str]
 ) -> None:
     assert required_jobs(classify(paths)) == set(ALL_JOBS) - {STRESS_JOB} - unselected
+
+
+_CI_REQUIREMENT_FILES = (
+    ".github/ci/requirements-build.txt",
+    ".github/ci/requirements-lint.txt",
+    ".github/ci/requirements-runners-release.txt",
+    ".github/ci/requirements-runners.txt",
+    ".github/ci/requirements-scanner.txt",
+)
+
+
+def test_ci_requirements_file_selects_ci_tooling_not_full() -> None:
+    """A CI pin bump runs the jobs that install the pins, not the whole pipeline."""
+    for path in _CI_REQUIREMENT_FILES:
+        categories = classify([path])
+        jobs = required_jobs(categories)
+
+        assert categories == {"ci_tooling"}, path
+        assert {
+            "release-semantic",
+            "package-artifacts",
+            "sidecar-smoke",
+            "bwave-smoke",
+            "scanner-smoke",
+            "lint",
+            "test",
+            "test-verify",
+            "coverage-shards",
+            "coverage",
+        } <= jobs, path
+        assert not jobs & {"docs-check", "site-build", "rust-test", "bwave-integration"}, path
 
 
 def test_aggregate_waits_for_every_conditional_job() -> None:
@@ -944,6 +1038,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
         "bwave-integration",
         "package-artifacts",
         "sidecar-smoke",
+        "scanner-smoke",
         "bwave-smoke",
     }
     assert workflow["workflow"] == "true"

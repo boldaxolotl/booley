@@ -1,0 +1,3 @@
+# Packaging tools: publish.yml, docker-publish.yml, deep-tests.yml, and the test.yml package-artifacts job.
+build==1.6.1
+twine==7.0.0
