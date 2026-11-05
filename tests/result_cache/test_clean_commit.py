@@ -340,6 +340,15 @@ def unborn_submodule(base: Path) -> Path:
     return layout.project
 
 
+def hidden_off_commit_submodule(base: Path) -> Path:
+    layout = build_layout(base, "tracked")
+    sub = add_submodule(layout.rtl, "sub", new_repo(base / "sub", {"s.v": "s\n"}))
+    git(layout.rtl, "update-index", "--assume-unchanged", "sub")
+    commit_files(sub, {"s.v": "moved\n"})
+    assert git(layout.rtl, "status", "--porcelain") == ""  # the parent sees nothing
+    return layout.project
+
+
 NOT_TRACKED = "neither tracked in the RTL repository"
 UNSELECTABLE_CASES: dict[str, tuple[Callable[[Path], Path], str]] = {
     "not-a-repository": (lambda b: b.joinpath("plain").mkdir() or b / "plain", "not in a Git"),
@@ -368,6 +377,7 @@ UNSELECTABLE_CASES: dict[str, tuple[Callable[[Path], Path], str]] = {
         "populated but not",
     ),
     "gitlink-path-is-absent": (lambda b: gitlink_replaced(b, lambda sub: None), "not clean"),
+    "assume-unchanged-submodule-off-commit": (hidden_off_commit_submodule, "not at its recorded"),
     "submodule-without-commit": (unborn_submodule, "submodule repository with no commit"),
 }
 
@@ -393,6 +403,29 @@ def test_head_moving_during_the_check_is_not_cacheable(
 
     monkeypatch.setattr(clean_commit, "_check", check_then_commit)
     assert_refused(layout.project, "rtl repository", "changed HEAD during the check")
+
+
+def test_malformed_git_record_raises_clean_commit_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.result_cache import clean_commit, tracked_files
+
+    layout = build_layout(tmp_path, "tracked")
+    monkeypatch.setattr(tracked_files, "git_output", lambda *args: b"malformed\0")
+    monkeypatch.setattr(clean_commit, "git_output", tracked_files.git_output)
+    with pytest.raises(clean_commit.CleanCommitError):
+        check(layout.project)
+
+
+def test_gitlink_replaced_by_symlink_raises(tmp_path: Path) -> None:
+    from booley.result_cache.clean_commit import CleanCommitError
+
+    layout = build_layout(tmp_path, "tracked")
+    sub = add_submodule(layout.rtl, "sub", new_repo(tmp_path / "sub", {"s.v": "s\n"}))
+    shutil.rmtree(sub)
+    sub.symlink_to(tmp_path)  # Git itself refuses a symlinked submodule path
+    with pytest.raises(CleanCommitError):
+        check(layout.project)
 
 
 def test_git_failure_raises_clean_commit_error(tmp_path: Path) -> None:

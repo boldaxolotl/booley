@@ -58,7 +58,8 @@ class CleanCommit:
     re-check at serve time that nothing moved since (HEAD is re-read here only
     once, after the status); the Configuration exclusions (#2212) must hash
     working-tree bytes, never index or HEAD blobs, or an assume-unchanged edit
-    of a configuration file would go unseen.
+    of a configuration file would go unseen. ``tracked_digest`` is None whenever
+    the run is not cacheable: test ``cacheable`` before comparing digests.
     """
 
     booley_dir: Path | None

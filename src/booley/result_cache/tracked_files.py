@@ -151,11 +151,15 @@ def _gitlink_state(tree: TrackedTree, path: Path, relative: str, oid: bytes) -> 
         return (b"gitlink", oid, b"uninitialised")
     if stat.S_ISDIR(status.st_mode):
         if is_git_worktree_root(path):
-            # An unborn HEAD matches no commit, and status prints nothing for it.
-            if run_git(path, "rev-parse", "--verify", "-q", "HEAD^{commit}").returncode:
+            # status prints nothing for an unborn HEAD, nor (with assume-unchanged or
+            # skip-worktree on the gitlink) for a HEAD off the recorded commit.
+            head = run_git(path, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+            if head.returncode:
                 tree.reasons.append(
                     f"{tree.label}:{relative} is a submodule repository with no commit"
                 )
+            elif head.stdout.strip().encode() != oid:
+                tree.reasons.append(f"{tree.label}:{relative} is not at its recorded commit")
             _walk_repository(tree, path, os.fsencode(relative) + b"/")
             return (b"gitlink", oid, b"initialised")
         if not any(path.iterdir()):
