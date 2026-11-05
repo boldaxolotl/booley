@@ -38,11 +38,16 @@ pytestmark = [
     pytest.mark.skipif(os.name != "posix", reason="requires POSIX FIFO and process groups"),
 ]
 SCOPE = "rtl/dut.sv"
+# Local, not ``tests.subprocess_budget``: a child process re-executes this file
+# with ``runpy`` where the ``tests`` package is not importable. Same 30 s budget.
+_GIT_TIMEOUT_S = 30
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src"
 
 
 def _git(root: Path, *args: str) -> bytes:
-    return subprocess.check_output(["git", "-C", str(root), *args], stderr=subprocess.PIPE)
+    return subprocess.check_output(
+        ["git", "-C", str(root), *args], stderr=subprocess.PIPE, timeout=_GIT_TIMEOUT_S
+    )
 
 
 @pytest.fixture

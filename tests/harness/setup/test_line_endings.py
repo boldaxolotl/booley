@@ -19,6 +19,7 @@ from booley.harness.setup.line_endings import (
     reconcile_project_line_endings,
 )
 from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
 
@@ -29,6 +30,7 @@ def _git(root: Path, *args: str, input_bytes: bytes | None = None) -> subprocess
         input=input_bytes,
         capture_output=True,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 

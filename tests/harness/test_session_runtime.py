@@ -42,8 +42,17 @@ from booley.runtime.session_admission import (
 from booley.runtime.session_admission import (
     vscode_sandboxes as real_vscode_sandboxes,
 )
+from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
 from tests.harness.booley_dir_support import select_booley_dir
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
+
+
+@pytest.fixture(autouse=True)
+def _no_docker_cli(monkeypatch):
+    """No test in this module may start a real ``docker`` process."""
+    forbid_docker_cli(monkeypatch)
+    yield
+    assert_docker_cli_unused()
 
 
 @pytest.fixture(autouse=True)
@@ -1090,6 +1099,8 @@ def wired(workspace: Path, request: pytest.FixtureRequest):
     with (
         patch.object(sr.idk, "network_exists", return_value=True),
         patch.object(sr.idk, "image_exists", return_value=True),
+        # No image metadata, as when the inspect finds nothing (no Docker CLI call).
+        patch.object(sr.idk, "inspect_image_metadata", return_value=None),
         lifecycle_reconcile,
         patch(
             "booley.runtime.session_issuance.validate",
@@ -1885,10 +1896,14 @@ class TestUp:
                 }
             ],
         }
-        with patch.object(
-            sr,
-            "_strict_all_interactive_states",
-            return_value=[("current-vscode", json.dumps([state]))],
+        with (
+            patch.object(
+                sr,
+                "_strict_all_interactive_states",
+                return_value=[("current-vscode", json.dumps([state]))],
+            ),
+            patch.object(sr.idk, "container_exists", return_value=False),
+            patch.object(sr.idk, "container_running", return_value=False),
         ):
             sr.up(workspace)
 
@@ -2187,10 +2202,10 @@ class TestUp:
             **state,
             "NetworkSettings": {"Networks": {dc.EGRESS_NETWORK: {}}},
         }
-        with patch.object(
-            sr,
-            "_strict_refresh_container",
-            side_effect=[None, state, reconnected],
+        with (
+            patch.object(sr, "_strict_refresh_container", side_effect=[None, state, reconnected]),
+            patch.object(sr.idk, "container_exists", return_value=False),
+            patch.object(sr.idk, "container_running", return_value=False),
         ):
             sr.restore_refresh_session(parked)
 
@@ -2836,6 +2851,7 @@ class TestImageDriftWarning:
                 else None
             ),
         )
+        monkeypatch.setattr(sr.idk, "inspect_image_metadata", lambda *_a, **_kw: None)
 
         sr._warn_on_image_drift({"image": digest}, workspace)
 
@@ -3010,7 +3026,10 @@ class TestStaleSessionContainerWarning:
 
 class TestDownAndStatus:
     def test_down_on_absent_container_is_false(self, workspace: Path):
-        with patch.object(sr.idk, "container_exists", return_value=False):
+        with (
+            patch.object(sr.idk, "container_exists", return_value=False),
+            patch.object(sr.idk, "network_exists", return_value=False),
+        ):
             assert not sr.down(workspace)
 
     def test_down_never_removes_the_issuance_image_keeper(self, workspace: Path):
@@ -3974,6 +3993,7 @@ class TestSessionRefresh:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         from booley.harness import booley
+        from booley.harness import doctor as doctor_module
         from booley.harness.booley import _build_parser
 
         monkeypatch.setattr(sr, "down", lambda _root: sr.DownResult(headless=True))
@@ -3990,6 +4010,12 @@ class TestSessionRefresh:
             health,
             "consume_changed_snapshot",
             lambda *_args, **_kwargs: pytest.fail("stale Doctor summary was consumed"),
+        )
+        # The deep status would probe the Sandbox through Docker.
+        monkeypatch.setattr(
+            doctor_module,
+            "observe_deep_status",
+            lambda *_args, **_kwargs: SimpleNamespace(render=lambda: "deep status"),
         )
         up_args = _build_parser().parse_args(["session", "up"])
 

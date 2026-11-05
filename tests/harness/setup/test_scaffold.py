@@ -36,6 +36,13 @@ from booley.runtime.booley_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
 from booley.targets.target_surface import collect_surface
 from tests.conftest import symlink_or_skip
+from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
+
+
+@pytest.fixture(autouse=True)
+def _docker_helper_uses_subprocess_run(monkeypatch):
+    """This module fakes the Docker CLI through ``subprocess.run``."""
+    route_docker_helper_through_subprocess_run(monkeypatch)
 
 
 def _choices(**overrides) -> ScaffoldChoices:

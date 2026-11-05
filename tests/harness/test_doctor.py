@@ -47,8 +47,17 @@ from tests.diagnostic_helpers import (
     _Rec,
     _require_doctor_warning,
 )
+from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.harness import test_session_runtime as resolution_fixtures
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+
+
+@pytest.fixture(autouse=True)
+def _docker_helper_uses_subprocess_run(monkeypatch):
+    """This module fakes the Docker CLI through ``subprocess.run``."""
+    route_docker_helper_through_subprocess_run(monkeypatch)
+
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
 
@@ -797,7 +806,14 @@ def _history_probe(booley_dir: Path) -> doctor._Reporter:
 
 
 def _history_git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
 
 
 def _history_repo(tmp_path: Path, monkeypatch) -> Path:
@@ -3971,7 +3987,7 @@ targets:
 
 def _readmem_repo(tmp_path) -> None:
     """A repo whose TB boots via $readmemh from a memory image NOT in any .core."""
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, timeout=SUBPROCESS_TIMEOUT_S)
     (tmp_path / "tb").mkdir()
     (tmp_path / "tb" / "tb.sv").write_text(
         'module tb; reg [7:0] mem[0:255];\n  initial $readmemh("fw/boot.vmem", mem);\nendmodule\n',
@@ -4050,7 +4066,7 @@ def _artifact_repo(tmp_path, *, with_source: bool, vendored: bool = False) -> No
     "upstream blob, no rebuildable source" opt-out of the heuristic — the
     CAPI2-valid marker, not the fusesoc-rejected bare ``vendored: true`` key).
     """
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, timeout=SUBPROCESS_TIMEOUT_S)
     (tmp_path / "rtl").mkdir()
     (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
     (tmp_path / "firmware").mkdir()
@@ -4074,7 +4090,7 @@ targets:
   sim: {{flow: sim, filesets: [rtl]}}
 """,
     )
-    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, timeout=SUBPROCESS_TIMEOUT_S)
 
 
 def test_committed_build_artifact_with_sibling_source_warns(tmp_path):
@@ -4738,6 +4754,7 @@ def _git_init(root: Path) -> None:
         ["git", "init", "-q", str(root)],
         capture_output=True,
         check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
@@ -4960,6 +4977,7 @@ class TestWorktreePortability:
             subprocess.run(
                 ["git", "-C", str(tmp_path), "config", "extensions.worktreeConfig", "true"],
                 check=True,
+                timeout=SUBPROCESS_TIMEOUT_S,
             )
             subprocess.run(
                 [
@@ -4972,6 +4990,7 @@ class TestWorktreePortability:
                     "true",
                 ],
                 check=True,
+                timeout=SUBPROCESS_TIMEOUT_S,
             )
         elif source == "foreign":
             monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
@@ -5064,10 +5083,12 @@ class TestWorktreePortability:
             subprocess.run(
                 ["git", "-C", str(tmp_path), "config", "core.repositoryFormatVersion", "1"],
                 check=True,
+                timeout=SUBPROCESS_TIMEOUT_S,
             )
             subprocess.run(
                 ["git", "-C", str(tmp_path), "config", "extensions.relativeWorktrees", "true"],
                 check=True,
+                timeout=SUBPROCESS_TIMEOUT_S,
             )
             if hazard == "format":
                 # The format diagnostic boundary remains authoritative even when
@@ -7151,18 +7172,27 @@ class TestLineEndingsCheck:
 
     @staticmethod
     def _repo(root: Path, *, autocrlf: str) -> None:
-        subprocess.run(["git", "init", "-q", str(root)], capture_output=True, check=True)
+        subprocess.run(
+            ["git", "init", "-q", str(root)],
+            capture_output=True,
+            check=True,
+            timeout=SUBPROCESS_TIMEOUT_S,
+        )
         subprocess.run(
             ["git", "-C", str(root), "config", "core.autocrlf", autocrlf],
             capture_output=True,
             check=True,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
 
     @staticmethod
     def _commit(root: Path, name: str, data: bytes) -> None:
         (root / name).write_bytes(data)
         subprocess.run(
-            ["git", "-C", str(root), "add", "-f", name], capture_output=True, check=True
+            ["git", "-C", str(root), "add", "-f", name],
+            capture_output=True,
+            check=True,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
         subprocess.run(
             [
@@ -7179,6 +7209,7 @@ class TestLineEndingsCheck:
             ],
             capture_output=True,
             check=True,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
 
     def test_lf_tree_with_autocrlf_off_passes(self, tmp_path: Path):
@@ -7904,6 +7935,7 @@ def _git_commit_all(root: Path, message: str = "add") -> None:
         ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", message],
         cwd=root,
         check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
@@ -7922,7 +7954,7 @@ def _committed_repo(root: Path) -> None:
     """A git repo with one unrelated committed file, so HEAD exists."""
     _git_init(root)
     (root / "README").write_text("x\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README"], cwd=root, check=True)
+    subprocess.run(["git", "add", "README"], cwd=root, check=True, timeout=SUBPROCESS_TIMEOUT_S)
     _git_commit_all(root)
 
 

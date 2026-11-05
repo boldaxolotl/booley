@@ -17,6 +17,7 @@ from booley.audit.diagnostic_results import Severity
 from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.harness import activity_hooks, doctor, web_isolation
 from booley.runtime import dashboard_extension, runtime_context
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 OVERRIDE_ID = "sandbox.git-identity-override"
 GITCONFIG_ID = "sandbox.gitconfig-identity"
@@ -31,7 +32,9 @@ class _SandboxGit:
         self.monkeypatch = monkeypatch
         self.checkout = root / "checkout"
         self.checkout.mkdir()
-        subprocess.run(["git", "init", "-q", str(self.checkout)], check=True)
+        subprocess.run(
+            ["git", "init", "-q", str(self.checkout)], check=True, timeout=SUBPROCESS_TIMEOUT_S
+        )
         self.booley_dir = self.checkout / ".booley"
         self.booley_dir.mkdir()
         (self.booley_dir / "booley.toml").write_text(

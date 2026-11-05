@@ -11,6 +11,7 @@ import pytest
 from booley.flows.synth import timing as synth_timing
 from booley.flows.synth.backends.openroad import reporting as openroad_reporting
 from tests.conftest import symlink_or_skip
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 # ---------------------------------------------------------------------------
 # resolve_liberty
@@ -130,6 +131,7 @@ class TestFinalCheckImportIsolation:
             capture_output=True,
             text=True,
             check=False,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
 
     def test_existing_library_cell_module_is_preserved(self, tmp_path):

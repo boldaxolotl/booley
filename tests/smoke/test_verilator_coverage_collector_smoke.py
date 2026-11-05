@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.execution.contract import SimulationOptions
@@ -418,8 +419,8 @@ def _prepare_cocotb_cache_project(root: Path) -> Path:
     )
     (root / ".booley/tests.toml").write_text('[sim]\ntests = ["check", "another"]\n')
     (root / ".gitignore").write_text(".booley/.runtime/\nreports/\n", encoding="utf-8")
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    subprocess.run(["git", "add", "."], cwd=root, check=True, timeout=SUBPROCESS_TIMEOUT_S)
     subprocess.run(
         [
             "git",
@@ -433,6 +434,7 @@ def _prepare_cocotb_cache_project(root: Path) -> Path:
         ],
         cwd=root,
         check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return helper
 
@@ -444,6 +446,7 @@ def _git_status(root: Path) -> str:
         check=True,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     ).stdout
 
 

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 SCRIPT = Path(__file__).parents[2] / ".github/scripts/watch_pr.py"
 SPEC = importlib.util.spec_from_file_location("watch_pr", SCRIPT)
@@ -49,6 +50,7 @@ def run_script(*args: str, env: dict[str, str] | None = None) -> subprocess.Comp
         capture_output=True,
         text=True,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 

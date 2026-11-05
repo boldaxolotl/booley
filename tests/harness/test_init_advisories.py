@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 CONFIGURED_TOML = """\
 [project]
@@ -154,7 +155,12 @@ PUBLISHED_ORIGIN = "https://github.com/boldaxolotl/booley-prj-picorv32.git"
 
 def _git(repo: Path, *args: str) -> None:
     identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
-    subprocess.run(["git", "-C", str(repo), *identity, *args], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), *identity, *args],
+        check=True,
+        capture_output=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
 
 
 def _publish(project: Path, origin: str, toml: str, *, fetched: bool = True) -> None:

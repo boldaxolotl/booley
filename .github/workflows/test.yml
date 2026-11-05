@@ -1443,7 +1443,7 @@ jobs:
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
               booley-test bash -c "cp -a /work/tests/fixtures/cocotb_counter /validation-tmp/project &&
               cd /validation-tmp/project &&
-              test \"\$(cocotb-config --version)\" = 2.1.0 &&
+              test \"\$(cocotb-config --version)\" = \"\$(sed -n 's/^cocotb==//p' /work/src/booley/data/docker/base-python-requirements.txt)\" &&
               python3 -m booley.flows.sim --project /validation-tmp/project --target sim_icarus &&
               python3 -m booley.flows.sim --project /validation-tmp/project --target sim_verilator"
 

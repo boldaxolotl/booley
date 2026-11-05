@@ -35,6 +35,7 @@ from booley.specialists.reviewer import (
     report_findings_to_mirror,
     validate_scope_category,
 )
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -3879,6 +3880,7 @@ def _git(repo: Path, *args: str) -> str:
         capture_output=True,
         text=True,
         check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return result.stdout.strip()
 
