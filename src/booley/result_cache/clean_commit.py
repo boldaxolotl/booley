@@ -105,7 +105,7 @@ def _select_participants(
     config = "/".join(filter(None, (inside, resolve_toml(booley_dir).name)))
     # Literal pathspecs: a directory named ``cfg?`` must not match a sibling ``cfgx``.
     if inside is not None and git_output(
-        rtl_root, "--literal-pathspecs", "ls-files", "-z", config
+        rtl_root, "--literal-pathspecs", "ls-files", "-z", "--", config
     ):
         return booley_dir, [("rtl", rtl_root)]
     raise _NotCacheableError(
@@ -174,12 +174,19 @@ def _ignored_links(repository: Path, nested: Path | None) -> Iterator[Path]:
             if path.is_symlink():
                 yield path
         elif nested is None or not path.samefile(nested):
-            for current, dirnames, filenames in os.walk(path):  # never follows links
+            for current, dirnames, filenames in os.walk(
+                path, onerror=_raise
+            ):  # never follows links
                 names = [
                     name for name in (*dirnames, *filenames) if Path(current, name).is_symlink()
                 ]
                 yield from (Path(current, name) for name in names)
                 dirnames[:] = [name for name in dirnames if name not in names]
+
+
+def _raise(error: OSError) -> None:
+    """``os.walk`` hook: an unreadable directory fails the check instead of being skipped."""
+    raise error
 
 
 def _outside_reason(tree: TrackedTree, link: Path, roots: Sequence[Path]) -> str | None:

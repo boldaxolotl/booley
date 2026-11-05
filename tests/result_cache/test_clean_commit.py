@@ -116,7 +116,8 @@ def test_dirty_participant_is_not_clean(case: str, tmp_path: Path) -> None:
     assert repo is not None
     write_files(repo, dict.fromkeys(files, "changed\n"))
     if case.endswith("staged"):
-        git(repo, "add", *files)
+        git(repo, "-c", "core.fsmonitor=false", "add", *files)  # the hook would hide the edit
+        assert git(repo, "diff", "--cached", "--name-only")  # really staged
     if "hidden" in case or "ignore-all" in case:
         assert plain_status(layout.rtl) == ""  # the unprotected command sees nothing
     if case == "rtl-submodule-off-commit":
@@ -262,11 +263,11 @@ def ignored_project_root(base: Path) -> Path:
     return layout.rtl / "scratch/proj"
 
 
-def glob_named_booley_directory(base: Path) -> Path:
-    files = {"cfgx/booley.toml": "", "booley.toml": '[project]\ndir = "cfg?"\n'}
+def named_booley_directory(base: Path, name: str) -> Path:
+    files = {"cfgx/booley.toml": "", "booley.toml": f'[project]\ndir = "{name}"\n'}
     rtl = new_repo(base / "rtl", files)
-    exclude(rtl, "cfg?/")  # status stays clean: only the literal pathspec rule decides
-    write_files(rtl, {"cfg?/booley.toml": ""})
+    exclude(rtl, f"{name}/")  # status stays clean: only the literal pathspec rule decides
+    write_files(rtl, {f"{name}/booley.toml": ""})
     return rtl
 
 
@@ -292,7 +293,12 @@ UNSELECTABLE_CASES: dict[str, tuple[Callable[[Path], Path], str]] = {
         lambda b: new_repo(new_repo(b / "outer", BOOLEY_TREE) / "rtl", {"a": "a\n"}),
         NOT_TRACKED,
     ),
-    "glob-named-booley-directory": (glob_named_booley_directory, NOT_TRACKED),
+    "glob-named-booley-directory": (lambda b: named_booley_directory(b, "cfg?"), NOT_TRACKED),
+    # Without `--`, Git reads this as an option and lists the whole index.
+    "option-named-booley-directory": (
+        lambda b: named_booley_directory(b, "--exclude=x"),
+        NOT_TRACKED,
+    ),
     "populated-uninitialised-submodule": (populated_uninitialised_submodule, "populated but not"),
 }
 
@@ -310,3 +316,17 @@ def test_git_failure_raises_clean_commit_error(tmp_path: Path) -> None:
     (layout.rtl / ".git/index").write_bytes(b"not an index")
     with pytest.raises(CleanCommitError):
         check(layout.project)
+
+
+def test_unreadable_directory_in_ignored_repository_raises(tmp_path: Path) -> None:
+    from booley.result_cache.clean_commit import CleanCommitError
+
+    layout = build_layout(tmp_path, "tracked")
+    new_repo(layout.rtl / "nested", {"n": "n\n"})
+    exclude(layout.rtl, "nested/")
+    (layout.rtl / "nested/deep").mkdir(mode=0)  # a link inside would go unseen
+    try:
+        with pytest.raises(CleanCommitError):
+            check(layout.project)
+    finally:
+        (layout.rtl / "nested/deep").chmod(0o755)

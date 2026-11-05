@@ -19,6 +19,7 @@ from tests.result_cache.git_fixtures import (
     git,
     isolate,
     new_repo,
+    write_files,
 )
 
 pytestmark = [
@@ -76,6 +77,9 @@ def test_checkout_variant_changes_tracked_digest(case: str, tmp_path: Path) -> N
         git(variant, "update-index", "--skip-worktree", "b/y.v")
     assert digest(full) == digest(again)
     assert digest(variant) != digest(full)
+    if case == "sparse-checkout":  # Git reports a new file in the excluded directory
+        write_files(variant, {"b/new.v": "n\n"})
+        assert not check(variant).cacheable
 
 
 @all_cases(["assume-unchanged", "executable-bit"])
