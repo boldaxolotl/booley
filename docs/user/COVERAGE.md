@@ -204,10 +204,20 @@ evidence.
 
 Some coverage points can never be hit (dead defaults, tied-off inputs) or are
 deliberately out of scope. A waiver removes one such point from the count.
-Waivers are always approved by a human, so the agent can't raise coverage by
+Each waiver is an **approval file** in your [waiver directory](#waiver-directory-coveragewaivers),
+naming the person who approved it, so the agent can't raise coverage by
 waiving what it failed to test.
 
-In Goal Mode:
+Every coverage run applies the approved waivers, in Interactive Mode and in
+Goal Mode: waived points are reported as `waived` and left out of the
+percentages. If an approval file is invalid, or does not match the current RTL
+(for example the source changed), that Target's evaluation is blocked and the
+run exits `2`. Fix or remove the approval, or rerun with `--no-waivers`. If one
+approval for a Target is bad, none of that Target's approvals apply.
+
+How a waiver gets approved depends on the mode.
+
+### In Goal Mode
 
 1. The Coverage Analyst proposes **Waiver Candidates**: points it believes are
    unreachable or out of scope. A candidate counts for nothing on its own.
@@ -215,22 +225,29 @@ In Goal Mode:
    its source, the coverage change it would make, and the justification, and
    you approve or reject each one with a reason. Nothing is approved by
    default.
-3. Approving writes the waiver (and, for an unreachable point, a written review
-   argument as proof) into your [waiver directory](#configuration) and
-   records the change in the Goal's Change Log. A rejection is remembered for
-   that point until its source changes.
+3. Approving writes the approval file (and, for an unreachable point, a
+   written review argument as proof) into your waiver directory and records
+   the change in the Goal's Change Log. A rejection is remembered for that
+   point until its source changes.
 4. Ask the agent to rerun coverage. Approval does not meet a Goal; only a new
    run with the waiver applied does.
 
-Every coverage run applies the approved waivers: waived points are reported
-as `waived` and left out of the percentages. If an approval file is invalid,
-or does not match the current RTL (for example the source changed), that Target's
-evaluation is blocked and the run exits `2`. Fix or remove the approval, or
-rerun with `--no-waivers`. If one approval for a Target is bad, none of that
-Target's approvals apply.
+### In Interactive Mode
 
-You can also write approval files by hand; the format is under
-[Configuration](#configuration).
+There is no approval step: the Coverage Analyst still suggests points that
+look unreachable or out of scope, but nothing records them, and a waiver
+exists only once an approval file does.
+
+1. Ask the agent which points could be waived, for example "Which uncovered
+   branches in fifo.sv are unreachable?". The Analyst names each point by its
+   `point_id` and gives its reason and evidence.
+2. Decide which ones to waive, and ask the agent to write approval files for
+   them, or write them yourself. The [format](#waiver-directory-coveragewaivers)
+   is under Configuration.
+3. Review every file before you keep it, especially `approved_by`,
+   `justification` and, for an `unreachable` point, the proof. Nothing else
+   checks that a person approved it.
+4. Rerun coverage to see the waivers applied.
 
 ## Analyzing a Campaign
 
@@ -345,5 +362,6 @@ approval_ref = "review:CR-1042"
 - `.toml` files in the directory are approval files; proofs need another
   extension, such as `.md`. Every other file in the directory must be named
   by some approval's proof.
-- Waiver Candidates from the Analyst can't be copied in by hand; they become
-  approvals only through review in Goal Mode.
+- A file that still contains the Analyst's candidate fields is rejected
+  (`COV_WAIVER_CANDIDATE_FORBIDDEN`). Write a normal approval for the point
+  instead, using its `point_id`.
