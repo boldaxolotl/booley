@@ -49,3 +49,8 @@ def test_expected_cocotb_version_reads_base_requirements(
     monkeypatch.setattr(verilator_acceptance, "BASE_REQUIREMENTS", requirements)
 
     assert verilator_acceptance.expected_cocotb_version() == "9.8.7"
+
+    # Unpatched, the gate reads the repository's real requirements file.
+    monkeypatch.undo()
+    real = verilator_acceptance.BASE_REQUIREMENTS.read_text(encoding="utf-8")
+    assert f"cocotb=={verilator_acceptance.expected_cocotb_version()}\n" in real
