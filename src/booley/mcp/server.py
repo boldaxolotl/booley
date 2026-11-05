@@ -114,9 +114,10 @@ from booley.mcp.session_registry import Attribution
 from booley.mcp.tool_changes import ChangingToolsServer, ToolChanges
 from booley.runtime import job_records as jobrec
 from booley.runtime import pid, runtime_context
-from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.booley_dir import resolve_booley_dir, resolve_common_booley_dir
 from booley.runtime.bootstrap_mode import should_run_outer_bookkeeping
 from booley.runtime.build_metadata import format_status_line
+from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.runtime.git import is_linked_worktree
@@ -128,6 +129,7 @@ from booley.runtime.mcp_config import (
     http_port,
 )
 from booley.runtime.owned_scratch import sweep_stale_scratch
+from booley.runtime.sandbox_layout import canonical_project_alias_path
 from booley.runtime.session_paths import logs_runtime_dir
 from booley.runtime.timefmt import format_human_datetime
 
@@ -2233,7 +2235,7 @@ def _interactive_session_id() -> str:
 
 
 def _maybe_configure_interactive_logs_dir() -> None:
-    """In Interactive Mode, point ``BOOLEY_LOGS_DIR`` at the project tree.
+    """In Interactive Mode, point ``BOOLEY_LOGS_DIR`` at the Main Booley Directory.
 
     Without this, transcripts and ``display.jsonl`` from MCP-driven endpoint
     calls land in an OS tempdir (see ``_resolve_transcript_dir``), which
@@ -2242,15 +2244,22 @@ def _maybe_configure_interactive_logs_dir() -> None:
 
     Interactive Mode is detected by:
       - ``BOOLEY_LOGS_DIR`` not already set;
-      - ``.booley/`` present in CWD (the Project Root the outer agent
-        bind-mounted into the container at ``/work``).
+      - a Project resolving from the server's environment and CWD.
 
-    Logs accumulate at ``.booley/.interactive_logs/<session-id>/``
-    (gitignored — see the template emitted by ``booley init``).
+    Logs accumulate at ``<Main Booley Directory>/.interactive_logs/<session-id>/``
+    (gitignored — see the template emitted by ``booley init``), whichever
+    checkout the server runs in, so the Dashboard and handle pruning, which
+    read the Main Booley Directory, see this session's Job records.
     """
     if os.environ.get("BOOLEY_LOGS_DIR"):
         return
-    booley_dir = Path.cwd() / ".booley"
+    try:
+        booley_dir = canonical_project_alias_path(resolve_common_booley_dir())
+    except (FileNotFoundError, SourceCheckoutProjectError):
+        return
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("Interactive logs directory unavailable: %s", exc)
+        return
     if not booley_dir.is_dir():
         return
     session_id = _interactive_session_id()

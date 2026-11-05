@@ -13,7 +13,7 @@ from pathlib import Path
 from booley.harness.dashboard.app import DashboardApp
 from booley.harness.dashboard.model import DashboardReader
 from booley.mcp.session_registry import namespace
-from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.dashboard_tasks import attach_blocker
 
 ALREADY_OPEN = 3
@@ -71,7 +71,7 @@ def _label_terminal() -> Callable[[], None]:
 
 def attach_policy(root: Path) -> dict[str, object]:
     """Read live Project policy without starting a terminal or changing any files."""
-    reason = attach_blocker(root, resolve_booley_dir(root))
+    reason = attach_blocker(root, resolve_common_booley_dir(root))
     already_open = not reason and _dashboard_is_open()
     if already_open:
         reason = "The Dashboard is already open in this Sandbox."
@@ -134,7 +134,7 @@ def run_dashboard(root: Path, *, on_attach: bool = False) -> int:
             return 2
         restore = _label_terminal()
         try:
-            DashboardApp(DashboardReader(root, resolve_booley_dir(root)).read).run()
+            DashboardApp(DashboardReader(root, resolve_common_booley_dir(root)).read).run()
         finally:
             restore()
     return 0

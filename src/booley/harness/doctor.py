@@ -149,6 +149,7 @@ from booley.runtime.booley_dir import (
     BOOLEY_DIR_NAME,
     contains,
     resolve_checkout_booley_dir,
+    resolve_common_booley_dir,
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.docs_links import docs_url
@@ -1185,13 +1186,22 @@ def _outer_branch_for_project_data(
     return None
 
 
+def _common_booley_dir(root: Path) -> Path | None:
+    """The Main Booley Directory holding Session Registry and handle maps, if a Project resolves."""
+    try:
+        return resolve_common_booley_dir(root)
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
 def _check_goal_presence(root: Path, booley_dir: Path | None, reporter: _Reporter) -> None:
     from booley.harness.dashboard.doctor import inspect_presence
 
-    if booley_dir is None:
+    common = None if booley_dir is None else _common_booley_dir(root)
+    if common is None:
         return
     result = inspect_presence(
-        root, booley_dir, inside_sandbox=runtime_context.inside_session_runtime()
+        root, common, inside_sandbox=runtime_context.inside_session_runtime()
     )
     if result.unavailable:
         reporter.skip_(result.unavailable)
@@ -3674,7 +3684,9 @@ def _run_project_checks(
         return
 
     _check_ticket_leftovers(project.booley_dir, reporter.warn_)
-    _check_handle_map_size(project.booley_dir, reporter.warn_)
+    common = _common_booley_dir(project.project_root)
+    if common is not None:
+        _check_handle_map_size(common, reporter.warn_)
     _check_project_gitignore(project.booley_dir, reporter.pass_, reporter.warn_)
     _check_goal_history_ignored(
         project.project_root, project.booley_dir, reporter.pass_, reporter.warn_

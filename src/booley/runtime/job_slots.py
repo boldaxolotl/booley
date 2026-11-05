@@ -250,9 +250,9 @@ def slots_dir(booley_dir: Path | None = None) -> Path | None:
     if env:
         return Path(env)
     try:
-        from booley.runtime.booley_dir import resolve_booley_dir
+        from booley.runtime.booley_dir import resolve_common_booley_dir
 
-        project = booley_dir if booley_dir is not None else resolve_booley_dir()
+        project = booley_dir if booley_dir is not None else resolve_common_booley_dir()
     except (OSError, ValueError, RuntimeError):
         return None
     return project / "runtime" / "jobs" / "slots"
@@ -285,13 +285,15 @@ def _default_inherited_execution_verifier(
     candidate: object, root: Path, owner_pid: int
 ) -> ExecutionId | None:
     try:
-        from booley.runtime.booley_dir import resolve_booley_dir
+        from booley.runtime.booley_dir import resolve_booley_dir, resolve_common_booley_dir
 
-        booley_dir = resolve_booley_dir()
-        canonical_root = booley_dir / "runtime" / "jobs" / "slots"
+        canonical_root = resolve_common_booley_dir() / "runtime" / "jobs" / "slots"
         if root.resolve() != canonical_root.resolve():
             return None
-        return verify_inherited_execution_id(candidate, booley_dir=booley_dir, owner_pid=owner_pid)
+        # Execution records stay with their writers' checkout resolver (see #2603).
+        return verify_inherited_execution_id(
+            candidate, booley_dir=resolve_booley_dir(), owner_pid=owner_pid
+        )
     except (OSError, RuntimeError, ValueError):
         return None
 

@@ -9,7 +9,7 @@ The client waits for this process on every prompt and tool call, so it is a
 standalone, standard-library-only script: importing the ``booley`` package
 would cost about 0.1 s per event. It therefore repeats the few storage rules
 of ``booley.runtime.session_activity``, the Session Registry key formats and
-the Booley Directory resolution order of ``booley.core.booley_dir``;
+the Main Booley Directory resolution of ``booley.core.booley_dir``;
 ``tests/harness/test_session_activity_hook.py`` holds the two in agreement.
 
 It prints nothing to stdout (clients feed hook output back to the model),
@@ -384,6 +384,62 @@ def resolve_booley_dir(env: Mapping[str, str], cwd: Path) -> Path | None:
     return None
 
 
+def _git_common_directory(checkout: Path) -> Path | None:
+    """The Git administration directory shared by all worktrees of *checkout*."""
+    marker = checkout / ".git"
+    if marker.is_file():
+        raw = marker.read_text(encoding="utf-8").strip()
+        if not raw.startswith("gitdir: "):
+            raise ValueError(f"invalid Git worktree marker: {marker}")
+        admin = Path(raw.removeprefix("gitdir: "))
+        marker = admin if admin.is_absolute() else checkout / admin
+        common = marker / "commondir"
+        if common.is_file():
+            marker = marker / common.read_text(encoding="utf-8").strip()
+    return marker.resolve() if marker.is_dir() else None
+
+
+def _own_booley_dir(root: Path) -> Path:
+    """A checkout's own Booley Directory: ``[project].dir``, else ``<root>/.booley``."""
+    return _toml_booley_dir(root) or root / BOOLEY_DIR_NAME
+
+
+def _main_booley_dir(selected: Path) -> Path | None:
+    """The Main Booley Directory when *selected* is a linked checkout's own, else ``None``.
+
+    Mirrors ``booley.core.booley_dir._main_booley_dir``: the owning checkout is
+    the first strict ancestor with ``.git``, and only its own directory is remapped.
+    """
+    checkout = next((p for p in selected.absolute().parents if (p / ".git").exists()), None)
+    if checkout is None:
+        return None
+    common = _git_common_directory(checkout)
+    if common is None or common.name != ".git":
+        return None
+    main = _own_booley_dir(common.parent)
+    if _own_booley_dir(checkout).resolve() != selected.resolve():
+        return None
+    if main.resolve() == selected.resolve() or not main.is_dir():
+        return None
+    return main
+
+
+def resolve_common_booley_dir(env: Mapping[str, str], cwd: Path) -> Path | None:
+    """The Main Booley Directory of the session's Project, or ``None`` outside one.
+
+    Session activity is Common Booley State (ADR 0082): a session in a linked
+    worktree writes where the Dashboard, which reads the main directory, looks.
+    An unreadable Git topology keeps the selection; the hook must not fail a turn.
+    """
+    selected = resolve_booley_dir(env, cwd)
+    if selected is None:
+        return None
+    try:
+        return _main_booley_dir(selected) or selected
+    except (OSError, ValueError, UnicodeError):
+        return selected
+
+
 def main(argv: list[str] | None = None) -> int:
     """Hook entry point. Never fails the client's turn: every problem exits 0."""
     args = sys.argv[1:] if argv is None else argv
@@ -397,7 +453,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = json.loads(raw)
         if not isinstance(payload, dict):
             raise ValueError("hook payload is not a JSON object")
-        project = resolve_booley_dir(os.environ, Path.cwd())
+        project = resolve_common_booley_dir(os.environ, Path.cwd())
         if project is not None:
             record(args[0], payload, project, now)
     except (OSError, ValueError, UnicodeError, RecursionError) as exc:
