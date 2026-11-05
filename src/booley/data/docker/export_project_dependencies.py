@@ -9,8 +9,14 @@ import tomllib
 from pathlib import Path
 
 
-def export_project_dependencies(pyproject: Path, destination: Path) -> None:
-    project = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("project", {})
+def project_dependency_requirements(pyproject_text: str) -> str:
+    """Render ``[project].dependencies`` as pip requirements text, one per line.
+
+    The base image build and the base compatibility contract both use this
+    function, so they cannot disagree about which part of ``pyproject.toml``
+    the base image installs.
+    """
+    project = tomllib.loads(pyproject_text).get("project", {})
     if not isinstance(project, dict):
         raise ValueError("project must be a table")
     dependencies = project.get("dependencies")
@@ -18,9 +24,13 @@ def export_project_dependencies(pyproject: Path, destination: Path) -> None:
         isinstance(dependency, str) for dependency in dependencies
     ):
         raise ValueError("project.dependencies must be a list of strings")
-    destination.write_text(
-        "".join(f"{dependency}\n" for dependency in dependencies), encoding="utf-8"
-    )
+    return "".join(f"{dependency}\n" for dependency in dependencies)
+
+
+def export_project_dependencies(pyproject: Path, destination: Path) -> None:
+    """Write the requirements file, with LF endings on every platform."""
+    requirements = project_dependency_requirements(pyproject.read_bytes().decode("utf-8"))
+    destination.write_text(requirements, encoding="utf-8", newline="\n")
 
 
 def main() -> int:
@@ -30,7 +40,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         export_project_dependencies(args.pyproject, args.destination)
-    except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
+    except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     return 0

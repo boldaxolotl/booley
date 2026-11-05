@@ -48,6 +48,7 @@ from booley.runtime.build_stamp import (
     wheel_embedded_source_fingerprint,
     write_build_stamp,
 )
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 BUILD_SH = Path(__file__).resolve().parents[2] / "src" / "booley" / "data" / "docker" / "build.sh"
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
@@ -66,7 +67,12 @@ def _write_wheel(root: Path, name: str = WHEEL_NAME) -> Path:
 
 
 def _git(root: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), *args],
+        check=True,
+        capture_output=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
 
 
 @pytest.fixture

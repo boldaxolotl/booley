@@ -15,6 +15,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+
 CHILD_TIMEOUT_S = 60
 
 # Creates a nested Codex home and a read-only Specialist workspace, prints both
@@ -136,5 +138,7 @@ def make_repo(path: Path) -> Path:
         ["add", "tracked.sv"],
         ["-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "--quiet", "-m", "x"],
     ):
-        subprocess.run(["git", *args], cwd=path, check=True, capture_output=True)
+        subprocess.run(
+            ["git", *args], cwd=path, check=True, capture_output=True, timeout=SUBPROCESS_TIMEOUT_S
+        )
     return path

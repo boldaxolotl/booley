@@ -20,6 +20,13 @@ from booley.harness import init_cmd
 from booley.harness.setup import docker_image as init_docker_image
 from booley.harness.setup.common import InitContext
 from booley.runtime.docker_build import DockerBuildResult
+from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
+
+
+@pytest.fixture(autouse=True)
+def _docker_helper_uses_subprocess_run(monkeypatch):
+    """This module fakes the Docker CLI through ``subprocess.run``."""
+    route_docker_helper_through_subprocess_run(monkeypatch)
 
 
 def test_init_cmd_reexports_docker_compatibility_helpers() -> None:

@@ -160,3 +160,56 @@ def kill_process_tree(proc: subprocess.Popen) -> None:
     """
     group = capture_process_group(proc)
     terminate_process_group(proc, group, is_windows=IS_WINDOWS)
+
+
+#: Seconds ``run_captured_bounded`` waits for output pipes to close after it
+#: killed the process tree.
+_KILL_DRAIN_TIMEOUT_S = 5
+
+
+def run_captured_bounded(argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+    """Run *argv* capturing text output; never wait unboundedly on a timeout.
+
+    Unlike ``subprocess.run(..., timeout=...)``, which kills only the direct
+    child and (on Windows) then waits for the output pipes to reach EOF with no
+    limit, this starts the child in its own process group, kills the whole tree
+    on timeout and abandons pipes a surviving descendant still holds.
+
+    Returns the ``CompletedProcess`` for any exit status (never raises on a
+    non-zero exit). Raises ``subprocess.TimeoutExpired`` after *timeout*
+    seconds, and ``FileNotFoundError`` when the executable is absent.
+
+    Worst case until ``TimeoutExpired`` is raised: about ``timeout + 12`` s on
+    POSIX (SIGTERM, 2 s grace, SIGKILL, up to 5 s wait, 5 s drain) and about
+    ``timeout + 32`` s on Windows, where each ``taskkill`` may take 10 s.
+    """
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **popen_new_group_kwargs(),
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_process_tree(proc)
+        try:
+            stdout, stderr = proc.communicate(timeout=_KILL_DRAIN_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            # A descendant escaped the group and still holds a pipe: give up on
+            # its output. On POSIX communicate() reads on this thread, so the
+            # pipes can be closed here; on Windows daemon reader threads own
+            # them (closing a buffered pipe a reader is blocked on would block).
+            stdout = stderr = None
+            if not IS_WINDOWS:
+                for pipe in (proc.stdout, proc.stderr):
+                    if pipe is not None:
+                        pipe.close()
+        raise subprocess.TimeoutExpired(argv, timeout, output=stdout, stderr=stderr) from None
+    except BaseException:
+        kill_process_tree(proc)
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)

@@ -34,6 +34,7 @@ from tests.diagnostic_helpers import (
     _record_environment,
     _require_doctor_warning,
 )
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 from tests.target_test_support import write_two_core_sim_project
 
 
@@ -670,7 +671,13 @@ class TestCustomToolsAndCriteria:
 
 
 def _git_init(root: Path) -> None:
-    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "init", "-q", str(root)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
 
 
 class TestGitConflictsAndDirty:

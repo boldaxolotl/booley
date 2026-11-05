@@ -181,3 +181,46 @@ def test_kill_process_tree_kills_descendants_after_wrapper_exits():
         (123, 0),
         (123, signal.SIGKILL),
     ]
+
+
+def test_run_captured_bounded_kills_the_tree_when_interrupted():
+    """A KeyboardInterrupt mid-wait must not leave the child running."""
+    started: list[subprocess.Popen] = []
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        # Windows tree-kill also launches taskkill through Popen: record only
+        # the helper's own child, not the killer.
+        if not started:
+            started.append(proc)
+        return proc
+
+    real_communicate = real_popen.communicate
+
+    def interrupted(self, *args, **kwargs):
+        # Windows tree-kill runs taskkill through subprocess.run, which also
+        # calls communicate(): interrupt only the helper's own child, or the
+        # killer is interrupted and never kills the tree.
+        if started and self is started[0]:
+            raise KeyboardInterrupt
+        return real_communicate(self, *args, **kwargs)
+
+    with (
+        patch.object(platform_paths.subprocess, "Popen", recording_popen),
+        patch.object(real_popen, "communicate", interrupted),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        platform_paths.run_captured_bounded(
+            [sys.executable, "-c", "import time; time.sleep(60)"], timeout=30
+        )
+
+    (proc,) = started
+    try:
+        # kill_process_tree already ran; the child is dead or about to be reaped.
+        assert proc.wait(timeout=15) is not None
+    finally:
+        proc.kill()
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                pipe.close()

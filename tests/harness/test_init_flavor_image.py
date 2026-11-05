@@ -25,6 +25,14 @@ from booley.harness.setup import docker_image as idi
 from booley.harness.setup.common import InitContext, StepResult
 from booley.runtime import project_image as pi
 from booley.runtime.dockerfile_syntax import build_context_imports
+from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
+
+
+@pytest.fixture(autouse=True)
+def _docker_helper_uses_subprocess_run(monkeypatch):
+    """This module fakes the Docker CLI through ``subprocess.run``."""
+    route_docker_helper_through_subprocess_run(monkeypatch)
+
 
 FLAVOR = "booley-sandbox-riscv"
 
@@ -329,6 +337,8 @@ class TestBaseImageNote:
     def _disable_installed_image_refresh(self, monkeypatch):
         """Keep presentation tests independent of Docker registry availability."""
         monkeypatch.setattr(idi, "_refresh_installed_base_image", lambda *_args: False)
+        # The build-cache report would run ``docker system df``.
+        monkeypatch.setattr(idi, "_report_build_cache", lambda *_args, **_kwargs: None)
 
     def test_base_step_explains_the_flavor_relationship(self, monkeypatch, capsys):
         monkeypatch.setattr(idi.shutil, "which", lambda n: "/usr/bin/docker")

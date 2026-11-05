@@ -55,18 +55,18 @@ filesets:
 parameters:
   WIDTH: {datatype: int, paramtype: vlogparam, default: 16}
 targets:
-  sim:                                # target name == the --target value
+  sim_dut:                            # target name == the --target value
     flow: sim
     flow_options: {tool: verilator}   # verilator | icarus
     filesets: [rtl, tb, fw]
     toplevel: tb_dut                  # a sim target's toplevel is its TB top
     parameters: [WIDTH]
-  lint:
+  lint_dut:
     flow: lint
     flow_options: {tool: verilator}
     filesets: [rtl]
     toplevel: dut
-  synth:
+  synth_dut:
     flow: generic
     flow_options: {tool: yosys, arch: xilinx}  # arch is ignored by Booley
     filesets: [rtl]

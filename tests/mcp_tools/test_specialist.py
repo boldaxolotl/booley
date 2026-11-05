@@ -15,6 +15,7 @@ from claude_agent_sdk import ClaudeSDKError
 from booley.core.models import AgentCallParams
 from booley.mcp.base import EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.specialists.specialist import _DEFAULT_TIER_MODELS, TIER_RANK, VALID_TIERS, Specialist
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 
 def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:
@@ -546,13 +547,21 @@ class TestSpecialistGitCommit:
     def _init_repo(self, tmp_path: Path) -> Path:
         repo = tmp_path / "repo"
         repo.mkdir()
-        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "init"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT_S,
+        )
         subprocess.run(
             ["git", "config", "user.email", "test@example.com"],
             cwd=repo,
             check=True,
             capture_output=True,
             text=True,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
         subprocess.run(
             ["git", "config", "user.name", "Test User"],
@@ -560,10 +569,16 @@ class TestSpecialistGitCommit:
             check=True,
             capture_output=True,
             text=True,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
         (repo / "init.txt").write_text("init\n", encoding="utf-8")
         subprocess.run(
-            ["git", "add", "init.txt"], cwd=repo, check=True, capture_output=True, text=True
+            ["git", "add", "init.txt"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
         subprocess.run(
             ["git", "commit", "-m", "feat: init"],
@@ -571,6 +586,7 @@ class TestSpecialistGitCommit:
             check=True,
             capture_output=True,
             text=True,
+            timeout=SUBPROCESS_TIMEOUT_S,
         )
         return repo
 
