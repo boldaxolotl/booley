@@ -361,7 +361,7 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
     && command -v bwrap \
     && rm -rf /var/lib/apt/lists/*
 
-# The manifest is the only place the agent CLI versions are written: the
+# The manifest (and its lock) is the only source of the agent CLI versions: the
 # installed CLIs must report exactly the versions it pins.
 RUN agent_cli_pin() { python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["dependencies"][sys.argv[2]])' /opt/agent-clis/package.json "$1"; } \
     && test "$(claude --version | awk '{print $1}')" = "$(agent_cli_pin @anthropic-ai/claude-code)" \
