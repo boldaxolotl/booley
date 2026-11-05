@@ -1738,6 +1738,8 @@ class TestPromptConstruction:
         assert f"## {label} style guide\n" in system
         assert f"## {label} style guide — project overlay" in system
         assert "Signal names MUST carry a `u_` prefix." in system
+        # The overlay text is passed through byte-for-byte.
+        assert overlay.read_text() in system
         # Overlay must follow the packaged guide so precedence reads correctly.
         assert system.index(f"## {label} style guide\n") < system.index(
             f"## {label} style guide — project overlay"
@@ -2533,6 +2535,43 @@ class TestTbQualityPrompt:
         assert "Ternary string expression in display/sentinel calls" in system
         assert "$display((total_failed == 0) ?" in system
         assert "print a large decimal" in system
+
+    def test_simulator_specific_rules_are_marked(self, state_file: Path):
+        """Single-simulator rules carry an ``[<Simulator> only]`` mark (#2636)."""
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            ["--scope", "tb/mod_a_tb.sv", "--category", "tb", "--focus", "quality"]
+        )
+        endpoint.read_state()
+        system = endpoint._build_system_prompt("quality")
+
+        assert "[Icarus only]" in system
+        assert "Icarus exposes" not in system
+        assert 'flow_options.tool = "icarus"' not in system
+        assert "**## Simulation Context**" in system
+
+        # The Vivado xsim bug rule and check 11's clause are marked.
+        urandom = system.index("Never use `$urandom_range()`")
+        assert "[Vivado xsim only]" in system[urandom - 200 : urandom + 200]
+        # The mark covers that clause alone, not the rest of check 11.
+        assert (
+            "`[Vivado xsim only]` for this clause alone: missing rejection sampling for large ranges"
+            in system
+        )
+
+        # `$stop` is wrong on every simulator: its reason names no single one.
+        stop = system.index("End simulation with `$finish`, not `$stop`")
+        assert "Icarus" not in system[stop : stop + 400]
+
+    def test_rtl_range_rule_is_not_justified_by_cocotb_alone(self, state_file: Path):
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "code_style"]
+        )
+        endpoint.read_state()
+        system = endpoint._build_system_prompt("code_style")
+
+        assert "silent data corruption under cocotb/VPI" not in system
 
     def test_output_instructions_pin_category_to_focus(self):
         output = ReviewerSpecialist._output_instructions("protocol")
@@ -3613,6 +3652,120 @@ class TestVerifyFixedPersistence:
 
 def _tb_args(scope: str = "verif/mod_a_tb.sv") -> list[str]:
     return ["--scope", scope, "--category", "tb", "--focus", "quality"]
+
+
+_SIM_CORE_TEMPLATE = """\
+CAPI=2:
+name: ::demo_core:0
+
+filesets:
+  rtl:
+    files:
+      - rtl/counter.sv: {{file_type: systemVerilogSource}}
+  tb:
+    files:
+      - tb/tb_counter.sv: {{file_type: systemVerilogSource}}
+    tags: [tb]
+  lint_only_tb:
+    files:
+      - tb/tb_lint_only.sv: {{file_type: systemVerilogSource}}
+    tags: [tb]
+
+targets:
+  default:
+    filesets: [rtl]
+  sim:
+{sim_selection}
+    filesets: [rtl, tb]
+    toplevel: tb_counter
+  lint_all:
+    flow: lint
+    flow_options:
+      tool: verilator
+    filesets: [rtl, tb, lint_only_tb]
+    toplevel: counter
+"""
+
+_VERILATOR_SELECTION = "    flow: sim\n    flow_options:\n      tool: verilator"
+_ICARUS_SELECTION = "    default_tool: icarus"
+
+
+def _sim_project(root: Path, sim_selection: str = _VERILATOR_SELECTION) -> Path:
+    """Write a Project whose ``sim`` Target uses the given simulator selection."""
+    from tests.fusesoc_test_support import write_core
+
+    write_core(root, _SIM_CORE_TEMPLATE.format(sim_selection=sim_selection))
+    return root
+
+
+def _tb_endpoint(project: Path, scope: str) -> ReviewerSpecialist:
+    endpoint = ReviewerSpecialist()
+    endpoint.parse_args(
+        ["--scope", scope, "--category", "tb", "--focus", "quality", "--work-dir", str(project)]
+    )
+    return endpoint
+
+
+def _simulation_context(prompt: str) -> str:
+    """Return the ``## Simulation Context`` section of *prompt* (asserted present)."""
+    assert "## Simulation Context" in prompt, prompt
+    section = prompt.split("## Simulation Context", 1)[1]
+    return section.split("\n## ", 1)[0]
+
+
+class TestTbSimulationContext:
+    """A TB review tells the reviewer which simulator runs each scoped file (#2636)."""
+
+    def test_verilator_only_project_names_verilator(self, tmp_path: Path, state_file: Path):
+        project = _sim_project(tmp_path)
+        prompt = _tb_endpoint(project, "tb/tb_counter.sv")._build_prompt()
+
+        section = _simulation_context(prompt)
+        file_lines = [line for line in section.splitlines() if line.startswith("- tb/")]
+        assert file_lines == ["- tb/tb_counter.sv: Verilator"]
+
+    def test_file_in_no_simulation_target_is_unknown(self, tmp_path: Path, state_file: Path):
+        project = _sim_project(tmp_path)
+        prompt = _tb_endpoint(project, "tb/tb_lint_only.sv")._build_prompt()
+
+        section = _simulation_context(prompt)
+        assert "tb/tb_lint_only.sv: unknown (no simulation Target uses this file)" in section
+        assert "advisory" in section
+
+    def test_icarus_project_names_icarus(self, tmp_path: Path, state_file: Path):
+        project = _sim_project(tmp_path, _ICARUS_SELECTION)
+        prompt = _tb_endpoint(project, "tb/tb_counter.sv")._build_prompt()
+
+        file_lines = [
+            line for line in _simulation_context(prompt).splitlines() if line.startswith("- tb/")
+        ]
+        assert file_lines == ["- tb/tb_counter.sv: Icarus"]
+
+    def test_verify_prompt_carries_simulation_context(self, tmp_path: Path, state_file: Path):
+        project = _sim_project(tmp_path)
+        endpoint = _tb_endpoint(project, "tb/tb_counter.sv")
+
+        prompt = endpoint._build_verify_prompt("quality", {"issues": []})
+
+        assert "tb/tb_counter.sv: Verilator" in _simulation_context(prompt)
+
+    def test_rtl_prompt_has_no_simulation_context(self, tmp_path: Path, state_file: Path):
+        project = _sim_project(tmp_path)
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            [
+                "--scope",
+                "rtl/counter.sv",
+                "--category",
+                "rtl",
+                "--focus",
+                "bugs",
+                "--work-dir",
+                str(project),
+            ]
+        )
+
+        assert "## Simulation Context" not in endpoint._build_prompt()
 
 
 class TestTbReviewGetsTheSpec:

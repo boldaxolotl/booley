@@ -101,15 +101,15 @@ def _inside_container() -> bool:
 
 _PROVIDER_TIER_MODELS: dict[str, dict[str, str]] = {
     "claude": {
-        "heavy": "claude-fable-5",
-        "standard": "claude-opus-4-8",
+        "heavy": "claude-fable-5-1",
+        "standard": "claude-opus-5-5",
         # Light tier is Sonnet, not Haiku: Booley never routes work to Haiku.
-        "light": "claude-sonnet-5",
+        "light": "claude-sonnet-5-5",
     },
     "codex": {
         "heavy": "gpt-6-astra",
-        "standard": "gpt-5.6-sol",
-        "light": "gpt-5.6-luna",
+        "standard": "gpt-6.1-sol",
+        "light": "gpt-6-luna",
     },
 }
 
@@ -180,7 +180,7 @@ class AgentSettings:
         """Model for *role*, falling back to *tier* when the role isn't pinned.
 
         A ``[models.roles]`` value may name a tier (``"light"``) or a literal
-        model id (``"claude-sonnet-5"``). Tier names resolve through
+        model id (``"claude-sonnet-5-5"``). Tier names resolve through
         ``tier_models``, so a role pinned to a tier still tracks any
         ``[models]`` override of that tier.
 
@@ -727,7 +727,7 @@ def parse_role_models(models_section: Mapping[str, Any]) -> dict[str, str]:
         if not isinstance(value, str) or not value.strip():
             raise BackendConfigError(
                 f"booley.toml [models.roles] {role}={value!r} is invalid; use a tier name "
-                f'({"/".join(_MODEL_TIERS)}) or a model id (e.g. "claude-opus-4-8").'
+                f'({"/".join(_MODEL_TIERS)}) or a model id (e.g. "claude-opus-5-5").'
             )
         role_models[role] = value.strip()
     return role_models

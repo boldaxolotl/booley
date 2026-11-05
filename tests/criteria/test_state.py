@@ -9,9 +9,8 @@ from typing import ClassVar
 
 import pytest
 
+from booley.criteria.categories import _FINGERPRINT_CATEGORIES, CATEGORY_RTL, CATEGORY_TB
 from booley.criteria.state import (
-    CATEGORY_RTL,
-    CATEGORY_TB,
     CriterionEntry,
     DevelopmentState,
     _check_absolute_cap,
@@ -301,6 +300,13 @@ class TestMinGateKey:
         assert min_gate_key("clk_i.fmax_mhz") == "fmax_mhz"
 
 
+# Every (prefix, categories) pair of the canonical Criterion category table.
+_CANONICAL_PREFIXES: dict[str, frozenset[str]] = {
+    prefix: categories for prefixes, categories in _FINGERPRINT_CATEGORIES for prefix in prefixes
+}
+_CANONICAL_CATEGORIES: frozenset[str] = frozenset().union(*_CANONICAL_PREFIXES.values())
+
+
 class TestCriteriaOperations:
     @pytest.fixture
     def state(self, tmp_path: Path) -> DevelopmentState:
@@ -461,6 +467,29 @@ class TestCriteriaOperations:
         state.set_criterion("custom_gate", True)
         reset = state.reset_category(CATEGORY_RTL)
         assert "custom_gate" in reset
+
+    def test_category_override_beats_canonical_table(self, state: DevelopmentState):
+        """An explicit category_map entry replaces the prefix table, even for table prefixes."""
+        state.init_criteria(
+            {"sim_pass_custom": True},
+            category_overrides={"sim_pass_custom": CATEGORY_RTL},
+        )
+        state.set_criterion("sim_pass_custom", True)
+        assert state.reset_category(CATEGORY_TB) == []
+        assert state.is_met("sim_pass_custom") is True
+        assert state.reset_category(CATEGORY_RTL) == ["sim_pass_custom"]
+
+    @pytest.mark.parametrize("prefix", sorted(_CANONICAL_PREFIXES))
+    def test_reset_category_follows_canonical_table(self, state: DevelopmentState, prefix: str):
+        """A reset of category C resets a prefixed key iff the canonical table lists C for it."""
+        key = f"{prefix}probe"
+        state.init_criteria({key: True})
+        for category in sorted(_CANONICAL_CATEGORIES):
+            state.set_criterion(key, True)
+            reset = state.reset_category(category)
+            expected = category in _CANONICAL_PREFIXES[prefix]
+            assert (key in reset) is expected, f"{key!r} on {category!r} reset"
+            assert state.is_met(key) is not expected, f"{key!r} met after {category!r} reset"
 
     def test_summary(self, state: DevelopmentState):
         state.set_criterion("lint_clean_lite", True)

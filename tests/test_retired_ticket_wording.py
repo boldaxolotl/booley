@@ -51,6 +51,8 @@ _ALLOWED_LITERALS: dict[str, tuple[str, ...]] = {
     "runtime/_codex_backend.py": ("ticket",),
     "runtime/incontainer_git_identity.py": ("--ticket",),
     "harness/doctor.py": _DOCTOR_MIGRATION,
+    # Allowed class: ADR 0082 Booley Directory path names in the state classification table.
+    "core/booley_dir_parts.py": ("tickets/history/", "tickets/"),
     "runtime/project_gitignore.py": _LEGACY_PATTERNS,
     "runtime/project_trackability.py": _LEGACY_PATTERNS,
 }
