@@ -239,7 +239,7 @@ _REFUSALS = [
     (
         "missing-record-entry",
         lambda r: (r / "site/booley/data/x.json").unlink(),
-        "cannot hash booley: .*No such file",
+        "cannot hash booley: .*(No such file|cannot find the file)",
         (),
     ),
     ("record-entry-directory", _append_record("booley/data,,\n"), "not a regular file", ()),
@@ -251,7 +251,7 @@ _REFUSALS = [
     ),
     (
         "unlistable-directory",
-        _chmod_zero("site/booley/data"),
+        _chmod_zero("site/booley/__pycache__"),
         "cannot hash booley: .*Permission denied",
         (_NON_ROOT,),
     ),
@@ -265,7 +265,7 @@ _REFUSALS = [
     (
         "dangling-symlink",
         lambda r: _symlink(r, "site/booley/data/dead", "nowhere"),
-        "cannot hash booley: .*No such file",
+        "cannot hash booley: .*(No such file|cannot find the file)",
         (_POSIX,),
     ),
     (
