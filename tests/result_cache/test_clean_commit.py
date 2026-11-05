@@ -74,6 +74,7 @@ def dirty_layout(base: Path) -> Layout:
         ("core.fsmonitor", str(hook)),
         ("core.untrackedCache", "true"),
         ("core.ignoreCase", "true"),
+        ("diff.ignoreSubmodules", "all"),  # the parent's plain status ignores submodules
     ):
         git(rtl, "config", key, value)
     git(rtl, "update-index", "--fsmonitor", "--untracked-cache")
@@ -124,6 +125,9 @@ def test_dirty_participant_is_not_clean(case: str, tmp_path: Path) -> None:
         assert plain_status(layout.rtl) == ""  # the unprotected command sees nothing
     if case == "rtl-submodule-off-commit":
         commit_files(layout.rtl / "sub", {"s.v": "moved\n"})
+        assert (
+            git(layout.rtl, "status", "--porcelain") == "?? .booley/"
+        )  # configured status: nothing
     if case == "rtl-nested-repository":
         new_repo(layout.rtl / "nested", {"n": "n\n"})
     assert_refused(layout.project, f"{label} repository", "not clean", named)
