@@ -76,3 +76,67 @@ def test_a_signal_death_is_re_raised_on_the_parent(
 
     expected_reset = [] if number == signal.SIGKILL else [("signal", number)]
     assert events == [("rlimit", None), *expected_reset, ("kill", (os.getpid(), number))]
+
+
+@_needs_fork
+def test_a_failed_fork_falls_back_to_the_in_process_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse_fork() -> int:
+        raise OSError("pids limit")
+
+    monkeypatch.setattr(foreground_child.os, "fork", refuse_fork)
+    monkeypatch.setattr(foreground_child.os, "isatty", lambda _fd: False)
+
+    assert foreground_child.run_foreground_child(lambda: 4) == 4
+
+
+@_needs_fork
+def test_a_launch_that_raises_ends_the_child_with_the_failure_code(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def exit_child(code: int) -> None:
+        raise _ChildExitError(code)
+
+    def explode() -> int:
+        raise RuntimeError("launch blew up")
+
+    monkeypatch.setattr(foreground_child.os, "fork", lambda: 0)
+    monkeypatch.setattr(foreground_child.os, "_exit", exit_child)
+    monkeypatch.setattr(foreground_child.os, "isatty", lambda _fd: False)
+
+    with pytest.raises(_ChildExitError) as raised:
+        foreground_child.run_foreground_child(explode)
+
+    assert raised.value.code == 2
+    assert "launch blew up" in capsys.readouterr().err
+
+
+@_needs_fork
+def test_a_tty_that_is_not_our_controlling_terminal_is_not_terminal_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def not_a_controlling_tty(_fd: int) -> int:
+        raise OSError("ENOTTY")
+
+    monkeypatch.setattr(foreground_child.os, "isatty", lambda _fd: True)
+    monkeypatch.setattr(foreground_child.os, "tcgetpgrp", not_a_controlling_tty)
+
+    assert foreground_child._foreground_tty() is False
+    assert foreground_child._ForegroundRun._is_foreground() is False
+
+
+@_needs_fork
+def test_forwarding_waits_for_a_child_and_targets_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        foreground_child.os, "kill", lambda pid, number: sent.append((pid, number))
+    )
+    monkeypatch.setattr(foreground_child.os, "isatty", lambda _fd: False)
+    run = foreground_child._ForegroundRun(lambda: 0)
+
+    run._forward(signal.SIGTERM, None)  # no child yet: nothing to signal
+    run._child = 4321
+    run._forward(signal.SIGHUP, None)
+
+    assert sent == [(4321, signal.SIGHUP)]
