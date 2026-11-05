@@ -172,6 +172,48 @@ def test_resume_and_required_target_guidance() -> None:
             parser.parse_args([])
 
 
+TARGET_OMISSION = "When omitted, exactly one eligible Target is selected and announced"
+DEFAULT_MARKERS = ("When omitted", "Default:", "(default ")
+
+
+def test_target_help_states_each_rule_once() -> None:
+    """Every Built-in Flow's human `--target` help says the omission rule once."""
+    for cls in FLOWS:
+        flow = cls()
+        parsers = (build_parser(flow, human=True), build_cli_parser(flow, CliInvocation()))
+        for parser in parsers:
+            help_text = parser._option_string_actions["--target"].help
+            assert help_text.count(TARGET_OMISSION) == 1, (flow.name, help_text)
+            if flow.name == "sim":
+                assert help_text.count("manifest owns") == 1, help_text
+                assert help_text.count("conflicts with --resume-from") == 1, help_text
+        # Check the rendered text too; whitespace-normalize since argparse wraps lines.
+        rendered = " ".join(parsers[0].format_help().split())
+        assert rendered.count(TARGET_OMISSION) == 1, flow.name
+
+
+def test_human_help_states_each_default_once() -> None:
+    """Each human option's omission/default text appears once, not in its description too."""
+    for cls in FLOWS:
+        flow = cls()
+        parser = build_parser(flow, human=True)
+        groups = (
+            shared_help(flow.name, target_required=flow.target_required)
+            + flow.argument_adapter.help_groups
+        )
+        for group in groups:
+            for option in group.options:
+                # Several actions can share a dest (hidden alias + visible flag): check the visible ones.
+                for action in parser._actions:
+                    if action.dest != option.dest or action.help == argparse.SUPPRESS:
+                        continue
+                    where = (flow.name, option.dest)
+                    assert action.help.count(option.omission) == 1, (where, action.help)
+                    description = action.help.removesuffix(option.omission)
+                    for marker in DEFAULT_MARKERS:
+                        assert marker not in description, (where, marker, action.help)
+
+
 def test_module_help_outside_project(tmp_path: Path) -> None:
     env = {
         key: value

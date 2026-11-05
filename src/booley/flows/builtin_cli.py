@@ -31,7 +31,7 @@ def build_parser(
     if flow.name == "sim":
         resume_help = " For sim resume, the manifest owns selection."
         target_help = (
-            SurfaceHelp(str(target_help) + resume_help, cli=target_help.cli + resume_help)
+            SurfaceHelp(str(target_help) + resume_help, cli=target_help.cli)
             if isinstance(target_help, SurfaceHelp)
             else target_help + resume_help
         )
