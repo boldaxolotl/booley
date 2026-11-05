@@ -130,6 +130,13 @@ def test_contract_rejects_symlink_escape(tmp_path: Path) -> None:
     assert "unsafe stable-base input" in result.stderr
 
 
+def test_base_python_requirements_is_a_stable_base_input() -> None:
+    assert (
+        "src/booley/data/docker/base-python-requirements.txt"
+        in docker_base_contract.stable_base_inputs(Path())
+    )
+
+
 def test_manifest_inputs_trigger_classifier_and_publisher() -> None:
     inputs = [
         line

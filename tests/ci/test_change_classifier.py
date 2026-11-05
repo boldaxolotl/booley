@@ -450,6 +450,8 @@ def test_stable_base_input_requests_local_compatibility_build(tmp_path: Path) ->
     [
         # #829: the base inventory helper's bytes are a base compatibility input.
         ("src/booley/data/docker/base_package_inventory.py", True),
+        # The pinned Python package set is installed by the base image.
+        ("src/booley/data/docker/base-python-requirements.txt", True),
         # The contract gates every image lane but not the base.
         (".github/contracts/session-runtime.toml", False),
     ],

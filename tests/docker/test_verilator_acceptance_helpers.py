@@ -7,8 +7,10 @@ import select
 import signal
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+from tests.docker import verilator_acceptance
 from tests.docker.verilator_acceptance import terminate_and_reap
 
 
@@ -37,3 +39,13 @@ def test_ignored_sigterm_is_killed_and_timeout_remains_a_failure() -> None:
             child.wait(timeout=5)
         if child.stdout is not None:
             child.stdout.close()
+
+
+def test_expected_cocotb_version_reads_base_requirements(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    requirements = tmp_path / "base-python-requirements.txt"
+    requirements.write_text("# pins\nnumpy==1.0\ncocotb==9.8.7\ncocotbext-axi==0.1\n")
+    monkeypatch.setattr(verilator_acceptance, "BASE_REQUIREMENTS", requirements)
+
+    assert verilator_acceptance.expected_cocotb_version() == "9.8.7"

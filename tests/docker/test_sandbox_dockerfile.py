@@ -9,11 +9,13 @@ import re
 import shlex
 import shutil
 import subprocess
+import tomllib
 import zipfile
 from pathlib import Path
 
 import pytest
 import yaml
+from tests.sandbox_image_contract import base_python_pins
 from tests.sidecar_image_helpers import (
     DIND_IMAGE,
     SIDECAR_ALPINE_BASE,
@@ -28,6 +30,8 @@ _DOCKER_DIR = _DOCKERFILE.parent
 _BASE_DOCKERFILE = _DOCKER_DIR / "Dockerfile.base"
 _SUBSTRATE_DOCKERFILE = _DOCKER_DIR / "Dockerfile.substrate"
 _WHEEL_DOCKERFILE = _DOCKER_DIR / "Dockerfile.wheel"
+_BASE_REQUIREMENTS = _DOCKER_DIR / "base-python-requirements.txt"
+_BASE_REQUIREMENTS_IN_IMAGE = "/tmp/booley-build/base-python-requirements.txt"
 _LIBEXEC_BWAVE = "/usr/local/libexec/booley/bwave"
 
 
@@ -52,6 +56,47 @@ def test_claude_sdk_cli_duplicate_is_removed_in_install_layer() -> None:
     assert "ClaudeSDKBackend" not in install_layer
 
 
+def test_base_python_installs_take_exact_pins_only_from_requirements_file() -> None:
+    """No exact pin is written inline; every pinned package is installed via the file."""
+    pins = base_python_pins(_BASE_REQUIREMENTS.read_text(encoding="utf-8"))
+    installed: set[str] = set()
+    for instruction in logical_instructions(_BASE_DOCKERFILE.read_text(encoding="utf-8")):
+        if instruction.keyword != "RUN" or "pip install" not in instruction.value:
+            continue
+        if "--requirement /tmp/booley-build/project-dependencies.txt" in instruction.value:
+            continue  # project dependency layer: pins come from pyproject.toml
+        tokens = shlex.split(instruction.value.split("pip install", 1)[1].split("&&")[0])
+        assert not [token for token in tokens if "==" in token], instruction.value
+        assert f"--constraint {_BASE_REQUIREMENTS_IN_IMAGE}" in instruction.value
+        installed.update(token for token in tokens if re.fullmatch(r"[a-z][a-z0-9-]*", token))
+
+    assert installed == set(pins)
+
+
+def test_base_edalize_fusesoc_pins_match_project_metadata() -> None:
+    pins = base_python_pins(_BASE_REQUIREMENTS.read_text(encoding="utf-8"))
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    exact = dict(
+        requirement.split("==")
+        for requirement in project["project"]["dependencies"]
+        if "==" in requirement
+    )
+
+    for name in ("edalize", "fusesoc"):
+        assert name in pins, f"{name} missing from base-python-requirements.txt"
+        assert pins[name] == exact.get(name), name
+
+
+def test_supported_tools_doc_lists_base_cocotb_pins() -> None:
+    pins = base_python_pins(_BASE_REQUIREMENTS.read_text(encoding="utf-8"))
+    doc = Path("docs/user/SUPPORTED-EDA-TOOLS.md").read_text(encoding="utf-8")
+    row = next(line for line in doc.splitlines() if line.startswith("| cocotb |"))
+
+    assert f"| cocotb | {pins['cocotb']}, with" in row
+    for name in ("cocotbext-axi", "cocotbext-uart", "numpy"):
+        assert f"`{name}` {pins[name]}" in row or f"{name}` {pins[name]}" in row, name
+
+
 def test_all_python_installs_tolerate_slow_publisher_reads() -> None:
     dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
     install_start = dockerfile.index("RUN python /tmp/booley-build/export_project_dependencies.py")
@@ -71,7 +116,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     pyproject_copy = base.index("COPY pyproject.toml")
     dependency_exporter = base.index("COPY src/booley/data/docker/export_project_dependencies.py")
     project_install = base.index("--requirement /tmp/booley-build/project-dependencies.txt")
-    image_dependencies = base.index('"cocotb==2.1.0"')
+    image_dependencies = base.index("--constraint /tmp/booley-build/base-python-requirements.txt")
 
     assert pyproject_copy < dependency_exporter < project_install
     assert project_install < image_dependencies
