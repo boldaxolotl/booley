@@ -157,6 +157,8 @@ _SIDECAR_FILES = {
     "tests/docker/test_reaper.py",
     "tests/docker/test_reaper_image_e2e.py",
     "tests/docker/test_sidecar_image_helpers.py",
+    # Derives the SIDECAR_* expectations the sidecar e2e tests consume.
+    "tests/sidecar_image_helpers.py",
 }
 
 
