@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 import pytest
 from tests.sidecar_image_helpers import (
+    SIDECAR_BOOKWORM_BASE,
     assert_ok,
     assert_python_version,
     candidate_image,
@@ -137,7 +138,7 @@ def _assert_shutdown_stats(resources: _Resources) -> None:
 @pytest.mark.slow()
 def test_candidate_connect_streams_bytes_and_reports_stats_on_shutdown() -> None:
     image = candidate_image("BOOLEY_EGRESS_PROXY_IMAGE", "packaged proxy proof")
-    assert_python_version(image)
+    assert_python_version(image, SIDECAR_BOOKWORM_BASE)
     resources = _Resources.create()
     try:
         _start_upstream(image, resources)

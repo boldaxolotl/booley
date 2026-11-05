@@ -106,3 +106,18 @@ def test_from_references_resolve_global_arguments() -> None:
     ]
     with pytest.raises(ValueError, match="Dockerfile:1: unresolved FROM"):
         dockerfile_syntax.from_references("FROM ${MISSING}\n")
+
+
+def test_from_references_unquote_global_defaults_and_join_continued_from_lines() -> None:
+    dockerfile = 'ARG PARENT="example.invalid/base:1"\nFROM \\\n    ${PARENT} \\\n    AS builder\n'
+
+    references = dockerfile_syntax.from_references(dockerfile)
+
+    assert [(r.image, r.alias, r.line) for r in references] == [
+        ("example.invalid/base:1", "builder", 2)
+    ]
+
+
+def test_from_references_reject_a_global_argument_declaring_several_names() -> None:
+    with pytest.raises(ValueError, match="Dockerfile:1: ARG must declare exactly one name"):
+        dockerfile_syntax.from_references("ARG A=1 B=2\nFROM ${A}\n")

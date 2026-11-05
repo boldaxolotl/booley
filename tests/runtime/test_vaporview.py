@@ -177,8 +177,8 @@ def test_installed_versions_skips_obsolete_build(tmp_path):
 
 
 def test_installed_versions_prefers_vscode_registry_after_downgrade(tmp_path):
-    # Observed with VS Code 1.143: `--install-extension id@1.5.4` over 1.6.0
-    # rewrites extensions.json at once but leaves the 1.6.0 directory, unmarked.
+    # Observed with VS Code 1.143: `--install-extension id@1.5.4` over a newer
+    # install rewrites extensions.json at once but leaves the newer directory, unmarked.
     root = tmp_path / ".vscode-server" / "extensions"
     _install(root, "9.9.9")
     _install(root, "1.5.4")

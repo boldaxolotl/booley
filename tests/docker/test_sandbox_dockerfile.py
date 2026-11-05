@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -77,18 +78,6 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert pyproject_copy < dependency_exporter < project_install
     assert project_install < image_dependencies
     assert "YOSYS_REF" in base
-    # The in-file LABEL copies of the external FROM references stay in lockstep.
-    stages = {
-        reference.stage: reference.image for reference in dockerfile_syntax.from_references(base)
-    }
-    labels = dict(
-        re.findall(r"^\s*(?:LABEL\s+)?(io\.booley\.[\w.-]+-artifact)=(\S+?)\s*\\?$", base, re.M)
-    )
-    assert labels == {
-        "io.booley.openroad.builder-artifact": stages[0],
-        "io.booley.eda.builder-artifact": stages[1],
-        "io.booley.openroad.runtime-parent-artifact": stages[2],
-    }
     assert [reference.alias for reference in dockerfile_syntax.from_references(base)] == [
         "openroad-artifacts",
         "eda-artifacts",
@@ -120,6 +109,22 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert 'test -x "$(command -v claude)"' in candidate
     assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.285"' in candidate
     assert "python -m pip check" in candidate
+
+
+def test_stable_base_labels_match_the_external_from_references() -> None:
+    """The in-file LABEL copies of the external FROM references stay in lockstep."""
+    base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+    stages = {
+        reference.stage: reference.image for reference in dockerfile_syntax.from_references(base)
+    }
+    labels = dict(
+        re.findall(r"^\s*(?:LABEL\s+)?(io\.booley\.[\w.-]+-artifact)=(\S+?)\s*\\?$", base, re.M)
+    )
+    assert labels == {
+        "io.booley.openroad.builder-artifact": stages[0],
+        "io.booley.eda.builder-artifact": stages[1],
+        "io.booley.openroad.runtime-parent-artifact": stages[2],
+    }
 
 
 def test_stable_base_asserts_cocotb_icarus_library_contract() -> None:
@@ -746,24 +751,20 @@ def test_spike_uses_the_validated_snapshot_and_runs_upstream_checks() -> None:
     assert "test -x /opt/riscv/bin/spike" in spike_build
 
 
-def _from_images(contents: str) -> list[str]:
-    return [
-        instruction.value.split()[0]
-        for instruction in logical_instructions(contents)
-        if instruction.keyword == "FROM"
-    ]
-
-
 def test_riscv_tooling_builds_on_the_runtime_base_ubuntu_digest() -> None:
     """ADR 0070: tooling binaries link against the Ubuntu the base runs on."""
-    base_images = _from_images(_BASE_DOCKERFILE.read_text(encoding="utf-8"))
-    riscv_images = _from_images((_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8"))
-    assert (
-        dockerfile_syntax.from_references(
+    base_images = [
+        reference.image
+        for reference in dockerfile_syntax.from_references(
+            _BASE_DOCKERFILE.read_text(encoding="utf-8")
+        )
+    ]
+    riscv_images = [
+        reference.image
+        for reference in dockerfile_syntax.from_references(
             (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
-        )[0].image
-        == base_images[-1]
-    )
+        )
+    ]
 
     assert base_images[-1].startswith("docker.io/library/ubuntu:26.04@sha256:")
     assert riscv_images == [base_images[-1], "booley-standard-substrate"]
@@ -1290,3 +1291,19 @@ def test_riscv_document_install_rejects_wrong_checksums(
         for volume in ("unprivileged", "privileged"):
             assert f"riscv-isa-{volume}.pdf / .html" in index
         assert environment["ISA_MANUAL_RELEASE"] in index
+
+
+def test_agent_policy_probe_derives_node_and_npm_from_the_packaged_recipe() -> None:
+    """The in-image probe expects exactly the versions the packaged recipe pins."""
+    spec = importlib.util.spec_from_file_location(
+        "agent_policy_probe", Path("tests/docker/agent_policy_probe.py")
+    )
+    assert spec is not None and spec.loader is not None
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert probe._recipe_versions() == (
+        dockerfile_syntax.argument_default(base, "NODE_VERSION"),
+        dockerfile_syntax.argument_default(base, "NPM_VERSION"),
+    )

@@ -45,7 +45,13 @@ def _from_reference(dockerfile: str, alias: str | None = None) -> str:
 SIDECAR_BOOKWORM_BASE = _from_reference("Dockerfile.egress-proxy")
 SIDECAR_ALPINE_BASE = _from_reference("Dockerfile.flexnet-relay")
 SIDECAR_DOCKER_CLI = _from_reference("Dockerfile.reaper", "docker-cli")
-SIDECAR_PYTHON_VERSION = "Python " + SIDECAR_BOOKWORM_BASE.split(":")[1].split("-")[0]
+
+
+def sidecar_python_version(base_image: str) -> str:
+    """Return the ``python3 --version`` text of a ``python:<version>-...`` base."""
+    return "Python " + base_image.split(":")[1].split("-", maxsplit=1)[0]
+
+
 _DOCKER_SOCKET = "unix:///var/run/docker.sock"
 _NAME_PREFIX_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
 
@@ -281,8 +287,8 @@ def candidate_image(environment_variable: str, proof_name: str) -> str:
     return image
 
 
-def assert_python_version(image: str, expected: str = SIDECAR_PYTHON_VERSION) -> None:
-    """Assert the exact Python patch packaged in a sidecar image."""
+def assert_python_version(image: str, base_image: str) -> None:
+    """Assert a sidecar image packages the Python patch of its own base image."""
     version = docker("run", "--rm", "--entrypoint", "python3", image, "--version")
     assert_ok(version)
-    assert (version.stdout + version.stderr).strip() == expected
+    assert (version.stdout + version.stderr).strip() == sidecar_python_version(base_image)

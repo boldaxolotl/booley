@@ -172,15 +172,15 @@ def from_references(contents: str) -> tuple[FromReference, ...]:
 
     Raises ``ValueError`` when a ``$`` reference stays unresolved.
     """
-    globals_: dict[str, str] = {}
+    globals_ = {
+        argument.name: argument.default
+        for argument in build_arguments(contents)
+        if argument.stage is None and argument.default is not None
+    }
     references: list[FromReference] = []
     stage = -1
     for instruction in logical_instructions(contents):
-        if instruction.keyword == "ARG" and stage < 0:
-            name, separator, default = instruction.value.partition("=")
-            if separator:
-                globals_[name] = default
-        elif instruction.keyword == "FROM":
+        if instruction.keyword == "FROM":
             stage += 1
             image = next(
                 (field for field in shlex.split(instruction.value) if not field.startswith("--")),

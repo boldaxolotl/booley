@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from tests.sidecar_image_helpers import (
+    SIDECAR_ALPINE_BASE,
     DockerClient,
     assert_ok,
     assert_python_version,
@@ -151,7 +152,7 @@ def _cleanup(client: DockerClient, topology: _Topology) -> None:
 @pytest.mark.slow()
 def test_candidate_image_contract() -> None:
     image = candidate_image("BOOLEY_REAPER_IMAGE", "packaged reaper proof")
-    assert_python_version(image)
+    assert_python_version(image, SIDECAR_ALPINE_BASE)
 
     inspected = docker("image", "inspect", image)
     assert_ok(inspected)
