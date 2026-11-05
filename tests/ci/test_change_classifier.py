@@ -445,6 +445,49 @@ def test_stable_base_input_requests_local_compatibility_build(tmp_path: Path) ->
     }
 
 
+_PROJECT_METADATA = """\
+[project]
+name = "demo"
+dependencies = ["alpha>=1.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+"""
+
+
+def _project_metadata_change(tmp_path: Path, edited: str) -> dict[str, str]:
+    repo, _seed = _repository(tmp_path)
+    _write(repo, "pyproject.toml", _PROJECT_METADATA)
+    base = _commit(repo, "metadata")
+    _write(repo, "pyproject.toml", edited)
+    return _classify(repo, base, _commit(repo, "edit metadata"))
+
+
+def test_extras_only_project_metadata_change_skips_stable_base(tmp_path: Path) -> None:
+    outputs = _project_metadata_change(
+        tmp_path, _PROJECT_METADATA.replace("pytest>=8", "pytest>=9")
+    )
+
+    assert outputs["stable_base"] == "false"
+    assert outputs["build_stable_base"] == "false"
+    assert outputs["packaging"] == "true"
+
+
+def test_runtime_dependency_change_selects_stable_base(tmp_path: Path) -> None:
+    outputs = _project_metadata_change(
+        tmp_path, _PROJECT_METADATA.replace("alpha>=1.0", "alpha>=2")
+    )
+
+    assert outputs["stable_base"] == "true"
+    assert outputs["build_stable_base"] == "true"
+
+
+def test_unparsable_project_metadata_keeps_stable_base(tmp_path: Path) -> None:
+    outputs = _project_metadata_change(tmp_path, "[project\nbroken")
+
+    assert outputs["stable_base"] == "true"
+
+
 @pytest.mark.parametrize(
     ("path", "stable_base"),
     [

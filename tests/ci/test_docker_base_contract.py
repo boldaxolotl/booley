@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from booley.runtime import docker_base_contract
 
@@ -578,3 +579,136 @@ def test_image_resolution_rejects_malformed_matching_digest(monkeypatch) -> None
 
     with pytest.raises(ValueError, match="did not resolve to an immutable digest"):
         docker_base_contract.resolve_image_pull("ghcr.io/acme/base:main", "contract")
+
+
+_PYPROJECT = """\
+[project]
+name = "demo"
+dependencies = [
+  "alpha>=1.0",
+  "beta==2.0; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.ruff]
+line-length = 100
+"""
+
+
+def _metadata_repo(tmp_path: Path, pyproject: str = _PYPROJECT) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "inputs.txt").write_text("pyproject.toml\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    return tmp_path
+
+
+def test_contract_ignores_project_metadata_outside_runtime_dependencies(tmp_path: Path) -> None:
+    repo = _metadata_repo(tmp_path)
+    first = _fingerprint(repo)
+    edits = (
+        _PYPROJECT.replace('"pytest>=8"', '"pytest>=9", "extra-tool"'),
+        _PYPROJECT.replace("line-length = 100", "line-length = 88\n[tool.other]\nx = 1"),
+        "# a comment\n" + _PYPROJECT,
+        _PYPROJECT.replace(
+            'dependencies = [\n  "alpha>=1.0",\n  "beta==2.0; sys_platform == \'win32\'",\n]',
+            'dependencies = ["alpha>=1.0", "beta==2.0; sys_platform == \'win32\'"]',
+        ),
+    )
+    for edited in edits:
+        (repo / "pyproject.toml").write_text(edited, encoding="utf-8")
+        assert _fingerprint(repo) == first
+
+
+def test_contract_tracks_runtime_dependency_changes(tmp_path: Path) -> None:
+    repo = _metadata_repo(tmp_path)
+    seen = {_fingerprint(repo)}
+    for edited in _dependency_edits():
+        (repo / "pyproject.toml").write_text(edited, encoding="utf-8")
+        seen.add(_fingerprint(repo))
+    assert len(seen) == 5
+
+
+def _dependency_edits() -> tuple[str, ...]:
+    return (
+        _PYPROJECT.replace("alpha>=1.0", "alpha>=1.1"),
+        _PYPROJECT.replace('  "alpha>=1.0",\n', '  "alpha>=1.0",\n  "gamma",\n'),
+        _PYPROJECT.replace('  "alpha>=1.0",\n', ""),
+        _PYPROJECT.replace("sys_platform == 'win32'", "sys_platform == 'linux'"),
+    )
+
+
+def test_contract_contents_tracks_runtime_dependency_changes() -> None:
+    original = docker_base_contract.contract_contents("pyproject.toml", _PYPROJECT.encode())
+    for edited in _dependency_edits():
+        assert (
+            docker_base_contract.contract_contents("pyproject.toml", edited.encode()) != original
+        )
+
+
+def test_contract_contents_rejects_unusable_project_metadata() -> None:
+    with pytest.raises(ValueError):
+        docker_base_contract.contract_contents("pyproject.toml", b"[project]\nname = 'x'\n")
+
+
+def test_contract_contents_keeps_other_inputs_verbatim() -> None:
+    assert docker_base_contract.contract_contents("Dockerfile.base", b"raw\n") == b"raw\n"
+
+
+_BASE_REFERENCE = "ghcr.io/boldaxolotl/booley-sandbox-base:main"
+
+
+def _publish_decision(
+    repo: Path, monkeypatch, resolution: object
+) -> tuple[str, list[tuple[str, str]]]:
+    """Run ``--publish-decision`` with a faked registry; return its verdict and lookups."""
+    seen: list[tuple[str, str]] = []
+
+    def fake_resolve(reference: str, contract: str) -> str:
+        seen.append((reference, contract))
+        if isinstance(resolution, Exception):
+            raise resolution
+        return f"{reference}@sha256:{'a' * 64}"
+
+    monkeypatch.setattr(docker_base_contract, "resolve_image_remote", fake_resolve)
+    output = repo / "github-output.txt"
+    arguments = ["--repo", str(repo), "--manifest", "inputs.txt"]
+    arguments += ["--publish-decision", _BASE_REFERENCE, "--github-output", str(output)]
+    monkeypatch.setattr(sys, "argv", ["docker_base_contract.py", *arguments])
+    assert docker_base_contract.main() == 0
+    lines = output.read_text(encoding="utf-8").splitlines()
+    return next(line for line in lines if line.startswith("publish=")), seen
+
+
+def test_publish_decision_follows_the_published_contract(tmp_path: Path, monkeypatch) -> None:
+    cases = (
+        (None, "publish=false"),
+        (ValueError("label mismatch"), "publish=true"),
+        (subprocess.CalledProcessError(1, ["docker"]), "publish=true"),
+    )
+    for index, (resolution, expected) in enumerate(cases):
+        repo = _metadata_repo(tmp_path / str(index))
+        verdict, seen = _publish_decision(repo, monkeypatch, resolution)
+        assert verdict == expected
+        assert seen == [(_BASE_REFERENCE, docker_base_contract.contract(repo, "inputs.txt"))]
+
+
+def test_base_publish_job_is_gated_on_the_publish_decision() -> None:
+    workflow = yaml.safe_load(
+        Path(".github/workflows/docker-base-publish.yml").read_text(encoding="utf-8")
+    )
+    gate = workflow["jobs"]["stable-base-contract"]
+    publish = workflow["jobs"]["build-publish-smoke"]
+
+    commands = " ".join(step.get("run", "") for step in gate["steps"])
+    assert f"--publish-decision {_BASE_REFERENCE}" in commands
+    assert "--github-output" in commands
+    assert gate["outputs"] == {"publish": "${{ steps.decide.outputs.publish }}"}
+    assert publish["needs"] == "stable-base-contract"
+    assert publish["if"] == (
+        "github.event_name == 'workflow_dispatch' || "
+        "needs.stable-base-contract.outputs.publish == 'true'"
+    )
+    # Path filters cannot read content, so pyproject.toml still starts the workflow.
+    assert "pyproject.toml" in workflow[True]["push"]["paths"]
