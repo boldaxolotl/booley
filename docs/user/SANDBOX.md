@@ -186,11 +186,11 @@ image and print a warning naming each one:
 - Pins on `fusesoc`, `edalize`, and Booley itself. Booley manages these, and
   an older pin would break its Flows.
 
-Every other pin wins over the base image, including `cocotb`. A plain
-`booley init` and `booley session refresh` print a notice for each pin that
-changes a version the base image ships. The base image
-checks its own cocotb at build time; that check doesn't cover yours, so the
-first `booley flow sim` after the rebuild is your test of the combination.
+Every other pin wins over the base image, including `cocotb`. `booley init`
+(without `--check`) and `booley session refresh` print a notice for each pin
+that changes a version the base image ships. The base image checks its own
+cocotb at build time; that check doesn't cover yours, so the first
+`booley flow sim` after the rebuild is your test of the combination.
 
 **Where to keep the file.** If the upstream project keeps its test pins in
 `tox.ini`, `setup.py`, or a CI workflow, copy them into a plain requirements

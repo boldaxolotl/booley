@@ -112,10 +112,13 @@ def test_session_refresh_prepare_reports_left_out_lines(
 
     out = capsys.readouterr().out
     assert out.count("'-e ./local'") == 1
+    assert out.count("'fusesoc==2.3'") == 1
     assert out.count("pin 'cocotb==1.5.1' overrides") == 1
 
 
-@pytest.mark.parametrize("shape", ["clean", "external-image", "hand-written-dockerfile"])
+@pytest.mark.parametrize(
+    "shape", ["clean", "external-image", "hand-written-dockerfile", "hand-edited-requirements"]
+)
 def test_no_new_output_without_left_out_lines(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -126,6 +129,11 @@ def test_no_new_output_without_left_out_lines(
         root = _project(tmp_path, "numpy\ncocotb==2.1.0\n")
     elif shape == "external-image":
         root = _project(tmp_path, LEFT_OUT_REQUIREMENTS, image="example/custom")
+    elif shape == "hand-edited-requirements":
+        root = _project(tmp_path, LEFT_OUT_REQUIREMENTS)
+        docker_dir = root / ".booley" / "docker"
+        docker_dir.mkdir()
+        (docker_dir / "requirements.txt").write_text("numpy\n", encoding="utf-8")
     else:
         root = _project(tmp_path, LEFT_OUT_REQUIREMENTS)
         docker_dir = root / ".booley" / "docker"

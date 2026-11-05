@@ -580,7 +580,7 @@ def _configured_requirements(
 ) -> tuple[str, list[str], list[str], list[str]] | None:
     """Consolidate ``[sandbox].pip_requirements`` into ``(body, kept, skipped, dropped)``.
 
-    ``None`` when no requirements file is configured or found by default.
+    ``None`` when no requirements file is configured.
     """
     raw = _sandbox_config(project_root).get("pip_requirements")
     if raw is not None and not is_str_list(raw):
