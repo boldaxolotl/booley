@@ -11,12 +11,20 @@ from booley.fusesoc import fusesoc_registry
 from booley.harness import doctor
 from tests.conftest import symlink_or_skip
 from tests.diagnostic_helpers import _Rec
+from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.harness.test_doctor import (
     _patch_environment,
     _schema_audit,
     _write_core,
     _write_project,
 )
+
+
+@pytest.fixture(autouse=True)
+def _docker_helper_uses_subprocess_run(monkeypatch):
+    """This module fakes the Docker CLI through ``subprocess.run``."""
+    route_docker_helper_through_subprocess_run(monkeypatch)
+
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
 

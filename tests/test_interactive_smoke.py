@@ -26,6 +26,7 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 from booley.targets.catalog import TargetCatalog
 from tests.conftest import symlink_or_skip
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 _BOOLEY_ENV_VARS = (
     "BOOLEY_CONTROL_PROJECT_ROOT",
@@ -275,6 +276,7 @@ class TestAsicSynthesizeBaselineInteractive:
                 check=True,
                 capture_output=True,
                 text=True,
+                timeout=SUBPROCESS_TIMEOUT_S,
             )
 
         git("init", "-q")
@@ -513,6 +515,13 @@ class TestInitInteractive:
             interactive_init.session_runtime,
             "plan_stopped_headless_runtime_reconciliation",
             lambda *_args: SimpleNamespace(pending=False),
+        )
+        # No Unlicensed relay exists; do not ask the Docker CLI.
+        monkeypatch.setattr(
+            interactive_init.interactive_docker, "container_exists", lambda _n: False
+        )
+        monkeypatch.setattr(
+            interactive_init.interactive_docker, "network_exists", lambda *_a: False
         )
 
     def _ctx(self, root):

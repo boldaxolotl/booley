@@ -646,3 +646,93 @@ def test_inspect_large_valid_metadata(monkeypatch):
     result = idk.inspect_image_metadata("issued")
     assert result is not None
     assert result.labels == {"large": value}
+
+
+# ---------------------------------------------------------------------------
+# _run_docker timeout contract (real processes, no Docker needed)
+# ---------------------------------------------------------------------------
+
+# Parent script: starts a heartbeat grandchild that inherits stdout/stderr, then
+# either sleeps (parent still alive at the timeout) or exits at once (the Docker
+# CLI is gone but a descendant still holds the output pipe).  The grandchild
+# ends itself when the test creates the stop file (or after ~40 s) and then
+# writes the done file, so the tests never kill a recorded PID (which could have
+# been reused) yet leave no process behind.
+_PARENT_SCRIPT = """\
+import subprocess, sys, time
+heartbeat, stop, done, mode = sys.argv[1:5]
+child = (
+    "import os, time\\n"
+    "end = time.monotonic() + 40\\n"
+    "while time.monotonic() < end and not os.path.exists({stop!r}):\\n"
+    "    open({heartbeat!r}, 'a').write('x')\\n"
+    "    time.sleep(0.05)\\n"
+    "open({done!r}, 'w').close()\\n"
+).format(heartbeat=heartbeat, stop=stop, done=done)
+subprocess.Popen([sys.executable, "-c", child])
+if mode == "live":
+    time.sleep(40)
+"""
+
+
+class TestRunDockerTimeout:
+    """``_run_docker`` must honor ``timeout`` and clean up what it started."""
+
+    @pytest.fixture
+    def grandchild(self, tmp_path):
+        """Paths for the heartbeat grandchild; teardown stops it and waits."""
+        import time
+
+        paths = {name: tmp_path / name for name in ("heartbeat", "stop", "done")}
+        yield paths
+        paths["stop"].touch()
+        deadline = time.monotonic() + 5
+        while not paths["done"].exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+    @staticmethod
+    def _run_timing_out(tmp_path, paths, mode: str) -> float:
+        """Run the parent script through ``_run_docker``; return elapsed seconds."""
+        import sys
+        import time
+
+        script = tmp_path / "parent.py"
+        script.write_text(_PARENT_SCRIPT, encoding="utf-8")
+        start = time.monotonic()
+        # ``executable`` is the interpreter; the "docker args" are the script.
+        with pytest.raises(subprocess.TimeoutExpired):
+            idk._run_docker(
+                [
+                    str(script),
+                    str(paths["heartbeat"]),
+                    str(paths["stop"]),
+                    str(paths["done"]),
+                    mode,
+                ],
+                timeout=2,
+                executable=sys.executable,
+            )
+        return time.monotonic() - start
+
+    def test_timeout_kills_the_whole_process_tree(self, tmp_path, grandchild):
+        import time
+
+        self._run_timing_out(tmp_path, grandchild, "live")
+        heartbeat = grandchild["heartbeat"]
+        assert heartbeat.exists(), "grandchild never started"
+        # Poll until the heartbeat stops growing (deadline poll, not a fixed sleep).
+        deadline = time.monotonic() + 10
+        stable = False
+        while time.monotonic() < deadline:
+            before = heartbeat.stat().st_size
+            time.sleep(0.5)
+            if heartbeat.stat().st_size == before:
+                stable = True
+                break
+        assert stable, "grandchild still running after the timeout"
+
+    def test_timeout_returns_after_the_child_exits_while_a_grandchild_holds_the_pipe(
+        self, tmp_path, grandchild
+    ):
+        elapsed = self._run_timing_out(tmp_path, grandchild, "exit")
+        assert elapsed < 25, f"_run_docker hung {elapsed:.1f}s on a pipe held by a grandchild"

@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 from booley.runtime import docker_base_contract
 
@@ -64,6 +65,7 @@ def _fingerprint(repo: Path) -> str:
         capture_output=True,
         check=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return result.stdout.strip()
 
