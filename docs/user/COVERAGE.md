@@ -140,8 +140,59 @@ source file in `source_rollups`:
 
 `total_points` counts every point, `eligible_points` only the RTL points that
 count toward the percentage (see below), and `percent` is covered divided by
-eligible, or `null` when no point is eligible. The individual points are in the Campaign's point store; the Coverage
-Analyst reads them for you.
+eligible, or `null` when no point is eligible.
+
+**`coverage-points.jsonl.gz`**, next to the full Campaign file, is the point
+store: one JSON line per [coverage point](#what-is-measured). It is what the
+Coverage Analyst reads. A toggle point looks like this:
+
+```json
+{
+  "identity": {
+    "metric": "toggle",
+    "location": {"source": "rtl/fifo.sv",
+                 "start": {"line": 42, "column": 17}, "end": {"line": 42, "column": 17}},
+    "hierarchy": "TOP.tb.dut.u_fifo",
+    "subject": {"signal_bit_direction": "wr_ptr[2]:1->0"}
+  },
+  "hits_by_run": {"run:002:stress@1": 3},
+  "disposition": {"kind": "eligible"},
+  …
+}
+```
+
+- `location` and `hierarchy` say where the point is: the source line and
+  the instance it belongs to.
+- `subject` says which point it is on that line: a bit and direction for
+  `toggle`, the outcome (`if`, `else`, a `case` item) for `branch`, the term
+  combination for `expression`.
+- `hits_by_run` counts hits per Test Run, so you can see which tests reach
+  the point. Test Runs that never hit it are left out, so an uncovered point
+  has an empty `hits_by_run`.
+- `disposition` is `eligible` when the point counts toward the percentage,
+  `unscored` for testbench and generated code and for FSM and covergroup
+  data, and `waived` for an [approved waiver](#coverage-waivers).
+
+The file is large (tens of thousands of points for a mid-size design), so
+query it rather than read it. Inside the Sandbox, from the directory that
+holds it:
+
+```bash
+# Uncovered points per source file, worst first
+zcat coverage-points.jsonl.gz | jq -r '
+  select(.disposition.kind == "eligible" and ([.hits_by_run[]] | add // 0) == 0)
+  | .identity.location.source' | sort | uniq -c | sort -rn | head
+
+# Uncovered points in one file: line, metric, which point, instance
+zcat coverage-points.jsonl.gz | jq -r '
+  select(.identity.location.source == "rtl/fifo.sv" and .disposition.kind == "eligible"
+         and ([.hits_by_run[]] | add // 0) == 0)
+  | [.identity.location.start.line, .identity.metric,
+     (.identity.subject | to_entries[0].value), .identity.hierarchy] | @tsv'
+```
+
+The second command prints one tab-separated line per point, such as
+`42  toggle  wr_ptr[2]:1->0  TOP.tb.dut.u_fifo`.
 
 How the numbers are counted:
 
