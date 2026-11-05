@@ -392,7 +392,11 @@ class TestAppExtension:
         [
             pytest.param([vaporview.BUNDLED_VSIX], True, id="bundled"),
             pytest.param([], False, id="missing"),
-            pytest.param([f"{vaporview.EXTENSION_ID}@1.6.0"], False, id="gallery-pinned"),
+            pytest.param(
+                [f"{vaporview.EXTENSION_ID}@{vaporview.VERIFIED_VERSION}"],
+                False,
+                id="gallery-pinned",
+            ),
             pytest.param([vaporview.EXTENSION_ID], False, id="gallery-unpinned"),
             pytest.param(
                 [vaporview.BUNDLED_VSIX, vaporview.EXTENSION_ID],
@@ -400,7 +404,7 @@ class TestAppExtension:
                 id="bundled-plus-gallery",
             ),
             pytest.param(
-                [vaporview.BUNDLED_VSIX, f"{vaporview.EXTENSION_ID}@1.6.0"],
+                [vaporview.BUNDLED_VSIX, f"{vaporview.EXTENSION_ID}@{vaporview.VERIFIED_VERSION}"],
                 False,
                 id="bundled-plus-gallery-pinned",
             ),
@@ -416,7 +420,10 @@ class TestAppExtension:
             ),
             pytest.param([vaporview.BUNDLED_VSIX.upper()], False, id="path-wrong-case"),
             pytest.param(
-                [vaporview.BUNDLED_VSIX, "/x/lramseyer.vaporview-1.6.0.vsix"],
+                [
+                    vaporview.BUNDLED_VSIX,
+                    f"/x/lramseyer.vaporview-{vaporview.VERIFIED_VERSION}.vsix",
+                ],
                 False,
                 id="marketplace-named-vsix-added",
             ),
@@ -436,13 +443,13 @@ class TestAppExtension:
             pytest.param(
                 dc.spec_installs_hdl_highlight,
                 "mshr-h.veriloghdl",
-                "/usr/local/libexec/booley/veriloghdl-1.29.0.vsix",
+                dc.HDL_VSIX,
                 id="hdl",
             ),
             pytest.param(
                 dc.spec_installs_live_preview,
                 "ms-vscode.live-server",
-                "/usr/local/libexec/booley/live-server-0.4.20.vsix",
+                dc.LIVE_PREVIEW_VSIX,
                 id="live-preview",
             ),
         ],

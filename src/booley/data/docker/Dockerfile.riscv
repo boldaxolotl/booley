@@ -75,7 +75,7 @@ RUN echo ">>> Installing xPack RISC-V GNU toolchain ${XPACK_GCC_VERSION} (multil
            rm -f "$duplicate"; \
            ln "$original" "$duplicate"; \
        done \
-    && for names in 'c++ g++' 'gcc gcc-15.2.0' 'ld ld.bfd'; do \
+    && for names in 'c++ g++' "gcc gcc-${XPACK_GCC_VERSION%-*}" 'ld ld.bfd'; do \
            set -- $names; \
            original="/opt/riscv/bin/riscv-none-elf-$1"; \
            duplicate="/opt/riscv/bin/riscv-none-elf-$2"; \

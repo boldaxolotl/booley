@@ -11,7 +11,9 @@ from booley.goals.lifecycle import LifecycleError
 from booley.harness.setup.line_endings import LineEndingMode, reconcile_project_line_endings
 from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
 from tests.conftest import symlink_or_skip
-from tests.goals.attribute_support import system_attributes as system_attributes  # noqa: PLC0414 — pytest fixture
+from tests.goals.attribute_support import (
+    system_attributes as system_attributes,  # noqa: PLC0414 — pytest fixture
+)
 from tests.goals.conftest import enter_goals, git
 from tests.goals.test_finish import Crash, environment, request
 from tests.goals.test_finish_inputs import paired_complete

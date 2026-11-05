@@ -17,6 +17,8 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
 
+from booley.flows.sim.verilator_identity import PINNED_VERILATOR
+
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "verilator_acceptance"
 FLAGS = [
     "--coverage-line",
@@ -25,7 +27,8 @@ FLAGS = [
     "--coverage-user",
     "--coverage-per-instance",
 ]
-REVISION = "ea338be98e1e838d3518809ce8899f85a009963c"
+REVISION = PINNED_VERILATOR.commit
+VERSION_NUMBER = PINNED_VERILATOR.tag.removeprefix("v")
 WORK = Path("/tmp/verilator-acceptance")
 BASE_REQUIREMENTS = (
     Path(__file__).resolve().parents[2] / "src/booley/data/docker/base-python-requirements.txt"
@@ -112,10 +115,10 @@ class Acceptance(unittest.TestCase):
 
     def test_00_identity(self) -> None:
         version = run(["verilator", "--version"], self.work).stdout
-        self.assertRegex(version, r"Verilator 5\.052\b")
+        self.assertRegex(version, rf"Verilator {re.escape(VERSION_NUMBER)}\b")
         provenance = Path("/usr/local/share/verilator/BOOLEY-SOURCE.txt").read_text()
         self.assertIn(REVISION, provenance)
-        self.assertIn("v5.052", provenance)
+        self.assertIn(PINNED_VERILATOR.tag, provenance)
         self.assertTrue(Path("/usr/include/lz4.h").is_file())
         self.assertEqual(
             run(["cocotb-config", "--version"], self.work).stdout.strip(),

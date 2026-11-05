@@ -161,30 +161,30 @@ def test_installed_versions_unknown_without_server_root(tmp_path):
 
 def test_installed_versions_lists_live_builds_across_roots(tmp_path):
     _install(tmp_path / ".vscode-server" / "extensions", "1.5.4")
-    _install(tmp_path / ".vscode-remote" / "extensions", "1.6.0")
+    _install(tmp_path / ".vscode-remote" / "extensions", "9.9.9")
 
-    assert vaporview.installed_versions(tmp_path) == ["1.5.4", "1.6.0"]
+    assert vaporview.installed_versions(tmp_path) == ["1.5.4", "9.9.9"]
 
 
 def test_installed_versions_skips_obsolete_build(tmp_path):
     # A downgrade to the pinned build leaves the newer directory marked obsolete.
     root = tmp_path / ".vscode-server" / "extensions"
-    _install(root, "1.6.0")
+    _install(root, "9.9.9")
     _install(root, "1.5.4")
-    (root / ".obsolete").write_text('{"lramseyer.vaporview-1.6.0": true}', encoding="utf-8")
+    (root / ".obsolete").write_text('{"lramseyer.vaporview-9.9.9": true}', encoding="utf-8")
 
     assert vaporview.installed_versions(tmp_path) == ["1.5.4"]
 
 
 def test_installed_versions_prefers_vscode_registry_after_downgrade(tmp_path):
-    # Observed with VS Code 1.143: `--install-extension id@1.5.4` over 1.6.0
-    # rewrites extensions.json at once but leaves the 1.6.0 directory, unmarked.
+    # Observed with VS Code 1.143: `--install-extension id@1.5.4` over a newer
+    # install rewrites extensions.json at once but leaves the newer directory, unmarked.
     root = tmp_path / ".vscode-server" / "extensions"
-    _install(root, "1.6.0")
+    _install(root, "9.9.9")
     _install(root, "1.5.4")
     registry = [
         {"identifier": {"id": "lramseyer.vaporview"}, "version": "1.5.4"},
-        {"identifier": {"id": "mshr-h.veriloghdl"}, "version": "1.6.0"},
+        {"identifier": {"id": "mshr-h.veriloghdl"}, "version": "9.9.9"},
     ]
     (root / "extensions.json").write_text(json.dumps(registry), encoding="utf-8")
 
@@ -246,7 +246,7 @@ def test_bundled_vsix_tracks_the_verified_version():
         (f"{vaporview.EXTENSION_ID}@0.0.1", True),
         ("lramseyer.vaporview-extra", False),
         ("/usr/local/libexec/booley/dashboard.vsix", False),
-        ("/usr/local/libexec/booley/vaporview-1.6.0.zip", False),
+        ("/usr/local/libexec/booley/vaporview-" + vaporview.VERIFIED_VERSION + ".zip", False),
         (42, False),
     ],
 )

@@ -12,6 +12,7 @@ from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintFlow
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.verilator_identity import PINNED_VERILATOR
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.flow_adapter import flow_schema
 from tests.flows.report_headline import assert_paired_headline
@@ -377,8 +378,9 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
     binaries = runtime / "bin"
     binaries.mkdir()
     verilator = binaries / "verilator"
+    pinned_number = PINNED_VERILATOR.tag.removeprefix("v")
     verilator.write_text(
-        '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "Verilator 5.052"; fi\nexit 0\n'
+        f'#!/bin/sh\nif [ "$1" = "--version" ]; then echo "Verilator {pinned_number}"; fi\nexit 0\n'
     )
     verilator.chmod(0o755)
     monkeypatch.setenv(

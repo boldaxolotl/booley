@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -21,9 +22,10 @@ from tests.sidecar_image_helpers import (
     DIND_IMAGE,
     SIDECAR_ALPINE_BASE,
     SIDECAR_BOOKWORM_BASE,
-    SIDECAR_PYTHON_VERSION,
+    SIDECAR_DOCKER_CLI,
 )
 
+from booley.runtime import dockerfile_syntax
 from booley.runtime.dockerfile_syntax import logical_instructions
 
 _DOCKERFILE = Path("src/booley/data/docker/Dockerfile")
@@ -122,19 +124,11 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert pyproject_copy < dependency_exporter < project_install
     assert project_install < image_dependencies
     assert "YOSYS_REF" in base
-    assert (
-        "FROM docker.io/openroad/ubuntu26.04@sha256:"
-        "c3185708e2f1cdb4fed9fb4d84d2882d36a1f1f6af90959ceb07dcb7416fe49d"
-    ) in base
-    assert (
-        "FROM docker.io/openroad/ubuntu26.04-dev@sha256:"
-        "a971c4db78c9a4a8db18a9fe136c9731c613e4582a5093180bc7c07e24351e09 "
-        "AS eda-artifacts"
-    ) in base
-    assert (
-        "FROM docker.io/library/ubuntu:26.04@sha256:"
-        "f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7"
-    ) in base
+    assert [reference.alias for reference in dockerfile_syntax.from_references(base)] == [
+        "openroad-artifacts",
+        "eda-artifacts",
+        None,
+    ]
     assert "COPY --from=eda-artifacts /usr/local/share/yosys/ /usr/local/share/yosys/" in base
     assert "COPY --from=eda-artifacts /usr/local/lib/ivl/ /usr/local/lib/ivl/" in base
     assert (
@@ -142,7 +136,9 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     )
     assert "COPY --from=openroad-artifacts /opt/or-tools/lib/ /opt/or-tools/lib/" in base
     assert "COPY --from=openroad-artifacts /opt/or-tools/include/" not in base
-    assert "ARG VERIBLE_VERSION=v0.0-4296-g0f262651" in base
+    assert re.fullmatch(
+        r"v[0-9.]+-[0-9]+-g[0-9a-f]+", dockerfile_syntax.argument_default(base, "VERIBLE_VERSION")
+    )
     assert "verible-verilog-lint --version" in base
     assert "COPY dist/booley_rtl-*.whl" not in base
     assert "COPY crates/bwave/" not in base
@@ -158,6 +154,22 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert "ClaudeSDKBackend" not in candidate
     assert 'test -x "$(command -v claude)"' in candidate
     assert "python -m pip check" in candidate
+
+
+def test_stable_base_labels_match_the_external_from_references() -> None:
+    """The in-file LABEL copies of the external FROM references stay in lockstep."""
+    base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+    stages = {
+        reference.stage: reference.image for reference in dockerfile_syntax.from_references(base)
+    }
+    labels = dict(
+        re.findall(r"^\s*(?:LABEL\s+)?(io\.booley\.[\w.-]+-artifact)=(\S+?)\s*\\?$", base, re.M)
+    )
+    assert labels == {
+        "io.booley.openroad.builder-artifact": stages[0],
+        "io.booley.eda.builder-artifact": stages[1],
+        "io.booley.openroad.runtime-parent-artifact": stages[2],
+    }
 
 
 def test_stable_base_asserts_cocotb_icarus_library_contract() -> None:
@@ -387,16 +399,21 @@ def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None
     assert evidence_script.count(":py314") >= 3
     assert ":py313" not in evidence_script
     assert '"Python 3.13.15"' not in evidence_script
-    assert f'"{SIDECAR_PYTHON_VERSION}"' in evidence_script
+    assert '"Python 3.14' not in evidence_script
     assert "source-repodigests.tsv" in evidence_script
     assert f'readonly DOCKER_DIND="{DIND_IMAGE}"' in evidence_script
     assert 'capture_source docker-dind "${DOCKER_DIND}"' in evidence_script
-    assert f'readonly BOOKWORM_CANDIDATE="{SIDECAR_BOOKWORM_BASE}"' in evidence_script
-    assert f'readonly ALPINE_CANDIDATE="{SIDECAR_ALPINE_BASE}"' in evidence_script
-    assert (
-        'readonly DOCKER_CLI="docker:29.8.2-cli@sha256:'
-        'b1805116a6a86cc591b5d5f60a910a0715cdcc9d18d866ad68b1457ead25c35c"' in evidence_script
-    )
+    # The sidecar bases derive from the Dockerfiles; no pin is copied here.
+    for dockerfile, selector in (
+        ("Dockerfile.egress-proxy", "only"),
+        ("Dockerfile.flexnet-relay", "only"),
+        ("Dockerfile.reaper", "last"),
+        ("Dockerfile.reaper", "docker-cli"),
+    ):
+        assert f'dockerfile_from "${{DOCKER_DIR}}/{dockerfile}" {selector}' in evidence_script
+    assert "@sha256:" not in evidence_script.replace(DIND_IMAGE, "")
+    for image in ("EGRESS", "FLEXNET", "REAPER"):
+        assert f'"${{{image}_PYTHON}}"' in evidence_script
     assert evidence_script.count("src/booley/eda/provisioning/licensing") == 1
     assert archive_script.count(":py313") >= 3
     assert '"Python 3.13.15"' in archive_script
@@ -434,10 +451,14 @@ def test_shipped_external_base_images_are_digest_pinned() -> None:
 def test_reaper_uses_pinned_runtime_stages_without_live_package_install() -> None:
     reaper = (_DOCKER_DIR / "Dockerfile.reaper").read_text(encoding="utf-8")
 
-    assert (
-        "FROM docker:29.8.2-cli@sha256:"
-        "b1805116a6a86cc591b5d5f60a910a0715cdcc9d18d866ad68b1457ead25c35c"
-    ) in reaper
+    stages = {item.alias: item for item in dockerfile_syntax.from_references(reaper)}
+    assert set(stages) == {"docker-cli", None}
+    assert stages["docker-cli"].image == SIDECAR_DOCKER_CLI
+    assert re.fullmatch(r"docker:[0-9.]+-cli@sha256:[0-9a-f]{64}", SIDECAR_DOCKER_CLI)
+    # The reaper CLI talks to the dind daemon in its e2e test: one Docker release.
+    release = re.fullmatch(r"docker:([0-9.]+)-dind@sha256:[0-9a-f]{64}", DIND_IMAGE)
+    assert release is not None
+    assert SIDECAR_DOCKER_CLI.startswith(f"docker:{release.group(1)}-cli@")
     assert "apk add" not in reaper
     assert "COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker" in reaper
 
@@ -447,10 +468,10 @@ def test_sidecars_pin_expected_python_bases_without_changing_distributions() -> 
     flexnet = (_DOCKER_DIR / "Dockerfile.flexnet-relay").read_text(encoding="utf-8")
     reaper = (_DOCKER_DIR / "Dockerfile.reaper").read_text(encoding="utf-8")
 
-    assert f"FROM {SIDECAR_BOOKWORM_BASE}" in egress
-    alpine = f"FROM {SIDECAR_ALPINE_BASE}"
-    assert alpine in flexnet
-    assert alpine in reaper
+    assert [r.image for r in dockerfile_syntax.from_references(egress)] == [SIDECAR_BOOKWORM_BASE]
+    assert [r.image for r in dockerfile_syntax.from_references(flexnet)] == [SIDECAR_ALPINE_BASE]
+    # Flexnet and the reaper share one Alpine base: two declarations held equal.
+    assert dockerfile_syntax.from_references(reaper)[-1].image == SIDECAR_ALPINE_BASE
 
 
 def test_sandbox_downloads_are_verified_before_use() -> None:
@@ -489,10 +510,14 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
 
 
 def _base_build_arg(dockerfile: str, name: str) -> str:
-    """Return the default of one ``ARG name=value`` line in the base recipe."""
-    match = re.search(rf"^ARG {name}=(\S+)$", dockerfile, re.MULTILINE)
-    assert match, f"Dockerfile.base declares no default for {name}"
-    return match.group(1)
+    """Return the default of the one ``ARG name=value`` declaration in the base recipe."""
+    return dockerfile_syntax.argument_default(dockerfile, name)
+
+
+def _source_tag_names_version(dockerfile: str, prefix: str) -> None:
+    """The upstream tag repeats the pinned version (naming varies, so it is not derived)."""
+    version = _base_build_arg(dockerfile, f"{prefix}_VERSION")
+    assert version in _base_build_arg(dockerfile, f"{prefix}_SOURCE_TAG")
 
 
 def test_bundled_vaporview_vsix_stays_in_lockstep_with_the_verified_build() -> None:
@@ -520,11 +545,16 @@ def test_bundled_vaporview_vsix_stays_in_lockstep_with_the_verified_build() -> N
     assert "/usr/local/share/booley/licenses/vaporview/SOURCE.txt" in region
     assert "https://github.com/Lramseyer/vaporview" in region
     assert re.search(r"^ARG VAPORVIEW_SOURCE_COMMIT=[0-9a-f]{40}$", region, re.MULTILINE)
+    _source_tag_names_version(dockerfile, "VAPORVIEW")
 
 
 def _bundled_vsix_install_targets(dockerfile: str) -> set[str]:
     """Every VSIX path the base recipe installs, with ``ARG`` defaults substituted."""
-    defaults = dict(re.findall(r"^ARG (\w+)=(\S+)$", dockerfile, re.MULTILINE))
+    defaults = {
+        argument.name: argument.default
+        for argument in dockerfile_syntax.build_arguments(dockerfile)
+        if argument.default is not None
+    }
     targets = set()
     for target in re.findall(r'install -m 0644 /tmp/\S+\.vsix "([^"]+)"', dockerfile):
         targets.add(re.sub(r"\$\{(\w+)\}", lambda match: defaults[match.group(1)], target))
@@ -565,7 +595,7 @@ def test_bundled_mit_vsix_is_verified_before_install(name: str) -> None:
     """Checksum, MIT license and notices are all checked before the VSIX is installed."""
     prefix, notice_member, notice_file = _MIT_VSIXES[name]
     dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    _base_build_arg(dockerfile, f"{prefix}_VERSION")
+    _source_tag_names_version(dockerfile, prefix)
     assert re.fullmatch(r"[0-9a-f]{64}", _base_build_arg(dockerfile, f"{prefix}_SHA256"))
     assert re.fullmatch(r"[0-9a-f]{40}", _base_build_arg(dockerfile, f"{prefix}_SOURCE_COMMIT"))
     region = dockerfile[dockerfile.index(f"ARG {prefix}_VERSION=") :]
@@ -755,21 +785,36 @@ def test_agent_cli_build_check_compares_installed_clis_with_the_manifest(tmp_pat
     assert exit_code("9.9.9", "8.8.7") != 0, "codex mismatch must fail the build"
 
 
-def test_openroad_uses_verified_26q4_oci_artifact() -> None:
+def test_openroad_uses_verified_oci_artifact() -> None:
     dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+    revision = dockerfile_syntax.argument_default(dockerfile, "OPENROAD_SOURCE_REF")
 
-    assert "ARG OPENROAD_VERSION=26Q4" in dockerfile
+    assert re.fullmatch(r"[0-9a-f]{40}", revision)
+    assert re.fullmatch(
+        r"[0-9]{2}Q[1-4]", dockerfile_syntax.argument_default(dockerfile, "OPENROAD_VERSION")
+    )
+    # Both stages redeclare the one global default; the binary version ends in its prefix.
+    openroad_args = [
+        argument
+        for argument in dockerfile_syntax.build_arguments(dockerfile)
+        if argument.name == "OPENROAD_SOURCE_REF"
+    ]
+    assert [(a.stage, a.default is None) for a in openroad_args] == [
+        (None, False),
+        (0, True),
+        (2, True),
+    ]
+    binary = dockerfile_syntax.argument_default(dockerfile, "OPENROAD_BINARY_VERSION")
+    assert binary.endswith(f"-g{revision[:10]}")
     manifest = json.loads((_DOCKER_DIR / "openroad-source-manifest.json").read_text())
-    assert manifest["revision"] == "c4d317e4fa2398b9880920a1411c20258a2175a9"
+    assert manifest["revision"] == revision
     assert len(manifest["submodules"]) == 5
     sta = next(item for item in manifest["submodules"] if item["path"] == "src/sta")
-    assert sta["revision"] == "e983e15b2cb346badf8f23725fd3914d25312c44"
-    assert "ARG OPENROAD_SOURCE_REF=c4d317e4fa2398b9880920a1411c20258a2175a9" in dockerfile
-    assert "ARG OPENROAD_BINARY_VERSION=26Q3-2927-gc4d317e4fa" in dockerfile
-    assert (
-        "ARG OPENROAD_SOURCE_SENTINEL_SHA256="
-        "8f72ff3a40bf361df9eee1d4a6ecf163285ebabca3d49c0f8eb958810f65a590"
-    ) in dockerfile
+    assert re.fullmatch(r"[0-9a-f]{40}", sta["revision"])
+    assert re.fullmatch(
+        r"[0-9a-f]{64}",
+        dockerfile_syntax.argument_default(dockerfile, "OPENROAD_SOURCE_SENTINEL_SHA256"),
+    )
     assert "./src/rsz/src/Resizer.tcl | sha256sum" in dockerfile
     assert (
         "COPY --from=openroad-artifacts /OpenROAD/build/bin/openroad /usr/bin/openroad"
@@ -777,7 +822,7 @@ def test_openroad_uses_verified_26q4_oci_artifact() -> None:
     )
     assert "--exclude='./build' --exclude='./install'" in dockerfile
     assert "! grep -Eq '^\\./(build|install)(/|$)'" in dockerfile
-    assert "OpenROAD-c4d317e4fa2398b9880920a1411c20258a2175a9.tar.gz" in dockerfile
+    assert "OpenROAD-${OPENROAD_SOURCE_REF}.tar.gz" in dockerfile
     assert "openroad -version" in dockerfile
     assert "COPY --from=openroad-artifacts /OpenROAD/src/sta/LICENSE" in dockerfile
     assert "Precision-Innovations/OpenROAD/releases/download" not in dockerfile
@@ -797,16 +842,17 @@ def test_agent_runtime_uses_verified_node_and_executable_policy_probe() -> None:
     workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
     probe = Path("tests/docker/agent_policy_probe.py").read_text(encoding="utf-8")
 
-    assert (
-        "ARG NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6"
-        in dockerfile
-    )
-    assert "--expected-npm 11.19.0" in workflow
+    assert re.fullmatch(r"[0-9a-f]{64}", _base_build_arg(dockerfile, "NODE_SHA256"))
+    assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", _base_build_arg(dockerfile, "NPM_VERSION"))
+    assert 'test "$(npm --version)" = "${NPM_VERSION}"' in dockerfile
+    # The probe derives both versions from the image's own recipe.
+    assert "--expected-" not in workflow
     assert "--network none" in workflow
     assert "agent_policy_probe.py" in workflow
     assert "--evidence /validation-tmp/agent-policy.json" in workflow
     assert "agent-policy-evidence-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
-    assert 'default="11.19.0"' in probe
+    assert "--expected-" not in probe
+    assert "NPM_VERSION" in probe
 
 
 def test_source_builds_fetch_immutable_commits() -> None:
@@ -830,7 +876,6 @@ def test_spike_uses_the_validated_snapshot_and_runs_upstream_checks() -> None:
     spike_ref = re.search(r"^ARG SPIKE_REF=([0-9a-f]{40})$", riscv, re.MULTILINE)
 
     assert spike_ref is not None
-    assert spike_ref.group(1) == "609dbe0b9994154833039209fa37151e7c05e9d4"
     # The user-facing tool list names the exact pin, so it must move with it.
     supported_tools = Path("docs/user/SUPPORTED-EDA-TOOLS.md").read_text(encoding="utf-8")
     assert f"`{spike_ref.group(1)}`" in supported_tools
@@ -842,18 +887,20 @@ def test_spike_uses_the_validated_snapshot_and_runs_upstream_checks() -> None:
     assert "test -x /opt/riscv/bin/spike" in spike_build
 
 
-def _from_images(contents: str) -> list[str]:
-    return [
-        instruction.value.split()[0]
-        for instruction in logical_instructions(contents)
-        if instruction.keyword == "FROM"
-    ]
-
-
 def test_riscv_tooling_builds_on_the_runtime_base_ubuntu_digest() -> None:
     """ADR 0070: tooling binaries link against the Ubuntu the base runs on."""
-    base_images = _from_images(_BASE_DOCKERFILE.read_text(encoding="utf-8"))
-    riscv_images = _from_images((_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8"))
+    base_images = [
+        reference.image
+        for reference in dockerfile_syntax.from_references(
+            _BASE_DOCKERFILE.read_text(encoding="utf-8")
+        )
+    ]
+    riscv_images = [
+        reference.image
+        for reference in dockerfile_syntax.from_references(
+            (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
+        )
+    ]
 
     assert base_images[-1].startswith("docker.io/library/ubuntu:26.04@sha256:")
     assert riscv_images == [base_images[-1], "booley-standard-substrate"]
@@ -1285,8 +1332,9 @@ def test_picorv32_demo_contract_runs_on_pr_main_merge_queue_and_nightly() -> Non
 def test_verilator_safe_release_and_fst_runtime_contract() -> None:
     base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
     contract = Path(".github/contracts/session-runtime.toml").read_text(encoding="utf-8")
-    assert "ARG VERILATOR_VERSION=v5.052" in base
-    assert "ARG VERILATOR_REF=ea338be98e1e838d3518809ce8899f85a009963c" in base
+    assert re.fullmatch(r"v[0-9]+\.[0-9]{3}", _base_build_arg(base, "VERILATOR_VERSION"))
+    assert re.fullmatch(r"[0-9a-f]{40}", _base_build_arg(base, "VERILATOR_REF"))
+    assert 'grep -F "Verilator ${VERILATOR_VERSION#v}"' in base
     assert 'test "$(git rev-parse HEAD)" = "${VERILATOR_REF}"' in base
     assert base.count("liblz4-dev") == 2  # compiler stage and user model builds
     assert "libjemalloc-dev" not in base
@@ -1382,3 +1430,19 @@ def test_riscv_document_install_rejects_wrong_checksums(
         for volume in ("unprivileged", "privileged"):
             assert f"riscv-isa-{volume}.pdf / .html" in index
         assert environment["ISA_MANUAL_RELEASE"] in index
+
+
+def test_agent_policy_probe_derives_node_and_npm_from_the_packaged_recipe() -> None:
+    """The in-image probe expects exactly the versions the packaged recipe pins."""
+    spec = importlib.util.spec_from_file_location(
+        "agent_policy_probe", Path("tests/docker/agent_policy_probe.py")
+    )
+    assert spec is not None and spec.loader is not None
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert probe._recipe_versions() == (
+        dockerfile_syntax.argument_default(base, "NODE_VERSION"),
+        dockerfile_syntax.argument_default(base, "NPM_VERSION"),
+    )

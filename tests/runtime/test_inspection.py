@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from tests.diagnostic_helpers import (
@@ -27,6 +27,7 @@ from booley.runtime import (
     project_image,
     runtime_context,
     session_runtime,
+    vaporview,
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
@@ -847,7 +848,7 @@ class TestDevcontainerSpecStaleness:
 
     @pytest.mark.parametrize(
         "gallery_entry",
-        ["lramseyer.vaporview", "lramseyer.vaporview@1.6.0"],
+        ["lramseyer.vaporview", f"lramseyer.vaporview@{vaporview.VERIFIED_VERSION}"],
         ids=["unpinned", "pinned"],
     )
     def test_gallery_vaporview_spec_warns_with_the_bundled_vsix(
@@ -873,15 +874,15 @@ class TestDevcontainerSpecStaleness:
         ("bundled", "gallery_entry", "label"),
         [
             pytest.param(
-                "/usr/local/libexec/booley/veriloghdl-1.29.0.vsix",
+                dc.HDL_VSIX,
                 "mshr-h.veriloghdl",
-                "veriloghdl-1.29.0.vsix",
+                PurePosixPath(dc.HDL_VSIX).name,
                 id="mshr-h.veriloghdl",
             ),
             pytest.param(
-                "/usr/local/libexec/booley/live-server-0.4.20.vsix",
+                dc.LIVE_PREVIEW_VSIX,
                 "ms-vscode.live-server",
-                "live-server-0.4.20.vsix",
+                PurePosixPath(dc.LIVE_PREVIEW_VSIX).name,
                 id="ms-vscode.live-server",
             ),
         ],

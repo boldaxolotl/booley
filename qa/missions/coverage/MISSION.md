@@ -8,7 +8,7 @@ mismatch is a finding rather than a judgement call.
 ## Pins and prerequisites
 - Booley: the candidate under test (set by the run skill; not pinned here).
 - Fixture Project: `../../shared/coverage/project/` in this repository.
-- Tools/host needs: pinned Verilator 5.052 in the issued Sandbox, Yosys with
+- Tools/host needs: pinned Verilator (`VERILATOR_VERSION` in `src/booley/data/docker/Dockerfile.base`) in the issued Sandbox, Yosys with
   SAT/induction, gcc, Python, Docker; ~8 GiB RAM and ~20 GiB free disk for the
   large `sim_scale` Campaign; a Codex or Claude client for the Analyst.
 - Budget: 8 h total: 405 area minutes plus 75 contingency. Areas run in
@@ -28,7 +28,7 @@ recipes live in `../../shared/coverage/RUNBOOK.md`; skim it before area 1.
   resolved Booley Directory (never assume `.booley`). Keep the rest of
   initialization's config. Commit fixture and initialized Project files, including seeded Goalsets and
   managed `.gitignore`, before creating a Goal worktree.
-- Tools: pinned Verilator v5.052 (`ea338be98e1e838d3518809ce8899f85a009963c`) in the issued Sandbox, Yosys
+- Tools: pinned Verilator (`VERILATOR_VERSION` and `VERILATOR_REF` in `src/booley/data/docker/Dockerfile.base`) in the issued Sandbox, Yosys
   with SAT/induction, gcc, Python. Native builds run only in the Sandbox. `sim_scale` (4,096 instances)
   wants ~8 GiB RAM and ~20 GiB free disk; if absent, log it and skip only the large-Campaign items.
 - Build the syscall fault library into a run-owned dir and inject it only into the one command under test

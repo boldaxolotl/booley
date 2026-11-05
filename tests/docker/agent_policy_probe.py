@@ -9,8 +9,11 @@ import subprocess
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib import resources
 from pathlib import Path
 from typing import Any
+
+from booley.runtime import dockerfile_syntax
 
 # The repository manifest is the single source of the pinned CLI versions. Reading
 # it (CI mounts the checkout at /work) checks the image against the current pins.
@@ -43,6 +46,16 @@ def _run(
         output = f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         raise AssertionError(f"command failed ({result.returncode}): {command!r}\n{output}")
     return result
+
+
+def _recipe_versions() -> tuple[str, str]:
+    """Return the Node and npm versions pinned by the image's packaged recipe."""
+    recipe = resources.files("booley").joinpath("data/docker/Dockerfile.base")
+    contents = recipe.read_text(encoding="utf-8")
+    return (
+        dockerfile_syntax.argument_default(contents, "NODE_VERSION"),
+        dockerfile_syntax.argument_default(contents, "NPM_VERSION"),
+    )
 
 
 def _assert_versions(expected_node: str, expected_npm: str) -> dict[str, str]:
@@ -407,8 +420,6 @@ def _assert_codex_policy(root: Path) -> dict[str, str]:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--expected-node", default="24.21.0")
-    parser.add_argument("--expected-npm", default="11.19.0")
     parser.add_argument("--evidence", type=Path)
     return parser.parse_args()
 
@@ -419,7 +430,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="booley-agent-policy-") as temporary:
         root = Path(temporary)
         evidence = {
-            "versions": _assert_versions(args.expected_node, args.expected_npm),
+            "versions": _assert_versions(*_recipe_versions()),
             "installed_packages": _assert_npm_tree(),
             "sdk_cli": _assert_sdk_uses_system_claude(),
             "booley_configuration": _assert_booley_configuration(root),

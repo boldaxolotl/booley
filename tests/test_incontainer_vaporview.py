@@ -129,7 +129,7 @@ class TestPatchManifest:
 class TestFindManifests:
     def test_globs_versioned_dirs(self, tmp_path):
         ext = tmp_path / ".vscode-server" / "extensions"
-        for ver in ("1.6.0", "1.7.0"):
+        for ver in ("9.9.8", "9.9.9"):
             d = ext / f"lramseyer.vaporview-{ver}"
             d.mkdir(parents=True)
             (d / "package.json").write_text("{}", encoding="utf-8")
@@ -140,8 +140,8 @@ class TestFindManifests:
 
         found = iv.find_manifests(tmp_path)
         assert [p.parent.name for p in found] == [
-            "lramseyer.vaporview-1.6.0",
-            "lramseyer.vaporview-1.7.0",
+            "lramseyer.vaporview-9.9.8",
+            "lramseyer.vaporview-9.9.9",
         ]
 
     def test_absent_extension_returns_empty(self, tmp_path):

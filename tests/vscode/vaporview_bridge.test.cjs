@@ -31,7 +31,7 @@ function fakeVscode(options) {
     const listeners = {};
     const extension = options.vaporview === false ? undefined : {
         activated: 0,
-        packageJSON: { version: options.version ?? '1.6.0' },
+        packageJSON: { version: options.version ?? '9.9.9' },
         async activate() { this.activated += 1; },
     };
     const commands = {
@@ -156,7 +156,7 @@ test('ping reports VaporView, focus and open documents', async () => {
     const reply = await request(f, 'ping');
     assert.equal(reply.ok, true);
     assert.equal(reply.result.protocol, 1);
-    assert.equal(reply.result.vaporview, '1.6.0');
+    assert.equal(reply.result.vaporview, '9.9.9');
     assert.equal(reply.result.focused, true);
     assert.ok(reply.result.lastFocused > 0);
     assert.deepEqual(reply.result.documents, [TRACE]);

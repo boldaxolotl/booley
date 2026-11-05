@@ -627,7 +627,9 @@ class _FakeViewer:
     - State readback lags an apply by ``lag`` reads, like the real webview.
     """
 
-    def __init__(self, netlist: list[str], *, rows=(), open_docs=(), version="1.6.0"):
+    def __init__(
+        self, netlist: list[str], *, rows=(), open_docs=(), version=vaporview.VERIFIED_VERSION
+    ):
         self.ids = {path: i for i, path in enumerate(netlist, start=1)}
         # 1-bit signals: VaporView renders them as a binary waveform, ignores a
         # requested radix, and reports numberFormat/renderType "binary".
@@ -857,7 +859,7 @@ def _install_viewer(
     netlist: list[str] | None = None,
     rows=(),
     open_docs=(),
-    version: str | None = "1.6.0",
+    version: str | None = vaporview.VERIFIED_VERSION,
 ) -> _FakeViewer:
     """Attach one fake window: discovery finds it and the client drives it."""
     viewer = _FakeViewer(
@@ -1827,7 +1829,9 @@ def test_scoped_protocol_failure_names_the_probe_failure(
 def test_scoped_open_with_ambiguous_windows_says_how_to_pick(tmp_path, monkeypatch, fake_rust):
     _seed_default(tmp_path)
     windows = [
-        bwave_bridge.BridgeInfo(Path(f"/fake/window-{i}.sock"), "1.6.0", False, 0.0, ())
+        bwave_bridge.BridgeInfo(
+            Path(f"/fake/window-{i}.sock"), vaporview.VERIFIED_VERSION, False, 0.0, ()
+        )
         for i in (1, 2)
     ]
     monkeypatch.setattr(bwave_bridge, "discover", lambda home=None: (windows, []))

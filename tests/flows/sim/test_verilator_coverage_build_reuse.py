@@ -64,7 +64,10 @@ class _Invoker:
 
     def __call__(self, command: list[str], *, timeout: int) -> SubprocessResult:
         if command == ["verilator", "--version"]:
-            return SubprocessResult(returncode=0, stdout="Verilator 5.052 2026-09-05\n")
+            return SubprocessResult(
+                returncode=0,
+                stdout=f"Verilator {PINNED_VERILATOR.tag.removeprefix('v')} 2026-09-05\n",
+            )
         started = time.monotonic()
         result = subprocess.run(
             command,

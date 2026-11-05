@@ -814,7 +814,9 @@ def test_real_adapter_reports_missing_verilator_provenance_as_shared_failure(tmp
     plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
     execution = VerilatorCoverageExecution(
         plan.handle,
-        invoke=lambda command, timeout: SubprocessResult(0, "Verilator 5.052", ""),
+        invoke=lambda command, timeout: SubprocessResult(
+            0, f"Verilator {PINNED_VERILATOR.tag.removeprefix('v')}", ""
+        ),
         options=SimulationOptions(),
         provenance_path=tmp_path / "missing-provenance",
     )

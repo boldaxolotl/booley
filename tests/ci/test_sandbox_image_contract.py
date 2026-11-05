@@ -14,12 +14,12 @@ from typing import Any
 import pytest
 from tests.sandbox_image_contract import (
     ContractSources,
-    dockerfile_parents,
     find_step,
     load_sources,
     validate_sources,
 )
 
+from booley.runtime import dockerfile_syntax
 from booley.runtime.dockerfile_syntax import logical_instructions
 
 _ROOT = Path(__file__).parents[2]
@@ -75,14 +75,15 @@ RUN command --one \\
 
     instructions = logical_instructions(dockerfile)
 
-    assert dockerfile_parents(dockerfile) == ("example.invalid/base:local",)
+    references = dockerfile_syntax.from_references(dockerfile)
+    assert tuple(reference.image for reference in references) == ("example.invalid/base:local",)
     assert instructions[-1].keyword == "RUN"
     assert instructions[-1].value == "command --one && command --two"
 
 
 def test_dockerfile_parser_rejects_unresolved_from_arg() -> None:
     with pytest.raises(ValueError, match="unresolved FROM"):
-        dockerfile_parents("FROM ${MISSING}\n")
+        dockerfile_syntax.from_references("FROM ${MISSING}\n")
 
 
 @pytest.mark.parametrize(
@@ -388,8 +389,7 @@ def test_resolver_contract_ignores_dead_comment_text() -> None:
 @pytest.mark.parametrize(
     ("mutation", "role", "left", "right"),
     [
-        ("node-authority", "Node", "Dockerfile.base", "agent_policy_probe.py"),
-        ("node-probe", "Node", "Dockerfile.base", "agent_policy_probe.py"),
+        ("node-probe", "Node", "agent_policy_probe.py", "booley-test"),
         ("cocotb-authority", "Cocotb", "base-python-requirements.txt", "session-runtime.toml"),
         ("cocotb-build-probe", "Cocotb", "Dockerfile.base", "base-python-requirements.txt"),
         ("cocotb-production-probe", "Cocotb", "base-python-requirements.txt", "test.yml"),
@@ -401,7 +401,6 @@ def test_resolver_contract_ignores_dead_comment_text() -> None:
         ),
     ],
     ids=[
-        "node-authority",
         "node-probe",
         "cocotb-authority",
         "cocotb-build-probe",
@@ -427,11 +426,6 @@ def _mutate_runtime_role(sources: ContractSources, mutation: str) -> ContractSou
 
 
 def _mutate_node_role(sources: ContractSources, mutation: str) -> ContractSources:
-    if mutation == "node-authority":
-        contents = _sub_once(
-            r"ARG NODE_VERSION=[^\s]+", "ARG NODE_VERSION=99.0.0", sources.base_dockerfile
-        )
-        return replace(sources, base_dockerfile=contents)
     step = _step(
         sources,
         "test_workflow",
@@ -439,7 +433,7 @@ def _mutate_node_role(sources: ContractSources, mutation: str) -> ContractSource
         "bwave-smoke",
         "Run installed agent CLI policy probe",
     )
-    step["run"] = _sub_once(r"--expected-node\s+[^\s]+", "--expected-node 99.0.0", step["run"])
+    step["run"] = str(step["run"]).replace("booley-test python", "other-image python")
     return sources
 
 
@@ -483,6 +477,53 @@ def _mutate_cocotb_role(sources: ContractSources, mutation: str) -> ContractSour
         str(step["run"]),
     )
     return sources
+
+
+def test_verilator_identity_must_match_the_dockerfile_pin() -> None:
+    sources = _sources()
+    pinned = replace(
+        sources,
+        base_dockerfile=_sub_once(
+            r"ARG VERILATOR_VERSION=[^\s]+",
+            "ARG VERILATOR_VERSION=v9.999",
+            sources.base_dockerfile,
+        ),
+    )
+
+    errors = _errors(pinned, "Verilator")
+
+    assert "Dockerfile.base" in errors
+    assert "verilator_identity.py" in errors
+    assert "session-runtime.toml" in errors
+    live = replace(sources, verilator_identity=(sources.verilator_identity[0], "0" * 40))
+    assert "verilator_identity.py" in _errors(live, "Verilator")
+
+
+def test_session_runtime_verilator_probe_must_match_the_dockerfile_pin() -> None:
+    sources = _sources()
+    probe = next(
+        item
+        for item in sources.session_runtime["common"]["probe"]
+        if item["name"] == "EDA command diagnostics"
+    )
+    probe["command"] = probe["command"].replace(
+        "Verilator source revision: ", "Verilator source revision: 0"
+    )
+
+    errors = _errors(sources, "Verilator")
+
+    assert "Dockerfile.base" in errors
+    assert "session-runtime.toml" in errors
+
+
+def test_node_and_npm_authorities_are_dockerfile_arguments() -> None:
+    sources = _sources()
+    missing_npm = replace(
+        sources,
+        base_dockerfile=_sub_once(r"ARG NPM_VERSION=[^\s]+\n", "", sources.base_dockerfile),
+    )
+
+    assert "expected one exact version" in _errors(missing_npm, "npm authority")
 
 
 def test_cocotb_production_probe_requires_candidate_image() -> None:

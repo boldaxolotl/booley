@@ -6,10 +6,12 @@
 # run from the exact dependency image used by upstream's final stage. The
 # builder is intentionally throwaway: its object files and regression fixtures
 # account for most of the old Sandbox Image.
+# Global default; each stage that uses the revision redeclares it bare.
+ARG OPENROAD_SOURCE_REF=c4d317e4fa2398b9880920a1411c20258a2175a9
 FROM docker.io/openroad/ubuntu26.04@sha256:c3185708e2f1cdb4fed9fb4d84d2882d36a1f1f6af90959ceb07dcb7416fe49d AS openroad-artifacts
 
 USER root
-ARG OPENROAD_SOURCE_REF=c4d317e4fa2398b9880920a1411c20258a2175a9
+ARG OPENROAD_SOURCE_REF
 # Corresponding Source excludes build outputs. Since 26Q4 the builder also
 # leaves an install prefix whose ./install/bin/openroad duplicates the shipped
 # executable (~58 MB compressed), so both trees stay out and the archive
@@ -104,7 +106,7 @@ RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from so
     && make -j4 && make install \
     && find /usr/local/bin -maxdepth 1 -type f -name 'verilator*_bin*' \
         -exec strip --strip-unneeded {} + \
-    && verilator --version | grep -F 'Verilator 5.052' \
+    && verilator --version | grep -F "Verilator ${VERILATOR_VERSION#v}" \
     && printf '%s\n' \
         "Verilator release: ${VERILATOR_VERSION}" \
         "Verilator source revision: ${VERILATOR_REF}" \
@@ -174,21 +176,21 @@ COPY --from=eda-artifacts /usr/local/share/man/man1/verilator* /usr/local/share/
 # runtime receives only the OR-Tools library closure, not its 177 MB development
 # headers, examples, executables, or CMake metadata.
 ARG OPENROAD_VERSION=26Q4
-ARG OPENROAD_SOURCE_REF=c4d317e4fa2398b9880920a1411c20258a2175a9
+ARG OPENROAD_SOURCE_REF
 ARG OPENROAD_BINARY_VERSION=26Q3-2927-gc4d317e4fa
 ARG OPENROAD_SOURCE_SENTINEL_SHA256=8f72ff3a40bf361df9eee1d4a6ecf163285ebabca3d49c0f8eb958810f65a590
 COPY --from=openroad-artifacts /OpenROAD/build/bin/openroad /usr/bin/openroad
 COPY --from=openroad-artifacts /opt/or-tools/lib/ /opt/or-tools/lib/
 COPY --from=openroad-artifacts /OpenROAD/LICENSE /usr/local/share/doc/openroad/LICENSE
 COPY --from=openroad-artifacts /OpenROAD/src/sta/LICENSE /usr/local/share/doc/openroad/OpenSTA-LICENSE
-COPY --from=openroad-artifacts /tmp/OpenROAD-c4d317e4fa2398b9880920a1411c20258a2175a9.tar.gz /usr/local/share/doc/openroad/OpenROAD-c4d317e4fa2398b9880920a1411c20258a2175a9.tar.gz
+COPY --from=openroad-artifacts /tmp/OpenROAD-${OPENROAD_SOURCE_REF}.tar.gz /usr/local/share/doc/openroad/OpenROAD-${OPENROAD_SOURCE_REF}.tar.gz
 COPY src/booley/data/docker/openroad-source-manifest.json /usr/local/share/doc/openroad/source-manifest.json
 RUN echo ">>> Verifying OpenROAD ${OPENROAD_VERSION} (${OPENROAD_SOURCE_REF})..." \
     && test "$(/usr/bin/openroad -version | xargs)" = "${OPENROAD_BINARY_VERSION}" \
     && test "$(tar -xOf "/usr/local/share/doc/openroad/OpenROAD-${OPENROAD_SOURCE_REF}.tar.gz" \
         ./src/rsz/src/Resizer.tcl | sha256sum | awk '{print $1}')" = \
         "${OPENROAD_SOURCE_SENTINEL_SHA256}" \
-    && python3 -c 'import json; manifest=json.load(open("/usr/local/share/doc/openroad/source-manifest.json")); assert manifest["revision"] == "c4d317e4fa2398b9880920a1411c20258a2175a9"; assert len(manifest["submodules"]) == 5' \
+    && python3 -c 'import json; manifest=json.load(open("/usr/local/share/doc/openroad/source-manifest.json")); import sys; assert manifest["revision"] == sys.argv[1]; assert len(manifest["submodules"]) == 5' "${OPENROAD_SOURCE_REF}" \
     && test -f /usr/local/share/doc/openroad/LICENSE \
     && test -f /usr/local/share/doc/openroad/OpenSTA-LICENSE \
     && ln -s /usr/bin/openroad /usr/local/bin/openroad \
@@ -336,6 +338,7 @@ RUN echo ">>> Bundling Live Preview ${LIVE_PREVIEW_VERSION} VSIX..." \
 # them before execution; neither a mutable setup script nor semver ranges are
 # allowed in the release image.
 ARG NODE_VERSION=24.21.0
+ARG NPM_VERSION=11.19.0
 ARG NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
 COPY src/booley/data/docker/agent-clis-package.json /opt/agent-clis/package.json
 COPY src/booley/data/docker/agent-clis-package-lock.json /opt/agent-clis/package-lock.json
@@ -346,6 +349,7 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
     && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
     && rm -f /tmp/node.tar.xz \
+    && test "$(npm --version)" = "${NPM_VERSION}" \
     && apt-get update \
     && apt-get install -y --no-install-recommends bubblewrap \
     && npm ci --prefix /opt/agent-clis --omit=dev --no-audit --no-fund \
@@ -539,7 +543,7 @@ LABEL org.opencontainers.image.source=https://github.com/boldaxolotl/booley \
       org.opencontainers.image.created=${BOOLEY_BASE_BUILT_AT} \
       io.booley.runtime-base.contract=${BOOLEY_BASE_CONTRACT} \
       io.booley.runtime-base.package-inventory=/usr/local/share/booley/base-package-inventory.json \
-      io.booley.openroad.source-revision=c4d317e4fa2398b9880920a1411c20258a2175a9 \
+      io.booley.openroad.source-revision=${OPENROAD_SOURCE_REF} \
       io.booley.openroad.builder-artifact=docker.io/openroad/ubuntu26.04@sha256:c3185708e2f1cdb4fed9fb4d84d2882d36a1f1f6af90959ceb07dcb7416fe49d \
       io.booley.eda.builder-artifact=docker.io/openroad/ubuntu26.04-dev@sha256:a971c4db78c9a4a8db18a9fe136c9731c613e4582a5093180bc7c07e24351e09 \
       io.booley.openroad.runtime-parent-artifact=docker.io/library/ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7

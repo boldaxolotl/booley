@@ -7,8 +7,8 @@ injection and reversal mechanics it points to.
 ## Fixed inputs and preparation
 
 Use the installed candidate and its issued Linux Sandbox on an Ubuntu or
-Windows host. Note package/source/docs/image, Verilator 5.052 commit
-`ea338be98e1e838d3518809ce8899f85a009963c`, Yosys, gcc, Python, provider
+Windows host. Note package/source/docs/image, Verilator version and commit
+(`VERILATOR_VERSION` and `VERILATOR_REF` in `src/booley/data/docker/Dockerfile.base`), Yosys, gcc, Python, provider
 CLI/SDK and Specialist model identities. Run Codex and Claude separately.
 Fixture protocol drift in the provider fixture is a fixture bug, never a
 live-model pass. Native compilation happens only in the Sandbox.

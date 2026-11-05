@@ -140,7 +140,7 @@ def is_vaporview_entry(entry: object) -> bool:
     """Whether a devcontainer ``extensions`` entry requests VaporView in any form.
 
     Matches a gallery ID at any version (``lramseyer.vaporview``,
-    ``lramseyer.vaporview@1.6.0``) and a bundled VSIX path for any version, so
+    ``lramseyer.vaporview@<version>``) and a bundled VSIX path for any version, so
     drift detection can insist that :data:`BUNDLED_VSIX` is the only one.
     """
     if not isinstance(entry, str):
@@ -149,7 +149,7 @@ def is_vaporview_entry(entry: object) -> bool:
         return True
     name = entry.rpartition("/")[2].lower()
     # Any VSIX file name mentioning VaporView, including Marketplace-style
-    # ``lramseyer.vaporview-1.6.0.vsix``.
+    # ``lramseyer.vaporview-<version>.vsix``.
     return "vaporview" in name and name.endswith(".vsix")
 
 
