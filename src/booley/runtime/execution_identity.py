@@ -14,6 +14,8 @@ entry-point plugins of other distributions, ``sys.pycache_prefix``
 redirection, the interpreter) belongs to the ownership and import-path gate of
 the availability check and to the image ID.
 
+Reusable by Goal evidence freshness (#2052) as well as the Result Cache.
+
 Contracts consumers must honour:
 
 - The identity hashes on-disk content at call time, not the bytes a long-lived

@@ -239,7 +239,7 @@ _REFUSALS = [
     (
         "missing-record-entry",
         lambda r: (r / "site/booley/data/x.json").unlink(),
-        "cannot hash booley",
+        "cannot hash booley: .*No such file",
         (),
     ),
     ("record-entry-directory", _append_record("booley/data,,\n"), "not a regular file", ()),
@@ -249,18 +249,23 @@ _REFUSALS = [
         "not a regular file",
         (_POSIX,),
     ),
-    ("unlistable-directory", _chmod_zero("site/booley/data"), "cannot hash booley", (_NON_ROOT,)),
+    (
+        "unlistable-directory",
+        _chmod_zero("site/booley/data"),
+        "cannot hash booley: .*Permission denied",
+        (_NON_ROOT,),
+    ),
     (
         "unreadable-file",
         _chmod_zero("site/booley/data/x.json"),
-        "cannot hash booley",
+        "cannot hash booley: .*Permission denied",
         (_NON_ROOT,),
     ),
     ("fifo", lambda r: os.mkfifo(r / "site/booley/pipe"), "not a regular file", (_POSIX,)),
     (
         "dangling-symlink",
         lambda r: _symlink(r, "site/booley/data/dead", "nowhere"),
-        "cannot hash booley",
+        "cannot hash booley: .*No such file",
         (_POSIX,),
     ),
     (
@@ -285,7 +290,7 @@ _REFUSALS = [
         (),
     ),
     ("missing-record", lambda r: (r / "site/other-1.0.dist-info").mkdir(), "cannot read", ()),
-    ("spec-none", lambda r: _LIVE, "cannot hash booley", ()),
+    ("spec-none", lambda r: _LIVE, "cannot hash booley: .*__spec__ is None", ()),
     ("record-row-without-path", _append_record(",sha256=x,12\n"), "without a path", ()),
 ]
 
@@ -565,6 +570,12 @@ _HOST_REFUSALS = [
         "cgroup2 mount rooted",
     ),
     (
+        "cgroup-mount-wrong-type",
+        _replace("proc/self/mountinfo", "- cgroup2", "- tmpfs"),
+        {},
+        "cgroup2 mount rooted",
+    ),
+    (
         "two-cgroup-mounts",
         _replace(
             "proc/self/mountinfo",
@@ -602,13 +613,13 @@ _HOST_REFUSALS = [
         "non-utf8-cpuinfo",
         lambda r: (r / "proc/cpuinfo").write_bytes(b"\xff\xfe"),
         {},
-        "cannot collect host facts",
+        "cannot collect host facts: .*codec can't decode",
     ),
     (
         "bad-memtotal",
         _set(_MEMINFO, "MemTotal: abc kB\nSwapTotal: 1 kB\n"),
         {},
-        "cannot collect host facts",
+        "cannot collect host facts: .*invalid literal",
     ),
 ]
 
