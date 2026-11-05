@@ -912,6 +912,40 @@ def _aggregate_detail(
     return detail
 
 
+def _publish_timing_dir(
+    invocation_dir: Path,
+    source_dir: Path,
+    components: tuple[str, ...],
+    root: Path,
+    label: str,
+) -> str | None:
+    """Copy every file under *source_dir* to ``invocation_dir/<components>``.
+
+    Returns the project-relative destination directory, ``""`` when there was
+    nothing to copy (no directory, or an empty one), and ``None`` when the copy
+    failed: the partial copy is removed and a warning naming *label* is logged.
+    Publication never changes a run's verdict, so failures are not raised.
+    """
+    if not source_dir.is_dir():
+        return ""
+    destination = invocation_dir.joinpath(*components)
+    try:
+        copied_any = False
+        for source in sorted(path for path in source_dir.rglob("*") if path.is_file()):
+            artifacts.publish_file(
+                invocation_dir,
+                (*components, *source.relative_to(source_dir).parts),
+                source,
+                work_dir=root,
+            )
+            copied_any = True
+    except (OSError, ValueError):
+        shutil.rmtree(destination, ignore_errors=True)
+        logger.warning("could not publish %s", label, exc_info=True)
+        return None
+    return posix_relpath(destination, root) if copied_any else ""
+
+
 def _build_report_dict(
     flow_name: str,
     target: str,
@@ -1822,17 +1856,45 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             report["run_id"] = run_id
         safe_target = synth_target_report_slug(target)
         report_path = report_dir / f"synth_{safe_target}.json"
+        self._add_report_artifacts(report, report_dir, report_path, target, metrics)
+        published = self._publisher().publish_report(implementation, report)
+        return ImplementationReport(published.payload["implementation"])
+
+    def _add_report_artifacts(
+        self,
+        report: dict[str, Any],
+        report_dir: Path,
+        report_path: Path,
+        target: str,
+        metrics: SynthMetrics,
+    ) -> None:
+        """Set ``report["artifacts"]``: this file, the run log, and preserved evidence."""
         # The run.log pointer lived only in the stdout ``log:`` line, which the
         # MCP layer tail-truncates; ``reports`` was already here but not the log
         # itself. Both now travel together in the shared ``artifacts`` shape,
         # alongside this file's own path.
-        preserved = self._snapshot_report_artifacts(report_dir, safe_target, metrics)
+        preserved = self._snapshot_report_artifacts(
+            report_dir, synth_target_report_slug(target), metrics
+        )
         report["artifacts"] = {
             "report": posix_relpath(report_path, self.args.work_dir),
             **preserved,
         }
-        published = self._publisher().publish_report(implementation, report)
-        return ImplementationReport(published.payload["implementation"])
+        if "baseline" in report:
+            self._add_baseline_timing_pointer(report, target)
+
+    def _add_baseline_timing_pointer(self, report: dict[str, Any], target: str) -> None:
+        """Name the published baseline timing reports, or say why there are none."""
+        # A missing entry means the baseline wrote no timing reports.
+        published = getattr(self, "_baseline_timing", {}).get(target, "")
+        if published:
+            report["artifacts"]["baseline_timing"] = published
+        elif published is None:
+            report["baseline"]["timing_unavailable"] = (
+                "baseline timing reports could not be published"
+            )
+        else:
+            report["baseline"]["timing_unavailable"] = "baseline run produced no timing reports"
 
     def _snapshot_report_artifacts(
         self, report_dir: Path, safe_target: str, metrics: SynthMetrics
@@ -1841,39 +1903,21 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         root = Path(self.args.work_dir)
         invocation_dir = self.reserve_invocation_dir()
         assert invocation_dir is not None
-        destination = invocation_dir / "artifacts" / f"synth_{safe_target}"
         result: dict[str, Any] = {
             **({"log": metrics.log_path} if metrics.log_path else {}),
             **({"live_dirs": dict(metrics.dirs)} if metrics.dirs else {}),
         }
         timing = metrics.dirs.get("timing") if metrics.dirs else None
         if timing:
-            source_dir = root / timing
-            if source_dir.is_dir():
-                try:
-                    copied_any = False
-                    for source in sorted(path for path in source_dir.rglob("*") if path.is_file()):
-                        artifacts.publish_file(
-                            invocation_dir,
-                            (
-                                "artifacts",
-                                f"synth_{safe_target}",
-                                "timing",
-                                *source.relative_to(source_dir).parts,
-                            ),
-                            source,
-                            work_dir=root,
-                        )
-                        copied_any = True
-                    if copied_any:
-                        result["timing"] = posix_relpath(destination / "timing", root)
-                except (OSError, ValueError):
-                    shutil.rmtree(destination / "timing", ignore_errors=True)
-                    logger.warning(
-                        "could not publish numbered synth timing evidence for %s",
-                        safe_target,
-                        exc_info=True,
-                    )
+            published = _publish_timing_dir(
+                invocation_dir,
+                root / timing,
+                ("artifacts", f"synth_{safe_target}", "timing"),
+                root,
+                f"numbered synth timing evidence for {safe_target}",
+            )
+            if published:
+                result["timing"] = published
         return result
 
     def _write_progress_report(
@@ -2375,6 +2419,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         baseline_results: dict[str, SynthMetrics] | None = None,
     ) -> tuple[dict[str, SynthMetrics] | EndpointOutcome, str | None]:
         """Synthesize paired baseline Targets in an ephemeral worktree."""
+        # Candidate selector -> published baseline timing dir (None: publishing failed).
+        self._baseline_timing: dict[str, str | None] = {}
         baseline_ref = self.args.baseline
         if not baseline_ref:
             return baseline_results or {}, None
@@ -2420,6 +2466,36 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             ), None
         return result, short_sha
 
+    def _publish_baseline_timing(
+        self,
+        metrics: SynthMetrics,
+        baseline: str,
+        pairs: Sequence[TargetPairPlan],
+        project_root: Path,
+    ) -> None:
+        """Copy the baseline's timing reports out of the ephemeral worktree.
+
+        Runs while the worktree and the work-root lease still exist. The copy
+        lands beside each paired candidate's own ``timing/`` directory.
+        """
+        invocation_dir = self.reserve_invocation_dir()
+        timing = metrics.dirs.get("timing") if metrics.dirs else None
+        if invocation_dir is None or not timing:
+            return
+        for plan in pairs:
+            if plan.baseline.selector != baseline:
+                continue
+            candidate = plan.candidate.selector
+            published = _publish_timing_dir(
+                invocation_dir,
+                Path(self.args.work_dir) / timing,
+                ("artifacts", f"synth_{synth_target_report_slug(candidate)}", "baseline_timing"),
+                project_root,
+                f"baseline synth timing evidence for {candidate}",
+            )
+            if published != "":
+                self._baseline_timing[candidate] = published
+
     def _execute_baseline_pairs(
         self,
         pairs: Sequence[TargetPairPlan],
@@ -2441,6 +2517,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                         on_wait=lambda target=baseline: self._report_workspace_wait(target),
                     ):
                         metrics, output = self._run_single_config(baseline)
+                        self._publish_baseline_timing(metrics, baseline, pairs, project_root)
                 except edam.WorkRootLeaseError as exc:
                     logger.error("Synth baseline %s: %s", baseline, exc)
                     output = str(exc)
