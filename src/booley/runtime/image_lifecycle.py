@@ -575,7 +575,13 @@ def _configured_image(project_root: Path) -> str | None:
     return raw.strip() if raw is not None else None
 
 
-def _project_requirements_body(project_root: Path) -> str | None:
+def _configured_requirements(
+    project_root: Path,
+) -> tuple[str, list[str], list[str], list[str]] | None:
+    """Consolidate ``[sandbox].pip_requirements`` into ``(body, kept, skipped, dropped)``.
+
+    ``None`` when no requirements file is configured or found by default.
+    """
     raw = _sandbox_config(project_root).get("pip_requirements")
     if raw is not None and not is_str_list(raw):
         raise ImageLifecycleError("[sandbox].pip_requirements must be a list of strings")
@@ -586,11 +592,41 @@ def _project_requirements_body(project_root: Path) -> str | None:
             "configured sandbox pip requirements are missing: " + ", ".join(missing)
         )
     if not requirements:
+        return None
+    return project_image.consolidated_requirements(project_root, requirements)
+
+
+def _project_requirements_body(project_root: Path) -> str | None:
+    consolidated = _configured_requirements(project_root)
+    if consolidated is None:
         return _user_project_requirements(project_root)
-    body, kept, _skipped, _dropped = project_image.consolidated_requirements(
-        project_root, requirements
-    )
+    body, kept, _skipped, _dropped = consolidated
     return body if kept else None
+
+
+def baked_project_requirements(
+    project_root: Path,
+) -> tuple[str, list[str], list[str], list[str]] | None:
+    """Return ``(body, kept, skipped, dropped)`` when the configured pins shape the image.
+
+    ``None`` when nothing is configured, or when the Project image is not built
+    from the consolidated pins: an external image, a hand-written Dockerfile, or
+    a hand-edited ``requirements.txt`` that replaces the generated one.
+    """
+    consolidated = _configured_requirements(project_root)
+    if consolidated is None:
+        return None
+    if _logical_reference(project_root) not in {BASE_IMAGE, *FLAVOR_RECIPES}:
+        return None
+    try:
+        dockerfile = _direct_booley_dir(project_root) / "docker" / "Dockerfile"
+    except FileNotFoundError:
+        return None
+    if dockerfile.is_file() and not project_image.is_managed_generated_file(dockerfile):
+        return None
+    if _user_project_requirements(project_root) is not None:
+        return None
+    return consolidated
 
 
 def _user_project_requirements(project_root: Path) -> str | None:
