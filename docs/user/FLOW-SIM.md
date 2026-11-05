@@ -67,11 +67,11 @@ booley flow sim --target sim_soc --mode elab-only       # compile only
 ### Adding a Test
 
 1. Ask the agent to add the test, for example *"Add a test for FIFO overflow
-   to the `sim` Target."* The agent writes the testbench code and registers
+   to the `sim_soc` Target."* The agent writes the testbench code and registers
    the Test name in [`tests.toml`](TESTS.md).
 2. The agent runs `booley doctor`, which checks `tests.toml` and names the
    entry and the rule for any mistake.
-3. Ask the agent to run it: *"Run `fifo_overflow` on `sim`."* A run of the
+3. Ask the agent to run it: *"Run `fifo_overflow` on `sim_soc`."* A run of the
    whole Target includes it from now on.
 
 ### Test Runs, Test Variants and seeds

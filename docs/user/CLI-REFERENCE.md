@@ -203,7 +203,7 @@ the command.
 
 ```bash
 booley -C ../other targets
-booley flow lint --target lint --project ../other
+booley flow lint --target lint_style --project ../other
 booley session -C ../other status
 ```
 

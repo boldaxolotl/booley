@@ -29,11 +29,11 @@ command line, gets its own `select` template. For a
 the names of its cocotb test functions, and Booley selects them itself.
 
 ```toml
-[sim]
+[sim_soc]
 tests  = ["reset", "basic", "stress"]
 select = "+test={name}"               # pass the name instead of the position
 
-[cpu_core]                            # a CPU core that boots one firmware image per Test
+[sim_firmware]                        # a CPU core that boots one firmware image per Test
 tests  = ["hello.elf", "coremark.elf"]
 select = "--meminit=ram,{name}"
 ```
@@ -45,7 +45,7 @@ Target leaves them out, and naming a skipped Test explicitly still runs it.
 An all-skip target fails preflight rather than passing with zero tests.
 
 ```toml
-[sim]
+[sim_soc]
 tests = ["reset", "basic", "stress"]
 skip  = ["stress"]
 ```
@@ -61,7 +61,7 @@ configuration, ask the agent to add a Variant: *"Add a `soak` variant of
 `stress` with 100000 iterations."*
 
 ```toml
-[sim.variants.stress]
+[sim_soc.variants.stress]
 default = "short"
 short = ["+iters=1000"]
 soak  = ["+iters=100000"]
@@ -103,7 +103,7 @@ How the seed reaches the simulation depends on the Target:
 | Any other simulator, HDL testbench | nothing; the Target is **unseeded** |
 
 ```toml
-[sim]
+[sim_soc]
 seed = "+seed={seed}"        # the testbench also reads its seed from +seed=
 default_seed = 7             # this Target's Default Seed; 1 when not set
 ```
@@ -170,9 +170,9 @@ test_list = "smoke"
 
 Any other key fails to load, and `booley doctor` names it.
 
-- **Section names.** A bare Target name (`[sim]`) applies to every core's
+- **Section names.** A bare Target name (`[sim_uart]`) applies to every core's
   Target of that name. To pick one core's Target, quote a qualified name:
-  `["acme:uart:rx#sim"]`. It matches like `--target` does, and it wins over the
+  `["acme:uart:rx#sim_uart"]`. It matches like `--target` does, and it wins over the
   bare name. Two qualified sections that name one Target, or a section that
   names no Target, fail `booley doctor`.
 - **Names.** A Test or Variant name has no whitespace, `+`, `@`, `<`, `>`,
