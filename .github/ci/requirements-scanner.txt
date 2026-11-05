@@ -1,0 +1,2 @@
+# Confidential-content scanner dependency: confidential-content.yml and the test.yml scanner-smoke job.
+cryptography==50.0.2
