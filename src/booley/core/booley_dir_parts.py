@@ -58,6 +58,8 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirPart] = MappingProxyType(
         "goals/history/": _CHECKOUT,
         "tickets/history/": _CHECKOUT,
         # Checkout: tied to one checkout's sources.
+        "tmp/doctor/": _CHECKOUT,
+        "runtime/doctor/core-resolve/": _CHECKOUT,
         ".runtime/edalize/": _CHECKOUT,
         ".runtime/python-artifacts/": _CHECKOUT,
         "flow-reports/": _CHECKOUT,
@@ -115,7 +117,6 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirPart] = MappingProxyType(
         "runtime/doctor/": _COMMON,
         "runtime/developer_probe.json": _COMMON,
         "runtime/synth_probe.json": _COMMON,
-        "tmp/doctor/": _COMMON,
         "runtime/resources/": _COMMON,
         ".runtime/executions/": _COMMON,
         ".runtime/jobs/": _COMMON,

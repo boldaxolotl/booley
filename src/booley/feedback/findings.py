@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from booley.core.file_lock import LockTimeoutError, release_file_lock, wait_for_file_lock
-from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
@@ -285,7 +285,7 @@ class CorruptFindingsLogError(RuntimeError):
 
 def log_path(booley_dir: Path | None = None) -> Path:
     """Absolute path of the findings log."""
-    return (booley_dir or resolve_booley_dir()) / LOG_NAME
+    return (booley_dir or resolve_common_booley_dir()) / LOG_NAME
 
 
 def read_log(booley_dir: Path | None = None) -> FindingsLog:
@@ -351,7 +351,7 @@ def transaction(booley_dir: Path | None = None, *, operation: str = "update") ->
     The OS releases ownership on process death; a bounded wait refuses busy
     writers. Never unlink the sidecar: existing waiters must share its inode.
     """
-    directory = booley_dir or resolve_booley_dir()
+    directory = booley_dir or resolve_common_booley_dir()
     sidecar = directory / ".runtime" / "findings.lock"
     sidecar.parent.mkdir(parents=True, exist_ok=True)
     with sidecar.open("a+", encoding="utf-8") as handle:

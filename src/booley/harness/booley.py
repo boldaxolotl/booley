@@ -1402,9 +1402,9 @@ def _session_up(args: argparse.Namespace, project_root: Path) -> int:
 def _report_upgrade_before_session(project_root: Path) -> None:
     """Observe host version state and advise before starting a Sandbox."""
     try:
-        from booley.runtime.booley_dir import resolve_checkout_booley_dir
+        from booley.runtime.booley_dir import resolve_common_booley_dir
 
-        status = upgrade_review.observe(resolve_checkout_booley_dir(project_root))
+        status = upgrade_review.observe(resolve_common_booley_dir(project_root))
     except Exception:  # noqa: BLE001 — advisory state must never block Session startup
         return
     if status.condition is upgrade_review.ReviewCondition.CURRENT:

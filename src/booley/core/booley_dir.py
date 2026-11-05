@@ -315,6 +315,14 @@ def resolve_common_booley_dir(start: Path | None = None) -> Path:
     return selected if main is None else main
 
 
+def resolve_main_checkout_root(project_root: Path) -> Path:
+    """Return the main checkout of *project_root*'s repository.
+
+    Falls back to *project_root* outside Git or when the Git topology cannot be read.
+    """
+    return _main_checkout_root(project_root) or project_root
+
+
 def checkout_booley_dir_relative_to(project_root: Path) -> Path:
     """Return the selected checkout's Booley Directory as a safe relative path."""
     root = project_root.resolve()

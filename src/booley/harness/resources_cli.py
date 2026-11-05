@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from booley.runtime import resource_history
-from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.booley_dir import resolve_common_booley_dir
 
 
 def add_subparser(sub: argparse._SubParsersAction) -> None:
@@ -22,7 +22,7 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
 def run(args: argparse.Namespace, project_root: Path) -> int:
     """Print the history statistics of the selected Project."""
     try:
-        records = resource_history.load_records(resolve_booley_dir(project_root))
+        records = resource_history.load_records(resolve_common_booley_dir(project_root))
     except (OSError, ValueError) as exc:
         print(f"ERROR: cannot read the Job resource history: {exc}", file=sys.stderr)
         return 2

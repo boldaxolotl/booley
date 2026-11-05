@@ -18,7 +18,7 @@ from typing import Any
 
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.runtime import health
-from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.timefmt import format_duration
 
 _RUN_LOCK_NAME = "auto.lock"
@@ -93,7 +93,7 @@ def run_if_due(
 ) -> dict[str, Any] | None:
     """Run one automatic Doctor attempt when stale; never raises."""
     try:
-        booley_dir = resolve_booley_dir(project_root)
+        booley_dir = resolve_common_booley_dir(project_root)
         lock_path = health.state_dir(booley_dir) / _RUN_LOCK_NAME
         with health.try_state_lock(lock_path) as acquired:
             if not acquired:
