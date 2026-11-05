@@ -187,7 +187,7 @@ def _raise(error: OSError) -> None:
 
 
 def _is_link(path: Path) -> bool:
-    """Unlike ``Path.is_symlink`` (which hides ``EACCES`` on Python 3.14), raises when unreadable."""
+    """Unlike ``Path.is_symlink`` (which hides ``EACCES`` on Python 3.13+), raises when unreadable."""
     return stat.S_ISLNK(path.lstat().st_mode)
 
 

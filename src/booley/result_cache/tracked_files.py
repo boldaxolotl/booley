@@ -25,7 +25,12 @@ def git_output(repository: Path, *args: str) -> bytes:
     A monitor hook can hide a modified file and ``core.ignoreCase=true`` (a
     repository made on a case-insensitive host, used here) an untracked one.
     """
-    return raw_git(repository, "-c", "core.fsmonitor=false", "-c", "core.ignoreCase=false", *args)
+    return raw_git(
+        repository,
+        *("-c", "core.fsmonitor=false", "-c", "core.ignoreCase=false"),
+        *("-c", "core.untrackedCache=false"),
+        *args,
+    )
 
 
 def relative_posix(path: Path, root: Path) -> str | None:
