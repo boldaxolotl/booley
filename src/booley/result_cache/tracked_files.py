@@ -20,10 +20,12 @@ _GITLINK_MODE = b"160000"
 
 
 def git_output(repository: Path, *args: str) -> bytes:
-    """Raw Git output with the file-system monitor and ``core.ignoreCase`` off.
+    """Raw Git output with the file-system monitor, ``core.ignoreCase`` and the untracked cache off.
 
-    A monitor hook can hide a modified file and ``core.ignoreCase=true`` (a
-    repository made on a case-insensitive host, used here) an untracked one.
+    A monitor hook can hide a modified file, ``core.ignoreCase=true`` (a
+    repository made on a case-insensitive host, used here) an untracked one,
+    and a stale untracked cache (a mount that never updates directory mtimes)
+    an untracked file.
     """
     return raw_git(
         repository,
@@ -128,7 +130,8 @@ def _entry_state(tree: TrackedTree, path: Path, relative: str) -> tuple[bytes, .
         return (b"absent",)
     if stat.S_ISLNK(status.st_mode):
         tree.links.append(path)
-        return (b"link", os.fsencode(path.readlink()))
+        # Raw text: Path.readlink() would drop a trailing "/" and "." parts, which change behavior.
+        return (b"link", os.fsencode(os.readlink(path)))  # noqa: PTH115
     if not stat.S_ISREG(status.st_mode):
         tree.reasons.append(f"{tree.label}:{relative} is neither a file nor a symlink")
         return (b"other",)

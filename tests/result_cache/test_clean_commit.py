@@ -124,7 +124,7 @@ def test_dirty_participant_is_not_clean(case: str, tmp_path: Path) -> None:
         commit_files(layout.rtl / "sub", {"s.v": "moved\n"})
     if case == "rtl-nested-repository":
         new_repo(layout.rtl / "nested", {"n": "n\n"})
-    assert_refused(layout.project, label, "not clean", named)
+    assert_refused(layout.project, f"{label} repository", "not clean", named)
 
 
 def test_core_edit_in_standalone_booley_repository_is_not_clean(tmp_path: Path) -> None:
@@ -134,7 +134,7 @@ def test_core_edit_in_standalone_booley_repository_is_not_clean(tmp_path: Path) 
     assert clean.cacheable, clean.reasons
     assert [p.label for p in clean.participants] == ["rtl", "booley"]
     write_files(layout.booley, {"cores/x.core": "edited\n"})
-    assert_refused(layout.project, "booley", "not clean", "cores/x.core")
+    assert_refused(layout.project, "booley repository", "not clean", "cores/x.core")
 
 
 # --- AC4: symlinks leaving the participants ------------------------------------
@@ -218,9 +218,17 @@ def test_out_of_tree_symlink_is_not_cacheable(case: str, tmp_path: Path) -> None
     mutate(layout.rtl, str(tmp_path / "secret"))
     result = check(layout.project)
     assert not result.cacheable
-    assert any(
-        f"symlink {where} resolves outside the participants" in r for r in result.reasons
-    ), result.reasons
+    label, _, name = where.partition(":")
+    root = layout.rtl if label == "rtl" else layout.booley
+    assert root is not None
+    # The whole reason: participant, link and the raw target (what the digest also keys).
+    refusal = (
+        "steps back with '..' after a name"
+        if case == "dotdot-hop-back-inside"
+        else ("resolves outside the participants or into .git")
+    )
+    expected = f"symlink {where} {refusal} ({os.readlink(root / name)})"  # noqa: PTH115
+    assert expected in result.reasons, result.reasons
 
 
 def test_symlink_inside_participants_stays_cacheable(tmp_path: Path) -> None:

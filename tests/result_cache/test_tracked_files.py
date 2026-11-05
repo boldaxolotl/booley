@@ -105,7 +105,7 @@ def rename(rtl: Path) -> None:
 
 def retarget(rtl: Path) -> None:
     git(rtl, "rm", "-q", "link")
-    (rtl / "link").symlink_to("README")  # both targets are present in the tree
+    (rtl / "link").symlink_to("src/a.v/")  # same file; only the raw target text differs
     git(rtl, "add", "link")
     git(rtl, "commit", "-q", "-m", "retarget")
 

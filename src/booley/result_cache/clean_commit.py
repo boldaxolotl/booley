@@ -69,14 +69,20 @@ def check_clean_commit(checkout_root: Path) -> CleanCommit:
     A refusal is a reason on the result. A Git or file-system failure raises
     :class:`CleanCommitError`; the caller treats both as "not cacheable".
     """
-    project_root = Path(checkout_root).resolve()
     try:
+        project_root = Path(checkout_root).resolve()
         booley_dir, roots = _select_participants(Path(checkout_root), project_root)
         participants = tuple(_participant(label, root) for label, root in roots)
         reasons, digest = _check(booley_dir, project_root, participants)
     except _NotCacheableError as refusal:
         return CleanCommit(None, (), (str(refusal),), None)
-    except (FileCommitError, SourceCheckoutProjectError, BooleyLayoutError, OSError) as exc:
+    except (
+        FileCommitError,
+        SourceCheckoutProjectError,
+        BooleyLayoutError,
+        OSError,
+        UnicodeError,
+    ) as exc:
         raise CleanCommitError(f"cannot check clean commit at {checkout_root}: {exc}") from exc
     return CleanCommit(booley_dir, participants, reasons, None if reasons else digest)
 
@@ -187,23 +193,22 @@ def _raise(error: OSError) -> None:
 
 
 def _is_link(path: Path) -> bool:
-    """Unlike ``Path.is_symlink`` (which hides ``EACCES`` on Python 3.13+), raises when unreadable."""
+    """Unlike ``Path.is_symlink`` (which hides ``EACCES`` on Python 3.14+), raises when unreadable."""
     return stat.S_ISLNK(path.lstat().st_mode)
 
 
 def _outside_reason(tree: TrackedTree, link: Path, roots: Sequence[Path]) -> str | None:
     """A reason when *link* leaves the participants, lexically or resolved, or reaches ``.git``."""
-    raw = link.readlink()
+    target = os.readlink(link)  # noqa: PTH115 - Path.readlink() drops a trailing "/"
+    raw = Path(target)
     lexical = Path(os.path.normpath(link.parent / raw))
-    # ``..`` after a name may step out through a directory link: refuse it, and the lexical
-    # rule rejects a hop through an outside link that points back inside.
-    stepped = any(a != ".." and b == ".." for a, b in zip(raw.parts, raw.parts[1:], strict=False))
-    if not stepped and all(
-        _is_inside(path, roots) for path in (lexical, Path(os.path.realpath(link)))
-    ):
-        return None
-    where = relative_posix(link, tree.root)
-    return f"symlink {tree.label}:{where} resolves outside the participants ({raw})"
+    where = f"{tree.label}:{relative_posix(link, tree.root)}"
+    if not all(_is_inside(path, roots) for path in (lexical, Path(os.path.realpath(link)))):
+        return f"symlink {where} resolves outside the participants or into .git ({target})"
+    # ``..`` after a name may step out through a directory link: refuse it (it may stay inside).
+    if any(a != ".." and b == ".." for a, b in zip(raw.parts, raw.parts[1:], strict=False)):
+        return f"symlink {where} steps back with '..' after a name ({target})"
+    return None
 
 
 def _is_inside(path: Path, roots: Sequence[Path]) -> bool:
