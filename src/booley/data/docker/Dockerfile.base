@@ -432,23 +432,31 @@ ENV PIP_DEFAULT_TIMEOUT=120 \
 # dependencies; pinning them explicitly here makes the contract visible in
 # the image and guards against a future loosening of the wheel constraint.
 # Edalize only *invokes* the EDA tools built above; it does not manage their
-# versions (ADR 0019 decision).
+# versions (ADR 0019 decision). The exact pins live in
+# base-python-requirements.txt, applied here as a pip constraints file so the
+# two install layers keep their own --ignore-installed policy; a test holds the
+# edalize/fusesoc copy equal to pyproject.toml.
+COPY src/booley/data/docker/base-python-requirements.txt /tmp/booley-build/base-python-requirements.txt
+
 RUN python -m pip install --break-system-packages --no-cache-dir \
-    "edalize==0.6.8" "fusesoc==2.4.7"
+    --constraint /tmp/booley-build/base-python-requirements.txt \
+    edalize fusesoc
 
 # Cocotb verification layer (ADR 0034 decision 10) — cocotb 2.x plus the
 # small curated, pinned Python set a testbench may import (Booley Flows have no
 # network, so anything beyond this set is vendored in the project tree).
 # cocotbext-spi is ABSENT deliberately: no release imports against cocotb 2.x
-# (0.5.0 still uses the removed cocotb.clock.BaseClock).
+# (0.5.0 still uses the removed cocotb.clock.BaseClock). Pins: see
+# base-python-requirements.txt.
 RUN python -m pip install --break-system-packages --no-cache-dir --ignore-installed \
-    "cocotb==2.1.0" "numpy==2.5.3" "cocotbext-axi==0.1.28" "cocotbext-uart==0.1.4"
+    --constraint /tmp/booley-build/base-python-requirements.txt \
+    cocotb numpy cocotbext-axi cocotbext-uart
 
 # Build-time sanity (D2): the image fails to build rather than failing at
 # first sim — cocotb-config resolves, the curated set imports, and the
 # Icarus VPI library the run-half loads by absolute path exists. Cocotb 2.1
 # returns the complete platform-suffixed path (`.so` on this Linux image).
-RUN test "$(cocotb-config --version)" = "2.1.0" \
+RUN test "$(cocotb-config --version)" = "$(sed -n 's/^cocotb==//p' /tmp/booley-build/base-python-requirements.txt)" \
     && python3 -c "import cocotb, cocotbext.axi, cocotbext.uart, numpy" \
     && test -e "$(cocotb-config --lib-name-path vpi icarus)"
 USER agent

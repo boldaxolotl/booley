@@ -27,6 +27,17 @@ FLAGS = [
 ]
 REVISION = "ea338be98e1e838d3518809ce8899f85a009963c"
 WORK = Path("/tmp/verilator-acceptance")
+BASE_REQUIREMENTS = (
+    Path(__file__).resolve().parents[2] / "src/booley/data/docker/base-python-requirements.txt"
+)
+
+
+def expected_cocotb_version() -> str:
+    """Return the cocotb pin of the base image from its requirements file."""
+    match = re.search(r"^cocotb==([0-9.]+)$", BASE_REQUIREMENTS.read_text(), re.MULTILINE)
+    if match is None:
+        raise AssertionError(f"{BASE_REQUIREMENTS}: no cocotb==<version> pin")
+    return match.group(1)
 
 
 def run(
@@ -106,7 +117,10 @@ class Acceptance(unittest.TestCase):
         self.assertIn(REVISION, provenance)
         self.assertIn("v5.052", provenance)
         self.assertTrue(Path("/usr/include/lz4.h").is_file())
-        self.assertEqual(run(["cocotb-config", "--version"], self.work).stdout.strip(), "2.1.0")
+        self.assertEqual(
+            run(["cocotb-config", "--version"], self.work).stdout.strip(),
+            expected_cocotb_version(),
+        )
         libraries = run(["ldd", "/usr/local/bin/verilator_bin"], self.work).stdout
         self.assertNotIn("jemalloc", libraries)
 

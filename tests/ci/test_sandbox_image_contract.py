@@ -390,9 +390,23 @@ def test_resolver_contract_ignores_dead_comment_text() -> None:
     [
         ("node-authority", "Node", "Dockerfile.base", "agent_policy_probe.py"),
         ("node-probe", "Node", "Dockerfile.base", "agent_policy_probe.py"),
-        ("cocotb-authority", "Cocotb", "Dockerfile.base", "cocotb-config"),
-        ("cocotb-build-probe", "Cocotb", "Dockerfile.base", "cocotb-config"),
-        ("cocotb-production-probe", "Cocotb", "Dockerfile.base", "test.yml"),
+        ("cocotb-authority", "Cocotb", "base-python-requirements.txt", "session-runtime.toml"),
+        ("cocotb-build-probe", "Cocotb", "Dockerfile.base", "base-python-requirements.txt"),
+        ("cocotb-production-probe", "Cocotb", "base-python-requirements.txt", "test.yml"),
+        (
+            "cocotb-session-contract",
+            "Cocotb",
+            "base-python-requirements.txt",
+            "session-runtime.toml",
+        ),
+    ],
+    ids=[
+        "node-authority",
+        "node-probe",
+        "cocotb-authority",
+        "cocotb-build-probe",
+        "cocotb-production-probe",
+        "cocotb-session-contract",
     ],
 )
 def test_runtime_role_mutations_name_both_disagreeing_sources(
@@ -433,17 +447,27 @@ def _mutate_cocotb_role(sources: ContractSources, mutation: str) -> ContractSour
     if mutation == "cocotb-authority":
         return replace(
             sources,
-            base_dockerfile=_sub_once(
-                r'(["\']cocotb==)[^"\']+', r"\g<1>99.0.0", sources.base_dockerfile
+            base_python_requirements=_sub_once(
+                r"(?m)^cocotb==.*$", "cocotb==99.0.0", sources.base_python_requirements
             ),
         )
     if mutation == "cocotb-build-probe":
+        # A literal version instead of the derivation from the requirements file.
         return replace(
             sources,
             base_dockerfile=_sub_once(
-                r'(cocotb-config --version\)"\s*=\s*")[^"]+',
-                r"\g<1>99.0.0",
+                r'(cocotb-config --version\)"\s*=\s*)"\$\(sed[^"]*\)"',
+                r'\g<1>"2.1.0"',
                 sources.base_dockerfile,
+            ),
+        )
+    if mutation == "cocotb-session-contract":
+        return replace(
+            sources,
+            session_runtime_contract=_sub_once(
+                r'(cocotb-config --version\)" = ")[^"]+',
+                r"\g<1>99.0.0",
+                sources.session_runtime_contract,
             ),
         )
     step = _step(
@@ -454,8 +478,8 @@ def _mutate_cocotb_role(sources: ContractSources, mutation: str) -> ContractSour
         "Run cocotb Icarus/Verilator production-image flows",
     )
     step["run"] = _sub_once(
-        r'(cocotb-config --version\)\\?"\s*=\s*)[0-9.]+',
-        r"\g<1>99.0.0",
+        r"(cocotb-config --version\)\\?\"\s*=\s*)\\\"\\\$\(sed[^)]*\)\\\"",
+        r"\g<1>2.1.0",
         str(step["run"]),
     )
     return sources
@@ -495,7 +519,9 @@ def test_runtime_authorities_reject_ranges_and_duplicates() -> None:
     sources = _sources()
     ranged = replace(
         sources,
-        base_dockerfile=_sub_once(r"cocotb==", "cocotb>=", sources.base_dockerfile),
+        base_python_requirements=_sub_once(
+            r"cocotb==", "cocotb>=", sources.base_python_requirements
+        ),
     )
     node_line = re.search(r"^ARG NODE_VERSION=[^\s]+$", sources.base_dockerfile, re.MULTILINE)
     assert node_line is not None
@@ -506,7 +532,7 @@ def test_runtime_authorities_reject_ranges_and_duplicates() -> None:
         ),
     )
 
-    assert "expected one exact version" in _errors(ranged, "Cocotb authority")
+    assert "cocotb>=" in _errors(ranged, "exact version")
     assert "expected one exact version" in _errors(duplicated, "Node authority")
 
 
