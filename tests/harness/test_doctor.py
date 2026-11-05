@@ -7648,6 +7648,32 @@ class TestSubscriptionCredsHealth:
         assert rec.kinds() == {"warn"}
         assert "expired" in rec.events[0][1]
 
+    @pytest.mark.parametrize("seeded", [False, True], ids=["unseeded", "seeded"])
+    def test_expired_login_fix_follows_seed(self, creds_home, monkeypatch, tmp_path, seeded):
+        """Only a seeded Sandbox (or the host) can blame host rotation / offer `booley auth`."""
+        creds = creds_home / ".claude" / ".credentials.json"
+        creds.write_text(self._EXPIRED)
+        seed = tmp_path / "seed-creds.json"
+        monkeypatch.setitem(dc._APP_CREDS_SEED_TARGET, auth_token.APP_CLAUDE, str(seed))
+        if seeded:
+            seed.write_text(self._VALID)  # valid seed: the seed-expired WARN stays quiet
+        _set_venue(monkeypatch, True)
+        reporter = doctor._Reporter.create()
+
+        doctor._check_subscription_creds_health(
+            auth_token.APP_CLAUDE, reporter.pass_, reporter.warn_
+        )
+
+        (finding,) = [f for f in reporter.findings if f.severity is Severity.WARN]
+        assert finding.check_id == "agent.subscription-credential-expired"
+        message = finding.message.replace(str(creds), "")
+        if seeded:
+            assert "host has rotated" in message
+            assert "booley auth --app claude" in finding.fix
+        else:
+            assert "host" not in message and "rotat" not in message
+            assert "booley auth" not in finding.fix and "/login" in finding.fix
+
     def test_expired_login_with_stored_token_is_harmless(self, creds_home):
         (creds_home / ".claude" / ".credentials.json").write_text(self._EXPIRED)
         auth_token.store_token("sk-ant-oat01-x")

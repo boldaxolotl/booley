@@ -344,7 +344,10 @@ class TestDoctorPolicyAwareness:
     @staticmethod
     def _run_oauth_check(monkeypatch, policy):
         from booley.harness import doctor
+        from booley.runtime import runtime_context
 
+        # Host venue, pinned: a Sandbox without a seed sidecar reports a different NOTE.
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
         monkeypatch.setattr(
             doctor.host_environment,
             "inspect_agent_installation",
