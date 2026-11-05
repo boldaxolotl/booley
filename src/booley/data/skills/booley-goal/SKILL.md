@@ -168,6 +168,15 @@ Editing one blocks Finish until reverted and discards affected evidence. Never
 weaken tests or Targets to meet a Goal. Target and constraint edits appear in
 the Review Package.
 
+Booley has no per-call parameter override: the Target owns its values. For an
+A/B experiment, add a sibling Target in the same `.core` file that differs only
+in the parameter under test, and run it with `work_dir` and `diagnostic=true`
+(no Goal names it, so a run without `diagnostic` is refused). Before
+`goal_finish`, delete exactly the entries you added, or keep the sibling and
+say why in the Session Summary. Never edit an existing Target's parameters and
+revert them: that Target's Goals would accept a non-diagnostic run as evidence
+for a configuration they did not ask for.
+
 If work is blocked by missing intent or an unmet Goal, explain the evidence
 and the decision needed. Continue independent work when possible. If the cause
 is Booley machinery or documentation, use `/booley-feedback` for diagnosis and
