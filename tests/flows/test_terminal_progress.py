@@ -353,8 +353,11 @@ def test_descendant_held_pipe_does_not_wait_forever(tmp_path):
             text=True,
             start_new_session=True,
         ) as process:
-            stdout, _, timed_out = communicate_observed(process, sink, timeout=0.3)
-    assert time.monotonic() - started < 3
+            # Generous timeout: a loaded CI runner can take over 0.3 s just to start
+            # the interpreter. The held descendant sleeps 30 s, so the bound below
+            # still proves the call does not wait for it.
+            stdout, _, timed_out = communicate_observed(process, sink, timeout=3)
+    assert time.monotonic() - started < 15
     assert stdout == "parent done\n"
     assert timed_out
 
