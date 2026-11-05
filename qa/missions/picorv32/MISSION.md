@@ -9,7 +9,7 @@ at Booley, usually at handoffs: paired repos, evidence freshness, Grants, Sessio
 ## Pins and prerequisites
 - Booley: the candidate under test (set by the run skill; not pinned here).
 - Project: https://github.com/boldaxolotl/booley-prj-picorv32 @
-  `e53c1896ab02595aa4ebb3a56b5aa7bd109177f9` (upstream RTL plus Stealth `.booley`).
+  `a3520837bce9416c1a7209d779148a9eb12482a9` (upstream RTL plus Stealth `.booley`).
 - Upstream: https://github.com/YosysHQ/picorv32 @ `a473fc8fca393771d83b0ffcf0b14db3393339d8`.
 - Tools/host: Docker (≥6 GB free); the `booley init` Sandbox image (xPack GCC 15.2, srec_cat, dtc,
   Spike, `/opt/riscv-docs`, Icarus, Verilator, sv2v/Yosys/OpenROAD); a logged-in Codex or Claude
@@ -41,10 +41,12 @@ Try:
   `booley init` and follow the demo steps it prints (Sandbox, then
   `bash .booley/hooks/post-setup.sh`). The demo ships preconfigured for sim, lint, and
   synth. Configure it with the edits below, not with the `booley-setup` skill.
-- Booley Directory edits: set `[specialists.coverage_analyst] enabled = false` in `booley.toml` (the Icarus
-  Targets can't produce Verilator Coverage Campaigns). If Vivado is present, also set
-  `[flows.fpga] enabled = true`, add `[eda.vivado]` with `provisioning = "host"`, and add
-  `booley: {doctor: [fpga]}` to `fpga_core` in `cores/picorv32_impl.core`.
+- Booley Directory edits: set `[specialists.coverage_analyst] enabled = false` in `booley.toml` (the
+  demo's Verilator Targets use a custom C++ `main` without `custom_main_hooks`, so they write no
+  coverage data). If Vivado is present, also set `[flows.fpga] enabled = true`, add `[eda.vivado]`
+  with `provisioning = "host"`, and add `booley: {doctor: [fpga]}` under `fpga_core`'s
+  `flow_options` (beside `tool: vivado`, as `lint_core` and `synth_core` do) in
+  `cores/picorv32_impl.core`.
 - Enable Stealth with `ignore_native_cores = true`. Only the hidden authored cores are projected,
   with no copied RTL and no symlinks. Dot-prefixed paths don't count as native.
 - Create run-owned destination branches (outer and standalone Booley Directory).
@@ -54,8 +56,9 @@ Try:
 - Build `firmware/firmware.hex` before the first Doctor run, since Doctor resolves the sim Target
   against it. `booley doctor` and `booley doctor --deep` should show no warnings. Repeat
   `booley init`: no drift; the auth policy matches the provider.
-- Baseline: `booley targets`, Icarus sims (main, AXI, Wishbone, Dhrystone), Verilator lint, and
-  physical synth all pass with fresh reports. The trees still match the setup branch and the pin.
+- Baseline: `booley targets`, Verilator sims (`sim_core` tests `main` and `axi`, `sim_wb`,
+  `sim_dhry`), Verilator lint, and physical synth all pass with fresh reports. The trees still
+  match the setup branch and the pin.
 Look for: undocumented steps, a stale image, over- or under-matching waivers, stale reports, wrong
 tool resolution.
 
@@ -343,7 +346,8 @@ installations, images, and Sessions untouched. Record the final pin state. Nothi
 - Fixture testbenches must print a pass sentinel the Project configures (`ALL TESTS PASSED.` here).
   Configured sentinels replace the built-in `[SIM_RESULT]` markers, so a clean `$finish` alone
   grades INCONCLUSIVE.
-- Icarus has no `$system`, and SystemVerilog fixtures need `-g2012` (the campaign cores set it in
+- The Simulation Campaign fixture (area 12) runs on Icarus. Icarus has no `$system`, and
+  SystemVerilog fixtures need `-g2012` (the campaign cores set it in
   `flow_options.iverilog_options`). The campaign's `slow` test spins about 20 s of wall time. If it
   finishes too fast to interrupt, pass `+slow_steps=<n>`.
 - Bare-metal Spike needs `tohost`/`fromhost` symbols to exit. A Linux `ecall` exit only works under
@@ -352,3 +356,9 @@ installations, images, and Sessions untouched. Record the final pin state. Nothi
   copied into `.booley/cores/<dir>/` must name its files as
   `.booley/cores/<dir>/<file>`, or the Flow fails with `Project compile input is not a
   file: /work/<file>`.
+- The pinned demo already ships `goalsets/zbb.md` and `specs/zbb.md` for its own Zbb Goal. Area 6
+  uses this mission's Goalset and prompts; the child must not pick up the demo's `zbb` Goalset.
+- The demo has no `[agent]` pin, so Booley defaults to Claude Code. To drive the run with Codex, add
+  `[agent]` with `provider = "codex"` to `booley.toml` before the first `booley init`.
+- The demo ships `doctor-waivers.toml`. Waived Doctor rows are expected and are not warnings; some
+  waivers apply only in GitHub Codespaces.
