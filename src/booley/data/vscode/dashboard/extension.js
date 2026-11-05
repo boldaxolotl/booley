@@ -103,9 +103,12 @@ class AttachController {
                 this.output.appendLine(result.reason);
                 return;
             }
-            // Sample before creating ours: any terminal already open (for example
-            // the shell a Codespace visitor just opened with Ctrl+`) is in use.
-            const busy = vscode.window.terminals.length > 0;
+            // Sample before creating ours: a terminal that has received input since
+            // this window loaded (for example a shell the user typed in) is in use.
+            // A terminal nobody has used yet, such as the Codespace shell that
+            // starts with the Trust click, does not hold the Dashboard back, so it
+            // can end up behind the Dashboard.
+            const busy = vscode.window.terminals.some(existing => existing.state.isInteractedWith);
             const terminal = vscode.window.createTerminal({
                 name: 'Booley Dashboard',
                 shellPath: BOOLEY,
@@ -128,8 +131,8 @@ class AttachController {
     }
 
     // A panel terminal created without show() becomes the visible tab only
-    // when it is the panel's first terminal, so the user's terminal and any
-    // prompt waiting in it stay in front. Offer the Dashboard instead.
+    // when it is the panel's first terminal, so a terminal the user has used
+    // and any prompt waiting in it stay in front. Offer the Dashboard instead.
     offer(terminal) {
         void Promise.resolve(vscode.window.showInformationMessage(
             'Booley Dashboard is ready in the terminal panel.', 'Open')).then(choice => {
