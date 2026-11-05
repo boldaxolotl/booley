@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from booley.core.booley_dir import reset_cache
 from tests.result_cache.git_fixtures import (
     add_submodule,
     all_cases,
@@ -41,8 +43,10 @@ sys.stdout.buffer.write(data)
 
 
 @pytest.fixture(autouse=True)
-def _isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolated(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     isolate(monkeypatch)
+    yield
+    reset_cache()  # a selection cached by one test must not leak into the next
 
 
 def lfs_filter(base: Path, smudge: str = "") -> dict[str, str]:

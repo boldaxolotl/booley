@@ -402,6 +402,31 @@ def enclosed_repository(base: Path) -> Path:
     return inner  # the Project Root is a submodule; its Booley Directory lives in `outer`
 
 
+def two_level_enclosed_repository(base: Path) -> Path:
+    outer = build_layout(base, "standalone").rtl
+    ip = add_submodule(outer, "ip", new_repo(base / "ip", {"i.v": "i\n"}))
+    core = add_submodule(ip, "core", new_repo(base / "core", {"c.v": "c\n"}))
+    return core  # the Booley Directory lives in `outer`, two repositories up
+
+
+def unusable_enclosing_repository(base: Path) -> Path:
+    outer = base / "outer"
+    outer.mkdir()
+    (outer / ".git").write_text("gitdir: /nonexistent\n")  # Git cannot use it
+    new_repo(outer / ".booley", BOOLEY_FILES)
+    (outer / "mid").mkdir()
+    return new_repo(outer / "mid" / "rtl", {"a": "a\n"})  # a plain level sits between
+
+
+def core_worktree_enclosing_repository(base: Path) -> Path:
+    outer = base / "a"
+    outer.mkdir()
+    new_repo(outer / ".booley", BOOLEY_FILES)
+    inner = new_repo(outer / "b", {"b": "b\n"})
+    git(inner, "config", "core.worktree", str(outer))  # Git reports `a`, not `a/b`
+    return new_repo(inner / "c", {"c": "c\n"})
+
+
 NOT_TRACKED = "neither tracked in the RTL repository"
 UNSELECTABLE_CASES: dict[str, tuple[Callable[[Path], Path], str]] = {
     "not-a-repository": (lambda b: b.joinpath("plain").mkdir() or b / "plain", "not in a Git"),
@@ -437,6 +462,9 @@ UNSELECTABLE_CASES: dict[str, tuple[Callable[[Path], Path], str]] = {
         "it cannot read",
     ),
     "project-in-enclosed-repository": (enclosed_repository, "encloses"),
+    "project-in-two-level-enclosed-repository": (two_level_enclosed_repository, "encloses"),
+    "booley-in-unusable-enclosing-repository": (unusable_enclosing_repository, "encloses"),
+    "core-worktree-enclosing-repository": (core_worktree_enclosing_repository, "encloses"),
     "hidden-gitlink-replaced-by-symlink": (hidden_symlinked_gitlink, "populated but not"),
     "submodule-without-commit": (unborn_submodule, "submodule repository with no commit"),
 }

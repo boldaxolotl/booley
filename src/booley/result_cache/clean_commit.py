@@ -118,9 +118,10 @@ def _select_participants(
     except FileNotFoundError as exc:
         raise _NotCacheableError(f"no Booley Directory: {exc}") from exc
     if is_git_worktree_root(booley_dir) and not booley_dir.samefile(rtl_root):
-        if _in_enclosing_repository(booley_dir, rtl_root):
+        if (enclosing := _enclosing_repository(booley_dir, rtl_root)) is not None:
             raise _NotCacheableError(
-                f"Booley Directory {booley_dir} sits in a repository that encloses {rtl_root}"
+                f"Booley Directory {booley_dir} lies outside {rtl_root}, "
+                f"which the repository at {enclosing} encloses"
             )
         return booley_dir, [("rtl", rtl_root), ("booley", booley_dir)]
     # A repository that cannot be read is refused, not guessed at (the RTL root has its own .git).
@@ -140,18 +141,22 @@ def _select_participants(
     )
 
 
-def _in_enclosing_repository(booley_dir: Path, rtl_root: Path) -> bool:
-    """Whether *booley_dir* lies outside the RTL repository but in a repository enclosing it.
+def _enclosing_repository(booley_dir: Path, rtl_root: Path) -> Path | None:
+    """The nearest ancestor of the RTL root with a ``.git`` entry, when the Booley Directory is outside it.
 
-    That enclosing repository would hold the Booley Directory yet be no participant.
+    Such a repository may hold the Booley Directory yet be no participant. The walk uses the file
+    system, not Git: Git's "not a repository" exit is localised and equals its other failures.
+    Any ``.git`` entry counts, valid or not, so an unusable one is refused (fail closed).
     """
     if relative_posix(booley_dir, rtl_root) is not None:
-        return False
-    top = run_git(rtl_root.parent, "rev-parse", "--show-toplevel")
-    return (
-        top.returncode == 0
-        and relative_posix(booley_dir, Path(top.stdout.strip()).resolve()) is not None
-    )
+        return None
+    for ancestor in rtl_root.parents:
+        try:
+            (ancestor / ".git").lstat()
+        except FileNotFoundError:
+            continue  # any other OSError propagates and fails the check loudly
+        return ancestor
+    return None
 
 
 def _participant(label: str, root: Path) -> Participant:
