@@ -1,4 +1,5 @@
 # Files whose bytes define the published EDA/runtime base compatibility contract.
+# Exception: pyproject.toml contributes only its exported [project].dependencies.
 .dockerignore
 pyproject.toml
 src/booley/data/docker/Dockerfile.base

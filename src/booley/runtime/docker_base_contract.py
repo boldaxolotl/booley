@@ -14,6 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 DEFAULT_MANIFEST = "src/booley/data/docker/stable-base-inputs.txt"
+# The base image installs only ``[project].dependencies`` from this file, so
+# only that export contributes to the contract (#2553).
+PROJECT_METADATA = "pyproject.toml"
 _CONTRACT_LABEL = "io.booley.runtime-base.contract"
 _DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _IMAGE_INDEX_MEDIA_TYPES = {
@@ -66,6 +69,21 @@ def stable_base_inputs(repo: Path, manifest: str = DEFAULT_MANIFEST) -> tuple[st
     return tuple(path.relative_to(repo).as_posix() for path in input_paths(repo, manifest))
 
 
+def contract_contents(relative: str, contents: bytes) -> bytes:
+    """Return the bytes an input contributes to the contract.
+
+    ``pyproject.toml`` contributes its exported runtime requirements, the same
+    text the base image build installs. Every other input contributes whole.
+    Raises ``ValueError`` when the project metadata cannot be exported.
+    """
+    if relative != PROJECT_METADATA:
+        return contents
+    # Imported lazily: most importers of this module never fingerprint inputs.
+    from booley.data.docker.export_project_dependencies import project_dependency_requirements
+
+    return project_dependency_requirements(contents.decode("utf-8")).encode("utf-8")
+
+
 def contract(repo: Path, manifest: str = DEFAULT_MANIFEST) -> str:
     repo = repo.resolve()
     digest = hashlib.sha256()
@@ -73,10 +91,24 @@ def contract(repo: Path, manifest: str = DEFAULT_MANIFEST) -> str:
         relative = path.relative_to(repo).as_posix().encode()
         digest.update(len(relative).to_bytes(4, "big"))
         digest.update(relative)
-        contents = path.read_bytes()
+        contents = contract_contents(path.relative_to(repo).as_posix(), path.read_bytes())
         digest.update(len(contents).to_bytes(8, "big"))
         digest.update(contents)
     return digest.hexdigest()
+
+
+def publish_needed(reference: str, expected_contract: str) -> bool:
+    """Return whether the base image published at ``reference`` must be rebuilt.
+
+    The published image is current only when it resolves and carries
+    ``expected_contract``. Any resolution failure (label mismatch, missing tag,
+    registry error) means rebuild.
+    """
+    try:
+        resolve_image_remote(reference, expected_contract)
+    except (ValueError, subprocess.SubprocessError):
+        return True
+    return False
 
 
 def _repository(reference: str) -> str:
@@ -307,7 +339,13 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--manifest", default=DEFAULT_MANIFEST)
     parser.add_argument("--github-output", type=Path)
-    parser.add_argument("--resolve-image")
+    exclusive = parser.add_mutually_exclusive_group()
+    exclusive.add_argument("--resolve-image")
+    exclusive.add_argument(
+        "--publish-decision",
+        metavar="REFERENCE",
+        help="write publish=true|false: whether REFERENCE lacks this contract",
+    )
     parser.add_argument("--resolver", choices=("shadow", "remote", "pull"), default="shadow")
     args = parser.parse_args()
     try:
@@ -318,6 +356,7 @@ def main() -> int:
             "pull": resolve_image_pull,
         }
         image = resolvers[args.resolver](args.resolve_image, value) if args.resolve_image else None
+        publish = publish_needed(args.publish_decision, value) if args.publish_decision else None
     except (OSError, subprocess.SubprocessError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -326,6 +365,11 @@ def main() -> int:
             print(f"contract={value}", file=stream)
             if image:
                 print(f"image={image}", file=stream)
+            if publish is not None:
+                print(f"publish={str(publish).lower()}", file=stream)
+    if publish is not None:
+        print(f"publish={str(publish).lower()}")
+        return 0
     print(image or value)
     return 0
 

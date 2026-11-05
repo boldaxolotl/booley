@@ -399,6 +399,9 @@ RUN userdel -r ubuntu 2>/dev/null || true \
 # bundle layout, but production runtime code does not. Remove it in the SAME
 # layer that pip creates it; a later-layer deletion would hide the file from
 # the merged filesystem without reclaiming any image storage.
+# Only the dependencies exported from this copy are part of the base contract,
+# so no later step may read anything else from it: two images with one contract
+# could otherwise carry different copies.
 COPY pyproject.toml /tmp/booley-build/pyproject.toml
 COPY src/booley/data/docker/export_project_dependencies.py /tmp/booley-build/export_project_dependencies.py
 # Ubuntu 26.04's system Python refuses ensurepip outside a venv; its supported
