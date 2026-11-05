@@ -1164,6 +1164,37 @@ def _add_pr_publish_parser(subparsers: argparse._SubParsersAction) -> None:
                     action_parser.add_argument("--edit-last", action="store_true")
 
 
+def self_test_main() -> int:
+    """Prove the scanner's encryption dependency seals, unseals, and rejects tampering.
+
+    Needs no key, repository, or network: it uses a throwaway key and plaintext.
+    Exit 1 when the dependency is missing, cannot round-trip, or accepts a
+    tampered ciphertext (a base64 or format error is not tamper detection).
+    """
+    plaintext = b"self-test vocabulary"
+    try:
+        key = os.urandom(32)
+        sealed = seal_vocabulary(plaintext, key)
+        if unseal_vocabulary(sealed, key) != plaintext:
+            raise GuardError("the dependency did not return the sealed plaintext")
+        header, identifier, payload, _tail = sealed.split(b"\n")
+        raw = bytearray(base64.b64decode(payload, validate=True))
+        raw[-1] ^= 0x01  # last byte of the authentication tag
+        tampered = b"\n".join((header, identifier, base64.b64encode(bytes(raw)), b""))
+        try:
+            unseal_vocabulary(tampered, key)
+        except SealedVocabularyError as exc:
+            if "failed authentication" not in str(exc):
+                raise GuardError(f"tampering was rejected for the wrong reason: {exc}") from exc
+        else:
+            raise GuardError("the dependency accepted a tampered ciphertext")
+    except (ImportError, SealedVocabularyError, GuardError) as exc:
+        print(f"Confidential-content scanner self-test failed: {exc}", file=sys.stderr)
+        return 1
+    print("Confidential-content scanner self-test: passed.")
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path.cwd(), help="repository to inspect")
@@ -1199,6 +1230,9 @@ def _parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--base", required=True)
     verify_parser.add_argument("--event", required=True, type=Path)
     subparsers.add_parser("sync-ci-key", help="publish the decryption key to Actions")
+    subparsers.add_parser(
+        "self-test", help="check the encryption dependency without a key or repository"
+    )
     audit_parser = subparsers.add_parser("audit", help="inspect full ancestry of revisions")
     audit_parser.add_argument("--rev", action="append", default=[], help="revision to inspect")
     audit_parser.add_argument(
@@ -1237,6 +1271,8 @@ def main(argv: list[str] | None = None) -> int:
             remote_name=parsed.remote_name,
             remote_location=parsed.remote_location,
         )
+    if parsed.command == "self-test":
+        return self_test_main()
     if parsed.command in {"pull-request", "pr-text", "publish-pr"}:
         return _pr_command_main(parsed)
     if parsed.command in {

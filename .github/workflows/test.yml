@@ -87,6 +87,7 @@ jobs:
       packaging: ${{ steps.classify.outputs.packaging }}
       workflow: ${{ steps.classify.outputs.workflow }}
       release: ${{ steps.classify.outputs.release }}
+      ci_tooling: ${{ steps.classify.outputs.ci_tooling }}
       full: ${{ steps.classify.outputs.full }}
       jobs: ${{ steps.classify.outputs.jobs }}
       build_stable_base: ${{ steps.classify.outputs.build_stable_base }}
@@ -145,7 +146,7 @@ jobs:
           cache: pip
 
       - name: Install semantic-check dependency
-        run: pip install PyYAML==6.0.3
+        run: pip install -r .github/ci/requirements-lint.txt
 
       - name: Validate release semantics
         run: >-
@@ -803,7 +804,7 @@ jobs:
 
       - name: Build wheel and source distribution
         run: |
-          pip install build==1.6.1 twine==7.0.0
+          pip install -r .github/ci/requirements-build.txt
           PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import BuildProfile, write_build_stamp; write_build_stamp(Path.cwd(), profile=BuildProfile.DEVELOPMENT_WHEEL)'
           trap 'rm -f src/booley/_build_commit.py src/booley/data/development-build-context.tar.gz' EXIT
           python -m build
@@ -852,6 +853,27 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  # Exercises the scanner's dependency from the pull request's own requirements.
+  # confidential-content.yml runs the trusted base scanner and cannot see a
+  # candidate bump of .github/ci/requirements-scanner.txt.
+  scanner-smoke:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: fromJSON(needs.changes.outputs.jobs)['scanner-smoke']
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Install scanner dependency
+        run: python -m pip install -r .github/ci/requirements-scanner.txt
+
+      - name: Seal and unseal a throwaway vocabulary
+        run: python .github/scripts/confidential_content_guard.py self-test
+
   sidecar-smoke:
     runs-on: ubuntu-latest
     needs: changes
@@ -865,7 +887,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install sidecar test dependencies
-        run: pip install pytest==9.2.0 pytest-asyncio==1.4.0
+        run: pip install -r .github/ci/requirements-runners.txt
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
@@ -955,7 +977,7 @@ jobs:
           cache: pip
 
       - name: Install host-side test dependencies
-        run: pip install pytest==9.2.0 pytest-asyncio==1.4.0
+        run: pip install -r .github/ci/requirements-runners.txt
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -1341,7 +1363,7 @@ jobs:
               --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
               -e TMPDIR=/validation-tmp
-              booley-test bash -c "pip install --break-system-packages pytest==9.2.0 pytest-asyncio==1.4.0 &&
+              booley-test bash -c "pip install --break-system-packages -r /work/.github/ci/requirements-runners.txt &&
               python -m pytest /work/tests/bwave/test_waveform_store_streaming.py
               -v -k 'not slow' -o cache_dir=/validation-tmp/pytest-cache"
 
@@ -1371,7 +1393,7 @@ jobs:
               -e TMPDIR=/validation-tmp -e BOOLEY_CONTAINER=1
               -e BOOLEY_PYTEST_TIMING_FILE=/validation-tmp/test-timings.jsonl
               booley-test bash -c "pip install --break-system-packages
-              pytest==9.2.0 pytest-asyncio==1.4.0 pytest-timeout==2.4.0 hypothesis &&
+              -r /work/.github/ci/requirements-runners-release.txt &&
               python -m pytest
               /work/tests/smoke/test_verilator_release_matrix.py
               /work/tests/smoke/test_verilator_coverage_collector_smoke.py
@@ -1406,7 +1428,7 @@ jobs:
               --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
               -e TMPDIR=/validation-tmp
-              booley-test bash -c "pip install --break-system-packages pytest==9.2.0 pytest-asyncio==1.4.0 &&
+              booley-test bash -c "pip install --break-system-packages -r /work/.github/ci/requirements-runners.txt &&
               python -m pytest /work/crates/bwave/tests/simulator_ground_truth_test.py
               -q --tb=short -o cache_dir=/validation-tmp/pytest-cache"
 
@@ -1438,7 +1460,7 @@ jobs:
               --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
               -e TMPDIR=/validation-tmp -e BOOLEY_GOAL_MODE_SMOKE=1 -e BOOLEY_MCP_MODE=interactive
-              booley-test bash -c "pip install --break-system-packages pytest==9.2.0 pytest-asyncio==1.4.0 &&
+              booley-test bash -c "pip install --break-system-packages -r /work/.github/ci/requirements-runners.txt &&
               python -m pytest /work/tests/smoke/test_goal_mode_image_smoke.py
               -v --tb=short --junitxml=/validation-tmp/goal-mode.xml
               -o cache_dir=/validation-tmp/pytest-cache &&
@@ -1677,6 +1699,7 @@ jobs:
       - bwave-integration
       - package-artifacts
       - sidecar-smoke
+      - scanner-smoke
       - bwave-smoke
       - flake-stress
     if: always()

@@ -27,16 +27,22 @@ from booley.core.host_probes import ProbeState, probe_docker
 from booley.dev_support.test_profiles import BWAVE_BUILD, native_test_problem
 
 SCHEMA_VERSION = 1
-PINNED_RUNNERS = {
-    "pytest": "9.2.0",
-    "pytest-asyncio": "1.4.0",
-    "pytest-xdist": "3.8.0",
-    "pytest-timeout": "2.4.0",
-    "pytest-repeat": "0.9.4",
-    "pytest-cov": "7.1.0",
-    "coverage": "7.17.0",
-    "ruff": "0.17.2",
+# The runners whose exact versions the shared tools environment must hold. Only
+# names live here; pyproject.toml is the single source of each version, so a
+# bump there needs no second edit (see runner_pins).
+RUNNER_EXTRAS = {
+    "test": (
+        "pytest",
+        "pytest-asyncio",
+        "pytest-xdist",
+        "pytest-timeout",
+        "pytest-repeat",
+        "pytest-cov",
+        "coverage",
+    ),
+    "quality": ("ruff",),
 }
+_EXACT_PIN_RE = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*([^\s;,]+)\s*")
 # Names the cache root, so checkouts speaking another receipt schema build under
 # another directory and lock and never overwrite or race this one.
 RECEIPT_SCHEMA_VERSION = 2
@@ -473,7 +479,15 @@ def _environment_check(root: Path) -> tuple[Check, tuple[Command, ...], Path]:
     fingerprint = dependency_fingerprint(root)
     env_root = agent_tools_root() / fingerprint
     shared_python = venv_python(env_root)
-    valid, reason = validate_environment(env_root, fingerprint, shared_python)
+    try:
+        pins = runner_pins(root)
+    except ReadinessUsageError as error:
+        return (
+            Check("python.shared-environment", Status.BLOCKED, True, str(error)[:240]),
+            (),
+            (shared_python),
+        )
+    valid, reason = validate_environment(env_root, fingerprint, shared_python, pins)
     if valid:
         return Check("python.shared-environment", Status.READY, True, reason), (), shared_python
     bootstrap = Command(
@@ -542,6 +556,29 @@ def _project_dependencies(root: Path) -> dict[str, tuple[str, ...]]:
     return selected
 
 
+def runner_pins(root: Path) -> dict[str, str]:
+    """Return the exact runner versions pyproject.toml declares, keyed by lowercase name.
+
+    Raises ReadinessUsageError naming the extra and package when a runner has
+    no ``==`` pin, because a floor cannot identify the installed version.
+    """
+    declared = _project_dependencies(root)
+    pins: dict[str, str] = {}
+    for extra, names in RUNNER_EXTRAS.items():
+        exact: dict[str, str] = {}
+        for requirement in declared[extra]:
+            match = _EXACT_PIN_RE.fullmatch(requirement)
+            if match:
+                exact[match[1].lower().replace("_", "-")] = match[2]
+        for name in names:
+            if name not in exact:
+                raise ReadinessUsageError(
+                    f"{name} in the {extra} extra of pyproject.toml needs an exact == pin"
+                )
+            pins[name] = exact[name]
+    return pins
+
+
 def dependency_argv(root: Path) -> tuple[str, ...]:
     """Return a bounded, platform-neutral pip install argument list."""
     values = _project_dependencies(root)
@@ -565,7 +602,9 @@ def venv_python(venv: Path) -> Path:
     return venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 
 
-def validate_environment(root: Path, fingerprint: str, python: Path) -> tuple[bool, str]:
+def validate_environment(
+    root: Path, fingerprint: str, python: Path, pins: dict[str, str]
+) -> tuple[bool, str]:
     """Trust a published receipt; shared by readiness and the bootstrap, it runs no subprocess.
 
     The bootstrap writes the receipt last, after pip check and the runner-pin
@@ -584,7 +623,7 @@ def validate_environment(root: Path, fingerprint: str, python: Path) -> tuple[bo
         return False, "shared tools environment receipt or interpreter is stale"
     installed = receipt.get("installed")
     if not isinstance(installed, dict) or any(
-        installed.get(name) != version for name, version in PINNED_RUNNERS.items()
+        installed.get(name) != version for name, version in pins.items()
     ):
         return False, "shared tools environment has mismatched Ruff/Pytest runner pins"
     return True, "shared tools environment matches the repository fingerprint"

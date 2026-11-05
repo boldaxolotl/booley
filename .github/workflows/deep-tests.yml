@@ -191,7 +191,7 @@ jobs:
           python-version: "3.13"
           cache: pip
       - name: Install worktree test environment
-        run: pip install -e ".[test]" build==1.6.1
+        run: pip install -e ".[test]" -r .github/ci/requirements-build.txt
       - name: Build canonical Sandbox Image
         shell: bash
         run: |

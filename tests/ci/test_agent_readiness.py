@@ -122,15 +122,82 @@ def test_project_runner_pins_match_the_readiness_contract():
     root = Path(__file__).parents[2]
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     extras = project["optional-dependencies"]
+    pins = readiness.runner_pins(root)
+    assert set(pins) == {
+        "pytest",
+        "pytest-asyncio",
+        "pytest-xdist",
+        "pytest-timeout",
+        "pytest-repeat",
+        "pytest-cov",
+        "coverage",
+        "ruff",
+    }
     for extra in ("test", "dev"):
         declared = {item.split("==", 1)[0]: item for item in extras[extra]}
-        runners = {
-            name: version for name, version in readiness.PINNED_RUNNERS.items() if name != "ruff"
-        }
-        for name, version in runners.items():
-            assert declared.get(name) == f"{name}=={version}"
+        for name, version in pins.items():
+            if name != "ruff":
+                assert declared.get(name) == f"{name}=={version}"
     quality = {item.split("==", 1)[0]: item for item in extras["quality"]}
-    assert quality["ruff"] == f"ruff=={readiness.PINNED_RUNNERS['ruff']}"
+    assert quality["ruff"] == f"ruff=={pins['ruff']}"
+
+
+def _write_project(root: Path, test: list[str], quality: list[str]) -> None:
+    """Write a minimal pyproject.toml declaring the given extras."""
+    lines = ["[project]", 'name = "demo"', 'version = "0"', "dependencies = []"]
+    lines += ["[project.optional-dependencies]"]
+    lines += ["test = [" + ", ".join(f'"{item}"' for item in test) + "]"]
+    lines += ["quality = [" + ", ".join(f'"{item}"' for item in quality) + "]"]
+    (root / "pyproject.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+_RUNNER_NAMES = (
+    "pytest",
+    "pytest-asyncio",
+    "pytest-xdist",
+    "pytest-timeout",
+    "pytest-repeat",
+    "pytest-cov",
+    "coverage",
+)
+
+
+def test_runner_pins_derive_from_project_metadata(tmp_path):
+    """A version bump in pyproject.toml alone changes the pins; no second edit exists."""
+    test = [f"{name}=={index}.0.1" for index, name in enumerate(_RUNNER_NAMES, start=1)]
+    _write_project(tmp_path, [*test, "hypothesis>=1.0"], ["Ruff==9.9.9"])
+    pins = readiness.runner_pins(tmp_path)
+    assert pins == {
+        **{name: f"{index}.0.1" for index, name in enumerate(_RUNNER_NAMES, start=1)},
+        "ruff": "9.9.9",
+    }
+
+
+def test_runner_without_exact_pin_is_a_usage_error(tmp_path):
+    exact = [f"{name}==1" for name in _RUNNER_NAMES]
+    cases = {
+        "pytest": (
+            ["pytest>=1" if n == "pytest" else f"{n}==1" for n in _RUNNER_NAMES],
+            "ruff==1",
+        ),
+        "coverage": ([item for item in exact if not item.startswith("coverage")], "ruff==1"),
+        "ruff": (exact, "ruff>=0.1"),
+    }
+    for culprit, (test, ruff) in cases.items():
+        _write_project(tmp_path, test, [ruff])
+        with pytest.raises(readiness.ReadinessUsageError, match=f"{culprit}.*exact"):
+            readiness.runner_pins(tmp_path)
+
+
+def test_unpinned_runner_blocks_the_shared_environment_check(monkeypatch, tmp_path):
+    """The failure is reported on the environment check, not as a missing source marker."""
+    _write_project(tmp_path, ["pytest>=1"], ["ruff==1"])
+    monkeypatch.setattr(readiness, "dependency_fingerprint", lambda _root: "fp")
+    monkeypatch.setattr(readiness, "agent_tools_root", lambda: tmp_path / "tools")
+    check, commands, _python = readiness._environment_check(tmp_path)
+    assert (check.id, check.status) == ("python.shared-environment", readiness.Status.BLOCKED)
+    assert "pytest" in check.summary
+    assert commands == ()
 
 
 def test_bootstrap_dependencies_never_install_booley():
@@ -249,13 +316,25 @@ def test_git_write_policy_is_closed(monkeypatch, value):
         readiness._prepare(Path.cwd(), "codex/x", None)
 
 
-RECEIPT = {"schema_version": 2, "fingerprint": "fp", "installed": readiness.PINNED_RUNNERS}
 STALE = "shared tools environment receipt or interpreter is stale"
 PINS = "shared tools environment has mismatched Ruff/Pytest runner pins"
 
 
-def _write_receipt(environment: Path, receipt: object = RECEIPT) -> None:
+def _runner_pins() -> dict[str, str]:
+    """The runner pins this checkout's pyproject.toml declares."""
+    return readiness.runner_pins(Path(__file__).parents[2])
+
+
+def _receipt(pins: dict[str, str] | None = None, **overrides: object) -> dict[str, object]:
+    """A valid schema-2 receipt for fingerprint ``fp``, with *overrides* applied."""
+    installed = _runner_pins() if pins is None else pins
+    return {"schema_version": 2, "fingerprint": "fp", "installed": installed} | overrides
+
+
+def _write_receipt(environment: Path, receipt: object = None) -> None:
     """Publish *receipt* (raw JSON text when a string) beside a venv interpreter."""
+    if receipt is None:
+        receipt = _receipt()
     python = readiness.venv_python(environment)
     python.parent.mkdir(parents=True, exist_ok=True)
     python.touch()
@@ -266,23 +345,25 @@ def _write_receipt(environment: Path, receipt: object = RECEIPT) -> None:
 @pytest.mark.parametrize(
     ("receipt", "summary"),
     [
-        (RECEIPT, "shared tools environment matches the repository fingerprint"),
+        (_receipt, "shared tools environment matches the repository fingerprint"),
         ("[", "shared tools environment is missing or has no valid receipt"),
         ("null", STALE),
-        ({**RECEIPT, "schema_version": 1}, STALE),
-        ({**RECEIPT, "fingerprint": "other"}, STALE),
-        ({**RECEIPT, "installed": None}, PINS),
-        ({**RECEIPT, "installed": {**readiness.PINNED_RUNNERS, "ruff": "0.0.0"}}, PINS),
+        (lambda pins: _receipt(pins, schema_version=1), STALE),
+        (lambda pins: _receipt(pins, fingerprint="other"), STALE),
+        (lambda pins: _receipt(pins, installed=None), PINS),
+        (lambda pins: _receipt(pins, installed=pins | {"ruff": "0.0.0"}), PINS),
     ],
     ids=["valid", "unparsable", "null", "schema-1", "fingerprint", "no-pins", "wrong-pin"],
 )
 def test_develop_trusts_the_receipt_without_probing(monkeypatch, tmp_path, receipt, summary):
+    pins = _runner_pins()
     monkeypatch.setattr(readiness, "dependency_fingerprint", lambda _root: "fp")
+    monkeypatch.setattr(readiness, "runner_pins", lambda _root: pins)
     monkeypatch.setattr(readiness, "agent_tools_root", lambda: tmp_path)
     monkeypatch.setattr(readiness.subprocess, "run", lambda *_a, **_k: pytest.fail("probed"))
-    _write_receipt(tmp_path / "fp", receipt)
+    _write_receipt(tmp_path / "fp", receipt(pins) if callable(receipt) else receipt)
     check, commands, _python = readiness._environment_check(tmp_path)
-    blocked = receipt is not RECEIPT
+    blocked = receipt is not _receipt
     assert (check.id, check.summary) == ("python.shared-environment", summary)
     assert check.status is (readiness.Status.BLOCKED if blocked else readiness.Status.READY)
     assert [command.id for command in commands] == (
@@ -314,7 +395,7 @@ def test_invalid_environment_is_rebuilt_in_place(monkeypatch, tmp_path):
 def test_failed_build_leaves_neither_tree_nor_receipt(monkeypatch, tmp_path):
     module = _bootstrap_module()
     environment = tmp_path / "fp"
-    _write_receipt(environment, {**RECEIPT, "schema_version": 1})
+    _write_receipt(environment, _receipt(schema_version=1))
     error = RuntimeError("pip failed")
 
     def build(environment, *_args):
@@ -399,7 +480,7 @@ def offline_bootstrap(monkeypatch, tmp_path):
     """Make the bootstrap install one offline console-script wheel and no pins."""
     pytest.importorskip("ensurepip")
     wheel = _console_script_wheel(tmp_path)
-    monkeypatch.setattr(readiness, "PINNED_RUNNERS", {})
+    monkeypatch.setattr(readiness, "runner_pins", lambda _root: {})
     monkeypatch.setattr(
         readiness,
         "dependency_argv",
@@ -427,7 +508,7 @@ def test_schema_one_receipt_is_rebuilt_with_working_console_scripts(offline_boot
     assert (result.returncode, result.stdout.strip()) == (0, "demo-tool ran"), result.stderr
     assert not (environment / "stale").exists()
     assert readiness.validate_environment(
-        environment, "fingerprint", readiness.venv_python(environment)
+        environment, "fingerprint", readiness.venv_python(environment), {}
     )[0]
 
 
@@ -589,6 +670,7 @@ def test_environment_check_emits_bootstrap_commands(monkeypatch, tmp_path):
     monkeypatch.setattr(readiness, "agent_tools_root", lambda: tmp_path)
     python = tmp_path / "bin/python"
     monkeypatch.setattr(readiness, "venv_python", lambda _root: python)
+    monkeypatch.setattr(readiness, "runner_pins", lambda _root: {})
     monkeypatch.setattr(readiness, "validate_environment", lambda *args: (False, "stale"))
     check, commands, shared = readiness._environment_check(tmp_path / "root")
     assert check.status is readiness.Status.BLOCKED
