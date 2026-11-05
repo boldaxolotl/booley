@@ -36,7 +36,7 @@ booley flow synth --target synth_core --baseline main
 
 | Option | Effect |
 |---|---|
-| `--baseline <git-ref>` | Also synthesize the Target at that revision and add the change in percent to every row. Shared rules: [Running Flows](FLOW_REFERENCE.md#common-options). |
+| `--baseline <git-ref>` | Also synthesize the Target at that revision and add the change in percent to every row. Its timing reports are kept beside the current run's; the JSON report names both. Shared rules: [Running Flows](FLOW_REFERENCE.md#common-options). |
 | `--ppa-profile <compact\|balanced\|max_frequency>` | Use this [optimization profile](#optimization-profiles) for this run. Default: the Target's `ppa_profile`, else `balanced`. |
 | `--flatten` / `--no-flatten` | Flatten the hierarchy before mapping, or keep it. Default: flatten. |
 | `--frontend <sv2v\|slang>` | Pick how SystemVerilog is read; switch only when the default fails. See [synth RTL frontend](SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang). |
