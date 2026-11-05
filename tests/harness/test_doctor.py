@@ -3321,10 +3321,10 @@ targets:
     [message] = c.warned
     assert "cannot trace" in message and "sim_x" in message
     assert (message.check_id, message.subject) == ("sim.trace-unavailable", "sim_x")
-    # The Simulation Flow reports a zero-signal traced run as Inconclusive; the
+    # The Simulation Flow reports a zero-signal traced run as inconclusive; the
     # WARN must not promise a silent pass.
-    assert "passes" not in message.lower()
-    assert "Inconclusive" in message and "exit 1" in message
+    assert " passes" not in message.lower()
+    assert "inconclusive (exit 1)" in message
     # The remedy names the trace arguments the owned main must honor.
     assert "+trace and +tracefile=<file>" in message
     assert "[flows.sim].trace_args" in message

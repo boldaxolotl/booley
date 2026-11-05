@@ -5361,12 +5361,13 @@ def _check_sim_traceable(
     auto ``--main`` (or ``--binary``) has no C++ main to construct a
     ``VerilatedVcdC`` or ``VerilatedFstC``, so the trace option hooks into nothing: the
     run produces no usable waveform (typically a bare ~443-byte FST header with
-    **0 signals**), and a run that would otherwise pass is reported Inconclusive
-    (exit 1) — a trap that otherwise surfaces only on the first trace run. The
+    **0 signals**), and a run that would otherwise pass is reported inconclusive
+    (exit 1; an Error, exit 2, if the trace pipeline stalls) — a trap that
+    otherwise surfaces only on the first trace run. The
     remedy is the convention traceable sim Targets already follow: a committed
     ``cppSource`` ``--exe`` main that opens the matching tracer and honors
     ``+trace``/``+tracefile=<file>`` (or the project's declared
-    ``[flows.sim].trace_args``), and drop ``--main``.
+    ``[flows.sim].trace_args``), and drop ``--main``/``--binary``.
 
     Verilator-only by design: for Icarus/Xcelium/VCS the trace overlay
     *auto-supplies* the ``booley_vcd_dump`` module from Booley's ``refs/`` when
@@ -5403,11 +5404,12 @@ def _check_sim_traceable(
             f"Verilator sim Target(s) cannot trace: {offending} — they build with "
             "Verilator's auto --main/--binary, which has no tracer for "
             "`sim --trace` to hook, so a traced run produces no usable waveform: "
-            "one that would otherwise pass ends Inconclusive (exit 1). Give each "
+            "one that would otherwise pass ends inconclusive (exit 1), or as an "
+            "Error (exit 2) if the trace pipeline stalls. Give each "
             "a cppSource --exe main that opens the matching VCD/FST tracer and "
             "handles Booley's +trace and +tracefile=<file> arguments (or declare "
             "[flows.sim].trace_args for the options your main accepts), and drop "
-            "--main from verilator_options (mirror a traceable sim Target's "
+            "--main/--binary from verilator_options (mirror a traceable sim Target's "
             "tb_cpp fileset)."
         )
 

@@ -161,11 +161,10 @@ def _render_trace_args(trace_args: list[str] | None, trace_file: Path | None) ->
     Booley cannot assume its own plusarg convention: a project that owns its
     C++ ``main()`` defines whatever trace CLI it likes, and Ibex's
     ``VerilatorSimCtrl`` accepts only getopt ``-t``/``--trace[=FILE]``. Passing
-    the wrong convention is silent — the binary ignores the unknown plusarg,
-    the dump contains nothing but a header, and the traced run ends
-    inconclusive. So the
-    contract is configurable (``[flows.sim].trace_args``), with Booley's
-    own convention as the default.
+    the wrong convention is silent — the binary ignores the unknown plusarg
+    and the dump contains nothing but a header — yet the traced run still ends
+    inconclusive rather than passing. So the contract is configurable
+    (``[flows.sim].trace_args``), with Booley's own convention as the default.
 
     ``{file}`` interpolates the resolved trace destination: a VCD FIFO for the
     conversion recipe or a regular FST file for the native recipe. Arguments
