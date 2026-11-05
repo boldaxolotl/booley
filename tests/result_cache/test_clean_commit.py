@@ -333,10 +333,13 @@ def test_git_failure_raises_clean_commit_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="root ignores modes")
-@pytest.mark.parametrize("mode", [0o000, 0o444], ids=["unlistable", "unsearchable"])
-def test_unreadable_directory_in_ignored_repository_raises(tmp_path: Path, mode: int) -> None:
+@all_cases([("unlistable", 0o000), ("unsearchable", 0o444)])
+def test_unreadable_directory_in_ignored_repository_raises(
+    case: tuple[str, int], tmp_path: Path
+) -> None:
     from booley.result_cache.clean_commit import CleanCommitError
 
+    mode = case[1]
     layout = build_layout(tmp_path, "tracked")
     nested_ignored_link(layout.rtl, str(tmp_path / "secret"))
     (layout.rtl / "nested/deep").mkdir()
