@@ -349,6 +349,22 @@ def hidden_off_commit_submodule(base: Path) -> Path:
     return layout.project
 
 
+def unreadable_booley_repository(base: Path) -> Path:
+    layout = build_layout(base, "standalone")
+    (layout.rtl / ".booley/.git").rename(layout.rtl / ".booley/.git.real")
+    (layout.rtl / ".booley/.git").write_text("gitdir: /nonexistent\n")  # a stale gitfile
+    return layout.project
+
+
+def hidden_symlinked_gitlink(base: Path) -> Path:
+    layout = build_layout(base, "tracked")
+    sub = add_submodule(layout.rtl, "sub", new_repo(base / "sub", {"s.v": "s\n"}))
+    git(layout.rtl, "update-index", "--skip-worktree", "sub")
+    shutil.rmtree(sub)
+    sub.symlink_to(base / "sub")  # a checkout at the recorded commit
+    return layout.project
+
+
 NOT_TRACKED = "neither tracked in the RTL repository"
 UNSELECTABLE_CASES: dict[str, tuple[Callable[[Path], Path], str]] = {
     "not-a-repository": (lambda b: b.joinpath("plain").mkdir() or b / "plain", "not in a Git"),
@@ -378,6 +394,8 @@ UNSELECTABLE_CASES: dict[str, tuple[Callable[[Path], Path], str]] = {
     ),
     "gitlink-path-is-absent": (lambda b: gitlink_replaced(b, lambda sub: None), "not clean"),
     "assume-unchanged-submodule-off-commit": (hidden_off_commit_submodule, "not at its recorded"),
+    "booley-repository-unreadable": (unreadable_booley_repository, "it cannot read"),
+    "hidden-gitlink-replaced-by-symlink": (hidden_symlinked_gitlink, "populated but not"),
     "submodule-without-commit": (unborn_submodule, "submodule repository with no commit"),
 }
 
