@@ -974,6 +974,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
         "bwave-integration",
         "package-artifacts",
         "sidecar-smoke",
+        "scanner-smoke",
         "bwave-smoke",
     }
     assert workflow["workflow"] == "true"
