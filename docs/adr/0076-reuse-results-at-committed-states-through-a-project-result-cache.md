@@ -331,6 +331,9 @@ Each is bounded by the sampled re-runs (§6) and the kill switch.
 - **Nondeterminism** that the comparison rule doesn't expose.
 - **Host changes below the coarse identity**, such as microcode, sysctls,
   memory pressure or storage errors.
+- **CPU, memory or pids limits set above the Sandbox's cgroup namespace**
+  (a `--cgroup-parent`, a systemd slice quota), which the host facts cannot
+  read from inside it.
 - **Mounted tool trees changed without changing the fingerprint**, for up to
   30 days.
 - **A verdict-changing knob** that the enumeration test misses.
