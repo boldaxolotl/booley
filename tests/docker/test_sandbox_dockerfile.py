@@ -902,8 +902,11 @@ def test_only_the_tooling_publisher_writes_riscv_tooling_tags() -> None:
 
 def test_release_build_dependency_is_pinned() -> None:
     workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+    requirements = Path(".github/ci/requirements-build.txt").read_text(encoding="utf-8")
 
-    assert "pip install build==1.6.1" in workflow
+    assert "pip install -r .github/ci/requirements-build.txt" in workflow
+    assert "pip install build==" not in workflow
+    assert re.search(r"^build==\d+(\.\d+)+$", requirements, flags=re.MULTILINE)
 
 
 def test_local_build_script_resolves_compatible_stable_base() -> None:

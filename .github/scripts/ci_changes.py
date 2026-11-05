@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import subprocess
 import sys
@@ -38,6 +39,7 @@ CATEGORIES = (
     "packaging",
     "workflow",
     "release",
+    "ci_tooling",
     "full",
 )
 CONDITIONAL_JOBS = (
@@ -53,12 +55,24 @@ CONDITIONAL_JOBS = (
     "package-artifacts",
     "sidecar-smoke",
     "bwave-smoke",
+    "scanner-smoke",
     "flake-stress",
 )
 # Selected by the pull request's changed test modules (ci_flake_stress.py),
 # never by path categories, so a workflow or full-CI change does not force it.
 STRESS_JOB = "flake-stress"
 ALWAYS_JOBS = ("changes", "release-semantic")
+CI_TOOLING_JOBS = (
+    "package-artifacts",
+    "sidecar-smoke",
+    "bwave-smoke",
+    "scanner-smoke",
+    "lint",
+    "test",
+    "test-verify",
+    "coverage-shards",
+    "coverage",
+)
 ALL_JOBS = (*ALWAYS_JOBS, *CONDITIONAL_JOBS)
 # A path whose classification is a subset of this is a documentation path:
 # README, website and documentation content that the narrow `docs-check` job
@@ -92,6 +106,9 @@ _PACKAGING_FILES = {
     "setup.cfg",
     "setup.py",
 }
+# Pins for the CI-only tools that workflows install (never the project itself).
+_CI_REQUIREMENTS_DIR = ".github/ci/"
+_CI_REQUIREMENTS_NAME = "requirements-*.txt"
 _IMAGE_TEST_PREFIXES = ("tests/docker/", "tests/smoke/")
 _IMAGE_TEST_FILES = {"tests/bwave/test_waveform_store_streaming.py"}
 _RELEASE_SENSITIVE_PREFIXES = (
@@ -179,6 +196,15 @@ def _release_image_categories(path: str) -> tuple[str, ...]:
     return tuple(categories)
 
 
+def _ci_tooling_categories(path: str) -> tuple[str, ...]:
+    directory, _, name = path.rpartition("/")
+    if directory + "/" == _CI_REQUIREMENTS_DIR and fnmatch.fnmatchcase(
+        name, _CI_REQUIREMENTS_NAME
+    ):
+        return ("ci_tooling",)
+    return ()
+
+
 def _boolean(value: str) -> bool:
     normalized = value.casefold()
     if normalized not in {"true", "false"}:
@@ -264,6 +290,7 @@ def _path_categories(path: str, *, contract_neutral: bool = False) -> set[str]:
         categories.add("stable_base")
     if path.startswith((".github/workflows/", ".github/actions/", ".github/scripts/")):
         categories.add("workflow")
+    categories.update(_ci_tooling_categories(path))
     if path in {
         ".github/workflows/publish.yml",
         ".github/workflows/docker-publish.yml",
@@ -332,6 +359,11 @@ def _category_jobs(categories: set[str]) -> set[str]:
         jobs.update({"package-artifacts", "bwave-smoke"})
     if "sidecar" in categories:
         jobs.add("sidecar-smoke")
+    if "ci_tooling" in categories:
+        # The jobs that install the pinned tools, plus the Python lane whose
+        # tests keep the requirements files in step with pyproject.toml. Not
+        # `full`/`release`: a pin bump needs no docs, site, or Rust jobs.
+        jobs.update(CI_TOOLING_JOBS)
     return jobs
 
 

@@ -1373,3 +1373,54 @@ def test_source_guard_synthetic_vocabulary_contract(monkeypatch):
     assert prefix.regex.search("narwhal__private_suffix").group() == "narwhal__private_suffix"
     assert not prefix.regex.search("narwhal__")
     assert "quokka" not in token.term_id
+
+
+def _self_test(*, pythonpath: Path | None = None) -> subprocess.CompletedProcess[str]:
+    """Run ``self-test`` in a subprocess, optionally shadowing imports via PYTHONPATH."""
+    env = os.environ.copy()
+    if pythonpath is not None:
+        env["PYTHONPATH"] = str(pythonpath)
+    return subprocess.run(
+        [sys.executable, str(SCANNER), "self-test"],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+
+
+def test_self_test_passes_with_the_scanner_dependency() -> None:
+    """The CI smoke job needs no key, repository, or network, only the dependency."""
+    result = _self_test()
+
+    assert result.returncode == 0, result.stderr
+    assert "self-test" in result.stdout
+
+
+def test_self_test_fails_when_the_dependency_is_broken(tmp_path: Path) -> None:
+    """A dependency that cannot authenticate (or import) must fail the smoke job."""
+    shadow = tmp_path / "cryptography"
+    (shadow / "hazmat/primitives/ciphers").mkdir(parents=True)
+    for package in (shadow, shadow / "hazmat", shadow / "hazmat/primitives"):
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    (shadow / "hazmat/primitives/ciphers/__init__.py").write_text("", encoding="utf-8")
+    (shadow / "hazmat/primitives/ciphers/aead.py").write_text(
+        "class AESGCM:\n"
+        "    def __init__(self, key):\n"
+        "        pass\n"
+        "    def encrypt(self, nonce, data, aad):\n"
+        "        return data + bytes(16)\n"
+        "    def decrypt(self, nonce, data, aad):\n"
+        "        return data[:-16]\n",
+        encoding="utf-8",
+    )
+    (shadow / "exceptions.py").write_text(
+        "class InvalidTag(Exception):\n    pass\n", encoding="utf-8"
+    )
+
+    result = _self_test(pythonpath=tmp_path)
+
+    assert result.returncode == 1
+    assert result.stderr.strip()
+    assert "Traceback" not in result.stderr

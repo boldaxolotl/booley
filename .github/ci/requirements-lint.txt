@@ -1,0 +1,2 @@
+# Lint and validation helpers: the test.yml release-semantic job.
+PyYAML==6.0.3
