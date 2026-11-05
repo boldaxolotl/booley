@@ -352,20 +352,25 @@ class TestRotationRiskVenue:
     _NOTE = "login made inside the Sandbox"
 
     @pytest.mark.parametrize(
-        ("app", "policy", "in_sandbox", "seed_app", "expect_warn"),
+        ("app", "policy", "in_sandbox", "seed_app", "expected"),
         [
-            pytest.param("claude", "auto", True, None, False, id="unseeded-claude"),
-            pytest.param("codex", "auto", True, None, False, id="unseeded-codex"),
-            pytest.param("codex", "auto", True, "claude", False, id="other-app-seed"),
-            pytest.param("claude", "subscription", True, None, False, id="unseeded-subscription"),
-            pytest.param("claude", "auto", True, "claude", True, id="seeded-claude"),
-            pytest.param("codex", "auto", True, "codex", True, id="seeded-codex"),
-            pytest.param("claude", "auto", False, None, True, id="host-claude"),
-            pytest.param("codex", "auto", False, None, True, id="host-codex"),
+            pytest.param("claude", "auto", True, None, "sandbox-note", id="unseeded-claude"),
+            pytest.param("codex", "auto", True, None, "sandbox-note", id="unseeded-codex"),
+            pytest.param("codex", "auto", True, "claude", "sandbox-note", id="other-app-seed"),
+            pytest.param(
+                "claude", "subscription", True, None, "sandbox-note", id="unseeded-subscription"
+            ),
+            pytest.param("claude", "auto", True, "claude", "warn", id="seeded-claude"),
+            pytest.param(
+                "claude", "subscription", True, "claude", "accepted-note", id="seeded-subscription"
+            ),
+            pytest.param("codex", "auto", True, "codex", "warn", id="seeded-codex"),
+            pytest.param("claude", "auto", False, None, "warn", id="host-claude"),
+            pytest.param("codex", "auto", False, None, "warn", id="host-codex"),
         ],
     )
     def test_rotation_risk_by_venue_and_seed(
-        self, isolated_home, monkeypatch, tmp_path, app, policy, in_sandbox, seed_app, expect_warn
+        self, isolated_home, monkeypatch, tmp_path, app, policy, in_sandbox, seed_app, expected
     ):
         from booley.harness import doctor
 
@@ -393,11 +398,21 @@ class TestRotationRiskVenue:
         )
 
         warns = [f for f in reporter.findings if f.check_id == "agent.rotation-risk"]
-        if expect_warn:
+        sandbox_notes = [f for f in reporter.findings if self._NOTE in f.message]
+        label = {"claude": "Claude Code", "codex": "Codex"}[app]
+        if expected == "warn":
             assert [f.fix for f in warns] == [f"booley auth --app {app}"]
+            assert "host-side login can revoke mid-run" in warns[0].message
+            assert sandbox_notes == []
             return
         assert warns == []
-        assert [f.message for f in reporter.findings if self._NOTE in f.message]
+        if expected == "accepted-note":
+            assert sandbox_notes == []
+            assert any("accepted by explicit auth" in f.message for f in reporter.findings)
+            return
+        assert [(f.severity, f.message.startswith(f"{label}:")) for f in sandbox_notes] == [
+            (doctor.Severity.NOTE, True)
+        ]
 
 
 class TestDoctorCheck:

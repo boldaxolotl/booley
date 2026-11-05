@@ -3238,27 +3238,26 @@ def _check_subscription_creds_health(
                     display_overrides=display_overrides,
                 )
             )
-        elif _host_login_can_rotate(app):
-            _warn(
-                _subscription_expiry_message(
-                    expiry,
-                    now,
-                    f"subscription login at {creds_path} is expired (",
-                    ") and refresh fails once the host has rotated the shared refresh token — agents then crash at launch",
-                    display_overrides=display_overrides,
-                ),
-                f"booley auth --app {app}  (or refresh the host login and recreate the container)",
-            )
         else:
+            if _host_login_can_rotate(app):
+                suffix, fix = (
+                    ") and refresh fails once the host has rotated the shared refresh token — agents then crash at launch",
+                    f"booley auth --app {app}  (or refresh the host login and recreate the container)",
+                )
+            else:
+                suffix, fix = (
+                    ") and must refresh when an agent starts — agents crash at launch if that refresh fails",
+                    "sign in again inside the Sandbox: run claude and use /login",
+                )
             _warn(
                 _subscription_expiry_message(
                     expiry,
                     now,
                     f"subscription login at {creds_path} is expired (",
-                    ") and must refresh when an agent starts — agents crash at launch if that refresh fails",
+                    suffix,
                     display_overrides=display_overrides,
                 ),
-                "sign in again inside the Sandbox: run claude and use /login",
+                fix,
             )
     elif expiry is not None:
         _pass(
