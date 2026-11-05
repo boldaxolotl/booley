@@ -280,6 +280,13 @@ def test_clean_layout_is_cacheable(case: tuple[str, list[str]], tmp_path: Path) 
     assert result.booley_dir == (layout.booley or layout.rtl / ".booley").resolve()
 
 
+def test_booley_directory_at_the_repository_root_is_cacheable(tmp_path: Path) -> None:
+    rtl = new_repo(tmp_path / "rtl", {"booley.toml": '[project]\ndir = "."\n', "a.v": "a\n"})
+    result = check(rtl)
+    assert result.cacheable, result.reasons
+    assert [p.label for p in result.participants] == ["rtl"]
+
+
 def outside_work_tree(base: Path) -> Path:
     layout = build_layout(base, "tracked")
     (base / "elsewhere").mkdir()
@@ -356,6 +363,12 @@ def unreadable_booley_repository(base: Path) -> Path:
     return layout.project
 
 
+def unreadable_nested_booley_repository(base: Path) -> Path:
+    layout = build_layout(base, "tracked")  # the config is tracked in the RTL index
+    (layout.rtl / ".booley/.git").write_text("gitdir: /nonexistent\n")  # a stale gitfile
+    return layout.project
+
+
 def hidden_symlinked_gitlink(base: Path) -> Path:
     layout = build_layout(base, "tracked")
     sub = add_submodule(layout.rtl, "sub", new_repo(base / "sub", {"s.v": "s\n"}))
@@ -395,6 +408,10 @@ UNSELECTABLE_CASES: dict[str, tuple[Callable[[Path], Path], str]] = {
     "gitlink-path-is-absent": (lambda b: gitlink_replaced(b, lambda sub: None), "not clean"),
     "assume-unchanged-submodule-off-commit": (hidden_off_commit_submodule, "not at its recorded"),
     "booley-repository-unreadable": (unreadable_booley_repository, "it cannot read"),
+    "tracked-booley-with-unreadable-repository": (
+        unreadable_nested_booley_repository,
+        "it cannot read",
+    ),
     "hidden-gitlink-replaced-by-symlink": (hidden_symlinked_gitlink, "populated but not"),
     "submodule-without-commit": (unborn_submodule, "submodule repository with no commit"),
 }
