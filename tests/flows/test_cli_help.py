@@ -203,14 +203,15 @@ def test_human_help_states_each_default_once() -> None:
         )
         for group in groups:
             for option in group.options:
-                action = next(a for a in parser._actions if a.dest == option.dest)
-                if action.help == argparse.SUPPRESS:
-                    continue
-                where = (flow.name, option.dest)
-                assert action.help.count(option.omission) == 1, (where, action.help)
-                description = action.help.removesuffix(option.omission)
-                for marker in DEFAULT_MARKERS:
-                    assert marker not in description, (where, marker, action.help)
+                # Several actions can share a dest (hidden alias + visible flag): check the visible ones.
+                for action in parser._actions:
+                    if action.dest != option.dest or action.help == argparse.SUPPRESS:
+                        continue
+                    where = (flow.name, option.dest)
+                    assert action.help.count(option.omission) == 1, (where, action.help)
+                    description = action.help.removesuffix(option.omission)
+                    for marker in DEFAULT_MARKERS:
+                        assert marker not in description, (where, marker, action.help)
 
 
 def test_module_help_outside_project(tmp_path: Path) -> None:
