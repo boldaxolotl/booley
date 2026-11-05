@@ -5,12 +5,19 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+
 from booley.runtime.project_prepare import prepare_project
 
 
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
-        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     ).stdout.strip()
 
 

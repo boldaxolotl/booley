@@ -49,6 +49,7 @@ from booley.flows.test_runs import build_test_run, test_run_document
 from booley.targets.catalog import TargetCatalog
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 __all__ = ["project_alias"]
 
@@ -641,16 +642,35 @@ def test_campaign_store_rejects_linked_root_before_lock_write(tmp_path: Path) ->
 def _source_equal_revision_drift(tmp_path: Path) -> tuple[Path, str]:
     root = tmp_path / "source"
     root.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=root,
+        check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"], cwd=root, check=True, timeout=SUBPROCESS_TIMEOUT_S
+    )
     (root / "source.sv").write_text("module source; endmodule\n", encoding="utf-8")
-    subprocess.run(["git", "add", "source.sv"], cwd=root, check=True)
-    subprocess.run(["git", "commit", "-qm", "source"], cwd=root, check=True)
+    subprocess.run(["git", "add", "source.sv"], cwd=root, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    subprocess.run(
+        ["git", "commit", "-qm", "source"], cwd=root, check=True, timeout=SUBPROCESS_TIMEOUT_S
+    )
     original = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     ).stdout.strip()
-    subprocess.run(["git", "commit", "--allow-empty", "-qm", "drift"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "-qm", "drift"],
+        cwd=root,
+        check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
     return root, original
 
 

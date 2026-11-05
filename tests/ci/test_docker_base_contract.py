@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 from booley.runtime import docker_base_contract
 
@@ -65,6 +66,7 @@ def _fingerprint(repo: Path) -> str:
         capture_output=True,
         check=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return result.stdout.strip()
 
@@ -95,6 +97,7 @@ def test_contract_rejects_missing_or_unsafe_inputs(tmp_path: Path) -> None:
         capture_output=True,
         check=False,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.returncode == 2
@@ -125,6 +128,7 @@ def test_contract_rejects_symlink_escape(tmp_path: Path) -> None:
         capture_output=True,
         check=False,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.returncode == 2

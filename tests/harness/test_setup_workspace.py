@@ -6,9 +6,12 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
+
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 
 @pytest.fixture(autouse=True)
@@ -74,15 +77,24 @@ def _run_worktree_create(
         payload["branch_ref"] = branch_ref
     if on_existing:
         payload["on_existing"] = on_existing
-    return subprocess.run(
-        [bash_bin(), str(worktree_create_script())],
-        input=json.dumps(payload),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-        env=env,
-    )
+    # Output goes to files, not pipes: if the script hangs, the timeout kill
+    # must not then wait for a descendant (git, python) that still holds a pipe
+    # (CPython's Windows post-kill ``communicate()`` has no time limit).
+    with tempfile.TemporaryFile("w+b") as out, tempfile.TemporaryFile("w+b") as err:
+        completed = subprocess.run(
+            [bash_bin(), str(worktree_create_script())],
+            input=json.dumps(payload).encode("utf-8"),
+            stdout=out,
+            stderr=err,
+            check=False,
+            env=env,
+            timeout=SUBPROCESS_TIMEOUT_S,
+        )
+        out.seek(0)
+        err.seek(0)
+        stdout = out.read().decode("utf-8", errors="replace")
+        stderr = err.read().decode("utf-8", errors="replace")
+    return subprocess.CompletedProcess(completed.args, completed.returncode, stdout, stderr)
 
 
 def _assert_moved_worktree_portable(
@@ -142,6 +154,7 @@ def _assert_moved_worktree_portable(
             "PATH": f"{python_bin}{os.pathsep}{os.environ['PATH']}",
             "PYTHONPATH": str(Path(__file__).parents[2] / "src"),
         },
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     assert commit.returncode == 0, commit.stderr
 
@@ -408,6 +421,7 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
         text=True,
         encoding="utf-8",
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 

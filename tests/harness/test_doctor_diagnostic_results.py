@@ -16,7 +16,15 @@ from booley.config.host_config import SandboxHostPolicy
 from booley.harness import doctor, host_diagnostics
 from booley.harness.setup import readiness
 from booley.runtime import doctor_stamp, session_admission
+from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.harness.test_doctor import _patch_environment, _write_project
+
+
+@pytest.fixture(autouse=True)
+def _docker_helper_uses_subprocess_run(monkeypatch):
+    """This module fakes the Docker CLI through ``subprocess.run``."""
+    route_docker_helper_through_subprocess_run(monkeypatch)
+
 
 # The exact host-wide Sandbox inventory listing owned by session_admission.
 _INVENTORY_ARGV = [

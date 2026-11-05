@@ -16,6 +16,7 @@ sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
 from ci_changes import ALL_JOBS, STRESS_JOB, build_test_matrix, classify, required_jobs
 from picorv32_ci_inputs import RISCV_IMAGE_FILES
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 _CLASSIFIER = _ROOT / ".github/scripts/ci_changes.py"
 _AGGREGATOR = _ROOT / ".github/scripts/ci_required.py"
@@ -36,18 +37,22 @@ def _git(repo: Path, *args: str) -> str:
         capture_output=True,
         check=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return result.stdout.strip()
 
 
 def _commit(repo: Path, message: str) -> str:
     env = _git_identity_env()
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=env)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "-A"], check=True, env=env, timeout=SUBPROCESS_TIMEOUT_S
+    )
     subprocess.run(
         ["git", "-C", str(repo), "commit", "-m", message],
         check=True,
         capture_output=True,
         env=env,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return _git(repo, "rev-parse", "HEAD")
 
@@ -58,6 +63,7 @@ def _merge(repo: Path, branch: str) -> str:
         check=True,
         capture_output=True,
         env=_git_identity_env(),
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return _git(repo, "rev-parse", "HEAD")
 
@@ -110,7 +116,9 @@ def _run_classifier(
         command.extend((f"--linux-{option}", value))
     if head_ref is not None:
         command.extend(("--head-ref", head_ref))
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        command, capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT_S
+    )
     return result, output
 
 

@@ -1,26 +1,23 @@
-# Tests
+# `tests.toml`
 
-A **Test** is one named scenario your testbench can run: `reset`, `irq`,
-`stress`. Booley only runs Tests that the Project registers for a sim Target
-in `tests.toml`, so you, the Developer Agent and every Flow refer to the same
-Test by the same name, and every pass or fail traces back to a declared
-configuration. Project Setup writes `tests.toml` from your repository's existing
-tests. After that you change it when you add a test, want to run a test in
-another configuration (a **Test Variant**), or need control over random seeds.
-How to run Tests and read their results is in [Simulation](FLOW-SIM.md).
+`tests.toml` declares the **Tests** of each simulation Target. A Test is one
+named scenario your testbench can run: `reset`, `irq`, `stress`. Booley only
+runs Tests the Project registers here, so you, the Developer Agent and every
+Flow refer to the same Test by the same name, and every pass or fail traces
+back to a declared configuration. The file also declares how a Test runs in
+another configuration (a **Test Variant**) and how runs are seeded.
+
+Project Setup writes `tests.toml` from your repository's existing tests, and
+afterwards you ask the Developer Agent to change it (see
+[Adding a Test](FLOW-SIM.md#adding-a-test)). `booley doctor` checks the file
+and names the entry and the rule for any mistake. Come here to look up what a
+key means. How to run Tests and read their results is in
+[Simulation](FLOW-SIM.md).
 
 A Target without any registered Tests still runs: Booley starts its testbench
 once with no Test selected, so the testbench runs whatever it runs by default.
 
-## Adding a Test
-
-1. Ask the agent to add the test, for example *"Add a test for FIFO overflow
-   to the `sim` Target."* The agent writes the testbench code and registers
-   the Test name in `tests.toml`.
-2. The agent runs `booley doctor`, which checks `tests.toml` and names the
-   entry and the rule for any mistake.
-3. Ask the agent to run it: *"Run `fifo_overflow` on `sim`."* A run of the
-   whole Target includes it from now on.
+## Selecting the Test in the testbench (`select`)
 
 The testbench has to know which Test to run. For an HDL testbench Booley
 passes one argument per run that names the Test. By default it is
@@ -32,11 +29,11 @@ command line, gets its own `select` template. For a
 the names of its cocotb test functions, and Booley selects them itself.
 
 ```toml
-[sim]
+[sim_soc]
 tests  = ["reset", "basic", "stress"]
 select = "+test={name}"               # pass the name instead of the position
 
-[cpu_core]                            # a CPU core that boots one firmware image per Test
+[sim_firmware]                        # a CPU core that boots one firmware image per Test
 tests  = ["hello.elf", "coremark.elf"]
 select = "--meminit=ram,{name}"
 ```
@@ -48,7 +45,7 @@ Target leaves them out, and naming a skipped Test explicitly still runs it.
 An all-skip target fails preflight rather than passing with zero tests.
 
 ```toml
-[sim]
+[sim_soc]
 tests = ["reset", "basic", "stress"]
 skip  = ["stress"]
 ```
@@ -64,7 +61,7 @@ configuration, ask the agent to add a Variant: *"Add a `soak` variant of
 `stress` with 100000 iterations."*
 
 ```toml
-[sim.variants.stress]
+[sim_soc.variants.stress]
 default = "short"
 short = ["+iters=1000"]
 soak  = ["+iters=100000"]
@@ -106,7 +103,7 @@ How the seed reaches the simulation depends on the Target:
 | Any other simulator, HDL testbench | nothing; the Target is **unseeded** |
 
 ```toml
-[sim]
+[sim_soc]
 seed = "+seed={seed}"        # the testbench also reads its seed from +seed=
 default_seed = 7             # this Target's Default Seed; 1 when not set
 ```
@@ -173,9 +170,9 @@ test_list = "smoke"
 
 Any other key fails to load, and `booley doctor` names it.
 
-- **Section names.** A bare Target name (`[sim]`) applies to every core's
+- **Section names.** A bare Target name (`[sim_uart]`) applies to every core's
   Target of that name. To pick one core's Target, quote a qualified name:
-  `["acme:uart:rx#sim"]`. It matches like `--target` does, and it wins over the
+  `["acme:uart:rx#sim_uart"]`. It matches like `--target` does, and it wins over the
   bare name. Two qualified sections that name one Target, or a section that
   names no Target, fail `booley doctor`.
 - **Names.** A Test or Variant name has no whitespace, `+`, `@`, `<`, `>`,
