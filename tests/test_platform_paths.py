@@ -190,7 +190,10 @@ def test_run_captured_bounded_kills_the_tree_when_interrupted():
 
     def recording_popen(*args, **kwargs):
         proc = real_popen(*args, **kwargs)
-        started.append(proc)
+        # Windows tree-kill also launches taskkill through Popen: record only
+        # the helper's own child, not the killer.
+        if not started:
+            started.append(proc)
         return proc
 
     def interrupted(self, *args, **kwargs):
