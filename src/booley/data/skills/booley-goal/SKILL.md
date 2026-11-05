@@ -230,7 +230,7 @@ use identical IDs, summary, and options to recover the saved result, even
 following a later entry. `revalidation_required` needs fresh evidence, a fresh
 operation ID, and a new Session Summary.
 
-Read [review.md](review.md) when Finish returns the Review Package or the human
+Read [review.md](review.md) when Finish returns its summary or the human
 asks to inspect it. Open `done` review findings remain visible and do not
 require a second approval to finish. Completion does not authorize merging,
 publishing, or deleting the branch or worktree. Outside Stealth, the Session

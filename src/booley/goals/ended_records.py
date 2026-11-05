@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.goals.checkout import CheckoutError, GoalCheckout
+from booley.goals.finish_presentation import finished_overview
 from booley.goals.model import GoalRecord, GoalState, WorktreeIdentity
 from booley.goals.paths import goals_root, record_paths, worktree_lock_file
 from booley.goals.store import (
@@ -93,13 +94,25 @@ def with_last_ended(text: str, store: GoalStore, work_dir: Path, *, project_wide
 
 
 def render_last_ended(store: GoalStore, record: GoalRecord) -> str:
-    """Id, state, end time, failure, and the Session Summary and Review Package that exist."""
+    """Id, state, end time, failure, and what the Goal produced.
+
+    A finished record shows its Finish overview, which names the full briefing
+    and the Review Package data; other records name the Session Summary and
+    Review Package files that exist.
+    """
     paths = record_paths(store.booley_dir, record.id)
     lines = [f"Last ended Goal Mode in this worktree: {record.id} ({record.state.value})"]
     if record.ended_at:
         lines.append(f"Ended: {format_human_datetime_safe(record.ended_at)}")
     if record.failure:
         lines.append(f"Failure: {record.failure}")
+    overview = (
+        finished_overview(store.booley_dir, record.id, record.finish_operation)
+        if record.state is GoalState.FINISHED and record.finish_operation
+        else None
+    )
+    if overview is not None:
+        return "\n".join([*lines, "", overview])
     if paths.summary_file.is_file():
         lines.append(f"Session Summary: {paths.summary_file}")
     if paths.review_package_file.is_file():
