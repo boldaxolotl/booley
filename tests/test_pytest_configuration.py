@@ -528,7 +528,7 @@ def test_matrix_uses_test_only_dependencies() -> None:
         if step.get("name") == "Install package with test dependencies"
     )
 
-    assert install_step["run"] == 'pip install -e ".[test]"'
+    assert install_step["run"] == 'pip install -e ".[test]" -c .github/ci/constraints.txt'
 
 
 def test_matrix_enforces_the_ci_duration_budget() -> None:
@@ -776,7 +776,7 @@ def test_lint_job_uses_quality_only_dependencies() -> None:
         if step.get("name") == "Install pinned CI quality tools"
     )
 
-    assert install_step["run"] == 'pip install -e ".[quality]"'
+    assert install_step["run"] == 'pip install -e ".[quality]" -c .github/ci/constraints.txt'
 
 
 def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:

@@ -30,9 +30,12 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            .github/ci/constraints.txt
 
       - name: Install package with test dependencies
-        run: pip install -e ".[test]"
+        run: pip install -e ".[test]" -c .github/ci/constraints.txt
 
       - name: Run complete compatibility suite
         env:

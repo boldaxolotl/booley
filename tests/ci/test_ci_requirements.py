@@ -1,4 +1,7 @@
-"""CI tool pins live in ``.github/ci/requirements-*.txt``, never inline in workflows (#2557)."""
+"""CI tool pins live in ``.github/ci/requirements-*.txt``, never inline in workflows (#2557).
+
+Project installs in CI also pass the committed constraints file (#2707).
+"""
 
 from __future__ import annotations
 
@@ -21,6 +24,23 @@ _REQUIREMENT_FILES = sorted(_REQUIREMENTS_DIR.glob("requirements-*.txt"))
 # Longest first, so "python -m pip" is not mistaken for a bare "python".
 _INSTALLERS = (("uv", "pip"), ("python", "-m", "pip"), ("pip",), ("pip3",), ("pipx",))
 _COMMAND_SEPARATORS = re.compile(r"\n|&&|\|\||;|\|")
+_CONSTRAINTS = ".github/ci/constraints.txt"
+# A project install targets the checkout: ".", ".[extras]", or the workspace variable.
+_PROJECT_TARGET = re.compile(r"(\.|\$\{GITHUB_WORKSPACE\})(\[[^\]]*\])?")
+_PROJECT_INSTALL_LOCATIONS = {
+    "test.yml:docs-check",
+    "test.yml:lint",
+    "test.yml:test",
+    "test.yml:flake-stress",
+    "test.yml:coverage-shards",
+    "test.yml:coverage",
+    "test.yml:bwave-integration",
+    "deep-tests.yml:mutation",
+    "deep-tests.yml:bwave-fuzz",
+    "deep-tests.yml:worktree-mounts",
+    "full-python-matrix.yml:test",
+    ".github/actions/prepare-picorv32-demo/action.yml",
+}
 _PIN = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?P<version>[0-9][0-9A-Za-z.!+_-]*)$")
 
 
@@ -65,6 +85,8 @@ def _install_commands(script: str) -> list[list[str]]:
                 end = index + len(installer)
                 if tuple(tokens[index:end]) == installer and "install" in tokens[end : end + 1]:
                     commands.append(tokens[end + 1 :])
+                    # Longest installer wins: "python -m pip" must not also count as "pip".
+                    break
     return commands
 
 
@@ -183,3 +205,54 @@ def test_pull_request_scanner_smoke_installs_pr_requirements() -> None:
     assert "scanner-smoke" in workflow["jobs"]["ci-required"]["needs"]
     selected = required_jobs(classify([".github/ci/requirements-scanner.txt"]))
     assert "scanner-smoke" in selected
+
+
+def _project_installs() -> list[tuple[str, list[str]]]:
+    """Return ``(location, tokens)`` for every install of the project or its extras."""
+    return [
+        (location, tokens)
+        for location, script in _workflow_texts()
+        for tokens in _install_commands(script)
+        if any(_PROJECT_TARGET.fullmatch(token) for token in tokens)
+    ]
+
+
+def _constraint_paths(tokens: list[str]) -> list[str]:
+    """Return the values passed to ``-c`` / ``--constraint`` in an install command."""
+    return [
+        tokens[index + 1]
+        for index, token in enumerate(tokens[:-1])
+        if token in {"-c", "--constraint"}
+    ]
+
+
+def test_project_installs_pass_the_constraints_file() -> None:
+    """AC1: every CI install of the project or its extras passes the constraints file."""
+    installs = _project_installs()
+    assert {location for location, _ in installs} >= _PROJECT_INSTALL_LOCATIONS
+    offenders = [
+        f"{location}: {' '.join(tokens)}"
+        for location, tokens in installs
+        if not any(path.endswith(_CONSTRAINTS) for path in _constraint_paths(tokens))
+    ]
+    assert offenders == []
+
+
+def test_project_pip_caches_key_on_the_constraints_file() -> None:
+    """AC1: a pip cache serving a project install is keyed on pyproject and the constraints."""
+    installing_jobs = {location for location, _ in _project_installs()}
+    offenders: list[str] = []
+    for path in sorted((_ROOT / ".github/workflows").glob("*.yml")):
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job_name, job in document["jobs"].items():
+            if f"{path.name}:{job_name}" not in installing_jobs:
+                continue
+            for step in job.get("steps", ()):
+                settings = step.get("with", {})
+                if str(step.get("uses", "")).startswith("actions/setup-python") and (
+                    settings.get("cache") == "pip"
+                ):
+                    keyed = settings.get("cache-dependency-path", "").split()
+                    if not {"pyproject.toml", _CONSTRAINTS} <= set(keyed):
+                        offenders.append(f"{path.name}:{job_name}")
+    assert offenders == []
