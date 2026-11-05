@@ -15,8 +15,12 @@ function fakeEditor(options, records, settings) {
     // An explicit `remote: undefined` models a local window, as VS Code reports it.
     const remote = 'remote' in options ? options.remote : 'dev-container';
     const { log, terminals, listeners, commands, messages } = records;
-    // Terminals the user already has open; the Dashboard joins this list.
-    const open = options.userTerminal ? [{ name: 'bash' }] : [];
+    // Terminals already open; the Dashboard joins this list. An idle terminal
+    // (like the Codespace default shell) comes first; a user terminal is one
+    // the user has typed in.
+    const open = [];
+    if (options.idleTerminal) { open.push({ name: 'bash', state: { isInteractedWith: false } }); }
+    if (options.userTerminal) { open.push({ name: 'bash', state: { isInteractedWith: true } }); }
     const root = { fsPath: '/work' };
     const output = { appendLine: line => log.push(line), show() {}, dispose() {} };
     const listen = name => fn => { listeners[name] = fn; return { dispose() {} }; };
@@ -57,7 +61,9 @@ function fakeEditor(options, records, settings) {
             createOutputChannel: () => output,
             createTerminal: options => {
                 const terminal = { options, shown: false, disposed: false,
-                    show() { this.shown = true; }, dispose() { this.disposed = true; } };
+                    state: { isInteractedWith: false },
+                    show(preserveFocus) { this.shown = true; this.preserveFocus = preserveFocus; },
+                    dispose() { this.disposed = true; } };
                 terminals.push(terminal);
                 open.push(terminal);
                 return terminal;
@@ -317,8 +323,22 @@ test('a missing close command never blocks the Dashboard', async () => {
     assert.equal(f.log.length, 0);
 });
 
-test('a terminal already in use keeps the panel; the Dashboard waits behind a notification', async () => {
-    const f = fixture({ userTerminal: true });
+test('a terminal nobody has used does not hold the Dashboard back', async () => {
+    // A Codespace starts its default shell with the Trust click; a restored
+    // terminal in an already-trusted window looks the same.
+    for (const trusted of [false, true]) {
+        const f = fixture({ idleTerminal: true, trusted });
+        await tick();
+        if (!trusted) { f.vscode.workspace.isTrusted = true; f.listeners.trust(); await tick(); }
+        assert.equal(f.terminals.length, 1);
+        assert.equal(f.terminals[0].shown, true, 'the Dashboard comes to the front');
+        assert.equal(f.terminals[0].preserveFocus, true, 'keyboard focus stays put');
+        assert.equal(f.messages.length, 0, 'no notification when nothing is in use');
+    }
+});
+
+test('a terminal the user has used keeps the panel even beside an unused one; the Dashboard waits behind a notification', async () => {
+    const f = fixture({ idleTerminal: true, userTerminal: true });
     await tick();
     assert.equal(f.terminals.length, 1, 'the Dashboard still starts');
     assert.equal(f.terminals[0].shown, false, 'the user terminal must stay in front');

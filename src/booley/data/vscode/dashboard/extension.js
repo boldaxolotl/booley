@@ -103,9 +103,11 @@ class AttachController {
                 this.output.appendLine(result.reason);
                 return;
             }
-            // Sample before creating ours: any terminal already open (for example
-            // the shell a Codespace visitor just opened with Ctrl+`) is in use.
-            const busy = vscode.window.terminals.length > 0;
+            // Sample before creating ours: a terminal the user has typed in since
+            // this window loaded (for example a shell opened with Ctrl+`) is in use.
+            // A terminal nobody has used yet, such as the Codespace shell that
+            // starts with the Trust click, does not hold the Dashboard back.
+            const busy = vscode.window.terminals.some(open => open.state.isInteractedWith);
             const terminal = vscode.window.createTerminal({
                 name: 'Booley Dashboard',
                 shellPath: BOOLEY,
