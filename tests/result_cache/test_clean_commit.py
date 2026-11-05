@@ -13,6 +13,7 @@ from tests.result_cache.git_fixtures import (
     BOOLEY_FILES,
     Layout,
     add_submodule,
+    all_cases,
     build_layout,
     check,
     commit_files,
@@ -35,13 +36,11 @@ def _isolated(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def exclude(repo: Path, pattern: str) -> None:
-    """Hide *pattern* from *repo* without a tracked ``.gitignore``."""
     with (repo / ".git/info/exclude").open("a") as handle:
         handle.write(f"{pattern}\n")
 
 
 def assert_refused(project: Path, *fragments: str) -> None:
-    """The run is refused and one reason contains every fragment."""
     result = check(project)
     assert not result.cacheable
     assert result.tracked_digest is None
@@ -106,7 +105,7 @@ DIRTY_CASES = {
 }
 
 
-@pytest.mark.parametrize("case", DIRTY_CASES)
+@all_cases(DIRTY_CASES)
 def test_dirty_participant_is_not_clean(case: str, tmp_path: Path) -> None:
     layout = dirty_layout(tmp_path)
     clean = check(layout.project)
@@ -204,7 +203,7 @@ LINK_CASES: dict[str, tuple[str, Callable[[Path, str], None], str]] = {
 }
 
 
-@pytest.mark.parametrize("case", LINK_CASES)
+@all_cases(LINK_CASES)
 def test_out_of_tree_symlink_is_not_cacheable(case: str, tmp_path: Path) -> None:
     kind, mutate, where = LINK_CASES[case]
     layout = build_layout(tmp_path, kind)
@@ -220,24 +219,20 @@ def test_out_of_tree_symlink_is_not_cacheable(case: str, tmp_path: Path) -> None
 def test_symlink_inside_participants_stays_cacheable(tmp_path: Path) -> None:
     layout = build_layout(tmp_path, "paired")
     commit_links(layout.rtl, ("file", "src/a.v"), ("root", "."), ("booley", ".booley/cores"))
-    result = check(layout.project)
-    assert result.cacheable, result.reasons
+    assert check(layout.project).cacheable
 
 
-# --- AC5: layouts and refusals -------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("kind", "labels"),
+@all_cases(
     [
         ("tracked", ["rtl"]),
         ("standalone", ["rtl", "booley"]),
         ("paired", ["rtl", "booley"]),
         ("rtl-submodule", ["rtl", "booley"]),
         ("outside-rtl-tree", ["rtl", "booley"]),
-    ],
+    ]
 )
-def test_clean_layout_is_cacheable(kind: str, labels: list[str], tmp_path: Path) -> None:
+def test_clean_layout_is_cacheable(case: tuple[str, list[str]], tmp_path: Path) -> None:
+    kind, labels = case
     layout = build_layout(tmp_path, kind)
     result = check(layout.project)
     assert result.cacheable, result.reasons
@@ -302,7 +297,7 @@ UNSELECTABLE_CASES: dict[str, tuple[Callable[[Path], Path], str]] = {
 }
 
 
-@pytest.mark.parametrize("case", UNSELECTABLE_CASES)
+@all_cases(UNSELECTABLE_CASES)
 def test_unselectable_run_is_not_cacheable(case: str, tmp_path: Path) -> None:
     build, reason = UNSELECTABLE_CASES[case]
     assert_refused(build(tmp_path), reason)

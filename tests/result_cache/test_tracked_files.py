@@ -10,6 +10,7 @@ import pytest
 
 from tests.result_cache.git_fixtures import (
     add_submodule,
+    all_cases,
     build_layout,
     check,
     clone,
@@ -44,7 +45,6 @@ def _isolated(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def lfs_filter(base: Path, smudge: str = "") -> dict[str, str]:
-    """Git config installing the stand-in filter; *smudge* replaces its smudge command."""
     (base / "lfs.py").write_text(LFS_FILTER)
     run = f"{sys.executable} {base / 'lfs.py'}"
     return {"filter.lfs.clean": f"{run} clean", "filter.lfs.smudge": smudge or f"{run} smudge"}
@@ -56,9 +56,7 @@ def clone_with_lfs(origin: Path, target: Path, *options: str, smudge: str = "") 
     return clone(origin, target, *flags, *options)
 
 
-@pytest.mark.parametrize(
-    "case", ["sparse-checkout", "skip-worktree", "lfs-pointer", "uninitialised-submodule"]
-)
+@all_cases(["sparse-checkout", "skip-worktree", "lfs-pointer", "uninitialised-submodule"])
 def test_checkout_variant_changes_tracked_digest(case: str, tmp_path: Path) -> None:
     origin = build_layout(tmp_path / "origin", "tracked").rtl
     files = {"a/x.v": "x\n", "b/y.v": "y\n", ".gitattributes": "big.bin filter=lfs\n"}
@@ -80,7 +78,7 @@ def test_checkout_variant_changes_tracked_digest(case: str, tmp_path: Path) -> N
     assert digest(variant) != digest(full)
 
 
-@pytest.mark.parametrize("case", ["assume-unchanged", "executable-bit"])
+@all_cases(["assume-unchanged", "executable-bit"])
 def test_edit_hidden_from_git_changes_digest(case: str, tmp_path: Path) -> None:
     layout = build_layout(tmp_path, "tracked")
     source = layout.rtl / "src/a.v"
@@ -112,7 +110,7 @@ def hidden_submodule_edit(rtl: Path) -> None:
     (rtl / "sub/s.v").write_text("hidden edit\n")  # gitlink commit unchanged
 
 
-@pytest.mark.parametrize("case", ["rename", "symlink-retarget", "submodule-hidden-edit"])
+@all_cases(["rename", "symlink-retarget", "submodule-hidden-edit"])
 def test_committed_change_changes_digest(case: str, tmp_path: Path) -> None:
     layout = build_layout(tmp_path, "tracked")
     (layout.rtl / "link").symlink_to("src/a.v")
@@ -156,9 +154,9 @@ def test_booley_directory_position_is_keyed(
     assert digest(rtl) != digest(hidden.project)
 
 
-@pytest.mark.parametrize("kind", ["tracked", "standalone", "legacy-pipeline-toml-kept"])
-def test_configuration_files_are_not_digested(kind: str, tmp_path: Path) -> None:
-    layout = build_layout(tmp_path, "standalone" if kind == "standalone" else "tracked")
+@all_cases(["tracked", "standalone", "legacy-pipeline-toml-kept"])
+def test_configuration_files_are_not_digested(case: str, tmp_path: Path) -> None:
+    layout = build_layout(tmp_path, "standalone" if case == "standalone" else "tracked")
     repo, prefix = (layout.booley, "") if layout.booley else (layout.rtl, ".booley/")
     before = digest(layout.project)
 
@@ -166,7 +164,7 @@ def test_configuration_files_are_not_digested(kind: str, tmp_path: Path) -> None
         commit_files(layout.rtl if stray else repo, {(name if stray else prefix + name): text})
         return digest(layout.project)
 
-    if kind == "legacy-pipeline-toml-kept":  # booley.toml wins: pipeline.toml is no config
+    if case == "legacy-pipeline-toml-kept":  # booley.toml wins: pipeline.toml is no config
         before = change("pipeline.toml", "a = 1\n")
         assert change("pipeline.toml", "a = 2\n") != before
         return
@@ -176,6 +174,6 @@ def test_configuration_files_are_not_digested(kind: str, tmp_path: Path) -> None
         assert change(name, "edited\n") != before
         before = digest(layout.project)
     # Anchored to the Booley Directory: the same names elsewhere are digested.
-    stray = "src/tests.toml" if kind == "tracked" else "criteria.toml"
+    stray = "src/tests.toml" if case == "tracked" else "criteria.toml"
     before = change(stray, "a\n", True)
     assert change(stray, "b\n", True) != before

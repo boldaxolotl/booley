@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -42,7 +43,6 @@ def isolate(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def check(project: Path) -> Any:
-    """Run the clean-commit check from a clean Booley Directory selection cache."""
     from booley.result_cache.clean_commit import check_clean_commit
 
     reset_cache()
@@ -50,11 +50,29 @@ def check(project: Path) -> Any:
 
 
 def digest(project: Path) -> str:
-    """The tracked-files digest of a project that must be cacheable."""
     result = check(project)
     assert result.cacheable, result.reasons
     assert result.tracked_digest is not None
     return result.tracked_digest
+
+
+def all_cases(cases: Iterable[Any]) -> Callable[[Callable[..., None]], Callable[[Path], None]]:
+    """Run a ``(case, tmp_path)`` body for every case as one test, naming a failing case."""
+
+    def decorate(run: Callable[..., None]) -> Callable[[Path], None]:
+        def test(tmp_path: Path) -> None:
+            for case in cases:
+                name = case if isinstance(case, str) else case[0]
+                (tmp_path / name).mkdir()
+                try:
+                    run(case, tmp_path / name)
+                except Exception as exc:
+                    raise AssertionError(f"case {name}: {exc!r}") from exc
+
+        test.__name__ = run.__name__
+        return test
+
+    return decorate
 
 
 def git(cwd: Path, *args: str) -> str:
