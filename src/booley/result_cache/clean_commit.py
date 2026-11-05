@@ -120,7 +120,7 @@ def _select_participants(
     if is_git_worktree_root(booley_dir) and not booley_dir.samefile(rtl_root):
         return booley_dir, [("rtl", rtl_root), ("booley", booley_dir)]
     # A repository that cannot be read is refused, not guessed at (the RTL root has its own .git).
-    unreadable = not booley_dir.samefile(rtl_root) and os.path.lexists(booley_dir / ".git")
+    unreadable = os.path.lexists(booley_dir / ".git") and not booley_dir.samefile(rtl_root)
     if unreadable:
         raise _NotCacheableError(f"Booley Directory {booley_dir} has a .git it cannot read")
     inside = relative_posix(booley_dir, rtl_root)

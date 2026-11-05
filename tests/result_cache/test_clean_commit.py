@@ -174,6 +174,11 @@ def submodule_link(rtl: Path, out: str, *, tracked: bool) -> None:
         ignored_link(sub, "ign", out)
 
 
+def ignored_directory_link(rtl: Path, out: str) -> None:
+    (rtl / "build").mkdir()
+    ignored_link(rtl, "build/l", out, "build/")
+
+
 def skip_worktree_link(rtl: Path, out: str) -> None:
     git(rtl, "update-index", "--skip-worktree", "src/a.v")
     (rtl / "src/a.v").unlink()
@@ -200,6 +205,7 @@ LINK_CASES: dict[str, tuple[str, Callable[[Path, str], None], str]] = {
     "tracked": ("tracked", lambda rtl, out: commit_links(rtl, ("link", out)), "rtl:link"),
     "ignored": ("tracked", lambda rtl, out: ignored_link(rtl, "ign", out), "rtl:ign"),
     "ignored-in-nested-repository": ("tracked", nested_ignored_link, "rtl:nested/l"),
+    "ignored-in-plain-ignored-directory": ("tracked", ignored_directory_link, "rtl:build/l"),
     "hop-through-outside-link": ("tracked", hop_link, "rtl:hop"),
     "into-git-directory": ("tracked", lambda r, o: commit_links(r, ("g", ".git/config")), "rtl:g"),
     "dotdot-hop-back-inside": ("tracked", dotdot_hop_link, "rtl:A"),
@@ -285,6 +291,15 @@ def test_booley_directory_at_the_repository_root_is_cacheable(tmp_path: Path) ->
     result = check(rtl)
     assert result.cacheable, result.reasons
     assert [p.label for p in result.participants] == ["rtl"]
+
+
+def test_missing_booley_directory_is_a_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rtl = new_repo(tmp_path / "rtl", {"a.v": "a\n"})  # no local .booley to outrank the variable
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "nowhere"))  # selected, but absent
+    with pytest.warns(UserWarning, match="does not exist"):
+        assert_refused(rtl, "neither tracked in the RTL repository")
 
 
 def outside_work_tree(base: Path) -> Path:
