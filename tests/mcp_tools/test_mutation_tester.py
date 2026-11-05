@@ -43,6 +43,7 @@ from booley.specialists.mutation_tester import (
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
 from tests.conftest import require_symlinks, symlink_or_skip
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 from tests.target_test_support import write_two_core_sim_project
 
 # The parameters the fake ``.core`` Target declares; a test may add plusargs.
@@ -1613,6 +1614,7 @@ def _git(*args: str, cwd: Path) -> None:
         check=True,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 

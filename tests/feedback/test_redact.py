@@ -24,6 +24,7 @@ from booley.feedback.redact import (
     residual_risks,
 )
 from tests.conftest import symlink_or_skip
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 
 @pytest.fixture
@@ -31,13 +32,13 @@ def project(tmp_path):
     """A realistic project: git remote, identity, booley.toml, and a .core."""
     root = tmp_path / "rocketwidget"
     (root / ".booley").mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=SUBPROCESS_TIMEOUT_S)
     for args in (
         ["config", "user.name", "Jane Tester"],
         ["config", "user.email", "jane@acme-semi.example"],
         ["remote", "add", "origin", "git@github.com:acme-semi/rocketwidget.git"],
     ):
-        subprocess.run(["git", *args], cwd=root, check=True)
+        subprocess.run(["git", *args], cwd=root, check=True, timeout=SUBPROCESS_TIMEOUT_S)
     (root / ".booley" / "booley.toml").write_text(
         '[project]\nname = "rocketwidget"\n\n[flows.sim]\n',
         encoding="utf-8",
