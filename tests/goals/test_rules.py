@@ -114,3 +114,16 @@ def test_nonaccepting_configurable_endpoint_uses_safe_fallback(monkeypatch):
     monkeypatch.setattr(catalog, "_default_interactive_definitions", lambda: definitions)
     with pytest.raises(ValueError, match="configured_endpoint lacks work_dir"):
         work_dir_guidance()
+
+
+def test_paired_checkout_rule_only_when_requested(monkeypatch) -> None:
+    from tests.docs.test_goal_work_dir_guidance import _assert_guidance_names, _tools
+
+    guidance = work_dir_guidance()
+    assert "Paired Checkout" not in goal_mode_rules(routing_guidance=guidance)
+    rules = goal_mode_rules(routing_guidance=guidance, paired_checkout=True)
+    assert "is a Paired Checkout: a separate Git repository on its own branch" in rules
+    assert "before finishing" in rules
+    assert "`goal_status`" in rules
+    names = {tool.name for tool in _tools(monkeypatch)}
+    _assert_guidance_names(rules, names, "paired Checkout rules")

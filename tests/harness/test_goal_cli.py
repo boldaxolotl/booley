@@ -628,3 +628,19 @@ def test_goal_abandon_project_selection_no_option(goal_mode, monkeypatch, capsys
     assert capsys.readouterr().err == ""
     assert store.load(goal_mode.record.id).state == GoalState.ABANDONED
     assert store.load(other.record.id) == before
+
+
+def test_goal_status_names_uncommitted_repository(
+    goal_mode,  # noqa: F811 — shared pytest fixture uses its required name
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.chdir(goal_mode.worktree)
+    args = Namespace(goal_command="status", short=False, long=True)
+    assert _cmd_goal(args, goal_mode.main) == 0
+    assert "uncommitted changes" not in capsys.readouterr().out
+    (goal_mode.worktree / "scratch").write_text("work\n", encoding="utf-8")
+    assert _cmd_goal(args, goal_mode.main) == 0
+    assert f"WARNING: uncommitted changes in {goal_mode.worktree} block Finish" in (
+        capsys.readouterr().out
+    )
