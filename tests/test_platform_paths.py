@@ -196,8 +196,15 @@ def test_run_captured_bounded_kills_the_tree_when_interrupted():
             started.append(proc)
         return proc
 
+    real_communicate = real_popen.communicate
+
     def interrupted(self, *args, **kwargs):
-        raise KeyboardInterrupt
+        # Windows tree-kill runs taskkill through subprocess.run, which also
+        # calls communicate(): interrupt only the helper's own child, or the
+        # killer is interrupted and never kills the tree.
+        if started and self is started[0]:
+            raise KeyboardInterrupt
+        return real_communicate(self, *args, **kwargs)
 
     with (
         patch.object(platform_paths.subprocess, "Popen", recording_popen),
