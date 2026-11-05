@@ -343,8 +343,10 @@ def test_bwave_smoke_enforces_cached_path_duration_budget() -> None:
         "steps.duration-clock.outcome == 'success'"
     )
     assert ".github/scripts/ci_duration_budget.py" in canary["run"]
-    assert canary["env"]["STANDARD_BUDGET_SECONDS"] == 560
+    assert canary["env"]["STANDARD_BUDGET_SECONDS"] == 670
+    assert canary["env"]["STANDARD_WARN_SECONDS"] == 640
     assert '--budget-seconds "${budget}"' in canary["run"]
+    assert '--warn-seconds "${warn}"' in canary["run"]
     assert steps.index(canary) > next(
         index
         for index, step in enumerate(steps)
@@ -373,7 +375,7 @@ def _bwave_smoke_clock_seconds(*, build_seconds: int, validation_seconds: int) -
 
 @pytest.mark.parametrize(
     ("build_seconds", "validation_seconds", "passed"),
-    [(900, 450, True), (60, 600, False)],
+    [(900, 450, True), (60, 700, False)],
     ids=["slow-build-normal-tests", "fast-build-slow-tests"],
 )
 def test_bwave_smoke_budget_times_tests_not_image_builds(
@@ -395,6 +397,7 @@ def test_bwave_smoke_budget_times_tests_not_image_builds(
         started_at=1_000,
         now=1_000 + elapsed,
         budget=budget_step["env"]["STANDARD_BUDGET_SECONDS"],
+        warn=budget_step["env"]["STANDARD_WARN_SECONDS"],
     )
 
     assert result.passed is passed
