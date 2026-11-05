@@ -134,9 +134,9 @@ run a fixed focused subset. The change classifier (`required_jobs` in
 `ci_tooling`, and for unclassified paths. `ci_tooling` is
 `.github/ci/requirements-*.txt`, where CI-only tool pins live instead of inline
 in workflows; it runs the jobs that install those pins and the Python lane that
-keeps them in step with `pyproject.toml`, but not `full`. README, website and documentation-only changes run
-`docs-check` instead: `git diff --check` plus the content tests that
-`.github/scripts/ci_docs_tests.py` derives from the files that read
+keeps them in step with `pyproject.toml`, but not `full`. README, website and
+documentation-only changes run `docs-check` instead: `git diff --check` plus the
+content tests that `.github/scripts/ci_docs_tests.py` derives from the files that read
 documentation. They add `package-artifacts` when `README.md` changed, and
 `site-build` and `lint` for `website/` and `docs/user/`. `main` pushes select
 every job, and the weekly `full-python-matrix.yml` workflow runs the same mark

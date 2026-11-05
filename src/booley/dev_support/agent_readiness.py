@@ -42,7 +42,7 @@ RUNNER_EXTRAS = {
     ),
     "quality": ("ruff",),
 }
-_EXACT_PIN_RE = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*([^\s;,]+)\s*")
+_EXACT_PIN_RE = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*([0-9][^\s;,*=]*)\s*")
 # Names the cache root, so checkouts speaking another receipt schema build under
 # another directory and lock and never overwrite or race this one.
 RECEIPT_SCHEMA_VERSION = 2
@@ -485,7 +485,7 @@ def _environment_check(root: Path) -> tuple[Check, tuple[Command, ...], Path]:
         return (
             Check("python.shared-environment", Status.BLOCKED, True, str(error)[:240]),
             (),
-            (shared_python),
+            shared_python,
         )
     valid, reason = validate_environment(env_root, fingerprint, shared_python, pins)
     if valid:

@@ -87,7 +87,6 @@ jobs:
       packaging: ${{ steps.classify.outputs.packaging }}
       workflow: ${{ steps.classify.outputs.workflow }}
       release: ${{ steps.classify.outputs.release }}
-      ci_tooling: ${{ steps.classify.outputs.ci_tooling }}
       full: ${{ steps.classify.outputs.full }}
       jobs: ${{ steps.classify.outputs.jobs }}
       build_stable_base: ${{ steps.classify.outputs.build_stable_base }}

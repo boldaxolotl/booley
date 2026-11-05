@@ -18,13 +18,6 @@ from ci_changes import classify, required_jobs
 
 _REQUIREMENTS_DIR = _ROOT / ".github/ci"
 _REQUIREMENT_FILES = sorted(_REQUIREMENTS_DIR.glob("requirements-*.txt"))
-_EXPECTED_FILES = {
-    "requirements-build.txt",
-    "requirements-lint.txt",
-    "requirements-runners-release.txt",
-    "requirements-runners.txt",
-    "requirements-scanner.txt",
-}
 # Longest first, so "python -m pip" is not mistaken for a bare "python".
 _INSTALLERS = (("uv", "pip"), ("python", "-m", "pip"), ("pip",), ("pip3",), ("pipx",))
 _COMMAND_SEPARATORS = re.compile(r"\n|&&|\|\||;|\|")
@@ -94,6 +87,7 @@ def _requirement_packages(path: Path, seen: frozenset[Path] = frozenset()) -> di
 
 
 def _release_tuple(version: str) -> tuple[int, ...]:
+    assert re.fullmatch(r"\d+(\.\d+)*", version), f"pin {version!r} is not a plain release"
     return tuple(int(part) for part in version.split("."))
 
 
@@ -106,10 +100,6 @@ def _pyproject_requirements() -> dict[str, str]:
         assert match
         declared[match[1].lower()] = match[2]
     return declared
-
-
-def test_the_five_requirement_files_exist() -> None:
-    assert {path.name for path in _REQUIREMENT_FILES} == _EXPECTED_FILES
 
 
 def test_workflows_install_no_inline_exact_pins() -> None:

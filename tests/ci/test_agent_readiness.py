@@ -173,20 +173,24 @@ def test_runner_pins_derive_from_project_metadata(tmp_path):
     }
 
 
-def test_runner_without_exact_pin_is_a_usage_error(tmp_path):
-    exact = [f"{name}==1" for name in _RUNNER_NAMES]
-    cases = {
-        "pytest": (
-            ["pytest>=1" if n == "pytest" else f"{n}==1" for n in _RUNNER_NAMES],
-            "ruff==1",
-        ),
-        "coverage": ([item for item in exact if not item.startswith("coverage")], "ruff==1"),
-        "ruff": (exact, "ruff>=0.1"),
-    }
-    for culprit, (test, ruff) in cases.items():
-        _write_project(tmp_path, test, [ruff])
-        with pytest.raises(readiness.ReadinessUsageError, match=f"{culprit}.*exact"):
-            readiness.runner_pins(tmp_path)
+@pytest.mark.parametrize(
+    ("culprit", "bad_requirement"),
+    [
+        ("pytest", "pytest>=1"),
+        ("pytest", "pytest==1.*"),
+        ("pytest", "pytest===1"),
+        ("coverage", None),
+        ("ruff", "ruff>=0.1"),
+    ],
+)
+def test_runner_without_exact_pin_is_a_usage_error(tmp_path, culprit, bad_requirement):
+    test = [f"{name}==1" for name in _RUNNER_NAMES if name != culprit or culprit == "pytest"]
+    quality = ["ruff==1"] if culprit != "ruff" else [bad_requirement]
+    if culprit == "pytest":
+        test = [bad_requirement if item.startswith("pytest==") else item for item in test]
+    _write_project(tmp_path, test, quality)
+    with pytest.raises(readiness.ReadinessUsageError, match=f"{culprit}.*exact"):
+        readiness.runner_pins(tmp_path)
 
 
 def test_unpinned_runner_blocks_the_shared_environment_check(monkeypatch, tmp_path):
