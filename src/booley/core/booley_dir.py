@@ -6,6 +6,12 @@ Runtime lookups route through :func:`resolve_booley_dir` with 4-step discovery:
   3. Walk up from start dir looking for .booley/
   4. Raise with actionable error
 
+Three resolvers name the parts of Booley state (ADR 0082):
+:func:`resolve_booley_dir` selects the active Booley Directory,
+:func:`resolve_checkout_booley_dir` returns one checkout's own directory (Checkout
+Booley State), and :func:`resolve_common_booley_dir` returns the Main Booley
+Directory shared by every checkout of the Project (Common Booley State).
+
 Full initialization instead uses :func:`booley_dir_for_init` because it owns
 the prospective directory in the explicitly selected checkout.
 
@@ -26,6 +32,7 @@ from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.booley_dir_pin import require_pinned_entry
 from booley.core.booley_layout import (
     BOOLEY_DIR_NAME,
+    git_common_directory,
     require_current_layout,
     validate_environment,
     validate_selection,
@@ -243,6 +250,69 @@ def resolve_authoritative_booley_dir(project_root: Path) -> Path:
     if explicit is not None:
         return explicit
     return root / BOOLEY_DIR_NAME
+
+
+def _owning_checkout(selected: Path) -> Path | None:
+    """Return the RTL checkout owning *selected*: its first strict ancestor with ``.git``.
+
+    A Paired Checkout or Versioned Booley Directory has a ``.git`` of its own;
+    skipping it reaches the outer RTL checkout.
+    """
+    for parent in selected.absolute().parents:
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
+def _main_checkout_root(checkout: Path) -> Path | None:
+    """Return the main checkout of *checkout*'s repository, or ``None`` if unreadable.
+
+    A bare repository, submodule or separate git dir has no ``.git`` directory
+    to take the main checkout from. A malformed marker or retired migration
+    pointer raises ``BooleyLayoutError``.
+    """
+    try:
+        common = git_common_directory(checkout)
+    except OSError:
+        return None
+    if common is not None and not common.is_dir():
+        logger.warning("Git pointer %s names a missing repository", checkout / ".git")
+        return None
+    if common is None or common.name != ".git":
+        return None
+    return common.parent
+
+
+def _main_booley_dir(selected: Path) -> Path | None:
+    """Map a selected Booley Directory to the Main one, or ``None`` to keep it.
+
+    ``None`` means the selection already is main or the Git topology cannot be
+    read (outside Git, stale pointer, bare repository or submodule).
+    """
+    checkout = _owning_checkout(selected)
+    main_root = None if checkout is None else _main_checkout_root(checkout)
+    if checkout is None or main_root is None:
+        return None
+    # Only the checkout's own Booley Directory is remapped, never a stray BOOLEY_DIR.
+    directory = selected.resolve()
+    if resolve_authoritative_booley_dir(checkout).resolve() != directory:
+        return None
+    main = resolve_authoritative_booley_dir(main_root)
+    if main.resolve() == directory or not main.is_dir():
+        return None
+    return main
+
+
+def resolve_common_booley_dir(start: Path | None = None) -> Path:
+    """Return the Main Booley Directory (Common Booley State) of the selected Project.
+
+    From the main checkout, a linked worktree (Snapshot), or a Paired Checkout this
+    is the main checkout's directory, honoring its ``[project].dir``. Outside Git, or
+    when the Git common directory cannot be read, it is the selected directory.
+    """
+    selected = resolve_booley_dir(start)
+    main = _main_booley_dir(selected)
+    return selected if main is None else main
 
 
 def checkout_booley_dir_relative_to(project_root: Path) -> Path:

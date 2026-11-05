@@ -150,6 +150,35 @@ class TestModelForRole:
 
 
 class TestLoadAgentSettings:
+    @pytest.mark.parametrize(
+        ("provider", "expected"),
+        [
+            (
+                "claude",
+                {
+                    "heavy": "claude-fable-5-1",
+                    "standard": "claude-opus-5-5",
+                    "light": "claude-sonnet-5-5",
+                },
+            ),
+            (
+                "codex",
+                {
+                    "heavy": "gpt-6-astra",
+                    "standard": "gpt-6.1-sol",
+                    "light": "gpt-6-luna",
+                },
+            ),
+        ],
+        ids=["claude", "codex"],
+    )
+    def test_default_tiers_by_provider(self, tmp_path, provider, expected):
+        """A project with only [agent] provider gets that provider's current tiers."""
+        _write_toml(tmp_path, f'[agent]\nprovider = "{provider}"\n')
+        load_agent_settings(tmp_path)
+        cfg = bc.get_agent_settings()
+        assert {tier: cfg.model_for_tier(tier) for tier in expected} == expected
+
     def test_roles_land_in_backend_config(self, tmp_path):
         _write_toml(
             tmp_path,
@@ -240,6 +269,18 @@ class TestSpecialistResolvesRolePin:
         specialist = ReviewerSpecialist()
         specialist._args = SimpleNamespace(model=None)
         assert specialist._resolve_model() == "claude-haiku-4-5"
+
+    def test_standalone_fallback_uses_current_standard_model(self, monkeypatch):
+        """Without harness config the fallback is the current standard model."""
+        from booley.specialists.reviewer import ReviewerSpecialist
+
+        def _unavailable():
+            raise AttributeError("no harness settings")
+
+        monkeypatch.setattr("booley.config.settings.get_agent_settings", _unavailable)
+        specialist = ReviewerSpecialist()
+        specialist._args = SimpleNamespace(model=None)
+        assert specialist._resolve_model() == "claude-opus-5-5"
 
     def test_unpinned_specialist_uses_floor_tier(self, monkeypatch):
         from booley.specialists.reviewer import ReviewerSpecialist

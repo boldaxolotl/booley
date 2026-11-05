@@ -101,7 +101,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from booley.config.protected_inputs import protected_input_declarations
 from booley.core.booley_dir import BOOLEY_DIR_NAME, resolve_checkout_booley_dir
@@ -118,6 +118,9 @@ from booley.goals.declared_inputs import (
 from booley.goals.input_identity import capture_roots, require_bindings
 from booley.runtime.git import git_common_dir
 from booley.runtime.git_facts import repository_facts
+
+if TYPE_CHECKING:
+    from booley.goals.model import GoalRecord
 
 # The protected set as the rules text names it (ADR 0067 "Protected inputs").
 PROTECTED_INPUT_NAMES: tuple[str, ...] = (
@@ -185,6 +188,19 @@ class ProtectedInputRoots:
     logical_paths: tuple[tuple[Path, Path], ...] = ()
     checkout_label: tuple[RootKind, str] | None = None
 
+    @classmethod
+    def for_goal(cls, record: GoalRecord, worktree: Path, booley_dir: Path) -> ProtectedInputRoots:
+        """The one roots factory for a Goal: labels as entered, reads through *worktree*.
+
+        Every Goal drift check (entry, run binding, publication, Goal changes, status,
+        Finish) builds its roots here, so they label protected paths the way the
+        entry baseline did and cannot disagree about one filesystem state. The
+        waiver destination check (``mcp/goal_waivers.py``) only locates paths and
+        keeps plain roots, so legacy apply recovery needs no saved input paths.
+        Errors (:class:`InputIdentityError`, :class:`ProtectedInputError`) propagate.
+        """
+        return cls(worktree, booley_dir).with_input_paths(record.input_paths)
+
     @repository_facts()
     def with_input_paths(self, saved: Mapping[str, Any]) -> ProtectedInputRoots:
         """Physical proof preserves D7 labels and resolves them through the current mount."""
@@ -239,6 +255,19 @@ class ProtectedSnapshot:
     def encoded_paths(self) -> tuple[str, ...]:
         """The paths as ``record.json`` stores them."""
         return tuple(path.encode() for path in self.paths)
+
+    @classmethod
+    def at_entry(cls, record: GoalRecord) -> ProtectedSnapshot:
+        """The entry baseline *record* stores: the one place it is decoded.
+
+        An ``entering`` record has no digests yet; they read as empty.
+        """
+        return cls(
+            tuple(ProtectedPath.decode(text) for text in record.protected_paths),
+            record.protected_digest or "",
+            record.protected_head_digest or "",
+            record.declared_protected_inputs,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +428,14 @@ def _digest_inputs(
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+@dataclass(frozen=True)
+class ProtectedCheck:
+    """A Goal's protected-input verdict and the snapshot it was judged on."""
+
+    violations: tuple[str, ...]
+    snapshot: ProtectedSnapshot | None
+
+
 @repository_facts()
 def protected_input_violations(
     recorded_paths: Sequence[str],
@@ -413,28 +450,78 @@ def protected_input_violations(
     is unchanged; the working view equals the working view at entry; the HEAD
     view equals the HEAD view at entry.
     """
-    recorded = tuple(ProtectedPath.decode(text) for text in recorded_paths)
-    if declared is not None:
-        try:
-            current_rules = _declared_rules(roots)
-        except (OSError, ValueError, RuntimeError) as exc:
-            raise ProtectedInputError(f"cannot inspect declared protected inputs: {exc}") from exc
-        if current_rules != declared.declarations:
-            return capture_violations(declared, None)
+    baseline = ProtectedSnapshot(
+        tuple(ProtectedPath.decode(text) for text in recorded_paths),
+        working_digest,
+        head_digest,
+        declared,
+    )
+    return list(_drift_against(baseline, roots).violations)
+
+
+def _drift_against(baseline: ProtectedSnapshot, roots: ProtectedInputRoots) -> ProtectedCheck:
+    """Violations of *baseline* under *roots*, with the snapshot they were judged on.
+
+    The snapshot is ``None`` when the declaration rules changed, which is
+    reported before any file is read.
+    """
+    rules = _declaration_violations(baseline, roots)
+    if rules:
+        return ProtectedCheck(tuple(rules), None)
     snapshot = snapshot_protected_inputs(roots)
-    if declared is not None:
-        detailed = capture_violations(declared, snapshot.declared)
+    return ProtectedCheck(tuple(snapshot_violations(baseline, snapshot)), snapshot)
+
+
+def _declaration_violations(baseline: ProtectedSnapshot, roots: ProtectedInputRoots) -> list[str]:
+    """The violations when the declared-input rules differ from *baseline*'s; else empty."""
+    declared = baseline.declared
+    if declared is None:
+        return []
+    try:
+        current_rules = _declared_rules(roots)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise ProtectedInputError(f"cannot inspect declared protected inputs: {exc}") from exc
+    return capture_violations(declared, None) if current_rules != declared.declarations else []
+
+
+def snapshot_violations(baseline: ProtectedSnapshot, current: ProtectedSnapshot) -> list[str]:
+    """Why *current* differs from *baseline*; empty when it does not.
+
+    The one comparison every Goal surface shares. Declared-input detail is
+    reported only when *baseline* carries a declared capture; otherwise the
+    declared files are covered by the path list and by the digests, which hash
+    the declared capture.
+    """
+    if baseline.declared is not None:
+        detailed = capture_violations(baseline.declared, current.declared)
         if detailed:
             return detailed
-    current = snapshot.paths
-    if current != recorded:
-        changed = sorted({p.encode() for p in current} ^ {p.encode() for p in recorded})
+    if current.paths != baseline.paths:
+        changed = sorted(
+            {p.encode() for p in current.paths} ^ {p.encode() for p in baseline.paths}
+        )
         return [f"protected inputs now resolve to different files: {', '.join(changed)}"]
-    if snapshot.working_digest != working_digest:
+    if current.working_digest != baseline.working_digest:
         return ["a protected input differs from its state at entry"]
-    if snapshot.head_digest != head_digest:
+    if current.head_digest != baseline.head_digest:
         return ["a protected input differs from its state at entry in HEAD"]
     return []
+
+
+@repository_facts()
+def check_goal_inputs(record: GoalRecord, worktree: Path, booley_dir: Path) -> ProtectedCheck:
+    """Compare *record*'s protected inputs with *worktree* now: the one Goal drift check.
+
+    Run binding, publication, Goal changes and status all call this, so one
+    filesystem state yields one verdict. Inputs that cannot be inspected (including
+    roots that changed identity) are a violation, not an exception; Finish builds
+    its own roots because it routes identity failures to a recovery.
+    """
+    try:
+        roots = ProtectedInputRoots.for_goal(record, worktree, booley_dir)
+        return _drift_against(ProtectedSnapshot.at_entry(record), roots)
+    except (ProtectedInputError, OSError, ValueError, RuntimeError) as exc:
+        return ProtectedCheck((f"protected inputs cannot be inspected: {exc}",), None)
 
 
 def _declared_rules(roots: ProtectedInputRoots) -> tuple[str, ...]:

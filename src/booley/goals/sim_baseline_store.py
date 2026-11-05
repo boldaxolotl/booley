@@ -26,9 +26,11 @@ from booley.goals.synth_baseline import (
     synth_result_key,
     synth_units,
 )
+from booley.runtime import job_records
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.filesystem_utils import read_file_bytes
+from booley.runtime.pid import is_pid_alive
 
 SCHEMA = "booley.sim-baseline/v1"
 INPUTS_FILE = "sim-baseline-inputs.json"
@@ -224,7 +226,7 @@ def _capture_protected(
 
     root = Path(record.worktree_path).resolve()
     project = resolve_checkout_booley_dir(root)
-    roots = ProtectedInputRoots(root, booley_dir)
+    roots = ProtectedInputRoots.for_goal(record, root, booley_dir)
     main = roots.main_checkout()
     paths = sorted(record.protected_paths, key=lambda value: not value.startswith("worktree:"))
     for encoded in paths:
@@ -392,3 +394,32 @@ def validate_results(
         found.add(pair)
     if status == "complete" and found != set(wanted):
         raise ValueError("completed baseline report is missing Test Runs")
+
+
+def baseline_observations(
+    project: Path,
+    record: GoalRecord,
+    goal: RecordedGoal,
+    family: BaselineFamily = SIM_BASELINE,
+) -> dict[str, Any]:
+    """Read an independent request; dead Jobs never remain pending indefinitely."""
+    try:
+        inputs = entry_inputs(project, record)
+        identity = request_identity(project, record, goal, inputs, family)
+        path = request_path(project, identity, family)
+        if not path.exists():
+            return {"status": "pending", "reason": "baseline has not been scheduled yet"}
+        raw = read_document(path, family)
+        if raw.get("identity") != identity:
+            raise ValueError("baseline request identity differs")
+        validate_results(project, raw, family)
+        if raw.get("status") == "pending":
+            job = job_records.read_record(raw["job_id"], Path(raw["jobs_root"]))
+            if job is None or not job_records.is_active(job, is_pid_alive):
+                return {
+                    "status": "unavailable",
+                    "reason": "baseline Job interrupted or unavailable",
+                }
+        return raw
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return {"status": "unavailable", "reason": f"baseline evidence cannot be read: {exc}"}
