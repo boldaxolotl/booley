@@ -32,16 +32,23 @@ puts "BOOLEY_STAGE: detailed_placement"
 detailed_placement
 estimate_parasitics -placement
 puts "BOOLEY_STAGE: sta_report_pre_repair"
-report_checks -path_delay max -sort_by_slack -group_count 1 > {<WORK>/reports/timing/pre_repair.rpt}
-set _pre_paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count 1]
+set _pre_paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count 10]
 set _pre_csv [open {<WORK>/reports/timing/pre_repair.csv.rpt} w]
-foreach _pp $_pre_paths {
+set _pre_slacks {}
+foreach _pp [lrange $_pre_paths 0 9] {
   set _slk [get_property $_pp slack]
   puts $_pre_csv [format "%s,%s,%.6f" [get_property [get_property $_pp startpoint] full_name] [get_property [get_property $_pp endpoint] full_name] $_slk]
-  puts [format "STA_PRE_REPAIR_WORST_SLACK_NS: %.6f" $_slk]
-  break
+  lappend _pre_slacks $_slk
 }
 close $_pre_csv
+if {[llength $_pre_slacks] > 0} {
+  puts [format "STA_PRE_REPAIR_WORST_SLACK_NS: %.6f" [lindex $_pre_slacks 0]]
+}
+if {[llength $_pre_slacks] > 0} {
+  report_checks -path_delay max -sort_by_slack -group_path_count 10 -slack_max [expr {[lindex $_pre_slacks end] + 1e-6}] > {<WORK>/reports/timing/pre_repair.rpt}
+} else {
+  report_checks -path_delay max -sort_by_slack -group_path_count 10 > {<WORK>/reports/timing/pre_repair.rpt}
+}
 flush stdout
 puts "BOOLEY_STAGE: repair_timing"
 repair_timing -setup -skip_gate_cloning
@@ -49,18 +56,25 @@ detailed_placement ; estimate_parasitics -placement
 puts "BOOLEY_STAGE: sta_report"
 report_design_area
 write_verilog {openroad_dut.v}
-report_checks -path_delay max -sort_by_slack -group_count 1 > {<WORK>/reports/timing/overall.rpt}
-set paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count 1]
+set paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count 10]
 set csv_out [open {<WORK>/reports/timing/overall.csv.rpt} w]
-foreach path $paths {
+set slacks {}
+foreach path [lrange $paths 0 9] {
   set startpoint_name [get_property [get_property $path startpoint] full_name]
   set endpoint_name [get_property [get_property $path endpoint] full_name]
   set slack [get_property $path slack]
   puts $csv_out [format "%s,%s,%.6f" $startpoint_name $endpoint_name $slack]
-  puts [format "STA_WORST_SLACK_NS: %.6f" $slack]
-  break
+  lappend slacks $slack
 }
 close $csv_out
+if {[llength $slacks] > 0} {
+  puts [format "STA_WORST_SLACK_NS: %.6f" [lindex $slacks 0]]
+}
+if {[llength $slacks] > 0} {
+  report_checks -path_delay max -sort_by_slack -group_path_count 10 -slack_max [expr {[lindex $slacks end] + 1e-6}] > {<WORK>/reports/timing/overall.rpt}
+} else {
+  report_checks -path_delay max -sort_by_slack -group_path_count 10 > {<WORK>/reports/timing/overall.rpt}
+}
 if {[llength [info commands foreach_in_collection]] == 0} {
   proc foreach_in_collection {_var _coll _body} {
     upvar 1 $_var _v
@@ -82,10 +96,9 @@ if {![catch {set _clks [all_clocks]}]} {
     puts [format "STA_PERCLOCK: name=%s period_ns=%.6f wns_ns=%s whs_ns=%s" $_cn $_per $_wns $_whs]
   }
 }
-if {![catch {set _r2r [find_timing_paths -path_delay max -sort_by_slack -group_path_count 1 -from [all_registers] -to [all_registers]]}] && [llength $_r2r] > 0} {
-  foreach _p $_r2r {
-    puts [format "STA_REG2REG_SLACK_NS: %.6f" [get_property $_p slack]]
-    break
-  }
-  catch {report_checks -path_delay max -sort_by_slack -group_count 1 -from [all_registers] -to [all_registers] -format full > {<WORK>/reports/timing/reg2reg.rpt}}
+if {![catch {set _r2r [find_timing_paths -path_delay max -sort_by_slack -group_path_count 10 -from [all_registers] -to [all_registers]]}] && [llength $_r2r] > 0} {
+  set _r2r_slacks {}
+  foreach _p [lrange $_r2r 0 9] { lappend _r2r_slacks [get_property $_p slack] }
+  puts [format "STA_REG2REG_SLACK_NS: %.6f" [lindex $_r2r_slacks 0]]
+  catch {report_checks -path_delay max -sort_by_slack -group_path_count 10 -from [all_registers] -to [all_registers] -format full -slack_max [expr {[lindex $_r2r_slacks end] + 1e-6}] > {<WORK>/reports/timing/reg2reg.rpt}}
 }

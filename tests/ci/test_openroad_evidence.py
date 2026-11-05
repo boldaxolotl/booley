@@ -26,6 +26,11 @@ def test_openroad_failure_exports_partial_logs_and_removes_scratch(
 
 _FAKE_PYTHON = r"""#!/usr/bin/env bash
 work="$2"
+# The probe's closing report check takes only the work dir; the fake OpenROAD
+# writes no timing reports, so there is nothing to check.
+if (( $# == 2 )); then
+  exit 0
+fi
 mkdir -p "$work/abc-control" "$work/collision-preserve" "$work/collision-attribute"
 mkdir -p "$work/repair-off/reports" "$work/repair-on/reports"
 for path in synth.ys synth-undriven.ys abc-control/synth.ys collision-preserve/synth.ys collision-attribute/synth.ys run_openroad-repair-off.tcl run_openroad-repair-on.tcl repair-off/run_openroad.tcl repair-on/run_openroad.tcl; do

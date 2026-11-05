@@ -3853,6 +3853,64 @@ class TestFlowConfigBoundary:
 # ===========================================================================
 
 
+class TestTimingReportPaths:
+    """``[flows.synth].timing_report_paths``: how many paths the STA reports list."""
+
+    @staticmethod
+    def _flow(tmp_path: Path, toml_body: str) -> AsicSynthesizeFlow:
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "booley.toml").write_text(f"[flows.synth]\n{toml_body}", encoding="utf-8")
+        flow = AsicSynthesizeFlow()
+        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+        flow.read_state()
+        return flow
+
+    @staticmethod
+    def _resolve(flow: AsicSynthesizeFlow, tmp_path: Path):
+        with patch.object(
+            fusesoc_registry,
+            "_resolve_target",
+            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
+        ):
+            return flow._resolve_synth_recipe("lite")
+
+    def test_knob_reaches_the_configure_argv(self, state_file: Path, tmp_path: Path):
+        from booley.flows.synth.backends import configure
+
+        flow = self._flow(tmp_path, "timing_report_paths = 3\n")
+        assert flow._resolve_run_policy(True) is None
+        cmd = list(self._resolve(flow, tmp_path).command)
+        assert cmd[cmd.index("--timing-report-paths") + 1] == "3"
+        args = configure.parse_configure_argv(cmd)
+        _profile, _yosys, openroad = configure._resolve_ppa_settings(args)
+        assert configure._resolve_syn_timing(args, openroad).report_paths == 3
+
+    def test_unset_knob_leaves_the_argv_alone(self, state_file: Path, tmp_path: Path):
+        flow = self._flow(tmp_path, "")
+        assert flow._resolve_run_policy(True) is None
+        assert "--timing-report-paths" not in self._resolve(flow, tmp_path).command
+
+    @pytest.mark.parametrize("value", ["0", "-2", "true", "1.5"])
+    def test_value_below_one_is_a_configuration_error(
+        self, state_file: Path, tmp_path: Path, value: str
+    ):
+        flow = self._flow(tmp_path, f"timing_report_paths = {value}\n")
+        message = flow._resolve_run_policy(True)
+        assert message is not None
+        assert message.startswith("synth: ")
+        assert "timing_report_paths" in message
+
+    def test_knob_leaves_recipe_fingerprint_unchanged(self, state_file: Path, tmp_path: Path):
+        """Report size is not a recipe input: Goal criteria pin the fingerprint."""
+        default = self._flow(tmp_path, "")
+        self._resolve(default, tmp_path)
+        custom = self._flow(tmp_path, "timing_report_paths = 3\n")
+        assert custom._resolve_run_policy(True) is None
+        self._resolve(custom, tmp_path)
+        assert custom._recipe_evidence["lite"][:2] == default._recipe_evidence["lite"][:2]
+
+
 class TestTimingOutputFormat:
     def test_logical_target_labels_estimate_and_warns(self, flow_and_state):
         flow, _ = flow_and_state

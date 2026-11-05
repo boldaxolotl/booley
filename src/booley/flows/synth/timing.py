@@ -12,6 +12,10 @@ from typing import NamedTuple
 
 from booley.flows.synth.mode import SynthMode
 
+# Worst setup paths listed by each OpenROAD diagnostic timing report. Override
+# project-wide with ``[flows.synth].timing_report_paths`` in ``booley.toml``.
+DEFAULT_TIMING_REPORT_PATHS = 10
+
 
 class StaTimingConfig(NamedTuple):
     """Resolved timing intent passed to the built-in synthesis adapters."""
@@ -25,6 +29,7 @@ class StaTimingConfig(NamedTuple):
     gate_cloning: bool = False
     setup_margin_ns: float = 0.0
     repair_tns_percent: float | None = None
+    report_paths: int = DEFAULT_TIMING_REPORT_PATHS
 
 
 DEFAULT_STA_UTILIZATION_PCT = 40.0
