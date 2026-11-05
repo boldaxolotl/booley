@@ -56,7 +56,7 @@ def summary_line(result: DurationResult) -> str:
     """Render one stable Markdown summary row."""
     if not result.passed:
         verdict = "**FAIL**"
-    elif result.warned and result.warn_seconds is not None:
+    elif result.warned:
         over = result.elapsed_seconds - result.warn_seconds
         verdict = f"**WARN** (+{over}s over warn)"
     else:

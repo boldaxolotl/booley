@@ -92,7 +92,10 @@ def test_cli_between_warn_and_budget_warns_and_passes(
     out = capsys.readouterr().out
     text = summary.read_text(encoding="utf-8")
     assert code == 0
-    assert "::warning" in out
+    assert (
+        "::warning title=Duration budget::bwave-smoke took 650s, "
+        "over the 640s warn threshold (fail at 660s)"
+    ) in out.splitlines()
     assert "WARN" in text
     assert "+10s" in text
     assert "::warning" not in text
@@ -109,25 +112,29 @@ def test_cli_over_budget_fails(
 
 
 def test_cli_rejects_warn_above_budget(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    summary = tmp_path / "summary.md"
-    argv = [
-        "ci_duration_budget.py",
-        "--label",
-        "bwave-smoke",
-        "--started-at-epoch",
-        "1000",
-        "--now-epoch",
-        "1600",
-        "--warn-seconds",
-        "661",
-        "--budget-seconds",
-        "660",
-        "--summary",
-        str(summary),
-    ]
-    monkeypatch.setattr(sys, "argv", argv)
-
     with pytest.raises(ValueError, match="warn"):
-        ci_duration_budget.main()
+        _run_cli(monkeypatch, tmp_path, elapsed=600, warn=661, budget=660)
 
-    assert not summary.exists()
+    assert not (tmp_path / "summary.md").exists()
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "warn", "budget", "code", "verdict"),
+    [
+        (640, 640, 660, 0, "PASS"),  # exactly at warn: still silent
+        (660, 640, 660, 0, "WARN"),  # exactly at budget: warns, does not fail
+        (650, 660, 660, 0, "PASS"),  # warn == budget is accepted (no band)
+    ],
+)
+def test_cli_thresholds_are_inclusive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    elapsed: int,
+    warn: int,
+    budget: int,
+    code: int,
+    verdict: str,
+) -> None:
+    assert _run_cli(monkeypatch, tmp_path, elapsed=elapsed, warn=warn, budget=budget)[0] == code
+    assert verdict in capsys.readouterr().out
