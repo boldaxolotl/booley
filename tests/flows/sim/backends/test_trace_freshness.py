@@ -292,7 +292,7 @@ def test_stale_store_never_returned_after_failed_declared_vcd_conversion(
         capsys,
         stale={"work/tb.fst": MINIMAL_FST_BYTES},
         produce=lambda dirs: (dirs.run / "tb.vcd").write_text(_VCD_TEXT),
-        trace_files=("tb.vcd",),
+        trace_files=("tb.fst", "tb.vcd"),
     )
 
     assert "TRACE_OK" not in out

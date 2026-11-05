@@ -717,3 +717,17 @@ def test_trace_session_find_and_cleanup_publish_conversion(
         trace_session, "discover_waveform", lambda *_args, **_kwargs: stores.DiscoveryResult(None)
     )
     assert session.inspect(None).usable is False
+
+
+def test_trace_session_find_raises_for_ambiguous_discovery(tmp_path: Path, monkeypatch) -> None:
+    from booley.flows.sim import trace_session
+
+    monkeypatch.setattr(
+        trace_session,
+        "discover_waveform",
+        lambda *_args, **_kwargs: stores.DiscoveryResult(
+            None, failure_kind="ambiguous", detail="ambiguous"
+        ),
+    )
+    with pytest.raises(SystemExit, match="ambiguous"):
+        trace_session.TraceSession(tmp_path).find()

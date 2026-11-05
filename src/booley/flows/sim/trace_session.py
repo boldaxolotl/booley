@@ -349,6 +349,8 @@ class TraceSession:
         result = discover_waveform(
             self._work_dir, cache_dir=self.cache_dir, store_name=self.bwave_path.name
         )
+        if result.failure_kind == "ambiguous":
+            raise SystemExit(result.detail)
         selected = result.selected
         if result.conversion is not None:
             self._record_conversion("vcd_convert", result.conversion)
