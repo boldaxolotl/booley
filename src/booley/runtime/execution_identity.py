@@ -4,7 +4,8 @@ ADR 0076 section 2 keys a cached result by, among other parts, the Booley code
 that produced it and the host that ran it. This module computes both as
 ``sha256:<hex>`` strings and refuses (``IdentityError``) whenever it cannot
 account for every input, so a consumer reports "unavailable" instead of
-serving a result under a partial identity.
+serving a result under a partial identity. Goal evidence freshness (#2052)
+reuses both.
 
 ``booley_build_identity`` is the installed-content identity of the ``booley``,
 ``fusesoc`` and ``edalize`` distributions. It is not the image identity of
@@ -13,8 +14,6 @@ Sandbox Image). Everything else on the import path (Jinja2, PyYAML,
 entry-point plugins of other distributions, ``sys.pycache_prefix``
 redirection, the interpreter) belongs to the ownership and import-path gate of
 the availability check and to the image ID.
-
-Reusable by Goal evidence freshness (#2052) as well as the Result Cache.
 
 Contracts consumers must honour:
 
@@ -29,9 +28,8 @@ Contracts consumers must honour:
 - Content only is hashed. Which of a hashed ``.pyc`` and its hashed source
   runs is not keyed (CPython decides it from the ``.pyc`` header, and
   mtime and size are not hashed); switching takes a write to the install,
-  which the ownership rule refuses. A redirected bytecode prefix lies
-  outside the install, so that rule does not cover it; its check is
-  the availability gate's (#2210).
+  which the ownership rule refuses. That rule does not cover a redirected
+  bytecode prefix outside the install; the availability gate (#2210) checks it.
 - ``collect_host_facts`` describes the calling process at call time (affinity
   is the calling thread's; rlimits and cgroup are the caller's), so collect
   them in the process that launches the tools, at both key snapshots.
