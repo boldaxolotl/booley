@@ -661,11 +661,7 @@ def test_agent_cli_versions_are_written_only_in_their_manifest() -> None:
         found = result.stdout.splitlines()
         # The search must see the manifest itself, or an empty match proves nothing.
         assert "src/booley/data/docker/agent-clis-package.json" in found
-        stray = [
-            path
-            for path in found
-            if not path.startswith(_CLI_VERSION_ALLOWED)
-        ]
+        stray = [path for path in found if not path.startswith(_CLI_VERSION_ALLOWED)]
         assert stray == [], f"{name} {version} is written outside the manifest: {stray}"
 
 
