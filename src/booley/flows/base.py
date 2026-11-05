@@ -428,9 +428,7 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         "fail and list the eligible Targets.",
         cli=(
             "FuseSoC .core Target name(s) to run. Repeat the flag or separate names "
-            "with commas. List available Targets with `booley targets`. When omitted, "
-            "exactly one eligible Target is selected and announced; zero or multiple "
-            "eligible Targets fail and list the eligible Targets."
+            "with commas. List available Targets with `booley targets`."
         ),
     )
 

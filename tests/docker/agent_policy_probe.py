@@ -15,8 +15,12 @@ from typing import Any
 
 from booley.runtime import dockerfile_syntax
 
-EXPECTED_CLAUDE = "2.1.285"
-EXPECTED_CODEX = "0.160.0"
+# The repository manifest is the single source of the pinned CLI versions. Reading
+# it (CI mounts the checkout at /work) checks the image against the current pins.
+_MANIFEST = Path(__file__).resolve().parents[2] / "src/booley/data/docker/agent-clis-package.json"
+_PINNED = json.loads(_MANIFEST.read_text(encoding="utf-8"))["dependencies"]
+EXPECTED_CLAUDE = _PINNED["@anthropic-ai/claude-code"]
+EXPECTED_CODEX = _PINNED["@openai/codex"]
 CLAUDE_WEB_TOOLS = {"WebFetch", "WebSearch"}
 CODEX_POLICY_SOURCE = "/etc/codex/requirements.toml"
 CANARY_TEXT = "booley-agent-policy-canary"
