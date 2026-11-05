@@ -314,7 +314,8 @@ def test_failed_local_rebuild_still_fails_the_lane(tmp_path: Path) -> None:
 # --- Duration budget ------------------------------------------------------
 
 
-def _budget(tmp_path: Path, record: str | None, riscv: str = "true") -> tuple[int, str]:
+def _budget(tmp_path: Path, record: str | None, riscv: str = "true") -> tuple[int, str, str]:
+    """Return the exit code and the (warn, budget) thresholds the step passed on."""
     step = _step("Enforce duration budget")
     path = tmp_path / "runner" / "riscv-image-evidence" / "tooling-source.json"
     if record is not None:
@@ -327,47 +328,63 @@ def _budget(tmp_path: Path, record: str | None, riscv: str = "true") -> tuple[in
             **{name: str(value) for name, value in step["env"].items()},
             "RISCV_IMAGE": riscv,
             "TOOLING_RECORD": str(path),
+            "REGISTRY_WARN_SECONDS": "100",
             "REGISTRY_BUDGET_SECONDS": "111",
+            "LOCAL_WARN_SECONDS": "200",
             "LOCAL_BUDGET_SECONDS": "222",
         },
     )
-    budget = next(
-        (call.split("--budget-seconds ")[1].split()[0] for call in calls if "budget" in call), ""
-    )
-    return result.returncode, budget
+    call = next((call for call in calls if "budget" in call), "")
+    warn = call.split("--warn-seconds ")[1].split()[0] if "--warn-seconds " in call else ""
+    budget = call.split("--budget-seconds ")[1].split()[0] if "--budget-seconds " in call else ""
+    return result.returncode, warn, budget
 
 
 @pytest.mark.parametrize(
-    ("source", "budget"),
-    [("registry", "111"), ("local", "222"), ("local-compat-fallback", "222")],
+    ("source", "warn", "budget"),
+    [
+        ("registry", "100", "111"),
+        ("local", "200", "222"),
+        ("local-compat-fallback", "200", "222"),
+    ],
 )
 def test_budget_follows_the_recorded_tooling_source(
-    tmp_path: Path, source: str, budget: str
+    tmp_path: Path, source: str, warn: str, budget: str
 ) -> None:
-    assert _budget(tmp_path, json.dumps({"schema_version": 1, "source": source})) == (0, budget)
+    record = json.dumps({"schema_version": 1, "source": source})
+    assert _budget(tmp_path, record) == (0, warn, budget)
     assert f"`{source}`" in (tmp_path / "summary.md").read_text(encoding="utf-8")
 
 
 def test_budget_without_a_source_record_is_the_local_budget(tmp_path: Path) -> None:
-    assert _budget(tmp_path, None) == (0, "222")
+    assert _budget(tmp_path, None) == (0, "200", "222")
 
 
 def test_budget_without_the_riscv_lane_is_the_standard_budget(tmp_path: Path) -> None:
-    assert _budget(tmp_path, None, riscv="false") == (0, "560")
+    assert _budget(tmp_path, None, riscv="false") == (0, "640", "670")
 
 
 def test_budget_rejects_an_unreadable_source_record(tmp_path: Path) -> None:
-    status, budget = _budget(tmp_path, "{not json")
+    status, warn, budget = _budget(tmp_path, "{not json")
 
     assert status != 0
-    assert budget == ""
+    assert (warn, budget) == ("", "")
 
 
 def test_registry_budget_never_exceeds_the_local_budget() -> None:
     """A hit that is as slow as a local build has lost its reason to exist."""
     env = _step("Enforce duration budget")["env"]
 
+    assert env["REGISTRY_WARN_SECONDS"] <= env["LOCAL_WARN_SECONDS"]
     assert env["REGISTRY_BUDGET_SECONDS"] <= env["LOCAL_BUDGET_SECONDS"]
+
+
+def test_every_lane_warns_at_or_below_its_budget() -> None:
+    """The script rejects a warn threshold above its fail threshold; catch it at config time."""
+    env = _step("Enforce duration budget")["env"]
+
+    for lane in ("STANDARD", "REGISTRY", "LOCAL"):
+        assert 0 < env[f"{lane}_WARN_SECONDS"] <= env[f"{lane}_BUDGET_SECONDS"]
 
 
 @pytest.mark.parametrize(
