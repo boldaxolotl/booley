@@ -648,7 +648,7 @@ def test_agent_cli_versions_are_written_only_in_their_manifest() -> None:
     manifest = json.loads((_DOCKER_DIR / "agent-clis-package.json").read_text(encoding="utf-8"))
     for name in ("@anthropic-ai/claude-code", "@openai/codex"):
         version = manifest["dependencies"][name]
-        # Digit boundaries keep 2.1.285 from matching 12.1.2850.
+        # Digit boundaries stop a version from matching inside a longer one.
         pattern = rf"(^|[^0-9.]){re.escape(version)}([^0-9]|$)"
         result = subprocess.run(
             ["git", "grep", "-l", "-E", pattern, "--", ".", ":!*Cargo.lock"],
