@@ -25,7 +25,7 @@ def _keep_pytest_process_identity(monkeypatch):
 def test_repeat_attach_one_view_and_no_filesystem_lock(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(command.socket, "AF_UNIX", 1, raising=False)
     monkeypatch.setattr(command, "namespace", lambda: "pid:[fixture]")
-    monkeypatch.setattr(command, "resolve_booley_dir", lambda _: tmp_path)
+    monkeypatch.setattr(command, "resolve_common_booley_dir", lambda _: tmp_path)
     launched = []
     monkeypatch.setattr(command, "DashboardReader", lambda *_: SimpleNamespace(read=lambda: None))
     monkeypatch.setattr(
@@ -56,7 +56,7 @@ def test_repeat_attach_one_view_and_no_filesystem_lock(tmp_path, monkeypatch, ca
 def test_attach_policy_is_read_only_and_disabled_attach_never_starts(
     tmp_path, monkeypatch, capsys
 ):
-    monkeypatch.setattr(command, "resolve_booley_dir", lambda _: tmp_path)
+    monkeypatch.setattr(command, "resolve_common_booley_dir", lambda _: tmp_path)
     monkeypatch.setattr(command, "attach_blocker", lambda *_: "disabled by configuration")
     monkeypatch.setattr(command, "run_dashboard", lambda *_: pytest.fail("must not start"))
     assert command.run_attach(tmp_path, policy_only=True) == 0
@@ -73,7 +73,7 @@ def test_attach_policy_is_read_only_and_disabled_attach_never_starts(
 def test_attach_rechecks_policy_before_launch_and_surfaces_bad_configuration(
     tmp_path, monkeypatch, capsys
 ):
-    monkeypatch.setattr(command, "resolve_booley_dir", lambda _: tmp_path)
+    monkeypatch.setattr(command, "resolve_common_booley_dir", lambda _: tmp_path)
     monkeypatch.setattr(command, "attach_blocker", lambda *_: "")
     monkeypatch.setattr(command, "_dashboard_is_open", lambda: False)
     launches = []
@@ -192,7 +192,7 @@ def _stub_dashboard(monkeypatch, tmp_path, *, run=None):
     monkeypatch.setattr(command.socket, "AF_UNIX", 1, raising=False)
     monkeypatch.setattr(command.socket, "socket", lambda *_: Socket())
     monkeypatch.setattr(command, "namespace", lambda: "pid:[title-fixture]")
-    monkeypatch.setattr(command, "resolve_booley_dir", lambda _: tmp_path)
+    monkeypatch.setattr(command, "resolve_common_booley_dir", lambda _: tmp_path)
     monkeypatch.setattr(command, "DashboardReader", lambda *_: SimpleNamespace(read=lambda: None))
     monkeypatch.setattr(
         command,
@@ -296,7 +296,7 @@ class FirstRefreshDashboard(DashboardApp):
         self.call_after_refresh(self.exit)
 
 command.namespace = lambda: f"pid:[terminal-title-test-{os.getpid()}]"
-command.resolve_booley_dir = lambda _: Path(sys.argv[1])
+command.resolve_common_booley_dir = lambda _: Path(sys.argv[1])
 command.DashboardReader = lambda *_: SimpleNamespace(read=DashboardSnapshot)
 command.DashboardApp = FirstRefreshDashboard
 raise SystemExit(command.run_dashboard(Path(sys.argv[1])))

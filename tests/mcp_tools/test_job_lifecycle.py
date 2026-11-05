@@ -130,7 +130,7 @@ async def test_job_creation_allocates_handles_and_broken_maps_do_not_gate_execut
 ):
     project = tmp_path / "project-data"
     project.mkdir()
-    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda: project)
+    monkeypatch.setattr("booley.runtime.booley_dir.resolve_common_booley_dir", lambda: project)
     store = HandleStore(project, jobs=True)
     if broken:
         store.root.mkdir(parents=True)
@@ -162,7 +162,7 @@ def test_goal_job_handle_uses_bound_project_directory(context, tmp_path, monkeyp
 
     project = tmp_path / "bound-project"
     monkeypatch.setattr(
-        "booley.runtime.booley_dir.resolve_booley_dir",
+        "booley.runtime.booley_dir.resolve_common_booley_dir",
         lambda: pytest.fail("Goal handle must use its admitted binding"),
     )
     binding = SimpleNamespace(booley_dir=project, to_json=lambda: {})

@@ -243,7 +243,7 @@ def test_nested_server_does_not_prune(tmp_path, monkeypatch):
     add_job(tmp_path, "sim-one", ended_ago=2 * DAY, session_key="codex:one")
     before = {p: p.read_bytes() for p in tmp_path.rglob("*.json")}
     monkeypatch.setenv("BOOLEY_MCP_NESTED", "1")
-    monkeypatch.setattr(pruning(), "resolve_booley_dir", lambda: tmp_path)
+    monkeypatch.setattr(pruning(), "resolve_common_booley_dir", lambda: tmp_path)
     assert pruning().prune_at_start() is None
     assert before == {p: p.read_bytes() for p in tmp_path.rglob("*.json")}
 
@@ -252,7 +252,7 @@ def test_server_start_logs_pruning_failure_and_still_serves(tmp_path, monkeypatc
     add_job(tmp_path, "sim-one", ended_ago=2 * DAY)
     handles.HandleStore(tmp_path, jobs=True).path.write_text("broken")
     monkeypatch.delenv("BOOLEY_MCP_NESTED", raising=False)
-    monkeypatch.setattr(pruning(), "resolve_booley_dir", lambda: tmp_path)
+    monkeypatch.setattr(pruning(), "resolve_common_booley_dir", lambda: tmp_path)
     started: list[threading.Thread | None] = []
     real = pruning().prune_at_start
 
