@@ -178,11 +178,11 @@ def test_runner_pins_derive_from_project_metadata(tmp_path):
 @pytest.mark.parametrize(
     ("culprit", "bad_requirement"),
     [
-        ("pytest", "pytest>=1"),
-        ("pytest", "pytest==1.*"),
-        ("pytest", "pytest===1"),
-        ("coverage", None),
-        ("ruff", "ruff>=0.1"),
+        pytest.param("pytest", "pytest>=1", id="pytest-floor"),
+        pytest.param("pytest", "pytest==1.*", id="pytest-wildcard"),
+        pytest.param("pytest", "pytest===1", id="pytest-triple-equals"),
+        pytest.param("coverage", None, id="coverage-missing"),
+        pytest.param("ruff", "ruff>=0.1", id="ruff-floor"),
     ],
 )
 def test_runner_without_exact_pin_is_a_usage_error(tmp_path, culprit, bad_requirement):
