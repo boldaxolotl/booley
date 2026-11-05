@@ -9,6 +9,24 @@ works only on Verilator Targets; an Icarus Target cannot collect coverage.
 Coverage does not replace pass/fail checks: a fully covered design can still
 be wrong.
 
+## What is measured
+
+Verilator splits the design into **coverage points**, small things that a
+test either hits or misses. Each metric counts a different kind of point:
+
+| Metric | One point is | Covered when |
+|---|---|---|
+| `line` | a block of statements that always run together | the block runs |
+| `branch` | one outcome of an `if` or `case`: the `if` taken, its `else` taken, one `case` item | that outcome happens |
+| `expression` | one combination of a Boolean expression's terms that decides its result, such as `a` false in `a && b` | that combination occurs |
+| `toggle` | one bit of a signal changing in one direction: `count[3]` 0→1 and `count[3]` 1→0 are two points | that bit makes that change |
+| `cover_property` | one SystemVerilog `cover property` | the property matches |
+
+One hit by one test is enough. Verilator also records FSM and covergroup
+data; Booley keeps it in the Campaign but gives it no percentage, so no
+threshold applies to it. The metric names in the table are the ones
+[Coverage Goals](#coverage-goals) use.
+
 ## Collecting coverage
 
 1. Make sure the Target simulates with Verilator and every testbench file in
@@ -26,8 +44,7 @@ If any selected Target uses Icarus, the whole run is refused before anything
 builds. Coverage runs only in the default `--mode simulate`. `--trace` can be
 combined with `--coverage`.
 
-Generated or custom C++ mains, HDL testbenches, and cocotb all work. FSM and
-covergroup records are kept but not scored, so no threshold applies to them.
+Generated or custom C++ mains, HDL testbenches, and cocotb all work.
 
 ## Reading results
 
@@ -40,8 +57,8 @@ files live on disk is described in
 
 How the numbers are counted:
 
-- Each test writes its own coverage data, and Booley merges them: a point is
-  covered if any test hit it. Booley keeps which test hit what.
+- Each test writes its own coverage data, and Booley merges them: a
+  [point](#what-is-measured) is covered if any test hit it. Booley keeps which test hit what.
 - A metric's percentage is covered RTL points divided by all RTL points.
   Testbench (`tb`-tagged) and generated code are reported but not counted.
   [Approved waivers](#coverage-waivers) remove their points from the count.
@@ -79,7 +96,7 @@ at least 90% and branch at least 80% over the whole suite":
  "metrics": {"line": 90, "branch": 80}}
 ```
 
-- Metrics are `line`, `branch`, `expression`, `toggle`, and `cover_property`.
+- Metrics are the five in [What is measured](#what-is-measured).
   Name at least one; each threshold is a number above 0 and at most 100.
   Every threshold must be met. Booley compares exact values, so a displayed
   89.996% rounded to 90.00% does not meet 90.
