@@ -171,6 +171,11 @@ def hop_link(rtl: Path, out: str) -> None:
     commit_links(rtl, ("hop", "../back"))
 
 
+def dotdot_hop_link(rtl: Path, out: str) -> None:
+    (rtl.parent / "back").symlink_to(rtl / "src")  # `inc/../back` leaves and returns
+    commit_links(rtl, ("inc", "."), ("A", "inc/../back/a.v"))
+
+
 def sibling_link(rtl: Path, out: str) -> None:
     (rtl.parent / "rtl-x").mkdir()  # a sibling whose name starts with the root's
     commit_links(rtl, ("sib", "../rtl-x"))
@@ -183,6 +188,7 @@ LINK_CASES: dict[str, tuple[str, Callable[[Path, str], None], str]] = {
     "ignored-in-nested-repository": ("tracked", nested_ignored_link, "rtl:nested/l"),
     "hop-through-outside-link": ("tracked", hop_link, "rtl:hop"),
     "into-git-directory": ("tracked", lambda r, o: commit_links(r, ("g", ".git/config")), "rtl:g"),
+    "dotdot-hop-back-inside": ("tracked", dotdot_hop_link, "rtl:A"),
     "sibling-prefix": ("tracked", sibling_link, "rtl:sib"),
     # `a/l` is lexically inside (`rtl/secret`) but resolves through `inc -> .` to outside.
     "dotdot-through-inside-link": (
@@ -318,13 +324,16 @@ def test_git_failure_raises_clean_commit_error(tmp_path: Path) -> None:
         check(layout.project)
 
 
-def test_unreadable_directory_in_ignored_repository_raises(tmp_path: Path) -> None:
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="root ignores modes")
+@pytest.mark.parametrize("mode", [0o000, 0o444], ids=["unlistable", "unsearchable"])
+def test_unreadable_directory_in_ignored_repository_raises(tmp_path: Path, mode: int) -> None:
     from booley.result_cache.clean_commit import CleanCommitError
 
     layout = build_layout(tmp_path, "tracked")
-    new_repo(layout.rtl / "nested", {"n": "n\n"})
-    exclude(layout.rtl, "nested/")
-    (layout.rtl / "nested/deep").mkdir(mode=0)  # a link inside would go unseen
+    nested_ignored_link(layout.rtl, str(tmp_path / "secret"))
+    (layout.rtl / "nested/deep").mkdir()
+    (layout.rtl / "nested/deep/l").symlink_to(tmp_path / "secret")  # unseen when skipped
+    (layout.rtl / "nested/deep").chmod(mode)
     try:
         with pytest.raises(CleanCommitError):
             check(layout.project)

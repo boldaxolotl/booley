@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -171,30 +172,35 @@ def _ignored_links(repository: Path, nested: Path | None) -> Iterator[Path]:
     for entry in filter(None, listing.split(b"\0")):
         path = repository / os.fsdecode(entry)
         if not entry.endswith(b"/"):
-            if path.is_symlink():
+            if _is_link(path):
                 yield path
         elif nested is None or not path.samefile(nested):
-            for current, dirnames, filenames in os.walk(
-                path, onerror=_raise
-            ):  # never follows links
-                names = [
-                    name for name in (*dirnames, *filenames) if Path(current, name).is_symlink()
-                ]
+            # os.walk never follows links; an unreadable directory must fail, not be skipped.
+            for current, dirnames, filenames in os.walk(path, onerror=_raise):
+                names = [name for name in (*dirnames, *filenames) if _is_link(Path(current, name))]
                 yield from (Path(current, name) for name in names)
                 dirnames[:] = [name for name in dirnames if name not in names]
 
 
 def _raise(error: OSError) -> None:
-    """``os.walk`` hook: an unreadable directory fails the check instead of being skipped."""
     raise error
+
+
+def _is_link(path: Path) -> bool:
+    """Unlike ``Path.is_symlink`` (which hides ``EACCES`` on Python 3.14), raises when unreadable."""
+    return stat.S_ISLNK(path.lstat().st_mode)
 
 
 def _outside_reason(tree: TrackedTree, link: Path, roots: Sequence[Path]) -> str | None:
     """A reason when *link* leaves the participants, lexically or resolved, or reaches ``.git``."""
     raw = link.readlink()
     lexical = Path(os.path.normpath(link.parent / raw))
-    # The lexical rule rejects a hop through an outside link that points back inside.
-    if all(_is_inside(path, roots) for path in (lexical, Path(os.path.realpath(link)))):
+    # ``..`` after a name may step out through a directory link: refuse it, and the lexical
+    # rule rejects a hop through an outside link that points back inside.
+    stepped = any(a != ".." and b == ".." for a, b in zip(raw.parts, raw.parts[1:], strict=False))
+    if not stepped and all(
+        _is_inside(path, roots) for path in (lexical, Path(os.path.realpath(link)))
+    ):
         return None
     where = relative_posix(link, tree.root)
     return f"symlink {tree.label}:{where} resolves outside the participants ({raw})"
