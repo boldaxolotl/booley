@@ -19,7 +19,7 @@ from booley.runtime import interactive_docker
 DOCKER_CLI_CALLS: list[list[str]] = []
 
 
-def _forbidden(args: list[str], *_args: object, **_kwargs: object):
+def _fail_on_docker_call(args: list[str], *_args: object, **_kwargs: object):
     """Stand-in for ``_run_docker``; accepts ``timeout=`` and ``executable=``."""
     DOCKER_CLI_CALLS.append(list(args))
     pytest.fail(f"test reached the Docker CLI: docker {' '.join(args)}")
@@ -28,7 +28,7 @@ def _forbidden(args: list[str], *_args: object, **_kwargs: object):
 def forbid_docker_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make any ``_run_docker`` call fail the running test."""
     DOCKER_CLI_CALLS.clear()
-    monkeypatch.setattr(interactive_docker, "_run_docker", _forbidden)
+    monkeypatch.setattr(interactive_docker, "_run_docker", _fail_on_docker_call)
 
 
 def assert_docker_cli_unused() -> None:
