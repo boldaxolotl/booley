@@ -51,12 +51,43 @@ booley flow fpga --target fpga_soc --ppa-profile max_frequency --baseline main
 
 ## Reading results
 
-Each Target gets one row: LUT, FF, BRAM, and DSP counts, worst setup slack
-(WNS), worst hold slack (WHS), Fmax, build time (or `cached`), and a verdict.
-Fmax is that of the slowest clock, derived from the clock period in your XDC
-and its setup slack; with several clocks, the row names that clock. The JSON
-report (`fpga_<target>.json`) has the per-clock breakdown (period, slacks,
-critical path, Fmax), and the verdict card prints its path and the build log's.
+A run you start yourself prints one row per Target, then the path of its log:
+
+```text
+  Target     LUT      FF      BRAM   DSP   WNS        WHS        Fmax                  Time      Status
+  ────────   ──────   ─────   ────   ───   ────────   ────────   ───────────────────   ───────   ──────
+  fpga_soc   12,034   8,100   4      2     0.312 ns   0.045 ns   114.1 MHz [clk_sys]   1843.2s   PASS
+
+  fpga_soc: log: .booley/flow-reports/fpga/3/artifacts/fpga_fpga_soc/run.log
+
+RESULT: PASS
+```
+
+WNS and WHS are the worst setup and hold slack over all clocks. Fmax is that
+of the slowest clock, derived from the clock period in your XDC and its setup
+slack; with several clocks, the row names that clock. Time reads `cached` when
+the build was [reused](#reusing-earlier-builds); a reused build prints no log.
+With `--baseline`, a `baseline: <commit>` line comes first and a second row
+under each Target shows the LUT, FF, BRAM and DSP changes, such as `Δ -3.7%`.
+A failing Target also gets notes under the table: the latch, loop and
+multi-driven counts, or the end of Vivado's output.
+
+The run's files are under `flow-reports/` in the Booley Directory (or
+`--report-dir`), in the numbered run directory (`fpga/3/` above):
+
+| File | What it holds |
+|---|---|
+| `fpga/<N>/targets/<target>.json` | Per Target: `passed`, and under `metrics` the `lut_count`, `ff_count`, `bram_count` and `dsp_count`; `per_clock`, each clock's `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps` and `fmax_mhz`; and `latches`, `comb_loops` and `multi_driven`. On an `ERROR`, `infra_error` says why and `metrics.failure_output` holds Vivado's last output. With `--baseline`, `baseline_metrics` has the baseline's numbers. A copy of the newest run's file is kept as `fpga_<target>.json` at the top of `flow-reports/`. |
+| `fpga/<N>/artifacts/fpga_<target>/run.log` | The build's output, followed by Vivado's placed utilization report and its routed timing-summary and DRC reports. |
+
+For the rest of Vivado's output, such as the full timing paths or
+checkpoints to open in the Vivado GUI, go to the build directory in your
+checkout, `.booley/.runtime/edalize/fpga/<target>/`. It holds the Vivado
+project, with each stage's reports, logs and checkpoints under
+`fpga_<target>.runs/synth_1/` and `fpga_<target>.runs/impl_1/`; the JSON
+report lists these directories under `metrics.artifacts.live_dirs`. The next
+build of the same Target overwrites them, and a `--baseline` build's are
+deleted when the run ends.
 
 | Verdict | Meaning | Exit |
 |---|---|---:|

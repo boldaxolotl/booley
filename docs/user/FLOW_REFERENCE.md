@@ -179,15 +179,14 @@ has the details.
 
 **Reports.** Each run writes a JSON report and full logs under `flow-reports/`
 in the Booley Directory (Goal runs use the Goal's runtime directory), or under
-`--report-dir`. The verdict and the report
-both give the exact paths. [FLOW_REPORTS.md](../internals/FLOW_REPORTS.md)
-describes the report files, for scripts that read them.
+`--report-dir`. Each run gets the next number under its Flow's directory, such
+as `flow-reports/sim/12/`, with the run's `report.json` at the top. Each
+Flow's page says which files in it to open.
 
 **Dry runs.** `--dry-run` prints a JSON plan of each unit of work: Target,
 sources, constraints, parameters, and the exact commands. It exits `0` when
 everything can be planned and `2` otherwise, still showing the parts that
-could be planned. [Dry-run plan](../internals/FLOW_REPORTS.md#dry-run-plan)
-lists the fields.
+could be planned.
 
 When a Flow fails for a reason you can't explain, see
 [Troubleshooting](TROUBLESHOOTING.md). If Booley itself seems wrong, report it

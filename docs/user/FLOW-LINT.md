@@ -35,9 +35,24 @@ booley flow lint --target lint_soc,lint_style --scope rtl/fifo.sv
 
 ## Reading results
 
-Each Target prints one line with its linter, raw finding count, and number of
-files linted. The console then shows the first five distinct findings, and the
-run ends with one verdict:
+A run you start yourself prints one line per Target, then the findings left
+after merging duplicates across Targets and applying `--scope`, then the
+verdict:
+
+```text
+[lint] lint_soc     [verilator] 7 warnings (target total), 12 files, 0.4s
+[lint] 7 unique in-scope warnings
+[lint]   %Warning-UNUSEDSIGNAL: rtl/fifo.sv:10:5 Signal is not used: 's10'
+  …
+[lint]   ... and 2 more (see /work/.booley/flow-reports/lint/3/lint_report.json)
+
+RESULT: WARN (7 warnings)
+See /work/.booley/flow-reports/lint/3/lint_report.json for the full warning list (rule/file:line/message).
+```
+
+The Target line shows its linter, everything the linter reported (before
+merging and `--scope`), and the number of files linted. The console lists the
+first five findings. The `RESULT` line gives one verdict:
 
 | Verdict | Meaning | Exit |
 |---|---|---:|
@@ -46,10 +61,29 @@ run ends with one verdict:
 | `FAIL` | The linter rejected the RTL, for example a syntax error or an undeclared signal. | `1` |
 | `ERROR` | No verdict: missing linter, timeout, or a Target whose `toplevel` module is not in any of its files (lint would check nothing). | `2` |
 
-The full list of findings is in `lint_report.json`, and each Target's complete
-linter output is in its log; the verdict card prints both paths. A `LINT:{target}`
-Goal is met only when that Target has no findings within the run's `--scope`,
-whatever `warnings_as_errors` says.
+A Target that could not be linted cleanly prints `ERROR:` on its own line in
+both the `FAIL` and `ERROR` cases; the `RESULT` line tells them apart. On a
+`FAIL`, both lines quote the linter's first error and point at the full log:
+
+```text
+[lint] lint_soc     ERROR: %Error: rtl/fifo.sv:3:1: Can't find definition of variable: 'zzz' (full log: .booley/flow-reports/lint/4/artifacts/lint_soc/run.log)
+…
+RESULT: FAIL — lint_soc: %Error: rtl/fifo.sv:3:1: Can't find definition of variable: 'zzz' (full log: .booley/flow-reports/lint/4/artifacts/lint_soc/run.log)
+```
+
+Each run's files are in its numbered run directory (`lint/3/` above), under
+`flow-reports/` in the Booley Directory or `--report-dir`
+([Reports](FLOW_REFERENCE.md#reading-results)):
+
+| File | What it holds |
+|---|---|
+| `lint/<N>/lint_report.json` | Every finding with its rule, file, line, message, and the Targets that reported it; the error of each Target that could not be linted; and, per Target, the linter, raw finding count, files linted and log path. `passed` is `false` whenever there are findings. |
+| `lint/<N>/artifacts/<target>/run.log` | The linter's complete output for that Target: every error after the first, and the context around each finding. |
+
+`flow-reports/lint_report.json` is a copy of the latest run's report.
+
+A `LINT:{target}` Goal is met only when that Target has no findings within the
+run's `--scope`, whatever `warnings_as_errors` says.
 
 ## Waivers and rules
 

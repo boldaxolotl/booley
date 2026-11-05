@@ -2,8 +2,9 @@
 
 This is the file-level reference for what the built-in `sim`, `lint`, `synth`,
 and `fpga` Flows write to disk: where the reports go, which JSON fields they
-contain, and how simulation Campaigns are laid out. Read it if you write a
-script or tool that consumes Flow output.
+contain, and how simulation Campaigns are laid out. It is for contributors
+changing what the Flows write or code that reads it. The user docs explain the
+files a person opens; keep them consistent with this page.
 
 | Document | Covers |
 |---|---|
@@ -183,11 +184,22 @@ unavailable` instead; the verdict and Criteria are unaffected.
 
 | Field | Contents |
 |---|---|
-| `target`, `target_identity`, `tb_top`, `eda_tool` | Target selector, its full FuseSoC identity, the testbench top, and the simulator. |
-| `passed`, `complete`, `elapsed_s` | Target verdict, whether the run finished writing its results, and duration. `complete: false` means the run was interrupted while publishing and can be resumed. |
-| `phase_timings_s` | Seconds spent in `setup`, `pre_sim`, `build`, `run`, `result_processing`, `publication`, and `unattributed`, with `execution_total` and `total`. |
+| `$schema`, `flow`, `mode` | Schema id, `sim`, and `simulate`. |
+| `target`, `target_identity` | Target selector and its full FuseSoC identity. |
+| `passed`, `inconclusive`, `complete` | Target verdict, whether it was inconclusive, and whether the run finished writing its results. `complete: false` means the run was interrupted while publishing and can be resumed. |
 | `tests[]` | One entry per test (see below). |
 | `test_runs[]` | One row per Test Run: `name`, `test`, `variant`, `seed`, `args`, `env`, `fingerprint`, and `grade` (`pass`, `fail`, `error`, or `inconclusive`). `test` is null for the unnamed invocation; `variant` and `seed` are null when the run has none. |
+| `campaign_id`, `campaign_manifest` | The Simulation Campaign and a reference to its `manifest.json`. Per-Test-Run logs and waveforms live in the Campaign's work items, not in this file. |
+| `coverage_campaign`, `collection`, `evaluation` | Coverage runs only: a reference to the Target's `coverage.json` and the collection and evaluation statuses. |
+
+Reports from the older single-pass writer (`SimulateFlow._write_target_report`;
+normal CLI and MCP runs go through the Simulation Campaign instead) carry these
+fields in place of the Campaign ones:
+
+| Field | Contents |
+|---|---|
+| `tb_top`, `eda_tool`, `elapsed_s` | The testbench top, the simulator, and duration. |
+| `phase_timings_s` | Seconds spent in `setup`, `pre_sim`, `build`, `run`, `result_processing`, `publication`, and `unattributed`, with `execution_total` and `total`. |
 | `compile_command`, `fileset` | The build command and the resolved `rtl` and `tb` source lists. |
 | `artifacts` | The report, per-test run logs, result files, and waveforms from this run. |
 

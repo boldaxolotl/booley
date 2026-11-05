@@ -84,9 +84,6 @@ numbered run directory (`sim/12/` above):
 | `sim/<N>/report.json` | For each Target, under `detail.targets.<target>.coverage_metrics`, each metric's `percent`, `threshold` and `met`. |
 | `sim/<N>/targets/<target>/coverage.json` | The Coverage Campaign. Pass this path to the [Coverage Analyst](#analyzing-a-campaign) to find out what is uncovered and why. |
 
-The full layout is in [Flow reports](../internals/FLOW_REPORTS.md#coverage-campaign-files),
-for scripts that read these files.
-
 How the numbers are counted:
 
 - Each test writes its own coverage data, and Booley merges them: a

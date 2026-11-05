@@ -31,9 +31,9 @@ catch planted bugs is the Mutation Tester's job in
     >
     > *"Run the `stress` test with 20 random seeds on the `sim_soc` Target."*
 
-3. The agent reports each Test Run as passed or failed, with the path to its
-   log. When a test fails, it reads the log, and it can rerun that one Test
-   Run with the same seed and a waveform to find the cause:
+3. The agent reports each Test Run as passed or failed. When a test fails, it
+   reads that Test Run's log, and it can rerun that one Test Run with the same
+   seed and a waveform to find the cause:
 
     > *"Rerun the failing seed with a waveform and find out why it fails."*
 
@@ -108,12 +108,18 @@ They run one at a time unless you raise `max_heavy` in
 
 ## Reading results
 
-The run ends with a verdict card: a line per Target, and the Test Runs when
-there is more to say than "everything passed at the Default Seed" (a failure,
-another seed or Variant, or a Test that ran more than once). Each failed Test
-Run comes with a command that reruns exactly it:
+The run ends with a block per Target: its verdict (`PASS`, `FAIL`, `ERROR` or
+`INCONCLUSIVE`, see below), the paths to its Campaign manifest and the report,
+and for a failure the end of the simulator output. The Test Runs are listed
+when there is more to say than "everything passed at the Default Seed" (a
+failure, another seed or Variant, or a Test that ran more than once). Each
+failed Test Run comes with a command that reruns exactly it:
 
 ```text
+sim_soc: FAIL (Simulation Campaign 3f2a9c1e-…)
+  manifest: /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json
+  report: /work/.booley/flow-reports/sim.json
+  <end of the failed test's simulator output>
   Test Runs: 3 (2 passed, 1 failed)
     PASS         stress+soak@1804289383
     FAIL         stress+soak@846930886
@@ -131,9 +137,29 @@ Each Test Run gets one verdict:
 | Timeout | The simulation ran past its time limit (`timeout_ms`, ten minutes by default). It counts as a failure: look for a deadlock in the RTL or testbench, or raise the limit if the test really needs longer. | `1` |
 | Error | An infrastructure problem stopped the test, such as a build timeout, a build failure with no recognised design error, a missing tool, or Pre-Sim Commands that can't start; the result says nothing about the design. An RTL compile error or a simulator crash is a failure instead. | `2` |
 
-Each Test Run's full simulator output is in `tests/<test run>/run.log` under
-the Target's report directory (a Cocotb Target has one `tests/batch…/`
-directory per batch of tests); the verdict card prints the paths.
+The card doesn't print log or waveform paths. Each run has its own numbered
+directory (`sim/12/` above; see [Running Flows](FLOW_REFERENCE.md#reading-results)).
+`sim.json` on the `report:` line is a copy of the newest run's report and is
+overwritten by the next run. These are the files to open, relative to
+`sim/<N>/targets/<target>/`:
+
+| File | What it holds |
+|---|---|
+| `simulation.json` | The Target's results: each Test Run with its seed, verdict and cycle count. |
+| `campaign/work-items/<NNNN>-<id>/attempts/<NNNN>-<id>/evidence/*-run.log` | The full simulator output of one Test Run, or of one batch for a Cocotb Target. |
+| `…/evidence/*-trace.fst` | The [waveform](#waveforms) of a `--trace` run, next to its log. |
+
+Work items are numbered in the order the run planned them, and each one's
+`result.json` names its Test Run. To find the log of the failed run above:
+
+```bash
+grep -l '"test_run":"stress+soak@846930886"' \
+  /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/work-items/*/result.json
+```
+
+A work item normally has one attempt. One that was interrupted and then
+[resumed](#resuming-an-interrupted-run) gets another, in the original run's
+directory.
 
 **Goals.** In [Goal Mode](GOAL-MODE.md), a `sim` run that the agent makes in
 the Goal's worktree records evidence for `SIM`, `ELAB`, `CYCLE_COUNT` and
@@ -198,7 +224,8 @@ or when a signal changed, and it answers by reading the waveform with B-Wave.
 It can also open the part you care about in VS Code
 ([Viewing waveforms](USAGE.md#viewing-waveforms)). A traced run
 that produces no fresh, readable waveform is inconclusive rather than passing
-silently.
+silently. The waveform is saved next to the Test Run's log; see
+[Reading results](#reading-results).
 
 Booley stores every waveform as FST, a compact format that B-Wave and common
 viewers (GTKWave, VaporView) read. The simulator can write either format:
