@@ -8508,9 +8508,7 @@ def test_doctor_warns_on_unused_sources_and_preflight_checks(tmp_path, monkeypat
     text = toml_path.read_text(encoding="utf-8")
     assert 'name = "unit"\n' in text
     text = text.replace('name = "unit"\n', 'name = "unit"\npreflight_checks = ["lint"]\n', 1)
-    toml_path.write_text(
-        text + '\n[sources.testbench]\nsource_dirs = ["tb"]\n', encoding="utf-8"
-    )
+    toml_path.write_text(text + '\n[sources.testbench]\nsource_dirs = ["tb"]\n', encoding="utf-8")
 
     result = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
