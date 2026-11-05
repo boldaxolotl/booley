@@ -67,7 +67,8 @@ def all_cases(cases: Iterable[Any]) -> Callable[[Callable[..., None]], Callable[
                 try:
                     run(case, tmp_path / name)
                 except Exception as exc:
-                    raise AssertionError(f"case {name}: {exc!r}") from exc
+                    exc.add_note(f"case {name}")
+                    raise
 
         test.__name__ = run.__name__
         return test
