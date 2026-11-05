@@ -26,10 +26,8 @@ If any selected Target uses Icarus, the whole run is refused before anything
 builds. Coverage runs only in the default `--mode simulate`. `--trace` can be
 combined with `--coverage`.
 
-Coverage needs the Sandbox Image's Verilator ([exact build](SUPPORTED-EDA-TOOLS.md));
-any other Verilator, 5.050 included, fails collection with exit `2`. Generated
-or custom C++ mains, HDL testbenches, and cocotb all work. FSM and covergroup
-records are kept but not scored, so no threshold applies to them.
+Generated or custom C++ mains, HDL testbenches, and cocotb all work. FSM and
+covergroup records are kept but not scored, so no threshold applies to them.
 
 ## Reading results
 
