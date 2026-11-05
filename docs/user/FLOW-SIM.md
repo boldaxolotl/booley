@@ -12,7 +12,7 @@ use [Lint](FLOW-LINT.md) and [ASIC synthesis](FLOW-SYNTH.md) for those.
 
 What all Flows share (choosing Targets, common options, live progress, exit
 codes) is in [Running Flows](FLOW_REFERENCE.md). How to declare a Target's
-Tests, Test Variants and seeds is in [Tests](TESTS.md); measuring how much RTL
+Tests, Test Variants and seeds is in [`tests.toml`](TESTS.md); measuring how much RTL
 the tests exercise is in [Coverage](COVERAGE.md); checking that the tests
 catch planted bugs is the Mutation Tester's job in
 [Specialists](SPECIALISTS.md).
@@ -21,7 +21,7 @@ catch planted bugs is the Mutation Tester's job in
 
 1. Check that the Project has a simulation Target (`booley targets --for sim`
    lists them) and that its Tests are declared. Project Setup normally does
-   both; see [Tests](TESTS.md#adding-a-test) to add one yourself.
+   both; see [Adding a Test](#adding-a-test) to add one yourself.
 2. Ask the Developer Agent to run the tests, naming the Target and, if you
    want, the tests:
 
@@ -64,11 +64,21 @@ booley flow sim --target sim_soc --mode elab-only       # compile only
 | `--result-verbosity <compact\|full>` | For a Cocotb Target, `full` prints every test function's result. |
 | `--no-kill` | Don't kill leftover simulator processes before the run. For diagnosis only. |
 
+### Adding a Test
+
+1. Ask the agent to add the test, for example *"Add a test for FIFO overflow
+   to the `sim` Target."* The agent writes the testbench code and registers
+   the Test name in [`tests.toml`](TESTS.md).
+2. The agent runs `booley doctor`, which checks `tests.toml` and names the
+   entry and the rule for any mistake.
+3. Ask the agent to run it: *"Run `fifo_overflow` on `sim`."* A run of the
+   whole Target includes it from now on.
+
 ### Test Runs, Test Variants and seeds
 
-A **Test Run** is one Test, in one of its [Test Variants](TESTS.md#test-variants-variants),
-simulated with one seed. Results name it `test+variant@seed`, for example
-`stress+soak@42`, or `reset@1` for a Test without Variants. `--test` accepts:
+`--test` selects [Test Runs](TESTS.md#seeds-seed-default_seed): one
+[Test Variant](TESTS.md#test-variants-variants) at one seed, named
+`test+variant@seed`. It accepts:
 
 | You write | Booley runs |
 |---|---|
@@ -78,15 +88,12 @@ simulated with one seed. Results name it `test+variant@seed`, for example
 | `stress@x20`, `stress+soak@x20` | 20 Test Runs of that Variant, each with a different random seed. N is 1 to 1000. |
 
 `--seed 42` gives every selected Test Run seed 42; `--seed random` draws a
-separate seed for each. Booley picks every seed before the run starts and
-records it, so a report always names the seed that ran, and a failure replays
-exactly.
+separate seed for each. Booley picks every seed before the run starts, so a
+report always names the seed that ran.
 
 Without `--test`, Booley runs the default Variant of every Test at the Default
-Seed, leaving out the Tests listed in [`skip`](TESTS.md#skipping-known-bad-tests-skip).
-Naming tests gives an exact explicit suite, which overrides those entries. A
-Target whose whole suite is skipped fails preflight instead of passing
-vacuously.
+Seed, minus the Tests in [`skip`](TESTS.md#skipping-known-bad-tests-skip).
+Naming Tests runs exactly those, skipped or not.
 
 Booley refuses a request before anything builds when a named Test or Variant
 doesn't exist, two selectors mean the same Test Run, it asks for more than 1000

@@ -17,7 +17,7 @@ here to look up what a setting means and what its default is.
 |---|---|
 | `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[goals]`, `[sandbox].dashboard`, `[feedback]` | this page |
 | `[flows.sim]` | [Simulation](FLOW-SIM.md#configuration-flowssim) |
-| `[flows.sim]` coverage and coverage waivers | [Coverage](COVERAGE.md#configuration) |
+| `[coverage.waivers]` and per-Target coverage settings | [Coverage](COVERAGE.md#configuration) |
 | `[flows.lint]` | [Lint](FLOW-LINT.md#configuration-flowslint) |
 | `[flows.synth]` | [ASIC synthesis](FLOW-SYNTH.md#configuration-flowssynth) |
 | `[flows.fpga]` | [FPGA implementation](FLOW-FPGA.md#configuration-flowsfpga) |

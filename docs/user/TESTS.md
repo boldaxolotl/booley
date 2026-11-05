@@ -1,26 +1,23 @@
-# Tests
+# `tests.toml`
 
-A **Test** is one named scenario your testbench can run: `reset`, `irq`,
-`stress`. Booley only runs Tests that the Project registers for a sim Target
-in `tests.toml`, so you, the Developer Agent and every Flow refer to the same
-Test by the same name, and every pass or fail traces back to a declared
-configuration. Project Setup writes `tests.toml` from your repository's existing
-tests. After that you change it when you add a test, want to run a test in
-another configuration (a **Test Variant**), or need control over random seeds.
-How to run Tests and read their results is in [Simulation](FLOW-SIM.md).
+`tests.toml` declares the **Tests** of each simulation Target. A Test is one
+named scenario your testbench can run: `reset`, `irq`, `stress`. Booley only
+runs Tests the Project registers here, so you, the Developer Agent and every
+Flow refer to the same Test by the same name, and every pass or fail traces
+back to a declared configuration. The file also declares how a Test runs in
+another configuration (a **Test Variant**) and how runs are seeded.
+
+Project Setup writes `tests.toml` from your repository's existing tests, and
+afterwards you ask the Developer Agent to change it (see
+[Adding a Test](FLOW-SIM.md#adding-a-test)). `booley doctor` checks the file
+and names the entry and the rule for any mistake. Come here to look up what a
+key means. How to run Tests and read their results is in
+[Simulation](FLOW-SIM.md).
 
 A Target without any registered Tests still runs: Booley starts its testbench
 once with no Test selected, so the testbench runs whatever it runs by default.
 
-## Adding a Test
-
-1. Ask the agent to add the test, for example *"Add a test for FIFO overflow
-   to the `sim` Target."* The agent writes the testbench code and registers
-   the Test name in `tests.toml`.
-2. The agent runs `booley doctor`, which checks `tests.toml` and names the
-   entry and the rule for any mistake.
-3. Ask the agent to run it: *"Run `fifo_overflow` on `sim`."* A run of the
-   whole Target includes it from now on.
+## Selecting the Test in the testbench (`select`)
 
 The testbench has to know which Test to run. For an HDL testbench Booley
 passes one argument per run that names the Test. By default it is

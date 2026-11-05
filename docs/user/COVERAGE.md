@@ -16,9 +16,8 @@ be wrong.
    RTL and skews the numbers.
 2. Ask the agent for a coverage run, for example "Run sim_soc with coverage."
    The agent runs `booley flow sim --target sim_soc --coverage` (short form
-   `--cov`). Without `--test`, the Target's whole test suite runs, minus the
-   tests skipped in `tests.toml`; with `--test`, only the
-   [Test Runs](FLOW-SIM.md#test-runs-test-variants-and-seeds) you name.
+   `--cov`). It runs the same Test Runs as a plain `sim` run
+   ([selecting Test Runs](FLOW-SIM.md#test-runs-test-variants-and-seeds)).
 3. Read the result (next section).
 4. To find out what is missing and why, ask the agent to run the
    [Coverage Analyst](#analyzing-a-campaign) on the run.

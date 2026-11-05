@@ -6,9 +6,8 @@ LLM is involved, so you can trust a Flow's verdict as you would a script's.
 Booley ships four:
 
 - [Simulation (`sim`)](FLOW-SIM.md): build and run a Target's tests and report
-  whether each one passed. Two companion guides cover simulation topics:
-    - [Tests](TESTS.md): guide to declaring a sim Target's tests, Test
-      Variants, and seeds.
+  whether each one passed. A Target's Tests, Test Variants and seeds are
+  declared in [`tests.toml`](TESTS.md). A companion guide covers coverage:
     - [Coverage](COVERAGE.md): guide to measuring how much of the RTL your
       tests exercise, and finding what they miss.
 - [Lint (`lint`)](FLOW-LINT.md): check RTL for structural, semantic, and style
