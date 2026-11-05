@@ -169,15 +169,69 @@ class TestWriteScript:
         # repair_design still runs — only the setup timing pass is gated.
         assert "repair_design" in text
 
-    def test_marker_and_csv_block(self, tmp_path):
+    @staticmethod
+    def _lines(text, needle):
+        return [line.strip() for line in text.splitlines() if needle in line]
+
+    def test_default_reports_list_top_ten_paths_worst_first(self, tmp_path):
         text = self._write(tmp_path)
-        assert "STA_WORST_SLACK_NS: %.6f" in text
-        assert "find_timing_paths" in text
-        path_queries = [line for line in text.splitlines() if "find_timing_paths" in line]
-        assert path_queries
-        assert all("-group_path_count 1" in line for line in path_queries)
-        assert all("-group_count" not in line for line in path_queries)
+        # Final report: query, CSV loop over the worst-first list (collecting
+        # plain slacks, because report_checks frees the path objects), then the
+        # text report capped at the last kept path's slack.
+        query = "set paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count 10]"
+        capped = (
+            "report_checks -path_delay max -sort_by_slack -group_path_count 10 "
+            "-slack_max [expr {[lindex $slacks end] + 1e-6}] > "
+        )
+        assert query in text
+        assert capped in text
+        loop = "foreach path [lrange $paths 0 9] {"
+        assert text.index(query) < text.index("set csv_out [open") < text.index(loop)
+        assert text.index(loop) < text.index("close $csv_out") < text.index(capped)
+        csv_loop = text[text.index(loop) : text.index("close $csv_out")]
+        assert "break" not in csv_loop
+        assert "lappend slacks $slack" in csv_loop
         assert "report_design_area" in text
+
+    def test_custom_report_paths_apply_to_every_diagnostic_report(self, tmp_path):
+        text = self._write(tmp_path, report_paths=3)
+        reports = self._lines(text, "report_checks")
+        # overall and pre-repair: capped plus the "No paths" fallback; reg2reg: capped.
+        assert len(reports) == 5
+        assert all("-group_path_count 3 " in line for line in reports)
+        # The cap carries the rounding margin (get_property slack is rounded).
+        cap = "-slack_max [expr {[lindex"
+        assert sum(cap in line and "+ 1e-6}]" in line for line in reports) == 3
+        assert sum("reg2reg.rpt" in line for line in reports) == 1
+        assert sum("pre_repair.rpt" in line for line in reports) == 2
+        assert sum("overall.rpt" in line for line in reports) == 2
+        queries = self._lines(text, "find_timing_paths")
+        # overall, pre-repair and reg2reg take N; the per-clock marker queries stay at 1.
+        assert sum("-group_path_count 3" in line for line in queries) == 3
+        assert sum("-group_path_count 1" in line for line in queries) == 2
+        assert len(queries) == 5
+        assert "foreach path [lrange $paths 0 2] {" in text
+        assert "foreach _pp [lrange $_pre_paths 0 2] {" in text
+        assert "foreach _p [lrange $_r2r 0 2] {" in text
+        assert "-group_path_count 10" not in text
+        assert "-group_count" not in text
+
+    def test_worst_slack_markers_stay_single_path(self, tmp_path):
+        text = self._write(tmp_path, report_paths=4)
+        for marker, slacks in (
+            ("STA_WORST_SLACK_NS", "$slacks"),
+            ("STA_PRE_REPAIR_WORST_SLACK_NS", "$_pre_slacks"),
+            ("STA_REG2REG_SLACK_NS", "$_r2r_slacks"),
+        ):
+            assert text.count(f"{marker}: %.6f") == 1, marker
+            line = next(row for row in text.splitlines() if f"{marker}: %.6f" in row)
+            assert f"[lindex {slacks} 0]" in line, marker
+        # No marker sits inside a path loop, so none can print more than once.
+        # (The one remaining ``break`` ends the STA_CLOCK_PERIOD_NS clock loop.)
+        assert text.count("break") == 1
+        perclock = self._lines(text, "-to $_clk")
+        assert perclock
+        assert all("-group_path_count 1" in line for line in perclock)
 
     def test_no_bare_exit(self, tmp_path):
         # The -exit flag preserves nonzero-on-error; a bare `exit` would mask it.

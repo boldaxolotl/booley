@@ -396,11 +396,26 @@ class TestPhysicalStaHelpers:
 
         assert openroad_reporting.parse_sta_worst_slack("STA_WORST_SLACK_NS: -0.125") == -0.125
 
-    def test_parse_sta_worst_slack_csv_takes_min(self, tmp_path):
+    def test_parse_sta_worst_slack_csv_takes_min(self, tmp_path, capsys):
+        from booley.flows.synth.timing import StaTimingConfig
 
         csv = tmp_path / "overall.csv.rpt"
         csv.write_text("a,b,0.100\nc,d,-0.250\n", encoding="utf-8")
         assert openroad_reporting.parse_sta_worst_slack(csv) == -0.25
+        # The top-N report is worst first; without a marker the worst path is line 1.
+        csv.write_text("a,b,-0.400\nc,d,-0.250\ne,f,0.100\n", encoding="utf-8")
+        assert openroad_reporting.parse_sta_worst_slack(csv) == -0.4
+        report_dir = tmp_path / "reports"
+        report_dir.mkdir()
+        (report_dir / "overall.csv.rpt").write_text(csv.read_text(encoding="utf-8"))
+        stdout = "STA_CLOCK_PERIOD_NS: 10.000000\n"
+        capsys.readouterr()
+        assert openroad_reporting.emit_timing_markers(
+            stdout, StaTimingConfig(mode="physical"), report_dir
+        )
+        emitted = capsys.readouterr().out
+        assert emitted.count("STA_WORST_SLACK_NS:") == 1
+        assert "STA_WORST_SLACK_NS: -0.400000" in emitted
 
     def test_parse_sta_worst_slack_malformed_marker_degrades(self, monkeypatch):
         # Simulate STA marker-format drift: the regex matches but the

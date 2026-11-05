@@ -352,10 +352,17 @@ def test_synth_help_lists_live_policy_keys():
 
     policy = AsicSynthesizeFlow.description.split("[flows.synth]")[1]
     assert not re.search(r"\btarget\b", policy, re.IGNORECASE)
-    for key in ("enabled", "timeout_ms", "expected_latches", "fail_on_timing_violation"):
+    for key in (
+        "enabled",
+        "timeout_ms",
+        "expected_latches",
+        "fail_on_timing_violation",
+        "timing_report_paths",
+    ):
         assert key in policy
         if key != "enabled":
             assert "synth" in SELECTIVE_FLOW_KNOBS[key]
+    assert "timing_report_paths" in (USER_DOCS / "FLOW-SYNTH.md").read_text(encoding="utf-8")
 
 
 def test_target_omission_rule_matches_usage_and_reference() -> None:

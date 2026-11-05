@@ -40,6 +40,7 @@ SELECTIVE_FLOW_KNOBS = {
     "trace_files": frozenset({"sim"}),
     "output_dir": frozenset({"sim", "synth"}),
     "expected_latches": frozenset({"synth"}),
+    "timing_report_paths": frozenset({"synth"}),
 }
 
 _MOVED_TARGET_RECIPE_KEYS = frozenset(
