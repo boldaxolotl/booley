@@ -1,0 +1,5 @@
+# Test runners for the in-container coverage release step of test.yml bwave-smoke.
+# Separate from requirements-runners.txt: pytest-timeout enables the default per-test timeout.
+-r requirements-runners.txt
+pytest-timeout==2.4.0
+hypothesis==6.170.14

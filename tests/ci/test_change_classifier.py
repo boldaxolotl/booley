@@ -591,6 +591,7 @@ _NOT_SELECTED_BY_SOURCE = {
     "bwave-integration",
     "bwave-smoke",
     "rust-test",
+    "scanner-smoke",
     "sidecar-smoke",
 }
 
@@ -650,6 +651,37 @@ def test_non_documentation_changes_keep_their_job_sets(
     paths: list[str], unselected: set[str]
 ) -> None:
     assert required_jobs(classify(paths)) == set(ALL_JOBS) - {STRESS_JOB} - unselected
+
+
+_CI_REQUIREMENT_FILES = (
+    ".github/ci/requirements-build.txt",
+    ".github/ci/requirements-lint.txt",
+    ".github/ci/requirements-runners-release.txt",
+    ".github/ci/requirements-runners.txt",
+    ".github/ci/requirements-scanner.txt",
+)
+
+
+def test_ci_requirements_file_selects_ci_tooling_not_full() -> None:
+    """A CI pin bump runs the jobs that install the pins, not the whole pipeline."""
+    for path in _CI_REQUIREMENT_FILES:
+        categories = classify([path])
+        jobs = required_jobs(categories)
+
+        assert categories == {"ci_tooling"}, path
+        assert {
+            "release-semantic",
+            "package-artifacts",
+            "sidecar-smoke",
+            "bwave-smoke",
+            "scanner-smoke",
+            "lint",
+            "test",
+            "test-verify",
+            "coverage-shards",
+            "coverage",
+        } <= jobs, path
+        assert not jobs & {"docs-check", "site-build", "rust-test", "bwave-integration"}, path
 
 
 def test_aggregate_waits_for_every_conditional_job() -> None:
@@ -1004,6 +1036,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
         "bwave-integration",
         "package-artifacts",
         "sidecar-smoke",
+        "scanner-smoke",
         "bwave-smoke",
     }
     assert workflow["workflow"] == "true"
