@@ -175,24 +175,27 @@ def test_runner_pins_derive_from_project_metadata(tmp_path):
     }
 
 
-@pytest.mark.parametrize(
-    ("culprit", "bad_requirement"),
-    [
-        pytest.param("pytest", "pytest>=1", id="pytest-floor"),
-        pytest.param("pytest", "pytest==1.*", id="pytest-wildcard"),
-        pytest.param("pytest", "pytest===1", id="pytest-triple-equals"),
-        pytest.param("coverage", None, id="coverage-missing"),
-        pytest.param("ruff", "ruff>=0.1", id="ruff-floor"),
-    ],
+_UNPINNED_RUNNER_CASES = (
+    ("pytest", "pytest>=1"),
+    ("pytest", "pytest==1.*"),
+    ("pytest", "pytest===1"),
+    ("coverage", None),
+    ("ruff", "ruff>=0.1"),
 )
-def test_runner_without_exact_pin_is_a_usage_error(tmp_path, culprit, bad_requirement):
-    test = [f"{name}==1" for name in _RUNNER_NAMES if name != culprit or culprit == "pytest"]
-    quality = ["ruff==1"] if culprit != "ruff" else [bad_requirement]
-    if culprit == "pytest":
-        test = [bad_requirement if item.startswith("pytest==") else item for item in test]
-    _write_project(tmp_path, test, quality)
-    with pytest.raises(readiness.ReadinessUsageError, match=f"{culprit}.*exact"):
-        readiness.runner_pins(tmp_path)
+
+
+def test_runner_without_exact_pin_is_a_usage_error(tmp_path):
+    """Floors, wildcards, `===` and missing runners are rejected, naming the runner."""
+    for index, (culprit, bad_requirement) in enumerate(_UNPINNED_RUNNER_CASES):
+        root = tmp_path / str(index)
+        root.mkdir()
+        test = [f"{name}==1" for name in _RUNNER_NAMES if name != culprit or culprit == "pytest"]
+        quality = ["ruff==1"] if culprit != "ruff" else [bad_requirement]
+        if culprit == "pytest":
+            test = [bad_requirement if item.startswith("pytest==") else item for item in test]
+        _write_project(root, test, quality)
+        with pytest.raises(readiness.ReadinessUsageError, match=f"{culprit}.*exact"):
+            readiness.runner_pins(root)
 
 
 def test_unpinned_runner_blocks_the_shared_environment_check(monkeypatch, tmp_path):
