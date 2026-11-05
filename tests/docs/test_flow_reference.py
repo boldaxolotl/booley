@@ -170,9 +170,9 @@ def test_sim_campaign_resume_granularity_stays_documented() -> None:
 def test_sim_configured_skip_control_stays_documented() -> None:
     section = " ".join(_flow_section("sim").split())
     config = " ".join(_reference_text(USER_DOCS / "TESTS.md").split())
-    assert "exact explicit suite" in section
-    assert "overrides those entries" in section
-    assert "fails preflight instead of passing vacuously" in section
+    # FLOW-SIM says how --test interacts with skip; tests.toml owns the skip rules.
+    assert "Naming Tests runs exactly those, skipped or not" in section
+    assert "naming a skipped Test explicitly still runs it" in config
     assert "all-skip target fails preflight" in config
 
 

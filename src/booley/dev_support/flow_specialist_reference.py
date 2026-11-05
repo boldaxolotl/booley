@@ -54,9 +54,8 @@ _FLOW_REFERENCE_POINTER = (
     "Shared Flow options and results are in "
     "[FLOW_REFERENCE.md](FLOW_REFERENCE.md), each Flow's own in "
     "[FLOW-SIM.md](FLOW-SIM.md), [FLOW-LINT.md](FLOW-LINT.md), "
-    "[FLOW-SYNTH.md](FLOW-SYNTH.md), and [FLOW-FPGA.md](FLOW-FPGA.md), and report files in "
-    "[FLOW_REPORTS.md](../internals/FLOW_REPORTS.md); `booley flow <name> --help` "
-    "prints the options too."
+    "[FLOW-SYNTH.md](FLOW-SYNTH.md), and [FLOW-FPGA.md](FLOW-FPGA.md), including the "
+    "report files each one writes; `booley flow <name> --help` prints the options too."
 )
 
 _FLOW_KEY_CONTROLS: dict[str, str] = {

@@ -29,8 +29,9 @@ Two paths, sharing everything up to that handoff:
 
 Both paths begin with host-side Project Initialization, then use their own skill mode. For
 what each configuration field *means*, see [CONFIG.md](CONFIG.md) for
-`booley.toml` and `enabled`, [TARGETS.md](TARGETS.md) for `.core` and
-`tests.toml`, [FLOW-SIM.md](FLOW-SIM.md#passfail-sentinels-and-cycle-counts)
+`booley.toml` and `enabled`, [TARGETS.md](TARGETS.md) for `.core` files,
+[`tests.toml`](TESTS.md) for Tests, Test Variants and seeds,
+[FLOW-SIM.md](FLOW-SIM.md#passfail-sentinels-and-cycle-counts)
 for sentinels (the log-pattern strings that decide a simulation's pass/fail
 verdict), and [SANDBOX.md](SANDBOX.md#commercial-eda-provisioning) for EDA
 provisioning.
@@ -56,8 +57,9 @@ testbench edits:
 
 **Use the public projects as references.** Each one is a complete Booley
 Directory (the `.booley/` that setup produces) published as its own
-repository. When you set up your own design, compare your `booley.toml`,
-`.core` files, and `tests.toml` with theirs. PicoRV32 is the small one; Caliptra shows a large SoC with firmware
+repository. When you set up your own design, compare your
+[`booley.toml`](CONFIG.md), [`.core` files](TARGETS.md), and
+[`tests.toml`](TESTS.md) with theirs. PicoRV32 is the small one; Caliptra shows a large SoC with firmware
 tests. Both are also on the [Demos](https://booley.dev/demos/) page.
 
 The upstream build systems have nothing in common, which is the useful part:
@@ -197,7 +199,7 @@ What lands, wired together and ready to run:
 - `my_ip.core`: one Target per enabled flow (`sim`, `lint`, and optionally
   `synth` (plus SDC in physical mode), `fpga` + XDC); with `--stealth` it
   lives at `.booley/cores/my_ip.core`
-- `.booley/booley.toml` and `tests.toml`, populated rather than
+- `.booley/booley.toml` and [`tests.toml`](TESTS.md), populated rather than
   skeletons. The scaffolded config turns
   [stealth mode](STEALTH.md#stealth-mode) off, since this repo exists to
   exercise Booley and commit messages should stay verbatim. `--stealth`
@@ -253,7 +255,8 @@ and cleanup. The skill stops for your approval only once, after Step 0.
   approval.
 - **1 · Environment · host.** Applies the plan's sandbox-image decision if it
   made one (`booley init` re-run), then hands you into **Reopen in Container**.
-- **2 · Project config.** The `.core` Target(s), `tests.toml`, and `booley.toml`.
+- **2 · Project config.** The [`.core` Target(s)](TARGETS.md),
+  [`tests.toml`](TESTS.md), and [`booley.toml`](CONFIG.md).
 - **3 · AGENTS.md.** A concise Project-level guidance file for Developer Agents.
 - **4 · Doctor.** `booley doctor` is Booley's built-in health check: it audits
   your config, `.core` Targets, toolchain, and sandbox and reports on each
@@ -268,7 +271,8 @@ and cleanup. The skill stops for your approval only once, after Step 0.
 Steps 2–4 run in the container and follow the approved plan without asking
 again. A test
 that needs a non-RTL build step (per-case firmware, vector staging) is
-declared as `[flows.sim].pre_run_commands` during project config.
+declared as [`[flows.sim].pre_run_commands`](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands)
+during project config.
 Each step is also a standalone how-to file in the skill's `steps/` directory if
 you'd rather write it by hand.
 
@@ -315,8 +319,10 @@ with `/booley-goal start`, or start an
 ## See also
 
 - [INSTALL.md](INSTALL.md): host prerequisites, CLI installation, and Host Bootstrap.
-- [CONFIG.md](CONFIG.md): configuration field reference and advanced setups
+- [CONFIG.md](CONFIG.md): `booley.toml` reference and advanced setups
   (custom MCP tools and worktree setup hooks).
+- [TARGETS.md](TARGETS.md): `.core` files and Targets.
+- [`tests.toml`](TESTS.md): Tests, Test Variants and seeds.
 - [SANDBOX.md](SANDBOX.md): custom Sandbox image and commercial EDA tools.
 - [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md): which EDA tools Booley drives, at
   which boundary. The reference the skill's plan step checks against.
