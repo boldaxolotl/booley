@@ -355,12 +355,12 @@ a hash suffix):
 | `per_clock`, `wns_ns`, `whs_ns`, `reg2reg_slack_ns`, `reg2reg_fmax_mhz` | Physical-mode timing. Each `per_clock` entry has `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps`, and `fmax_mhz`. Logical mode reports `estimated_fmax_mhz` instead. |
 | `conditions` | `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`, `multi_driven`, and the combined `has_critical`. |
 | `total_warnings`, `warning_summary` | Warning count, plus `unique_warnings` and counts grouped by tool, category, and disposition, with a few sample messages. |
-| `baseline`, `delta_pct`, `timing_delta_pct` | With `--baseline`: the baseline's metrics and the deltas. `baseline.ref` is the compared revision. |
+| `baseline`, `delta_pct`, `timing_delta_pct` | With `--baseline`: the baseline's metrics and the deltas. `baseline.ref` is the compared revision. `baseline.timing_unavailable` says why no baseline timing reports were kept (none were written, or they could not be published). |
 | `baseline_target`, `candidate_target` | Selectors of the compared Targets. |
 | `baseline_target_identity`, `candidate_target_identity` | Their full FuseSoC identities. |
 | `run_evidence`, `baseline_run_evidence` | Source and recipe provenance for each side. |
 | `failure_output`, `io_bound_critical` | A failure excerpt, and whether the critical path runs through I/O. |
-| `artifacts` | The report, run log, build directory, and timing directory. |
+| `artifacts` | The report, run log, build directory, and timing directory. With `--baseline`, `baseline_timing` is the copy of whatever STA reports the baseline run wrote, at `artifacts/synth_<target>/baseline_timing/` in this invocation. |
 
 Actionable warnings set `grade: "warn"` but keep `passed: true`. Known-benign
 warnings are still counted, with a rationale. `artifacts.log` has every raw
