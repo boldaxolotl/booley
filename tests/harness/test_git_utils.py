@@ -27,6 +27,7 @@ from booley.runtime.git import (
     is_linked_worktree,
 )
 from tests.conftest import symlink_or_skip
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 # ---------------------------------------------------------------------------
 # Helpers — tiny git repo factory
@@ -35,18 +36,29 @@ from tests.conftest import symlink_or_skip
 
 def _init_repo(path: Path) -> Path:
     """Create a bare-minimum git repo with one commit. Returns its repository root."""
-    subprocess.run(["git", "init", str(path)], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "init", str(path)], capture_output=True, check=True, timeout=SUBPROCESS_TIMEOUT_S
+    )
     subprocess.run(
         ["git", "-C", str(path), "config", "user.email", "test@test.com"],
         capture_output=True,
         check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     subprocess.run(
-        ["git", "-C", str(path), "config", "user.name", "Test"], capture_output=True, check=True
+        ["git", "-C", str(path), "config", "user.name", "Test"],
+        capture_output=True,
+        check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     # Initial commit so HEAD exists
     (path / "init.txt").write_text("init", encoding="utf-8")
-    subprocess.run(["git", "-C", str(path), "add", "init.txt"], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-C", str(path), "add", "init.txt"],
+        capture_output=True,
+        check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
     # A detached maintenance process would race later byte-for-byte repository snapshots.
     subprocess.run(
         [
@@ -63,6 +75,7 @@ def _init_repo(path: Path) -> Path:
         ],
         capture_output=True,
         check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return path
 
@@ -73,6 +86,7 @@ def _make_worktree(repo: Path, wt_path: Path, branch: str = "test-branch") -> Pa
         ["git", "-C", str(repo), "worktree", "add", str(wt_path), "-b", branch],
         capture_output=True,
         check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return wt_path
 
@@ -349,6 +363,7 @@ def _is_ignored(wt: Path, rel: str) -> bool:
         ["git", "-C", str(wt), "check-ignore", "-q", rel],
         capture_output=True,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return result.returncode == 0
 

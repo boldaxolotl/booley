@@ -1,7 +1,9 @@
 # Files whose bytes define the published EDA/runtime base compatibility contract.
+# Exception: pyproject.toml contributes only its exported [project].dependencies.
 .dockerignore
 pyproject.toml
 src/booley/data/docker/Dockerfile.base
+src/booley/data/docker/base-python-requirements.txt
 src/booley/data/docker/base_package_inventory.py
 src/booley/data/docker/agent-clis-package.json
 src/booley/data/docker/agent-clis-package-lock.json

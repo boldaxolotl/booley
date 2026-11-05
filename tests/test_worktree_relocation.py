@@ -14,6 +14,7 @@ from booley.runtime.worktree_relocation import (
     refresh_relative_worktree_config,
     relocate_worktree,
 )
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -23,6 +24,7 @@ def _git(repository: Path, *args: str) -> str:
         check=True,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     return result.stdout.strip()
 

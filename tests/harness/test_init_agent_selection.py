@@ -505,6 +505,7 @@ def test_full_init_passes_verified_runtime_image_id_to_interactive_mode(tmp_path
         monkeypatch.setattr(init_cmd, name, lambda *_args, **_kwargs: None)
     monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: "pdk")
     monkeypatch.setattr(init_cmd, "_step_image_lifecycle", lambda _ctx, **_kwargs: result)
+    monkeypatch.setattr(init_cmd, "_sandbox_git_version", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(init_cmd, "_print_summary", lambda _ctx: 0)
     remembered = []
     monkeypatch.setattr(

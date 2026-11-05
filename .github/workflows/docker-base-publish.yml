@@ -8,6 +8,7 @@ on:
       - pyproject.toml
       - src/booley/data/docker/Dockerfile.base
       - src/booley/data/docker/base_package_inventory.py
+      - src/booley/data/docker/base-python-requirements.txt
       - src/booley/data/docker/agent-clis-package.json
       - src/booley/data/docker/agent-clis-package-lock.json
       - src/booley/data/docker/claude-managed-settings.json
@@ -30,7 +31,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # GitHub path filters cannot read content, so any pyproject.toml push starts
+  # this workflow. This cheap job skips the 57-minute build when the published
+  # :main base already carries this tree's contract, for example after an edit
+  # outside [project].dependencies (#2553).
+  stable-base-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      publish: ${{ steps.decide.outputs.publish }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decide whether the published base already has this contract
+        id: decide
+        run: |
+          python .github/scripts/docker_base_contract.py --repo . \
+            --publish-decision ghcr.io/boldaxolotl/booley-sandbox-base:main \
+            --github-output "${GITHUB_OUTPUT}"
+
   build-publish-smoke:
+    needs: stable-base-contract
+    # Fail toward rebuilding: publish unless the gate ran and said the published
+    # base is current. A manual run is an explicit refresh request and always
+    # publishes, even when the gate job fails; !cancelled() keeps a failed gate
+    # from implicitly skipping this job.
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'workflow_dispatch'
+      || needs.stable-base-contract.result != 'success'
+      || needs.stable-base-contract.outputs.publish == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:

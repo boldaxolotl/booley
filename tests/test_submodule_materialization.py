@@ -14,6 +14,7 @@ from booley.runtime.submodule_materialization import (
     materialize_submodules,
     materialize_worktree_submodules,
 )
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -23,6 +24,7 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
         check=False,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     # Surface git's own diagnosis: a bare CalledProcessError hides stderr, which
     # left a one-off CI failure of `git worktree add` (exit 128) undiagnosable.

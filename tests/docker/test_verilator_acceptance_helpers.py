@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 import pytest
+from tests.docker import verilator_acceptance
 from tests.docker.verilator_acceptance import terminate_and_reap
 
 
@@ -37,3 +38,8 @@ def test_ignored_sigterm_is_killed_and_timeout_remains_a_failure() -> None:
             child.wait(timeout=5)
         if child.stdout is not None:
             child.stdout.close()
+
+
+def test_expected_cocotb_version_reads_base_requirements() -> None:
+    real = verilator_acceptance.BASE_REQUIREMENTS.read_text(encoding="utf-8")
+    assert f"cocotb=={verilator_acceptance.expected_cocotb_version()}\n" in real
