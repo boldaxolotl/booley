@@ -61,7 +61,7 @@ sim_soc: simulation PASS · coverage collection COMPLETE · evaluation NOT_REQUE
   report: /work/.booley/flow-reports/sim.json
 ```
 
-The line has three verdicts:
+The first line has three verdicts:
 
 - **simulation**: whether the tests passed, as in
   [Simulation results](FLOW-SIM.md#reading-results).
@@ -75,14 +75,78 @@ The line has three verdicts:
   displayed 50%; minimum 80%)`. `BLOCKED` gives a code, such as an invalid
   [waiver](#coverage-waivers).
 
-The terminal does not print the percentages. They are in the run's files,
-under `flow-reports/` in the Booley Directory (or `--report-dir`), in the
-numbered run directory (`sim/12/` above):
+The two paths are the same for every `sim` run, with or without coverage:
 
-| File | What it holds |
-|---|---|
-| `sim/<N>/report.json` | For each Target, under `detail.targets.<target>.coverage_metrics`, each metric's `percent`, `threshold` and `met`. |
-| `sim/<N>/targets/<target>/coverage.json` | The Coverage Campaign. Pass this path to the [Coverage Analyst](#analyzing-a-campaign) to find out what is uncovered and why. |
+- **`manifest`** is the run's plan, written before anything runs: which Test
+  Runs, builds and source files it covers. You need it only to
+  [resume an interrupted run](FLOW-SIM.md#resuming-an-interrupted-run).
+- **`report`** is a copy of the newest run's `report.json`. The next run
+  overwrites it; the run's own copy is `sim/12/report.json`.
+
+### Where the numbers are
+
+The terminal doesn't print the percentages. Each run gets a numbered
+directory under `flow-reports/` in the Booley Directory (or `--report-dir`),
+`sim/12/` above. Coverage results are in two of its files.
+
+**`sim/<N>/report.json`** has each Target's percentages, under
+`detail.targets.<target>`:
+
+```json
+"sim_soc": {
+  "simulation": "pass",
+  "collection": "complete",
+  "evaluation": "not_requested",
+  "coverage_metrics": {
+    "line":       {"percent": 98.58, "threshold": null, "met": null},
+    "branch":     {"percent": 77.19, "threshold": null, "met": null},
+    "expression": {"percent": 79.51, "threshold": null, "met": null},
+    "toggle":     {"percent": 88.98, "threshold": null, "met": null}
+  }
+}
+```
+
+`threshold` and `met` are filled in when a Coverage Goal sets a threshold
+for that metric. A metric the design has no points for, such as
+`cover_property` in a design without `cover property` statements, is left out.
+
+**`sim/<N>/targets/<target>/coverage.json`** stands for the Coverage
+Campaign. It is a short pointer: its `coverage_campaign.path` names the full
+Campaign file, relative to the Target's directory:
+
+```json
+"coverage_campaign": {
+  "path": "campaign/work-items/0001-b2fd…/attempts/0001-f1d4…/coverage-campaign/coverage.json",
+  …
+}
+```
+
+Pass the pointer's path to the [Coverage Analyst](#analyzing-a-campaign) to
+find out what is uncovered and why. The full Campaign file it points to holds
+the point counts behind each percentage, per metric in `rollups` and per
+source file in `source_rollups`:
+
+```json
+"rollups": [
+  {"metric": "line",   "covered_points": 3481, "eligible_points": 3531,
+   "total_points": 3604, "waived_points": 0, "percent": 98.58},
+  {"metric": "branch", "covered_points": 565,  "eligible_points": 732,
+   "total_points": 810,  "waived_points": 0, "percent": 77.19},
+  …
+],
+"source_rollups": [
+  {"source": "rtl/fifo.sv", "rollups": [
+    {"metric": "toggle", "covered_points": 22, "eligible_points": 44, "percent": 50.0},
+    …
+  ]},
+  …
+]
+```
+
+`total_points` counts every point, `eligible_points` only the RTL points that
+count toward the percentage (see below), and `percent` is covered divided by
+eligible, or `null` when no point is eligible. The individual points are in the Campaign's point store; the Coverage
+Analyst reads them for you.
 
 How the numbers are counted:
 
