@@ -191,3 +191,20 @@ could be planned.
 When a Flow fails for a reason you can't explain, see
 [Troubleshooting](TROUBLESHOOTING.md). If Booley itself seems wrong, report it
 as described in [When Booley itself misbehaves](USAGE.md#when-booley-itself-misbehaves).
+
+### Cleaning up reports
+
+Booley keeps reports until they are deleted. Where they go decides who
+deletes them:
+
+| Run started by | Reports | Cleaned up |
+|---|---|---|
+| A Goal | The Goal Record, in the main checkout's Booley Directory | Automatically, once the Goal has ended and its worktree and Goal Branch are gone. |
+| The agent in Interactive Mode | `.interactive_logs/<session>/` in the Booley Directory of the checkout the session runs in | With the worktree, for a session in a linked worktree. |
+| You, from the CLI | `flow-reports/` in the Booley Directory of the checkout you run in, or `--report-dir` | With the worktree, for a run in a linked worktree. |
+
+In the main checkout nothing removes them, and coverage runs in particular
+grow to gigabytes. Delete the run folders under `flow-reports/` and the
+sessions under `.interactive_logs/` you don't need, when no run is active. Keep a run you may
+still [resume](FLOW-SIM.md#resuming-an-interrupted-run), and the run a
+resumed run continued from.

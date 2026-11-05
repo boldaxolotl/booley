@@ -444,11 +444,11 @@ booley projects forget /exact/deleted/project
 
 ## Coverage
 
-### Coverage Campaign diagnostics and retention
+### Coverage Campaign diagnostics
 
-Where Campaign files live and how to prune them:
+Where Campaign files live and how to delete finished runs:
 [Coverage results](https://booley.dev/docs/coverage/#reading-results)
-and [Cleaning up completed Campaigns](https://booley.dev/docs/coverage/#cleaning-up-completed-campaigns).
+and [Cleaning up reports](https://booley.dev/docs/flow-reference/#cleaning-up-reports).
 
 | Message | Fix |
 |---|---|
@@ -457,9 +457,8 @@ and [Cleaning up completed Campaigns](https://booley.dev/docs/coverage/#cleaning
 | `collection has no recorded result` | Coverage collection never finished, so the Campaign can't resume. Start the new run the message prints. |
 | `Coverage evidence budget exhausted` | Narrow the instruction you gave the Coverage Analyst, or use a model with a larger context. |
 
-An interrupted cleanup is safe to rerun with the same arguments. Never delete a
-lock file to get past a message, and keep empty `.pruned-N` folders: they
-reserve used run numbers.
+Never delete a lock file to get past a message, and keep any empty
+`.pruned-N` folders: they reserve used run numbers.
 
 The Coverage Analyst gives report-only analysis, without Waiver Candidates, in
 Stealth Mode Projects and when the Target's sources changed since the Campaign
@@ -489,8 +488,9 @@ booley flow sim --resume-from /exact/path/to/campaign/manifest.json --dry-run
   Target's run directory, then retry.
 
 Never delete Booley's job or execution records to force progress; they protect
-running EDA processes. Remove an abandoned Campaign with `--full`
-[pruning](https://booley.dev/docs/coverage/#cleaning-up-completed-campaigns).
+running EDA processes. To get rid of an abandoned Campaign, delete its run
+folder once no run is active
+([Cleaning up reports](https://booley.dev/docs/flow-reference/#cleaning-up-reports)).
 
 ### Waiver Candidates at review
 

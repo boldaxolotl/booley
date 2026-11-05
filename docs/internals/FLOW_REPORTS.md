@@ -349,9 +349,12 @@ Project source files.
 ### Coverage retention
 
 `python -m booley.flows.sim.campaign_retention` deletes the evidence of one
-exact run. Nothing is ever deleted automatically. Usage is in
-[COVERAGE.md](../user/COVERAGE.md#cleaning-up-completed-campaigns); the
-algorithm is in
+exact run. Nothing is ever deleted automatically. User docs tell people to
+delete finished run folders directly ([Cleaning up reports](../user/FLOW_REFERENCE.md#cleaning-up-reports));
+this command is the guarded version, for tooling and for removing a run that
+others depend on. Run it as
+`python -m booley.flows.sim.campaign_retention --reports-root <root> --invocation <N>`
+with one of the options below. The algorithm is in
 [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#exact-report-retention).
 
 - **`--native-target <target>`** removes that Target's `native/` directory (raw and

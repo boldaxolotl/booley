@@ -265,30 +265,11 @@ To run it yourself inside the Sandbox, pass the Target's
 booley specialist coverage_analyst --campaign <path to coverage.json>
 ```
 
-## Cleaning up completed Campaigns
+## Disk space
 
-Coverage runs keep the raw Verilator databases, which are large. Booley never
-deletes them automatically. To free space, prune one run. Take both values
-from the Target's [`coverage.json`](#reading-results) path: for
-`<reports>/sim/12/targets/sim_soc/coverage.json`, the reports root is
-`<reports>` and the run number is `12`.
-
-```bash
-# Drop one Target's raw databases; the Campaign stays readable by the Analyst
-python -m booley.flows.sim.campaign_retention \
-  --reports-root "$REPORTS_ROOT" --invocation 12 --native-target sim_soc
-
-# Remove the whole run; nothing can analyze it afterwards
-python -m booley.flows.sim.campaign_retention \
-  --reports-root "$REPORTS_ROOT" --invocation 12 --full
-```
-
-- `--full` refuses when later resumed runs depend on this one; add
-  `--include-dependents` to remove them too. It may ask for
-  `--project-data <Booley Directory>` when it has to recover an interrupted
-  run.
-- Runs that are still active are refused. An interrupted cleanup is safe to
-  retry with the same arguments.
+Coverage runs are large: each one keeps a raw Verilator database per Test Run
+plus a merged one, often tens of megabytes per test. Booley never deletes
+them; see [Cleaning up reports](FLOW_REFERENCE.md#cleaning-up-reports).
 
 ## Configuration
 
