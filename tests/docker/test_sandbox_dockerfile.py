@@ -1000,6 +1000,24 @@ def test_release_demo_contracts_use_reviewed_fixture_and_behavior_modules() -> N
     assert '--mount type=bind,src="${RUNNER_TEMP}/simulation-project",dst=/work' in simulation_run
 
 
+def test_release_concurrency_isolates_dispatched_candidate_builds() -> None:
+    """Dispatched candidate builds must not share the release cancellation group.
+
+    Push (release tag) runs keep one shared group so a newer release cancels an
+    older one; dispatched runs get a per-ref group so they never cancel, or get
+    cancelled by, a release.
+    """
+    workflow = _workflow(".github/workflows/docker-publish.yml")
+
+    assert workflow["concurrency"] == {
+        "group": (
+            "${{ github.event_name == 'push' && 'docker-release-promotion' "
+            "|| format('docker-candidate-{0}', github.ref) }}"
+        ),
+        "cancel-in-progress": True,
+    }
+
+
 def test_release_promotes_stable_tags_only_after_independent_gates() -> None:
     jobs = _workflow(".github/workflows/docker-publish.yml")["jobs"]
     standard_build = next(
