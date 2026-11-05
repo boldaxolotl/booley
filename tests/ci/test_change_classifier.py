@@ -510,6 +510,8 @@ def test_deleted_project_metadata_keeps_stable_base(tmp_path: Path) -> None:
     [
         # #829: the base inventory helper's bytes are a base compatibility input.
         ("src/booley/data/docker/base_package_inventory.py", True),
+        # The pinned Python package set is installed by the base image.
+        ("src/booley/data/docker/base-python-requirements.txt", True),
         # The contract gates every image lane but not the base.
         (".github/contracts/session-runtime.toml", False),
     ],
