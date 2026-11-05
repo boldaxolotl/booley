@@ -123,6 +123,8 @@ def test_project_runner_pins_match_the_readiness_contract():
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     extras = project["optional-dependencies"]
     pins = readiness.runner_pins(root)
+    # External gate probes read the module attribute; it must stay derived.
+    assert pins == readiness.PINNED_RUNNERS
     assert set(pins) == {
         "pytest",
         "pytest-asyncio",

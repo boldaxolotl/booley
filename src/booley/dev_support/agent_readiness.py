@@ -602,8 +602,20 @@ def venv_python(venv: Path) -> Path:
     return venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 
 
+def __getattr__(name: str) -> dict[str, str]:
+    """Serve ``PINNED_RUNNERS`` derived from pyproject.toml for external gate probes.
+
+    The issue-pipeline gate executor reads ``module.PINNED_RUNNERS`` and calls
+    ``validate_environment`` without pins; deriving both keeps it working with
+    no hand-copied versions.
+    """
+    if name == "PINNED_RUNNERS":
+        return runner_pins(Path(__file__).resolve().parents[3])
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def validate_environment(
-    root: Path, fingerprint: str, python: Path, pins: dict[str, str]
+    root: Path, fingerprint: str, python: Path, pins: dict[str, str] | None = None
 ) -> tuple[bool, str]:
     """Trust a published receipt; shared by readiness and the bootstrap, it runs no subprocess.
 
@@ -622,6 +634,8 @@ def validate_environment(
     ):
         return False, "shared tools environment receipt or interpreter is stale"
     installed = receipt.get("installed")
+    if pins is None:
+        pins = runner_pins(Path(__file__).resolve().parents[3])
     if not isinstance(installed, dict) or any(
         installed.get(name) != version for name, version in pins.items()
     ):
