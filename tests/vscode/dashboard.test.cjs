@@ -17,7 +17,7 @@ function fakeEditor(options, records, settings) {
     const { log, terminals, listeners, commands, messages } = records;
     // Terminals already open; the Dashboard joins this list. An idle terminal
     // (like the Codespace default shell) comes first; a user terminal is one
-    // the user has typed in.
+    // that has received input.
     const open = [];
     if (options.idleTerminal) { open.push({ name: 'bash', state: { isInteractedWith: false } }); }
     if (options.userTerminal) { open.push({ name: 'bash', state: { isInteractedWith: true } }); }
@@ -329,7 +329,11 @@ test('a terminal nobody has used does not hold the Dashboard back', async () => 
     for (const trusted of [false, true]) {
         const f = fixture({ idleTerminal: true, trusted });
         await tick();
-        if (!trusted) { f.vscode.workspace.isTrusted = true; f.listeners.trust(); await tick(); }
+        if (!trusted) {
+            f.vscode.workspace.isTrusted = true;
+            f.listeners.trust();
+            await tick();
+        }
         assert.equal(f.terminals.length, 1);
         assert.equal(f.terminals[0].shown, true, 'the Dashboard comes to the front');
         assert.equal(f.terminals[0].preserveFocus, true, 'keyboard focus stays put');
@@ -337,7 +341,8 @@ test('a terminal nobody has used does not hold the Dashboard back', async () => 
     }
 });
 
-test('a terminal the user has used keeps the panel even beside an unused one; the Dashboard waits behind a notification', async () => {
+test('a terminal the user has used keeps the panel; the Dashboard waits behind a notification', async () => {
+    // The unused terminal comes first: any used terminal counts, not just the first.
     const f = fixture({ idleTerminal: true, userTerminal: true });
     await tick();
     assert.equal(f.terminals.length, 1, 'the Dashboard still starts');
