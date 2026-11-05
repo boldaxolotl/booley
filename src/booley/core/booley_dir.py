@@ -319,6 +319,7 @@ def resolve_main_checkout_root(project_root: Path) -> Path:
     """Return the main checkout of *project_root*'s repository.
 
     Falls back to *project_root* outside Git or when the Git topology cannot be read.
+    A malformed ``.git`` pointer raises ``BooleyLayoutError``.
     """
     return _main_checkout_root(project_root) or project_root
 

@@ -114,7 +114,7 @@ def _core_digest(project_root: Path, booley_dir: Path) -> str:
 def compute_fingerprint(booley_dir: Path, project_root: Path) -> dict[str, Any]:
     """Hash config and authored design-description inputs relevant to Doctor.
 
-    Like the stamp, the record is Common Booley State: *booley_dir* is the Common
+    Like the stamp, the record is Common Booley State: *booley_dir* is the Main
     Booley Directory and root-level inputs come from the main checkout.
     """
     import booley

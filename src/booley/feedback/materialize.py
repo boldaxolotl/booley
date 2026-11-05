@@ -95,7 +95,11 @@ def _rewrite_attachments_only(booley_dir: Path, entries: list[Finding]) -> None:
 def materialize_attachments(
     booley_dir: Path, sources: Iterable[Path], *, checkout_dir: Path | None = None
 ) -> tuple[Path, ...]:
-    """Snapshot selected attachments and retarget them under the log lock."""
+    """Snapshot selected attachments and retarget them under the log lock.
+
+    *checkout_dir* is the Booley Directory that relative attachment paths resolve
+    against when it differs from the log directory (a linked worktree).
+    """
     selected = {Path(source).expanduser().resolve(strict=False) for source in sources}
     if not selected:
         return ()

@@ -137,9 +137,8 @@ def apply(project_root: Path, run_id: str) -> dict[str, Any]:
         materialize.materialize_attachments(common_dir, attached, checkout_dir=booley_dir)
     except (RuntimeError, OSError, ValueError) as exc:  # corrupt log, lock timeout, I/O
         return _keep(report, str(exc), blockers)
-    left, corrupt_now = _attached(
-        booley_dir, project_root, run_root
-    )  # a half-written append shows as corrupt
+    # A half-written append shows as corrupt.
+    left, corrupt_now = _attached(booley_dir, project_root, run_root)
     if left or corrupt_now != corrupt:
         return _keep(report, "Findings Log changed during cleanup", left or blockers)
     try:  # children first, marker last: a failed removal stays retryable

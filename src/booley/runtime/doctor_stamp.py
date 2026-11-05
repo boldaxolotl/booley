@@ -7,14 +7,14 @@ multi-hour ticket sweep before anyone thought to re-run doctor. The stamp
 closes that gap cheaply.
 
 On every doctor run that ends with **zero FAILs and zero active WARNs**, doctor
-records a timestamp plus an environment fingerprint into project runtime state at
-``<booley_dir>/runtime/doctor_stamp.json`` (beside the developer probe and
+records a timestamp plus an environment fingerprint into the Main Booley Directory
+at ``<booley_dir>/runtime/doctor_stamp.json`` (beside the developer probe and
 the slot store -- the same ADR 0028 bookkeeping home, bind-mounted into the
 Sandbox, so a host-written stamp is readable in-container and vice
-versa). Session start (``booley session up``) and the per-sweep ticket loop
-then check the stamp in microseconds -- no docker round-trips -- and emit a
-prominent advisory when doctor's blessing has gone stale or the fingerprint
-no longer matches the config on disk.
+versa). The init advisory and the health record then check the stamp in
+microseconds -- no docker round-trips -- and emit a prominent advisory when
+doctor's blessing has gone stale or the fingerprint no longer matches the
+config on disk.
 
 The fingerprint deliberately contains only inputs both launch contexts hash to the
 same bytes (``booley.toml``, ``doctor-waivers.toml``, and
@@ -87,7 +87,7 @@ def compute_fingerprint(booley_dir: Path, project_root: Path) -> dict[str, str |
     """Hash the config inputs whose drift should invalidate the stamp.
 
     The stamp describes the Sandbox and installed package, not one checkout's
-    code (ADR 0082), so *booley_dir* is the Common Booley Directory and the
+    code (ADR 0082), so *booley_dir* is the Main Booley Directory and the
     devcontainer comes from the main checkout, never a linked worktree's
     per-folder copy. Both are identical bytes on host and in-container
     (bind-mounted), so a fingerprint recorded on either side compares cleanly

@@ -15,6 +15,7 @@ from booley.audit.diagnostic_results import DiagnosticReport
 from booley.harness import doctor
 from booley.harness import doctor_deep as deep
 from booley.runtime import health, runtime_context
+from tests.booley_checkouts_support import LAYOUTS, linked_worktree
 from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
 from tests.harness.test_doctor import _write_project
 
@@ -634,3 +635,30 @@ def test_real_qualification_applies_warning_waiver_without_inventing_execution(
     assert ("git.worktree-portability" in record.reasons) is (not waived)
     assert result.counts["waived"] == (3 if waived else 0)
     assert commands == ["smoke", "good", "bad", "core"]
+
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_core_resolve_snippet_builds_in_the_checkout_from_a_worktree(
+    tmp_path, monkeypatch, layout
+):
+    """The in-Sandbox snippet keeps per-checkout build roots even when ``BOOLEY_DIR`` names main."""
+    from booley.fusesoc import fusesoc_registry
+    from booley.targets.catalog import TargetCatalog
+
+    _main, worktree = linked_worktree(tmp_path, monkeypatch, layout=layout, runtime="sandbox")
+    build_roots = []
+    monkeypatch.chdir(worktree)
+    monkeypatch.setattr(
+        TargetCatalog, "build", staticmethod(lambda _root: SimpleNamespace(select=lambda s: s))
+    )
+    monkeypatch.setattr(
+        fusesoc_registry,
+        "resolve_target_handle",
+        lambda _handle, *, build_root: build_roots.append(build_root),
+    )
+    payload = json.dumps([{"selector": "sim_fast", "build_key": "key"}])
+    monkeypatch.setattr("sys.argv", ["-c", payload])
+
+    exec(compile(doctor._CORE_RESOLVE_SNIPPET, "<snippet>", "exec"), {})
+
+    assert build_roots == [worktree / ".booley" / "runtime/doctor/core-resolve" / "key"]

@@ -996,7 +996,7 @@ def _run_project_phase(
     reporter.diagnostics(loaded.report)
     booley_dir, project = loaded.booley_dir, loaded.project
     mode = readiness.ReadinessMode.INSPECT if read_only else readiness.ReadinessMode.RECONCILE
-    # Goal, upgrade-review and probe records are Common Booley State, read from main.
+    # Goal and upgrade-review records are Common Booley State, read from main.
     common_dir = resolve_common_booley_dir(project_root) if booley_dir is not None else None
     _check_upgrade_review(common_dir, reporter)
     _check_legacy_source_stashes(project_root, reporter)
@@ -6717,7 +6717,7 @@ def _grade_core_resolution(
 _CORE_RESOLVE_SNIPPET = (
     "import json, os, sys\n"
     "from pathlib import Path\n"
-    "from booley.runtime.booley_dir import resolve_booley_dir\n"
+    "from booley.runtime.booley_dir import resolve_checkout_booley_dir\n"
     "from booley.fusesoc import fusesoc_registry as fr\n"
     "from booley.targets.catalog import TargetCatalog\n"
     "root = os.getcwd()\n"
@@ -6726,7 +6726,7 @@ _CORE_RESOLVE_SNIPPET = (
     "out = []\n"
     "for target in targets:\n"
     "    selector = target['selector']\n"
-    "    br = resolve_booley_dir(Path(root)) / 'runtime/doctor/core-resolve' / target['build_key']\n"
+    "    br = resolve_checkout_booley_dir(Path(root)) / 'runtime/doctor/core-resolve' / target['build_key']\n"
     "    try:\n"
     "        fr.resolve_target_handle(catalog.select(selector), build_root=br)\n"
     "        out.append({'selector': selector, 'ok': True})\n"
