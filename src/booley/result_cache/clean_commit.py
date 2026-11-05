@@ -51,6 +51,14 @@ class CleanCommit:
     (including locally excluded ones), Booley-owned paths or snapshot equality
     (#2099), the configuration (#2212), nor the tool, image, Booley and host
     parts of the Result Key.
+
+    Obligations for the serving caller (#2103): ``booley_dir`` may come from the
+    process-wide selection cache, so prove the Flow reads that same directory
+    (``samefile``); the tracked digest is read before the clean check, so
+    re-check at serve time that nothing moved since (HEAD is re-read here only
+    once, after the status); the Configuration exclusions (#2212) must hash
+    working-tree bytes, never index or HEAD blobs, or an assume-unchanged edit
+    of a configuration file would go unseen.
     """
 
     booley_dir: Path | None
@@ -74,6 +82,7 @@ def check_clean_commit(checkout_root: Path) -> CleanCommit:
         booley_dir, roots = _select_participants(Path(checkout_root), project_root)
         participants = tuple(_participant(label, root) for label, root in roots)
         reasons, digest = _check(booley_dir, project_root, participants)
+        reasons = (*reasons, *_moved_head(participants))
     except _NotCacheableError as refusal:
         return CleanCommit(None, (), (str(refusal),), None)
     except (
@@ -81,7 +90,8 @@ def check_clean_commit(checkout_root: Path) -> CleanCommit:
         SourceCheckoutProjectError,
         BooleyLayoutError,
         OSError,
-        UnicodeError,
+        ValueError,  # includes UnicodeError; a malformed Git record
+        RuntimeError,  # a symlink loop in Path.resolve() on Python 3.11/3.12
     ) as exc:
         raise CleanCommitError(f"cannot check clean commit at {checkout_root}: {exc}") from exc
     return CleanCommit(booley_dir, participants, reasons, None if reasons else digest)
@@ -150,6 +160,18 @@ def _check(
     for tree in sorted(trees, key=lambda tree: tree.label):
         frame(hasher, tree.label.encode(), tree.digest().encode())
     return tuple(reasons), f"sha256:{hasher.hexdigest()}"
+
+
+def _moved_head(participants: Sequence[Participant]) -> list[str]:
+    """Reasons for a participant whose HEAD changed since selection (a Git operation mid-check)."""
+    moved = []
+    for participant in participants:
+        now = run_git(participant.root, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+        if now.returncode or now.stdout.strip() != participant.head:
+            moved.append(
+                f"{participant.label} repository {participant.root} changed HEAD during the check"
+            )
+    return moved
 
 
 def _dirty(label: str, repository: Path, nested: Path | None) -> list[str]:

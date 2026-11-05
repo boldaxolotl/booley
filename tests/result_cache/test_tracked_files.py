@@ -82,14 +82,15 @@ def test_checkout_variant_changes_tracked_digest(case: str, tmp_path: Path) -> N
         assert not check(variant).cacheable
 
 
-@all_cases(["assume-unchanged", "executable-bit"])
+@all_cases(["assume-unchanged", "skip-worktree", "executable-bit"])
 def test_edit_hidden_from_git_changes_digest(case: str, tmp_path: Path) -> None:
     layout = build_layout(tmp_path, "tracked")
     source = layout.rtl / "src/a.v"
-    if case == "assume-unchanged":  # the flag is keyed too, so measure after setting it
-        git(layout.rtl, "update-index", "--assume-unchanged", "src/a.v")
+    if case != "executable-bit":  # the flag is keyed too, so measure after setting it
+        flag = "--skip-worktree" if case == "skip-worktree" else "--assume-unchanged"
+        git(layout.rtl, "update-index", flag, "src/a.v")
     before = digest(layout.project)
-    if case == "assume-unchanged":
+    if case != "executable-bit":
         source.write_text("module changed; endmodule\n")
     else:
         git(layout.rtl, "config", "core.fileMode", "false")
@@ -181,3 +182,12 @@ def test_configuration_files_are_not_digested(case: str, tmp_path: Path) -> None
     stray = "src/tests.toml" if case == "tracked" else "criteria.toml"
     before = change(stray, "a\n", True)
     assert change(stray, "b\n", True) != before
+
+
+def test_git_listings_override_the_untracked_cache(tmp_path: Path) -> None:
+    """A stale untracked cache would hide an untracked file; no portable fixture makes it stale."""
+    from booley.result_cache.tracked_files import git_output
+
+    layout = build_layout(tmp_path, "tracked")
+    git(layout.rtl, "config", "core.untrackedCache", "true")
+    assert git_output(layout.rtl, "config", "core.untrackedCache").strip() == b"false"

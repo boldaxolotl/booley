@@ -36,7 +36,9 @@ def _isolated(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def exclude(repo: Path, pattern: str) -> None:
-    with (repo / ".git/info/exclude").open("a") as handle:
+    # `.git` is a file in a submodule: ask Git where its exclude file is.
+    path = repo / git(repo, "rev-parse", "--git-path", "info/exclude")
+    with path.open("a") as handle:
         handle.write(f"{pattern}\n")
 
 
@@ -160,6 +162,14 @@ def nested_ignored_link(rtl: Path, out: str) -> None:
     ignored_link(rtl, "nested/l", out, "nested/")
 
 
+def submodule_link(rtl: Path, out: str, *, tracked: bool) -> None:
+    sub = add_submodule(rtl, "sub", new_repo(rtl.parent / "sub", {"s.v": "s\n"}))
+    if tracked:
+        commit_links(sub, ("link", out))
+    else:
+        ignored_link(sub, "ign", out)
+
+
 def skip_worktree_link(rtl: Path, out: str) -> None:
     git(rtl, "update-index", "--skip-worktree", "src/a.v")
     (rtl / "src/a.v").unlink()
@@ -200,6 +210,16 @@ LINK_CASES: dict[str, tuple[str, Callable[[Path, str], None], str]] = {
         "tracked",
         lambda rtl, out: commit_links(rtl, (".booley/criteria.toml", out)),
         "rtl:.booley/criteria.toml",
+    ),
+    "ignored-in-submodule": (
+        "tracked",
+        lambda rtl, out: submodule_link(rtl, out, tracked=False),
+        "rtl:sub/ign",
+    ),
+    "tracked-in-submodule": (
+        "tracked",
+        lambda rtl, out: submodule_link(rtl, out, tracked=True),
+        "rtl:sub/link",
     ),
     "skip-worktree-hides-symlink": ("tracked", skip_worktree_link, "rtl:src/a.v"),
     "ignored-in-standalone-booley": (
@@ -292,6 +312,30 @@ def populated_uninitialised_submodule(base: Path) -> Path:
     return layout.project
 
 
+def special_file(base: Path) -> Path:
+    layout = build_layout(base, "tracked")
+    (layout.rtl / "src/a.v").unlink()
+    os.mkfifo(layout.rtl / "src/a.v")  # a tracked path that is neither a file nor a link
+    return layout.project
+
+
+def gitlink_replaced(base: Path, replace: Callable[[Path], None]) -> Path:
+    layout = build_layout(base, "tracked")
+    sub = add_submodule(layout.rtl, "sub", new_repo(base / "sub", {"s.v": "s\n"}))
+    shutil.rmtree(sub)
+    replace(sub)
+    return layout.project
+
+
+def unborn_submodule(base: Path) -> Path:
+    layout = build_layout(base, "tracked")
+    sub = add_submodule(layout.rtl, "sub", new_repo(base / "sub", {"s.v": "s\n"}))
+    shutil.rmtree(sub)
+    sub.mkdir()
+    git(sub, "init", "-q", "-b", "main")  # a repository with no commit: status prints nothing
+    return layout.project
+
+
 NOT_TRACKED = "neither tracked in the RTL repository"
 UNSELECTABLE_CASES: dict[str, tuple[Callable[[Path], Path], str]] = {
     "not-a-repository": (lambda b: b.joinpath("plain").mkdir() or b / "plain", "not in a Git"),
@@ -314,6 +358,13 @@ UNSELECTABLE_CASES: dict[str, tuple[Callable[[Path], Path], str]] = {
         NOT_TRACKED,
     ),
     "populated-uninitialised-submodule": (populated_uninitialised_submodule, "populated but not"),
+    "tracked-path-is-a-fifo": (special_file, "neither a file nor a symlink"),
+    "gitlink-path-is-a-file": (
+        lambda b: gitlink_replaced(b, lambda sub: sub.write_text("x")),
+        "populated but not",
+    ),
+    "gitlink-path-is-absent": (lambda b: gitlink_replaced(b, lambda sub: None), "not clean"),
+    "submodule-without-commit": (unborn_submodule, "submodule repository with no commit"),
 }
 
 
@@ -321,6 +372,23 @@ UNSELECTABLE_CASES: dict[str, tuple[Callable[[Path], Path], str]] = {
 def test_unselectable_run_is_not_cacheable(case: str, tmp_path: Path) -> None:
     build, reason = UNSELECTABLE_CASES[case]
     assert_refused(build(tmp_path), reason)
+
+
+def test_head_moving_during_the_check_is_not_cacheable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.result_cache import clean_commit
+
+    layout = build_layout(tmp_path, "tracked")
+    real_check = clean_commit._check
+
+    def check_then_commit(*args: object) -> object:
+        result = real_check(*args)  # type: ignore[arg-type]
+        commit_files(layout.rtl, {"src/a.v": "module b; endmodule\n"})  # lands after the digest
+        return result
+
+    monkeypatch.setattr(clean_commit, "_check", check_then_commit)
+    assert_refused(layout.project, "rtl repository", "changed HEAD during the check")
 
 
 def test_git_failure_raises_clean_commit_error(tmp_path: Path) -> None:

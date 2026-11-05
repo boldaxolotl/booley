@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from booley.core.config_paths import GOALSETS_DIR
 from booley.result_cache._canonical import frame
 from booley.runtime.pinned_history import raw_git
-from booley.runtime.project_repositories import is_git_worktree_root
+from booley.runtime.project_repositories import is_git_worktree_root, run_git
 
 _FORMAT_TAG = b"booley-result-cache-tracked-v1"
 # Marker for "not inside this participant"; never a valid relative path.
@@ -56,7 +56,7 @@ def is_configuration_file(relative: str, booley_relative: str | None, config_nam
         return False
     inside = PurePosixPath(relative[len(prefix) :])
     if inside.parts[:1] == (GOALSETS_DIR,):
-        return len(inside.parts) == 2 and inside.suffix == ".md" and inside.stem != ""
+        return len(inside.parts) == 2 and inside.suffix == ".md"
     return str(inside) in {config_name, "tests.toml", "criteria.toml"}
 
 
@@ -151,6 +151,11 @@ def _gitlink_state(tree: TrackedTree, path: Path, relative: str, oid: bytes) -> 
         return (b"gitlink", oid, b"uninitialised")
     if stat.S_ISDIR(status.st_mode):
         if is_git_worktree_root(path):
+            # An unborn HEAD matches no commit, and status prints nothing for it.
+            if run_git(path, "rev-parse", "--verify", "-q", "HEAD^{commit}").returncode:
+                tree.reasons.append(
+                    f"{tree.label}:{relative} is a submodule repository with no commit"
+                )
             _walk_repository(tree, path, os.fsencode(relative) + b"/")
             return (b"gitlink", oid, b"initialised")
         if not any(path.iterdir()):
