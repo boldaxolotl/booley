@@ -118,6 +118,10 @@ def _select_participants(
     except FileNotFoundError as exc:
         raise _NotCacheableError(f"no Booley Directory: {exc}") from exc
     if is_git_worktree_root(booley_dir) and not booley_dir.samefile(rtl_root):
+        if _in_enclosing_repository(booley_dir, rtl_root):
+            raise _NotCacheableError(
+                f"Booley Directory {booley_dir} sits in a repository that encloses {rtl_root}"
+            )
         return booley_dir, [("rtl", rtl_root), ("booley", booley_dir)]
     # A repository that cannot be read is refused, not guessed at (the RTL root has its own .git).
     unreadable = os.path.lexists(booley_dir / ".git") and not booley_dir.samefile(rtl_root)
@@ -133,6 +137,20 @@ def _select_participants(
     raise _NotCacheableError(
         f"Booley Directory {booley_dir} is neither tracked in the RTL repository "
         "nor its own repository"
+    )
+
+
+def _in_enclosing_repository(booley_dir: Path, rtl_root: Path) -> bool:
+    """Whether *booley_dir* lies outside the RTL repository but in a repository enclosing it.
+
+    That enclosing repository would hold the Booley Directory yet be no participant.
+    """
+    if relative_posix(booley_dir, rtl_root) is not None:
+        return False
+    top = run_git(rtl_root.parent, "rev-parse", "--show-toplevel")
+    return (
+        top.returncode == 0
+        and relative_posix(booley_dir, Path(top.stdout.strip()).resolve()) is not None
     )
 
 

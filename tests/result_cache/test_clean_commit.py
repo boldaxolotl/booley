@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 
+from booley.core.booley_dir import reset_cache
 from tests.result_cache.git_fixtures import (
     BOOLEY_FILES,
     Layout,
@@ -31,8 +32,10 @@ BOOLEY_TREE = {f".booley/{name}": text for name, text in BOOLEY_FILES.items()}
 
 
 @pytest.fixture(autouse=True)
-def _isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolated(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     isolate(monkeypatch)
+    yield
+    reset_cache()  # a selection cached by one test must not leak into the next module
 
 
 def exclude(repo: Path, pattern: str) -> None:
@@ -393,6 +396,12 @@ def hidden_symlinked_gitlink(base: Path) -> Path:
     return layout.project
 
 
+def enclosed_repository(base: Path) -> Path:
+    outer = build_layout(base, "standalone").rtl
+    inner = add_submodule(outer, "ip", new_repo(base / "ip", {"i.v": "i\n"}))
+    return inner  # the Project Root is a submodule; its Booley Directory lives in `outer`
+
+
 NOT_TRACKED = "neither tracked in the RTL repository"
 UNSELECTABLE_CASES: dict[str, tuple[Callable[[Path], Path], str]] = {
     "not-a-repository": (lambda b: b.joinpath("plain").mkdir() or b / "plain", "not in a Git"),
@@ -427,6 +436,7 @@ UNSELECTABLE_CASES: dict[str, tuple[Callable[[Path], Path], str]] = {
         unreadable_nested_booley_repository,
         "it cannot read",
     ),
+    "project-in-enclosed-repository": (enclosed_repository, "encloses"),
     "hidden-gitlink-replaced-by-symlink": (hidden_symlinked_gitlink, "populated but not"),
     "submodule-without-commit": (unborn_submodule, "submodule repository with no commit"),
 }
@@ -467,15 +477,18 @@ def test_malformed_git_record_raises_clean_commit_error(
         check(layout.project)
 
 
-def test_gitlink_replaced_by_symlink_raises(tmp_path: Path) -> None:
+def test_gitlink_replaced_by_symlink_is_not_cacheable(tmp_path: Path) -> None:
     from booley.result_cache.clean_commit import CleanCommitError
 
     layout = build_layout(tmp_path, "tracked")
     sub = add_submodule(layout.rtl, "sub", new_repo(tmp_path / "sub", {"s.v": "s\n"}))
     shutil.rmtree(sub)
-    sub.symlink_to(tmp_path)  # Git itself refuses a symlinked submodule path
-    with pytest.raises(CleanCommitError):
-        check(layout.project)
+    sub.symlink_to(tmp_path)
+    try:  # recent Git refuses a symlinked submodule path itself; older Git leaves it to us
+        result = check(layout.project)
+    except CleanCommitError:
+        return
+    assert not result.cacheable
 
 
 def test_git_failure_raises_clean_commit_error(tmp_path: Path) -> None:
