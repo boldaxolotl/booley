@@ -105,96 +105,11 @@ directory under `flow-reports/` in the Booley Directory (or `--report-dir`),
 for that metric. A metric the design has no points for, such as
 `cover_property` in a design without `cover property` statements, is left out.
 
-**`sim/<N>/targets/<target>/coverage.json`** stands for the Coverage
-Campaign. It is a short pointer: its `coverage_campaign.path` names the full
-Campaign file, relative to the Target's directory:
+**`sim/<N>/targets/<target>/coverage.json`** is the Coverage Campaign. Pass
+its path to the [Coverage Analyst](#analyzing-a-campaign) to find out what is
+uncovered and why.
 
-```json
-"coverage_campaign": {
-  "path": "campaign/work-items/0001-b2fd…/attempts/0001-f1d4…/coverage-campaign/coverage.json",
-  …
-}
-```
-
-Pass the pointer's path to the [Coverage Analyst](#analyzing-a-campaign) to
-find out what is uncovered and why. The full Campaign file it points to holds
-the point counts behind each percentage, per metric in `rollups` and per
-source file in `source_rollups`:
-
-```json
-"rollups": [
-  {"metric": "line",   "covered_points": 3481, "eligible_points": 3531,
-   "total_points": 3604, "waived_points": 0, "percent": 98.58},
-  {"metric": "branch", "covered_points": 565,  "eligible_points": 732,
-   "total_points": 810,  "waived_points": 0, "percent": 77.19},
-  …
-],
-"source_rollups": [
-  {"source": "rtl/fifo.sv", "rollups": [
-    {"metric": "toggle", "covered_points": 22, "eligible_points": 44, "percent": 50.0},
-    …
-  ]},
-  …
-]
-```
-
-`total_points` counts every point, `eligible_points` only the RTL points that
-count toward the percentage (see below), and `percent` is covered divided by
-eligible, or `null` when no point is eligible.
-
-**`coverage-points.jsonl.gz`**, next to the full Campaign file, is the point
-store: one JSON line per [coverage point](#what-is-measured). It is what the
-Coverage Analyst reads. A toggle point looks like this:
-
-```json
-{
-  "identity": {
-    "metric": "toggle",
-    "location": {"source": "rtl/fifo.sv",
-                 "start": {"line": 42, "column": 17}, "end": {"line": 42, "column": 17}},
-    "hierarchy": "TOP.tb.dut.u_fifo",
-    "subject": {"signal_bit_direction": "wr_ptr[2]:1->0"}
-  },
-  "hits_by_run": {"run:002:stress@1": 3},
-  "disposition": {"kind": "eligible"},
-  …
-}
-```
-
-- `location` and `hierarchy` say where the point is: the source line and
-  the instance it belongs to.
-- `subject` says which point it is on that line: a bit and direction for
-  `toggle`, the outcome (`if`, `else`, a `case` item) for `branch`, the term
-  combination for `expression`.
-- `hits_by_run` counts hits per Test Run, so you can see which tests reach
-  the point. Test Runs that never hit it are left out, so an uncovered point
-  has an empty `hits_by_run`.
-- `disposition` is `eligible` when the point counts toward the percentage,
-  `unscored` for testbench and generated code and for FSM and covergroup
-  data, and `waived` for an [approved waiver](#coverage-waivers).
-
-The file is large (tens of thousands of points for a mid-size design), so
-query it rather than read it. Inside the Sandbox, from the directory that
-holds it:
-
-```bash
-# Uncovered points per source file, worst first
-zcat coverage-points.jsonl.gz | jq -r '
-  select(.disposition.kind == "eligible" and ([.hits_by_run[]] | add // 0) == 0)
-  | .identity.location.source' | sort | uniq -c | sort -rn | head
-
-# Uncovered points in one file: line, metric, which point, instance
-zcat coverage-points.jsonl.gz | jq -r '
-  select(.identity.location.source == "rtl/fifo.sv" and .disposition.kind == "eligible"
-         and ([.hits_by_run[]] | add // 0) == 0)
-  | [.identity.location.start.line, .identity.metric,
-     (.identity.subject | to_entries[0].value), .identity.hierarchy] | @tsv'
-```
-
-The second command prints one tab-separated line per point, such as
-`42  toggle  wr_ptr[2]:1->0  TOP.tb.dut.u_fifo`.
-
-How the numbers are counted:
+### How the numbers are counted
 
 - Each test writes its own coverage data, and Booley merges them: a
   [point](#what-is-measured) is covered if any test hit it. Booley keeps which test hit what.
@@ -222,6 +137,37 @@ exit code covers simulation and collection only:
 
 With several Targets, each Target keeps its own results even when another
 Target decides the exit code.
+
+### Finding uncovered points
+
+Ask the agent, which runs the [Coverage Analyst](#analyzing-a-campaign). For a
+quick look yourself, every [coverage point](#what-is-measured) of the run is
+in the point store, `coverage-points.jsonl.gz`, one JSON line per point. It
+sits in the Campaign directory,
+`sim/<N>/targets/<target>/campaign/work-items/*/attempts/*/coverage-campaign/`.
+Inside the Sandbox, from that directory:
+
+```bash
+# Uncovered points per source file, worst first
+zcat coverage-points.jsonl.gz | jq -r '
+  select(.disposition.kind == "eligible" and ([.hits_by_run[]] | add // 0) == 0)
+  | .identity.location.source' | sort | uniq -c | sort -rn | head
+
+# Uncovered points in one file: line, metric, which point, instance
+zcat coverage-points.jsonl.gz | jq -r '
+  select(.identity.location.source == "rtl/fifo.sv" and .disposition.kind == "eligible"
+         and ([.hits_by_run[]] | add // 0) == 0)
+  | [.identity.location.start.line, .identity.metric,
+     (.identity.subject | to_entries[0].value), .identity.hierarchy] | @tsv'
+```
+
+The second command prints one line per uncovered point, such as
+`42  toggle  wr_ptr[2]:1->0  TOP.tb.dut.u_fifo`: bit 2 of `wr_ptr` on line 42
+never fell from 1 to 0 in instance `u_fifo`. For a `branch` point the third
+column is the outcome (`if`, `else`, a `case` item); for an `expression`
+point, the term combination. Only `eligible` points count toward the
+percentage, so the commands skip testbench, generated and waived ones. The
+file's format can change between Booley releases.
 
 ## Coverage Goals
 

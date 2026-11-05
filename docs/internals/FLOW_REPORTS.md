@@ -269,6 +269,55 @@ be trusted: `valid` when collection completed normally, otherwise `invalid`
 with the reason, and empty rollups. Keep the Target reference, selected attempt,
 and enclosing Simulation Campaign together.
 
+Each `rollups` entry (and each per-source entry in `source_rollups`, keyed by
+`source`) has `metric`, `semantics` (one sentence on what one point means),
+`total_points`, `eligible_points`, `covered_points`, `waived_points`, and
+`percent` (covered / eligible, rounded to 2 decimals, `null` when nothing is
+eligible). A metric with no points is omitted. For example:
+
+```json
+{"metric": "branch", "total_points": 810, "eligible_points": 732,
+ "covered_points": 565, "waived_points": 0, "percent": 77.19, "semantics": "…"}
+```
+
+#### Point store
+
+`coverage-points.jsonl.gz` is gzipped JSON Lines. The first line is a header,
+`{"$schema": "booley.coverage-points/v1", "campaign_id": …, "target_identity": …}`;
+every other line is one coverage point:
+
+```json
+{
+  "id": "cp1:…",
+  "identity": {
+    "metric": "toggle",
+    "location": {"source": "rtl/fifo.sv",
+                 "start": {"line": 42, "column": 17}, "end": {"line": 42, "column": 17}},
+    "hierarchy": "TOP.tb.dut.u_fifo",
+    "subject": {"signal_bit_direction": "wr_ptr[2]:1->0"},
+    "collector": {"record_type": "toggle", "native_key": "…"}
+  },
+  "hits_by_run": {"run:002:stress@1": 3},
+  "disposition": {"kind": "eligible"}
+}
+```
+
+| Field | Contents |
+|---|---|
+| `id` | Stable point id: `cp1:` plus the base64url of the canonical `identity` JSON. Waivers and Waiver Candidates name points by it. |
+| `identity.metric` | `line`, `branch`, `expression`, `toggle`, `cover_property`, or the unscored `fsm` / `covergroup`. |
+| `identity.location` | Project-relative `source` and the start/end line and column Verilator reported. |
+| `identity.hierarchy` | Instance path; points are per instance. |
+| `identity.subject` | One key per metric: `basic_block` (line), `outcome` (branch: `if`, `else`, a case item; expression: the term combination, e.g. `(rst_ni==0) => 1`), `signal_bit_direction` (toggle: `signal[bit]:0->1`), `cover_property`, `native_fsm`, `native_covergroup`. |
+| `identity.collector` | Verilator's `record_type` and raw record key, for tracing a point back to the native database. |
+| `hits_by_run` | Hit count per Test Run id (`run:<NNN>:<test run>`); runs with zero hits are omitted, so an uncovered point has `{}`. |
+| `disposition` | `kind` is `eligible` (scored RTL), `unscored` (a `testbench`, `generated` or `foreign` source, or an unscored metric), or `waived`; a waived point also carries `reason`, `waiver_id`, `waiver_file`, `waiver_fingerprint` and `provenance`. |
+
+Booley code reads points through the manifest
+(`booley.flows.sim.coverage_campaign_store`), which checks the store's size and
+digest. `docs/user/COVERAGE.md` gives users `zcat | jq` commands that open the
+store directly for a quick look; keep those consistent with this format.
+
 In `report.json`, `detail.targets[<target>]` keeps each Target's `simulation`,
 `collection`, and `evaluation` results even when another Target decided the
 exit code. `coverage_campaign` points to the Target-level reference once it
