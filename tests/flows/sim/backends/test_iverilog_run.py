@@ -21,7 +21,7 @@ from booley.flows.sim.adapter_transport import (
     read_adapter_result,
 )
 from booley.flows.sim.backends import icarus as ir
-from booley.flows.sim.backends.shared import find_icarus_image
+from booley.flows.sim.backends.shared import CurrentRunTraces, find_icarus_image
 from booley.flows.sim.trace_session import TraceInspection
 
 
@@ -145,14 +145,15 @@ def test_icarus_marks_raw_trace_as_fallback_after_postprocess(tmp_path: Path, ca
             incident.write_text(reason, encoding="utf-8")
             return incident
 
+    trace = NonQueryableTrace()
     run = ir._IcarusRun(
         build_dir=tmp_path,
         run_cwd=tmp_path,
         work_dir=tmp_path,
         image=tmp_path / "sim",
         command=[],
-        trace=NonQueryableTrace(),
-        declared_before={},
+        trace=trace,
+        current=CurrentRunTraces(trace, (), (), {}),
     )
 
     output, result = ir._finalize_icarus_trace(run, SimpleNamespace(returncode=0), [])
@@ -181,14 +182,15 @@ def test_icarus_marks_unqueryable_fst_as_incident(tmp_path: Path, capsys):
             incident.write_text(reason, encoding="utf-8")
             return incident
 
+    trace = NonQueryableTrace()
     run = ir._IcarusRun(
         build_dir=tmp_path,
         run_cwd=tmp_path,
         work_dir=tmp_path,
         image=tmp_path / "sim",
         command=[],
-        trace=NonQueryableTrace(),
-        declared_before={},
+        trace=trace,
+        current=CurrentRunTraces(trace, (), (), {}),
     )
 
     output, result = ir._finalize_icarus_trace(run, SimpleNamespace(returncode=1), [])
@@ -202,6 +204,8 @@ def test_icarus_marks_unqueryable_fst_as_incident(tmp_path: Path, capsys):
 
 def test_icarus_names_trace_files_when_declared_patterns_matched_nothing(tmp_path: Path):
     class NoTrace:
+        owned_outputs = frozenset()
+
         def postprocess(self, _path):
             return None
 
@@ -213,14 +217,15 @@ def test_icarus_names_trace_files_when_declared_patterns_matched_nothing(tmp_pat
             incident.write_text(reason, encoding="utf-8")
             return incident
 
+    trace = NoTrace()
     run = ir._IcarusRun(
         build_dir=tmp_path,
         run_cwd=tmp_path,
         work_dir=tmp_path,
         image=tmp_path / "sim",
         command=[],
-        trace=NoTrace(),
-        declared_before={},
+        trace=trace,
+        current=CurrentRunTraces(trace, ("missing.vcd",), (tmp_path,), {}),
     )
 
     _output, result = ir._finalize_icarus_trace(
@@ -626,12 +631,13 @@ def test_final_disk_preserves_prior_abort(tmp_path, monkeypatch, prior):
 
 
 class _FakeTraceSession:
-    """Trace seam stub: discovery returns the first existing candidate, so
-    the outcome depends only on whether the adapter trusts that file."""
+    """Trace seam stub: Booley-owned discovery sees only the store a VCD
+    conversion publishes, so the outcome depends on the declared-file filter."""
 
-    def __init__(self, work_dir: Path, find_candidates: list[Path], published: Path | None = None):
+    owned_outputs: frozenset[Path] = frozenset()
+
+    def __init__(self, work_dir: Path, published: Path | None = None):
         self._work_dir = work_dir
-        self._find_candidates = find_candidates
         # Where a successful VCD conversion publishes its waveform store.
         self._published = published
 
@@ -644,8 +650,7 @@ class _FakeTraceSession:
             path.unlink()  # a successful conversion consumes the source VCD
 
     def find(self):
-        candidates = [*self._find_candidates, *([self._published] if self._published else [])]
-        return next((path for path in candidates if path.exists()), None)
+        return self._published if self._published and self._published.exists() else None
 
     def inspect(self, path):
         return TraceInspection(SimpleNamespace(path=path))
@@ -662,16 +667,14 @@ def _run_traced_icarus(
     *,
     trace_files: list[str],
     stale_dirs: tuple[str, ...],
-    find_in: tuple[str, ...],
     vvp_body: str,
-    shared_dir: bool = False,
     stale_name: str = "tb_dump.fst",
     converts_to_store: bool = False,
 ) -> str:
     """Run the full traced Icarus path with stale declared files pre-created."""
     build_dir = tmp_path / "build"
     run_cwd = tmp_path / "run"
-    work_dir = run_cwd if shared_dir else tmp_path / "work"
+    work_dir = tmp_path / "work"
     for directory in (build_dir, run_cwd, work_dir):
         directory.mkdir(exist_ok=True)
     (build_dir / "sim_cfg.scr").write_text("")
@@ -683,9 +686,7 @@ def _run_traced_icarus(
     fake_vvp.chmod(0o755)
     monkeypatch.setattr(ir, "_find_vvp", lambda: str(fake_vvp))
     session = _FakeTraceSession(
-        work_dir,
-        [tmp_path / name / "tb_dump.fst" for name in find_in],
-        published=work_dir / "trace.fst" if converts_to_store else None,
+        work_dir, published=work_dir / "trace.fst" if converts_to_store else None
     )
     monkeypatch.setattr(ir, "_new_trace_session", lambda *_args: session)
     return ir.run_icarus_image(
@@ -700,34 +701,26 @@ def _run_traced_icarus(
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX vvp stub")
 @pytest.mark.parametrize(
-    ("trace_files", "stale_dirs", "find_in", "vvp_body", "shared_dir"),
+    ("stale_dirs", "vvp_body"),
     [
-        pytest.param(["tb_dump.fst"], ("run",), (), "true", False, id="run_cwd"),
-        # run_cwd holds no tb_dump.fst here: only work_dir has the stale copy.
-        pytest.param(["tb_dump.fst"], ("work",), ("work",), "true", False, id="work_dir"),
-        pytest.param(["tb_dump.fst"], ("run", "work"), ("work",), "true", False, id="shadowed"),
-        pytest.param(
-            ["tb_dump.vcd", "tb_dump.fst"],
-            ("run",),
-            ("run",),
-            "echo fresh > tb_dump.vcd",
-            True,
-            id="adoption_find",
-        ),
+        pytest.param(("run",), "true", id="run_cwd"),
+        pytest.param(("work",), "true", id="work_dir"),
+        # The run removes the earlier root's copy; the later root's stale copy
+        # must not take its place.
+        pytest.param(("run", "work"), "rm tb_dump.fst", id="shadowed"),
     ],
 )
 def test_icarus_never_adopts_unchanged_declared_trace(
-    tmp_path: Path, monkeypatch, trace_files, stale_dirs, find_in, vvp_body, shared_dir
+    tmp_path: Path, monkeypatch, stale_dirs, vvp_body
 ):
     """A declared trace left by an earlier run must not earn TRACE_OK."""
+    trace_files = ["tb_dump.fst"]
     output = _run_traced_icarus(
         tmp_path,
         monkeypatch,
         trace_files=trace_files,
         stale_dirs=stale_dirs,
-        find_in=find_in,
         vvp_body=vvp_body,
-        shared_dir=shared_dir,
     )
 
     assert "TRACE_INCIDENT" in output
@@ -743,7 +736,6 @@ def test_icarus_never_converts_unchanged_declared_vcd(tmp_path: Path, monkeypatc
         monkeypatch,
         trace_files=["tb_dump.vcd"],
         stale_dirs=("run",),
-        find_in=(),
         vvp_body="true",
         stale_name="tb_dump.vcd",
         converts_to_store=True,
@@ -762,7 +754,6 @@ def test_icarus_adopts_declared_trace_rewritten_by_run(tmp_path: Path, monkeypat
         monkeypatch,
         trace_files=["tb_dump.fst"],
         stale_dirs=("run",),
-        find_in=(),
         vvp_body="printf 'fresh longer content' > tb_dump.fst",
     )
 

@@ -2762,6 +2762,14 @@ def test_owned_main_dump_without_trace_files_is_inconclusive_with_candidates(
     assert "listed, not adopted): sim.vcd" in reason
 
 
+def test_trace_candidates_list_undeclared_fst(tmp_path: Path) -> None:
+    """#2543: an undeclared fresh store is never adopted but is named for the user."""
+    outcome = _run_owned_main(tmp_path, ("run/extra.fst",))
+
+    assert outcome.verdict == "inconclusive"
+    assert "listed, not adopted): extra.fst" in outcome.tests[0].reason
+
+
 def test_unqueryable_trace_detail_survives_verbatim(tmp_path: Path) -> None:
     detail = "trace requested but the retained waveform is not queryable: bad header"
     outcome = _run_owned_main(tmp_path, ("run/sim.vcd",), detail=detail)
