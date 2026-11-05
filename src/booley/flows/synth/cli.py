@@ -26,7 +26,11 @@ class SynthArguments(BuiltinArguments):
                     ("--flatten", "--no-flatten"),
                 ),
                 HelpOption(
-                    "frontend", "When omitted, use Target flow_options.frontend, else sv2v."
+                    "frontend",
+                    "When omitted, use Target flow_options.frontend, else sv2v.",
+                    "RTL frontend: 'sv2v' (transpile + read_verilog) or 'slang' "
+                    "(native Yosys read_slang, requires the Yosys>=0.67 sandbox image); "
+                    "overrides the selected Target's flow_options.frontend",
                 ),
                 PPA_HELP,
             ),
