@@ -108,6 +108,7 @@ class TraceSession:
         self._work_dir = work_dir
         self._trace_scope = trace_scope
         self._cache_key = cache_key
+        self._raw_trace_paths: tuple[Path, ...] = ()
         # Stall-kill state — set by start_monitor when it escalates to a kill.
         self._stall_killed = False
         self._stall_message: str | None = None
@@ -337,10 +338,17 @@ class TraceSession:
         return self.incident_path
 
     def find(self) -> Path | None:
-        """Adapt B-Wave discovery into Simulation-owned attempt evidence."""
-        result = discover_waveform(self._work_dir, cache_dir=self.cache_dir)
-        if result.failure_kind == "ambiguous":
-            raise SystemExit(result.detail)
+        """Return this session's own trace output: ``trace.fst`` or a raw VCD.
+
+        Only Booley-owned names are considered. :meth:`reset_for_run` deletes
+        them before the simulator starts, so whatever this finds was produced
+        by the current run. Other ``*.fst`` files (leftovers, testbench dumps)
+        are never selected here; declared files go through
+        ``CurrentRunTraces`` instead.
+        """
+        result = discover_waveform(
+            self._work_dir, cache_dir=self.cache_dir, store_name=self.bwave_path.name
+        )
         selected = result.selected
         if result.conversion is not None:
             self._record_conversion("vcd_convert", result.conversion)
@@ -348,7 +356,7 @@ class TraceSession:
                 selected = self._publish_bwave(result.selected) if result.selected else None
         return selected or result.selected
 
-    def inspect(self, path: Path | None = None) -> TraceInspection:
+    def inspect(self, path: Path | None) -> TraceInspection:
         """Prove that a retained store has a hierarchy and at least one signal.
 
         The structural FST scan used by :meth:`find` is deliberately only a
@@ -356,7 +364,7 @@ class TraceSession:
         ``bwave list`` hierarchy query, so malformed and zero-signal stores
         cannot earn ``TRACE_OK`` merely because they contain a value block.
         """
-        candidate = path or self.find()
+        candidate = path
         if candidate is None:
             return TraceInspection(None, "no retained trace artifact was found")
         if candidate.suffix.lower() != ".fst":
@@ -400,18 +408,25 @@ class TraceSession:
         callers include simulator-owned raw VCD paths that live outside the
         session work directory.
         """
-        paths = {
-            self.bwave_path,
-            self.work_bwave_path,
-            self.fifo_path,
-            self.incident_path,
-            self.persisted_stderr_path,
-            self.manifest_path,
-            self._work_dir / "trace.vcd",
-            *raw_trace_paths,
-        }
-        for path in paths:
+        self._raw_trace_paths = raw_trace_paths
+        for path in self.owned_outputs:
             path.unlink(missing_ok=True)
+
+    @property
+    def owned_outputs(self) -> frozenset[Path]:
+        """Paths :meth:`reset_for_run` deletes: outputs only this session writes."""
+        return frozenset(
+            {
+                self.bwave_path,
+                self.work_bwave_path,
+                self.fifo_path,
+                self.incident_path,
+                self.persisted_stderr_path,
+                self.manifest_path,
+                self._work_dir / "trace.vcd",
+                *self._raw_trace_paths,
+            }
+        )
 
     def invalidate(self) -> None:
         """Delete cached stores from tmpdir so next find() picks up fresh data."""

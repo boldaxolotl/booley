@@ -94,6 +94,7 @@ from booley.flows.sim.backends.cocotb_results import (
 )
 from booley.flows.sim.backends.shared import (
     BOOLEY_DUMP_VCD_NAME,
+    CurrentRunTraces,
     RunLogProgress,
     RunTermination,
     append_child_cpu_marker,
@@ -801,7 +802,7 @@ class _CocotbRun:
     tests: list[str]
     env: dict[str, str]
     command: list[str]
-    trace: TraceSession | None
+    current: CurrentRunTraces | None
 
 
 def _persist_result_transport(
@@ -1134,10 +1135,15 @@ def _prepare_cocotb_run(
         return prepared
     env, command = prepared
     backend = "iverilog" if eda_tool == "icarus" else eda_tool
-    trace = TraceSession(work, trace_scope, backend=backend) if vcd else None
-    if trace is not None:
-        trace.reset_for_run((run / _DEFAULT_VCD_NAME,))
-    return _CocotbRun(build, run, work, results, tests, env, command, trace)
+    current = (
+        CurrentRunTraces.begin(
+            TraceSession(work, trace_scope, backend=backend),
+            raw_trace_paths=(run / _DEFAULT_VCD_NAME,),
+        )
+        if vcd
+        else None
+    )
+    return _CocotbRun(build, run, work, results, tests, env, command, current)
 
 
 def _execute_cocotb_run(
@@ -1181,8 +1187,8 @@ def _complete_cocotb_run(
 ) -> int:
     output = "".join(lines)
     trace_result = (
-        _finalize_cocotb_trace(run.trace, run.run_cwd, proc)
-        if run.trace is not None
+        _finalize_cocotb_trace(run.current, run.run_cwd, proc)
+        if run.current is not None
         else _TraceFinalization()
     )
     if trace_result.output:
@@ -1267,13 +1273,14 @@ def run_cocotb_sim(
 
 
 def _finalize_cocotb_trace(
-    trace: TraceSession,
+    current: CurrentRunTraces,
     run_cwd: Path,
     proc,
 ) -> _TraceFinalization:
     """Postprocess and validate one Cocotb waveform before any verdict."""
+    trace = current.session
     trace.postprocess(run_cwd / _DEFAULT_VCD_NAME)
-    inspection = trace.inspect(trace.find())
+    inspection = trace.inspect(current.select().path)
     if not inspection.usable:
         reason = (
             f"trace requested but no queryable waveform was produced: {inspection.failure_reason}"

@@ -321,7 +321,7 @@ def test_guard_termination_is_published_to_adapter_transport(
         "verilator", "attempt", "acme:lib:dut:1#sim", ("smoke",), tmp_path / "adapter.json"
     )
     paths = vr._RunPaths(tmp_path, tmp_path, tmp_path)
-    trace = vr._TraceRuntime(None, [], {}, vr.TraceMode.VCD_FIFO, None)
+    trace = vr._TraceRuntime(None, None, vr.TraceMode.VCD_FIFO, None)
 
     vr._execute_verilated_and_publish(
         [], paths, {}, 30, trace, 0, (), None, None, None, False, identity
@@ -346,8 +346,7 @@ def test_execute_with_heartbeat_cleans_fifo_conversion(tmp_path: Path, monkeypat
     conversion = object()
     trace = vr._TraceRuntime(
         session=session,
-        search_dirs=[],
-        files_before={},
+        current=None,
         mode=vr.TraceMode.VCD_FIFO,
         conversion=conversion,
     )
@@ -674,6 +673,10 @@ class TestDeclaredTraceFiles:
     """F-22: a custom main()'s dump can be declared instead of guessed."""
 
     class _FakeTrace:
+        """Trace seam stub: the store exists only once a VCD was converted."""
+
+        owned_outputs: frozenset[Path] = frozenset()
+
         def __init__(self, store: Path | None = None):
             self.store = store
             self.postprocessed: list[Path] = []
@@ -682,7 +685,10 @@ class TestDeclaredTraceFiles:
             self.postprocessed.append(path)
 
         def find(self):
-            return self.store
+            return self.store if self.postprocessed else None
+
+        def write_incident(self, reason, **_kw):
+            return Path("trace_incident.txt")
 
         def inspect(self, path: Path) -> TraceInspection:
             return TraceInspection(
@@ -695,6 +701,10 @@ class TestDeclaredTraceFiles:
                 )
             )
 
+    @staticmethod
+    def _current(trace, patterns: list[str], roots: list[Path]):
+        return backend_shared.CurrentRunTraces(trace, tuple(patterns), tuple(roots), {})
+
     def test_declared_vcd_is_postprocessed_and_adopted(self, tmp_path: Path):
         run_cwd = tmp_path / "tests"
         run_cwd.mkdir()
@@ -702,15 +712,15 @@ class TestDeclaredTraceFiles:
         store = tmp_path / "trace.fst"
         store.write_bytes(b"fst")
         trace = self._FakeTrace(store)
-        found = vr.adopt_declared_trace_files(trace, ["fpu.vcd"], [run_cwd, tmp_path])
-        assert found == store
+        current = self._current(trace, ["fpu.vcd"], [run_cwd, tmp_path])
+        assert current.select().path == store
         assert trace.postprocessed == [run_cwd / "fpu.vcd"]
 
     def test_globs_and_non_vcd_artifacts(self, tmp_path: Path):
         (tmp_path / "dump_003.fst").write_bytes(b"fst")
         trace = self._FakeTrace(None)
-        found = vr.adopt_declared_trace_files(trace, ["dump_*.fst"], [tmp_path])
-        assert found == tmp_path / "dump_003.fst"
+        current = self._current(trace, ["dump_*.fst"], [tmp_path])
+        assert current.select().path == tmp_path / "dump_003.fst"
         assert trace.postprocessed == []  # already a store; no conversion
 
     def test_huge_vcd_is_adopted_raw_instead_of_converted(self, tmp_path: Path, monkeypatch):
@@ -728,7 +738,7 @@ class TestDeclaredTraceFiles:
         big.write_bytes(b"0" * 64)
         trace = self._FakeTrace(tmp_path / "trace.fst")
 
-        found = vr.adopt_declared_trace_files(trace, ["fpu.vcd"], [tmp_path])
+        found = self._current(trace, ["fpu.vcd"], [tmp_path]).select().path
 
         assert found == big  # the dump itself, not a store
         assert trace.postprocessed == []  # no unbounded conversion was attempted
@@ -736,14 +746,13 @@ class TestDeclaredTraceFiles:
     def test_huge_raw_vcd_cannot_earn_trace_ok(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(backend_shared, "MAX_ADOPTED_VCD_BYTES", 16)
         (tmp_path / "huge.vcd").write_bytes(b"0" * 64)
-
-        suffix, evidence = vr._finalize_trace(
-            TraceSession(tmp_path),
-            None,
-            None,
-            trace_files=["huge.vcd"],
-            search_dirs=[tmp_path],
+        current = backend_shared.CurrentRunTraces.begin(
+            TraceSession(tmp_path), patterns=("huge.vcd",), roots=(tmp_path,)
         )
+        # The run rewrites the dump, so it is fresh.
+        (tmp_path / "huge.vcd").write_bytes(b"0" * 65)
+
+        suffix, evidence = vr._finalize_trace(current, None, None, trace_files=["huge.vcd"])
 
         assert "TRACE_OK:" not in suffix
         assert "TRACE_INCIDENT:" in suffix
@@ -756,60 +765,35 @@ class TestDeclaredTraceFiles:
         (tmp_path / "fpu.vcd").write_bytes(b"0" * 64)
         trace = self._FakeTrace(store)
 
-        assert vr.adopt_declared_trace_files(trace, ["fpu.vcd"], [tmp_path]) == store
+        assert self._current(trace, ["fpu.vcd"], [tmp_path]).select().path == store
         assert trace.postprocessed == [tmp_path / "fpu.vcd"]
 
     def test_empty_and_missing_candidates_are_ignored(self, tmp_path: Path):
         (tmp_path / "empty.vcd").write_text("")
         trace = self._FakeTrace(None)
-        assert vr.adopt_declared_trace_files(trace, ["empty.vcd"], [tmp_path]) is None
-        assert vr.adopt_declared_trace_files(trace, ["nope.vcd"], [tmp_path]) is None
-        assert vr.adopt_declared_trace_files(trace, [], [tmp_path]) is None
+        for patterns in (["empty.vcd"], ["nope.vcd"], []):
+            assert self._current(trace, patterns, [tmp_path]).select().path is None
 
     def test_finalize_trace_adopts_the_declared_file(self, tmp_path: Path, capsys):
         (tmp_path / "fpu.vcd").write_text("$var wire 1 ! clk $end\n")
         store = tmp_path / "trace.fst"
         store.write_bytes(b"fst")
+        current = self._current(self._FakeTrace(store), ["fpu.vcd"], [tmp_path])
 
-        class _Trace(TestDeclaredTraceFiles._FakeTrace):
-            def __init__(self):
-                super().__init__(None)
-                self.calls = 0
+        suffix, evidence = vr._finalize_trace(current, None, None, trace_files=["fpu.vcd"])
 
-            def find(self):
-                # First probe (Booley's own artifacts) misses; the adopted VCD
-                # is what makes the second one hit.
-                self.calls += 1
-                return store if self.postprocessed else None
-
-        trace = _Trace()
-        suffix, evidence = vr._finalize_trace(
-            trace, None, None, trace_files=["fpu.vcd"], search_dirs=[tmp_path]
-        )
         assert f"TRACE_OK: {store}" in suffix
         assert evidence.path == str(store)
 
-    def test_incident_names_the_knob_when_nothing_is_declared(self, tmp_path: Path, capsys):
-        class _Trace(TestDeclaredTraceFiles._FakeTrace):
-            def write_incident(self, reason, **_kw):
-                path = tmp_path / "trace_incident.txt"
-                path.write_text(reason)
-                return path
-
-        suffix, evidence = vr._finalize_trace(_Trace(None), None, None)
+    def test_incident_names_the_knob_when_nothing_is_declared(self, tmp_path: Path):
+        current = self._current(self._FakeTrace(tmp_path / "x"), [], [tmp_path])
+        suffix, evidence = vr._finalize_trace(current, None, None)
         assert "trace_files" in suffix
         assert evidence.status == "incident"
 
     def test_incident_names_the_knob_when_declared_patterns_matched_nothing(self, tmp_path: Path):
-        class _Trace(TestDeclaredTraceFiles._FakeTrace):
-            def write_incident(self, reason, **_kw):
-                path = tmp_path / "trace_incident.txt"
-                path.write_text(reason)
-                return path
-
-        suffix, evidence = vr._finalize_trace(
-            _Trace(None), None, None, trace_files=["missing.vcd"], search_dirs=[tmp_path]
-        )
+        current = self._current(self._FakeTrace(tmp_path / "x"), ["missing.vcd"], [tmp_path])
+        suffix, evidence = vr._finalize_trace(current, None, None, trace_files=["missing.vcd"])
         assert "[flows.sim].trace_files ['missing.vcd']" in suffix
         assert evidence.status == "incident"
 
@@ -894,7 +878,7 @@ def test_final_disk_retains_abort_during_reap(tmp_path, monkeypatch, prior):
     assert termination.kind == expected[prior]
     if prior == "trace_stall":
         monkeypatch.setattr(vr, "_finalize_trace", lambda *args, **kwargs: ("", None))
-        runtime = vr._TraceRuntime(trace, [], {}, vr.TraceMode.NATIVE_FST, None)
+        runtime = vr._TraceRuntime(trace, object(), vr.TraceMode.NATIVE_FST, None)
         _, _, termination = vr._finalize_verilated_run(
             deque(["PASS\n"]),
             proc,
