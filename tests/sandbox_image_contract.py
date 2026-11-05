@@ -123,8 +123,8 @@ def base_python_pins(contents: str) -> dict[str, str]:
     """
     pins: dict[str, str] = {}
     for number, raw in enumerate(contents.splitlines(), start=1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
+        line = raw  # no stripping: the sed and regex readers see surrounding blanks
+        if not line.strip() or line.startswith("#"):
             continue
         name, separator, version = line.partition("==")
         if (
@@ -718,8 +718,8 @@ def _derived_probe_errors(
     if expressions == (expected,):
         return []
     return [
-        f"{role.name} {role.constraint} role: {role.authority}={authority!r} "
-        f"disagrees with {locator}={expressions!r}; it must derive the version as {expected!r}"
+        f"{role.name} {role.constraint} role: {locator}={expressions!r} must derive the "
+        f"version as {expected!r} from {role.authority} (pinned {authority!r})"
     ]
 
 
@@ -733,11 +733,11 @@ def _cocotb_build_expressions(contents: str) -> tuple[str, ...]:
 
 
 def _session_cocotb_versions(contents: str) -> tuple[str, ...]:
-    probes = tomllib.loads(contents).get("common", {}).get("probe", [])
+    probes = tomllib.loads(contents)["common"]["probe"]
     return tuple(
         match.group(1)
         for probe in probes
-        if probe.get("name") == "EDA command diagnostics"
+        if probe["name"] == "EDA command diagnostics"
         for match in re.finditer(
             r'^test "\$\(cocotb-config --version\)" = "([^"]*)"$', probe["command"], re.MULTILINE
         )

@@ -532,9 +532,7 @@ def test_runtime_authorities_reject_ranges_and_duplicates() -> None:
         ),
     )
 
-    assert "lowercase name and an exact version" in _errors(
-        ranged, "lowercase name and an exact version"
-    )
+    assert "cocotb>=" in _errors(ranged, "exact version")
     assert "expected one exact version" in _errors(duplicated, "Node authority")
 
 

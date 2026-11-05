@@ -61,12 +61,12 @@ def test_base_python_installs_take_exact_pins_only_from_requirements_file() -> N
     pins = base_python_pins(_BASE_REQUIREMENTS.read_text(encoding="utf-8"))
     installed: set[str] = set()
     for instruction in logical_instructions(_BASE_DOCKERFILE.read_text(encoding="utf-8")):
-        if instruction.keyword != "RUN" or "pip install" not in instruction.value:
+        if instruction.keyword != "RUN" or not re.search(r"pip\s+install", instruction.value):
             continue
         if "--requirement /tmp/booley-build/project-dependencies.txt" in instruction.value:
             continue  # project dependency layer: pins come from pyproject.toml
-        tokens = shlex.split(instruction.value.split("pip install", 1)[1].split("&&")[0])
-        assert not [token for token in tokens if "==" in token], instruction.value
+        assert "==" not in instruction.value, instruction.value
+        tokens = shlex.split(re.split(r"pip\s+install", instruction.value, maxsplit=1)[1])
         assert f"--constraint {_BASE_REQUIREMENTS_IN_IMAGE}" in instruction.value
         installed.update(token for token in tokens if re.fullmatch(r"[a-z][a-z0-9-]*", token))
 
@@ -77,9 +77,9 @@ def test_base_edalize_fusesoc_pins_match_project_metadata() -> None:
     pins = base_python_pins(_BASE_REQUIREMENTS.read_text(encoding="utf-8"))
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     exact = dict(
-        requirement.split("==")
+        match.groups()
         for requirement in project["project"]["dependencies"]
-        if "==" in requirement
+        if (match := re.fullmatch(r"([A-Za-z0-9_.-]+)==([^;\s]+)", requirement))
     )
 
     for name in ("edalize", "fusesoc"):
@@ -94,7 +94,7 @@ def test_supported_tools_doc_lists_base_cocotb_pins() -> None:
 
     assert f"| cocotb | {pins['cocotb']}, with" in row
     for name in ("cocotbext-axi", "cocotbext-uart", "numpy"):
-        assert f"`{name}` {pins[name]}" in row or f"{name}` {pins[name]}" in row, name
+        assert f"`{name}` {pins[name]}" in row, name
 
 
 def test_all_python_installs_tolerate_slow_publisher_reads() -> None:
@@ -116,7 +116,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     pyproject_copy = base.index("COPY pyproject.toml")
     dependency_exporter = base.index("COPY src/booley/data/docker/export_project_dependencies.py")
     project_install = base.index("--requirement /tmp/booley-build/project-dependencies.txt")
-    image_dependencies = base.index("--constraint /tmp/booley-build/base-python-requirements.txt")
+    image_dependencies = base.index(f"--constraint {_BASE_REQUIREMENTS_IN_IMAGE}")
 
     assert pyproject_copy < dependency_exporter < project_install
     assert project_install < image_dependencies
