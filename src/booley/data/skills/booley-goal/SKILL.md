@@ -168,33 +168,14 @@ Editing one blocks Finish until reverted and discards affected evidence. Never
 weaken tests or Targets to meet a Goal. Target and constraint edits appear in
 the Review Package.
 
-Booley has no per-call parameter or define override, by design: the Target
-owns its parameter values, so a run with other values needs another Target.
-For an A/B experiment on a build-time parameter, such as synthesizing the
-same RTL with a feature turned off, add a sibling Target in the original
-Target's `.core` file: copy its entry and change only the parameter under
-test, for example `parameters: [ENABLE_X=0]`, under a name such as
-`synth_core_noopt` for `synth_core`. The parameter must already be declared
-in the core, and a bool parameter takes `false`, not `0`. A simulation
-sibling also needs its own `tests.toml` section to run the same Tests; to
-vary run-time arguments, declare a Test Variant instead. If the rules list
-the file you would edit as a Protected Input, do not edit it; ask the human.
-No Goal names the sibling, so run it through a Goal-bound call with
-`work_dir` and `diagnostic=true`; without `diagnostic` the run is refused.
-Like any `.core` or `tests.toml` edit, adding it makes evidence covering that
-file stale, and Review Goals on that Target need new discovery. Remove the
-sibling by deleting exactly the entries you added (its Target entry and any
-`tests.toml` section), keep every other edit, then check `goal_status`. If
-you keep it, rerun the stale Goals. A sibling still present at `goal_finish`
-is a Target change in the Review Package: before `goal_finish`, remove it, or
-keep it and say why in the Session Summary. Either way, name the experiment
-and its result there.
-
-Never edit an existing Target's parameters and revert them to run an
-experiment. That Target is still named by its Goals, so a run without
-`diagnostic` during the edit is accepted and replaces the Goal's evidence
-with a result for a configuration no Goal asked for. The same run on a
-sibling is refused.
+Booley has no per-call parameter override: the Target owns its values. For an
+A/B experiment, add a sibling Target in the same `.core` file that differs only
+in the parameter under test, and run it with `work_dir` and `diagnostic=true`
+(no Goal names it, so a run without `diagnostic` is refused). Before
+`goal_finish`, delete exactly the entries you added, or keep the sibling and
+say why in the Session Summary. Never edit an existing Target's parameters and
+revert them: that Target's Goals would accept a non-diagnostic run as evidence
+for a configuration they did not ask for.
 
 If work is blocked by missing intent or an unmet Goal, explain the evidence
 and the decision needed. Continue independent work when possible. If the cause
