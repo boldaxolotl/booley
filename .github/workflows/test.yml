@@ -1586,16 +1586,40 @@ jobs:
           retention-days: 14
 
       # The clock covers the test phase only (from "Start test-phase duration
-      # clock" to here). Each budget is the measured maximum test phase plus
-      # 10%, rounded up to the next 10 s, from successful and budget-only-
-      # failed runs 2026-10-20 to 2026-10-23, including the 2026-10-21
-      # hosted-runner slowdown. A RISC-V lane's budget depends on its tooling
-      # source (ADR 0070), so a slow registry hit cannot hide behind the
-      # local-build ceiling.
-      # - standard: 210 runs, 211-503 s (median 347 s): 560 s.
-      # - registry: 32 runs, 307-648 s (median 490 s): 720 s.
-      # - local (and compatibility fallback): the 8 automatic local-build runs
-      #   from 2026-10-03 to 2026-10-11 measured 755-1027 s: 1130 s.
+      # clock" to here). Each lane has a (warn, fail) pair. A run over warn
+      # but within fail passes with a ::warning annotation; a run over fail
+      # fails. A warning means the suite has drifted past its measured
+      # maximum: re-derive the pair. A RISC-V lane's pair depends on its
+      # tooling source (ADR 0070), so a slow registry hit cannot hide behind
+      # the local-build ceiling.
+      # Measurement: every test.yml run created 2026-10-22 to 2026-11-05 (the
+      # last run 2026-11-05 08:38Z), all attempts of its bwave-smoke job, kept
+      # when the job succeeded or its only failed step was this budget;
+      # stable-base rebuilds (budget step skipped), cancelled jobs and one run
+      # whose jobs API failed are excluded. Test phase = this step's start
+      # minus the clock step's start (before 2026-10-23, minus the end of
+      # "Build standard wheel overlay", where the clock now sits). Every
+      # RISC-V job in the window resolved its tooling from the registry.
+      # - standard, 2026-10-22..11-05: 498 runs, 277-573 s (median 436.5 s,
+      #   p95 503 s). 2026-10-28..11-05 (current suite size): 296 runs,
+      #   299-573 s (median 459.5 s, p95 509 s).
+      # - registry, 2026-10-22..11-05: 123 runs, 384-648 s (median 563 s,
+      #   p95 620 s). 2026-10-28..11-05: 42 runs, 396-642 s (median 591.5 s,
+      #   p95 630 s).
+      # Rule: fail = max(p95 x 1.3, max x 1.1), taken over the two-week
+      # window and the current-size sub-window, the larger of the two, so
+      # older, faster runs cannot pull it below what today's suite needs.
+      # Warn = two-week max x 1.1. Every value rounds up to the next 10 s.
+      # - standard: fail max(503 x 1.3 = 653.9, 573 x 1.1 = 630.3; sub-window
+      #   509 x 1.3 = 661.7, 630.3) = 661.7 -> 670 s; warn 573 x 1.1 -> 640 s.
+      # - registry: fail max(620 x 1.3 = 806, 648 x 1.1 = 712.8; sub-window
+      #   630 x 1.3 = 819, 642 x 1.1 = 706.2) = 819 -> 820 s; warn
+      #   648 x 1.1 = 712.8 -> 720 s.
+      # - local (and compatibility fallback): no local build ran in the
+      #   window, so the 8 automatic local-build runs from 2026-10-03 to
+      #   2026-10-11 (755-1027 s) stay the sample. Fail 1027 x 1.1 -> 1130 s.
+      #   Warn is the observed maximum rounded up, 1030 s, because max x 1.1
+      #   equals the fail threshold and would leave no warn band.
       # Stable-base changes deliberately retain the 180-minute safety cap.
       - name: Enforce duration budget
         if: >-
@@ -1606,10 +1630,14 @@ jobs:
           RISCV_IMAGE: ${{ needs.changes.outputs.riscv_image }}
           STARTED_AT_EPOCH: ${{ steps.duration-clock.outputs.started_at_epoch }}
           TOOLING_RECORD: ${{ runner.temp }}/riscv-image-evidence/tooling-source.json
-          STANDARD_BUDGET_SECONDS: 560
-          REGISTRY_BUDGET_SECONDS: 720
+          STANDARD_WARN_SECONDS: 640
+          STANDARD_BUDGET_SECONDS: 670
+          REGISTRY_WARN_SECONDS: 720
+          REGISTRY_BUDGET_SECONDS: 820
+          LOCAL_WARN_SECONDS: 1030
           LOCAL_BUDGET_SECONDS: 1130
         run: |
+          warn="${STANDARD_WARN_SECONDS}"
           budget="${STANDARD_BUDGET_SECONDS}"
           if [[ "${RISCV_IMAGE}" == true ]]; then
             # A lane that stopped before resolving its source is judged as local.
@@ -1617,15 +1645,18 @@ jobs:
             if [[ -f "${TOOLING_RECORD}" ]]; then
               tooling_source="$(jq -er .source "${TOOLING_RECORD}")"
             fi
+            warn="${LOCAL_WARN_SECONDS}"
             budget="${LOCAL_BUDGET_SECONDS}"
             if [[ "${tooling_source}" == registry ]]; then
+              warn="${REGISTRY_WARN_SECONDS}"
               budget="${REGISTRY_BUDGET_SECONDS}"
             fi
-            echo "RISC-V tooling source: \`${tooling_source}\` (budget ${budget} s)" >> "${GITHUB_STEP_SUMMARY}"
+            echo "RISC-V tooling source: \`${tooling_source}\` (warn ${warn} s, budget ${budget} s)" >> "${GITHUB_STEP_SUMMARY}"
           fi
           PYTHONPATH=src python .github/scripts/ci_duration_budget.py \
             --label bwave-smoke \
             --started-at-epoch "${STARTED_AT_EPOCH}" \
+            --warn-seconds "${warn}" \
             --budget-seconds "${budget}" \
             --summary "${GITHUB_STEP_SUMMARY}"
 
