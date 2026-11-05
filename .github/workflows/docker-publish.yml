@@ -11,10 +11,14 @@ env:
   BASE_IMAGE_NAME: boldaxolotl/booley-sandbox-base
   RISCV_IMAGE_NAME: boldaxolotl/booley-sandbox-riscv
 
-# A newer release cancels an older in-flight run before its promotion job can
-# move `latest` backwards. Candidate tags remain available for diagnosis.
+# Push runs (release tags) share one group: a newer release cancels an
+# older in-flight run before its promotion job can move `latest`
+# backwards. Dispatched candidate builds get a per-ref group, so they never
+# cancel, or get cancelled by, a release; a newer dispatch on the same ref
+# still supersedes an older one. Candidate tags remain available for
+# diagnosis.
 concurrency:
-  group: docker-release-promotion
+  group: ${{ github.event_name == 'push' && 'docker-release-promotion' || format('docker-candidate-{0}', github.ref) }}
   cancel-in-progress: true
 
 jobs:
