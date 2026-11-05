@@ -132,6 +132,25 @@ def goal_enter_schema() -> dict[str, Any]:
     }
 
 
+def _status_record(view: GoalStatusView) -> dict[str, Any]:
+    """One structured status record: addresses plus what would block Finish.
+
+    ``uncommitted`` is ``None`` when the repositories were not checked (not the
+    caller's own ACTIVE record) or the check failed, in which case
+    ``uncommitted_error`` says why.
+    """
+    return {
+        **goal_addresses(view.record),
+        "uncommitted": None
+        if view.uncommitted is None
+        else [
+            {"path": str(repository.path), "paired_checkout": repository.paired_checkout}
+            for repository in view.uncommitted
+        ],
+        "uncommitted_error": view.uncommitted_error or None,
+    }
+
+
 def _status_selection(store: GoalStore, root: Path) -> GoalStatusSelection:
     """Status with the Simulation Flow's reader of unpublished campaign results."""
     from booley.mcp.sim_baseline_jobs import schedule_goal_baselines
@@ -179,7 +198,9 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
             if arguments.get("rules") is True:
                 for view in views:
                     text += "\n\n" + goal_mode_rules(
-                        view.record.declared_protected_inputs, routing_guidance=work_dir_guidance()
+                        view.record.declared_protected_inputs,
+                        routing_guidance=work_dir_guidance(),
+                        paired_checkout=view.record.paired_project_base_sha is not None,
                     )
                 if not views:
                     text += "\n\n" + goal_mode_rules(routing_guidance=work_dir_guidance())
@@ -187,7 +208,7 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
                 text,
                 is_error=False,
                 goal_aware=aware,
-                structured={"records": [goal_addresses(view.record) for view in views]},
+                structured={"records": [_status_record(view) for view in views]},
             )
     except (
         LifecycleError,

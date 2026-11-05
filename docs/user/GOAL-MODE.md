@@ -284,6 +284,11 @@ replied with, including where the full briefing and Review Package data are; for
 other records, the Session Summary and Review Package paths when those files
 exist.
 
+Run from a Goal's worktree, `booley goal status` also names each repository
+whose uncommitted changes would block Finish. When the worktree's `.booley` is a
+Paired Checkout (its own Git repository on its own branch), the agent must
+commit changes there as well; ask it to if the status names that repository.
+
 ## Goalsets
 
 A Goalset is a Markdown file under `.booley/goalsets/` that stores a set of

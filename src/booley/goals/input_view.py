@@ -265,6 +265,63 @@ def _cleanliness_paths(root: Path, *, outer: bool) -> list[tuple[bytes, Path]]:
     ]
 
 
+@dataclass(frozen=True)
+class UncommittedRepository:
+    """A Finish participant whose uncommitted changes would refuse Finish."""
+
+    path: Path
+    #: The Paired Checkout (its own Git repository and branch), not the RTL repository.
+    paired_checkout: bool
+
+
+def _participants(selection: InputSelection) -> tuple[Path, ...]:
+    """The repositories Finish checks, in its order: RTL, then the Paired Checkout."""
+    return tuple(
+        root for root in (selection.rtl, selection.project_repository) if root is not None
+    )
+
+
+def _blocking_change(
+    selection: InputSelection,
+    root: Path,
+    *,
+    owned: Path | None,
+    retained: frozenset[Path],
+    preserve_publication_staging: bool,
+) -> bool:
+    """Whether *root* has a change Finish refuses, after every exemption.
+
+    Two passes over the same rows: any blocking row that needs no pin projection
+    decides at once; only then are the ` M ` rows compared with their pin, so a
+    repository with an untracked or staged change never pays for the projection.
+    """
+    paths = _cleanliness_paths(root, outer=root == selection.rtl)
+    pin = selection.rtl_pin if root == selection.rtl else selection.project_pin
+    modified: list[Path] = []
+    for status, path in paths:
+        if path == owned or (status == b"?? " and path in retained):
+            continue
+        if (
+            preserve_publication_staging
+            and owned is not None
+            and status[:1] != b" "
+            and (owned.is_relative_to(path) or path.is_relative_to(owned))
+        ):
+            # The caller proved its exact published blob and literal working
+            # file. Preserve competing index entries confined to that artifact.
+            continue
+        if status == b" M " and pin is not None:
+            modified.append(path)
+            continue
+        return True
+    if not modified or pin is None:
+        return False
+    projection = pinned_working_bytes(root, pin)
+    return any(
+        not tracked_matches_pin(root, pin, path, projection=projection) for path in modified
+    )
+
+
 def require_clean(
     selection: InputSelection,
     *,
@@ -273,30 +330,32 @@ def require_clean(
     preserve_publication_staging: bool = False,
 ) -> None:
     """Both participants, exempting only an already-verified own summary file."""
-    for root in (selection.rtl, selection.project_repository):
-        if root is None:
-            continue
-        paths = _cleanliness_paths(root, outer=root == selection.rtl)
-        pin = selection.rtl_pin if root == selection.rtl else selection.project_pin
-        projection = None
-        for status, path in paths:
-            if path == owned or (status == b"?? " and path in retained):
-                continue
-            if (
-                preserve_publication_staging
-                and owned is not None
-                and status[:1] != b" "
-                and (owned.is_relative_to(path) or path.is_relative_to(owned))
-            ):
-                # The caller proved its exact published blob and literal working
-                # file. Preserve competing index entries confined to that artifact.
-                continue
-            if status == b" M " and pin is not None:
-                if projection is None:
-                    projection = pinned_working_bytes(root, pin)
-                if tracked_matches_pin(root, pin, path, projection=projection):
-                    continue
+    for root in _participants(selection):
+        if _blocking_change(
+            selection,
+            root,
+            owned=owned,
+            retained=retained,
+            preserve_publication_staging=preserve_publication_staging,
+        ):
             raise LifecycleError(f"commit changes in {root} before finishing")
+
+
+def uncommitted_participants(
+    selection: InputSelection, *, retained: frozenset[Path]
+) -> tuple[UncommittedRepository, ...]:
+    """Every participant Finish's first cleanliness check would refuse, in Finish order."""
+    return tuple(
+        UncommittedRepository(root, paired_checkout=root == selection.project_repository)
+        for root in _participants(selection)
+        if _blocking_change(
+            selection,
+            root,
+            owned=None,
+            retained=retained,
+            preserve_publication_staging=False,
+        )
+    )
 
 
 @dataclass(frozen=True)

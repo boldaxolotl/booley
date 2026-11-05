@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -80,10 +81,16 @@ def test_caller_fences(goal_mode: SimpleNamespace, drift: str) -> None:
     assert lint_status(goal_mode).status == ("unmet" if drift == "spec" else "stale")
 
 
+def without_finish_check(views):
+    """*views* minus the uncommitted-changes check only the occupant's own worktree gets."""
+    return tuple(replace(view, uncommitted=None) for view in views)
+
+
 def test_status_inside_outside_and_rendering(goal_mode: SimpleNamespace) -> None:
     store = GoalStore(goal_mode.control)
     inside = status_views(store, goal_mode.worktree)
-    assert inside == status_views(store, goal_mode.main)
+    assert inside[0].uncommitted == ()
+    assert without_finish_check(inside) == status_views(store, goal_mode.main)
     assert "LINT:top" in render_status(inside)
     assert "lint_clean_top" not in render_status(inside)
     assert "Pending proposals: 0" in render_status(inside, short=False)
@@ -221,7 +228,9 @@ def test_scoped_selection_retains_occupying_states(goal_mode, tmp_path, state):
     for caller in (goal_mode.main, outside):
         fallback = select_status(store, caller)
         assert fallback.project_wide is True
-        assert fallback.views == occupant.views == status_views(store, caller)
+        assert (
+            fallback.views == without_finish_check(occupant.views) == status_views(store, caller)
+        )
 
 
 def test_scoped_selection_empty_and_errors(layout, tmp_path):

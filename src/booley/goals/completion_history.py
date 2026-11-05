@@ -4,10 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from booley.goals.finish_attempt import validate_attempt, validate_local_artifacts
-from booley.goals.lifecycle import LifecycleError, LifecycleOperation, read_bound_request
+from booley.goals.lifecycle import (
+    LifecycleError,
+    LifecycleOperation,
+    LifecycleRequest,
+    read_bound_request,
+)
+from booley.goals.model import GoalRecord
 from booley.goals.proposals import digest, encode
+from booley.goals.store import GoalStore, RecordLock
 from booley.runtime.atomic_files import atomic_replace_bytes, atomic_write_once
 from booley.runtime.pinned_history import raw_git, tree_rows
 
@@ -77,6 +85,20 @@ def retained_outputs(operation: LifecycleOperation) -> frozenset[Path]:
         if require_destination(destination, bytes.fromhex(frozen["summary_hex"])):
             found.add(destination)
     return frozenset(found)
+
+
+def fresh_attempt_retained_outputs(
+    store: GoalStore, lock: RecordLock, record: GoalRecord, root: Path
+) -> frozenset[Path]:
+    """What a Finish under a fresh ``operation_id`` would retain, without persisting anything.
+
+    A ``revalidation_required`` result needs a fresh ``operation_id``, so this is
+    the set the next Finish exempts from its cleanliness check.
+    """
+    if not (lock.record_dir / "operations").is_dir():
+        return frozenset()  # Nothing has been finished yet; there are no prior attempts.
+    request = LifecycleRequest(root, record.id, str(uuid4()))
+    return retained_outputs(LifecycleOperation(store, lock, request, root))
 
 
 def validate_canonical_ownership(operation: LifecycleOperation, frozen: dict[str, Any]) -> None:
