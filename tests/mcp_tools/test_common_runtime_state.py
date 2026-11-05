@@ -20,9 +20,10 @@ from tests.booley_dir_topology import enter_worktree
 @pytest.fixture
 def worktree(tmp_path, monkeypatch) -> tuple[Path, Path]:
     """``(Main Booley Directory, worktree)`` with the CWD in the worktree."""
-    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
-    monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
+    # Empty means unset, and monkeypatch restores the original after the server sets it.
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", "")
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", "")
+    monkeypatch.setenv("BOOLEY_SLOTS_DIR", "")
     yield enter_worktree(tmp_path, monkeypatch)
     reset_cache()
 
