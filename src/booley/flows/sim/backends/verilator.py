@@ -162,7 +162,8 @@ def _render_trace_args(trace_args: list[str] | None, trace_file: Path | None) ->
     C++ ``main()`` defines whatever trace CLI it likes, and Ibex's
     ``VerilatorSimCtrl`` accepts only getopt ``-t``/``--trace[=FILE]``. Passing
     the wrong convention is silent — the binary ignores the unknown plusarg,
-    the run passes, and the dump contains nothing but a header. So the
+    the dump contains nothing but a header, and the traced run ends
+    inconclusive. So the
     contract is configurable (``[flows.sim].trace_args``), with Booley's
     own convention as the default.
 
