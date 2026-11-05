@@ -1,7 +1,9 @@
 # Read a Review Package
 
-Read this when Finish returns a Review Package or the human asks to review Goal
-work. Use the returned package and file pointers; do not guess a latest record.
+Read this when Finish returns its summary or the human asks to review Goal
+work. Use the returned file pointers; do not guess a latest record. The reply is
+a short summary: open its `Full briefing` file for the Change Log, Target
+changes, constraint edits, and Test Runs.
 
 1. Read the Session Summary and diff against the Goal base. Explain what
    changed and why, then inspect the actual source changes.
@@ -20,8 +22,9 @@ work. Use the returned package and file pointers; do not guess a latest record.
    and any "Simulation Campaigns not fully accounted for". Check that the
    testbench does not special-case a frozen seed.
 5. Present a concise account of the result, then end with the paths Finish
-   returned, so the human can open them. Put each on its own line: a bold
-   label, then the absolute path as inline code, with nothing after it.
+   returned (`<summary>` is the reply's `Full briefing` path, `<package>` its
+   `Review Package data` path), so the human can open them. Put each on its own
+   line: a bold label, then the absolute path as inline code, with nothing after it.
 
    ```markdown
    **Review Package summary:** `<summary>`

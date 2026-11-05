@@ -31,6 +31,7 @@ from booley.goals.entry import (
     enter_goal_mode,
     parse_entry_request,
 )
+from booley.goals.finish_presentation import finished_overview
 from booley.goals.format import render_status
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.model import goal_arg_json_schema
@@ -261,10 +262,19 @@ async def _finish(
         env,
         session_key=(request_context or McpRequestContext()).session_key(),
     )
-    message = result.get("message", result.get("reason", ""))
+    overview = None
+    if result["status"] == "finished":
+        # A retry or recovery names the operation that froze the attempt.
+        overview = await asyncio.to_thread(
+            finished_overview,
+            booley_dir,
+            result["record_id"],
+            result.get("recovered_operation_id", result["operation_id"]),
+        )
+    message = overview or result.get("message", result.get("reason", ""))
     if result.get("reason") and result["reason"] not in message:
         message += "\nReason: " + result["reason"]
-    if result.get("publication_note"):
+    if overview is None and result.get("publication_note"):
         message += "\n" + result["publication_note"]
     if result.get("running_jobs"):
         message += "\nRunning Jobs (not cancelled): " + str(result["running_jobs"])

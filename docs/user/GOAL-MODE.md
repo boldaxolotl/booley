@@ -232,7 +232,12 @@ why, and Booley builds the Review Package: the diff against the starting code,
 the final Goals and their evidence, the Change Log, open review findings,
 Target and constraint changes, and the Session Summary.
 
-Read the Review Package before deciding what to merge; open `done` findings
+Finish replies with a short summary: the Session Summary, each Goal, the
+changed files and Targets, counts of Goal Changes and decisions, and open
+findings. It names the full briefing, where it was published or why it was not,
+and the Review Package data file. The full briefing keeps every audit section.
+
+Read the full briefing before deciding what to merge; open `done` findings
 are listed there. Completion keeps the Goal Branch and worktree; merge,
 publication, and cleanup need separate instructions.
 
@@ -273,9 +278,11 @@ Jobs share the Project's [admission caps](CONFIG.md#jobs--concurrency-jobs).
 For scripted inspection, `booley goal status` shows this worktree's Goal Mode,
 or every active Goal Mode in the Project when this worktree hosts none. In a
 worktree without an active Goal Mode, `booley goal status` also shows its most
-recently ended Goal Record: Goal id, state, end time, the
-failure reason of a failed record, and the Session Summary and Review Package
-paths when those files exist.
+recently ended Goal Record: Goal id, state, end time, and the failure reason of
+a failed record. For a finished record it shows the same short summary Finish
+replied with, including where the full briefing and Review Package data are; for
+other records, the Session Summary and Review Package paths when those files
+exist.
 
 ## Goalsets
 
