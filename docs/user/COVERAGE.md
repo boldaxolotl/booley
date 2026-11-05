@@ -49,11 +49,43 @@ Generated or custom C++ mains, HDL testbenches, and cocotb all work.
 ## Reading results
 
 Each Target gets its own **Coverage Campaign**: the coverage record of one
-Target in one run. The result shows a percentage for each metric, the
-thresholds you set (if any) and whether each was met, and the path of the
-Campaign's `coverage.json`, which you pass to the Coverage Analyst. Where the
-files live on disk is described in
-[Flow reports](../internals/FLOW_REPORTS.md).
+Target in one run. The easiest way to read it is to ask the agent, for example
+"What coverage did sim_soc reach?". The agent gets every metric's percentage,
+any threshold and whether it was met, and the Campaign's location.
+
+A run you start yourself prints one line per Target:
+
+```text
+sim_soc: simulation PASS · coverage collection COMPLETE · evaluation NOT_REQUESTED (Simulation Campaign …)
+  manifest: /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json
+  report: /work/.booley/flow-reports/sim.json
+```
+
+The line has three verdicts:
+
+- **simulation**: whether the tests passed, as in
+  [Simulation results](FLOW-SIM.md#reading-results).
+- **coverage collection**: `COMPLETE`, or `COLLECTOR_ERROR`, `INCOMPLETE` or
+  `INCOMPATIBLE` followed by a diagnostic code in brackets. Anything but
+  `COMPLETE` means the numbers can't be trusted.
+- **evaluation**: whether the thresholds were met. `NOT_REQUESTED` means
+  there were none to check, which is the normal case outside a
+  [Coverage Goal](#coverage-goals). `FAIL` names the first metric that
+  missed, for example `evaluation FAIL (branch: observed 1/2 points;
+  displayed 50%; minimum 80%)`. `BLOCKED` gives a code, such as an invalid
+  [waiver](#coverage-waivers).
+
+The terminal does not print the percentages. They are in the run's files,
+under `flow-reports/` in the Booley Directory (or `--report-dir`), in the
+numbered run directory (`sim/12/` above):
+
+| File | What it holds |
+|---|---|
+| `sim/<N>/report.json` | For each Target, under `detail.targets.<target>.coverage_metrics`, each metric's `percent`, `threshold` and `met`. |
+| `sim/<N>/targets/<target>/coverage.json` | The Coverage Campaign. Pass this path to the [Coverage Analyst](#analyzing-a-campaign) to find out what is uncovered and why. |
+
+The full layout is in [Flow reports](../internals/FLOW_REPORTS.md#coverage-campaign-files),
+for scripts that read these files.
 
 How the numbers are counted:
 
@@ -156,8 +188,8 @@ branch coverage on sim_soc so low?". Its model only reads the evidence: it
 never runs simulation, changes Goals, or approves waivers. Pick its model like
 any Specialist's, under [`[models]`](CONFIG.md#model-selection-models).
 
-To run it yourself inside the Sandbox, pass the `coverage.json` path from the
-result:
+To run it yourself inside the Sandbox, pass the Target's
+[`coverage.json`](#reading-results):
 
 ```bash
 booley specialist coverage_analyst --campaign <path to coverage.json>
@@ -167,7 +199,7 @@ booley specialist coverage_analyst --campaign <path to coverage.json>
 
 Coverage runs keep the raw Verilator databases, which are large. Booley never
 deletes them automatically. To free space, prune one run. Take both values
-from the `coverage.json` path in the result: for
+from the Target's [`coverage.json`](#reading-results) path: for
 `<reports>/sim/12/targets/sim_soc/coverage.json`, the reports root is
 `<reports>` and the run number is `12`.
 
