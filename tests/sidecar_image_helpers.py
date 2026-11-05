@@ -18,22 +18,34 @@ from pathlib import Path
 import pytest
 
 from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
+from booley.runtime import dockerfile_syntax
 
 DIND_IMAGE = (
     "docker:29.8.2-dind@sha256:7dcdfc4a20246236f558175182ccace1eb15a41bd3eb119dd2284f393498b7c1"
 )
-# Sidecar Python bases. Keep in lockstep with the Dockerfile.egress-proxy,
-# Dockerfile.flexnet-relay, and Dockerfile.reaper FROM lines and with
-# .github/scripts/sidecar-build-evidence.sh; the pin tests compare against these.
-SIDECAR_PYTHON_VERSION = "Python 3.14.8"
-SIDECAR_BOOKWORM_BASE = (
-    "python:3.14.8-slim-bookworm"
-    "@sha256:c8137f4c460908c8763f281c8f22c431eb5c538514ba9553fc3a89c06b7cfb88"
-)
-SIDECAR_ALPINE_BASE = (
-    "python:3.14.8-alpine3.24"
-    "@sha256:8acac70227ce3b34da9453120c375cc5b66cd0b062d4dc6bc74286f81a3819e1"
-)
+_DOCKER_DIR = Path(__file__).parents[1] / "src/booley/data/docker"
+
+
+def _from_reference(dockerfile: str, alias: str | None = None) -> str:
+    """Return the FROM reference of a sidecar Dockerfile (the pin's one source).
+
+    ``alias`` names a stage of a multi-stage file; without it the file must have one stage.
+    """
+    references = dockerfile_syntax.from_references(
+        (_DOCKER_DIR / dockerfile).read_text(encoding="utf-8")
+    )
+    chosen = [r for r in references if alias is None or r.alias == alias]
+    if len(chosen) != 1 or (alias is None and len(references) != 1):
+        raise ValueError(f"{dockerfile}: expected one FROM for {alias!r}, found {references}")
+    return chosen[0].image
+
+
+# Sidecar bases derive from the Dockerfile FROM lines; the evidence script derives them
+# the same way, and tests compare the remaining in-repo copies against these.
+SIDECAR_BOOKWORM_BASE = _from_reference("Dockerfile.egress-proxy")
+SIDECAR_ALPINE_BASE = _from_reference("Dockerfile.flexnet-relay")
+SIDECAR_DOCKER_CLI = _from_reference("Dockerfile.reaper", "docker-cli")
+SIDECAR_PYTHON_VERSION = "Python " + SIDECAR_BOOKWORM_BASE.split(":")[1].split("-")[0]
 _DOCKER_SOCKET = "unix:///var/run/docker.sock"
 _NAME_PREFIX_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
 

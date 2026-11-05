@@ -1306,7 +1306,6 @@ jobs:
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
               -e TMPDIR=/validation-tmp
               booley-test python /work/tests/docker/agent_policy_probe.py
-              --expected-node 24.21.0 --expected-npm 11.19.0
               --evidence /validation-tmp/agent-policy.json
 
           - name: Run Verible production-image end-to-end test

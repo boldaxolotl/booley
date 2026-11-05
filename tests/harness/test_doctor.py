@@ -38,6 +38,7 @@ from booley.runtime import (
     runtime_context,
     session_issuance,
     session_runtime,
+    vaporview,
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime.booley_dir import reset_cache
@@ -2840,7 +2841,7 @@ class TestViewerBridgeCheck:
             first_target="x",
         )
 
-    _HEALTHY: tuple[dict, ...] = ({"vaporview": "1.6.0", "error": None},)
+    _HEALTHY: tuple[dict, ...] = ({"vaporview": vaporview.VERIFIED_VERSION, "error": None},)
 
     def _run(
         self,
@@ -3169,8 +3170,8 @@ def test_vaporview_extension_probe_preserves_state_and_prefix(monkeypatch, retur
     [
         (
             0,
-            '{"bridges": [{"vaporview": "1.6.0", "error": null}]}',
-            [{"vaporview": "1.6.0", "error": None}],
+            f'{{"bridges": [{{"vaporview": "{vaporview.VERIFIED_VERSION}", "error": null}}]}}',
+            [{"vaporview": vaporview.VERIFIED_VERSION, "error": None}],
         ),
         (0, '{"bridges": []}', []),
         (1, "Traceback (ImportError)", None),

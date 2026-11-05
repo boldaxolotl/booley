@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import re
 import shlex
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from booley.flows.sim.verilator_identity import PINNED_VERILATOR
+from booley.runtime import dockerfile_syntax
 from booley.runtime.dockerfile_syntax import logical_instructions
 
 _BASE_DOCKERFILE = "src/booley/data/docker/Dockerfile.base"
@@ -57,6 +60,8 @@ class ContractSources:
     test_workflow: dict[str, Any]
     release_workflow: dict[str, Any]
     base_workflow: dict[str, Any]
+    session_runtime: dict[str, Any]
+    verilator_identity: tuple[str, str]
 
 
 @dataclass(frozen=True)
@@ -71,7 +76,15 @@ _RUNTIME_ROLES = {
     "node": RuntimeRole(
         "Node",
         "Dockerfile.base:ARG NODE_VERSION",
-        ("test.yml:bwave-smoke:agent_policy_probe.py --expected-node",),
+        ("test.yml:bwave-smoke:agent_policy_probe.py",),
+    ),
+    "verilator": RuntimeRole(
+        "Verilator",
+        "Dockerfile.base:ARG VERILATOR_VERSION",
+        (
+            "verilator_identity.py:PINNED_VERILATOR",
+            "session-runtime.toml:EDA command diagnostics",
+        ),
     ),
     "cocotb": RuntimeRole(
         "Cocotb",
@@ -94,6 +107,10 @@ def load_sources(repo: Path) -> ContractSources:
         test_workflow=_load_yaml(repo / ".github/workflows/test.yml"),
         release_workflow=_load_yaml(repo / ".github/workflows/docker-publish.yml"),
         base_workflow=_load_yaml(repo / ".github/workflows/docker-base-publish.yml"),
+        session_runtime=tomllib.loads(
+            (repo / ".github/contracts/session-runtime.toml").read_text(encoding="utf-8")
+        ),
+        verilator_identity=(PINNED_VERILATOR.tag, PINNED_VERILATOR.commit),
     )
 
 
@@ -102,33 +119,6 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{path}: workflow must be a mapping")
     return value
-
-
-def dockerfile_parents(contents: str) -> tuple[str, ...]:
-    arguments: dict[str, str] = {}
-    parents: list[str] = []
-    for instruction in logical_instructions(contents):
-        if instruction.keyword == "ARG":
-            name, separator, value = instruction.value.partition("=")
-            if separator:
-                arguments[name] = value
-        elif instruction.keyword == "FROM":
-            fields = shlex.split(instruction.value)
-            image = next((field for field in fields if not field.startswith("--")), "")
-            resolved = _expand_arguments(image, arguments)
-            if not resolved or "$" in resolved:
-                raise ValueError(f"Dockerfile:{instruction.line}: unresolved FROM {image}")
-            parents.append(resolved)
-    return tuple(parents)
-
-
-def _expand_arguments(value: str, arguments: dict[str, str]) -> str:
-    pattern = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
-
-    def replace(match: re.Match[str]) -> str:
-        return arguments.get(match.group(1) or match.group(2), match.group(0))
-
-    return pattern.sub(replace, value)
 
 
 def _flatten_steps(
@@ -274,7 +264,9 @@ def _dockerfile_errors(sources: ContractSources) -> list[str]:
         ("wheel overlay", sources.overlay_dockerfile, "booley-substrate"),
     ):
         try:
-            parents = dockerfile_parents(contents)
+            parents = tuple(
+                reference.image for reference in dockerfile_syntax.from_references(contents)
+            )
         except ValueError as error:
             errors.append(f"{role} image: {error}")
             continue
@@ -597,7 +589,7 @@ def _shell_command(run: str, executable: str) -> list[str]:
 
 def _runtime_role_errors(sources: ContractSources) -> list[str]:
     errors: list[str] = []
-    for validator in (_node_role_errors, _cocotb_role_errors):
+    for validator in (_node_role_errors, _verilator_role_errors, _cocotb_role_errors):
         try:
             errors.extend(validator(sources))
         except ValueError as error:
@@ -606,19 +598,76 @@ def _runtime_role_errors(sources: ContractSources) -> list[str]:
 
 
 def _node_role_errors(sources: ContractSources) -> list[str]:
+    """Node and npm versions are Dockerfile.base ARGs; the probe derives from them."""
     role = _RUNTIME_ROLES["node"]
-    authority = _unique_version(
-        f"{role.name} authority {role.authority}",
-        _argument_values(sources.base_dockerfile, "NODE_VERSION"),
-    )
+    errors: list[str] = []
+    for label, argument in (
+        (f"{role.name} authority {role.authority}", "NODE_VERSION"),
+        ("npm authority Dockerfile.base:ARG NPM_VERSION", "NPM_VERSION"),
+    ):
+        _unique_version(label, _argument_defaults(sources.base_dockerfile, argument))
     probe = find_step(
         "test.yml",
         sources.test_workflow,
         "bwave-smoke",
         name="Run installed agent CLI policy probe",
     )
-    evidence = _node_probe_version(str(probe.value.get("run", "")))
-    return _version_pair_errors(role, authority, evidence, role.probes[0])
+    run = str(probe.value.get("run", "")).replace("\n", " ")
+    if not re.search(r"booley-test\s+python\s+/work/tests/docker/agent_policy_probe\.py", run):
+        errors.append(
+            f"{role.name} exact role: {role.probes[0]} must run against booley-test "
+            f"to check the {role.authority} recipe"
+        )
+    return errors
+
+
+def _verilator_role_errors(sources: ContractSources) -> list[str]:
+    """The live Verilator identity and the runtime probe must equal the Dockerfile pin."""
+    role = _RUNTIME_ROLES["verilator"]
+    tag = _single_default(
+        f"{role.name} authority {role.authority}", sources.base_dockerfile, "VERILATOR_VERSION"
+    )
+    ref = _single_default(
+        f"{role.name} authority Dockerfile.base:ARG VERILATOR_REF",
+        sources.base_dockerfile,
+        "VERILATOR_REF",
+    )
+    errors: list[str] = []
+    live_tag, live_ref = sources.verilator_identity
+    errors.extend(_verilator_pair_errors(role, (tag, ref), (live_tag, live_ref), role.probes[0]))
+    probe = _session_runtime_verilator_probe(sources.session_runtime)
+    errors.extend(_verilator_pair_errors(role, (tag, ref), probe, role.probes[1]))
+    return errors
+
+
+def _verilator_pair_errors(
+    role: RuntimeRole, authority: tuple[str, str], evidence: tuple[str, str], locator: str
+) -> list[str]:
+    if authority == evidence:
+        return []
+    return [
+        f"{role.name} {role.constraint} role: {role.authority}/VERILATOR_REF={authority!r} "
+        f"disagrees with {locator}={evidence!r}"
+    ]
+
+
+def _session_runtime_verilator_probe(contract: dict[str, Any]) -> tuple[str, str]:
+    """Return the (tag, commit) the EDA diagnostics probe expects from Verilator."""
+    probes = [
+        probe
+        for probe in contract.get("common", {}).get("probe", [])
+        if probe.get("name") == "EDA command diagnostics"
+    ]
+    if len(probes) != 1:
+        raise ValueError("Verilator exact role: expected one 'EDA command diagnostics' probe")
+    command = str(probes[0].get("command", ""))
+    version = re.search(r"verilator --version[^\n]*=\s*\"([^\"]+)\"", command)
+    revision = re.search(r"Verilator source revision: ([0-9a-f]{40})", command)
+    if version is None or revision is None:
+        raise ValueError(
+            "Verilator exact role: session-runtime.toml probe lacks version or revision"
+        )
+    return f"v{version.group(1)}", revision.group(1)
 
 
 def _cocotb_role_errors(sources: ContractSources) -> list[str]:
@@ -714,13 +763,20 @@ def _shell_fields(command: str, *, comments: bool = False) -> list[str]:
     return fields
 
 
-def _argument_values(contents: str, name: str) -> tuple[str, ...]:
-    prefix = f"{name}="
+def _argument_defaults(contents: str, name: str) -> tuple[str, ...]:
+    """Return every declared default of ARG ``name`` (duplicates stay visible)."""
     return tuple(
-        instruction.value[len(prefix) :]
-        for instruction in logical_instructions(contents)
-        if instruction.keyword == "ARG" and instruction.value.startswith(prefix)
+        argument.default
+        for argument in dockerfile_syntax.build_arguments(contents)
+        if argument.name == name and argument.default is not None
     )
+
+
+def _single_default(locator: str, contents: str, name: str) -> str:
+    try:
+        return dockerfile_syntax.argument_default(contents, name)
+    except ValueError as error:
+        raise ValueError(f"{locator}: {error}") from error
 
 
 def _cocotb_requirements(contents: str) -> tuple[str, ...]:
@@ -745,17 +801,6 @@ def _unique_version(locator: str, values: tuple[str, ...]) -> str:
     if len(values) != 1 or _VERSION.fullmatch(values[0]) is None:
         raise ValueError(f"{locator}: expected one exact version, found {values}")
     return values[0]
-
-
-def _node_probe_version(run: str) -> str:
-    match = re.search(
-        r"booley-test\s+python\s+/work/tests/docker/agent_policy_probe\.py\s+"
-        r".*?--expected-node\s+([^\s]+)",
-        run.replace("\n", " "),
-    )
-    if match is None:
-        raise ValueError("Node probe test.yml: expected agent_policy_probe.py against booley-test")
-    return match.group(1)
 
 
 def _version_pair_errors(

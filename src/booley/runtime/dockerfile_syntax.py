@@ -8,10 +8,12 @@ stdlib-only because ``.github/scripts`` import it before Booley is installed.
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass
 
 _STAGE_ALIAS = re.compile(r"\s+AS\s+(\S+)\s*$", re.IGNORECASE)
 _COPY_FROM = re.compile(r"(?:^|\s)--from=(\S+)", re.IGNORECASE)
+_ARGUMENT_REFERENCE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 
 
 @dataclass(frozen=True)
@@ -90,3 +92,107 @@ def build_context_imports(contents: str) -> tuple[Instruction, ...]:
         for item in instructions
         if item.keyword in {"ADD", "COPY"} and item.copy_source_stage not in stages
     )
+
+
+@dataclass(frozen=True)
+class BuildArgument:
+    """One ``ARG`` declaration.
+
+    ``stage`` is ``None`` for a declaration before the first ``FROM`` (global
+    scope) and the 0-based index of the build stage otherwise. ``default`` is
+    the declared literal; a bare ``ARG NAME`` has ``None``.
+    """
+
+    name: str
+    default: str | None
+    stage: int | None
+    line: int
+
+
+@dataclass(frozen=True)
+class FromReference:
+    """One ``FROM`` line with global ``ARG`` defaults substituted.
+
+    ``image`` is the first non-flag field. ``stage`` is the 0-based index of
+    the build stage the line opens.
+    """
+
+    image: str
+    alias: str | None
+    stage: int
+    line: int
+
+
+def build_arguments(contents: str) -> tuple[BuildArgument, ...]:
+    """Return every ``ARG`` declaration in file order, repeats included.
+
+    Raises ``ValueError`` naming the line for an empty name or an ``ARG`` that
+    declares several names (the repository never uses that form).
+    """
+    arguments: list[BuildArgument] = []
+    stage: int | None = None
+    for instruction in logical_instructions(contents):
+        if instruction.keyword == "FROM":
+            stage = 0 if stage is None else stage + 1
+        elif instruction.keyword == "ARG":
+            fields = shlex.split(instruction.value)
+            if len(fields) != 1:
+                raise ValueError(
+                    f"Dockerfile:{instruction.line}: ARG must declare exactly one name, "
+                    f"found {instruction.value!r}"
+                )
+            name, separator, default = fields[0].partition("=")
+            if not name:
+                raise ValueError(f"Dockerfile:{instruction.line}: ARG has an empty name")
+            arguments.append(
+                BuildArgument(name, default if separator else None, stage, instruction.line)
+            )
+    return tuple(arguments)
+
+
+def argument_default(contents: str, name: str) -> str:
+    """Return the default of the one ``ARG`` declaration of ``name`` that has one.
+
+    Bare redeclarations (``ARG NAME``) do not count. Raises ``ValueError``
+    when no declaration carries a default or when more than one does, equal
+    or not: a pinned value has a single source.
+    """
+    defaults = [
+        argument.default
+        for argument in build_arguments(contents)
+        if argument.name == name and argument.default is not None
+    ]
+    if len(defaults) != 1:
+        raise ValueError(f"ARG {name}: expected one declaration with a default, found {defaults}")
+    return defaults[0]
+
+
+def from_references(contents: str) -> tuple[FromReference, ...]:
+    """Return every ``FROM`` with global ``ARG`` defaults substituted.
+
+    Raises ``ValueError`` when a ``$`` reference stays unresolved.
+    """
+    globals_: dict[str, str] = {}
+    references: list[FromReference] = []
+    stage = -1
+    for instruction in logical_instructions(contents):
+        if instruction.keyword == "ARG" and stage < 0:
+            name, separator, default = instruction.value.partition("=")
+            if separator:
+                globals_[name] = default
+        elif instruction.keyword == "FROM":
+            stage += 1
+            image = next(
+                (field for field in shlex.split(instruction.value) if not field.startswith("--")),
+                "",
+            )
+            resolved = _ARGUMENT_REFERENCE.sub(
+                lambda match: globals_.get(match.group(1) or match.group(2), match.group(0)),
+                image,
+            )
+            if not resolved or "$" in resolved:
+                raise ValueError(f"Dockerfile:{instruction.line}: unresolved FROM {image}")
+            references.append(
+                FromReference(resolved, instruction.stage_alias, stage, instruction.line)
+            )
+    return tuple(references)

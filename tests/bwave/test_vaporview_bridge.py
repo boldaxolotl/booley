@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from booley.bwave import vaporview_bridge as bridge
+from booley.runtime import vaporview
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32" or not hasattr(socket, "AF_UNIX"),
@@ -30,7 +31,7 @@ pytestmark = pytest.mark.skipif(
 def _ping(**overrides) -> dict:
     return {
         "protocol": 1,
-        "vaporview": "1.6.0",
+        "vaporview": vaporview.VERIFIED_VERSION,
         "focused": False,
         "lastFocused": 0,
         "documents": [],
@@ -176,7 +177,9 @@ def test_ping_parses_window_report(home, servers):
 
     info = bridge.BridgeClient(server.path).ping()
 
-    assert info == bridge.BridgeInfo(server.path, "1.6.0", True, 1700.0, ("/a.fst",))
+    assert info == bridge.BridgeInfo(
+        server.path, vaporview.VERIFIED_VERSION, True, 1700.0, ("/a.fst",)
+    )
 
 
 @pytest.mark.parametrize(
@@ -288,14 +291,16 @@ def test_doctor_summary_reports_each_window_without_raising(home, servers):
 
     summary = bridge.doctor_summary(home)
 
-    assert summary["bridges"][0] == {"vaporview": "1.6.0", "error": None}
+    assert summary["bridges"][0] == {"vaporview": vaporview.VERIFIED_VERSION, "error": None}
     assert summary["bridges"][1] == {"vaporview": None, "error": "VaporView is not installed"}
     assert summary["bridges"][2]["vaporview"] is None
     assert "malformed" in summary["bridges"][2]["error"]
 
 
 def _info(name: str, *, last: float = 0, docs=(), focused=False) -> bridge.BridgeInfo:
-    return bridge.BridgeInfo(Path(f"/b/{name}"), "1.6.0", focused, last, tuple(docs))
+    return bridge.BridgeInfo(
+        Path(f"/b/{name}"), vaporview.VERIFIED_VERSION, focused, last, tuple(docs)
+    )
 
 
 def test_select_the_only_window():

@@ -728,7 +728,8 @@ def _fake_invoke(captured, raw_path: Path):
         captured.setdefault("timeouts", []).append((tuple(command), timeout))
         if command == ["verilator", "--version"]:
             return captured.get("version") or SubprocessResult(
-                returncode=0, stdout="Verilator 5.052 2026-09-05\n"
+                returncode=0,
+                stdout=f"Verilator {PINNED_VERILATOR.tag.removeprefix('v')} 2026-09-05\n",
             )
         script = command[2]
         if "BOOLEY_BUILD_STAGE" in script:
@@ -1027,7 +1028,7 @@ def _coverage_build_failure_request(tmp_path: Path):
     document.pop("fingerprints")
     workload = document["workload"]
     workload["coverage"] = True
-    workload["eda"] = {"kind": "verilator", "version": "5.052"}
+    workload["eda"] = {"kind": "verilator", "version": PINNED_VERILATOR.tag.removeprefix("v")}
     workload["build_recipe"]["eda_tool"] = "verilator"
     item = document["work_items"][0]
     item["kind"] = "coverage_aggregate"

@@ -49,7 +49,7 @@ class _RealVerilatorExecution:
         ).stdout
         provenance = Path("/usr/local/share/verilator/BOOLEY-SOURCE.txt")
         if (
-            "Verilator 5.052" not in version
+            f"Verilator {PINNED_VERILATOR.tag.removeprefix('v')}" not in version
             or not provenance.is_file()
             or PINNED_VERILATOR.commit not in provenance.read_text(encoding="utf-8")
         ):

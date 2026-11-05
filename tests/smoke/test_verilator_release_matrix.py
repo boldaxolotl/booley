@@ -11,8 +11,10 @@ from pathlib import Path
 
 import pytest
 
-VERILATOR_VERSION = "5.052"
-VERILATOR_REF = "ea338be98e1e838d3518809ce8899f85a009963c"
+from booley.flows.sim.verilator_identity import PINNED_VERILATOR
+
+VERILATOR_VERSION = PINNED_VERILATOR.tag.removeprefix("v")
+VERILATOR_REF = PINNED_VERILATOR.commit
 _COVERAGE_FLAGS = (
     "--coverage-line",
     "--coverage-toggle",

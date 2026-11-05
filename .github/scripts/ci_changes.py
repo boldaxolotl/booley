@@ -148,6 +148,8 @@ _SIDECAR_FILES = {
     "src/booley/data/docker/Dockerfile.egress-proxy",
     "src/booley/data/docker/Dockerfile.flexnet-relay",
     "src/booley/data/docker/Dockerfile.reaper",
+    # The evidence script derives the sidecar bases through this reader.
+    "src/booley/runtime/dockerfile_syntax.py",
     "tests/docker/test_egress_proxy.py",
     "tests/docker/test_egress_proxy_image_e2e.py",
     "tests/docker/test_flexnet_relay_e2e.py",

@@ -93,8 +93,8 @@ fails on missing tools or wrong source identity.
 Validation starts from main `5a45b4e8bdf2319335e956cd92660e8263cdee15`.
 The local Sandbox Image is `booley-sandbox:issue-419` (image prefix
 `25d35ba51cab`), with this worktree mounted read-only and `PYTHONPATH=/work/src`.
-Its exact Verilator `v5.052` source identity is
-`ea338be98e1e838d3518809ce8899f85a009963c`. Test plugins are installed only in
+Its exact Verilator source identity is the `VERILATOR_VERSION` and
+`VERILATOR_REF` pair in `src/booley/data/docker/Dockerfile.base`. Test plugins are installed only in
 disposable containers. This validates current source against an existing image;
 the hosted candidate-image gate must also validate the newly packaged image.
 

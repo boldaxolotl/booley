@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from booley.goals.model import parse_goal_arg
+from booley.runtime import dockerfile_syntax
 
 sys.path.insert(0, str(Path(__file__).parents[2] / ".github/scripts"))
 
@@ -166,9 +167,6 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
     assert contract.schema == 2
     assert all(goal.target in contract.required_targets for goal in contract.required_goals)
     assert contract.toolchain_url.startswith("https://github.com/xpack-dev-tools/")
-    assert contract.toolchain_sha256 == (
-        "aaaa8060c914851a3e5ee1ba82cc3d6f80972f90638a05c6e823a37557a33758"
-    )
     assert contract.required_targets == (
         "lint_core",
         "sim_core",
@@ -180,6 +178,20 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
         "firmware/firmware.hex",
         "dhrystone/dhry.hex",
     }
+
+
+def test_demo_toolchain_matches_the_riscv_image_pin() -> None:
+    dockerfile = Path("src/booley/data/docker/Dockerfile.riscv").read_text(encoding="utf-8")
+    release = dockerfile_syntax.argument_default(dockerfile, "XPACK_GCC_VERSION")
+    contract = load_contract(CONTRACT)
+
+    assert contract.toolchain_url == (
+        "https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/"
+        f"v{release}/xpack-riscv-none-elf-gcc-{release}-linux-x64.tar.gz"
+    )
+    assert contract.toolchain_sha256 == dockerfile_syntax.argument_default(
+        dockerfile, "XPACK_GCC_SHA256"
+    )
 
 
 @pytest.mark.parametrize(

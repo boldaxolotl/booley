@@ -455,10 +455,7 @@ def test_generated_main_collects_one_native_database_and_normalizes_line_point(
 
 
 def _assert_build_evidence(result) -> None:
-    assert result.collector == VerilatorCollectorIdentity(
-        tag="v5.052",
-        commit="ea338be98e1e838d3518809ce8899f85a009963c",
-    )
+    assert result.collector == PINNED_VERILATOR
     assert result.build.variant.trace is False
     assert result.build.variant.coverage is True
     assert result.build.instrumentation == (

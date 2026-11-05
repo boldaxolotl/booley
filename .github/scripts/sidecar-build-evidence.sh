@@ -4,9 +4,57 @@
 set -euo pipefail
 
 readonly EVIDENCE_DIR="${RUNNER_TEMP}/docker-build-evidence"
-readonly BOOKWORM_CANDIDATE="python:3.14.8-slim-bookworm@sha256:c8137f4c460908c8763f281c8f22c431eb5c538514ba9553fc3a89c06b7cfb88"
-readonly ALPINE_CANDIDATE="python:3.14.8-alpine3.24@sha256:8acac70227ce3b34da9453120c375cc5b66cd0b062d4dc6bc74286f81a3819e1"
-readonly DOCKER_CLI="docker:29.8.2-cli@sha256:b1805116a6a86cc591b5d5f60a910a0715cdcc9d18d866ad68b1457ead25c35c"
+readonly DOCKER_DIR="src/booley/data/docker"
+
+# Print the FROM reference of a Dockerfile stage through the shared reader.
+# SELECTOR is "only" (single-stage file), "last" (final stage), or a stage alias.
+dockerfile_from() {
+  PYTHONPATH=src python3 -c '
+import sys
+from pathlib import Path
+
+from booley.runtime import dockerfile_syntax
+
+references = dockerfile_syntax.from_references(Path(sys.argv[1]).read_text(encoding="utf-8"))
+selector = sys.argv[2]
+if selector == "only":
+    chosen = references
+elif selector == "last":
+    chosen = references[-1:]
+else:
+    chosen = [reference for reference in references if reference.alias == selector]
+if len(chosen) != 1 or (selector == "only" and len(references) != 1):
+    sys.exit(f"{sys.argv[1]}: no unique FROM for {selector!r}")
+print(chosen[0].image)
+' "$@"
+}
+
+# Print "Python X.Y.Z" for a python:X.Y.Z-... base reference.
+python_version_of() {
+  if [[ "$1" =~ ^python:([0-9]+\.[0-9]+\.[0-9]+)- ]]; then
+    printf 'Python %s\n' "${BASH_REMATCH[1]}"
+  else
+    echo "not a python:X.Y.Z base reference: $1" >&2
+    return 1
+  fi
+}
+
+# Assign first, then mark readonly, so set -e stops on a failed lookup.
+BOOKWORM_CANDIDATE="$(dockerfile_from "${DOCKER_DIR}/Dockerfile.egress-proxy" only)"
+readonly BOOKWORM_CANDIDATE
+ALPINE_CANDIDATE="$(dockerfile_from "${DOCKER_DIR}/Dockerfile.flexnet-relay" only)"
+readonly ALPINE_CANDIDATE
+REAPER_BASE="$(dockerfile_from "${DOCKER_DIR}/Dockerfile.reaper" last)"
+readonly REAPER_BASE
+DOCKER_CLI="$(dockerfile_from "${DOCKER_DIR}/Dockerfile.reaper" docker-cli)"
+readonly DOCKER_CLI
+EGRESS_PYTHON="$(python_version_of "${BOOKWORM_CANDIDATE}")"
+readonly EGRESS_PYTHON
+FLEXNET_PYTHON="$(python_version_of "${ALPINE_CANDIDATE}")"
+readonly FLEXNET_PYTHON
+REAPER_PYTHON="$(python_version_of "${REAPER_BASE}")"
+readonly REAPER_PYTHON
+# No Dockerfile owns the daemon image; tests hold its release equal to DOCKER_CLI's.
 readonly DOCKER_DIND="docker:29.8.2-dind@sha256:7dcdfc4a20246236f558175182ccace1eb15a41bd3eb119dd2284f393498b7c1"
 
 mkdir -p "${EVIDENCE_DIR}"
@@ -92,9 +140,9 @@ build_image reaper-candidate src/booley/data/docker/Dockerfile.reaper \
   booley-reaper:py314 src/booley/docker
 
 : > "${EVIDENCE_DIR}/image-sizes.tsv"
-capture_image egress-proxy-candidate booley-egress-proxy:py314 "Python 3.14.8"
-capture_image flexnet-relay-candidate booley-flexnet-relay:py314 "Python 3.14.8"
-capture_image reaper-candidate booley-reaper:py314 "Python 3.14.8"
+capture_image egress-proxy-candidate booley-egress-proxy:py314 "${EGRESS_PYTHON}"
+capture_image flexnet-relay-candidate booley-flexnet-relay:py314 "${FLEXNET_PYTHON}"
+capture_image reaper-candidate booley-reaper:py314 "${REAPER_PYTHON}"
 
 : > "${EVIDENCE_DIR}/source-repodigests.tsv"
 capture_source python-bookworm-candidate "${BOOKWORM_CANDIDATE}"

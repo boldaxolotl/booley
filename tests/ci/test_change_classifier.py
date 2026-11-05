@@ -849,6 +849,7 @@ def test_coverage_jobs_are_always_selected_and_required_as_a_pair(
         "src/booley/data/docker/Dockerfile.reaper",
         "src/booley/docker/egress_proxy.py",
         "src/booley/eda/provisioning/licensing/relay.py",
+        "src/booley/runtime/dockerfile_syntax.py",
         "tests/docker/test_sidecar_image_helpers.py",
         "tests/docker/test_egress_proxy.py",
         "tests/docker/test_proxy_entry.py",

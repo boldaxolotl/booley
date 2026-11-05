@@ -5,7 +5,6 @@ import importlib.util
 import io
 import json
 import os
-import re
 import stat
 import subprocess
 import sys
@@ -16,6 +15,9 @@ from pathlib import Path
 
 import pytest
 
+from booley.runtime import dockerfile_syntax
+
+DOCKER_DIR = Path(__file__).parents[2] / "src/booley/data/docker"
 SCRIPT = Path(__file__).parents[2] / ".github/scripts/image_contract.py"
 CONTRACT = Path(__file__).parents[2] / ".github/contracts/session-runtime.toml"
 SPEC = importlib.util.spec_from_file_location("image_contract", SCRIPT)
@@ -58,8 +60,11 @@ def test_repository_contract_preserves_slimmed_image_payload() -> None:
     riscv = image_contract.load_contract(CONTRACT, "riscv")
 
     assert "/OpenROAD" in standard["absent_paths"]
+    openroad_ref = dockerfile_syntax.argument_default(
+        (DOCKER_DIR / "Dockerfile.base").read_text(encoding="utf-8"), "OPENROAD_SOURCE_REF"
+    )
     assert (
-        "/usr/local/share/doc/openroad/OpenROAD-c4d317e4fa2398b9880920a1411c20258a2175a9.tar.gz"
+        f"/usr/local/share/doc/openroad/OpenROAD-{openroad_ref}.tar.gz"
         in standard["required_paths"]
     )
     assert (
@@ -94,14 +99,30 @@ def test_repository_contract_preserves_slimmed_image_payload() -> None:
 
 
 def test_openroad_source_archive_contract_matches_runtime_base() -> None:
-    root = CONTRACT.parents[2]
-    dockerfile = (root / "src/booley/data/docker/Dockerfile.base").read_text()
-    revisions = set(re.findall(r"^ARG OPENROAD_SOURCE_REF=([0-9a-f]{40})$", dockerfile, re.M))
-    assert len(revisions) == 1
-    revision = revisions.pop()
+    dockerfile = (DOCKER_DIR / "Dockerfile.base").read_text(encoding="utf-8")
+    revision = dockerfile_syntax.argument_default(dockerfile, "OPENROAD_SOURCE_REF")
     archive = f"/usr/local/share/doc/openroad/OpenROAD-{revision}.tar.gz"
     for flavor in ("standard", "riscv"):
         assert archive in image_contract.load_contract(CONTRACT, flavor)["required_paths"]
+
+
+def test_bundled_extension_paths_match_runtime_base() -> None:
+    dockerfile = (DOCKER_DIR / "Dockerfile.base").read_text(encoding="utf-8")
+    bundles = {"VERILOGHDL_VERSION": "veriloghdl", "LIVE_PREVIEW_VERSION": "live-server"}
+    for flavor in ("standard", "riscv"):
+        paths = image_contract.load_contract(CONTRACT, flavor)["required_paths"]
+        for argument, stem in bundles.items():
+            version = dockerfile_syntax.argument_default(dockerfile, argument)
+            assert f"/usr/local/libexec/booley/{stem}-{version}.vsix" in paths, argument
+
+
+def test_riscv_gcc_link_matches_the_tooling_pin() -> None:
+    dockerfile = (DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
+    release = dockerfile_syntax.argument_default(dockerfile, "XPACK_GCC_VERSION")
+    gcc_version = release.rsplit("-", 1)[0]
+    probes = image_contract.load_contract(CONTRACT, "riscv")["probes"]
+    commands = "\n".join(probe["command"] for probe in probes)
+    assert f"/opt/riscv/bin/riscv-none-elf-gcc-{gcc_version}\n" in commands + "\n"
 
 
 def test_contract_rejects_single_path_hard_link_group(tmp_path: Path) -> None:
