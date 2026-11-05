@@ -9,6 +9,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -111,7 +112,6 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert '--wheel "$WHEEL"' in candidate
     assert "ClaudeSDKBackend" not in candidate
     assert 'test -x "$(command -v claude)"' in candidate
-    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.285"' in candidate
     assert "python -m pip check" in candidate
 
 
@@ -436,10 +436,10 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         assert f"ARG {checksum_arg}=" in riscv
         assert f"${{{checksum_arg}}}" in riscv
 
-    lock = (_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8")
-    assert '"@anthropic-ai/claude-code": "2.1.285"' in lock
-    assert '"@openai/codex": "0.160.0"' in lock
-    assert lock.count('"integrity": "sha512-') == 16
+    lock_text = (_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8")
+    manifest = json.loads((_DOCKER_DIR / "agent-clis-package.json").read_text(encoding="utf-8"))
+    assert json.loads(lock_text)["packages"][""]["dependencies"] == manifest["dependencies"]
+    assert lock_text.count('"integrity": "sha512-') == 16
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
 
 
@@ -611,12 +611,105 @@ def test_linux_agent_cli_native_artifacts_are_required_dependencies() -> None:
     package = json.loads((_DOCKER_DIR / "agent-clis-package.json").read_text(encoding="utf-8"))
     lock = json.loads((_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8"))
 
-    assert package["dependencies"]["@anthropic-ai/claude-code-linux-x64"] == "2.1.285"
-    assert package["dependencies"]["@openai/codex-linux-x64"] == (
-        "npm:@openai/codex@0.160.0-linux-x64"
+    dependencies = package["dependencies"]
+    # Platform packages must track their main package; the manifest owns the version.
+    assert (
+        dependencies["@anthropic-ai/claude-code-linux-x64"]
+        == dependencies["@anthropic-ai/claude-code"]
+    )
+    assert dependencies["@openai/codex-linux-x64"] == (
+        f"npm:@openai/codex@{dependencies['@openai/codex']}-linux-x64"
     )
     assert "optional" not in lock["packages"]["node_modules/@anthropic-ai/claude-code-linux-x64"]
     assert "optional" not in lock["packages"]["node_modules/@openai/codex-linux-x64"]
+
+
+# Files that may name a CLI version besides the manifest: its lockfile, provenance
+# comments, and historical records.
+_CLI_VERSION_ALLOWED = (
+    "src/booley/data/docker/agent-clis-package.json",
+    "src/booley/data/docker/agent-clis-package-lock.json",
+    "src/booley/config/gateway.py",
+    "src/booley/runtime/text_only_agent.py",
+    "docs/internals/GATEWAY.md",
+    "CHANGELOG.md",
+    "src/booley/data/refs/CHANGELOG.md",
+    "docs/adr/",
+    "docs/internals/validation/",
+)
+
+
+def test_agent_cli_versions_are_written_only_in_their_manifest() -> None:
+    """No tracked file outside the allowlist names a pinned CLI version.
+
+    Cargo.lock is excluded: Rust crate versions can coincide with a CLI version
+    and cannot hold a CLI pin.
+    """
+    manifest = json.loads((_DOCKER_DIR / "agent-clis-package.json").read_text(encoding="utf-8"))
+    for name in ("@anthropic-ai/claude-code", "@openai/codex"):
+        version = manifest["dependencies"][name]
+        # Digit boundaries keep 2.1.285 from matching 12.1.2850.
+        pattern = rf"(^|[^0-9.]){re.escape(version)}([^0-9]|$)"
+        result = subprocess.run(
+            ["git", "grep", "-l", "-E", pattern, "--", ".", ":!*Cargo.lock"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode in (0, 1), result.stderr
+        stray = [
+            path
+            for path in result.stdout.splitlines()
+            if not path.startswith(_CLI_VERSION_ALLOWED)
+        ]
+        assert stray == [], f"{name} {version} is written outside the manifest: {stray}"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the build check needs a POSIX shell")
+@pytest.mark.parametrize(
+    ("claude_version", "codex_version", "passes"),
+    [("9.9.9", "8.8.8", True), ("9.9.8", "8.8.8", False), ("9.9.9", "8.8.7", False)],
+    ids=["match", "claude-mismatch", "codex-mismatch"],
+)
+def test_agent_cli_build_check_compares_installed_clis_with_the_manifest(
+    tmp_path: Path, claude_version: str, codex_version: str, passes: bool
+) -> None:
+    """Run the shipped build check against a fixture manifest and stub CLIs."""
+    manifest_path = "/opt/agent-clis/package.json"
+    checks = [
+        instruction.value
+        for instruction in logical_instructions(_BASE_DOCKERFILE.read_text(encoding="utf-8"))
+        if instruction.keyword == "RUN" and manifest_path in instruction.value
+    ]
+    assert len(checks) == 1, "exactly one RUN must compare the installed CLIs with the manifest"
+
+    manifest = tmp_path / "package.json"
+    manifest.write_text(
+        json.dumps(
+            {"dependencies": {"@anthropic-ai/claude-code": "9.9.9", "@openai/codex": "8.8.8"}}
+        ),
+        encoding="utf-8",
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "python3").symlink_to(sys.executable)
+    for name, output in (
+        ("claude", f"{claude_version} (Claude Code)"),
+        ("codex", f"codex-cli {codex_version}"),
+    ):
+        stub = bin_dir / name
+        stub.write_text(f"#!/bin/sh\necho '{output}'\n", encoding="utf-8")
+        stub.chmod(0o755)
+
+    result = subprocess.run(
+        ["sh", "-c", checks[0].replace(manifest_path, str(manifest))],
+        env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert (result.returncode == 0) == passes, result.stderr
 
 
 def test_openroad_uses_verified_26q4_oci_artifact() -> None:
