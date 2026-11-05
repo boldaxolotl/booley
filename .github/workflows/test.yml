@@ -995,6 +995,10 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            .github/ci/constraints.txt
+            .github/ci/requirements-runners.txt
 
       - name: Install host-side test dependencies
         run: pip install -r .github/ci/requirements-runners.txt

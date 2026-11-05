@@ -25,8 +25,12 @@ _REQUIREMENT_FILES = sorted(_REQUIREMENTS_DIR.glob("requirements-*.txt"))
 _INSTALLERS = (("uv", "pip"), ("python", "-m", "pip"), ("pip",), ("pip3",), ("pipx",))
 _COMMAND_SEPARATORS = re.compile(r"\n|&&|\|\||;|\|")
 _CONSTRAINTS = ".github/ci/constraints.txt"
-# A project install targets the checkout: ".", ".[extras]", or the workspace variable.
-_PROJECT_TARGET = re.compile(r"(\.|\$\{GITHUB_WORKSPACE\})(\[[^\]]*\])?")
+# A project install targets the checkout: ".", "./", ".[extras]", "-e .", or a workspace
+# variable, optionally behind an "-e" / "--editable=" prefix glued to the target.
+_PROJECT_TARGET = re.compile(
+    r"(?:-e|--editable=)?(?:\.|\./|\$GITHUB_WORKSPACE|\$\{GITHUB_WORKSPACE\}|\$PWD)(?:\[[^\]]*\])?"
+)
+_INSTALLING_ACTION = "./.github/actions/prepare-picorv32-demo"
 _PROJECT_INSTALL_LOCATIONS = {
     "test.yml:docs-check",
     "test.yml:lint",
@@ -80,12 +84,15 @@ def _install_commands(script: str) -> list[list[str]]:
             tokens = segment.split()
         # A split inside `bash -c "..."` leaves stray quotes on the edge tokens.
         tokens = [token.strip("\"'") for token in tokens]
+        resume_at = 0
         for index in range(len(tokens)):
+            if index < resume_at:
+                continue  # inside an installer already counted ("python -m pip" is not also "pip")
             for installer in _INSTALLERS:
                 end = index + len(installer)
                 if tuple(tokens[index:end]) == installer and "install" in tokens[end : end + 1]:
                     commands.append(tokens[end + 1 :])
-                    # Longest installer wins: "python -m pip" must not also count as "pip".
+                    resume_at = end
                     break
     return commands
 
@@ -219,11 +226,15 @@ def _project_installs() -> list[tuple[str, list[str]]]:
 
 def _constraint_paths(tokens: list[str]) -> list[str]:
     """Return the values passed to ``-c`` / ``--constraint`` in an install command."""
-    return [
-        tokens[index + 1]
-        for index, token in enumerate(tokens[:-1])
-        if token in {"-c", "--constraint"}
-    ]
+    paths: list[str] = []
+    for index, token in enumerate(tokens):
+        if token in {"-c", "--constraint"} and index + 1 < len(tokens):
+            paths.append(tokens[index + 1])
+        elif token.startswith("--constraint="):
+            paths.append(token.removeprefix("--constraint="))
+        elif token.startswith("-c") and not token.startswith("--"):
+            paths.append(token.removeprefix("-c"))
+    return paths
 
 
 def test_project_installs_pass_the_constraints_file() -> None:
@@ -245,7 +256,12 @@ def test_project_pip_caches_key_on_the_constraints_file() -> None:
     for path in sorted((_ROOT / ".github/workflows").glob("*.yml")):
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
         for job_name, job in document["jobs"].items():
-            if f"{path.name}:{job_name}" not in installing_jobs:
+            # A job also installs the project when it calls the composite action that does.
+            uses_installing_action = any(
+                str(step.get("uses", "")).startswith(_INSTALLING_ACTION)
+                for step in job.get("steps", ())
+            )
+            if f"{path.name}:{job_name}" not in installing_jobs and not uses_installing_action:
                 continue
             for step in job.get("steps", ()):
                 settings = step.get("with", {})
@@ -256,3 +272,40 @@ def test_project_pip_caches_key_on_the_constraints_file() -> None:
                     if not {"pyproject.toml", _CONSTRAINTS} <= set(keyed):
                         offenders.append(f"{path.name}:{job_name}")
     assert offenders == []
+
+
+@pytest.mark.parametrize(
+    ("script", "installs"),
+    [
+        ("python -m pip install -e .[test]", 1),
+        ("uv pip install --system -r x.txt", 1),
+        ("pip install a && pip3 install b", 2),
+    ],
+)
+def test_install_scanner_counts_each_install_once(script: str, installs: int) -> None:
+    """A multi-token installer ("python -m pip") is one install, not two."""
+    assert len(_install_commands(script)) == installs
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'pip install "$GITHUB_WORKSPACE"[test]',
+        "pip install ./",
+        "pip install -e. -c x",
+        "pip install --editable=.[test]",
+    ],
+)
+def test_project_target_recognises_checkout_spellings(command: str) -> None:
+    """The AC1 scanner treats every spelling of the checkout as a project install."""
+    (tokens,) = _install_commands(command)
+    assert any(_PROJECT_TARGET.fullmatch(token) for token in tokens)
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [["-c", "k.txt"], ["--constraint", "k.txt"], ["--constraint=k.txt"], ["-ck.txt"]],
+)
+def test_constraint_paths_recognise_every_flag_spelling(tokens: list[str]) -> None:
+    """``-c`` / ``--constraint`` count in all their argparse spellings."""
+    assert _constraint_paths(tokens) == ["k.txt"]

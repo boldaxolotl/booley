@@ -276,9 +276,9 @@ it. Regenerate it from the repository root with the command in its header:
 uv pip compile pyproject.toml --all-extras --universal --python-version 3.11 -o .github/ci/constraints.txt
 ```
 
-- `release-semantic` runs `ci_constraints.py` before any project install, so a
-  stale file fails with the regenerate command instead of pip's
-  `ResolutionImpossible`.
+- `release-semantic` runs `ci_constraints.py` before its own project install, so a
+  stale file fails there with the regenerate command. The other jobs do not wait
+  for it and may also fail with pip's `ResolutionImpossible`.
 - The check catches an added, removed, or re-pinned direct dependency and a wrong
   compile command. It does not notice a new extra or marker on an existing direct
   requirement.
