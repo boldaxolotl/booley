@@ -99,7 +99,7 @@ A file that decides how evidence is produced and is therefore digested at Goal M
 _Avoid_: frozen file, locked config, Scope
 
 **Review Package**:
-The structured result Finish presents for a Goal Mode: diff summary against the base, each Goal with its final evidence, the Change Log, open review findings, Target changes, constraint-file edits, and the Session Summary.
+The structured result Finish produces for a Goal Mode: diff summary against the base, each Goal with its final evidence, the Change Log, open review findings, Target changes, constraint-file edits, and the Session Summary. Finish replies with a short summary and the path of the full text.
 _Avoid_: triage package, run report, acceptance report
 
 **Session**:

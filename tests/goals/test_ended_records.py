@@ -235,8 +235,8 @@ def test_finish_deletes_a_record_whose_worktree_and_branch_are_gone(layout, monk
     text = cli_status(layout.worktree, layout.main, monkeypatch, capsys)
     paths = record_paths(layout.control, layout.record.id)
     assert f"{layout.record.id} (finished)" in text
-    assert f"Session Summary: {paths.summary_file}" in text
-    assert f"Review Package: {paths.review_package_file}" in text
+    assert f"Full briefing: {paths.summary_file}" in text
+    assert f"Review Package data: {paths.review_package_file}" in text
     assert mcp_status(layout.worktree, layout.control) + "\n" == text
 
 
