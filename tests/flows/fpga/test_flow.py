@@ -98,9 +98,6 @@ def _write_project_config(
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir(exist_ok=True)
     (booley_dir / "booley.toml").write_text(
-        "[sources.rtl]\n"
-        'source_dirs = ["rtl"]\n'
-        'include_dirs = ["rtl/include"]\n\n'
         "[flows.fpga]\n" + execution_lines,
         encoding="utf-8",
     )
