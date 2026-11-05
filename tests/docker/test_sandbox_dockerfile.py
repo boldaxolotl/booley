@@ -666,14 +666,7 @@ def test_agent_cli_versions_are_written_only_in_their_manifest() -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the build check needs a POSIX shell")
-@pytest.mark.parametrize(
-    ("claude_version", "codex_version", "passes"),
-    [("9.9.9", "8.8.8", True), ("9.9.8", "8.8.8", False), ("9.9.9", "8.8.7", False)],
-    ids=["match", "claude-mismatch", "codex-mismatch"],
-)
-def test_agent_cli_build_check_compares_installed_clis_with_the_manifest(
-    tmp_path: Path, claude_version: str, codex_version: str, passes: bool
-) -> None:
+def test_agent_cli_build_check_compares_installed_clis_with_the_manifest(tmp_path: Path) -> None:
     """Run the shipped build check against a fixture manifest and stub CLIs."""
     manifest_path = "/opt/agent-clis/package.json"
     checks = [
@@ -693,23 +686,28 @@ def test_agent_cli_build_check_compares_installed_clis_with_the_manifest(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "python3").symlink_to(sys.executable)
-    for name, output in (
-        ("claude", f"{claude_version} (Claude Code)"),
-        ("codex", f"codex-cli {codex_version}"),
-    ):
-        stub = bin_dir / name
-        stub.write_text(f"#!/bin/sh\necho '{output}'\n", encoding="utf-8")
-        stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
 
-    result = subprocess.run(
-        ["sh", "-c", checks[0].replace(manifest_path, str(manifest))],
-        env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
-    assert (result.returncode == 0) == passes, result.stderr
+    def exit_code(claude_version: str, codex_version: str) -> int:
+        for name, output in (
+            ("claude", f"{claude_version} (Claude Code)"),
+            ("codex", f"codex-cli {codex_version}"),
+        ):
+            stub = bin_dir / name
+            stub.write_text(f"#!/bin/sh\necho '{output}'\n", encoding="utf-8")
+            stub.chmod(0o755)
+        return subprocess.run(
+            ["sh", "-c", checks[0].replace(manifest_path, str(manifest))],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        ).returncode
+
+    assert exit_code("9.9.9", "8.8.8") == 0
+    assert exit_code("9.9.8", "8.8.8") != 0, "claude mismatch must fail the build"
+    assert exit_code("9.9.9", "8.8.7") != 0, "codex mismatch must fail the build"
 
 
 def test_openroad_uses_verified_26q4_oci_artifact() -> None:
