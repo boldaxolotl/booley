@@ -26,10 +26,12 @@ Contracts consumers must honour:
   or ``python3`` from ``PATH``, a redirected bytecode prefix) is checked
   elsewhere, and so are modules imported from a Project directory that was
   temporarily on ``sys.path``.
-- Content only is hashed. Whether a hashed ``.pyc`` or its hashed source runs
-  (decided by the source mtime and size in the ``.pyc`` header) can change
-  with no identity change; that takes a write to the install, which the
-  ownership rule refuses.
+- Content only is hashed. Which of a hashed ``.pyc`` and its hashed source
+  runs is not keyed (CPython decides it from the ``.pyc`` header, and
+  mtime and size are not hashed); switching takes a write to the install,
+  which the ownership rule refuses. A redirected bytecode prefix lies
+  outside the install, so that rule does not cover it; its check is
+  the availability gate's (#2210).
 - ``collect_host_facts`` describes the calling process at call time (affinity
   is the calling thread's; rlimits and cgroup are the caller's), so collect
   them in the process that launches the tools, at both key snapshots.

@@ -239,7 +239,7 @@ _REFUSALS = [
     (
         "missing-record-entry",
         lambda r: (r / "site/booley/data/x.json").unlink(),
-        "cannot hash booley: .*(No such file|cannot find the file)",
+        r"cannot hash booley: .*(Errno|WinError) 2",
         (),
     ),
     ("record-entry-directory", _append_record("booley/data,,\n"), "not a regular file", ()),
@@ -309,8 +309,13 @@ def test_build_identity_refuses(
     search = search if isinstance(search, list) else None  # edits return junk
     if live:  # a module whose __spec__ is None makes find_spec raise ValueError
         monkeypatch.setitem(sys.modules, "booley", types.ModuleType("booley"))
-    with pytest.raises(ident.IdentityError, match=match):
-        _identity(ident, root, search, live=live)
+    try:
+        with pytest.raises(ident.IdentityError, match=match):
+            _identity(ident, root, search, live=live)
+    finally:  # rows that lock a path leave a tree pytest could not delete
+        for rel in ("site/booley/__pycache__", "site/booley/data", "site/booley/data/x.json"):
+            if (root / rel).exists():
+                (root / rel).chmod(0o755)
 
 
 @pytest.mark.parametrize(
