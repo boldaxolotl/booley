@@ -117,7 +117,9 @@ def test_runtime_directory_failure_keeps_plain_codex_launch(tmp_path, monkeypatc
     monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
     monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: config)
     monkeypatch.setattr(
-        chat_cmd, "resolve_common_booley_dir", lambda _root: (_ for _ in ()).throw(error("bad runtime"))
+        chat_cmd,
+        "resolve_common_booley_dir",
+        lambda _root: (_ for _ in ()).throw(error("bad runtime")),
     )
     executed = []
 
@@ -431,7 +433,9 @@ def test_codex_launch_paths_append_agent_args(tmp_path, monkeypatch):
         _launch(tmp_path, forwarded)
         assert executed[-1] == (launch[0], [*launch[1], *forwarded])
     monkeypatch.setattr(
-        chat_cmd, "resolve_common_booley_dir", lambda _root: (_ for _ in ()).throw(ValueError("no dir"))
+        chat_cmd,
+        "resolve_common_booley_dir",
+        lambda _root: (_ for _ in ()).throw(ValueError("no dir")),
     )
     _launch(tmp_path, forwarded)
     assert executed[-1] == ("codex", ["codex", *forwarded])
