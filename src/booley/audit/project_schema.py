@@ -154,8 +154,8 @@ def audit_project_table(data: Mapping[str, Any]) -> ConfigTableAudit:
             )
         )
     if "preflight_checks" in project:
-        # Subject keeps this individually waivable: a subject-less waiver of the
-        # description WARN matches every subject and would otherwise hide it.
+        # The subject lets a waiver target this WARN alone; a waiver without a
+        # subject still matches every project-metadata WARN.
         findings.append(
             _project_warning(
                 "booley.toml [project].preflight_checks is unused; nothing runs "

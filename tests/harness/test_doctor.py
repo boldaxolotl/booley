@@ -8515,8 +8515,7 @@ def test_doctor_warns_on_unused_sources_and_preflight_checks(tmp_path, monkeypat
     output = colors.strip_ansi(capsys.readouterr().out)
     warn_lines = [line for line in output.splitlines() if line.startswith("  !  ")]
     assert result == 0
-    assert any("[sources]" in line for line in warn_lines)
-    assert ".core" in output
+    assert any("[sources]" in line and ".core" in line for line in warn_lines)
     assert any("[project].preflight_checks" in line for line in warn_lines)
 
 
