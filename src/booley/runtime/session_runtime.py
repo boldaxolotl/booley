@@ -242,7 +242,8 @@ def _allowed_credential_keys(spec: dict) -> frozenset[str]:
         raise SessionError(
             f"Sandbox Agent CLI record is malformed ({exc}); refresh the Sandbox"
         ) from exc
-    # The record always lists the CLI app, so an app absent from it earns no key.
+    # Issuance (``_validate_credential_policy``) requires the record to list the CLI app,
+    # so an app absent from it earns no key.
     return frozenset().union(
         *(auth_token.allowed_credential_keys(c, p) for c, p in record.items())
     )

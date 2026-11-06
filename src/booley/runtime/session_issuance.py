@@ -1392,8 +1392,9 @@ def _validate_credential_policy(
     expected = dict(found.policies) if app in found.clis else {}
     if app in auth_token.CREDENTIALS and app not in found.clis:
         raise RuntimeSpecError(
-            f"Sandbox Agent CLI {app} is not in [agent] clis "
-            f"{_format_cli_record(found.policies)}; refresh and recreate the Sandbox"
+            f"Sandbox Agent CLI {app} is not in the Project's Agent CLIs "
+            f"({_format_cli_record(found.policies)}; without [agent] clis only [agent] "
+            "default is allowed); run `booley session refresh` and recreate the Sandbox"
         )
     if list(record.items()) != list(expected.items()):
         raise RuntimeSpecError(

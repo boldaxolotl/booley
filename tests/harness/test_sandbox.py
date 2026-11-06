@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from booley.harness.sandbox import (
     DockerRunner,
     DockerSandboxConfig,
@@ -326,6 +328,57 @@ def test_ephemeral_shell_forwards_only_listed_cli_credentials(tmp_path, monkeypa
         assert ".codex" not in command
     finally:
         runner._env_file.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize(
+    "toml",
+    [
+        pytest.param('[agent]\ndefault = "codex"\nclis = ["claude"]\n', id="default-not-listed"),
+        pytest.param(
+            '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "auto"\n', id="unlisted-auth-key"
+        ),
+    ],
+)
+def test_ephemeral_shell_without_credentials_on_invalid_agent_config(
+    tmp_path, monkeypatch, capsys, toml
+):
+    """An invalid ``[agent]`` warns and starts the shell with no logins and no API keys."""
+    from booley.runtime import auth_token
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    for key in (
+        "BOOLEY_DIR",
+        "BOOLEY_PRIMARY_AUTH",
+        "BOOLEY_PRIMARY_PROVIDER",
+        "BOOLEY_AGENT_APP",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_OPENAI")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_ANTHROPIC")
+    data = tmp_path / "project" / ".booley"
+    data.mkdir(parents=True)
+    (data / "booley.toml").write_text(toml)
+    for app, body in (
+        ("claude", '{"claudeAiOauth":{"accessToken":"SYNTHETIC_LOGIN"}}'),
+        ("codex", '{"tokens":{"access_token":"SYNTHETIC_LOGIN"},"OPENAI_API_KEY":null}'),
+    ):
+        login = auth_token.subscription_creds_path(app)
+        login.parent.mkdir(parents=True, exist_ok=True)
+        login.write_text(body)
+    runner = DockerRunner(
+        DockerSandboxConfig(image="test-image", needs_network=False), data.parent
+    )
+
+    command = " ".join(runner._build_docker_cmd(["true"]))
+
+    assert ".credentials.json" not in command
+    assert ".codex" not in command
+    assert runner._env_file is None
+    assert "starting without Agent CLI logins or API keys" in capsys.readouterr().err
 
 
 def test_ephemeral_shell_ignores_ambiguous_agent_app_environment(tmp_path, monkeypatch):

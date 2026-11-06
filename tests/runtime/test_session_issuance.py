@@ -3784,6 +3784,63 @@ def test_sealing_checks_claude_config_seed_under_claude_policy(issued, monkeypat
     _seal_copy(project, spec)
 
 
+def _mixed_policy_spec(issued, monkeypatch, request, claude: str, codex: str):
+    """Issue and validate a Claude+Codex spec whose CLIs follow different ``[agent.auth]`` policies."""
+    toml = _CLAUDE_AND_CODEX + f'\n[agent.auth]\nclaude = "{claude}"\ncodex = "{codex}"\n'
+    project, spec, home = _multi_cli_project(issued, monkeypatch, request, toml)
+    policies = {"claude": claude, "codex": codex}
+    assert dc.spec_cli_policies(spec) == policies
+    project_id = dc.canonical_project_id(project)
+    for cli, policy in policies.items():
+        assert dc.state_volume_mount(cli, project_id, policy) in spec["mounts"]
+    path = _issue_spec(project, json.loads(json.dumps(spec)))  # issue a copy; keep *spec* unsealed
+    runtime_spec.validate(project, json.loads(path.read_text()), path)
+    return project, spec, home
+
+
+def _assert_seal_refused(project: Path, spec: dict, refusal: str) -> None:
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=refusal):
+        runtime_spec.seal(project, spec)
+
+
+def test_mixed_policy_codex_api_key_refuses_codex_login(issued, monkeypatch, request):
+    project, spec, home = _mixed_policy_spec(
+        issued, monkeypatch, request, "subscription", "api_key"
+    )
+    login = f"source={home / '.codex' / 'auth.json'},target={dc._APP_CREDS_SEED_TARGET['codex']}"
+    spec["mounts"].insert(1, f"{login},type=bind,readonly")
+    _assert_seal_refused(project, spec, "credential seed violates")
+
+
+def test_mixed_policy_codex_subscription_refuses_codex_token_seed(issued, monkeypatch, request):
+    project, spec, home = _mixed_policy_spec(
+        issued, monkeypatch, request, "api_key", "subscription"
+    )
+    token = f"source={home / 'token'},target={dc._APP_TOKEN_SEED_TARGET['codex']}"
+    spec["mounts"].insert(1, f"{token},type=bind,readonly")
+    _assert_seal_refused(project, spec, "credential seed violates")
+
+
+def test_mixed_policy_codex_subscription_refuses_codex_api_key_env(issued, monkeypatch, request):
+    project, spec, _ = _mixed_policy_spec(issued, monkeypatch, request, "api_key", "subscription")
+    spec["remoteEnv"]["OPENAI_API_KEY"] = "${localEnv:OPENAI_API_KEY}"
+    _assert_seal_refused(project, spec, "credential environment has drifted")
+
+
+def test_default_change_without_clis_requires_refresh(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(
+        issued, monkeypatch, request, '[agent]\ndefault = "claude"\n'
+    )
+    path = _issue_spec(project, spec)
+    runtime_spec.validate(project, spec, path)
+    _set_toml(project, request, '[agent]\ndefault = "codex"\n')
+    with pytest.raises(
+        runtime_spec.RuntimeSpecError,
+        match=r"without \[agent\] clis only \[agent\] default.*booley session refresh",
+    ):
+        runtime_spec.validate(project, spec, path)
+
+
 def test_cli_set_change_requires_refresh(issued, monkeypatch, request):
     project, spec, _ = _multi_cli_project(
         issued, monkeypatch, request, '[agent]\nclis = ["claude"]\n'

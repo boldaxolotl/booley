@@ -16,6 +16,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -354,16 +355,30 @@ class DockerRunner:
         A Project that lists no CLI gets exactly its effective default CLI (the
         environment's ``BOOLEY_PRIMARY_PROVIDER`` / ``BOOLEY_AGENT_APP``, else Claude).
         """
-        from booley.config.agent import project_credential_policies, resolve_default_cli
+        from booley.config.agent import (
+            BackendConfigError,
+            project_credential_policies,
+            resolve_default_cli,
+        )
         from booley.config.agent_app import AgentAppError
 
         try:
             resolved = resolve_default_cli(None)
         except AgentAppError:  # an ambiguous BOOLEY_AGENT_APP must not stop a shell
             resolved = None
-        found = project_credential_policies(
-            self.worktree, selected=resolved[0] if resolved else None
-        )
+        try:
+            found = project_credential_policies(
+                self.worktree, selected=resolved[0] if resolved else None
+            )
+        except BackendConfigError as exc:
+            # Fail closed: an invalid [agent.auth] may be what forbids a login, and the
+            # shell's job is EDA tools, so it starts without Agent CLI logins or keys.
+            print(
+                f"warning: cannot resolve the Project's Agent CLIs ({exc}); "
+                "starting without Agent CLI logins or API keys",
+                file=sys.stderr,
+            )
+            return ()
         return tuple(auth_token.credential_plan(cli, found.policies[cli]) for cli in found.clis)
 
     def _append_api_key_env_file(
