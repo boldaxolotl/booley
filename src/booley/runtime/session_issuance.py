@@ -1361,8 +1361,8 @@ def _validate_remote_environment(
     from booley.runtime import auth_token
 
     try:
-        # The record is the single source of truth: it always lists the CLI app, so an
-        # app absent from it earns no credential key.
+        # The record is the single source of truth: `_validate_credential_policy` requires
+        # it to list the CLI app, so an app absent from it earns no credential key.
         allowed = frozenset().union(
             *(auth_token.allowed_credential_keys(cli, p) for cli, p in record.items())
         )
@@ -1381,10 +1381,13 @@ def _validate_credential_policy(
     spec: dict[str, Any], project: Path, project_data: Path, app: str, record: dict[str, str]
 ) -> None:
     """Check the spec's CLI set, per-CLI policies and credential seeds against ``[agent]``."""
-    from booley.config.agent import project_credential_policies
+    from booley.config.agent import BackendConfigError, project_credential_policies
     from booley.runtime import auth_token
 
-    found = project_credential_policies(project, booley_dir=project_data, selected=app)
+    try:
+        found = project_credential_policies(project, booley_dir=project_data, selected=app)
+    except BackendConfigError as exc:
+        raise RuntimeSpecError(f"booley.toml [agent] is invalid: {exc}") from exc
     # The set is recorded in [agent] clis order, which also fixes the name and volume order.
     expected = dict(found.policies) if app in found.clis else {}
     if app in auth_token.CREDENTIALS and app not in found.clis:

@@ -707,8 +707,9 @@ def _mask_mounts(mask_paths: Sequence[str], mask_source: str) -> list[str]:
 class CliSeeds:
     """One Agent CLI's credential plan and the docker-path sources its seeds mount from.
 
-    A source is mounted only when the plan selected that seed (the plan, not the
-    caller, decides what the CLI's ``[agent.auth]`` policy lets into the Sandbox).
+    A login or token source is mounted only when the plan selected that seed (the plan,
+    not the caller, decides what the CLI's ``[agent.auth]`` policy lets into the Sandbox);
+    the Claude config source is the plan's own seed, which the issuance validator rechecks.
     """
 
     plan: auth_token.CredentialPlan

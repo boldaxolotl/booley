@@ -3795,6 +3795,16 @@ def test_cli_set_change_requires_refresh(issued, monkeypatch, request):
         runtime_spec.validate(project, spec, path)
 
 
+def test_invalid_agent_config_fails_validation_as_spec_error(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(
+        issued, monkeypatch, request, '[agent]\nclis = ["claude"]\n'
+    )
+    path = _issue_spec(project, spec)
+    _set_toml(project, request, '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "auto"\n')
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"\[agent\] is invalid"):
+        runtime_spec.validate(project, spec, path)
+
+
 def test_legacy_single_cli_spec_without_record_still_validates(issued, monkeypatch, request):
     project, spec, _ = _multi_cli_project(
         issued, monkeypatch, request, '[agent]\nprovider = "claude"\n'
