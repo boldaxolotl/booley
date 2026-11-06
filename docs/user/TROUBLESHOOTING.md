@@ -181,9 +181,10 @@ before `bwave gui` does.
   `lramseyer.vaporview@1.6.0`.
 - **"Error getting user theme" or wrong signal colours.** The Sandbox Image
   ships VaporView already patched, so this means the container runs an image
-  from Booley 0.4.0 or earlier. Update Booley and rebuild the container; until
-  then, **Developer: Reload Window** clears it. If it persists after a reload,
-  read `~/.booley/vaporview-install-watch.log`.
+  from Booley 0.4.0 or earlier, or VaporView was installed from somewhere other
+  than the bundled VSIX. Update Booley and rebuild the container; until then,
+  **Developer: Reload Window** clears it. If it persists after a reload, read
+  `~/.booley/vaporview-install-watch.log`.
 - **The view opens but signals are missing.** A WARNING names each signal that
   couldn't be shown or each `--signals` pattern that matched nothing; the trace
   itself is fine. Check the full name with `bwave list`.

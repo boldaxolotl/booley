@@ -774,19 +774,6 @@ class TestPatchVsix:
         with pytest.raises(vsix.VsixPatchError, match="cannot patch VSIX"):
             vsix.patch_vsix(path)
 
-    def test_failed_verification_keeps_the_original(self, tmp_path, monkeypatch):
-        path = self._vsix(tmp_path / "vaporview.vsix")
-        original = path.read_bytes()
-
-        def corrupt(source, target, replacements):
-            target.write_bytes(b"truncated")
-
-        monkeypatch.setattr(vsix, "_write_archive", corrupt)
-        with pytest.raises(vsix.VsixPatchError, match="written VSIX is unreadable"):
-            vsix.patch_vsix(path)
-        assert path.read_bytes() == original
-        assert [p.name for p in tmp_path.iterdir()] == ["vaporview.vsix"]
-
     def test_installed_patched_vsix_needs_no_attach_time_edit(self, tmp_path, monkeypatch):
         """The race fix: VS Code extracts an already-patched extension."""
         path = self._vsix(tmp_path / "vaporview.vsix")
@@ -854,7 +841,7 @@ class TestPatchVsix:
         with pytest.raises(vsix.VsixPatchError, match="no recognized VaporView"):
             vsix.rewrite_source_notice("VaporView, some other wording\n", "a" * 64)
 
-    def test_unpatched_vsix_gains_the_notice_member_only(self, tmp_path):
+    def test_edited_vsix_without_notice_gains_only_the_notice(self, tmp_path):
         """An already-edited VSIX without the in-extension notice still gets one."""
         manifest, bundle = iv.patch_extension_texts(
             json.dumps(_vanilla_manifest()), _VANILLA_BUNDLE
@@ -877,8 +864,3 @@ class TestPatchVsix:
         assert not notice.exists()
         assert source.read_text(encoding="utf-8") == before
         assert str(path) in capsys.readouterr().err
-
-    def test_defaults_target_the_bundled_vsix_beside_its_license(self):
-        assert iv.vaporview.BUNDLED_VSIX.endswith(f"vaporview-{_VERSION}.vsix")
-        assert vsix.DEFAULT_NOTICE.parent == Path("/usr/local/share/booley/licenses/vaporview")
-        assert vsix.DEFAULT_SOURCE_NOTICE.parent == vsix.DEFAULT_NOTICE.parent

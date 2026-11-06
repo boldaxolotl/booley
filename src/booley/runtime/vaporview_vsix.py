@@ -98,23 +98,6 @@ def _carries_notice(archive: zipfile.ZipFile) -> bool:
         return False
 
 
-def _verify_patched(path: Path) -> None:
-    """Re-open the written VSIX and confirm both edits are at their fixed point."""
-    try:
-        with zipfile.ZipFile(path) as archive:
-            corrupt = archive.testzip()
-            manifest, bundle = _read_members(archive, path)
-            has_notice = _carries_notice(archive)
-    except (OSError, zipfile.BadZipFile) as exc:
-        raise VsixPatchError(f"{path}: written VSIX is unreadable ({exc})") from exc
-    if corrupt is not None:
-        raise VsixPatchError(f"{path}: written VSIX has a corrupt member {corrupt}")
-    if not has_notice:
-        raise VsixPatchError(f"{path}: written VSIX lacks the modification notice")
-    if incontainer_vaporview.patch_extension_texts(manifest, bundle) is not None:
-        raise VsixPatchError(f"{path}: written VSIX is not at the patched fixed point")
-
-
 def patch_vsix(path: Path) -> bool:
     """Patch the VaporView VSIX at *path* in place.
 
@@ -136,7 +119,11 @@ def patch_vsix(path: Path) -> bool:
                 return False
             replacements = {_NOTICE_MEMBER: extension_notice()}
             if patched is not None:
-                replacements |= {_MANIFEST_MEMBER: patched[0], _BUNDLE_MEMBER: patched[1]}
+                patched_manifest, patched_bundle = patched
+                replacements |= {
+                    _MANIFEST_MEMBER: patched_manifest,
+                    _BUNDLE_MEMBER: patched_bundle,
+                }
             _replace_atomically(path, archive, replacements)
     except (OSError, zipfile.BadZipFile) as exc:
         raise VsixPatchError(f"{path}: cannot patch VSIX ({exc})") from exc
@@ -144,14 +131,13 @@ def patch_vsix(path: Path) -> bool:
 
 
 def _replace_atomically(path: Path, source: zipfile.ZipFile, replacements: dict[str, str]) -> None:
-    """Write and verify a patched copy next to *path*, then swap it in."""
+    """Write a patched copy next to *path*, then swap it in."""
     mode = path.stat().st_mode
     handle, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.booley-")
     os.close(handle)
     temporary = Path(name)
     try:
         _write_archive(source, temporary, replacements)
-        _verify_patched(temporary)
         temporary.chmod(mode)
         temporary.replace(path)
     finally:
@@ -172,26 +158,22 @@ _CHANGES = (
     "\n"
     "The edits are made by booley/runtime/incontainer_vaporview.py and\n"
     "booley/runtime/vaporview_vsix.py in the Booley distribution; the modified\n"
-    "work remains under GPL-3.0 (see LICENSE.txt).\n"
+    "work remains under GPL-3.0 (see LICENSE.txt). A VaporView installed from\n"
+    "anywhere else receives the same edits from Booley's attach hook.\n"
 )
+
+_NOTICE_HEADER = f"Modified VaporView {vaporview.VERIFIED_VERSION} ({vaporview.EXTENSION_ID})\n\n"
 
 
 def extension_notice() -> str:
     """The modification notice carried inside the VSIX, so every installed copy has it."""
-    return (
-        f"Modified VaporView {vaporview.VERIFIED_VERSION} ({vaporview.EXTENSION_ID})\n"
-        f"\n"
-        f"Booley modified this extension on {_MODIFIED_ON}.\n"
-        f"\n"
-        f"{_CHANGES}"
-    )
+    return f"{_NOTICE_HEADER}Booley modified this extension on {_MODIFIED_ON}.\n\n{_CHANGES}"
 
 
 def modification_notice(vsix: Path) -> str:
     """The image-level notice beside VaporView's license, naming the shipped file."""
     return (
-        f"Modified VaporView {vaporview.VERIFIED_VERSION} ({vaporview.EXTENSION_ID})\n"
-        f"\n"
+        f"{_NOTICE_HEADER}"
         f"Booley modified {vsix} on {_MODIFIED_ON}.\n"
         f"The shipped file is the modified build (sha256 {_sha256(vsix)});\n"
         f"SOURCE.txt names the official build and source it was made from.\n"

@@ -1,6 +1,6 @@
 # Drive VaporView through a Booley extension bridge
 
-Status: accepted (amended 2026-10-28: VaporView ships as a bundled VSIX, see Amendments)
+Status: accepted (amended 2026-10-28: VaporView ships as a bundled VSIX; amended 2026-11-06: the image build patches that VSIX; see Amendments)
 
 Supersedes the transport and compatibility-patch parts of ADR 0035 (scoped
 Waveform Viewer views over VaporView's WCP server). ADR 0035's user-facing
@@ -213,3 +213,18 @@ last active tab, and per-row commands cannot create groups or verify order.
   a spec carrying any gallery VaporView entry reads as drift. The installed
   files are byte-identical to the Marketplace build, so the residual patch's
   fingerprints are unchanged.
+
+## Amendments (2026-11-06)
+
+- **The image build patches the bundled VSIX (#2701).** The attach-time patch
+  raced VaporView's activation, so the first window of a fresh container could
+  still show "Error getting user theme". The wheel overlay now rewrites
+  `/usr/local/libexec/booley/vaporview-1.6.0.vsix` with the same two verified
+  edits (`booley.runtime.vaporview_vsix`), so VS Code installs an
+  already-patched extension. The VSIX is therefore no longer byte-identical to
+  the Marketplace build; the patched bundle fingerprint is unchanged. GPL-3.0
+  notices follow: the VSIX carries `extension/BOOLEY-MODIFICATIONS.txt`,
+  `MODIFICATIONS.txt` sits beside the license, and `SOURCE.txt` names the
+  shipped build. The attach hook remains for older images and for a VaporView
+  installed from elsewhere. Removal once upstream fixes Lramseyer/vaporview#207
+  and Lramseyer/vaporview#230 is tracked in #2859.
