@@ -100,3 +100,50 @@ def test_stealth_finish_reply_without_target_changes_and_post_finish_status(layo
     status = goal_tool("goal_status", layout)
     assert reply in status
     assert "Session Summary:" not in status
+
+
+def _briefing_row(detail: dict) -> dict:
+    """The smallest Review Package Goal row the briefing renders."""
+    return {
+        "spec": "REVIEW:top",
+        "metric": "clean",
+        "modified_target": False,
+        "observation_sha256": "ab12",
+        "spec_revision": 1,
+        "original_observations": [],
+        "selected_observation": {
+            "sequence": 3,
+            "producer": "reviewer",
+            "invocation_id": "inv-1",
+            "recorded_at": "2026-11-06T00:00:00Z",
+            "detail": detail,
+        },
+    }
+
+
+def test_briefing_shows_specialist_model_fallback_note():
+    from booley.goals.finish_presentation import _goal_lines
+
+    fell_back = {
+        "model": "gpt-6-luna",
+        "agent_cli": "codex",
+        "fallback": {
+            "first_choice": "claude-opus-5-5",
+            "skipped": [
+                {"model": "claude-opus-5-5", "reason": "Agent CLI claude is not logged in"}
+            ],
+        },
+    }
+
+    lines = _goal_lines(_briefing_row({"specialist_model": fell_back}), str)
+    plain = _goal_lines(
+        _briefing_row({"specialist_model": {"model": "claude-opus-5-5", "agent_cli": "claude"}}),
+        str,
+    )
+
+    assert (
+        "  Model: ran on gpt-6-luna instead of claude-opus-5-5 "
+        "(claude-opus-5-5: Agent CLI claude is not logged in)." in lines
+    )
+    # Running the first choice (or no recorded model) adds no note.
+    assert not any("Model:" in line for line in plain)

@@ -1718,6 +1718,8 @@ object, even after calling the capability.
         """Publish evidence before any Criterion can advertise the outcome."""
         for name in ("filtered", "rejected"):
             detail.setdefault(name, [])
+        # The audit file and the Criterion it backs must name the same model.
+        self._stamp_model_note(detail)
         path = self._review_evidence_path
         detail["audit_evidence"] = str(path)
         detail["artifacts"] = {

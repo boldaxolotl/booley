@@ -99,14 +99,35 @@ class ModelUnavailableError(AgentProviderError):
 
     ``settings`` names every config key that resolves to ``model``; ``detail`` keeps
     the raw provider text, which stays out of the message shown to people.
+
+    ``attempts`` is set only by a ``[models]`` fallback list that ran out of entries
+    (``booley.runtime.model_fallback``): every ``(model, reason)`` it skipped or saw
+    refused, in list order. ``model`` is then the list's first entry.
     """
 
     def __init__(
-        self, *, model: str, provider: str, settings: tuple[str, ...], detail: str
+        self,
+        *,
+        model: str,
+        provider: str,
+        settings: tuple[str, ...],
+        detail: str,
+        attempts: tuple[tuple[str, str], ...] = (),
     ) -> None:
         self.model = model
         self.settings = settings
         self.detail = detail
+        self.attempts = attempts
+        if attempts:
+            key = settings[0] if settings else "[models]"
+            tried = ", ".join(f"'{entry}' ({reason})" for entry, reason in attempts)
+            message = (
+                f"No model in `{key}` could run: {tried}. "
+                f"Set `{key}` to a model the account can use."
+            )
+            message += " booley.toml is a Protected Input, so change it before Goal entry."
+            super().__init__(message, provider)
+            return
         if settings:
             keys = " and ".join(f"`{key}`" for key in settings)
             fix = f"Set {keys} to a model the account can use."
