@@ -175,7 +175,167 @@ shards.
 
 ## Sustained cohort
 
-Pending (#1793). At least 20 comparable automatic code-changing validations
-after the default change, reported against a pre-change cohort of the same
-shape. They are kept apart from the controlled samples above, which alone
-attribute the effect.
+Issue #1793. This section is observational: it shows how the adopted default
+(two Ubuntu shards per Python version, `loadscope`) behaved on ordinary
+validations. It does not attribute the effect; only the controlled samples
+above do. No drift-check runs were dispatched, and none of the runs below are
+dispatches.
+
+### Selection
+
+Collected on 2026-11-06 from the GitHub API: attempt 1 of every completed
+`push` or `pull_request` run of `Tests` (merge-queue runs included). A run is
+comparable when the `test` job ran and the other jobs that can sit on the gate
+path match exactly. Two such job sets are common on both sides of the change:
+
+- **Full:** Windows 3.11/3.13 compatibility, ten Windows 3.14 shards, three
+  Ubuntu 3.13 coverage shards and `coverage`, `bwave-smoke`,
+  `bwave-integration`, `rust-test`, and `sidecar-smoke`.
+- **Python-only:** the same without `bwave-integration`, `rust-test`, and
+  `sidecar-smoke`.
+
+Runs that also selected `flake-stress` or `scanner-smoke` (added after the
+change) are left out. The before cohort uses the Ubuntu complete-suite jobs
+(`ubuntu-<python>-full`); the after cohort uses the two-shard jobs and starts
+with #2279's merge (2026-10-27 14:59 UTC). The before cohort starts on
+2026-10-25: test speedups from #1601 landed on 2026-10-24 and cut the slowest
+Windows shard from about 830 s to about 600 s, so earlier runs are not the same
+shape. Metrics use the definitions of the per-run table above. Runner minutes
+sum the attempt-1 runtime of every completed job except `ci-metrics`, as
+`ci-metrics` does.
+
+### Results
+
+Passing runs only (`ci-required` succeeded on attempt 1):
+
+| Job set | Cohort | Window (UTC) | Passing runs | Gate median (p25-p75) | Gate p90 | Gate minus max queue, median | Max queue median | Slowest Ubuntu job median (range) | Slowest Windows 3.14 shard median | Runner min median (p25-p75) |
+| --- | --- | --- | ---: | --- | ---: | ---: | ---: | --- | ---: | --- |
+| Full | Before | 10-25 06:56 to 10-27 14:31 | 44 | 1074 s (1031-1140) | 1353 s | 1036 s | 4 s | 1024 s (739-1115) | 603 s | 175.1 (168.7-180.9) |
+| Full | After | 10-27 14:59 to 11-05 17:40 | 190 | 920 s (836-1110) | 1487 s | 830 s | 100 s | 598 s (492-715) | 621 s | 186.9 (182.2-190.9) |
+| Python-only | Before | 10-25 06:39 to 10-27 10:14 | 46 | 1088 s (1020-1181) | 1442 s | 1008 s | 66 s | 991 s (737-1121) | 608 s | 168.3 (162.9-174.7) |
+| Python-only | After | 10-27 15:15 to 11-06 09:52 | 159 | 943 s (830-1178) | 1480 s | 820 s | 103 s | 598 s (403-659) | 620 s | 177.5 (172.7-182.8) |
+
+- **Gate:** the median fell by 154 s (full) and 145 s (Python-only), about
+  13-14%, close to the controlled C - A effect of -127 s. With the longest
+  queue wait subtracted, the median drops by 206 s and 188 s and the p90 by
+  132 s (1110 to 978) and 126 s (1097 to 971). The raw p90 got worse, and so did
+  the median queue (4-66 s before, 100-103 s after): the after cohort ran on a
+  busier runner pool, and each run now asks for two more runners. The slow
+  tail is queue, not test time.
+- **Critical path:** before, an Ubuntu complete-suite job was the latest test
+  job in 89 of 90 passing runs, and `test-verify` was the last job before
+  `ci-required` in 83. After, a Windows 3.14 shard was the latest test job in
+  274 of 349, and `bwave-smoke` (175) or `coverage` (149) finished last; an
+  Ubuntu shard was latest in 75. More Ubuntu shards would rarely shorten the
+  gate; `bwave-smoke`, `coverage`, and the Windows shards now set it.
+- **Cost:** median runner minutes rose by 11.8 (full) and 9.2 (Python-only),
+  about 5-7%. The controlled samples showed no measurable increase (C - A was
+  -12.8, inside the A-to-B noise). The record predicted 6-7 extra minutes,
+  because each extra Ubuntu job repeats about 30 s of setup and 60-75 s of
+  collection; the sustained increase is a few minutes above that.
+
+### Failures, reported separately
+
+Runs whose `ci-required` did not pass on attempt 1, from the same windows:
+
+| Cause | Full before (59 runs) | Full after (261) | Python-only before (68) | Python-only after (225) |
+| --- | ---: | ---: | ---: | ---: |
+| Superseded by a newer push (cancelled) | 14 | 43 | 9 | 29 |
+| Windows test failure | 1 | 9 | 7 | 25 |
+| Ubuntu test failure | 0 | 2 | 1 | 6 |
+| Ubuntu shard hit its 15-minute limit | 0 | 2 | 0 | 1 |
+| Windows shard hit its 15-minute limit | 0 | 1 | 0 | 0 |
+| `bwave-smoke` failed | 0 | 11 | 0 | 4 |
+| `coverage` failed | 0 | 1 | 2 | 1 |
+| `lint` or `docs-check` failed | 0 | 2 | 3 | 0 |
+| `test-verify` failed | 0 | 0 | 0 | 0 |
+
+`test-verify` passed in every run that reached it, so the exact-once check for
+both Linux groups never failed. The three Ubuntu shard timeouts:
+
+- [42052210406](https://github.com/boldaxolotl/booley/actions/runs/42052210406):
+  3.14 shard 1, 945 s, in the test step.
+- [41032747128](https://github.com/boldaxolotl/booley/actions/runs/41032747128):
+  3.11 shard 2, 930 s, in the test step after a timed-out cache restore.
+- [42033479342](https://github.com/boldaxolotl/booley/actions/runs/42033479342):
+  3.11 shard 2, 1,030 s, stuck installing test dependencies.
+
+No Ubuntu complete-suite job hit its 30-minute limit before the change. A
+shard now has 15 minutes for about 600 s of work, so a slow setup or a
+hanging test reaches the limit sooner than it did with one 1,000 s job under
+30 minutes. The Windows test and `bwave-smoke` failures are outside the Ubuntu
+jobs; this cohort cannot tie them to the sharding.
+
+### Per-run results (first 20 passing runs after the change, per job set)
+
+The aggregates above use every passing run. The first 20 of each set are
+listed here so the cohort's start can be checked against the controlled
+samples. Shard numbers are folded to `N`.
+
+#### Full job set
+
+| Run | Event | Required gate | Max queue | Slowest Ubuntu shard | Latest test job | Last job before `ci-required` | Runner min |
+| --- | --- | ---: | ---: | ---: | --- | --- | ---: |
+| [40526483475](https://github.com/boldaxolotl/booley/actions/runs/40526483475) | push | 979 s | 5 s | 607 s | windows-3.14-shard-N-of-10 | bwave-smoke | 188.7 |
+| [40532635264](https://github.com/boldaxolotl/booley/actions/runs/40532635264) | push | 792 s | 5 s | 591 s | windows-3.14-shard-N-of-10 | coverage | 188.7 |
+| [40537646096](https://github.com/boldaxolotl/booley/actions/runs/40537646096) | push | 829 s | 5 s | 579 s | windows-3.14-shard-N-of-10 | coverage | 194.5 |
+| [40545203857](https://github.com/boldaxolotl/booley/actions/runs/40545203857) | push | 895 s | 2 s | 560 s | windows-3.14-shard-N-of-10 | bwave-smoke | 192.5 |
+| [40548118939](https://github.com/boldaxolotl/booley/actions/runs/40548118939) | pull_request | 813 s | 4 s | 574 s | windows-3.14-shard-N-of-10 | coverage | 181.3 |
+| [40551209231](https://github.com/boldaxolotl/booley/actions/runs/40551209231) | push | 834 s | 4 s | 590 s | windows-3.14-shard-N-of-10 | coverage | 197.3 |
+| [40657963122](https://github.com/boldaxolotl/booley/actions/runs/40657963122) | push | 819 s | 4 s | 582 s | windows-3.14-shard-N-of-10 | coverage | 188.4 |
+| [40668755321](https://github.com/boldaxolotl/booley/actions/runs/40668755321) | pull_request | 792 s | 7 s | 606 s | windows-3.14-shard-N-of-10 | coverage | 177.8 |
+| [40670083640](https://github.com/boldaxolotl/booley/actions/runs/40670083640) | pull_request | 993 s | 5 s | 563 s | windows-3.14-shard-N-of-10 | bwave-smoke | 175.4 |
+| [40671596712](https://github.com/boldaxolotl/booley/actions/runs/40671596712) | push | 814 s | 3 s | 586 s | windows-3.14-shard-N-of-10 | coverage | 191.8 |
+| [40674881153](https://github.com/boldaxolotl/booley/actions/runs/40674881153) | pull_request | 973 s | 3 s | 715 s | ubuntu-3.11-shard-N-of-2 | bwave-smoke | 190.4 |
+| [40677093783](https://github.com/boldaxolotl/booley/actions/runs/40677093783) | push | 886 s | 4 s | 586 s | windows-3.14-shard-N-of-10 | bwave-smoke | 182.9 |
+| [40734081457](https://github.com/boldaxolotl/booley/actions/runs/40734081457) | push | 1125 s | 205 s | 607 s | windows-3.14-shard-N-of-10 | bwave-smoke | 191.3 |
+| [40744933599](https://github.com/boldaxolotl/booley/actions/runs/40744933599) | push | 973 s | 164 s | 577 s | windows-3.14-shard-N-of-10 | coverage | 181.9 |
+| [40750878240](https://github.com/boldaxolotl/booley/actions/runs/40750878240) | pull_request | 828 s | 121 s | 556 s | windows-3.14-shard-N-of-10 | coverage | 189.7 |
+| [40751605493](https://github.com/boldaxolotl/booley/actions/runs/40751605493) | push | 1071 s | 172 s | 609 s | ubuntu-3.14-shard-N-of-2 | bwave-smoke | 187.2 |
+| [40758748798](https://github.com/boldaxolotl/booley/actions/runs/40758748798) | push | 861 s | 128 s | 594 s | windows-3.14-shard-N-of-10 | bwave-smoke | 190.9 |
+| [40761498008](https://github.com/boldaxolotl/booley/actions/runs/40761498008) | pull_request | 1074 s | 299 s | 551 s | windows-3.14-shard-N-of-10 | test-verify | 176.4 |
+| [40762591524](https://github.com/boldaxolotl/booley/actions/runs/40762591524) | push | 1064 s | 150 s | 599 s | windows-3.14-shard-N-of-10 | coverage | 185.1 |
+| [40767430000](https://github.com/boldaxolotl/booley/actions/runs/40767430000) | push | 849 s | 231 s | 580 s | windows-3.14-shard-N-of-10 | test-verify | 166.7 |
+
+#### Python-only job set
+
+| Run | Event | Required gate | Max queue | Slowest Ubuntu shard | Latest test job | Last job before `ci-required` | Runner min |
+| --- | --- | ---: | ---: | ---: | --- | --- | ---: |
+| [40529140373](https://github.com/boldaxolotl/booley/actions/runs/40529140373) | pull_request | 850 s | 7 s | 565 s | windows-3.14-shard-N-of-10 | bwave-smoke | 170.9 |
+| [40656111991](https://github.com/boldaxolotl/booley/actions/runs/40656111991) | pull_request | 798 s | 3 s | 612 s | ubuntu-3.14-shard-N-of-2 | coverage | 165.5 |
+| [40734118102](https://github.com/boldaxolotl/booley/actions/runs/40734118102) | pull_request | 1449 s | 658 s | 567 s | windows-3.14-shard-N-of-10 | bwave-smoke | 186.1 |
+| [40734687095](https://github.com/boldaxolotl/booley/actions/runs/40734687095) | pull_request | 1227 s | 417 s | 545 s | windows-3.14-shard-N-of-10 | bwave-smoke | 170.0 |
+| [40738402837](https://github.com/boldaxolotl/booley/actions/runs/40738402837) | pull_request | 1032 s | 101 s | 544 s | windows-3.14-shard-N-of-10 | bwave-smoke | 184.6 |
+| [40740347164](https://github.com/boldaxolotl/booley/actions/runs/40740347164) | pull_request | 1236 s | 323 s | 586 s | windows-3.14-shard-N-of-10 | bwave-smoke | 176.8 |
+| [40740455893](https://github.com/boldaxolotl/booley/actions/runs/40740455893) | pull_request | 954 s | 138 s | 568 s | windows-3.14-shard-N-of-10 | bwave-smoke | 170.1 |
+| [40741117757](https://github.com/boldaxolotl/booley/actions/runs/40741117757) | pull_request | 1026 s | 421 s | 620 s | windows-3.14-shard-N-of-10 | test-verify | 194.4 |
+| [40741517911](https://github.com/boldaxolotl/booley/actions/runs/40741517911) | pull_request | 1275 s | 512 s | 583 s | windows-3.14-shard-N-of-10 | coverage | 185.5 |
+| [40745067851](https://github.com/boldaxolotl/booley/actions/runs/40745067851) | pull_request | 1176 s | 278 s | 585 s | windows-3.14-shard-N-of-10 | coverage | 180.2 |
+| [40745783833](https://github.com/boldaxolotl/booley/actions/runs/40745783833) | pull_request | 1480 s | 404 s | 538 s | windows-3.14-shard-N-of-10 | bwave-smoke | 178.7 |
+| [40749422966](https://github.com/boldaxolotl/booley/actions/runs/40749422966) | pull_request | 829 s | 51 s | 591 s | windows-3.14-shard-N-of-10 | coverage | 182.2 |
+| [40753705555](https://github.com/boldaxolotl/booley/actions/runs/40753705555) | pull_request | 876 s | 3 s | 554 s | windows-3.14-shard-N-of-10 | bwave-smoke | 170.4 |
+| [40754428896](https://github.com/boldaxolotl/booley/actions/runs/40754428896) | pull_request | 846 s | 19 s | 496 s | windows-3.14-shard-N-of-10 | coverage | 175.9 |
+| [40756641896](https://github.com/boldaxolotl/booley/actions/runs/40756641896) | pull_request | 815 s | 3 s | 554 s | windows-3.14-shard-N-of-10 | coverage | 166.7 |
+| [40758094915](https://github.com/boldaxolotl/booley/actions/runs/40758094915) | pull_request | 886 s | 3 s | 566 s | windows-3.14-shard-N-of-10 | coverage | 179.3 |
+| [40760511240](https://github.com/boldaxolotl/booley/actions/runs/40760511240) | pull_request | 787 s | 101 s | 605 s | windows-3.14-shard-N-of-10 | coverage | 181.4 |
+| [40762789647](https://github.com/boldaxolotl/booley/actions/runs/40762789647) | pull_request | 1088 s | 273 s | 587 s | windows-3.14-shard-N-of-10 | coverage | 176.7 |
+| [40763804837](https://github.com/boldaxolotl/booley/actions/runs/40763804837) | pull_request | 1578 s | 565 s | 554 s | windows-3.14-shard-N-of-10 | coverage | 165.7 |
+| [40763928458](https://github.com/boldaxolotl/booley/actions/runs/40763928458) | pull_request | 1384 s | 529 s | 612 s | windows-3.14-shard-N-of-10 | bwave-smoke | 177.5 |
+
+### Recommendation
+
+Keep the two-shard default. Across 349 ordinary passing validations, it took
+about 150 s (13-14%) off the median required gate, in line with the controlled
+estimate, and the exact-once check never failed. It costs about 9-12 more
+runner minutes per run (5-7%), which the controlled samples did not show. Most
+of that is the expected setup and collection overhead of two more Ubuntu jobs.
+Reverting would give up the 150 s to save those minutes.
+
+Two follow-ups for the maintainer to consider; neither changes the default:
+
+- The gate now ends on `bwave-smoke`, `coverage` (after the Ubuntu 3.13
+  coverage shards), or a Windows 3.14 shard. Those, not the Ubuntu legs, are
+  where any further latency gain is.
+- The 15-minute shard limit leaves about 300 s of headroom. Three of 486 runs
+  after the change lost a Ubuntu shard to it, one while installing
+  dependencies. Watch this as the suite grows.
