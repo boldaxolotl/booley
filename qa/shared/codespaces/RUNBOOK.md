@@ -4,22 +4,24 @@ Shared by the `gui` mission and the `booley-gui-check` skill. It takes a QA
 agent from a Booley commit `<sha>` to a readable Booley GUI in a browser
 Codespace on the picorv32 demo, checks the GUI against the CLI, and cleans up.
 
-Each step says what to do and how to tell it worked. Steps 1-5 are setup: if
+Steps 1-6 say what to do and how to tell it worked; steps 7-9 are rules and
+references. Steps 1-5 are setup: if
 one fails, stop and report, because nothing after it is valid. From step 6 on,
 log a failure as a finding, work around it if you can, and keep going.
 
 | Name | Value |
 |---|---|
 | `<sha>` | The Booley commit under test (full) |
-| `<short>` | Its first 7 characters, as `booley --version` prints them |
-| `$DEMO` | `boldaxolotl/booley-prj-picorv32` |
+| `<short>` | `git rev-parse --short <sha>`, as `booley --version` prints it (9 characters in this repo) |
+| `$DEMO` | `boldaxolotl/booley-prj-picorv32`; shell state does not persist between tool calls, so set `DEMO=...` in each call that uses it |
 | QA branch | `qa/<short>` on the demo repo |
-| Candidate tag | `candidate-<sha>-<run>-<attempt>` from `docker-publish.yml` |
+| Candidate tag | `candidate-<sha>-<databaseId>-<attempt>` from `docker-publish.yml` (`databaseId` is the run id) |
 
 ## Hard rules
 
 - **Never use the clipboard.** No clipboard read or write, no paste, no
   Ctrl+C/Ctrl+V/Ctrl+Shift+V. It is the maintainer's real system clipboard.
+  Ctrl+C with no selection, to interrupt a running process, is allowed.
 - **Never type into the Monaco editor.** Edit files from a terminal (heredoc or
   a Python one-liner).
 - **Use only your own browser tab.** Tabs belong to the T3 thread, and other
@@ -58,8 +60,8 @@ Find a successful `docker-publish.yml` run for `<sha>`:
 
 ```sh
 gh run list --repo boldaxolotl/booley --workflow docker-publish.yml \
-  --json databaseId,headSha,attempt,status,conclusion \
-  --jq '.[] | select(.headSha == "<sha>")'
+  --limit 200 --json databaseId,headSha,attempt,status,conclusion \
+  --jq '.[] | select(.headSha == "<sha>" and .conclusion == "success")'
 ```
 
 If there is none, dispatch one on the branch whose head is `<sha>` (`main` or
@@ -68,6 +70,8 @@ one, so dispatch once.
 
 ```sh
 gh workflow run docker-publish.yml --repo boldaxolotl/booley --ref <branch>
+gh run list --repo boldaxolotl/booley --workflow docker-publish.yml \
+  --limit 1 --json databaseId --jq '.[0].databaseId'   # the new run's id
 gh run watch <run-id> --repo boldaxolotl/booley --exit-status
 ```
 
@@ -86,7 +90,7 @@ scratch directory, not a checkout:
 
 ```sh
 DEMO=boldaxolotl/booley-prj-picorv32
-TAG=candidate-<sha>-<run>-<attempt>
+TAG=candidate-<sha>-<databaseId>-<attempt>
 BRANCH=qa/<short>
 base=$(gh api repos/$DEMO/git/ref/heads/main --jq .object.sha)
 gh api repos/$DEMO/git/refs -f ref=refs/heads/$BRANCH -f sha=$base
@@ -179,8 +183,8 @@ Optional: `editor.accessibilitySupport: "on"` (same one-liner) also lists
 terminal rows in `preview_snapshot`. But then `preview_act type` into a
 terminal is silently dropped: only single-key `press` gets through. To undo it
 with key presses alone, press the characters of `^'on'^'off'` and Enter: bash
-reruns the previous one-liner with `off`. Snapshots cut off at 10,000
-characters, another reason to prefer `preview_evaluate`.
+reruns the previous one-liner with `off`. Snapshots are capped (10-20 KB
+depending on the tool version), another reason to prefer `preview_evaluate`.
 
 ## 7. Interaction rules
 
