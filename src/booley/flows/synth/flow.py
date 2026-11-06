@@ -586,6 +586,11 @@ def _latch_diagnostic(metrics: SynthMetrics) -> str:
     )
 
 
+# Header prepended to a design diagnostic when the tool exited 0 but its log
+# still reported an error; it describes the exit code, not the design problem.
+_EXIT_ZERO_ERROR_HEADER = "ERROR: synthesis log reports an error despite exit 0:"
+
+
 def _design_failure_reason(metrics: SynthMetrics) -> str:
     """Keep the rejected generic master distinct from allowed latch evidence."""
     if "unmapped generic cell:" in metrics.failure_output:
@@ -593,13 +598,18 @@ def _design_failure_reason(metrics: SynthMetrics) -> str:
         return f"{reason}; {_latch_diagnostic(metrics)}" if metrics.latches else reason
     if metrics.latches:
         return _latch_diagnostic(metrics)
-    return (
-        "unmapped latch"
-        if "unmapped latch:" in metrics.failure_output
-        else (
-            metrics.failure_output.splitlines()[0] if metrics.failure_output else "design failure"
-        )
+    if "unmapped latch:" in metrics.failure_output:
+        return "unmapped latch"
+    # The exit-0 header names the exit code, not the design problem: skip it.
+    first_reason = next(
+        (
+            line.strip()
+            for line in metrics.failure_output.splitlines()
+            if line.strip() and line.strip() != _EXIT_ZERO_ERROR_HEADER
+        ),
+        "",
     )
+    return first_reason or "design failure"
 
 
 def _detect_critical_conditions(output: str) -> tuple[int, int, int]:
@@ -1596,7 +1606,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             metrics.returncode = 1
             metrics.termination = "design_failure"
             metrics.failure_output = (
-                "ERROR: synthesis log reports an error despite exit 0:\n  "
+                f"{_EXIT_ZERO_ERROR_HEADER}\n  "
                 if result.returncode == 0 and outcome.forced_failure
                 else ""
             ) + failure.diagnostic
@@ -1667,6 +1677,16 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 _latch_diagnostic(metrics)
             ):
                 metrics.failure_output = _latch_diagnostic(metrics) + "\n" + metrics.failure_output
+            if metrics.termination == "design_failure":
+                # The tool ran to completion; the design failed a check. The
+                # process exit code and timeout state say nothing about that.
+                logger.error(
+                    "Synth %s: design check failed: %s (full output: %s)",
+                    target,
+                    _design_failure_reason(metrics),
+                    metrics.log_path or "not persisted",
+                )
+                return
             reason_lines = metrics.failure_output.splitlines()
             logger.error(
                 "Synth %s: boundary run failed (rc=%d, timed_out=%s): %s (full output: %s)",
