@@ -11,7 +11,7 @@ from unittest.mock import Mock
 import pytest
 
 import booley
-from booley.audit.diagnostic_results import DiagnosticReport
+from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.harness import doctor
 from booley.harness import doctor_deep as deep
 from booley.runtime import health, runtime_context
@@ -397,14 +397,189 @@ def test_probe_cost_accounting_and_completeness_are_independent(
         "measure_developer_rss",
         lambda _: developer_probe.ProbeMeasurement(1024, True, usage),
     )
+    monkeypatch.setattr(developer_probe, "probe_model_access", lambda *_args, **_kw: usage)
     if storage_fails:
         monkeypatch.setattr(
             developer_probe, "record_measurement", Mock(side_effect=OSError("unwritable"))
         )
     reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
     doctor._track_developer_probe(project, reporter, tracker)
-    assert reporter.agent_calls == [doctor._AgentCallRecord("agent probe", usage)]
+    assert reporter.agent_calls[0] == doctor._AgentCallRecord("agent probe", usage)
+    assert {call.label for call in reporter.agent_calls[1:]} <= {"model probe"}
     assert tracker.missing == (("developer-probe",) if storage_fails else ())
+
+
+_MODEL_CONFIG = """
+[agent]
+provider = "codex"
+
+[models]
+standard = "std-model"
+
+[models.roles]
+reviewer = "rev-model"
+"""
+
+
+def _model_probe_world(tmp_path, monkeypatch, *, gateway=False):
+    """A Sandbox-side Project whose tiers and role pins resolve to four models."""
+    from booley.config import agent as agent_config
+    from booley.harness import developer_probe
+
+    project = _project(tmp_path)
+    config = project.booley_dir / "booley.toml"
+    config.write_text(config.read_text() + _MODEL_CONFIG, encoding="utf-8")
+    for name in (
+        "BOOLEY_PRIMARY_AUTH",
+        "BOOLEY_PRIMARY_PROVIDER",
+        "BOOLEY_GATEWAY_MODEL",
+        "BOOLEY_GATEWAY_EFFORT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    if gateway:
+        monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
+        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
+        monkeypatch.setenv("BOOLEY_GATEWAY_URL", "https://gateway.example/v1")
+        monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC_GATEWAY_TOKEN")
+    monkeypatch.setattr(agent_config, "_agent_settings", None)
+    agent_config.load_agent_settings(project.project_root, booley_dir=project.booley_dir)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr(developer_probe, "record_measurement", lambda *_args: tmp_path / "p.json")
+    return project
+
+
+def _refusal(model):
+    """What probe_model_access raises when the provider refuses *model*."""
+    from booley.harness import developer_probe
+    from booley.runtime.agent_errors import model_unavailable_error
+
+    cause = model_unavailable_error(model, "codex", "raw provider body")
+    error = developer_probe.ProbeError(
+        f"probe agent failed: {cause}", agent_failure=True, agent_called=True
+    )
+    error.__cause__ = cause
+    return error
+
+
+def _run_model_probes(project, monkeypatch, *, refused=(), light=None):
+    """Drive the deep probes with stubbed provider calls; return what was observed."""
+    from booley.harness import developer_probe
+
+    usage = developer_probe.ProbeUsage(5, 0, 1, 0.001)
+    probed = []
+
+    def measure(_root):
+        if light is not None:
+            raise light
+        return developer_probe.ProbeMeasurement(1024, True, usage)
+
+    def probe(_root, model, **_kw):
+        probed.append(model)
+        if model in refused:
+            raise _refusal(model)
+        return usage
+
+    monkeypatch.setattr(developer_probe, "measure_developer_rss", measure)
+    monkeypatch.setattr(developer_probe, "probe_model_access", probe, raising=False)
+    reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
+    doctor._track_developer_probe(project, reporter, tracker)
+    return probed, reporter, tracker
+
+
+def _messages(reporter, severity):
+    return [item.message for item in reporter.findings if item.severity is severity]
+
+
+def test_deep_probes_every_resolved_model_and_passes_when_accepted(tmp_path, monkeypatch):
+    project = _model_probe_world(tmp_path, monkeypatch)
+
+    probed, reporter, tracker = _run_model_probes(project, monkeypatch)
+
+    # The light-tier model is covered by the memory probe; every other model gets one call.
+    assert sorted(probed) == ["gpt-6-astra", "rev-model", "std-model"]
+    assert _messages(reporter, Severity.FAIL) == []
+    accepted = " ".join(_messages(reporter, Severity.PASS))
+    assert all(model in accepted for model in probed)
+    assert len(reporter.agent_calls) == 1 + len(probed)
+    assert tracker.missing == ()
+
+
+def test_deep_fails_naming_model_and_config_key_when_provider_refuses_it(tmp_path, monkeypatch):
+    project = _model_probe_world(tmp_path, monkeypatch)
+
+    _probed, reporter, tracker = _run_model_probes(project, monkeypatch, refused={"std-model"})
+
+    failures = _messages(reporter, Severity.FAIL)
+    assert len(failures) == 1, failures
+    failure = failures[0]
+    assert "std-model" in failure
+    assert "[models] standard" in failure
+    assert "Protected Input" in failure
+    assert tracker.missing == ()  # the probe ran; its verdict is the FAIL
+    assert not reporter.result(1).clean
+
+
+def test_deep_light_model_refusal_is_not_reported_as_an_auth_problem(tmp_path, monkeypatch):
+    project = _model_probe_world(tmp_path, monkeypatch)
+
+    _probed, reporter, _tracker = _run_model_probes(
+        project, monkeypatch, light=_refusal("gpt-6-luna")
+    )
+
+    (failure,) = [item for item in reporter.findings if item.severity is Severity.FAIL]
+    assert "gpt-6-luna" in failure.message
+    assert "[models] light" in failure.message
+    assert "check agent auth" not in failure.fix
+
+
+def test_deep_skips_model_probes_when_the_provider_probe_failed(tmp_path, monkeypatch):
+    from booley.harness import developer_probe
+
+    project = _model_probe_world(tmp_path, monkeypatch)
+    auth_failure = developer_probe.ProbeError(
+        "probe agent failed: expired", agent_failure=True, agent_called=True
+    )
+    auth_failure.__cause__ = RuntimeError("expired")
+
+    probed, _reporter, tracker = _run_model_probes(project, monkeypatch, light=auth_failure)
+
+    assert probed == []
+    assert tracker.missing == ("developer-probe", "model-access")
+
+
+def test_deep_model_probe_failure_fails_and_stops_probing(tmp_path, monkeypatch):
+    """A non-refusal agent failure on a model probe FAILs and spends nothing more."""
+    from booley.harness import developer_probe
+
+    project = _model_probe_world(tmp_path, monkeypatch)
+    usage = developer_probe.ProbeUsage(5, 0, 1, 0.001)
+    probed = []
+
+    def probe(_root, model, **_kw):
+        probed.append(model)
+        raise developer_probe.ProbeError("model probe failed: boom", agent_failure=True)
+
+    monkeypatch.setattr(
+        developer_probe,
+        "measure_developer_rss",
+        lambda _root: developer_probe.ProbeMeasurement(1024, True, usage),
+    )
+    monkeypatch.setattr(developer_probe, "probe_model_access", probe)
+    reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
+    doctor._track_developer_probe(project, reporter, tracker)
+
+    assert len(probed) == 1
+    assert len(_messages(reporter, Severity.FAIL)) == 1
+    assert tracker.missing == ("model-access",)
+
+
+def test_deep_gateway_auth_runs_no_extra_model_probe(tmp_path, monkeypatch):
+    project = _model_probe_world(tmp_path, monkeypatch, gateway=True)
+
+    probed, _reporter, tracker = _run_model_probes(project, monkeypatch)
+
+    assert probed == []
+    assert tracker.missing == ()
 
 
 def _qualification_measurement(missing):
@@ -462,6 +637,12 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
         developer_probe,
         "measure_developer_rss",
         lambda _project: _qualification_measurement(missing),
+    )
+    monkeypatch.setattr(
+        developer_probe,
+        "probe_model_access",
+        lambda *_args, **_kw: developer_probe.ProbeUsage(1, 0, 1, 0.0),
+        raising=False,
     )
     return audit
 
@@ -559,7 +740,7 @@ def test_runtime_policy_full_doctor_qualification(
         assert record.reasons == tuple(sorted(blocking | extra))
         assert [r.code for r in result.deep_status.reasons] == ["latest-attempt-failed"]
     elif expected is deep.DeepOutcome.INCOMPLETE:
-        assert record.reasons == ("developer-probe",)
+        assert record.reasons == ("developer-probe", "model-access")
     else:
         assert not record.reasons
     assert result.deep_status.current is (expected is deep.DeepOutcome.SUCCESS)
@@ -568,7 +749,7 @@ def test_runtime_policy_full_doctor_qualification(
     )
     assert commands == ["smoke", "good", "bad", "core"]
     assert set(completions) == {
-        *([] if missing == "developer" else ["developer-probe"]),
+        *([] if missing == "developer" else ["developer-probe", "model-access"]),
         "sim.smoke.d97e8ce47f651215",
         "sim.selftest.good",
         "sim.selftest.bad",
@@ -608,7 +789,7 @@ def test_pending_review_qualifies_once_and_ack_preserves_deep(tmp_path, monkeypa
     assert final.clean and final.deep_status.current
     assert deep.deep_stamp_path(audit.booley_dir).read_bytes() == before
     assert commands == ["smoke", "good", "bad", "core"]
-    assert len(completions) == 5
+    assert len(completions) == 6
 
 
 @pytest.mark.parametrize("waived,missing", [(False, None), (True, None), (True, "developer")])

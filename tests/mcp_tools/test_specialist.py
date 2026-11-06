@@ -289,6 +289,46 @@ def test_provider_exception_preserves_report_and_persists_traceback(
     assert any(record.exc_info for record in caplog.records if record.levelname == "DEBUG")
 
 
+def test_refused_model_reports_actionable_message(tmp_path: Path, monkeypatch) -> None:
+    from booley.runtime.agent_errors import ModelUnavailableError
+
+    state_file = tmp_path / "state.json"
+    state_file.write_text("{}")
+    endpoint = ReviewSpecialist()
+    monkeypatch.setattr(
+        "booley.runtime.runtime_context.container_only_error", lambda _command: None
+    )
+    refusal = ModelUnavailableError(
+        model="gpt-refused",
+        provider="codex",
+        settings=("[models] standard",),
+        detail='{"status":400,"error":{"code":"model_not_found"}}',
+    )
+
+    with (
+        patch.dict(os.environ, _env_with_state(state_file)),
+        patch.object(endpoint, "_invoke_agent", side_effect=refusal),
+    ):
+        result = endpoint.execute_cli(
+            [
+                "--work-dir",
+                str(tmp_path),
+                "--report-dir",
+                str(tmp_path / "reports"),
+                "--transcript-dir",
+                str(tmp_path / "transcripts"),
+            ]
+        )
+
+    assert result.exit_code == 2
+    report = result.outcome.report_text
+    assert report.startswith("review_test failed: ModelUnavailableError: ")
+    assert "gpt-refused" in report
+    assert "[models] standard" in report
+    assert "Protected Input" in report
+    assert "model_not_found" not in report
+
+
 class TestTranscriptPath:
     def test_transcript_path_created(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
@@ -467,6 +507,22 @@ class TestInvokeAgentWithResume:
         assert len(calls) == 2
         assert calls[1].session_id is None
         assert calls[1].resume_session is False
+
+    def test_model_refusal_is_not_retried(self):
+        from booley.runtime.agent_errors import ModelUnavailableError
+
+        endpoint = ReviewSpecialist()
+        endpoint.name = "test_endpoint"
+        refusal = ModelUnavailableError(
+            model="gpt-refused", provider="codex", settings=(), detail="model_not_found"
+        )
+        with patch.object(endpoint, "_invoke_agent", side_effect=refusal) as invoke:
+            params = AgentCallParams(
+                prompt="p", model="gpt-refused", cwd="/tmp", session_id="s", resume_session=True
+            )
+            with pytest.raises(ModelUnavailableError):
+                endpoint._invoke_agent_with_resume(params)
+        assert invoke.call_count == 1
 
     def test_timeout_error_propagates(self):
         endpoint = ReviewSpecialist()

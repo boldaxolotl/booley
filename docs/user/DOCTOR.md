@@ -31,7 +31,7 @@ and syntheses, and can take minutes or tens of minutes.
 | `--concise` | Show only problems and the final counts |
 | `--verbose`, `-v` | Show extra detail, including waivers that matched no warning |
 | `--deep` | Also run the real EDA checks described under [Deep checks](#deep-checks) |
-| `--skip-agent-checks` | With `--deep`, skip the agent credential check and the model-provider probe |
+| `--skip-agent-checks` | With `--deep`, skip the agent credential check and the model-provider probes |
 | `-C PATH`, `--project PATH` | Check the Project at `PATH` instead of the one containing the current directory |
 
 ## Read the result
@@ -88,7 +88,11 @@ and on the Dashboard. The full output of the last run is in
 
 - one short, paid call to the model provider that Booley's Specialists (review
   agents) use, which proves the credentials work in this Sandbox and measures
-  the agent's memory use (skip it with `--skip-agent-checks`);
+  the agent's memory use, plus one more short call for each other model your
+  `[models]` tiers and `[models.roles]` pins select (a gateway makes no extra
+  call). A model the provider refuses fails Doctor and names the config key to
+  change, instead of failing a Goal later (skip these calls with
+  `--skip-agent-checks`);
 - a short simulation, lint, and ASIC synthesis on each Target marked for Doctor
   (see [Doctor selection](CONFIG.md#explicit-flow-targets-and-doctor-selection));
 - the simulation and lint [self-tests](#self-test-fixtures);
@@ -116,7 +120,7 @@ except `upgrade.review-pending`, and every check that applies actually ran.
 Waiving a warning doesn't count as running the check. These runs never
 qualify:
 
-- a run on the host, because the model-provider probe runs only in the
+- a run on the host, because the model-provider probes run only in the
   Sandbox;
 - a run with `--skip-agent-checks`.
 

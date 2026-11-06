@@ -54,7 +54,9 @@ from .agent_errors import (
     UsageLimitError,
     is_auth_failure,
     is_context_exhausted,
+    is_model_refusal,
     is_usage_limit,
+    model_unavailable_error,
 )
 from .gateway_token import gateway_token_for, refresh_gateway_token
 from .owned_scratch import mark_owned, remove_owned, scratch_root
@@ -356,7 +358,9 @@ class CodexBackend:
                 system_prompt=params.system_prompt,
                 user_prompt=params.prompt,
             )
-            _codex_check_errors(error_msg, output, returncode, raw_stderr, raw_output)
+            _codex_check_errors(
+                error_msg, output, returncode, raw_stderr, raw_output, model=params.model
+            )
             structured, structured_fallback = _codex_resolve_structured(
                 params.output_format,
                 output,
@@ -903,27 +907,34 @@ def _codex_check_errors(
     returncode: int,
     raw_stderr: str,
     raw_output: str,
+    *,
+    model: str,
 ) -> None:
     """Raise appropriate exceptions for Codex error conditions."""
     # Progress messages are not a successful result when the usage cap ends the call.
     if error_msg and (not output or is_usage_limit(error_msg)):
-        _raise_for_codex_detail(error_msg, prefix="Codex error")
+        _raise_for_codex_detail(error_msg, prefix="Codex error", model=model)
 
     if returncode != 0:
         # Classify the full provider diagnostic, never agent text in JSONL stdout.
         if is_usage_limit(raw_stderr):
-            _raise_for_codex_detail(raw_stderr, prefix=f"Codex exit code {returncode}")
+            _raise_for_codex_detail(
+                raw_stderr, prefix=f"Codex exit code {returncode}", model=model
+            )
         if not output:
             detail = (raw_stderr or raw_output)[:500]
-            _raise_for_codex_detail(detail, prefix=f"Codex exit code {returncode}")
+            _raise_for_codex_detail(detail, prefix=f"Codex exit code {returncode}", model=model)
 
 
-def _raise_for_codex_detail(detail: str, *, prefix: str) -> None:
+def _raise_for_codex_detail(detail: str, *, prefix: str, model: str) -> None:
     """Classify an error string and raise the appropriate exception."""
     if is_usage_limit(detail):
         raise UsageLimitError(detail, provider="codex")
     if is_context_exhausted(detail):
         raise ContextExhaustedError(detail, provider="codex")
+    # Before the transient check: a refusal body can contain digits like "500".
+    if is_model_refusal(detail):
+        raise model_unavailable_error(model, "codex", detail)
     if is_auth_failure(detail) and _gateway_token_command_active():
         raise AgentAuthError(f"{prefix}: {detail}", provider="codex")
     if _is_transient_error(RuntimeError(detail)):

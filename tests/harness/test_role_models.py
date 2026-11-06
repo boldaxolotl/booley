@@ -145,6 +145,25 @@ class TestModelForRole:
         cfg = self._cfg({"reviewer": "light"})
         assert cfg.model_for_role("reviewer", "heavy") == "small"
 
+    def test_model_settings_maps_every_resolved_model(self):
+        cfg = AgentSettings(
+            tier_models={"heavy": "big", "standard": "mid", "light": "mid"},
+            role_models={
+                "reviewer": "light",
+                "mutation_tester": "custom",
+                "coverage_analyst": "big",
+            },
+        )
+        assert cfg.model_settings() == {
+            "big": ("[models] heavy", "[models.roles] coverage_analyst"),
+            "mid": ("[models] standard", "[models] light", "[models.roles] reviewer"),
+            "custom": ("[models.roles] mutation_tester",),
+        }
+
+    def test_model_settings_under_gateway_pin_is_the_pin(self):
+        cfg = AgentSettings(role_models={"reviewer": "light"}, model_pin="gw-model")
+        assert cfg.model_settings() == {"gw-model": ("BOOLEY_GATEWAY_MODEL",)}
+
 
 # --- load path ---------------------------------------------------------------
 

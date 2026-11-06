@@ -30,7 +30,8 @@ from booley.runtime.owned_scratch import owned_tempdir
 from booley.runtime.timefmt import utc_now_rfc3339
 
 if TYPE_CHECKING:
-    from booley.core.models import AgentResult
+    from booley.config.agent import AgentSettings
+    from booley.core.models import AgentCallParams, AgentResult
 
 try:
     import resource  # POSIX-only; no Windows equivalent for RUSAGE_CHILDREN
@@ -177,6 +178,26 @@ def measure_developer_rss(
         raise ProbeError(f"probe agent failed: {exc}") from exc
 
 
+def _probe_params(
+    settings: AgentSettings, model: str, work: Path, timeout_s: int, label: str
+) -> AgentCallParams:
+    """The cheapest real agent call: one text-only turn, no tools, no Booley MCP server."""
+    from booley.core.models import AgentCallParams
+
+    return AgentCallParams(
+        prompt=_PROBE_PROMPT,
+        model=model,
+        # Only the gateway pin sets an effort; otherwise Codex's own default.
+        reasoning_effort=settings.effort_pin,
+        cwd=str(work),
+        text_only=True,
+        allowed_agent_capabilities=[],
+        max_turns=1,
+        timeout_seconds=timeout_s,
+        label=label,
+    )
+
+
 def _measure_in(
     project_root: Path,
     work: Path,
@@ -186,7 +207,6 @@ def _measure_in(
     """Run the probe agent call in the *work* directory (see :func:`measure_developer_rss`)."""
     import asyncio
 
-    from booley.core.models import AgentCallParams
     from booley.runtime import agent as agent_mod
     from booley.runtime import agent_config as config_mod
 
@@ -199,18 +219,9 @@ def _measure_in(
                     "unavailable on this platform; using the fallback estimate"
                 )
             getrusage = resource.getrusage
-        cfg = config_mod.get_backend_config()
-        params = AgentCallParams(
-            prompt=_PROBE_PROMPT,
-            model=cfg.settings.model_for_tier("light"),
-            # Only the gateway pin sets an effort; otherwise Codex's own default.
-            reasoning_effort=cfg.settings.effort_pin,
-            cwd=str(work),
-            text_only=True,
-            allowed_agent_capabilities=[],
-            max_turns=1,
-            timeout_seconds=timeout_s,
-            label="doctor-developer-probe",
+        settings = config_mod.get_backend_config().settings
+        params = _probe_params(
+            settings, settings.model_for_tier("light"), work, timeout_s, "doctor-developer-probe"
         )
         before = getrusage(_RUSAGE_CHILDREN).ru_maxrss
     except Exception as exc:  # fail-soft by contract: environment issues become a doctor SKIP
@@ -248,3 +259,56 @@ def _measure_in(
             usage=usage,
         )
     return ProbeMeasurement(peak_rss_bytes=int(after) * 1024, exact=after > before, usage=usage)
+
+
+def probe_model_access(
+    project_root: Path,
+    model: str,
+    *,
+    booley_dir: Path | None = None,
+    timeout_s: int = PROBE_TIMEOUT_S,
+) -> ProbeUsage:
+    """Ask the provider for one trivial turn on *model*; return the spend.
+
+    A refusal surfaces as :class:`ProbeError` whose ``__cause__`` is the
+    provider's :class:`~booley.runtime.agent_errors.ModelUnavailableError`.
+    A timeout is an error too, so it never reads as acceptance.
+    """
+    try:
+        with owned_tempdir("booley-model-probe-") as work:
+            return _probe_model_in(project_root, booley_dir, model, work, timeout_s)
+    except OSError as exc:  # fail-soft by contract: an unusable temp dir becomes a doctor SKIP
+        raise ProbeError(f"model probe failed: {exc}") from exc
+
+
+def _probe_model_in(
+    project_root: Path, booley_dir: Path | None, model: str, work: Path, timeout_s: int
+) -> ProbeUsage:
+    """Run the model probe call in *work* (see :func:`probe_model_access`)."""
+    import asyncio
+
+    from booley.runtime import agent as agent_mod
+    from booley.runtime import agent_config as config_mod
+    from booley.runtime.agent_errors import UsageLimitError
+
+    try:
+        config_mod.load_backend_config(project_root, booley_dir=booley_dir)
+        params = _probe_params(
+            config_mod.get_backend_config().settings, model, work, timeout_s, "doctor-model-probe"
+        )
+    except Exception as exc:  # fail-soft by contract: environment issues become a doctor SKIP
+        raise ProbeError(f"model probe failed: {exc}") from exc
+    try:
+        result = asyncio.run(agent_mod.call_agent(configure_agent_call(params)))
+    except Exception as exc:
+        raise ProbeError(
+            f"model probe failed: {exc}",
+            agent_failure=not isinstance(exc, UsageLimitError),
+            agent_called=True,
+        ) from exc
+    usage = ProbeUsage.from_result(result)
+    if result.timed_out:
+        raise ProbeError(
+            f"model probe timed out after {timeout_s}s", agent_called=True, usage=usage
+        )
+    return usage
