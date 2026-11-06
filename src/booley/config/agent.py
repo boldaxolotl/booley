@@ -9,7 +9,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from booley.config.gateway import GATEWAY_AUTH, GatewayModelPin, gateway_model_pin_from_env
+from booley.config.gateway import (
+    GATEWAY_AUTH,
+    GATEWAY_MODEL_ENV,
+    GatewayModelPin,
+    gateway_model_pin_from_env,
+)
 from booley.config.jobs import SlotCaps, parse_caps
 from booley.config.sandbox import SANDBOX_IMAGE, project_sandbox_image
 from booley.core.config_paths import resolve_toml
@@ -194,6 +199,23 @@ class AgentSettings:
         if pinned is None:
             return self.model_for_tier(tier)
         return self.tier_models.get(pinned, pinned)
+
+    def model_settings(self) -> dict[str, tuple[str, ...]]:
+        """Every distinct resolved model mapped to the config keys that select it.
+
+        Tier keys come first (heavy, standard, light), then role pins sorted by
+        name; under a gateway model pin the one model is selected by that env var.
+        """
+        if self.model_pin:
+            return {self.model_pin: (GATEWAY_MODEL_ENV,)}
+        keys: dict[str, list[str]] = {}
+        for tier in _MODEL_TIERS:
+            keys.setdefault(self.model_for_tier(tier), []).append(f"[models] {tier}")
+        for role in sorted(self.role_models):
+            keys.setdefault(self.model_for_role(role, "standard"), []).append(
+                f"[models.roles] {role}"
+            )
+        return {model: tuple(names) for model, names in keys.items()}
 
     def effort_for_tier(self, tier: str) -> str | None:
         """Resolve reasoning effort for a tier. None = use provider default."""
