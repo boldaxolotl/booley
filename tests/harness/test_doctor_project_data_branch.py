@@ -207,3 +207,67 @@ def test_expected_worktree_booley_layouts_do_not_warn(
     tmp_path: Path, versioned: bool, paired: bool
 ) -> None:
     assert _pairing_warnings(_linked_worktree(tmp_path, versioned=versioned, paired=paired)) == []
+
+
+def _common_state_findings(root: Path) -> list:
+    reporter = doctor._Reporter.create()
+    doctor._check_common_state_in_worktrees(root, reporter)
+    return list(reporter.findings or ())
+
+
+def _plant(path: Path, text: str = "planted\n") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_common_state_in_worktree_warns_on_planted_path(tmp_path: Path) -> None:
+    worktree = _linked_worktree(tmp_path, versioned=False, paired=False)
+    root = tmp_path / "project"
+    planted = worktree / ".booley" / "runtime" / "session_activity" / "a"
+    _plant(planted)
+    # A main checkout full of Common state is where that state belongs.
+    _plant(root / ".booley" / "runtime" / "session_activity" / "main")
+    _plant(root / ".booley" / "findings.jsonl")
+
+    findings = _common_state_findings(root)
+
+    warnings = [finding for finding in findings if finding.severity == "warn"]
+    assert [finding.check_id for finding in warnings] == ["project-data.common-state-in-worktree"]
+    assert warnings[0].subject == str(worktree / ".booley")
+    assert "runtime/session_activity" in warnings[0].message
+    assert "findings.jsonl" not in warnings[0].message
+    assert "git worktree remove" in warnings[0].fix
+    assert planted.is_file()  # Doctor reports; it never deletes.
+    assert not any(finding.severity == "pass" for finding in findings)
+
+
+def test_common_state_in_worktree_passes_on_clean_snapshot(tmp_path: Path) -> None:
+    worktree = _linked_worktree(tmp_path, versioned=False, paired=False)
+    _plant(worktree / ".booley" / "cores" / "ip.core")  # Versioned state is fine.
+    _plant(worktree / ".booley" / "flow-reports" / "r.json")  # So is source-tied state.
+
+    findings = _common_state_findings(tmp_path / "project")
+
+    assert [finding.severity for finding in findings] == ["pass"]
+
+
+def test_common_state_in_worktree_ignores_tracked_paths_in_paired_checkout(
+    tmp_path: Path,
+) -> None:
+    worktree = _linked_worktree(tmp_path, versioned=True, paired=True)
+    paired = worktree / ".booley"
+    # Committed in the Versioned Booley Directory, so present in every Paired Checkout.
+    _plant(paired / "goalsets" / "x.md")
+    _plant(paired / "docker" / "Dockerfile")
+    _git(paired, "config", "user.name", "Test")
+    _git(paired, "config", "user.email", "test@example.invalid")
+    _git(paired, "add", "-f", "goalsets", "docker")
+    _git(paired, "commit", "-m", "common files")
+
+    assert [f.severity for f in _common_state_findings(tmp_path / "project")] == ["pass"]
+
+    _plant(paired / "runtime" / "session_activity" / "a")
+    warnings = [f for f in _common_state_findings(tmp_path / "project") if f.severity == "warn"]
+    assert len(warnings) == 1
+    assert "session_activity" in warnings[0].message
+    assert "goalsets" not in warnings[0].message and "docker" not in warnings[0].message

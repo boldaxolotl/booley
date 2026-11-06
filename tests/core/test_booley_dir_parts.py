@@ -143,3 +143,105 @@ def test_unclassified_path_is_rejected():
     ):
         with pytest.raises(UnclassifiedBooleyPathError):
             booley_dir_part(path)
+
+
+# The maintainer's grouping of Checkout rows: copied into a Snapshot (versioned
+# with the RTL) or tied to one checkout's sources. A new Checkout row must be
+# placed in one of them here, which is how the test forces that decision.
+VERSIONED_PATTERNS = {
+    "booley.toml",
+    "tests.toml",
+    "criteria.toml",
+    "doctor-waivers.toml",
+    "configs.toml",
+    "cores/",
+    "hooks/",
+    "generators/",
+    "mcp_tools/",
+    "selftest/",
+    "AGENTS.md",
+    "FUSESOC_IGNORE",
+    "goals/history/",
+    "tickets/history/",
+    "pipeline.toml",
+    "tools/",
+    "rtl_style_guide.md",
+    "tb_style_guide.md",
+    ".gitignore",
+    ".gitattributes",
+    ".managed/",
+}
+SOURCE_TIED_PATTERNS = {
+    "tmp/doctor/",
+    "runtime/doctor/core-resolve/",
+    ".runtime/edalize/",
+    ".runtime/python-artifacts/",
+    "flow-reports/",
+    "mcp-tool-reports/",
+    "tmp/setup/",
+    ".git/",
+    ".runtime/syn/",
+    ".runtime/simulation-run-locks/",
+    ".runtime/flow-console/",
+    ".runtime/mutation_tester/",
+    ".runtime/flow-reports/",
+    ".runtime/mcp-tool-reports/",
+    ".runtime/display.jsonl",
+    ".runtime/prompts/",
+    "tmp/fusesoc-isolated-cores/",
+}
+
+
+def test_every_checkout_row_says_whether_it_is_versioned():
+    from booley.core.booley_dir_parts import BOOLEY_DIR_PATHS, BooleyDirClass, BooleyDirPart
+
+    assert all(isinstance(value, BooleyDirClass) for value in BOOLEY_DIR_PATHS.values())
+    by_class = {
+        booley_class: {p for p, value in BOOLEY_DIR_PATHS.items() if value is booley_class}
+        for booley_class in BooleyDirClass
+    }
+    assert by_class[BooleyDirClass.VERSIONED] == VERSIONED_PATTERNS
+    assert by_class[BooleyDirClass.SOURCE_TIED] == SOURCE_TIED_PATTERNS
+    assert BooleyDirClass.COMMON.part is BooleyDirPart.COMMON
+    assert BooleyDirClass.VERSIONED.part is BooleyDirPart.CHECKOUT
+    assert BooleyDirClass.SOURCE_TIED.part is BooleyDirPart.CHECKOUT
+
+
+def test_walk_yields_topmost_uniform_entries(tmp_path):
+    from booley.core.booley_dir_parts import BooleyDirClass, iter_booley_dir
+
+    def touch(relative: str) -> None:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x\n", encoding="utf-8")
+
+    for relative in (
+        "cores/ip/deep/file.core",  # One entry: the whole subtree is versioned.
+        "goals/G1/record.json",  # goals/ is Common but goals/history/ is not.
+        "goals/history/H1.md",
+        "runtime/jobs/j1/state.json",  # runtime/ is a container.
+        "runtime/unknown.json",
+        "runtime/doctor/core-resolve/x",
+        "runtime/doctor/stale.lock",
+        "eval_tmp/x",  # Unclassified, no rows below: one entry, not walked.
+    ):
+        touch(relative)
+    (tmp_path / "linked").symlink_to(tmp_path / "cores", target_is_directory=True)
+    (tmp_path / "tickets").mkdir()
+    (tmp_path / "tickets" / "history").mkdir()
+
+    walked = dict(iter_booley_dir(tmp_path))
+
+    assert walked == {
+        "cores": BooleyDirClass.VERSIONED,
+        "eval_tmp": None,
+        "goals/G1": BooleyDirClass.COMMON,
+        "goals/history": BooleyDirClass.VERSIONED,
+        "linked": None,  # A symlink is a leaf, never followed.
+        "runtime/doctor/core-resolve": BooleyDirClass.SOURCE_TIED,
+        "runtime/doctor/stale.lock": BooleyDirClass.COMMON,
+        "runtime/jobs": BooleyDirClass.COMMON,
+        "runtime/unknown.json": None,
+        "tickets/history": BooleyDirClass.VERSIONED,
+    }
+    assert list(walked) == sorted(walked)

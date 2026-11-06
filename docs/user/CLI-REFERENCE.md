@@ -147,7 +147,10 @@ The worktree gets its own Booley Directory (the `.booley/` folder):
   that repository first, untracked files included; Booley refuses a repository
   with no commits or an existing branch of that name. Ignored files stay
   behind. Booley refuses to create a worktree from inside a Paired Checkout.
-- **Snapshot**, otherwise: a plain copy of the Booley Directory.
+- **Snapshot**, otherwise: a copy of the Booley Directory's configuration
+  (settings, `cores/`, hooks, committed history). Build results, reports, logs,
+  and evidence stay in the main Booley Directory. A path Booley does not
+  classify is not copied, and the command names it.
 
 **Removing a worktree** deletes everything in it, ignored files included, and
 Booley has no command for it. First save what you need:
