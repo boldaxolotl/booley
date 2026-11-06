@@ -32,6 +32,7 @@ build dir next to the ``.eda.yml``.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import logging
 import os
@@ -43,6 +44,8 @@ from typing import Any
 
 import yaml
 from fusesoc.capi2 import exprs as _fusesoc_exprs
+from fusesoc.capi2.coreparser import Core2Parser
+from fusesoc.core import Core as FuseSocCore
 
 from booley.core.booley_dir import BOOLEY_DIR_NAME
 from booley.core.booley_dir_links import resolve_through_entry
@@ -703,6 +706,76 @@ def core_schema_errors(core_file: Path | str) -> list[str]:
             )
 
     return errors
+
+
+@dataclass(frozen=True)
+class FuseSocCoreRejection:
+    """FuseSoC's own reason for ignoring one ``.core`` file."""
+
+    message: str  # FuseSoC's message, without its "Error validating data." prefix
+    entry: str | None  # violation path cut to section + entry ("targets.u", "filesets")
+    target: str | None  # Target named by the violation path, when it names one
+    misplaced_booley: bool  # a ``booley:`` mapping sits directly under that Target
+
+
+@functools.cache
+def _fusesoc_core_parser() -> Core2Parser:
+    """FuseSoC's CAPI2 parser, built on first use (schema compilation is slow).
+
+    The defaults equal the settings Target inspection hands FuseSoC, so Doctor's
+    verdict and a Flow's resolution agree.
+    """
+    return Core2Parser()
+
+
+def fusesoc_rejection_message(raw: str) -> str:
+    """Normalize a FuseSoC parse-error message for Booley diagnostics.
+
+    FuseSoC prefixes schema errors with ``"\\nError validating data."``; the
+    ``data`` root is an implementation detail of its JSON-schema validator.
+    """
+    message = raw.strip().removeprefix("Error validating ")
+    return message.removeprefix("data.")
+
+
+def _rejection_from(exc: BaseException) -> FuseSocCoreRejection:
+    """Describe a FuseSoC parse failure, reading the schema violation if present."""
+    message = fusesoc_rejection_message(str(getattr(exc, "msg", None) or exc))
+    violation = exc.__context__
+    path = getattr(violation, "path", None)
+    entry: str | None = None
+    target: str | None = None
+    misplaced_booley = False
+    if isinstance(path, list) and path[:1] == ["data"] and path[1:2]:
+        section = path[1:3]  # ["targets", "u"] or ["filesets"]
+        entry = ".".join(section)
+        if path[1] == "targets" and len(path) >= 3:
+            target = path[2]
+            offenders = getattr(violation, "value", None)
+            misplaced_booley = (
+                len(path) == 3
+                and getattr(violation, "rule", None) == "additionalProperties"
+                and isinstance(offenders, Mapping)
+                and "booley" in offenders
+            )
+    return FuseSocCoreRejection(message, entry, target, misplaced_booley)
+
+
+def fusesoc_core_rejection(core_file: Path | str) -> FuseSocCoreRejection | None:
+    """Return FuseSoC's CAPI2 verdict for one core, or ``None`` when it accepts it.
+
+    Builds ``fusesoc.core.Core`` exactly as ``CoreManager.find_cores`` does and
+    treats the failures it ignores a file for (``SyntaxError``, ``ImportError``,
+    ``ValueError``) as a rejection, so Doctor and Target inspection report the
+    reason FuseSoC itself would give instead of re-deriving the schema. FuseSoC's
+    loader lets some YAML errors escape as ``yaml.YAMLError``; those count too.
+    The caller has already read the file, so no ``OSError`` is expected.
+    """
+    try:
+        FuseSocCore(parser=_fusesoc_core_parser(), core_file=str(core_file))
+    except (SyntaxError, ImportError, ValueError, yaml.YAMLError) as exc:
+        return _rejection_from(exc)
+    return None
 
 
 def core_target_flow_option(core_doc: Mapping[str, Any], name: str, option: str) -> Any:
