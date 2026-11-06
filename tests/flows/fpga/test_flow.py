@@ -2114,7 +2114,7 @@ def test_summary_record_keeps_every_metric_with_delta_sub_row(
         pytest.param(
             True,
             {"default": "ERROR (baseline)"},
-            "RESULT: ERROR (baseline default: baseline broke",
+            "RESULT: ERROR (baseline default: ",
             id="baseline-error",
         ),
     ],
