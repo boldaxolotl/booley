@@ -5346,8 +5346,8 @@ def test_exit_zero_design_failure_reason_omits_exit_header(flow_and_state, tmp_p
         )
     assert report["termination"] == "design_failure"
     messages = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
-    assert any(f"design check failed: {diagnostic}" in m for m in messages)
-    assert not any("despite exit 0" in m for m in messages)
+    assert any(f"design check failed: {diagnostic}" in m for m in messages), messages
+    assert not any("despite exit 0" in m for m in messages), messages
     # The status cell and RESULT line show the same reason, not the header.
     assert f"FAIL ({diagnostic})" in result.report_text
     assert f"RESULT: FAIL (lite: {diagnostic})" in result.report_text
