@@ -14,6 +14,8 @@ from booley.flows.sim.adapter_transport import (
     AdapterTraceResult,
     AdapterTransportError,
     AdapterTransportIdentity,
+    assess_native_verdict,
+    native_verdict_message,
     partial_result_identity,
     read_adapter_result,
     write_adapter_result,
@@ -696,3 +698,27 @@ def test_attempt_failed_promotion_preserves_only_durable_partial(tmp_path, monke
     assert outcome.error_kind == "cleanup"
     assert read_adapter_result(partial) == result
     assert not identity.result_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("count", "label"),
+    [
+        (1, "1 assertion/fatal error message"),
+        (2, "2 assertion/fatal error messages"),
+    ],
+)
+def test_native_fatal_only_failure_names_assertion_fatal_messages(count: int, label: str):
+    """A testbench ``$fatal`` failure is not an SVA failure and the text must not say so (#2807)."""
+    output = "".join(
+        f"[{100 + i}] %Fatal: tb.sv:12: Dhrystone trapped before validated success marker\n"
+        for i in range(count)
+    )
+
+    assessment = assess_native_verdict(output, 1)
+
+    # The grade and machine-readable count are unchanged: still a design failure.
+    assert assessment.sva_errors == count
+    assert assessment.passed is False
+    assert assessment.inconclusive is False
+    message = native_verdict_message("Verilator", assessment, 1, RunTermination())
+    assert message == f"\nVerilator sim FAILED ({label})"

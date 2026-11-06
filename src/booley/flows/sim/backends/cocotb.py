@@ -103,6 +103,7 @@ from booley.flows.sim.backends.shared import (
 )
 from booley.flows.sim.result import (
     count_sva_errors,
+    describe_error_message_count,
     format_infra_error,
     format_summary,
     write_result_json,
@@ -277,7 +278,7 @@ def _apply_design_evidence(
     detail: str,
 ) -> tuple[AdapterTestResult, ...]:
     if sva_errors:
-        reason = f"{sva_errors} SVA assertion error(s)"
+        reason = describe_error_message_count(sva_errors)
     elif failure_kind == "design":
         reason = detail or "simulator process failed outside Cocotb results"
     else:
@@ -903,7 +904,7 @@ def _print_verdict(
         failed = [name for name, verdict, _ in assessment.verdicts if verdict != VERDICT_PASS]
         reason = f"{len(failed)}/{len(selected)} tests failed"
         if assessment.sva_errors:
-            reason += f", {assessment.sva_errors} SVA assertion errors"
+            reason += f", {describe_error_message_count(assessment.sva_errors)}"
         print(f"\ncocotb sim FAILED ({reason})")
 
 

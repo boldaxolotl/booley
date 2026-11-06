@@ -404,7 +404,8 @@ class TestCocotbVerdictMatrix:
         with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(tmp_path, flow, out)
         assert result.exit_code == EXIT_FAILURE
-        assert "sva_errors=1" in result.report_text
+        assert ", 1 assertion/fatal error message," in result.report_text
+        assert "sva_errors=" not in result.report_text
 
     def test_build_warnings_echoing_error_text_do_not_fail_the_batch(
         self,

@@ -19,7 +19,11 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.flows.sim.adapter_transport import AdapterTransportIdentity, read_adapter_result
+from booley.flows.sim.adapter_transport import (
+    AdapterTestResult,
+    AdapterTransportIdentity,
+    read_adapter_result,
+)
 from booley.flows.sim.backends import cocotb as crun
 from booley.flows.sim.backends.shared import RunTermination
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX
@@ -949,3 +953,26 @@ def test_traced_cocotb_status_reports_simulator(tmp_path: Path, eda_tool: str, b
     status = json.loads(trace.manifest_path.read_text())
     assert status["backend"] == backend
     assert status["trace_scope"] == "counter"
+
+
+def test_rtl_fatal_failure_text_names_assertion_fatal_messages(capsys):
+    """Cocotb failure text counts ``$fatal`` lines as messages, not SVA assertions (#2807)."""
+    (detailed,) = crun._apply_design_evidence((AdapterTestResult("t", "pass"),), 1, "", "")
+    assert detailed.detail == "1 assertion/fatal error message"
+
+    assessment = crun._VerdictAssessment(
+        selected=("t",),
+        verdicts=(("t", "pass", ""),),
+        sva_errors=2,
+        passed=False,
+        inconclusive=False,
+        infrastructure_error="",
+    )
+    # The failure branch never reads the parsed results.
+    crun._print_verdict(
+        assessment, crun.CocotbResults.__new__(crun.CocotbResults), RunTermination(), 0
+    )
+
+    out = capsys.readouterr().out
+    assert "cocotb sim FAILED (0/1 tests failed, 2 assertion/fatal error messages)" in out
+    assert "SVA" not in out

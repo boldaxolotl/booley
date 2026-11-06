@@ -24,7 +24,11 @@ from booley.flows.sim.backends.shared import (
     SimulationFailureKind,
     allowed_failure_kinds,
 )
-from booley.flows.sim.result import count_sva_errors, parse_sim_verdict
+from booley.flows.sim.result import (
+    count_sva_errors,
+    describe_error_message_count,
+    parse_sim_verdict,
+)
 
 ADAPTER_RESULT_SCHEMA = 1
 AdapterVerdict = Literal["pass", "fail", "timeout", "inconclusive"]
@@ -521,7 +525,7 @@ def native_verdict_message(
         reason = f"rc={returncode}" if returncode else "fail sentinel matched"
         outcome = f"FAILED ({reason})"
     elif assessment.sva_errors:
-        outcome = f"FAILED ({assessment.sva_errors} SVA assertion errors)"
+        outcome = f"FAILED ({describe_error_message_count(assessment.sva_errors)})"
     else:
         outcome = f"FAILED (rc={returncode})"
     return f"\n{tool} sim {outcome}"
