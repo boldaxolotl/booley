@@ -19,6 +19,12 @@ from each side:
   `booley session enter`): the same configuration plus the tools, MCP server,
   and agent setup inside the Sandbox.
 
+Doctor checks the sign-in of every Agent CLI listed in `[agent] clis`. A missing
+sign-in for the default CLI is graded as before (a failure when `[agent] auth`
+pins a billing mode, a warning under `auto`). For another listed CLI it is a
+warning that names that CLI's login command. Warning IDs end in the CLI, for
+example `agent.credential-missing:codex`, so you can waive each one separately.
+
 Run plain `booley doctor` for everyday checks. It checks configuration and
 prepares each Flow without running an EDA tool.
 

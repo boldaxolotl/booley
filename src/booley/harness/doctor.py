@@ -2776,47 +2776,97 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     reported, auto_choice = _report_agent_app_choice(reporter)
     if not reported:
         return
-    provider = _configured_provider(project)
-    auth_policy = _configured_auth_policy(project)
+    default_cli = _configured_provider(project)
+    allowed = _allowed_clis(project, default_cli)
     _warn_ignored_gateway_handoff(reporter)
-    _check_gateway_model_pin(auth_policy, provider, reporter)
+    # Pins apply to gateway-routed Codex only, so judge them under Codex's policy when it is listed.
+    pin_cli = auth_token.APP_CODEX if auth_token.APP_CODEX in allowed else default_cli
+    _check_gateway_model_pin(_configured_auth_policy(project, pin_cli), pin_cli, reporter)
+    for cli in allowed:
+        _check_cli_credentials(
+            project, cli, reporter, is_default=cli == default_cli, auto_choice=auto_choice
+        )
+
+
+def _check_cli_credentials(
+    project: ProjectAudit | None,
+    cli: str,
+    reporter: _Reporter,
+    *,
+    is_default: bool,
+    auto_choice: AgentAppChoice | None,
+) -> None:
+    """Audit one allowed Agent CLI's credential, policy, and rotation risk.
+
+    The default CLI keeps its grading (FAIL under a pinned policy, WARN under
+    ``auto``). Another allowed CLI never fails for a missing credential: that
+    only means it cannot run yet, so it WARNs with the CLI's own login fix.
+    """
+    auth_policy = _configured_auth_policy(project, cli)
     if auth_policy == GATEWAY_AUTH:
         # Under BOOLEY_AGENT_APP=auto the policy comes from the start's choice record.
-        _check_gateway_auth(provider, reporter, chosen_by_auto=auto_choice is not None)
+        _check_gateway_auth(
+            cli, reporter, chosen_by_auto=auto_choice is not None or not is_default
+        )
         return
     try:
-        plan = auth_token.credential_plan(provider, auth_policy)
+        plan = auth_token.credential_plan(cli, auth_policy)
     except ValueError as exc:
-        reporter.fail_(str(exc), check_id="agent.credential-policy", subject=provider)
+        reporter.fail_(str(exc), check_id="agent.credential-policy", subject=cli)
         return
     _check_agent_auth_token(
-        provider,
+        cli,
         reporter.pass_,
         reporter.warn_,
         reporter.skip_,
         policy=auth_policy,
         plan=plan,
-        _fail=lambda message: reporter.fail_(
-            message, check_id="agent.credential-missing", subject=provider
+        _fail=(
+            (
+                lambda message: reporter.fail_(
+                    message, check_id="agent.credential-missing", subject=cli
+                )
+            )
+            if is_default
+            else None
         ),
+        missing_fix="" if is_default else _missing_credential_fix(cli, auth_policy),
+        is_default=is_default,
     )
+    if plan.selected is None and not is_default:
+        return  # the missing-credential WARN already names the fix; no login to rotate
     _check_oauth_token(
-        provider,
+        cli,
         reporter.pass_,
         reporter.warn_,
         reporter.skip_,
         policy=auth_policy,
         _note=reporter.note_,
         plan=plan,
+        is_default=is_default,
     )
     _check_subscription_creds_health(
-        provider,
+        cli,
         reporter.pass_,
         reporter.warn_,
         policy=auth_policy,
         plan=plan,
         display_overrides=reporter.display_overrides,
     )
+
+
+def _missing_credential_fix(cli: str, policy: str) -> str:
+    """The sign-in that *policy* accepts for *cli* (see ``auth_token.allowed_credential_keys``)."""
+    if cli == auth_token.APP_CLAUDE:
+        if policy == "api_key":
+            return f"export {auth_token.API_KEY_ENV[cli]}"
+        return "run claude and use /login, or on the host: booley auth"
+    host_login = f"booley auth --cli {cli}"
+    if policy == "subscription":
+        return "codex login"
+    if policy == "api_key":
+        return f"export {auth_token.API_KEY_ENV[cli]}, or on the host: {host_login}"
+    return f"codex login, or on the host: {host_login}"
 
 
 def _report_agent_app_choice(reporter: _Reporter) -> tuple[bool, AgentAppChoice | None]:
@@ -2882,8 +2932,9 @@ def _check_gateway_auth(provider: str, reporter: _Reporter, *, chosen_by_auto: b
     """Grade the env-selected gateway policy: it routes Codex only and needs URL + token.
 
     *chosen_by_auto* means ``BOOLEY_AGENT_APP=auto`` picked the gateway because it
-    found no Claude or Codex login, so a token command that cannot print a token
-    yet is a warning. With an explicit app it stays a FAIL.
+    found no Claude or Codex login, or because the CLI is not the Project's default
+    (it cannot run yet), so a token command that cannot print a token yet is a
+    warning. With an explicit default app it stays a FAIL.
     """
     if provider != auth_token.APP_CODEX:
         reporter.fail_(
@@ -3014,7 +3065,7 @@ def _configured_provider(project: ProjectAudit | None) -> str:
     loaders use: ``BOOLEY_PRIMARY_PROVIDER`` -> booley.toml ``[agent] default`` ->
     ``BOOLEY_AGENT_APP``), then the built-in default. An omitted default is not
     "unknown", so the auth checks audit exactly the backend that will run: the
-    *unused* backend's absent credentials never surface as warnings.
+    *unlisted* backend's absent credentials never surface as warnings.
     """
     from booley.config.agent import _DEFAULT_PROVIDER, resolve_default_cli
 
@@ -3022,8 +3073,22 @@ def _configured_provider(project: ProjectAudit | None) -> str:
     return resolved[0] if resolved else _DEFAULT_PROVIDER
 
 
-def _configured_auth_policy(project: ProjectAudit | None) -> str:
-    """Audit the default CLI's policy; ambient handoff is only a no-Project fallback."""
+def _allowed_clis(project: ProjectAudit | None, default_cli: str) -> tuple[str, ...]:
+    """The Agent CLIs to audit: the default first, then the other declared ``[agent] clis``.
+
+    A default outside the declared list (for example from ``BOOLEY_PRIMARY_PROVIDER``)
+    is a config error that ``agent.backend-health`` reports; the credential audit
+    then stays the default CLI's alone.
+    """
+    declared = _declared_agent(project)
+    clis = declared.clis if declared else None
+    if not clis or default_cli not in clis:
+        return (default_cli,)
+    return (default_cli, *(cli for cli in clis if cli != default_cli))
+
+
+def _configured_auth_policy(project: ProjectAudit | None, cli: str | None = None) -> str:
+    """Audit *cli*'s policy (default CLI when omitted); ambient handoff is only a no-Project fallback."""
     from booley.config.agent import (
         _DEFAULT_AUTH,
         _VALID_AUTH_MODES,
@@ -3032,7 +3097,13 @@ def _configured_auth_policy(project: ProjectAudit | None) -> str:
         gateway_handoff_active,
     )
 
-    if gateway_handoff_active():
+    default_cli = _configured_provider(project)
+    cli = cli or default_cli
+    # The hand-off routes Codex; Claude is audited as gateway only when it is the sole
+    # allowed CLI (the single-CLI FAIL "routes Codex only"), as the runtime treats it.
+    if gateway_handoff_active() and (
+        cli == auth_token.APP_CODEX or _allowed_clis(project, default_cli) == (cli,)
+    ):
         return GATEWAY_AUTH  # env-only policy: it outranks the Project toml
     env_auth = env_auth_handoff() or ""
     if project is None:
@@ -3041,7 +3112,7 @@ def _configured_auth_policy(project: ProjectAudit | None) -> str:
     if declared is None:
         return _DEFAULT_AUTH
     auth = declared.auth
-    policy = auth if isinstance(auth, str) else (auth or {}).get(_configured_provider(project))
+    policy = auth if isinstance(auth, str) else (auth or {}).get(cli)
     if policy == GATEWAY_AUTH and not _inside_container():
         return _DEFAULT_AUTH  # like the env hand-off, the toml gateway applies in a Sandbox only
     return policy or _DEFAULT_AUTH
@@ -3058,9 +3129,11 @@ def _agent_app_installed(provider: str) -> bool:
     return host_environment.inspect_agent_installation("codex").installed
 
 
-def _provider_not_installed_reason(provider: str) -> str:
+def _provider_not_installed_reason(provider: str, *, is_default: bool = True) -> str:
     """Explain an unchecked auth audit: the selected provider is absent here."""
-    return f"the configured [agent] provider ({provider}) is not installed on this host"
+    if is_default:
+        return f"the configured [agent] provider ({provider}) is not installed on this host"
+    return f"the allowed Agent CLI ({provider}) is not installed on this host"
 
 
 def _check_agent_auth_token(
@@ -3072,6 +3145,8 @@ def _check_agent_auth_token(
     *,
     _fail: Check | None = None,
     plan: auth_token.CredentialPlan | None = None,
+    missing_fix: str = "",
+    is_default: bool = True,
 ) -> None:
     """ADR 0018: verify the agent's credential where it actually lives (not assumed).
 
@@ -3082,19 +3157,21 @@ def _check_agent_auth_token(
     ``[agent] auth`` knob: under ``subscription`` Booley scrubs the API keys
     from agent envs, so the resolution here mirrors that.
 
-    Scoped to the ONE provider the project runs on (see
-    :func:`_configured_provider`): a Booley run never reads the other app's
-    credentials, so their absence is not a finding worth a warning.
+    Scoped to one allowed CLI (see :func:`_allowed_clis`): a CLI the Project does
+    not list is never audited. *missing_fix* names the sign-in for a missing credential.
     """
     _warn = _warning_sink(_warn, "agent.credential-missing", subject=provider)
     plan = plan or auth_token.credential_plan(provider, policy)
     if policy != "auto" and plan.selected is None:
-        (_fail or _warn)(
-            f"{provider}: no usable credential under auth = '{policy}'; provide the pinned credential"
-        )
+        message = f"{provider}: no usable credential under auth = '{policy}'; provide the pinned credential"
+        if _fail:
+            _fail(message)
+        else:
+            _warn(message, missing_fix)
         return
     if not _agent_app_installed(provider):
-        _skip(f"agent auth token check skipped - {_provider_not_installed_reason(provider)}")
+        reason = _provider_not_installed_reason(provider, is_default=is_default)
+        _skip(f"agent auth token check skipped - {reason}")
         return
     label = _AGENT_APP_LABELS[provider]
     effective = plan.selected
@@ -3107,7 +3184,8 @@ def _check_agent_auth_token(
         )
         _warn(
             f"{label} detected but no usable credential under auth = '{policy}' "
-            f"(login file: {auth_token.subscription_creds_path(provider)}) — {hint}"
+            f"(login file: {auth_token.subscription_creds_path(provider)}) — {hint}",
+            missing_fix,
         )
         return
     line = f"{label} auth: {effective.source}"
@@ -3164,6 +3242,7 @@ def _check_oauth_token(
     *,
     _note: Check | None = None,
     plan: auth_token.CredentialPlan | None = None,
+    is_default: bool = True,
 ) -> None:
     """Report whether agents run on a rotation-free credential or a refreshing one.
 
@@ -3180,14 +3259,13 @@ def _check_oauth_token(
     explicit ``auth = "subscription"`` accepts that tradeoff, so it is a NOTE.
     In a Sandbox without the app's seed sidecar the login was made inside it, no
     host-side login shares its refresh token, and the finding is a NOTE too.
-    Only the *other* provider's line is dropped -- see :func:`_configured_provider`.
+    A CLI the Project does not list gets no line -- see :func:`_allowed_clis`.
     """
     note_sink = _note or _pass
     _warn = _warning_sink(_warn, "agent.rotation-risk", subject=provider)
     if not _agent_app_installed(provider):
-        _skip(
-            f"rotation-free credential check skipped - {_provider_not_installed_reason(provider)}"
-        )
+        reason = _provider_not_installed_reason(provider, is_default=is_default)
+        _skip(f"rotation-free credential check skipped - {reason}")
         return
     plan = plan or auth_token.credential_plan(provider, policy)
     if policy == "api_key" and plan.selected is None:
@@ -3211,7 +3289,7 @@ def _check_oauth_token(
         if policy == "subscription":
             note_sink(f"{message} (accepted by explicit auth = 'subscription')")
         else:
-            _warn(message, f"booley auth --app {provider}")
+            _warn(message, f"booley auth --cli {provider}")
         return
     # F-18: `stored` is truthy when the token comes from the read-only sidecar
     # seed too (the in-container case), but the privacy check only stats the
@@ -3329,7 +3407,7 @@ def _check_subscription_creds_health(
             if _host_login_can_rotate(app):
                 suffix, fix = (
                     ") and refresh fails once the host has rotated the shared refresh token — agents then crash at launch",
-                    f"booley auth --app {app}  (or refresh the host login and recreate the container)",
+                    f"booley auth --cli {app}  (or refresh the host login and recreate the container)",
                 )
             else:
                 suffix, fix = (
@@ -3363,7 +3441,7 @@ def _check_subscription_creds_health(
             "to a pre-refresh inode, so every container (re)start re-seeds dead "
             "credentials",
             "recreate the container to re-bind the current host file — or store a "
-            f"rotation-free credential: booley auth --app {app}",
+            f"rotation-free credential: booley auth --cli {app}",
         )
 
 

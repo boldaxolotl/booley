@@ -138,7 +138,7 @@ def test_chat_parser_and_dispatch_are_registered():
     assert args.command == "chat"
     assert tlr._EARLY_COMMANDS["chat"] is tlr.run_chat
     help_text = parser.format_help()
-    assert "Open this Project's configured agent" in help_text
+    assert "Open this Project's default (or chosen) Agent CLI" in " ".join(help_text.split())
 
 
 def _parse_argv(monkeypatch, *argv):
@@ -149,6 +149,7 @@ def _parse_argv(monkeypatch, *argv):
 def test_chat_forwards_arguments_after_chat(monkeypatch):
     assert _parse_argv(monkeypatch, "chat", "resume", "--last").agent_args == ["resume", "--last"]
     assert _parse_argv(monkeypatch, "chat", "--resume", "abc").agent_args == ["--resume", "abc"]
+    assert _parse_argv(monkeypatch, "chat", "--resume", "abc").cli is None
     # The first `chat` is the value of --project; only the second is the command.
     args = _parse_argv(monkeypatch, "--project", "chat", "chat", "--resume", "x", "--", "y")
     assert args.agent_args == ["--resume", "x", "--", "y"]
@@ -157,6 +158,21 @@ def test_chat_forwards_arguments_after_chat(monkeypatch):
     args = _parse_argv(monkeypatch, "chat", "--project", "P", "--continue")
     assert args.agent_args == ["--continue"]
     assert args._cli_selection.value == "P"
+
+
+def test_chat_cli_option_is_booleys_only_when_leading(monkeypatch, capsys):
+    args = _parse_argv(monkeypatch, "chat", "--cli", "codex", "--resume", "x")
+    assert (args.cli, args.agent_args) == ("codex", ["--resume", "x"])
+    assert _parse_argv(monkeypatch, "chat", "--cli=codex").cli == "codex"
+    args = _parse_argv(monkeypatch, "chat", "-C", "P", "--cli", "codex")
+    assert (args.cli, args._cli_selection.value) == ("codex", "P")
+    # After the agent's own arguments, `--cli` belongs to the agent CLI.
+    args = _parse_argv(monkeypatch, "chat", "--resume", "x", "--cli", "codex")
+    assert (args.cli, args.agent_args) == (None, ["--resume", "x", "--cli", "codex"])
+    with pytest.raises(SystemExit) as raised:
+        _parse_argv(monkeypatch, "chat", "--cli", "bogus")
+    assert raised.value.code == 2
+    assert "invalid choice: 'bogus'" in capsys.readouterr().err
 
 
 def test_chat_later_booley_options_are_forwarded(monkeypatch, capsys):
@@ -183,8 +199,31 @@ def test_chat_help_documents_passthrough(monkeypatch, capsys):
         _parse_argv(monkeypatch, "chat", "--help")
     assert raised.value.code == 0
     help_text = " ".join(capsys.readouterr().out.split())
-    assert "passed unchanged to the agent CLI" in help_text
+    assert "passed unchanged to the Agent CLI" in help_text
     assert "booley chat -- --help" in help_text
+
+
+def test_chat_help_documents_cli_option(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        _parse_argv(monkeypatch, "chat", "--help")
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "--cli {claude,codex}" in help_text
+    assert "must be listed in booley.toml [agent] clis" in help_text
+
+
+def test_auth_cli_and_hidden_app_alias_parse_identically(capsys):
+    parser = tlr._build_parser()
+
+    by_cli = parser.parse_args(["auth", "--cli", "codex", "--status"])
+    by_app = parser.parse_args(["auth", "--app", "codex", "--status"])
+
+    assert vars(by_cli) == vars(by_app)
+    assert by_cli.app == "codex"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["auth", "--help"])
+    auth_help = capsys.readouterr().out
+    assert "--cli" in auth_help
+    assert "--app" not in auth_help
 
 
 def test_bare_booley_defaults_to_chat(monkeypatch):
@@ -315,7 +354,7 @@ def _configure_indirect_lifecycle_timeout(command, monkeypatch, failure) -> None
     ("argv", "command"),
     [
         (["doctor"], "doctor"),
-        (["auth", "--app", "claude"], "auth"),
+        (["auth", "--cli", "claude"], "auth"),
         (["eda", "grant", "revoke", "/project", "--kind", "vivado"], "eda"),
     ],
 )
@@ -955,7 +994,7 @@ class TestEnforceVenue:
 
         assert not re.search(r"\[(Sandbox|either|host|mixed)\]", help_text)
         assert "Locations:" not in help_text
-        assert "Open this Project's configured agent CLI" in help_text
+        assert "Open this Project's default (or chosen) Agent CLI" in " ".join(help_text.split())
 
     def test_runtime_guards_are_derived_from_command_location_catalog(self):
         assert (
@@ -1766,6 +1805,7 @@ def test_auth_status_optional_context_preserves_source_checkout(tmp_path, monkey
     assert roots == [None]
 
 
+@pytest.mark.parametrize("flag", ["--cli", "--app"])
 @pytest.mark.parametrize(
     "in_project,app,expected_apps,expected_rc",
     [
@@ -1777,7 +1817,7 @@ def test_auth_status_optional_context_preserves_source_checkout(tmp_path, monkey
     ],
 )
 def test_auth_status_cli_preserves_omitted_app_selection(
-    tmp_path, monkeypatch, capsys, in_project, app, expected_apps, expected_rc
+    tmp_path, monkeypatch, capsys, flag, in_project, app, expected_apps, expected_rc
 ):
     from booley.runtime import auth_token
 
@@ -1803,7 +1843,7 @@ def test_auth_status_cli_preserves_omitted_app_selection(
         (data / "booley.toml").write_text('[agent]\nprovider="codex"\nauth="api_key"\n')
         argv.extend(["--project", str(project)])
     if app:
-        argv.extend(["--app", app])
+        argv.extend([flag, app])
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
     monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)

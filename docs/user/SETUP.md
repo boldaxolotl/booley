@@ -128,8 +128,8 @@ auth = "subscription"   # or "api_key"
 Pick `subscription` or `api_key` explicitly. The default, `auto`, lets the
 Agent CLI decide, and an exported API key always beats a subscription, so
 you can end up paying per token without noticing. With an explicit choice,
-`booley doctor` fails when that credential is missing instead of quietly using
-another one. A Project that also runs a Specialist on the other Agent CLI can
+`booley doctor` fails when the default Agent CLI's credential is missing instead
+of quietly using another one (it only warns for another allowed CLI). A Project that also runs a Specialist on the other Agent CLI can
 bill each CLI differently. All values are in
 [CONFIG.md](CONFIG.md#pinning-what-bills-agent-auth).
 
@@ -160,7 +160,7 @@ Specialist in the middle of a run
 | App | Login that doesn't expire | How |
 |---|---|---|
 | Claude | a one-year token | `booley auth` (it runs `claude setup-token` for you) |
-| Codex | an API key | `booley auth --app codex`, then paste the key |
+| Codex | an API key | `booley auth --cli codex`, then paste the key |
 
 Codex has no long-lived subscription token, so for Codex this means paying per
 token instead of using your subscription.

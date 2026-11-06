@@ -257,7 +257,7 @@ class CodexBackend:
         if self._auth_mode == "api_key" and plan.selected is None:
             return (
                 "[agent] auth = 'api_key' but no OPENAI_API_KEY is exported or stored — "
-                "export it, run `booley auth --app codex`, or switch auth"
+                "export it, run `booley auth --cli codex`, or switch auth"
             )
         if self._auth_mode == "subscription" and plan.selected is None:
             return (

@@ -513,6 +513,29 @@ def test_reporting_policy_matrix(clean_env, monkeypatch, capsys, app, policy, ke
         assert "refreshing subscription login" in output
 
 
+def test_auth_status_uses_the_requested_cli_policy(clean_env, monkeypatch, capsys):
+    """`auth --status --cli codex` grades Codex under Codex's policy, not the default CLI's."""
+    import argparse
+
+    from booley.harness import auth_cmd
+
+    root = clean_env / "project"
+    data = root / ".booley"
+    data.mkdir(parents=True)
+    (data / "booley.toml").write_text(
+        '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n'
+        '[agent.auth]\nclaude = "subscription"\ncodex = "api_key"\n'
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_API_KEY")
+
+    code = auth_cmd.run_auth(argparse.Namespace(status=True, app="codex"), root)
+
+    output = capsys.readouterr().out
+    assert code == 0
+    assert "auth policy 'api_key'" in output
+    assert "codex: agents run on" in output
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("app", ["claude", "codex"])
 @pytest.mark.parametrize("policy", ["auto", "subscription", "api_key"])
