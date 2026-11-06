@@ -3319,7 +3319,16 @@ targets:
     )
     c = _Collector()
     doctor._check_sim_traceable(tmp_path, _verilator_sim_ref(core), c._pass, c._warn)
-    assert any("cannot trace" in m and "sim_x" in m for m in c.warned)
+    [message] = c.warned
+    assert "cannot trace" in message and "sim_x" in message
+    assert (message.check_id, message.subject) == ("sim.trace-unavailable", "sim_x")
+    # The Simulation Flow reports a zero-signal traced run as inconclusive; the
+    # WARN must not promise a silent pass.
+    assert " passes" not in message.lower()
+    assert "inconclusive (exit 1)" in message
+    # The remedy names the trace arguments the owned main must honor.
+    assert "+trace and +tracefile=<file>" in message
+    assert "[flows.sim].trace_args" in message
     assert not c.passed
 
 
