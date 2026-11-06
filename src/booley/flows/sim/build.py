@@ -148,8 +148,13 @@ def prepare_simulation_build(
     resolution_vlnv: str | None = None,
     environment: Mapping[str, str] | None = None,
     lane_kind: LaneKind = "heavy",
+    core_library: fusesoc_registry.CoreLibraryPlan | None = None,
 ) -> PreparedSimulationBuild:
-    """Resolve and prepare the simulator image used by normal Simulation."""
+    """Resolve and prepare the simulator image used by normal Simulation.
+
+    *core_library* replaces the Project's prepared FuseSoC library view, e.g.
+    with a private per-build mirror that a build may edit.
+    """
     try:
         return _prepare_simulation_build(
             handle,
@@ -158,6 +163,7 @@ def prepare_simulation_build(
             resolution_vlnv=resolution_vlnv,
             environment=environment,
             lane_kind=lane_kind,
+            core_library=core_library,
         )
     except (
         fusesoc_registry.FuseSocError,
@@ -177,6 +183,7 @@ def _prepare_simulation_build(
     resolution_vlnv: str | None,
     environment: Mapping[str, str] | None,
     lane_kind: LaneKind,
+    core_library: fusesoc_registry.CoreLibraryPlan | None,
 ) -> PreparedSimulationBuild:
     """Prepare one supported simulator Target after boundary normalization."""
     root, inspection, backend_arguments = _simulation_recipe_inputs(handle, lane_kind=lane_kind)
@@ -187,6 +194,7 @@ def _prepare_simulation_build(
         build_root=work_root,
         resolution_vlnv=resolution_vlnv,
         backend_arguments=backend_arguments,
+        library_plan=core_library,
     )
     normalize_resolved_parameters(resolved)
     validate_top_parameter_intent(resolved, flow="sim")
