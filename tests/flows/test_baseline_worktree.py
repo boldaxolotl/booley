@@ -520,6 +520,41 @@ def test_no_stealth_cores_is_a_noop(tmp_path: Path) -> None:
         assert not (wt / ".booley").exists()
 
 
+@pytest.mark.parametrize("with_cores", [True, False], ids=["stealth-cores", "config-only"])
+def test_linked_worktree_baseline_mirrors_its_own_booley_directory(
+    tmp_path: Path, monkeypatch, with_cores: bool
+) -> None:
+    """A linked worktree's baseline reads that worktree's cores and configuration.
+
+    In the Sandbox ``BOOLEY_DIR`` selects the Main Booley Directory, but the
+    baseline of a worktree must still be built from the worktree's own files.
+    """
+    from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
+    from tests.booley_checkouts_support import linked_worktree
+
+    main, worktree = linked_worktree(tmp_path, monkeypatch, layout="snapshot", runtime="sandbox")
+    own = worktree / ".booley"
+    (main / ".booley" / "booley.toml").write_text("# main\n", encoding="utf-8")
+    (own / "booley.toml").write_text("# worktree\n", encoding="utf-8")
+    for directory, label in ((main / ".booley", "main"), (own, "worktree")):
+        if with_cores:
+            core = directory / "cores" / "ip"
+            core.mkdir(parents=True)
+            (core / "top.core").write_text(
+                f"CAPI=2:\nname: {label}:ip:top:1.0\n", encoding="utf-8"
+            )
+    reset_cache()
+
+    with baseline_worktree(worktree, "HEAD") as baseline:
+        copied = resolve_checkout_booley_dir(baseline)
+        assert copied == baseline / ".booley"
+        assert (copied / "booley.toml").read_text(encoding="utf-8") == "# worktree\n"
+        if with_cores:
+            top = copied / "cores" / "ip" / "top.core"
+            assert "worktree:ip:top" in top.read_text(encoding="utf-8")
+    reset_cache()
+
+
 def test_nonstealth_ignored_project_baseline_keeps_live_tests_resolution(tmp_path: Path) -> None:
     from booley.runtime.booley_dir import resolve_checkout_booley_dir
 

@@ -385,7 +385,7 @@ directories for you, so `mkdir -p` any you write into. Booley exports:
 | `BOOLEY_TEST_RUN_NAMES` | The Test Runs being prepared (`stress+soak@42`), space-separated. |
 | `BOOLEY_TEST_RUN_NAME`, `BOOLEY_TEST_VARIANT`, `BOOLEY_TEST_SEED` | The Test Run, its Variant and seed, when exactly one Test Run is prepared and it has them. |
 | `BOOLEY_RUN_CWD` | The directory the simulation runs in: `run_cwd`, or the Project Root. |
-| `BOOLEY_PROJECT_ROOT`, `BOOLEY_DIR` | The Project Root and the Booley Directory (`/booley-project` inside the Sandbox). |
+| `BOOLEY_PROJECT_ROOT`, `BOOLEY_DIR` | The checkout being simulated and its own Booley Directory (`/work/.booley` for the main checkout inside the Sandbox). |
 | `BOOLEY_SIM_EDA_TOOL` | The simulator, such as `verilator`. |
 
 For example, to build different firmware per Test Variant:

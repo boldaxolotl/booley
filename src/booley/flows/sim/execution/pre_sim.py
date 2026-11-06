@@ -6,7 +6,6 @@ import os
 import subprocess
 import time
 from collections.abc import Mapping
-from contextlib import suppress
 from pathlib import Path
 
 from booley.core.file_lock import active_child_lease_fd
@@ -14,7 +13,7 @@ from booley.flows.eda_failures import find_missing_executable
 from booley.flows.sim.config import resolve_pre_sim_commands, resolve_run_cwd
 from booley.flows.sim.live_progress import observe_stage
 from booley.flows.test_runs import TestRun
-from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
 from booley.runtime.platform_paths import (
     bash_bin,
@@ -111,8 +110,6 @@ def _pre_sim_environment(
         environment["BOOLEY_BUILD_ROOT"] = str(build_root)
     else:
         environment.pop("BOOLEY_BUILD_ROOT", None)
-    with suppress(FileNotFoundError):
-        environment["BOOLEY_DIR"] = str(resolve_booley_dir(root))
     if len(test_names) == 1:
         environment["BOOLEY_TEST_NAME"] = test_names[0]
     for name in TEST_RUN_VARIABLES:
@@ -120,9 +117,14 @@ def _pre_sim_environment(
         environment.pop(name, None)
     environment.update(test_run_environment(test_runs))
     try:
-        cache_root = resolve_checkout_booley_dir(root) / ".runtime" / "python-artifacts"
+        # The checkout's own directory, not the selected one: a linked worktree
+        # inside the Sandbox must not be handed the Main Booley Directory.
+        own_booley_dir = resolve_checkout_booley_dir(root)
     except (OSError, RuntimeError, ValueError):
         cache_root = build_root / "python-artifacts"
+    else:
+        environment["BOOLEY_DIR"] = str(own_booley_dir)
+        cache_root = own_booley_dir / ".runtime" / "python-artifacts"
     scope = f"pre-sim:{handle.selector}:{resolved_run_cwd}:{' '.join(test_names)}"
     return relocate_python_artifacts(environment, cache_root, pytest_scope=scope)
 

@@ -287,6 +287,55 @@ def test_timeout_is_preserved_as_pre_sim_evidence(tmp_path: Path) -> None:
     assert evidence.status == "timed_out"
 
 
+def _booley_dir_seen_by_pre_sim(root: Path, tmp_path: Path) -> dict[str, str]:
+    """Run one Pre-Sim Command for *root* with a mocked subprocess; return its environment."""
+    handle = cast(TargetHandle, SimpleNamespace(project_root=root.resolve(), selector="lite"))
+    run = MagicMock(return_value=_completed())
+    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", run):
+        evidence = run_pre_sim_commands(
+            handle,
+            test_names=("smoke",),
+            build_root=tmp_path / "build",
+            eda_tool="verilator",
+            timeout_s=5,
+            commands=("true",),
+        )
+    assert evidence is not None and evidence.status == "passed"
+    return run.call_args.kwargs["env"]
+
+
+def test_linked_worktree_pre_sim_commands_see_its_own_booley_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from booley.runtime.booley_dir import reset_cache
+    from tests.booley_checkouts_support import linked_worktree
+
+    _main, worktree = linked_worktree(tmp_path, monkeypatch, layout="snapshot", runtime="sandbox")
+
+    environment = _booley_dir_seen_by_pre_sim(worktree, tmp_path)
+
+    own = worktree / ".booley"
+    assert environment["BOOLEY_DIR"] == str(own)
+    assert environment["PYTHONPYCACHEPREFIX"].startswith(
+        str(own / ".runtime" / "python-artifacts")
+    )
+    reset_cache()
+
+
+def test_main_checkout_pre_sim_commands_see_the_main_booley_dir(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from booley.runtime.booley_dir import reset_cache
+    from tests.booley_checkouts_support import linked_worktree
+
+    main, _worktree = linked_worktree(tmp_path, monkeypatch, layout="snapshot", runtime="sandbox")
+
+    environment = _booley_dir_seen_by_pre_sim(main, tmp_path)
+
+    assert environment["BOOLEY_DIR"] == str((main / ".booley").resolve())
+    reset_cache()
+
+
 def test_python_and_pytest_caches_stay_under_project_runtime(tmp_path: Path, monkeypatch) -> None:
     from booley.runtime.booley_dir import reset_cache
 
