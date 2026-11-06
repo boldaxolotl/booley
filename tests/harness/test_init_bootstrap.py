@@ -184,7 +184,7 @@ def test_init_without_a_usable_bootstrap_base_defers_to_project_planner(
     bootstrap_result = init_cmd.BootstrapResult(Intent.ENSURE, ())
 
     assert init_cmd._reconcile_initialized_image(ctx, bootstrap_result) is expected
-    assert observed == [(ctx, {})]
+    assert observed == [(ctx, {"report_requirements": True})]
 
 
 def test_init_managed_project_uses_planned_reconciliation(

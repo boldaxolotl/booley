@@ -177,7 +177,8 @@ image on top of the selected base and switches the Project to it; you don't
 set `image` for this. If a listed file is missing, `init` stops with an error.
 Leave the key unset to use the base image unchanged.
 
-Two kinds of lines are left out of the image:
+`booley init` and `booley session refresh` leave two kinds of lines out of the
+image and print a warning naming each one:
 
 - Lines that need files outside the requirements: editable installs (`-e`),
   includes (`-r`, `-c`), and local or `file:` paths. Install those at runtime
@@ -185,9 +186,11 @@ Two kinds of lines are left out of the image:
 - Pins on `fusesoc`, `edalize`, and Booley itself. Booley manages these, and
   an older pin would break its Flows.
 
-Every other pin wins over the base image, including `cocotb`. The base image
-checks its own cocotb at build time; that check doesn't cover yours, so the
-first `booley flow sim` after the rebuild is your test of the combination.
+Every other pin wins over the base image, including `cocotb`. `booley init`
+(without `--check`) and `booley session refresh` print a notice for each pin
+that changes a version the base image ships. The base image checks its own
+cocotb at build time; that check doesn't cover yours, so the first
+`booley flow sim` after the rebuild is your test of the combination.
 
 **Where to keep the file.** If the upstream project keeps its test pins in
 `tox.ini`, `setup.py`, or a CI workflow, copy them into a plain requirements
