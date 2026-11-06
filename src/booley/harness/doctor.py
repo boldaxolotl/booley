@@ -149,6 +149,7 @@ from booley.runtime.booley_dir import (
     BOOLEY_DIR_NAME,
     contains,
     resolve_checkout_booley_dir,
+    resolve_common_booley_dir,
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.docs_links import docs_url
@@ -875,7 +876,7 @@ def run_doctor_result(
 
     result = reporter.result(reporter.finish())
     if project is not None and result.clean and result.health_evidence and record_clean:
-        doctor_stamp.record_clean_run(project.booley_dir, project_root, deep=deep)
+        doctor_stamp.record_clean_run(project.common_booley_dir, project_root, deep=deep)
     return _report_deep_currency(project_root, project, result, summary, record_clean)
 
 
@@ -890,7 +891,7 @@ def _report_deep_currency(
     if summary is not None and persist:
         try:
             booley_dir = (
-                project.booley_dir if project else resolve_checkout_booley_dir(project_root)
+                project.common_booley_dir if project else resolve_common_booley_dir(project_root)
             )
         except (FileNotFoundError, OSError):
             booley_dir = None
@@ -932,7 +933,7 @@ def observe_deep_status(
     """Read and report currency without starting checks or modifying evidence."""
     record = None
     with contextlib.suppress(FileNotFoundError, OSError):
-        record = doctor_deep.load_deep_record(resolve_checkout_booley_dir(project_root))
+        record = doctor_deep.load_deep_record(resolve_common_booley_dir(project_root))
     image_id, version = _observe_sandbox_identity(project_root, container)
     return doctor_deep.evaluate_deep_status(record, version=version, image_id=image_id)
 
@@ -995,9 +996,11 @@ def _run_project_phase(
     reporter.diagnostics(loaded.report)
     booley_dir, project = loaded.booley_dir, loaded.project
     mode = readiness.ReadinessMode.INSPECT if read_only else readiness.ReadinessMode.RECONCILE
-    _check_upgrade_review(booley_dir, reporter)
+    # Goal and upgrade-review records are Common Booley State, read from main.
+    common_dir = resolve_common_booley_dir(project_root) if booley_dir is not None else None
+    _check_upgrade_review(common_dir, reporter)
     _check_legacy_source_stashes(project_root, reporter)
-    _check_goal_presence(project_root, booley_dir, reporter)
+    _check_goal_presence(project_root, common_dir, reporter)
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
@@ -1749,7 +1752,7 @@ def _heavy_memory_reservation(project: ProjectAudit) -> resource_policy.HeavyMem
     raw = jobs.get("heavy_memory") if isinstance(jobs, dict) else None
     from booley.harness import synth_probe
 
-    measurement = synth_probe.load_measurement(project.booley_dir)
+    measurement = synth_probe.load_measurement(project.common_booley_dir)
     calibration = (
         resource_policy.SynthesisMemoryCalibration(
             target=str(measurement["target"]),
@@ -1813,7 +1816,7 @@ def _check_memory_invariant(
     if reservation.error:
         _warn(reservation.error)
         return
-    orch, measured = _developer_mem_bytes(project.booley_dir)
+    orch, measured = _developer_mem_bytes(project.common_booley_dir)
     requirement = resource_policy.memory_requirement(
         max_heavy=caps.max_heavy,
         heavy_job_bytes=reservation.bytes,
@@ -2021,7 +2024,9 @@ def _run_developer_probe(
         return record
     record = _AgentCallRecord("agent probe", measurement.usage)
     try:
-        path = developer_probe.record_measurement(project.booley_dir, measurement.peak_rss_bytes)
+        path = developer_probe.record_measurement(
+            project.common_booley_dir, measurement.peak_rss_bytes
+        )
     except Exception as exc:  # noqa: BLE001 — fail-soft by contract; the paid call is still accounted
         _skip(
             f"Specialist provider memory probe skipped - {exc} (memory invariant keeps the 1g fallback)"
@@ -2196,7 +2201,7 @@ def _check_custom_image_freshness(
         return
     if image == DOCKER_IMAGE or image == pi.project_image_name(project.project_root):
         return  # base / auto-generated derived — covered by the sibling checks
-    dockerfile = project.booley_dir / "docker" / "Dockerfile"
+    dockerfile = project.common_booley_dir / "docker" / "Dockerfile"
     if not dockerfile.is_file():
         return  # no project Dockerfile to compare against (e.g. externally built)
     created = _image_created_epoch(docker_exe, image)
@@ -3703,8 +3708,8 @@ def _run_project_checks(
         reporter.skip_("Project checks skipped - project config invalid")
         return
 
-    _check_ticket_leftovers(project.booley_dir, reporter.warn_)
-    _check_handle_map_size(project.booley_dir, reporter.warn_)
+    _check_ticket_leftovers(project.common_booley_dir, reporter.warn_)
+    _check_handle_map_size(project.common_booley_dir, reporter.warn_)
     _check_project_gitignore(project.booley_dir, reporter.pass_, reporter.warn_)
     _check_goal_history_ignored(
         project.project_root, project.booley_dir, reporter.pass_, reporter.warn_
@@ -6330,7 +6335,7 @@ def _report_native_dependencies(
     _warn: Check,
 ) -> None:
     """Report curated native packages, honoring the project image recipe."""
-    dockerfile = project.booley_dir / "docker" / "Dockerfile"
+    dockerfile = project.common_booley_dir / "docker" / "Dockerfile"
     declared = {
         package for package in needed if _dockerfile_declares_native_package(dockerfile, package)
     }
@@ -6742,7 +6747,7 @@ def _grade_core_resolution(
 _CORE_RESOLVE_SNIPPET = (
     "import json, os, sys\n"
     "from pathlib import Path\n"
-    "from booley.runtime.booley_dir import resolve_booley_dir\n"
+    "from booley.runtime.booley_dir import resolve_checkout_booley_dir\n"
     "from booley.fusesoc import fusesoc_registry as fr\n"
     "from booley.targets.catalog import TargetCatalog\n"
     "root = os.getcwd()\n"
@@ -6751,7 +6756,7 @@ _CORE_RESOLVE_SNIPPET = (
     "out = []\n"
     "for target in targets:\n"
     "    selector = target['selector']\n"
-    "    br = resolve_booley_dir(Path(root)) / 'runtime/doctor/core-resolve' / target['build_key']\n"
+    "    br = resolve_checkout_booley_dir(Path(root)) / 'runtime/doctor/core-resolve' / target['build_key']\n"
     "    try:\n"
     "        fr.resolve_target_handle(catalog.select(selector), build_root=br)\n"
     "        out.append({'selector': selector, 'ok': True})\n"
@@ -7738,7 +7743,7 @@ def _record_synth_memory_calibration(
     from booley.harness import synth_probe
 
     synth_probe.record_measurement(
-        project.booley_dir,
+        project.common_booley_dir,
         target,
         float(peak),
         selected_targets=_doctor_targets(project, "synth"),

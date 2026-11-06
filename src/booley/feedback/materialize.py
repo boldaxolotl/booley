@@ -18,16 +18,23 @@ class MaterializationError(RuntimeError):
     """Raised when attachment evidence cannot be snapshotted safely."""
 
 
-def normalize_attachment_path(raw: str, booley_dir: Path) -> Path:
-    """Resolve absolute, ``~``, and project-relative attachment spellings."""
+def normalize_attachment_path(
+    raw: str, booley_dir: Path, *, checkout_dir: Path | None = None
+) -> Path:
+    """Resolve absolute, ``~``, and project-relative attachment spellings.
+
+    Relative spellings resolve against *checkout_dir*, the Booley Directory of the
+    checkout the caller runs in, when it differs from the log's *booley_dir*.
+    """
     candidate = Path(raw).expanduser()
     if candidate.is_absolute():
         return candidate.resolve(strict=False)
-    for base in (booley_dir.parent, booley_dir, Path.cwd()):
+    base_dir = checkout_dir or booley_dir
+    for base in (base_dir.parent, base_dir, Path.cwd()):
         resolved = (base / candidate).resolve(strict=False)
         if resolved.exists():
             return resolved
-    return (booley_dir.parent / candidate).resolve(strict=False)
+    return (base_dir.parent / candidate).resolve(strict=False)
 
 
 def _excerpt(source: Path) -> tuple[str, dict[str, object]]:
@@ -85,8 +92,14 @@ def _rewrite_attachments_only(booley_dir: Path, entries: list[Finding]) -> None:
     temporary.replace(path)
 
 
-def materialize_attachments(booley_dir: Path, sources: Iterable[Path]) -> tuple[Path, ...]:
-    """Snapshot selected attachments and retarget them under the log lock."""
+def materialize_attachments(
+    booley_dir: Path, sources: Iterable[Path], *, checkout_dir: Path | None = None
+) -> tuple[Path, ...]:
+    """Snapshot selected attachments and retarget them under the log lock.
+
+    *checkout_dir* is the Booley Directory that relative attachment paths resolve
+    against when it differs from the log directory (a linked worktree).
+    """
     selected = {Path(source).expanduser().resolve(strict=False) for source in sources}
     if not selected:
         return ()
@@ -99,7 +112,9 @@ def materialize_attachments(booley_dir: Path, sources: Iterable[Path]) -> tuple[
         changed: set[Path] = set()
         for row, finding in enumerate(log.entries):
             for index, attachment in enumerate(finding.attachments):
-                source = normalize_attachment_path(attachment, booley_dir)
+                source = normalize_attachment_path(
+                    attachment, booley_dir, checkout_dir=checkout_dir
+                )
                 if source in selected:
                     finding.attachments[index] = _snapshot(booley_dir, finding, row, index, source)
                     changed.add(source)

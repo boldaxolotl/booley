@@ -149,6 +149,7 @@ from booley.runtime.booley_dir import (
     reset_cache,
     resolve_booley_dir,
     resolve_checkout_booley_dir,
+    resolve_common_booley_dir,
 )
 from booley.runtime.checkout_role import is_booley_qa_skill_path
 from booley.runtime.docker_capacity import DockerCapacityError
@@ -1602,7 +1603,7 @@ def _print_configured_advisory(ctx: InitContext) -> None:
     print()
     try:
         advisory = doctor_stamp.check_stamp_advisory(
-            resolve_booley_dir(ctx.project_root), ctx.project_root
+            resolve_common_booley_dir(ctx.project_root), ctx.project_root
         )
     except (FileNotFoundError, OSError):
         advisory = None  # advisory by contract — never let the stamp break init

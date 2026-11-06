@@ -21,7 +21,11 @@ from booley.audit.health import HealthSnapshot
 from booley.core.boundary import as_dict
 from booley.runtime import doctor_stamp
 from booley.runtime.atomic_files import atomic_replace_bytes
-from booley.runtime.booley_dir import contains, resolve_booley_dir
+from booley.runtime.booley_dir import (
+    contains,
+    resolve_common_booley_dir,
+    resolve_main_checkout_root,
+)
 from booley.runtime.file_lock import try_file_lock
 from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_datetime, utc_now_rfc3339
@@ -108,8 +112,14 @@ def _core_digest(project_root: Path, booley_dir: Path) -> str:
 
 
 def compute_fingerprint(booley_dir: Path, project_root: Path) -> dict[str, Any]:
-    """Hash config and authored design-description inputs relevant to Doctor."""
+    """Hash config and authored design-description inputs relevant to Doctor.
+
+    Like the stamp, the record is Common Booley State: *booley_dir* is the Main
+    Booley Directory and root-level inputs come from the main checkout.
+    """
     import booley
+
+    project_root = resolve_main_checkout_root(project_root)
 
     fingerprint: dict[str, Any] = doctor_stamp.compute_fingerprint(booley_dir, project_root)
     for name in ("tests.toml", "configs.toml", "AGENTS.md"):
@@ -127,7 +137,7 @@ def compute_fingerprint(booley_dir: Path, project_root: Path) -> dict[str, Any]:
 def load_report(project_root: Path) -> dict[str, Any] | None:
     """Load the latest automatic Doctor report, or ``None`` when unavailable."""
     try:
-        booley_dir = resolve_booley_dir(project_root)
+        booley_dir = resolve_common_booley_dir(project_root)
         data = json.loads(read_file_bytes(report_path(booley_dir)).decode("utf-8"))
     except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
         return None
@@ -177,7 +187,7 @@ def read_health(project_root: Path, *, now: datetime | None = None) -> HealthSna
     unavailable: none of them is evidence of health, and each is due for a recheck.
     """
     try:
-        booley_dir = resolve_booley_dir(project_root)
+        booley_dir = resolve_common_booley_dir(project_root)
         document = load_report(project_root)
         if document is None:
             return None
@@ -202,7 +212,7 @@ def read_health(project_root: Path, *, now: datetime | None = None) -> HealthSna
 def due_reason(project_root: Path, *, now: datetime | None = None) -> str | None:
     """Return why an automatic check is due, or None outside a Project/when current."""
     try:
-        resolve_booley_dir(project_root)
+        resolve_common_booley_dir(project_root)
     except (FileNotFoundError, OSError):
         return None
     snapshot = read_health(project_root, now=now)
@@ -253,7 +263,7 @@ def publish_result(
     """
     from booley.runtime import runtime_context
 
-    booley_dir = resolve_booley_dir(project_root)
+    booley_dir = resolve_common_booley_dir(project_root)
     assessment = diagnostics.health
     payload = {
         "schema": 1,
@@ -290,7 +300,7 @@ def invalidate(project_root: Path, *, reason: str) -> None:
     in-Sandbox registrar resolves. A run already in flight is covered too: it
     started before this call, so its late result is still due.
     """
-    booley_dir = resolve_booley_dir(project_root)
+    booley_dir = resolve_common_booley_dir(project_root)
     document = {"at": run_start_stamp(), "reason": reason}
     _atomic_write(state_dir(booley_dir) / _INVALIDATION_NAME, json.dumps(document) + "\n")
 
@@ -321,7 +331,7 @@ def consume_changed_snapshot(
     if issues_only and snapshot.assessment.clean:
         return None
     try:
-        booley_dir = resolve_booley_dir(project_root)
+        booley_dir = resolve_common_booley_dir(project_root)
         directory = state_dir(booley_dir)
         announcements_path = directory / _ANNOUNCEMENTS_NAME
         with try_state_lock(directory / _ANNOUNCE_LOCK_NAME) as acquired:
