@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
 
+from booley.config.agent import AgentSettings
 from booley.config.settings import BackendConfigError
+from booley.harness import booley as booley_cli
 from booley.harness import chat_cmd
 from booley.runtime.pid import ProcessIdentity
 from booley.runtime.session_activity import process_session_key
@@ -465,3 +468,79 @@ def test_claude_user_name_replaces_booley_name(tmp_path, monkeypatch):
     for agent_args in (["-n", "foo"], ["--name=foo"]):
         _launch(tmp_path, agent_args)
         assert executed[-1] == ("claude", ["S17", *agent_args])
+
+
+def _configure_settings(monkeypatch, *, default_cli, clis=()):
+    """Point ``run`` at in-memory settings (no Project config on disk)."""
+    settings = AgentSettings(default_cli=default_cli, clis=tuple(clis))
+    monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
+    monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
+    monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: settings)
+
+
+def _capture_exec(monkeypatch) -> list[tuple[str, list[str]]]:
+    """Replace the process-replacing exec with a recorder that stops the launch."""
+    executed: list[tuple[str, list[str]]] = []
+
+    def execvp(executable, argv):
+        executed.append((executable, argv))
+        raise _ExecCalledError
+
+    monkeypatch.setattr(chat_cmd.os, "execvp", execvp)
+    return executed
+
+
+def test_cli_flag_launches_allowed_cli(tmp_path, monkeypatch):
+    _configure_settings(monkeypatch, default_cli="claude", clis=("claude", "codex"))
+    executed = _capture_exec(monkeypatch)
+
+    with pytest.raises(_ExecCalledError):
+        chat_cmd.run(argparse.Namespace(agent_args=["resume"], cli="codex"), tmp_path)
+
+    assert executed == [("codex", ["codex", "resume"])]
+
+
+def test_cli_flag_rejects_cli_outside_allowed_set(tmp_path, monkeypatch, capsys):
+    _configure_settings(monkeypatch, default_cli="claude")
+    executed = _capture_exec(monkeypatch)
+
+    assert chat_cmd.run(argparse.Namespace(agent_args=[], cli="codex"), tmp_path) == 2
+
+    assert "Agent CLI 'codex' is not allowed in this Project; allowed: claude" in (
+        capsys.readouterr().err
+    )
+    assert executed == []
+
+
+def test_cli_flag_reads_allowed_set_from_project_config(tmp_path, monkeypatch):
+    for name in ("BOOLEY_PRIMARY_PROVIDER", "BOOLEY_AGENT_APP"):
+        monkeypatch.delenv(name, raising=False)
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text(
+        '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda _root: booley_dir)
+    executed = _capture_exec(monkeypatch)
+
+    with pytest.raises(_ExecCalledError):
+        chat_cmd.run(argparse.Namespace(agent_args=[], cli="codex"), tmp_path)
+
+    assert executed == [("codex", ["codex"])]
+
+
+def test_no_cli_flag_launches_default_cli(tmp_path, monkeypatch):
+    """No flag (or a namespace without one, as bare `booley` builds) opens the default CLI."""
+    _configure_settings(monkeypatch, default_cli="codex", clis=("claude", "codex"))
+    executed = _capture_exec(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["booley", "chat", "--last"])
+
+    for args in (
+        booley_cli._parse_cli(),
+        argparse.Namespace(agent_args=["--last"]),
+    ):
+        with pytest.raises(_ExecCalledError):
+            chat_cmd.run(args, tmp_path)
+
+    assert executed == [("codex", ["codex", "--last"])] * 2
+    assert booley_cli._parse_cli().cli is None

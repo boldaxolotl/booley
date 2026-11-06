@@ -7988,7 +7988,7 @@ class TestSubscriptionCredsHealth:
         message = finding.message.replace(str(creds), "")
         if seeded:
             assert "host has rotated" in message
-            assert "booley auth --app claude" in finding.fix
+            assert "booley auth --cli claude" in finding.fix
         else:
             assert "host" not in message and "rotat" not in message
             assert "booley auth" not in finding.fix and "/login" in finding.fix
@@ -8013,7 +8013,7 @@ class TestSubscriptionCredsHealth:
         monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
         monkeypatch.setattr(doctor.time, "time", lambda: now)
         monkeypatch.setattr(doctor, "_configured_provider", lambda _: auth_token.APP_CLAUDE)
-        monkeypatch.setattr(doctor, "_configured_auth_policy", lambda _: "auto")
+        monkeypatch.setattr(doctor, "_configured_auth_policy", lambda *_: "auto")
         monkeypatch.setattr(doctor, "_check_agent_auth_token", lambda *_a, **_k: None)
         monkeypatch.setattr(doctor, "_check_oauth_token", lambda *_a, **_k: None)
         published = []
@@ -8025,7 +8025,7 @@ class TestSubscriptionCredsHealth:
             expiry = datetime(2026, 10, 8, hour, tzinfo=UTC).timestamp()
             path.write_text(json.dumps({"claudeAiOauth": {"expiresAt": expiry * 1000}}))
             reporter = doctor._Reporter.create()
-            doctor._run_agent_credential_checks(SimpleNamespace(), reporter)
+            doctor._run_agent_credential_checks(SimpleNamespace(booley_toml={}), reporter)
             result = reporter.result(0)
             legacy = f"{hour + 4:02d}:00 · 08 OCT 2026"
             expected = (

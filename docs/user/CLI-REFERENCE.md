@@ -38,7 +38,7 @@ booley bootstrap --check-only     # report pending work; change nothing
 booley init                       # set up the Project in the current directory
 booley init --scaffold my_ip      # start a new IP from scratch in a fresh repo
 booley auth                       # save a long-lived Claude login for unattended runs
-booley auth --app codex           # the same for Codex: paste an API key
+booley auth --cli codex           # the same for Codex: paste an API key
 booley auth --status              # show which login each agent would use
 ```
 
@@ -50,7 +50,8 @@ Host Bootstrap is described in [INSTALL.md](INSTALL.md#host-bootstrap);
 
 ```bash
 booley                            # open the Developer Agent (same as booley chat)
-booley chat --resume <id>         # Claude: arguments after chat go to the agent CLI
+booley chat --cli codex           # open another Agent CLI your Project allows
+booley chat --resume <id>         # Claude: arguments after chat and its options go to the agent CLI
 booley chat resume --last         # Codex: the same, with its own subcommands
 booley chat -- --help             # the agent CLI's help (Booley's is booley chat --help)
 booley dashboard                  # sessions and Jobs; see Usage
