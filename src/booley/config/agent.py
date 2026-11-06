@@ -762,6 +762,6 @@ def project_credential_policy(
     project_root: Path, *, booley_dir: Path | None = None, cli: str | None = None
 ) -> tuple[str, str]:
     """The CLI (default unless `cli` names one) and its declared auth policy at a root."""
-    found = project_credential_policies(project_root, booley_dir=booley_dir)
+    found = project_credential_policies(project_root, booley_dir=booley_dir, selected=cli)
     chosen = cli or found.default
     return chosen, found.policies.get(chosen, _DEFAULT_AUTH)
