@@ -386,3 +386,57 @@ def test_common_state_warning_counts_paths_beyond_the_shown_limit(
     assert len(warnings) == 1
     assert "common4, and 2 more" in warnings[0].message
     assert "common5" not in warnings[0].message
+
+
+def _relocated_linked_worktree(tmp_path: Path, *, versioned: bool) -> Path:
+    """A primary checkout with ``[project].dir = "state"`` and a linked worktree copying it."""
+    root = tmp_path / "project"
+    root.mkdir()
+    _git(root, "init", "-q")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    (root / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+    _git(root, "add", "booley.toml")
+    _git(root, "commit", "-qm", "base")
+    state = root / "state"
+    state.mkdir()
+    (state / "booley.toml").write_text("main\n", encoding="utf-8")
+    if versioned:
+        _git(state, "init", "-q")
+        _git(state, "config", "user.name", "Test")
+        _git(state, "config", "user.email", "test@example.invalid")
+        _git(state, "add", ".")
+        _git(state, "commit", "-qm", "project")
+    worktree = tmp_path / "linked"
+    _git(root, "worktree", "add", "--detach", str(worktree), "HEAD")
+    (worktree / "state").mkdir()
+    (worktree / "state" / "booley.toml").write_text("copy\n", encoding="utf-8")
+    return worktree
+
+
+def test_plain_copy_at_relocated_directory_warns(tmp_path: Path) -> None:
+    worktree = _relocated_linked_worktree(tmp_path, versioned=True)
+
+    warnings = _pairing_warnings(worktree)
+
+    assert [finding.check_id for finding in warnings] == ["project-data.worktree-unpaired"]
+    assert str(worktree / "state") in warnings[0].message
+
+
+def test_common_state_scan_reads_the_relocated_directory(tmp_path: Path) -> None:
+    worktree = _relocated_linked_worktree(tmp_path, versioned=False)
+    _plant(worktree / "state" / "runtime" / "session_activity" / "a")
+    _plant(worktree / ".booley" / "runtime" / "session_activity" / "ignored")
+
+    warnings = [f for f in _common_state_findings(tmp_path / "project") if f.severity == "warn"]
+
+    assert [finding.subject for finding in warnings] == [str(worktree / "state")]
+
+
+def test_common_state_scan_skips_a_worktree_with_a_retired_layout(tmp_path: Path) -> None:
+    worktree = _relocated_linked_worktree(tmp_path, versioned=False)
+    (worktree / "booley.toml").write_text('[project]\ndir = ".booley_project"\n', encoding="utf-8")
+
+    findings = _common_state_findings(tmp_path / "project")
+
+    assert [f for f in findings if f.severity == "warn"] == []

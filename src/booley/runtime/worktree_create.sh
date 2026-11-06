@@ -5,7 +5,8 @@
 #
 # Input JSON fields:
 #   name         (required) single safe path component; the worktree is
-#                created at <cwd>/.booley/worktrees/<name>.
+#                created at <cwd>/<Booley Directory>/worktrees/<name>, where the
+#                Booley Directory is <cwd>/booley.toml [project].dir (default .booley).
 #   cwd          (required) root of the Git repository to branch from.
 #   branch_ref   (optional) existing refs/heads/... branch to attach; without
 #                it the worktree starts on a detached HEAD at the current HEAD.
@@ -88,6 +89,22 @@ BOOLEY_PACKAGE_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 PYTHONPATH="$BOOLEY_PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
     "${PY[@]}" -c 'import sys; from pathlib import Path; from booley.core.booley_layout import validate_environment,require_current_layout; validate_environment(); require_current_layout(Path(sys.argv[1]))' "$CWD"
 
+# The checkout's own Booley Directory, relative to the root and read from the
+# checkout alone (booley.runtime.worktree_paths). With --ambient it also refuses
+# a Booley Directory outside the checkout, or a BOOLEY_DIR naming another one,
+# before anything is created. The root is passed in native form so a Windows
+# Python reads the right file.
+booley_dir_relative() {
+    local root="$1" out
+    shift
+    if command -v cygpath >/dev/null 2>&1; then root=$(cygpath -m "$root"); fi
+    out=$(PYTHONPATH="$BOOLEY_PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+        "${PY[@]}" -m booley.runtime.worktree_paths "$root" "$@") || return 1
+    printf '%s' "${out%$'\r'}"
+}
+BOOLEY_REL=$(booley_dir_relative "$CWD" --ambient)
+BOOLEY_DIR_PATH="$CWD/$BOOLEY_REL"
+
 EXPLICIT_BRANCH=""
 if [ -n "$BRANCH_REF" ]; then
     if [[ "$BRANCH_REF" != refs/heads/* ]] || ! git -C "$CWD" check-ref-format "$BRANCH_REF"; then
@@ -101,7 +118,7 @@ if [ -n "$BRANCH_REF" ]; then
     EXPLICIT_BRANCH="${BRANCH_REF#refs/heads/}"
 fi
 
-WORKTREE_DIR="$CWD/.booley/worktrees/$NAME"
+WORKTREE_DIR="$BOOLEY_DIR_PATH/worktrees/$NAME"
 CREATING_MARKER="$WORKTREE_DIR/.creating"
 
 # Keep this worktree's .core copies out of FuseSoC's recursive --cores-root
@@ -112,13 +129,13 @@ CREATING_MARKER="$WORKTREE_DIR/.creating"
 # predates the fix — so guarantee it here whenever a worktree exists. The
 # marker suppresses .core DISCOVERY only; source files a baseline fileset
 # references under .booley/ are still read.
-mkdir -p "$CWD/.booley"
-FUSESOC_IGNORE_MARKER="$CWD/.booley/FUSESOC_IGNORE"
+mkdir -p "$BOOLEY_DIR_PATH"
+FUSESOC_IGNORE_MARKER="$BOOLEY_DIR_PATH/FUSESOC_IGNORE"
 # A Versioned Booley Directory may have no committed root marker. Quarantine its
 # transient worktrees without adding an untracked input to the clean source.
 if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-}" = "1" ] && [ ! -f "$FUSESOC_IGNORE_MARKER" ]; then
-    mkdir -p "$CWD/.booley/worktrees"
-    FUSESOC_IGNORE_MARKER="$CWD/.booley/worktrees/FUSESOC_IGNORE"
+    mkdir -p "$BOOLEY_DIR_PATH/worktrees"
+    FUSESOC_IGNORE_MARKER="$BOOLEY_DIR_PATH/worktrees/FUSESOC_IGNORE"
 fi
 if [ ! -f "$FUSESOC_IGNORE_MARKER" ]; then
     printf '# Booley Directory: keep transient worktree .core copies out of FuseSoC/Booley core discovery.\n' \
@@ -149,7 +166,7 @@ SNAPSHOT_LIST=""
 # Serialize concurrent invocations on the SAME worktree name. Different
 # worktrees still run in parallel (lockfile is per-name). Prevents racing
 # runners from blowing each other's directories away mid-build.
-LOCK_DIR="$CWD/.booley/worktrees/.locks"
+LOCK_DIR="$BOOLEY_DIR_PATH/worktrees/.locks"
 mkdir -p "$LOCK_DIR"
 LOCKFILE="$LOCK_DIR/$NAME.lock"
 
@@ -305,7 +322,7 @@ if [ "$ON_EXISTING" = "refuse" ]; then
     if [ -n "$_destination_problem" ]; then
         _parent_lock_release
         echo "ERROR: worktree destination is not free ($_destination_problem): $WORKTREE_DIR" >&2
-        if [ -f "$WORKTREE_DIR/.booley/.git" ]; then
+        if [ -f "$WORKTREE_DIR/$BOOLEY_REL/.git" ]; then
             echo "ERROR: remove the Paired Checkout first, then the outer worktree, once its work is safe" >&2
         fi
         echo "ERROR: choose another name, or remove the old worktree once its work is safe" >&2
@@ -402,16 +419,6 @@ git_wt() {
     git --git-dir="$WORKTREE_GIT_DIR" --work-tree="$WORKTREE_DIR" "$@"
 }
 
-# Resolve the current Booley Directory; init is the only layout migrator.
-PIPELINE_DIR="$CWD/.booley"
-if [ -n "${BOOLEY_DIR:-}" ]; then
-    BOOLEY_DIR_RESOLVED="$BOOLEY_DIR"
-elif [ -d "$CWD/.booley" ]; then
-    BOOLEY_DIR_RESOLVED="$CWD/.booley"
-else
-    BOOLEY_DIR_RESOLVED="$PIPELINE_DIR"
-fi
-
 # --- Critical section B: more parent .git/config writes ---
 # Enable per-worktree config and keep all worktree settings out of the shared
 # parent .git/config. Re-acquire the parent-git lock around this cluster because
@@ -448,34 +455,35 @@ if [ "$(git -C "$CWD" config --bool --get worktree.useRelativePaths 2>/dev/null 
     fi
 fi
 
-# Apply the same validated [agent.git] policy used by Interactive Mode. Older
-# layouts may keep booley.toml under .booley/, but pipeline.toml is never read.
-IDENTITY_BOOLEY_DIR="$BOOLEY_DIR_RESOLVED"
-if [ ! -f "$IDENTITY_BOOLEY_DIR/booley.toml" ] && [ -f "$PIPELINE_DIR/booley.toml" ]; then
-    IDENTITY_BOOLEY_DIR="$PIPELINE_DIR"
-fi
-BOOLEY_PACKAGE_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+# Apply the same validated [agent.git] policy used by Interactive Mode, read from
+# the checkout's own Booley Directory (the ambient BOOLEY_DIR was checked to be
+# that directory, or unset, before anything was created). pipeline.toml is never read.
 PYTHONPATH="$BOOLEY_PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
-    BOOLEY_DIR="$IDENTITY_BOOLEY_DIR" BOOLEY_GIT_CHECKOUT="$WORKTREE_DIR" \
+    BOOLEY_DIR="$BOOLEY_DIR_PATH" BOOLEY_GIT_CHECKOUT="$WORKTREE_DIR" \
     "${PY[@]}" -m booley.runtime.incontainer_git_identity --ticket
 
 _parent_lock_release
 # --- End critical section B ---
 
-# Copy .booley/ into worktree if it exists as a sibling (convention-based discovery).
+# The new worktree's own root booley.toml (it may come from another branch) names
+# where that worktree expects its Booley Directory; a refusal here rolls the
+# worktree back through the ERR trap.
+WORKTREE_BOOLEY_REL=$(booley_dir_relative "$WORKTREE_DIR")
+
+# Copy the Booley Directory into the worktree if it exists (convention-based discovery).
 # The Snapshot is an allowlist: only paths classified as Checkout state versioned
 # with the RTL in booley.core.booley_dir_parts.BOOLEY_DIR_PATHS are copied.
 # Common state, state tied to one checkout's sources, and paths no row covers stay
 # in the Main Booley Directory (unclassified ones are named on stderr). Only
 # nested repositories and tool caches inside copied configuration are excluded.
-if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}" != "1" ] && [ -d "$CWD/.booley" ]; then
-    echo "Copying .booley/ into worktree..." >&2
-    mkdir -p "$WORKTREE_DIR/.booley"
+if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}" != "1" ] && [ -d "$BOOLEY_DIR_PATH" ]; then
+    echo "Copying $BOOLEY_REL/ into worktree..." >&2
+    mkdir -p "$WORKTREE_DIR/$WORKTREE_BOOLEY_REL"
     SNAPSHOT_LIST="$LOCK_DIR/${NAME}.snapshot.$$.list"
     PYTHONPATH="$BOOLEY_PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
-        "${PY[@]}" -m booley.runtime.worktree_snapshot "$CWD/.booley" "$SNAPSHOT_LIST"
-    tar -C "$CWD/.booley" --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
-        --null -T "$SNAPSHOT_LIST" -cf - | tar -C "$WORKTREE_DIR/.booley" -xf -
+        "${PY[@]}" -m booley.runtime.worktree_snapshot "$BOOLEY_DIR_PATH" "$SNAPSHOT_LIST"
+    tar -C "$BOOLEY_DIR_PATH" --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
+        --null -T "$SNAPSHOT_LIST" -cf - | tar -C "$WORKTREE_DIR/$WORKTREE_BOOLEY_REL" -xf -
     # No pipefail here: check both tar exits so a vanished entry fails creation.
     _snapshot_status=("${PIPESTATUS[@]}")
     rm -f "$SNAPSHOT_LIST"
@@ -483,7 +491,7 @@ if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}" != "1" ] && [ -d "$CWD/.booley" ]; t
         echo "ERROR: copying the Snapshot failed (tar exit ${_snapshot_status[*]})" >&2
         false
     fi
-    echo ".booley/ copied ($(du -sh "$WORKTREE_DIR/.booley" 2>/dev/null | cut -f1))" >&2
+    echo "$WORKTREE_BOOLEY_REL/ copied ($(du -sh "$WORKTREE_DIR/$WORKTREE_BOOLEY_REL" 2>/dev/null | cut -f1))" >&2
 fi
 
 # Root-level quarantine markers are commonly untracked by design, so git
