@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -18,7 +20,7 @@ from tests.booley_dir_topology import enter_worktree
 
 
 @pytest.fixture
-def worktree(tmp_path, monkeypatch) -> tuple[Path, Path]:
+def worktree(tmp_path, monkeypatch) -> Iterator[tuple[Path, Path]]:
     """``(Main Booley Directory, worktree)`` with the CWD in the worktree."""
     # Empty means unset, and monkeypatch restores the original after the server sets it.
     monkeypatch.setenv("BOOLEY_LOGS_DIR", "")
@@ -43,6 +45,22 @@ def test_worktree_mcp_server_jobs_are_visible_from_main(worktree, monkeypatch):
     assert root in project_job_roots(main)
     found, _unreadable = handle_pruning._read_job_records(main, {"run-1"})
     assert "run-1" in found
+
+
+def test_servers_of_different_checkouts_keep_separate_logs(worktree, monkeypatch):
+    from booley.mcp.server import _maybe_configure_interactive_logs_dir
+
+    main, _tree = worktree
+    _maybe_configure_interactive_logs_dir()
+    worktree_logs = Path(os.environ["BOOLEY_LOGS_DIR"])
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", "")
+    monkeypatch.chdir(main.parent)
+    reset_cache()
+    _maybe_configure_interactive_logs_dir()
+    main_logs = Path(os.environ["BOOLEY_LOGS_DIR"])
+    # Both servers share the host's name, yet neither sees the other's Jobs or sessions.
+    assert worktree_logs.parent == main_logs.parent == main / ".interactive_logs"
+    assert worktree_logs != main_logs
 
 
 @pytest.mark.parametrize("sandbox_like", [False, True], ids=["host", "sandbox"])
@@ -111,16 +129,17 @@ def test_unbound_job_handle_registers_in_main(worktree, monkeypatch):
     assert registered == [main]
 
 
-def test_job_slot_store_is_in_main(worktree):
+def test_job_slot_store_is_in_main(worktree, monkeypatch):
     from booley.runtime import job_slots
 
     main, _worktree = worktree
     root = main / "runtime" / "jobs" / "slots"
     assert job_slots.slots_dir() == root
     verifier = job_slots._default_inherited_execution_verifier
-    # The root is accepted as the canonical one; the unknown candidate then fails verification.
-    assert verifier("not-an-execution", root, 1) is None
-    assert verifier("not-an-execution", worktree[1] / ".booley/runtime/jobs/slots", 1) is None
+    # Only the Main Booley Directory's root is canonical; verification itself is stubbed.
+    monkeypatch.setattr(job_slots, "verify_inherited_execution_id", lambda *_a, **_kw: "verified")
+    assert verifier("anything", root, 1) == "verified"
+    assert verifier("anything", worktree[1] / ".booley/runtime/jobs/slots", 1) is None
 
 
 def test_dashboard_and_chat_handles_use_main(worktree, monkeypatch):
@@ -197,3 +216,15 @@ def test_doctor_reads_session_state_from_main(worktree, monkeypatch):
     doctor._run_project_checks(project, reporter)
     assert presence == [main]
     assert handle_maps == [main]
+
+
+def test_doctor_reports_a_skip_when_the_main_directory_is_unresolvable(tmp_path, monkeypatch):
+    from booley.harness import doctor
+
+    def broken(_root):
+        raise RuntimeError("malformed .git marker")
+
+    monkeypatch.setattr(doctor, "resolve_common_booley_dir", broken)
+    reporter = doctor._Reporter.create()
+    assert doctor._common_booley_dir(tmp_path, reporter) is None
+    assert reporter.counts["skip"] == 1

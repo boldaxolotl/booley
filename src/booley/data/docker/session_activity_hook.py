@@ -416,9 +416,9 @@ def _main_booley_dir(selected: Path) -> Path | None:
     common = _git_common_directory(checkout)
     if common is None or common.name != ".git":
         return None
-    main = _own_booley_dir(common.parent)
     if _own_booley_dir(checkout).resolve() != selected.resolve():
         return None
+    main = _own_booley_dir(common.parent)
     if main.resolve() == selected.resolve() or not main.is_dir():
         return None
     return main

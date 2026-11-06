@@ -1186,18 +1186,25 @@ def _outer_branch_for_project_data(
     return None
 
 
-def _common_booley_dir(root: Path) -> Path | None:
-    """The Main Booley Directory holding Session Registry and handle maps, if a Project resolves."""
+def _common_booley_dir(root: Path, reporter: _Reporter) -> Path | None:
+    """The Main Booley Directory holding Session Registry and handle maps.
+
+    Reports a skip with the reason when it cannot be resolved, so the checks
+    that read it never vanish silently.
+    """
     try:
         return resolve_common_booley_dir(root)
-    except (OSError, ValueError, RuntimeError):
+    except (OSError, ValueError, RuntimeError) as exc:
+        reporter.skip_(f"Main Booley Directory checks skipped - {exc}")
         return None
 
 
 def _check_goal_presence(root: Path, booley_dir: Path | None, reporter: _Reporter) -> None:
     from booley.harness.dashboard.doctor import inspect_presence
 
-    common = None if booley_dir is None else _common_booley_dir(root)
+    if booley_dir is None:
+        return
+    common = _common_booley_dir(root, reporter)
     if common is None:
         return
     result = inspect_presence(
@@ -3684,7 +3691,7 @@ def _run_project_checks(
         return
 
     _check_ticket_leftovers(project.booley_dir, reporter.warn_)
-    common = _common_booley_dir(project.project_root)
+    common = _common_booley_dir(project.project_root, reporter)
     if common is not None:
         _check_handle_map_size(common, reporter.warn_)
     _check_project_gitignore(project.booley_dir, reporter.pass_, reporter.warn_)

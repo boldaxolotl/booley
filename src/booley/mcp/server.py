@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import hashlib
 import itertools
 import json
 import logging
@@ -2254,6 +2255,7 @@ def _maybe_configure_interactive_logs_dir() -> None:
     if os.environ.get("BOOLEY_LOGS_DIR"):
         return
     try:
+        selected = resolve_booley_dir()
         booley_dir = canonical_project_alias_path(resolve_common_booley_dir())
     except (FileNotFoundError, SourceCheckoutProjectError):
         return
@@ -2263,6 +2265,10 @@ def _maybe_configure_interactive_logs_dir() -> None:
     if not booley_dir.is_dir():
         return
     session_id = _interactive_session_id()
+    if selected.resolve() != resolve_common_booley_dir().resolve():
+        # Host servers of different checkouts share a hostname: keep their Job
+        # records, reports and Specialist sessions apart in the shared directory.
+        session_id += "-" + hashlib.sha256(str(selected.resolve()).encode()).hexdigest()[:8]
     logs_dir = booley_dir / INTERACTIVE_LOGS_DIR_NAME / session_id
     logs_dir.mkdir(parents=True, exist_ok=True)
     os.environ["BOOLEY_LOGS_DIR"] = str(logs_dir)

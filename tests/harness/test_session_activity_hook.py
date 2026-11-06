@@ -411,13 +411,13 @@ def test_hook_common_dir_matches_booley(tmp_path, monkeypatch, topology):
         toml='[project]\ndir = "hw/booley"\n' if relocated else "",
     )
     cwd = {
-        "main": main,
+        "main": lambda: main,
         "snapshot": lambda: snapshot(main),
         "paired": lambda: paired_checkout(main),
         "relocated": lambda: snapshot(main, relative="hw/booley"),
         "env-worktree": lambda: snapshot(main),
     }[topology]
-    cwd = cwd() if callable(cwd) else cwd
+    cwd = cwd()
     env = {"BOOLEY_DIR": str(cwd / ".booley")} if topology == "env-worktree" else {}
     monkeypatch.chdir(cwd)
     for key, value in env.items():
