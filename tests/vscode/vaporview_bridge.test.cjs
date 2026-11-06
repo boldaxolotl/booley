@@ -50,6 +50,8 @@ function fakeVscode(options) {
         api: {
             Uri: FakeUri,
             extensions: { getExtension: id => (id === 'lramseyer.vaporview' ? extension : undefined) },
+            // `trusted: null` models a VS Code that does not expose workspace trust.
+            workspace: options.trusted === null ? {} : { isTrusted: options.trusted ?? true },
             window: {
                 state: { focused: options.focused ?? false },
                 onDidChangeWindowState: fn => { listeners.focus = fn; return { dispose() {} }; },
@@ -158,6 +160,7 @@ test('ping reports VaporView, focus and open documents', async () => {
     assert.equal(reply.result.protocol, 1);
     assert.equal(reply.result.vaporview, '9.9.9');
     assert.equal(reply.result.focused, true);
+    assert.equal(reply.result.trusted, true);
     assert.ok(reply.result.lastFocused > 0);
     assert.deepEqual(reply.result.documents, [TRACE]);
     assert.equal(f.editor.extension.activated, 1);
@@ -173,6 +176,22 @@ test('ping without VaporView answers instead of failing', async () => {
     assert.match(reply.result.error, /not installed in this VS Code window/);
     f.editor.listeners.focus({ focused: true });
     assert.ok((await request(f, 'ping')).result.lastFocused > 0);
+    stop(f);
+});
+
+test('ping in an untrusted window reports trusted false', async () => {
+    // Restricted Mode disables VaporView, so the extension is absent too.
+    const f = await startBridge({ vaporview: false, trusted: false });
+    const reply = await request(f, 'ping');
+    assert.equal(reply.ok, true);
+    assert.equal(reply.result.vaporview, null);
+    assert.equal(reply.result.trusted, false);
+    stop(f);
+});
+
+test('ping reports unknown trust as null, never as untrusted', async () => {
+    const f = await startBridge({ trusted: null });
+    assert.equal((await request(f, 'ping')).result.trusted, null);
     stop(f);
 });
 

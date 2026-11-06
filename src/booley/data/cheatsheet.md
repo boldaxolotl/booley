@@ -9,7 +9,7 @@ and nested actions.
 
 On the host, bare `booley` prints help and a getting-started hint.
 Inside the Sandbox, for Interactive Mode, we recommend `booley` / `booley chat`, which launches
-`claude` or `codex` according to `[agent].provider`.
+the default Agent CLI (`booley chat --cli <name>` picks another allowed one).
 
 | Command | Purpose |
 |---------|---------|
@@ -407,13 +407,13 @@ The `booley-sandbox` image contains Booley's EDA toolchain, Developer Agent clie
 | `booley session up` | Start the Sandbox headlessly (no VS Code) |
 | `booley session enter [-- cmd]` | Shell into it, or run one command |
 | `booley session down` | Stop and remove it |
-| `booley` / `booley chat` | Launch the configured `claude` or `codex` command inside the Sandbox |
+| `booley` / `booley chat` | Launch the default `claude` or `codex` command inside the Sandbox; `--cli <name>` picks another allowed one |
 | `docker pull ghcr.io/boldaxolotl/booley-sandbox:<ver>` | Manual pull of pre-built image |
 
 To extend the image, create `.booley/docker/Dockerfile` with `FROM booley-sandbox`, build it, then set `[sandbox].image` in `.booley/booley.toml`.
 
 Inside the Sandbox, `booley` / `booley chat` is a convenience alias for the selected Developer Agent command:
-it replaces itself with the native CLI. Arguments after `booley chat` are passed to it unchanged, for example `booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex); `booley chat -- --help` forwards `--help`.
+it replaces itself with the native CLI. Arguments after `booley chat` and its own options (`--cli`, `-C`) are passed to it unchanged, for example `booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex); `booley chat -- --help` forwards `--help`.
 
 **`booley chat`, `booley goal`, and `booley dashboard` run in the Sandbox.**
 Bare `booley` prints help on the host and starts the configured Developer Agent in the

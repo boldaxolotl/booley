@@ -105,8 +105,8 @@ Don't continue until `booley doctor` shows no failures or warnings.
     booley
     ```
 
-    `booley` (or `booley chat`) just starts the Developer Agent chosen in
-    `[agent].provider` in `.booley/booley.toml`:
+    `booley` (or `booley chat`) just starts the Developer Agent chosen by
+    `[agent] default` in `.booley/booley.toml`:
 
     | Provider | Same as running |
     | --- | --- |
@@ -117,9 +117,14 @@ Don't continue until `booley doctor` shows no failures or warnings.
     open more container terminals. If more than one will edit files, give each
     its own worktree; see [Several agents at once](#several-agents-at-once).
 
-    Arguments after `booley chat` go to that CLI unchanged. To resume an
-    earlier conversation, run `booley chat --resume <id>` (Claude) or
-    `booley chat resume --last` (Codex).
+    `booley chat --cli codex` opens another Agent CLI instead, as long as it is
+    listed in `[agent] clis`; otherwise it stops and lists the allowed ones. In
+    the Sandbox, Booley currently sets up (sign-in, Booley tools, skills) only
+    the default CLI, so another one may ask you to sign in and lack Booley's tools.
+
+    Arguments after `booley chat` and its own options (`--cli`, `-C`) go to the
+    CLI unchanged. To resume an earlier conversation, run
+    `booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex).
 
     If you see a login screen instead of a chat, run `booley auth --status` in a
     **host terminal** and follow its advice (usually `booley auth`). Then run

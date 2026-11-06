@@ -3,7 +3,7 @@
 
 Subcommands:
     goal      Work with Goal Records and evidence
-    chat      Open the Project's configured agent CLI
+    chat      Open the Project's default (or --cli chosen) Agent CLI
     worktree  Create a linked worktree with paired or snapshot Project inputs
     cheat     Print quick-reference cheatsheet
     doctor    Run environment health checks
@@ -31,6 +31,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from booley.config.agent import AGENT_CLIS
 from booley.feedback import cli as feedback_cli
 from booley.feedback.storage import feedback_storage_dir
 from booley.harness import (
@@ -451,7 +452,7 @@ _MIN_WRAP_WIDTH = 11
 _ROOT_DESCRIPTION = "Booley — RTL development harness."
 _ROOT_FOOTER = (
     "Run bare `booley` on the host for help, or inside the Sandbox to open this "
-    "Project's configured agent CLI. See `booley cheat --skills` for guided agent workflows."
+    "Project's default Agent CLI. See `booley cheat --skills` for guided agent workflows."
 )
 
 
@@ -591,14 +592,17 @@ def _add_auth_subparser(sub) -> None:
         "auth", help="Mint + store the agent's long-lived auth token (claude setup-token)"
     )
     auth_p.add_argument(
-        "--app",
-        choices=("claude", "codex"),
+        "--cli",
+        dest="app",
+        choices=AGENT_CLIS,
         default=None,
         help=(
-            "AI agent client (credential changes default to claude; "
-            "status uses the Project provider or both clients)"
+            "Agent CLI (credential changes default to claude; "
+            "status uses the Project's default CLI or both CLIs)"
         ),
     )
+    # Historical spelling of --cli: same dest, so both parse identically.
+    auth_p.add_argument("--app", dest="app", choices=AGENT_CLIS, help=argparse.SUPPRESS)
     auth_p.add_argument(
         "--status", action="store_true", help="Report which credential each agent would use"
     )
@@ -884,17 +888,29 @@ def _add_shell_subparser(sub) -> None:
 
 def _add_utility_subparsers(sub) -> None:
     """Add host utilities, setup commands, and direct Flow commands."""
-    sub.add_parser(
+    chat_p = sub.add_parser(
         "chat",
-        help="Open this Project's configured agent CLI [invokes agent]",
-        description="Open the configured interactive agent CLI for this Project.",
-        usage="%(prog)s [-h] [-C PATH | --project PATH] [--] [ARGS ...]",
+        help="Open this Project's default (or chosen) Agent CLI [invokes agent]",
+        description=(
+            "Open an interactive Agent CLI for this Project: its default, or the one --cli names."
+        ),
+        usage="%(prog)s [-h] [-C PATH | --project PATH] [--cli {claude,codex}] [--] [ARGS ...]",
         epilog=(
-            "Arguments after `chat` are passed unchanged to the agent CLI, after "
-            "Booley's own launch arguments, for example `booley chat --resume <id>` "
-            "(Claude) or `booley chat resume --last` (Codex). Booley reads -h/--help "
-            "and -C/--project only before any other argument. Put `--` "
-            "first to forward them to the agent: `booley chat -- --help`."
+            "Arguments after `chat` and its own options are passed unchanged to the "
+            "Agent CLI, after Booley's own launch arguments, for example "
+            "`booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex). "
+            "Booley reads -h/--help, -C/--project and --cli only before any other "
+            "argument. Put `--` first to forward them to the agent: "
+            "`booley chat -- --help`."
+        ),
+    )
+    chat_p.add_argument(
+        "--cli",
+        choices=AGENT_CLIS,
+        default=None,
+        help=(
+            "Agent CLI to open; must be listed in booley.toml [agent] clis "
+            "(default: the Project's default Agent CLI)"
         ),
     )
     _add_cheat_subparser(sub)
@@ -1162,13 +1178,15 @@ def _argv_command_index(argv: list[str], globals_parser: argparse.ArgumentParser
 
 
 def _chat_option_width(tail: list[str], position: int) -> int:
-    """Return how many tokens Booley's own `chat` Project option takes at `position`."""
+    """Return how many tokens Booley's own `chat` option (-C/--project, --cli) takes at `position`."""
     if position >= len(tail):
         return 0
     token = tail[position]
     if token in ("-C", "--project"):
         return 2 if position + 1 < len(tail) else 1
-    if token.startswith("--project=") or (token.startswith("-C") and len(token) > 2):
+    if token == "--cli":
+        return 2 if position + 1 < len(tail) else 1
+    if token.startswith(("--project=", "--cli=")) or (token.startswith("-C") and len(token) > 2):
         return 1
     return 0
 
@@ -1176,7 +1194,7 @@ def _chat_option_width(tail: list[str], position: int) -> int:
 def _split_chat_tail(argv: list[str], command_index: int) -> tuple[list[str], list[str]]:
     """Split `booley ... chat TAIL` into Booley's argv and the agent CLI's arguments.
 
-    Booley keeps `-C`/`--project` only while they lead the tail. Everything after
+    Booley keeps `-C`/`--project` and `--cli` only while they lead the tail. Everything after
     them goes to the agent CLI untouched, with one leading `--` dropped so
     `booley chat -- --help` forwards `--help`. A leading `-h`/`--help` stays
     Booley's: the whole argv goes to argparse, which prints the `chat` help.

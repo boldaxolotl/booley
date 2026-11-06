@@ -93,7 +93,7 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
     # refuses (AgentAppError) outside a Sandbox.
     app = app or agent_app.resolved_app(None)
     if project_root is not None and resolve_authoritative_booley_dir(project_root).is_dir():
-        provider, policy = project_credential_policy(project_root)
+        provider, policy = project_credential_policy(project_root, cli=app)
         app = app or provider
     if gateway_handoff_active():
         return _report_gateway_status(app)
@@ -115,7 +115,7 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
                 f"{selected}: no credential found under auth = '{policy}' — agents cannot authenticate"
             )
             if policy == "auto":
-                hint(f"run the app's login, export an API key, or booley auth --app {selected}")
+                hint(f"run the app's login, export an API key, or booley auth --cli {selected}")
             continue
         usable += 1
         line = f"{selected}: agents run on {effective.source} ({_MODE_DESC[effective.mode]})"
@@ -125,7 +125,7 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
             warn(line)
             hint("a host-side login can revoke a running container's copy mid-run")
             if policy == "auto":
-                hint(f"booley auth --app {selected}")
+                hint(f"booley auth --cli {selected}")
         for loser in effective.overridden:
             hint(f"{loser} is present but not used; the line above wins")
         if auth_token.read_stored_token(selected) and not auth_token.stored_token_is_private(
@@ -262,7 +262,7 @@ def _acquire(credential: AppCredential, from_stdin: bool, project_root: Path | N
 
 
 def _resolve_app(args: argparse.Namespace) -> str | None:
-    """The app to act on; ``--app`` or the default."""
+    """The app to act on; ``--cli`` (alias ``--app``) or the default."""
     app = getattr(args, "app", None) or APP_CLAUDE
     if app not in auth_token.CREDENTIALS:
         err(f"unknown app '{app}' — expected one of: {', '.join(auth_token.CREDENTIALS)}")

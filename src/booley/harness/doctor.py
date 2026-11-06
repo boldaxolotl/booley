@@ -72,6 +72,7 @@ from booley.core.boundary import (
     BoundaryError,
     is_str_list,
     require_bool,
+    require_bool_value,
     require_dict,
     require_int,
     require_list,
@@ -180,7 +181,7 @@ from booley.targets.selection import (
 )
 
 if TYPE_CHECKING:
-    from booley.config.agent import DeclaredAgent
+    from booley.config.agent import AgentSettings, DeclaredAgent
     from booley.config.agent_app import AgentAppChoice
     from booley.harness import developer_probe
 
@@ -1011,6 +1012,7 @@ def _run_project_phase(
         reporter.diagnostics(readiness.check_guidance(project, mode=mode))
         _check_project_data_destination_branch(project.project_root, reporter)
     _check_worktree_booley_pairing(project_root, reporter)
+    _check_common_state_in_worktrees(project_root, reporter)
     _check_worktree_prune_guard(project_root, reporter.pass_, reporter.skip_, reporter.fail_)
     _check_line_endings(
         project_root,
@@ -1124,6 +1126,122 @@ def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> N
         f"{versioned}; Goal Mode and baselines will not use its committed revisions",
         "save any work in this worktree, then recreate it with `booley worktree new <name>` "
         f"from {primary}",
+    )
+
+
+_COMMON_STATE_CHECK_ID = "project-data.common-state-in-worktree"
+_COMMON_STATE_PATHS_SHOWN = 5
+
+
+def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) -> None:
+    """Warn when a linked worktree's Booley Directory holds untracked Common Booley State.
+
+    Common Booley State lives once per Project, in the Main Booley Directory;
+    a copy in a worktree is never read and goes stale. Older Snapshots copied
+    it. Paths Git tracks there arrive by checkout and are not reported.
+    """
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.runtime.directory_migration_git import primary_checkout
+    from booley.runtime.worktrees import list_worktrees
+
+    try:
+        main_dir = resolve_common_booley_dir(project_root).resolve()
+        # Git lists the primary checkout first; only linked worktrees can hold stale copies.
+        linked = list_worktrees(primary_checkout(project_root))[1:]
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip() or f"git exited {exc.returncode}"
+        reporter.skip_(
+            f"Common Booley State in worktrees skipped - cannot list worktrees: {detail}"
+        )
+        return
+    except (
+        BooleyLayoutError,
+        OSError,
+        subprocess.TimeoutExpired,
+        SourceCheckoutProjectError,
+    ) as exc:
+        reporter.skip_(f"Common Booley State in worktrees skipped - cannot list worktrees: {exc}")
+        return
+    scanned = 0
+    warned = False
+    for entry in linked:
+        booley_dir = entry.path / BOOLEY_DIR_NAME
+        if booley_dir.is_symlink() or not booley_dir.is_dir() or booley_dir.resolve() == main_dir:
+            continue
+        try:
+            untracked = _untracked_common_paths(entry.path, booley_dir)
+        except FileNotFoundError:
+            continue  # A baseline worktree removed while scanning.
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or "").strip() or f"git exited {exc.returncode}"
+            reporter.skip_(f"Common Booley State in {booley_dir} skipped - {detail}")
+            continue
+        except (OSError, ValueError) as exc:
+            reporter.skip_(f"Common Booley State in {booley_dir} skipped - {exc}")
+            continue
+        scanned += 1
+        if untracked:
+            warned = True
+            _warn_common_state_in_worktree(booley_dir, untracked, reporter)
+    if not warned:
+        reporter.pass_(f"no Common Booley State in {scanned} worktree Booley Directories")
+
+
+def _untracked_common_paths(worktree: Path, booley_dir: Path) -> list[str]:
+    """Return the Common Booley State paths in *booley_dir* that Git does not track.
+
+    Raises:
+        OSError: the directory cannot be walked.
+        subprocess.CalledProcessError: ``git ls-files`` failed, so tracked paths cannot be told apart.
+        ValueError: Git printed a path name that is not valid UTF-8.
+    """
+    from booley.core.booley_dir_parts import BooleyDirClass, iter_booley_dir
+
+    common = [
+        path
+        for path, booley_class in iter_booley_dir(booley_dir)
+        if booley_class is BooleyDirClass.COMMON
+    ]
+    if not common:
+        return []
+    tracked = _tracked_booley_paths(worktree, booley_dir)
+    return [path for path in common if not _is_tracked(path, tracked)]
+
+
+def _tracked_booley_paths(worktree: Path, booley_dir: Path) -> set[str]:
+    """Return Git-tracked paths under *booley_dir*, relative to it and ``/``-separated.
+
+    Raises:
+        subprocess.CalledProcessError: ``git ls-files`` failed, so tracked paths cannot be told apart.
+    """
+    own_repository = (booley_dir / ".git").exists()
+    cwd = booley_dir if own_repository else worktree
+    args = ["ls-files", "-z"] if own_repository else ["ls-files", "-z", "--", BOOLEY_DIR_NAME]
+    result = project_repositories.run_git(cwd, *args)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, args, stderr=result.stderr)
+    prefix = "" if own_repository else f"{BOOLEY_DIR_NAME}/"
+    return {name.removeprefix(prefix) for name in result.stdout.split("\0") if name}
+
+
+def _is_tracked(path: str, tracked: set[str]) -> bool:
+    """Return whether *path*, or any file below it, is in *tracked*."""
+    return path in tracked or any(name.startswith(f"{path}/") for name in tracked)
+
+
+def _warn_common_state_in_worktree(
+    booley_dir: Path, untracked: list[str], reporter: _Reporter
+) -> None:
+    shown = ", ".join(untracked[:_COMMON_STATE_PATHS_SHOWN])
+    hidden = len(untracked) - _COMMON_STATE_PATHS_SHOWN
+    if hidden > 0:
+        shown += f", and {hidden} more"
+    _warning_sink(reporter.warn_, _COMMON_STATE_CHECK_ID, subject=str(booley_dir))(
+        f"{booley_dir} holds Common Booley State ({shown}); Booley reads it from the Main "
+        "Booley Directory, so these copies are stale",
+        f"save anything you still need from these paths, then delete them from {booley_dir}; "
+        "remove a Git worktree under worktrees/ or .baseline-wt-* with `git worktree remove`, "
+        "not by deleting its directory",
     )
 
 
@@ -2089,7 +2207,7 @@ def _run_model_access_probes(
     call (host run, auth failure, usage cap) the extra spend is pointless and the check
     stays incomplete.
     """
-    from booley.config.agent import load_agent_settings
+    from booley.config.agent import SPECIALISTS, load_agent_settings
     from booley.harness import developer_probe
 
     if internal_record is None:
@@ -2101,7 +2219,9 @@ def _run_model_access_probes(
         return
     settings = load_agent_settings(project.project_root, booley_dir=project.booley_dir)
     probed_all = True
-    for model, keys in settings.model_settings().items():
+    # model -> verdict; one probe per model even when several [models] lists share it.
+    verdicts: dict[str, _ModelProbe] = {}
+    for model, keys in settings.model_settings(include_lists=False).items():
         cli = settings.cli_for_model_id(model)
         if model == settings.internal_model() or settings.auth_for(cli) == GATEWAY_AUTH:
             continue
@@ -2110,16 +2230,31 @@ def _run_model_access_probes(
             "one provider turn; usually seconds, times out after "
             f"{format_duration(developer_probe.PROBE_TIMEOUT_S)}",
         )
-        if not _probe_one_model(project, reporter, model, keys):
+        if not _probe_one_model(project, reporter, model, keys, verdicts):
             probed_all = False
             break
+    if probed_all:
+        for name in sorted(SPECIALISTS):
+            entries = settings.model_candidates(name)
+            if entries is not None and not _probe_model_list(
+                project, reporter, settings, name, entries, internal_record, verdicts
+            ):
+                probed_all = False
+                break
     tracker.completed("model-access", probed_all)
 
 
-def _probe_one_model(
-    project: ProjectAudit, reporter: _Reporter, model: str, keys: tuple[str, ...]
-) -> bool:
-    """Probe *model*, grade the verdict, and return whether the next model may be probed."""
+@dataclass(frozen=True)
+class _ModelProbe:
+    """The graded result of one trivial provider turn on a Specialist model."""
+
+    outcome: str  # "accepted", "refused", "failed" (FAIL), or "skipped" (inconclusive)
+    message: str = ""
+    fix: str = ""
+
+
+def _run_model_probe(project: ProjectAudit, reporter: _Reporter, model: str) -> _ModelProbe:
+    """Probe *model* once and grade the verdict; spend is recorded on *reporter*."""
     from booley.harness import developer_probe
 
     try:
@@ -2133,18 +2268,110 @@ def _probe_one_model(
                 _AgentCallRecord("model probe", getattr(exc, "usage", None), cause)
             )
         if isinstance(cause, ModelUnavailableError):
-            reporter.fail_(str(cause), _MODEL_REFUSAL_FIX)
-            return True
+            return _ModelProbe("refused", str(cause), _MODEL_REFUSAL_FIX)
         if getattr(exc, "agent_failure", False):
-            reporter.fail_(
+            return _ModelProbe(
+                "failed",
                 f"Specialist model {model} probe could not complete a trivial call: {exc}",
                 "check the provider's error in the harness log",
             )
-        else:
-            reporter.skip_(f"Specialist model {model} probe skipped - {exc}")
-        return False
+        return _ModelProbe("skipped", f"Specialist model {model} probe skipped - {exc}")
     reporter.record_agent_call(_AgentCallRecord("model probe", usage))
-    reporter.pass_(f"Specialist model {model} accepted by the provider ({', '.join(keys)})")
+    return _ModelProbe("accepted")
+
+
+def _probe_one_model(
+    project: ProjectAudit,
+    reporter: _Reporter,
+    model: str,
+    keys: tuple[str, ...],
+    verdicts: dict[str, _ModelProbe],
+) -> bool:
+    """Probe *model*, grade the verdict, and return whether the next model may be probed."""
+    probe = verdicts[model] = _run_model_probe(project, reporter, model)
+    if probe.outcome == "accepted":
+        reporter.pass_(f"Specialist model {model} accepted by the provider ({', '.join(keys)})")
+        return True
+    if probe.outcome == "refused":
+        reporter.fail_(probe.message, probe.fix)
+        return True
+    if probe.outcome == "failed":
+        reporter.fail_(probe.message, probe.fix)
+    else:
+        reporter.skip_(probe.message)
+    return False
+
+
+def _probe_model_list(
+    project: ProjectAudit,
+    reporter: _Reporter,
+    settings: AgentSettings,
+    name: str,
+    entries: tuple[str, ...],
+    internal_record: _AgentCallRecord | None,
+    verdicts: dict[str, _ModelProbe],
+) -> bool:
+    """Walk the hidden ``[models] <name>`` fallback list as a launch would (#2836).
+
+    PASS when the first entry works, WARN naming the skipped or refused entries and the
+    model chosen, FAIL when no entry works. Entries a launch skips make no probe. Returns
+    whether the next list may be probed (``False`` after an inconclusive probe).
+    """
+    from booley.harness import developer_probe
+    from booley.runtime.model_fallback import REASON_REFUSED, entry_skip_reason
+
+    key = f"[models] {name}"
+    passed_over: list[tuple[str, str]] = []
+    for model in entries:
+        reason = entry_skip_reason(settings, model, remembered=False)
+        if reason is not None:
+            passed_over.append((model, reason))
+            continue
+        cli = settings.cli_for_model_id(model)
+        if model == settings.internal_model() and internal_record is not None:
+            # The memory probe already called it: reuse its verdict.
+            refused = isinstance(internal_record.error, ModelUnavailableError)
+            probe = _ModelProbe("refused" if refused else "accepted")
+        elif settings.auth_for(cli) == GATEWAY_AUTH:
+            probe = _ModelProbe("accepted")  # the gateway fixes the model server-side
+        elif model in verdicts:
+            probe = verdicts[model]
+        else:
+            _announce_long_check(
+                f"provider-backed check: Specialist model access probe for {model}",
+                "one provider turn; usually seconds, times out after "
+                f"{format_duration(developer_probe.PROBE_TIMEOUT_S)}",
+            )
+            probe = verdicts[model] = _run_model_probe(project, reporter, model)
+        if probe.outcome == "refused":
+            passed_over.append((model, REASON_REFUSED))
+            continue
+        if probe.outcome != "accepted":
+            if probe.outcome == "failed":
+                reporter.fail_(probe.message, probe.fix)
+            else:
+                reporter.skip_(probe.message)
+            return False
+        if not passed_over:
+            reporter.pass_(f"Specialist model list for {key}: {model} accepted by the provider")
+            return True
+        skipped = "; ".join(f"{item} ({why})" for item, why in passed_over)
+        reporter.warn_(
+            warning(
+                "agent.model-fallback",
+                f"Specialist model list for {key} falls back to {model}: {skipped}.",
+                subject=key,
+            ),
+            "log in to the Agent CLI of the first entry or choose a model the account can use",
+        )
+        return True
+    tried = ", ".join(f"'{item}' ({why})" for item, why in passed_over)
+    reporter.fail_(
+        f"No model in `{key}` could run: {tried}. Set `{key}` to a model the account can use.",
+        _MODEL_REFUSAL_FIX,
+        check_id="agent.model-fallback",
+        subject=key,
+    )
     return True
 
 
@@ -2777,47 +3004,133 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     reported, auto_choice = _report_agent_app_choice(reporter)
     if not reported:
         return
-    provider = _configured_provider(project)
-    auth_policy = _configured_auth_policy(project)
+    default_cli = _configured_provider(project)
+    allowed = _allowed_clis(project, default_cli)
     _warn_ignored_gateway_handoff(reporter)
-    _check_gateway_model_pin(auth_policy, provider, reporter)
+    # Pins apply to gateway-routed Codex only, so judge them under Codex's policy when it is listed.
+    pin_cli = auth_token.APP_CODEX if auth_token.APP_CODEX in allowed else default_cli
+    _check_gateway_model_pin(_configured_auth_policy(project, pin_cli), pin_cli, reporter)
+    specialist_clis = _specialist_clis(project)
+    for cli in allowed:
+        _check_cli_credentials(
+            project,
+            cli,
+            reporter,
+            is_default=cli == default_cli,
+            runs_specialist=cli in specialist_clis,
+            auto_choice=auto_choice,
+        )
+
+
+def _specialist_clis(project: ProjectAudit | None) -> frozenset[str]:
+    """The Agent CLIs that the Project's ``[models]`` pins run a Specialist on.
+
+    Fail-soft like :func:`_declared_agent`: a non-table ``[models]``, a non-string
+    pin, or an unknown model prefix contributes nothing (``agent.backend-health``
+    already reports an invalid ``[models]``).
+    """
+    from booley.config.agent import cli_for_model
+
+    models = project.booley_toml.get("models") if project is not None else None
+    if not isinstance(models, dict):
+        return frozenset()
+    pinned = (cli_for_model(pin.strip()) for pin in models.values() if isinstance(pin, str))
+    return frozenset(cli for cli in pinned if cli)
+
+
+def _check_cli_credentials(
+    project: ProjectAudit | None,
+    cli: str,
+    reporter: _Reporter,
+    *,
+    is_default: bool,
+    runs_specialist: bool,
+    auto_choice: AgentAppChoice | None,
+) -> None:
+    """Audit one allowed Agent CLI's credential, policy, and rotation risk.
+
+    The default CLI keeps its grading (FAIL under a pinned policy, WARN under
+    ``auto``). Another allowed CLI WARNs for a missing credential, with the CLI's
+    own login fix, unless a ``[models]`` pin runs a Specialist on it: then it
+    FAILs under every policy, because that Specialist's calls would fail.
+    """
+    required = is_default or runs_specialist
+    auth_policy = _configured_auth_policy(project, cli)
     if auth_policy == GATEWAY_AUTH:
         # Under BOOLEY_AGENT_APP=auto the policy comes from the start's choice record.
-        _check_gateway_auth(provider, reporter, chosen_by_auto=auto_choice is not None)
+        _check_gateway_auth(cli, reporter, chosen_by_auto=auto_choice is not None or not required)
         return
     try:
-        plan = auth_token.credential_plan(provider, auth_policy)
+        plan = auth_token.credential_plan(cli, auth_policy)
     except ValueError as exc:
-        reporter.fail_(str(exc), check_id="agent.credential-policy", subject=provider)
+        reporter.fail_(str(exc), check_id="agent.credential-policy", subject=cli)
         return
     _check_agent_auth_token(
-        provider,
+        cli,
         reporter.pass_,
         reporter.warn_,
         reporter.skip_,
         policy=auth_policy,
         plan=plan,
-        _fail=lambda message: reporter.fail_(
-            message, check_id="agent.credential-missing", subject=provider
+        _fail=(
+            (
+                lambda message, fix="": reporter.fail_(
+                    message, fix, check_id="agent.credential-missing", subject=cli
+                )
+            )
+            if required
+            else None
         ),
+        missing_fix="" if is_default else _missing_credential_fix(cli, auth_policy),
+        is_default=is_default,
+        missing_fails=runs_specialist and not is_default,
     )
+    if plan.selected is None and not is_default:
+        return  # the missing-credential WARN already names the fix; no login to rotate
+    _check_cli_rotation_risk(cli, reporter, auth_policy, plan, is_default=is_default)
+
+
+def _check_cli_rotation_risk(
+    cli: str,
+    reporter: _Reporter,
+    policy: str,
+    plan: auth_token.CredentialPlan,
+    *,
+    is_default: bool,
+) -> None:
+    """Check *cli*'s OAuth token and subscription credential health."""
     _check_oauth_token(
-        provider,
+        cli,
         reporter.pass_,
         reporter.warn_,
         reporter.skip_,
-        policy=auth_policy,
+        policy=policy,
         _note=reporter.note_,
         plan=plan,
+        is_default=is_default,
     )
     _check_subscription_creds_health(
-        provider,
+        cli,
         reporter.pass_,
         reporter.warn_,
-        policy=auth_policy,
+        policy=policy,
         plan=plan,
         display_overrides=reporter.display_overrides,
     )
+
+
+def _missing_credential_fix(cli: str, policy: str) -> str:
+    """The sign-in that *policy* accepts for *cli* (see ``auth_token.allowed_credential_keys``)."""
+    if cli == auth_token.APP_CLAUDE:
+        if policy == "api_key":
+            return f"export {auth_token.API_KEY_ENV[cli]}"
+        return "run claude and use /login, or on the host: booley auth --cli claude"
+    host_login = f"booley auth --cli {cli}"
+    if policy == "subscription":
+        return "codex login"
+    if policy == "api_key":
+        return f"export {auth_token.API_KEY_ENV[cli]}, or on the host: {host_login}"
+    return f"codex login, or on the host: {host_login}"
 
 
 def _report_agent_app_choice(reporter: _Reporter) -> tuple[bool, AgentAppChoice | None]:
@@ -2883,8 +3196,9 @@ def _check_gateway_auth(provider: str, reporter: _Reporter, *, chosen_by_auto: b
     """Grade the env-selected gateway policy: it routes Codex only and needs URL + token.
 
     *chosen_by_auto* means ``BOOLEY_AGENT_APP=auto`` picked the gateway because it
-    found no Claude or Codex login, so a token command that cannot print a token
-    yet is a warning. With an explicit app it stays a FAIL.
+    found no Claude or Codex login, or because the CLI is not the Project's default
+    (it cannot run yet), so a token command that cannot print a token yet is a
+    warning. With an explicit default app it stays a FAIL.
     """
     if provider != auth_token.APP_CODEX:
         reporter.fail_(
@@ -3023,7 +3337,7 @@ def _configured_provider(project: ProjectAudit | None) -> str:
     loaders use: ``BOOLEY_PRIMARY_PROVIDER`` -> booley.toml ``[agent] default`` ->
     ``BOOLEY_AGENT_APP``), then the built-in default. An omitted default is not
     "unknown", so the auth checks audit exactly the backend that will run: the
-    *unused* backend's absent credentials never surface as warnings.
+    *unlisted* backend's absent credentials never surface as warnings.
     """
     from booley.config.agent import _DEFAULT_PROVIDER, resolve_default_cli
 
@@ -3031,8 +3345,22 @@ def _configured_provider(project: ProjectAudit | None) -> str:
     return resolved[0] if resolved else _DEFAULT_PROVIDER
 
 
-def _configured_auth_policy(project: ProjectAudit | None) -> str:
-    """Audit the default CLI's policy; ambient handoff is only a no-Project fallback."""
+def _allowed_clis(project: ProjectAudit | None, default_cli: str) -> tuple[str, ...]:
+    """The Agent CLIs to audit: the default first, then the other declared ``[agent] clis``.
+
+    A default outside the declared list (for example from ``BOOLEY_PRIMARY_PROVIDER``)
+    is a config error that ``agent.backend-health`` reports; the credential audit
+    then stays the default CLI's alone.
+    """
+    declared = _declared_agent(project)
+    clis = declared.clis if declared else None
+    if not clis or default_cli not in clis:
+        return (default_cli,)
+    return (default_cli, *(cli for cli in clis if cli != default_cli))
+
+
+def _configured_auth_policy(project: ProjectAudit | None, cli: str | None = None) -> str:
+    """Audit *cli*'s policy (default CLI when omitted); ambient handoff is only a no-Project fallback."""
     from booley.config.agent import (
         _DEFAULT_AUTH,
         _VALID_AUTH_MODES,
@@ -3041,7 +3369,13 @@ def _configured_auth_policy(project: ProjectAudit | None) -> str:
         gateway_handoff_active,
     )
 
-    if gateway_handoff_active():
+    default_cli = _configured_provider(project)
+    cli = cli or default_cli
+    # The hand-off routes Codex; Claude is audited as gateway only when it is the sole
+    # allowed CLI (the single-CLI FAIL "routes Codex only"), as the runtime treats it.
+    if gateway_handoff_active() and (
+        cli == auth_token.APP_CODEX or _allowed_clis(project, default_cli) == (cli,)
+    ):
         return GATEWAY_AUTH  # env-only policy: it outranks the Project toml
     env_auth = env_auth_handoff() or ""
     if project is None:
@@ -3050,7 +3384,7 @@ def _configured_auth_policy(project: ProjectAudit | None) -> str:
     if declared is None:
         return _DEFAULT_AUTH
     auth = declared.auth
-    policy = auth if isinstance(auth, str) else (auth or {}).get(_configured_provider(project))
+    policy = auth if isinstance(auth, str) else (auth or {}).get(cli)
     if policy == GATEWAY_AUTH and not _inside_container():
         return _DEFAULT_AUTH  # like the env hand-off, the toml gateway applies in a Sandbox only
     return policy or _DEFAULT_AUTH
@@ -3067,9 +3401,11 @@ def _agent_app_installed(provider: str) -> bool:
     return host_environment.inspect_agent_installation("codex").installed
 
 
-def _provider_not_installed_reason(provider: str) -> str:
+def _provider_not_installed_reason(provider: str, *, is_default: bool = True) -> str:
     """Explain an unchecked auth audit: the selected provider is absent here."""
-    return f"the configured [agent] provider ({provider}) is not installed on this host"
+    if is_default:
+        return f"the configured [agent] provider ({provider}) is not installed on this host"
+    return f"the allowed Agent CLI ({provider}) is not installed on this host"
 
 
 def _check_agent_auth_token(
@@ -3081,6 +3417,9 @@ def _check_agent_auth_token(
     *,
     _fail: Check | None = None,
     plan: auth_token.CredentialPlan | None = None,
+    missing_fix: str = "",
+    is_default: bool = True,
+    missing_fails: bool = False,
 ) -> None:
     """ADR 0018: verify the agent's credential where it actually lives (not assumed).
 
@@ -3091,19 +3430,22 @@ def _check_agent_auth_token(
     ``[agent] auth`` knob: under ``subscription`` Booley scrubs the API keys
     from agent envs, so the resolution here mirrors that.
 
-    Scoped to the ONE provider the project runs on (see
-    :func:`_configured_provider`): a Booley run never reads the other app's
-    credentials, so their absence is not a finding worth a warning.
+    Scoped to one allowed CLI (see :func:`_allowed_clis`): a CLI the Project does
+    not list is never audited. *missing_fix* names the sign-in for a missing credential;
+    *missing_fails* grades a missing credential FAIL (through *_fail*) even under ``auto``.
     """
     _warn = _warning_sink(_warn, "agent.credential-missing", subject=provider)
     plan = plan or auth_token.credential_plan(provider, policy)
     if policy != "auto" and plan.selected is None:
-        (_fail or _warn)(
-            f"{provider}: no usable credential under auth = '{policy}'; provide the pinned credential"
-        )
+        message = f"{provider}: no usable credential under auth = '{policy}'; provide the pinned credential"
+        if _fail:
+            _fail(message, missing_fix)
+        else:
+            _warn(message, missing_fix)
         return
     if not _agent_app_installed(provider):
-        _skip(f"agent auth token check skipped - {_provider_not_installed_reason(provider)}")
+        reason = _provider_not_installed_reason(provider, is_default=is_default)
+        _skip(f"agent auth token check skipped - {reason}")
         return
     label = _AGENT_APP_LABELS[provider]
     effective = plan.selected
@@ -3114,10 +3456,14 @@ def _check_agent_auth_token(
             if policy != "auto"
             else "run its login or export an API key"
         )
-        _warn(
+        message = (
             f"{label} detected but no usable credential under auth = '{policy}' "
             f"(login file: {auth_token.subscription_creds_path(provider)}) — {hint}"
         )
+        if missing_fails and _fail:
+            _fail(message, missing_fix)
+        else:
+            _warn(message, missing_fix)
         return
     line = f"{label} auth: {effective.source}"
     if effective.overridden:
@@ -3173,6 +3519,7 @@ def _check_oauth_token(
     *,
     _note: Check | None = None,
     plan: auth_token.CredentialPlan | None = None,
+    is_default: bool = True,
 ) -> None:
     """Report whether agents run on a rotation-free credential or a refreshing one.
 
@@ -3189,14 +3536,13 @@ def _check_oauth_token(
     explicit ``auth = "subscription"`` accepts that tradeoff, so it is a NOTE.
     In a Sandbox without the app's seed sidecar the login was made inside it, no
     host-side login shares its refresh token, and the finding is a NOTE too.
-    Only the *other* provider's line is dropped -- see :func:`_configured_provider`.
+    A CLI the Project does not list gets no line -- see :func:`_allowed_clis`.
     """
     note_sink = _note or _pass
     _warn = _warning_sink(_warn, "agent.rotation-risk", subject=provider)
     if not _agent_app_installed(provider):
-        _skip(
-            f"rotation-free credential check skipped - {_provider_not_installed_reason(provider)}"
-        )
+        reason = _provider_not_installed_reason(provider, is_default=is_default)
+        _skip(f"rotation-free credential check skipped - {reason}")
         return
     plan = plan or auth_token.credential_plan(provider, policy)
     if policy == "api_key" and plan.selected is None:
@@ -3220,7 +3566,7 @@ def _check_oauth_token(
         if policy == "subscription":
             note_sink(f"{message} (accepted by explicit auth = 'subscription')")
         else:
-            _warn(message, f"booley auth --app {provider}")
+            _warn(message, f"booley auth --cli {provider}")
         return
     # F-18: `stored` is truthy when the token comes from the read-only sidecar
     # seed too (the in-container case), but the privacy check only stats the
@@ -3338,7 +3684,7 @@ def _check_subscription_creds_health(
             if _host_login_can_rotate(app):
                 suffix, fix = (
                     ") and refresh fails once the host has rotated the shared refresh token — agents then crash at launch",
-                    f"booley auth --app {app}  (or refresh the host login and recreate the container)",
+                    f"booley auth --cli {app}  (or refresh the host login and recreate the container)",
                 )
             else:
                 suffix, fix = (
@@ -3372,7 +3718,7 @@ def _check_subscription_creds_health(
             "to a pre-refresh inode, so every container (re)start re-seeds dead "
             "credentials",
             "recreate the container to re-bind the current host file — or store a "
-            f"rotation-free credential: booley auth --app {app}",
+            f"rotation-free credential: booley auth --cli {app}",
         )
 
 
@@ -3553,20 +3899,27 @@ def _viewer_bridges(argv_prefix: list[str]) -> list[dict] | None:
     try:
         report = require_dict(json.loads(result.stdout), field="bridge probe")
         entries = require_list(report.get("bridges"), field="bridge probe bridges")
-        return [
-            {
-                "vaporview": require_opt_str(entry, "vaporview"),
-                "error": require_opt_str(entry, "error"),
-            }
-            for entry in (require_dict(item, field="bridge entry") for item in entries)
-        ]
+        return [_bridge_entry(require_dict(item, field="bridge entry")) for item in entries]
     except (ValueError, BoundaryError):
         return None
 
 
-def _bridge_dark_fix(argv_prefix: list[str]) -> str:
-    """Choose recovery from an authoritative remote extension observation."""
-    state = _vaporview_extension_state(argv_prefix)
+def _bridge_entry(entry: dict) -> dict:
+    """Validate one bridge report; ``trusted`` is None when the bridge omits it."""
+    trusted = entry.get("trusted")
+    return {
+        "vaporview": require_opt_str(entry, "vaporview"),
+        "error": require_opt_str(entry, "error"),
+        "trusted": None if trusted is None else require_bool_value(trusted, field="trusted"),
+    }
+
+
+def _bridge_dark_fix(argv_prefix: list[str], state: vaporview.ExtensionState | None = None) -> str:
+    """Choose recovery from an authoritative remote extension observation.
+
+    ``state`` is a registry observation the caller already made; None probes.
+    """
+    state = _vaporview_extension_state(argv_prefix) if state is None else state
     if state is vaporview.ExtensionState.MISSING:
         return "VaporView extension is not installed. " + _BRIDGE_MISSING_EXTENSION_FIX
     if state is vaporview.ExtensionState.UNKNOWN:
@@ -3586,17 +3939,40 @@ def _report_viewer_bridges(
     if not bridges:
         _fail(f"{description}: no window answered{where}", _bridge_dark_fix(argv_prefix))
         return
+    # Restricted Mode disables VaporView, so a window that reports itself
+    # untrusted cannot show it: that is waiting for the user, not a fault.
     broken = [entry for entry in bridges if entry["vaporview"] is None]
-    if broken:
+    waiting = [entry for entry in broken if entry["trusted"] is False]
+    state = _vaporview_extension_state(argv_prefix) if waiting else None
+    # The registry does not depend on trust, so a really absent VaporView
+    # (MISSING) is never hidden behind a window that is not yet trusted.
+    if state is vaporview.ExtensionState.MISSING:
+        waiting = []
+    if len(broken) > len(waiting):
         reasons = "; ".join(sorted({entry["error"] or "no detail" for entry in broken}))
         _fail(
             f"{description}: {len(broken)} of {len(bridges)} window(s){where} report no "
             f"usable VaporView ({reasons})",
-            _bridge_dark_fix(argv_prefix),
+            _bridge_dark_fix(argv_prefix, state),
         )
         return
-    count = f" ({len(bridges)} windows)" if len(bridges) > 1 else ""
-    _pass(f"{description}{count}")
+    _report_waiting_for_trust(description, len(bridges), len(waiting), where, _pass, _skip)
+
+
+def _report_waiting_for_trust(
+    description: str, windows: int, waiting: int, where: str, _pass: Check, _skip: Check
+) -> None:
+    """Pass or skip a bridge inventory in which no window is broken."""
+    if not waiting:
+        count = f" ({windows} windows)" if windows > 1 else ""
+        _pass(f"{description}{count}")
+    elif waiting < windows:
+        _pass(f"{description} ({windows} windows; {waiting} waiting for workspace trust)")
+    else:
+        _skip(
+            f"{description} - VaporView waits for workspace trust in {waiting} "
+            f"window(s){where}; trust the folder, then run `booley doctor`"
+        )
 
 
 def _check_viewer_bridge(

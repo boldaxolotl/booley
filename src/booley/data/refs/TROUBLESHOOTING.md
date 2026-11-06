@@ -206,7 +206,7 @@ The host and the container share that token, so a Claude Code or Codex session
 on the host can invalidate the container's copy mid-run.
 
 Use a sign-in that doesn't rotate: run `booley auth` for Claude, or
-`booley auth --app codex` for Codex, on the host. Rebuild an existing container
+`booley auth --cli codex` for Codex, on the host. Rebuild an existing container
 once so it gets the new credential. Billing choices are in
 [Setup](https://booley.dev/docs/setup/#sign-in-and-billing).
 

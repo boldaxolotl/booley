@@ -401,7 +401,7 @@ class TestRotationRiskVenue:
         sandbox_notes = [f for f in reporter.findings if self._NOTE in f.message]
         label = {"claude": "Claude Code", "codex": "Codex"}[app]
         if expected == "warn":
-            assert [f.fix for f in warns] == [f"booley auth --app {app}"]
+            assert [f.fix for f in warns] == [f"booley auth --cli {app}"]
             assert "host-side login can revoke mid-run" in warns[0].message
             assert sandbox_notes == []
             return

@@ -45,6 +45,7 @@ from booley.runtime.exception_diagnostics import (
     log_exception,
     write_exception_diagnostic,
 )
+from booley.runtime.model_fallback import ModelRun, call_with_fallback
 from booley.runtime.nested_mcp_capabilities import nested_mcp_tools_for
 from booley.runtime.owned_scratch import sweep_stale_scratch
 from booley.runtime.process_tree import descendant_pids as _descendant_pids
@@ -100,6 +101,8 @@ class Specialist(McpTool):
         self._total_cache_create_tokens = 0
         self._total_cost_usd = 0.0
         self._last_session_id: str | None = None
+        # The model the latest agent call ran on (and any [models] list fallback).
+        self._model_run: ModelRun | None = None
 
     def _add_args(self, parser: argparse.ArgumentParser) -> None:
         """Add agent-specific arguments."""
@@ -209,9 +212,13 @@ class Specialist(McpTool):
 
     def _resolve_effort(self) -> str | None:
         """Reasoning effort for the Agent CLI this Specialist runs on."""
+        return self._reasoning_effort(self._resolve_cli())
+
+    def _reasoning_effort(self, cli: str) -> str | None:
+        """Reasoning effort for a call on *cli*; Specialists with their own rule override."""
         from booley.config.settings import get_agent_settings
 
-        return get_agent_settings().effort_for(self._resolve_cli())
+        return get_agent_settings().effort_for(cli)
 
     def _transcript_path(self) -> Path | None:
         """Resolve transcript file path."""
@@ -276,7 +283,50 @@ class Specialist(McpTool):
         params: AgentCallParams,
         on_event: Any = None,
     ) -> Any:
-        """Call an isolated agent and accumulate token/cost usage.
+        """Call an isolated agent on the model this Specialist's ``[models]`` value selects.
+
+        A string pin (or none) calls once with *params* untouched, so a provider refusal
+        raises the model-refusal error and nothing else is tried. A hidden fallback list
+        (ADR 0084 amendment, #2836) is walked by ``call_with_fallback``: each attempt
+        replaces the model, Agent CLI and reasoning effort; a session resumes only on the
+        model that made it. The model that ran is kept in ``self._model_run``.
+        """
+        from booley.config.settings import get_agent_settings
+
+        settings = get_agent_settings()
+        is_list = settings.model_candidates(self.name) is not None
+        first_cli = params.agent_cli or self._resolve_cli()
+        # A resumed session belongs to the model that made it: the one an earlier call of
+        # this Specialist ran on, else the first entry the caller built *params* for.
+        previous = self._model_run
+        session_pair = (previous.model, previous.cli) if previous else (params.model, first_cli)
+
+        def attempt(model: str, cli: str) -> Any:
+            if not is_list:
+                return self._invoke_agent_once(params, on_event)
+            call_params = dataclasses.replace(
+                params,
+                model=model,
+                agent_cli=cli,
+                reasoning_effort=self._reasoning_effort(cli),
+            )
+            if (model, cli) != session_pair:
+                # A session never transfers across models or Agent CLIs.
+                call_params = dataclasses.replace(
+                    call_params, session_id=None, resume_session=False
+                )
+                self.emit_progress(f"trying [models] entry {model} on {cli}")
+            return self._invoke_agent_once(call_params, on_event)
+
+        result, self._model_run = call_with_fallback(settings, self.name, attempt)
+        return result
+
+    def _invoke_agent_once(
+        self,
+        params: AgentCallParams,
+        on_event: Any = None,
+    ) -> Any:
+        """One isolated agent call with *params*, accumulating token/cost usage.
 
         Missing callbacks stream specialist_thinking events to display.jsonl.
         Missing per-Specialist nested MCP-tool allowlists come from
@@ -727,8 +777,36 @@ class Specialist(McpTool):
                 return msg.strip()
         return None
 
+    def _stamp_model_note(self, detail: dict[str, Any]) -> None:
+        """Record the model that ran (and any ``[models]`` fallback) in *detail*.
+
+        Without a model call in this invocation the key is dropped, so a detail copied
+        from an earlier run never claims a model this one did not use.
+        """
+        if self._model_run is None:
+            detail.pop("specialist_model", None)
+        else:
+            detail["specialist_model"] = self._model_run.note()
+
+    def set_criterion(
+        self,
+        key: str,
+        met: bool,
+        *,
+        detail: dict[str, Any] | None = None,
+        source_target: str | None = None,
+    ) -> None:
+        """Record a Criterion with the model note, which the Review Package then shows."""
+        if detail is not None:
+            self._stamp_model_note(detail)
+        super().set_criterion(key, met, detail=detail, source_target=source_target)
+
     def _finalize_result(self, result: McpToolResult) -> None:
         """Stamp accumulated agent token/cost data onto the McpToolResult."""
+        if self._model_run is not None:
+            self._stamp_model_note(result.detail)
+            if self._model_run.fell_back:
+                result.report_text = f"{result.report_text}\n{self._model_run.summary()}".strip()
         result.input_tokens = self._total_input_tokens
         result.output_tokens = self._total_output_tokens
         result.cached_tokens = self._total_cached_tokens

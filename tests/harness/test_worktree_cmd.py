@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -15,6 +14,7 @@ import pytest
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
 from booley.runtime import runtime_context
+from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
 
 # ---------------------------------------------------------------------------
 # Parser and venue
@@ -191,11 +191,12 @@ def test_copied_booley_dir_leaves_goal_and_session_state_behind(project: Path) -
 
     copied = project / ".booley" / "worktrees" / "snapshot" / ".booley"
     assert (copied / "booley.toml").is_file()
-    # The tracked history file arrives through Git; nothing else under goals/.
+    # goals/history/ is versioned with the RTL (tracked or not); no other Goal state is copied.
     goals = copied / "goals"
     assert sorted(p.relative_to(goals).as_posix() for p in goals.rglob("*")) == [
         "history",
         "history/old-20260101T000000Z.md",
+        "history/untracked-20261006T000000Z.md",
     ]
     assert not list(goals.rglob("record.json"))
     assert not (goals / "locks").exists()
@@ -502,19 +503,16 @@ def test_snapshot_omits_canonical_transient_paths(project):
         "flow-reports/report.json",
         "logs/log.txt",
         ".baseline-wt-stale/result",
-    ]
-    from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
-
-    preserved = [
+        # Common state is never copied (ADR 0082), whatever git thinks of it.
         *NEW_RUNTIME_PATHS,
         "runtime/doctor_stamp.json",
         "runtime/developer_probe.json",
         "runtime/upgrade_review.json",
         "SETUP-REPORT.md",
         "FEEDBACK-REPORT.md",
-        "cores/logs/keep.txt",
-        "cores/flow-reports/keep.json",
     ]
+    # Nested directories that merely share a transient name are configuration.
+    preserved = ["cores/logs/keep.txt", "cores/flow-reports/keep.json"]
     for path in preserved:
         _write(project / ".booley" / path, "keep\n")
     for path in paths:
@@ -524,6 +522,103 @@ def test_snapshot_omits_canonical_transient_paths(project):
     assert (copied / "booley.toml").is_file()
     assert all(not (copied / path).exists() for path in paths)
     assert all((copied / path).read_text(encoding="utf-8") == "keep\n" for path in preserved)
+
+
+def _row_sample(pattern: str) -> str:
+    """Return a path below (or equal to) one classification row's pattern."""
+    path = pattern.replace("*", "x")
+    return f"{path}sample.txt" if path.endswith("/") else path
+
+
+# Rows whose sample the harness cannot plant: a `.booley/.git` makes creation refuse or
+# pair (project_worktree_pairing), the layout lock and relocation record belong to the
+# layout gate that wraps `booley worktree new`.
+_UNPLANTABLE_ROWS = {".git/", "directory-layout.lock", ".directory-relocation.json"}
+
+
+@_real_script
+def test_snapshot_copies_only_versioned_checkout_state(project):
+    from booley.core.booley_dir_parts import BOOLEY_DIR_PATHS, BooleyDirClass
+    from booley.runtime import handles
+
+    data = project / ".booley"
+    samples = {
+        pattern: _row_sample(pattern)
+        for pattern in BOOLEY_DIR_PATHS
+        if pattern not in _UNPLANTABLE_ROWS
+    }
+    # The planted rows are every row but the explicit exemptions.
+    assert set(samples) | _UNPLANTABLE_ROWS == set(BOOLEY_DIR_PATHS)
+    for sample in samples.values():
+        _write(data / sample, "# planted\n")
+    handles.register_job(data, "main-job", "sim", "codex:one")
+    handle_store = handles.HandleStore(data, jobs=True).path.relative_to(data)
+    assert handle_store.is_relative_to("runtime")
+
+    assert _new("allowlist", project) == 0
+
+    copied = worktree_cmd.worktree_path(project, "allowlist") / ".booley"
+    for pattern, sample in samples.items():
+        booley_class = BOOLEY_DIR_PATHS[pattern]
+        assert (copied / sample).exists() == (booley_class is BooleyDirClass.VERSIONED), sample
+    # Issue evidence: these Common and source-tied paths were copied before.
+    for leaked in (
+        "runtime/session_activity/sample.txt",
+        "findings.jsonl",
+        "mcp-tool-reports/sample.txt",
+        str(handle_store),
+    ):
+        assert not (copied / leaked).exists(), leaked
+    # The main Booley Directory is untouched.
+    assert all((data / sample).is_file() for sample in samples.values())
+
+
+@_real_script
+def test_snapshot_skips_and_names_unclassified_paths(project, capsys):
+    data = project / ".booley"
+    _write(data / "eval_tmp" / "x", "stale\n")
+    _write(data / "runtime" / "unknown.json", "{}\n")
+
+    assert _new("unclassified", project) == 0
+
+    copied = worktree_cmd.worktree_path(project, "unclassified") / ".booley"
+    assert not (copied / "eval_tmp").exists()
+    assert not (copied / "runtime" / "unknown.json").exists()
+    skipped = [line for line in capsys.readouterr().err.splitlines() if "skipped" in line]
+    assert len(skipped) == 2
+    assert any("eval_tmp" in line and "runtime" not in line for line in skipped)
+    assert any("runtime/unknown.json" in line for line in skipped)
+    assert (data / "eval_tmp" / "x").is_file()
+
+
+@_real_script
+def test_snapshot_keeps_nested_locks_and_tmp_directories(project):
+    _write(project / ".booley" / "cores" / "ip" / ".locks" / "keep", "keep\n")
+    _write(project / ".booley" / "mcp_tools" / "t" / "tmp" / "keep", "keep\n")
+
+    assert _new("nested-dirs", project) == 0
+
+    copied = worktree_cmd.worktree_path(project, "nested-dirs") / ".booley"
+    assert (copied / "cores" / "ip" / ".locks" / "keep").is_file()
+    assert (copied / "mcp_tools" / "t" / "tmp" / "keep").is_file()
+
+
+@_real_script
+def test_new_snapshot_passes_the_common_state_check(project):
+    from booley.core.booley_dir_parts import BOOLEY_DIR_PATHS, BooleyDirClass
+    from booley.harness import doctor
+
+    for pattern, booley_class in BOOLEY_DIR_PATHS.items():
+        if booley_class is BooleyDirClass.COMMON and pattern not in _UNPLANTABLE_ROWS:
+            _write(project / ".booley" / _row_sample(pattern), "# planted\n")
+    assert _new("doctor-clean", project) == 0
+
+    reporter = doctor._Reporter.create()
+    doctor._check_common_state_in_worktrees(project, reporter)
+
+    severities = [finding.severity for finding in reporter.findings or ()]
+    assert "warn" not in severities and "skip" not in severities
+    assert len(severities) == 1
 
 
 @_real_script
@@ -543,47 +638,8 @@ def test_ci_driver_creates_pairing_through_user_command(versioned_project, tmp_p
     assert git(paired, "rev-parse", "HEAD") == git(workspace.booley_dir, "rev-parse", "HEAD")
 
 
-def test_static_snapshot_additions_are_canonical_transient_patterns(versioned_project):
-    from booley.runtime.paths import worktree_create_script
-    from booley.runtime.project_gitignore import is_project_transient_path
-
-    script = worktree_create_script().read_text(encoding="utf-8")
-    copy = script.split('tar -C "$CWD/.booley"', 1)[1].split("-cf - .", 1)[0]
-    excludes = set(re.findall(r"--exclude='([^']+)'", copy))
-    additions = {
-        "./runtime/doctor/*.lock",
-        "./runtime/jobs/slots",
-        "./tickets/state",
-        "./tickets/waiver-candidates",
-        "./.runtime",
-        "./flow-reports",
-        "./logs",
-        "./.baseline-wt-*",
-    }
-    assert additions <= excludes
-    assert {"./runtime", "./SETUP-REPORT.md", "./FEEDBACK-REPORT.md"}.isdisjoint(excludes)
-    assert "PROJECT_COPY_PATTERNS" not in script
-    for pattern in additions:
-        path = pattern.removeprefix("./").replace("*", "sample")
-        if not path.endswith(".lock"):
-            path += "/state.json"
-        # The fixture's .gitignore is exactly PROJECT_GITIGNORE_PATTERNS.
-        assert (
-            _git(
-                versioned_project / ".booley",
-                "check-ignore",
-                "--no-index",
-                "--quiet",
-                path,
-            ).returncode
-            == 0
-        )
-        assert is_project_transient_path(path)
-
-
 def test_canonical_transient_classifier_matches_git_including_reincludes(versioned_project):
     from booley.runtime.project_gitignore import is_project_transient_path
-    from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
 
     paths = [
         *NEW_RUNTIME_PATHS,

@@ -5,12 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
+from booley.bwave import vaporview_bridge
 from booley.harness import auto_doctor, doctor
 from booley.runtime import doctor_stamp, health, health_presentation
 from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
@@ -437,3 +443,109 @@ def test_containment_checkout_core_symlink_remains_fingerprinted(tmp_path):
     before = health._core_digest(root, selected)
     core.write_text("second")
     assert health._core_digest(root, selected) != before
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or not hasattr(socket, "AF_UNIX"),
+    reason="the Viewer Bridge serves Unix sockets inside Linux Sandboxes",
+)
+def test_pretrust_viewer_bridge_publishes_no_fail(tmp_path: Path, monkeypatch):
+    """Automatic Doctor before "Trust Folder & Continue" must not publish a FAIL.
+
+    VS Code disables VaporView in Restricted Mode, so the bridge answers
+    ``vaporview: null`` with ``trusted: false``. The whole pipe runs for real:
+    the bridge's wire reply, ``doctor_summary``, Doctor's Viewer Bridge check,
+    and ``publish_result`` into ``last.json``.
+    """
+    booley_dir = _project(tmp_path)
+    # Unix socket paths are capped near 104 bytes; pytest's tmp_path can exceed it.
+    with tempfile.TemporaryDirectory(prefix="vvb-", dir="/tmp") as short_home:
+        home = Path(short_home)
+        socket_path = vaporview_bridge.bridge_dir(home) / "window-1.sock"
+        socket_path.parent.mkdir(parents=True)
+        pretrust_ping = {
+            "ok": True,
+            "result": {
+                "protocol": vaporview_bridge.PROTOCOL,
+                "vaporview": None,
+                "focused": False,
+                "lastFocused": 0,
+                "documents": [],
+                "error": "VaporView (lramseyer.vaporview) is not installed in this VS Code window",
+                "trusted": False,
+            },
+        }
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(socket_path))
+        server.listen(4)
+
+        server.settimeout(5)
+
+        def serve() -> None:
+            # Bounded: the check pings each window a handful of times at most.
+            for _ in range(8):
+                try:
+                    conn, _ = server.accept()
+                except OSError:
+                    return
+                with conn:
+                    conn.settimeout(5)
+                    conn.recv(65536)
+                    conn.sendall((json.dumps(pretrust_ping) + "\n").encode())
+
+        threading.Thread(target=serve, daemon=True).start()
+        try:
+            report = _publish_with_real_bridge_check(tmp_path, booley_dir, home, monkeypatch)
+        finally:
+            server.close()
+
+    assert report["counts"]["fail"] == 0
+    assert health.load_report(tmp_path)["counts"]["fail"] == 0
+    assert "FAIL" not in health_presentation.count_line(health.read_health(tmp_path)).text
+
+
+def _publish_with_real_bridge_check(
+    project_root: Path, booley_dir: Path, home: Path, monkeypatch
+) -> dict:
+    """Run the real Viewer Bridge check inside ``auto_doctor._execute``."""
+    real_run = subprocess.run
+
+    def probe_run(argv, **kwargs):
+        """Serve Doctor's in-Sandbox probes: bridges are real, the rest is attached."""
+        command = list(argv)
+        if command[-1] == doctor._VIEWER_BRIDGE_PROBE_SOURCE:
+            summary = vaporview_bridge.doctor_summary(home)
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(summary), stderr="")
+        if command[-1] in (
+            doctor._VSCODE_EXTENSION_HOST_PROBE_SOURCE,
+            doctor._VAPORVIEW_STATE_PROBE_SOURCE,
+        ):
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return real_run(argv, **kwargs)
+
+    def run_doctor(*_args, **_kwargs):
+        reporter = doctor._Reporter.create()
+        doctor._check_viewer_bridge(
+            doctor.ProjectAudit(
+                project_root=project_root,
+                booley_dir=booley_dir,
+                booley_toml={},
+                configs_toml={"x": {}},
+                first_target="x",
+            ),
+            None,
+            reporter.pass_,
+            reporter.skip_,
+            reporter.fail_,
+        )
+        return doctor.DoctorRunResult(
+            counts=reporter.counts, findings=tuple(reporter.findings or ()), exit_code=0
+        )
+
+    from booley.runtime import runtime_context
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr(doctor.subprocess, "run", probe_run)
+    monkeypatch.setattr(doctor, "_check_vaporview_version", lambda *_args: None)
+    monkeypatch.setattr(doctor, "run_doctor_result", run_doctor)
+    return auto_doctor._execute(project_root, booley_dir, "session-start")

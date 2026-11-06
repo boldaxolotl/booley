@@ -3,8 +3,6 @@
 import json
 import multiprocessing
 import os
-import shutil
-import subprocess
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -274,36 +272,6 @@ def test_deeply_nested_or_oversized_map_is_diagnosed_without_mutation(tmp_path, 
     assert labels == {}
     assert "handles unavailable" in warnings[0]
     assert store.path.read_text() == payload
-
-
-@pytest.mark.skipif(
-    os.name == "nt" or not shutil.which("bash") or (not shutil.which("tar")),
-    reason="POSIX worktree copy requires bash and tar",
-)
-def test_worktree_copy_excludes_both_handle_maps_and_keeps_configuration(tmp_path):
-    parent, destination = (tmp_path / "parent", tmp_path / "worktree")
-    project = parent / ".booley"
-    project.mkdir(parents=True)
-    destination.mkdir()
-    (project / "config.txt").write_text("Project configuration")
-    handles.register_job(project, "parent-job", "sim", "codex:one")
-    before = handles.HandleStore(project, jobs=True).path.read_bytes()
-    script = Path(handles.__file__).with_name("worktree_create.sh").read_text()
-    start = script.index('if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}"')
-    block = script[start : script.index("\nfi", start) + 3]
-    env = dict(
-        os.environ,
-        CWD=str(parent),
-        WORKTREE_DIR=str(destination),
-        BOOLEY_WORKTREE_PAIRED_PROJECT="0",
-    )
-    command = ["bash", "-o", "pipefail", "-c", block]
-    subprocess.run(command, env=env, check=True, capture_output=True, timeout=30)
-    copied = destination / ".booley"
-    assert (copied / "config.txt").read_text() == "Project configuration"
-    assert not (copied / "runtime" / "sessions").exists()
-    assert not (copied / "runtime" / "job-handles").exists()
-    assert handles.HandleStore(project, jobs=True).path.read_bytes() == before
 
 
 def test_job_allocation_failure_is_advisory(tmp_path, monkeypatch, caplog):
