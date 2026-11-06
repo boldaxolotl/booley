@@ -423,7 +423,8 @@ def test_init_keeps_a_per_cli_auth_table(tmp_path, monkeypatch):
         '[agent]\nclis = ["claude", "codex"]\ndefault = "codex"\n\n'
         '[agent.auth]\nclaude = "api_key"\ncodex = "subscription"\n'
     )
-    config.write_text(body, encoding="utf-8")
+    # Bytes, not write_text: Windows would translate "\n" to CRLF.
+    config.write_bytes(body.encode())
     monkeypatch.setattr(
         "builtins.input",
         lambda _prompt: (_ for _ in ()).throw(AssertionError("must not prompt")),
