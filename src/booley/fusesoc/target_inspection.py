@@ -41,37 +41,6 @@ def _new_library_manager() -> LibraryManager:
         return LibraryManager("")
 
 
-def _portable_core_data(data: Any) -> Mapping[str, Any]:
-    """Normalize Windows fileset separators before FuseSoC parses expressions."""
-    if not isinstance(data, Mapping) or not isinstance(data.get("filesets"), Mapping):
-        return data
-    filesets = dict(data["filesets"])
-    for name, fileset in filesets.items():
-        if not isinstance(fileset, Mapping) or not isinstance(fileset.get("files"), list):
-            continue
-        entries: list[Any] = []
-        for entry in fileset["files"]:
-            if isinstance(entry, str):
-                entries.append(entry.replace("\\", "/"))
-            elif isinstance(entry, Mapping) and len(entry) == 1:
-                path, attributes = next(iter(entry.items()))
-                entries.append({str(path).replace("\\", "/"): attributes})
-            else:
-                entries.append(entry)
-        filesets[name] = {**fileset, "files": entries}
-    return {**data, "filesets": filesets}
-
-
-class _PortableCoreParser:
-    """Keep FuseSoC target inspection portable across host path conventions."""
-
-    def __init__(self, parser: Any) -> None:
-        self._parser = parser
-
-    def read(self, core_file: str, validate_core: bool = True) -> Mapping[str, Any]:
-        return _portable_core_data(self._parser.read(core_file, validate_core))
-
-
 def _target_flags(name: str, flow: str | None, eda_tool: str | None) -> dict[str, Any]:
     """Build fresh FuseSoC condition flags for one Target."""
     flags: dict[str, Any] = {"is_toplevel": True, "target": name}
@@ -240,7 +209,7 @@ class _TargetSourceInspector:
         try:
             plan = fusesoc_registry.prepare_core_library_plan(self.root)
             manager = CoreManager(_InspectionConfig(), library_manager=_new_library_manager())
-            manager.core2parser = _PortableCoreParser(manager.core2parser)
+            manager.core2parser = fusesoc_registry.PortableCoreParser(manager.core2parser)
             for index, (library_root, ignored_dirs) in enumerate(
                 zip(plan.roots, plan.ignored_dirs, strict=True)
             ):
@@ -304,7 +273,7 @@ class _TargetSourceInspector:
         plan, manager = self._prepare()
         try:
             selected_core = plan.operational_core(core_file)
-            top = manager.get_core(Vlnv(vlnv))
+            top = self._get_core(manager, vlnv, identity, core_file, selected_core)
             actual_core = Path(top.core_file).resolve()
             if actual_core != selected_core.resolve():
                 raise fusesoc_registry.FuseSocError(
@@ -319,6 +288,32 @@ class _TargetSourceInspector:
             raise fusesoc_registry.FuseSocError(
                 f"could not inspect Target {identity!r}: {exc}"
             ) from exc
+
+    @staticmethod
+    def _get_core(
+        manager: CoreManager,
+        vlnv: str,
+        identity: str,
+        core_file: Path,
+        selected_core: Path,
+    ) -> Any:
+        """Fetch the Target's core, explaining a core FuseSoC ignored at scan time.
+
+        FuseSoC drops a schema-invalid ``.core`` from its library, so the lookup
+        fails with a bare ``DependencyError`` naming only the VLNV. Ask FuseSoC
+        why it rejected the file (the operational view it scanned) and name the
+        authored file the user edits.
+        """
+        try:
+            return manager.get_core(Vlnv(vlnv))
+        except DependencyError:
+            rejection = fusesoc_registry.fusesoc_core_rejection(selected_core)
+            if rejection is None:
+                raise
+            raise fusesoc_registry.FuseSocError(
+                f"could not inspect Target {identity!r}: FuseSoC rejected {core_file}: "
+                f"{rejection.message}"
+            ) from None
 
     def _inspect_handle(self, handle: TargetHandle) -> TargetInspection:
         """Inspect one canonical handle with fresh Target-specific flags."""

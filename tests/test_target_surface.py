@@ -189,6 +189,37 @@ class TestTargetInterface:
         with pytest.raises(IncompatibleTargetError):
             select_target(project, "sim", for_flow="lint")
 
+    def test_inspection_names_rejected_core_and_fusesoc_message(self, tmp_path: Path):
+        """FuseSoC drops a schema-invalid core; inspection says which and why."""
+        authored = tmp_path / "bad.core"
+        authored.write_text(
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: acme:ip:bad:0
+                targets:
+                  good_target:
+                    flow: lint
+                    flow_options: {tool: verilator}
+                  bad_target:
+                    flow: lint
+                    flow_options: {tool: verilator}
+                    booley: {doctor: [lint]}
+                """
+            ),
+            encoding="utf-8",
+        )
+        handle = select_target(tmp_path, "good_target")
+
+        with pytest.raises(fusesoc_registry.FuseSocError) as excinfo:
+            inspect_target(tmp_path, handle)
+
+        message = str(excinfo.value)
+        assert "FuseSoC rejected" in message
+        assert "bad.core" in message
+        assert "targets.bad_target" in message
+        assert "booley" in message
+
     def test_inspection_uses_projected_view_of_stealth_authored_core(self, tmp_path: Path):
         booley_dir = tmp_path / ".booley"
         cores = booley_dir / "cores"

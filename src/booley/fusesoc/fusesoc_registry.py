@@ -32,6 +32,7 @@ build dir next to the ``.eda.yml``.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import logging
 import os
@@ -43,6 +44,8 @@ from typing import Any
 
 import yaml
 from fusesoc.capi2 import exprs as _fusesoc_exprs
+from fusesoc.capi2.coreparser import Core2Parser
+from fusesoc.core import Core as FuseSocCore
 
 from booley.core.booley_dir import BOOLEY_DIR_NAME
 from booley.core.booley_dir_links import resolve_through_entry
@@ -703,6 +706,137 @@ def core_schema_errors(core_file: Path | str) -> list[str]:
             )
 
     return errors
+
+
+def portable_core_data(data: Any) -> Mapping[str, Any]:
+    """Normalize Windows fileset separators before FuseSoC parses expressions."""
+    if not isinstance(data, Mapping) or not isinstance(data.get("filesets"), Mapping):
+        return data
+    filesets = dict(data["filesets"])
+    for name, fileset in filesets.items():
+        if not isinstance(fileset, Mapping) or not isinstance(fileset.get("files"), list):
+            continue
+        entries: list[Any] = []
+        for entry in fileset["files"]:
+            if isinstance(entry, str):
+                entries.append(entry.replace("\\", "/"))
+            elif isinstance(entry, Mapping) and len(entry) == 1:
+                path, attributes = next(iter(entry.items()))
+                entries.append({str(path).replace("\\", "/"): attributes})
+            else:
+                entries.append(entry)
+        filesets[name] = {**fileset, "files": entries}
+    return {**data, "filesets": filesets}
+
+
+class PortableCoreParser:
+    """Keep FuseSoC parsing portable across host path conventions.
+
+    Shared by Target inspection and Doctor's FuseSoC verdict so both accept the
+    same Windows-separator fileset paths.
+    """
+
+    def __init__(self, parser: Any) -> None:
+        self._parser = parser
+
+    def read(self, core_file: str, validate_core: bool = True) -> Mapping[str, Any]:
+        return portable_core_data(self._parser.read(core_file, validate_core))
+
+
+@dataclass(frozen=True)
+class FuseSocCoreRejection:
+    """FuseSoC's own reason for ignoring one ``.core`` file."""
+
+    message: str  # FuseSoC's message, without its "Error validating data." prefix
+    entry: str | None  # violation path cut to section + entry ("targets.u", "filesets")
+    target: str | None  # Target named by the violation path, when it names one
+    misplaced_booley: bool  # a ``booley:`` mapping sits directly under that Target
+    misplaced_flows: frozenset[str] = frozenset()  # Flows its ``doctor:`` list names
+
+
+@functools.cache
+def _fusesoc_core_parser() -> PortableCoreParser:
+    """FuseSoC's CAPI2 parser, built on first use (schema compilation is slow).
+
+    Wrapped like Target inspection's parser, with FuseSoC's default settings, so
+    Doctor's verdict and a Flow's resolution agree.
+    """
+    return PortableCoreParser(Core2Parser())
+
+
+def _fusesoc_rejection_message(raw: str) -> str:
+    """Normalize a FuseSoC parse-error message for Booley diagnostics.
+
+    FuseSoC prefixes schema errors with ``"\\nError validating data."``; the
+    ``data`` root is an implementation detail of its JSON-schema validator.
+    """
+    message = raw.strip().removeprefix("Error validating ")
+    return message.removeprefix("data.")
+
+
+def _rejection_from(exc: BaseException) -> FuseSocCoreRejection:
+    """Describe a FuseSoC parse failure, reading the schema violation if present."""
+    message = _fusesoc_rejection_message(str(getattr(exc, "msg", None) or exc))
+    violation = exc.__context__
+    path = getattr(violation, "path", None)
+    entry: str | None = None
+    target: str | None = None
+    misplaced_booley = False
+    misplaced_flows: frozenset[str] = frozenset()
+    if isinstance(path, list) and path[:1] == ["data"] and path[1:2]:
+        section = path[1:3]  # ["targets", "u"] or ["filesets"]
+        entry = ".".join(section)
+        if path[1] == "targets" and len(path) >= 3:
+            target = path[2]
+            offenders = getattr(violation, "value", None)
+            misplaced_booley = (
+                len(path) == 3
+                and getattr(violation, "rule", None) == "additionalProperties"
+                and isinstance(offenders, Mapping)
+                and "booley" in offenders
+            )
+            if misplaced_booley:
+                misplaced_flows = _misplaced_doctor_flows(offenders["booley"])
+    return FuseSocCoreRejection(message, entry, target, misplaced_booley, misplaced_flows)
+
+
+def _misplaced_doctor_flows(booley: Any) -> frozenset[str]:
+    """Flows named by a misplaced ``booley: {doctor: [...]}`` mapping."""
+    doctor = booley.get("doctor") if isinstance(booley, Mapping) else None
+    if not isinstance(doctor, list):
+        return frozenset()
+    return frozenset(flow for flow in doctor if isinstance(flow, str))
+
+
+def _has_capi2_header(core_file: Path | str) -> bool:
+    """Mirror ``CoreManager._detect_capi_version``: first token is ``CAPI=2:``."""
+    try:
+        with Path(core_file).open() as handle:
+            tokens = handle.readline().split()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return tokens[:1] == ["CAPI=2:"]
+
+
+def fusesoc_core_rejection(core_file: Path | str) -> FuseSocCoreRejection | None:
+    """Return FuseSoC's CAPI2 verdict for one core, or ``None`` when it accepts it.
+
+    Builds ``fusesoc.core.Core`` exactly as ``CoreManager.find_cores`` does and
+    treats the failures it ignores a file for (``SyntaxError``, ``ImportError``,
+    ``ValueError``) as a rejection, so Doctor and Target inspection report the
+    reason FuseSoC itself would give instead of re-deriving the schema. FuseSoC's
+    loader lets some YAML errors escape as ``yaml.YAMLError``; those count too.
+    The caller has already read the file, so no ``OSError`` is expected. A file
+    whose first line is not ``CAPI=2:`` is one ``find_cores`` skips silently (CAPI1
+    or not a FuseSoC core), so it has no rejection to report.
+    """
+    if not _has_capi2_header(core_file):
+        return None
+    try:
+        FuseSocCore(parser=_fusesoc_core_parser(), core_file=str(core_file))
+    except (SyntaxError, ImportError, ValueError, yaml.YAMLError) as exc:
+        return _rejection_from(exc)
+    return None
 
 
 def core_target_flow_option(core_doc: Mapping[str, Any], name: str, option: str) -> Any:
