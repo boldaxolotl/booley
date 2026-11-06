@@ -646,13 +646,15 @@ def test_synth_work_unit_observes_registered_stage_file(tmp_path, monkeypatch):
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])
     build = tmp_path / "synth"
     build.mkdir()
-    plan = SimpleNamespace(build_dir=build)
+    plan = SimpleNamespace(
+        build_dir=build, spec=SimpleNamespace(timing=SimpleNamespace(mode="logical"))
+    )
     monkeypatch.setattr(flow, "_resolve_synth_recipe", lambda _: SimpleNamespace(command=["spec"]))
     monkeypatch.setattr(flow, "_configure_synth", lambda *_: plan)
     script = f"import pathlib; pathlib.Path({str(build / 'yosys.log')!r}).write_text('BOOLEY_STAGE: yosys\\nreal file-only line\\n')"
     monkeypatch.setattr(flow, "_synth_boundary_cmd", lambda _: [sys.executable, "-c", script])
     monkeypatch.setattr(
-        flow, "_interpret_boundary_run", lambda *args: (SimpleNamespace(), args[2].stdout)
+        flow, "_interpret_boundary_run", lambda *args, **_: (SimpleNamespace(), args[2].stdout)
     )
     sink = observer(tmp_path, flow="synth", tool_output=True)
     watch = terminal_progress.observe_logs

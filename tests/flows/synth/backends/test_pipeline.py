@@ -193,8 +193,18 @@ class TestConfigureSynthesis:
         assert "../" in makefile  # ... via an upward relative path
         assert str(tmp_path) not in sta_tcl
         assert "read_verilog {sta_dut.v}" in sta_tcl
-        assert "read_sdc {" in sta_tcl
-        assert "constraints/dut.sdc}" in sta_tcl
+        # OpenROAD reads Booley's private SDC copy, staged in the build dir.
+        assert "read_sdc {sdc/0_dut.sdc}" in sta_tcl
+        assert plan.spec.timing.sdc == (plan.build_dir / "sdc" / "0_dut.sdc",)
+
+    def test_sdc_outside_the_reuse_grammar_is_read_in_place(self, tmp_path: Path):
+        """An SDC that may locate files beside itself is not copied."""
+        spec = _spec(tmp_path)
+        sdc = spec.timing.sdc[0]
+        sdc.write_text("source [file dirname [info script]]/clocks.tcl\n", encoding="utf-8")
+        plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
+        assert plan.spec.timing.sdc == (sdc,)
+        assert not (plan.build_dir / "sdc").exists()
 
     @pytest.mark.skipif(
         sys.platform == "win32",

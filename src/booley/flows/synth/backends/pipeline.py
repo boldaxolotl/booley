@@ -35,12 +35,13 @@ import shlex
 import shutil
 from collections.abc import Callable
 from contextlib import redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError
 from booley.flows.eda_failures import FailureKind, new_attempt_token, render_failure_marker
 from booley.flows.synth.backends.openroad import reporting as openroad_reporting
+from booley.flows.synth.backends.openroad import sdc_grammar
 from booley.flows.synth.backends.openroad import timing as openroad_timing
 from booley.flows.synth.backends.yosys import core as syn_core
 from booley.flows.synth.mode import runs_openroad
@@ -156,22 +157,7 @@ def configure_synthesis(spec: SynthSpec, build_dir: Path) -> SynthPlan:
     _write_recipe_artifact(spec, build_dir)
 
     if runs_openroad(spec.timing.mode):
-        report_dir = build_dir / "reports" / "timing"
-        report_dir.mkdir(parents=True, exist_ok=True)
-        sdc_paths = tuple(Path(_rel(path, build_dir)) for path in spec.timing.sdc)
-        # Relative script-internal paths: the recipes run with cwd=build_dir.
-        openroad_timing.write_openroad_script(
-            spec.design_name,
-            spec.liberty,
-            Path(f"sta_{spec.design_name}.v"),
-            sdc_paths,
-            openroad_timing.openroad_pdk_paths(),
-            Path("reports/timing"),
-            build_dir,
-            spec.timing,
-            target=spec.target or spec.design_name,
-            source_sdc_paths=sdc_paths,
-        )
+        spec = _configure_openroad(spec, build_dir)
 
     attempt_token = new_attempt_token()
     (build_dir / "Makefile").write_text(
@@ -183,6 +169,50 @@ def configure_synthesis(spec: SynthSpec, build_dir: Path) -> SynthPlan:
         warnings=tuple(warnings),
         attempt_token=attempt_token,
     )
+
+
+def _configure_openroad(spec: SynthSpec, build_dir: Path) -> SynthSpec:
+    """Stage the SDC files, write the OpenROAD script, and return the staged spec.
+
+    The OpenROAD script, the interpret half and the reuse key all read the
+    returned spec's SDC paths.
+    """
+    (build_dir / "reports" / "timing").mkdir(parents=True, exist_ok=True)
+    staged = tuple(_stage_sdc(i, path, build_dir) for i, path in enumerate(spec.timing.sdc))
+    # Relative script-internal paths: the recipes run with cwd=build_dir.
+    openroad_timing.write_openroad_script(
+        spec.design_name,
+        spec.liberty,
+        Path(f"sta_{spec.design_name}.v"),
+        tuple(Path(_rel(path, build_dir)) for path in staged),
+        openroad_timing.openroad_pdk_paths(),
+        Path("reports/timing"),
+        build_dir,
+        spec.timing,
+        target=spec.target or spec.design_name,
+        source_sdc_paths=tuple(Path(_rel(path, build_dir)) for path in spec.timing.sdc),
+    )
+    return replace(spec, timing=spec.timing._replace(sdc=staged))
+
+
+def _stage_sdc(index: int, path: Path, build_dir: Path) -> Path:
+    """The SDC file OpenROAD reads: a private copy when it could ever be reused.
+
+    FuseSoC may export the SDC or read it in place in the Project. A copy
+    keeps a Project edit made during the run away from OpenROAD and the reuse
+    key. An SDC outside the reuse grammar stays in place: it may locate files
+    beside itself (``[info script]``) and never reuses anyway.
+    """
+    try:
+        text = path.read_bytes()
+    except OSError:
+        return path  # OpenROAD reports the unreadable file
+    if sdc_grammar.tcl_decline_reason(text) is not None:
+        return path
+    copy = build_dir / "sdc" / f"{index}_{path.name}"
+    copy.parent.mkdir(exist_ok=True)
+    copy.write_bytes(text)
+    return copy
 
 
 def _clear_stage_artifacts(build_dir: Path, design: str) -> None:
@@ -212,9 +242,9 @@ def _clear_stage_artifacts(build_dir: Path, design: str) -> None:
     ]
     for name in stale:
         (build_dir / name).unlink(missing_ok=True)
-    reports_dir = build_dir / "reports"
-    if reports_dir.exists():
-        shutil.rmtree(reports_dir)
+    for directory in (build_dir / "reports", build_dir / "sdc"):
+        if directory.exists():
+            shutil.rmtree(directory)
 
 
 def _rel(path: Path, build_dir: Path) -> str:
@@ -363,6 +393,15 @@ def _sta_recipe_lines(spec: SynthSpec, token: str) -> list[str]:
     return lines
 
 
+#: Stands in for the per-run attempt token so the recipe text is a stable reuse-key input.
+_RECIPE_TOKEN_PLACEHOLDER = "0" * 32
+
+
+def openroad_recipe_text(spec: SynthSpec) -> str:
+    """The OpenROAD stage's recipe with a fixed token: one OpenROAD reuse-key input."""
+    return "\n".join(_sta_recipe_lines(spec, _RECIPE_TOKEN_PLACEHOLDER))
+
+
 def _render_makefile(spec: SynthSpec, build_dir: Path, token: str) -> str:
     """Render the stage-chaining Makefile (the boundary command's far side).
 
@@ -376,7 +415,7 @@ def _render_makefile(spec: SynthSpec, build_dir: Path, token: str) -> str:
     default_target = "sta" if runs_openroad(mode) else "yosys"
     phony = ["all", "yosys"] + (["sv2v"] if spec.frontend == "sv2v" else [])
     if runs_openroad(mode):
-        phony.append("sta")
+        phony += ["sta", "openroad"]
 
     lines = [
         "# Generated by Booley synth (ADR 0037) -- do not edit.",
@@ -422,7 +461,10 @@ def _render_makefile(spec: SynthSpec, build_dir: Path, token: str) -> str:
         "",
     ]
     if runs_openroad(mode):
-        lines += ["sta: yosys", *_sta_recipe_lines(spec, token), ""]
+        # `openroad` is the same stage without the Yosys prerequisite, so the
+        # Flow can run the two stages separately and skip OpenROAD on reuse.
+        recipe = _sta_recipe_lines(spec, token)
+        lines += ["sta: yosys", *recipe, "", "openroad:", *recipe, ""]
     return "\n".join(lines)
 
 

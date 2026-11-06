@@ -40,6 +40,7 @@ booley flow synth --target synth_core --baseline main
 | `--ppa-profile <compact\|balanced\|max_frequency>` | Use this [optimization profile](#optimization-profiles) for this run. Default: the Target's `ppa_profile`, else `balanced`. |
 | `--flatten` / `--no-flatten` | Flatten the hierarchy before mapping, or keep it. Default: flatten. |
 | `--frontend <sv2v\|slang>` | Pick how SystemVerilog is read; switch only when the default fails. See [synth RTL frontend](SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang). |
+| `--fresh-openroad` | Run OpenROAD even when [its results could be reused](#reusing-openroad-results), and store the new results instead. MCP: `fresh_openroad`. |
 
 ## Reading results
 
@@ -130,6 +131,27 @@ Use logical mode for quick area trends on large designs, and physical mode
 whenever timing matters. The mode belongs to the Target. There is
 no per-call `--synth-mode` option, so keep one Target per mode if you need
 both.
+
+## Reusing OpenROAD results
+
+In physical mode Yosys always runs. OpenROAD, usually the slow part, is skipped
+when everything it reads matches this Target's last completed run in this
+checkout: the exact netlist Yosys wrote, the generated OpenROAD script, the
+library and SDC contents, the OpenROAD build, the Sandbox image, Booley's own
+build and OpenROAD's environment. That run's OpenROAD results are then used
+as this run's. A comment-only or testbench-only RTL edit usually gives the same
+netlist and reuses; a changed clock period, or any logic change that alters
+the netlist, runs OpenROAD again.
+
+A reused run prints `<target>: REUSED -- OpenROAD results reused from run <id>
+(<time>)`, its `run.log` ends with a `BOOLEY_OPENROAD_REUSED` line, and its
+JSON report has an `openroad_reuse` entry naming the producing run. The numbers
+are that run's, and the result counts like a fresh one, including for Goals.
+SDC files that use Tcl beyond plain constraint commands (variables, `set`,
+`expr`, `source`, `;`) always run OpenROAD, as do runs outside the Sandbox,
+a library that includes other files, and a preloaded library (`LD_PRELOAD`). The stored results survive
+cleaning the Target's build directory; `--fresh-openroad` runs OpenROAD anyway
+and replaces them.
 
 ## Optimization profiles
 

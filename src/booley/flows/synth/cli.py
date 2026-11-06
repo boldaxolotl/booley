@@ -33,6 +33,10 @@ class SynthArguments(BuiltinArguments):
                     "overrides the selected Target's flow_options.frontend",
                 ),
                 PPA_HELP,
+                HelpOption(
+                    "fresh_openroad",
+                    "When omitted, reuse the stored OpenROAD result when every OpenROAD input matches.",
+                ),
             ),
         ),
         HelpGroup(
@@ -137,5 +141,12 @@ class SynthArguments(BuiltinArguments):
             help="RTL frontend: 'sv2v' (transpile + read_verilog) or 'slang' "
             "(native Yosys read_slang, requires the Yosys>=0.67 sandbox image). "
             "Overrides the selected Target's flow_options.frontend (default sv2v).",
+        )
+        parser.add_argument(
+            "--fresh-openroad",
+            dest="fresh_openroad",
+            action="store_true",
+            help="Run OpenROAD even when its inputs match the last run of this Target, "
+            "and replace the stored OpenROAD result.",
         )
         add_ppa_arguments(parser)
