@@ -233,11 +233,14 @@ def _goal_lines(row: dict[str, Any], presenter: Callable[[object], str]) -> list
 
 def _model_fallback_lines(detail: dict[str, Any]) -> list[str]:
     """A note when the Specialist behind the evidence ran on a fallback ``[models]`` entry."""
-    note = detail.get("specialist_model")
-    fallback = note.get("fallback") if isinstance(note, dict) else None
+    note: dict[str, Any] | None = detail.get("specialist_model")
+    if not isinstance(note, dict):
+        return []
+    fallback: dict[str, Any] | None = note.get("fallback")
     if not fallback:
         return []
-    passed_over = "; ".join(f"{item['model']}: {item['reason']}" for item in fallback["skipped"])
+    skipped: list[dict[str, Any]] = fallback["skipped"]
+    passed_over = "; ".join(f"{item['model']}: {item['reason']}" for item in skipped)
     return [
         f"  Model: ran on {note['model']} instead of {fallback['first_choice']} ({passed_over})."
     ]
