@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -5586,8 +5587,13 @@ def test_1095_public_frontend_failure(
         "error" if expected_exit == EXIT_ERROR else "fail"
     )
     if expected_exit == EXIT_ERROR:
-        assert diagnostic in report["infra_error"]
-        assert "RESULT: ERROR — lite:" in result.report_text
+        # Issue #2808: the tool prefix appears exactly once, never doubled.
+        expected_reason = (
+            diagnostic if diagnostic.startswith(f"{tool}:") else f"{tool}: {diagnostic}"
+        )
+        assert report["infra_error"] == expected_reason
+        assert f"{tool}: {tool}:" not in result.report_text
+        assert f"RESULT: ERROR — lite: {report['infra_error']}" in result.report_text
     else:
         assert not report["infra_error"]
 
@@ -5612,6 +5618,46 @@ def test_1095_public_missing_sv2v_names_remediation(flow_and_state, tmp_path):
     assert report["termination"] == "infrastructure_error"
     assert "RESULT: ERROR — lite: missing tool: sv2v. Rebuild" in result.report_text
     assert report["infra_error"] in result.report_text
+
+
+def test_2808_missing_sv2v_reason_skips_make_and_hides_marker(
+    flow_and_state, tmp_path, caplog: pytest.LogCaptureFixture
+):
+    """Issue #2808: a missing sv2v reports its remediation, not a make line or marker."""
+    flow, _ = flow_and_state
+    plan = dataclasses.replace(
+        _stub_plan(tmp_path, "lite", mode="logical"), attempt_token=_LATCH_TOKEN
+    )
+    marker = (
+        f"BOOLEY_EDA_FAILURE token={_LATCH_TOKEN} kind=missing_eda_tool stage=sv2v subject=sv2v"
+    )
+    process = SubprocessResult(
+        returncode=2,
+        stdout=(
+            "make: Entering directory '/work/b'\n"
+            "BOOLEY_STAGE: sv2v\n"
+            f"{marker}\n"
+            "make: *** [Makefile:12: sv2v] Error 127\n"
+            "make: Leaving directory '/work/b'\n"
+        ),
+    )
+    with (
+        caplog.at_level(logging.ERROR, logger="booley.flows.synth.flow"),
+        patch.object(flow, "_configure_synth", return_value=plan),
+        patch.object(flow, "_execute_boundary", return_value=process),
+    ):
+        result = flow._run()
+    report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+    assert result.exit_code == EXIT_ERROR
+    assert report["termination"] == "infrastructure_error"
+    assert report["infra_error"].startswith("missing tool: sv2v")
+    failed = [r.getMessage() for r in caplog.records if "boundary run failed" in r.getMessage()]
+    assert len(failed) == 1
+    assert "missing tool: sv2v" in failed[0]
+    assert "make: Entering" not in failed[0]
+    assert "BOOLEY_EDA_FAILURE" not in result.report_text
+    assert "BOOLEY_EDA_FAILURE" not in report["failure_output"]
+    assert "BOOLEY_EDA_FAILURE" not in caplog.text
 
 
 @pytest.mark.parametrize("tool", ["sv2v", "openroad"])
