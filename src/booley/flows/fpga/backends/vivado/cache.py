@@ -101,7 +101,7 @@ def _reachable_file_evidence(
     count (a checkout's ``.booley/`` or ``.git`` is never walked).
     """
     build_root = Path(resolved.build_root).resolve()
-    listed = {item.absolute(resolved.build_root) for item in resolved.rtl_files}
+    listed = {item.absolute(resolved.build_root).resolve() for item in resolved.rtl_files}
     evidence: dict[Path, dict[str, Any]] = {}
     for raw_folder in reachable_dirs:
         folder = Path(raw_folder).resolve()
@@ -113,13 +113,15 @@ def _reachable_file_evidence(
             try:
                 digest, size = _hash_file(path)
             except OSError:
-                digest, size = hashlib.sha256(b"").hexdigest(), 0
+                digest, size, missing = hashlib.sha256(b"").hexdigest(), 0, True
+            else:
+                missing = False
             name = (
                 path.relative_to(build_root).as_posix()
                 if path.is_relative_to(build_root)
                 else str(path)
             )
-            evidence[path] = {"name": name, "sha256": digest, "size": size}
+            evidence[path] = {"name": name, "sha256": digest, "size": size, "missing": missing}
     return sorted(evidence.values(), key=lambda item: item["name"])
 
 

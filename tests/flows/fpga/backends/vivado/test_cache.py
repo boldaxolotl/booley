@@ -374,14 +374,23 @@ def _reachable_target(tmp_path: Path) -> ResolvedTarget:
     )
 
 
-def test_default_payload_has_no_reachable_files(tmp_path: Path) -> None:
+def _forbidden_walk(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+    raise AssertionError("non-isolated fingerprint must not walk reachable dirs")
+
+
+def test_default_payload_has_no_reachable_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Without reachable_dirs the key equals a call that never heard of them."""
     resolved = _reachable_target(tmp_path)
     (resolved.build_root / "src" / "inc" / "extra.vh").write_text("// x\n", encoding="utf-8")
-    plain = fpga_cache.input_fingerprint(resolved, {}, out_of_context=False)
-    assert plain == fpga_cache.input_fingerprint(
-        resolved, {}, out_of_context=False, reachable_dirs=()
-    )
+    with monkeypatch.context() as guard:
+        # The legacy payload must never reach the reachable-file walk.
+        guard.setattr(fpga_cache, "_reachable_file_evidence", _forbidden_walk)
+        plain = fpga_cache.input_fingerprint(resolved, {}, out_of_context=False)
+        assert plain == fpga_cache.input_fingerprint(
+            resolved, {}, out_of_context=False, reachable_dirs=()
+        )
     assert plain != fpga_cache.input_fingerprint(
         resolved,
         {},

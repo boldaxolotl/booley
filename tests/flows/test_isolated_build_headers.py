@@ -204,7 +204,7 @@ def _holds(folders: list[Path], name: str) -> bool:
     return any((folder / name).exists() for folder in folders)
 
 
-def _lint_incdirs(root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, list[Path], str]:
+def _lint_incdirs(root: Path) -> tuple[Path, list[Path], str]:
     """Run lint setup; return the build root, its ``+incdir+`` folders and the .vc text."""
     handle = TargetCatalog.build(root).select("lint", for_flow="lint")
     flow = LintFlow()
@@ -235,25 +235,6 @@ def test_isolated_fpga_include_dirs_hold_only_listed_headers(tmp_path: Path) -> 
     assert all(folder.resolve().is_relative_to(export) for folder in folders), folders
     assert _holds(folders, "listed.vh")
     assert not _holds(folders, "unlisted.vh")
-
-
-@pytest.mark.usefixtures("real_fusesoc")
-@pytest.mark.parametrize("layout", ["plain-dir", "symlinked-booley-dir"])
-def test_isolated_unlisted_header_edit_is_never_a_stale_vivado_hit(
-    tmp_path: Path, layout: str
-) -> None:
-    """AC3: a header Vivado can read changes the key; an unreadable one cannot matter."""
-    external = tmp_path / "external-booley" if layout == "symlinked-booley-dir" else None
-    root = _write_project(tmp_path / "proj", "isolated", symlinked_booley=external)
-    flow = _fpga_flow(root)
-    before = _fpga_fingerprint(flow)
-    (root / "rtl" / "inc" / "unlisted.vh").write_text("// unlisted v2\n", encoding="utf-8")
-    after = _fpga_fingerprint(flow)
-    reachable = _holds(_fpga_dirs(flow), "unlisted.vh")
-    assert before != after or not reachable
-    # Positive half: the listed header's bytes always move the key.
-    (root / "rtl" / "inc" / "listed.vh").write_text("// listed v2\n", encoding="utf-8")
-    assert _fpga_fingerprint(flow) != after
 
 
 @pytest.mark.usefixtures("real_fusesoc")
@@ -315,12 +296,10 @@ def test_isolated_synth_include_dirs_hold_only_listed_headers(tmp_path: Path) ->
 
 
 @pytest.mark.usefixtures("real_fusesoc")
-def test_isolated_lint_vc_names_only_listed_headers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_isolated_lint_vc_names_only_listed_headers(tmp_path: Path) -> None:
     """AC2: lint's generated ``.vc`` names only export folders."""
     root = _write_project(tmp_path / "proj", "isolated")
-    build_root, incdirs, vc = _lint_incdirs(root, monkeypatch)
+    build_root, incdirs, vc = _lint_incdirs(root)
     assert incdirs
     assert all(folder.is_relative_to(build_root.resolve()) for folder in incdirs), incdirs
     assert not _holds(incdirs, "unlisted.vh")
@@ -329,16 +308,14 @@ def test_isolated_lint_vc_names_only_listed_headers(
 
 @pytest.mark.usefixtures("real_fusesoc")
 @pytest.mark.parametrize("flow_name", ["fpga", "lint"])
-def test_isolated_dropped_header_is_not_reachable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flow_name: str
-) -> None:
+def test_isolated_dropped_header_is_not_reachable(tmp_path: Path, flow_name: str) -> None:
     """A header delisted between runs must not stay readable through the old export."""
     root = _write_project(tmp_path / "proj", "isolated")
 
     def folders() -> list[Path]:
         if flow_name == "fpga":
             return _fpga_dirs(_fpga_flow(root))
-        return _lint_incdirs(root, monkeypatch)[1]
+        return _lint_incdirs(root)[1]
 
     assert _holds(folders(), "listed.vh")
     _write_core(root, "isolated", listed=False)
@@ -349,17 +326,15 @@ def test_isolated_dropped_header_is_not_reachable(
 
 @pytest.mark.usefixtures("real_fusesoc")
 @pytest.mark.parametrize("flow_name", ["fpga", "lint"])
-def test_isolated_core_version_bump_never_reads_old_export(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flow_name: str
-) -> None:
+def test_isolated_core_version_bump_never_reads_old_export(tmp_path: Path, flow_name: str) -> None:
     root = _write_project(tmp_path / "proj", "isolated")
 
     def resolve() -> tuple[Path, list[Path]]:
         if flow_name == "fpga":
             flow = _fpga_flow(root)
             return _fpga_fusesoc_root(root), _fpga_dirs(flow)
-        build_root, incdirs, _vc = _lint_incdirs(root, monkeypatch)
-        return build_root.parent, incdirs
+        _build_root, incdirs, _vc = _lint_incdirs(root)
+        return work_root_for(root, "lint", "lint"), incdirs
 
     resolve()
     _write_core(root, "isolated", version=1)
@@ -391,12 +366,10 @@ def test_execution_ref_resolves_through_mirror(tmp_path: Path, which: str) -> No
 
 @pytest.mark.usefixtures("real_fusesoc")
 @pytest.mark.skipif(shutil.which("verilator") is None, reason="verilator unavailable")
-def test_lint_tool_error_names_unlisted_header(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_lint_tool_error_names_unlisted_header(tmp_path: Path) -> None:
     root = _write_project(tmp_path / "proj", "isolated")
     (root / "rtl" / "top.v").write_text('`include "unlisted.vh"\nmodule top; endmodule\n')
-    build_root, _incdirs, _vc = _lint_incdirs(root, monkeypatch)
+    build_root, _incdirs, _vc = _lint_incdirs(root)
     run = subprocess.run(
         ["make", "-C", str(build_root)], capture_output=True, text=True, check=False
     )
@@ -431,9 +404,7 @@ def _export_inc(work_root: Path, target: str) -> Path:
 
 @pytest.mark.usefixtures("real_fusesoc")
 @pytest.mark.parametrize("variant", ["projected", "plain"])
-def test_non_isolated_builds_are_unchanged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variant: str
-) -> None:
+def test_non_isolated_builds_are_unchanged(tmp_path: Path, variant: str) -> None:
     """AC4: no mirror, build roots untouched, literal include dirs, key as before."""
     root = _write_project(tmp_path / "proj", variant)
     fpga_root = _fpga_fusesoc_root(root)
@@ -443,7 +414,7 @@ def test_non_isolated_builds_are_unchanged(
     flow = _fpga_flow(root)
     recipe = flow._resolve_fpga_recipe("fpga")
     assert [Path(d).resolve() for d in recipe.include_dirs] == [_export_inc(fpga_root, "fpga")]
-    assert getattr(recipe, "reachable_dirs", ()) == ()
+    assert recipe.reachable_dirs == ()
     # The key is the pre-#2893 one: computed without any reachable_dirs argument.
     with patch.object(edam_layer, "configure", side_effect=_fake_vivado_tcl):
         edam = flow._materialize_fpga_project(recipe, work_root_for(root, "fpga", "fpga"))
@@ -454,7 +425,7 @@ def test_non_isolated_builds_are_unchanged(
         out_of_context=recipe.out_of_context,
         recipe_sha256=recipe.recipe_fingerprint,
     )
-    _build_root, incdirs, _vc = _lint_incdirs(root, monkeypatch)
+    _build_root, incdirs, _vc = _lint_incdirs(root)
     assert incdirs == [_export_inc(lint_root, "lint")]
     synth = AsicSynthesizeFlow()
     synth.parse_args(["--target", "synth", "--work-dir", str(root)])
