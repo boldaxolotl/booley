@@ -56,7 +56,11 @@ def add_ppa_arguments(parser: argparse.ArgumentParser) -> None:
         help="Expert Yosys override for the profile's ABC recipe",
     )
     parser.add_argument("--abc-script", default=None, help="Expert raw Yosys ABC +script")
-    _add_bool_pair(parser, "generic-abc-before-mapping")
+    _add_bool_pair(
+        parser,
+        "generic-abc-before-mapping",
+        "Expert Yosys: run generic ABC before technology mapping (overrides the selected Target)",
+    )
     parser.add_argument("--abc-delay-ps", type=int, default=None, help="Expert ABC delay target")
     parser.add_argument(
         "--utilization-pct", type=float, default=None, help="Expert OpenROAD floorplan override"
@@ -67,9 +71,21 @@ def add_ppa_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Expert OpenROAD global-placement density override",
     )
-    _add_bool_pair(parser, "repair-setup")
-    _add_bool_pair(parser, "repair-hold")
-    _add_bool_pair(parser, "gate-cloning")
+    _add_bool_pair(
+        parser,
+        "repair-setup",
+        "Expert OpenROAD: repair setup timing (overrides the selected Target)",
+    )
+    _add_bool_pair(
+        parser,
+        "repair-hold",
+        "Expert OpenROAD: repair hold timing (overrides the selected Target)",
+    )
+    _add_bool_pair(
+        parser,
+        "gate-cloning",
+        "Expert OpenROAD: enable gate cloning (overrides the selected Target)",
+    )
     parser.add_argument(
         "--setup-margin-ns", type=float, default=None, help="Expert OpenROAD setup margin"
     )
@@ -81,10 +97,12 @@ def add_ppa_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_bool_pair(parser: argparse.ArgumentParser, option: str) -> None:
-    """Add tri-state ``--foo``/``--no-foo`` arguments."""
+def _add_bool_pair(parser: argparse.ArgumentParser, option: str, description: str) -> None:
+    """Add tri-state ``--foo``/``--no-foo`` arguments; *description* is its help text, describing ``--foo``."""
     dest = option.replace("-", "_")
-    parser.add_argument(f"--{option}", dest=dest, action="store_true", default=None)
+    parser.add_argument(
+        f"--{option}", dest=dest, action="store_true", default=None, help=description
+    )
     parser.add_argument(f"--no-{option}", dest=dest, action="store_false")
 
 
