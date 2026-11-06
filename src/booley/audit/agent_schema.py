@@ -84,7 +84,8 @@ def audit_models_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     findings: list[ConfigFinding] = []
     if settings.specialist_models:
         pins = ", ".join(
-            f"{name}={model}" for name, model in sorted(settings.specialist_models.items())
+            f"{name}={model if isinstance(model, str) else '[' + ', '.join(model) + ']'}"
+            for name, model in sorted(settings.specialist_models.items())
         )
         findings.append(pass_finding(f"booley.toml [models] pins: {pins}"))
     return ConfigTableAudit(tuple(findings))
