@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterable
 from hashlib import sha256
 from pathlib import Path
 
-from booley.core.booley_dir import resolve_booley_dir
+from booley.core.booley_dir import resolve_common_booley_dir
 from booley.mcp.session_registry import DEAD_PROCESS_STATES
 from booley.runtime import job_records
 from booley.runtime.bootstrap_mode import should_run_outer_bookkeeping
@@ -161,7 +161,7 @@ def prune_project_handles(booley_dir: Path, *, now: float) -> None:
 
 def _prune_quietly() -> None:
     try:
-        booley_dir = resolve_booley_dir()
+        booley_dir = resolve_common_booley_dir()
     except FileNotFoundError:
         return
     except (OSError, ValueError, RuntimeError) as exc:

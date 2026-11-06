@@ -14,10 +14,18 @@ import pytest
 
 from booley.mcp.session_registry import SessionRegistry
 from booley.runtime import session_activity as activity
+from booley.runtime.booley_dir import reset_cache, resolve_common_booley_dir
 from booley.runtime.chat_sessions import reserve_codex_chat
 from booley.runtime.handles import HandleStore
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import ActivityStore
+from tests.booley_checkouts_support import (
+    enter_worktree,
+    isolate_git,
+    main_project,
+    paired_checkout,
+    snapshot,
+)
 
 NOW = 1791454200.0
 SCRIPT = Path(__file__).parents[2] / "src/booley/data/docker/session_activity_hook.py"
@@ -241,7 +249,7 @@ def test_hook_rejects_the_same_corrupt_handle_maps_as_the_registry(tmp_path, cor
 
 def run_main(monkeypatch, capsys, argv, stdin, project=None):
     monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(stdin)))
-    monkeypatch.setattr(hook, "resolve_booley_dir", lambda _env, _cwd: project)
+    monkeypatch.setattr(hook, "resolve_common_booley_dir", lambda _env, _cwd: project)
     code = hook.main(argv)
     return code, capsys.readouterr()
 
@@ -372,6 +380,60 @@ def test_booley_dir_follows_booleys_own_resolution_order(tmp_path):
     env = {"BOOLEY_DIR": str(elsewhere)}
     assert hook.resolve_booley_dir(env, nested) == elsewhere
     assert hook.resolve_booley_dir({"BOOLEY_DIR": str(tmp_path / "gone")}, str(nested)) is None
+
+
+def test_worktree_hook_writes_main_activity(tmp_path, monkeypatch):
+    """Run as the image runs it, from a linked worktree with no BOOLEY_DIR (#2603)."""
+    main, worktree = enter_worktree(tmp_path, monkeypatch)
+    payload = json.dumps({"hook_event_name": "PreToolUse", "session_id": "t1", "tool_name": "x"})
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", str(SCRIPT), "codex"],
+        input=payload.encode(),
+        capture_output=True,
+        cwd=worktree,
+        env={},
+        timeout=30,
+        check=False,
+    )
+    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b"")
+    assert ActivityStore(main).read("codex:t1").state == activity.WAITING_TOOL
+    assert not (worktree / ".booley/runtime/session_activity").exists()
+
+
+@pytest.mark.parametrize("topology", ["main", "snapshot", "paired", "relocated", "env-worktree"])
+def test_hook_common_dir_matches_booley(tmp_path, monkeypatch, topology):
+    """The stdlib mirror selects the directory ``resolve_common_booley_dir`` does."""
+    isolate_git(tmp_path, monkeypatch)
+    relocated = topology == "relocated"
+    main = main_project(
+        tmp_path,
+        relative="hw/booley" if relocated else ".booley",
+        toml='[project]\ndir = "hw/booley"\n' if relocated else "",
+    )
+    cwd = {
+        "main": lambda: main,
+        "snapshot": lambda: snapshot(main),
+        "paired": lambda: paired_checkout(main),
+        "relocated": lambda: snapshot(main, relative="hw/booley"),
+        "env-worktree": lambda: snapshot(main),
+    }[topology]
+    cwd = cwd()
+    env = {"BOOLEY_DIR": str(cwd / ".booley")} if topology == "env-worktree" else {}
+    monkeypatch.chdir(cwd)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    reset_cache()
+    expected = (main / ("hw/booley" if relocated else ".booley")).resolve()
+    assert hook.resolve_common_booley_dir(env, cwd) == expected
+    assert resolve_common_booley_dir(cwd).resolve() == expected
+
+
+def test_hook_keeps_selection_when_git_marker_is_malformed(tmp_path):
+    checkout = tmp_path / "checkout"
+    (checkout / ".booley").mkdir(parents=True)
+    (checkout / ".booley/booley.toml").write_text("", encoding="utf-8")
+    (checkout / ".git").write_text("not a pointer\n", encoding="utf-8")
+    assert hook.resolve_common_booley_dir({}, checkout) == (checkout / ".booley").resolve()
 
 
 def test_script_runs_standalone_without_site_packages_or_booley(tmp_path):

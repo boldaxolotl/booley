@@ -23,7 +23,7 @@ from booley.mcp.session_registry import (
     registered_worktree_presence,
     resolve_attribution,
 )
-from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.session_activity import ActivityStore
 
 logger = logging.getLogger(__name__)
@@ -326,7 +326,7 @@ class SessionObserver:
             )
 
     def _registry(self) -> SessionRegistry:
-        project = resolve_booley_dir()
+        project = resolve_common_booley_dir()
         return SessionRegistry(project, quiet_after=quiet_after(project))
 
     async def maintain(self) -> None:
