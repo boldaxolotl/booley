@@ -19,6 +19,7 @@ from booley.flows.endpoint_events import (
 )
 from booley.flows.endpoint_session import PreparedExecution
 from booley.runtime import job_slots
+from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EndpointOutcome,
@@ -267,14 +268,18 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
     if inherited:
         logger.debug("%s runs under its parent's %s slot", endpoint.name, inherited)
         return (None, None)
-    root = job_slots.slots_dir()
+    try:
+        project = resolve_common_booley_dir()
+    except (OSError, ValueError, RuntimeError):
+        project = None
+    root = job_slots.slots_dir(project)
     if root is None:
         return (None, None)
 
-    # Caps must come from the SAME project the slot store belongs to
-    # (slots_dir → resolve_booley_dir), never from work_dir: a linked
-    # worktree can carry a diverged booley.toml.
-    caps = parse_caps(load_job_budget_config())
+    # Caps must come from the SAME project the slot store belongs to: the Main
+    # Booley Directory (Common Booley State), never work_dir or a linked
+    # worktree's diverged booley.toml.
+    caps = parse_caps(load_job_budget_config(booley_dir=project))
     role = job_slots.ROLE_INTERACTIVE
     # Claim identity is this live process: record the argv exactly as
     # /proc reports it so the ghost guards can match it later.

@@ -11,7 +11,7 @@ from pathlib import Path
 from booley.config.gateway import GatewayConfigError
 from booley.config.settings import BackendConfigError, get_agent_settings, load_agent_settings
 from booley.harness import codex_chat
-from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir, resolve_common_booley_dir
 from booley.runtime.handles import reserve_session_handle
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import process_session_key
@@ -37,7 +37,7 @@ def _claude_argv(project_root: Path, agent_args: list[str]) -> list[str]:
         if identity is None:
             raise RuntimeError("launch process identity is unavailable")
         handle = reserve_session_handle(
-            resolve_booley_dir(project_root), process_session_key(identity)
+            resolve_common_booley_dir(project_root), process_session_key(identity)
         )
         return [handle] if _names_session(agent_args) else [handle, "-n", handle]
     except (OSError, ValueError, RuntimeError) as exc:
@@ -72,7 +72,7 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
         executable, argv = provider, [provider]
         if provider == "codex":
             try:
-                executable, argv = codex_chat.command(resolve_booley_dir(project_root))
+                executable, argv = codex_chat.command(resolve_common_booley_dir(project_root))
             except (OSError, ValueError, RuntimeError) as exc:
                 print(f"NOTE: Codex tab handle is unavailable: {exc}", file=sys.stderr)
         elif provider == "claude":
