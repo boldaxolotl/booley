@@ -35,7 +35,7 @@ import shlex
 import shutil
 from collections.abc import Callable
 from contextlib import redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError
@@ -156,22 +156,7 @@ def configure_synthesis(spec: SynthSpec, build_dir: Path) -> SynthPlan:
     _write_recipe_artifact(spec, build_dir)
 
     if runs_openroad(spec.timing.mode):
-        report_dir = build_dir / "reports" / "timing"
-        report_dir.mkdir(parents=True, exist_ok=True)
-        sdc_paths = tuple(Path(_rel(path, build_dir)) for path in spec.timing.sdc)
-        # Relative script-internal paths: the recipes run with cwd=build_dir.
-        openroad_timing.write_openroad_script(
-            spec.design_name,
-            spec.liberty,
-            Path(f"sta_{spec.design_name}.v"),
-            sdc_paths,
-            openroad_timing.openroad_pdk_paths(),
-            Path("reports/timing"),
-            build_dir,
-            spec.timing,
-            target=spec.target or spec.design_name,
-            source_sdc_paths=sdc_paths,
-        )
+        spec = _configure_openroad(spec, build_dir)
 
     attempt_token = new_attempt_token()
     (build_dir / "Makefile").write_text(
@@ -183,6 +168,36 @@ def configure_synthesis(spec: SynthSpec, build_dir: Path) -> SynthPlan:
         warnings=tuple(warnings),
         attempt_token=attempt_token,
     )
+
+
+def _configure_openroad(spec: SynthSpec, build_dir: Path) -> SynthSpec:
+    """Stage the SDC files, write the OpenROAD script, and return the staged spec.
+
+    OpenROAD reads Booley's private SDC copies, so a Project SDC edited during
+    a run cannot reach it; the OpenROAD reuse key and the interpret half read
+    the same copies. FuseSoC may export the SDC or read it in place.
+    """
+    (build_dir / "reports" / "timing").mkdir(parents=True, exist_ok=True)
+    (build_dir / "sdc").mkdir(exist_ok=True)
+    staged = tuple(
+        build_dir / "sdc" / f"{i}_{path.name}" for i, path in enumerate(spec.timing.sdc)
+    )
+    for source, copy in zip(spec.timing.sdc, staged, strict=True):
+        shutil.copyfile(source, copy)
+    # Relative script-internal paths: the recipes run with cwd=build_dir.
+    openroad_timing.write_openroad_script(
+        spec.design_name,
+        spec.liberty,
+        Path(f"sta_{spec.design_name}.v"),
+        tuple(Path(_rel(path, build_dir)) for path in staged),
+        openroad_timing.openroad_pdk_paths(),
+        Path("reports/timing"),
+        build_dir,
+        spec.timing,
+        target=spec.target or spec.design_name,
+        source_sdc_paths=tuple(Path(_rel(path, build_dir)) for path in spec.timing.sdc),
+    )
+    return replace(spec, timing=spec.timing._replace(sdc=staged))
 
 
 def _clear_stage_artifacts(build_dir: Path, design: str) -> None:
@@ -212,9 +227,9 @@ def _clear_stage_artifacts(build_dir: Path, design: str) -> None:
     ]
     for name in stale:
         (build_dir / name).unlink(missing_ok=True)
-    reports_dir = build_dir / "reports"
-    if reports_dir.exists():
-        shutil.rmtree(reports_dir)
+    for directory in (build_dir / "reports", build_dir / "sdc"):
+        if directory.exists():
+            shutil.rmtree(directory)
 
 
 def _rel(path: Path, build_dir: Path) -> str:

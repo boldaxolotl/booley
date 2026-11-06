@@ -193,8 +193,9 @@ class TestConfigureSynthesis:
         assert "../" in makefile  # ... via an upward relative path
         assert str(tmp_path) not in sta_tcl
         assert "read_verilog {sta_dut.v}" in sta_tcl
-        assert "read_sdc {" in sta_tcl
-        assert "constraints/dut.sdc}" in sta_tcl
+        # OpenROAD reads Booley's private SDC copy, staged in the build dir.
+        assert "read_sdc {sdc/0_dut.sdc}" in sta_tcl
+        assert plan.spec.timing.sdc == (plan.build_dir / "sdc" / "0_dut.sdc",)
 
     @pytest.mark.skipif(
         sys.platform == "win32",

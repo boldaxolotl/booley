@@ -14,11 +14,12 @@ Keyed, in order:
 4. ``tech_lef``, ``stdcell_lef``, ``wire_rc``, ``liberty`` contents. A relative
    path declines (OpenROAD resolves it in the build dir); so does a liberty
    with ``include_file`` (it reads an unkeyed file).
-5. ``sdc[i]`` contents (the script carries the paths): FuseSoC's per-run copies
-   under the Target work root. One outside it declines, since an edit made and
-   undone during the run would escape ``pre == post`` (which is the only guard
-   for keyed files outside the work root, e.g. a writable ``PRJ_LIB_DIR``).
-   SDC and wire-RC are Tcl: accepted only under :func:`tcl_decline_reason`.
+5. ``sdc[i]``: the SDC copies configure stages in the build dir; OpenROAD reads
+   those, so a Project SDC edit during the run cannot reach it. SDC and
+   wire-RC are Tcl: accepted only under :func:`tcl_decline_reason`. For keyed
+   files outside Booley's build dir (e.g. a writable ``PRJ_LIB_DIR``) the
+   ``pre == post`` check is the only guard against an edit made and undone
+   during one run.
 6. ``openroad_identity``: resolved path, ``-version``, SHA-256 of the binary and
    of each library ``ldd`` resolves; a non-ELF ``openroad`` declines.
    ``dlopen``ed code (Tcl packages, Qt plugins) is covered by record 7.
@@ -173,7 +174,7 @@ def collect_openroad_inputs(
     )
     sdc_files = tuple((f"sdc[{i}]", path) for i, path in enumerate(spec.timing.sdc))
     environment = _environment_record()
-    reason = _decline_reason(plan.build_dir.parent, pdk_files, sdc_files)
+    reason = _decline_reason(pdk_files, sdc_files)
     if reason is not None or environment is None:
         reason = reason or "a preload library is set, or PATH has a relative entry"
         logger.info("OpenROAD reuse declined: %s", reason)
@@ -193,19 +194,13 @@ def collect_openroad_inputs(
 
 
 def _decline_reason(
-    work_root: Path,
-    pdk_files: tuple[tuple[str, Path], ...],
-    sdc_files: tuple[tuple[str, Path], ...],
+    pdk_files: tuple[tuple[str, Path], ...], sdc_files: tuple[tuple[str, Path], ...]
 ) -> str | None:
     """Why a file input cannot be keyed soundly, or ``None``."""
     for role, path in pdk_files + sdc_files:
         if not path.is_absolute():
             # OpenROAD resolves it in the build dir, Booley in its own cwd.
             return f"{role} path {path} is relative"
-    root = work_root.resolve()
-    for role, path in sdc_files:
-        if not path.resolve().is_relative_to(root):
-            return f"{role} {path} is outside the Target work root"
     wire_rc = next(path for role, path in pdk_files if role == "wire_rc")
     liberty = next(path for role, path in pdk_files if role == "liberty")
     return _tcl_files_decline_reason((("wire_rc", wire_rc), *sdc_files)) or (

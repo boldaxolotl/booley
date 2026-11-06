@@ -149,8 +149,7 @@ JSON report has an `openroad_reuse` entry naming the producing run. The numbers
 are that run's, and the result counts like a fresh one, including for Goals.
 SDC files that use Tcl beyond plain constraint commands (variables, `set`,
 `expr`, `source`, `;`) always run OpenROAD, as do runs outside the Sandbox,
-SDC files from outside the Target's own files, a library that includes other
-files, and a preloaded library (`LD_PRELOAD`). The stored results survive
+a library that includes other files, and a preloaded library (`LD_PRELOAD`). The stored results survive
 cleaning the Target's build directory; `--fresh-openroad` runs OpenROAD anyway
 and replaces them.
 

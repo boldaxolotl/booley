@@ -70,6 +70,8 @@ class Bench:
     netlist: str = NETLIST
     argv: list[str] = field(default_factory=list)
     openroad_calls: int = 0
+    #: Read the SDC in place in the Project, as projection mode (ignore_native_cores) does.
+    sdc_in_place: bool = False
     #: Runs in place of the OpenROAD stage's file writes when set; may return a result.
     on_openroad: Callable[[Path], SubprocessResult | None] | None = None
 
@@ -93,6 +95,11 @@ class Bench:
         (build_root / "src").mkdir(parents=True, exist_ok=True)
         (build_root / "src" / "dut.sv").write_text("module dut(input clk); endmodule\n")
         self.staged_sdc(target).write_text(self.sdc)
+        sdc = "src/dut.sdc"
+        if self.sdc_in_place:
+            sdc = str(self.root / "constraints" / "dut.sdc")
+            Path(sdc).parent.mkdir(exist_ok=True)
+            Path(sdc).write_text(self.sdc)
         mode = "logical" if target == LOGICAL_TARGET else "physical"
         return fusesoc_registry.ResolvedTarget(
             name=target,
@@ -102,7 +109,7 @@ class Bench:
             flow_options={"tool": "yosys", "synth_mode": mode},
             files=(
                 fusesoc_registry.ResolvedFile(name="src/dut.sv", file_type="systemVerilogSource"),
-                fusesoc_registry.ResolvedFile(name="src/dut.sdc", file_type="SDC"),
+                fusesoc_registry.ResolvedFile(name=sdc, file_type="SDC"),
             ),
             parameters={},
             build_root=build_root,
@@ -332,6 +339,16 @@ def test_unprovable_tcl_never_reuses(
     assert not (bench.slot_root / "slot.json").exists()
 
 
+def test_sdc_read_in_place_reuses(bench: Bench) -> None:
+    bench.sdc_in_place = True
+    bench.run_fresh()
+    bench.run_hit()
+
+    bench.sdc = SDC.replace("4.0", "5.0")
+
+    bench.run_fresh()
+
+
 def test_internal_name_only_netlist_change_misses(bench: Bench) -> None:
     bench.run_fresh()
     bench.run_hit()
@@ -398,7 +415,8 @@ def test_input_change_during_openroad_stores_nothing(bench: Bench) -> None:
     bench.run_hit()
 
     def edit_sdc_mid_run(build: Path) -> None:
-        bench.staged_sdc().write_text(SDC.replace("4.0", "6.0"))
+        # The SDC copy OpenROAD reads (configure stages it in the build dir).
+        (build / "sdc" / "0_dut.sdc").write_text(SDC.replace("4.0", "6.0"))
         bench._openroad(build)
 
     bench.on_openroad = edit_sdc_mid_run
