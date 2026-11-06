@@ -357,29 +357,29 @@ def _refuse_model(refused: str):
     return respond
 
 
-@pytest.mark.parametrize(
-    ("logged_in", "clis", "default"),
-    [
-        pytest.param({"codex"}, ("claude", "codex"), "claude", id="claude-not-logged-in"),
-        pytest.param({"claude", "codex"}, ("codex",), "codex", id="claude-not-in-clis"),
-    ],
-)
 def test_model_list_skips_entry_whose_cli_cannot_run(
-    tmp_path: Path, per_cli_backends, logins, logged_in, clis, default
+    tmp_path: Path, per_cli_backends, logins
 ) -> None:
-    logins.update(logged_in)
-    _built, calls = per_cli_backends(_list_settings(clis=clis, default=default))
-
-    result = _launch_finalized(_named("reviewer"), tmp_path)
-
-    assert result.exit_code == EXIT_SUCCESS
-    # No model call for the skipped Claude entry; the reviewer runs on Luna with Codex's effort.
-    assert [(cli, params.model, params.reasoning_effort) for cli, params in calls] == [
-        ("codex", "gpt-6-luna", "high")
+    cases = [
+        ({"codex"}, ("claude", "codex"), "claude"),  # Claude has no login
+        ({"claude", "codex"}, ("codex",), "codex"),  # Claude is not in [agent] clis
     ]
-    note = result.detail["specialist_model"]
-    assert note["model"] == "gpt-6-luna"
-    assert note["fallback"]["first_choice"] == "claude-opus-5-5"
+    for logged_in, clis, default in cases:
+        logins.clear()
+        logins.update(logged_in)
+        _built, calls = per_cli_backends(_list_settings(clis=clis, default=default))
+        earlier = len(calls)  # the fixture's call log is shared across installs
+
+        result = _launch_finalized(_named("reviewer"), tmp_path)
+
+        assert result.exit_code == EXIT_SUCCESS
+        # No model call for the skipped Claude entry; Luna runs with Codex's effort.
+        assert [(cli, p.model, p.reasoning_effort) for cli, p in calls[earlier:]] == [
+            ("codex", "gpt-6-luna", "high")
+        ]
+        note = result.detail["specialist_model"]
+        assert note["model"] == "gpt-6-luna"
+        assert note["fallback"]["first_choice"] == "claude-opus-5-5"
 
 
 def test_model_list_runs_first_entry_when_both_clis_are_logged_in(
@@ -437,23 +437,23 @@ def _non_refusal_errors():
     ]
 
 
-@pytest.mark.parametrize("index", range(4), ids=["auth", "usage-limit", "transient", "timeout"])
 def test_model_list_non_refusal_errors_do_not_try_next_entry(
-    tmp_path: Path, per_cli_backends, logins, index
+    tmp_path: Path, per_cli_backends, logins
 ) -> None:
     logins.update({"claude", "codex"})
-    error = _non_refusal_errors()[index]
+    for error in _non_refusal_errors():
 
-    def fail(_params: AgentCallParams):
-        raise error
+        def fail(_params: AgentCallParams, error=error):
+            raise error
 
-    _built, calls = per_cli_backends(_list_settings(), respond=fail)
+        _built, calls = per_cli_backends(_list_settings(), respond=fail)
+        earlier = len(calls)  # the fixture's call log is shared across installs
 
-    result = _launch_finalized(_named("reviewer"), tmp_path)
+        result = _launch_finalized(_named("reviewer"), tmp_path)
 
-    assert result.exit_code == 2
-    assert [(cli, params.model) for cli, params in calls] == [("claude", "claude-opus-5-5")]
-    assert type(error).__name__ in result.report_text
+        assert result.exit_code == 2
+        assert [(cli, p.model) for cli, p in calls[earlier:]] == [("claude", "claude-opus-5-5")]
+        assert type(error).__name__ in result.report_text
 
 
 def test_model_list_without_usable_entry_names_each_entry_and_reason(

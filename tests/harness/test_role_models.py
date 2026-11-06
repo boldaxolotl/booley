@@ -274,39 +274,23 @@ def test_models_is_a_recognized_top_level_table():
 # --- hidden [models] fallback list (#2836, ADR 0084 amendment) -------------------
 
 _MODEL_LIST_SHAPE_ERRORS_FAIL_LOADING_NAMING_KEY_CASES = [
-    pytest.param("reviewer = []", "[models] reviewer is an empty list", id="empty"),
-    pytest.param(
-        "reviewer = [1]", "[models] reviewer entry 1 must be a model ID string", id="integer"
-    ),
-    pytest.param(
-        'reviewer = [["gpt-6-luna"]]',
-        "[models] reviewer entry 1 must be a model ID string",
-        id="nested-list",
-    ),
-    pytest.param(
-        'reviewer = ["claude-opus-5-5", ""]',
-        "[models] reviewer entry 2 must be a model ID string",
-        id="blank",
-    ),
-    pytest.param(
-        'reviewer = ["llama-3"]',
-        "[models] reviewer entry 'llama-3' names no known Agent CLI",
-        id="unknown-prefix",
-    ),
+    ("reviewer = []", "[models] reviewer is an empty list"),
+    ("reviewer = [1]", "[models] reviewer entry 1 must be a model ID string"),
+    ('reviewer = [["gpt-6-luna"]]', "[models] reviewer entry 1 must be a model ID string"),
+    ('reviewer = ["claude-opus-5-5", ""]', "[models] reviewer entry 2 must be a model ID string"),
+    ('reviewer = ["llama-3"]', "[models] reviewer entry 'llama-3' names no known Agent CLI"),
 ]
 
 
-@pytest.mark.parametrize(
-    ("line", "fragment"), _MODEL_LIST_SHAPE_ERRORS_FAIL_LOADING_NAMING_KEY_CASES
-)
-def test_model_list_shape_errors_fail_loading_naming_key(tmp_path, line, fragment):
+def test_model_list_shape_errors_fail_loading_naming_key(tmp_path):
     """An empty list or a bad entry fails loading and names the ``[models]`` key."""
-    _write_toml(tmp_path, f"[models]\n{line}\n")
+    for line, fragment in _MODEL_LIST_SHAPE_ERRORS_FAIL_LOADING_NAMING_KEY_CASES:
+        _write_toml(tmp_path, f"[models]\n{line}\n")
 
-    with pytest.raises(BackendConfigError) as excinfo:
-        load_agent_settings(tmp_path)
+        with pytest.raises(BackendConfigError) as excinfo:
+            load_agent_settings(tmp_path)
 
-    assert fragment in str(excinfo.value)
+        assert fragment in str(excinfo.value)
 
 
 def test_model_list_entry_outside_clis_loads(tmp_path):
