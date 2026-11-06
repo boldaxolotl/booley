@@ -2693,7 +2693,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         )
         result = compose_result(
             short_sha if self.args.baseline else None,
-            self._summary_table_lines(targets, current_results, baseline_results),
+            self._summary_table_lines(
+                targets, current_results, baseline_results, selfcompare_msg, implementation_reports
+            ),
             notes,
             result_line,
         )
@@ -2852,6 +2854,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         targets: list[str],
         current: dict[str, SynthMetrics],
         baseline: dict[str, SynthMetrics],
+        selfcompare_msg: str | None,
+        reports: dict[str, ImplementationReport],
     ) -> list[str]:
         """The per-Target table: one row per Target; ``Δ`` columns only against a baseline."""
         with_delta = any(target in baseline for target in targets)
@@ -2859,7 +2863,15 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         headers = ["Target", "Area", *delta, "Crit path", *delta, "Fmax", "Setup slack", "Time"]
         headers.append("Status")
         rows = [
-            self._summary_row(target, current[target], baseline.get(target), with_delta)
+            self._summary_row(
+                target,
+                current[target],
+                baseline.get(target),
+                with_delta,
+                # The self-compare WARN is run-level: it applies to every compared Target.
+                baseline_not_meaningful=bool(selfcompare_msg) and target in baseline,
+                comparison_error=reports[target].grade == "error",
+            )
             for target in targets
         ]
         return render_table(headers, rows, max_widths={0: TARGET_WIDTH})
@@ -2870,6 +2882,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         cur: SynthMetrics,
         base: SynthMetrics | None,
         with_delta: bool,
+        *,
+        baseline_not_meaningful: bool,
+        comparison_error: bool,
     ) -> list[str]:
         """Cells of one Target's table row (``—`` for a metric the run lacks)."""
         worst = worst_clock(cur.per_clock)
@@ -2888,7 +2903,12 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         )
         area = f"{cur.area_kge:.1f} kGE" if cur.area_kge is not None else MISSING
         slack = f"{cur.wns_ns:+.3f} ns" if cur.wns_ns is not None else MISSING
-        status = self._format_status_suffix(cur).strip() or self._passing_status(target, cur)
+        status = self._format_status_suffix(cur).strip() or self._run_status(
+            target, cur, baseline_not_meaningful=baseline_not_meaningful
+        )
+        if comparison_error and not status.startswith("ERROR"):
+            # RESULT is ERROR and names this Target, whatever else its own run did.
+            status = "ERROR (baseline)"
         cells = [target, area]
         if with_delta:
             cells.append(self._delta_cell(cur.area_kge, base.area_kge if base else None))
@@ -2899,10 +2919,33 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             )
         return [*cells, fmax, slack, f"{cur.elapsed_s:.1f}s", status_cell(status)]
 
-    def _passing_status(self, target: str, cur: SynthMetrics) -> str:
-        """``PASS``, unless a fatal timing violation fails this Target's run."""
-        fatal = getattr(self, "_timing_violation_is_fatal", False)
-        return "FAIL (timing)" if fatal and self._timing_violation(target, cur) else "PASS"
+    def _run_status(
+        self,
+        target: str,
+        cur: SynthMetrics,
+        *,
+        baseline_not_meaningful: bool,
+    ) -> str:
+        """Status of a Target whose run passed, agreeing with the ``RESULT:`` line.
+
+        ``FAIL (timing)`` for a fatal timing violation, ``WARN (<reasons>)``
+        for every WARN reason this Target adds, else ``PASS``. The inputs are the
+        ones ``_result_line`` is fed: ``_timing_violation``, the actionable EDA
+        warnings, and the run's self-compare message.
+        """
+        timing = self._timing_violation(target, cur)
+        if timing and getattr(self, "_timing_violation_is_fatal", False):
+            return "FAIL (timing)"
+        reasons = [
+            reason
+            for reason, applies in (
+                ("baseline", baseline_not_meaningful),
+                ("timing", bool(timing)),
+                ("EDA warnings", bool(cur.warning_summary.actionable_warnings)),
+            )
+            if applies
+        ]
+        return f"WARN ({', '.join(reasons)})" if reasons else "PASS"
 
     @classmethod
     def _delta_cell(cls, current: float | None, baseline: float | None) -> str:
