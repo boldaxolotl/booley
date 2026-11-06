@@ -26,8 +26,8 @@ also exercises the host, auth, runtime, policy, Doctor and feedback surfaces.
   and Claude CLI; rerun on another host or client for coverage. Area 2's CRLF cases are
   Windows-only.
 - Budget: 8 h for the primary run: 460 area minutes, including 90 for feature
-  work and 45 for bounded repair, plus 20 contingency. Areas 12, 16 and 17 are
-  optional follow-up work outside this timebox (55 minutes total); log them as
+  work and 45 for bounded repair, plus 20 contingency. Areas 12 and 16 are
+  optional follow-up work outside this timebox (40 minutes total); log them as
   skipped unless requested. Run primary areas sequentially; Interactive children
   never overlap an active Goal in the same Project.
 
@@ -299,13 +299,7 @@ through the documented lifecycle: the digest is unchanged, the Project persists,
 rebuilt. Rerun the smoke test, then remove the owned runtime and Project but keep the image.
 Look for: hidden downloads or rebuilds, a digest that drifts.
 
-### 17. gui-client — VS Code client (~15 min, only if VS Code is available, optional follow-up)
-Try: attach VS Code to the Sandbox and run the baseline prompt; call status, Targets, a Flow
-and a Specialist through its MCP (read-only; no Goals entered). Screenshot the fresh MMIO
-trace in the Waveform Viewer; headless or B-Wave-only readback doesn't count.
-Look for: attachment or MCP failures that appear only in the GUI.
-
-### 18. cleanup — Product cleanup (~20 min)
+### 17. cleanup — Product cleanup (~20 min)
 Exercise Booley's own cleanup: `session down`, explicit Goal abandon where needed, printed Git
 worktree removal using the printed USAGE steps, and Project deregistration. Record any owned process or container left behind and any
 unrelated state touched. Keep the evaluator seed, manifest and results in the run dir, outside
