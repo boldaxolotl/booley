@@ -271,3 +271,14 @@ def test_common_state_in_worktree_ignores_tracked_paths_in_paired_checkout(
     assert len(warnings) == 1
     assert "session_activity" in warnings[0].message
     assert "goalsets" not in warnings[0].message and "docker" not in warnings[0].message
+
+
+def test_common_state_check_skips_when_the_project_is_the_booley_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(_root: Path) -> Path:
+        raise doctor.SourceCheckoutProjectError("Booley's own source")
+
+    monkeypatch.setattr(doctor, "resolve_common_booley_dir", refuse)
+
+    assert [f.severity for f in _common_state_findings(tmp_path)] == ["skip"]

@@ -1151,6 +1151,7 @@ def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) ->
         OSError,
         subprocess.TimeoutExpired,
         subprocess.CalledProcessError,
+        SourceCheckoutProjectError,
     ) as exc:
         reporter.skip_(f"Common Booley State in worktrees skipped - cannot list worktrees: {exc}")
         return
@@ -1164,7 +1165,7 @@ def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) ->
             untracked = _untracked_common_paths(entry.path, booley_dir)
         except FileNotFoundError:
             continue  # A baseline worktree removed while scanning.
-        except (OSError, RuntimeError) as exc:
+        except (OSError, subprocess.CalledProcessError, ValueError) as exc:
             reporter.skip_(f"Common Booley State in {booley_dir} skipped - {exc}")
             continue
         scanned += 1
@@ -1180,7 +1181,8 @@ def _untracked_common_paths(worktree: Path, booley_dir: Path) -> list[str]:
 
     Raises:
         OSError: the directory cannot be walked.
-        RuntimeError: ``git ls-files`` failed, so tracked paths cannot be told apart.
+        subprocess.CalledProcessError: ``git ls-files`` failed, so tracked paths cannot be told apart.
+        ValueError: Git printed a path name that is not valid UTF-8.
     """
     from booley.core.booley_dir_parts import BooleyDirClass, iter_booley_dir
 
@@ -1199,14 +1201,14 @@ def _tracked_booley_paths(worktree: Path, booley_dir: Path) -> set[str]:
     """Return Git-tracked paths under *booley_dir*, relative to it and ``/``-separated.
 
     Raises:
-        RuntimeError: ``git ls-files`` failed, so tracked paths cannot be told apart.
+        subprocess.CalledProcessError: ``git ls-files`` failed, so tracked paths cannot be told apart.
     """
     own_repository = (booley_dir / ".git").exists()
     cwd = booley_dir if own_repository else worktree
     args = ["ls-files", "-z"] if own_repository else ["ls-files", "-z", "--", BOOLEY_DIR_NAME]
     result = project_repositories.run_git(cwd, *args)
     if result.returncode != 0:
-        raise RuntimeError(f"git ls-files failed: {result.stderr.strip() or result.returncode}")
+        raise subprocess.CalledProcessError(result.returncode, args, stderr=result.stderr)
     prefix = "" if own_repository else f"{BOOLEY_DIR_NAME}/"
     return {name.removeprefix(prefix) for name in result.stdout.split("\0") if name}
 

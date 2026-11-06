@@ -148,7 +148,7 @@ The worktree gets its own Booley Directory (the `.booley/` folder):
   with no commits or an existing branch of that name. Ignored files stay
   behind. Booley refuses to create a worktree from inside a Paired Checkout.
 - **Snapshot**, otherwise: a copy of the Booley Directory's configuration
-  (settings, `cores/`, hooks, committed history). Build results, reports, logs,
+  (settings, `cores/`, hooks, Goal and Ticket history). Build results, reports, logs,
   and evidence stay in the main Booley Directory. A path Booley does not
   classify is not copied, and the command names it.
 
