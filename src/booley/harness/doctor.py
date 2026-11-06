@@ -2782,10 +2782,32 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     # Pins apply to gateway-routed Codex only, so judge them under Codex's policy when it is listed.
     pin_cli = auth_token.APP_CODEX if auth_token.APP_CODEX in allowed else default_cli
     _check_gateway_model_pin(_configured_auth_policy(project, pin_cli), pin_cli, reporter)
+    specialist_clis = _specialist_clis(project)
     for cli in allowed:
         _check_cli_credentials(
-            project, cli, reporter, is_default=cli == default_cli, auto_choice=auto_choice
+            project,
+            cli,
+            reporter,
+            is_default=cli == default_cli,
+            runs_specialist=cli in specialist_clis,
+            auto_choice=auto_choice,
         )
+
+
+def _specialist_clis(project: ProjectAudit | None) -> frozenset[str]:
+    """The Agent CLIs that the Project's ``[models]`` pins run a Specialist on.
+
+    Fail-soft like :func:`_declared_agent`: a non-table ``[models]``, a non-string
+    pin, or an unknown model prefix contributes nothing (``agent.backend-health``
+    already reports an invalid ``[models]``).
+    """
+    from booley.config.agent import cli_for_model
+
+    models = project.booley_toml.get("models") if project is not None else None
+    if not isinstance(models, dict):
+        return frozenset()
+    pinned = (cli_for_model(pin.strip()) for pin in models.values() if isinstance(pin, str))
+    return frozenset(cli for cli in pinned if cli)
 
 
 def _check_cli_credentials(
@@ -2794,20 +2816,21 @@ def _check_cli_credentials(
     reporter: _Reporter,
     *,
     is_default: bool,
+    runs_specialist: bool,
     auto_choice: AgentAppChoice | None,
 ) -> None:
     """Audit one allowed Agent CLI's credential, policy, and rotation risk.
 
     The default CLI keeps its grading (FAIL under a pinned policy, WARN under
-    ``auto``). Another allowed CLI never fails for a missing credential: that
-    only means it cannot run yet, so it WARNs with the CLI's own login fix.
+    ``auto``). Another allowed CLI WARNs for a missing credential, with the CLI's
+    own login fix, unless a ``[models]`` pin runs a Specialist on it: then it
+    FAILs under every policy, because that Specialist's calls would fail.
     """
+    required = is_default or runs_specialist
     auth_policy = _configured_auth_policy(project, cli)
     if auth_policy == GATEWAY_AUTH:
         # Under BOOLEY_AGENT_APP=auto the policy comes from the start's choice record.
-        _check_gateway_auth(
-            cli, reporter, chosen_by_auto=auto_choice is not None or not is_default
-        )
+        _check_gateway_auth(cli, reporter, chosen_by_auto=auto_choice is not None or not required)
         return
     try:
         plan = auth_token.credential_plan(cli, auth_policy)
@@ -2823,15 +2846,16 @@ def _check_cli_credentials(
         plan=plan,
         _fail=(
             (
-                lambda message: reporter.fail_(
-                    message, check_id="agent.credential-missing", subject=cli
+                lambda message, fix="": reporter.fail_(
+                    message, fix, check_id="agent.credential-missing", subject=cli
                 )
             )
-            if is_default
+            if required
             else None
         ),
         missing_fix="" if is_default else _missing_credential_fix(cli, auth_policy),
         is_default=is_default,
+        missing_fails=runs_specialist and not is_default,
     )
     if plan.selected is None and not is_default:
         return  # the missing-credential WARN already names the fix; no login to rotate
@@ -3159,6 +3183,7 @@ def _check_agent_auth_token(
     plan: auth_token.CredentialPlan | None = None,
     missing_fix: str = "",
     is_default: bool = True,
+    missing_fails: bool = False,
 ) -> None:
     """ADR 0018: verify the agent's credential where it actually lives (not assumed).
 
@@ -3170,14 +3195,15 @@ def _check_agent_auth_token(
     from agent envs, so the resolution here mirrors that.
 
     Scoped to one allowed CLI (see :func:`_allowed_clis`): a CLI the Project does
-    not list is never audited. *missing_fix* names the sign-in for a missing credential.
+    not list is never audited. *missing_fix* names the sign-in for a missing credential;
+    *missing_fails* grades a missing credential FAIL (through *_fail*) even under ``auto``.
     """
     _warn = _warning_sink(_warn, "agent.credential-missing", subject=provider)
     plan = plan or auth_token.credential_plan(provider, policy)
     if policy != "auto" and plan.selected is None:
         message = f"{provider}: no usable credential under auth = '{policy}'; provide the pinned credential"
         if _fail:
-            _fail(message)
+            _fail(message, missing_fix)
         else:
             _warn(message, missing_fix)
         return
@@ -3194,11 +3220,14 @@ def _check_agent_auth_token(
             if policy != "auto"
             else "run its login or export an API key"
         )
-        _warn(
+        message = (
             f"{label} detected but no usable credential under auth = '{policy}' "
-            f"(login file: {auth_token.subscription_creds_path(provider)}) — {hint}",
-            missing_fix,
+            f"(login file: {auth_token.subscription_creds_path(provider)}) — {hint}"
         )
+        if missing_fails and _fail:
+            _fail(message, missing_fix)
+        else:
+            _warn(message, missing_fix)
         return
     line = f"{label} auth: {effective.source}"
     if effective.overridden:

@@ -22,7 +22,10 @@ from each side:
 Doctor checks the sign-in of every Agent CLI listed in `[agent] clis`. A missing
 sign-in for the default CLI is graded as before (a failure when `[agent] auth`
 pins a billing mode, a warning under `auto`). For another listed CLI it is a
-warning that names that CLI's login command. Warning IDs end in the CLI, for
+warning that names that CLI's login command; when `[models]` runs a Specialist on
+that CLI it is a failure, whatever `[agent] auth` says. Inside the Sandbox Booley
+signs in only the default CLI for now, so another listed CLI reports its missing
+sign-in there. Warning IDs end in the CLI, for
 example `agent.credential-missing:codex`, so you can waive each one separately.
 
 Run plain `booley doctor` for everyday checks. It checks configuration and

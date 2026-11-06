@@ -129,7 +129,7 @@ Pick `subscription` or `api_key` explicitly. The default, `auto`, lets the
 Agent CLI decide, and an exported API key always beats a subscription, so
 you can end up paying per token without noticing. With an explicit choice,
 `booley doctor` fails when the default Agent CLI's credential is missing instead
-of quietly using another one (it only warns for another allowed CLI). A Project that also runs a Specialist on the other Agent CLI can
+of quietly using another one (for another allowed CLI it only warns, unless a Specialist runs on it). A Project that also runs a Specialist on the other Agent CLI can
 bill each CLI differently. All values are in
 [CONFIG.md](CONFIG.md#pinning-what-bills-agent-auth).
 

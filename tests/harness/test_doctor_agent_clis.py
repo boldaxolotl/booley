@@ -48,12 +48,20 @@ def _login(home: Path, cli: str) -> None:
     path.write_text(json.dumps(content), encoding="utf-8")
 
 
-def _findings(tmp_path: Path, **agent) -> list[DiagnosticFinding]:
-    """Run the agent credential checks for a Project whose ``[agent]`` is *agent*."""
+def _findings(
+    tmp_path: Path, models: dict[str, str] | None = None, **agent
+) -> list[DiagnosticFinding]:
+    """Run the agent credential checks for a Project whose ``[agent]`` is *agent*.
+
+    *models* is the Project's ``[models]`` table (Specialist -> model pins).
+    """
+    booley_toml: dict = {"agent": agent}
+    if models is not None:
+        booley_toml["models"] = models
     audit = doctor.ProjectAudit(
         project_root=tmp_path,
         booley_dir=tmp_path / ".booley",
-        booley_toml={"agent": agent},
+        booley_toml=booley_toml,
         configs_toml={},
         first_target="",
     )
@@ -87,6 +95,59 @@ def test_other_allowed_cli_missing_credentials_warn_with_login_fix(home, tmp_pat
         assert fix_has in missing.fix
         assert fix_lacks is None or fix_lacks not in missing.fix
         assert not _with_id(findings, "agent.rotation-risk", "codex")
+
+
+def test_specialist_pinned_cli_missing_credentials_fail(home, tmp_path):
+    """A non-default CLI that a [models] pin runs a Specialist on FAILs under every policy."""
+    auth_token.store_token("sk-ant-oat01-x")
+    for codex_auth in ("auto", "api_key"):
+        findings = _findings(
+            tmp_path,
+            models={"reviewer": "gpt-5"},
+            clis=["claude", "codex"],
+            default="claude",
+            auth={"claude": "auto", "codex": codex_auth},
+        )
+
+        (missing,) = _with_id(findings, "agent.credential-missing", "codex")
+        assert missing.severity is Severity.FAIL
+        assert doctor._missing_credential_fix("codex", codex_auth) in missing.fix
+        assert not [f for f in findings if f.severity is Severity.FAIL and f is not missing]
+        assert not _with_id(findings, "agent.rotation-risk", "codex")
+
+    # Guard: a pin on the default CLI leaves the other CLI at its WARN.
+    findings = _findings(
+        tmp_path,
+        models={"reviewer": "claude-sonnet-5-5"},
+        clis=["claude", "codex"],
+        default="claude",
+    )
+    (missing,) = _with_id(findings, "agent.credential-missing", "codex")
+    assert missing.severity is Severity.WARN
+
+
+def test_specialist_pinned_gateway_codex_grades_like_default(home, tmp_path, monkeypatch):
+    """A pinned Codex fails on a token-command error as the default CLI does; unpinned it warns."""
+    recorded: list[bool] = []
+    monkeypatch.setattr(
+        doctor,
+        "_configured_auth_policy",
+        lambda _project, cli=None: "gateway" if cli == "codex" else "auto",
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_check_gateway_auth",
+        lambda _cli, _reporter, *, chosen_by_auto: recorded.append(chosen_by_auto),
+    )
+    auth_token.store_token("sk-ant-oat01-x")
+    agent = {"clis": ["claude", "codex"], "default": "claude"}
+
+    _findings(tmp_path, models={"reviewer": "gpt-5"}, **agent)
+    assert recorded == [False]
+
+    recorded.clear()
+    _findings(tmp_path, **agent)
+    assert recorded == [True]
 
 
 def test_default_cli_missing_credentials_fail(home, tmp_path, monkeypatch):

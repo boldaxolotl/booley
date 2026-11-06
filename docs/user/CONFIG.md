@@ -193,7 +193,8 @@ issuing one fails with a pointer to a hand-written Sandbox spec.
 
 With `subscription` or `api_key`, `booley doctor` fails when the default CLI's
 credential is missing instead of quietly billing the other one; for another CLI
-in `clis` it only warns, because that CLI cannot run yet. On the command line,
+in `clis` it only warns, unless a `[models]` entry runs a Specialist on that CLI:
+then a missing credential fails under any `auth` value. On the command line,
 `booley init --auth api-key` (with a hyphen) records `api_key`. Why to pick one:
 [Sign-in and billing](SETUP.md#sign-in-and-billing).
 
