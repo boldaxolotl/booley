@@ -72,6 +72,8 @@ class Bench:
     openroad_calls: int = 0
     #: Read the SDC in place in the Project, as projection mode (ignore_native_cores) does.
     sdc_in_place: bool = False
+    #: Runs after the Yosys stage's file writes when set.
+    on_yosys: Callable[[], None] | None = None
     #: Runs in place of the OpenROAD stage's file writes when set; may return a result.
     on_openroad: Callable[[Path], SubprocessResult | None] | None = None
 
@@ -136,6 +138,8 @@ class Bench:
             }.items():
                 (build / name).write_text(text)
             stdout += "BOOLEY_STAGE: sv2v\nBOOLEY_STAGE: yosys\n"
+            if self.on_yosys:
+                self.on_yosys()
         if stage in {"openroad", "all"}:
             self.openroad_calls += 1
             result = self.on_openroad(build) if self.on_openroad else self._openroad(build)
@@ -364,6 +368,18 @@ def test_project_sdc_edit_during_openroad_cannot_reach_it(bench: Bench) -> None:
     assert (bench.slot_root / "slot.json").exists()  # stored under the bytes OpenROAD read
     bench.run_fresh()  # the edited SDC is a new input
     bench.run_hit()
+
+
+def test_sdc_left_in_place_never_reuses(bench: Bench) -> None:
+    """An SDC outside the grammar at configure stays in place; making it plain later declines."""
+    bench.sdc_in_place = True
+    bench.sdc = SDC + "create_clock -period $p clk\n"
+    in_place = bench.root / "constraints" / "dut.sdc"
+    bench.on_yosys = lambda: in_place.write_text(SDC)  # plain again before the key is computed
+
+    bench.run_fresh()
+    bench.run_fresh()
+    assert not (bench.slot_root / "slot.json").exists()
 
 
 def test_internal_name_only_netlist_change_misses(bench: Bench) -> None:

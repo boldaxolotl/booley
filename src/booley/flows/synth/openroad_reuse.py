@@ -17,7 +17,7 @@ Keyed, in order:
 5. ``sdc[i]``: the SDC copies configure stages in the build dir; OpenROAD reads
    those, so a Project SDC edit during the run cannot reach it. Only SDCs
    accepted by ``sdc_grammar.tcl_decline_reason`` are copied (and keyed);
-   others, and a wire-RC outside the grammar, decline. For keyed files
+   an SDC left in place declines, as does a wire-RC outside the grammar. For keyed files
    outside Booley's build dir (e.g. a writable ``PRJ_LIB_DIR``) ``pre ==
    post`` is the only guard against an edit made and undone during one run.
 6. ``openroad_identity``: resolved path, ``-version``, SHA-256 of the binary and
@@ -147,7 +147,12 @@ def collect_openroad_inputs(
     )
     sdc_files = tuple((f"sdc[{i}]", path) for i, path in enumerate(spec.timing.sdc))
     environment = _environment_record()
-    reason = _decline_reason(pdk_files, sdc_files)
+    # Only an SDC configure copied (grammar-accepted then) is read from a private copy.
+    staged = plan.build_dir / "sdc"
+    reason = _decline_reason(pdk_files, sdc_files) or next(
+        (f"{role} {path} was not staged" for role, path in sdc_files if path.parent != staged),
+        None,
+    )
     if reason is not None or environment is None:
         reason = reason or "a preload library is set, or PATH has a relative entry"
         logger.info("OpenROAD reuse declined: %s", reason)
