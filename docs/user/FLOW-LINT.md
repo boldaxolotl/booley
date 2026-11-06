@@ -31,7 +31,7 @@ booley flow lint --target lint_soc,lint_style --scope rtl/fifo.sv
 
 | Option | Effect |
 |---|---|
-| `--scope <path,...>` | Keep only findings whose file path contains one of the listed strings, so `rtl/fifo.sv` and `rtl/core/` both work. The whole Target is still linted, and errors are reported regardless of scope. |
+| `--scope <path,...>` | Keep only findings whose file path contains one of the listed strings, so `rtl/fifo.sv` and `rtl/core/` both work. The whole Target is still linted, and errors are reported regardless of scope. Entries are checked against the Target's HDL file paths and the paths of reported findings; an entry that matches none ends the run with `ERROR` (exit `2`), naming the entry and a few linted paths, so a typo cannot pass. |
 
 ## Reading results
 
@@ -59,7 +59,7 @@ first five findings. The `RESULT` line gives one verdict:
 | `PASS` | No findings. | `0` |
 | `WARN (N warnings)` | The linter ran and reported findings. | `1`, or `0` with `warnings_as_errors = false` |
 | `FAIL` | The linter rejected the RTL, for example a syntax error or an undeclared signal. | `1` |
-| `ERROR` | No verdict: missing linter, timeout, or a Target whose `toplevel` module is not in any of its files (lint would check nothing). | `2` |
+| `ERROR` | No verdict: missing linter, timeout, a Target whose `toplevel` module is not in any of its files (lint would check nothing), or a `--scope` entry that matches no linted file. | `2` |
 
 A Target that could not be linted cleanly prints `ERROR:` on its own line in
 both the `FAIL` and `ERROR` cases; the `RESULT` line tells them apart. On a
@@ -83,7 +83,7 @@ Each run's files are in its numbered run directory (`lint/3/` above), under
 `flow-reports/lint_report.json` is a copy of the latest run's report.
 
 A `LINT:{target}` Goal is met only when that Target has no findings within the
-run's `--scope`, whatever `warnings_as_errors` says.
+run's `--scope`, whatever `warnings_as_errors` says. A run whose `--scope` matches no linted file records no result.
 
 ## Waivers and rules
 
