@@ -116,6 +116,7 @@ def lint_flow() -> LintFlow:
 def _stub_resolved(
     eda_tool: str | None = "verilator",
     files: tuple[str, ...] = (),
+    build_root: Path = Path("build"),
 ) -> object:
     """Minimal ResolvedTarget for tests that patch _prepare_lint_command.
 
@@ -137,7 +138,7 @@ def _stub_resolved(
             for name in files
         ),
         parameters={},
-        build_root=Path("build"),
+        build_root=build_root,
         edam_path=Path("build/stub_demo_0.eda.yml"),
     )
 
@@ -1606,8 +1607,7 @@ class TestUnmatchedScope:
         assert "RESULT: ERROR" in out
         assert "RESULT: PASS" not in out
         assert "'nonexistent/'" in out
-        assert "rtl/mod_a.sv" in out  # example linted path
-        assert DevelopmentState.load(state_file).is_met("lint_clean_lite") is not True
+        assert "rtl/mod_b.sv" in out  # example from the file list only, no warning there
         assert "lint_clean_lite" not in DevelopmentState.load(state_file).criteria
 
     def test_mixed_scope_is_error(self, state_file: Path, capsys):
@@ -1655,6 +1655,28 @@ class TestUnmatchedScope:
         assert outcome.exit_code == EXIT_ERROR
         assert "nonexistent/" in outcome.outcome.report_text
 
+    def test_unmatched_scope_still_records_design_failure(self, state_file: Path, capsys):
+        """A scope typo must not hide a design FAIL: its False criterion is recorded."""
+        failing = MagicMock(
+            returncode=1,
+            stdout="%Error: rtl/mod_a.sv:3:1: syntax error\n",
+            stderr="",
+            timed_out=False,
+            duration_s=0.5,
+        )
+        with (
+            patch.object(
+                LintFlow,
+                "_prepare_lint_command",
+                return_value=(["verilator", "--lint-only"], self._resolved()),
+            ),
+            patch.object(LintFlow, "_execute", return_value=failing),
+        ):
+            code = LintFlow().main(["--target", "lite", "--scope", "nonexistent/"])
+
+        assert code == EXIT_ERROR
+        assert DevelopmentState.load(state_file).is_met("lint_clean_lite") is False
+
     def test_unmatched_scope_entries(self):
         from booley.flows.lint.flow import unmatched_scope_entries
 
@@ -1672,7 +1694,10 @@ class TestUnmatchedScope:
                 "_prepare_lint_command",
                 return_value=(
                     ["verilator", "--lint-only"],
-                    _stub_resolved(files=("src/demo_core_0/rtl/counter.sv",)),
+                    _stub_resolved(
+                        files=("src/demo_core_0/rtl/counter.sv",),
+                        build_root=Path(".booley/.runtime/edalize/lint/lite"),
+                    ),
                 ),
             ),
             patch.object(

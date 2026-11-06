@@ -83,7 +83,9 @@ Each run's files are in its numbered run directory (`lint/3/` above), under
 `flow-reports/lint_report.json` is a copy of the latest run's report.
 
 A `LINT:{target}` Goal is met only when that Target has no findings within the
-run's `--scope`, whatever `warnings_as_errors` says. A run whose `--scope` matches no linted file records no result.
+run's `--scope`, whatever `warnings_as_errors` says. A run with any `--scope`
+entry that matches no linted file ends in `ERROR` and records no passing
+result.
 
 ## Waivers and rules
 

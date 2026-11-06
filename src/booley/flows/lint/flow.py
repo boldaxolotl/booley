@@ -213,6 +213,11 @@ def parse_verible_warnings(output: str, target: str) -> list[LintWarning]:
     return warnings
 
 
+def _target_errors_text(errored: list[LintConfigResult]) -> str:
+    """Join each errored Target's message as ``target: error`` for a RESULT line."""
+    return "; ".join(f"{cr.target}: {cr.error}" for cr in errored)
+
+
 def _errored_verdict(errored: list[LintConfigResult]) -> tuple[int, str]:
     """Grade a run in which at least one Target errored.
 
@@ -226,7 +231,7 @@ def _errored_verdict(errored: list[LintConfigResult]) -> tuple[int, str]:
     """
     eda_tool_failed = any(cr.error_is_eda_tool_failure for cr in errored)
     label = "ERROR" if eda_tool_failed else "FAIL"
-    summary = f"RESULT: {label} — " + "; ".join(f"{cr.target}: {cr.error}" for cr in errored)
+    summary = f"RESULT: {label} — " + _target_errors_text(errored)
     return (EXIT_ERROR if eda_tool_failed else EXIT_FAILURE), summary
 
 
@@ -1074,6 +1079,36 @@ class LintFlow(BuiltinFlow[LintRequest]):
         paths.update(warning.file for warning in warnings)
         return sorted(paths)
 
+    def _log_artifacts(self, target_results: list[LintConfigResult]) -> dict[str, Any]:
+        """Work-dir-relative ``log_<target>`` artifact entries for the Targets that logged."""
+        block: dict[str, Any] = {}
+        for config_result in target_results:
+            if not config_result.log_path:
+                continue
+            relative_log = artifacts.relative(config_result.log_path, self.args.work_dir)
+            if relative_log is not None:
+                block[f"log_{config_result.target}"] = relative_log
+        return block
+
+    def _record_design_failures(self, errored: list[LintConfigResult]) -> None:
+        """Record ``lint_clean_<target> = False`` for Targets whose linter rejected the RTL.
+
+        Skips EDA-tool failures (no verdict). Independent of ``--scope``: an
+        error is reported regardless of scope.
+        """
+        for cr in errored:
+            if cr.error_is_eda_tool_failure:
+                continue
+            self.set_criterion(
+                f"lint_clean_{cr.target}",
+                False,
+                detail={
+                    "warnings": _scoped_warning_count(cr.warnings, self.args.scope),
+                    "error": cr.error,
+                },
+                source_target=cr.target,
+            )
+
     def _unmatched_scope_outcome(
         self,
         selectors: list[str],
@@ -1085,8 +1120,10 @@ class LintFlow(BuiltinFlow[LintRequest]):
 
         A scope that matches nothing would otherwise report zero in-scope
         warnings and pass. Like the other no-verdict paths (linter failure,
-        preparation failure) this records no ``lint_clean_*`` criterion and
-        writes no ``lint_report.json``, which would claim ``passed: true``.
+        preparation failure) this never records a passing ``lint_clean_*``
+        criterion and writes no ``lint_report.json``, which would claim
+        ``passed: true``. Targets whose linter rejected the design still record
+        their scope-independent ``False``.
         Returns ``None`` when every entry matches.
         """
         linted_paths = self._linted_paths(prepared, all_warnings)
@@ -1108,21 +1145,17 @@ class LintFlow(BuiltinFlow[LintRequest]):
         summary = "RESULT: ERROR — " + message
         errored = [cr for cr in target_results if cr.error]
         if errored:
-            summary += "; " + "; ".join(f"{cr.target}: {cr.error}" for cr in errored)
+            summary += "; " + _target_errors_text(errored)
+        # A scope typo hides no design failure: a Target whose linter rejected
+        # the RTL still records its scope-independent False criterion.
+        self._record_design_failures(errored)
         print(f"\n{summary}")
         detail: dict[str, Any] = {
             "targets": selectors,
             "scope_unmatched": unmatched,
             "linted_file_examples": examples,
         }
-        artifact_block: dict[str, Any] = {}
-        for config_result in target_results:
-            if not config_result.log_path:
-                continue
-            relative_log = artifacts.relative(config_result.log_path, self.args.work_dir)
-            if relative_log is not None:
-                artifact_block[f"log_{config_result.target}"] = relative_log
-        artifacts.merge_artifacts(detail, artifact_block)
+        artifacts.merge_artifacts(detail, self._log_artifacts(target_results))
         return EndpointOutcome(exit_code=EXIT_ERROR, report_text=summary, detail=detail)
 
     def _run(self) -> EndpointOutcome:  # noqa: PLR0911, PLR0912, PLR0915 — linear aggregate orchestration
@@ -1232,12 +1265,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         # The copy that reaches the agent as MCP structuredContent: the stdout
         # "See <report> ..." line is tail-truncatable, ``detail`` is not.
         artifact_block = artifacts.artifacts_block(self.args.work_dir, report=report_path)
-        for config_result in target_results:
-            if not config_result.log_path:
-                continue
-            relative_log = artifacts.relative(config_result.log_path, self.args.work_dir)
-            if relative_log is not None:
-                artifact_block[f"log_{config_result.target}"] = relative_log
+        artifact_block.update(self._log_artifacts(target_results))
         artifacts.merge_artifacts(detail, artifact_block)
         for result in target_results:
             self.record_eda_tool(result.target, result.eda_tool)
