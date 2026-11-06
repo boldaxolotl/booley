@@ -394,7 +394,11 @@ class TestWorktreeCreateScript:
             text=True,
             encoding="utf-8",
             check=False,
-            env={**os.environ, "BOOLEY_PYTHON": sys.executable},
+            # The harness default BOOLEY_DIR sits beside the repository; a Sandbox's is its own.
+            env={
+                **{k: v for k, v in os.environ.items() if k != "BOOLEY_DIR"},
+                "BOOLEY_PYTHON": sys.executable,
+            },
         )
 
         assert result.returncode == 0, result.stderr

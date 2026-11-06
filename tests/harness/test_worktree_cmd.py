@@ -91,6 +91,16 @@ _real_script = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _ambient_booley_dir_is_the_checkouts_own(monkeypatch) -> None:
+    """Model a Sandbox whose ``BOOLEY_DIR`` is the checkout's own directory, or unset.
+
+    ``booley worktree new`` refuses any other ambient selection, so the harness
+    default (a ``BOOLEY_DIR`` beside the temporary checkout) must not apply here.
+    """
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+
+
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args],
@@ -1721,3 +1731,184 @@ def test_booley_dir_outside_checkout_is_refused_without_leftovers(
     assert not (root / ".booley").exists()
     assert not (root / "state" / "worktrees").exists()
     assert not (external / "worktrees").exists()
+
+
+@pytest.mark.parametrize("case", ["inside-mismatch", "missing"])
+@_real_script
+def test_booley_dir_mismatch_or_missing_is_refused(tmp_path, monkeypatch, capsys, case) -> None:
+    root = _configured_project(tmp_path, monkeypatch, "state")
+    if case == "inside-mismatch":
+        _write(root / "state" / "booley.toml", "[submodules]\npaths = []\n")
+        _write(root / ".booley" / "booley.toml", "[submodules]\npaths = []\n")
+        monkeypatch.setenv("BOOLEY_DIR", str(root / ".booley"))
+    branches = _git(root, "branch", "--list").stdout
+
+    assert _new("demo", root) == 1
+
+    err = capsys.readouterr().err
+    if case == "missing":
+        assert f"Booley Directory {root / 'state'} does not exist" in err
+    else:
+        assert str(root / ".booley") in err and str(root / "state") in err
+    assert _worktree_paths(root) == [f"worktree {root}"]
+    assert _git(root, "branch", "--list").stdout == branches
+    assert not (root / "state" / "worktrees").exists()
+    assert not (root / ".booley" / "worktrees").exists()
+
+
+@_real_script
+def test_booley_dir_ambient_matching_own_directory_is_accepted(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """A Sandbox's ``BOOLEY_DIR`` is an alias of the checkout's own directory."""
+    root = _configured_project(tmp_path, monkeypatch, "state")
+    _write(root / "state" / "booley.toml", "[submodules]\npaths = []\n")
+    alias = tmp_path / "booley-project"
+    alias.symlink_to(root / "state", target_is_directory=True)
+    monkeypatch.setenv("BOOLEY_DIR", str(alias))
+
+    assert _new("demo", root) == 0
+
+    assert capsys.readouterr().out == f"{root / 'state' / 'worktrees' / 'demo'}\n"
+    # Paths recorded by Git never spell the alias.
+    worktree = root / "state" / "worktrees" / "demo"
+    assert str(alias) not in (worktree / ".git").read_text(encoding="utf-8")
+    assert str(alias) not in _git(root, "worktree", "list", "--porcelain").stdout
+
+
+def test_new_worktree_booley_dir_comes_from_its_own_configuration(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from booley.runtime.worktree_paths import main
+
+    root = _configured_project(tmp_path, monkeypatch, "state")
+
+    assert main([str(root)]) == 0
+    assert capsys.readouterr().out == "state\n"
+    _write(root / "booley.toml", f'[project]\ndir = "{(tmp_path / "external").as_posix()}"\n')
+    assert main([str(root)]) == 1
+    assert "relative [project].dir" in capsys.readouterr().err
+    assert main([str(root), "--ambient"]) == 1
+    assert main([]) == 2
+    assert "usage" in capsys.readouterr().err
+
+
+@_real_script
+def test_new_worktree_resolves_its_own_booley_dir(tmp_path, monkeypatch, capsys) -> None:
+    """A ``<branch>--<desc>`` worktree may carry another ``[project].dir`` than main."""
+    root = _configured_project(tmp_path, monkeypatch, "state")
+    _write(root / "state" / "booley.toml", "[submodules]\npaths = []\n")
+    for branch, directory in (("relocated", "other"), ("external", (tmp_path / "x").as_posix())):
+        assert _git(root, "checkout", "-q", "-b", branch).returncode == 0
+        _write(root / "booley.toml", f'[project]\ndir = "{directory}"\n')
+        assert _git(root, "commit", "-qam", branch).returncode == 0
+        assert _git(root, "checkout", "-q", "-").returncode == 0
+
+    assert _new("relocated--try", root) == 0
+    worktree = root / "state" / "worktrees" / "relocated--try"
+    assert capsys.readouterr().out == f"{worktree}\n"
+    assert (worktree / "other" / "booley.toml").is_file()
+    assert not (worktree / "state").exists()
+
+    assert _new("external--try", root) == 1
+    assert "relative [project].dir" in capsys.readouterr().err
+    assert not (root / "state" / "worktrees" / "external--try").exists()
+    assert (
+        str(root / "state" / "worktrees" / "external--try")
+        not in _git(root, "worktree", "list", "--porcelain").stdout
+    )
+
+
+def test_default_booley_dir_may_be_absent(tmp_path, monkeypatch) -> None:
+    """Only a configured Booley Directory must exist: an absent default stays creatable."""
+    from booley.runtime.worktree_paths import worktree_booley_dir
+
+    root = _configured_project(tmp_path, monkeypatch, ".booley")
+
+    assert worktree_booley_dir(root).as_posix() == ".booley"
+
+
+@pytest.fixture
+def relocated_versioned_project(tmp_path, monkeypatch):
+    """A Stealth outer repository whose Versioned Booley Directory lives at ``state``."""
+    from booley.runtime.project_gitignore import PROJECT_GITIGNORE
+    from tests.goals.conftest import git
+    from tests.goals.stealth_support import CORE
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    root = tmp_path / "relocated" / "main"
+    root.mkdir(parents=True)
+    git(root, "init", "-q", "-b", "main")
+    _write(root / "rtl.v", "module top; endmodule\n")
+    _write(root / "booley.toml", '[project]\ndir = "state"\n')
+    git(root, "add", ".")
+    git(root, "commit", "-qm", "RTL")
+    _write(root / ".git/info/exclude", "/state\n")
+    source = root / "state"
+    _write(source / ".gitignore", PROJECT_GITIGNORE)
+    _write(
+        source / "booley.toml",
+        "[agent.git]\nname='Worktree Test'\nemail='wt@test.invalid'\n",
+    )
+    _write(source / "cores/top.core", CORE)
+    git(source, "init", "-q", "-b", "main")
+    git(source, "add", ".")
+    git(source, "commit", "-qm", "Project")
+    return root
+
+
+@_real_script
+def test_relocated_versioned_booley_dir_pairs_inside_worktree(
+    relocated_versioned_project, capsys
+) -> None:
+    from tests.goals.conftest import git
+
+    root = relocated_versioned_project
+    source = root / "state"
+    assert _new("demo", root) == 0
+
+    worktree = root / "state" / "worktrees" / "demo"
+    assert capsys.readouterr().out.startswith(str(worktree))
+    paired = worktree / "state"
+    assert (paired / ".git").is_file()
+    assert git(paired, "symbolic-ref", "--short", "HEAD") == "booley-worktree/demo"
+    assert (root / "state" / "worktrees" / "FUSESOC_IGNORE").is_file()
+    assert not (root / ".booley").exists() and not (worktree / ".booley").exists()
+    assert worktree_cmd._is_named_pair(worktree, "demo")
+    # A second creation refuses and prints removal steps for the relocated pair.
+    assert _new("demo", root) == 1
+    error = capsys.readouterr().err
+    assert shlex.join(["git", "-C", str(source), "worktree", "remove", str(paired)]) in error
+
+
+def test_relocated_pairing_failure_rolls_back_both_repositories(
+    relocated_versioned_project, monkeypatch, capsys
+) -> None:
+    from booley.runtime import project_worktree_pairing as pairing
+    from tests.goals.conftest import git
+
+    root = relocated_versioned_project
+
+    def create(name, project_root, *, paired_project):
+        destination = worktree_cmd.worktree_path(project_root, name)
+        git(project_root, "worktree", "add", "--detach", str(destination), "HEAD")
+
+    def fail(*_args):
+        raise pairing.ProjectPairingError("injected identity failure")
+
+    monkeypatch.setattr(worktree_cmd, "_create_outer", create)
+    monkeypatch.setattr(pairing, "apply_git_identity", fail)
+
+    assert _new("failure", root) == 1
+
+    assert "injected" in capsys.readouterr().err
+    worktree = root / "state" / "worktrees" / "failure"
+    assert not worktree.exists()
+    assert str(worktree) not in git(root, "worktree", "list", "--porcelain")
+    assert str(worktree / "state") not in git(root / "state", "worktree", "list", "--porcelain")
+    assert (
+        _git(
+            root / "state", "show-ref", "--verify", "--quiet", "refs/heads/booley-worktree/failure"
+        ).returncode
+        != 0
+    )

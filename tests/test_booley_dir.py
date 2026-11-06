@@ -9,9 +9,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from booley.runtime.booley_dir import (
+    BooleyDirOutsideCheckoutError,
     booley_dir_for_init,
     checkout_booley_dir_relative_to,
     checkout_runtime_dir,
+    own_booley_dir,
+    own_booley_dir_relative,
     reset_cache,
     resolve_booley_dir,
     resolve_checkout_booley_dir,
@@ -676,3 +679,67 @@ class TestCommonBooleyDir:
         (worktree / ".booley" / "booley.toml").write_text("", encoding="utf-8")
 
         assert _common(worktree) == worktree / ".booley"
+
+
+class TestCheckoutOwnBooleyDir:
+    """``own_booley_dir`` reads one checkout alone, lexically, and never the ambient selection."""
+
+    @staticmethod
+    def _configure(root: Path, text: str) -> None:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "booley.toml").write_bytes(text.encode("utf-8"))
+
+    def test_default_is_dot_booley_even_when_absent(self, tmp_path: Path) -> None:
+        assert own_booley_dir(tmp_path) == tmp_path / ".booley"
+        assert own_booley_dir_relative(tmp_path).as_posix() == ".booley"
+
+    def test_relative_dir_stays_lexical(self, tmp_path: Path) -> None:
+        link = tmp_path / "link"
+        real = tmp_path / "real"
+        real.mkdir()
+        symlink_or_skip(link, real, target_is_directory=True)
+        self._configure(real, '[project]\ndir = "a/../state/sub"\n')
+
+        assert own_booley_dir(link) == link / "state" / "sub"
+        assert own_booley_dir_relative(link).as_posix() == "state/sub"
+
+    def test_ignores_environment_cache_and_ancestors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = tmp_path / "root"
+        self._configure(tmp_path, '[project]\ndir = "ancestor"\n')
+        root.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(elsewhere))
+        (tmp_path / ".booley").mkdir()
+        resolve_booley_dir(tmp_path)  # warms the process cache
+
+        assert own_booley_dir(root) == root / ".booley"
+        self._configure(root, '[project]\ndir = "state"\n')
+        assert own_booley_dir(root) == root / "state"
+
+    @pytest.mark.parametrize(
+        "text",
+        ["INVALID{{{", "[project]\n", '[project]\ndir = ""\n', '[project]\ndir = "a\\u0000"\n'],
+    )
+    def test_unusable_configuration_means_the_default(self, tmp_path: Path, text: str) -> None:
+        self._configure(tmp_path, text)
+
+        assert own_booley_dir(tmp_path) == tmp_path / ".booley"
+
+    @pytest.mark.parametrize("kind", ["absolute", "absolute-inside", "escaping", "root"])
+    def test_relative_form_refuses_a_directory_not_strictly_inside(
+        self, tmp_path: Path, kind: str
+    ) -> None:
+        root = tmp_path / "root"
+        value = {
+            "absolute": (tmp_path / "external").as_posix(),
+            "absolute-inside": (root / "state").as_posix(),
+            "escaping": "../external",
+            "root": ".",
+        }[kind]
+        self._configure(root, f'[project]\ndir = "{value}"\n')
+
+        with pytest.raises(BooleyDirOutsideCheckoutError, match=r"relative \[project\]\.dir"):
+            own_booley_dir_relative(root)

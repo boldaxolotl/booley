@@ -186,3 +186,48 @@ def test_repository_inspection_ignores_foreign_selectors(tmp_path, monkeypatch):
     assert inspect_symbolic_branch(intended).branch == "release/next"
     assert git_directories(intended) == before
     assert Path(run_git(intended, "rev-parse", "--show-toplevel").stdout.strip()) == intended
+
+
+def test_relocated_paired_checkout_prefix_names_the_configured_directory(tmp_path: Path) -> None:
+    from booley.runtime.project_repositories import paired_project_repository
+
+    outer = _repository(tmp_path)
+    (outer / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+    project = tmp_path / "project-repo"
+    project.mkdir()
+    _git(project, "init", "-q")
+    _git(project, "config", "user.name", "Test")
+    _git(project, "config", "user.email", "test@example.invalid")
+    _git(project, "commit", "-q", "--allow-empty", "-m", "base")
+    _git(project, "worktree", "add", "--detach", str(outer / "state"))
+
+    paired = paired_project_repository(outer)
+
+    assert paired is not None
+    assert paired.worktree == outer / "state"
+    assert paired.path_prefix == "state"
+    assert paired.prefixed_path("cores/x") == "state/cores/x"
+    # The default name is not consulted once the directory is relocated.
+    assert not (outer / ".booley").exists()
+
+
+def test_paired_checkout_keeps_the_fixed_name_when_the_configured_directory_is_not_one(
+    tmp_path: Path,
+) -> None:
+    """Pairings made by earlier Booley versions at ``.booley`` stay recognized."""
+    from booley.runtime.project_repositories import paired_project_repository
+
+    outer = _repository(tmp_path)
+    (outer / "booley.toml").write_text('[project]\ndir = "../outside"\n', encoding="utf-8")
+    assert paired_project_repository(outer) is None
+    project = tmp_path / "project-repo"
+    project.mkdir()
+    _git(project, "init", "-q")
+    _git(project, "config", "user.name", "Test")
+    _git(project, "config", "user.email", "test@example.invalid")
+    _git(project, "commit", "-q", "--allow-empty", "-m", "base")
+    _git(project, "worktree", "add", "--detach", str(outer / ".booley"))
+
+    paired = paired_project_repository(outer)
+
+    assert paired is not None and paired.path_prefix == ".booley"
