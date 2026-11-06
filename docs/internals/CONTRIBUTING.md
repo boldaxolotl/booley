@@ -133,7 +133,7 @@ syntax, narrowly reviewed exemptions, and the static-analysis boundary.
 ### Maintainer QA skills
 
 Maintainers may install the repository-owned QA skills from any primary
-Booley source checkout containing all three skills, including from a nested
+Booley source checkout containing all QA skills, including from a nested
 directory. Branch, dirty-tree and installed-version differences do not matter:
 
 ```bash

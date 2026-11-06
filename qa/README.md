@@ -17,8 +17,9 @@ step never hides the bugs behind it.
 | [taxi](missions/taxi/MISSION.md) | Port of the Taxi 10G MAC from a direct clone: setup, baseline, FST and B-Wave, submodule companion Project, mutation testing, two Goals, campaign, cleanup |
 | [uart](missions/uart/MISSION.md) | Clean-room UART from the OpenTitan documentation with an independent evaluator |
 | [coverage](missions/coverage/MISSION.md) | Native coverage on a fixed fixture Project with known counts: collection, arithmetic, policy, waivers, storage, retention, a coverage Goal, the Coverage Analyst |
+| [gui](missions/gui/MISSION.md) | Browser Codespace on the picorv32 demo with a candidate image: onboarding, Dashboard under a live Goal, B-Wave scoped views, stop and resume, terminal output, Review Package, themes, docs site, all checked against the CLI |
 
-Each mission fits an 8-hour budget with areas in priority order. Host and client
+Each mission fits an 8-hour budget (`gui`: 4 hours) with areas in priority order. Host and client
 coverage (Windows, other agent clients) comes from rerunning a mission on that
 host or client.
 
@@ -26,7 +27,7 @@ host or client.
 
 Invoke these explicitly; agents do not start them on their own.
 
-From any primary Booley source checkout containing all three skills (including
+From any primary Booley source checkout containing all QA skills (including
 from a nested directory), a maintainer can install them into Codex and an
 existing distinct Claude skill target. Dirty trees, non-main branches and
 installed-version differences are accepted:
@@ -51,6 +52,7 @@ behavioral guidance, not a security boundary.
 | [`booley-qa-run`](booley-qa-run/SKILL.md) | Run one mission against a Booley build; writes `findings.md`, `log.md`, `resources.md`, `evidence/` |
 | [`booley-qa-triage`](booley-qa-triage/SKILL.md) | Triage findings with the maintainer one cluster at a time: verify against current main, decide, then file issues or fix the mission |
 | [`booley-add-to-qa`](booley-add-to-qa/SKILL.md) | Add a behavior, fault idea, or known trap to a mission |
+| [`booley-gui-check`](booley-gui-check/SKILL.md) | Check one PR's GUI change in a Codespace on its candidate image; posts a screenshot table on the PR and returns pass/fail per step |
 
 ## Other files
 
@@ -61,7 +63,7 @@ behavioral guidance, not a security boundary.
 | [`AREAS.md`](AREAS.md) | Booley capabilities mapped to the mission areas that exercise them |
 | [`missions/`](missions/) | Mission files plus their prompts, Goalsets and ad-hoc Goal lists, fixtures, specs, and evaluators |
 | [`shared/coverage/`](shared/coverage/RUNBOOK.md) | Native-coverage fixture Project, expected values, fault injectors, and evaluator |
-| [`shared/codespaces/`](shared/codespaces/RUNBOOK.md) | Browser-driven Codespace on the picorv32 demo with a candidate image: setup, reading the terminal, GUI-vs-CLI oracles, evidence, cleanup |
+| [`shared/codespaces/`](shared/codespaces/RUNBOOK.md) | Browser-driven Codespace on the picorv32 demo with a candidate image: setup, reading the terminal, GUI-vs-CLI oracles, evidence, cleanup, candidate image deletion; used by the `gui` mission and `booley-gui-check` |
 
 ## Checking changes
 

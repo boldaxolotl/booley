@@ -39,15 +39,21 @@ def _asset_references(text: str) -> set[str]:
 
 
 def test_every_mission_is_present():
-    assert {path.parent.name for path in MISSIONS} == {"coverage", "picorv32", "taxi", "uart"}
+    assert {path.parent.name for path in MISSIONS} == {
+        "coverage",
+        "gui",
+        "picorv32",
+        "taxi",
+        "uart",
+    }
 
 
 @pytest.mark.parametrize("mission", MISSIONS, ids=lambda path: path.parent.name)
 def test_mission_asset_references_exist(mission: Path):
+    text = mission.read_text()
+    links = {link for link in MARKDOWN_LINK.findall(text) if "://" not in link}
     missing = sorted(
-        ref
-        for ref in _asset_references(mission.read_text())
-        if not (mission.parent / ref).exists()
+        ref for ref in _asset_references(text) | links if not (mission.parent / ref).exists()
     )
     assert not missing, f"{mission.relative_to(QA_ROOT)} references missing assets: {missing}"
 
@@ -187,3 +193,65 @@ def test_capability_map_links_resolve_to_mission_areas() -> None:
 def test_qa_skill_names_do_not_overlap_packaged_product_skills() -> None:
     assert all((QA_ROOT / name / "SKILL.md").is_file() for name in QA_SKILL_NAMES)
     assert QA_SKILL_NAMES.isdisjoint(path.name for path in skills_dir().iterdir())
+
+
+AREA_HEADING = re.compile(r"^### (\d+)\. ([\w-]+) — .*\(~(\d+) min", re.MULTILINE)
+
+
+def _areas(mission: Path) -> list[tuple[str, int]]:
+    """Return each area's slug and timebox minutes, in mission order."""
+    text = mission.read_text(encoding="utf-8")
+    headings = AREA_HEADING.findall(text)
+    # Every `###` heading under "## Areas" is an area with a number and a timebox.
+    areas_section = text.split("## Areas", 1)[1].split("\n## ", 1)[0]
+    assert len(headings) == areas_section.count("\n### "), mission
+    assert [int(number) for number, _, _ in headings] == list(range(1, len(headings) + 1))
+    return [(slug, int(minutes)) for _, slug, minutes in headings]
+
+
+@pytest.mark.parametrize("mission", MISSIONS, ids=lambda path: path.parent.name)
+def test_mission_areas_are_numbered_and_timeboxed(mission: Path) -> None:
+    slugs = [slug for slug, _ in _areas(mission)]
+    assert len(slugs) == len(set(slugs)), mission
+
+
+def test_gui_mission_follows_the_shared_runbook_in_issue_order() -> None:
+    mission = QA_ROOT / "missions" / "gui" / "MISSION.md"
+    areas = _areas(mission)
+    assert [slug for slug, _ in areas] == [
+        "setup",
+        "dashboard-default",
+        "dashboard-live",
+        "bwave-gui",
+        "stop-resume",
+        "terminal-output",
+        "goal-finish",
+        "live-preview",
+        "matrix",
+        "docs-site",
+        "cleanup",
+    ]
+    assert sum(minutes for _, minutes in areas) <= 240  # the mission's 4-hour budget
+    text = mission.read_text(encoding="utf-8")
+    assert "](../../shared/codespaces/RUNBOOK.md)" in text
+    # The default-settings pass comes before the runbook's reading-mode step.
+    default_area = text.split("### 2. dashboard-default", 1)[1].split("\n### ", 1)[0]
+    assert default_area.index("Screenshots only") < default_area.index("runbook step 6")
+    assert "Record the switch in `log.md`" in default_area
+
+
+def test_gui_client_moved_from_uart_to_gui() -> None:
+    assert "gui-client" not in (QA_ROOT / "missions" / "uart" / "MISSION.md").read_text()
+    assert "gui-client" not in (QA_ROOT / "AREAS.md").read_text()
+
+
+def test_gui_check_skill_publishes_through_the_guard_and_spares_the_base_image() -> None:
+    skill = " ".join((QA_ROOT / "booley-gui-check" / "SKILL.md").read_text().split())
+    runbook = " ".join((QA_ROOT / "shared" / "codespaces" / "RUNBOOK.md").read_text().split())
+    assert "booley-gui-check" in QA_SKILL_NAMES
+    assert "qa/shared/codespaces/RUNBOOK.md" in skill
+    assert "publish-pr comment" in skill
+    assert "pr-<n>/<sha>" in skill
+    # Check steps exist before any Codespace does.
+    assert skill.index("**Plan the checks.**") < skill.index("**Codespace.**")
+    assert "never anything in `booley-sandbox-base`" in runbook

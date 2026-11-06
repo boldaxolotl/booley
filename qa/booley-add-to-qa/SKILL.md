@@ -27,8 +27,8 @@ run.
    and its timebox; the `AREAS.md` line if a capability is new. Wait for
    approval.
 3. **Apply.** Edit the mission and `AREAS.md`. Keep the mission's areas in
-   priority order and its total timebox within 8 hours; if the addition pushes
-   it over, say which area should shrink. Add any new fixture, prompt, or Goalset
+   priority order and its total timebox within its budget (8 hours; `gui`:
+   4 hours); if the addition pushes it over, say which area should shrink. Add any new fixture, prompt, or Goalset
    file next to the mission and reference it by relative path. Ad-hoc Goal lists
    use `goals/*.json`; shared coverage fixtures belong in
    `qa/shared/coverage/goals/`.

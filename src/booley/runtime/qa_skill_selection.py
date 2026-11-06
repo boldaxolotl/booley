@@ -11,7 +11,9 @@ from uuid import uuid4
 from booley.core.boundary import BoundaryError, require_dict, require_str
 from booley.runtime.checkout_role import is_booley_source_checkout, source_checkout_root
 
-QA_SKILL_NAMES = frozenset({"booley-qa-run", "booley-qa-triage", "booley-add-to-qa"})
+QA_SKILL_NAMES = frozenset(
+    {"booley-qa-run", "booley-qa-triage", "booley-add-to-qa", "booley-gui-check"}
+)
 _STATE_FILENAME = "booley-qa-skills.json"
 
 

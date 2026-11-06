@@ -21,7 +21,7 @@ errors, and friction points as the mission's timebox allows. The mission tells
 you *where* to look; you decide *how* to get there when the documented path
 breaks.
 
-Inputs from the user: a mission name (`picorv32`, `taxi`, `uart`, `coverage` — a directory
+Inputs from the user: a mission name (`picorv32`, `taxi`, `uart`, `coverage`, `gui` — a directory
 under `qa/missions/`), a Booley build (an exact commit or a published version),
 an artifact root, and optionally `smoke` to also run the release smoke list.
 
