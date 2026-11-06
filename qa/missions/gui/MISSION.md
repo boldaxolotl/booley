@@ -24,8 +24,9 @@ against a CLI oracle, or the missing oracle is logged as a gap.
   half an hour of that allowance. Run at most one Goal at a time.
 - Budget: 4 h: 230 area minutes plus 10 contingency, one 4-core Codespace
   (about 4 h of the Free plan's ~30 h). Areas are in priority order. Area 5
-  needs area 3's Goal still running: if area 4 would carry past the Goal's
-  end, run area 5 first and say so in `log.md`.
+  needs area 3's Goal still running, and the Goal (about 30 min) usually ends
+  inside area 3's hour: once the Goal has run about 10 min and the Flow
+  comparisons are done, do area 5, then finish area 3. Log the order.
 
 ## Mission-specific rules
 - **Allowed external actions.** This mission needs some writes that the run
@@ -67,7 +68,8 @@ against a CLI oracle, or the missing oracle is logged as a gap.
 Intent: a new user gets from "Open in Codespaces" to a working Booley without help.
 Try:
 - Runbook steps 1-5 with `<sha>` = the candidate. In the first command
-  terminal, run `touch /tmp/qa-start` (area 8 uses it). Record in `log.md`: click on
+  terminal, run `touch /tmp/qa-start` (area 8 uses it). It lives in the
+  Codespace, not on the host, so the run skill's no-`/tmp` rule doesn't apply. Record in `log.md`: click on
   "Create codespace", state `Available`, trust prompt, Dashboard visible,
   `booley --version` correct, first Flow passing.
 - Follow `START-HERE.md` as a new user would: does it open on its own in the
@@ -174,7 +176,8 @@ Evidence: `bwave-gui-*` screenshots, each with the command and its report as
 
 ### 5. stop-resume — Stop and resume the Codespace mid-Goal (~15 min)
 Intent: Booley state survives a Codespace stop, and the GUI comes back to it.
-Depends on: area 3's Goal still running (see the budget note).
+Depends on: area 3's Goal still running; run it inside area 3 (see the
+budget note).
 Try:
 - Note `booley goal status --long`, the Job records and the Dashboard. Stop
   the Codespace with `gh codespace stop --codespace <name>` and time it.

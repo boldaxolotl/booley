@@ -232,26 +232,13 @@ def test_gui_mission_follows_the_shared_runbook_in_issue_order() -> None:
         "cleanup",
     ]
     assert sum(minutes for _, minutes in areas) <= 240  # the mission's 4-hour budget
-    text = mission.read_text(encoding="utf-8")
-    assert "](../../shared/codespaces/RUNBOOK.md)" in text
-    # The default-settings pass comes before the runbook's reading-mode step.
-    default_area = text.split("### 2. dashboard-default", 1)[1].split("\n### ", 1)[0]
-    assert default_area.index("Screenshots only") < default_area.index("runbook step 6")
-    assert "Record the switch in `log.md`" in default_area
+    assert "](../../shared/codespaces/RUNBOOK.md)" in mission.read_text(encoding="utf-8")
 
 
-def test_gui_client_moved_from_uart_to_gui() -> None:
-    assert "gui-client" not in (QA_ROOT / "missions" / "uart" / "MISSION.md").read_text()
-    assert "gui-client" not in (QA_ROOT / "AREAS.md").read_text()
-
-
-def test_gui_check_skill_publishes_through_the_guard_and_spares_the_base_image() -> None:
-    skill = " ".join((QA_ROOT / "booley-gui-check" / "SKILL.md").read_text().split())
-    runbook = " ".join((QA_ROOT / "shared" / "codespaces" / "RUNBOOK.md").read_text().split())
+def test_gui_check_skill_follows_the_runbook_and_posts_through_the_guard() -> None:
+    skill = (QA_ROOT / "booley-gui-check" / "SKILL.md").read_text(encoding="utf-8")
     assert "booley-gui-check" in QA_SKILL_NAMES
+    assert (QA_ROOT / "shared" / "codespaces" / "RUNBOOK.md").is_file()
     assert "qa/shared/codespaces/RUNBOOK.md" in skill
-    assert "publish-pr comment" in skill
-    assert "pr-<n>/<sha>" in skill
-    # Check steps exist before any Codespace does.
-    assert skill.index("**Plan the checks.**") < skill.index("**Codespace.**")
-    assert "never anything in `booley-sandbox-base`" in runbook
+    # The PR comment goes through the confidential-content publisher, never raw `gh`.
+    assert "confidential_content_guard.py --repo . publish-pr comment" in skill

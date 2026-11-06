@@ -11,7 +11,8 @@ guidance for clients without enforceable invocation metadata.
 Before acting, resolve the real path of this loaded `SKILL.md` (following the
 installed link). Its parent is the skill directory, its grandparent is `qa/`,
 and the parent of `qa/` is the source checkout. Require that source to be a
-clean primary checkout on `main`, with `.git` as a directory; stop with
+clean primary checkout, with `.git` as a directory, on `main` unless the caller
+named an unreleased copy (below), which may be on any clean branch; stop with
 restore/re-enable guidance otherwise. The installed `booley` revision does not
 matter: the check runs the PR's own image. Resolve every input below from that
 source checkout, never from the process working directory.
@@ -59,11 +60,13 @@ Create `<artifact-root>/gui-check-pr<n>-<UTC yyyymmddThhmmssZ>-<short>/` with
    under "Not checked" with the reason. With no closing issue
    (`gh pr view <n> --json closingIssuesReferences` is empty), take the
    criteria from the PR body and say so in `checks.md` and the comment.
-2. **Image.** Runbook step 2. For an open PR, `<sha>` is its head. For a
-   merged one, use `main` (its change is there; say so in the comment): reuse
-   or dispatch a candidate run on `main`, and `<sha>` is that run's `headSha`,
-   since `main` can move during the check. With no candidate run, dispatch on
-   the PR's head branch, or on `main` for a merged PR. Candidate builds reuse the base image published from
+2. **Image.** Runbook steps 1-2. For an open PR, `<sha>` is its head. A PR
+   from a fork can't be dispatched here: stop and return `blocked: fork PR`.
+   For a merged PR, check `main` instead (its change is there; say so in the
+   comment): fix `<sha>` once with `gh api repos/boldaxolotl/booley/commits/main
+   --jq .sha` before the runbook's run lookup, and keep it even if `main` moves
+   during the check. With no candidate run for `<sha>`, dispatch on the PR's
+   head branch, or on `main` for a merged PR. Candidate builds reuse the base image published from
    `main`, so a PR head whose base image differs from `main`'s fails within a
    minute at "Resolve compatible stable runtime base" (`label mismatch`). Then
    stop and return `blocked: rebase the PR onto main`. Record in `log.md`
@@ -110,7 +113,8 @@ Create `<artifact-root>/gui-check-pr<n>-<UTC yyyymmddThhmmssZ>-<short>/` with
      and the head SHA checked;
    - a table with step, expected, seen, pass (one row per `checks.md` step);
    - the screenshots, each under its step number;
-   - the image tag, the Codespace machine type, and the timings from step 3;
+   - the image tag (noting that step 6 deleted it, if it did), the Codespace
+     machine type, and the timings from step 3;
    - what was not checked, and why;
    - any kept resources (step 6).
 
