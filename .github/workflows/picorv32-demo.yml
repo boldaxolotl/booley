@@ -33,6 +33,7 @@ on:
       - "src/booley/dev_support/commit_msg_utils.py"
       - "src/booley/dev_support/demo_contract.py"
       - "src/booley/dev_support/demo_contract_codec.py"
+      - "src/booley/dev_support/mutation_*.py"
       - "src/booley/dev_support/toolchain_provenance.py"
       - "src/booley/dev_support/validate_commit_msg.py"
       - "src/booley/eda/**"

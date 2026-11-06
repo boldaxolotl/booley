@@ -102,6 +102,7 @@ def test_pull_requests_run_demo_only_for_its_real_inputs() -> None:
     assert "src/booley/**" not in paths
     assert {
         "src/booley/dev_support/demo_contract.py",
+        "src/booley/dev_support/mutation_*.py",
         "src/booley/feedback/**",
         "src/booley/harness/**",
         "src/booley/projects/**",

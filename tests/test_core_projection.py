@@ -20,6 +20,7 @@ from booley.fusesoc.core_projection import (
     projection_issues,
     reconcile_isolated_registry,
     reconcile_projected_cores,
+    render_private_mirror,
 )
 from tests.conftest import symlink_or_skip
 from tests.fusesoc_test_support import symlinked_booley_dir
@@ -384,3 +385,58 @@ def test_isolated_registry_keeps_files_below_symlinked_booley_dir_lexical(
     # The ``..`` route into the target is not the entry: it keeps its physical path.
     assert text.count((external.resolve() / "sim" / "main.cc").as_posix()) == 1
     assert outside.resolve().as_posix() in text
+
+
+def test_private_mirror_names_in_checkout_files_relatively(tmp_path: Path) -> None:
+    root, core = _project(tmp_path)
+    (root / "rtl" / "inc").mkdir(parents=True)
+    (root / "rtl" / "demo.sv").write_text("module demo; endmodule\n", encoding="utf-8")
+    (root / "rtl" / "inc" / "defs.svh").write_text("`define X 1\n", encoding="utf-8")
+    outside = tmp_path / "outside.sv"
+    outside.write_text("module outside; endmodule\n", encoding="utf-8")
+    symlink_or_skip(root / "rtl" / "ext.sv", outside)
+    core.write_text(
+        "CAPI=2:\n"
+        "name: booley::demo:0\n"
+        "filesets:\n"
+        "  rtl:\n"
+        "    files:\n"
+        "      - rtl/demo.sv\n"
+        "      - rtl/inc/defs.svh: {is_include_file: true, include_path: rtl/inc}\n"
+        "      - rtl/ext.sv\n"
+        f"      - {outside.as_posix()}\n"
+        "      - rtl/missing.sv\n"
+        "targets: {}\n",
+        encoding="utf-8",
+    )
+    (root / ".booley" / "booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
+    )
+    reconcile_isolated_registry(root)
+    shared = {p: p.read_bytes() for p in isolated_registry_root(root).glob("*.core")}
+    mirror_root = tmp_path / "mirror"
+
+    mirrored = render_private_mirror(root, mirror_root)
+
+    (mirror_core,) = mirrored.values()
+    assert mirrored == {core.resolve(): mirror_core}
+    text = mirror_core.read_text(encoding="utf-8")
+    assert "- rtl/demo.sv\n" in text
+    assert "include_path: rtl/inc" in text
+    assert root.resolve().as_posix() not in text
+    # In-checkout files are copied; the link out of the checkout stays absolute and uncopied.
+    assert (mirror_root / "rtl" / "demo.sv").read_text(encoding="utf-8").startswith("module demo")
+    assert (mirror_root / "rtl" / "inc" / "defs.svh").is_file()
+    assert not (mirror_root / "rtl" / "ext.sv").exists()
+    assert not (mirror_root / "rtl" / "missing.sv").exists()
+    # Both the link and the literal absolute name keep pointing outside.
+    assert text.count(outside.resolve().as_posix()) == 2
+    # The shared registry is left exactly as it was.
+    assert {p: p.read_bytes() for p in isolated_registry_root(root).glob("*.core")} == shared
+
+
+def test_private_mirror_refuses_an_existing_mirror_root(tmp_path: Path) -> None:
+    root, _core = _project(tmp_path)
+    (tmp_path / "mirror").mkdir()
+    with pytest.raises(FileExistsError):
+        render_private_mirror(root, tmp_path / "mirror")
