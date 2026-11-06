@@ -474,7 +474,7 @@ def _run_model_probes(project, monkeypatch, *, refused=(), light=None):
         return usage
 
     monkeypatch.setattr(developer_probe, "measure_developer_rss", measure)
-    monkeypatch.setattr(developer_probe, "probe_model_access", probe)
+    monkeypatch.setattr(developer_probe, "probe_model_access", probe, raising=False)
     reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
     doctor._track_developer_probe(project, reporter, tracker)
     return probed, reporter, tracker
@@ -636,6 +636,7 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
         developer_probe,
         "probe_model_access",
         lambda *_args, **_kw: developer_probe.ProbeUsage(1, 0, 1, 0.0),
+        raising=False,
     )
     return audit
 

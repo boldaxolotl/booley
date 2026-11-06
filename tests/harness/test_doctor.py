@@ -924,7 +924,7 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
         return developer_probe.ProbeUsage(1, 0, 1, 0.0)
 
     monkeypatch.setattr(developer_probe, "measure_developer_rss", measure)
-    monkeypatch.setattr(developer_probe, "probe_model_access", probe)
+    monkeypatch.setattr(developer_probe, "probe_model_access", probe, raising=False)
     doctor.run_doctor_result(
         argparse.Namespace(verbose=False, deep=deep), tmp_path, record_clean=False
     )
