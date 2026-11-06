@@ -548,6 +548,65 @@ def test_bundled_vaporview_vsix_stays_in_lockstep_with_the_verified_build() -> N
     _source_tag_names_version(dockerfile, "VAPORVIEW")
 
 
+@pytest.mark.parametrize("recipe", [_DOCKERFILE, _WHEEL_DOCKERFILE], ids=lambda p: p.name)
+def test_overlay_patches_the_bundled_vaporview_vsix_after_installing_booley(recipe: Path) -> None:
+    """#2701: the VSIX is patched at build time, so no container installs it unpatched.
+
+    It needs the installed wheel (the patch logic ships in it) and root (the
+    VSIX and its license directory are root-owned).
+    """
+    instructions = logical_instructions(recipe.read_text(encoding="utf-8"))
+    patches = [
+        i
+        for i in instructions
+        if i.keyword == "RUN" and "booley.runtime.vaporview_vsix" in i.value
+    ]
+    assert len(patches) == 1
+    patch = patches[0]
+    assert re.search(r"\bpython3? -I -m booley\.runtime\.vaporview_vsix$", patch.value)
+    wheel_install = next(
+        i
+        for i in instructions
+        if i.keyword == "RUN" and "pip install" in i.value and "$WHEEL" in i.value
+    )
+    assert wheel_install.line < patch.line
+    user = [i.value for i in instructions if i.keyword == "USER" and i.line < patch.line]
+    assert user[-1] == "root"
+
+
+def test_overlay_rewrites_the_base_vaporview_source_notice() -> None:
+    """The base's SOURCE.txt wording stays one the overlay can correct (#2701).
+
+    The overlay ships a modified VSIX, so the base's "redistributed unmodified"
+    claim must be rewritten; a reworded base recipe would fail the image build.
+    """
+    from booley.runtime import vaporview_vsix
+
+    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+    region = dockerfile[dockerfile.index("ARG VAPORVIEW_VERSION=") :]
+    region = region[: region.index("SOURCE.txt \\")]
+    printed = region[region.index("printf '%s\\n'") :]
+    lines = re.findall(r'^\s+"(.*)" \\$', printed, re.MULTILINE)
+    defaults = {
+        argument.name: argument.default
+        for argument in dockerfile_syntax.build_arguments(dockerfile)
+        if argument.default is not None
+    }
+    text = "".join(
+        re.sub(r"\$\{(\w+)\}", lambda match: defaults[match.group(1)], line) + "\n"
+        for line in lines
+    )
+    assert "Redistributed unmodified" in text
+
+    rewritten = vaporview_vsix.rewrite_source_notice(text, "f" * 64)
+
+    assert "unmodified" not in rewritten
+    assert "attach hook" not in rewritten
+    assert _base_build_arg(dockerfile, "VAPORVIEW_SHA256") in rewritten
+    assert "Corresponding source: https://github.com/Lramseyer/vaporview" in rewritten
+    assert f"(sha256 {'f' * 64})" in rewritten
+
+
 def _bundled_vsix_install_targets(dockerfile: str) -> set[str]:
     """Every VSIX path the base recipe installs, with ``ARG`` defaults substituted."""
     defaults = {
