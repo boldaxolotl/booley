@@ -27,6 +27,7 @@ from booley.evidence.fields import (
 from booley.evidence.timing import ClockTiming, make_clock_timing
 from booley.flows import run_evidence
 from booley.flows.base import SubprocessResult
+from booley.flows.eda_failures import first_tool_diagnostic
 from booley.flows.fpga.backends.vivado import cache as fpga_cache
 from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics, _metrics_detail
 from booley.flows.fpga.flow import FpgaImplFlow, _PreparedFpgaCommand, _vlogdefine_args
@@ -1862,7 +1863,87 @@ def test_route_fact_does_not_hide_abnormal_termination(process):
 )
 def test_startup_cause_skips_success_summary_and_echoed_tcl(diagnostic):
     text = '0 Critical Warnings and 0 Errors encountered.\nputs "error"\n' + diagnostic
-    assert FpgaImplFlow._first_startup_cause(text) == diagnostic
+    assert first_tool_diagnostic(text, default="no route completion evidence") == diagnostic
+
+
+_FPGA_MARKER = (
+    "BOOLEY_EDA_FAILURE token=0123456789abcdef0123456789abcdef "
+    "kind=missing_eda_tool stage=vivado subject=vivado"
+)
+
+
+def _run_failing_fpga(tmp_path: Path, state_file: Path, stdout: str, stderr: str):
+    """Run fpga_impl with a mocked failing make invocation; return (result, report)."""
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file)
+    work_root = tmp_path / "wr"
+    with (
+        patch.object(
+            FpgaImplFlow,
+            "_prepare_fpga_command",
+            return_value=_PreparedFpgaCommand(["make", "-C", "wr"], work_root, "", False),
+        ),
+        patch.object(
+            FpgaImplFlow,
+            "_execute_local",
+            return_value=SubprocessResult(returncode=1, stdout=stdout, stderr=stderr),
+        ),
+        patch(
+            "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
+            return_value={"lut_count": 10, "ff_count": 5},
+        ),
+    ):
+        result = flow._run()
+    report = json.loads((tmp_path / "reports" / "fpga_default.json").read_text(encoding="utf-8"))
+    return result, report
+
+
+@pytest.mark.parametrize(
+    ("diagnostic_lines", "cause"),
+    [
+        (
+            "ERROR: [Common 17-69] Command failed: bogus option",
+            "ERROR: [Common 17-69] Command failed: bogus option",
+        ),
+        ("vivado: unrecognized option -bogus", "vivado: unrecognized option -bogus"),
+    ],
+    ids=["error-line", "unrecognized"],
+)
+def test_2808_fpga_failure_text_follows_shared_rules(
+    tmp_path: Path, state_file: Path, diagnostic_lines: str, cause: str
+) -> None:
+    """Issue #2808: FPGA cause skips noise lines and no marker reaches failure text."""
+    result, report = _run_failing_fpga(
+        tmp_path,
+        state_file,
+        stdout=(
+            "make: Entering directory '/wr'\n"
+            f"{_FPGA_MARKER}\n"
+            "/bin/sh: lsb_release: command not found\n"
+            "WARNING: [Vivado 12-584] port foo not found\n"
+        ),
+        stderr=f"{diagnostic_lines}\nmake: *** [Makefile:9: impl] Error 1\n",
+    )
+    assert result.exit_code == EXIT_ERROR
+    assert report["infra_error"] == f"Vivado did not reach route_design: {cause}"
+    assert "BOOLEY_EDA_FAILURE" not in report["metrics"]["failure_output"]
+    assert "BOOLEY_EDA_FAILURE" not in result.report_text
+
+
+def test_2808_fpga_infrastructure_diagnostic_hides_marker(
+    tmp_path: Path, state_file: Path
+) -> None:
+    """Issue #2808: an infrastructure-classified Vivado failure shows no marker line."""
+    result, report = _run_failing_fpga(
+        tmp_path,
+        state_file,
+        stdout=f"{_FPGA_MARKER}\n",
+        stderr="make: vivado: No such file or directory\n",
+    )
+    assert result.exit_code == EXIT_ERROR
+    assert report["infra_error"].startswith("missing tool: vivado")
+    assert "BOOLEY_EDA_FAILURE" not in report["metrics"]["failure_output"]
+    assert "BOOLEY_EDA_FAILURE" not in result.report_text
 
 
 @pytest.mark.parametrize("topology", ["standalone", "linked"])

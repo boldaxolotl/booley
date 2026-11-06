@@ -21,6 +21,25 @@ _MARKER_RE = re.compile(
     r"stage=(?P<stage>[a-z0-9_+-]+) subject=(?P<subject>[A-Za-z0-9_.+/-]+)$",
     re.MULTILINE,
 )
+_MARKER_LINE_RE = re.compile(r"^BOOLEY_EDA_FAILURE\b")
+# Wrapper noise that is never the cause of a tool failure.
+_NOISE_LINE_RE = re.compile(r"^(?:BOOLEY_STAGE:|make:|make\[\d+\]:)")
+# Lines tagged with a non-error severity never name the failure ("WARNING: [..]",
+# "[WARNING STA-1]", "INFO: ...", "CRITICAL WARNING: ...").
+_NON_ERROR_SEVERITY_RE = re.compile(
+    r"^\[?(?:info|warning|critical warning|note)(?=[:\[\]\s])", re.IGNORECASE
+)
+_DIAGNOSTIC_RE = re.compile(
+    r"(?i)(?:^|:\s|\]\s|\[)(?:error|fatal)\b"
+    r"|\bunrecognized (?:option|argument)\b"
+    r"|\bunknown (?:command|option|argument)\b"
+    r"|\bunsupported (?:command|option)\b"
+    r"|\b(?:not found|no such file|permission denied)\b"
+    r"|^usage:"
+    r"|^(?:could not|cannot|failed to|missing)\b"
+    r"|^application-specific initialization failed:"
+)
+_DIAGNOSTIC_CAP = 500
 _MISSING_EXE_PATTERNS = (
     re.compile(
         r"^(?:[\w./-]*(?:sh|bash|dash))(?::\s*(?:line\s+)?\d+)?:\s*"
@@ -79,6 +98,38 @@ def format_missing_eda_tool(executable: str) -> str:
         f"missing tool: {name}. Rebuild the Sandbox Image, then run "
         "`booley doctor` to verify EDA provisioning."
     )
+
+
+def strip_failure_markers(text: str) -> str:
+    """Drop every wrapper failure-marker line; classification reads the raw text."""
+    return "\n".join(line for line in text.splitlines() if not _MARKER_LINE_RE.match(line.strip()))
+
+
+def _is_noise_line(line: str) -> bool:
+    """Return whether a stripped line is wrapper output rather than a tool message."""
+    return (
+        bool(_NOISE_LINE_RE.match(line))
+        or bool(_MARKER_LINE_RE.match(line))
+        or bool(_MISSING_EXE_PATTERNS[0].match(line))
+    )
+
+
+def first_tool_diagnostic(text: str, default: str | None = None) -> str:
+    """Return the first meaningful tool diagnostic, ignoring execution wrappers.
+
+    Skips ``make`` lines, stage and failure markers, incidental shell
+    missing-program lines, and non-error severity lines. With no matching line
+    the result is ``default`` or, when that is ``None``, the first non-noise line
+    (``"no diagnostic available"`` if there is none). Returned lines are capped.
+    """
+    lines = [line for line in (raw.strip() for raw in text.splitlines()) if line]
+    lines = [line for line in lines if not _is_noise_line(line)]
+    for line in lines:
+        if not _NON_ERROR_SEVERITY_RE.match(line) and _DIAGNOSTIC_RE.search(line):
+            return line[:_DIAGNOSTIC_CAP]
+    if default is not None:
+        return default
+    return lines[0][:_DIAGNOSTIC_CAP] if lines else "no diagnostic available"
 
 
 def find_missing_executable(text: str) -> str | None:
@@ -245,7 +296,9 @@ __all__ = [
     "FailureKind",
     "classify_eda_failure",
     "find_missing_executable",
+    "first_tool_diagnostic",
     "format_missing_eda_tool",
     "new_attempt_token",
     "render_failure_marker",
+    "strip_failure_markers",
 ]
