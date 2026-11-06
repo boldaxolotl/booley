@@ -54,15 +54,25 @@ def test_marking_a_draft_ready_starts_ci(name: str) -> None:
     assert pull_request["types"] == PR_TYPES
 
 
-def test_ci_required_skips_only_with_the_gate() -> None:
+def test_every_tests_job_skips_with_the_gated_changes_job() -> None:
     jobs = _load("test.yml")["jobs"]
 
-    # Every Tests job hangs off `changes`, so the gate skips the whole run.
+    # ci-metrics hangs off ci-required, whose own `if` (pinned in
+    # test_pytest_configuration.py) skips it when `changes` skips.
     for job_name, job in jobs.items():
-        if job_name == "changes":
+        if job_name in {"changes", "ci-metrics"}:
             continue
         needs = job["needs"]
         needs = [needs] if isinstance(needs, str) else needs
-        assert "changes" in needs or needs == ["ci-required"], job_name
-    assert jobs["ci-required"]["if"] == ("always() && needs.changes.result != 'skipped'")
-    assert jobs["ci-metrics"]["if"] == ("always() && needs.ci-required.result != 'skipped'")
+        assert "changes" in needs, job_name
+    assert jobs["ci-metrics"]["needs"] == "ci-required"
+
+
+def test_mergify_never_accepts_a_skipped_ci_required() -> None:
+    # A draft's skipped ci-required satisfies branch protection, so queueing
+    # must keep demanding an explicit success.
+    mergify = yaml.safe_load((WORKFLOWS.parents[1] / ".mergify.yml").read_text(encoding="utf-8"))
+    rule = require_dict(mergify["queue_rules"][0], field="queue_rules[0]")
+
+    for key in ("queue_conditions", "merge_conditions"):
+        assert "check-success = @github-actions/ci-required" in rule[key], key

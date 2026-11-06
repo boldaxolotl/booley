@@ -28,8 +28,8 @@ Queue only a final, non-draft PR targeting `main` after its initial required
 GitHub Actions checks pass. A draft PR runs no `Tests`, so mark it ready
 (`gh pr ready <number>`) and wait for `ci-required` first. Mergify's own
 speculative draft PRs are exempt and always run CI. The authenticated GitHub
-identity needs write permission. Mergify then validates the cumulative candidate against `main` and
-its queue predecessors.
+identity needs write permission. Mergify then validates the cumulative
+candidate against `main` and its queue predecessors.
 
 ```bash
 printf '%s' '@mergifyio queue default' > /tmp/booley-mergify-queue.txt

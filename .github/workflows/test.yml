@@ -1707,6 +1707,9 @@ jobs:
       - bwave-smoke
       - flake-stress
     # Skipped with `changes` on a draft PR; otherwise always resolve status.
+    # Branch protection counts a skipped required check as passing. That is
+    # safe only because drafts cannot merge, marking ready reruns CI, and
+    # Mergify's queue requires check-success (skipped never matches).
     if: always() && needs.changes.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 5
