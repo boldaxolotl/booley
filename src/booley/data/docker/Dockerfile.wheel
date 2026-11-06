@@ -32,6 +32,14 @@ RUN --mount=type=bind,source=dist,target=/tmp/booley-dist,readonly \
 # The sources ship in the wheel; building it needs no npm or Marketplace access.
 RUN python3 -I -m booley.runtime.dashboard_extension
 
+# VaporView compatibility edits (#2701). Patch the substrate's pinned VSIX
+# before any container installs it, so the first window never runs VaporView's
+# desktop theme lookup (upstream Lramseyer/vaporview#207). Patching after
+# install would race the extension's activation. The command fails the build
+# for any VSIX but the verified one, is a no-op on an already-patched VSIX, and
+# updates VaporView's GPL-3.0 notices (in the VSIX and beside its license).
+RUN python3 -I -m booley.runtime.vaporview_vsix
+
 # Install the native binary and create its package-data hard link in this ONE
 # RUN.  An exported layer diff cannot record a hard link whose other name lives
 # in a lower layer, so splitting them (issue #828) stores the bytes twice or

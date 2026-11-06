@@ -56,6 +56,14 @@ RUN --mount=type=bind,source=dist,target=/tmp/booley-dist,readonly \
 # Build the image-local Dashboard extension from the installed wheel sources.
 RUN python -I -m booley.runtime.dashboard_extension
 
+# VaporView compatibility edits (#2701). Patch the base's pinned VSIX before
+# any container installs it, so the first window never runs VaporView's desktop
+# theme lookup (upstream Lramseyer/vaporview#207). Patching after install would
+# race the extension's activation. The command fails the build for any VSIX
+# but the verified one, is a no-op on an already-patched VSIX, and updates
+# VaporView's GPL-3.0 notices (in the VSIX and beside its license).
+RUN python -I -m booley.runtime.vaporview_vsix
+
 # bwave — VCD waveform parser for RTL debug. The native binary is installed
 # OFF PATH, in two places that are one inode:
 #
