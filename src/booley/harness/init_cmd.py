@@ -166,6 +166,7 @@ from booley.runtime.image_lifecycle import (
     PlanAction,
     PreparedConvergence,
     ProjectImageScope,
+    baked_project_requirements,
 )
 from booley.runtime.image_lifecycle import Intent as ImageLifecycleIntent
 from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
@@ -795,38 +796,29 @@ def _load_sandbox_config(toml_path: Path) -> dict:
     return {}
 
 
-def _resolve_baked_requirements(ctx, sandbox: dict) -> tuple[str, list] | None:
-    """Resolve project requirements to bake into the sandbox image.
+def _report_project_requirements(project_root: Path, *, query_base_image: bool) -> None:
+    """Warn about ``pip_requirements`` lines the Project image leaves out (#2574).
 
-    Returns ``(dockerfile_body, kept_requirements)`` or ``None`` when there is
-    nothing to bake (having already emitted the appropriate skip/record).
+    One warning per skipped or dropped line. With ``query_base_image``, also
+    notes kept pins that re-version a package the base image ships; check-only
+    callers pass False so they never run a container.
     """
-    pip_req = sandbox.get("pip_requirements")
-    pip_req_list = [str(x) for x in pip_req] if isinstance(pip_req, list) else None
-    req_files, missing = pi.resolve_requirements(ctx.project_root, pip_req_list)
-    for m in missing:
-        warn(f"[sandbox].pip_requirements: {m} not found — skipping")
-    if not req_files:
-        skip("no [sandbox].pip_requirements to bake — using base sandbox image")
-        ctx.record("project_image", "skip", "no requirements")
-        return None
-
-    rels = ", ".join(p.relative_to(ctx.project_root).as_posix() for p in req_files)
-    info(f"project Python deps from: {rels}")
-
-    body, kept, skipped, dropped_managed = pi.consolidated_requirements(
-        ctx.project_root, req_files
-    )
-    for s in skipped:
-        warn(f"skipping non-bakeable requirement (install at runtime): {s}")
-    for d in dropped_managed:
-        warn(f"dropping pin on Booley-managed package (image version wins): {d}")
-    if not kept:
-        skip("no PyPI-installable requirements to bake — using base sandbox image")
-        ctx.record("project_image", "skip", "only local/editable deps")
-        return None
-    _report_curated_overrides(kept)
-    return body, kept
+    baked = baked_project_requirements(project_root)
+    if baked is None:
+        return
+    _body, kept, skipped, dropped = baked
+    for line in skipped:
+        warn(
+            f"[sandbox].pip_requirements: left out '{line}': it needs files outside "
+            "the requirements file; install it at runtime"
+        )
+    for line in dropped:
+        warn(
+            f"[sandbox].pip_requirements: left out '{line}': Booley manages this "
+            "package, so the image's version wins"
+        )
+    if query_base_image and kept:
+        _report_curated_overrides(kept)
 
 
 def _report_curated_overrides(kept: list[str]) -> None:
@@ -894,8 +886,13 @@ def _step_image_lifecycle(
     *,
     base_result: LifecycleResult | None = None,
     intent: ImageLifecycleIntent | None = None,
+    report_requirements: bool = False,
 ) -> LifecycleResult | None:
-    """Reconcile the authoritative Sandbox Image chain for initialization."""
+    """Reconcile the authoritative Sandbox Image chain for initialization.
+
+    ``report_requirements`` also warns about ``pip_requirements`` lines the
+    image leaves out; only a command that plans the image for the user sets it.
+    """
     ctx.step_banner("Sandbox Image lifecycle")
     intent = intent or (
         ImageLifecycleIntent.CHECK
@@ -906,6 +903,10 @@ def _step_image_lifecycle(
     )
     scope = ProjectImageScope(ctx.project_root, base_result)
     try:
+        if report_requirements:
+            _report_project_requirements(
+                ctx.project_root, query_base_image=intent is not ImageLifecycleIntent.CHECK
+            )
         result = image_lifecycle.reconcile_planned(scope, intent, verbose=ctx.verbose)
     except DockerCapacityError as exc:
         err(f"image-capacity: {exc}")
@@ -960,6 +961,7 @@ def prepare_runtime_image(
     verbose: bool = False,
 ) -> PreparedConvergence:
     """Build and verify refresh candidates without changing managed tags."""
+    _report_project_requirements(project_root, query_base_image=True)
     lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
     info("Refresh plan:")
     for step in lifecycle_plan.steps:
@@ -2259,8 +2261,8 @@ def _reconcile_initialized_image(
     """Reconcile the Project image against Bootstrap's verified host base."""
     base = _usable_bootstrap_base(bootstrap_result) if bootstrap_result else None
     if base is not None:
-        return _step_image_lifecycle(ctx, base_result=base)
-    return _step_image_lifecycle(ctx)
+        return _step_image_lifecycle(ctx, base_result=base, report_requirements=True)
+    return _step_image_lifecycle(ctx, report_requirements=True)
 
 
 def _step_retire_superseded_images(ctx: InitContext, result: LifecycleResult | None) -> None:
