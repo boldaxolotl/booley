@@ -278,6 +278,30 @@ def effective_credential(
     return _native_credential(app, policy, home=home)
 
 
+def login_credential(
+    app: str, policy: str = "auto", *, home: Path | None = None
+) -> EffectiveCredential | None:
+    """The credential *app* is logged in with under *policy*, or ``None``; no network call.
+
+    The one "logged in" rule shared by the in-container registrar and the Specialist
+    model fallback list: ``effective_credential`` minus the registrar's own Codex
+    ``auth.json`` copy of an API key, which is not a visitor's login.
+    """
+    credential = effective_credential(app, policy, home=home)
+    if credential is not None and app == APP_CODEX and credential.mode == MODE_SUBSCRIPTION:
+        # Function-local: incontainer_setup imports this module.
+        from booley.runtime.incontainer_setup import is_registrar_codex_key_file
+
+        if is_registrar_codex_key_file(Path(credential.source)):
+            return None
+    return credential
+
+
+def cli_logged_in(app: str, policy: str = "auto", *, home: Path | None = None) -> bool:
+    """Whether *app* has a login its agents could use under *policy*."""
+    return login_credential(app, policy, home=home) is not None
+
+
 def _native_credential(
     app: str, policy: str, *, home: Path | None = None
 ) -> EffectiveCredential | None:

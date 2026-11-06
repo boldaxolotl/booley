@@ -180,7 +180,7 @@ from booley.targets.selection import (
 )
 
 if TYPE_CHECKING:
-    from booley.config.agent import DeclaredAgent
+    from booley.config.agent import AgentSettings, DeclaredAgent
     from booley.config.agent_app import AgentAppChoice
     from booley.harness import developer_probe
 
@@ -2089,7 +2089,7 @@ def _run_model_access_probes(
     call (host run, auth failure, usage cap) the extra spend is pointless and the check
     stays incomplete.
     """
-    from booley.config.agent import load_agent_settings
+    from booley.config.agent import SPECIALISTS, load_agent_settings
     from booley.harness import developer_probe
 
     if internal_record is None:
@@ -2101,7 +2101,9 @@ def _run_model_access_probes(
         return
     settings = load_agent_settings(project.project_root, booley_dir=project.booley_dir)
     probed_all = True
-    for model, keys in settings.model_settings().items():
+    # model -> verdict; one probe per model even when several [models] lists share it.
+    verdicts: dict[str, _ModelProbe] = {}
+    for model, keys in settings.model_settings(include_lists=False).items():
         cli = settings.cli_for_model_id(model)
         if model == settings.internal_model() or settings.auth_for(cli) == GATEWAY_AUTH:
             continue
@@ -2110,16 +2112,31 @@ def _run_model_access_probes(
             "one provider turn; usually seconds, times out after "
             f"{format_duration(developer_probe.PROBE_TIMEOUT_S)}",
         )
-        if not _probe_one_model(project, reporter, model, keys):
+        if not _probe_one_model(project, reporter, model, keys, verdicts):
             probed_all = False
             break
+    if probed_all:
+        for name in sorted(SPECIALISTS):
+            entries = settings.model_candidates(name)
+            if entries is not None and not _probe_model_list(
+                project, reporter, settings, name, entries, internal_record, verdicts
+            ):
+                probed_all = False
+                break
     tracker.completed("model-access", probed_all)
 
 
-def _probe_one_model(
-    project: ProjectAudit, reporter: _Reporter, model: str, keys: tuple[str, ...]
-) -> bool:
-    """Probe *model*, grade the verdict, and return whether the next model may be probed."""
+@dataclass(frozen=True)
+class _ModelProbe:
+    """The graded result of one trivial provider turn on a Specialist model."""
+
+    outcome: str  # "accepted", "refused", "failed" (FAIL), or "skipped" (inconclusive)
+    message: str = ""
+    fix: str = ""
+
+
+def _run_model_probe(project: ProjectAudit, reporter: _Reporter, model: str) -> _ModelProbe:
+    """Probe *model* once and grade the verdict; spend is recorded on *reporter*."""
     from booley.harness import developer_probe
 
     try:
@@ -2133,18 +2150,110 @@ def _probe_one_model(
                 _AgentCallRecord("model probe", getattr(exc, "usage", None), cause)
             )
         if isinstance(cause, ModelUnavailableError):
-            reporter.fail_(str(cause), _MODEL_REFUSAL_FIX)
-            return True
+            return _ModelProbe("refused", str(cause), _MODEL_REFUSAL_FIX)
         if getattr(exc, "agent_failure", False):
-            reporter.fail_(
+            return _ModelProbe(
+                "failed",
                 f"Specialist model {model} probe could not complete a trivial call: {exc}",
                 "check the provider's error in the harness log",
             )
-        else:
-            reporter.skip_(f"Specialist model {model} probe skipped - {exc}")
-        return False
+        return _ModelProbe("skipped", f"Specialist model {model} probe skipped - {exc}")
     reporter.record_agent_call(_AgentCallRecord("model probe", usage))
-    reporter.pass_(f"Specialist model {model} accepted by the provider ({', '.join(keys)})")
+    return _ModelProbe("accepted")
+
+
+def _probe_one_model(
+    project: ProjectAudit,
+    reporter: _Reporter,
+    model: str,
+    keys: tuple[str, ...],
+    verdicts: dict[str, _ModelProbe],
+) -> bool:
+    """Probe *model*, grade the verdict, and return whether the next model may be probed."""
+    probe = verdicts[model] = _run_model_probe(project, reporter, model)
+    if probe.outcome == "accepted":
+        reporter.pass_(f"Specialist model {model} accepted by the provider ({', '.join(keys)})")
+        return True
+    if probe.outcome == "refused":
+        reporter.fail_(probe.message, probe.fix)
+        return True
+    if probe.outcome == "failed":
+        reporter.fail_(probe.message, probe.fix)
+    else:
+        reporter.skip_(probe.message)
+    return False
+
+
+def _probe_model_list(
+    project: ProjectAudit,
+    reporter: _Reporter,
+    settings: AgentSettings,
+    name: str,
+    entries: tuple[str, ...],
+    internal_record: _AgentCallRecord | None,
+    verdicts: dict[str, _ModelProbe],
+) -> bool:
+    """Walk the hidden ``[models] <name>`` fallback list as a launch would (#2836).
+
+    PASS when the first entry works, WARN naming the skipped or refused entries and the
+    model chosen, FAIL when no entry works. Entries a launch skips make no probe. Returns
+    whether the next list may be probed (``False`` after an inconclusive probe).
+    """
+    from booley.harness import developer_probe
+    from booley.runtime.model_fallback import REASON_REFUSED, entry_skip_reason
+
+    key = f"[models] {name}"
+    passed_over: list[tuple[str, str]] = []
+    for model in entries:
+        reason = entry_skip_reason(settings, model, remembered=False)
+        if reason is not None:
+            passed_over.append((model, reason))
+            continue
+        cli = settings.cli_for_model_id(model)
+        if model == settings.internal_model() and internal_record is not None:
+            # The memory probe already called it: reuse its verdict.
+            refused = isinstance(internal_record.error, ModelUnavailableError)
+            probe = _ModelProbe("refused" if refused else "accepted")
+        elif settings.auth_for(cli) == GATEWAY_AUTH:
+            probe = _ModelProbe("accepted")  # the gateway fixes the model server-side
+        elif model in verdicts:
+            probe = verdicts[model]
+        else:
+            _announce_long_check(
+                f"provider-backed check: Specialist model access probe for {model}",
+                "one provider turn; usually seconds, times out after "
+                f"{format_duration(developer_probe.PROBE_TIMEOUT_S)}",
+            )
+            probe = verdicts[model] = _run_model_probe(project, reporter, model)
+        if probe.outcome == "refused":
+            passed_over.append((model, REASON_REFUSED))
+            continue
+        if probe.outcome != "accepted":
+            if probe.outcome == "failed":
+                reporter.fail_(probe.message, probe.fix)
+            else:
+                reporter.skip_(probe.message)
+            return False
+        if not passed_over:
+            reporter.pass_(f"Specialist model list for {key}: {model} accepted by the provider")
+            return True
+        skipped = "; ".join(f"{item} ({why})" for item, why in passed_over)
+        reporter.warn_(
+            warning(
+                "agent.model-fallback",
+                f"Specialist model list for {key} falls back to {model}: {skipped}.",
+                subject=key,
+            ),
+            "log in to the Agent CLI of the first entry or choose a model the account can use",
+        )
+        return True
+    tried = ", ".join(f"'{item}' ({why})" for item, why in passed_over)
+    reporter.fail_(
+        f"No model in `{key}` could run: {tried}. Set `{key}` to a model the account can use.",
+        _MODEL_REFUSAL_FIX,
+        check_id="agent.model-fallback",
+        subject=key,
+    )
     return True
 
 

@@ -269,3 +269,74 @@ def test_specialists_match_registered_specialist_names():
 def test_models_is_a_recognized_top_level_table():
     audit = project_schema.audit_known_tables({"models": {}})
     assert audit.findings == ()
+
+
+# --- hidden [models] fallback list (#2836, ADR 0084 amendment) -------------------
+
+_MODEL_LIST_SHAPE_ERRORS_FAIL_LOADING_NAMING_KEY_CASES = [
+    pytest.param("reviewer = []", "[models] reviewer is an empty list", id="empty"),
+    pytest.param(
+        "reviewer = [1]", "[models] reviewer entry 1 must be a model ID string", id="integer"
+    ),
+    pytest.param(
+        'reviewer = [["gpt-6-luna"]]',
+        "[models] reviewer entry 1 must be a model ID string",
+        id="nested-list",
+    ),
+    pytest.param(
+        'reviewer = ["claude-opus-5-5", ""]',
+        "[models] reviewer entry 2 must be a model ID string",
+        id="blank",
+    ),
+    pytest.param(
+        'reviewer = ["llama-3"]',
+        "[models] reviewer entry 'llama-3' names no known Agent CLI",
+        id="unknown-prefix",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("line", "fragment"), _MODEL_LIST_SHAPE_ERRORS_FAIL_LOADING_NAMING_KEY_CASES
+)
+def test_model_list_shape_errors_fail_loading_naming_key(tmp_path, line, fragment):
+    """An empty list or a bad entry fails loading and names the ``[models]`` key."""
+    _write_toml(tmp_path, f"[models]\n{line}\n")
+
+    with pytest.raises(BackendConfigError) as excinfo:
+        load_agent_settings(tmp_path)
+
+    assert fragment in str(excinfo.value)
+
+
+def test_model_list_entry_outside_clis_loads(tmp_path):
+    """A list entry whose CLI is not in ``[agent] clis`` loads; a string pin still fails."""
+    _write_toml(
+        tmp_path,
+        '[agent]\ndefault = "claude"\n\n[models]\nreviewer = ["claude-opus-5-5", "gpt-6-luna"]\n',
+    )
+
+    settings = load_agent_settings(tmp_path)
+
+    assert settings.clis == ("claude",)
+    assert settings.model_candidates("reviewer") == ("claude-opus-5-5", "gpt-6-luna")
+    assert settings.model_for_specialist("reviewer") == "claude-opus-5-5"
+    assert settings.cli_for_specialist("reviewer") == "claude"
+    assert settings.model_candidates("mutation_tester") is None
+    assert settings.model_settings()["gpt-6-luna"] == ("[models] reviewer",)
+
+    _write_toml(tmp_path, '[agent]\ndefault = "claude"\n\n[models]\nreviewer = "gpt-6-luna"\n')
+    with pytest.raises(BackendConfigError, match="not in \\[agent\\] clis"):
+        load_agent_settings(tmp_path)
+
+
+def test_model_list_gateway_pin_replaces_codex_entries(tmp_path):
+    """The gateway fixes the model server-side: Codex entries collapse to the pin."""
+    settings = AgentSettings(
+        default_cli="claude",
+        clis=("claude", "codex"),
+        specialist_models={"reviewer": ("gpt-6-luna", "gpt-6-astra", "claude-opus-5-5")},
+        model_pin="gpt-6-luna",
+    )
+
+    assert settings.model_candidates("reviewer") == ("gpt-6-luna", "claude-opus-5-5")

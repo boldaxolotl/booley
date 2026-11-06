@@ -35,7 +35,9 @@ of the multi-CLI epic.
   `BOOLEY_PRIMARY_AUTH=gateway` hand-off, is honored only inside a Sandbox.
 - **The model implies the CLI.** `[models]` has one key per Specialist
   (`reviewer`, `mutation_tester`, `coverage_analyst`). `claude-*` models run on
-  Claude Code and `gpt-*` models on Codex; that CLI must be in `clis`. An
+  Claude Code and `gpt-*` models on Codex; for a string value that CLI must be
+  in `clis` (a list entry outside it loads and is skipped at launch, see the
+  amendment). An
   unknown key, a model with neither prefix, or a CLI outside the set fails
   loading, naming the key. A Specialist without an entry runs on the default
   CLI's built-in Specialist model (`claude-opus-5-5` / `gpt-6.1-sol`, today's
@@ -48,9 +50,9 @@ of the multi-CLI epic.
   CLI); `heavy` and `light` overrides have no equivalent and are dropped.
 - **Strict selection.** A Specialist runs its one resolved model. A model the
   CLI refuses fails the call naming the `[models]` key; no other model is
-  tried. Deep Doctor probes each resolved model through its own CLI. A
-  list-of-models form with fallback is deferred to
-  [#2836](https://github.com/boldaxolotl/booley/issues/2836).
+  tried. Deep Doctor probes each resolved model through its own CLI. The
+  opt-in list form that does fall back is the amendment below
+  ([#2836](https://github.com/boldaxolotl/booley/issues/2836)).
 - **One backend per CLI.** An agent call names its CLI; the runtime builds
   each CLI's backend once, with that CLI's auth policy.
 
@@ -72,7 +74,8 @@ a CLI per tier would still pin all Specialists together.
 **A separate `cli` key per Specialist.** It can disagree with the model; the
 model prefix already names the CLI.
 **Fall back to another model on refusal.** It silently changes what a review
-measured and what it bills; the user decides via the deferred list form.
+measured and what it bills, so a string value never does; only the user's
+opt-in list form (amendment below) falls back, and it records every fallback.
 **Keep `[models.roles]` as an alias.** Two spellings for one setting, one of
 them accepting tier names that no longer exist.
 
@@ -85,3 +88,38 @@ them accepting tier names that no longer exist.
   their config; the error message gives the replacement.
 - `booley init` still records `provider`; it keeps an `[agent.auth]` table it
   finds.
+
+## Amendment (#2836): list fallback
+
+A `[models]` Specialist value may also be a non-empty list of model IDs. The
+form is hidden on purpose: user docs do not mention it. It exists for a Project
+that must work for visitors with different logins, such as the Codespaces demo
+(Claude visitors get Opus; ChatGPT-login Codex visitors, whose accounts refuse
+the larger Codex models, get Luna). A string value is unchanged and never falls
+back.
+
+- **Shape.** Every entry follows the string rules for its prefix: the CLI is
+  inferred from the model ID and an ID with no known CLI fails loading. An
+  empty list or a non-string entry fails loading, naming the key. An entry
+  whose CLI is outside `[agent] clis` still loads, so one list serves visitors
+  whose Agent CLI differs; the launch skips it.
+- **Launch.** Entries are tried in order. An entry is skipped, with no model
+  call, when its Agent CLI has no login (the same rule the Codespaces
+  registrar uses) or is outside `clis`. The first remaining entry runs. Only
+  the model-refusal error moves to the next entry; auth failures, usage
+  limits, transient errors and timeouts propagate as for a string value.
+- **Memory.** A refused entry is remembered for the life of the Python process
+  making the call. Each Specialist launch is its own subprocess, so the memory
+  spans that launch's model calls (mutation rounds, a retried resume), not
+  separate launches; a refused first entry costs one token-free refusal per
+  launch. Carrying it across launches would need server-to-subprocess plumbing
+  and a staleness rule, since a new login can make the model usable.
+- **No usable entry.** The model-refusal error names the key and every entry
+  with its reason (not logged in, not in `clis`, refused by the provider).
+- **Recording.** Every Specialist result carries the model that ran. A
+  fallback adds the first choice and each passed-over entry with its reason to
+  the result detail, a line to the report, and the Criterion evidence, so the
+  Review Package shows it.
+- **Deep Doctor.** It walks each list with the launch rules: PASS when the
+  first entry works, WARN naming the skipped or refused entries and the model
+  chosen, FAIL when none works.

@@ -212,6 +212,7 @@ def _goal_lines(row: dict[str, Any], presenter: Callable[[object], str]) -> list
         lines.append("  Baseline -> final: " + baseline["summary"])
         lines += _attention_lines(baseline)
     detail = selected["detail"]
+    lines += _model_fallback_lines(detail)
     lines += _open_finding_lines(detail)
     if row["original_observations"]:
         if "goal_derivation" in detail:
@@ -228,6 +229,18 @@ def _goal_lines(row: dict[str, Any], presenter: Callable[[object], str]) -> list
             )
         )
     return lines
+
+
+def _model_fallback_lines(detail: dict[str, Any]) -> list[str]:
+    """A note when the Specialist behind the evidence ran on a fallback ``[models]`` entry."""
+    note = detail.get("specialist_model")
+    fallback = note.get("fallback") if isinstance(note, dict) else None
+    if not fallback:
+        return []
+    passed_over = "; ".join(f"{item['model']}: {item['reason']}" for item in fallback["skipped"])
+    return [
+        f"  Model: ran on {note['model']} instead of {fallback['first_choice']} ({passed_over})."
+    ]
 
 
 def _goal_headline(row: dict[str, Any], present: Callable[[object], str]) -> str:

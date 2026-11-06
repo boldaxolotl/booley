@@ -420,7 +420,7 @@ coverage_analyst = "claude-sonnet-5-5"
 """
 
 
-def _model_probe_world(tmp_path, monkeypatch, *, gateway=False):
+def _model_probe_world(tmp_path, monkeypatch, *, gateway=False, config_body=_MODEL_CONFIG):
     """A Sandbox-side Project whose Specialists run on three models across two CLIs.
 
     reviewer on Codex (gpt-6-astra), mutation_tester on Claude's built-in default
@@ -432,7 +432,7 @@ def _model_probe_world(tmp_path, monkeypatch, *, gateway=False):
 
     project = _project(tmp_path)
     config = project.booley_dir / "booley.toml"
-    config.write_text(config.read_text() + _MODEL_CONFIG, encoding="utf-8")
+    config.write_text(config.read_text() + config_body, encoding="utf-8")
     for name in (
         "BOOLEY_PRIMARY_AUTH",
         "BOOLEY_PRIMARY_PROVIDER",
@@ -588,6 +588,95 @@ def test_deep_gateway_routed_codex_model_is_not_probed(tmp_path, monkeypatch):
     probed, _reporter, tracker = _run_model_probes(project, monkeypatch)
 
     assert probed == ["claude-opus-5-5"]  # the gateway fixes gpt-6-astra server-side
+    assert tracker.missing == ()
+
+
+_MODEL_LIST_CONFIG = """
+[agent]
+clis = ["claude", "codex"]
+default = "claude"
+
+[models]
+reviewer = ["claude-opus-5-5", "gpt-6-luna"]
+mutation_tester = ["claude-opus-5-5", "gpt-6-luna"]
+coverage_analyst = ["claude-opus-5-5", "gpt-6-luna"]
+"""
+
+
+def _logged_in(monkeypatch, *clis):
+    """Only *clis* have a login, as the model fallback list sees it."""
+    from booley.runtime import auth_token
+
+    monkeypatch.setattr(
+        auth_token, "cli_logged_in", lambda cli, *_a, **_kw: cli in clis, raising=False
+    )
+
+
+def _list_world(tmp_path, monkeypatch, *clis):
+    _logged_in(monkeypatch, *clis)
+    return _model_probe_world(tmp_path, monkeypatch, config_body=_MODEL_LIST_CONFIG)
+
+
+def test_deep_model_list_passes_when_first_entry_is_accepted(tmp_path, monkeypatch):
+    project = _list_world(tmp_path, monkeypatch, "claude", "codex")
+
+    probed, reporter, tracker = _run_model_probes(project, monkeypatch)
+
+    assert probed == ["claude-opus-5-5"]  # one probe serves all three lists
+    assert _messages(reporter, Severity.FAIL) == []
+    assert _messages(reporter, Severity.WARN) == []
+    passed = _messages(reporter, Severity.PASS)
+    for name in ("reviewer", "mutation_tester", "coverage_analyst"):
+        assert f"Specialist model list for [models] {name}: claude-opus-5-5 accepted" in " ".join(
+            passed
+        )
+    assert tracker.missing == ()
+
+
+def test_deep_model_list_warns_naming_skipped_and_refused_entries(tmp_path, monkeypatch):
+    project = _list_world(tmp_path, monkeypatch, "claude", "codex")
+
+    probed, reporter, tracker = _run_model_probes(
+        project, monkeypatch, refused={"claude-opus-5-5"}
+    )
+
+    assert probed == ["claude-opus-5-5", "gpt-6-luna"]
+    assert _messages(reporter, Severity.FAIL) == []
+    warnings = _messages(reporter, Severity.WARN)
+    assert len(warnings) == 3
+    assert any("[models] reviewer falls back to gpt-6-luna" in w for w in warnings)
+    assert "claude-opus-5-5 (refused by the provider)" in " ".join(warnings)
+    assert tracker.missing == ()
+
+
+def test_deep_model_list_warn_names_an_entry_skipped_without_a_login(tmp_path, monkeypatch):
+    project = _list_world(tmp_path, monkeypatch, "codex")
+
+    probed, reporter, _tracker = _run_model_probes(project, monkeypatch)
+
+    assert probed == ["gpt-6-luna"]  # the Claude entry is skipped with no model call
+    warnings = _messages(reporter, Severity.WARN)
+    assert warnings
+    for warning in warnings:
+        assert "falls back to gpt-6-luna" in warning
+        assert "claude-opus-5-5 (Agent CLI claude is not logged in)" in warning
+    assert _messages(reporter, Severity.FAIL) == []
+
+
+def test_deep_model_list_fails_when_no_entry_works(tmp_path, monkeypatch):
+    project = _list_world(tmp_path, monkeypatch, "claude", "codex")
+
+    probed, reporter, tracker = _run_model_probes(
+        project, monkeypatch, refused={"claude-opus-5-5", "gpt-6-luna"}
+    )
+
+    assert probed == ["claude-opus-5-5", "gpt-6-luna"]
+    failures = _messages(reporter, Severity.FAIL)
+    assert len(failures) == 3
+    reviewer = next(f for f in failures if "`[models] reviewer`" in f)
+    assert "No model in `[models] reviewer` could run" in reviewer
+    assert "'claude-opus-5-5' (refused by the provider)" in reviewer
+    assert "'gpt-6-luna' (refused by the provider)" in reviewer
     assert tracker.missing == ()
 
 

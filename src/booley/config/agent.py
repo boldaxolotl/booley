@@ -129,7 +129,10 @@ class AgentSettings:
     # One auth policy per listed CLI; an unlisted CLI reads as ``auto``.
     auth: Mapping[str, str] = field(default_factory=dict)
     # [models]: Specialist name -> pinned model ID. Absent = the default CLI's built-in model.
-    specialist_models: Mapping[str, str] = field(default_factory=dict)
+    # A ``tuple`` value is the hidden fallback list (ADR 0084 amendment, #2836): models tried
+    # in order at each launch. It is deliberately undocumented for users; a ``str`` is the
+    # strict single pin and never falls back.
+    specialist_models: Mapping[str, str | tuple[str, ...]] = field(default_factory=dict)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     jobs: SlotCaps = field(default_factory=SlotCaps)
     # Gateway-only pins (BOOLEY_GATEWAY_MODEL / _EFFORT) for gateway-routed Codex.
@@ -150,14 +153,40 @@ class AgentSettings:
 
     def cli_for_specialist(self, name: str) -> str:
         """The Agent CLI *name* runs on: its pinned model's CLI, else the default CLI."""
-        pinned = self.specialist_models.get(name)
+        pinned = self._first_pin(name)
         return (pinned and cli_for_model(pinned)) or self.default_cli
 
+    def _first_pin(self, name: str) -> str | None:
+        """The pinned model of *name*; for a fallback list, its first (preferred) entry."""
+        pinned = self.specialist_models.get(name)
+        return pinned[0] if isinstance(pinned, tuple) else pinned
+
     def model_for_specialist(self, name: str) -> str:
-        """The model *name* runs on; a gateway pin replaces it for gateway-routed Codex."""
+        """The model *name* runs on; a gateway pin replaces it for gateway-routed Codex.
+
+        For a fallback list this is the first entry: the configured first choice, used
+        for logging and the initial call parameters. The launch picks the entry that
+        really runs (``booley.runtime.model_fallback``).
+        """
         if self.model_pin and self.cli_for_specialist(name) == "codex":
             return self.model_pin
-        return self.specialist_models.get(name) or _DEFAULT_SPECIALIST_MODEL[self.default_cli]
+        return self._first_pin(name) or _DEFAULT_SPECIALIST_MODEL[self.default_cli]
+
+    def model_candidates(self, name: str) -> tuple[str, ...] | None:
+        """The ordered fallback list of *name*, or ``None`` for a string pin or no pin.
+
+        A gateway pin replaces every Codex entry (the gateway fixes the model
+        server-side); the consecutive duplicates that creates collapse to one.
+        """
+        pinned = self.specialist_models.get(name)
+        if not isinstance(pinned, tuple):
+            return None
+        entries: list[str] = []
+        for pin in pinned:
+            entry = self.model_pin if self.model_pin and cli_for_model(pin) == "codex" else pin
+            if not entries or entries[-1] != entry:
+                entries.append(entry)
+        return tuple(entries)
 
     def cli_for_model_id(self, model: str) -> str:
         """The Agent CLI that serves *model*: the gateway pin runs on Codex, whatever its name."""
@@ -171,15 +200,23 @@ class AgentSettings:
             return self.model_pin
         return _INTERNAL_MODEL[self.default_cli]
 
-    def model_settings(self) -> dict[str, tuple[str, ...]]:
-        """Every distinct Specialist model mapped to the config keys that select it."""
+    def model_settings(self, *, include_lists: bool = True) -> dict[str, tuple[str, ...]]:
+        """Every distinct Specialist model mapped to the config keys that select it.
+
+        A fallback list adds each of its entries under its ``[models] <name>`` key, so a
+        refusal of one entry still names the key to fix; Doctor passes
+        ``include_lists=False`` to walk those lists separately.
+        """
         keys: dict[str, list[str]] = {}
         for name in sorted(SPECIALISTS):
-            model = self.model_for_specialist(name)
-            gateway = bool(self.model_pin) and model == self.model_pin
-            key = GATEWAY_MODEL_ENV if gateway else f"[models] {name}"
-            if key not in keys.setdefault(model, []):
-                keys[model].append(key)
+            candidates = self.model_candidates(name)
+            if candidates is not None and not include_lists:
+                continue
+            for model in candidates or (self.model_for_specialist(name),):
+                gateway = bool(self.model_pin) and model == self.model_pin
+                key = GATEWAY_MODEL_ENV if gateway else f"[models] {name}"
+                if key not in keys.setdefault(model, []):
+                    keys[model].append(key)
         return {model: tuple(names) for model, names in keys.items()}
 
     def effort_for(self, cli: str) -> str | None:
@@ -359,19 +396,48 @@ def _retired_models_error(models: Mapping[str, Any], default_cli: str) -> Backen
     )
 
 
+def _list_entry_model(name: str, value: Any, index: int) -> str:
+    """One fallback-list entry of ``[models] <name>``: a non-empty string with a known prefix."""
+    entry = value.strip() if isinstance(value, str) else ""
+    if not entry:
+        raise BackendConfigError(
+            f"booley.toml [models] {name} entry {index} must be a model ID string, not {value!r}."
+        )
+    if cli_for_model(entry) is None:
+        raise BackendConfigError(
+            f"booley.toml [models] {name} entry {entry!r} names no known Agent CLI: "
+            "claude-* models run on Claude Code and gpt-* models on Codex."
+        )
+    return entry
+
+
 def parse_models_section(
     models: Mapping[str, Any], clis: tuple[str, ...], default_cli: str
-) -> dict[str, str]:
-    """Check ``[models]`` against the listed CLIs; return the Specialist -> model pins."""
+) -> dict[str, str | tuple[str, ...]]:
+    """Check ``[models]`` against the listed CLIs; return the Specialist -> model pins.
+
+    A value is one model ID (strict: its CLI must be in *clis*, no fallback) or the
+    hidden fallback list: a non-empty array of model IDs tried in order at launch
+    (ADR 0084 amendment, #2836; deliberately absent from user docs). A list entry
+    whose Agent CLI is outside *clis* still loads: the launch skips it, which lets
+    one list serve visitors logged in to different Agent CLIs.
+    """
     if {"heavy", "standard", "light", "roles"} & set(models):
         raise _retired_models_error(models, default_cli)
-    pins: dict[str, str] = {}
+    pins: dict[str, str | tuple[str, ...]] = {}
     for name, value in models.items():
         if name not in SPECIALISTS:
             raise BackendConfigError(
                 f"booley.toml [models] has an unknown key {name!r}; "
                 f"valid keys are {', '.join(sorted(SPECIALISTS))}."
             )
+        if isinstance(value, list):
+            if not value:
+                raise BackendConfigError(
+                    f"booley.toml [models] {name} is an empty list; list at least one model ID."
+                )
+            pins[name] = tuple(_list_entry_model(name, item, i) for i, item in enumerate(value, 1))
+            continue
         model = value.strip() if isinstance(value, str) else ""
         cli = cli_for_model(model)
         if cli is None:

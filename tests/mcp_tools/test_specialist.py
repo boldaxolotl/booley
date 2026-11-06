@@ -295,6 +295,249 @@ def test_refused_model_raises_refusal_and_tries_no_other_model(
     assert "model_not_found" not in report
 
 
+# --- hidden [models] fallback list (#2836, ADR 0084 amendment) ---------------------
+
+
+def _launch_finalized(endpoint: Specialist, tmp_path: Path) -> McpToolResult:
+    """``_launch`` plus the finalization every executed Specialist result goes through."""
+    result = _launch(endpoint, tmp_path)
+    endpoint._finalize_result(result)
+    return result
+
+
+_OPUS_THEN_LUNA = ("claude-opus-5-5", "gpt-6-luna")
+
+
+def _refusal_memory() -> dict:
+    """The process refusal memory of the model fallback list (empty if the module is absent)."""
+    try:
+        from booley.runtime import model_fallback
+    except ImportError:
+        return {}
+    return model_fallback._REFUSED
+
+
+@pytest.fixture
+def logins(monkeypatch):
+    """Set which Agent CLIs have a login; the process refusal memory starts empty."""
+    from booley.runtime import auth_token
+
+    logged_in: set[str] = set()
+    monkeypatch.setattr(
+        auth_token, "cli_logged_in", lambda cli, *_a, **_kw: cli in logged_in, raising=False
+    )
+    refused = _refusal_memory()
+    refused.clear()
+    yield logged_in
+    refused.clear()
+
+
+def _list_settings(models=_OPUS_THEN_LUNA, *, clis=("claude", "codex"), default="claude"):
+    from booley.config.agent import AgentSettings
+
+    return AgentSettings(
+        default_cli=default,
+        clis=clis,
+        auth={"claude": "subscription", "codex": "api_key"},
+        specialist_models={"reviewer": tuple(models)},
+    )
+
+
+def _refuse_model(refused: str):
+    """A backend reply that refuses *refused* as the real backends do, else approves."""
+    from booley.core.models import AgentResult
+    from booley.runtime.agent_errors import model_unavailable_error
+
+    def respond(params: AgentCallParams):
+        if params.model == refused:
+            cli = "claude" if refused.startswith("claude-") else "codex"
+            raise model_unavailable_error(params.model, cli, "model_not_found")
+        return AgentResult(structured={"approved": True})
+
+    return respond
+
+
+@pytest.mark.parametrize(
+    ("logged_in", "clis", "default"),
+    [
+        pytest.param({"codex"}, ("claude", "codex"), "claude", id="claude-not-logged-in"),
+        pytest.param({"claude", "codex"}, ("codex",), "codex", id="claude-not-in-clis"),
+    ],
+)
+def test_model_list_skips_entry_whose_cli_cannot_run(
+    tmp_path: Path, per_cli_backends, logins, logged_in, clis, default
+) -> None:
+    logins.update(logged_in)
+    _built, calls = per_cli_backends(_list_settings(clis=clis, default=default))
+
+    result = _launch_finalized(_named("reviewer"), tmp_path)
+
+    assert result.exit_code == EXIT_SUCCESS
+    # No model call for the skipped Claude entry; the reviewer runs on Luna with Codex's effort.
+    assert [(cli, params.model, params.reasoning_effort) for cli, params in calls] == [
+        ("codex", "gpt-6-luna", "high")
+    ]
+    note = result.detail["specialist_model"]
+    assert note["model"] == "gpt-6-luna"
+    assert note["fallback"]["first_choice"] == "claude-opus-5-5"
+
+
+def test_model_list_runs_first_entry_when_both_clis_are_logged_in(
+    tmp_path: Path, per_cli_backends, logins
+) -> None:
+    logins.update({"claude", "codex"})
+    _built, calls = per_cli_backends(_list_settings())
+
+    result = _launch_finalized(_named("reviewer"), tmp_path)
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert [(cli, params.model) for cli, params in calls] == [("claude", "claude-opus-5-5")]
+    assert result.detail["specialist_model"] == {"model": "claude-opus-5-5", "agent_cli": "claude"}
+    assert "Ran on" not in result.report_text
+
+
+def test_model_list_refusal_moves_on_and_is_remembered(
+    tmp_path: Path, per_cli_backends, logins
+) -> None:
+    logins.update({"claude", "codex"})
+    _built, calls = per_cli_backends(_list_settings(), respond=_refuse_model("claude-opus-5-5"))
+
+    first = _launch_finalized(_named("reviewer"), tmp_path)
+    second = _launch_finalized(_named("reviewer"), tmp_path)
+
+    assert first.exit_code == EXIT_SUCCESS and second.exit_code == EXIT_SUCCESS
+    # The refused entry is called once; the second launch goes straight to Luna.
+    assert [(cli, params.model) for cli, params in calls] == [
+        ("claude", "claude-opus-5-5"),
+        ("codex", "gpt-6-luna"),
+        ("codex", "gpt-6-luna"),
+    ]
+    fallback = second.detail["specialist_model"]["fallback"]
+    assert fallback["skipped"] == [
+        {
+            "model": "claude-opus-5-5",
+            "reason": "refused by the provider earlier in this process",
+        }
+    ]
+
+
+def _non_refusal_errors():
+    from booley.runtime.agent_errors import (
+        AgentAuthError,
+        AgentTimeoutError,
+        TransientAPIError,
+        UsageLimitError,
+    )
+
+    return [
+        AgentAuthError("401 unauthorized", "claude"),
+        UsageLimitError("usage limit reached", "claude"),
+        TransientAPIError("529 overloaded"),
+        AgentTimeoutError("deadline reached"),
+    ]
+
+
+@pytest.mark.parametrize("index", range(4), ids=["auth", "usage-limit", "transient", "timeout"])
+def test_model_list_non_refusal_errors_do_not_try_next_entry(
+    tmp_path: Path, per_cli_backends, logins, index
+) -> None:
+    logins.update({"claude", "codex"})
+    error = _non_refusal_errors()[index]
+
+    def fail(_params: AgentCallParams):
+        raise error
+
+    _built, calls = per_cli_backends(_list_settings(), respond=fail)
+
+    result = _launch_finalized(_named("reviewer"), tmp_path)
+
+    assert result.exit_code == 2
+    assert [(cli, params.model) for cli, params in calls] == [("claude", "claude-opus-5-5")]
+    assert type(error).__name__ in result.report_text
+
+
+def test_model_list_without_usable_entry_names_each_entry_and_reason(
+    tmp_path: Path, per_cli_backends, logins
+) -> None:
+    logins.update({"codex"})  # Claude has no login; Luna is refused
+    _built, calls = per_cli_backends(_list_settings(), respond=_refuse_model("gpt-6-luna"))
+
+    result = _launch_finalized(_named("reviewer"), tmp_path)
+
+    assert result.exit_code == 2
+    assert [(cli, params.model) for cli, params in calls] == [("codex", "gpt-6-luna")]
+    report = result.report_text
+    assert report.startswith("reviewer failed: ModelUnavailableError: ")
+    assert "'claude-opus-5-5' (Agent CLI claude is not logged in)" in report
+    assert "'gpt-6-luna' (refused by the provider)" in report
+    assert "`[models] reviewer`" in report
+    assert "Protected Input" in report
+
+
+def test_single_model_value_ignores_list_memory_and_never_falls_back(
+    tmp_path: Path, per_cli_backends, logins
+) -> None:
+    from booley.config.agent import AgentSettings
+
+    logins.update({"claude", "codex"})
+    # A list refuses Luna first, so the process remembers Luna as refused ...
+    _built, list_calls = per_cli_backends(
+        _list_settings(("gpt-6-luna", "claude-opus-5-5")), respond=_refuse_model("gpt-6-luna")
+    )
+    assert _launch(_named("reviewer"), tmp_path).exit_code == EXIT_SUCCESS
+    assert [(cli, params.model) for cli, params in list_calls] == [
+        ("codex", "gpt-6-luna"),
+        ("claude", "claude-opus-5-5"),
+    ]
+
+    # ... yet a string pin for Luna still calls it once, and its refusal tries nothing else.
+    earlier = len(list_calls)  # the fixture's call log is shared across installs
+    _built, calls = per_cli_backends(
+        AgentSettings(
+            default_cli="claude",
+            clis=("claude", "codex"),
+            specialist_models={"reviewer": "gpt-6-luna"},
+        ),
+        respond=_refuse_model("gpt-6-luna"),
+    )
+    result = _launch_finalized(_named("reviewer"), tmp_path)
+
+    assert [(cli, params.model) for cli, params in calls[earlier:]] == [("codex", "gpt-6-luna")]
+    assert result.exit_code == 2
+    assert result.report_text.startswith("reviewer failed: ModelUnavailableError: ")
+    assert "specialist_model" not in result.detail
+
+
+def test_specialist_result_and_evidence_record_model_and_fallback(
+    tmp_path: Path, per_cli_backends, logins
+) -> None:
+    from booley.flows.endpoint_state import EndpointState
+
+    logins.update({"codex"})
+    _built, _calls = per_cli_backends(_list_settings())
+    endpoint = _named("reviewer")
+
+    result = _launch_finalized(endpoint, tmp_path)
+
+    expected = {
+        "model": "gpt-6-luna",
+        "agent_cli": "codex",
+        "fallback": {
+            "first_choice": "claude-opus-5-5",
+            "skipped": [
+                {"model": "claude-opus-5-5", "reason": "Agent CLI claude is not logged in"}
+            ],
+        },
+    }
+    assert result.detail["specialist_model"] == expected
+    assert "Ran on gpt-6-luna instead of claude-opus-5-5" in result.report_text
+    # The Criterion evidence (what the Review Package copies) carries the same note.
+    detail: dict = {"specialist_model": {"model": "stale"}}
+    with patch.object(EndpointState, "set_criterion") as base:
+        endpoint.set_criterion("review_rtl_bugs_done", True, detail=detail)
+    assert base.call_args.kwargs["detail"]["specialist_model"] == expected
+
+
 class TestTranscriptPath:
     def test_transcript_path_created(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
