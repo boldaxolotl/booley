@@ -884,7 +884,11 @@ class TestCallAgent:
         from booley.runtime.agent_backend import CodexBackend
         from booley.runtime.agent_config import BackendConfig, set_backend_config
 
-        set_backend_config(BackendConfig(settings=AgentSettings(), active_backend=CodexBackend()))
+        set_backend_config(
+            BackendConfig(
+                settings=AgentSettings(default_cli="codex"), active_backend=CodexBackend()
+            )
+        )
 
     @staticmethod
     def _codex_process(*, returncode: int, stdout: bytes = b"", stderr: bytes = b""):

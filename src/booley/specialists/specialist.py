@@ -1,8 +1,7 @@
 """Specialist — McpTool subclass for LLM-powered operations.
 
-Handles provider selection from booley.toml, --model tier resolution
-with per-Specialist floor enforcement, prompt construction, and transcript
-capture. Reuses the existing agent.py / _claude_backend.py /
+Handles Agent CLI and model selection from booley.toml ([models] pins), prompt
+construction, and transcript capture. Reuses the existing agent.py / _claude_backend.py /
 _codex_backend.py infrastructure.
 
 Code-modifying Specialists: subclasses that set ``code_modifying = True`` can
@@ -58,15 +57,6 @@ from .specialist_workspace import (
 
 logger = logging.getLogger(__name__)
 
-# Tier ranking for floor enforcement (higher = more capable)
-TIER_RANK: dict[str, int] = {
-    "light": 0,
-    "standard": 1,
-    "heavy": 2,
-}
-
-VALID_TIERS = tuple(TIER_RANK.keys())
-
 
 class Specialist(McpTool):
     """Base for Specialists that invoke an LLM agent.
@@ -86,8 +76,6 @@ class Specialist(McpTool):
     # every Specialist admits under the LIGHT class pool.
     JOB_CLASS = job_slots.CLASS_LIGHT
 
-    # Minimum model tier (floor) — subclasses override this
-    min_model: str = "standard"
     # Default max conversation turns
     default_max_turns: int | None = None
     # Default timeout in seconds
@@ -115,15 +103,6 @@ class Specialist(McpTool):
 
     def _add_args(self, parser: argparse.ArgumentParser) -> None:
         """Add agent-specific arguments."""
-        parser.add_argument(
-            "--model",
-            choices=list(VALID_TIERS),
-            default=None,
-            help=(
-                f"Model tier for this invocation ({'/'.join(VALID_TIERS)}). "
-                f"Clamped to Specialist's minimum floor ({self.min_model}) if below."
-            ),
-        )
         parser.add_argument(
             "--instruction",
             default="",
@@ -217,50 +196,22 @@ class Specialist(McpTool):
         )
 
     def _resolve_model(self) -> str:
-        """Resolve the model to run this specialist on.
+        """The model this Specialist runs on: its ``[models]`` pin, else the built-in default."""
+        from booley.config.settings import get_agent_settings
 
-        Priority:
-          1. ``[models.roles] <Specialist name>`` in booley.toml — an explicit pin,
-             which deliberately overrides the ``min_model`` floor (the floor
-             guards Booley's tier defaults, not a user's stated choice).
-          2. ``--model`` tier flag, clamped up to the ``min_model`` floor.
-          3. The floor tier itself.
-        """
-        tier = self._resolve_tier(self.args.model)
-        try:
-            from booley.config.settings import get_agent_settings
+        return get_agent_settings().model_for_specialist(self.name)
 
-            cfg = get_agent_settings()
-            return cfg.model_for_role(self.name, tier)
-        except (ImportError, AttributeError):
-            return _DEFAULT_TIER_MODELS[tier]
+    def _resolve_cli(self) -> str:
+        """The Agent CLI this Specialist runs on: the one its model implies."""
+        from booley.config.settings import get_agent_settings
+
+        return get_agent_settings().cli_for_specialist(self.name)
 
     def _resolve_effort(self) -> str | None:
-        """Resolve reasoning effort for the active tier."""
-        tier = self._resolve_tier(self.args.model)
-        try:
-            from booley.config.settings import get_agent_settings
+        """Reasoning effort for the Agent CLI this Specialist runs on."""
+        from booley.config.settings import get_agent_settings
 
-            cfg = get_agent_settings()
-            return cfg.effort_for_tier(tier)
-        except (ImportError, AttributeError):
-            return None
-
-    def _resolve_tier(self, requested: str | None) -> str:
-        """Apply floor enforcement: return max(requested, min_model)."""
-        if requested is None:
-            return self.min_model
-        req_rank = TIER_RANK.get(requested, 1)
-        floor_rank = TIER_RANK.get(self.min_model, 1)
-        if req_rank < floor_rank:
-            logger.info(
-                "%s: --model %s below floor %s, upgrading",
-                self.name,
-                requested,
-                self.min_model,
-            )
-            return self.min_model
-        return requested
+        return get_agent_settings().effort_for(self._resolve_cli())
 
     def _transcript_path(self) -> Path | None:
         """Resolve transcript file path."""
@@ -335,6 +286,8 @@ class Specialist(McpTool):
         """
         if on_event is None:
             on_event = self._make_streaming_callback()
+        if params.agent_cli is None:
+            params = dataclasses.replace(params, agent_cli=self._resolve_cli())
         if params.nested_mcp_tools is None:
             params = dataclasses.replace(
                 params,
@@ -521,17 +474,19 @@ class Specialist(McpTool):
             self.args.timeout_ms = self.min_timeout * 1000
 
         params = self._agent_call_params()
-        tier = self._resolve_tier(self.args.model)
         logger.info(
-            "Invoking Specialist %s (model=%s, tier=%s, effort=%s, max_turns=%s, timeout=%dms)",
+            "Invoking Specialist %s (cli=%s, model=%s, effort=%s, max_turns=%s, timeout=%dms)",
             self.name,
+            self._resolve_cli(),
             params.model,
-            tier,
             params.reasoning_effort or "default",
             self.args.max_turns,
             self.args.timeout_ms,
         )
-        self.emit_progress(f"invoking Specialist ({tier}, timeout={self.args.timeout_ms}ms)")
+        self.emit_progress(
+            f"invoking Specialist ({self._resolve_cli()}, {params.model}, "
+            f"timeout={self.args.timeout_ms}ms)"
+        )
 
         try:
             result = self._invoke_agent(params)
@@ -876,17 +831,6 @@ def parent_death_watchdog(
         yield
     finally:
         stop.set()
-
-
-# Standalone default models (when harness config is unavailable).
-# Source the model strings from _backend_config so the pins live in one place.
-def _standalone_default_tier_models() -> dict[str, str]:
-    from booley.config.agent import _PROVIDER_TIER_MODELS
-
-    return dict(_PROVIDER_TIER_MODELS["claude"])
-
-
-_DEFAULT_TIER_MODELS: dict[str, str] = _standalone_default_tier_models()
 
 
 def _call_agent_sync(

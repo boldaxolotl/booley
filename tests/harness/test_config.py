@@ -4,29 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from booley.config.settings import (
-    _PROVIDER_TIER_MODELS,
-    SandboxConfig,
-    _parse_sandbox_config,
-)
+from booley.config.settings import SandboxConfig, _parse_sandbox_config
 from booley.runtime._retry import (
     API_RETRY_BACKOFF_MULTIPLIER,
     API_RETRY_INITIAL_BACKOFF_S,
     API_RETRY_MAX_BACKOFF_S,
     MAX_API_RETRIES,
 )
-
-
-class TestProviderTierModels:
-    def test_both_providers_defined(self):
-        assert "claude" in _PROVIDER_TIER_MODELS
-        assert "codex" in _PROVIDER_TIER_MODELS
-
-    @pytest.mark.parametrize("provider", ["claude", "codex"])
-    def test_all_tiers_present(self, provider):
-        tiers = _PROVIDER_TIER_MODELS[provider]
-        for t in ("heavy", "standard", "light"):
-            assert t in tiers
 
 
 class TestAPIResilience:

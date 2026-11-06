@@ -44,10 +44,8 @@ booley specialist reviewer --category rtl --focus bugs --scope rtl
 Runs you start yourself never count as Goal evidence.
 
 Specialists accept `-C/--project`, `--report-dir`, `--diagnostic`, and, where
-it applies, `--target`. Three options exist only on the command line:
+it applies, `--target`. Two options exist only on the command line:
 
-- `--model light|standard|heavy` picks the model tier. A tier below the
-  Specialist's minimum is raised to that minimum.
 - `--max-turns N` caps the conversation length.
 - `--timeout DURATION` limits each model call, not the whole run.
 
@@ -56,8 +54,8 @@ Reports go to `mcp-tool-reports/` in the Booley Directory, or under
 
 ## Configuring Specialists
 
-- Pin a Specialist to a model with
-  [`[models.roles]`](CONFIG.md#pinning-one-specialist-modelsroles).
+- Pin a Specialist to a model, and with it the Agent CLI it runs on, with
+  [`[models]`](CONFIG.md#model-selection-models).
 - Turn one off with
   [`enabled = false`](CONFIG.md#flow-and-specialist-availability-enabled).
 - Add your project's own style rules for style and testbench reviews in

@@ -180,6 +180,7 @@ from booley.targets.selection import (
 )
 
 if TYPE_CHECKING:
+    from booley.config.agent import DeclaredAgent
     from booley.config.agent_app import AgentAppChoice
     from booley.harness import developer_probe
 
@@ -2023,7 +2024,7 @@ def _run_developer_probe(
         return None
     _announce_long_check(
         "provider-backed check: Specialist provider memory and authorization probe",
-        "one light-tier provider turn; usually seconds, times out after "
+        "one internal-model provider turn; usually seconds, times out after "
         f"{format_duration(developer_probe.PROBE_TIMEOUT_S)}",
     )
     try:
@@ -2078,34 +2079,31 @@ def _run_model_access_probes(
     project: ProjectAudit,
     reporter: _Reporter,
     tracker: doctor_deep.DeepCheckTracker,
-    light_record: _AgentCallRecord | None,
+    internal_record: _AgentCallRecord | None,
 ) -> None:
-    """Probe every other model the Project resolves, so a refusal fails Doctor, not a Goal.
+    """Probe every model the ``[models]`` table resolves, so a refusal fails Doctor, not a Goal.
 
-    The memory probe already exercised the light-tier model. Each remaining distinct model
-    (the other tiers and every ``[models.roles]`` pin) gets one trivial provider turn. A
-    gateway fixes the model server-side, so it adds no probe. Without a working light-tier
+    The memory probe already exercised the internal model. Each distinct Specialist model
+    gets one trivial provider turn on the Agent CLI it implies. A gateway fixes the model
+    server-side, so gateway-routed Codex models add no probe. Without a working internal
     call (host run, auth failure, usage cap) the extra spend is pointless and the check
     stays incomplete.
     """
-    from booley.config.agent import load_agent_settings
+    from booley.config.agent import cli_for_model, load_agent_settings
     from booley.harness import developer_probe
 
-    if light_record is None:
+    if internal_record is None:
         return
-    if light_record.error is not None and not isinstance(
-        light_record.error, ModelUnavailableError
+    if internal_record.error is not None and not isinstance(
+        internal_record.error, ModelUnavailableError
     ):
         reporter.skip_("Specialist model access probes skipped - the provider probe failed")
         return
     settings = load_agent_settings(project.project_root, booley_dir=project.booley_dir)
-    if settings.auth == GATEWAY_AUTH:
-        tracker.completed("model-access", True)
-        return
-    light = settings.model_for_tier("light")
     probed_all = True
     for model, keys in settings.model_settings().items():
-        if model == light:
+        cli = cli_for_model(model) or "codex"  # a gateway pin is arbitrary and Codex-only
+        if model == settings.internal_model() or settings.auth_for(cli) == GATEWAY_AUTH:
             continue
         _announce_long_check(
             f"provider-backed check: Specialist model access probe for {model}",
@@ -2889,7 +2887,7 @@ def _check_gateway_auth(provider: str, reporter: _Reporter, *, chosen_by_auto: b
     """
     if provider != auth_token.APP_CODEX:
         reporter.fail_(
-            f"auth '{GATEWAY_AUTH}' routes Codex only; set [agent] provider = 'codex'",
+            f"auth '{GATEWAY_AUTH}' routes Codex only; set [agent] default = 'codex'",
             check_id="agent.credential-missing",
             subject=provider,
         )
@@ -2979,80 +2977,57 @@ def _check_devcontainer_excludes(
         _pass("Booley files excluded from git (info/exclude)")
 
 
-def _declared_provider(project: ProjectAudit | None) -> str | None:
-    """The project's *explicitly declared* ``[agent] provider``, else ``None``.
+def _declared_agent(project: ProjectAudit | None) -> DeclaredAgent | None:
+    """The project's ``[agent]`` shape, or ``None`` when absent or invalid.
 
-    Deliberately stricter than :func:`_configured_provider`, and deliberately
-    NOT env-aware: this exists to drift-check the on-disk devcontainer spec, so
-    it must mirror exactly what re-seeding would decide --
-    ``init_cmd._select_interactive_app`` consults booley.toml and nothing else.
-    An undeclared provider means the seeder falls back to host detection, which
-    no on-disk value can be compared against, so the caller skips the check
-    rather than guessing.
-
-    Fail-soft (Decision 12): an invalid value degrades to ``None`` here;
+    Fail-soft (Decision 12): an invalid table degrades to ``None`` here;
     :func:`_validate_agent_table` already FAILed on it upstream.
     """
-    from booley.config.agent import BackendConfigError, _parse_provider
+    from booley.config.agent import BackendConfigError, parse_agent_section
 
     agent_section = project.booley_toml.get("agent") if project is not None else None
     if not isinstance(agent_section, dict):
         return None
     try:
-        return _parse_provider(agent_section)
+        return parse_agent_section(agent_section)
     except BackendConfigError:
         return None
 
 
-def _configured_provider(project: ProjectAudit | None) -> str:
-    """Return the single agent provider this project's runs will use.
+def _declared_provider(project: ProjectAudit | None) -> str | None:
+    """The project's *explicitly declared* default Agent CLI, else ``None``.
 
-    Booley runs exactly one provider, and there is ALWAYS an answer: this
-    mirrors ``config.agent._lazy_agent_settings`` --
-    ``BOOLEY_PRIMARY_PROVIDER`` -> booley.toml ``[agent] provider`` ->
-    ``BOOLEY_AGENT_APP`` (exported by the devcontainer) -> ``_DEFAULT_PROVIDER``.
-    An omitted ``[agent] provider`` is not "unknown", it is the default, so the
-    auth checks audit exactly the backend that will run: the *unused* backend's
-    absent credentials -- guaranteed on any single-provider host, with no action
-    worth taking -- never surface as warnings.
-
-    Doctor is fail-soft by contract (Decision 12), so an invalid provider value
-    degrades to the default here instead of raising --
-    :func:`_validate_agent_table` already FAILed on it upstream.
+    Deliberately NOT env-aware: this exists to drift-check the on-disk devcontainer
+    spec, so it must mirror exactly what re-seeding would decide --
+    ``init_cmd._select_interactive_app`` consults booley.toml and nothing else.
+    An undeclared default means the seeder falls back to host detection, which no
+    on-disk value can be compared against, so the caller skips the check.
     """
-    from booley.config.agent import (
-        _DEFAULT_PROVIDER,
-        _VALID_PROVIDERS,
-        BackendConfigError,
-        _parse_provider,
-    )
+    declared = _declared_agent(project)
+    return declared.default if declared else None
 
-    env_provider = (os.environ.get("BOOLEY_PRIMARY_PROVIDER") or "").strip()
-    if env_provider in _VALID_PROVIDERS:
-        return env_provider
-    agent_section = project.booley_toml.get("agent") if project is not None else None
-    if isinstance(agent_section, dict):
-        try:
-            declared = _parse_provider(agent_section)
-        except BackendConfigError:
-            declared = None
-        if declared is not None:
-            return declared
-    from booley.config import agent_app
 
-    app_provider = agent_app.resolved_app((os.environ.get("BOOLEY_AGENT_APP") or "").strip())
-    if app_provider in _VALID_PROVIDERS:
-        return app_provider
-    return _DEFAULT_PROVIDER
+def _configured_provider(project: ProjectAudit | None) -> str:
+    """Return the default Agent CLI this project's runs will use.
+
+    There is ALWAYS an answer: ``config.agent.resolve_default_cli`` (the order the
+    loaders use: ``BOOLEY_PRIMARY_PROVIDER`` -> booley.toml ``[agent] default`` ->
+    ``BOOLEY_AGENT_APP``), then the built-in default. An omitted default is not
+    "unknown", so the auth checks audit exactly the backend that will run: the
+    *unused* backend's absent credentials never surface as warnings.
+    """
+    from booley.config.agent import _DEFAULT_PROVIDER, resolve_default_cli
+
+    resolved = resolve_default_cli(_declared_agent(project))
+    return resolved[0] if resolved else _DEFAULT_PROVIDER
 
 
 def _configured_auth_policy(project: ProjectAudit | None) -> str:
-    """Audit the selected Project policy; ambient handoff is only a no-Project fallback."""
+    """Audit the default CLI's policy; ambient handoff is only a no-Project fallback."""
     from booley.config.agent import (
         _DEFAULT_AUTH,
         _VALID_AUTH_MODES,
-        BackendConfigError,
-        _parse_auth,
+        _inside_container,
         env_auth_handoff,
         gateway_handoff_active,
     )
@@ -3062,13 +3037,14 @@ def _configured_auth_policy(project: ProjectAudit | None) -> str:
     env_auth = env_auth_handoff() or ""
     if project is None:
         return env_auth if env_auth in _VALID_AUTH_MODES else _DEFAULT_AUTH
-    agent_section = project.booley_toml.get("agent")
-    if not isinstance(agent_section, dict):
+    declared = _declared_agent(project)
+    if declared is None:
         return _DEFAULT_AUTH
-    try:
-        return _parse_auth(agent_section) or _DEFAULT_AUTH
-    except BackendConfigError:
-        return _DEFAULT_AUTH
+    auth = declared.auth
+    policy = auth if isinstance(auth, str) else (auth or {}).get(_configured_provider(project))
+    if policy == GATEWAY_AUTH and not _inside_container():
+        return _DEFAULT_AUTH  # like the env hand-off, the toml gateway applies in a Sandbox only
+    return policy or _DEFAULT_AUTH
 
 
 _AGENT_APP_LABELS = {auth_token.APP_CLAUDE: "Claude Code", auth_token.APP_CODEX: "Codex"}

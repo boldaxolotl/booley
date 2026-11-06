@@ -1,4 +1,4 @@
-"""Tests for Specialist — model resolution, tier floors, argparse."""
+"""Tests for Specialist — model and Agent CLI resolution, argparse, failure reports."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from claude_agent_sdk import ClaudeSDKError
 
 from booley.core.models import AgentCallParams
 from booley.mcp.base import EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
-from booley.specialists.specialist import _DEFAULT_TIER_MODELS, TIER_RANK, VALID_TIERS, Specialist
+from booley.specialists.specialist import Specialist
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 
@@ -30,7 +30,6 @@ class ReviewSpecialist(Specialist):
 
     name = "review_test"
     description = "Test review endpoint"
-    min_model = "standard"
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--diff-ref", default="HEAD~1")
@@ -48,51 +47,6 @@ class ReviewSpecialist(Specialist):
         return McpToolResult(exit_code=EXIT_FAILURE, criterion_met=False)
 
 
-class HeavySpecialist(Specialist):
-    """Specialist with heavy floor for testing."""
-
-    name = "heavy_test"
-    description = "Test heavy-floor endpoint"
-    min_model = "heavy"
-
-    def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
-        pass
-
-    def _build_prompt(self) -> str:
-        return "test"
-
-    def _interpret_output(self, output: str, structured: dict | None) -> McpToolResult:
-        return McpToolResult(exit_code=EXIT_SUCCESS)
-
-
-class TestTierRank:
-    def test_light_lowest(self):
-        assert TIER_RANK["light"] < TIER_RANK["standard"] < TIER_RANK["heavy"]
-
-    def test_valid_tiers_match_rank_keys(self):
-        assert set(VALID_TIERS) == set(TIER_RANK.keys())
-
-
-class TestDefaultTierModels:
-    """The standalone fallback table, used when the harness config won't import.
-
-    Asserted structurally rather than by model name — naming a specific model
-    here just means every model launch breaks the suite. The invariant that
-    matters is that the fallback mirrors the real Claude tier table.
-    """
-
-    def test_mirrors_the_claude_provider_tiers(self):
-        from booley.config.agent import _PROVIDER_TIER_MODELS
-
-        assert _PROVIDER_TIER_MODELS["claude"] == _DEFAULT_TIER_MODELS
-
-    def test_covers_every_tier_with_a_distinct_model(self):
-        assert set(_DEFAULT_TIER_MODELS) == set(VALID_TIERS)
-        models = list(_DEFAULT_TIER_MODELS.values())
-        assert all(m.strip() for m in models)
-        assert len(set(models)) == len(models), "tiers must not collapse onto one model"
-
-
 class TestSpecialistArgparse:
     def test_common_agent_args(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
@@ -100,16 +54,8 @@ class TestSpecialistArgparse:
         endpoint = ReviewSpecialist()
         with patch.dict(os.environ, env):
             args = endpoint.parse_args(
-                [
-                    "--model",
-                    "light",
-                    "--instruction",
-                    "focus on timing",
-                    "--diff-ref",
-                    "HEAD~3",
-                ]
+                ["--instruction", "focus on timing", "--diff-ref", "HEAD~3"]
             )
-        assert args.model == "light"
         assert args.instruction == "focus on timing"
         assert args.diff_ref == "HEAD~3"
 
@@ -119,7 +65,6 @@ class TestSpecialistArgparse:
         endpoint = ReviewSpecialist()
         with patch.dict(os.environ, env):
             args = endpoint.parse_args([])
-        assert args.model is None
         assert args.instruction == ""
         assert args.diff_ref == "HEAD~1"
 
@@ -131,76 +76,6 @@ class TestSpecialistArgparse:
     def test_hidden_options_do_not_accept_abbreviations(self):
         with pytest.raises(SystemExit):
             ReviewSpecialist().parse_args(["--transcript", "injected"])
-
-
-class TestFloorEnforcement:
-    def test_no_model_falls_back_to_floor(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        env = _env_with_state(state_file)
-        endpoint = ReviewSpecialist()
-        with patch.dict(os.environ, env):
-            endpoint.parse_args([])
-        assert endpoint._resolve_tier(None) == "standard"
-
-    def test_model_above_floor_passes_through(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        env = _env_with_state(state_file)
-        endpoint = ReviewSpecialist()
-        with patch.dict(os.environ, env):
-            endpoint.parse_args(["--model", "heavy"])
-        assert endpoint._resolve_tier("heavy") == "heavy"
-
-    def test_model_below_floor_upgrades(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        env = _env_with_state(state_file)
-        endpoint = ReviewSpecialist()
-        with patch.dict(os.environ, env):
-            endpoint.parse_args(["--model", "light"])
-        assert endpoint._resolve_tier("light") == "standard"
-
-    def test_heavy_floor_upgrades_standard(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        env = _env_with_state(state_file)
-        endpoint = HeavySpecialist()
-        with patch.dict(os.environ, env):
-            endpoint.parse_args(["--model", "standard"])
-        assert endpoint._resolve_tier("standard") == "heavy"
-
-
-class TestModelResolution:
-    # These assert against _DEFAULT_TIER_MODELS rather than a model-family
-    # substring: the behavior under test is which *tier* a specialist resolves
-    # to, and hardcoding the model of the day made every launch break them.
-
-    def test_standalone_heavy_resolves_heavy_tier(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        env = _env_with_state(state_file)
-        endpoint = HeavySpecialist()
-        with patch.dict(os.environ, env):
-            endpoint.parse_args([])
-        with patch.dict("sys.modules", {"booley.config.settings": None}):
-            model = endpoint._resolve_model()
-        assert model == _DEFAULT_TIER_MODELS["heavy"]
-
-    def test_standard_floor_no_flag_resolves_standard_tier(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        env = _env_with_state(state_file)
-        endpoint = ReviewSpecialist()
-        with patch.dict(os.environ, env):
-            endpoint.parse_args([])
-        with patch.dict("sys.modules", {"booley.config.settings": None}):
-            model = endpoint._resolve_model()
-        assert model == _DEFAULT_TIER_MODELS["standard"]
-
-    def test_explicit_heavy_resolves_heavy_tier(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        env = _env_with_state(state_file)
-        endpoint = ReviewSpecialist()
-        with patch.dict(os.environ, env):
-            endpoint.parse_args(["--model", "heavy"])
-        with patch.dict("sys.modules", {"booley.config.settings": None}):
-            model = endpoint._resolve_model()
-        assert model == _DEFAULT_TIER_MODELS["heavy"]
 
 
 class TestTimeoutClamping:
@@ -289,27 +164,63 @@ def test_provider_exception_preserves_report_and_persists_traceback(
     assert any(record.exc_info for record in caplog.records if record.levelname == "DEBUG")
 
 
-def test_refused_model_reports_actionable_message(tmp_path: Path, monkeypatch) -> None:
-    from booley.runtime.agent_errors import ModelUnavailableError
-
-    state_file = tmp_path / "state.json"
-    state_file.write_text("{}")
+def _named(name: str) -> ReviewSpecialist:
+    """A test Specialist that resolves its model and Agent CLI under *name*."""
     endpoint = ReviewSpecialist()
+    endpoint.name = name
+    return endpoint
+
+
+@pytest.fixture
+def per_cli_backends(monkeypatch):
+    """Install settings with one recording fake backend per Agent CLI.
+
+    ``install(settings, respond=None)`` returns ``(built, calls)``: ``built`` lists each
+    ``(cli, auth)`` backend construction and ``calls`` each ``(cli, params)`` call.
+    ``respond(params)`` replaces the default approving reply (it may raise).
+    """
+    from booley.core.models import AgentResult
+    from booley.runtime import agent_config
+
+    built: list[tuple[str, str]] = []
+    calls: list[tuple[str, AgentCallParams]] = []
+
+    def approve(_params: AgentCallParams) -> AgentResult:
+        return AgentResult(structured={"approved": True})
+
+    def install(settings, respond=approve):
+        class FakeBackend:
+            def __init__(self, cli: str) -> None:
+                self.cli = cli
+
+            async def call(self, params, *, on_event=None, on_start=None):
+                calls.append((self.cli, params))
+                return respond(params)
+
+        def make_backend(cli: str, auth: str) -> FakeBackend:
+            built.append((cli, auth))
+            return FakeBackend(cli)
+
+        monkeypatch.setattr(agent_config, "_make_backend", make_backend)
+        agent_config.set_backend_config(agent_config.configure_backend(settings))
+        return built, calls
+
     monkeypatch.setattr(
         "booley.runtime.runtime_context.container_only_error", lambda _command: None
     )
-    refusal = ModelUnavailableError(
-        model="gpt-refused",
-        provider="codex",
-        settings=("[models] standard",),
-        detail='{"status":400,"error":{"code":"model_not_found"}}',
+    monkeypatch.setattr(
+        "booley.specialists.specialist.parent_death_watchdog", lambda *_: contextlib.nullcontext()
     )
+    yield install
+    agent_config.set_backend_config(None)
 
-    with (
-        patch.dict(os.environ, _env_with_state(state_file)),
-        patch.object(endpoint, "_invoke_agent", side_effect=refusal),
-    ):
-        result = endpoint.execute_cli(
+
+def _launch(endpoint: Specialist, tmp_path: Path) -> McpToolResult:
+    """Run *endpoint*'s agent step: model and CLI resolution, invocation, failure report."""
+    state_file = tmp_path / "state.json"
+    state_file.write_text("{}")
+    with patch.dict(os.environ, _env_with_state(state_file)):
+        endpoint.parse_args(
             [
                 "--work-dir",
                 str(tmp_path),
@@ -319,12 +230,67 @@ def test_refused_model_reports_actionable_message(tmp_path: Path, monkeypatch) -
                 str(tmp_path / "transcripts"),
             ]
         )
+        endpoint.read_state()
+        return endpoint._run()
 
+
+def test_specialist_launch_runs_on_its_models_cli(tmp_path: Path, per_cli_backends) -> None:
+    from booley.config.agent import AgentSettings
+
+    built, calls = per_cli_backends(
+        AgentSettings(
+            default_cli="claude",
+            clis=("claude", "codex"),
+            auth={"claude": "subscription", "codex": "api_key"},
+            specialist_models={"reviewer": "gpt-6-luna"},
+        )
+    )
+
+    assert _launch(_named("reviewer"), tmp_path).exit_code == EXIT_SUCCESS
+    assert _launch(_named("mutation_tester"), tmp_path).exit_code == EXIT_SUCCESS
+
+    (reviewer_cli, reviewer), (mutation_cli, mutation) = calls
+    assert (reviewer_cli, reviewer.model, reviewer.reasoning_effort) == (
+        "codex",
+        "gpt-6-luna",
+        "high",
+    )
+    assert (mutation_cli, mutation.model, mutation.reasoning_effort) == (
+        "claude",
+        "claude-opus-5-5",
+        None,
+    )
+    # The default CLI's backend is built up front; codex's once, on first use, with its auth.
+    assert built == [("claude", "subscription"), ("codex", "api_key")]
+
+
+def test_refused_model_raises_refusal_and_tries_no_other_model(
+    tmp_path: Path, per_cli_backends
+) -> None:
+    from booley.config.agent import AgentSettings
+    from booley.runtime.agent_errors import model_unavailable_error
+
+    def refuse(params: AgentCallParams):
+        # Built as the Codex backend builds it: inside the call, from the live settings.
+        raise model_unavailable_error(
+            params.model, "codex", '{"status":400,"error":{"code":"model_not_found"}}'
+        )
+
+    _built, calls = per_cli_backends(
+        AgentSettings(
+            default_cli="codex", clis=("codex",), specialist_models={"reviewer": "gpt-6-luna"}
+        ),
+        respond=refuse,
+    )
+
+    result = _launch(_named("reviewer"), tmp_path)
+
+    assert [(cli, params.model) for cli, params in calls] == [("codex", "gpt-6-luna")]
     assert result.exit_code == 2
-    report = result.outcome.report_text
-    assert report.startswith("review_test failed: ModelUnavailableError: ")
-    assert "gpt-refused" in report
-    assert "[models] standard" in report
+    report = result.report_text
+    assert report.startswith("reviewer failed: ModelUnavailableError: ")
+    assert "'gpt-6-luna'" in report
+    assert "`[models] reviewer`" in report
     assert "Protected Input" in report
     assert "model_not_found" not in report
 

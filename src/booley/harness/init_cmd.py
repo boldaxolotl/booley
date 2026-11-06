@@ -572,9 +572,13 @@ def _read_agent_selection(path: Path) -> tuple[str | None, str | None]:
     with path.open("rb") as config_file:
         data = tomllib.load(config_file)
     agent = require_dict(data.get("agent", {}), field="booley.toml [agent]")
-    from booley.config.agent import parse_auth, parse_provider
+    from booley.config.agent import parse_agent_section
 
-    return parse_provider(agent), parse_auth(agent)
+    declared = parse_agent_section(agent)
+    auth = declared.auth
+    if isinstance(auth, dict):  # an [agent.auth] table counts as declared; init never rewrites it
+        auth = auth.get(declared.default or "claude", "auto")
+    return declared.default, auth
 
 
 def _prompt_agent_choice(
@@ -1066,7 +1070,7 @@ def _select_interactive_app(
 ) -> str:
     """Return the project's declared agent app, never one inferred from the host."""
     if project_root is not None:
-        from booley.config.agent import _VALID_PROVIDERS, _parse_provider
+        from booley.config.agent import AGENT_CLIS, parse_agent_section
 
         config_path = resolve_toml(
             project_data_source or authorized_project_data_source(project_root)
@@ -1078,10 +1082,10 @@ def _select_interactive_app(
                 with config_path.open("rb") as config_file:
                     config = tomllib.load(config_file)
                 agent = config.get("agent", {})
-                provider = _parse_provider(agent if isinstance(agent, dict) else {})
+                provider = parse_agent_section(agent if isinstance(agent, dict) else {}).default
             except (OSError, ValueError):
                 provider = None
-            if provider in _VALID_PROVIDERS:
+            if provider in AGENT_CLIS:
                 return provider
     return dc.APP_NONE
 

@@ -56,7 +56,7 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
     try:
         booley_dir = resolve_checkout_booley_dir(project_root)
         load_agent_settings(project_root, booley_dir=booley_dir)
-        provider = get_agent_settings().provider
+        provider = get_agent_settings().default_cli
     except GatewayConfigError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

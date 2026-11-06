@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -24,15 +25,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The provider used when nothing else pins one. Claude — never codex — so a
+# The Agent CLIs Booley can run: Claude Code and Codex. A model ID implies its CLI by prefix.
+AGENT_CLIS = ("claude", "codex")
+_MODEL_PREFIX_CLI = (("claude-", "claude"), ("gpt-", "codex"))
+
+# The CLI used when nothing else names one. Claude — never codex — so a
 # missing/dropped config degrades to Booley's actual backend instead of an
-# unauthenticated Codex call that 401s. Mirrors _DEFAULT_TIER_MODELS below,
-# which already sources Claude model strings.
+# unauthenticated Codex call that 401s.
 _DEFAULT_PROVIDER = "claude"
 
-_VALID_PROVIDERS = ("codex", "claude")
-
-# [agent] auth: which credential the agents must bill.
+# [agent] auth: which credential each Agent CLI must bill.
 #   auto         — today's behavior: the agent CLI resolves per its own
 #                  precedence (API key > rotation-free token > login file).
 #   subscription — bill the subscription: Booley scrubs the API-key env vars
@@ -45,38 +47,36 @@ _VALID_PROVIDERS = ("codex", "claude")
 #                  check fails loud when the key is absent instead of letting
 #                  agents silently fall back to (and bill) the subscription.
 #
-# ``gateway`` is an environment-only hand-off (``BOOLEY_PRIMARY_AUTH=gateway`` plus
-# BOOLEY_GATEWAY_URL / BOOLEY_GATEWAY_TOKEN) inside a Sandbox, not a toml value.
+# ``gateway`` routes Codex only. It is honored inside a Sandbox: set by the
+# ``BOOLEY_PRIMARY_AUTH=gateway`` hand-off (plus BOOLEY_GATEWAY_URL / BOOLEY_GATEWAY_TOKEN)
+# or, for Codex, in ``[agent.auth]``.
 _VALID_AUTH_MODES = ("auto", "subscription", "api_key")
 _ENV_AUTH_MODES = (*_VALID_AUTH_MODES, GATEWAY_AUTH)
 _DEFAULT_AUTH = "auto"
 
-# The three capability tiers every provider maps to concrete models.
-MODEL_TIERS = ("heavy", "standard", "light")
-_MODEL_TIERS = MODEL_TIERS
+# The agents whose model may be pinned in ``[models]``: each is a Specialist that runs
+# as its own `python -m booley.dev_support.<name>` subprocess and re-reads booley.toml,
+# so the key must equal ``Specialist.name``. Explicit rather than derived from the MCP
+# registry (importing it would drag the endpoint packages into the config layer); a
+# cross-check test fails if a new Specialist is added without extending this set.
+SPECIALISTS = frozenset({"reviewer", "mutation_tester", "coverage_analyst"})
 
-# [models.roles] vocabulary: the agents whose model may be pinned by name.
-# Each role is a Specialist (``reviewer``, ``mutation_tester``, …) that runs as its
-# own `python -m booley.dev_support.<name>` subprocess and re-reads booley.toml, so
-# the role key must equal the Specialist's ``Specialist.name``.
-#
-# The list is explicit rather than derived from the MCP endpoint registry: importing
-# the registry here would drag the whole endpoint packages into the config layer,
-# which bare specialist subprocesses import at startup. A registry cross-check
-# test (tests/harness/test_role_models.py) fails if a new specialist is added
-# without extending this set, so it cannot drift silently.
-KNOWN_ROLES = frozenset(
-    {
-        "reviewer",
-        "mutation_tester",
-        "coverage_analyst",
-    }
-)
-_KNOWN_ROLES = KNOWN_ROLES
+# Built-in models. Every Specialist takes the same default per Agent CLI; the internal
+# model serves Booley's own calls (Doctor memory probe), never a Specialist.
+_DEFAULT_SPECIALIST_MODEL = {"claude": "claude-opus-5-5", "codex": "gpt-6.1-sol"}
+_INTERNAL_MODEL = {"claude": "claude-sonnet-5-5", "codex": "gpt-6-luna"}
+# Codex Specialist calls keep reasoning effort high (Claude has no per-call effort knob).
+_CODEX_EFFORT = "high"
 
-# Former harness-step pins that no agent call reads. Refused (not ignored) so a
-# leftover pin cannot silently do nothing.
-RETIRED_ROLES = frozenset({"developer", "recovery", "triage_report"})
+# The retired tier table, kept only to show what a retired tier key used to resolve to.
+_RETIRED_TIER_MODELS: dict[str, dict[str, str]] = {
+    "claude": {
+        "heavy": "claude-fable-5-1",
+        "standard": "claude-opus-5-5",
+        "light": "claude-sonnet-5-5",
+    },
+    "codex": {"heavy": "gpt-6-astra", "standard": "gpt-6.1-sol", "light": "gpt-6-luna"},
+}
 
 
 class BackendConfigError(RuntimeError):
@@ -88,49 +88,14 @@ class BackendConfigError(RuntimeError):
     """
 
 
-class RetiredRoleError(BackendConfigError):
-    """A ``[models.roles]`` pin names a role no agent call reads any more."""
-
-    def __init__(self, role: str) -> None:
-        self.role = role
-        super().__init__(
-            f"booley.toml [models.roles] {role!r} is a retired role that no agent call reads; "
-            f"remove the {role} pin from [models.roles]."
-        )
-
-
 def _inside_container() -> bool:
     """Detect if we're running inside a Docker container."""
     return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
 
 
-_PROVIDER_TIER_MODELS: dict[str, dict[str, str]] = {
-    "claude": {
-        "heavy": "claude-fable-5-1",
-        "standard": "claude-opus-5-5",
-        # Light tier is Sonnet, not Haiku: Booley never routes work to Haiku.
-        "light": "claude-sonnet-5-5",
-    },
-    "codex": {
-        "heavy": "gpt-6-astra",
-        "standard": "gpt-6.1-sol",
-        "light": "gpt-6-luna",
-    },
-}
-
-_PROVIDER_TIER_EFFORT: dict[str, dict[str, str]] = {
-    "codex": {
-        "heavy": "high",
-        "standard": "high",
-        "light": "high",
-    },
-    # NOTE: Claude is intentionally absent — the Agent SDK exposes no clean
-    # per-call reasoning-effort knob, so effort_for_tier() returns None for
-    # Claude tiers (documented no-op). Add a mapping here if/when the SDK
-    # surfaces an extended-thinking budget hook.
-}
-
-_DEFAULT_TIER_MODELS: dict[str, str] = dict(_PROVIDER_TIER_MODELS["claude"])
+def cli_for_model(model: str) -> str | None:
+    """The Agent CLI a model ID implies (``claude-*`` or ``gpt-*``), else ``None``."""
+    return next((cli for prefix, cli in _MODEL_PREFIX_CLI if model.startswith(prefix)), None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,113 +123,72 @@ class SandboxConfig:
 class AgentSettings:
     """Validated agent, model, sandbox, and job settings consumed by Runtime."""
 
-    tier_models: Mapping[str, str] = field(default_factory=lambda: dict(_DEFAULT_TIER_MODELS))
-    # [models.roles]: role name -> tier name or literal model id. Empty = every
-    # role takes its floor tier, which is the pre-knob behavior.
-    role_models: Mapping[str, str] = field(default_factory=dict)
-    auth: str = _DEFAULT_AUTH
-    provider: str = _DEFAULT_PROVIDER
+    default_cli: str = _DEFAULT_PROVIDER
+    # The Agent CLIs this Project may run; empty means just the default CLI.
+    clis: tuple[str, ...] = ()
+    # One auth policy per listed CLI; an unlisted CLI reads as ``auto``.
+    auth: Mapping[str, str] = field(default_factory=dict)
+    # [models]: Specialist name -> pinned model ID. Absent = the default CLI's built-in model.
+    specialist_models: Mapping[str, str] = field(default_factory=dict)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     jobs: SlotCaps = field(default_factory=SlotCaps)
-    # Gateway-only pins (BOOLEY_GATEWAY_MODEL / _EFFORT): override every tier,
-    # role pin and floor / every tier effort. None = no pin.
+    # Gateway-only pins (BOOLEY_GATEWAY_MODEL / _EFFORT) for gateway-routed Codex.
     model_pin: str | None = None
     effort_pin: str | None = None
 
     def __post_init__(self) -> None:
-        """Freeze caller-owned mappings as part of the validated value object."""
-        object.__setattr__(self, "tier_models", MappingProxyType(dict(self.tier_models)))
-        object.__setattr__(self, "role_models", MappingProxyType(dict(self.role_models)))
+        """Freeze caller-owned mappings and default the CLI set to the default CLI."""
+        object.__setattr__(self, "clis", self.clis or (self.default_cli,))
+        object.__setattr__(self, "auth", MappingProxyType(dict(self.auth)))
+        object.__setattr__(
+            self, "specialist_models", MappingProxyType(dict(self.specialist_models))
+        )
 
-    def model_for_tier(self, tier: str) -> str:
-        if self.model_pin:
+    def auth_for(self, cli: str) -> str:
+        """The auth policy for *cli*."""
+        return self.auth.get(cli, _DEFAULT_AUTH)
+
+    def cli_for_specialist(self, name: str) -> str:
+        """The Agent CLI *name* runs on: its pinned model's CLI, else the default CLI."""
+        pinned = self.specialist_models.get(name)
+        return (pinned and cli_for_model(pinned)) or self.default_cli
+
+    def model_for_specialist(self, name: str) -> str:
+        """The model *name* runs on; a gateway pin replaces it for gateway-routed Codex."""
+        if self.model_pin and self.cli_for_specialist(name) == "codex":
             return self.model_pin
-        return self.tier_models.get(tier, self.tier_models["standard"])
+        return self.specialist_models.get(name) or _DEFAULT_SPECIALIST_MODEL[self.default_cli]
 
-    def model_for_role(self, role: str, tier: str) -> str:
-        """Model for *role*, falling back to *tier* when the role isn't pinned.
-
-        A ``[models.roles]`` value may name a tier (``"light"``) or a literal
-        model id (``"claude-sonnet-5-5"``). Tier names resolve through
-        ``tier_models``, so a role pinned to a tier still tracks any
-        ``[models]`` override of that tier.
-
-        An explicit pin deliberately overrides a specialist's ``min_model``
-        floor: the floor guards Booley's own tier defaults, not a choice the
-        user wrote down.
-        """
-        if self.model_pin:
+    def internal_model(self) -> str:
+        """The model for Booley's own calls on the default CLI (never a Specialist's)."""
+        if self.model_pin and self.default_cli == "codex":
             return self.model_pin
-        pinned = self.role_models.get(role)
-        if pinned is None:
-            return self.model_for_tier(tier)
-        return self.tier_models.get(pinned, pinned)
+        return _INTERNAL_MODEL[self.default_cli]
 
     def model_settings(self) -> dict[str, tuple[str, ...]]:
-        """Every distinct resolved model mapped to the config keys that select it.
-
-        Tier keys come first (heavy, standard, light), then role pins sorted by
-        name; under a gateway model pin the one model is selected by that env var.
-        """
-        if self.model_pin:
-            return {self.model_pin: (GATEWAY_MODEL_ENV,)}
+        """Every distinct Specialist model mapped to the config keys that select it."""
         keys: dict[str, list[str]] = {}
-        for tier in _MODEL_TIERS:
-            keys.setdefault(self.model_for_tier(tier), []).append(f"[models] {tier}")
-        for role in sorted(self.role_models):
-            keys.setdefault(self.model_for_role(role, "standard"), []).append(
-                f"[models.roles] {role}"
-            )
+        for name in sorted(SPECIALISTS):
+            model = self.model_for_specialist(name)
+            gateway = bool(self.model_pin) and model == self.model_pin
+            key = GATEWAY_MODEL_ENV if gateway else f"[models] {name}"
+            if key not in keys.setdefault(model, []):
+                keys[model].append(key)
         return {model: tuple(names) for model, names in keys.items()}
 
-    def effort_for_tier(self, tier: str) -> str | None:
-        """Resolve reasoning effort for a tier. None = use provider default."""
-        if self.effort_pin:
-            return self.effort_pin
-        provider_effort = _PROVIDER_TIER_EFFORT.get(self.provider, {})
-        return provider_effort.get(tier)
+    def effort_for(self, cli: str) -> str | None:
+        """Reasoning effort for a Specialist call on *cli*; ``None`` = the CLI's default."""
+        return (self.effort_pin or _CODEX_EFFORT) if cli == "codex" else None
 
 
 _agent_settings: AgentSettings | None = None
 
 
-def _resolve_tier_models(provider: str, overrides: dict[str, str] | None) -> dict[str, str]:
-    """The provider's tier defaults with any declared ``[models]`` tiers applied.
-
-    *overrides* is sparse — only the tiers the project actually declared — so
-    the unspecified ones follow the resolved provider. Merging here rather than
-    at parse time matters when the provider is settled *after* the toml is read
-    (a ``BOOLEY_PRIMARY_PROVIDER`` hand-off beats ``[agent] provider``);
-    filling gaps at parse time would splice Claude defaults into a Codex run.
-    """
-    tiers = dict(_PROVIDER_TIER_MODELS[provider])
-    tiers.update(overrides or {})
-    return tiers
-
-
-def _gateway_pin(auth: str, provider: str) -> GatewayModelPin:
-    """The env model/effort pin; empty unless the gateway policy drives Codex."""
-    if auth == GATEWAY_AUTH and provider == "codex":
+def _gateway_pin(auth: Mapping[str, str]) -> GatewayModelPin:
+    """The env model/effort pin; empty unless Codex's policy is the gateway."""
+    if auth.get("codex") == GATEWAY_AUTH:
         return gateway_model_pin_from_env()
     return GatewayModelPin()
-
-
-def _build_agent_settings(
-    provider: str,
-    auth: str,
-    tier_overrides: dict[str, str] | None = None,
-    role_models: dict[str, str] | None = None,
-) -> AgentSettings:
-    """Assemble validated settings for a resolved provider and auth mode."""
-    pin = _gateway_pin(auth, provider)
-    return AgentSettings(
-        tier_models=_resolve_tier_models(provider, tier_overrides),
-        role_models=dict(role_models or {}),
-        provider=provider,
-        auth=auth,
-        model_pin=pin.model,
-        effort_pin=pin.effort,
-    )
 
 
 def _unresolved_provider_error() -> BackendConfigError:
@@ -282,57 +206,207 @@ def _unresolved_provider_error() -> BackendConfigError:
     )
 
 
-def _resolve_lazy_provider(project: _ProjectAgentConfig | None) -> str:
-    """Resolve the provider from hand-off, Project, app, or host default."""
-    import os
+@dataclass(frozen=True)
+class DeclaredAgent:
+    """What ``[agent]`` declares before the environment or ``[models]`` is consulted.
 
-    env_provider = os.environ.get("BOOLEY_PRIMARY_PROVIDER")
-    if env_provider is not None:
-        if env_provider not in _VALID_PROVIDERS:
-            logger.warning(
-                "Unknown BOOLEY_PRIMARY_PROVIDER %r; using %s", env_provider, _DEFAULT_PROVIDER
+    ``default`` is ``default``, else its ``provider`` alias, else the first of ``clis``;
+    ``auth`` is one policy for every listed CLI, or a ``{cli: policy}`` table.
+    """
+
+    clis: tuple[str, ...] | None = None
+    default: str | None = None
+    auth: str | Mapping[str, str] | None = None
+
+
+def _checked(value: object, key: str, allowed: tuple[str, ...]) -> str:
+    if value not in allowed:
+        raise BackendConfigError(
+            f"booley.toml [agent] {key}={value!r} is invalid; "
+            f"use one of {', '.join(repr(a) for a in allowed)}."
+        )
+    return str(value)
+
+
+def parse_agent_section(agent: Mapping[str, Any]) -> DeclaredAgent:
+    """Check the shape of ``[agent]``: ``clis``, ``default``/``provider``, ``auth``.
+
+    Environment-free, so every reader agrees on it; the checks that need the effective
+    CLI set (an environment hand-off can change it) live in :func:`settings_from_data`.
+    """
+    raw_clis, clis = agent.get("clis"), None
+    if raw_clis is not None:
+        if not isinstance(raw_clis, list) or not raw_clis or len(set(raw_clis)) != len(raw_clis):
+            raise BackendConfigError(
+                "booley.toml [agent] clis must be a non-empty list of distinct Agent CLIs"
             )
-            env_provider = _DEFAULT_PROVIDER
-        return env_provider
+        clis = tuple(_checked(cli, "clis", AGENT_CLIS) for cli in raw_clis)
+    default, provider = agent.get("default"), agent.get("provider")
+    if None not in (default, provider) and default != provider:
+        raise BackendConfigError(
+            f"booley.toml [agent] default={default!r} conflicts with provider={provider!r}; "
+            "provider is the old spelling of default."
+        )
+    chosen = default if default is not None else provider
+    chosen = None if chosen is None else _checked(chosen, "default", AGENT_CLIS)
+    return DeclaredAgent(clis, chosen or (clis[0] if clis else None), _parse_auth(agent))
 
-    if project is not None and project.provider is not None:
-        logger.info("Resolved provider=%s from project booley.toml", project.provider)
-        return project.provider
 
+def _parse_auth(agent: Mapping[str, Any]) -> str | Mapping[str, str] | None:
+    raw = agent.get("auth")
+    if raw is None or isinstance(raw, str):
+        return None if raw is None else _checked(raw, "auth", _ENV_AUTH_MODES)
+    if not isinstance(raw, dict):
+        raise BackendConfigError(
+            "booley.toml [agent] auth must be a policy or an [agent.auth] table"
+        )
+    table = {}
+    for cli, policy in raw.items():
+        table[_checked(cli, "auth key", AGENT_CLIS)] = _checked(
+            policy, f"auth.{cli}", _ENV_AUTH_MODES
+        )
+        if cli == "claude" and policy == GATEWAY_AUTH:
+            raise BackendConfigError(
+                "booley.toml [agent.auth] claude='gateway' is invalid: the gateway routes Codex only"
+            )
+    return table
+
+
+def resolve_default_cli(declared: DeclaredAgent | None) -> tuple[str, str] | None:
+    """The default Agent CLI and its source, or ``None`` when no source names one.
+
+    Precedence (shared by every loader and Doctor): ``BOOLEY_PRIMARY_PROVIDER``, the
+    declared default, then ``BOOLEY_AGENT_APP``.
+    """
+    env_cli = (os.environ.get("BOOLEY_PRIMARY_PROVIDER") or "").strip()
+    if env_cli in AGENT_CLIS:
+        return env_cli, "BOOLEY_PRIMARY_PROVIDER"
+    if env_cli:
+        logger.warning("Ignoring unknown BOOLEY_PRIMARY_PROVIDER %r", env_cli)
+    if declared is not None and declared.default is not None:
+        return declared.default, "[agent] default"
     from booley.config import agent_app
 
-    app_provider = agent_app.resolved_app(os.environ.get("BOOLEY_AGENT_APP"))
-    if app_provider in _VALID_PROVIDERS:
-        logger.info(
-            "Resolved provider=%s from BOOLEY_AGENT_APP (no developer "
-            "hand-off — standalone specialist invocation)",
-            app_provider,
-        )
-        return app_provider
-
-    if _inside_container():
-        raise _unresolved_provider_error()
-
-    return _DEFAULT_PROVIDER
+    app = agent_app.resolved_app((os.environ.get("BOOLEY_AGENT_APP") or "").strip())
+    return (app, "BOOLEY_AGENT_APP") if app in AGENT_CLIS else None
 
 
-def _lazy_agent_settings() -> AgentSettings:
-    """Resolve settings from environment, Project configuration, and defaults."""
+def _auth_policies(
+    declared: DeclaredAgent, clis: tuple[str, ...], default_cli: str, *, lazy: bool
+) -> dict[str, str]:
+    """One policy per listed CLI: the declared one, then the environment hand-off."""
+    auth = declared.auth
+    if isinstance(auth, str):
+        if auth == GATEWAY_AUTH and "claude" in clis:
+            raise BackendConfigError(
+                "booley.toml [agent] auth='gateway' routes Codex only but claude is listed; "
+                "use an [agent.auth] table: codex = 'gateway'"
+            )
+        policies = dict.fromkeys(clis, auth)
+    else:
+        unlisted = [cli for cli in auth or {} if cli not in clis]
+        if unlisted:
+            raise BackendConfigError(
+                f"booley.toml [agent.auth] {unlisted[0]} is not in [agent] clis"
+            )
+        policies = {cli: (auth or {}).get(cli, _DEFAULT_AUTH) for cli in clis}
+    if not _inside_container():  # the gateway is honored in a Sandbox only
+        policies = {cli: _DEFAULT_AUTH if p == GATEWAY_AUTH else p for cli, p in policies.items()}
+    if gateway_handoff_active():
+        if "codex" in policies:
+            policies["codex"] = GATEWAY_AUTH
+    elif lazy and env_auth_handoff() is not None:
+        policies[default_cli] = _env_auth()  # until #2755 hands off per CLI
+    return policies
 
-    # Specialists load Project pins lazily when no parent developer configured
-    # this process. Provider precedence remains hand-off, Project, app, default.
-    project = _project_config_from_env()
-    auth = (
-        _env_auth()
-        if env_auth_handoff() is not None
-        else (project.auth if project else None) or _DEFAULT_AUTH
+
+def _retired_models_error(models: Mapping[str, Any], default_cli: str) -> BackendConfigError:
+    """The migration error for tier keys and ``[models.roles]``, showing the new entries."""
+    tiers = dict(_RETIRED_TIER_MODELS[default_cli])
+    tiers.update({t: models[t].strip() for t in tiers if isinstance(models.get(t), str)})
+    roles = models.get("roles") if isinstance(models.get("roles"), dict) else {}
+    lines, clis, notes = [], [default_cli], []
+    for name in sorted(SPECIALISTS):
+        pin = roles.get(name)
+        model = tiers.get(pin, pin) if isinstance(pin, str) and pin.strip() else tiers["standard"]
+        lines.append(f'{name} = "{model}"')
+        cli = cli_for_model(model)
+        if cli is None:
+            notes.append(f"replace the {name} model with a claude-* or gpt-* ID")
+        elif cli not in clis:
+            clis.append(cli)
+    if "heavy" in models or "light" in models:
+        notes.append("heavy and light overrides have no equivalent and are dropped")
+    agent = f'[agent]\nclis = {clis!r}\ndefault = "{default_cli}"\n'.replace("'", '"')
+    return BackendConfigError(
+        "booley.toml [models] tier keys and [models.roles] are retired: each Specialist now "
+        "has its own [models] key and its model implies the Agent CLI. Replace them with:\n"
+        + (agent if len(clis) > 1 else "")
+        + "[models]\n"
+        + "\n".join(lines)
+        + (f"\n({'; '.join(notes)})" if notes else "")
     )
 
-    return _build_agent_settings(
-        _resolve_lazy_provider(project),
-        auth,
-        project.tier_models if project else None,
-        project.role_models if project else None,
+
+def parse_models_section(
+    models: Mapping[str, Any], clis: tuple[str, ...], default_cli: str
+) -> dict[str, str]:
+    """Check ``[models]`` against the listed CLIs; return the Specialist -> model pins."""
+    if {"heavy", "standard", "light", "roles"} & set(models):
+        raise _retired_models_error(models, default_cli)
+    pins: dict[str, str] = {}
+    for name, value in models.items():
+        if name not in SPECIALISTS:
+            raise BackendConfigError(
+                f"booley.toml [models] has an unknown key {name!r}; "
+                f"valid keys are {', '.join(sorted(SPECIALISTS))}."
+            )
+        model = value.strip() if isinstance(value, str) else ""
+        cli = cli_for_model(model)
+        if cli is None:
+            raise BackendConfigError(
+                f"booley.toml [models] {name}={value!r} names no known Agent CLI: "
+                "claude-* models run on Claude Code and gpt-* models on Codex."
+            )
+        if cli not in clis:
+            raise BackendConfigError(
+                f"booley.toml [models] {name}={model!r} needs the {cli} Agent CLI, "
+                f"which is not in [agent] clis; add {cli!r}."
+            )
+        pins[name] = model
+    return pins
+
+
+def settings_from_data(data: Mapping[str, Any], *, lazy: bool) -> AgentSettings:
+    """Build and validate settings from a parsed booley.toml, shared by every loader.
+
+    *lazy* is the Specialist-subprocess path: it honors every ``BOOLEY_PRIMARY_AUTH``
+    hand-off and refuses to guess an unresolved CLI inside a Sandbox.
+    """
+    agent = data.get("agent", {})
+    declared = parse_agent_section(agent if isinstance(agent, dict) else {})
+    resolved = resolve_default_cli(declared)
+    if resolved is None and lazy and _inside_container():
+        raise _unresolved_provider_error()
+    default_cli, source = resolved or (_DEFAULT_PROVIDER, "default")
+    clis = declared.clis or (default_cli,)
+    if default_cli not in clis:
+        raise BackendConfigError(
+            f"{source} names {default_cli!r}, which is not in booley.toml [agent] clis."
+        )
+    policies = _auth_policies(declared, clis, default_cli, lazy=lazy)
+    models = data.get("models", {})
+    if not isinstance(models, dict):
+        logger.warning("booley.toml [models] is not a table; ignoring")
+        models = {}
+    pin = _gateway_pin(policies)
+    return AgentSettings(
+        default_cli=default_cli,
+        clis=clis,
+        auth=policies,
+        specialist_models=parse_models_section(models, clis, default_cli),
+        model_pin=pin.model,
+        effort_pin=pin.effort,
     )
 
 
@@ -340,7 +414,7 @@ def get_agent_settings() -> AgentSettings:
     """Return validated settings, resolving environment and Project defaults lazily."""
     global _agent_settings
     if _agent_settings is None:
-        _agent_settings = _lazy_agent_settings()
+        _agent_settings = settings_from_data(_project_toml_from_env(), lazy=True)
     return _agent_settings
 
 
@@ -350,69 +424,31 @@ def set_agent_settings(settings: AgentSettings | None) -> None:
     _agent_settings = settings
 
 
-@dataclass(frozen=True)
-class _ProjectAgentConfig:
-    """What the project's booley.toml says about agents and their models.
+def _project_toml_from_env() -> dict[str, Any]:
+    """The Project's booley.toml via ``BOOLEY_DIR`` (what a Specialist subprocess sees).
 
-    ``provider``/``auth`` are ``None`` when undeclared — the caller decides
-    whether an env hand-off or a default fills them in. ``tier_models`` is
-    sparse (only the tiers ``[models]`` actually declared) so it can be merged
-    against whichever provider ultimately wins.
+    Container layout: the toml mounted flat in ``BOOLEY_DIR``; host: ``<repo>/.booley``.
     """
-
-    provider: str | None = None
-    auth: str | None = None
-    tier_models: dict[str, str] | None = None
-    role_models: dict[str, str] = field(default_factory=dict)
-
-
-def _project_config_from_env() -> _ProjectAgentConfig | None:
-    """Read the project's agent/model config from booley.toml via env.
-
-    Reads ``BOOLEY_DIR`` and looks for ``booley.toml`` under it. Handles
-    both layouts the harness produces:
-
-      * container: ``BOOLEY_DIR=/booley-project`` with the toml mounted
-        flat at ``/booley-project/booley.toml``.
-      * host:      ``BOOLEY_DIR=<repo>/.booley`` — the toml sits
-        directly inside, so the same flat probe finds it.
-
-    This is the path a *specialist subprocess* takes: it never calls
-    ``load_agent_settings``, so without this it would see none of the project's
-    ``[models]`` pins. Returns ``None`` when the dir/toml is absent or
-    unreadable. An *invalid* provider/auth/role still raises (fail loud).
-    """
-    import os
-
     booley_dir = os.environ.get("BOOLEY_DIR")
     if not booley_dir:
-        return None
-
+        return {}
     base = Path(booley_dir)
-    for toml_path in (base / "booley.toml", base / ".booley" / "booley.toml"):
-        if not toml_path.is_file():
-            continue
-        try:
-            import tomllib
+    candidates = (base / "booley.toml", base / ".booley" / "booley.toml")
+    return next((data for path in candidates if (data := _read_toml(path)) is not None), {})
 
-            with toml_path.open("rb") as f:
-                data = tomllib.load(f)
-        except (OSError, ImportError, ValueError) as e:
-            logger.warning("Failed to read agent config from %s: %s", toml_path, e)
-            continue
-        agent = data.get("agent", {})
-        if not isinstance(agent, dict):
-            agent = {}
-        models = data.get("models", {})
-        if not isinstance(models, dict):
-            models = {}
-        return _ProjectAgentConfig(
-            provider=_parse_provider(agent),
-            auth=_parse_auth(agent),
-            tier_models=_parse_tier_models(models),
-            role_models=_parse_role_models(models),
-        )
-    return None
+
+def _read_toml(path: Path) -> dict[str, Any] | None:
+    """The parsed toml at *path*, or ``None`` when it is missing or unreadable."""
+    import tomllib
+
+    if not path.is_file():
+        return None
+    try:
+        with path.open("rb") as f:
+            return tomllib.load(f)
+    except (OSError, ValueError) as e:
+        logger.warning("Failed to read agent config from %s: %s", path, e)
+        return None
 
 
 def _parse_sandbox_config(data: dict) -> SandboxConfig:
@@ -480,138 +516,26 @@ def _resolve_booley_toml(project_data: Path) -> Path:
 def load_agent_settings(project_root: Path, *, booley_dir: Path | None = None) -> AgentSettings:
     """Load and install validated agent, model, sandbox, and job settings.
 
-    The single provider is selected via ``[agent] provider`` (default:
-    ``_DEFAULT_PROVIDER``). The developer and every specialist run on it.
-    Auth mode, explicit model tiers, and sandbox config are also read from the
-    TOML. ``booley_dir`` lets callers that already resolved the canonical
-    Booley Directory avoid repeating path discovery. An explicitly *invalid*
-    provider raises ``BackendConfigError`` — we never silently run a backend
-    the project didn't ask for.
+    The default Agent CLI comes from ``BOOLEY_PRIMARY_PROVIDER``, ``[agent] default``
+    or ``BOOLEY_AGENT_APP`` (else Claude); ``[agent] clis`` lists the CLIs a Project may
+    run and ``[models]`` pins Specialists. ``booley_dir`` lets callers that already
+    resolved the canonical Booley Directory avoid repeating path discovery. Invalid
+    ``[agent]`` or ``[models]`` content raises ``BackendConfigError`` — we never
+    silently run a backend or model the project didn't ask for.
     """
     global _agent_settings
-
-    (auth, tier_overrides, provider, role_models, sandbox_cfg, jobs_cfg) = _load_toml_agent_config(
-        project_root,
-        booley_dir=booley_dir,
-    )
-    if provider is None:
-        from booley.config import agent_app
-
-        provider = agent_app.resolved_app(_DEFAULT_PROVIDER)
-    if gateway_handoff_active():
-        # Env-only policy: it has no toml home, so it overrides the toml value.
-        auth = GATEWAY_AUTH
-
-    pin = _gateway_pin(auth, provider)
-    _agent_settings = AgentSettings(
-        tier_models=_resolve_tier_models(provider, tier_overrides),
-        role_models=role_models,
-        auth=auth,
-        provider=provider,
-        sandbox=sandbox_cfg,
-        jobs=jobs_cfg,
-        model_pin=pin.model,
-        effort_pin=pin.effort,
-    )
-
-    return _agent_settings
-
-
-def _load_toml_agent_config(
-    project_root: Path,
-    *,
-    booley_dir: Path | None = None,
-) -> tuple[str, dict[str, str] | None, str | None, dict[str, str], SandboxConfig, SlotCaps]:
-    """Parse booley.toml [agent]/[sandbox]/[models]/[jobs].
-
-    Returns (auth, tier_overrides, provider, role_models, sandbox, jobs).
-    ``provider`` is ``None`` when the toml is missing/unparseable or declares
-    no provider — the caller applies ``_DEFAULT_PROVIDER``. An *invalid*
-    provider, auth, or role raises (fail loud).
-    """
-    if booley_dir is None:
-        bp = project_root / ".booley"
-        project_data = bp
-    else:
-        project_data = booley_dir
-    toml_path = _resolve_booley_toml(project_data)
-
-    auth = _DEFAULT_AUTH
-    tier_overrides: dict[str, str] | None = None
-    provider: str | None = None
-    role_models: dict[str, str] = {}
-    sandbox_cfg = SandboxConfig()
-    jobs_cfg = SlotCaps()
-
-    if not toml_path.exists():
-        logger.debug("No booley.toml at %s; using defaults", toml_path)
-        return (auth, tier_overrides, provider, role_models, sandbox_cfg, jobs_cfg)
-
-    try:
-        import tomllib
-    except ImportError:
-        logger.warning("tomllib unavailable; using default model config")
-        return (auth, tier_overrides, provider, role_models, sandbox_cfg, jobs_cfg)
-
-    try:
-        with toml_path.open("rb") as f:
-            data = tomllib.load(f)
-
-        sandbox_cfg = _parse_sandbox_config(data)
-        sandbox_cfg = replace(sandbox_cfg, image=project_sandbox_image(project_root))
-        jobs_cfg = _parse_jobs_config(data)
-        (auth, tier_overrides, provider, role_models) = _parse_agent_and_models(data, auth)
-        logger.debug(
-            "Loaded booley.toml [agent]: %s (provider), %d role model pin(s)",
-            provider,
-            len(role_models),
-        )
-    except (OSError, KeyError, TypeError, ValueError) as e:
-        logger.warning("Failed to parse booley.toml: %s (using defaults)", e)
-
-    return (auth, tier_overrides, provider, role_models, sandbox_cfg, jobs_cfg)
-
-
-def parse_provider(agent_section: Mapping[str, Any]) -> str | None:
-    """Resolve the declared agent provider, or ``None`` when [agent] omits it.
-
-    ``provider`` is the sole spelling. An explicitly invalid value raises
-    ``BackendConfigError`` — a typo must not silently run a backend the project
-    never chose.
-    """
-    raw = agent_section.get("provider")
-    if raw is None:
-        return None
-    if raw not in _VALID_PROVIDERS:
-        raise BackendConfigError(
-            f"booley.toml [agent] provider={raw!r} is invalid; use 'codex' or 'claude'."
-        )
-    return raw
-
-
-_parse_provider = parse_provider
-
-
-def parse_auth(agent_section: Mapping[str, Any]) -> str | None:
-    """Resolve the declared auth mode, or ``None`` when [agent] omits it.
-
-    ``auth`` is the sole spelling. An explicitly invalid value raises
-    ``BackendConfigError`` — a typo
-    like ``auth = "subscripton"`` must not silently bill a credential the
-    project never chose.
-    """
-    raw = agent_section.get("auth")
-    if raw is None:
-        return None
-    if raw not in _VALID_AUTH_MODES:
-        raise BackendConfigError(
-            f"booley.toml [agent] auth={raw!r} is invalid; "
-            f"use one of {', '.join(repr(m) for m in _VALID_AUTH_MODES)}."
-        )
-    return raw
-
-
-_parse_auth = parse_auth
+    data = _read_toml(_resolve_booley_toml(booley_dir or project_root / ".booley"))
+    settings = settings_from_data(data or {}, lazy=False)
+    if data is not None:
+        try:
+            sandbox = replace(
+                _parse_sandbox_config(data), image=project_sandbox_image(project_root)
+            )
+            settings = replace(settings, sandbox=sandbox, jobs=_parse_jobs_config(data))
+        except (OSError, KeyError, TypeError, ValueError) as e:
+            logger.warning("Failed to parse booley.toml: %s (using defaults)", e)
+    _agent_settings = settings
+    return settings
 
 
 def env_auth_handoff() -> str | None:
@@ -661,136 +585,13 @@ def _env_auth() -> str:
     return raw
 
 
-def resolve_auth_policy() -> str:
-    """The effective ``[agent] auth`` policy, resolved without side effects.
-
-    For callers that need only the auth policy (sandbox env forwarding, doctor
-    reporting) and must never trip ``_lazy_agent_settings``'s fail-loud
-    provider resolution. Order: ``BOOLEY_PRIMARY_AUTH`` (the developer's
-    hand-off into containers) beats the project's booley.toml; absent both,
-    ``auto``. Never raises: an invalid toml value degrades to ``auto`` with a
-    warning here — the loud ``BackendConfigError`` belongs to the config-load
-    path, not to a reporting/forwarding helper. The one exception is
-    ``BOOLEY_AGENT_APP=auto`` outside a Sandbox or before the registrar
-    resolved it, which raises ``AgentAppError``.
-    """
-    import os
-
-    if env_auth_handoff():
-        return _env_auth()
-
-    booley_dir = os.environ.get("BOOLEY_DIR")
-    if not booley_dir:
-        return _DEFAULT_AUTH
-    base = Path(booley_dir)
-    for toml_path in (base / "booley.toml", base / ".booley" / "booley.toml"):
-        if not toml_path.is_file():
-            continue
-        try:
-            import tomllib
-
-            with toml_path.open("rb") as f:
-                data = tomllib.load(f)
-            agent = data.get("agent", {})
-            if isinstance(agent, dict):
-                return _parse_auth(agent) or _DEFAULT_AUTH
-        except (OSError, ValueError, BackendConfigError) as e:
-            logger.warning("Failed to read [agent] auth from %s: %s", toml_path, e)
-        break
-    return _DEFAULT_AUTH
-
-
-def _parse_tier_models(models_section: dict) -> dict[str, str] | None:
-    """Parse the tier keys of ``[models]``, or ``None`` when none are declared.
-
-    Sparse by design: an undeclared tier must follow the resolved provider's
-    default, so it is left absent rather than pre-filled here. Non-tier keys
-    (``roles``, and anything else) are handled by ``_parse_role_models`` and
-    doctor's table validation, not here.
-    """
-    tiers = {
-        tier: models_section[tier]
-        for tier in _MODEL_TIERS
-        if isinstance(models_section.get(tier), str) and models_section[tier].strip()
-    }
-    return tiers or None
-
-
-def parse_role_models(models_section: Mapping[str, Any]) -> dict[str, str]:
-    """Parse ``[models.roles]`` — per-agent model pins.
-
-    Each value is either a tier name or a literal model id; the distinction is
-    resolved late, in ``AgentSettings.model_for_role``, so a role pinned to a
-    tier keeps tracking that tier's ``[models]`` override.
-
-    An unknown role key raises ``BackendConfigError``. Silently ignoring it is
-    the one failure mode this knob must not have: the user pins a model, the
-    run bills a different one, and nothing says so. A retired role raises
-    ``RetiredRoleError`` for the same reason: nothing reads that pin.
-    """
-    roles_section = models_section.get("roles", {})
-    if not roles_section:
-        return {}
-    if not isinstance(roles_section, dict):
-        raise BackendConfigError(
-            f"booley.toml [models] roles must be a table, got {type(roles_section).__name__}; "
-            'write it as [models.roles] with one "<role> = <model>" line per agent.'
-        )
-
-    role_models: dict[str, str] = {}
-    for role, value in roles_section.items():
-        if role in RETIRED_ROLES:
-            raise RetiredRoleError(role)
-        if role not in _KNOWN_ROLES:
-            raise BackendConfigError(
-                f"booley.toml [models.roles] has an unknown role {role!r}; "
-                f"valid roles are {', '.join(sorted(_KNOWN_ROLES))}."
-            )
-        if not isinstance(value, str) or not value.strip():
-            raise BackendConfigError(
-                f"booley.toml [models.roles] {role}={value!r} is invalid; use a tier name "
-                f'({"/".join(_MODEL_TIERS)}) or a model id (e.g. "claude-opus-5-5").'
-            )
-        role_models[role] = value.strip()
-    return role_models
-
-
-_parse_role_models = parse_role_models
-
-
-def _parse_agent_and_models(
-    data: dict,
-    default_auth: str,
-) -> tuple[str, dict[str, str] | None, str | None, dict[str, str]]:
-    """Parse [agent] and [models] sections.
-
-    Returns (auth, tier_overrides, provider, role_models). ``provider`` is
-    ``None`` when undeclared; the caller applies ``_DEFAULT_PROVIDER``.
-    ``tier_overrides`` is sparse — see ``_resolve_tier_models``.
-
-    ``[models]`` is read whether or not ``[agent]`` exists: they are
-    independent tables, and gating one on the other made every ``[models]``
-    setting in an ``[agent]``-less project silently inert.
-    """
-    agent_section = data.get("agent", {})
-    if not isinstance(agent_section, dict):
-        agent_section = {}
-
-    provider = _parse_provider(agent_section)
-    auth = _parse_auth(agent_section) or default_auth
-
-    models_section = data.get("models", {})
-    if not isinstance(models_section, dict):
-        logger.warning("booley.toml [models] is not a table; ignoring")
-        models_section = {}
-
-    return (auth, _parse_tier_models(models_section), provider, _parse_role_models(models_section))
-
-
 def project_credential_policy(
     project_root: Path, *, booley_dir: Path | None = None
 ) -> tuple[str, str]:
-    """Read policy at an already-selected root, failing closed on invalid input."""
+    """The default CLI and its declared auth policy at an already-selected root.
+
+    Reads booley.toml only (no environment) and fails closed on invalid input.
+    """
     import tomllib
 
     if booley_dir is None:
@@ -813,4 +614,12 @@ def project_credential_policy(
     agent = data.get("agent", {})
     if not isinstance(agent, dict):
         raise BackendConfigError("booley.toml [agent] must be a table")
-    return parse_provider(agent) or _DEFAULT_PROVIDER, parse_auth(agent) or _DEFAULT_AUTH
+    declared = parse_agent_section(agent)
+    cli = declared.default or _DEFAULT_PROVIDER
+    policy = declared.auth if isinstance(declared.auth, str) else (declared.auth or {}).get(cli)
+    if policy == GATEWAY_AUTH:
+        raise BackendConfigError(
+            "a Booley-issued Sandbox cannot route Codex through the gateway yet; "
+            "use a hand-written Sandbox spec with BOOLEY_PRIMARY_AUTH=gateway"
+        )
+    return cli, policy or _DEFAULT_AUTH

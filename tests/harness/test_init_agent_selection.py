@@ -413,6 +413,29 @@ def test_existing_selection_is_authoritative_and_not_rewritten(tmp_path, monkeyp
     assert config.read_text(encoding="utf-8") == body
 
 
+def test_init_keeps_a_per_cli_auth_table(tmp_path, monkeypatch):
+    """An [agent.auth] table counts as declared auth: no prompt, no rewrite."""
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    config = booley_dir / "booley.toml"
+    body = (
+        '[agent]\nclis = ["claude", "codex"]\ndefault = "codex"\n\n'
+        '[agent.auth]\nclaude = "api_key"\ncodex = "subscription"\n'
+    )
+    config.write_text(body, encoding="utf-8")
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _prompt: (_ for _ in ()).throw(AssertionError("must not prompt")),
+    )
+    ctx = InitContext(project_root=tmp_path, interactive=True)
+
+    resolved = init_cmd._resolve_agent_selection(ctx, _args(), config)
+
+    assert resolved == init_cmd.AgentSelection("codex", "subscription")
+    assert init_cmd._step_agent_config(ctx, resolved, config)
+    assert config.read_bytes() == body.encode()
+
+
 def test_existing_provider_only_receives_and_persists_default_auth(tmp_path):
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()

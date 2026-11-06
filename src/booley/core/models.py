@@ -45,6 +45,8 @@ class AgentCallParams:
     artifact_paths: ArtifactPathResolver | None = None
     label: str | None = None
     reasoning_effort: str | None = None
+    # The Agent CLI that runs the call; None = the Project's default CLI.
+    agent_cli: str | None = None
     session_id: str | None = None
     resume_session: bool = False
 

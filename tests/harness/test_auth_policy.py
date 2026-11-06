@@ -53,39 +53,16 @@ class TestParseAuth:
     def test_retired_primary_auth_alias_is_ignored(self):
         assert bc._parse_auth({"primary_auth": "subscription"}) is None
 
+    def test_per_cli_table(self):
+        assert bc._parse_auth({"auth": {"claude": "subscription", "codex": "gateway"}}) == {
+            "claude": "subscription",
+            "codex": "gateway",
+        }
+
     def test_invalid_value_raises(self):
         # A typo must not silently bill a credential the project never chose.
         with pytest.raises(bc.BackendConfigError, match="subscripton"):
             bc._parse_auth({"auth": "subscripton"})
-
-
-class TestResolveAuthPolicy:
-    def test_defaults_to_auto(self, clean_env):
-        assert bc.resolve_auth_policy() == "auto"
-
-    def test_env_handoff_wins(self, clean_env, monkeypatch):
-        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
-        assert bc.resolve_auth_policy() == "subscription"
-
-    def test_invalid_env_degrades_to_auto(self, clean_env, monkeypatch):
-        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "junk")
-        assert bc.resolve_auth_policy() == "auto"
-
-    def test_reads_project_toml(self, clean_env, monkeypatch):
-        project = clean_env / "proj"
-        project.mkdir()
-        (project / "booley.toml").write_text('[agent]\nauth = "subscription"\n')
-        monkeypatch.setenv("BOOLEY_DIR", str(project))
-        assert bc.resolve_auth_policy() == "subscription"
-
-    def test_invalid_toml_value_degrades_not_raises(self, clean_env, monkeypatch):
-        # This helper feeds reporting/forwarding paths — it must never raise;
-        # the loud BackendConfigError belongs to the config-load path.
-        project = clean_env / "proj"
-        project.mkdir()
-        (project / "booley.toml").write_text('[agent]\nauth = "junk"\n')
-        monkeypatch.setenv("BOOLEY_DIR", str(project))
-        assert bc.resolve_auth_policy() == "auto"
 
 
 class TestClaudeSubscriptionScrub:

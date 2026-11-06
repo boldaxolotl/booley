@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any
 
 from booley.audit.config_common import (
@@ -11,22 +11,13 @@ from booley.audit.config_common import (
     fail_finding,
     failure,
     pass_finding,
-    warn_finding,
 )
-from booley.config.agent import (
-    KNOWN_ROLES,
-    MODEL_TIERS,
-    BackendConfigError,
-    RetiredRoleError,
-    parse_auth,
-    parse_provider,
-    parse_role_models,
-)
-from booley.core.boundary import as_dict, as_str
+from booley.config.agent import BackendConfigError, parse_agent_section, settings_from_data
+from booley.core.boundary import as_dict
 
 
 def audit_agent_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Audit the runtime provider and authentication selection."""
+    """Audit the Agent CLI set, default, and authentication selection."""
     raw_agent = data.get("agent")
     if raw_agent is None:
         return ConfigTableAudit()
@@ -40,31 +31,28 @@ def audit_agent_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     if retired:
         return failure(
             f"booley.toml [agent] uses retired key(s): {', '.join(retired)}",
-            "use only [agent].provider/auth",
+            "use only [agent].clis/default/auth",
         )
-    return _audit_agent_selection(agent)
-
-
-def _audit_agent_selection(agent: Mapping[str, Any]) -> ConfigTableAudit:
     try:
-        provider = parse_provider(agent)
-    except BackendConfigError as exc:
-        return failure(str(exc), 'set [agent] provider = "claude" or "codex"')
-    try:
-        auth = parse_auth(agent)
+        declared = parse_agent_section(agent)
+        settings_from_data({k: v for k, v in data.items() if k != "models"}, lazy=False)
     except BackendConfigError as exc:
         return failure(
             str(exc),
-            'set [agent] auth = "auto", "subscription", or "api_key"',
+            'set [agent] clis/default to "claude" or "codex"; auth to "auto", '
+            '"subscription", "api_key" (or "gateway" for Codex), alone or per CLI in [agent.auth]',
         )
-    if not provider:
+    if declared.default is None and declared.auth is None:
         return ConfigTableAudit()
-    detail = f" (auth: {auth})" if auth else ""
-    return ConfigTableAudit((pass_finding(f"booley.toml [agent] provider: {provider}{detail}"),))
+    clis = f"clis: {', '.join(declared.clis)}; " if declared.clis else ""
+    detail = f"; auth: {declared.auth}" if declared.auth else ""
+    return ConfigTableAudit(
+        (pass_finding(f"booley.toml [agent] {clis}default: {declared.default}{detail}"),)
+    )
 
 
 def audit_models_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Audit model-tier overrides and per-role model pins."""
+    """Audit the per-Specialist model pins against the configured Agent CLIs."""
     raw_models = data.get("models")
     if raw_models is None:
         return ConfigTableAudit()
@@ -74,47 +62,26 @@ def audit_models_table(data: Mapping[str, Any]) -> ConfigTableAudit:
             "booley.toml [models] must be a table",
             "rewrite [models] as a TOML table",
         )
-    findings = _unknown_model_key_findings(models, MODEL_TIERS)
     try:
-        role_models = parse_role_models(models)
-    except RetiredRoleError as exc:
-        findings.append(fail_finding(str(exc), f"delete the {exc.role} line from [models.roles]"))
-        return ConfigTableAudit(tuple(findings))
+        settings_from_data({k: v for k, v in data.items() if k != "models"}, lazy=False)
+    except BackendConfigError:
+        return ConfigTableAudit()  # the [agent] audit reports it
+    try:
+        settings = settings_from_data(data, lazy=False)
     except BackendConfigError as exc:
-        findings.append(fail_finding(str(exc), f"use one of: {', '.join(sorted(KNOWN_ROLES))}"))
-        return ConfigTableAudit(tuple(findings))
-    findings.extend(_model_pass_findings(models, MODEL_TIERS, role_models))
-    return ConfigTableAudit(tuple(findings))
-
-
-def _unknown_model_key_findings(
-    models: Mapping[str, Any],
-    tiers: Sequence[str],
-) -> list[ConfigFinding]:
-    return [
-        warn_finding(
-            f"booley.toml [models] has an unrecognized key {key!r} — expected a tier "
-            f"({'/'.join(tiers)}) or the [models.roles] table; it is ignored",
-            "config.models-unknown-key",
-            subject=key,
+        return ConfigTableAudit(
+            (
+                fail_finding(
+                    str(exc),
+                    "pin each Specialist with a claude-* or gpt-* model ID, and list its "
+                    "Agent CLI in [agent] clis",
+                ),
+            )
         )
-        for key in models
-        if key not in tiers and key != "roles"
-    ]
-
-
-def _model_pass_findings(
-    models: Mapping[str, Any],
-    tiers: Sequence[str],
-    role_models: Mapping[str, str],
-) -> list[ConfigFinding]:
     findings: list[ConfigFinding] = []
-    configured_tiers = [tier for tier in tiers if as_str(models.get(tier)) is not None]
-    if configured_tiers:
-        findings.append(
-            pass_finding(f"booley.toml [models] tier overrides: {', '.join(configured_tiers)}")
+    if settings.specialist_models:
+        pins = ", ".join(
+            f"{name}={model}" for name, model in sorted(settings.specialist_models.items())
         )
-    if role_models:
-        pins = ", ".join(f"{role}={model}" for role, model in sorted(role_models.items()))
-        findings.append(pass_finding(f"booley.toml [models.roles] pins: {pins}"))
-    return findings
+        findings.append(pass_finding(f"booley.toml [models] pins: {pins}"))
+    return ConfigTableAudit(tuple(findings))
