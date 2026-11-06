@@ -55,7 +55,9 @@ from .agent_errors import (
     TransientAPIError,
     UsageLimitError,
     is_context_exhausted,
+    is_model_refusal,
     is_usage_limit,
+    model_unavailable_error,
 )
 from .exception_diagnostics import log_exception, provider_exception_message
 from .prompt_artifacts import adjacent_artifact_paths, write_prompt_artifacts
@@ -318,6 +320,7 @@ class ClaudeSDKBackend:
                         stream_state.turn_count,
                         attempt,
                         transcript_path,
+                        model=options.model,
                     )
         finally:
             _claude_write_markdown(transcript_path, markdown_path=paths.transcript_markdown)
@@ -794,6 +797,8 @@ def _handle_stream_exception(
     turn_count: int,
     attempt: int,
     transcript_path: Path | None,
+    *,
+    model: str,
 ) -> None:
     """Handle exceptions from the SDK stream, re-raising as appropriate."""
     if isinstance(exc, TransientAPIError):
@@ -831,6 +836,8 @@ def _handle_stream_exception(
         raise UsageLimitError(provider_message, provider="claude") from exc
     if is_context_exhausted(provider_message):
         raise ContextExhaustedError(provider_message, provider="claude") from exc
+    if is_model_refusal(provider_message):
+        raise model_unavailable_error(model, "claude", provider_message) from exc
     if _is_transient_error(RuntimeError(provider_message)):
         logger.warning("Transient API error: %s", provider_message)
         raise TransientAPIError(provider_message) from exc

@@ -387,10 +387,12 @@ class Specialist(McpTool):
             return self._invoke_agent(params, on_event=on_event)
         from claude_agent_sdk import ClaudeSDKError
 
-        from booley.runtime.agent_errors import TransientAPIError
+        from booley.runtime.agent_errors import ModelUnavailableError, TransientAPIError
 
         try:
             return self._invoke_agent(params, on_event=on_event)
+        except ModelUnavailableError:
+            raise  # a fresh session asks the same refused model; the fix is config
         except (ClaudeSDKError, TransientAPIError, RuntimeError) as exc:
             logger.warning(
                 "%s: resumed session failed (%s), retrying as fresh invocation",
