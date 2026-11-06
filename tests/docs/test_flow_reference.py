@@ -292,6 +292,10 @@ def test_synth_report_fields_stay_documented(tmp_path: Path) -> None:
         failure_output="failure",
         run_evidence={"run_id": "current"},
         synth_mode="physical",
+        openroad_reuse={
+            "producer_run_id": "synth-1",
+            "producer_started_at": "2026-11-06T10:00:00Z",
+        },
     )
     baseline_synth = SynthMetrics(
         area_um2=8.0,
