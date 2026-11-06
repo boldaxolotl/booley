@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import os
 import subprocess
 from pathlib import Path
@@ -308,25 +309,16 @@ def _launch_finalized(endpoint: Specialist, tmp_path: Path) -> McpToolResult:
 _OPUS_THEN_LUNA = ("claude-opus-5-5", "gpt-6-luna")
 
 
-def _refusal_memory() -> dict:
-    """The process refusal memory of the model fallback list (empty if the module is absent)."""
-    try:
-        from booley.runtime import model_fallback
-    except ImportError:
-        return {}
-    return model_fallback._REFUSED
-
-
 @pytest.fixture
 def logins(monkeypatch):
     """Set which Agent CLIs have a login; the process refusal memory starts empty."""
     from booley.runtime import auth_token
 
     logged_in: set[str] = set()
-    monkeypatch.setattr(
-        auth_token, "cli_logged_in", lambda cli, *_a, **_kw: cli in logged_in, raising=False
-    )
-    refused = _refusal_memory()
+    monkeypatch.setattr(auth_token, "cli_logged_in", lambda cli, *_a, **_kw: cli in logged_in)
+    from booley.runtime import model_fallback
+
+    refused = model_fallback._REFUSED
     refused.clear()
     yield logged_in
     refused.clear()
@@ -380,6 +372,25 @@ def test_model_list_skips_entry_whose_cli_cannot_run(
         note = result.detail["specialist_model"]
         assert note["model"] == "gpt-6-luna"
         assert note["fallback"]["first_choice"] == "claude-opus-5-5"
+
+
+def test_model_list_fallback_keeps_the_session_of_the_model_that_ran(
+    tmp_path: Path, per_cli_backends, logins
+) -> None:
+    """Retry rounds resume the session the fallback model made, not a fresh one."""
+    logins.add("codex")
+    _built, calls = per_cli_backends(_list_settings())
+    endpoint = _named("reviewer")
+    _launch_finalized(endpoint, tmp_path)  # round 1 runs on Luna (Claude has no login)
+
+    resumed = dataclasses.replace(
+        endpoint._agent_call_params(), session_id="codex-session", resume_session=True
+    )
+    endpoint._invoke_agent(resumed)
+
+    cli, params = calls[-1]
+    assert (cli, params.model) == ("codex", "gpt-6-luna")
+    assert (params.session_id, params.resume_session) == ("codex-session", True)
 
 
 def test_model_list_runs_first_entry_when_both_clis_are_logged_in(

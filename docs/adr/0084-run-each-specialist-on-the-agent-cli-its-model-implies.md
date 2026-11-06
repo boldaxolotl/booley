@@ -37,10 +37,9 @@ of the multi-CLI epic.
   (`reviewer`, `mutation_tester`, `coverage_analyst`). `claude-*` models run on
   Claude Code and `gpt-*` models on Codex; for a string value that CLI must be
   in `clis` (a list entry outside it loads and is skipped at launch, see the
-  amendment). An
-  unknown key, a model with neither prefix, or a CLI outside the set fails
-  loading, naming the key. A Specialist without an entry runs on the default
-  CLI's built-in Specialist model (`claude-opus-5-5` / `gpt-6.1-sol`, today's
+  amendment). An unknown key, a model with neither prefix, or a CLI outside
+  the set fails loading, naming the key. A Specialist without an entry runs on
+  the default CLI's built-in Specialist model (`claude-opus-5-5` / `gpt-6.1-sol`, today's
   `standard` tier); Booley's internal calls use `claude-sonnet-5-5` /
   `gpt-6-luna`.
 - **Tiers retired with a migration error.** The tier keys, `[models.roles]`,
@@ -89,7 +88,7 @@ them accepting tier names that no longer exist.
 - `booley init` still records `provider`; it keeps an `[agent.auth]` table it
   finds.
 
-## Amendment (#2836): list fallback
+## Amendments (2026-11-06): list fallback (#2836)
 
 A `[models]` Specialist value may also be a non-empty list of model IDs. The
 form is hidden on purpose: user docs do not mention it. It exists for a Project

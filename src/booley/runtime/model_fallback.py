@@ -68,7 +68,7 @@ class ModelRun:
 
     def summary(self) -> str:
         """One human line for a fallback: what ran and why each earlier entry did not."""
-        why = "; ".join(f"{model} {reason}" for model, reason in self.skipped)
+        why = "; ".join(f"{model}: {reason}" for model, reason in self.skipped)
         return f"Ran on {self.model} instead of {self.first_choice} ({why})."
 
 

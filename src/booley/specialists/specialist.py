@@ -288,14 +288,18 @@ class Specialist(McpTool):
         A string pin (or none) calls once with *params* untouched, so a provider refusal
         raises the model-refusal error and nothing else is tried. A hidden fallback list
         (ADR 0084 amendment, #2836) is walked by ``call_with_fallback``: each attempt
-        replaces the model, Agent CLI and reasoning effort, and never reuses a session
-        across models. The model that ran is kept in ``self._model_run``.
+        replaces the model, Agent CLI and reasoning effort; a session resumes only on the
+        model that made it. The model that ran is kept in ``self._model_run``.
         """
         from booley.config.settings import get_agent_settings
 
         settings = get_agent_settings()
         is_list = settings.model_candidates(self.name) is not None
         first_cli = params.agent_cli or self._resolve_cli()
+        # A resumed session belongs to the model that made it: the one an earlier call of
+        # this Specialist ran on, else the first entry the caller built *params* for.
+        previous = self._model_run
+        session_pair = (previous.model, previous.cli) if previous else (params.model, first_cli)
 
         def attempt(model: str, cli: str) -> Any:
             if not is_list:
@@ -306,7 +310,7 @@ class Specialist(McpTool):
                 agent_cli=cli,
                 reasoning_effort=self._reasoning_effort(cli),
             )
-            if (model, cli) != (params.model, first_cli):
+            if (model, cli) != session_pair:
                 # A session never transfers across models or Agent CLIs.
                 call_params = dataclasses.replace(
                     call_params, session_id=None, resume_session=False
