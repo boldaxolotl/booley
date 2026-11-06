@@ -52,7 +52,7 @@ from booley.mcp.base import (
     EXIT_SUCCESS,
     McpToolResult,
 )
-from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
+from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.file_lock import LockContentionError, nonblocking_file_lock
@@ -943,7 +943,7 @@ class ReviewerSpecialist(Specialist):
             root = Path(self.args.work_dir).resolve()
             checkout_id = hashlib.sha256(str(root).encode()).hexdigest()[:24]
             self.args.state_file = (
-                resolve_checkout_booley_dir(root) / "reviewer-state" / checkout_id / "state.json"
+                resolve_common_booley_dir(root) / "reviewer-state" / checkout_id / "state.json"
             )
         self._review_state_bytes = self._read_review_state_bytes()
         return super().read_state()
@@ -1707,7 +1707,7 @@ object, even after calling the capability.
         if getattr(self.args, "dry_run", False):
             return self._dry_run_preview()
         self._review_evidence_path = (
-            resolve_booley_dir(Path(self.args.work_dir))
+            resolve_common_booley_dir(Path(self.args.work_dir))
             / "reviewer-evidence"
             / f"{self._review_run_id}.json"
         )

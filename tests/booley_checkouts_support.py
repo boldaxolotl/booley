@@ -112,3 +112,20 @@ def linked_worktree(
         monkeypatch.setenv("BOOLEY_DIR", str(main / ".booley"))
     reset_cache()
     return main, worktree
+
+
+def enter_worktree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """Work from a linked Snapshot worktree on the host: ``(Main Booley Directory, worktree)``.
+
+    No ``BOOLEY_DIR`` is set, the CWD is the worktree, and the resolver cache is
+    cleared, so the selected directory is the worktree's own and only the Common
+    resolver reaches main.
+    """
+    from booley.runtime.booley_dir import reset_cache
+
+    isolate_git(tmp_path, monkeypatch)
+    main = main_project(tmp_path)
+    worktree = snapshot(main)
+    monkeypatch.chdir(worktree)
+    reset_cache()
+    return main / ".booley", worktree

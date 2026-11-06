@@ -212,6 +212,7 @@ def test_reconciled_checkout_stays_clean_after_real_reviewer(tmp_path, monkeypat
     )
     assert result.exit_code == 0, result.outcome.report_text
     assert list(selected_dir.glob("mcp-tool-reports/**/report.json"))
-    assert list(selected_dir.glob("reviewer-state/**/*"))
+    # Reviewer state is Common Booley State: it lives in the main checkout's directory (#2603).
+    assert list(directory.glob("reviewer-state/**/*"))
     assert git(worktree, "status", "--porcelain") == ""
     assert git(policy_owner, "status", "--porcelain") == ""
