@@ -27,7 +27,6 @@ from booley.evidence.fields import (
 from booley.evidence.timing import ClockTiming, make_clock_timing
 from booley.flows import run_evidence
 from booley.flows.base import SubprocessResult
-from booley.flows.eda_failures import first_tool_diagnostic
 from booley.flows.fpga.backends.vivado import cache as fpga_cache
 from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics, _metrics_detail
 from booley.flows.fpga.flow import FpgaImplFlow, _PreparedFpgaCommand, _vlogdefine_args
@@ -1862,6 +1861,8 @@ def test_route_fact_does_not_hide_abnormal_termination(process):
     ],
 )
 def test_startup_cause_skips_success_summary_and_echoed_tcl(diagnostic):
+    from booley.flows.eda_failures import first_tool_diagnostic
+
     text = '0 Critical Warnings and 0 Errors encountered.\nputs "error"\n' + diagnostic
     assert first_tool_diagnostic(text, default="no route completion evidence") == diagnostic
 
