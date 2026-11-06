@@ -22,7 +22,7 @@ const LIFECYCLE_PREFIX = 'Codespaces: ';
 function isLifecycleTerminal(terminal) {
     return vscode.env.remoteName === 'codespaces' &&
         [terminal.name, terminal.creationOptions.name]
-            .some(name => name?.startsWith(LIFECYCLE_PREFIX) === true);
+            .some(name => name?.startsWith(LIFECYCLE_PREFIX));
 }
 
 function policy(root, signal) {
@@ -122,7 +122,7 @@ class AttachController {
             // A terminal nobody has used yet, such as the Codespace shell that
             // starts with the Trust click, does not hold the Dashboard back, so it
             // can end up behind the Dashboard. A Codespaces lifecycle-command
-            // terminal is never in use, even though VS Code flags it interacted.
+            // terminal is never in use, even though VS Code may flag it interacted.
             const busy = this.terminalInUse();
             const terminal = vscode.window.createTerminal({
                 name: 'Booley Dashboard',

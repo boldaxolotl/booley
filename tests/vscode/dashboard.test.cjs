@@ -28,13 +28,18 @@ function fakeEditor(options, records, settings) {
         open.push({ name: 'bash', creationOptions: {}, state: { isInteractedWith: true } });
     }
     // Codespaces runs devcontainer lifecycle commands (postAttachCommand) in a
-    // terminal named `Codespaces: <command>`, and the editor flags it interacted
-    // because the command is sent as text.
+    // terminal named `Codespaces: <command>`, which the editor may flag
+    // interacted when the command is sent as text.
     if (options.lifecycleTerminal) {
         open.push({ name: LIFECYCLE_NAME, creationOptions: { name: LIFECYCLE_NAME },
             state: { isInteractedWith: true } });
     }
     // The prefix only on the current name (a process title or a rename).
+    // The prefix only on the creation name (the shell title replaced the name).
+    if (options.createdLifecycleTerminal) {
+        open.push({ name: 'bash', creationOptions: { name: LIFECYCLE_NAME },
+            state: { isInteractedWith: true } });
+    }
     if (options.titledLifecycleTerminal) {
         open.push({ name: 'Codespaces: python -m booley.runtime.incontainer_vaporview',
             creationOptions: {}, state: { isInteractedWith: true } });
@@ -401,6 +406,14 @@ test('a used terminal beside a Codespaces lifecycle terminal keeps the panel', a
 
 test('a terminal titled like a Codespaces lifecycle terminal does not hold the Dashboard back', async () => {
     const f = fixture({ remote: 'codespaces', titledLifecycleTerminal: true });
+    await tick();
+    assert.equal(f.terminals[0].shown, true);
+    assert.equal(f.terminals[0].preserveFocus, true);
+    assert.equal(f.messages.length, 0);
+});
+
+test('a terminal created like a Codespaces lifecycle terminal does not hold the Dashboard back', async () => {
+    const f = fixture({ remote: 'codespaces', createdLifecycleTerminal: true });
     await tick();
     assert.equal(f.terminals[0].shown, true);
     assert.equal(f.terminals[0].preserveFocus, true);
