@@ -22,3 +22,4 @@ class SynthRequest(FlowRequest):
     gate_cloning: bool | None = None
     setup_margin_ns: float | None = None
     repair_tns_percent: float | None = None
+    fresh_openroad: bool = False

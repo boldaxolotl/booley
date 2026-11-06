@@ -63,12 +63,13 @@ from booley.flows.result_table import (
     status_cell,
     tty_text,
 )
+from booley.flows.synth import openroad_reuse
 from booley.flows.synth.backends.yosys.core import (
     NAND2_AREA_UM2,
 )
 from booley.flows.synth.backends.yosys.parsing import authoritative_stat_section, parse_stat
 from booley.flows.synth.cli import SynthArguments
-from booley.flows.synth.mode import SynthMode
+from booley.flows.synth.mode import SynthMode, runs_openroad
 from booley.flows.synth.request import SynthRequest
 from booley.flows.synth.timing import parse_perclock
 from booley.flows.synth.warnings import WarningSummary
@@ -83,7 +84,12 @@ from booley.runtime.endpoint_execution import (
     EndpointOutcome,
 )
 from booley.runtime.platform_paths import posix_relpath
-from booley.runtime.timefmt import format_duration, utc_now_rfc3339
+from booley.runtime.timefmt import (
+    format_clock,
+    format_duration,
+    rfc3339_from_epoch,
+    utc_now_rfc3339,
+)
 from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
 
@@ -153,6 +159,34 @@ class _PlannedSynthRecipe:
 
     command: tuple[str, ...]
     resolved: Any
+
+
+@dataclass(frozen=True)
+class _SynthRun:
+    """One boundary run plus what OpenROAD reuse needs after interpretation."""
+
+    result: SubprocessResult
+    #: Set on a hit: the run whose OpenROAD outputs were restored.
+    producer: openroad_reuse.Producer | None = None
+    #: Set on a fresh OpenROAD run with a provable pre-run key: store under it.
+    key: str | None = None
+    identity: tuple[tuple[str, str], ...] | None = None
+
+
+def _merge_stage_results(yosys: SubprocessResult, openroad: SubprocessResult) -> SubprocessResult:
+    """One result for the Yosys and OpenROAD stage commands of a physical run."""
+    peaks = [rss for rss in (yosys.peak_rss_mb, openroad.peak_rss_mb) if rss is not None]
+    return SubprocessResult(
+        returncode=openroad.returncode,
+        stdout=yosys.stdout + openroad.stdout,
+        stderr=yosys.stderr + openroad.stderr,
+        timed_out=openroad.timed_out,
+        duration_s=yosys.duration_s + openroad.duration_s,
+        # The Yosys stage's dispatch time keeps its artifacts fresh for the stale guard.
+        dispatched_unix=yosys.dispatched_unix,
+        peak_rss_mb=max(peaks) if peaks else None,
+        oom_kill_delta=openroad.oom_kill_delta,
+    )
 
 
 def synth_target_report_slug(target: str) -> str:
@@ -331,6 +365,9 @@ class SynthMetrics:
     recipe_snapshot: dict[str, Any] = field(default_factory=dict)
     recipe_fingerprint: str = ""
     run_evidence: dict[str, Any] = field(default_factory=dict)
+    #: Set only when OpenROAD was reused: ``producer_run_id`` and
+    #: ``producer_started_at`` (UTC RFC 3339) of the run that produced its outputs.
+    openroad_reuse: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
         """Normalize string-compatible construction at the metrics interface."""
@@ -900,6 +937,8 @@ def _target_summary(
             **({"live_dirs": dict(metrics.dirs)} if metrics.dirs else {}),
         },
     }
+    if metrics.openroad_reuse:
+        summary["openroad_reuse"] = dict(metrics.openroad_reuse)
     if baseline is not None:
         summary["baseline_metrics"] = {
             "passed": baseline.passed,
@@ -1000,6 +1039,8 @@ def _build_report_dict(
     }
     if _is_io_bound_critical(metrics):
         report["io_bound_critical"] = True
+    if metrics.openroad_reuse:
+        report["openroad_reuse"] = dict(metrics.openroad_reuse)
     if baseline_metrics and baseline_ref:
         report["baseline"] = _baseline_report_detail(baseline_metrics, baseline_ref)
         _add_report_deltas(report, metrics, baseline_metrics, compute_delta)
@@ -1349,9 +1390,10 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         )
         return syn_make.configure_synthesis(spec, self._synth_build_dir(target))
 
-    def _synth_boundary_cmd(self, plan: Any) -> list[str]:
-        """Return the Sandbox command for a configured synthesis plan."""
-        return ["make", "-C", edam.relpath_for_make(plan.build_dir, self.args.work_dir)]
+    def _synth_boundary_cmd(self, plan: Any, stage: str | None = None) -> list[str]:
+        """Return the Sandbox command for a configured plan, or for one Makefile *stage*."""
+        cmd = ["make", "-C", edam.relpath_for_make(plan.build_dir, self.args.work_dir)]
+        return [*cmd, stage] if stage else cmd
 
     # -- Single-target run ----------------------------------------------------
 
@@ -1436,16 +1478,107 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             target=target,
             temporary=role == "baseline",
         )
-        start = time.monotonic()
-        proc_result = self._run_synth_make(target, make_cmd)
-        elapsed = time.monotonic() - start
-        metrics, output = self._interpret_boundary_run(target, plan, proc_result, elapsed)
-        return self._attach_recipe_evidence(target, metrics), output
+        return self._run_configured(target, plan)
 
-    def _run_synth_make(self, target: str, make_cmd: list[str]) -> SubprocessResult:
+    def _run_configured(self, target: str, plan: Any) -> tuple[SynthMetrics, str]:
+        """Run and interpret one configured plan, then refresh its OpenROAD reuse slot."""
+        start = time.monotonic()
+        run = self._run_synth_make(target, plan)
+        elapsed = time.monotonic() - start
+        metrics, output = self._interpret_boundary_run(
+            target, plan, run.result, elapsed, producer=run.producer
+        )
+        metrics = self._attach_recipe_evidence(target, metrics)
+        self._store_openroad_result(target, plan, metrics, run)
+        return metrics, output
+
+    def _run_synth_make(self, target: str, plan: Any) -> _SynthRun:
         """Run the synthesis Makefile; sv2v, Yosys and OpenROAD are measured as phases."""
         with resource_phase(target, "synth", split=SYNTH_PHASES):
-            return self._execute_boundary(make_cmd, timeout=self._get_timeout())
+            if not runs_openroad(plan.spec.timing.mode):
+                cmd = self._synth_boundary_cmd(plan)
+                return _SynthRun(self._execute_boundary(cmd, timeout=self._get_timeout()))
+            return self._run_physical_stages(target, plan)
+
+    def _openroad_slot(self, target: str) -> openroad_reuse.ReuseSlot:
+        """The Target's reuse slot, beside its work root (which every run wipes)."""
+        root = work_root_for(self.args.work_dir, self.name, target, variant="openroad_reuse")
+        return openroad_reuse.ReuseSlot(root)
+
+    def _run_physical_stages(self, target: str, plan: Any) -> _SynthRun:
+        """Run Yosys, then OpenROAD unless the Target's reuse slot matches every input.
+
+        A baseline runs in a throwaway worktree, so it neither reads nor
+        writes a slot. Before OpenROAD runs, the slot is invalidated: a run
+        that fails, times out or is interrupted leaves no slot that can hit.
+        """
+        timeout = self._get_timeout()
+        start = time.monotonic()
+        yosys = self._execute_boundary(self._synth_boundary_cmd(plan, "yosys"), timeout=timeout)
+        if yosys.returncode != 0 or yosys.timed_out:
+            return _SynthRun(yosys)
+        if getattr(self, "_execution_role", "candidate") != "candidate":
+            return _SynthRun(
+                _merge_stage_results(yosys, self._run_openroad_stage(plan, timeout, start))
+            )
+        identity = openroad_reuse.sandbox_identity()
+        key = openroad_reuse.openroad_reuse_key(
+            openroad_reuse.collect_openroad_inputs(plan, identity)
+        )
+        slot = self._openroad_slot(target)
+        entry = slot.lookup(key) if key is not None and not self.args.fresh_openroad else None
+        if entry is not None:
+            from booley.flows.terminal_progress import announce_unit
+
+            # Before the copy: the log observer replays the restored openroad.log.
+            announce_unit("candidate: OpenROAD reused", target=target)
+            if slot.restore(entry, plan.build_dir):
+                # The stage marker attributes the run to OpenROAD exactly as a fresh run.
+                stdout = yosys.stdout.rstrip("\n") + "\nBOOLEY_STAGE: sta\n"
+                return _SynthRun(replace(yosys, stdout=stdout), producer=entry.producer)
+        slot.invalidate()
+        openroad = self._run_openroad_stage(plan, timeout, start)
+        return _SynthRun(_merge_stage_results(yosys, openroad), key=key, identity=identity)
+
+    def _run_openroad_stage(self, plan: Any, timeout: int, start: float) -> SubprocessResult:
+        """Run the Makefile's OpenROAD stage within what is left of the run's budget."""
+        remaining = max(1, int(timeout - (time.monotonic() - start)))
+        return self._execute_boundary(
+            self._synth_boundary_cmd(plan, "openroad"), timeout=remaining
+        )
+
+    def _store_openroad_result(
+        self, target: str, plan: Any, metrics: SynthMetrics, run: _SynthRun
+    ) -> None:
+        """Refresh the reuse slot after a fresh OpenROAD run that completed cleanly.
+
+        Stores only when the key recomputed now equals the one computed
+        before OpenROAD ran, so an input changed during the run stores
+        nothing. A store failure never fails the run.
+        """
+        if run.key is None or not (
+            metrics.termination == "completed"
+            and metrics.returncode == 0
+            and metrics.timing_complete
+            and metrics.ppa_complete
+        ):
+            return
+        post = openroad_reuse.openroad_reuse_key(
+            openroad_reuse.collect_openroad_inputs(plan, run.identity)
+        )
+        if post != run.key:
+            logger.info("Synth %s: OpenROAD inputs changed during the run; not stored", target)
+            return
+        producer = openroad_reuse.Producer(
+            run_id=str(metrics.run_evidence.get("run_id", "")),
+            started_at=rfc3339_from_epoch(run.result.dispatched_unix),
+        )
+        try:
+            self._openroad_slot(target).store(
+                run.key, plan.build_dir, plan.spec.design_name, producer
+            )
+        except OSError:
+            logger.warning("Synth %s: could not store the OpenROAD result", target, exc_info=True)
 
     def _attach_recipe_evidence(self, target: str, metrics: SynthMetrics) -> SynthMetrics:
         """Attach the recipe resolved before this run to its metrics."""
@@ -1710,10 +1843,25 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         plan: Any,
         proc_result: SubprocessResult,
         elapsed: float,
+        producer: openroad_reuse.Producer | None = None,
     ) -> tuple[SynthMetrics, str]:
-        """Interpret a boundary result from its freshness-gated artifacts."""
+        """Interpret a boundary result from its freshness-gated artifacts.
+
+        A *producer* means the OpenROAD outputs were restored from the reuse
+        slot; they are interpreted exactly as a fresh run's, and labelled.
+        """
         outcome, output = self._read_boundary_output(plan, proc_result)
         metrics = _parse_synth_output(output, elapsed, plan.spec.timing.mode)
+        if producer is not None:
+            # At the end: run.log keeps only the tail of very long output.
+            output += (
+                f"\nBOOLEY_OPENROAD_REUSED: run_id={producer.run_id} "
+                f"started_at={producer.started_at}"
+            )
+            metrics.openroad_reuse = {
+                "producer_run_id": producer.run_id,
+                "producer_started_at": producer.started_at,
+            }
         self._apply_boundary_completion(metrics, outcome, proc_result, output)
         self._record_boundary_diagnostics(target, metrics, proc_result, elapsed, output)
 
@@ -2070,13 +2218,18 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         snapshot = synthesis_recipe_snapshot(resolved, self.args, target=target)
         plan_recipe = dict(snapshot)
         recipe_args = snapshot.get("recipe_args", [])
+        physical = False
         if "--synth-mode" in recipe_args:
             index = recipe_args.index("--synth-mode")
-            if recipe_args[index + 1] == "physical":
+            physical = recipe_args[index + 1] == "physical"
+            if physical:
                 plan_recipe["clock_validation"] = (
                     "Target SDC clock creation is validated by OpenROAD at runtime"
                 )
         build_dir = self._synth_build_dir(target)
+        make = ("make", "-C", normalize_plan_path(build_dir, root))
+        # Physical runs Yosys and OpenROAD as separate stages (OpenROAD may be reused).
+        make_commands = [(*make, "yosys"), (*make, "openroad")] if physical else [make]
         handle = self._target_handle(target)
         return WorkUnitPlan(
             unit_id=stable_unit_id(
@@ -2103,15 +2256,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                     cwd=".",
                     template=True,
                 ),
-                CommandPlan(
-                    (
-                        "make",
-                        "-C",
-                        normalize_plan_path(build_dir, root),
-                    ),
-                    cwd=".",
-                    template=True,
-                ),
+                *(CommandPlan(command, cwd=".", template=True) for command in make_commands),
             ),
             expected_artifacts=(
                 normalize_plan_path(self._synth_work_root(target) / "run.log", root),
@@ -2625,6 +2770,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 for group in cur.warning_summary.representatives
                 if group.category == "combinational_loop" and group.disposition == "advisory"
             )
+        if cur.openroad_reuse:
+            lines.append(self._format_reuse_line(tgt, cur.openroad_reuse))
         if cur.failure_output:
             lines.append(self._format_failure_output(tgt, cur))
         if cur.log_path:
@@ -2979,6 +3126,13 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         """``+1.2%`` against the baseline, ``—`` when it cannot be computed."""
         pct = cls._compute_delta_pct(current, baseline)
         return f"{pct:+.1f}%" if pct is not None else MISSING
+
+    @staticmethod
+    def _format_reuse_line(tgt: str, producer: dict[str, str]) -> str:
+        """Name the run whose OpenROAD results this run reused."""
+        when = format_clock(producer.get("producer_started_at"))
+        run = producer.get("producer_run_id")
+        return note_line(tgt, "REUSED", f"OpenROAD results reused from run {run} ({when})")
 
     @staticmethod
     def _format_io_bound_line(tgt: str, cur: SynthMetrics) -> str:

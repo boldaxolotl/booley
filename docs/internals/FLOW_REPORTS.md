@@ -424,6 +424,7 @@ a hash suffix):
 | `baseline_target_identity`, `candidate_target_identity` | Their full FuseSoC identities. |
 | `run_evidence`, `baseline_run_evidence` | Source and recipe provenance for each side. |
 | `failure_output`, `io_bound_critical` | A failure excerpt, and whether the critical path runs through I/O. |
+| `openroad_reuse` | Present only when OpenROAD was reused: `producer_run_id` and `producer_started_at` of the run whose OpenROAD results these are. On such a run `elapsed_s` and `peak_rss_mb` cover this run's own work (Yosys), not the producer's OpenROAD. |
 | `artifacts` | The report, run log, build directory, and timing directory. With `--baseline`, `baseline_timing` is the copy of whatever STA reports the baseline run wrote, at `artifacts/synth_<target>/baseline_timing/` in this invocation. |
 
 Actionable warnings set `grade: "warn"` but keep `passed: true`. Known-benign

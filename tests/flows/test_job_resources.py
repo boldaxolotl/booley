@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -234,6 +235,8 @@ def _label_seen(flow_object, method: str, *args: Any) -> job_resources.ResourceL
     with (
         patch.object(flow_object, "_execute_boundary", side_effect=execute),
         patch.object(flow_object, "_get_timeout", return_value=60),
+        # Only synth builds its boundary command from a configured plan.
+        patch.object(flow_object, "_synth_boundary_cmd", return_value=["make"], create=True),
     ):
         getattr(flow_object, method)(*args)
     return seen[0]
@@ -248,7 +251,10 @@ def _label_seen(flow_object, method: str, *args: Any) -> job_resources.ResourceL
     ],
 )
 def test_flows_label_their_commands(flow_class, method, phase, split):
-    label = _label_seen(flow_class(), method, "core", ["make"])
+    # A logical synth plan; the other Flows take the command itself.
+    plan = SimpleNamespace(spec=SimpleNamespace(timing=SimpleNamespace(mode="logical")))
+    command = plan if flow_class is AsicSynthesizeFlow else ["make"]
+    label = _label_seen(flow_class(), method, "core", command)
     assert label == job_resources.ResourceLabel("core", phase, split=split)
     assert job_resources.current_label() is None
 
