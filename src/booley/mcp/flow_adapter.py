@@ -5,7 +5,7 @@ from typing import Any
 from booley.flows.base import BuiltinFlow
 from booley.flows.builtin_cli import build_parser
 from booley.flows.test_runs import MAX_SEED, SEED_REQUEST_RANDOM
-from booley.mcp.schema_extractor import SPECIALIST_CLI_ONLY_DESTS, extract_schema
+from booley.mcp.schema_extractor import SPECIALIST_CLI_ONLY_DESTS, extract_schema, negative_flags
 
 
 def _specialist_schema(endpoint: Any) -> dict[str, Any]:
@@ -22,6 +22,20 @@ def _specialist_schema(endpoint: Any) -> dict[str, Any]:
         schema["required"] = [dest for dest in schema["required"] if dest in properties]
     schema["additionalProperties"] = False
     return schema
+
+
+def flow_negative_flags(endpoint: Any) -> dict[str, str]:
+    """Return the negative option string of each paired boolean the endpoint parses.
+
+    Taken from the parser that parses the call, so ``false`` over MCP reaches
+    the endpoint as ``--no-x`` even when a custom schema hook shapes the schema.
+    """
+    parser = (
+        build_parser(endpoint)
+        if isinstance(endpoint, BuiltinFlow)
+        else getattr(endpoint, "_parser", None)
+    )
+    return negative_flags(parser) if parser is not None else {}
 
 
 def flow_schema(endpoint: Any) -> dict[str, Any]:

@@ -149,6 +149,8 @@ def _import_and_extract(
     import_prefix: str = "booley.mcp",
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Return an endpoint definition or its import/extraction error."""
+    from booley.mcp.flow_adapter import flow_negative_flags
+
     fqn = f"{import_prefix}.{module_name}"
     mod, err = _import_module_safe(fqn)
     if err is not None:
@@ -160,13 +162,14 @@ def _import_and_extract(
         logger.warning(msg)
         return None, msg
 
-    cls, _instance, schema = found
+    cls, instance, schema = found
     is_custom = not import_prefix.startswith("booley.")
     return (
         _mcp_tool_def_from_class(
             cls,
             schema,
             module_name,
+            negative_flags=flow_negative_flags(instance),
             is_custom=is_custom,
             module_path=f"{import_prefix}.{module_name}",
         ),
