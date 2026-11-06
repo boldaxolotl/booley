@@ -2102,6 +2102,52 @@ def test_summary_record_keeps_every_metric_with_delta_sub_row(
     assert f"{_DIM}" in out.getvalue(), "delta sub-row is dimmed on the console"
 
 
+@pytest.mark.parametrize(
+    ("baseline_error", "expected_rows", "expected_result"),
+    [
+        pytest.param(
+            False,
+            {"default": "PASS", "tight": "FAIL"},
+            "RESULT: FAIL (tight: timing not met",
+            id="timing-violation-is-fail",
+        ),
+        pytest.param(
+            True,
+            {"default": "ERROR (baseline)"},
+            "RESULT: ERROR (baseline default: baseline broke",
+            id="baseline-error",
+        ),
+    ],
+)
+def test_summary_rows_agree_with_result_reasons(
+    tmp_path: Path,
+    state_file: Path,
+    baseline_error: bool,
+    expected_rows: dict[str, str],
+    expected_result: str,
+) -> None:
+    """Each row's Status agrees with the RESULT line; the FPGA Flow has no WARN verdict."""
+    flow = _flow(tmp_path, state_file)
+    if baseline_error:
+        flow.args.baseline = "abc1234"
+        current = {"default": _passing_fpga()}
+        baseline = {"default": FpgaMetrics(infra_error="baseline broke", returncode=2)}
+    else:
+        current = {"default": _passing_fpga(), "tight": _passing_fpga(wns_ns=-0.3)}
+        baseline = {}
+    result = flow._aggregate_results(list(current), current, baseline, "abc1234")
+    _, rows = _fpga_table(result.report_text)
+    statuses = {
+        row.split()[0]: row[
+            min(i for w in ("PASS", "FAIL", "ERROR") if (i := row.find(w)) >= 0) :
+        ].rstrip()
+        for row in rows
+        if not row.lstrip().startswith("Δ")
+    }
+    assert statuses == expected_rows
+    assert expected_result in result.report_text
+
+
 def test_summary_notes_drop_the_flow_prefix(
     tmp_path: Path, state_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
