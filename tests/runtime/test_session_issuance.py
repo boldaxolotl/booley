@@ -3798,33 +3798,53 @@ def _mixed_policy_spec(issued, monkeypatch, request, claude: str, codex: str):
     return project, spec, home
 
 
-def _assert_seal_refused(project: Path, spec: dict, refusal: str) -> None:
-    with pytest.raises(runtime_spec.RuntimeSpecError, match=refusal):
-        runtime_spec.seal(project, spec)
-
-
-def test_mixed_policy_codex_api_key_refuses_codex_login(issued, monkeypatch, request):
-    project, spec, home = _mixed_policy_spec(
-        issued, monkeypatch, request, "subscription", "api_key"
-    )
+def _damage_codex_login(spec: dict, home: Path) -> None:
     login = f"source={home / '.codex' / 'auth.json'},target={dc._APP_CREDS_SEED_TARGET['codex']}"
     spec["mounts"].insert(1, f"{login},type=bind,readonly")
-    _assert_seal_refused(project, spec, "credential seed violates")
 
 
-def test_mixed_policy_codex_subscription_refuses_codex_token_seed(issued, monkeypatch, request):
-    project, spec, home = _mixed_policy_spec(
-        issued, monkeypatch, request, "api_key", "subscription"
-    )
+def _damage_codex_token(spec: dict, home: Path) -> None:
     token = f"source={home / 'token'},target={dc._APP_TOKEN_SEED_TARGET['codex']}"
     spec["mounts"].insert(1, f"{token},type=bind,readonly")
-    _assert_seal_refused(project, spec, "credential seed violates")
 
 
-def test_mixed_policy_codex_subscription_refuses_codex_api_key_env(issued, monkeypatch, request):
-    project, spec, _ = _mixed_policy_spec(issued, monkeypatch, request, "api_key", "subscription")
+def _damage_codex_env(spec: dict, home: Path) -> None:
     spec["remoteEnv"]["OPENAI_API_KEY"] = "${localEnv:OPENAI_API_KEY}"
-    _assert_seal_refused(project, spec, "credential environment has drifted")
+
+
+@pytest.mark.parametrize(
+    ("claude", "codex", "damage", "refusal"),
+    [
+        pytest.param(
+            "subscription",
+            "api_key",
+            _damage_codex_login,
+            "credential seed violates",
+            id="codex-api-key-login",
+        ),
+        pytest.param(
+            "api_key",
+            "subscription",
+            _damage_codex_token,
+            "credential seed violates",
+            id="codex-subscription-token",
+        ),
+        pytest.param(
+            "api_key",
+            "subscription",
+            _damage_codex_env,
+            "credential environment has drifted",
+            id="codex-subscription-env",
+        ),
+    ],
+)
+def test_mixed_policy_spec_seals_and_refuses_forbidden_seed(
+    issued, monkeypatch, request, claude, codex, damage, refusal
+):
+    project, spec, home = _mixed_policy_spec(issued, monkeypatch, request, claude, codex)
+    damage(spec, home)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=refusal):
+        runtime_spec.seal(project, spec)
 
 
 def test_default_change_without_clis_requires_refresh(issued, monkeypatch, request):
