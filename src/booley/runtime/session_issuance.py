@@ -1450,7 +1450,8 @@ def _validate_credential_seed_sources(spec: dict[str, Any], record: dict[str, st
     login_targets = {dc._APP_CREDS_SEED_TARGET[cli]: cli for cli in record}
     for raw in spec.get("mounts", []):
         fields = _mount_fields(raw)
-        source = Path(fields.get("source", ""))
+        # Spec sources use Docker's bind format (``/c/...`` on Windows): map back to a host path.
+        source = host_path_from_docker_mount(fields.get("source", "")) or Path()
         cli = login_targets.get(fields.get("target"))
         if (
             cli
