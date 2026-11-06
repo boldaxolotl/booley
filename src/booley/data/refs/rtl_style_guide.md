@@ -20,6 +20,8 @@ Project-specific overlays may be supplied by the caller or change-request contex
 |------|----------|
 | No single-letter signals (except `i`, `j`, `k`), no generic names (`data`, `result`, `temp`) — use domain terms | MINOR |
 | Consistent naming within a module — no mixing naming styles for the same kind of signal | MINOR |
+| A parameter, signal, or port name must say what it holds or sizes — a width parameter names the quantity it sizes (`SMP_CNT_W` for a sample-counter width, not `TOTAL_W`; `BYTE_IDX_W`, not `IDX_W`), and a port names its content (`smp_cnt_o`, not `total_o`). Flag any name a reader cannot map to its content without reading the logic | MINOR |
+| Scope names to their block — a parent module must not reuse a submodule's block-local name unprefixed for its own constant or signal (a top-level `localparam WIDTH` mirroring submodule `ns`'s `WIDTH` becomes `NS_WIDTH`). Bare `WIDTH`, `DEPTH`, `IDX_W` are fine only inside the block they describe | MINOR |
 | No magic numbers — derive constants from existing parameters | MINOR |
 | No redundant localparams that duplicate package constants | MINOR |
 | No ascending bit ranges `[lo:hi]` in ports or signals — use descending `[N-1:0]`. Ascending ranges invert bit order relative to the descending convention used everywhere else, and VPI-based testbenches such as cocotb assume the left index is the MSB when converting an integer | CRITICAL |
