@@ -425,15 +425,14 @@ def test_reachable_files_walk_is_bounded_outside_build_root(tmp_path: Path) -> N
 
 
 def test_reachable_files_tolerate_missing_user_folder(tmp_path: Path) -> None:
-    """A reachable folder that cannot be listed adds nothing and does not raise."""
+    """A reachable folder that cannot be listed adds nothing, like an empty one."""
     resolved = _reachable_target(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
     gone = tmp_path / "does-not-exist"
-    plain = fpga_cache.input_fingerprint(
+    assert fpga_cache.input_fingerprint(
         resolved, {}, out_of_context=False, reachable_dirs=(gone,)
-    )
-    assert plain == fpga_cache.input_fingerprint(
-        resolved, {}, out_of_context=False, reachable_dirs=(gone,)
-    )
+    ) == fpga_cache.input_fingerprint(resolved, {}, out_of_context=False, reachable_dirs=(empty,))
 
 
 def test_reachable_file_unreadable_is_keyed_as_missing(
@@ -444,15 +443,24 @@ def test_reachable_file_unreadable_is_keyed_as_missing(
     user = tmp_path / "user"
     user.mkdir()
     (user / "locked.vh").write_text("// v1\n", encoding="utf-8")
-    readable = fpga_cache.input_fingerprint(
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    real_hash = fpga_cache._hash_file
+
+    def _locked_only(path: Path) -> tuple[str, int]:
+        if path.name == "locked.vh":
+            raise OSError("permission denied")
+        return real_hash(path)
+
+    monkeypatch.setattr(fpga_cache, "_hash_file", _locked_only)
+    with_locked = fpga_cache.input_fingerprint(
         resolved, {}, out_of_context=False, reachable_dirs=(user,)
     )
-
-    def _unreadable(_path: Path) -> tuple[str, int]:
-        raise OSError("permission denied")
-
-    monkeypatch.setattr(fpga_cache, "_hash_file", _unreadable)
-    unreadable = fpga_cache.input_fingerprint(
-        resolved, {}, out_of_context=False, reachable_dirs=(user,)
+    without_file = fpga_cache.input_fingerprint(
+        resolved, {}, out_of_context=False, reachable_dirs=(empty,)
     )
-    assert unreadable != readable
+    assert with_locked != without_file  # the unreadable file is still in the key
+    monkeypatch.setattr(fpga_cache, "_hash_file", real_hash)
+    assert with_locked != fpga_cache.input_fingerprint(
+        resolved, {}, out_of_context=False, reachable_dirs=(user,)
+    )  # and its entry differs from the readable one
