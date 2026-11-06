@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -5259,6 +5260,97 @@ def test_expected_physical_unmapped_latch_is_noncritical_design_failure(flow_and
     assert report["ppa_complete"] is False
     assert "actual=8, expected=8, excess=0" in result.report_text
     assert "$_DLATCH_P_" in report["implementation"]["status"]["diagnostic_excerpt"]
+
+
+_NO_PATH_OPENROAD_LOG = (
+    "STA_CLOCK_PERIOD_NS: 10.000000\n"
+    "[INFO GPL-0028] Bin count (X, Y):           4 ,      4\n"
+    "STA_PERCLOCK: name=clk period_ns=10.000000 wns_ns=NA whs_ns=NA\n"
+    "Design area 63 u^2 50% utilization.\n"
+)
+
+
+def _no_path_physical_case(expected: int, **extra) -> dict:
+    """Physical latch case whose STA found no paths (empty CSV, GPL-0028 in the log)."""
+    return {
+        "mode": "physical",
+        "expected": expected,
+        "openroad": _NO_PATH_OPENROAD_LOG,
+        "artifacts": {
+            "openroad_dut.v": "module dut; endmodule\n",
+            "reports/timing/overall.rpt": "No paths found.\n",
+            "reports/timing/overall.csv.rpt": "",
+        },
+        **extra,
+    }
+
+
+def test_no_path_latch_failure_reports_no_slack_and_names_design_check(
+    flow_and_state, tmp_path, caplog
+):
+    with caplog.at_level(logging.ERROR, logger="booley.flows.synth.flow"):
+        result, report = _run_latch_case(flow_and_state, tmp_path, _no_path_physical_case(0))
+    assert report["termination"] == "design_failure"
+    assert result.detail["lite"]["wns_ns"] is None
+    assert "wns_ns" not in report
+    assert report["per_clock"][0]["wns_ns"] is None
+    run_log = (tmp_path / report["artifacts"]["log"]).read_text()
+    assert "STA_WORST_SLACK_NS" not in run_log
+    assert "STA_FMAX_MHZ" not in run_log
+    assert "+4.000" not in result.report_text
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert any("design check failed: 8 latches" in m for m in messages)
+    assert not any("rc=" in m for m in messages)
+
+
+def test_no_path_completed_run_has_no_timing_evidence(flow_and_state, tmp_path):
+    """Accepted rule (#2804 Q1): no STA path means no numeric timing evidence."""
+    result, report = _run_latch_case(flow_and_state, tmp_path, _no_path_physical_case(8))
+    assert result.detail["lite"]["wns_ns"] is None
+    assert report["timing_complete"] is False
+    assert report["ppa_complete"] is False
+    assert result.exit_code == EXIT_FAILURE
+    assert "+4.000" not in result.report_text
+
+
+@pytest.mark.parametrize(
+    ("process", "expected"),
+    [
+        ({"returncode": 139}, "rc=139, timed_out=False"),
+        ({"returncode": -9, "timed_out": True}, "rc=-9, timed_out=True"),
+    ],
+)
+def test_tool_failure_log_keeps_exit_code_and_timeout_state(
+    flow_and_state, tmp_path, caplog, process, expected
+):
+    with caplog.at_level(logging.ERROR, logger="booley.flows.synth.flow"):
+        _run_latch_case(
+            flow_and_state, tmp_path, {"mode": "physical", "expected": 8, "process": process}
+        )
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert any(expected in m for m in messages)
+    assert not any("design check failed" in m for m in messages)
+
+
+def test_exit_zero_design_failure_reason_omits_exit_header(flow_and_state, tmp_path, caplog):
+    """The exit-0 forced-failure header is not the design-check reason."""
+    diagnostic = "ERROR: syntax error at rtl.sv:3"
+    with caplog.at_level(logging.ERROR, logger="booley.flows.synth.flow"):
+        result, report = _run_latch_case(
+            flow_and_state,
+            tmp_path,
+            {
+                "cell": "$_DFF_P_",
+                "artifacts": {"yosys.log": f"{diagnostic}\n"},
+            },
+        )
+    assert report["termination"] == "design_failure"
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert any(f"design check failed: {diagnostic}" in m for m in messages)
+    assert not any("despite exit 0" in m for m in messages)
+    # The status cell and RESULT line show the same reason, not the header.
+    assert f"FAIL ({diagnostic})" in result.report_text
+    assert f"RESULT: FAIL (lite: {diagnostic})" in result.report_text
 
 
 @pytest.mark.parametrize(

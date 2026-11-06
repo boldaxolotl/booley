@@ -402,11 +402,12 @@ class TestPhysicalStaHelpers:
         from booley.flows.synth.timing import StaTimingConfig
 
         csv = tmp_path / "overall.csv.rpt"
+        assert openroad_reporting.parse_overall_csv_worst_slack(csv) is None  # missing file
         csv.write_text("a,b,0.100\nc,d,-0.250\n", encoding="utf-8")
-        assert openroad_reporting.parse_sta_worst_slack(csv) == -0.25
+        assert openroad_reporting.parse_overall_csv_worst_slack(csv) == -0.25
         # The top-N report is worst first; without a marker the worst path is line 1.
         csv.write_text("a,b,-0.400\nc,d,-0.250\ne,f,0.100\n", encoding="utf-8")
-        assert openroad_reporting.parse_sta_worst_slack(csv) == -0.4
+        assert openroad_reporting.parse_overall_csv_worst_slack(csv) == -0.4
         report_dir = tmp_path / "reports"
         report_dir.mkdir()
         (report_dir / "overall.csv.rpt").write_text(csv.read_text(encoding="utf-8"))
@@ -421,8 +422,8 @@ class TestPhysicalStaHelpers:
 
     def test_parse_sta_worst_slack_malformed_marker_degrades(self, monkeypatch):
         # Simulate STA marker-format drift: the regex matches but the
-        # captured group is not a valid float.  Must fall back to the CSV
-        # scan (here yielding None) rather than crashing synthesis.
+        # captured group is not a valid float.  Must ignore the
+        # marker (returning None) rather than crashing synthesis.
         import re
 
         drifted = re.compile(r"STA_WORST_SLACK_NS:\s*(\S+)")
@@ -519,6 +520,35 @@ class TestEmitTimingMarkers:
         assert "STA_CRITICAL_PATH_PS: 2100.000" in out
         assert "STA_REG2REG_FMAX_MHZ: 666.667" in out
         assert "STA_REPORT:" in out and "STA_CSV_REPORT:" in out
+
+    def test_no_path_log_reports_no_overall_slack(self, tmp_path, capsys):
+        """No STA paths: GPL-0028's comma-separated numbers must not become slack."""
+
+        stdout = (
+            "STA_CLOCK_PERIOD_NS: 10.000000\n"
+            "[INFO GPL-0028] Bin count (X, Y):           4 ,      4\n"
+            "STA_PERCLOCK: name=clk period_ns=10.000000 wns_ns=NA whs_ns=NA\n"
+        )
+        (tmp_path / "overall.csv.rpt").write_text("", encoding="utf-8")
+        (tmp_path / "overall.rpt").write_text("No paths found.\n", encoding="utf-8")
+        openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path)
+        out = capsys.readouterr().out
+        for marker in ("STA_WORST_SLACK_NS", "STA_CRITICAL_PATH_PS", "STA_FMAX_MHZ"):
+            assert marker not in out
+        assert "STA_PERCLOCK: name=clk" in out
+
+    def test_marker_wins_over_comma_log_lines(self, tmp_path, capsys):
+        """A real path keeps its marker slack even beside comma-separated log lines."""
+
+        stdout = (
+            "STA_CLOCK_PERIOD_NS: 10.000000\n"
+            "[INFO GPL-0028] Bin count (X, Y):           4 ,      4\n"
+            "STA_WORST_SLACK_NS: -0.100000\n"
+        )
+        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        out = capsys.readouterr().out
+        assert "STA_WORST_SLACK_NS: -0.100000" in out
+        assert "STA_CRITICAL_PATH_PS: 10100.000" in out
 
     def test_reg2reg_survives_when_overall_absent(self, tmp_path, capsys):
         """A false-pathed / I/O-bound overall worst path leaves no
