@@ -3659,13 +3659,40 @@ def _schema_audit(tmp_path, booley_toml=None) -> doctor.ProjectAudit:
     )
 
 
-def test_check_core_schema_flags_scalar_depend(tmp_path):
-    """A schema violation in a core the project drives is a FAIL."""
-    _write_core(tmp_path, _BAD_DEPEND_CORE)
+_BAD_FILE_KEY_CORE = """\
+CAPI=2:
+name: ::demo:0
+filesets:
+  rtl:
+    files: [rtl/dut.sv: {file_type: systemVerilogSource, vendored: true}]
+targets:
+  sim:
+    flow: sim
+    flow_options: {booley: {doctor: [sim]}}
+    filesets: [rtl]
+"""
+
+
+@pytest.mark.parametrize(
+    ("core_text", "expected"),
+    [
+        (_BAD_DEPEND_CORE, "depend must be array"),
+        (_BAD_FILE_KEY_CORE, "vendored"),
+    ],
+    ids=["scalar-depend", "per-file-key"],
+)
+def test_check_core_schema_flags_scalar_depend(tmp_path, core_text, expected):
+    """A schema violation in a core the project drives is exactly one FAIL.
+
+    The Booley subset and FuseSoC's own verdict describe the same CAPI2 entry,
+    so the FuseSoC row must not duplicate the subset row.
+    """
+    _write_core(tmp_path, core_text)
     project = _schema_audit(tmp_path, {"flows": {"sim": {}}})
     c = _Collector()
     doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail)
-    assert any("depend must be array" in msg for msg, _ in c.failed)
+    assert len(c.failed) == 1
+    assert expected in c.failed[0][0]
 
 
 def test_check_core_setup_hazards_fails_selected_provider(tmp_path):
@@ -3778,6 +3805,107 @@ def test_check_core_schema_passes_clean_core(tmp_path):
     doctor._check_core_schema(_schema_audit(tmp_path), tmp_path, c._pass, c._warn, c._fail)
     assert not c.failed
     assert any("schema valid" in m for m in c.passed)
+
+
+_MISPLACED_BOOLEY_CORE = """\
+CAPI=2:
+name: acme:ip:picorv32_impl:0
+filesets:
+  rtl:
+    files: [rtl/top.sv: {file_type: systemVerilogSource}]
+targets:
+  lint_core:
+    flow: lint
+    flow_options: {tool: verilator, booley: {doctor: [lint]}}
+    filesets: [rtl]
+    toplevel: top
+  synth_core:
+    flow: generic
+    flow_options: {tool: yosys, arch: xilinx, booley: {doctor: [synth]}}
+    filesets: [rtl]
+    toplevel: top
+  fpga_core:
+    flow: generic
+    flow_options: {tool: vivado, part: xc7a35tcsg324-1}
+    booley: {doctor: [fpga]}
+    filesets: [rtl]
+    toplevel: top
+"""
+
+_UNKNOWN_PROPERTY_CORE = """\
+CAPI=2:
+name: ::demo:0
+filesets:
+  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
+targets:
+  lint:
+    filesetz: [rtl]
+    flow: lint
+    flow_options: {tool: verilator, booley: {doctor: [lint]}}
+    filesets: [rtl]
+    toplevel: dut
+"""
+
+
+def _misplaced_booley_project(root: Path) -> doctor.ProjectAudit:
+    (root / "rtl").mkdir()
+    (root / "rtl" / "top.sv").write_text("module top; endmodule\n", encoding="utf-8")
+    _write_core(root, _MISPLACED_BOOLEY_CORE, name="picorv32_impl.core")
+    flows = {name: {"enabled": True} for name in ("lint", "synth", "fpga")}
+    flows["sim"] = {"enabled": False}
+    return _schema_audit(root, {"flows": flows})
+
+
+def test_misplaced_booley_key_yields_one_fail_and_skips_sibling_dry_runs(tmp_path, monkeypatch):
+    """A `booley:` mapping beside `flow_options` makes FuseSoC ignore the whole core.
+
+    The phase reports that once, names core/Target/key and the fix, and does not
+    dry-run (and FAIL) every sibling Target of the ignored core.
+    """
+    project = _misplaced_booley_project(tmp_path)
+    monkeypatch.setattr(doctor, "_check_design_size", lambda *args, **kwargs: None)
+    monkeypatch.setattr(doctor, "_check_flow_runtime_reality", lambda *args, **kwargs: None)
+    dry_runs: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        doctor,
+        "_run_flow_check",
+        lambda _project, flow_name, **kwargs: dry_runs.append((flow_name, kwargs["target"])),
+    )
+    reporter = doctor._Reporter.create()
+
+    doctor._run_flow_and_core_phase(
+        project,
+        doctor._DoctorFlowRuntime(tmp_path, None),
+        False,
+        reporter,
+        lambda _message: None,
+    )
+
+    fails = [f for f in reporter.findings if f.severity == "fail"]
+    assert len(fails) == 1, [f.message for f in fails]
+    assert "picorv32_impl.core" in fails[0].message
+    assert "fpga_core" in fails[0].message
+    assert "booley" in fails[0].message
+    assert "targets.fpga_core.flow_options" in fails[0].fix
+    assert dry_runs == []
+    skips = [f.message for f in reporter.findings if f.severity == "skip"]
+    for target in ("lint_core", "synth_core"):
+        assert any(target in m and "picorv32_impl.core" in m for m in skips), skips
+    assert any("fpga has no Doctor Target" in m and "picorv32_impl.core" in m for m in skips)
+
+
+def test_check_core_schema_fails_unknown_target_property(tmp_path):
+    """Another property FuseSoC's CAPI2 schema forbids is one FAIL naming the key."""
+    _write_core(tmp_path, _UNKNOWN_PROPERTY_CORE)
+    project = _schema_audit(tmp_path, {"flows": {"lint": {}}})
+    c = _Collector()
+    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail)
+    assert len(c.failed) == 1
+    message, fix = c.failed[0]
+    assert "design.core" in message
+    assert "targets.lint" in message
+    assert "filesetz" in message
+    assert "flow_options" not in fix
 
 
 def test_yosys_target_without_arch_warns(tmp_path):
