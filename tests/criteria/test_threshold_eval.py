@@ -46,6 +46,37 @@ def _per_clock(critical_path_ps: float, fmax_mhz: float, clock: str = "clk_i") -
     }
 
 
+def _two_clock_detail() -> dict:
+    # clk_i is fast (2000 MHz), clk_slow is slow (250 MHz) → they must be
+    # gated independently.
+    return {
+        "cells": 100,
+        "area_um2": 500,
+        "wire_count": 100,
+        "per_clock": {
+            "clk_i": {
+                "period_ns": 0.5,
+                "wns_ns": 0.0,
+                "whs_ns": 0.0,
+                "critical_path_ps": 500,
+                "fmax_mhz": 2000.0,
+            },
+            "clk_slow": {
+                "period_ns": 4.0,
+                "wns_ns": 0.0,
+                "whs_ns": 0.0,
+                "critical_path_ps": 4000,
+                "fmax_mhz": 250.0,
+            },
+        },
+        "has_critical": False,
+        "latches": 0,
+        "comb_loops": 0,
+        "multi_driven": 0,
+        "process_count": 0,
+    }
+
+
 @pytest.fixture()
 def state(tmp_path: Path) -> DevelopmentState:
     """Fresh state with a synthesis_ok_default criterion."""
@@ -510,41 +541,11 @@ class TestAbsoluteCaps:
 class TestPerClockThresholds:
     """A clock-scoped threshold gates exactly one clock in a multi-clock design."""
 
-    def _two_clock_detail(self) -> dict:
-        # clk_i is fast (2000 MHz), clk_slow is slow (250 MHz) → they must be
-        # gated independently.
-        return {
-            "cells": 100,
-            "area_um2": 500,
-            "wire_count": 100,
-            "per_clock": {
-                "clk_i": {
-                    "period_ns": 0.5,
-                    "wns_ns": 0.0,
-                    "whs_ns": 0.0,
-                    "critical_path_ps": 500,
-                    "fmax_mhz": 2000.0,
-                },
-                "clk_slow": {
-                    "period_ns": 4.0,
-                    "wns_ns": 0.0,
-                    "whs_ns": 0.0,
-                    "critical_path_ps": 4000,
-                    "fmax_mhz": 250.0,
-                },
-            },
-            "has_critical": False,
-            "latches": 0,
-            "comb_loops": 0,
-            "multi_driven": 0,
-            "process_count": 0,
-        }
-
     def test_per_clock_fmax_min_gates_named_clock_pass(self, state):
         # clk_i (2000 MHz) clears its own 1000 MHz floor even though clk_slow
         # (250 MHz) would fail a flat floor — scoping isolates clk_i.
         _init_with_params(state, {"clk_i.fmax_mhz_min": 1000})
-        state.set_criterion("synthesis_ok_default", True, detail=self._two_clock_detail())
+        state.set_criterion("synthesis_ok_default", True, detail=_two_clock_detail())
         assert state.is_met("synthesis_ok_default")
         checks = state.criteria["synthesis_ok_default"].detail["checks"]
         assert checks[0]["value"] == 2000.0
@@ -552,7 +553,7 @@ class TestPerClockThresholds:
     def test_per_clock_fmax_min_gates_named_clock_fail(self, state):
         # Same floor, but pointed at the slow clock → fails on clk_slow alone.
         _init_with_params(state, {"clk_slow.fmax_mhz_min": 1000})
-        state.set_criterion("synthesis_ok_default", True, detail=self._two_clock_detail())
+        state.set_criterion("synthesis_ok_default", True, detail=_two_clock_detail())
         assert not state.is_met("synthesis_ok_default")
         checks = state.criteria["synthesis_ok_default"].detail["checks"]
         assert checks[0]["value"] == 250.0
@@ -561,14 +562,14 @@ class TestPerClockThresholds:
         # clk_i critical path 500ps is under a 600ps cap; clk_slow's 4000ps is
         # irrelevant because the cap names clk_i.
         _init_with_params(state, {"clk_i.critical_path_ps_max": 600})
-        state.set_criterion("synthesis_ok_default", True, detail=self._two_clock_detail())
+        state.set_criterion("synthesis_ok_default", True, detail=_two_clock_detail())
         assert state.is_met("synthesis_ok_default")
 
     def test_flat_fmax_min_resolves_to_worst_clock(self, state):
         # A flat floor gates the timing-worst clock (clk_slow @ 250 MHz), so a
         # 1000 MHz floor fails the whole design even though clk_i clears it.
         _init_with_params(state, {"fmax_mhz_min": 1000})
-        state.set_criterion("synthesis_ok_default", True, detail=self._two_clock_detail())
+        state.set_criterion("synthesis_ok_default", True, detail=_two_clock_detail())
         assert not state.is_met("synthesis_ok_default")
         checks = state.criteria["synthesis_ok_default"].detail["checks"]
         assert checks[0]["value"] == 250.0  # worst clock, not clk_i
@@ -576,7 +577,7 @@ class TestPerClockThresholds:
     def test_per_clock_and_flat_coexist(self, state):
         # clk_i.fmax_mhz_min gates clk_i only; a separate area cap gates flat.
         _init_with_params(state, {"clk_i.fmax_mhz_min": 1000, "area_um2_max": 1000})
-        state.set_criterion("synthesis_ok_default", True, detail=self._two_clock_detail())
+        state.set_criterion("synthesis_ok_default", True, detail=_two_clock_detail())
         assert state.is_met("synthesis_ok_default")
         checks = state.criteria["synthesis_ok_default"].detail["checks"]
         assert len(checks) == 2
@@ -584,7 +585,7 @@ class TestPerClockThresholds:
     def test_per_clock_increase_gates_named_clock(self, state):
         # Delta thresholds are per-clock too: clk_i critical path grew 20%.
         _init_with_params(state, {"clk_i.critical_path_ps_increase_at_most": 10})
-        detail = self._two_clock_detail()
+        detail = _two_clock_detail()
         detail["per_clock"]["clk_i"]["critical_path_ps"] = 600  # was 500 baseline
         detail["baseline_metrics"] = {
             "per_clock": _per_clock(500, 2000.0),
@@ -593,6 +594,127 @@ class TestPerClockThresholds:
         assert not state.is_met("synthesis_ok_default")
         checks = state.criteria["synthesis_ok_default"].detail["checks"]
         assert checks[0]["pct"] == pytest.approx(20.0)
+
+
+# ===========================================================================
+# Unavailable thresholds fail closed (#2779)
+# ===========================================================================
+
+
+def _unmeasured_detail() -> dict:
+    """Detail without ``per_clock`` timing (e.g. a logical-mode synthesis)."""
+    return {"cells": 100, "area_um2": 500, "wire_count": 100}
+
+
+_FPGA_METRIC_MAP = {"bram_count": "bram_count", "fmax_mhz": "fmax_mhz"}
+
+
+class TestUnavailableThresholdsFailClosed:
+    """A threshold the run cannot evaluate leaves the Criterion unmet."""
+
+    def _only_check(self, state, name: str = "synthesis_ok_default") -> dict:
+        checks = state.criteria[name].detail["checks"]
+        assert len(checks) == 1
+        return checks[0]
+
+    @pytest.mark.parametrize(
+        "param",
+        ["clk_missing.critical_path_ps_max", "clk_missing.fmax_mhz_min"],
+        ids=["cap", "floor"],
+    )
+    def test_clock_scoped_threshold_on_absent_clock_fails(self, state, param):
+        _init_with_params(state, {param: 600})
+        state.set_criterion("synthesis_ok_default", True, detail=_two_clock_detail())
+        assert not state.is_met("synthesis_ok_default")
+        assert not state.criteria["synthesis_ok_default"].ever_met
+        check = self._only_check(state)
+        assert check["pass"] is False
+        assert check["skipped"] is True
+        assert "clk_missing" in check["reason"]
+        assert "clk_i, clk_slow" in check["reason"]
+
+    def test_absent_clock_with_no_per_clock_reports_none(self, state):
+        _init_with_params(state, {"clk_x.fmax_mhz_min": 100})
+        state.set_criterion("synthesis_ok_default", True, detail=_unmeasured_detail())
+        assert not state.is_met("synthesis_ok_default")
+        assert "reported clocks: none" in self._only_check(state)["reason"]
+
+    @pytest.mark.parametrize(
+        ("params", "detail"),
+        [
+            ({"area_kge_max": 5}, _unmeasured_detail()),
+            ({"fmax_mhz_min": 100}, _unmeasured_detail()),
+            ({"area_um2_max": 5000}, {"area_um2": "not-a-number"}),
+        ],
+        ids=["area_kge_max", "fmax_mhz_min-no-timing", "area_um2_max-non-numeric"],
+    )
+    def test_missing_metric_fails(self, state, params, detail):
+        _init_with_params(state, params)
+        state.set_criterion("synthesis_ok_default", True, detail=detail)
+        assert not state.is_met("synthesis_ok_default")
+        check = self._only_check(state)
+        assert check["pass"] is False
+        assert check["skipped"] is True
+
+    @pytest.mark.parametrize(
+        ("bram_count", "expected"),
+        [(2, True), (8, False), (None, False)],
+        ids=["present-pass", "present-fail", "missing"],
+    )
+    def test_fpga_resource_cap(self, state, bram_count, expected):
+        state.init_criteria(
+            {"fpga_impl_ok_default": True},
+            criterion_params={"fpga_impl_ok_default": {"bram_count_max": 4}},
+        )
+        detail = {"_metric_map": _FPGA_METRIC_MAP, "_min_allowed": ["fmax_mhz"]}
+        if bram_count is not None:
+            detail["bram_count"] = bram_count
+        state.set_criterion("fpga_impl_ok_default", True, detail=detail)
+        assert state.is_met("fpga_impl_ok_default") is expected
+        check = self._only_check(state, "fpga_impl_ok_default")
+        assert check["pass"] is expected
+
+    @pytest.mark.parametrize("key", ["bogus_max", "clk_i.bogus_max"], ids=["flat", "per-clock"])
+    def test_unknown_metric_key_fails_naming_key(self, state, key):
+        _init_with_params(state, {key: 1})
+        state.set_criterion("synthesis_ok_default", True, detail=_two_clock_detail())
+        assert not state.is_met("synthesis_ok_default")
+        check = self._only_check(state)
+        assert check["pass"] is False
+        assert key in check["reason"]
+
+    def test_reported_clock_missing_sub_metric_fails(self, state):
+        # clk_slow is reported but carries no Fmax: the clock-scoped floor has
+        # nothing to compare, so it must not count as met.
+        detail = _two_clock_detail()
+        detail["per_clock"]["clk_slow"]["fmax_mhz"] = None
+        _init_with_params(state, {"clk_slow.fmax_mhz_min": 100})
+        state.set_criterion("synthesis_ok_default", True, detail=detail)
+        assert not state.is_met("synthesis_ok_default")
+        assert not state.criteria["synthesis_ok_default"].ever_met
+        check = self._only_check(state)
+        assert check["pass"] is False
+        assert "clk_slow" in check["reason"]
+        assert "not reported" not in check["reason"]
+
+    def test_min_allowed_metric_without_mapping_fails_naming_key(self, state):
+        # A Flow whose _min_allowed names a metric its _metric_map lacks must
+        # still fail the floor rather than drop it.
+        _init_with_params(state, {"gadget_min": 1})
+        detail = {"area_um2": 500, "_metric_map": {"area": "area_um2"}, "_min_allowed": ["gadget"]}
+        state.set_criterion("synthesis_ok_default", True, detail=detail)
+        assert not state.is_met("synthesis_ok_default")
+        check = self._only_check(state)
+        assert check["pass"] is False
+        assert "gadget_min" in check["reason"]
+
+    def test_disallowed_min_key_fails_naming_key(self, state):
+        _init_with_params(state, {"cell_count_min": 10})
+        state.set_criterion("synthesis_ok_default", True, detail=_two_clock_detail())
+        assert not state.is_met("synthesis_ok_default")
+        check = self._only_check(state)
+        assert check["pass"] is False
+        assert "cell_count_min" in check["reason"]
 
 
 # ===========================================================================
