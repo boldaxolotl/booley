@@ -590,6 +590,11 @@ def _latch_diagnostic(metrics: SynthMetrics) -> str:
     )
 
 
+# Header prepended to a design diagnostic when the tool exited 0 but its log
+# still reported an error; it describes the exit code, not the design problem.
+_EXIT_ZERO_ERROR_HEADER = "ERROR: synthesis log reports an error despite exit 0:"
+
+
 def _design_failure_reason(metrics: SynthMetrics) -> str:
     """Keep the rejected generic master distinct from allowed latch evidence."""
     if "unmapped generic cell:" in metrics.failure_output:
@@ -597,13 +602,18 @@ def _design_failure_reason(metrics: SynthMetrics) -> str:
         return f"{reason}; {_latch_diagnostic(metrics)}" if metrics.latches else reason
     if metrics.latches:
         return _latch_diagnostic(metrics)
-    return (
-        "unmapped latch"
-        if "unmapped latch:" in metrics.failure_output
-        else (
-            metrics.failure_output.splitlines()[0] if metrics.failure_output else "design failure"
-        )
+    if "unmapped latch:" in metrics.failure_output:
+        return "unmapped latch"
+    # The exit-0 header names the exit code, not the design problem: skip it.
+    first_reason = next(
+        (
+            line.strip()
+            for line in metrics.failure_output.splitlines()
+            if line.strip() and line.strip() != _EXIT_ZERO_ERROR_HEADER
+        ),
+        "",
     )
+    return first_reason or "design failure"
 
 
 def _detect_critical_conditions(output: str) -> tuple[int, int, int]:
@@ -1599,7 +1609,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             metrics.returncode = 1
             metrics.termination = "design_failure"
             metrics.failure_output = (
-                "ERROR: synthesis log reports an error despite exit 0:\n  "
+                f"{_EXIT_ZERO_ERROR_HEADER}\n  "
                 if result.returncode == 0 and outcome.forced_failure
                 else ""
             ) + failure.diagnostic
@@ -1663,22 +1673,36 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         elif result.returncode != 0:
             logger.warning("Synth %s failed with rc=%d", target, result.returncode)
         if metrics.termination != "completed" or (not metrics.has_metrics and result.returncode):
-            metrics.failure_output = metrics.failure_output or _error_excerpt(
-                "\n".join((result.stdout, result.stderr))
-            )
-            if metrics.latches and not metrics.failure_output.startswith(
-                _latch_diagnostic(metrics)
-            ):
-                metrics.failure_output = _latch_diagnostic(metrics) + "\n" + metrics.failure_output
-            reason = metrics.infra_error or _design_failure_reason(metrics)
+            self._log_boundary_failure(target, metrics, result)
+
+    def _log_boundary_failure(
+        self, target: str, metrics: SynthMetrics, result: SubprocessResult
+    ) -> None:
+        """Log the terminal error line: a design check, or the tool's exit state."""
+        metrics.failure_output = metrics.failure_output or _error_excerpt(
+            "\n".join((result.stdout, result.stderr))
+        )
+        if metrics.latches and not metrics.failure_output.startswith(_latch_diagnostic(metrics)):
+            metrics.failure_output = _latch_diagnostic(metrics) + "\n" + metrics.failure_output
+        if metrics.termination == "design_failure":
+            # The tool ran to completion; the design failed a check. The
+            # process exit code and timeout state say nothing about that.
             logger.error(
-                "Synth %s: boundary run failed (rc=%d, timed_out=%s): %s (full output: %s)",
+                "Synth %s: design check failed: %s (full output: %s)",
                 target,
-                result.returncode,
-                result.timed_out,
-                reason,
+                _design_failure_reason(metrics),
                 metrics.log_path or "not persisted",
             )
+            return
+        reason_lines = metrics.failure_output.splitlines()
+        logger.error(
+            "Synth %s: boundary run failed (rc=%d, timed_out=%s): %s (full output: %s)",
+            target,
+            result.returncode,
+            result.timed_out,
+            metrics.infra_error or (reason_lines[0] if reason_lines else "(no output)"),
+            metrics.log_path or "not persisted",
+        )
 
     def _interpret_boundary_run(
         self,

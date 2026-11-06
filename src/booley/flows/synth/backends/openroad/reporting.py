@@ -243,7 +243,7 @@ def emit_timing_markers(stdout: str, config: StaTimingConfig, report_dir: Path) 
     period_ps = effective_period_ps(config, stdout)
     slack_ns = parse_sta_worst_slack(stdout)
     if slack_ns is None:
-        slack_ns = parse_sta_worst_slack(report_dir / "overall.csv.rpt")
+        slack_ns = parse_overall_csv_worst_slack(report_dir / "overall.csv.rpt")
     if slack_ns is not None and period_ps is not None:
         print_overall_fmax(slack_ns, period_ps)
     reg2reg_emitted = period_ps is not None and print_reg2reg_fmax(stdout, period_ps)
@@ -301,28 +301,40 @@ def effective_period_ps(config: StaTimingConfig, stdout: str) -> float | None:
     return parse_sta_clock_period_ps(stdout)
 
 
-def parse_sta_worst_slack(source: str | Path) -> float | None:
-    """Parse worst setup slack in ns from STA output or Booley CSV."""
-    if isinstance(source, Path):
-        if not source.exists():
-            return None
-        text = source.read_text(encoding="utf-8", errors="replace")
-    else:
-        text = source
+def parse_sta_worst_slack(text: str) -> float | None:
+    """Parse worst setup slack in ns from Booley's ``STA_WORST_SLACK_NS`` marker.
+
+    Only the marker counts. OpenROAD's own log lines (for example GPL-0028's
+    ``Bin count (X, Y): 4 , 4``) can look like numeric CSV rows, so scanning
+    the log for them would invent a slack for a design with no timing paths.
+    """
     marker = _STA_SLACK_RE.search(text)
-    if marker:
-        # EDA-tool-output parsing: the regex constrains the group to a numeric
-        # form, but if the marker format ever drifts, degrade to the
-        # CSV scan below instead of crashing the whole synthesis flow.
-        try:
-            return float(marker.group(1))
-        except ValueError:
-            print(
-                "WARNING: STA slack marker present but not a valid float: "
-                f"{marker.group(1)!r}; falling back to CSV scan"
-            )
+    if marker is None:
+        return None
+    # EDA-tool-output parsing: the regex constrains the group to a numeric
+    # form, but if the marker format ever drifts, ignore it instead of
+    # crashing the whole synthesis flow.
+    try:
+        return float(marker.group(1))
+    except ValueError:
+        print(
+            "WARNING: STA slack marker present but not a valid float: "
+            f"{marker.group(1)!r}; ignoring it"
+        )
+        return None
+
+
+def parse_overall_csv_worst_slack(path: Path) -> float | None:
+    """Return the minimum slack in Booley's own ``overall.csv.rpt``, if any.
+
+    The file is written by Booley's STA Tcl as ``startpoint,endpoint,slack``
+    rows, so the third field of every row with at least three fields is a
+    slack. A missing or empty file (STA found no paths) yields ``None``.
+    """
+    if not path.exists():
+        return None
     values: list[float] = []
-    for line in text.splitlines():
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         parts = [part.strip() for part in line.split(",")]
         if len(parts) >= 3:
             with contextlib.suppress(ValueError):
