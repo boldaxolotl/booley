@@ -10,8 +10,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from booley.harness.sandbox import (
     DockerRunner,
     DockerSandboxConfig,
@@ -330,17 +328,14 @@ def test_ephemeral_shell_forwards_only_listed_cli_credentials(tmp_path, monkeypa
         runner._env_file.unlink(missing_ok=True)
 
 
-@pytest.mark.parametrize(
-    "toml",
-    [
-        pytest.param('[agent]\ndefault = "codex"\nclis = ["claude"]\n', id="default-not-listed"),
-        pytest.param(
-            '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "auto"\n', id="unlisted-auth-key"
-        ),
-    ],
-)
+_INVALID_AGENT_CONFIGS = {
+    "default-not-listed": '[agent]\ndefault = "codex"\nclis = ["claude"]\n',
+    "unlisted-auth-key": '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "auto"\n',
+}
+
+
 def test_ephemeral_shell_without_credentials_on_invalid_agent_config(
-    tmp_path, monkeypatch, capsys, toml
+    tmp_path, monkeypatch, capsys
 ):
     """An invalid ``[agent]`` warns and starts the shell with no logins and no API keys."""
     from booley.runtime import auth_token
@@ -361,7 +356,6 @@ def test_ephemeral_shell_without_credentials_on_invalid_agent_config(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_ANTHROPIC")
     data = tmp_path / "project" / ".booley"
     data.mkdir(parents=True)
-    (data / "booley.toml").write_text(toml)
     for app, body in (
         ("claude", '{"claudeAiOauth":{"accessToken":"SYNTHETIC_LOGIN"}}'),
         ("codex", '{"tokens":{"access_token":"SYNTHETIC_LOGIN"},"OPENAI_API_KEY":null}'),
@@ -369,16 +363,19 @@ def test_ephemeral_shell_without_credentials_on_invalid_agent_config(
         login = auth_token.subscription_creds_path(app)
         login.parent.mkdir(parents=True, exist_ok=True)
         login.write_text(body)
-    runner = DockerRunner(
-        DockerSandboxConfig(image="test-image", needs_network=False), data.parent
-    )
 
-    command = " ".join(runner._build_docker_cmd(["true"]))
+    for case, toml in _INVALID_AGENT_CONFIGS.items():
+        (data / "booley.toml").write_text(toml)
+        runner = DockerRunner(
+            DockerSandboxConfig(image="test-image", needs_network=False), data.parent
+        )
 
-    assert ".credentials.json" not in command
-    assert ".codex" not in command
-    assert runner._env_file is None
-    assert "starting without Agent CLI logins or API keys" in capsys.readouterr().err
+        command = " ".join(runner._build_docker_cmd(["true"]))
+
+        assert ".credentials.json" not in command, case
+        assert ".codex" not in command, case
+        assert runner._env_file is None, case
+        assert "starting without Agent CLI logins or API keys" in capsys.readouterr().err, case
 
 
 def test_ephemeral_shell_ignores_ambiguous_agent_app_environment(tmp_path, monkeypatch):

@@ -3812,39 +3812,27 @@ def _damage_codex_env(spec: dict, home: Path) -> None:
     spec["remoteEnv"]["OPENAI_API_KEY"] = "${localEnv:OPENAI_API_KEY}"
 
 
-@pytest.mark.parametrize(
-    ("claude", "codex", "damage", "refusal"),
-    [
-        pytest.param(
-            "subscription",
-            "api_key",
-            _damage_codex_login,
-            "credential seed violates",
-            id="codex-api-key-login",
-        ),
-        pytest.param(
-            "api_key",
-            "subscription",
-            _damage_codex_token,
-            "credential seed violates",
-            id="codex-subscription-token",
-        ),
-        pytest.param(
-            "api_key",
-            "subscription",
-            _damage_codex_env,
-            "credential environment has drifted",
-            id="codex-subscription-env",
-        ),
-    ],
+_MIXED_POLICY_CASES = (
+    # (case, claude policy, codex policy, damage, expected refusal)
+    ("codex-api-key-login", "subscription", "api_key", _damage_codex_login, "seed violates"),
+    ("codex-subscription-token", "api_key", "subscription", _damage_codex_token, "seed violates"),
+    (
+        "codex-subscription-env",
+        "api_key",
+        "subscription",
+        _damage_codex_env,
+        "credential environment has drifted",
+    ),
 )
-def test_mixed_policy_spec_seals_and_refuses_forbidden_seed(
-    issued, monkeypatch, request, claude, codex, damage, refusal
-):
-    project, spec, home = _mixed_policy_spec(issued, monkeypatch, request, claude, codex)
-    damage(spec, home)
-    with pytest.raises(runtime_spec.RuntimeSpecError, match=refusal):
-        runtime_spec.seal(project, spec)
+
+
+def test_mixed_policy_spec_seals_and_refuses_forbidden_seed(issued, monkeypatch, request):
+    for case, claude, codex, damage, refusal in _MIXED_POLICY_CASES:
+        project, spec, home = _mixed_policy_spec(issued, monkeypatch, request, claude, codex)
+        damage(spec, home)
+        with pytest.raises(runtime_spec.RuntimeSpecError, match=refusal) as caught:
+            runtime_spec.seal(project, spec)
+        assert caught.value, case
 
 
 def test_default_change_without_clis_requires_refresh(issued, monkeypatch, request):
