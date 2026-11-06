@@ -1344,6 +1344,76 @@ def test_workflow_trusts_mergify_identity_for_pr_updates_and_main_history() -> N
     assert allowed_identity in main_scan
 
 
+RENOVATE_BOT_EMAIL = "353471265+booley-renovate[bot]@users.noreply.github.com"
+
+
+def _workflow_allowed_authors(step_name: str, next_step_name: str) -> str:
+    """Return one scan step's shipped BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS value."""
+    workflow = (SCANNER.parent.parent / "workflows/confidential-content.yml").read_text(
+        encoding="utf-8"
+    )
+    step = workflow.split(f"- name: {step_name}", 1)[1].split(f"- name: {next_step_name}", 1)[0]
+    block = step.split("BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: |\n", 1)[1]
+    patterns = []
+    for line in block.splitlines():
+        # The block scalar ends at the first line that is not a bare pattern.
+        if not line.startswith("            ") or ":" in line:
+            break
+        patterns.append(line.strip())
+    return "\n".join(patterns)
+
+
+@pytest.mark.parametrize(
+    ("step_name", "next_step_name"),
+    [
+        ("Scan pull-request commits", "Scan complete main history"),
+        ("Scan complete main history", "Publish scan status"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("author_email", "allowed"),
+    [
+        (RENOVATE_BOT_EMAIL, True),
+        # An unescaped "[bot]" glob is a character class; this lookalike would pass it.
+        ("353471265+booley-renovateb@users.noreply.github.com", False),
+        # Same App name with another account ID is a different identity.
+        ("1+booley-renovate[bot]@users.noreply.github.com", False),
+    ],
+)
+def test_workflow_trusts_only_the_exact_renovate_app_identity(
+    tmp_path: Path, step_name: str, next_step_name: str, author_email: str, allowed: bool
+) -> None:
+    repo, _base = _repository(tmp_path)
+    (repo / "deps.txt").write_text("clean dependency bump\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    # Renovate commits locally with gitAuthor as both author and committer.
+    _git(
+        repo,
+        "commit",
+        "-m",
+        "bump a dependency",
+        env=_identity_env("booley-renovate[bot]", author_email),
+    )
+    head = _git(repo, "rev-parse", "HEAD")
+    env = _sealed_fixture(repo, _encoded_config()) | {
+        "BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS": _workflow_allowed_authors(step_name, next_step_name),
+    }
+
+    result = subprocess.run(
+        [sys.executable, str(SCANNER), "--repo", str(repo), "audit", "--rev", head],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+    )
+
+    if allowed:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 1
+        assert "author identity" in result.stderr
+
+
 def test_source_guard_synthetic_generic_vocabulary_remains_independent(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
     config = base64.b64encode(
