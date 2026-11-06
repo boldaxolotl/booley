@@ -100,7 +100,6 @@ from booley.flows.target_test_suite import (
     require_runnable_target_test_suite,
 )
 from booley.fusesoc import fusesoc_registry
-from booley.fusesoc.core_projection import native_cores_ignored
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.paths import refs_dir
@@ -1830,13 +1829,12 @@ replacement must differ, and every proposal must remain a single source edit.
         private_library: dict[str, fusesoc_registry.CoreLibraryPlan] = {}
         if mutation is not None:
             validate_mutation_closure(catalog.core_closure((handle,)) or frozenset())
-            if native_cores_ignored(handle.project_root):
-                # The shared isolated registry names every source absolutely, so
-                # a mutant would have no private copy: give this variant its own.
+            # The shared isolated registry names every source absolutely, so a
+            # mutant would have no private copy: give this variant its own.
+            mirror_plan = fusesoc_registry.build_library_plan(handle.project_root, build_path)
+            if mirror_plan is not None:
+                private_library["core_library"] = mirror_plan
                 mirror_root = build_path / "core-mirror"
-                private_library["core_library"] = fusesoc_registry.prepare_private_mirror_plan(
-                    handle.project_root, mirror_root
-                )
         prepared = prepare_simulation_build(
             handle,
             build_root=build_path,

@@ -7,7 +7,7 @@ import importlib.metadata
 import json
 import os
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -77,14 +77,66 @@ def _input_file_evidence(resolved: Any) -> list[dict[str, Any]]:
     return files
 
 
+def _folder_files(folder: Path, *, recursive: bool) -> list[Path]:
+    """Regular files in *folder*; the whole tree without following links if *recursive*."""
+    if not recursive:
+        try:
+            return [p for p in folder.iterdir() if p.is_file()]
+        except OSError:
+            return []
+    found: list[Path] = []
+    for dirpath, _dirs, names in os.walk(folder, followlinks=False):
+        found.extend(Path(dirpath) / name for name in names if (Path(dirpath) / name).is_file())
+    return found
+
+
+def _reachable_file_evidence(
+    resolved: Any,
+    reachable_dirs: Sequence[Path],
+) -> list[dict[str, Any]]:
+    """Hash files Vivado can read through *reachable_dirs* beyond ``rtl_files``.
+
+    A folder inside the build root is a clean export folder, so it is walked
+    recursively; a folder outside it is a user folder, so only its own files
+    count (a checkout's ``.booley/`` or ``.git`` is never walked).
+    """
+    build_root = Path(resolved.build_root).resolve()
+    listed = {item.absolute(resolved.build_root) for item in resolved.rtl_files}
+    evidence: dict[Path, dict[str, Any]] = {}
+    for raw_folder in reachable_dirs:
+        folder = Path(raw_folder).resolve()
+        inside = folder.is_relative_to(build_root)
+        for raw_path in _folder_files(folder, recursive=inside):
+            path = raw_path.resolve()
+            if path in listed or path in evidence:
+                continue
+            try:
+                digest, size = _hash_file(path)
+            except OSError:
+                digest, size = hashlib.sha256(b"").hexdigest(), 0
+            name = (
+                path.relative_to(build_root).as_posix()
+                if path.is_relative_to(build_root)
+                else str(path)
+            )
+            evidence[path] = {"name": name, "sha256": digest, "size": size}
+    return sorted(evidence.values(), key=lambda item: item["name"])
+
+
 def input_fingerprint(
     resolved: Any,
     edam: Mapping[str, Any],
     *,
     out_of_context: bool,
     recipe_sha256: str = "",
+    reachable_dirs: Sequence[Path] = (),
 ) -> str:
-    """Hash the resolved design intent, every input byte, and tool identity."""
+    """Hash the resolved design intent, every input byte, and tool identity.
+
+    *reachable_dirs* (isolated Projects only) are folders Vivado resolves a
+    relative ``include`` in; their files join the key so an edit to any header
+    Vivado can read changes it. Empty keeps the payload exactly as before.
+    """
     # The normalized recipe digest carries the resolved profile and mapping.
     # Avoid treating an explicit ``balanced`` spelling as different from its
     # identical omitted default.
@@ -112,6 +164,8 @@ def input_fingerprint(
             "fusesoc": _package_version("fusesoc"),
         },
     }
+    if reachable_dirs:
+        payload["reachable_files"] = _reachable_file_evidence(resolved, reachable_dirs)
     encoded = json.dumps(
         payload,
         sort_keys=True,

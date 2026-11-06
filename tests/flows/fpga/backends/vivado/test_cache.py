@@ -354,3 +354,62 @@ def test_string_guard_precedes_cache_lookup(tmp_path, monkeypatch):
     )
     with pytest.raises(ValueError, match="Vivado does not support string/file"):
         flow._prepare_fpga_command("fpga_demo")
+
+
+def _reachable_target(tmp_path: Path) -> ResolvedTarget:
+    """A Target whose build root holds one listed source and one export folder."""
+    build = tmp_path / "build"
+    (build / "src" / "inc" / "deep").mkdir(parents=True)
+    (build / "rtl.sv").write_text("module top; endmodule\n", encoding="utf-8")
+    return ResolvedTarget(
+        name="t",
+        vlnv="::demo:0",
+        toplevel="top",
+        eda_tool="vivado",
+        files=(ResolvedFile(name="rtl.sv", file_type="systemVerilogSource"),),
+        parameters={},
+        build_root=build,
+        edam_path=build / "t.eda.yml",
+        flow_options={"tool": "vivado", "part": "xc7a35tcpg236-1"},
+    )
+
+
+def test_default_payload_has_no_reachable_files(tmp_path: Path) -> None:
+    """Without reachable_dirs the key equals a call that never heard of them."""
+    resolved = _reachable_target(tmp_path)
+    (resolved.build_root / "src" / "inc" / "extra.vh").write_text("// x\n", encoding="utf-8")
+    plain = fpga_cache.input_fingerprint(resolved, {}, out_of_context=False)
+    assert plain == fpga_cache.input_fingerprint(
+        resolved, {}, out_of_context=False, reachable_dirs=()
+    )
+    assert plain != fpga_cache.input_fingerprint(
+        resolved,
+        {},
+        out_of_context=False,
+        reachable_dirs=(resolved.build_root / "src" / "inc",),
+    )
+
+
+def test_reachable_files_walk_is_bounded_outside_build_root(tmp_path: Path) -> None:
+    """Inside the build root the walk is recursive; a user folder counts only its own files."""
+    resolved = _reachable_target(tmp_path)
+    inside = resolved.build_root / "src" / "inc"
+    user = tmp_path / "user"
+    (user / "deep").mkdir(parents=True)
+    (user / "top.vh").write_text("// top v1\n", encoding="utf-8")
+    (user / "deep" / "buried.vh").write_text("// buried v1\n", encoding="utf-8")
+    (inside / "deep" / "buried.vh").write_text("// inside v1\n", encoding="utf-8")
+
+    def key() -> str:
+        return fpga_cache.input_fingerprint(
+            resolved, {}, out_of_context=False, reachable_dirs=(inside, user)
+        )
+
+    base = key()
+    (user / "deep" / "buried.vh").write_text("// buried v2\n", encoding="utf-8")
+    assert key() == base  # a subfolder of a user folder is never walked
+    (inside / "deep" / "buried.vh").write_text("// inside v2\n", encoding="utf-8")
+    changed = key()
+    assert changed != base  # a subfolder of the build root is
+    (user / "top.vh").write_text("// top v2\n", encoding="utf-8")
+    assert key() != changed  # a user folder's own file is

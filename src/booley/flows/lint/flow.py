@@ -600,6 +600,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         resolved = fusesoc_registry.resolve_target_handle(
             target,
             build_root=build_root,
+            library_plan=fusesoc_registry.build_library_plan(target.project_root, build_root),
         )
         normalize_resolved_parameters(resolved)
         declared_family = _lint_eda_tool_family(target.eda_tool)

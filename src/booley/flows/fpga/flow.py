@@ -25,6 +25,7 @@ import os
 import re
 import sys
 import tempfile
+from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,6 +76,7 @@ from booley.flows.result_table import (
 from booley.flows.target_parameters import vlogparam_specs
 from booley.flows.terminal_progress import ProgressText
 from booley.fusesoc import fusesoc_registry
+from booley.fusesoc.core_projection import native_cores_ignored
 from booley.harness import colors
 from booley.harness.terminal_table import render_table
 from booley.runtime import job_slots
@@ -183,6 +185,9 @@ class _ResolvedFpgaRecipe:
     recipe_snapshot: dict[str, Any]
     recipe_fingerprint: str
     source_evidence: run_evidence.FlowSourceEvidence
+    # Folders Vivado resolves relative includes in; set only in isolated
+    # Projects, where they widen the cache key (see cache.input_fingerprint).
+    reachable_dirs: tuple[Path, ...] = ()
 
 
 _FPGA_METRIC_MAP: dict[str, str] = {
@@ -617,7 +622,21 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             recipe_snapshot=snapshot,
             recipe_fingerprint=fpga_recipe_snapshot_fingerprint(snapshot),
             source_evidence=run_evidence.capture_flow_source_evidence(work_dir, target),
+            reachable_dirs=self._reachable_dirs(target, sv_files, v_files, include_dirs),
         )
+
+    def _reachable_dirs(
+        self,
+        target: str,
+        sv_files: Sequence[Path],
+        v_files: Sequence[Path],
+        include_dirs: Sequence[Path],
+    ) -> tuple[Path, ...]:
+        """Folders whose files must join the cache key; empty outside isolated Projects."""
+        if not native_cores_ignored(self._target_handle(target).project_root):
+            return ()
+        folders = {*include_dirs, *(path.parent for path in (*sv_files, *v_files))}
+        return tuple(sorted(folders))
 
     def _resolve_fpga_target(self, target: str, *, build_root: Path | None) -> Any:
         """Resolve one Target at the selected candidate or baseline revision."""
@@ -632,7 +651,11 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         ref = getattr(self, "_target_execution_refs", {}).get(target)
         if ref is not None:
             return resolve_target_execution_ref(handle, ref, build_root=selected_root)
-        return fusesoc_registry.resolve_target_handle(handle, build_root=selected_root)
+        return fusesoc_registry.resolve_target_handle(
+            handle,
+            build_root=selected_root,
+            library_plan=fusesoc_registry.build_library_plan(handle.project_root, selected_root),
+        )
 
     def _target_handle(self, target: str) -> TargetHandle:
         """Return the selected handle, reselecting only in a baseline checkout."""
@@ -669,6 +692,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             edam,
             out_of_context=recipe.out_of_context,
             recipe_sha256=recipe.recipe_fingerprint,
+            reachable_dirs=recipe.reachable_dirs,
         )
         dispatch_evidence = run_evidence.build_flow_run_evidence(
             flow=self.name,
