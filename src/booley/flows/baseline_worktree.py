@@ -35,7 +35,7 @@ from booley.evidence.acceptance import PairedBaselineMode, PairedProjectBaseline
 from booley.evidence.fields import BASELINE_REF_PARAM
 from booley.flows.terminal_progress import announce_unit
 from booley.fusesoc.fusesoc_registry import prepare_core_library_plan
-from booley.runtime.booley_dir import BOOLEY_DIR_NAME
+from booley.runtime.booley_dir import BOOLEY_DIR_NAME, resolve_checkout_booley_dir
 from booley.runtime.project_gitignore import is_project_transient_path
 from booley.runtime.project_repositories import (
     is_standalone_git_repository,
@@ -337,7 +337,7 @@ def _copy_root_quarantine_marker(project_root: Path, wt_dir: Path) -> None:
 
 
 def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> None:
-    """Mirror the live Booley Directory's authored files into the worktree.
+    """Mirror the checkout's own Booley Directory's authored files into the worktree.
 
     ``.booley/`` is git-excluded, so a fresh ``git worktree add`` checkout
     carries none of it. When the Project has stealth cores (ADR 0036), the
@@ -347,11 +347,17 @@ def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> None
     a ``.booley/`` Booley resolves configuration there too, so every authored
     file is mirrored, not just ``cores/``. Transient state (worktrees, runtime,
     logs, this baseline checkout itself) stays behind; a Versioned Booley
-    Directory also leaves out what its own ignore rules exclude. Without
-    stealth cores the worktree keeps no ``.booley/`` and resolves the live
-    Booley Directory directly. Without a Paired Checkout, the *live* content is
-    the pragmatic choice; Paired Checkouts take the separate fork-point
-    worktree path before this helper is called.
+    Directory also leaves out what its own ignore rules exclude. The
+    source is the checkout's *own* Booley Directory, not the selected one:
+    inside the Sandbox ``BOOLEY_DIR`` names the Main Booley Directory, but a
+    linked worktree's baseline must read that worktree's cores and
+    ``booley.toml``. Without stealth cores the baseline keeps no ``.booley/``
+    when it would resolve that same directory anyway (main checkout, or a host
+    worktree whose own directory is found by walk-up); otherwise the directory
+    is mirrored so the baseline does not fall back to main's configuration.
+    Without a Paired Checkout, the *live* content is the pragmatic choice;
+    Paired Checkouts take the separate fork-point worktree path before this
+    helper is called.
 
     Symlinks are copied **as symlinks**. A stealth ``.core`` resolves its
     filesets relative to itself, so it reaches the RTL through core-relative
@@ -366,8 +372,11 @@ def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> None
     would produce silently-wrong baseline metrics, the one thing delta mode
     exists to prevent.
     """
-    src = worktree_state_dir(project_root)
-    if not (src / "cores").is_dir():
+    src = resolve_checkout_booley_dir(project_root)
+    # The baseline checkout lives under ``worktree_state_dir`` (``_baseline_dir``),
+    # so without a copy it resolves that directory.
+    resolved_without_copy = worktree_state_dir(project_root).resolve() == src.resolve()
+    if not (src / "cores").is_dir() and resolved_without_copy:
         return
     project_root = Path(os.path.normpath(str(project_root)))
     wt_dir = Path(os.path.normpath(str(wt_dir)))
