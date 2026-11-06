@@ -49,11 +49,13 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           # Mergify authors the in-place merge commits used to update queued
           # branches and signs speculative candidates with a separate committer.
-          # Trust both exact integration emails while scanning all
+          # The booley-renovate GitHub App (#2559) authors dependency-update
+          # commits. Trust these exact integration emails while scanning all
           # candidate content and every other commit identity normally.
           BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: |
             37929162+mergify[[]bot[]]@users.noreply.github.com
             commit-signer@mergify.com
+            353471265+booley-renovate[[]bot[]]@users.noreply.github.com
           BOOLEY_LEAK_GUARD_KEY_B64: ${{ secrets.BOOLEY_LEAK_GUARD_KEY_B64 }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -73,11 +75,14 @@ jobs:
         continue-on-error: true
         env:
           # Mergify is the sole actor allowed to update main outside a human PR
-          # merge. Trust its exact author and signer emails while retaining content and
-          # identity checks for every other commit in the immutable history.
+          # merge. Trust its exact author and signer emails, and the
+          # booley-renovate App author whose commits reach main through those
+          # merges, while retaining content and identity checks for every
+          # other commit in the immutable history.
           BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: |
             37929162+mergify[[]bot[]]@users.noreply.github.com
             commit-signer@mergify.com
+            353471265+booley-renovate[[]bot[]]@users.noreply.github.com
           BOOLEY_LEAK_GUARD_KEY_B64: ${{ secrets.BOOLEY_LEAK_GUARD_KEY_B64 }}
         run: >-
           python .github/scripts/confidential_content_guard.py
