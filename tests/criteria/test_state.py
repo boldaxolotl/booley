@@ -162,20 +162,21 @@ class TestMetricCoercion:
         assert _coerce_metric(True) is None
         assert _coerce_metric(False) is None
 
-    def test_absolute_cap_non_numeric_skips_instead_of_crashing(self):
+    def test_absolute_cap_non_numeric_fails_closed(self):
         detail = {"area_um2": "not-a-number"}
         result = _check_absolute_cap("area_max", "_max", 100.0, detail, self._MAP)
         assert result["skipped"] is True
-        assert result["pass"] is True
+        assert result["pass"] is False
 
     def test_absolute_cap_numeric_string_compares(self):
         result = _check_absolute_cap("area_max", "_max", 100.0, {"area_um2": "50"}, self._MAP)
         assert result["pass"] is True
         assert result["value"] == 50.0
 
-    def test_absolute_min_non_numeric_skips(self):
+    def test_absolute_min_non_numeric_fails_closed(self):
         result = _check_absolute_min("fmax_min", 200.0, {"fmax_mhz": "fast"}, self._MAP, {"fmax"})
         assert result["skipped"] is True
+        assert result["pass"] is False
 
     def test_delta_non_numeric_current_skips(self, tmp_path: Path):
         state = DevelopmentState.load(tmp_path / "s.json")
@@ -262,7 +263,7 @@ class TestResolveMetric:
         assert label == "area_um2"
 
     def test_unknown_metric_returns_none_none(self):
-        # Prefix maps to nothing → caller skips the param entirely.
+        # Prefix maps to nothing → caller records a failing row.
         assert resolve_metric(self._multi_clock(), "bogus", self._MAP) == (None, None)
 
     def test_unknown_per_clock_sub_returns_none_none(self):
@@ -274,7 +275,7 @@ class TestResolveMetric:
 
     def test_known_but_absent_flat_returns_none_with_label(self):
         # fmax_mhz is known, but neither a flat scalar nor any per_clock entry
-        # exists → (None, label) so the caller emits a clean "not available" skip.
+        # exists → (None, label) so the caller emits a failing "not available" row.
         value, label = resolve_metric({}, "fmax_mhz", self._MAP)
         assert value is None
         assert label == "fmax_mhz"

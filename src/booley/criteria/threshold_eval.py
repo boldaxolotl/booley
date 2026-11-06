@@ -10,7 +10,6 @@ flows one way. Delta (growth/reduction) threshold logic remains as methods on
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from booley.core.boundary import as_float
@@ -19,8 +18,6 @@ from booley.evidence.timing import (
     per_clock_from_json,
     worst_clock,
 )
-
-logger = logging.getLogger(__name__)
 
 # The per-clock timing sub-metrics — a *flat* threshold on one of these (no clock
 # named) gates on the timing-worst clock, since Fmax/critical-path have no single
@@ -46,8 +43,8 @@ def _coerce_metric(value: Any) -> float | None:
 
     Metric dicts (``detail``/``baseline``) cross a Flow/LLM boundary, so a
     value may be a string, bool, NaN/inf, or other non-numeric type. Callers
-    treat None as 'metric unavailable' and skip the gate rather than crashing
-    the disposition decision path. Delegates to ``core.boundary.as_float``,
+    treat None as 'metric unavailable' and fail the gate closed rather than
+    crashing the disposition decision path. Delegates to ``core.boundary.as_float``,
     which rejects both the bool trap (``float(True)`` would silently become
     1.0) and NaN/inf (valid floats that would otherwise poison a `<=`/`>=`
     comparison).
@@ -72,10 +69,10 @@ def resolve_metric(
       ``detail["per_clock"][clock][metric_map[sub]]`` (Fmax/critical-path are
       per-clock, so a threshold names the clock: ``clk_i.fmax_mhz_min``).
 
-    ``label`` is the resolved metric key used in the check/skip message, or
-    ``None`` when the prefix maps to no known metric (the caller then skips the
-    param entirely). A known metric whose value is merely absent returns
-    ``(None, label)`` so the caller emits a clean "not available" skip.
+    ``label`` is the resolved metric key used in the check message, or
+    ``None`` when the prefix maps to no known metric (the caller records a
+    failing row). A known metric whose value is merely absent returns
+    ``(None, label)`` so the caller emits a failing "not available" row.
     """
     if "." in metric_prefix:
         clock, _, sub = metric_prefix.partition(".")
@@ -110,25 +107,50 @@ def min_gate_key(metric_prefix: str) -> str:
     return metric_prefix.rpartition(".")[2] if "." in metric_prefix else metric_prefix
 
 
+def _unavailable_check(param_key: str, reason: str) -> dict[str, Any]:
+    """Failing row for a threshold the run cannot evaluate (fail closed).
+
+    Same shape as the delta checks' unavailable rows: a gate that cannot be
+    measured must not pass unchecked.
+    """
+    return {"param": param_key, "pass": False, "skipped": True, "reason": reason}
+
+
+def _unreported_clock_reason(detail: dict[str, Any], metric_prefix: str) -> str | None:
+    """Reason naming an unreported clock and the reported ones, else ``None``.
+
+    Only a clock-scoped prefix (``<clock>.<metric>``) whose clock is missing
+    from ``detail["per_clock"]`` yields a reason.
+    """
+    if "." not in metric_prefix:
+        return None
+    clock = metric_prefix.partition(".")[0]
+    per_clock = detail.get("per_clock")
+    reported = per_clock if isinstance(per_clock, dict) else {}
+    if clock in reported:
+        return None
+    return (
+        f"clock {clock!r} not reported; reported clocks: {', '.join(sorted(reported)) or 'none'}"
+    )
+
+
 def _check_absolute_cap(
     param_key: str,
     suffix: str,
     threshold: float,
     detail: dict[str, Any],
     metric_map: dict[str, str],
-) -> dict[str, Any] | None:
-    """Evaluate an absolute cap (*_max) threshold. Returns check dict or None."""
+) -> dict[str, Any]:
+    """Evaluate an absolute cap (*_max) threshold; an unavailable metric fails."""
     metric_prefix = param_key.removesuffix(suffix)
     value, label = resolve_metric(detail, metric_prefix, metric_map)
     if label is None:
-        return None
+        return _unavailable_check(param_key, f"threshold {param_key!r} names an unknown metric")
     if value is None:
-        return {
-            "param": param_key,
-            "pass": True,
-            "skipped": True,
-            "reason": f"metric {label} not available",
-        }
+        return _unavailable_check(
+            param_key,
+            _unreported_clock_reason(detail, metric_prefix) or f"metric {label} not available",
+        )
     return {"param": param_key, "pass": value <= threshold, "value": value, "threshold": threshold}
 
 
@@ -138,23 +160,22 @@ def _check_absolute_min(
     detail: dict[str, Any],
     metric_map: dict[str, str],
     min_allowed: set[str],
-) -> dict[str, Any] | None:
-    """Evaluate an absolute minimum (*_min) threshold. Returns check dict or None."""
+) -> dict[str, Any]:
+    """Evaluate an absolute minimum (*_min) threshold; an unavailable metric fails."""
     metric_prefix = param_key.removesuffix("_min")
     gate_key = min_gate_key(metric_prefix)
     if gate_key not in min_allowed:
-        logger.warning(
-            "Rejecting *_min param %r: metric %r not in min_allowed", param_key, gate_key
+        return _unavailable_check(
+            param_key,
+            f"threshold {param_key!r}: {gate_key} does not accept a *_min floor "
+            f"(allowed: {', '.join(sorted(min_allowed)) or 'none'})",
         )
-        return None
     value, label = resolve_metric(detail, metric_prefix, metric_map)
     if label is None:
-        return None
+        return _unavailable_check(param_key, f"threshold {param_key!r} names an unknown metric")
     if value is None:
-        return {
-            "param": param_key,
-            "pass": True,
-            "skipped": True,
-            "reason": f"{label} not available",
-        }
+        return _unavailable_check(
+            param_key,
+            _unreported_clock_reason(detail, metric_prefix) or f"metric {label} not available",
+        )
     return {"param": param_key, "pass": value >= threshold, "value": value, "threshold": threshold}
