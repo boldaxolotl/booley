@@ -245,3 +245,14 @@ def test_walk_yields_topmost_uniform_entries(tmp_path):
         "tickets/history": BooleyDirClass.VERSIONED,
     }
     assert list(walked) == sorted(walked)
+
+
+def test_snapshot_main_reports_an_unreadable_source(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.runtime import worktree_snapshot
+
+    status = worktree_snapshot.main([str(tmp_path / "missing"), str(tmp_path / "list")])
+
+    assert status == 1
+    assert "cannot list the Booley Directory for the Snapshot" in capsys.readouterr().err
