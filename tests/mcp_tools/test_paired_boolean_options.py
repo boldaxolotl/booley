@@ -18,7 +18,7 @@ from booley.flows.base import BuiltinFlow
 from booley.flows.builtin_cli import build_parser
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.synth.recipe import synthesis_recipe_args
-from booley.mcp import catalog, server
+from booley.mcp import catalog, catalog_worker, server
 from booley.mcp.call_context import resolve_call_context
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.registry import discover_mcp_tools
@@ -118,6 +118,32 @@ def test_every_paired_option_on_every_mcp_tool() -> None:
             assert server._params_to_argv({}, flags) == []
 
     assert seen.get("synth") == SYNTH_PAIR_DESTS
+
+
+def test_custom_tool_pair_survives_catalog_worker_extraction(tmp_path: Path) -> None:
+    """A Project tool's paired option keeps its negative flag through the worker."""
+    tool = tmp_path / "pair_tool.py"
+    tool.write_text(
+        "from booley.mcp.base import McpTool\n"
+        "class Pair(McpTool):\n"
+        "    name = 'pair_tool'\n"
+        "    description = 'Pair tool'\n"
+        "    def _add_args(self, parser):\n"
+        "        parser.add_argument('--fast', action='store_true', help='Go fast.')\n"
+        "        parser.add_argument('--no-fast', dest='fast', action='store_false')\n"
+        "    def _run(self, args): pass\n"
+        "    def _build_prompt(self, args): return ''\n"
+        "    def _interpret_output(self, output, args): pass\n"
+    )
+
+    definition, error = catalog_worker._import_and_extract_file(tool)
+
+    assert error is None and definition is not None
+    flags = definition["negative_flags"]
+    assert flags == {"fast": "--no-fast"}
+    assert server._params_to_argv({"fast": False}, flags) == ["--no-fast"]
+    assert server._params_to_argv({"fast": True}, flags) == ["--fast"]
+    assert server._params_to_argv({}, flags) == []
 
 
 def test_single_boolean_flags_unchanged() -> None:
