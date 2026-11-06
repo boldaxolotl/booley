@@ -731,7 +731,6 @@ class MutationTesterSpecialist(Specialist):
     )
     non_persisting_dry_run: bool = True
     announce_success_report: bool = True
-    min_model: str = "standard"
     default_timeout: int = 1800
     min_timeout: int = 1200
     satisfies: ClassVar[list[str]] = ["mutation_score"]

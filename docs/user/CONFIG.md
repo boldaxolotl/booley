@@ -2,7 +2,7 @@
 
 `.booley/booley.toml` holds your Project's Booley settings. This page covers the
 Project-wide ones: Project identity, extra Protected Inputs, turning Flows and
-Specialists off, Job limits, the agent provider and its billing, models, the
+Specialists off, Job limits, the Agent CLIs and their billing, models, the
 Dashboard and Goal presence, and feedback redaction. Settings for one Flow, the Sandbox, or
 Stealth Mode live on their own pages; the table below says where.
 
@@ -103,7 +103,7 @@ Specialist also disappears from `booley specialist` and from Goal sessions. The
 value must be `true` or `false`, and Doctor rejects Specialist names it doesn't
 know. Custom Flows and Specialists your Project adds use the same switch.
 
-To choose a Specialist's model, see [`[models.roles]`](#pinning-one-specialist-modelsroles).
+To choose a Specialist's model, see [`[models]`](#model-selection-models).
 
 ## Jobs & concurrency (`[jobs]`)
 
@@ -138,17 +138,25 @@ the run count and the minimum, median, and maximum peak memory and wall-clock
 time for each (`--json` for scripts). Use it to choose `heavy_memory` and
 `[sandbox].memory`.
 
-## Agent provider (`[agent]`)
+## Agent CLIs (`[agent]`)
 
-The Developer Agent and Specialists use one AI provider, Claude or Codex:
+Booley runs its agents on an **Agent CLI**: Claude Code (`claude`) or Codex
+(`codex`). `clis` lists the ones your Project may use, and `default` picks the
+one the Developer Agent and Booley's own calls run on:
 
 ```toml
 [agent]
-provider = "claude"   # or "codex"
+clis = ["claude", "codex"]   # the Agent CLIs this Project may use
+default = "claude"           # must be one of them
 ```
 
-`booley init` asks for it (default `claude`) and keeps your answer on re-runs.
-`booley init --provider codex` sets it without the prompt.
+Without `clis`, the Project uses only the default CLI. Without `default`, the
+first entry of `clis` is the default. `provider` is the older name for
+`default` and still works; `booley init` asks for it (default `claude`) and
+keeps your answer on re-runs, and `booley init --provider codex` sets it
+without the prompt. Each Specialist runs on the Agent CLI its model needs, so
+list a second CLI only when a [`[models]`](#model-selection-models) entry asks
+for it.
 
 ### Pinning what bills (`[agent] auth`)
 
@@ -157,14 +165,31 @@ pays:
 
 ```toml
 [agent]
-provider = "claude"
+default = "claude"
 auth = "subscription"   # "subscription", "api_key", or "auto" (default)
 ```
 
-- **`auto`**: the provider's CLI decides, and an API key beats a subscription.
+- **`auto`**: the Agent CLI decides, and an API key beats a subscription.
 - **`subscription`**: Booley removes API keys from the agents' environment so
   the subscription pays.
 - **`api_key`**: the API key pays.
+
+A single value applies to every CLI in `clis`. To bill each CLI differently,
+use a table with one entry per CLI; a CLI you leave out uses `auto`:
+
+```toml
+[agent]
+clis = ["claude", "codex"]
+
+[agent.auth]
+claude = "subscription"
+codex = "api_key"
+```
+
+A table may name only CLIs listed in `clis`. Codex also accepts `gateway`,
+which sends its calls through a model gateway set up for your Sandbox; Claude
+Code does not. A Sandbox that Booley issues for you cannot use `gateway` yet:
+issuing one fails with a pointer to a hand-written Sandbox spec.
 
 With `subscription` or `api_key`, `booley doctor` fails when that credential is
 missing instead of quietly billing the other one. On the command line,
@@ -191,37 +216,40 @@ spec such as GitHub Codespaces.
 
 ## Model selection (`[models]`)
 
-Specialists pick models by **tier**: `heavy`, `standard`, or `light`.
-Specialists never run below `standard`; small internal steps use `light`. The
-Developer Agent itself uses your provider CLI's own model setting, not this
-table. Each provider has defaults, so most Projects need no `[models]` at all:
-
-| Tier | Claude | Codex |
-|---|---|---|
-| `heavy` | `claude-fable-5-1` | `gpt-6-astra` |
-| `standard` | `claude-opus-5-5` | `gpt-6.1-sol` |
-| `light` | `claude-sonnet-5-5` | `gpt-6-luna` |
-
-Override a tier to move everything on it at once. Tiers you leave out keep the
-default:
+Each Specialist has its own `[models]` key. The model you name decides which
+Agent CLI runs that Specialist: `claude-*` models run on Claude Code and
+`gpt-*` models on Codex. That CLI must be listed in [`[agent] clis`](#agent-clis-agent):
 
 ```toml
+[agent]
+clis = ["claude", "codex"]
+default = "claude"
+
 [models]
-standard = "claude-fable-5-1"
+reviewer = "gpt-6-astra"   # runs on Codex
 ```
 
-### Pinning one Specialist (`[models.roles]`)
+The `[models]` keys are `reviewer`, `mutation_tester`, and `coverage_analyst`.
+Any other key, a model that is neither `claude-*` nor `gpt-*`, or a model whose
+CLI isn't in `clis` stops Booley from loading the config, and `booley doctor`
+names the entry. The Developer Agent itself uses your Agent CLI's own model
+setting, not this table.
 
-```toml
-[models.roles]
-reviewer = "claude-fable-5-1"
-mutation_tester = "light"   # a tier name follows that tier
-```
+A Specialist without an entry, and Booley's own small internal steps, use the
+default CLI's built-in model, so most Projects need no `[models]` at all:
 
-Specialist roles are `reviewer`, `mutation_tester`, and `coverage_analyst`. Any
-other role fails `booley doctor`. A model name is passed to the provider as
-written. A pin may go below the `standard` floor; it changes only the model,
-not the reasoning effort.
+| Used by | Claude Code | Codex |
+|---|---|---|
+| Specialists | `claude-opus-5-5` | `gpt-6.1-sol` |
+| Booley's internal calls | `claude-sonnet-5-5` | `gpt-6-luna` |
+
+Booley passes the model to the Agent CLI as written and never swaps it: if your
+account can't run it, the Specialist fails and the error names the `[models]`
+entry to change. `booley doctor --deep` checks every model ahead of time.
+
+`[models]` has no model tiers. A config with `heavy`, `standard`, or `light`
+keys or a `[models.roles]` table doesn't load; the error shows the `[models]`
+entries to use instead.
 
 ## Dashboard and quiet Goal presence (`[goals]`)
 

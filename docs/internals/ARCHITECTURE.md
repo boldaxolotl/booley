@@ -135,7 +135,7 @@ B-Wave does not render waveforms. When a human needs a visual handoff, `bwave gu
 
 ## Backends
 
-Booley is backend-agnostic. One provider—Claude or Codex—is configured for agent sessions and nested Specialists, while the MCP capability surface remains the same. Provider selection, model roles, authentication, and billing options are configuration concerns documented under [`[agent]`](../user/CONFIG.md#agent-provider-agent) and in [SETUP.md](../user/SETUP.md#sign-in-and-billing).
+Booley is backend-agnostic. A Project lists the Agent CLIs it may run (Claude Code, Codex, or both) and names a default for agent sessions and Booley's own calls; each Specialist runs on the Agent CLI its configured model implies, while the MCP capability surface remains the same. CLI selection, per-Specialist models, per-CLI authentication, and billing options are configuration concerns documented under [`[agent]`](../user/CONFIG.md#agent-clis-agent), [`[models]`](../user/CONFIG.md#model-selection-models), and in [SETUP.md](../user/SETUP.md#sign-in-and-billing).
 
 ## Security & Trust Model
 

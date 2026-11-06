@@ -169,13 +169,13 @@ async def test_specialist_settings_from_env_drive_codex_backend_to_gateway(
     monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "codex")
 
     settings = agent_config.get_agent_settings()
-    backend = cb.CodexBackend(auth_mode=settings.auth)
+    backend = cb.CodexBackend(auth_mode=settings.auth_for("codex"))
     result = await backend._call_once(
         _params(tmp_path), full_prompt="p", transcript_path=tmp_path / "transcript.jsonl"
     )
     report = json.loads(result.output)
 
-    assert settings.auth == "gateway"
+    assert settings.auth_for("codex") == "gateway"
     assert report["model_provider"] == "booley_gateway"
     assert report["base_url"] == _URL
     assert report["token_run"]["stdout"] == _TOKEN
@@ -257,7 +257,7 @@ async def test_fake_codex_text_only_specialist_reaches_gateway_with_pinned_model
     settings = agent_config.get_agent_settings()
     params = _coverage_params(tmp_path)
 
-    result = await cb.CodexBackend(auth_mode=settings.auth)._call_once(
+    result = await cb.CodexBackend(auth_mode=settings.auth_for("codex"))._call_once(
         params, full_prompt="p", transcript_path=params.transcript_path
     )
     report = json.loads(result.output)

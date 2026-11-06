@@ -86,12 +86,12 @@ and on the Dashboard. The full output of the last run is in
 
 `booley doctor --deep` adds checks that run real tools:
 
-- one short, paid call to the model provider that Booley's Specialists (review
-  agents) use, which proves the credentials work in this Sandbox and measures
-  the agent's memory use, plus one more short call for each other model your
-  `[models]` tiers and `[models.roles]` pins select (a gateway makes no extra
-  call). A model the provider refuses fails Doctor and names the config key to
-  change, instead of failing a Goal later (skip these calls with
+- one short, paid call on your default Agent CLI, which proves the credentials
+  work in this Sandbox and measures the agent's memory use, plus one more short
+  call for each model a Specialist runs on, made through that model's Agent CLI
+  (a model Codex reaches through a gateway makes no extra call). A model the
+  provider refuses fails Doctor and names the `[models]` entry to change,
+  instead of failing a Goal later (skip these calls with
   `--skip-agent-checks`);
 - a short simulation, lint, and ASIC synthesis on each Target marked for Doctor
   (see [Doctor selection](CONFIG.md#explicit-flow-targets-and-doctor-selection));

@@ -369,7 +369,7 @@ Booley makes the choice in its start-up step, so the spec's
 registrar module `booley.harness.incontainer_register` with `python -m`.
 
 `booley doctor` in the Sandbox shows which app `auto` picked and why. If
-[`[agent] provider`](CONFIG.md#agent-provider-agent) pins an app, set
+[`[agent] default`](CONFIG.md#agent-clis-agent) (or the older `provider`) pins an app, set
 `BOOLEY_AGENT_APP` to that app or remove the pin. `auto` works only inside a
 container.
 
