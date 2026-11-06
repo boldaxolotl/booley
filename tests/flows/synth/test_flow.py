@@ -6152,6 +6152,32 @@ class TestSummaryTable:
         assert self._status_by_target(result.report_text) == {"core": "ERROR (baseline)"}
         assert self._result_line(result.report_text).startswith("RESULT: ERROR")
 
+    def test_failed_target_with_uncomparable_baseline_is_error(self, flow_and_state):
+        """RESULT is ERROR and names a failing Target whose baseline broke; its row agrees."""
+        flow, _ = flow_and_state
+        flow.args.baseline = "abc1234"
+        flow._baseline_selfcompare_msg = None
+        result = flow._aggregate_results(
+            ["broken", "ok", "slow"],
+            {
+                "broken": SynthMetrics(returncode=1),
+                "ok": self._passing(),
+                "slow": self._passing(wns_ns=-0.1),
+            },
+            {
+                "broken": SynthMetrics(returncode=1),
+                "ok": self._passing(),
+                "slow": SynthMetrics(infra_error="boom", returncode=2),
+            },
+            "abc1234",
+        )
+        assert self._status_by_target(result.report_text) == {
+            "broken": "ERROR (baseline)",
+            "ok": "PASS",
+            "slow": "ERROR (baseline)",
+        }
+        assert self._result_line(result.report_text).startswith("RESULT: ERROR")
+
     @pytest.mark.parametrize(
         ("current", "expected_rows", "verdict"),
         [

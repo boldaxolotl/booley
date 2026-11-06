@@ -2904,11 +2904,11 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         area = f"{cur.area_kge:.1f} kGE" if cur.area_kge is not None else MISSING
         slack = f"{cur.wns_ns:+.3f} ns" if cur.wns_ns is not None else MISSING
         status = self._format_status_suffix(cur).strip() or self._run_status(
-            target,
-            cur,
-            baseline_not_meaningful=baseline_not_meaningful,
-            comparison_error=comparison_error,
+            target, cur, baseline_not_meaningful=baseline_not_meaningful
         )
+        if comparison_error and not status.startswith("ERROR"):
+            # RESULT is ERROR and names this Target, whatever else its own run did.
+            status = "ERROR (baseline)"
         cells = [target, area]
         if with_delta:
             cells.append(self._delta_cell(cur.area_kge, base.area_kge if base else None))
@@ -2925,17 +2925,14 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         cur: SynthMetrics,
         *,
         baseline_not_meaningful: bool,
-        comparison_error: bool,
     ) -> str:
         """Status of a Target whose run passed, agreeing with the ``RESULT:`` line.
 
-        ``ERROR (baseline)`` for a baseline that could not be compared,
         ``FAIL (timing)`` for a fatal timing violation, ``WARN (<reasons>)``
-        for every WARN reason this Target adds (in the ``RESULT:`` precedence
-        order), else ``PASS``. The predicates are the ones ``_result_line`` uses.
+        for every WARN reason this Target adds, else ``PASS``. The inputs are the
+        ones ``_result_line`` is fed: ``_timing_violation``, the actionable EDA
+        warnings, and the run's self-compare message.
         """
-        if comparison_error:
-            return "ERROR (baseline)"
         timing = self._timing_violation(target, cur)
         if timing and getattr(self, "_timing_violation_is_fatal", False):
             return "FAIL (timing)"

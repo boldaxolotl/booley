@@ -2103,19 +2103,28 @@ def test_summary_record_keeps_every_metric_with_delta_sub_row(
 
 
 @pytest.mark.parametrize(
-    ("baseline_error", "expected_rows", "expected_result"),
+    ("baseline_error", "current_wns", "expected_rows", "expected_result"),
     [
         pytest.param(
             False,
+            -0.3,
             {"default": "PASS", "tight": "FAIL"},
             "RESULT: FAIL (tight: timing not met",
             id="timing-violation-is-fail",
         ),
         pytest.param(
             True,
-            {"default": "ERROR (baseline)"},
+            0.5,
+            {"default": "ERROR (baseline)", "tight": "PASS"},
             "RESULT: ERROR (baseline default: ",
             id="baseline-error",
+        ),
+        pytest.param(
+            True,
+            -0.3,
+            {"default": "ERROR (baseline)", "tight": "PASS"},
+            "RESULT: ERROR (baseline default: ",
+            id="failed-target-with-baseline-error",
         ),
     ],
 )
@@ -2123,6 +2132,7 @@ def test_summary_rows_agree_with_result_reasons(
     tmp_path: Path,
     state_file: Path,
     baseline_error: bool,
+    current_wns: float,
     expected_rows: dict[str, str],
     expected_result: str,
 ) -> None:
@@ -2130,10 +2140,13 @@ def test_summary_rows_agree_with_result_reasons(
     flow = _flow(tmp_path, state_file)
     if baseline_error:
         flow.args.baseline = "abc1234"
-        current = {"default": _passing_fpga()}
-        baseline = {"default": FpgaMetrics(infra_error="baseline broke", returncode=2)}
+        current = {"default": _passing_fpga(wns_ns=current_wns), "tight": _passing_fpga()}
+        baseline = {
+            "default": FpgaMetrics(infra_error="baseline broke", returncode=2),
+            "tight": _passing_fpga(),
+        }
     else:
-        current = {"default": _passing_fpga(), "tight": _passing_fpga(wns_ns=-0.3)}
+        current = {"default": _passing_fpga(), "tight": _passing_fpga(wns_ns=current_wns)}
         baseline = {}
     result = flow._aggregate_results(list(current), current, baseline, "abc1234")
     _, rows = _fpga_table(result.report_text)

@@ -1491,11 +1491,12 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             fmax = f"{worst.fmax_mhz:.1f} MHz{tag}"
         if cur.infra_error:
             status = "ERROR"
+        elif comparison_error:
+            # The baseline could not be compared: RESULT is ERROR and names this Target,
+            # even when its own run also failed.
+            status = "ERROR (baseline)"
         elif not cur.passed:
             status = "FAIL"
-        elif comparison_error:
-            # The baseline could not be compared: RESULT is ERROR and names this Target.
-            status = "ERROR (baseline)"
         else:
             status = "PASS"
         return [
