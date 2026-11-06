@@ -925,7 +925,7 @@ class DevelopmentState:
         metric_map: dict[str, str],
         min_allowed: set[str],
     ) -> dict[str, Any] | None:
-        """Evaluate one threshold param. Returns check dict or None only for a non-threshold param."""
+        """Evaluate one threshold param; None only for a non-threshold param."""
         if param_key.endswith("_max"):
             return _check_absolute_cap(
                 param_key,

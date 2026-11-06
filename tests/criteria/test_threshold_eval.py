@@ -626,6 +626,7 @@ class TestUnavailableThresholdsFailClosed:
         _init_with_params(state, {param: 600})
         state.set_criterion("synthesis_ok_default", True, detail=_two_clock_detail())
         assert not state.is_met("synthesis_ok_default")
+        assert not state.criteria["synthesis_ok_default"].ever_met
         check = self._only_check(state)
         assert check["pass"] is False
         assert check["skipped"] is True
@@ -681,6 +682,31 @@ class TestUnavailableThresholdsFailClosed:
         check = self._only_check(state)
         assert check["pass"] is False
         assert key in check["reason"]
+
+    def test_reported_clock_missing_sub_metric_fails(self, state):
+        # clk_slow is reported but carries no Fmax: the clock-scoped floor has
+        # nothing to compare, so it must not count as met.
+        detail = _two_clock_detail()
+        detail["per_clock"]["clk_slow"]["fmax_mhz"] = None
+        _init_with_params(state, {"clk_slow.fmax_mhz_min": 100})
+        state.set_criterion("synthesis_ok_default", True, detail=detail)
+        assert not state.is_met("synthesis_ok_default")
+        assert not state.criteria["synthesis_ok_default"].ever_met
+        check = self._only_check(state)
+        assert check["pass"] is False
+        assert "clk_slow" in check["reason"]
+        assert "not reported" not in check["reason"]
+
+    def test_min_allowed_metric_without_mapping_fails_naming_key(self, state):
+        # A Flow whose _min_allowed names a metric its _metric_map lacks must
+        # still fail the floor rather than drop it.
+        _init_with_params(state, {"gadget_min": 1})
+        detail = {"area_um2": 500, "_metric_map": {"area": "area_um2"}, "_min_allowed": ["gadget"]}
+        state.set_criterion("synthesis_ok_default", True, detail=detail)
+        assert not state.is_met("synthesis_ok_default")
+        check = self._only_check(state)
+        assert check["pass"] is False
+        assert "gadget_min" in check["reason"]
 
     def test_disallowed_min_key_fails_naming_key(self, state):
         _init_with_params(state, {"cell_count_min": 10})
