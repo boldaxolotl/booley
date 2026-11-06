@@ -942,9 +942,10 @@ def test_traced_cocotb_status_reports_simulator(tmp_path: Path, eda_tool: str, b
     else:
         assert run.command[0] == str(build / "Vtop")
         assert run.command[-3:] == ["--trace", "--trace-file", "dump.vcd"]
-    assert run.trace is not None
-    assert not run.trace.manifest_path.exists()
-    run.trace.record_attempt("vcd_postprocess", "started")
-    status = json.loads(run.trace.manifest_path.read_text())
+    assert run.current is not None
+    trace = run.current.session
+    assert not trace.manifest_path.exists()
+    trace.record_attempt("vcd_postprocess", "started")
+    status = json.loads(trace.manifest_path.read_text())
     assert status["backend"] == backend
     assert status["trace_scope"] == "counter"

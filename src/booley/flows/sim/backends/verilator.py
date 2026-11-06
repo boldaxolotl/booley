@@ -47,15 +47,13 @@ from booley.flows.sim.adapter_transport import (
     work_transport_arguments,
 )
 from booley.flows.sim.backends.shared import (
+    CurrentRunTraces,
     RunLogProgress,
     RunTermination,
-    TraceFileSnapshot,
-    adopt_declared_trace_files,
+    ambiguous_trace_reason,
     append_child_cpu_marker,
     child_cpu_snapshot,
     format_idle_note,
-    snapshot_declared_trace_files,
-    trace_file_stamp,
 )
 from booley.flows.sim.result import (
     extract_vrfc_warnings,
@@ -522,43 +520,9 @@ class _TraceRuntime:
     """Prepared trace processes and freshness evidence for one execution."""
 
     session: TraceSession | None
-    search_dirs: list[Path]
-    files_before: TraceFileSnapshot
+    current: CurrentRunTraces | None
     mode: TraceMode
     conversion: StreamingConversion | None
-
-
-def _prepare_trace_artifacts(
-    trace: TraceSession | None,
-    trace_files: list[str] | None,
-    run_cwd: Path,
-    work_dir: Path,
-    bin_dir: Path,
-) -> tuple[list[Path], TraceFileSnapshot]:
-    """Reset Booley-owned output and snapshot project-owned trace locations."""
-    if trace is not None:
-        trace.reset_for_run()
-    search_dirs = [run_cwd, work_dir, bin_dir]
-    return search_dirs, snapshot_declared_trace_files(trace_files, search_dirs)
-
-
-def _find_current_trace(
-    trace: TraceSession,
-    trace_files: list[str] | None,
-    search_dirs: list[Path],
-    before: TraceFileSnapshot | None,
-) -> Path | None:
-    """Find one artifact proven new or changed by the current simulation."""
-    found = trace.find()
-    if (
-        found is not None
-        and before is not None
-        and before.get(found.resolve()) == trace_file_stamp(found)
-    ):
-        found = None
-    if found is None and trace_files:
-        found = adopt_declared_trace_files(trace, trace_files, search_dirs, before=before)
-    return found
 
 
 def _missing_trace_reason(trace_files: list[str] | None) -> str:
@@ -606,24 +570,21 @@ def _trace_success_result(artifact: TraceArtifact) -> tuple[str, AdapterTraceRes
 
 
 def _finalize_trace(
-    trace: TraceSession,
+    current: CurrentRunTraces,
     proc: subprocess.Popen | None,
     bwave_proc: StreamingConversion | None,
     trace_files: list[str] | None = None,
-    search_dirs: list[Path] | None = None,
-    trace_files_before: TraceFileSnapshot | None = None,
 ) -> tuple[str, AdapterTraceResult]:
     """Locate the produced waveform and emit the TRACE_OK / TRACE_INCIDENT line.
 
     Returns the text to append to the run's captured output.
     """
-    found = _find_current_trace(
-        trace,
-        trace_files,
-        search_dirs or [],
-        trace_files_before,
-    )
-    if found is None:
+    trace = current.session
+    selection = current.select()
+    found = selection.path
+    if selection.ambiguous:
+        failure_reason = ambiguous_trace_reason(selection.ambiguous)
+    elif found is None:
         failure_reason = _missing_trace_reason(trace_files)
     else:
         inspection = trace.inspect(found)
@@ -667,20 +628,21 @@ def _prepare_trace_runtime(
 ) -> _TraceRuntime:
     """Prepare trace output, freshness evidence, and any FIFO converter."""
     session = _new_trace_session(paths.work_dir, trace_scope) if enabled else None
-    search_dirs, files_before = _prepare_trace_artifacts(
-        session,
-        trace_files,
-        paths.run_cwd,
-        paths.work_dir,
-        paths.bin_dir,
+    current = (
+        CurrentRunTraces.begin(
+            session,
+            patterns=tuple(trace_files or ()),
+            roots=(paths.run_cwd, paths.work_dir, paths.bin_dir),
+        )
+        if session is not None
+        else None
     )
     conversion = (
         _setup_trace(session, cmd, trace_args, trace_mode) if session is not None else None
     )
     return _TraceRuntime(
         session=session,
-        search_dirs=search_dirs,
-        files_before=files_before,
+        current=current,
         mode=trace_mode,
         conversion=conversion,
     )
@@ -765,13 +727,12 @@ def _finalize_verilated_run(
         return output, None, termination
     if trace.mode is TraceMode.VCD_FIFO and trace.conversion is None:
         trace.session.postprocess(paths.work_dir / "trace.vcd")
+    assert trace.current is not None
     trace_output, trace_result = _finalize_trace(
-        trace.session,
+        trace.current,
         proc,
         trace.conversion,
         trace_files=trace_files,
-        search_dirs=trace.search_dirs,
-        trace_files_before=trace.files_before,
     )
     return output + trace_output, trace_result, termination
 
