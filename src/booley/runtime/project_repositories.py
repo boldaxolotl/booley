@@ -6,7 +6,13 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.runtime.booley_dir import BOOLEY_DIR_NAME, resolve_checkout_booley_dir
+from booley.runtime.booley_dir import (
+    BOOLEY_DIR_NAME,
+    BooleyDirOutsideCheckoutError,
+    own_booley_dir,
+    own_booley_dir_relative,
+    resolve_checkout_booley_dir,
+)
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.git_facts import run_remembered
 
@@ -106,15 +112,36 @@ def resolve_inner_project_repo(project_root: Path) -> Path | None:
 
 
 def paired_project_repository(checkout_root: Path) -> RepositoryCheckout | None:
-    """Return the fixed checkout-local linked Project, without resolving config."""
+    """Return the checkout's own linked Project, read from its root ``booley.toml`` alone."""
     return project_topology(checkout_root, discover_standalone=False).paired
+
+
+def _paired_checkout_location(checkout_root: Path) -> tuple[Path, str] | None:
+    """Locate the checkout's linked Booley Directory and its prefix in the composite.
+
+    The checkout's own (possibly relocated) directory comes first. A Paired
+    Checkout at the fixed ``.booley`` name still counts, because earlier Booley
+    versions created every worktree pairing there whatever ``[project].dir`` said.
+    """
+    candidates = [(checkout_root / BOOLEY_DIR_NAME, BOOLEY_DIR_NAME)]
+    try:
+        own = (own_booley_dir(checkout_root), own_booley_dir_relative(checkout_root).as_posix())
+    except BooleyDirOutsideCheckoutError:
+        pass  # A Booley Directory outside the checkout is never paired inside it.
+    else:
+        candidates.insert(0, own)
+    for nested, prefix in candidates:
+        if (nested / ".git").is_file():
+            return nested, prefix
+    return None
 
 
 def _inspect_paired_project_repository(checkout_root: Path) -> RepositoryCheckout | None:
     """Return the checkout's linked inner worktree, when one is installed."""
-    nested = checkout_root / BOOLEY_DIR_NAME
-    if not (nested / ".git").is_file():
+    location = _paired_checkout_location(checkout_root)
+    if location is None:
         return None
+    nested, prefix = location
     result = run_identity_query(nested, "rev-parse", "--show-toplevel")
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
@@ -131,7 +158,7 @@ def _inspect_paired_project_repository(checkout_root: Path) -> RepositoryCheckou
         raise RepositoryCheckoutError(
             f"Paired Checkout has unexpected root {top}; expected {expected}"
         )
-    return RepositoryCheckout(nested, BOOLEY_DIR_NAME)
+    return RepositoryCheckout(nested, prefix)
 
 
 def is_paired_root_change(

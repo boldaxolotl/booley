@@ -9,8 +9,13 @@ from functools import cache
 from itertools import chain
 from pathlib import Path, PurePosixPath
 
-from booley.core.booley_dir import BOOLEY_DIR_NAME, resolve_authoritative_booley_dir
+from booley.core.booley_dir import (
+    BOOLEY_DIR_NAME,
+    own_booley_dir,
+    resolve_authoritative_booley_dir,
+)
 from booley.core.booley_dir_pin import BooleyDirPinError
+from booley.core.booley_layout import BooleyLayoutError
 from booley.core.checkout_role import SourceCheckoutProjectError, require_project_checkout
 from booley.runtime.booley_dir import contains
 from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
@@ -34,13 +39,31 @@ def has_git_worktree_marker(path: Path) -> bool:
         return False
 
 
+def _is_configured_booley_dir(path: Path) -> bool:
+    """Whether *path* is the Booley Directory its nearest strict Git ancestor configures.
+
+    The ``.booley`` name rule cannot recognize a directory that ``[project].dir``
+    relocated (or the Paired Checkout inside it). Only the nearest checkout
+    ancestor is consulted, and read errors mean "not one".
+    """
+    location = path.absolute()
+    for ancestor in location.parents:
+        if has_git_worktree_marker(ancestor):
+            try:
+                return own_booley_dir(ancestor) == location
+            except (BooleyLayoutError, OSError):
+                return False
+    return False
+
+
 def _data_root(
     start: Path, checkouts: list[Path], checkout_data: Callable[[Path], Path | None]
 ) -> Path | None:
     for parent in (start, *start.parents):
-        if parent.name == BOOLEY_DIR_NAME and (
-            parent != Path.home() / BOOLEY_DIR_NAME or has_git_worktree_marker(parent.parent)
-        ):
+        if (
+            parent.name == BOOLEY_DIR_NAME
+            and (parent != Path.home() / BOOLEY_DIR_NAME or has_git_worktree_marker(parent.parent))
+        ) or _is_configured_booley_dir(parent):
             return parent
         if parent in checkouts:
             break
@@ -82,8 +105,9 @@ def _checkout_candidates(start: Path | None) -> tuple[Path, list[Path]]:
         dict.fromkeys(
             p.resolve()
             for p in paths
-            if (p.name != BOOLEY_DIR_NAME or not has_git_worktree_marker(p.parent))
-            and has_git_worktree_marker(p)
+            if has_git_worktree_marker(p)
+            and not (p.name == BOOLEY_DIR_NAME and has_git_worktree_marker(p.parent))
+            and not _is_configured_booley_dir(p)
         )
     )
     return current, checkouts
@@ -177,9 +201,13 @@ def _session_owner(checkout: Path) -> Path:
     from booley.runtime.project_repositories import GitDirectoryInspectionError, git_directories
 
     for candidate in checkout.parents:
-        namespace = candidate / BOOLEY_DIR_NAME / "worktrees"
+        # Worktrees made before ``[project].dir`` was honored live under ``.booley``.
+        namespaces = (
+            own_booley_dir(candidate) / "worktrees",
+            candidate / BOOLEY_DIR_NAME / "worktrees",
+        )
         if (
-            checkout.parent == namespace.resolve()
+            any(checkout.parent == namespace.resolve() for namespace in namespaces)
             and resolve_authoritative_booley_dir(candidate).is_dir()
         ):
             return candidate

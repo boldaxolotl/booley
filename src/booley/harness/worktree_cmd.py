@@ -3,7 +3,8 @@
 The command wraps the packaged ``worktree_create.sh`` with its default
 ``refuse`` policy, so an existing destination (possibly an active worktree
 holding someone's work) is never deleted. The worktree lands at
-``.booley/worktrees/<name>``, on a detached
+``<Booley Directory>/worktrees/<name>`` (``.booley`` unless ``[project].dir`` relocates
+it inside the checkout), on a detached
 HEAD at the workspace's current commit unless the name uses the
 ``<branch>--<description>`` convention to check out an existing branch.
 A Versioned Booley Directory gets a Paired Checkout on ``booley-worktree/<name>``
@@ -22,7 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from booley.runtime.booley_dir import BOOLEY_DIR_NAME
+from booley.runtime.booley_dir import BooleyDirOutsideCheckoutError, own_booley_dir
 from booley.runtime.docs_links import docs_url
 from booley.runtime.paths import worktree_create_script
 from booley.runtime.platform_paths import bash_bin
@@ -41,6 +42,7 @@ from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     materialize_worktree_submodules,
 )
+from booley.runtime.worktree_paths import BooleyDirMismatchError, worktree_booley_dir
 from booley.runtime.worktree_snapshot import SKIPPED_PREFIX
 
 # Same single-path-component rule the script enforces; checking it at the
@@ -94,7 +96,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 def worktree_path(project_root: Path, name: str) -> Path:
     """Return where ``booley worktree new <name>`` creates the worktree."""
-    return project_root / BOOLEY_DIR_NAME / "worktrees" / name
+    return own_booley_dir(project_root) / "worktrees" / name
 
 
 class WorktreeCreationError(Exception):
@@ -144,6 +146,11 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
     """Keep checkout/pair registration atomic with respect to directory migration."""
     from booley.core.layout_lock import layout_gate
 
+    try:
+        worktree_booley_dir(project_root)
+    except (BooleyDirOutsideCheckoutError, BooleyDirMismatchError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
     with layout_gate(project_root):
         return _run_current(args, project_root)
 
@@ -215,7 +222,7 @@ def _rollback_creation(
 
 
 def _is_named_pair(worktree: Path, name: str) -> bool:
-    nested = worktree / BOOLEY_DIR_NAME
+    nested = own_booley_dir(worktree)
     if not (nested / ".git").is_file():
         return False
     branch = run_git(nested, "symbolic-ref", "--short", "HEAD")

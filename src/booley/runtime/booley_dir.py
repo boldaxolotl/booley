@@ -8,10 +8,13 @@ from stat import S_ISDIR
 
 from booley.core.booley_dir import (
     BOOLEY_DIR_NAME,
+    BooleyDirOutsideCheckoutError,
     booley_dir_for_init,
     checkout_booley_dir_relative_to,
     committed_project_scope,
     init_booley_dir_scope,
+    own_booley_dir,
+    own_booley_dir_relative,
     reset_cache,
     resolve_authoritative_booley_dir,
     resolve_booley_dir,
@@ -22,12 +25,15 @@ from booley.core.booley_dir import (
 
 __all__ = [
     "BOOLEY_DIR_NAME",
+    "BooleyDirOutsideCheckoutError",
     "booley_dir_for_init",
     "checkout_booley_dir_relative_to",
     "committed_project_scope",
     "contains",
     "crossed_booley_dir_entry",
     "init_booley_dir_scope",
+    "own_booley_dir",
+    "own_booley_dir_relative",
     "reset_cache",
     "resolve_authoritative_booley_dir",
     "resolve_booley_dir",

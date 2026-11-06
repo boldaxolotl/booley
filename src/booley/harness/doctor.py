@@ -150,6 +150,7 @@ from booley.runtime.agent_errors import ModelUnavailableError
 from booley.runtime.booley_dir import (
     BOOLEY_DIR_NAME,
     contains,
+    own_booley_dir,
     resolve_checkout_booley_dir,
     resolve_common_booley_dir,
 )
@@ -1108,7 +1109,7 @@ def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> N
     from booley.core.booley_layout import BooleyLayoutError
     from booley.runtime.directory_migration_git import primary_checkout
 
-    local = project_root / BOOLEY_DIR_NAME
+    local = own_booley_dir(project_root)
     is_copy = local.is_dir() and not local.is_symlink() and not (local / ".git").exists()
     if not (project_root / ".git").is_file() or not is_copy:
         return
@@ -1116,7 +1117,7 @@ def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> N
         primary = primary_checkout(project_root)
     except (BooleyLayoutError, OSError, subprocess.TimeoutExpired):
         return  # Git layout problems are reported by the Git state checks.
-    versioned = primary / BOOLEY_DIR_NAME
+    versioned = own_booley_dir(primary)
     if primary == project_root.resolve() or not project_repositories.is_standalone_git_repository(
         versioned
     ):
@@ -1165,8 +1166,13 @@ def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) ->
     scanned = 0
     warned = False
     for entry in linked:
-        booley_dir = entry.path / BOOLEY_DIR_NAME
-        if booley_dir.is_symlink() or not booley_dir.is_dir() or booley_dir.resolve() == main_dir:
+        booley_dir = own_booley_dir(entry.path)
+        if (
+            not booley_dir.is_relative_to(entry.path)
+            or booley_dir.is_symlink()
+            or not booley_dir.is_dir()
+            or booley_dir.resolve() == main_dir
+        ):
             continue
         try:
             untracked = _untracked_common_paths(entry.path, booley_dir)
@@ -1216,11 +1222,12 @@ def _tracked_booley_paths(worktree: Path, booley_dir: Path) -> set[str]:
     """
     own_repository = (booley_dir / ".git").exists()
     cwd = booley_dir if own_repository else worktree
-    args = ["ls-files", "-z"] if own_repository else ["ls-files", "-z", "--", BOOLEY_DIR_NAME]
+    relative = booley_dir.relative_to(worktree).as_posix()
+    args = ["ls-files", "-z"] if own_repository else ["ls-files", "-z", "--", relative]
     result = project_repositories.run_git(cwd, *args)
     if result.returncode != 0:
         raise subprocess.CalledProcessError(result.returncode, args, stderr=result.stderr)
-    prefix = "" if own_repository else f"{BOOLEY_DIR_NAME}/"
+    prefix = "" if own_repository else f"{relative}/"
     return {name.removeprefix(prefix) for name in result.stdout.split("\0") if name}
 
 
