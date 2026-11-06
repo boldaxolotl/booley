@@ -210,6 +210,37 @@ def test_project_credential_policy_refuses_toml_gateway(tmp_path):
     )
 
 
+def test_malformed_clis_entries_fail_naming_the_key(tmp_path):
+    """A nested list or table in ``clis`` is a config error, not an unhashable crash."""
+    for entry in ('["claude"]', "{ a = 1 }", '"claude", "claude"', '"gemini"'):
+        _write_toml(tmp_path, f"[agent]\nclis = [{entry}]\n")
+        with pytest.raises(BackendConfigError, match="clis"):
+            load_agent_settings(tmp_path)
+
+
+def test_project_credential_policy_refuses_gateway_for_any_listed_cli(tmp_path):
+    """Sandbox Issuance refuses a toml ``gateway`` even when Codex is not the default CLI."""
+    _write_toml(
+        tmp_path,
+        '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n\n[agent.auth]\ncodex = "gateway"\n',
+    )
+    with pytest.raises(BackendConfigError, match="gateway"):
+        bc.project_credential_policy(tmp_path, booley_dir=tmp_path / ".booley")
+
+
+def test_models_audit_reports_an_environment_error_without_an_agent_table(monkeypatch):
+    """With no ``[agent]`` table to report it, the ``[models]`` audit reports the failure."""
+    from booley.audit.agent_schema import audit_models_table
+
+    def _boom(_declared):
+        raise BackendConfigError("environment boom")
+
+    monkeypatch.setattr(bc, "resolve_default_cli", _boom)
+    audit = audit_models_table({"models": {"reviewer": "claude-opus-5-5"}})
+
+    assert [f.message for f in audit.findings] == ["environment boom"]
+
+
 # --- vocabulary drift guard --------------------------------------------------
 
 

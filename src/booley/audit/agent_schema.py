@@ -13,6 +13,7 @@ from booley.audit.config_common import (
     pass_finding,
 )
 from booley.config.agent import BackendConfigError, parse_agent_section, settings_from_data
+from booley.config.gateway import GatewayConfigError
 from booley.core.boundary import as_dict
 
 
@@ -36,6 +37,8 @@ def audit_agent_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     try:
         declared = parse_agent_section(agent)
         settings_from_data({k: v for k, v in data.items() if k != "models"}, lazy=False)
+    except GatewayConfigError:
+        pass  # the credential-policy check reports the bad gateway variable
     except BackendConfigError as exc:
         return failure(
             str(exc),
@@ -63,12 +66,12 @@ def audit_models_table(data: Mapping[str, Any]) -> ConfigTableAudit:
             "rewrite [models] as a TOML table",
         )
     try:
-        settings_from_data({k: v for k, v in data.items() if k != "models"}, lazy=False)
-    except BackendConfigError:
-        return ConfigTableAudit()  # the [agent] audit reports it
-    try:
         settings = settings_from_data(data, lazy=False)
+    except GatewayConfigError:
+        return ConfigTableAudit()  # the credential-policy check reports the bad gateway variable
     except BackendConfigError as exc:
+        if "agent" in data and _agent_section_fails(data):
+            return ConfigTableAudit()  # the [agent] audit reports it
         return ConfigTableAudit(
             (
                 fail_finding(
@@ -85,3 +88,14 @@ def audit_models_table(data: Mapping[str, Any]) -> ConfigTableAudit:
         )
         findings.append(pass_finding(f"booley.toml [models] pins: {pins}"))
     return ConfigTableAudit(tuple(findings))
+
+
+def _agent_section_fails(data: Mapping[str, Any]) -> bool:
+    """Whether the Project's Agent CLI selection is invalid even without ``[models]``."""
+    try:
+        settings_from_data({k: v for k, v in data.items() if k != "models"}, lazy=False)
+    except BackendConfigError:
+        return True
+    except GatewayConfigError:
+        return False
+    return False

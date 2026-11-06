@@ -242,3 +242,29 @@ def test_gateway_model_vars_ignored_under_other_policies(project, monkeypatch):
     assert set(claude.model_settings()) == {"claude-opus-5-5"}
     assert claude.internal_model() == "claude-sonnet-5-5"
     assert claude.effort_for("claude") is None
+
+
+def test_config_audits_report_nothing_for_an_invalid_gateway_variable(project, monkeypatch):
+    """Doctor's config audits leave a bad BOOLEY_GATEWAY_EFFORT to the credential-policy check."""
+    import tomllib
+
+    from booley.audit.agent_schema import audit_agent_table, audit_models_table
+
+    monkeypatch.setenv("BOOLEY_GATEWAY_EFFORT", "turbo")
+    data = tomllib.loads(_TOML)
+
+    for audit in (audit_agent_table(data), audit_models_table(data)):
+        assert [f for f in audit.findings if f.severity.value == "fail"] == []
+
+
+def test_probe_runs_the_gateway_pin_on_codex_whatever_its_name(project, monkeypatch):
+    """A gateway can serve any model ID; its probe never follows the name prefix."""
+    monkeypatch.setenv("BOOLEY_GATEWAY_MODEL", "claude-served-by-gateway")
+    settings = _loaded(project)
+
+    def cli_of(model):
+        return developer_probe._probe_params(settings, model, project, 5, "probe").agent_cli
+
+    assert cli_of("claude-served-by-gateway") == "codex"
+    assert cli_of("claude-opus-5-5") == "claude"
+    assert cli_of("gpt-6-luna") == "codex"

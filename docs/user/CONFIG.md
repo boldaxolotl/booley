@@ -188,7 +188,8 @@ codex = "api_key"
 
 A table may name only CLIs listed in `clis`. Codex also accepts `gateway`,
 which sends its calls through a model gateway set up for your Sandbox; Claude
-Code does not.
+Code does not. A Sandbox that Booley issues for you cannot use `gateway` yet:
+issuing one fails with a pointer to a hand-written Sandbox spec.
 
 With `subscription` or `api_key`, `booley doctor` fails when that credential is
 missing instead of quietly billing the other one. On the command line,

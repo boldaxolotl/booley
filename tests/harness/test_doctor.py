@@ -6517,6 +6517,9 @@ class TestDeveloperProbe:
             def internal_model(self):
                 return "test-model"
 
+            def cli_for_model_id(self, model):
+                return None
+
         monkeypatch.setattr(config_mod, "get_backend_config", _Cfg)
 
         async def fake_call(params, **_kw):
@@ -6619,6 +6622,9 @@ class TestDeveloperProbe:
             def internal_model(self):  # the cheapest real call
                 return "test-model"
 
+            def cli_for_model_id(self, model):
+                return None
+
         monkeypatch.setattr(config_mod, "get_backend_config", _Cfg)
 
         seen: list = []
@@ -6660,6 +6666,9 @@ class TestDeveloperProbe:
 
             def internal_model(self):
                 return "test-model"
+
+            def cli_for_model_id(self, model):
+                return None
 
         monkeypatch.setattr(config_mod, "get_backend_config", _Cfg)
 

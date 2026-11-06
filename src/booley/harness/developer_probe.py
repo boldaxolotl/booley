@@ -182,13 +182,12 @@ def _probe_params(
     settings: AgentSettings, model: str, work: Path, timeout_s: int, label: str
 ) -> AgentCallParams:
     """The cheapest real agent call: one text-only turn, no tools, no Booley MCP server."""
-    from booley.config.agent import cli_for_model
     from booley.core.models import AgentCallParams
 
     return AgentCallParams(
         prompt=_PROBE_PROMPT,
         model=model,
-        agent_cli=cli_for_model(model),  # None (a gateway pin) = the default CLI
+        agent_cli=settings.cli_for_model_id(model),
         # Only the gateway pin sets an effort; otherwise Codex's own default.
         reasoning_effort=settings.effort_pin,
         cwd=str(work),

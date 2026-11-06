@@ -159,6 +159,12 @@ class AgentSettings:
             return self.model_pin
         return self.specialist_models.get(name) or _DEFAULT_SPECIALIST_MODEL[self.default_cli]
 
+    def cli_for_model_id(self, model: str) -> str:
+        """The Agent CLI that serves *model*: the gateway pin runs on Codex, whatever its name."""
+        if self.model_pin and model == self.model_pin:
+            return "codex"
+        return cli_for_model(model) or self.default_cli
+
     def internal_model(self) -> str:
         """The model for Booley's own calls on the default CLI (never a Specialist's)."""
         if self.model_pin and self.default_cli == "codex":
@@ -236,11 +242,16 @@ def parse_agent_section(agent: Mapping[str, Any]) -> DeclaredAgent:
     """
     raw_clis, clis = agent.get("clis"), None
     if raw_clis is not None:
-        if not isinstance(raw_clis, list) or not raw_clis or len(set(raw_clis)) != len(raw_clis):
+        if not isinstance(raw_clis, list) or not raw_clis:
             raise BackendConfigError(
                 "booley.toml [agent] clis must be a non-empty list of distinct Agent CLIs"
             )
+        # Check each entry before comparing them: a nested list or table is unhashable.
         clis = tuple(_checked(cli, "clis", AGENT_CLIS) for cli in raw_clis)
+        if len(set(clis)) != len(clis):
+            raise BackendConfigError(
+                "booley.toml [agent] clis must be a non-empty list of distinct Agent CLIs"
+            )
     default, provider = agent.get("default"), agent.get("provider")
     if None not in (default, provider) and default != provider:
         raise BackendConfigError(
@@ -575,7 +586,7 @@ def _env_auth() -> str:
 
     The env var is a harness hand-off, not user config, so an unknown value is
     degraded to the default with a warning rather than raised (mirrors how
-    ``_lazy_agent_settings`` treats an unknown ``BOOLEY_PRIMARY_PROVIDER``).
+    ``resolve_default_cli`` treats an unknown ``BOOLEY_PRIMARY_PROVIDER``).
     ``gateway`` on a host (outside a container) is treated as unknown.
     """
     raw = env_auth_handoff() or _DEFAULT_AUTH
@@ -616,10 +627,12 @@ def project_credential_policy(
         raise BackendConfigError("booley.toml [agent] must be a table")
     declared = parse_agent_section(agent)
     cli = declared.default or _DEFAULT_PROVIDER
-    policy = declared.auth if isinstance(declared.auth, str) else (declared.auth or {}).get(cli)
-    if policy == GATEWAY_AUTH:
+    auth = declared.auth
+    policies = {auth} if isinstance(auth, str) else set((auth or {}).values())
+    if GATEWAY_AUTH in policies:  # whichever listed CLI asks for it, not only the default's
         raise BackendConfigError(
             "a Booley-issued Sandbox cannot route Codex through the gateway yet; "
             "use a hand-written Sandbox spec with BOOLEY_PRIMARY_AUTH=gateway"
         )
+    policy = auth if isinstance(auth, str) else (auth or {}).get(cli)
     return cli, policy or _DEFAULT_AUTH

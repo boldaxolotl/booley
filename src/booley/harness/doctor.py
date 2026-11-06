@@ -2089,7 +2089,7 @@ def _run_model_access_probes(
     call (host run, auth failure, usage cap) the extra spend is pointless and the check
     stays incomplete.
     """
-    from booley.config.agent import cli_for_model, load_agent_settings
+    from booley.config.agent import load_agent_settings
     from booley.harness import developer_probe
 
     if internal_record is None:
@@ -2102,7 +2102,7 @@ def _run_model_access_probes(
     settings = load_agent_settings(project.project_root, booley_dir=project.booley_dir)
     probed_all = True
     for model, keys in settings.model_settings().items():
-        cli = cli_for_model(model) or "codex"  # a gateway pin is arbitrary and Codex-only
+        cli = settings.cli_for_model_id(model)
         if model == settings.internal_model() or settings.auth_for(cli) == GATEWAY_AUTH:
             continue
         _announce_long_check(
