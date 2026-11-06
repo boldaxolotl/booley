@@ -297,7 +297,7 @@ files in the source checkout.
 
 #### `Specialist`
 
-Built-in Specialists such as `reviewer` override `_add_agent_args`, `_build_prompt`, and `_interpret_output`. The framework runs an LLM agent loop with the prompt and provider-native capabilities. `Specialist` implements `_add_args` itself to register shared flags such as `--model` and `--max-turns`; overriding it would break those flags.
+Built-in Specialists such as `reviewer` override `_add_agent_args`, `_build_prompt`, and `_interpret_output`. The framework runs an LLM agent loop with the prompt and provider-native capabilities. `Specialist` implements `_add_args` itself to register shared flags such as `--max-turns` and `--timeout`; overriding it would break those flags. The model and Agent CLI come from configuration, not a flag: a built-in Specialist reads its `[models]` key, and a Project Specialist runs on the default Agent CLI's built-in Specialist model.
 
 | Method | Responsibility |
 |--------|----------------|
@@ -309,12 +309,11 @@ Useful Specialist class attributes are:
 
 | Attribute | Meaning |
 |-----------|---------|
-| `min_model` | Lowest allowed model tier (`light`, `standard`, or `heavy`) |
 | `default_timeout` | Default maximum run time in seconds |
 | `agent_tools` | Provider-native capabilities requested for the agent loop; use this to shape behavior, not to enforce workspace access |
 | `workspace_access` | `"read_write"` (default) or `"read_only"`; read-only calls use a disposable snapshot on both providers |
 
-Shared human `--model`, `--max-turns`, and `--timeout` controls are CLI-only and
+Shared human `--max-turns` and `--timeout` controls are CLI-only and
 are excluded from strict Specialist MCP schemas, including custom schema hooks.
 Use `booley specialist <name>` or the supported `python -m booley.specialists.<name>`
 entry inside the Sandbox. Project subclasses must migrate `args.timeout` (seconds)
@@ -567,7 +566,6 @@ class ProtocolReviewerSpecialist(Specialist):
     description = "LLM-powered protocol compliance review"
     code_modifying = False
     satisfies = ["protocol_compliant"]
-    min_model = "standard"
     default_timeout = 1800
     agent_tools = ["Read", "Grep", "Glob"]
     workspace_access = "read_only"

@@ -78,7 +78,7 @@ def test_probe_call_has_no_booley_mcp_server_or_tools(sandbox, monkeypatch, flav
             raise OSError("captured")
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", capture)
-        auth_mode = agent_config.get_agent_settings().auth
+        auth_mode = agent_config.get_agent_settings().auth_for("codex")
         with pytest.raises(OSError, match="captured"):
             await _codex_backend._codex_spawn(["codex", "exec", "-"], params, auth_mode)
         return AgentResult(output="OK")

@@ -158,7 +158,7 @@ class TestTableInvariants:
     def test_output_costs_more_than_input(self, name: str):
         assert MODEL_PRICING[name].output > MODEL_PRICING[name].input
 
-    def test_every_default_tier_model_has_its_own_row(self, tmp_path, monkeypatch):
+    def test_every_builtin_model_has_its_own_row(self, tmp_path, monkeypatch):
         """A default model without its own row would be priced as another model."""
         from booley.config import agent as agent_config
 
@@ -172,8 +172,9 @@ class TestTableInvariants:
             (project_data / "booley.toml").write_text(f'[agent]\nprovider = "{provider}"\n')
             agent_config.load_agent_settings(tmp_path)
             settings = agent_config.get_agent_settings()
-            for tier in ("heavy", "standard", "light"):
-                assert settings.model_for_tier(tier) in MODEL_PRICING
+            assert settings.internal_model() in MODEL_PRICING
+            for model in settings.model_settings():
+                assert model in MODEL_PRICING
 
 
 class TestContextLimit:

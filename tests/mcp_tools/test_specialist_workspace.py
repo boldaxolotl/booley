@@ -813,8 +813,6 @@ def test_interactive_cpp_review_uses_real_snapshot(tmp_path, monkeypatch, catego
             "quality" if category == "tb" else "bugs",
             "--scope",
             ",".join(scope),
-            "--model",
-            "light",
         ]
     )
     endpoint.read_state()

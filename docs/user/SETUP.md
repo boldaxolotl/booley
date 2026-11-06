@@ -104,8 +104,8 @@ Re-running init keeps it; to change it later, edit that table (see
 Initialization walks through:
 
 1. Creates `.booley/` with starter config files
-2. Records your agent provider and auth policy
-3. Checks credentials for that provider
+2. Records your default Agent CLI and auth policy
+3. Checks credentials for that Agent CLI
 4. Prepares the Project's Sandbox Image: the Docker image your agent and EDA
    tools run in, built on top of Booley's base image
 5. Installs Booley's Git hooks
@@ -115,8 +115,8 @@ Initialization walks through:
 
 ### Sign-in and billing
 
-The Developer Agent and Specialists use one AI provider, Claude (the default)
-or Codex, and bill it through a **subscription** or an **API key**. Init asks
+The Developer Agent runs on an Agent CLI, Claude Code (the default) or Codex,
+and Booley bills it through a **subscription** or an **API key**. Init asks
 which one to bill and records it in `.booley/booley.toml`:
 
 ```toml
@@ -126,17 +126,18 @@ auth = "subscription"   # or "api_key"
 ```
 
 Pick `subscription` or `api_key` explicitly. The default, `auto`, lets the
-provider's CLI decide, and an exported API key always beats a subscription, so
+Agent CLI decide, and an exported API key always beats a subscription, so
 you can end up paying per token without noticing. With an explicit choice,
 `booley doctor` fails when that credential is missing instead of quietly using
-another one. All values are in
+another one. A Project that also runs a Specialist on the other Agent CLI can
+bill each CLI differently. All values are in
 [CONFIG.md](CONFIG.md#pinning-what-bills-agent-auth).
 
 To see which login Booley is using, run `booley auth --status` on the host.
 
 Where each credential comes from:
 
-| Provider | Subscription | API key |
+| Agent CLI | Subscription | API key |
 |---|---|---|
 | `claude` | Claude Pro/Max/Team/Enterprise (your login in `~/.claude/.credentials.json`) | `ANTHROPIC_API_KEY` |
 | `codex` | your Codex login (`codex login`, saved in `~/.codex/auth.json`) | `OPENAI_API_KEY` |

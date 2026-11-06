@@ -130,7 +130,7 @@ CODEX_EFFORT_LEVELS = (
 
 @dataclass(frozen=True)
 class GatewayModelPin:
-    """Optional model id and Codex reasoning effort that override every tier and role."""
+    """Optional model id and Codex reasoning effort that override every Specialist model."""
 
     model: str | None = None
     effort: str | None = None

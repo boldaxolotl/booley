@@ -258,34 +258,29 @@ def test_retired_project_interactive_policy_names_host_replacement() -> None:
     assert "[sandbox]\nidle_timeout_seconds = 600\nmax_sessions = 2" in finding.message
 
 
-def test_agent_audit_uses_authoritative_provider_and_auth_parsers() -> None:
+def test_agent_audit_uses_authoritative_agent_parser() -> None:
     valid = agent_schema.audit_agent_table(
-        {"agent": {"provider": "codex", "auth": "subscription"}}
+        {"agent": {"clis": ["claude", "codex"], "auth": {"codex": "subscription"}}}
     )
     retired = agent_schema.audit_agent_table({"agent": {"primary": "claude"}})
 
     assert valid.is_valid
-    assert valid.findings[0].message.endswith("codex (auth: subscription)")
+    assert valid.findings[0].message == (
+        "booley.toml [agent] clis: claude, codex; default: claude; auth: {'codex': 'subscription'}"
+    )
     assert not retired.is_valid
     assert "retired key(s): primary" in retired.findings[0].message
 
 
-def test_models_audit_preserves_warning_identity_and_pass_details() -> None:
+def test_models_audit_reports_pins() -> None:
     audit = agent_schema.audit_models_table(
-        {
-            "models": {
-                "heavyy": "typo",
-                "heavy": "custom-heavy",
-                "roles": {"reviewer": "custom-reviewer"},
-            }
-        }
+        {"agent": {"clis": ["claude", "codex"]}, "models": {"reviewer": "gpt-6-luna"}}
     )
 
     assert audit.is_valid
-    assert audit.findings[0].check_id == "config.models-unknown-key"
-    assert audit.findings[0].subject == "heavyy"
-    assert any("tier overrides: heavy" in item.message for item in audit.findings)
-    assert any("reviewer=custom-reviewer" in item.message for item in audit.findings)
+    assert [item.message for item in audit.findings] == [
+        "booley.toml [models] pins: reviewer=gpt-6-luna"
+    ]
 
 
 def test_flow_audit_collects_shape_failures_and_ignored_knob_warning() -> None:

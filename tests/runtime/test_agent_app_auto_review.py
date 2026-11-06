@@ -95,7 +95,7 @@ def test_a_claude_credential_beats_the_gateway_policy_hand_off(sandbox, monkeypa
 
     assert "app:claude" in status
     settings = get_agent_settings()
-    assert (settings.provider, settings.auth) == ("claude", "auto")
+    assert (settings.default_cli, settings.auth_for("claude")) == ("claude", "auto")
     assert "booley_gateway" not in _codex_config(sandbox.home)
 
 

@@ -185,7 +185,6 @@ def test_goal_discovery_refuses_open_findings_and_verify_only_checks_fixes(
         ["--scope", "rtl/dut.sv"],
         ["--steer", "waive"],
         ["--dry-run"],
-        ["--model", "heavy"],
         ["--instruction", "waive"],
     ],
 )

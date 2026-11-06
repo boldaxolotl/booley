@@ -3,7 +3,7 @@
 The container memory invariant needs a real number for "how much memory does
 an agent call cost?" — hardcoding it would drift with every agent
 CLI/SDK release. ``booley doctor --deep`` therefore spawns the cheapest real
-agent call (light-tier model, one turn, no Booley MCP server and no tools) and
+agent call (the internal model, one turn, no Booley MCP server and no tools) and
 records the child process's peak RSS into project runtime state at
 ``<booley_dir>/runtime/developer_probe.json``. The invariant check reads
 that file on every subsequent doctor run and multiplies it by the
@@ -187,6 +187,7 @@ def _probe_params(
     return AgentCallParams(
         prompt=_PROBE_PROMPT,
         model=model,
+        agent_cli=settings.cli_for_model_id(model),
         # Only the gateway pin sets an effort; otherwise Codex's own default.
         reasoning_effort=settings.effort_pin,
         cwd=str(work),
@@ -221,7 +222,7 @@ def _measure_in(
             getrusage = resource.getrusage
         settings = config_mod.get_backend_config().settings
         params = _probe_params(
-            settings, settings.model_for_tier("light"), work, timeout_s, "doctor-developer-probe"
+            settings, settings.internal_model(), work, timeout_s, "doctor-developer-probe"
         )
         before = getrusage(_RUSAGE_CHILDREN).ru_maxrss
     except Exception as exc:  # fail-soft by contract: environment issues become a doctor SKIP

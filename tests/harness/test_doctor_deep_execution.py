@@ -411,18 +411,22 @@ def test_probe_cost_accounting_and_completeness_are_independent(
 
 _MODEL_CONFIG = """
 [agent]
-provider = "codex"
+clis = ["claude", "codex"]
+default = "claude"
 
 [models]
-standard = "std-model"
-
-[models.roles]
-reviewer = "rev-model"
+reviewer = "gpt-6-astra"
+coverage_analyst = "claude-sonnet-5-5"
 """
 
 
 def _model_probe_world(tmp_path, monkeypatch, *, gateway=False):
-    """A Sandbox-side Project whose tiers and role pins resolve to four models."""
+    """A Sandbox-side Project whose Specialists run on three models across two CLIs.
+
+    reviewer on Codex (gpt-6-astra), mutation_tester on Claude's built-in default
+    (claude-opus-5-5), and coverage_analyst on the internal model (claude-sonnet-5-5),
+    which the memory probe already exercises.
+    """
     from booley.config import agent as agent_config
     from booley.harness import developer_probe
 
@@ -448,12 +452,12 @@ def _model_probe_world(tmp_path, monkeypatch, *, gateway=False):
     return project
 
 
-def _refusal(model):
-    """What probe_model_access raises when the provider refuses *model*."""
+def _refusal(model, cli):
+    """What a probe raises when *cli*'s provider refuses *model*."""
     from booley.harness import developer_probe
     from booley.runtime.agent_errors import model_unavailable_error
 
-    cause = model_unavailable_error(model, "codex", "raw provider body")
+    cause = model_unavailable_error(model, cli, "raw provider body")
     error = developer_probe.ProbeError(
         f"probe agent failed: {cause}", agent_failure=True, agent_called=True
     )
@@ -461,22 +465,25 @@ def _refusal(model):
     return error
 
 
-def _run_model_probes(project, monkeypatch, *, refused=(), light=None):
-    """Drive the deep probes with stubbed provider calls; return what was observed."""
+def _run_model_probes(project, monkeypatch, *, refused=(), internal=None):
+    """Drive the deep probes with stubbed provider calls; return what was observed.
+
+    *internal* is what the memory probe (the internal-model call) raises, if anything.
+    """
     from booley.harness import developer_probe
 
     usage = developer_probe.ProbeUsage(5, 0, 1, 0.001)
     probed = []
 
     def measure(_root):
-        if light is not None:
-            raise light
+        if internal is not None:
+            raise internal
         return developer_probe.ProbeMeasurement(1024, True, usage)
 
     def probe(_root, model, **_kw):
         probed.append(model)
         if model in refused:
-            raise _refusal(model)
+            raise _refusal(model, "codex" if model.startswith("gpt-") else "claude")
         return usage
 
     monkeypatch.setattr(developer_probe, "measure_developer_rss", measure)
@@ -495,11 +502,12 @@ def test_deep_probes_every_resolved_model_and_passes_when_accepted(tmp_path, mon
 
     probed, reporter, tracker = _run_model_probes(project, monkeypatch)
 
-    # The light-tier model is covered by the memory probe; every other model gets one call.
-    assert sorted(probed) == ["gpt-6-astra", "rev-model", "std-model"]
+    # The internal model is covered by the memory probe; every other model gets one call.
+    assert sorted(probed) == ["claude-opus-5-5", "gpt-6-astra"]
     assert _messages(reporter, Severity.FAIL) == []
     accepted = " ".join(_messages(reporter, Severity.PASS))
-    assert all(model in accepted for model in probed)
+    assert "gpt-6-astra accepted by the provider ([models] reviewer)" in accepted
+    assert "claude-opus-5-5 accepted by the provider ([models] mutation_tester)" in accepted
     assert len(reporter.agent_calls) == 1 + len(probed)
     assert tracker.missing == ()
 
@@ -507,28 +515,29 @@ def test_deep_probes_every_resolved_model_and_passes_when_accepted(tmp_path, mon
 def test_deep_fails_naming_model_and_config_key_when_provider_refuses_it(tmp_path, monkeypatch):
     project = _model_probe_world(tmp_path, monkeypatch)
 
-    _probed, reporter, tracker = _run_model_probes(project, monkeypatch, refused={"std-model"})
+    probed, reporter, tracker = _run_model_probes(project, monkeypatch, refused={"gpt-6-astra"})
 
     failures = _messages(reporter, Severity.FAIL)
     assert len(failures) == 1, failures
     failure = failures[0]
-    assert "std-model" in failure
-    assert "[models] standard" in failure
+    assert "codex provider refused model 'gpt-6-astra'" in failure
+    assert "`[models] reviewer`" in failure
     assert "Protected Input" in failure
+    assert "claude-opus-5-5" in probed  # a refusal does not stop the other probes
     assert tracker.missing == ()  # the probe ran; its verdict is the FAIL
     assert not reporter.result(1).clean
 
 
-def test_deep_light_model_refusal_is_not_reported_as_an_auth_problem(tmp_path, monkeypatch):
+def test_deep_internal_model_refusal_is_not_reported_as_an_auth_problem(tmp_path, monkeypatch):
     project = _model_probe_world(tmp_path, monkeypatch)
 
     _probed, reporter, _tracker = _run_model_probes(
-        project, monkeypatch, light=_refusal("gpt-6-luna")
+        project, monkeypatch, internal=_refusal("claude-sonnet-5-5", "claude")
     )
 
     (failure,) = [item for item in reporter.findings if item.severity is Severity.FAIL]
-    assert "gpt-6-luna" in failure.message
-    assert "[models] light" in failure.message
+    assert "claude-sonnet-5-5" in failure.message
+    assert "[models] coverage_analyst" in failure.message
     assert "check agent auth" not in failure.fix
 
 
@@ -541,7 +550,7 @@ def test_deep_skips_model_probes_when_the_provider_probe_failed(tmp_path, monkey
     )
     auth_failure.__cause__ = RuntimeError("expired")
 
-    probed, _reporter, tracker = _run_model_probes(project, monkeypatch, light=auth_failure)
+    probed, _reporter, tracker = _run_model_probes(project, monkeypatch, internal=auth_failure)
 
     assert probed == []
     assert tracker.missing == ("developer-probe", "model-access")
@@ -573,12 +582,12 @@ def test_deep_model_probe_failure_fails_and_stops_probing(tmp_path, monkeypatch)
     assert tracker.missing == ("model-access",)
 
 
-def test_deep_gateway_auth_runs_no_extra_model_probe(tmp_path, monkeypatch):
+def test_deep_gateway_routed_codex_model_is_not_probed(tmp_path, monkeypatch):
     project = _model_probe_world(tmp_path, monkeypatch, gateway=True)
 
     probed, _reporter, tracker = _run_model_probes(project, monkeypatch)
 
-    assert probed == []
+    assert probed == ["claude-opus-5-5"]  # the gateway fixes gpt-6-astra server-side
     assert tracker.missing == ()
 
 

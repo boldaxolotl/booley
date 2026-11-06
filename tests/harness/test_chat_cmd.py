@@ -43,7 +43,7 @@ def cli_on_path(monkeypatch):
 
 def _configure_provider(monkeypatch, provider):
     """Point ``run`` at ``provider`` without reading a real Project config."""
-    config = type("Config", (), {"provider": provider})()
+    config = type("Config", (), {"default_cli": provider})()
     monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
     monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
     monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: config)
@@ -91,7 +91,7 @@ def test_notice_is_the_last_line_before_exec(tmp_path, monkeypatch, capsys, prov
 
 
 def test_run_uses_named_codex_command(tmp_path, monkeypatch):
-    config = type("Config", (), {"provider": "codex"})()
+    config = type("Config", (), {"default_cli": "codex"})()
     monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
     monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
     monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: config)
@@ -112,7 +112,7 @@ def test_run_uses_named_codex_command(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("error", [FileNotFoundError, ValueError, RuntimeError])
 def test_runtime_directory_failure_keeps_plain_codex_launch(tmp_path, monkeypatch, capsys, error):
-    config = type("Config", (), {"provider": "codex"})()
+    config = type("Config", (), {"default_cli": "codex"})()
     monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
     monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
     monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: config)
@@ -139,7 +139,7 @@ def test_run_replaces_process_with_configured_cli(tmp_path, monkeypatch, provide
     booley_dir = tmp_path / "configured-project"
     loaded: list[tuple[Path, Path]] = []
     executed: list[tuple[str, list[str]]] = []
-    config = type("Config", (), {"provider": provider})()
+    config = type("Config", (), {"default_cli": provider})()
 
     monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda _root: booley_dir)
     monkeypatch.setattr(
@@ -163,7 +163,7 @@ def test_run_replaces_process_with_configured_cli(tmp_path, monkeypatch, provide
 
 
 def test_run_reports_missing_configured_cli(tmp_path, monkeypatch, capsys):
-    config = type("Config", (), {"provider": "codex"})()
+    config = type("Config", (), {"default_cli": "codex"})()
     monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
     monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
     monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: config)
@@ -252,7 +252,7 @@ def test_worktree_provider_config_uses_the_shared_runtime_handle_map(tmp_path, m
         with pytest.raises(_ExecCalledError):
             chat_cmd.run(argparse.Namespace(agent_args=[]), worktree)
         assert directories == [shared]
-        assert chat_cmd.get_agent_settings().provider == "codex"
+        assert chat_cmd.get_agent_settings().default_cli == "codex"
     finally:
         reset_cache()
 
@@ -260,7 +260,9 @@ def test_worktree_provider_config_uses_the_shared_runtime_handle_map(tmp_path, m
 def _configure_claude(monkeypatch, provider="claude"):
     monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
     monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
-    monkeypatch.setattr(chat_cmd, "get_agent_settings", type("Config", (), {"provider": provider}))
+    monkeypatch.setattr(
+        chat_cmd, "get_agent_settings", type("Config", (), {"default_cli": provider})
+    )
 
 
 def test_claude_named_exec_preserves_codex_command(tmp_path, monkeypatch):
@@ -285,7 +287,9 @@ def test_claude_named_exec_preserves_codex_command(tmp_path, monkeypatch):
     assert reservations == [
         (tmp_path, process_session_key(ProcessIdentity(98765, "fixture", 101)))
     ]
-    monkeypatch.setattr(chat_cmd, "get_agent_settings", type("Config", (), {"provider": "codex"}))
+    monkeypatch.setattr(
+        chat_cmd, "get_agent_settings", type("Config", (), {"default_cli": "codex"})
+    )
     monkeypatch.setattr(
         chat_cmd.codex_chat,
         "command",
@@ -395,7 +399,7 @@ def test_claude_worktree_settings_use_shared_runtime_reservation(tmp_path, monke
         with pytest.raises(_ExecCalledError):
             chat_cmd.run(argparse.Namespace(agent_args=[]), local.parent)
         assert directories == [shared]
-        assert chat_cmd.get_agent_settings().provider == "claude"
+        assert chat_cmd.get_agent_settings().default_cli == "claude"
     finally:
         reset_cache()
 

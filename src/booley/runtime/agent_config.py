@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from booley.config.agent import (
@@ -17,26 +17,44 @@ from .agent_backend import AgentBackend, ClaudeSDKBackend, CodexBackend
 
 @dataclass(frozen=True, slots=True)
 class BackendConfig:
-    """A live backend paired with the settings from which Runtime built it."""
+    """The live backends for one settings value, one per Agent CLI the Project may run.
+
+    ``active_backend`` serves the default CLI; any other listed CLI's backend is built
+    on first use by :meth:`backend_for`.
+    """
 
     settings: AgentSettings
     active_backend: AgentBackend
+    _others: dict[str, AgentBackend] = field(default_factory=dict, repr=False)
+
+    def backend_for(self, cli: str) -> AgentBackend:
+        """The backend that runs *cli*, built once with that CLI's auth policy."""
+        if cli == self.settings.default_cli:
+            return self.active_backend
+        if cli not in self._others:
+            self._others[cli] = _make_backend(cli, self.settings.auth_for(cli))
+        return self._others[cli]
 
 
 _backend_config: BackendConfig | None = None
 _backend_injected = False
 
 
-def _make_backend(settings: AgentSettings) -> AgentBackend:
-    if settings.provider == "claude":
-        return ClaudeSDKBackend(auth_mode=settings.auth)
-    return CodexBackend(auth_mode=settings.auth)
+def _make_backend(cli: str, auth: str) -> AgentBackend:
+    if cli == "claude":
+        return ClaudeSDKBackend(auth_mode=auth)
+    return CodexBackend(auth_mode=auth)
 
 
 def configure_backend(settings: AgentSettings) -> BackendConfig:
     """Install a freshly constructed backend for validated settings."""
     global _backend_config, _backend_injected
-    _backend_config = BackendConfig(settings=settings, active_backend=_make_backend(settings))
+    _backend_config = BackendConfig(
+        settings=settings,
+        active_backend=_make_backend(
+            settings.default_cli, settings.auth_for(settings.default_cli)
+        ),
+    )
     _backend_injected = False
     return _backend_config
 

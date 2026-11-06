@@ -121,13 +121,12 @@ def test_gateway_handoff_reaches_loaded_agent_settings(gateway_container, tmp_pa
 
     settings = agent_config.load_agent_settings(project)
 
-    assert settings.auth == "gateway"
-    assert agent_config.resolve_auth_policy() == "gateway"
+    assert settings.auth_for("codex") == "gateway"
 
 
 def test_gateway_handoff_with_surrounding_whitespace_is_one_policy_everywhere(gateway_container):
     gateway_container.setenv("BOOLEY_PRIMARY_AUTH", "gateway \n")
     gateway_container.setenv("BOOLEY_PRIMARY_PROVIDER", "codex")
 
-    assert agent_config.resolve_auth_policy() == "gateway"
-    assert agent_config.get_agent_settings().auth == "gateway"
+    assert agent_config.env_auth_handoff() == "gateway"
+    assert agent_config.get_agent_settings().auth_for("codex") == "gateway"

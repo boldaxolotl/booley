@@ -107,14 +107,17 @@ class ModelUnavailableError(AgentProviderError):
         self.model = model
         self.settings = settings
         self.detail = detail
-        keys = (
-            " and ".join(f"`{key}`" for key in settings)
-            if settings
-            else "the `[models]` tier or `[models.roles]` pin that selects it"
-        )
+        if settings:
+            keys = " and ".join(f"`{key}`" for key in settings)
+            fix = f"Set {keys} to a model the account can use."
+        else:
+            fix = (
+                "It is Booley's built-in model for internal calls on that Agent CLI: use an "
+                "account that can run it, or set `[agent] default` to another Agent CLI."
+            )
         message = (
             f"The {provider} provider refused model '{model}': it does not exist or this "
-            f"account cannot use it. Set {keys} to a model the account can use."
+            f"account cannot use it. {fix}"
         )
         if not settings or any(key != GATEWAY_MODEL_ENV for key in settings):
             message += " booley.toml is a Protected Input, so change it before Goal entry."
