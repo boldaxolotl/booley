@@ -113,13 +113,17 @@ def lint_flow() -> LintFlow:
     return LintFlow()
 
 
-def _stub_resolved(eda_tool: str | None = "verilator") -> object:
+def _stub_resolved(
+    eda_tool: str | None = "verilator",
+    files: tuple[str, ...] = (),
+    build_root: Path = Path("build"),
+) -> object:
     """Minimal ResolvedTarget for tests that patch _prepare_lint_command.
 
     ``_prepare_lint_command`` now returns (make command, ResolvedTarget) so the
     caller can report the actual EDA tool and file coverage; mocked call sites
     pair the command with this stub. Empty toplevel/files skip the coverage
-    checks.
+    checks. ``files`` declares linted SystemVerilog sources (EDAM ``name``s).
     """
     from booley.fusesoc import fusesoc_registry
 
@@ -129,9 +133,12 @@ def _stub_resolved(eda_tool: str | None = "verilator") -> object:
         toplevel="",
         eda_tool=eda_tool,
         configured_eda_tool=eda_tool,
-        files=(),
+        files=tuple(
+            fusesoc_registry.ResolvedFile(name=name, file_type="systemVerilogSource")
+            for name in files
+        ),
         parameters={},
-        build_root=Path("build"),
+        build_root=build_root,
         edam_path=Path("build/stub_demo_0.eda.yml"),
     )
 
@@ -1539,16 +1546,20 @@ class TestFullRun:
             ]
         )
         flow.read_state()
-        flow._run()
+        result = flow._run()
         captured = capsys.readouterr()
-        # Only 1 warning in scope
+        # Only 1 warning in scope; a scope matched through a warning path is accepted
         assert "1 unique in-scope warning" in captured.out
+        assert result.exit_code == EXIT_FAILURE
 
     @patch.object(LintFlow, "_execute")
     @patch.object(
         LintFlow,
         "_prepare_lint_command",
-        return_value=(["verilator", "--lint-only"], _stub_resolved()),
+        return_value=(
+            ["verilator", "--lint-only"],
+            _stub_resolved(files=("rtl/ticket.sv", "rtl/baseline.sv")),
+        ),
     )
     def test_scope_filtering_sets_clean_criterion(
         self, mock_cmd, mock_exec, state_file: Path, capsys
@@ -1571,6 +1582,156 @@ class TestFullRun:
         assert "0 unique in-scope warnings" in capsys.readouterr().out
         state = DevelopmentState.load(state_file)
         assert state.is_met("lint_clean_lite") is True
+
+
+class TestUnmatchedScope:
+    """A --scope entry that matches no linted file is an ERROR, not a PASS (#2801)."""
+
+    _STDOUT: ClassVar[str] = (
+        "%Warning-UNUSEDSIGNAL: rtl/mod_a.sv:42:5: unused\n"
+        "%Warning-WIDTH: rtl/mod_a.sv:50:1: width mismatch\n"
+    )
+
+    @pytest.fixture(autouse=True)
+    def _outside_sandbox_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Let ``main`` run on the host, as the CLI and MCP paths do in a Sandbox."""
+        monkeypatch.setattr(LintFlow, "_pre_state_gate", lambda _self: None)
+
+    @staticmethod
+    def _lint_result() -> MagicMock:
+        return MagicMock(
+            returncode=0,
+            stdout=TestUnmatchedScope._STDOUT,
+            stderr="",
+            timed_out=False,
+            duration_s=0.5,
+        )
+
+    @staticmethod
+    def _resolved(*files: str) -> object:
+        return _stub_resolved(files=files or ("rtl/mod_a.sv", "rtl/mod_b.sv"))
+
+    def test_unmatched_scope_is_error_cli(self, state_file: Path, capsys):
+        with (
+            patch.object(
+                LintFlow,
+                "_prepare_lint_command",
+                return_value=(["verilator", "--lint-only"], self._resolved()),
+            ),
+            patch.object(LintFlow, "_execute", return_value=self._lint_result()),
+        ):
+            code = LintFlow().main(["--target", "lite", "--scope", "nonexistent/"])
+
+        out = capsys.readouterr().out
+        assert code == EXIT_ERROR
+        assert "RESULT: ERROR" in out
+        assert "RESULT: PASS" not in out
+        assert "'nonexistent/'" in out
+        assert "rtl/mod_b.sv" in out  # example from the file list only, no warning there
+        assert "lint_clean_lite" not in DevelopmentState.load(state_file).criteria
+
+    def test_mixed_scope_is_error(self, state_file: Path, capsys):
+        with (
+            patch.object(
+                LintFlow,
+                "_prepare_lint_command",
+                return_value=(["verilator", "--lint-only"], self._resolved()),
+            ),
+            patch.object(LintFlow, "_execute", return_value=self._lint_result()),
+        ):
+            code = LintFlow().main(["--target", "lite", "--scope", "rtl/mod_a.sv,nonexistent/"])
+
+        out = capsys.readouterr().out
+        assert code == EXIT_ERROR
+        assert "'nonexistent/'" in out
+        assert "'rtl/mod_a.sv'" not in out
+
+    def test_unmatched_scope_is_error_mcp(self, state_file: Path, tmp_path: Path, capsys):
+        from booley.flows.lint.request import LintRequest
+        from booley.mcp.server import _params_to_argv
+
+        argv = _params_to_argv({"target": "lite", "scope": "nonexistent/"})
+        assert "--scope" in argv
+        with (
+            patch.object(
+                LintFlow,
+                "_prepare_lint_command",
+                return_value=(["verilator", "--lint-only"], self._resolved()),
+            ),
+            patch.object(LintFlow, "_execute", return_value=self._lint_result()),
+        ):
+            code = LintFlow().main(argv)
+            capsys.readouterr()
+            outcome = LintFlow().execute(
+                LintRequest(
+                    target="lite",
+                    scope="nonexistent/",
+                    work_dir=tmp_path,
+                    report_dir=tmp_path / "reports",
+                )
+            )
+
+        assert code == EXIT_ERROR
+        assert outcome.exit_code == EXIT_ERROR
+        assert "nonexistent/" in outcome.outcome.report_text
+
+    def test_unmatched_scope_still_records_design_failure(self, state_file: Path, capsys):
+        """A scope typo must not hide a design FAIL: its False criterion is recorded."""
+        failing = MagicMock(
+            returncode=1,
+            stdout="%Error: rtl/mod_a.sv:3:1: syntax error\n",
+            stderr="",
+            timed_out=False,
+            duration_s=0.5,
+        )
+        with (
+            patch.object(
+                LintFlow,
+                "_prepare_lint_command",
+                return_value=(["verilator", "--lint-only"], self._resolved()),
+            ),
+            patch.object(LintFlow, "_execute", return_value=failing),
+        ):
+            code = LintFlow().main(["--target", "lite", "--scope", "nonexistent/"])
+
+        assert code == EXIT_ERROR
+        assert DevelopmentState.load(state_file).is_met("lint_clean_lite") is False
+
+    def test_unmatched_scope_entries(self):
+        from booley.flows.lint.flow import unmatched_scope_entries
+
+        paths = ["rtl/mod_a.sv", "rtl/mod_b.sv"]
+        assert unmatched_scope_entries("rtl/mod_a.sv, nope/ ,,mod_b", paths) == ["nope/"]
+        assert unmatched_scope_entries("x/,y/", paths) == ["x/", "y/"]
+        assert unmatched_scope_entries("", paths) == []
+        assert unmatched_scope_entries("mod_a", []) == ["mod_a"]
+
+    def test_build_dir_path_fragment_is_unmatched(self, state_file: Path, capsys):
+        """Build-root path fragments are not linted file names: no vacuous pass."""
+        with (
+            patch.object(
+                LintFlow,
+                "_prepare_lint_command",
+                return_value=(
+                    ["verilator", "--lint-only"],
+                    _stub_resolved(
+                        files=("src/demo_core_0/rtl/counter.sv",),
+                        build_root=Path(".booley/.runtime/edalize/lint/lite"),
+                    ),
+                ),
+            ),
+            patch.object(
+                LintFlow,
+                "_execute",
+                return_value=MagicMock(
+                    returncode=0, stdout="", stderr="", timed_out=False, duration_s=0.5
+                ),
+            ),
+        ):
+            code = LintFlow().main(["--target", "lite", "--scope", "edalize/lint"])
+
+        assert code == EXIT_ERROR
+        assert "'edalize/lint'" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
