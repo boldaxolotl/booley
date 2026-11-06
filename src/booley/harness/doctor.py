@@ -1191,13 +1191,29 @@ def _outer_branch_for_project_data(
     return None
 
 
+def _common_booley_dir(root: Path, reporter: _Reporter) -> Path | None:
+    """The Main Booley Directory holding Session Registry and handle maps.
+
+    Reports a skip with the reason when it cannot be resolved, so the checks
+    that read it never vanish silently.
+    """
+    try:
+        return resolve_common_booley_dir(root)
+    except (OSError, ValueError, RuntimeError) as exc:
+        reporter.skip_(f"Main Booley Directory checks skipped - {exc}")
+        return None
+
+
 def _check_goal_presence(root: Path, booley_dir: Path | None, reporter: _Reporter) -> None:
     from booley.harness.dashboard.doctor import inspect_presence
 
     if booley_dir is None:
         return
+    common = _common_booley_dir(root, reporter)
+    if common is None:
+        return
     result = inspect_presence(
-        root, booley_dir, inside_sandbox=runtime_context.inside_session_runtime()
+        root, common, inside_sandbox=runtime_context.inside_session_runtime()
     )
     if result.unavailable:
         reporter.skip_(result.unavailable)

@@ -184,10 +184,12 @@ class JobLifecycle:
         )
         rec.session_key = context.session_key
         rec.binding = None if context.binding is None else context.binding.to_json()
-        from booley.runtime.booley_dir import resolve_booley_dir
+        from booley.runtime.booley_dir import resolve_common_booley_dir
 
         try:
-            project = context.binding.booley_dir if context.binding else resolve_booley_dir()
+            project = (
+                context.binding.booley_dir if context.binding else resolve_common_booley_dir()
+            )
             register_job(project, rec.run_id, rec.endpoint, rec.session_key, work_dir=rec.work_dir)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Job handle Project unavailable for %s: %s", rec.run_id, exc)

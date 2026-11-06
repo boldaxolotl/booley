@@ -20,7 +20,7 @@ class _ExecCalledError(Exception):
 
 @pytest.fixture(autouse=True)
 def plain_codex_launch(monkeypatch):
-    monkeypatch.setattr(chat_cmd, "resolve_booley_dir", lambda root: root)
+    monkeypatch.setattr(chat_cmd, "resolve_common_booley_dir", lambda root: root)
     monkeypatch.setattr(chat_cmd.codex_chat, "command", lambda _directory: ("codex", ["codex"]))
 
 
@@ -117,7 +117,9 @@ def test_runtime_directory_failure_keeps_plain_codex_launch(tmp_path, monkeypatc
     monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
     monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: config)
     monkeypatch.setattr(
-        chat_cmd, "resolve_booley_dir", lambda _root: (_ for _ in ()).throw(error("bad runtime"))
+        chat_cmd,
+        "resolve_common_booley_dir",
+        lambda _root: (_ for _ in ()).throw(error("bad runtime")),
     )
     executed = []
 
@@ -225,7 +227,7 @@ def test_run_loads_provider_from_resolved_booley_directory(tmp_path, monkeypatch
 
 
 def test_worktree_provider_config_uses_the_shared_runtime_handle_map(tmp_path, monkeypatch):
-    from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
+    from booley.runtime.booley_dir import reset_cache, resolve_common_booley_dir
 
     worktree = tmp_path / "worktree"
     local = worktree / ".booley"
@@ -235,7 +237,7 @@ def test_worktree_provider_config_uses_the_shared_runtime_handle_map(tmp_path, m
     (local / "booley.toml").write_text('[agent]\nprovider="codex"\n')
     (shared / "booley.toml").write_text('[agent]\nprovider="claude"\n')
     monkeypatch.setenv("BOOLEY_DIR", str(shared))
-    monkeypatch.setattr(chat_cmd, "resolve_booley_dir", resolve_booley_dir)
+    monkeypatch.setattr(chat_cmd, "resolve_common_booley_dir", resolve_common_booley_dir)
     directories = []
     monkeypatch.setattr(
         chat_cmd.codex_chat,
@@ -342,7 +344,7 @@ def test_claude_missing_launch_identity_or_directory_is_advisory(
     else:
         monkeypatch.setattr(
             chat_cmd,
-            "resolve_booley_dir",
+            "resolve_common_booley_dir",
             lambda _root: (_ for _ in ()).throw(ValueError("directory unavailable")),
         )
 
@@ -368,7 +370,7 @@ def test_claude_named_launch_missing_executable_keeps_existing_error(
 
 
 def test_claude_worktree_settings_use_shared_runtime_reservation(tmp_path, monkeypatch):
-    from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
+    from booley.runtime.booley_dir import reset_cache, resolve_common_booley_dir
 
     local = tmp_path / "worktree" / ".booley"
     shared = tmp_path / "main" / ".booley"
@@ -377,7 +379,7 @@ def test_claude_worktree_settings_use_shared_runtime_reservation(tmp_path, monke
     (local / "booley.toml").write_text('[agent]\nprovider="claude"\n')
     (shared / "booley.toml").write_text('[agent]\nprovider="codex"\n')
     monkeypatch.setenv("BOOLEY_DIR", str(shared))
-    monkeypatch.setattr(chat_cmd, "resolve_booley_dir", resolve_booley_dir)
+    monkeypatch.setattr(chat_cmd, "resolve_common_booley_dir", resolve_common_booley_dir)
     directories = []
     monkeypatch.setattr(
         chat_cmd,
@@ -431,7 +433,9 @@ def test_codex_launch_paths_append_agent_args(tmp_path, monkeypatch):
         _launch(tmp_path, forwarded)
         assert executed[-1] == (launch[0], [*launch[1], *forwarded])
     monkeypatch.setattr(
-        chat_cmd, "resolve_booley_dir", lambda _root: (_ for _ in ()).throw(ValueError("no dir"))
+        chat_cmd,
+        "resolve_common_booley_dir",
+        lambda _root: (_ for _ in ()).throw(ValueError("no dir")),
     )
     _launch(tmp_path, forwarded)
     assert executed[-1] == ("codex", ["codex", *forwarded])
