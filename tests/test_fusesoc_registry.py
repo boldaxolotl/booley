@@ -3061,3 +3061,20 @@ def test_build_library_plan_accepts_missing_build_root(tmp_path: Path) -> None:
     plan = fusesoc_registry.build_library_plan(root, build)
     assert plan is not None
     assert (build / "core-mirror").is_dir()
+
+
+def test_build_library_plan_reports_unclearable_build_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _library_plan_project(
+        tmp_path, "[stealth]\nenabled = true\nignore_native_cores = true\n"
+    )
+    build = tmp_path / "build"
+    (build / "old-tree").mkdir(parents=True)
+
+    def _refuse(_path: object) -> None:
+        raise OSError("busy")
+
+    monkeypatch.setattr(fusesoc_registry.shutil, "rmtree", _refuse)
+    with pytest.raises(fusesoc_registry.TargetResolutionError, match="could not mirror"):
+        fusesoc_registry.build_library_plan(root, build)

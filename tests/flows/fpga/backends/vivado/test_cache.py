@@ -422,3 +422,37 @@ def test_reachable_files_walk_is_bounded_outside_build_root(tmp_path: Path) -> N
     assert changed != base  # a subfolder of the build root is
     (user / "top.vh").write_text("// top v2\n", encoding="utf-8")
     assert key() != changed  # a user folder's own file is
+
+
+def test_reachable_files_tolerate_missing_user_folder(tmp_path: Path) -> None:
+    """A reachable folder that cannot be listed adds nothing and does not raise."""
+    resolved = _reachable_target(tmp_path)
+    gone = tmp_path / "does-not-exist"
+    plain = fpga_cache.input_fingerprint(
+        resolved, {}, out_of_context=False, reachable_dirs=(gone,)
+    )
+    assert plain == fpga_cache.input_fingerprint(
+        resolved, {}, out_of_context=False, reachable_dirs=(gone,)
+    )
+
+
+def test_reachable_file_unreadable_is_keyed_as_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reachable file that cannot be hashed still enters the key, flagged missing."""
+    resolved = _reachable_target(tmp_path)
+    user = tmp_path / "user"
+    user.mkdir()
+    (user / "locked.vh").write_text("// v1\n", encoding="utf-8")
+    readable = fpga_cache.input_fingerprint(
+        resolved, {}, out_of_context=False, reachable_dirs=(user,)
+    )
+
+    def _unreadable(_path: Path) -> tuple[str, int]:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(fpga_cache, "_hash_file", _unreadable)
+    unreadable = fpga_cache.input_fingerprint(
+        resolved, {}, out_of_context=False, reachable_dirs=(user,)
+    )
+    assert unreadable != readable
