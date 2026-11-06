@@ -125,7 +125,7 @@ def test_two_target_lint_progress_log_ownership(tmp_path, monkeypatch, capsys):
     targets = ("lint_a", "lint_b")
     source = write_lint_progress_core(tmp_path, targets)
 
-    def resolve(target, *, build_root):
+    def resolve(target, *, build_root, library_plan=None):
         return fusesoc_registry.ResolvedTarget(
             name=target.selector,
             vlnv=target.vlnv,
