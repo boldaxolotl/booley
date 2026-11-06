@@ -6,8 +6,8 @@ the build identity, the verified cause with `file:line` evidence, and the
 discussion. The brief says what the finished change must do.
 
 These rules extend the triage skill's Agent Brief format. Booley adds the
-`**Audit:**` and `**Review:**` fields, a fixed placement, and an authority
-rule.
+`**Audit:**`, `**Review:**`, and `**GUI:**` fields, a fixed placement, and an
+authority rule.
 
 ## Write it durable
 
@@ -43,6 +43,7 @@ Optional:
   touches, named without paths.
 - `**Audit:**` see below.
 - `**Review:**` see below.
+- `**GUI:**` see below.
 
 ## Audit
 
@@ -78,7 +79,7 @@ of the brief:
   next round's reviewer accepts.
 - `park-after`: an integer of at least 2, allowed only with `rounds=uncapped`.
   It is how many rounds may run without a clean one before the pipeline stops
-  and asks the maintainer. Default 6. The count covers rounds under the current
+  and asks the maintainer. Default 5. The count covers rounds under the current
   brief; a new brief starts it again.
 - `focus`: one quoted line that tells the reviewer what to look for first.
 
@@ -88,6 +89,30 @@ a missing `model` or `effort`, an unsupported `rounds` value, `park-after`
 without `rounds=uncapped`, a value spread over several lines, or unbalanced
 quotes. With `rounds=uncapped`, the pipeline queues the pull request only after
 a clean round on its current head.
+
+## GUI
+
+The pipeline checks a pull request that touches the GUI in a browser
+Codespace with the `booley-gui-check` skill, and queues it only after a
+passing check on its current head. Without this field, the pipeline's GUI
+path rules decide: changes to the VS Code extension data, the Dashboard,
+`bwave gui` and VaporView, the in-container runtime, or the published image
+and devcontainer recipes need a check. The Spec reviewer can flag a change
+the rules missed.
+
+Add `**GUI:**` only when the rules would get the ticket wrong:
+
+```markdown
+**GUI:** yes
+```
+
+- `yes`: the change needs a GUI check even though it touches no GUI path,
+  for example a CLI change that alters what the Dashboard shows.
+- `no`: the change touches a GUI path but changes nothing a user sees, for
+  example a refactor of an in-container module.
+
+The value is exactly `yes` or `no`. Anything else keeps the issue out of the
+pipeline. `documentation` tickets never run the check.
 
 ## Placement and authority
 
