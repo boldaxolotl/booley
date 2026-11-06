@@ -712,6 +712,7 @@ class TestPatchVsix:
 
     def test_patches_both_members_and_keeps_the_rest(self, tmp_path):
         path = self._vsix(tmp_path / "vaporview.vsix")
+        mode = path.stat().st_mode
         with zipfile.ZipFile(path) as archive:
             before = [(i.filename, i.date_time, i.compress_type) for i in archive.infolist()]
 
@@ -727,7 +728,7 @@ class TestPatchVsix:
         assert iv._bundle_sha256(bundle) == iv._PATCHED_BUNDLE_SHA256
         colors = _color_properties(json.loads(self._member(path, vsix._MANIFEST_MEMBER)))
         assert colors["vaporview.customColor7"]["scope"] == "machine"
-        assert path.stat().st_mode & 0o777 == 0o644
+        assert path.stat().st_mode == mode
         assert [p.name for p in tmp_path.iterdir()] == ["vaporview.vsix"]  # no temp left
 
     def test_second_run_leaves_the_file_byte_identical(self, tmp_path):
@@ -817,7 +818,8 @@ class TestPatchVsix:
         assert shipped in text
         assert "Lramseyer/vaporview#207" in text
         assert "GPL-3.0" in text
-        assert notice.stat().st_mode & 0o777 == 0o644
+        if os.name == "posix":  # Windows has no group/other permission bits
+            assert notice.stat().st_mode & 0o777 == 0o644
         rewritten = source.read_text(encoding="utf-8")
         assert "unmodified" not in rewritten
         assert "attach hook" not in rewritten

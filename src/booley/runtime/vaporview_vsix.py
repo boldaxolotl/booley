@@ -107,41 +107,42 @@ def patch_vsix(path: Path) -> bool:
     is not a zip, or is not the verified VaporView build; the original file is
     then left untouched.
     """
+    temporary: Path | None = None
     try:
+        # The source archive is closed before the swap: Windows refuses to
+        # replace a file that is still open.
         with zipfile.ZipFile(path) as archive:
-            manifest, bundle = _read_members(archive, path)
-            try:
-                patched = incontainer_vaporview.patch_extension_texts(manifest, bundle)
-            except incontainer_vaporview.ExtensionPatchError as exc:
-                raise VsixPatchError(f"{path}: {exc}") from exc
-            notice_current = _carries_notice(archive)
-            if patched is None and notice_current:
+            replacements = _replacements(archive, path)
+            if replacements is None:
                 return False
-            replacements = {_NOTICE_MEMBER: extension_notice()}
-            if patched is not None:
-                patched_manifest, patched_bundle = patched
-                replacements |= {
-                    _MANIFEST_MEMBER: patched_manifest,
-                    _BUNDLE_MEMBER: patched_bundle,
-                }
-            _replace_atomically(path, archive, replacements)
+            handle, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.booley-")
+            os.close(handle)
+            temporary = Path(name)
+            _write_archive(archive, temporary, replacements)
+        temporary.chmod(path.stat().st_mode)
+        temporary.replace(path)
     except (OSError, zipfile.BadZipFile) as exc:
         raise VsixPatchError(f"{path}: cannot patch VSIX ({exc})") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return True
 
 
-def _replace_atomically(path: Path, source: zipfile.ZipFile, replacements: dict[str, str]) -> None:
-    """Write a patched copy next to *path*, then swap it in."""
-    mode = path.stat().st_mode
-    handle, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.booley-")
-    os.close(handle)
-    temporary = Path(name)
+def _replacements(archive: zipfile.ZipFile, path: Path) -> dict[str, str] | None:
+    """The member texts to write, or ``None`` when the VSIX is already patched."""
+    manifest, bundle = _read_members(archive, path)
     try:
-        _write_archive(source, temporary, replacements)
-        temporary.chmod(mode)
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
+        patched = incontainer_vaporview.patch_extension_texts(manifest, bundle)
+    except incontainer_vaporview.ExtensionPatchError as exc:
+        raise VsixPatchError(f"{path}: {exc}") from exc
+    if patched is None and _carries_notice(archive):
+        return None
+    replacements = {_NOTICE_MEMBER: extension_notice()}
+    if patched is not None:
+        patched_manifest, patched_bundle = patched
+        replacements |= {_MANIFEST_MEMBER: patched_manifest, _BUNDLE_MEMBER: patched_bundle}
+    return replacements
 
 
 def _sha256(path: Path) -> str:
