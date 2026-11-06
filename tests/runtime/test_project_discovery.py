@@ -488,6 +488,8 @@ def test_session_owner_of_relocated_worktree_uses_configured_namespace(tmp_path,
     (root / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
     moved = state / "worktrees" / "goal"
     moved.parent.mkdir()
+    # Windows cannot rename a directory that is the process working directory.
+    monkeypatch.chdir(tmp_path)
     # Sandbox-written pointers name /work/<state>/worktrees/goal.
     linked.rename(moved)
     admin = root / ".git" / "worktrees" / "goal"

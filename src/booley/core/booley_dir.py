@@ -355,7 +355,7 @@ def _configured_dir(toml_path: Path) -> str:
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
         logger.warning("Failed to read %s: %s", toml_path, e)
         return ""
-    value = as_str((as_dict(cfg.get("project")) or {}).get("dir"), default="")
+    value = as_str((as_dict(cfg.get("project")) or {}).get("dir")) or ""
     return "" if "\x00" in value else value
 
 
