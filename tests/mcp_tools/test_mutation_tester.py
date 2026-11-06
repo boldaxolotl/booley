@@ -1555,13 +1555,21 @@ class TestColdStart:
         assert len(build_calls) == cold_builds + 3  # pristine + two isolated variants
 
     def test_post_rollback_residue_still_warns(self, tmp_path: Path, monkeypatch):
-        endpoint = _make_endpoint(tmp_path, monkeypatch)
+        from booley.dev_support import mutation_lock as lm
+
+        scope = "rtl/mod_a.sv"
+        _prepare_scope_files(tmp_path, [scope])
+        endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope)
+        baseline = lm.compute_scope_hashes([scope], tmp_path)
+        (tmp_path / scope).write_text("module changed; endmodule\n", encoding="utf-8")
         result = McpToolResult(exit_code=EXIT_SUCCESS, report_text="summary\n\nRESULT: PASS")
-        monkeypatch.setattr(endpoint, "_verify_clean_worktree", lambda _files: False)
 
-        endpoint._add_residue_warning(result, {"rtl/mod_a.sv", "rtl/design_top.sv"})
+        endpoint._add_residue_warning(result, baseline, tmp_path)
 
-        assert "worktree not clean after sim sweep\nRESULT: PASS" in result.report_text
+        assert (
+            "  WARNING: worktree not clean after sim sweep: rtl/mod_a.sv\nRESULT: PASS"
+            in result.report_text
+        )
 
     def test_creator_no_specs_errors(self, tmp_path: Path, monkeypatch):
         scope = "rtl/mod_a.sv"
@@ -1600,6 +1608,155 @@ class TestColdStart:
         endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=1)
         result = endpoint._run()
         assert result.exit_code == EXIT_ERROR
+
+
+class TestResidueWarning:
+    """The residue warning compares against the pre-run snapshot, not HEAD (#2777)."""
+
+    SCOPE = "rtl/mod_a.sv"
+    WARNING = "WARNING: worktree not clean after sim sweep"
+
+    def _arrange(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+        *,
+        in_git: bool = True,
+        dirty_before: bool = False,
+    ) -> dict[str, bool]:
+        """Build a scope file, a creator, and a sim fake; return the run-edit switch.
+
+        While ``switch["edit_scope"]`` is true, a verilator call on the last
+        mutant (count=2) appends a line to the scope file, standing in for a
+        run that leaves residue. By then every private build has copied the
+        scope file, so the resolved proposals still match.
+        """
+        _prepare_scope_files(tmp_path, [self.SCOPE])
+        _write_dut_top(tmp_path)
+        if in_git:
+            _init_repo_with(
+                tmp_path,
+                {
+                    self.SCOPE: (tmp_path / self.SCOPE).read_text(encoding="utf-8"),
+                    "rtl/design_top.sv": (tmp_path / "rtl/design_top.sv").read_text(
+                        encoding="utf-8"
+                    ),
+                },
+            )
+        if dirty_before:
+            with (tmp_path / self.SCOPE).open("a", encoding="utf-8") as handle:
+                handle.write("// uncommitted edit made before the run\n")
+        _patch_invoke_agent(
+            monkeypatch,
+            [FakeAgentResult(output=_sample_creator_json(_sample_specs(2)))],
+        )
+        _patch_resolve_target(monkeypatch)
+        switch = {"edit_scope": False}
+        original = subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            joined = " ".join(cmd) if isinstance(cmd, list) else ""
+            if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
+                return _fake_proc(rc=0)
+            if "booley.flows.sim.backends.verilator" in joined:
+                if switch["edit_scope"] and "mutant_2" in joined:
+                    with (tmp_path / self.SCOPE).open("a", encoding="utf-8") as handle:
+                        handle.write("// edit left by the run\n")
+                return _fake_proc(rc=0)
+            return original(cmd, *args, **kwargs)
+
+        monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", fake_run)
+        return switch
+
+    def _cold(self, tmp_path: Path, monkeypatch) -> McpToolResult:
+        endpoint = _make_endpoint(tmp_path, monkeypatch, scope=self.SCOPE, count=2, min_detected=0)
+        result = endpoint._run()
+        assert result.detail["reused_lock"] is False, result.report_text
+        return result
+
+    def _warm(self, tmp_path: Path, monkeypatch) -> McpToolResult:
+        monkeypatch.setattr(
+            "booley.specialists.specialist.Specialist._invoke_agent_with_resume",
+            lambda *_args, **_kwargs: pytest.fail("warm reuse invoked the creator"),
+        )
+        endpoint = _make_endpoint(tmp_path, monkeypatch, scope=self.SCOPE, count=2, min_detected=0)
+        result = endpoint._run()
+        assert result.detail["reused_lock"] is True
+        return result
+
+    def test_cold_run_ignores_scope_edit_that_predates_run(self, tmp_path: Path, monkeypatch):
+        self._arrange(tmp_path, monkeypatch, dirty_before=True)
+
+        result = self._cold(tmp_path, monkeypatch)
+
+        assert self.WARNING not in result.report_text
+
+    def test_warm_run_ignores_scope_edit_that_predates_run(self, tmp_path: Path, monkeypatch):
+        self._arrange(tmp_path, monkeypatch, dirty_before=True)
+        self._cold(tmp_path, monkeypatch)
+
+        result = self._warm(tmp_path, monkeypatch)
+
+        assert self.WARNING not in result.report_text
+
+    def test_cold_run_warns_naming_dirty_scope_file_the_run_changed(
+        self, tmp_path: Path, monkeypatch
+    ):
+        switch = self._arrange(tmp_path, monkeypatch, dirty_before=True)
+        switch["edit_scope"] = True
+
+        result = self._cold(tmp_path, monkeypatch)
+
+        warnings = [line for line in result.report_text.splitlines() if self.WARNING in line]
+        assert [line.strip() for line in warnings] == [f"{self.WARNING}: {self.SCOPE}"]
+        lines = result.report_text.splitlines()
+        assert lines.index(warnings[0]) < next(
+            i for i, line in enumerate(lines) if line.startswith("RESULT: ")
+        )
+
+    def test_warm_run_warns_naming_clean_scope_file_the_run_changed(
+        self, tmp_path: Path, monkeypatch
+    ):
+        switch = self._arrange(tmp_path, monkeypatch)
+        self._cold(tmp_path, monkeypatch)
+        switch["edit_scope"] = True
+
+        result = self._warm(tmp_path, monkeypatch)
+
+        warnings = [line for line in result.report_text.splitlines() if self.WARNING in line]
+        assert [line.strip() for line in warnings] == [f"{self.WARNING}: {self.SCOPE}"]
+
+    def test_cold_rollback_of_clean_scope_file_leaves_no_warning(
+        self, tmp_path: Path, monkeypatch
+    ):
+        switch = self._arrange(tmp_path, monkeypatch)
+        switch["edit_scope"] = True
+
+        result = self._cold(tmp_path, monkeypatch)
+
+        assert self.WARNING not in result.report_text
+        assert "edit left by the run" not in (tmp_path / self.SCOPE).read_text(encoding="utf-8")
+
+    def test_cold_run_outside_git_warns_naming_changed_scope_file(
+        self, tmp_path: Path, monkeypatch
+    ):
+        switch = self._arrange(tmp_path, monkeypatch, in_git=False)
+        switch["edit_scope"] = True
+
+        result = self._cold(tmp_path, monkeypatch)
+
+        assert f"{self.WARNING}: {self.SCOPE}" in result.report_text
+
+    def test_scope_residue_detects_deleted_scope_file(self, tmp_path: Path, monkeypatch):
+        from booley.dev_support import mutation_lock as lm
+
+        _prepare_scope_files(tmp_path, [self.SCOPE])
+        baseline = lm.compute_scope_hashes([self.SCOPE], tmp_path)
+        assert MutationTesterSpecialist._scope_residue(baseline, tmp_path) == []
+
+        (tmp_path / self.SCOPE).unlink()
+
+        assert MutationTesterSpecialist._scope_residue(baseline, tmp_path) == [self.SCOPE]
 
 
 # ---------------------------------------------------------------------------
