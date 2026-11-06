@@ -1647,3 +1647,77 @@ def test_removal_steps_keep_symlinked_paths_as_printed(tmp_path: Path) -> None:
 
     assert shlex.join(["git", "-C", str(link), "worktree", "remove", str(worktree)]) in steps
     assert str(real) not in steps
+
+
+# ---------------------------------------------------------------------------
+# A relocated or external Booley Directory (#2916)
+# ---------------------------------------------------------------------------
+
+
+def _configured_project(tmp_path: Path, monkeypatch, directory: str) -> Path:
+    """A committed Git Project whose root ``booley.toml`` sets ``[project].dir``.
+
+    The Booley Directory is untracked configuration, as it is in real Projects.
+    """
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    root = tmp_path / "repo"
+    root.mkdir()
+    for args in (
+        ("init",),
+        ("config", "user.name", "Test User"),
+        ("config", "user.email", "test@example.com"),
+    ):
+        assert _git(root, *args).returncode == 0
+    _write(root / "README.md", "hello\n")
+    _write(root / "booley.toml", f'[project]\ndir = "{directory}"\n')
+    assert _git(root, "add", "README.md", "booley.toml").returncode == 0
+    assert _git(root, "commit", "-m", "init").returncode == 0
+    return root
+
+
+def _worktree_paths(root: Path) -> list[str]:
+    listing = _git(root, "worktree", "list", "--porcelain").stdout
+    return [line for line in listing.splitlines() if line.startswith("worktree ")]
+
+
+@_real_script
+def test_relocated_booley_dir_hosts_snapshot_worktree(tmp_path, monkeypatch, capsys) -> None:
+    root = _configured_project(tmp_path, monkeypatch, "state")
+    _write(root / "state" / "booley.toml", "[submodules]\npaths = []\n")
+
+    assert _new("demo", root) == 0
+
+    worktree = root / "state" / "worktrees" / "demo"
+    assert capsys.readouterr().out == f"{worktree}\n"
+    assert (worktree / ".git").is_file()
+    assert (root / "state" / "worktrees" / ".locks" / "demo.lock").is_file()
+    assert (root / "state" / "FUSESOC_IGNORE").is_file()
+    assert (worktree / "state" / "booley.toml").is_file()
+    assert not (root / ".booley").exists()
+    assert not (worktree / ".booley").exists()
+
+
+@pytest.mark.parametrize("source", ["project-dir", "ambient"])
+@_real_script
+def test_booley_dir_outside_checkout_is_refused_without_leftovers(
+    tmp_path, monkeypatch, capsys, source
+) -> None:
+    external = tmp_path / "external"
+    external.mkdir()
+    root = _configured_project(
+        tmp_path, monkeypatch, external.as_posix() if source == "project-dir" else "state"
+    )
+    _write(root / "state" / "booley.toml", "[submodules]\npaths = []\n")
+    if source == "ambient":
+        monkeypatch.setenv("BOOLEY_DIR", str(external))
+    branches = _git(root, "branch", "--list").stdout
+
+    assert _new("demo", root) == 1
+
+    err = capsys.readouterr().err
+    assert str(external) in err and "relative [project].dir" in err
+    assert _worktree_paths(root) == [f"worktree {root}"]
+    assert _git(root, "branch", "--list").stdout == branches
+    assert not (root / ".booley").exists()
+    assert not (root / "state" / "worktrees").exists()
+    assert not (external / "worktrees").exists()
