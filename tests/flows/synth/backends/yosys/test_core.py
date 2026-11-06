@@ -550,6 +550,17 @@ class TestEmitTimingMarkers:
         assert "STA_WORST_SLACK_NS: -0.100000" in out
         assert "STA_CRITICAL_PATH_PS: 10100.000" in out
 
+    def test_csv_slack_wins_over_comma_log_lines_without_marker(self, tmp_path, capsys):
+        """No marker (killed run) but real CSV rows: the CSV slack, not GPL-0028's 4."""
+
+        stdout = (
+            "STA_CLOCK_PERIOD_NS: 10.000000\n"
+            "[INFO GPL-0028] Bin count (X, Y):           4 ,      4\n"
+        )
+        (tmp_path / "overall.csv.rpt").write_text("a,b,-0.250\n", encoding="utf-8")
+        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        assert "STA_WORST_SLACK_NS: -0.250000" in capsys.readouterr().out
+
     def test_reg2reg_survives_when_overall_absent(self, tmp_path, capsys):
         """A false-pathed / I/O-bound overall worst path leaves no
         STA_WORST_SLACK_NS, but the internal reg->reg Fmax must still surface."""
