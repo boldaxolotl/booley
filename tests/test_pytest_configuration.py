@@ -729,7 +729,7 @@ def test_ci_records_queue_and_runner_minutes() -> None:
 
     assert workflow["permissions"]["actions"] == "read"
     assert metrics_job["needs"] == "ci-required"
-    assert metrics_job["if"] == "always()"
+    assert metrics_job["if"] == "always() && needs.ci-required.result != 'skipped'"
     assert metrics_job["steps"][-1]["uses"] == "./.github/actions/collect-ci-metrics"
 
     action_path = REPOSITORY_ROOT / ".github/actions/collect-ci-metrics/action.yml"
@@ -1164,7 +1164,7 @@ def test_change_aware_jobs_feed_an_always_running_aggregate() -> None:
     assert semantic["timeout-minutes"] == 2
 
     aggregate = jobs["ci-required"]
-    assert aggregate["if"] == "always()"
+    assert aggregate["if"] == "always() && needs.changes.result != 'skipped'"
     assert set(aggregate["needs"]) == {"changes", "release-semantic", *conditional}
     rendered_aggregate = "\n".join(str(step) for step in aggregate["steps"])
     assert ".github/scripts/ci_required.py" in rendered_aggregate
@@ -1172,7 +1172,7 @@ def test_change_aware_jobs_feed_an_always_running_aggregate() -> None:
 
     metrics = jobs["ci-metrics"]
     assert metrics["needs"] == "ci-required"
-    assert metrics["if"] == "always()"
+    assert metrics["if"] == "always() && needs.ci-required.result != 'skipped'"
 
 
 def _apply_suite_warning_filters() -> None:
