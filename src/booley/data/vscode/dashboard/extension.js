@@ -10,6 +10,20 @@ const PROTOCOL = 'booley.dashboard.attachProtocol';
 // VS Code remote names whose workspace extension host runs inside the Sandbox;
 // GitHub Codespaces reports `codespaces`.
 const REMOTES = new Set(['dev-container', 'attached-container', 'codespaces']);
+// GitHub Codespaces runs devcontainer lifecycle commands (postAttachCommand
+// and friends) in terminals it names `Codespaces: <command>`.
+const LIFECYCLE_PREFIX = 'Codespaces: ';
+
+// A Codespaces lifecycle-command terminal: Codespaces may send its command as
+// text, which VS Code also counts as interaction, so it never means the user
+// is using the panel. Check both names: Codespaces may set the prefix at
+// creation or only as the terminal's title. A user terminal renamed to
+// `Codespaces: ...` also matches; that rare case is accepted.
+function isLifecycleTerminal(terminal) {
+    return vscode.env.remoteName === 'codespaces' &&
+        [terminal.name, terminal.creationOptions.name]
+            .some(name => name?.startsWith(LIFECYCLE_PREFIX) === true);
+}
 
 function policy(root, signal) {
     return new Promise((resolve, reject) => {
@@ -107,8 +121,9 @@ class AttachController {
             // this window loaded (for example a shell the user typed in) is in use.
             // A terminal nobody has used yet, such as the Codespace shell that
             // starts with the Trust click, does not hold the Dashboard back, so it
-            // can end up behind the Dashboard.
-            const busy = vscode.window.terminals.some(existing => existing.state.isInteractedWith);
+            // can end up behind the Dashboard. A Codespaces lifecycle-command
+            // terminal is never in use, even though VS Code flags it interacted.
+            const busy = this.terminalInUse();
             const terminal = vscode.window.createTerminal({
                 name: 'Booley Dashboard',
                 shellPath: BOOLEY,
@@ -128,6 +143,20 @@ class AttachController {
                 this.output.show(true);
             }
         }
+    }
+
+    // Whether a terminal the user has used is open. In a Codespace, log every
+    // terminal considered so a live check can see which one decided.
+    terminalInUse() {
+        const terminals = vscode.window.terminals;
+        const counted = terminals.map(t => !isLifecycleTerminal(t) && t.state.isInteractedWith);
+        if (vscode.env.remoteName === 'codespaces' && terminals.length > 0) {
+            const seen = terminals.map((t, i) => `'${t.name}' (created as ` +
+                `'${t.creationOptions.name ?? ''}', interacted: ${t.state.isInteractedWith}, ` +
+                `${counted[i] ? 'in use' : 'not in use'})`);
+            this.output.appendLine(`Dashboard terminal check: ${seen.join('; ')}.`);
+        }
+        return counted.includes(true);
     }
 
     // A panel terminal created without show() becomes the visible tab only

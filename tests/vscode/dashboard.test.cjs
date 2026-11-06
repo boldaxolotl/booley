@@ -8,6 +8,8 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname,
     '../../src/booley/data/vscode/dashboard/extension.js'), 'utf8');
+const LIFECYCLE_NAME = 'Codespaces: python -m booley.runtime.incontainer_live_preview && ' +
+    'python -m booley.runtime.incontainer_vaporview';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function fakeEditor(options, records, settings) {
@@ -19,8 +21,24 @@ function fakeEditor(options, records, settings) {
     // (like the Codespace default shell) comes first; a user terminal is one
     // that has received input.
     const open = [];
-    if (options.idleTerminal) { open.push({ name: 'bash', state: { isInteractedWith: false } }); }
-    if (options.userTerminal) { open.push({ name: 'bash', state: { isInteractedWith: true } }); }
+    if (options.idleTerminal) {
+        open.push({ name: 'bash', creationOptions: {}, state: { isInteractedWith: false } });
+    }
+    if (options.userTerminal) {
+        open.push({ name: 'bash', creationOptions: {}, state: { isInteractedWith: true } });
+    }
+    // Codespaces runs devcontainer lifecycle commands (postAttachCommand) in a
+    // terminal named `Codespaces: <command>`, and the editor flags it interacted
+    // because the command is sent as text.
+    if (options.lifecycleTerminal) {
+        open.push({ name: LIFECYCLE_NAME, creationOptions: { name: LIFECYCLE_NAME },
+            state: { isInteractedWith: true } });
+    }
+    // The prefix only on the current name (a process title or a rename).
+    if (options.titledLifecycleTerminal) {
+        open.push({ name: 'Codespaces: python -m booley.runtime.incontainer_vaporview',
+            creationOptions: {}, state: { isInteractedWith: true } });
+    }
     const root = { fsPath: '/work' };
     const output = { appendLine: line => log.push(line), show() {}, dispose() {} };
     const listen = name => fn => { listeners[name] = fn; return { dispose() {} }; };
@@ -60,7 +78,7 @@ function fakeEditor(options, records, settings) {
         window: {
             createOutputChannel: () => output,
             createTerminal: options => {
-                const terminal = { options, shown: false, disposed: false,
+                const terminal = { options, creationOptions: options, shown: false, disposed: false,
                     state: { isInteractedWith: false },
                     show(preserveFocus) { this.shown = true; this.preserveFocus = preserveFocus; },
                     dispose() { this.disposed = true; } };
@@ -352,6 +370,51 @@ test('a terminal the user has used keeps the panel; the Dashboard waits behind a
     f.messages[0].resolve('Open');
     await tick();
     assert.equal(f.terminals[0].shown, true);
+});
+
+test('a Codespaces lifecycle terminal does not hold the Dashboard back', async () => {
+    const f = fixture({ remote: 'codespaces', lifecycleTerminal: true, idleTerminal: true });
+    await tick();
+    assert.equal(f.terminals.length, 1);
+    assert.equal(f.terminals[0].shown, true, 'the Dashboard comes to the front');
+    assert.equal(f.terminals[0].preserveFocus, true, 'keyboard focus stays put');
+    assert.equal(f.messages.length, 0, 'no notification for a lifecycle terminal');
+    const lines = f.log.filter(line => line.includes('created as'));
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /created as 'Codespaces: python -m booley\.runtime\.incontainer_live_preview/);
+    assert.match(lines[0], /interacted: true, not in use/);
+});
+
+test('a used terminal beside a Codespaces lifecycle terminal keeps the panel', async () => {
+    const f = fixture({ remote: 'codespaces', lifecycleTerminal: true, userTerminal: true });
+    await tick();
+    assert.equal(f.terminals[0].shown, false, 'the user terminal must stay in front');
+    assert.equal(f.messages.length, 1);
+    assert.deepEqual(Array.from(f.messages[0].items), ['Open']);
+    f.messages[0].resolve('Open');
+    await tick();
+    assert.equal(f.terminals[0].shown, true);
+    const line = f.log.find(entry => entry.includes('created as'));
+    assert.match(line, /'bash' \(created as '', interacted: true, in use\)/);
+    assert.match(line, /interacted: true, not in use/);
+});
+
+test('a terminal titled like a Codespaces lifecycle terminal does not hold the Dashboard back', async () => {
+    const f = fixture({ remote: 'codespaces', titledLifecycleTerminal: true });
+    await tick();
+    assert.equal(f.terminals[0].shown, true);
+    assert.equal(f.terminals[0].preserveFocus, true);
+    assert.equal(f.messages.length, 0);
+});
+
+test('outside a Codespace a lifecycle-named terminal still counts', async () => {
+    for (const remote of ['dev-container', 'attached-container']) {
+        const f = fixture({ remote, lifecycleTerminal: true });
+        await tick();
+        assert.equal(f.terminals[0].shown, false, remote);
+        assert.equal(f.messages.length, 1, remote);
+        assert.equal(f.log.length, 0, remote);
+    }
 });
 
 test('dismissing the notification leaves the Dashboard in the background', async () => {
