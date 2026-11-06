@@ -41,6 +41,7 @@ from pathlib import Path
 from booley.core.boundary import BoundaryError
 from booley.flows.eda_failures import FailureKind, new_attempt_token, render_failure_marker
 from booley.flows.synth.backends.openroad import reporting as openroad_reporting
+from booley.flows.synth.backends.openroad import sdc_grammar
 from booley.flows.synth.backends.openroad import timing as openroad_timing
 from booley.flows.synth.backends.yosys import core as syn_core
 from booley.flows.synth.mode import runs_openroad
@@ -173,17 +174,11 @@ def configure_synthesis(spec: SynthSpec, build_dir: Path) -> SynthPlan:
 def _configure_openroad(spec: SynthSpec, build_dir: Path) -> SynthSpec:
     """Stage the SDC files, write the OpenROAD script, and return the staged spec.
 
-    OpenROAD reads Booley's private SDC copies, so a Project SDC edited during
-    a run cannot reach it; the OpenROAD reuse key and the interpret half read
-    the same copies. FuseSoC may export the SDC or read it in place.
+    The OpenROAD script, the interpret half and the reuse key all read the
+    returned spec's SDC paths.
     """
     (build_dir / "reports" / "timing").mkdir(parents=True, exist_ok=True)
-    (build_dir / "sdc").mkdir(exist_ok=True)
-    staged = tuple(
-        build_dir / "sdc" / f"{i}_{path.name}" for i, path in enumerate(spec.timing.sdc)
-    )
-    for source, copy in zip(spec.timing.sdc, staged, strict=True):
-        shutil.copyfile(source, copy)
+    staged = tuple(_stage_sdc(i, path, build_dir) for i, path in enumerate(spec.timing.sdc))
     # Relative script-internal paths: the recipes run with cwd=build_dir.
     openroad_timing.write_openroad_script(
         spec.design_name,
@@ -198,6 +193,26 @@ def _configure_openroad(spec: SynthSpec, build_dir: Path) -> SynthSpec:
         source_sdc_paths=tuple(Path(_rel(path, build_dir)) for path in spec.timing.sdc),
     )
     return replace(spec, timing=spec.timing._replace(sdc=staged))
+
+
+def _stage_sdc(index: int, path: Path, build_dir: Path) -> Path:
+    """The SDC file OpenROAD reads: a private copy when it could ever be reused.
+
+    FuseSoC may export the SDC or read it in place in the Project. A copy
+    keeps a Project edit made during the run away from OpenROAD and the reuse
+    key. An SDC outside the reuse grammar stays in place: it may locate files
+    beside itself (``[info script]``) and never reuses anyway.
+    """
+    try:
+        text = path.read_bytes()
+    except OSError:
+        return path  # OpenROAD reports the unreadable file
+    if sdc_grammar.tcl_decline_reason(text) is not None:
+        return path
+    copy = build_dir / "sdc" / f"{index}_{path.name}"
+    copy.parent.mkdir(exist_ok=True)
+    copy.write_bytes(text)
+    return copy
 
 
 def _clear_stage_artifacts(build_dir: Path, design: str) -> None:

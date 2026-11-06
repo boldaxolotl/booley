@@ -15,11 +15,11 @@ Keyed, in order:
    path declines (OpenROAD resolves it in the build dir); so does a liberty
    with ``include_file`` (it reads an unkeyed file).
 5. ``sdc[i]``: the SDC copies configure stages in the build dir; OpenROAD reads
-   those, so a Project SDC edit during the run cannot reach it. SDC and
-   wire-RC are Tcl: accepted only under :func:`tcl_decline_reason`. For keyed
-   files outside Booley's build dir (e.g. a writable ``PRJ_LIB_DIR``) the
-   ``pre == post`` check is the only guard against an edit made and undone
-   during one run.
+   those, so a Project SDC edit during the run cannot reach it. Only SDCs
+   accepted by ``sdc_grammar.tcl_decline_reason`` are copied (and keyed);
+   others, and a wire-RC outside the grammar, decline. For keyed files
+   outside Booley's build dir (e.g. a writable ``PRJ_LIB_DIR``) ``pre ==
+   post`` is the only guard against an edit made and undone during one run.
 6. ``openroad_identity``: resolved path, ``-version``, SHA-256 of the binary and
    of each library ``ldd`` resolves; a non-ELF ``openroad`` declines.
    ``dlopen``ed code (Tcl packages, Qt plugins) is covered by record 7.
@@ -47,15 +47,14 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import subprocess
-import unicodedata
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from booley.flows.synth.backends import pipeline
+from booley.flows.synth.backends.openroad import sdc_grammar
 from booley.flows.synth.backends.openroad import timing as openroad_timing
 from booley.runtime.build_metadata import current_build_metadata
 from booley.runtime.execution_records import atomic_write_json
@@ -80,33 +79,7 @@ _IMAGE_ENV = (
     "BOOLEY_IMAGE_BUILT_AT", "BOOLEY_PAYLOAD_FINGERPRINT", "BOOLEY_SOURCE_REVISION",
     "BOOLEY_VERSION", "BOOLEY_SANDBOX_FLAVOR",
 )
-# Strict SDC / wire-RC line grammar: constraint commands with no file operand
-# or I/O, and no Tcl builtins at all.
-_SDC_COMMANDS = frozenset({
-    "create_clock", "create_generated_clock", "set_input_delay", "set_output_delay",
-    "set_false_path", "set_multicycle_path", "set_max_delay", "set_min_delay",
-    "set_clock_groups", "set_clock_uncertainty", "set_clock_latency", "set_clock_transition",
-    "set_propagated_clock", "set_load", "set_driving_cell", "set_input_transition",
-    "set_max_fanout", "set_max_transition", "set_max_capacitance", "set_case_analysis",
-    "set_disable_timing", "set_timing_derate", "set_ideal_network", "set_units", "group_path",
-    "set_dont_touch", "set_layer_rc", "set_wire_rc",
-})
-_SDC_GETTERS = frozenset({
-    "get_ports", "get_pins", "get_cells", "get_nets", "get_clocks", "all_inputs",
-    "all_outputs", "all_clocks", "all_registers", "current_design",
-})
 # fmt: on
-_WS = r"[ \t]"
-_PLAIN = r"[A-Za-z0-9_.\-/*:+]+"
-# Bus indices are legal only inside a getter's brace-list, where Tcl reads them literally.
-_OBJECT = r"(?:[A-Za-z0-9_.\-/*:+]|\[[0-9*:]+\])+"
-_BRACE_PLAIN = rf"\{{{_WS}*(?:{_PLAIN}(?:{_WS}+{_PLAIN})*)?{_WS}*\}}"
-_BRACE_OBJECT = rf"\{{{_WS}*(?:{_OBJECT}(?:{_WS}+{_OBJECT})*)?{_WS}*\}}"
-_GETTER = rf"\[{_WS}*[a-z_]+(?:{_WS}+(?:{_PLAIN}|{_BRACE_OBJECT}))*{_WS}*\]"
-_COMMAND_LINE = re.compile(
-    rf"{_WS}*(?P<cmd>{_PLAIN})(?:{_WS}+(?:{_GETTER}|{_BRACE_PLAIN}|{_PLAIN}))*{_WS}*"
-)
-_BRACKET_COMMAND = re.compile(rf"\[{_WS}*([a-z_]+)")
 
 
 @dataclass(frozen=True)
@@ -223,54 +196,10 @@ def sandbox_identity() -> tuple[tuple[str, str], ...] | None:
     )
 
 
-def tcl_decline_reason(text: bytes) -> str | None:
-    """Why an SDC/wire-RC file is not provably side-effect free, or ``None``.
-
-    Every line must be blank, a full-line ``#`` comment, or exactly one
-    allowlisted constraint command whose arguments are plain words, one-line
-    brace-lists, or getter brackets. With no ``$ \\ " ;``, Tcl performs no
-    variable or backslash substitution and runs one command per line; the only
-    command substitutions are the getters, whose arguments are literal. The
-    character rules make the grammar's lines exactly Tcl's lines.
-    """
-    try:
-        decoded = text.decode("utf-8")
-    except UnicodeDecodeError:
-        return "not UTF-8"
-    bad = next((c for c in decoded if unicodedata.category(c) == "Cc" and c not in "\t\n\r"), None)
-    if bad is not None:
-        return f"control character {bad!r}"
-    if "\r" in decoded.replace("\r\n", ""):
-        return "carriage return without newline"
-    for number, raw in enumerate(decoded.replace("\r\n", "\n").split("\n"), 1):
-        reason = _line_decline_reason(raw)
-        if reason is not None:
-            return f"line {number}: {reason}"
-    return None
-
-
-def _line_decline_reason(raw: str) -> str | None:
-    """Classify one line after stripping only space and tab (Tcl's separators)."""
-    line = raw.strip(" \t")
-    if not line or line.startswith("#"):
-        return None
-    if any(c in ';\\$"' or (c != "\t" and not " " <= c <= "~") for c in raw):
-        return "non-ASCII character or one of ';', '\\', '$', '\"' in a command"
-    match = _COMMAND_LINE.fullmatch(raw)
-    if match is None:
-        return "argument is not a plain word, brace-list or getter"
-    if match["cmd"] not in _SDC_COMMANDS:
-        return f"command {match['cmd']!r} is not allowed"
-    bracket = next((g for g in _BRACKET_COMMAND.findall(raw) if g not in _SDC_GETTERS), None)
-    if bracket is not None:
-        return f"bracket command {bracket!r} is not allowed"
-    return None
-
-
 def _tcl_files_decline_reason(files: tuple[tuple[str, Path], ...]) -> str | None:
     for role, path in files:
         try:
-            reason = tcl_decline_reason(path.read_bytes())
+            reason = sdc_grammar.tcl_decline_reason(path.read_bytes())
         except OSError as exc:
             return f"{role} {path} is unreadable: {exc}"
         if reason is not None:

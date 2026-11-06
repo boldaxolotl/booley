@@ -349,6 +349,23 @@ def test_sdc_read_in_place_reuses(bench: Bench) -> None:
     bench.run_fresh()
 
 
+def test_project_sdc_edit_during_openroad_cannot_reach_it(bench: Bench) -> None:
+    bench.run_fresh()
+
+    def edit_project_sdc(build: Path) -> None:
+        bench.sdc = SDC.replace("4.0", "6.0")
+        bench.staged_sdc().write_text(bench.sdc)  # OpenROAD reads its own copy
+        bench._openroad(build)
+
+    bench.on_openroad = edit_project_sdc
+    bench.run("--fresh-openroad")
+    bench.on_openroad = None
+
+    assert (bench.slot_root / "slot.json").exists()  # stored under the bytes OpenROAD read
+    bench.run_fresh()  # the edited SDC is a new input
+    bench.run_hit()
+
+
 def test_internal_name_only_netlist_change_misses(bench: Bench) -> None:
     bench.run_fresh()
     bench.run_hit()
