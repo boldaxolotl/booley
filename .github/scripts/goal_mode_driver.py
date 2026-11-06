@@ -29,9 +29,12 @@ from uuid import uuid4
 
 from mcp import Client, StdioServerParameters
 
+from booley.dev_support import mutation_lock
 from booley.dev_support.demo_contract_codec import load_contract
+from booley.fusesoc.core_projection import native_cores_ignored
 from booley.goals.model import GoalArg, GoalFamily, GoalRecord, GoalState, goal_arg_to_json
 from booley.goals.naming import resolve_spelling
+from booley.goals.paths import record_paths
 from booley.goals.presentation import goal_presentation
 from booley.goals.sim_baseline_store import BASELINE_FAMILIES, baseline_jobs_dir
 from booley.goals.store import GoalStore
@@ -47,6 +50,11 @@ from booley.targets.domain import FuseSocError
 
 MCP_PROTOCOL_VERSION = "2026-07-28"
 TOOL_TIMEOUT_SECONDS = 600
+# The mutation smoke builds and simulates the baseline and one variant while the
+# Goal's detached baseline Jobs compete for the same host.
+MUTATION_SMOKE_TIMEOUT_SECONDS = 1200
+POLL_WAIT_SECONDS = 30
+MUTATION_SMOKE_SUFFIX = " mutation-smoke"
 # Bound for detached baseline Jobs to unwind after cancellation.
 BASELINE_STOP_SECONDS = 60
 # A SIGTERM sent before the Job supervisor installs its handler is lost, so the
@@ -112,9 +120,10 @@ async def run_flow(
     *,
     poll_limit: int = 20,
     expected_exit_code: int = 0,
+    timeout_seconds: float = TOOL_TIMEOUT_SECONDS,
 ) -> str:
     """Require exit zero under one absolute deadline, including detached Jobs."""
-    deadline = asyncio.get_running_loop().time() + TOOL_TIMEOUT_SECONDS
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
     text = await tool_text(session, name, arguments, deadline=deadline)
     run = _RUN.search(text)
     for index in range(poll_limit + 1):
@@ -128,7 +137,10 @@ async def run_flow(
         if index == poll_limit:
             break
         text = await tool_text(
-            session, "booley_poll", {"run_id": run.group(1), "wait_seconds": 30}, deadline=deadline
+            session,
+            "booley_poll",
+            {"run_id": run.group(1), "wait_seconds": POLL_WAIT_SECONDS},
+            deadline=deadline,
         )
     raise GoalDriverError(f"{name} Job did not finish within {poll_limit} polls")
 
@@ -200,11 +212,110 @@ async def _status(
 
 
 async def readiness(
-    session: ToolSession, worktree: Path, goals: Sequence[GoalArg]
+    session: ToolSession,
+    worktree: Path,
+    goals: Sequence[GoalArg],
+    *,
+    mutation_smoke_booley_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Enter the full contract and list every Goal without a lifecycle exception."""
+    """Enter the full contract and list every Goal without a lifecycle exception.
+
+    With *mutation_smoke_booley_dir* (the Main Booley Directory) set, also run
+    one small ``mutation_tester`` call inside the Goal worktree.
+    """
     entry = await enter(session, worktree, goals)
-    return await _status(session, worktree, entry, goals)
+    result = await _status(session, worktree, entry, goals)
+    if mutation_smoke_booley_dir is not None:
+        smoke = await mutation_smoke(
+            session, worktree, mutation_smoke_booley_dir, entry["record_id"], goals
+        )
+        result["steps"]["mutation_tester"] = smoke
+    return result
+
+
+def _smoke_scope_and_proposal(worktree: Path, goals: Sequence[GoalArg]) -> tuple[str, str, Any]:
+    """Return ``(target, scope file, spec dict)`` for one comment-only mutation.
+
+    The proposal extends the first ``//`` line comment of the first RTL file of
+    the contract's mutation Target. The variant therefore compiles and runs
+    exactly like the baseline: the smoke can only fail when a variant does not
+    build or yields no verdict, which is what it guards.
+    """
+    goal = next((goal for goal in goals if goal.family is GoalFamily.MUTATION), None)
+    if goal is None or goal.target is None:
+        raise GoalDriverError("mutation smoke needs a mutation Goal with a Target")
+    if not native_cores_ignored(worktree):
+        raise GoalDriverError(
+            "mutation smoke needs a Project with ignore_native_cores: the smoke guards the "
+            "private mirror path"
+        )
+    try:
+        catalog = TargetCatalog.build(worktree)
+        files = catalog.inspect(catalog.select(goal.target)).rtl_files
+    except FuseSocError as exc:
+        raise GoalDriverError(f"mutation smoke Target resolution failed: {exc}") from exc
+    if not files:
+        raise GoalDriverError(f"mutation smoke Target {goal.target} lists no RTL file")
+    scope = files[0]
+    for number, line in enumerate((worktree / scope).read_text("utf-8").splitlines(), start=1):
+        if line.lstrip().startswith("//"):
+            spec = {
+                "index": 1,
+                "category": "comment",
+                "file": scope,
+                "line": number,
+                "original_code": line,
+                "mutated_code": line + MUTATION_SMOKE_SUFFIX,
+                "detectability_argument": "comment-only change: the build must still succeed",
+            }
+            return goal.target, scope, spec
+    raise GoalDriverError(f"mutation smoke found no // line comment in {scope}")
+
+
+async def mutation_smoke(
+    session: ToolSession,
+    worktree: Path,
+    booley_dir: Path,
+    record_id: str,
+    goals: Sequence[GoalArg],
+) -> dict[str, Any]:
+    """Build and run one variant in the Goal worktree through the private mirror.
+
+    A schema-2 proposal lock is seeded in the Goal run's runtime directory
+    (``BOOLEY_RUNTIME_DIR`` for Goal calls) so warm reuse skips the creator
+    agent, which the CI container cannot reach. ``diagnostic`` keeps the
+    one-variant run from recording the Goal's mutation criterion as met.
+    """
+    target, scope, spec = _smoke_scope_and_proposal(worktree, goals)
+    runtime_dir = record_paths(booley_dir, record_id).runtime_dir
+    mutation_lock.save_lock(
+        mutation_lock.LockMeta(
+            created_at=mutation_lock.now_iso(),
+            scope=[scope],
+            scope_hashes=mutation_lock.compute_scope_hashes([scope], worktree),
+            count=1,
+            mutations=[spec],
+        ),
+        runtime_dir,
+    )
+    response = await run_flow(
+        session,
+        "mutation_tester",
+        {
+            "work_dir": str(worktree),
+            "target": target,
+            "scope": scope,
+            "count": 1,
+            "min_detected": 0,
+            "diagnostic": True,
+        },
+        poll_limit=MUTATION_SMOKE_TIMEOUT_SECONDS // POLL_WAIT_SECONDS,
+        timeout_seconds=MUTATION_SMOKE_TIMEOUT_SECONDS,
+    )
+    mirror = mutation_lock.variant_build_dir(1, runtime_dir) / "core-mirror"
+    if not mirror.is_dir():
+        raise GoalDriverError(f"mutation smoke never built through the private mirror: {mirror}")
+    return {"status": "pass", "response": response}
 
 
 async def roundtrip(
@@ -337,11 +448,22 @@ async def client_session(
 
 
 async def _client_run(
-    workspace: Workspace, goals: Sequence[GoalArg], python: Path, check_readiness: bool
+    workspace: Workspace,
+    goals: Sequence[GoalArg],
+    python: Path,
+    check_readiness: bool,
+    smoke_mutation: bool = False,
 ) -> dict[str, Any]:
     async with client_session(workspace, python) as client:
-        operation = readiness if check_readiness else roundtrip
-        result = await operation(client, workspace.worktree, goals)
+        if check_readiness:
+            result = await readiness(
+                client,
+                workspace.worktree,
+                goals,
+                mutation_smoke_booley_dir=workspace.booley_dir if smoke_mutation else None,
+            )
+        else:
+            result = await roundtrip(client, workspace.worktree, goals)
     record = GoalStore(workspace.booley_dir).load(result["record_id"])
     expected = GoalState.ACTIVE if check_readiness else GoalState.FINISHED
     if record.state is not expected:
@@ -425,6 +547,7 @@ def validate(
     goals: Sequence[GoalArg],
     python: Path = Path(sys.executable),
     readiness: bool = False,
+    mutation_smoke: bool = False,
 ) -> dict[str, Any]:
     """Operate only on a clone, preserving caller Project inputs and Git state."""
     with tempfile.TemporaryDirectory(prefix="booley-ci-goals-") as directory:
@@ -437,7 +560,7 @@ def validate(
         if not preparation.ok:
             raise GoalDriverError(preparation.error)
         try:
-            return asyncio.run(_client_run(workspace, goals, python, readiness))
+            return asyncio.run(_client_run(workspace, goals, python, readiness, mutation_smoke))
         finally:
             stop_baseline_jobs(workspace.booley_dir)
 
@@ -454,8 +577,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project-state", type=Path, required=True)
     parser.add_argument("--contract", type=Path, required=True)
     parser.add_argument("--readiness", action="store_true")
+    parser.add_argument(
+        "--mutation-smoke",
+        action="store_true",
+        help="with --readiness, also run one small mutation_tester call in the Goal worktree",
+    )
     parser.add_argument("--evidence", type=Path, required=True)
     args = parser.parse_args(argv)
+    if args.mutation_smoke and not args.readiness:
+        parser.error("--mutation-smoke requires --readiness")
     goals = load_contract(args.contract).required_goals
     if not args.readiness:
         goals = tuple(goal for goal in goals if goal.family is GoalFamily.LINT)
@@ -464,6 +594,7 @@ def main(argv: list[str] | None = None) -> int:
         project_state=args.project_state,
         goals=goals,
         readiness=args.readiness,
+        mutation_smoke=args.mutation_smoke,
     )
     write_evidence(args.evidence, result)
     return 0

@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import yaml
 from fusesoc.vlnv import Vlnv
+from tests.booley_checkouts_support import commit_all, init_repo, isolate_git, snapshot
+from tests.conftest import symlink_or_skip
+from tests.fusesoc_test_support import symlinked_booley_dir
 
 from booley.dev_support.mutation_build_sources import (
     materialize_build_mutation,
     validate_mutation_closure,
 )
 from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
-from booley.specialists.mutation_tester import MutationSpec
+from booley.specialists.mutation_tester import MutationSpec, MutationTesterSpecialist
 
 
 def _fixture(tmp_path, header=False, copyto=None, eda_tool=None, name=None, defect=None):
@@ -148,3 +152,117 @@ def test_identical_basename_dependency_uses_declaring_core_identity(tmp_path, de
     materialize_build_mutation(variants, 1, tmp_path, resolved)
     assert staged.read_bytes() == source.read_bytes().replace(b"BASELINE", b"MUTANT")
     assert dependency_export.read_bytes() == dependency_source.read_bytes() == source.read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# #2851: ignore_native_cores Projects mutate a private mirror, never the checkout
+# ---------------------------------------------------------------------------
+
+_DUT = "module dut; initial begin $display(`MESSAGE); $finish; end endmodule\n"
+_HEADER = '`define MESSAGE "BASELINE"\n'
+_STEALTH_CORE = {
+    "name": "acme:lib:dut:1",
+    "filesets": {
+        "rtl": {
+            "files": [
+                "rtl/dut.sv",
+                {"rtl/inc/message.svh": {"is_include_file": True, "include_path": "rtl/inc"}},
+            ],
+            "file_type": "systemVerilogSource",
+        }
+    },
+    "targets": {"sim": {"filesets": ["rtl"], "default_tool": "icarus", "toplevel": "dut"}},
+}
+
+
+def _write_ignore_native_project(root: Path) -> None:
+    """Write sources, a native core (ignored) and one stealth-authored core."""
+    (root / "rtl" / "inc").mkdir(parents=True, exist_ok=True)
+    (root / "rtl" / "dut.sv").write_text(_DUT, encoding="utf-8")
+    (root / "rtl" / "inc" / "message.svh").write_text(_HEADER, encoding="utf-8")
+    native = {**_STEALTH_CORE, "name": "native:lib:dut:1"}
+    (root / "native.core").write_text("CAPI=2:\n" + yaml.safe_dump(native), encoding="utf-8")
+    booley = root / ".booley"
+    (booley / "cores").mkdir(parents=True, exist_ok=True)
+    (booley / "booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
+    )
+    (booley / "cores" / "dut.core").write_text(
+        "CAPI=2:\n" + yaml.safe_dump(_STEALTH_CORE), encoding="utf-8"
+    )
+
+
+def _tree_snapshot(root: Path, excluded: Path) -> dict[Path, bytes]:
+    """Bytes of every regular file below *root*, skipping *excluded* and git internals."""
+    excluded = excluded.resolve()
+    return {
+        path: path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+        and not path.resolve().is_relative_to(excluded)
+        and ".git" not in path.relative_to(root).parts
+    }
+
+
+def _ignore_native_layout(tmp_path: Path, monkeypatch, layout: str) -> tuple[Path, Path]:
+    """Return ``(project root, build path)`` for one Project layout."""
+    isolate_git(tmp_path, monkeypatch)
+    if layout == "symlinked-booley-dir":
+        root = tmp_path / "proj"
+        root.mkdir()
+        symlinked_booley_dir(root, tmp_path / "external-booley")
+        _write_ignore_native_project(root)
+        return root, root / ".booley" / ".runtime" / "mutant_1"
+    if layout == "main":
+        root = tmp_path / "main"
+        init_repo(root)
+        _write_ignore_native_project(root)
+        return root, root / ".booley" / ".runtime" / "mutant_1"
+    main = tmp_path / "main"
+    init_repo(main)
+    _write_ignore_native_project(main)
+    (main / ".gitignore").write_text(".booley/\n", encoding="utf-8")
+    commit_all(main)
+    worktree = snapshot(main, name="wt")
+    # Goal runs place the variant build under the main Booley Directory,
+    # outside the worktree root.
+    return worktree, main / ".booley" / ".runtime" / "mutant_1"
+
+
+@pytest.mark.parametrize("layout", ["main", "symlinked-booley-dir", "linked-worktree"])
+def test_ignore_native_cores_mutation_writes_only_private_export(tmp_path, monkeypatch, layout):
+    root, build_path = _ignore_native_layout(tmp_path, monkeypatch, layout)
+    resolve = MutationTesterSpecialist._resolve_elab_target
+    # First use projects the shared registry; that is not a mutation side effect.
+    resolve("sim", root, tmp_path / "pristine-build")
+    spec = MutationSpec(1, "literal", "rtl/inc/message.svh", 1, "BASELINE", "MUTANT")
+    variants = MutationVariantPlan.resolve([spec], root, ["rtl/inc/message.svh"])
+    before = _tree_snapshot(root, excluded=build_path)
+    before_external = _tree_snapshot(tmp_path / "external-booley", build_path)
+    _handle, prepared = resolve("sim", root, build_path, (variants, 1))
+    exported = list(Path(prepared.resolved.build_root).rglob("message.svh"))
+    assert exported
+    assert all(b"MUTANT" in path.read_bytes() for path in exported)
+    assert all(path.resolve().is_relative_to(build_path.resolve()) for path in exported)
+    assert _tree_snapshot(root, excluded=build_path) == before
+    assert _tree_snapshot(tmp_path / "external-booley", build_path) == before_external
+    assert (root / "rtl" / "inc" / "message.svh").read_text() == _HEADER
+    if shutil.which("iverilog"):
+        _run(["make", "all"], Path(prepared.resolved.build_root))
+        assert "MUTANT" in _run(["make", "run"], Path(prepared.resolved.build_root))
+
+
+def test_ignore_native_cores_guard_refuses_out_of_checkout_source(tmp_path, monkeypatch):
+    root, build_path = _ignore_native_layout(tmp_path, monkeypatch, "main")
+    outside = tmp_path / "outside.sv"
+    outside.write_text(_DUT, encoding="utf-8")
+    symlink_or_skip(root / "rtl" / "ext.sv", outside)
+    core = root / ".booley" / "cores" / "dut.core"
+    data = yaml.safe_load(core.read_text(encoding="utf-8"))
+    data["filesets"]["rtl"]["files"].append("rtl/ext.sv")
+    core.write_text("CAPI=2:\n" + yaml.safe_dump(data), encoding="utf-8")
+    spec = MutationSpec(1, "literal", "rtl/ext.sv", 1, "$finish", "$stop")
+    variants = MutationVariantPlan.resolve([spec], root, ["rtl/ext.sv"])
+    with pytest.raises(MutationVariantError, match="absolute mutation export"):
+        MutationTesterSpecialist._resolve_elab_target("sim", root, build_path, (variants, 1))
+    assert outside.read_text(encoding="utf-8") == _DUT
