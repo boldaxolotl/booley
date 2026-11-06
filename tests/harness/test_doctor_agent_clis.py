@@ -66,28 +66,27 @@ def _with_id(findings, check_id: str, subject: str) -> list[DiagnosticFinding]:
     return [f for f in findings if (f.check_id, f.subject) == (check_id, subject)]
 
 
-@pytest.mark.parametrize(
-    "codex_auth,fix_has,fix_lacks",
-    [("auto", "codex login", None), ("api_key", "booley auth --cli codex", "codex login")],
-    ids=["auto", "api_key"],
-)
-def test_other_allowed_cli_missing_credentials_warn_with_login_fix(
-    home, tmp_path, codex_auth, fix_has, fix_lacks
-):
+def test_other_allowed_cli_missing_credentials_warn_with_login_fix(home, tmp_path):
     auth_token.store_token("sk-ant-oat01-x")
-    findings = _findings(
-        tmp_path,
-        clis=["claude", "codex"],
-        default="claude",
-        auth={"claude": "auto", "codex": codex_auth},
-    )
+    # Codex policy -> (text its fix must contain, text it must not contain)
+    cases = {
+        "auto": ("codex login", None),
+        "api_key": ("booley auth --cli codex", "codex login"),
+    }
+    for codex_auth, (fix_has, fix_lacks) in cases.items():
+        findings = _findings(
+            tmp_path,
+            clis=["claude", "codex"],
+            default="claude",
+            auth={"claude": "auto", "codex": codex_auth},
+        )
 
-    assert not [f for f in findings if f.severity is Severity.FAIL]
-    (missing,) = _with_id(findings, "agent.credential-missing", "codex")
-    assert missing.severity is Severity.WARN
-    assert fix_has in missing.fix
-    assert fix_lacks is None or fix_lacks not in missing.fix
-    assert not _with_id(findings, "agent.rotation-risk", "codex")
+        assert not [f for f in findings if f.severity is Severity.FAIL]
+        (missing,) = _with_id(findings, "agent.credential-missing", "codex")
+        assert missing.severity is Severity.WARN
+        assert fix_has in missing.fix
+        assert fix_lacks is None or fix_lacks not in missing.fix
+        assert not _with_id(findings, "agent.rotation-risk", "codex")
 
 
 def test_default_cli_missing_credentials_fail(home, tmp_path, monkeypatch):
@@ -118,20 +117,25 @@ def test_rotation_risk_ids_keep_per_cli_subjects(home, tmp_path):
 _RISK = "{label}: no rotation-free credential; agents use a refreshing one, which a host-side login can revoke mid-run"
 
 
-@pytest.mark.parametrize(
-    "only,label", [("claude", "Claude Code"), ("codex", "Codex")], ids=["claude", "codex"]
-)
-def test_single_cli_project_output_is_unchanged(home, tmp_path, only, label):
+def test_single_cli_project_output_is_unchanged(home, tmp_path):
     """The other CLI's login is present and installed, yet it is never audited."""
     _login(home, "claude")
     _login(home, "codex")
-    findings = _findings(tmp_path, clis=[only], default=only)
+    for only, label, login in (
+        ("claude", "Claude Code", home / ".claude/.credentials.json"),
+        ("codex", "Codex", home / ".codex/auth.json"),
+    ):
+        findings = _findings(tmp_path, clis=[only], default=only)
 
-    login = home / (".claude/.credentials.json" if only == "claude" else ".codex/auth.json")
-    # The login-expiry line (Claude only) carries a host-timezone date; compare the rest exactly.
-    rows = [f for f in findings if not f.message.startswith("subscription login valid until ")]
-    assert [(f.severity.name, f.check_id, f.message, f.fix) for f in rows] == [
-        ("PASS", None, f"{label} auth: {login}", ""),
-        ("WARN", "agent.rotation-risk", _RISK.format(label=label), f"booley auth --cli {only}"),
-    ]
-    assert {f.subject for f in findings} <= {None, only}
+        # The login-expiry line (Claude only) carries a host-timezone date; compare the rest.
+        rows = [f for f in findings if not f.message.startswith("subscription login valid until ")]
+        assert [(f.severity.name, f.check_id, f.message, f.fix) for f in rows] == [
+            ("PASS", None, f"{label} auth: {login}", ""),
+            (
+                "WARN",
+                "agent.rotation-risk",
+                _RISK.format(label=label),
+                f"booley auth --cli {only}",
+            ),
+        ]
+        assert {f.subject for f in findings} <= {None, only}

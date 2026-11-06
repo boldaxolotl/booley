@@ -1816,9 +1816,23 @@ def test_auth_status_optional_context_preserves_source_checkout(tmp_path, monkey
         (False, "codex", ("codex",), 0),
     ],
 )
-def test_auth_status_cli_preserves_omitted_app_selection(
+def test_auth_status_selection_by_flag(
     tmp_path, monkeypatch, capsys, flag, in_project, app, expected_apps, expected_rc
 ):
+    _assert_auth_status(
+        tmp_path, monkeypatch, capsys, flag, in_project, app, expected_apps, expected_rc
+    )
+
+
+def test_auth_status_cli_preserves_omitted_app_selection(tmp_path, monkeypatch, capsys):
+    """`--cli` narrows status to one CLI; omitting it keeps the Project or both-CLI default."""
+    _assert_auth_status(tmp_path, monkeypatch, capsys, "--cli", False, "codex", ("codex",), 0)
+
+
+def _assert_auth_status(
+    tmp_path, monkeypatch, capsys, flag, in_project, app, expected_apps, expected_rc
+):
+
     from booley.runtime import auth_token
 
     home = tmp_path / "home"
