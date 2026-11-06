@@ -607,7 +607,9 @@ def _logged_in(monkeypatch, *clis):
     """Only *clis* have a login, as the model fallback list sees it."""
     from booley.runtime import auth_token
 
-    monkeypatch.setattr(auth_token, "cli_logged_in", lambda cli, *_a, **_kw: cli in clis)
+    monkeypatch.setattr(
+        auth_token, "cli_logged_in", lambda cli, *_a, **_kw: cli in clis, raising=False
+    )
 
 
 def _list_world(tmp_path, monkeypatch, *clis):

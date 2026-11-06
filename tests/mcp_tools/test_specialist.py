@@ -315,7 +315,9 @@ def logins(monkeypatch):
     from booley.runtime import auth_token
 
     logged_in: set[str] = set()
-    monkeypatch.setattr(auth_token, "cli_logged_in", lambda cli, *_a, **_kw: cli in logged_in)
+    monkeypatch.setattr(
+        auth_token, "cli_logged_in", lambda cli, *_a, **_kw: cli in logged_in, raising=False
+    )
     from booley.runtime import model_fallback
 
     refused = model_fallback._REFUSED
