@@ -40,6 +40,12 @@ _DIAGNOSTIC_RE = re.compile(
     r"|^application-specific initialization failed:"
 )
 _DIAGNOSTIC_CAP = 500
+# "/bin/sh: 1: lsb_release: command not found" style lines from a shell or a
+# vendor launcher (rdiArgs.sh, bin/loader): incidental, not the tool's own error.
+_SHELL_MISSING_PROGRAM_RE = re.compile(
+    r"^(?:\S*/)?(?:sh|bash|dash|loader|[\w.+-]+\.sh)(?::\s*(?:line\s+)?\d+)?:\s*"
+    r"[\w.+-]+:\s*(?:command\s+)?not found"
+)
 _MISSING_EXE_PATTERNS = (
     re.compile(
         r"^(?:[\w./-]*(?:sh|bash|dash))(?::\s*(?:line\s+)?\d+)?:\s*"
@@ -107,25 +113,27 @@ def strip_failure_markers(text: str) -> str:
 
 def _is_noise_line(line: str) -> bool:
     """Return whether a stripped line is wrapper output rather than a tool message."""
-    return (
-        bool(_NOISE_LINE_RE.match(line))
-        or bool(_MARKER_LINE_RE.match(line))
-        or bool(_MISSING_EXE_PATTERNS[0].match(line))
-    )
+    return bool(_NOISE_LINE_RE.match(line)) or bool(_MARKER_LINE_RE.match(line))
 
 
 def first_tool_diagnostic(text: str, default: str | None = None) -> str:
     """Return the first meaningful tool diagnostic, ignoring execution wrappers.
 
-    Skips ``make`` lines, stage and failure markers, incidental shell
-    missing-program lines, and non-error severity lines. With no matching line
-    the result is ``default`` or, when that is ``None``, the first non-noise line
+    Skips ``make`` lines, stage and failure markers, non-error severity lines,
+    and incidental shell missing-program lines (the latter only while searching:
+    when nothing else matches they stay eligible as the fallback). With no
+    matching line the result is ``default`` or, when that is ``None``, the first
+    non-noise line
     (``"no diagnostic available"`` if there is none). Returned lines are capped.
     """
     lines = [line for line in (raw.strip() for raw in text.splitlines()) if line]
     lines = [line for line in lines if not _is_noise_line(line)]
     for line in lines:
-        if not _NON_ERROR_SEVERITY_RE.match(line) and _DIAGNOSTIC_RE.search(line):
+        if (
+            not _NON_ERROR_SEVERITY_RE.match(line)
+            and not _SHELL_MISSING_PROGRAM_RE.match(line)
+            and _DIAGNOSTIC_RE.search(line)
+        ):
             return line[:_DIAGNOSTIC_CAP]
     if default is not None:
         return default
@@ -234,7 +242,7 @@ def _startup_failure(
         for match in pattern.finditer(text):
             name = Path(match["name"]).name
             if name in owned:
-                diagnostic = match.group(0)[:500]
+                diagnostic = match.group(0)[:_DIAGNOSTIC_CAP]
                 return EdaFailure(
                     "infrastructure",
                     "missing_required_file",
