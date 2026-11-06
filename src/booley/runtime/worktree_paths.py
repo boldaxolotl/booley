@@ -89,19 +89,19 @@ def _is_same_directory(first: Path, second: Path) -> bool:
         return False
 
 
-def _ambient_booley_dir_error(root: Path, own: Path, ambient: str) -> ValueError | None:
-    """Explain why ``BOOLEY_DIR`` is not *own*, or ``None`` when it names the same directory."""
+def _require_ambient_booley_dir(root: Path, own: Path, ambient: str) -> None:
+    """Refuse a ``BOOLEY_DIR`` that does not name *own*, the checkout's Booley Directory."""
     selected = Path(ambient)
     # An absent default ``.booley`` can only match by spelling.
     if Path(os.path.normpath(selected.absolute())) == own or _is_same_directory(selected, own):
-        return None
+        return
     try:
         inside = selected.resolve(strict=True).is_relative_to(root.resolve())
     except OSError:
         inside = False
     if not inside:
-        return BooleyDirOutsideCheckoutError(ambient, root)
-    return BooleyDirMismatchError(
+        raise BooleyDirOutsideCheckoutError(ambient, root)
+    raise BooleyDirMismatchError(
         f"BOOLEY_DIR={ambient} is not this checkout's Booley Directory {own}; "
         "unset BOOLEY_DIR or point it at that directory"
     )
@@ -125,9 +125,7 @@ def worktree_booley_dir(project_root: Path) -> PurePosixPath:
         raise BooleyDirMismatchError(f"Booley Directory {own} does not exist")
     ambient = os.environ.get("BOOLEY_DIR")
     if ambient:
-        error = _ambient_booley_dir_error(root, own, ambient)
-        if error is not None:
-            raise error
+        _require_ambient_booley_dir(root, own, ambient)
     return relative
 
 

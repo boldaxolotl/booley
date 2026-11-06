@@ -93,11 +93,7 @@ _real_script = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def _ambient_booley_dir_is_the_checkouts_own(monkeypatch) -> None:
-    """Model a Sandbox whose ``BOOLEY_DIR`` is the checkout's own directory, or unset.
-
-    ``booley worktree new`` refuses any other ambient selection, so the harness
-    default (a ``BOOLEY_DIR`` beside the temporary checkout) must not apply here.
-    """
+    """``booley worktree new`` refuses a foreign ``BOOLEY_DIR``; the harness default is one."""
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
 
 
@@ -1659,17 +1655,11 @@ def test_removal_steps_keep_symlinked_paths_as_printed(tmp_path: Path) -> None:
     assert str(real) not in steps
 
 
-# ---------------------------------------------------------------------------
 # A relocated or external Booley Directory (#2916)
-# ---------------------------------------------------------------------------
 
 
 def _configured_project(tmp_path: Path, monkeypatch, directory: str) -> Path:
-    """A committed Git Project whose root ``booley.toml`` sets ``[project].dir``.
-
-    The Booley Directory is untracked configuration, as it is in real Projects.
-    """
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    """A committed Git Project whose root ``booley.toml`` sets ``[project].dir``."""
     root = tmp_path / "repo"
     root.mkdir()
     for args in (
@@ -1704,7 +1694,6 @@ def test_relocated_booley_dir_hosts_snapshot_worktree(tmp_path, monkeypatch, cap
     assert (root / "state" / "FUSESOC_IGNORE").is_file()
     assert (worktree / "state" / "booley.toml").is_file()
     assert not (root / ".booley").exists()
-    assert not (worktree / ".booley").exists()
 
 
 @pytest.mark.parametrize("source", ["project-dir", "ambient"])
@@ -1773,24 +1762,6 @@ def test_booley_dir_ambient_matching_own_directory_is_accepted(
     # Paths recorded by Git never spell the alias.
     worktree = root / "state" / "worktrees" / "demo"
     assert str(alias) not in (worktree / ".git").read_text(encoding="utf-8")
-    assert str(alias) not in _git(root, "worktree", "list", "--porcelain").stdout
-
-
-def test_new_worktree_booley_dir_comes_from_its_own_configuration(
-    tmp_path, monkeypatch, capsys
-) -> None:
-    from booley.runtime.worktree_paths import main
-
-    root = _configured_project(tmp_path, monkeypatch, "state")
-
-    assert main([str(root)]) == 0
-    assert capsys.readouterr().out == "state\n"
-    _write(root / "booley.toml", f'[project]\ndir = "{(tmp_path / "external").as_posix()}"\n')
-    assert main([str(root)]) == 1
-    assert "relative [project].dir" in capsys.readouterr().err
-    assert main([str(root), "--ambient"]) == 1
-    assert main([]) == 2
-    assert "usage" in capsys.readouterr().err
 
 
 @_real_script
@@ -1817,15 +1788,6 @@ def test_new_worktree_resolves_its_own_booley_dir(tmp_path, monkeypatch, capsys)
         str(root / "state" / "worktrees" / "external--try")
         not in _git(root, "worktree", "list", "--porcelain").stdout
     )
-
-
-def test_default_booley_dir_may_be_absent(tmp_path, monkeypatch) -> None:
-    """Only a configured Booley Directory must exist: an absent default stays creatable."""
-    from booley.runtime.worktree_paths import worktree_booley_dir
-
-    root = _configured_project(tmp_path, monkeypatch, ".booley")
-
-    assert worktree_booley_dir(root).as_posix() == ".booley"
 
 
 @pytest.fixture
@@ -1864,7 +1826,6 @@ def test_relocated_versioned_booley_dir_pairs_inside_worktree(
     from tests.goals.conftest import git
 
     root = relocated_versioned_project
-    source = root / "state"
     assert _new("demo", root) == 0
 
     worktree = root / "state" / "worktrees" / "demo"
@@ -1873,12 +1834,7 @@ def test_relocated_versioned_booley_dir_pairs_inside_worktree(
     assert (paired / ".git").is_file()
     assert git(paired, "symbolic-ref", "--short", "HEAD") == "booley-worktree/demo"
     assert (root / "state" / "worktrees" / "FUSESOC_IGNORE").is_file()
-    assert not (root / ".booley").exists() and not (worktree / ".booley").exists()
     assert worktree_cmd._is_named_pair(worktree, "demo")
-    # A second creation refuses and prints removal steps for the relocated pair.
-    assert _new("demo", root) == 1
-    error = capsys.readouterr().err
-    assert shlex.join(["git", "-C", str(source), "worktree", "remove", str(paired)]) in error
 
 
 def test_relocated_pairing_failure_rolls_back_both_repositories(

@@ -426,7 +426,6 @@ def test_plain_copy_at_relocated_directory_warns(tmp_path: Path) -> None:
 def test_common_state_scan_reads_the_relocated_directory(tmp_path: Path) -> None:
     worktree = _relocated_linked_worktree(tmp_path, versioned=False)
     _plant(worktree / "state" / "runtime" / "session_activity" / "a")
-    # Nothing under the default name is looked at.
     _plant(worktree / ".booley" / "runtime" / "session_activity" / "ignored")
 
     warnings = [f for f in _common_state_findings(tmp_path / "project") if f.severity == "warn"]
@@ -434,8 +433,10 @@ def test_common_state_scan_reads_the_relocated_directory(tmp_path: Path) -> None
     assert [finding.subject for finding in warnings] == [str(worktree / "state")]
 
 
-def test_tracked_paths_lookup_uses_the_relocated_pathspec(tmp_path: Path) -> None:
+def test_common_state_scan_skips_a_worktree_with_a_retired_layout(tmp_path: Path) -> None:
     worktree = _relocated_linked_worktree(tmp_path, versioned=False)
-    _git(worktree, "add", "-f", "state/booley.toml")
+    (worktree / "booley.toml").write_text('[project]\ndir = ".booley_project"\n', encoding="utf-8")
 
-    assert doctor._tracked_booley_paths(worktree, worktree / "state") == {"booley.toml"}
+    findings = _common_state_findings(tmp_path / "project")
+
+    assert [f for f in findings if f.severity == "warn"] == []

@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import NamedTuple
 
 from booley.config.settings import SubmoduleConfigError, load_submodule_config
-from booley.runtime.booley_dir import checkout_booley_dir_relative_to
+from booley.runtime.booley_dir import checkout_booley_dir_relative_to, own_booley_dir
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_repositories import (
     RepositoryCheckoutError,
@@ -113,9 +113,11 @@ def materialize_worktree_submodules(worktree: Path, *, missing_only: bool = Fals
     main = common.parent if common is not None and common.name == ".git" else None
     selections = [_Selection(main, worktree, _selected_top_level_paths(worktree))]
     if paired is not None:
-        paired_source = main / paired.path_prefix if main is not None else None
-        if paired_source is not None and not is_standalone_git_repository(paired_source):
-            paired_source = None
+        # Main's own Versioned Booley Directory, else the pair's prefix (an older layout).
+        paired_source = None
+        if main is not None:
+            candidates = (own_booley_dir(main), main / paired.path_prefix)
+            paired_source = next((c for c in candidates if is_standalone_git_repository(c)), None)
         selections.append(
             _Selection(paired_source, paired.worktree.resolve(), submodule_paths(paired.worktree))
         )

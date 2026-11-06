@@ -217,7 +217,11 @@ def test_materializes_paired_project_submodules_in_composite_ticket(
     assert _git(materialized, "rev-parse", "HEAD").stdout.strip() == dependency_sha
 
 
-def test_materializes_relocated_paired_project_submodules(tmp_path: Path) -> None:
+@pytest.mark.parametrize("worktree_dir", ["state", "other"])
+def test_materializes_relocated_paired_project_submodules(
+    tmp_path: Path, worktree_dir: str
+) -> None:
+    """The source is main's own directory even when the worktree's branch names another."""
     dependency = tmp_path / "dependency"
     _init_repo(dependency)
     dependency_sha = _commit_file(dependency, "paired dependency\n", "dependency")
@@ -236,13 +240,18 @@ def test_materializes_relocated_paired_project_submodules(tmp_path: Path) -> Non
     _git(project, "add", ".gitmodules", "booley.toml", "vendor/dependency")
     _git(project, "commit", "-qm", "project")
 
+    # The worktree's commit names its own directory; main keeps ``state``.
+    (source / "booley.toml").write_text(f'[project]\ndir = "{worktree_dir}"\n', encoding="utf-8")
+    _git(source, "commit", "-qam", "dir", "--allow-empty")
+    branch_sha = _git(source, "rev-parse", "HEAD").stdout.strip()
+    _git(source, "reset", "-q", "--hard", "HEAD~1")
     destination = tmp_path / "destination"
-    _add_worktree(source, destination, "HEAD")
-    _add_worktree(project, destination / "state", "HEAD")
+    _add_worktree(source, destination, branch_sha)
+    _add_worktree(project, destination / worktree_dir, "HEAD")
 
     materialize_worktree_submodules(destination)
 
-    materialized = destination / "state" / "vendor" / "dependency"
+    materialized = destination / worktree_dir / "vendor" / "dependency"
     assert (materialized / "source.sv").read_text(encoding="utf-8") == "paired dependency\n"
     assert _git(materialized, "rev-parse", "HEAD").stdout.strip() == dependency_sha
 

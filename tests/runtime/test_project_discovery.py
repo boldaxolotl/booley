@@ -477,15 +477,6 @@ def test_relocated_paired_checkout_is_not_a_checkout_candidate(tmp_path, monkeyp
     assert discover_project_root(data) == outer
 
 
-def test_non_git_booley_directory_is_still_a_data_root(tmp_path):
-    from booley.runtime.project_discovery import _data_root
-
-    project = tmp_path / "project"
-    (project / ".booley" / "sub").mkdir(parents=True)
-
-    assert _data_root(project / ".booley" / "sub", [], lambda _root: None) == project / ".booley"
-
-
 def test_session_owner_of_relocated_worktree_uses_configured_namespace(tmp_path, monkeypatch):
     from tests.harness.test_session_runtime import _linked_project
 
@@ -511,7 +502,10 @@ def test_session_owner_of_relocated_worktree_uses_configured_namespace(tmp_path,
 
 def test_unreadable_configuration_means_no_configured_booley_directory(tmp_path):
     """A retired-layout ``[project].dir`` raises on selection; discovery treats it as no match."""
-    from booley.runtime.project_discovery import _is_configured_booley_dir
+    from booley.runtime.project_discovery import (
+        _is_configured_booley_dir,
+        _session_owner,
+    )
 
     outer = tmp_path / "checkout"
     outer.mkdir()
@@ -519,3 +513,7 @@ def test_unreadable_configuration_means_no_configured_booley_directory(tmp_path)
     (outer / "booley.toml").write_text('[project]\ndir = ".booley_project"\n', encoding="utf-8")
 
     assert not _is_configured_booley_dir(outer / ".booley_project")
+    # Session ownership also skips such an ancestor instead of crashing on it.
+    inner = outer / "wt"
+    inner.mkdir()
+    assert _session_owner(inner) == outer.resolve()

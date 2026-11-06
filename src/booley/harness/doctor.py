@@ -1166,7 +1166,10 @@ def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) ->
     scanned = 0
     warned = False
     for entry in linked:
-        booley_dir = own_booley_dir(entry.path)
+        try:
+            booley_dir = own_booley_dir(entry.path)
+        except BooleyLayoutError:
+            continue  # A retired layout in that worktree is not this scan's finding.
         if (
             not booley_dir.is_relative_to(entry.path)
             or booley_dir.is_symlink()

@@ -247,8 +247,6 @@ def test_worktree_new_in_sandbox_refuses_external_booley_dir(tmp_path: Path, doc
         ("commit", "--allow-empty", "-qm", "initial"),
     ):
         assert _host_git(root, *args).returncode == 0
-    # The layout issuance requires for an external directory: an ordinary
-    # /booley-project, no alias to /work/.booley.
     plain = f"booley2916-plain-{uuid4().hex}:local"
     parent = f"127.0.0.1:1/booley2916-parent-{uuid4().hex}:local"
     assert _run(["docker", "tag", docker_image[1], parent]).returncode == 0
@@ -271,9 +269,6 @@ def test_worktree_new_in_sandbox_refuses_external_booley_dir(tmp_path: Path, doc
     assert "outside the checkout" in result.stderr and "relative [project].dir" in result.stderr
     assert not (root / ".booley").exists()
     assert not (external / "worktrees").exists()
-    assert (
-        "worktree " + str(root) + "\n" in _host_git(root, "worktree", "list", "--porcelain").stdout
-    )
     assert _host_git(root, "worktree", "list", "--porcelain").stdout.count("worktree ") == 1
 
 

@@ -202,10 +202,11 @@ def _session_owner(checkout: Path) -> Path:
 
     for candidate in checkout.parents:
         # Worktrees made before ``[project].dir`` was honored live under ``.booley``.
-        namespaces = (
-            own_booley_dir(candidate) / "worktrees",
-            candidate / BOOLEY_DIR_NAME / "worktrees",
-        )
+        try:
+            configured = own_booley_dir(candidate)
+        except BooleyLayoutError:
+            configured = candidate / BOOLEY_DIR_NAME  # Unusable configuration: legacy name only.
+        namespaces = (configured / "worktrees", candidate / BOOLEY_DIR_NAME / "worktrees")
         if (
             any(checkout.parent == namespace.resolve() for namespace in namespaces)
             and resolve_authoritative_booley_dir(candidate).is_dir()

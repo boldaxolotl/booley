@@ -86,20 +86,14 @@ def _resolve_from_toml(current: Path) -> Path | None:
     for parent in [current, *current.parents]:
         toml_path = parent / "booley.toml"
         if toml_path.is_file():
-            try:
-                with toml_path.open("rb") as f:
-                    cfg = tomllib.load(f)
-                project = as_dict(cfg.get("project")) or {}
-                dir_val = as_str(project.get("dir"), default="")
-                if dir_val and "\x00" not in dir_val:
-                    p = Path(dir_val)
-                    if not p.is_absolute():
-                        p = (parent / p).resolve()
-                    validate_selection(p)
-                    if p.is_dir():
-                        return p
-            except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
-                logger.warning("Failed to read %s: %s", toml_path, e)
+            dir_val = _configured_dir(toml_path)
+            if dir_val:
+                p = Path(dir_val)
+                if not p.is_absolute():
+                    p = (parent / p).resolve()
+                validate_selection(p)
+                if p.is_dir():
+                    return p
             # booley.toml found but no override — fall through
             break
     return None

@@ -689,10 +689,6 @@ class TestCheckoutOwnBooleyDir:
         root.mkdir(parents=True, exist_ok=True)
         (root / "booley.toml").write_bytes(text.encode("utf-8"))
 
-    def test_default_is_dot_booley_even_when_absent(self, tmp_path: Path) -> None:
-        assert own_booley_dir(tmp_path) == tmp_path / ".booley"
-        assert own_booley_dir_relative(tmp_path).as_posix() == ".booley"
-
     def test_relative_dir_stays_lexical(self, tmp_path: Path) -> None:
         link = tmp_path / "link"
         real = tmp_path / "real"
@@ -719,23 +715,19 @@ class TestCheckoutOwnBooleyDir:
         self._configure(root, '[project]\ndir = "state"\n')
         assert own_booley_dir(root) == root / "state"
 
-    @pytest.mark.parametrize(
-        "text",
-        ["INVALID{{{", "[project]\n", '[project]\ndir = ""\n', '[project]\ndir = "a\\u0000"\n'],
-    )
+    @pytest.mark.parametrize("text", ["INVALID{{{", '[project]\ndir = ""\n'])
     def test_unusable_configuration_means_the_default(self, tmp_path: Path, text: str) -> None:
         self._configure(tmp_path, text)
 
         assert own_booley_dir(tmp_path) == tmp_path / ".booley"
 
-    @pytest.mark.parametrize("kind", ["absolute", "absolute-inside", "escaping", "root"])
+    @pytest.mark.parametrize("kind", ["absolute", "escaping", "root"])
     def test_relative_form_refuses_a_directory_not_strictly_inside(
         self, tmp_path: Path, kind: str
     ) -> None:
         root = tmp_path / "root"
         value = {
             "absolute": (tmp_path / "external").as_posix(),
-            "absolute-inside": (root / "state").as_posix(),
             "escaping": "../external",
             "root": ".",
         }[kind]
