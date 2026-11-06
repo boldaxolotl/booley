@@ -17,7 +17,7 @@ import logging
 import re
 import shlex
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar
@@ -213,6 +213,11 @@ def parse_verible_warnings(output: str, target: str) -> list[LintWarning]:
     return warnings
 
 
+def _target_errors_text(errored: list[LintConfigResult]) -> str:
+    """Join each errored Target's message as ``target: error`` for a RESULT line."""
+    return "; ".join(f"{cr.target}: {cr.error}" for cr in errored)
+
+
 def _errored_verdict(errored: list[LintConfigResult]) -> tuple[int, str]:
     """Grade a run in which at least one Target errored.
 
@@ -226,7 +231,7 @@ def _errored_verdict(errored: list[LintConfigResult]) -> tuple[int, str]:
     """
     eda_tool_failed = any(cr.error_is_eda_tool_failure for cr in errored)
     label = "ERROR" if eda_tool_failed else "FAIL"
-    summary = f"RESULT: {label} — " + "; ".join(f"{cr.target}: {cr.error}" for cr in errored)
+    summary = f"RESULT: {label} — " + _target_errors_text(errored)
     return (EXIT_ERROR if eda_tool_failed else EXIT_FAILURE), summary
 
 
@@ -313,9 +318,24 @@ def deduplicate_warnings(
     return grouped
 
 
+def _scope_entries(scope: str) -> list[str]:
+    """Parse a comma-separated ``--scope`` value into non-empty, stripped entries."""
+    return [entry.strip() for entry in scope.split(",") if entry.strip()]
+
+
+def unmatched_scope_entries(scope: str, linted_paths: Iterable[str]) -> list[str]:
+    """Return the ``--scope`` entries that match no linted file path.
+
+    Uses the same substring rule as :func:`filter_by_scope`, so an entry that
+    keeps a warning is always matched. Entries come back in scope order.
+    """
+    paths = list(linted_paths)
+    return [entry for entry in _scope_entries(scope) if not any(entry in path for path in paths)]
+
+
 def filter_by_scope(warnings: list[LintWarning], scope: str) -> list[LintWarning]:
     """Filter warnings to only files matching comma-separated scope paths."""
-    scope_paths = [s.strip() for s in scope.split(",") if s.strip()]
+    scope_paths = _scope_entries(scope)
     if not scope_paths:
         return warnings
     return [w for w in warnings if any(sp in w.file for sp in scope_paths)]
@@ -1036,6 +1056,108 @@ class LintFlow(BuiltinFlow[LintRequest]):
             )
         return None
 
+    @staticmethod
+    def _linted_paths(
+        prepared: Mapping[str, _PreparedLintTarget],
+        warnings: Iterable[LintWarning],
+    ) -> list[str]:
+        """Sorted unique file paths a ``--scope`` entry can be checked against.
+
+        Two sources, both in the form ``filter_by_scope`` compares: the EDAM
+        ``name`` of every HDL file the Targets lint (includes and TB-tagged
+        files too), and every file path the linters reported. Warning paths
+        keep any scope that matches a warning today accepted even when the
+        linter prints a path absent from the EDAM list. Non-HDL EDAM entries
+        are never linted, so they are excluded.
+        """
+        paths = {
+            entry.name
+            for unit in prepared.values()
+            for entry in unit.resolved.files
+            if entry.is_hdl
+        }
+        paths.update(warning.file for warning in warnings)
+        return sorted(paths)
+
+    def _log_artifacts(self, target_results: list[LintConfigResult]) -> dict[str, Any]:
+        """Work-dir-relative ``log_<target>`` artifact entries for the Targets that logged."""
+        block: dict[str, Any] = {}
+        for config_result in target_results:
+            if not config_result.log_path:
+                continue
+            relative_log = artifacts.relative(config_result.log_path, self.args.work_dir)
+            if relative_log is not None:
+                block[f"log_{config_result.target}"] = relative_log
+        return block
+
+    def _record_design_failures(self, errored: list[LintConfigResult]) -> None:
+        """Record ``lint_clean_<target> = False`` for Targets whose linter rejected the RTL.
+
+        Skips EDA-tool failures (no verdict). Independent of ``--scope``: an
+        error is reported regardless of scope.
+        """
+        for cr in errored:
+            if cr.error_is_eda_tool_failure:
+                continue
+            self.set_criterion(
+                f"lint_clean_{cr.target}",
+                False,
+                detail={
+                    "warnings": _scoped_warning_count(cr.warnings, self.args.scope),
+                    "error": cr.error,
+                },
+                source_target=cr.target,
+            )
+
+    def _unmatched_scope_outcome(
+        self,
+        selectors: list[str],
+        prepared: Mapping[str, _PreparedLintTarget],
+        target_results: list[LintConfigResult],
+        all_warnings: list[LintWarning],
+    ) -> EndpointOutcome | None:
+        """Return the ERROR outcome when a ``--scope`` entry matches no linted file.
+
+        A scope that matches nothing would otherwise report zero in-scope
+        warnings and pass. Like the other no-verdict paths (linter failure,
+        preparation failure) this never records a passing ``lint_clean_*``
+        criterion and writes no ``lint_report.json``, which would claim
+        ``passed: true``. Targets whose linter rejected the design still record
+        their scope-independent ``False``.
+        Returns ``None`` when every entry matches.
+        """
+        linted_paths = self._linted_paths(prepared, all_warnings)
+        unmatched = unmatched_scope_entries(self.args.scope, linted_paths)
+        if not unmatched:
+            return None
+        examples = linted_paths[:3]
+        remaining = len(linted_paths) - len(examples)
+        quoted = ", ".join(f"'{entry}'" for entry in unmatched)
+        noun = "entry" if len(unmatched) == 1 else "entries"
+        verb = "matches" if len(unmatched) == 1 else "match"
+        if examples:
+            sample = ", ".join(examples) + (f" (and {remaining} more)" if remaining else "")
+            tail = f"; linted files include: {sample}"
+        else:
+            tail = "; no files were linted"
+        message = f"--scope {noun} {quoted} {verb} no linted file{tail}"
+        print(f"[lint] ERROR: {message}")
+        summary = "RESULT: ERROR — " + message
+        errored = [cr for cr in target_results if cr.error]
+        if errored:
+            summary += "; " + _target_errors_text(errored)
+        # A scope typo hides no design failure: a Target whose linter rejected
+        # the RTL still records its scope-independent False criterion.
+        self._record_design_failures(errored)
+        print(f"\n{summary}")
+        detail: dict[str, Any] = {
+            "targets": selectors,
+            "scope_unmatched": unmatched,
+            "linted_file_examples": examples,
+        }
+        artifacts.merge_artifacts(detail, self._log_artifacts(target_results))
+        return EndpointOutcome(exit_code=EXIT_ERROR, report_text=summary, detail=detail)
+
     def _run(self) -> EndpointOutcome:  # noqa: PLR0911, PLR0912, PLR0915 — linear aggregate orchestration
         """Run lint across configured build Targets."""
         err = self._validate_interactive_args()
@@ -1095,6 +1217,13 @@ class LintFlow(BuiltinFlow[LintRequest]):
         target_results, all_warnings = self._run_all_targets(targets, prepared)
         selectors = [target.selector for target in targets]
 
+        if self.args.scope:
+            unmatched_outcome = self._unmatched_scope_outcome(
+                selectors, prepared, target_results, all_warnings
+            )
+            if unmatched_outcome is not None:
+                return unmatched_outcome
+
         # Deduplicate and scope-filter
         eda_tool_by_target = {
             result.target: _lint_eda_tool_family(result.eda_tool) for result in target_results
@@ -1136,12 +1265,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         # The copy that reaches the agent as MCP structuredContent: the stdout
         # "See <report> ..." line is tail-truncatable, ``detail`` is not.
         artifact_block = artifacts.artifacts_block(self.args.work_dir, report=report_path)
-        for config_result in target_results:
-            if not config_result.log_path:
-                continue
-            relative_log = artifacts.relative(config_result.log_path, self.args.work_dir)
-            if relative_log is not None:
-                artifact_block[f"log_{config_result.target}"] = relative_log
+        artifact_block.update(self._log_artifacts(target_results))
         artifacts.merge_artifacts(detail, artifact_block)
         for result in target_results:
             self.record_eda_tool(result.target, result.eda_tool)
