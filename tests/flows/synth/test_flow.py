@@ -5293,7 +5293,7 @@ def test_no_path_latch_failure_reports_no_slack_and_names_design_check(
     assert report["termination"] == "design_failure"
     assert result.detail["lite"]["wns_ns"] is None
     assert "wns_ns" not in report
-    assert report["per_clock"][0]["wns_ns"] is None
+    assert report["per_clock"]["clk"]["wns_ns"] is None
     run_log = (tmp_path / report["artifacts"]["log"]).read_text()
     assert "STA_WORST_SLACK_NS" not in run_log
     assert "STA_FMAX_MHZ" not in run_log
