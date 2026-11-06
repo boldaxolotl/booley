@@ -337,7 +337,7 @@ def _copy_root_quarantine_marker(project_root: Path, wt_dir: Path) -> None:
 
 
 def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> None:
-    """Mirror the live Booley Directory's authored files into the worktree.
+    """Mirror the checkout's own Booley Directory's authored files into the worktree.
 
     ``.booley/`` is git-excluded, so a fresh ``git worktree add`` checkout
     carries none of it. When the Project has stealth cores (ADR 0036), the
@@ -355,9 +355,9 @@ def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> None
     when it would resolve that same directory anyway (main checkout, or a host
     worktree whose own directory is found by walk-up); otherwise the directory
     is mirrored so the baseline does not fall back to main's configuration.
-    Without a Paired Checkout, the *live* content is
-    the pragmatic choice; Paired Checkouts take the separate fork-point
-    worktree path before this helper is called.
+    Without a Paired Checkout, the *live* content is the pragmatic choice;
+    Paired Checkouts take the separate fork-point worktree path before this
+    helper is called.
 
     Symlinks are copied **as symlinks**. A stealth ``.core`` resolves its
     filesets relative to itself, so it reaches the RTL through core-relative
@@ -373,6 +373,8 @@ def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> None
     exists to prevent.
     """
     src = resolve_checkout_booley_dir(project_root)
+    # The baseline checkout lives under ``worktree_state_dir`` (``_baseline_dir``),
+    # so without a copy it resolves that directory.
     resolved_without_copy = worktree_state_dir(project_root).resolve() == src.resolve()
     if not (src / "cores").is_dir() and resolved_without_copy:
         return

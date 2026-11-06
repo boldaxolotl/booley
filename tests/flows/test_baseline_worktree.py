@@ -552,7 +552,6 @@ def test_linked_worktree_baseline_mirrors_its_own_booley_directory(
         if with_cores:
             top = copied / "cores" / "ip" / "top.core"
             assert "worktree:ip:top" in top.read_text(encoding="utf-8")
-    reset_cache()
 
 
 def test_nonstealth_ignored_project_baseline_keeps_live_tests_resolution(tmp_path: Path) -> None:

@@ -89,7 +89,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as out:
 
 @pytest.mark.parametrize("hook", ["post-setup", "pre-sim"])
 def test_booley_commands_from_checkout_hooks_reach_main_common_state(
-    tmp_path: Path, monkeypatch, hook: str
+    tmp_path: Path, monkeypatch, request: pytest.FixtureRequest, hook: str
 ) -> None:
     """A worktree hook sees the worktree's directory yet shares main's slots and handles."""
     from tests.booley_checkouts_support import linked_worktree
@@ -97,6 +97,7 @@ def test_booley_commands_from_checkout_hooks_reach_main_common_state(
     from booley.runtime.booley_dir import reset_cache
 
     main, worktree = linked_worktree(tmp_path, monkeypatch, layout="snapshot", runtime="sandbox")
+    request.addfinalizer(reset_cache)  # also on failure: no stale resolver cache
     monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
     # The child interpreter must import the Booley under test, installed or not.
     monkeypatch.setenv("PYTHONPATH", str(Path(booley.__file__).resolve().parent.parent))
@@ -114,7 +115,7 @@ def test_booley_commands_from_checkout_hooks_reach_main_common_state(
             f"runpy.run_path({str(script)!r}, run_name='__main__')\n",
             encoding="utf-8",
         )
-        assert prepare_project(main, worktree, slug="s", sim_flow_enabled=False).ok
+        assert prepare_project(worktree, worktree, slug="s", sim_flow_enabled=False).ok
     else:
         from types import SimpleNamespace
         from typing import cast
@@ -138,4 +139,3 @@ def test_booley_commands_from_checkout_hooks_reach_main_common_state(
     assert Path(seen["booley_dir"]) == worktree / ".booley"
     assert Path(seen["slots"]).resolve().is_relative_to(common)
     assert Path(seen["handles"]).resolve() == common
-    reset_cache()
