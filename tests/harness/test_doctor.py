@@ -2371,7 +2371,14 @@ class TestCoreAudit:
         doctor._run_core_audit(
             project, rec.p, rec.w, rec.s, lambda msg, fix="": failures.append((msg, fix))
         )
-        matches = [item for item in failures if "flow_options.defines" in item[0]]
+        # A bare ``defines:`` (null) is also a CAPI2 schema violation, so FuseSoC's
+        # own verdict adds one ``.core schema`` row; the Target-level row is the one
+        # that carries the vlogdefine advice.
+        matches = [
+            item
+            for item in failures
+            if "flow_options.defines" in item[0] and not item[0].startswith(".core schema")
+        ]
         assert len(matches) == 1
         message, fix = matches[0]
         assert "::demo:0#sim" in message
