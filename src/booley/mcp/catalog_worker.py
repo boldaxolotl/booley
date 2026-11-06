@@ -18,6 +18,7 @@ from pydantic import TypeAdapter
 
 from booley.core.boundary import require_dict
 from booley.mcp import catalog
+from booley.mcp.flow_adapter import flow_negative_flags
 from booley.runtime.process_group import (
     capture_process_group,
     new_group_kwargs,
@@ -147,11 +148,12 @@ def _import_and_extract_file(
         logger.warning(msg)
         return None, msg
 
-    cls, _instance, schema = found
+    cls, instance, schema = found
     return catalog._mcp_tool_def_from_class(
         cls,
         schema,
         py_path.stem,
+        negative_flags=flow_negative_flags(instance),
         is_custom=True,
         custom_path=str(py_path),
     ), None

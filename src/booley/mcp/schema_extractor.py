@@ -95,6 +95,41 @@ def _map_type_func(type_func: Any) -> str:
     return "string"
 
 
+def _boolean_pairs(
+    parser: argparse.ArgumentParser,
+) -> dict[str, tuple[argparse.Action, argparse.Action]]:
+    """Map each ``dest`` to its (``--x`` store_true, ``--no-x`` store_false) options.
+
+    Only optional flags count, and only a ``dest`` with exactly one of each kind
+    is a pair; every other boolean stays an independent single flag.
+    """
+    positives: dict[str, list[argparse.Action]] = {}
+    negatives: dict[str, list[argparse.Action]] = {}
+    for action in parser._actions:
+        if not action.option_strings:
+            continue
+        if isinstance(action, argparse._StoreTrueAction):
+            positives.setdefault(action.dest, []).append(action)
+        elif isinstance(action, argparse._StoreFalseAction):
+            negatives.setdefault(action.dest, []).append(action)
+    return {
+        dest: (positive[0], negatives[dest][0])
+        for dest, positive in positives.items()
+        if len(positive) == 1 and len(negatives.get(dest, [])) == 1
+    }
+
+
+def negative_flags(parser: argparse.ArgumentParser) -> dict[str, str]:
+    """Return ``dest`` -> ``--no-x`` option string for each paired boolean option.
+
+    MCP sends ``false`` for these as the negative flag, so a per-call value can
+    override a Target default instead of being dropped.
+    """
+    return {
+        dest: negative.option_strings[0] for dest, (_, negative) in _boolean_pairs(parser).items()
+    }
+
+
 def extract_schema(parser: argparse.ArgumentParser) -> dict[str, Any]:
     """Extract a JSON schema from an argparse ArgumentParser.
 
@@ -104,11 +139,17 @@ def extract_schema(parser: argparse.ArgumentParser) -> dict[str, Any]:
     actions = list(parser._actions)
     action_dests = {action.dest for action in actions}
     is_specialist = {"model", "max_turns", "transcript_dir", "timeout_ms"} <= action_dests
+    pairs = _boolean_pairs(parser)
+    negative_actions = {id(negative) for _, negative in pairs.values()}
     properties: dict[str, Any] = {}
     required: list[str] = []
 
     for action in actions:
         if isinstance(action, argparse._SubParsersAction):
+            continue
+        # A paired option is one tri-state property, described by its positive
+        # side and without a default: omission leaves the choice to the Target.
+        if id(action) in negative_actions:
             continue
 
         dest = action.dest
@@ -143,6 +184,8 @@ def extract_schema(parser: argparse.ArgumentParser) -> dict[str, Any]:
             and "default" not in prop  # don't override store_true/false defaults
         ):
             prop["default"] = action.default
+        if dest in pairs:
+            prop.pop("default", None)
 
         properties[dest] = prop
 
