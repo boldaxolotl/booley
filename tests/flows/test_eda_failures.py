@@ -120,3 +120,64 @@ def test_loader_unowned_and_rtl_negative_controls(text):
         )
         is None
     )
+
+
+_MARKER_LINE = (
+    "BOOLEY_EDA_FAILURE token=0123456789abcdef0123456789abcdef "
+    "kind=missing_eda_tool stage=sv2v subject=sv2v"
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "default", "expected"),
+    [
+        ("make: Entering directory '/w'\nsv2v: bad option", None, "sv2v: bad option"),
+        ("make[1]: Entering directory '/w'\nERROR: boom", None, "ERROR: boom"),
+        (f"BOOLEY_STAGE: sv2v\n{_MARKER_LINE}\nERROR: boom", None, "ERROR: boom"),
+        ("WARNING: [Vivado 1-2] foo not found\nERROR: real", None, "ERROR: real"),
+        ("[WARNING STA-1] foo not found\n[ERROR STA-2] real", None, "[ERROR STA-2] real"),
+        ("/bin/sh: lsb_release: command not found\nERROR: real", None, "ERROR: real"),
+        (
+            "/opt/Vivado/bin/loader: line 280: lsb_release: command not found\nERROR: real",
+            None,
+            "ERROR: real",
+        ),
+        ("mesh: net_7: not found\nplain", None, "mesh: net_7: not found"),
+        (
+            "/bin/sh: 1: klayout: not found\nmake: *** Error 127",
+            None,
+            "/bin/sh: 1: klayout: not found",
+        ),
+        ("make: *** Error 1\nplain line\nsecond", None, "plain line"),
+        ("make: *** Error 1\n\n", None, "no diagnostic available"),
+        ("make: *** Error 1\nnothing", "fallback", "fallback"),
+        ("x" * 600, None, "x" * 500),
+    ],
+    ids=[
+        "make",
+        "make-nested",
+        "stage-and-marker",
+        "vivado-warning",
+        "bracket-warning",
+        "shell-missing-program",
+        "loader-missing-program",
+        "non-shell-not-found",
+        "shell-missing-program-fallback",
+        "first-line-fallback",
+        "empty-fallback",
+        "default",
+        "cap-500",
+    ],
+)
+def test_2808_first_tool_diagnostic(text: str, default: str | None, expected: str) -> None:
+    from booley.flows.eda_failures import first_tool_diagnostic
+
+    assert first_tool_diagnostic(text, default) == expected
+
+
+def test_2808_strip_failure_markers_drops_marker_lines_only() -> None:
+    from booley.flows.eda_failures import strip_failure_markers
+
+    other_token = _MARKER_LINE.replace("0123456789abcdef", "fedcba9876543210")
+    text = f"before\n{_MARKER_LINE}\n  BOOLEY_EDA_FAILURE junk\n{other_token}\nafter"
+    assert strip_failure_markers(text) == "before\nafter"
