@@ -134,6 +134,7 @@ fi
 _OWNS_WORKTREE=false
 cleanup_on_error() {
     local rc=$?
+    if [ -n "$SNAPSHOT_LIST" ]; then rm -f "$SNAPSHOT_LIST"; fi
     if [ "$_OWNS_WORKTREE" = true ] && [ -f "$CREATING_MARKER" ]; then
         echo "ERROR: worktree_create.sh failed (rc=$rc) — cleaning up partial worktree" >&2
         git -C "$CWD" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
@@ -143,6 +144,7 @@ cleanup_on_error() {
     exit $rc
 }
 trap cleanup_on_error ERR
+SNAPSHOT_LIST=""
 
 # Serialize concurrent invocations on the SAME worktree name. Different
 # worktrees still run in parallel (lockfile is per-name). Prevents racing
@@ -461,49 +463,26 @@ _parent_lock_release
 # --- End critical section B ---
 
 # Copy .booley/ into worktree if it exists as a sibling (convention-based discovery).
-# Live state stays behind: Ticket boards/logs/locks, Goal state under goals/
-# (records, locks, and history; committed Goal history reaches the worktree
-# through Git only), session presence/handles and the Project Job handle map.
-# The ./ patterns match only top-level members
-# (the archive is built from "."); a nested directory named goals is copied.
+# The Snapshot is an allowlist: only paths classified as Checkout state versioned
+# with the RTL in booley.core.booley_dir_parts.BOOLEY_DIR_PATHS are copied.
+# Common state, state tied to one checkout's sources, and paths no row covers stay
+# in the Main Booley Directory (unclassified ones are named on stderr). Only
+# nested repositories and tool caches inside copied configuration are excluded.
 if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}" != "1" ] && [ -d "$CWD/.booley" ]; then
     echo "Copying .booley/ into worktree..." >&2
     mkdir -p "$WORKTREE_DIR/.booley"
-    tar -C "$CWD/.booley" --exclude='.git' \
-        --exclude='.venv' \
-        --exclude='__pycache__' \
-        --exclude='baselines' \
-        --exclude='baseline_codex' \
-        --exclude='full_run' \
-        --exclude='full_run_*' \
-        --exclude='.interactive_logs' \
-        --exclude='orphaned_after_*' \
-        --exclude='worktrees' \
-        --exclude='worktrees_disabled*' \
-        --exclude='tickets/board' \
-        --exclude='tickets/logs' \
-        --exclude='tickets/locks' \
-        --exclude='./.directory-relocation.json' \
-        --exclude='./goals' \
-        --exclude='./runtime/sessions' \
-        --exclude='./runtime/job-handles' \
-        --exclude='./runtime/doctor/*.lock' \
-        --exclude='./runtime/jobs/slots' \
-        --exclude='./tickets/state' \
-        --exclude='./tickets/waiver-candidates' \
-        --exclude='./.runtime' \
-        --exclude='./flow-reports' \
-        --exclude='./logs' \
-        --exclude='./.baseline-wt-*' \
-        --exclude='.locks' \
-        --exclude='tmp' \
-        --exclude='eval' \
-        --exclude='eval_*' \
-        --exclude='eval_debug*' \
-        --exclude='eval_tmp' \
-        --exclude='*_disabled_for_*' \
-        --exclude='stale_workspace_snapshots_*' \
-        -cf - . | tar -C "$WORKTREE_DIR/.booley" -xf -
+    SNAPSHOT_LIST="$LOCK_DIR/${NAME}.snapshot.$$.list"
+    PYTHONPATH="$BOOLEY_PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+        "${PY[@]}" -m booley.runtime.worktree_snapshot "$CWD/.booley" "$SNAPSHOT_LIST"
+    tar -C "$CWD/.booley" --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
+        --null -T "$SNAPSHOT_LIST" -cf - | tar -C "$WORKTREE_DIR/.booley" -xf -
+    # No pipefail here: check both tar exits so a vanished entry fails creation.
+    _snapshot_status=("${PIPESTATUS[@]}")
+    rm -f "$SNAPSHOT_LIST"
+    if [ "${_snapshot_status[0]}" != 0 ] || [ "${_snapshot_status[1]}" != 0 ]; then
+        echo "ERROR: copying the Snapshot failed (tar exit ${_snapshot_status[*]})" >&2
+        false
+    fi
     echo ".booley/ copied ($(du -sh "$WORKTREE_DIR/.booley" 2>/dev/null | cut -f1))" >&2
 fi
 

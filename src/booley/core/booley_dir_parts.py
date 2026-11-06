@@ -2,7 +2,9 @@
 
 Common Booley State exists once per Project, in the Main Booley Directory.
 Checkout Booley State exists once per checkout: it is versioned with the RTL or
-tied to one checkout's sources. Everything else is Common.
+tied to one checkout's sources. Everything else is Common. A Snapshot copies
+only the versioned rows; :func:`iter_booley_dir` walks a real directory in
+these terms.
 
 Patterns in :data:`BOOLEY_DIR_PATHS` are ``/``-separated and relative to the
 Booley Directory. A trailing ``/`` covers the directory and everything below it;
@@ -17,10 +19,11 @@ Stdlib-only.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator, Mapping
 from enum import StrEnum
 from fnmatch import fnmatchcase
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from types import MappingProxyType
 
 
@@ -31,60 +34,78 @@ class BooleyDirPart(StrEnum):
     CHECKOUT = "checkout"  # One per checkout.
 
 
+class BooleyDirClass(StrEnum):
+    """A Booley Directory path's class: its part, with Checkout split by what it is tied to."""
+
+    VERSIONED = "versioned"  # Checkout, versioned with the RTL: copied into a Snapshot.
+    SOURCE_TIED = "source-tied"  # Checkout, tied to one checkout's sources: never copied.
+    COMMON = "common"  # One per Project, in the Main Booley Directory.
+
+    @property
+    def part(self) -> BooleyDirPart:
+        """Return the part of Booley state this class belongs to."""
+        return BooleyDirPart.COMMON if self is BooleyDirClass.COMMON else BooleyDirPart.CHECKOUT
+
+
 class UnclassifiedBooleyPathError(ValueError):
     """A path is outside the Booley Directory or no table pattern covers it."""
 
 
-_COMMON = BooleyDirPart.COMMON
-_CHECKOUT = BooleyDirPart.CHECKOUT
+_COMMON = BooleyDirClass.COMMON
+_VERSIONED = BooleyDirClass.VERSIONED
+_SOURCE_TIED = BooleyDirClass.SOURCE_TIED
 
-# ADR 0082 appendix rows first, then paths other Booley modules write (see the
+# Every Checkout row says whether it is versioned with the RTL (copied into a
+# Snapshot) or tied to one checkout's sources (never copied). ADR 0082 appendix rows first, then paths other Booley modules write (see the
 # runtime/, mcp/, doctor and setup writers).
-BOOLEY_DIR_PATHS: Mapping[str, BooleyDirPart] = MappingProxyType(
+BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
     {
         # Checkout: versioned with the RTL.
-        "booley.toml": _CHECKOUT,
-        "tests.toml": _CHECKOUT,
-        "criteria.toml": _CHECKOUT,
-        "doctor-waivers.toml": _CHECKOUT,
-        "configs.toml": _CHECKOUT,
-        "cores/": _CHECKOUT,
-        "hooks/": _CHECKOUT,
-        "generators/": _CHECKOUT,
-        "mcp_tools/": _CHECKOUT,
-        "selftest/": _CHECKOUT,
-        "AGENTS.md": _CHECKOUT,
-        "FUSESOC_IGNORE": _CHECKOUT,
-        "goals/history/": _CHECKOUT,
-        "tickets/history/": _CHECKOUT,
+        "booley.toml": _VERSIONED,
+        "tests.toml": _VERSIONED,
+        "criteria.toml": _VERSIONED,
+        "doctor-waivers.toml": _VERSIONED,
+        "configs.toml": _VERSIONED,
+        "cores/": _VERSIONED,
+        "hooks/": _VERSIONED,
+        "generators/": _VERSIONED,
+        "mcp_tools/": _VERSIONED,
+        "selftest/": _VERSIONED,
+        "AGENTS.md": _VERSIONED,
+        "FUSESOC_IGNORE": _VERSIONED,
+        "goals/history/": _VERSIONED,
+        "tickets/history/": _VERSIONED,
         # Checkout: tied to one checkout's sources.
-        "tmp/doctor/": _CHECKOUT,
-        "runtime/doctor/core-resolve/": _CHECKOUT,
-        ".runtime/edalize/": _CHECKOUT,
-        ".runtime/python-artifacts/": _CHECKOUT,
-        "flow-reports/": _CHECKOUT,
-        "mcp-tool-reports/": _CHECKOUT,
-        "tmp/setup/": _CHECKOUT,
-        # Checkout, written by other Booley modules.
-        "pipeline.toml": _CHECKOUT,
-        "tools/": _CHECKOUT,
-        "rtl_style_guide.md": _CHECKOUT,
-        "tb_style_guide.md": _CHECKOUT,
+        "tmp/doctor/": _SOURCE_TIED,
+        "runtime/doctor/core-resolve/": _SOURCE_TIED,
+        ".runtime/edalize/": _SOURCE_TIED,
+        ".runtime/python-artifacts/": _SOURCE_TIED,
+        "flow-reports/": _SOURCE_TIED,
+        "mcp-tool-reports/": _SOURCE_TIED,
+        "tmp/setup/": _SOURCE_TIED,
+        # Checkout, written by other Booley modules: versioned.
+        "pipeline.toml": _VERSIONED,
+        "tools/": _VERSIONED,
+        "rtl_style_guide.md": _VERSIONED,
+        "tb_style_guide.md": _VERSIONED,
+        ".gitignore": _VERSIONED,
+        ".gitattributes": _VERSIONED,
+        # Generated (gitignored) Git hook bundle; hook adapters prefer the
+        # checkout's own copy, so a Snapshot keeps it.
+        ".managed/": _VERSIONED,
+        # Checkout, written by other Booley modules: tied to one checkout's sources.
         # A Paired Checkout's own ``.git`` pointer file is per checkout; the main
         # Versioned Booley Directory's object store is reached through git, not this table.
-        ".git/": _CHECKOUT,
-        ".gitignore": _CHECKOUT,
-        ".gitattributes": _CHECKOUT,
-        ".managed/": _CHECKOUT,
-        ".runtime/syn/": _CHECKOUT,
-        ".runtime/simulation-run-locks/": _CHECKOUT,
-        ".runtime/flow-console/": _CHECKOUT,
-        ".runtime/mutation_tester/": _CHECKOUT,
-        ".runtime/flow-reports/": _CHECKOUT,
-        ".runtime/mcp-tool-reports/": _CHECKOUT,
-        ".runtime/display.jsonl": _CHECKOUT,
-        ".runtime/prompts/": _CHECKOUT,
-        "tmp/fusesoc-isolated-cores/": _CHECKOUT,
+        ".git/": _SOURCE_TIED,
+        ".runtime/syn/": _SOURCE_TIED,
+        ".runtime/simulation-run-locks/": _SOURCE_TIED,
+        ".runtime/flow-console/": _SOURCE_TIED,
+        ".runtime/mutation_tester/": _SOURCE_TIED,
+        ".runtime/flow-reports/": _SOURCE_TIED,
+        ".runtime/mcp-tool-reports/": _SOURCE_TIED,
+        ".runtime/display.jsonl": _SOURCE_TIED,
+        ".runtime/prompts/": _SOURCE_TIED,
+        "tmp/fusesoc-isolated-cores/": _SOURCE_TIED,
         # Common: ADR rows.
         "goals/": _COMMON,
         "runtime/jobs/": _COMMON,
@@ -151,21 +172,35 @@ def booley_dir_part(relative: str | PurePath) -> BooleyDirPart:
     """Return the part of Booley state that owns *relative* (relative to the Booley Directory).
 
     Raises:
+        UnclassifiedBooleyPathError: see :func:`booley_dir_class`.
+    """
+    return booley_dir_class(relative).part
+
+
+def booley_dir_class(relative: str | PurePath) -> BooleyDirClass:
+    """Return the class that owns *relative* (relative to the Booley Directory).
+
+    Raises:
         UnclassifiedBooleyPathError: the path is anchored, escapes with ``..``, or no
             table pattern covers it.
     """
     path = PurePath(relative)
     if path.anchor or ".." in path.parts:
         raise UnclassifiedBooleyPathError(f"not relative to the Booley Directory: {relative}")
-    segments = tuple(segment for segment in path.parts if segment != ".")
-    best = _best_part(segments)
+    best = _class_of(tuple(segment for segment in path.parts if segment != "."))
+    if best is None:
+        raise UnclassifiedBooleyPathError(f"unclassified Booley Directory path: {relative}")
+    return best
+
+
+def _class_of(segments: tuple[str, ...]) -> BooleyDirClass | None:
+    """Return the class covering *segments*, an atomic-write temporary taking its target's."""
+    best = _best_class(segments)
     # An atomic write's temporary file (``.<name>.<pid>.tmp``) belongs to ``<name>``.
     for target in _temp_file_targets(segments[-1] if segments else ""):
         if best is not None:
             break
-        best = _best_part((*segments[:-1], target))
-    if best is None:
-        raise UnclassifiedBooleyPathError(f"unclassified Booley Directory path: {relative}")
+        best = _best_class((*segments[:-1], target))
     return best
 
 
@@ -183,12 +218,56 @@ def _temp_file_targets(leaf: str) -> Iterator[str]:
         yield f".{candidate}"
 
 
-def _best_part(segments: tuple[str, ...]) -> BooleyDirPart | None:
-    """Return the part of the deepest table pattern covering *segments*, if any."""
+def _best_class(segments: tuple[str, ...]) -> BooleyDirClass | None:
+    """Return the class of the deepest table pattern covering *segments*, if any."""
     best_depth = 0
-    best: BooleyDirPart | None = None
-    for pattern, part in BOOLEY_DIR_PATHS.items():
+    best: BooleyDirClass | None = None
+    for pattern, booley_class in BOOLEY_DIR_PATHS.items():
         depth = _covering_depth(pattern, segments)
         if depth is not None and depth > best_depth:
-            best_depth, best = depth, part
+            best_depth, best = depth, booley_class
     return best
+
+
+def _splits_below(segments: tuple[str, ...], own: BooleyDirClass | None) -> bool:
+    """Return whether a table row below *segments* has a class other than *own*.
+
+    An unclassified directory (*own* is ``None``) is a container: any row below
+    it splits it.
+    """
+    for pattern, booley_class in BOOLEY_DIR_PATHS.items():
+        pattern_segments = pattern.rstrip("/").split("/")
+        if len(pattern_segments) <= len(segments) or booley_class is own:
+            continue
+        if all(
+            fnmatchcase(part, seg) for part, seg in zip(segments, pattern_segments, strict=False)
+        ):
+            return True
+    return False
+
+
+def iter_booley_dir(root: Path) -> Iterator[tuple[str, BooleyDirClass | None]]:
+    """Yield the top-most entries of a Booley Directory whose whole subtree has one class.
+
+    Paths are ``/``-separated and relative to *root*; ``None`` marks an entry no
+    table row covers. A real directory is entered only when a deeper table row
+    gives part of it another class (``goals/`` holds ``goals/history/``) or when
+    it is an unclassified container (``runtime/``); a classified subtree is
+    never walked. Symlinks are leaves. Entries come in sorted order.
+
+    Raises:
+        OSError: *root* or a walked directory cannot be listed.
+    """
+    yield from _walk(root, ())
+
+
+def _walk(directory: Path, prefix: tuple[str, ...]) -> Iterator[tuple[str, BooleyDirClass | None]]:
+    with os.scandir(directory) as entries:
+        children = sorted(entries, key=lambda entry: entry.name)
+    for child in children:
+        segments = (*prefix, child.name)
+        own = _class_of(segments)
+        if child.is_dir(follow_symlinks=False) and _splits_below(segments, own):
+            yield from _walk(Path(child.path), segments)
+        else:
+            yield "/".join(segments), own

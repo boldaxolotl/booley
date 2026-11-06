@@ -187,7 +187,7 @@ The **Worktree Booley Directory** of a **Versioned Booley Directory**: a Git che
 _Avoid_: paired Project checkout, paired Project repository
 
 **Snapshot**:
-The **Worktree Booley Directory** of a non-versioned **Booley Directory**: a plain copy taken when the worktree is created.
+The **Worktree Booley Directory** of a non-versioned **Booley Directory**: a copy of its configuration taken when the worktree is created. Results, logs, and Common Booley State stay in the Main Booley Directory.
 _Avoid_: clean snapshot, project copy
 
 **Versioned Booley Directory**:

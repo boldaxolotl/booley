@@ -1011,6 +1011,7 @@ def _run_project_phase(
         reporter.diagnostics(readiness.check_guidance(project, mode=mode))
         _check_project_data_destination_branch(project.project_root, reporter)
     _check_worktree_booley_pairing(project_root, reporter)
+    _check_common_state_in_worktrees(project_root, reporter)
     _check_worktree_prune_guard(project_root, reporter.pass_, reporter.skip_, reporter.fail_)
     _check_line_endings(
         project_root,
@@ -1124,6 +1125,122 @@ def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> N
         f"{versioned}; Goal Mode and baselines will not use its committed revisions",
         "save any work in this worktree, then recreate it with `booley worktree new <name>` "
         f"from {primary}",
+    )
+
+
+_COMMON_STATE_CHECK_ID = "project-data.common-state-in-worktree"
+_COMMON_STATE_PATHS_SHOWN = 5
+
+
+def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) -> None:
+    """Warn when a linked worktree's Booley Directory holds untracked Common Booley State.
+
+    Common Booley State lives once per Project, in the Main Booley Directory;
+    a copy in a worktree is never read and goes stale. Older Snapshots copied
+    it. Paths Git tracks there arrive by checkout and are not reported.
+    """
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.runtime.directory_migration_git import primary_checkout
+    from booley.runtime.worktrees import list_worktrees
+
+    try:
+        main_dir = resolve_common_booley_dir(project_root).resolve()
+        # Git lists the primary checkout first; only linked worktrees can hold stale copies.
+        linked = list_worktrees(primary_checkout(project_root))[1:]
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip() or f"git exited {exc.returncode}"
+        reporter.skip_(
+            f"Common Booley State in worktrees skipped - cannot list worktrees: {detail}"
+        )
+        return
+    except (
+        BooleyLayoutError,
+        OSError,
+        subprocess.TimeoutExpired,
+        SourceCheckoutProjectError,
+    ) as exc:
+        reporter.skip_(f"Common Booley State in worktrees skipped - cannot list worktrees: {exc}")
+        return
+    scanned = 0
+    warned = False
+    for entry in linked:
+        booley_dir = entry.path / BOOLEY_DIR_NAME
+        if booley_dir.is_symlink() or not booley_dir.is_dir() or booley_dir.resolve() == main_dir:
+            continue
+        try:
+            untracked = _untracked_common_paths(entry.path, booley_dir)
+        except FileNotFoundError:
+            continue  # A baseline worktree removed while scanning.
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or "").strip() or f"git exited {exc.returncode}"
+            reporter.skip_(f"Common Booley State in {booley_dir} skipped - {detail}")
+            continue
+        except (OSError, ValueError) as exc:
+            reporter.skip_(f"Common Booley State in {booley_dir} skipped - {exc}")
+            continue
+        scanned += 1
+        if untracked:
+            warned = True
+            _warn_common_state_in_worktree(booley_dir, untracked, reporter)
+    if not warned:
+        reporter.pass_(f"no Common Booley State in {scanned} worktree Booley Directories")
+
+
+def _untracked_common_paths(worktree: Path, booley_dir: Path) -> list[str]:
+    """Return the Common Booley State paths in *booley_dir* that Git does not track.
+
+    Raises:
+        OSError: the directory cannot be walked.
+        subprocess.CalledProcessError: ``git ls-files`` failed, so tracked paths cannot be told apart.
+        ValueError: Git printed a path name that is not valid UTF-8.
+    """
+    from booley.core.booley_dir_parts import BooleyDirClass, iter_booley_dir
+
+    common = [
+        path
+        for path, booley_class in iter_booley_dir(booley_dir)
+        if booley_class is BooleyDirClass.COMMON
+    ]
+    if not common:
+        return []
+    tracked = _tracked_booley_paths(worktree, booley_dir)
+    return [path for path in common if not _is_tracked(path, tracked)]
+
+
+def _tracked_booley_paths(worktree: Path, booley_dir: Path) -> set[str]:
+    """Return Git-tracked paths under *booley_dir*, relative to it and ``/``-separated.
+
+    Raises:
+        subprocess.CalledProcessError: ``git ls-files`` failed, so tracked paths cannot be told apart.
+    """
+    own_repository = (booley_dir / ".git").exists()
+    cwd = booley_dir if own_repository else worktree
+    args = ["ls-files", "-z"] if own_repository else ["ls-files", "-z", "--", BOOLEY_DIR_NAME]
+    result = project_repositories.run_git(cwd, *args)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, args, stderr=result.stderr)
+    prefix = "" if own_repository else f"{BOOLEY_DIR_NAME}/"
+    return {name.removeprefix(prefix) for name in result.stdout.split("\0") if name}
+
+
+def _is_tracked(path: str, tracked: set[str]) -> bool:
+    """Return whether *path*, or any file below it, is in *tracked*."""
+    return path in tracked or any(name.startswith(f"{path}/") for name in tracked)
+
+
+def _warn_common_state_in_worktree(
+    booley_dir: Path, untracked: list[str], reporter: _Reporter
+) -> None:
+    shown = ", ".join(untracked[:_COMMON_STATE_PATHS_SHOWN])
+    hidden = len(untracked) - _COMMON_STATE_PATHS_SHOWN
+    if hidden > 0:
+        shown += f", and {hidden} more"
+    _warning_sink(reporter.warn_, _COMMON_STATE_CHECK_ID, subject=str(booley_dir))(
+        f"{booley_dir} holds Common Booley State ({shown}); Booley reads it from the Main "
+        "Booley Directory, so these copies are stale",
+        f"save anything you still need from these paths, then delete them from {booley_dir}; "
+        "remove a Git worktree under worktrees/ or .baseline-wt-* with `git worktree remove`, "
+        "not by deleting its directory",
     )
 
 
