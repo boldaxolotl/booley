@@ -47,6 +47,8 @@ from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import tomlkit
+
 from booley import __version__
 from booley.commit_policy import stealth_enabled
 from booley.config.host_config import retired_project_policy_message
@@ -660,40 +662,34 @@ def _resolve_agent_selection(
     return AgentSelection(provider, auth, write_provider, write_auth)
 
 
-def _insert_agent_fields(content: str, fields: list[str]) -> str:
-    """Insert missing fields into an existing [agent] table, preserving the file."""
-    lines = content.splitlines(keepends=True)
-    header = next(
-        (index for index, line in enumerate(lines) if line.split("#", 1)[0].strip() == "[agent]"),
-        None,
-    )
-    if header is None:
+def _insert_agent_fields(content: str, fields: dict[str, str]) -> str:
+    """Record ``fields`` in ``[agent]``, leaving the rest of the file byte-identical.
+
+    With an existing ``agent`` table each missing key lands directly after the
+    table's last non-blank line (after a multi-line value's closing line, and
+    before the blank lines separating it from the next header). Without one,
+    an ``[agent]`` table is appended at the end of the file.
+    """
+    document = tomlkit.parse(content)
+    if "agent" not in document:
         prefix = "" if not content or content.endswith("\n") else "\n"
         separator = "" if not content else "\n"
-        return content + prefix + separator + "[agent]\n" + "".join(fields)
-    end = next(
-        (
-            index
-            for index in range(header + 1, len(lines))
-            if lines[index].lstrip().startswith("[")
-        ),
-        len(lines),
-    )
-    insertion = "".join(fields)
-    if end > 0 and not lines[end - 1].endswith(("\n", "\r")):
-        insertion = "\n" + insertion
-    lines[end:end] = [insertion]
-    return "".join(lines)
+        rendered = "".join(f'{key} = "{value}"\n' for key, value in fields.items())
+        return content + prefix + separator + "[agent]\n" + rendered
+    table = document["agent"]
+    for key, value in fields.items():
+        table[key] = value
+    return document.as_string()
 
 
 def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) -> bool:
     """Persist a complete [agent] choice before auth checks and Session seeding."""
     ctx.step_banner("agent provider and authentication policy")
-    fields = []
+    fields: dict[str, str] = {}
     if selection.write_provider:
-        fields.append(f'provider = "{selection.provider}"\n')
+        fields["provider"] = selection.provider
     if selection.write_auth:
-        fields.append(f'auth = "{selection.auth}"\n')
+        fields["auth"] = selection.auth
     if not fields:
         skip(f"using existing [agent] {selection.provider}/{selection.auth}")
         ctx.record("agent_config", "skip", f"{selection.provider}/{selection.auth}")
