@@ -207,3 +207,182 @@ def test_expected_worktree_booley_layouts_do_not_warn(
     tmp_path: Path, versioned: bool, paired: bool
 ) -> None:
     assert _pairing_warnings(_linked_worktree(tmp_path, versioned=versioned, paired=paired)) == []
+
+
+def _common_state_findings(root: Path) -> list:
+    reporter = doctor._Reporter.create()
+    doctor._check_common_state_in_worktrees(root, reporter)
+    return list(reporter.findings or ())
+
+
+def _plant(path: Path, text: str = "planted\n") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_common_state_in_worktree_warns_on_planted_path(tmp_path: Path) -> None:
+    worktree = _linked_worktree(tmp_path, versioned=False, paired=False)
+    root = tmp_path / "project"
+    planted = worktree / ".booley" / "runtime" / "session_activity" / "a"
+    _plant(planted)
+    # A main checkout full of Common state is where that state belongs.
+    _plant(root / ".booley" / "runtime" / "session_activity" / "main")
+    _plant(root / ".booley" / "findings.jsonl")
+
+    findings = _common_state_findings(root)
+
+    warnings = [finding for finding in findings if finding.severity == "warn"]
+    assert [finding.check_id for finding in warnings] == ["project-data.common-state-in-worktree"]
+    assert warnings[0].subject == str(worktree / ".booley")
+    assert "runtime/session_activity" in warnings[0].message
+    assert "findings.jsonl" not in warnings[0].message
+    assert "git worktree remove" in warnings[0].fix
+    assert planted.is_file()  # Doctor reports; it never deletes.
+    assert not any(finding.severity == "pass" for finding in findings)
+
+
+def test_common_state_in_worktree_passes_on_clean_snapshot(tmp_path: Path) -> None:
+    worktree = _linked_worktree(tmp_path, versioned=False, paired=False)
+    _plant(worktree / ".booley" / "cores" / "ip.core")  # Versioned state is fine.
+    _plant(worktree / ".booley" / "flow-reports" / "r.json")  # So is source-tied state.
+
+    findings = _common_state_findings(tmp_path / "project")
+
+    assert [finding.severity for finding in findings] == ["pass"]
+
+
+def test_common_state_in_worktree_ignores_tracked_paths_in_paired_checkout(
+    tmp_path: Path,
+) -> None:
+    worktree = _linked_worktree(tmp_path, versioned=True, paired=True)
+    paired = worktree / ".booley"
+    # Committed in the Versioned Booley Directory, so present in every Paired Checkout.
+    _plant(paired / "goalsets" / "x.md")
+    _plant(paired / "docker" / "Dockerfile")
+    _git(paired, "config", "user.name", "Test")
+    _git(paired, "config", "user.email", "test@example.invalid")
+    _git(paired, "add", "-f", "goalsets", "docker")
+    _git(paired, "commit", "-m", "common files")
+
+    assert [f.severity for f in _common_state_findings(tmp_path / "project")] == ["pass"]
+
+    _plant(paired / "runtime" / "session_activity" / "a")
+    warnings = [f for f in _common_state_findings(tmp_path / "project") if f.severity == "warn"]
+    assert len(warnings) == 1
+    assert "session_activity" in warnings[0].message
+    assert "goalsets" not in warnings[0].message and "docker" not in warnings[0].message
+
+
+def test_common_state_check_skips_when_the_project_is_the_booley_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(_root: Path) -> Path:
+        raise doctor.SourceCheckoutProjectError("Booley's own source")
+
+    monkeypatch.setattr(doctor, "resolve_common_booley_dir", refuse)
+
+    assert [f.severity for f in _common_state_findings(tmp_path)] == ["skip"]
+
+
+def _git_failure(stderr: str) -> doctor.subprocess.CalledProcessError:
+    return doctor.subprocess.CalledProcessError(128, ["git"], stderr=stderr)
+
+
+def test_common_state_check_skips_with_git_stderr_when_listing_worktrees_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(_root: Path) -> Path:
+        raise _git_failure("fatal: not a git repository\n")
+
+    monkeypatch.setattr("booley.runtime.directory_migration_git.primary_checkout", fail)
+
+    findings = _common_state_findings(_linked_worktree(tmp_path, versioned=False, paired=False))
+
+    assert [f.severity for f in findings] == ["skip"]
+    assert "not a git repository" in findings[0].message
+
+
+def test_common_state_check_names_exit_code_when_git_prints_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(_root: Path) -> Path:
+        raise _git_failure("")
+
+    monkeypatch.setattr("booley.runtime.directory_migration_git.primary_checkout", fail)
+
+    findings = _common_state_findings(_linked_worktree(tmp_path, versioned=False, paired=False))
+
+    assert "git exited 128" in findings[0].message
+
+
+def test_common_state_check_ignores_worktrees_without_a_real_booley_directory(
+    tmp_path: Path,
+) -> None:
+    worktree = _linked_worktree(tmp_path, versioned=False, paired=False)
+    shutil.rmtree(worktree / ".booley")
+
+    findings = _common_state_findings(tmp_path / "project")
+
+    assert [(f.severity, f.message) for f in findings] == [
+        ("pass", "no Common Booley State in 0 worktree Booley Directories")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (_git_failure("fatal: bad index\n"), "bad index"),
+        (_git_failure(""), "git exited 128"),
+        (OSError("permission denied"), "permission denied"),
+        (ValueError("bad utf-8"), "bad utf-8"),
+    ],
+)
+def test_common_state_check_skips_a_worktree_it_cannot_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception, expected: str
+) -> None:
+    worktree = _linked_worktree(tmp_path, versioned=False, paired=False)
+
+    def fail(_worktree: Path, _booley_dir: Path) -> list[str]:
+        raise error
+
+    monkeypatch.setattr(doctor, "_untracked_common_paths", fail)
+
+    findings = _common_state_findings(tmp_path / "project")
+
+    assert [f.severity for f in findings] == ["skip", "pass"]
+    assert str(worktree / ".booley") in findings[0].message
+    assert expected in findings[0].message
+
+
+def test_common_state_check_skips_a_worktree_removed_while_scanning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _linked_worktree(tmp_path, versioned=False, paired=False)
+
+    def vanish(_worktree: Path, _booley_dir: Path) -> list[str]:
+        raise FileNotFoundError
+
+    monkeypatch.setattr(doctor, "_untracked_common_paths", vanish)
+
+    assert [f.severity for f in _common_state_findings(tmp_path / "project")] == ["pass"]
+
+
+def test_tracked_paths_lookup_raises_with_git_stderr_on_failure(tmp_path: Path) -> None:
+    with pytest.raises(doctor.subprocess.CalledProcessError) as raised:
+        doctor._tracked_booley_paths(tmp_path, tmp_path / ".booley")
+
+    assert raised.value.stderr
+
+
+def test_common_state_warning_counts_paths_beyond_the_shown_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _linked_worktree(tmp_path, versioned=False, paired=False)
+    paths = [f"common{index}" for index in range(7)]
+    monkeypatch.setattr(doctor, "_untracked_common_paths", lambda _worktree, _dir: paths)
+
+    warnings = [f for f in _common_state_findings(tmp_path / "project") if f.severity == "warn"]
+
+    assert len(warnings) == 1
+    assert "common4, and 2 more" in warnings[0].message
+    assert "common5" not in warnings[0].message
