@@ -5375,7 +5375,7 @@ def _check_icarus_sv_language_mode(
 
 
 # Verilator's own build-a-binary entry points: both generate the vanilla auto
-# main (`traceEverOn(true)` but no tracer object), so `simulate --trace` has
+# main (`traceEverOn(true)` but no tracer object), so `sim --trace` has
 # nothing to hook. A trace-capable Verilator sim Target instead ships a cppSource
 # `--exe` main that opens the VCD or FST tracer matching its authored options —
 # so the presence of either flag is the definitive "cannot trace" signal.
@@ -5395,11 +5395,14 @@ def _check_sim_traceable(
     is authored, and never *synthesises* a tracer. A Target built with Verilator's
     auto ``--main`` (or ``--binary``) has no C++ main to construct a
     ``VerilatedVcdC`` or ``VerilatedFstC``, so the trace option hooks into nothing: the
-    run PASSES but the store is a bare ~443-byte FST header with **0 signals** —
-    a silent trap that otherwise surfaces only on the first trace run. The
+    run produces no usable waveform (typically a bare ~443-byte FST header with
+    **0 signals**), and a run that would otherwise pass is reported inconclusive
+    (exit 1; an Error, exit 2, if the trace pipeline stalls) — a trap that
+    otherwise surfaces only on the first trace run. The
     remedy is the convention traceable sim Targets already follow: a committed
-    ``cppSource`` ``--exe`` main that opens the matching tracer, and drop
-    ``--main``.
+    ``cppSource`` ``--exe`` main that opens the matching tracer and honors
+    ``+trace``/``+tracefile=<file>`` (or the project's declared
+    ``[flows.sim].trace_args``), and drop ``--main``/``--binary``.
 
     Verilator-only by design: for Icarus/Xcelium/VCS the trace overlay
     *auto-supplies* the ``booley_vcd_dump`` module from Booley's ``refs/`` when
@@ -5435,10 +5438,14 @@ def _check_sim_traceable(
         _warning_sink(_warn, "sim.trace-unavailable", subject=offending)(
             f"Verilator sim Target(s) cannot trace: {offending} — they build with "
             "Verilator's auto --main/--binary, which has no tracer for "
-            "`sim --trace` to hook, so a trace run PASSES with an empty "
-            "0-signal waveform store and no error. Give each a cppSource --exe "
-            "main that opens the matching VCD/FST tracer and drop --main from "
-            "verilator_options (mirror a traceable sim Target's tb_cpp fileset)."
+            "`sim --trace` to hook, so a traced run produces no usable waveform: "
+            "one that would otherwise pass ends inconclusive (exit 1), or as an "
+            "Error (exit 2) if the trace pipeline stalls. Give each "
+            "a cppSource --exe main that opens the matching VCD/FST tracer and "
+            "handles Booley's +trace and +tracefile=<file> arguments (or declare "
+            "[flows.sim].trace_args for the options your main accepts), and drop "
+            "--main/--binary from verilator_options (mirror a traceable sim Target's "
+            "tb_cpp fileset)."
         )
 
 
