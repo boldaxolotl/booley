@@ -155,3 +155,11 @@ def test_listed_claude_with_ambiguous_config_fails_naming_claude(tmp_path, monke
 
     with pytest.raises(session_issuance.RuntimeSpecError, match="claude"):
         _issue(project, "codex")
+
+
+def test_init_refuses_to_seed_a_cli_outside_the_listed_set(tmp_path, monkeypatch):
+    """``init --provider codex`` on a Claude-only Project builds no spec with Codex's login."""
+    project = _host(tmp_path, monkeypatch, '[agent]\nclis = ["claude"]\n')
+
+    with pytest.raises(session_issuance.RuntimeSpecError, match=r"codex is not in .*clis"):
+        _issue(project, "codex")

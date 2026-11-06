@@ -1309,6 +1309,11 @@ def _credential_plans(
     from booley.config.agent import project_credential_policies
 
     found = project_credential_policies(project_root, booley_dir=source, selected=app)
+    if app in auth_token.CREDENTIALS and app not in found.clis:
+        raise RuntimeSpecError(
+            f"{app} is not in [agent] clis {list(found.clis)}; add it there or choose a listed CLI"
+        )
+    # ``none`` seeds nothing, so its single plan only carries the default policy.
     clis = found.clis if app in found.clis else (app,)
     plans = []
     for cli in clis:

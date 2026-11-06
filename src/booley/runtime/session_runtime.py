@@ -234,16 +234,18 @@ class DockerRunArgv(list[str]):
         self.environment = environment
 
 
-def _allowed_credential_keys(spec: dict, remote: dict, policy: str) -> frozenset[str]:
-    """Credential env keys the spec may forward: the default CLI's and every listed CLI's."""
+def _allowed_credential_keys(spec: dict) -> frozenset[str]:
+    """Credential env keys the spec may forward: those of every CLI in its record."""
     try:
         record = dc.spec_cli_policies(spec)
     except ValueError as exc:
         raise SessionError(
             f"Sandbox Agent CLI record is malformed ({exc}); refresh the Sandbox"
         ) from exc
-    allowed = auth_token.allowed_credential_keys(remote.get("BOOLEY_AGENT_APP", "none"), policy)
-    return allowed.union(*(auth_token.allowed_credential_keys(c, p) for c, p in record.items()))
+    # The record always lists the CLI app, so an app absent from it earns no key.
+    return frozenset().union(
+        *(auth_token.allowed_credential_keys(c, p) for c, p in record.items())
+    )
 
 
 def docker_run_argv(
@@ -268,7 +270,7 @@ def docker_run_argv(
     argv = DockerRunArgv(["docker", "run", "-d", "--name", name], dict(os.environ))
     remote = spec.get("remoteEnv") or {}
     policy = remote.get("BOOLEY_PRIMARY_AUTH", "auto")
-    allowed = _allowed_credential_keys(spec, remote, policy)
+    allowed = _allowed_credential_keys(spec)
 
     for mount in [spec.get("workspaceMount"), *(spec.get("mounts") or [])]:
         if mount:

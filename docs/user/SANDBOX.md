@@ -85,10 +85,10 @@ With `clis = ["claude"]` the Sandbox holds only Claude's login; with
 Each CLI follows its own [`[agent.auth]`](CONFIG.md#pinning-what-bills-agent-auth)
 policy. For example, with `claude = "subscription"` and `codex = "api_key"`, Claude's
 login is copied in and its API key is not forwarded, while Codex gets its API key
-and no login. The Developer Agent's window still connects to the `default` CLI;
-Specialists use whichever listed CLI their model needs.
+and no login. The Developer Agent's window connects to the CLI that was `default`
+when the Sandbox was issued; Specialists use whichever listed CLI their model needs.
 
-After you change `clis` or `auth`, the Sandbox refuses to start until you run
+After you change `clis`, `default` or `auth`, the Sandbox refuses to start until you run
 `booley session refresh` (or `booley init --seed` and rebuild the container).
 `booley doctor` reports a Sandbox that was issued for a different set of CLIs.
 

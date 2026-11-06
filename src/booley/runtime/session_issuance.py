@@ -1358,12 +1358,12 @@ def _validate_remote_environment(
                 {key: remote.get(key) for key in fixed_remote},
             )
         )
-    app = remote.get("BOOLEY_AGENT_APP")
     from booley.runtime import auth_token
 
-    policy = remote.get("BOOLEY_PRIMARY_AUTH", "auto")
     try:
-        allowed = auth_token.allowed_credential_keys(str(app), policy).union(
+        # The record is the single source of truth: it always lists the CLI app, so an
+        # app absent from it earns no credential key.
+        allowed = frozenset().union(
             *(auth_token.allowed_credential_keys(cli, p) for cli, p in record.items())
         )
     except ValueError as exc:
@@ -1387,6 +1387,11 @@ def _validate_credential_policy(
     found = project_credential_policies(project, booley_dir=project_data, selected=app)
     # The set is recorded in [agent] clis order, which also fixes the name and volume order.
     expected = dict(found.policies) if app in found.clis else {}
+    if app in auth_token.CREDENTIALS and app not in found.clis:
+        raise RuntimeSpecError(
+            f"Sandbox Agent CLI {app} is not in [agent] clis "
+            f"{_format_cli_record(found.policies)}; refresh and recreate the Sandbox"
+        )
     if list(record.items()) != list(expected.items()):
         raise RuntimeSpecError(
             f"Sandbox Agent CLIs {_format_cli_record(record)} differ from [agent] clis "
@@ -1416,7 +1421,8 @@ def _validate_seed_targets(spec: dict[str, Any], record: dict[str, str]) -> None
             forbidden |= {dc._APP_CREDS_SEED_TARGET[cli], dc._APP_TOKEN_SEED_TARGET[cli]}
             forbidden.add(dc._APP_AUTH_TARGET[cli])
     if "claude" not in record:
-        forbidden.add(dc._CLAUDE_CONFIG_SEED_TARGET)
+        # The config file can hold a primary API key, whether seeded or bound directly.
+        forbidden |= {dc._CLAUDE_CONFIG_SEED_TARGET, dc._CLAUDE_CONFIG_TARGET}
     for cli, policy in record.items():
         if policy == "api_key":
             forbidden.add(dc._APP_CREDS_SEED_TARGET[cli])
@@ -1998,7 +2004,8 @@ def _validate_state_volume(mounts: list[str], record: dict[str, str], project: P
         for raw in mounts
         if raw not in expected
         and (
-            _mount_fields(raw).get("type") == "volume"
+            # ``docker run --mount`` treats a mount with no type as a volume.
+            _mount_fields(raw).get("type", "volume") == "volume"
             or any(_mount_target(raw).startswith(f"{t}/") for t in targets)
         )
     ]

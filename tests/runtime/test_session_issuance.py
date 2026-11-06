@@ -3679,7 +3679,43 @@ _REFUSALS = {
     "credential-env": "credential environment has drifted",
     "widened-record": "Sandbox identity has drifted",
     "app-outside-record": "Agent CLIs codex=auto differ from",
+    "app-outside-clis-empty-record": "Agent CLI codex is not in",
+    "typeless-volume": "agent state is not scoped",
+    "claude-config-bind": "credential seed violates",
     **dict.fromkeys(("malformed-record", "gateway-record"), "Agent CLI record is malformed"),
+}
+
+
+def _damage_empty_record(spec: dict, project: Path, home: Path) -> None:
+    """An empty record must not let an app outside ``clis`` forward its own key."""
+    spec["name"] = "Booley Interactive (codex)"
+    spec["remoteEnv"].update(
+        BOOLEY_AGENT_APP="codex",
+        BOOLEY_AGENT_CLIS="",
+        OPENAI_API_KEY="${localEnv:OPENAI_API_KEY}",
+    )
+
+
+def _damage_typeless_volume(spec: dict, project: Path, home: Path) -> None:
+    """``docker run --mount`` defaults a mount with no type to a volume."""
+    volume = (
+        f"source=booley-codex-state-{dc.canonical_project_id(project)},target={dc.AGENT_HOME}/x"
+    )
+    spec["mounts"].insert(1, volume)
+
+
+def _damage_claude_config_bind(spec: dict, project: Path, home: Path) -> None:
+    """A bind at the real Claude config file may carry a primary API key."""
+    source = home / ".claude.json"
+    spec["mounts"].insert(
+        1, f"source={source},target={dc._CLAUDE_CONFIG_TARGET},type=bind,readonly"
+    )
+
+
+_MOUNT_AND_APP_DAMAGE = {
+    "app-outside-clis-empty-record": _damage_empty_record,
+    "typeless-volume": _damage_typeless_volume,
+    "claude-config-bind": _damage_claude_config_bind,
 }
 
 
@@ -3709,6 +3745,8 @@ def _damage_spec(spec: dict, project: Path, home: Path, damage: str) -> None:
         mounts.insert(1, bind(home / ".codex" / "auth.json", f"{dc.AGENT_HOME}/.codex/auth.json"))
     elif damage == "claude-config-seed":
         mounts.insert(1, bind(home / ".claude.json", dc._CLAUDE_CONFIG_SEED_TARGET))
+    elif damage in _MOUNT_AND_APP_DAMAGE:
+        _MOUNT_AND_APP_DAMAGE[damage](spec, project, home)
     elif damage == "stray-volume":
         stray = dc.state_volume_mount("codex", project_id).replace(".codex", "/stray")
         mounts.insert(1, stray)
@@ -3719,7 +3757,7 @@ def _damage_spec(spec: dict, project: Path, home: Path, damage: str) -> None:
 def test_sealing_refuses_seed_for_unlisted_cli(issued, monkeypatch, request):
     for damage, refusal in _REFUSALS.items():
         # Claude-config seeds are only unlisted for a Codex-only Project; the rest use Claude-only.
-        app = "codex" if damage == "claude-config-seed" else "claude"
+        app = "codex" if damage in {"claude-config-seed", "claude-config-bind"} else "claude"
         project, spec, home = _multi_cli_project(
             issued, monkeypatch, request, f'[agent]\nclis = ["{app}"]\n', app
         )

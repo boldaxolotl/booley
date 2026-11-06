@@ -326,3 +326,22 @@ def test_ephemeral_shell_forwards_only_listed_cli_credentials(tmp_path, monkeypa
         assert ".codex" not in command
     finally:
         runner._env_file.unlink(missing_ok=True)
+
+
+def test_ephemeral_shell_ignores_ambiguous_agent_app_environment(tmp_path, monkeypatch):
+    """An unresolvable ``BOOLEY_AGENT_APP`` falls back to Claude instead of stopping the shell."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
+    monkeypatch.setenv("BOOLEY_AGENT_APP", "auto")
+    data = tmp_path / "project" / ".booley"
+    data.mkdir(parents=True)
+    (data / "booley.toml").write_text('[agent]\nclis = ["claude", "codex"]\n')
+    runner = DockerRunner(
+        DockerSandboxConfig(image="test-image", needs_network=False), data.parent
+    )
+
+    plans = runner._credential_plans()
+
+    assert [plan.app for plan in plans] == ["claude", "codex"]

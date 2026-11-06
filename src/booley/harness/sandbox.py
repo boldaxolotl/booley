@@ -355,8 +355,12 @@ class DockerRunner:
         environment's ``BOOLEY_PRIMARY_PROVIDER`` / ``BOOLEY_AGENT_APP``, else Claude).
         """
         from booley.config.agent import project_credential_policies, resolve_default_cli
+        from booley.config.agent_app import AgentAppError
 
-        resolved = resolve_default_cli(None)
+        try:
+            resolved = resolve_default_cli(None)
+        except AgentAppError:  # an ambiguous BOOLEY_AGENT_APP must not stop a shell
+            resolved = None
         found = project_credential_policies(
             self.worktree, selected=resolved[0] if resolved else None
         )
