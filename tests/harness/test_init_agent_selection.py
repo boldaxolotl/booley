@@ -399,7 +399,8 @@ def test_existing_selection_is_authoritative_and_not_rewritten(tmp_path, monkeyp
     booley_dir.mkdir()
     config = booley_dir / "booley.toml"
     body = '[agent]\nprovider = "codex"\nauth = "subscription"\n'
-    config.write_text(body, encoding="utf-8")
+    # write_bytes: write_text would turn \n into \r\n on Windows and skew the byte compare.
+    config.write_bytes(body.encode())
     monkeypatch.setattr(
         "builtins.input",
         lambda _prompt: (_ for _ in ()).throw(AssertionError("must not prompt")),
