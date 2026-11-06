@@ -651,6 +651,17 @@ def test_mutation_smoke_refuses_project_without_ignore_native_cores(tmp_path) ->
         _run_smoke(tmp_path, [], worktree=worktree)
 
 
+def test_mutation_smoke_skips_tool_directives_and_continued_comments(tmp_path) -> None:
+    worktree = _smoke_project(tmp_path)
+    (worktree / "rtl/dut.sv").write_text(
+        "// verilator lint_off WIDTH\n// macro tail \\\n  // plain note\nmodule dut; endmodule\n",
+        encoding="utf-8",
+    )
+    _, _, booley_dir = _run_smoke(tmp_path, [_reply("EXIT_CODE: 0")], worktree=worktree)
+    lock = driver.mutation_lock.load_lock(driver.record_paths(booley_dir, _ID).runtime_dir)
+    assert lock is not None and lock.mutations[0]["line"] == 3
+
+
 def test_mutation_smoke_needs_a_line_comment_in_the_scope_file(tmp_path) -> None:
     worktree = _smoke_project(tmp_path)
     (worktree / "rtl/dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")

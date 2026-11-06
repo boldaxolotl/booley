@@ -235,6 +235,7 @@ def test_ignore_native_cores_mutation_writes_only_private_export(tmp_path, monke
     resolve = MutationTesterSpecialist._resolve_elab_target
     # First use projects the shared registry; that is not a mutation side effect.
     resolve("sim", root, tmp_path / "pristine-build")
+    assert not (tmp_path / "pristine-build" / "core-mirror").exists()  # baseline: shared registry
     spec = MutationSpec(1, "literal", "rtl/inc/message.svh", 1, "BASELINE", "MUTANT")
     variants = MutationVariantPlan.resolve([spec], root, ["rtl/inc/message.svh"])
     before = _tree_snapshot(root, excluded=build_path)
@@ -242,6 +243,7 @@ def test_ignore_native_cores_mutation_writes_only_private_export(tmp_path, monke
     _handle, prepared = resolve("sim", root, build_path, (variants, 1))
     exported = list(Path(prepared.resolved.build_root).rglob("message.svh"))
     assert exported
+    assert (build_path / "core-mirror").is_dir()
     assert all(b"MUTANT" in path.read_bytes() for path in exported)
     assert all(path.resolve().is_relative_to(build_path.resolve()) for path in exported)
     assert _tree_snapshot(root, excluded=build_path) == before

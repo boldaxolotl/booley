@@ -55,6 +55,13 @@ TOOL_TIMEOUT_SECONDS = 600
 MUTATION_SMOKE_TIMEOUT_SECONDS = 1200
 POLL_WAIT_SECONDS = 30
 MUTATION_SMOKE_SUFFIX = " mutation-smoke"
+# A ``//`` comment that tools read as a directive (or a macro line continuation)
+# is not inert: extending it could change compilation, so the smoke skips it.
+_TOOL_DIRECTIVE = re.compile(
+    r"//\s*(synopsys|pragma|verilator|synthesis|translate|cadence|vcs|xcelium|slang|verible"
+    r"|coverage|lint|iverilog|yosys)",
+    re.IGNORECASE,
+)
 # Bound for detached baseline Jobs to unwind after cancellation.
 BASELINE_STOP_SECONDS = 60
 # A SIGTERM sent before the Job supervisor installs its handler is lost, so the
@@ -233,10 +240,19 @@ async def readiness(
     return result
 
 
+def _is_inert_line_comment(line: str) -> bool:
+    """Whether appending text to *line* cannot change what a tool builds."""
+    return (
+        line.lstrip().startswith("//")
+        and not line.rstrip().endswith("\\")
+        and not _TOOL_DIRECTIVE.match(line.lstrip())
+    )
+
+
 def _smoke_scope_and_proposal(worktree: Path, goals: Sequence[GoalArg]) -> tuple[str, str, Any]:
     """Return ``(target, scope file, spec dict)`` for one comment-only mutation.
 
-    The proposal extends the first ``//`` line comment of the first RTL file of
+    The proposal extends the first inert ``//`` line comment of the first RTL file of
     the contract's mutation Target. The variant therefore compiles and runs
     exactly like the baseline: the smoke can only fail when a variant does not
     build or yields no verdict, which is what it guards.
@@ -258,7 +274,7 @@ def _smoke_scope_and_proposal(worktree: Path, goals: Sequence[GoalArg]) -> tuple
         raise GoalDriverError(f"mutation smoke Target {goal.target} lists no RTL file")
     scope = files[0]
     for number, line in enumerate((worktree / scope).read_text("utf-8").splitlines(), start=1):
-        if line.lstrip().startswith("//"):
+        if _is_inert_line_comment(line):
             spec = {
                 "index": 1,
                 "category": "comment",
