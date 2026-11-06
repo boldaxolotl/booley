@@ -1089,8 +1089,13 @@ replacement must differ, and every proposal must remain a single source edit.
             return prepared
         existing_lock = self._load_reusable_lock(prepared)
         if existing_lock is not None:
-            return self._run_warm(existing_lock, prepared)
-        return self._run_cold(prepared)
+            result = self._run_warm(existing_lock, prepared)
+        else:
+            # ``_run_cold`` finishes its git rollback before returning, so the
+            # residue check below sees the post-rollback scope files.
+            result = self._run_cold(prepared)
+        self._add_residue_warning(result, prepared.scope_hashes, prepared.work_dir)
+        return result
 
     def _prepare_run_plan(self) -> MutationRunPlan | McpToolResult:
         work_dir = self.args.work_dir
@@ -1260,7 +1265,6 @@ replacement must differ, and every proposal must remain a single source edit.
         finally:
             self._revert_stray_tracked_edits(plan.work_dir, pre_dirty, keep=[])
         assert result is not None
-        self._add_residue_warning(result, set(plan.scope_files))
         return result
 
     def _create_and_run_variants(
@@ -2579,47 +2583,36 @@ replacement must differ, and every proposal must remain a single source edit.
             verdict.inconclusive_reason,
         )
 
-    def _verify_clean_worktree(self, owned_files: set[str] | None = None) -> bool:
-        """True if the sweep left no residue in the files it is responsible for.
+    @staticmethod
+    def _scope_residue(baseline: Mapping[str, str], work_dir: Path) -> list[str]:
+        """Return the scope files whose content the run changed, sorted.
 
-        Scoped to the DUT/scope files the sweep actually rewrites (QA_REPORT
-        C2.2): a bare ``git diff`` flagged ANY pre-existing, unrelated edit in
-        the worktree, producing a false "worktree not clean" warning that
-        pointed the user at the wrong file. With no owned files known (no
-        specs), fall back to the whole-tree check.
+        ``baseline`` maps each scope file to its content hash captured before
+        the run (``MutationRunPlan.scope_hashes``). Residue is a difference
+        from that snapshot, not from git's index: an uncommitted edit that
+        predates the run and survives it untouched is not residue. A file that
+        disappeared counts, and no git repository is needed.
         """
-        cmd = ["git", "diff", "--name-only"]
-        files = sorted(f for f in (owned_files or set()) if f)
-        if files:
-            cmd += ["--", *files]
-        try:
-            result = subprocess.run(
-                cmd,
-                cwd=self.args.work_dir,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-            # A warning is a claim that residue exists, not that the check was
-            # unavailable. Only a successful diff naming files proves it.
-            return result.returncode != 0 or not result.stdout.strip()
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            return True
+        current = lock_mod.compute_scope_hashes(list(baseline), work_dir)
+        return sorted(rel for rel, digest in baseline.items() if current[rel] != digest)
 
-    def _add_residue_warning(self, result: McpToolResult, owned_files: set[str]) -> None:
-        """Add the cold-run cleanup warning only after rollback has completed."""
-        if self._verify_clean_worktree(owned_files):
+    def _add_residue_warning(
+        self,
+        result: McpToolResult,
+        baseline: Mapping[str, str],
+        work_dir: Path,
+    ) -> None:
+        """Warn, naming the files, when the run left scope content changed."""
+        residue = self._scope_residue(baseline, work_dir)
+        if not residue:
             return
-        warning = "  WARNING: worktree not clean after sim sweep"
-        if warning in result.report_text:
-            return
+        warning_prefix = "  WARNING: worktree not clean after sim sweep"
         lines = result.report_text.splitlines()
         result_index = next(
             (index for index, line in enumerate(lines) if line.startswith("RESULT: ")),
             len(lines),
         )
-        lines.insert(result_index, warning)
+        lines.insert(result_index, f"{warning_prefix}: {', '.join(residue)}")
         result.report_text = "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -3082,12 +3075,6 @@ replacement must differ, and every proposal must remain a single source edit.
             lines.append(
                 f"  SURVIVED [{spec.category}] {spec.file}:{spec.line}: {orig!r} -> {mut!r}"
             )
-        # Scope the residue check to the files the sweep actually mutates, so an
-        # unrelated pre-existing edit elsewhere in the tree is not misattributed
-        # to the sweep (QA_REPORT C2.2).
-        swept_files = {spec.file for spec in summary.specs if spec.file}
-        if inputs.reused_lock and not self._verify_clean_worktree(swept_files):
-            lines.append("  WARNING: worktree not clean after sim sweep")
         reason = f"{summary.detected_count}/{valid_count} detected" + (
             "" if passed else f", need {min_detected}"
         )
