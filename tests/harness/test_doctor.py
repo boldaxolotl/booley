@@ -904,16 +904,28 @@ def _healthy_doctor_backend(monkeypatch):
 
 @pytest.mark.parametrize("deep", [False, True])
 def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
+    from booley.harness import developer_probe
+
     booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     _healthy_doctor_backend(monkeypatch)
-    probe_calls = []
+    _set_venue(monkeypatch, True)
+    monkeypatch.setattr(doctor, "_run_deep_checks", lambda *a, **k: None)
+    monkeypatch.setattr(doctor, "_run_core_resolve_checks", lambda *a, **k: None)
+    rss_calls, model_calls = [], []
 
-    def probe(project, _pass, _skip, _fail, *, completeness=None):
-        probe_calls.append(project.project_root)
-        _pass("Specialist provider live authorization check completed successfully")
+    def measure(root):
+        rss_calls.append(root)
+        return developer_probe.ProbeMeasurement(
+            _GIB, True, developer_probe.ProbeUsage(1, 0, 1, 0.0)
+        )
 
-    monkeypatch.setattr(doctor, "_run_developer_probe", probe)
+    def probe(_root, model, **_kw):
+        model_calls.append(model)
+        return developer_probe.ProbeUsage(1, 0, 1, 0.0)
+
+    monkeypatch.setattr(developer_probe, "measure_developer_rss", measure)
+    monkeypatch.setattr(developer_probe, "probe_model_access", probe, raising=False)
     doctor.run_doctor_result(
         argparse.Namespace(verbose=False, deep=deep), tmp_path, record_clean=False
     )
@@ -924,7 +936,9 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
     assert (
         "Specialist provider live authorization check completed successfully" in output
     ) is deep
-    assert probe_calls == ([tmp_path] if deep else [])
+    # Plain Doctor never calls a model; deep Doctor probes each distinct non-light model.
+    assert rss_calls == ([tmp_path] if deep else [])
+    assert bool(model_calls) is deep
 
 
 def test_doctor_deep_host_preserves_probe_skip(tmp_path, monkeypatch, capsys):
@@ -6406,6 +6420,11 @@ class TestDeveloperProbe:
             )
 
         monkeypatch.setattr(developer_probe, "measure_developer_rss", fake_measure)
+        monkeypatch.setattr(
+            developer_probe,
+            "probe_model_access",
+            lambda *_args, **_kw: developer_probe.ProbeUsage(100, 0, 5, 0.001),
+        )
         project = _adr28_project(tmp_path)
         reporter = doctor._Reporter.create(profile=doctor._DoctorProfile(deep=True))
 
@@ -6419,8 +6438,9 @@ class TestDeveloperProbe:
             in colors.strip_ansi(seen_before_call[0])
         )
         assert (
-            "Agent-backed checks: 1 agent call, 1,234 input tokens (1,000 cached), "
-            "56 output tokens, cost $0.0031." in capsys.readouterr().out
+            # The memory probe plus one call for each non-light tier model.
+            "Agent-backed checks: 3 agent calls, 1,434 input tokens (1,000 cached), "
+            "66 output tokens, cost $0.0051." in capsys.readouterr().out
         )
 
     def test_long_check_announcement_flushes_stdout(self, monkeypatch):
@@ -6438,6 +6458,48 @@ class TestDeveloperProbe:
         doctor._announce_long_check("x", "y")
         assert "write" in events
         assert events[-1] == "flush"
+
+    @pytest.mark.parametrize("outcome", ["accepted", "refused", "timeout"])
+    def test_probe_model_access_grades_the_provider_answer(self, tmp_path, monkeypatch, outcome):
+        from booley.config.agent import AgentSettings
+        from booley.core.models import AgentResult
+        from booley.runtime import agent as agent_mod
+        from booley.runtime import agent_config as config_mod
+        from booley.runtime.agent_errors import ModelUnavailableError
+
+        loaded = []
+        monkeypatch.setattr(
+            config_mod, "load_backend_config", lambda root, **kw: loaded.append(kw)
+        )
+        monkeypatch.setattr(
+            config_mod, "get_backend_config", lambda: SimpleNamespace(settings=AgentSettings())
+        )
+        seen = []
+
+        async def fake_call(params, **_kw):
+            seen.append(params.model)
+            if outcome == "refused":
+                raise ModelUnavailableError(
+                    model=params.model, provider="codex", settings=(), detail="model_not_found"
+                )
+            return AgentResult(output="OK", input_tokens=7, timed_out=outcome == "timeout")
+
+        monkeypatch.setattr(agent_mod, "call_agent", fake_call)
+
+        if outcome == "accepted":
+            usage = developer_probe.probe_model_access(
+                tmp_path, "some-model", booley_dir=tmp_path / "bd"
+            )
+            assert (seen, usage.input_tokens) == (["some-model"], 7)
+            assert loaded == [{"booley_dir": tmp_path / "bd"}]  # same config as the model list
+            return
+        with pytest.raises(developer_probe.ProbeError) as excinfo:
+            developer_probe.probe_model_access(tmp_path, "some-model")
+        assert excinfo.value.agent_called is True
+        if outcome == "refused":
+            assert isinstance(excinfo.value.__cause__, ModelUnavailableError)
+        else:
+            assert excinfo.value.usage.input_tokens == 7  # a timeout never reads as acceptance
 
     @pytest.mark.parametrize("site", ["call", "rusage", "timeout", "no_rss"])
     def test_measure_post_call_errors_carry_usage(self, tmp_path, monkeypatch, site):

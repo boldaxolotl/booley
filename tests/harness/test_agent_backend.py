@@ -34,6 +34,7 @@ from booley.runtime.agent_config import (
     load_backend_config,
     set_backend_config,
 )
+from booley.runtime.agent_errors import AgentProviderError
 
 
 def _capturing_successful_query():
@@ -72,7 +73,7 @@ def test_unclassified_stream_exception_keeps_traceback_at_debug(caplog) -> None:
         patch.object(cb, "_dump_crash_context"),
         pytest.raises(RuntimeError, match="provider exploded"),
     ):
-        cb._handle_stream_exception(failure, False, deque(), deque(), 0, 1, None)
+        cb._handle_stream_exception(failure, False, deque(), deque(), 0, 1, None, model="test")
 
     ordinary = [
         record
@@ -95,7 +96,7 @@ def test_result_error_classification_uses_terminal_text() -> None:
     failure.errors = []
 
     with patch.object(cb, "_dump_crash_context"), pytest.raises(UsageLimitError):
-        cb._handle_stream_exception(failure, False, deque(), deque(), 0, 1, None)
+        cb._handle_stream_exception(failure, False, deque(), deque(), 0, 1, None, model="test")
 
 
 # ===========================================================================
@@ -691,6 +692,114 @@ async def test_codex_no_output_provider_failure_is_terminal(tmp_path, monkeypatc
 
     assert raised.value.provider == "codex"
     subprocess_call.assert_awaited_once()
+
+
+_REFUSED_MODEL = "gpt-refused-model"
+
+
+def _settings_resolving_to_refused_model(provider: str):
+    """Settings whose [models] standard tier and reviewer role both pick the refused model."""
+    from booley.config import agent as agent_config
+
+    settings = AgentSettings(
+        tier_models={**_PROVIDER_TIER_MODELS[provider], "standard": _REFUSED_MODEL},
+        role_models={"reviewer": _REFUSED_MODEL},
+        provider=provider,
+    )
+    return settings, agent_config
+
+
+def _assert_actionable_refusal(error, *, provider: str, detail_fragment: str) -> None:
+    assert type(error).__name__ == "ModelUnavailableError"
+    assert error.provider == provider
+    assert error.model == _REFUSED_MODEL
+    message = str(error)
+    assert _REFUSED_MODEL in message
+    assert "[models] standard" in message
+    assert "[models.roles] reviewer" in message
+    assert "Protected Input" in message
+    # The raw provider text is kept on the exception, not in the message.
+    assert detail_fragment in error.detail
+    assert detail_fragment not in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["error", "turn.failed", "stderr"])
+@pytest.mark.parametrize(
+    "detail",
+    [
+        # The issue's 0.4.0 run; the request id would match the transient "500" pattern.
+        '{"status":400,"error":{"message":"The model is unavailable","code":"model_not_found",'
+        '"request_id":"req_5001"}}',
+        f"The '{_REFUSED_MODEL}' model is not supported when using Codex with a ChatGPT account.",
+    ],
+    ids=["issue-json", "chatgpt-text"],
+)
+async def test_codex_model_refusal_is_terminal_and_actionable(
+    tmp_path, monkeypatch, source, detail
+):
+    from booley.core.models import AgentCallParams
+    from booley.runtime import _codex_backend as cb
+
+    settings, agent_config = _settings_resolving_to_refused_model("codex")
+    monkeypatch.setattr(agent_config, "_agent_settings", settings)
+    events = []
+    if source == "error":
+        events.append({"type": "error", "message": detail})
+    elif source == "turn.failed":
+        events.append({"type": "turn.failed", "error": {"message": detail}})
+    raw = "\n".join(json.dumps(event) for event in events)
+    subprocess_call = AsyncMock(return_value=(raw, detail if source == "stderr" else "", 1))
+    sleep = AsyncMock()
+    monkeypatch.setattr(cb, "_codex_run_subprocess", subprocess_call)
+    monkeypatch.setattr(cb.shutil, "which", lambda _name: "codex")
+    monkeypatch.setattr(cb.anyio, "sleep", sleep)
+
+    with pytest.raises(AgentProviderError) as raised:
+        await CodexBackend().call(
+            AgentCallParams(prompt="work", model=_REFUSED_MODEL, cwd=tmp_path)
+        )
+
+    _assert_actionable_refusal(raised.value, provider="codex", detail_fragment=detail[:40])
+    subprocess_call.assert_awaited_once()
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_claude_model_refusal_is_terminal_and_actionable(tmp_path, monkeypatch):
+    from claude_agent_sdk import ResultError
+
+    from booley.core.models import AgentCallParams
+    from booley.runtime import _claude_backend as cb
+
+    settings, agent_config = _settings_resolving_to_refused_model("claude")
+    monkeypatch.setattr(agent_config, "_agent_settings", settings)
+    detail = (
+        f"There's an issue with the selected model ({_REFUSED_MODEL}). "
+        "It may not exist or you may not have access to it."
+    )
+    attempts = []
+
+    async def refused_query(*, prompt, options):
+        attempts.append(options.model)
+        failure = ResultError("Command failed with exit code 1")
+        failure.result = detail
+        failure.errors = []
+        raise failure
+        yield  # pragma: no cover - makes this an async generator
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(cb, "query", refused_query)
+    monkeypatch.setattr(cb.anyio, "sleep", sleep)
+
+    with pytest.raises((AgentProviderError, ResultError)) as raised:
+        await ClaudeSDKBackend().call(
+            AgentCallParams(prompt="work", model=_REFUSED_MODEL, cwd=tmp_path)
+        )
+
+    _assert_actionable_refusal(raised.value, provider="claude", detail_fragment="selected model")
+    assert attempts == [_REFUSED_MODEL]
+    sleep.assert_not_awaited()
 
 
 # ===========================================================================

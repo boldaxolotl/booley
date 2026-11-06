@@ -440,12 +440,12 @@ def test_auth_failure_text_is_classified_only_under_a_gateway_token_command(monk
     monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC_STATIC_TOKEN")
 
     with pytest.raises(AgentProviderError) as static:
-        cb._raise_for_codex_detail(detail, prefix="Codex error")
+        cb._raise_for_codex_detail(detail, prefix="Codex error", model="test")
 
     monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN")
     monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN_COMMAND", "synthetic-token-command")
     with pytest.raises(agent_errors.AgentAuthError):
-        cb._raise_for_codex_detail(detail, prefix="Codex error")
+        cb._raise_for_codex_detail(detail, prefix="Codex error", model="test")
 
     assert not isinstance(static.value, agent_errors.AgentAuthError)
 

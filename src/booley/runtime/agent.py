@@ -31,8 +31,11 @@ def announce_agent_dispatch(params: AgentCallParams) -> None:
         "doctor-developer-probe": (
             "estimate the provider CLI's memory and check Specialist provider authorization for Doctor"
         ),
+        "doctor-model-probe": (
+            "check that the provider accepts a configured Specialist model for Doctor"
+        ),
     }.get(role, "perform the requested Specialist analysis")
-    actor = "provider probe" if role == "doctor-developer-probe" else "Specialist"
+    actor = "provider probe" if role.startswith("doctor-") else "Specialist"
     print(f"Booley is starting the {role} {actor} to {purpose}.", file=sys.stderr)
 
 
