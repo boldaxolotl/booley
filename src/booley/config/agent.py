@@ -54,6 +54,34 @@ _VALID_AUTH_MODES = ("auto", "subscription", "api_key")
 _ENV_AUTH_MODES = (*_VALID_AUTH_MODES, GATEWAY_AUTH)
 _DEFAULT_AUTH = "auto"
 
+# remoteEnv key of a Booley-issued Sandbox spec recording its allowed Agent CLIs and
+# each CLI's policy, as ``claude=subscription,codex=api_key`` in ``[agent] clis`` order.
+AGENT_CLIS_ENV = "BOOLEY_AGENT_CLIS"
+
+
+def encode_cli_policies(policies: Mapping[str, str]) -> str:
+    """The ``BOOLEY_AGENT_CLIS`` value for ``{cli: policy}`` in iteration order."""
+    return ",".join(f"{cli}={policy}" for cli, policy in policies.items())
+
+
+def decode_cli_policies(raw: str) -> dict[str, str]:
+    """Parse a ``BOOLEY_AGENT_CLIS`` value strictly; empty text is the empty record.
+
+    Raises ``ValueError`` for an unknown CLI, a duplicate, a malformed pair or a policy
+    other than ``auto|subscription|api_key`` (``gateway`` is refused so the record
+    cannot switch Codex to the gateway; the Sandbox hand-off alone does that).
+    """
+    policies: dict[str, str] = {}
+    for pair in filter(None, (part.strip() for part in raw.split(","))):
+        cli, sep, policy = pair.partition("=")
+        if not sep or cli not in AGENT_CLIS or policy not in _VALID_AUTH_MODES:
+            raise ValueError(f"malformed Agent CLI record entry {pair!r}")
+        if cli in policies:
+            raise ValueError(f"duplicate Agent CLI {cli!r} in the record")
+        policies[cli] = policy
+    return policies
+
+
 # The agents whose model may be pinned in ``[models]``: each is a Specialist that runs
 # as its own `python -m booley.dev_support.<name>` subprocess and re-reads booley.toml,
 # so the key must equal ``Specialist.name``. Explicit rather than derived from the MCP
@@ -302,10 +330,8 @@ def resolve_default_cli(declared: DeclaredAgent | None) -> tuple[str, str] | Non
     return (app, "BOOLEY_AGENT_APP") if app in AGENT_CLIS else None
 
 
-def _auth_policies(
-    declared: DeclaredAgent, clis: tuple[str, ...], default_cli: str, *, lazy: bool
-) -> dict[str, str]:
-    """One policy per listed CLI: the declared one, then the environment hand-off."""
+def _declared_policies(declared: DeclaredAgent, clis: tuple[str, ...]) -> dict[str, str]:
+    """One declared policy per listed CLI, from ``[agent] auth`` alone (no environment)."""
     auth = declared.auth
     if isinstance(auth, str):
         if auth == GATEWAY_AUTH and "claude" in clis:
@@ -313,22 +339,38 @@ def _auth_policies(
                 "booley.toml [agent] auth='gateway' routes Codex only but claude is listed; "
                 "use an [agent.auth] table: codex = 'gateway'"
             )
-        policies = dict.fromkeys(clis, auth)
-    else:
-        unlisted = [cli for cli in auth or {} if cli not in clis]
-        if unlisted:
-            raise BackendConfigError(
-                f"booley.toml [agent.auth] {unlisted[0]} is not in [agent] clis"
-            )
-        policies = {cli: (auth or {}).get(cli, _DEFAULT_AUTH) for cli in clis}
+        return dict.fromkeys(clis, auth)
+    unlisted = [cli for cli in auth or {} if cli not in clis]
+    if unlisted:
+        raise BackendConfigError(f"booley.toml [agent.auth] {unlisted[0]} is not in [agent] clis")
+    return {cli: (auth or {}).get(cli, _DEFAULT_AUTH) for cli in clis}
+
+
+def _auth_policies(
+    declared: DeclaredAgent, clis: tuple[str, ...], default_cli: str, *, lazy: bool
+) -> dict[str, str]:
+    """One policy per listed CLI: the declared one, then the environment hand-off."""
+    policies = _declared_policies(declared, clis)
     if not _inside_container():  # the gateway is honored in a Sandbox only
         policies = {cli: _DEFAULT_AUTH if p == GATEWAY_AUTH else p for cli, p in policies.items()}
     if gateway_handoff_active():
         if "codex" in policies:
             policies["codex"] = GATEWAY_AUTH
+    elif lazy and (recorded := _recorded_cli_policies()):
+        policies.update({cli: p for cli, p in recorded.items() if cli in policies})
     elif lazy and env_auth_handoff() is not None:
-        policies[default_cli] = _env_auth()  # until #2755 hands off per CLI
+        policies[default_cli] = _env_auth()  # a hand-written spec without the CLI record
     return policies
+
+
+def _recorded_cli_policies() -> dict[str, str]:
+    """The ``BOOLEY_AGENT_CLIS`` record of the issued spec; empty when absent or malformed."""
+    raw = os.environ.get(AGENT_CLIS_ENV, "")
+    try:
+        return decode_cli_policies(raw)
+    except ValueError as exc:
+        logger.warning("Ignoring %s: %s", AGENT_CLIS_ENV, exc)
+        return {}
 
 
 def _retired_models_error(models: Mapping[str, Any], default_cli: str) -> BackendConfigError:
@@ -596,12 +638,22 @@ def _env_auth() -> str:
     return raw
 
 
-def project_credential_policy(
-    project_root: Path, *, booley_dir: Path | None = None
-) -> tuple[str, str]:
-    """The default CLI and its declared auth policy at an already-selected root.
+@dataclass(frozen=True, slots=True)
+class ProjectCredentialPolicies:
+    """The Agent CLIs a Project allows, its default and each CLI's declared policy."""
 
-    Reads booley.toml only (no environment) and fails closed on invalid input.
+    clis: tuple[str, ...]
+    default: str
+    policies: Mapping[str, str]
+
+
+def project_credential_policies(
+    project_root: Path, *, booley_dir: Path | None = None, selected: str | None = None
+) -> ProjectCredentialPolicies:
+    """The allowed CLI set with each CLI's declared policy at an already-selected root.
+
+    Reads booley.toml only (no environment) and fails closed on invalid input. With no
+    ``[agent]`` CLI declared the set is *selected* when that names a CLI, else Claude.
     """
     import tomllib
 
@@ -613,26 +665,36 @@ def project_credential_policy(
         except FileNotFoundError:
             booley_dir = project_root / ".booley"
     path = _resolve_booley_toml(booley_dir)
-    if not path.exists():
-        return _DEFAULT_PROVIDER, _DEFAULT_AUTH
-    try:
-        with path.open("rb") as stream:
-            data = tomllib.load(stream)
-    except (OSError, ValueError) as exc:
-        raise BackendConfigError(
-            "cannot read Project credential policy; repair booley.toml"
-        ) from exc
+    data: dict[str, Any] = {}
+    if path.exists():
+        try:
+            with path.open("rb") as stream:
+                data = tomllib.load(stream)
+        except (OSError, ValueError) as exc:
+            raise BackendConfigError(
+                "cannot read Project credential policy; repair booley.toml"
+            ) from exc
     agent = data.get("agent", {})
     if not isinstance(agent, dict):
         raise BackendConfigError("booley.toml [agent] must be a table")
     declared = parse_agent_section(agent)
-    cli = declared.default or _DEFAULT_PROVIDER
-    auth = declared.auth
-    policies = {auth} if isinstance(auth, str) else set((auth or {}).values())
-    if GATEWAY_AUTH in policies:  # whichever listed CLI asks for it, not only the default's
+    undeclared = selected if selected in AGENT_CLIS else _DEFAULT_PROVIDER
+    default = declared.default or undeclared
+    clis = declared.clis or (default,)
+    if default not in clis:
+        raise BackendConfigError(f"booley.toml [agent] default {default!r} is not in [agent] clis")
+    policies = _declared_policies(declared, clis)
+    if GATEWAY_AUTH in policies.values():  # whichever listed CLI asks for it
         raise BackendConfigError(
             "a Booley-issued Sandbox cannot route Codex through the gateway yet; "
             "use a hand-written Sandbox spec with BOOLEY_PRIMARY_AUTH=gateway"
         )
-    policy = auth if isinstance(auth, str) else (auth or {}).get(cli)
-    return cli, policy or _DEFAULT_AUTH
+    return ProjectCredentialPolicies(clis, default, policies)
+
+
+def project_credential_policy(
+    project_root: Path, *, booley_dir: Path | None = None
+) -> tuple[str, str]:
+    """The default CLI and its declared auth policy at an already-selected root."""
+    found = project_credential_policies(project_root, booley_dir=booley_dir)
+    return found.default, found.policies[found.default]

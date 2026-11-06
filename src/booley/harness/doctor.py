@@ -2746,6 +2746,7 @@ def _run_mcp_checks(
         image,
         docker_exe,
         declared_provider=_declared_provider(project),
+        declared_clis=_declared_clis(project),
         eda=project.eda,
         fpga_enabled=_flow_enabled(project, "fpga"),
         expected_cache_mount=nangate_pdk.CONTAINER_ROOT if nangate_pdk.is_ready() else None,
@@ -3005,6 +3006,14 @@ def _declared_provider(project: ProjectAudit | None) -> str | None:
     """
     declared = _declared_agent(project)
     return declared.default if declared else None
+
+
+def _declared_clis(project: ProjectAudit | None) -> tuple[str, ...] | None:
+    """The Agent CLIs ``[agent]`` explicitly allows (declared ``clis``, else the default)."""
+    declared = _declared_agent(project)
+    if declared is None:
+        return None
+    return declared.clis or ((declared.default,) if declared.default else None)
 
 
 def _configured_provider(project: ProjectAudit | None) -> str:

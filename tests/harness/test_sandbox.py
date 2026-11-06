@@ -283,3 +283,46 @@ def test_ephemeral_auth_uses_runner_project_policy(tmp_path, monkeypatch):
         assert "SYNTHETIC" not in " ".join(command)
     finally:
         runner._env_file.unlink(missing_ok=True)
+
+
+def test_ephemeral_shell_forwards_only_listed_cli_credentials(tmp_path, monkeypatch):
+    """``booley shell`` mounts and exports credentials for the listed CLIs only."""
+    from booley.runtime import auth_token
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    for key in (
+        "BOOLEY_DIR",
+        "BOOLEY_PRIMARY_AUTH",
+        "BOOLEY_PRIMARY_PROVIDER",
+        "BOOLEY_AGENT_APP",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_OPENAI")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_ANTHROPIC")
+    data = tmp_path / "project" / ".booley"
+    data.mkdir(parents=True)
+    (data / "booley.toml").write_text('[agent]\nclis = ["claude"]\n')
+    for app, body in (
+        ("claude", '{"claudeAiOauth":{"accessToken":"SYNTHETIC_LOGIN"}}'),
+        ("codex", '{"tokens":{"access_token":"SYNTHETIC_LOGIN"},"OPENAI_API_KEY":null}'),
+    ):
+        login = auth_token.subscription_creds_path(app)
+        login.parent.mkdir(parents=True, exist_ok=True)
+        login.write_text(body)
+    runner = DockerRunner(
+        DockerSandboxConfig(image="test-image", needs_network=False), data.parent
+    )
+
+    command = " ".join(runner._build_docker_cmd(["true"]))
+    try:
+        body = runner._env_file.read_text()
+        assert "ANTHROPIC_API_KEY=SYNTHETIC_ANTHROPIC" in body
+        assert "OPENAI_API_KEY" not in body
+        assert ".claude/.credentials.json" in command
+        assert ".codex" not in command
+    finally:
+        runner._env_file.unlink(missing_ok=True)

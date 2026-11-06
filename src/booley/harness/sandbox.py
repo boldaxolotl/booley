@@ -112,14 +112,9 @@ class DockerSandboxConfig:
 
 
 def _append_auth_mounts(
-    docker_cmd: list[str], plans: tuple[auth_token.CredentialPlan, ...] | None = None
+    docker_cmd: list[str], plans: tuple[auth_token.CredentialPlan, ...]
 ) -> None:
-    """Mount only login files permitted by the selected Project policy."""
-    plans = (
-        plans
-        if plans is not None
-        else tuple(auth_token.credential_plan(app) for app in auth_token.CREDENTIALS)
-    )
+    """Mount only the logins of the Project's listed CLIs that their policies permit."""
     for plan in plans:
         if plan.subscription_seed:
             relative = ".claude/.credentials.json" if plan.app == "claude" else ".codex/auth.json"
@@ -354,10 +349,18 @@ class DockerRunner:
         return ["/bin/sh", "-lc", script, "booley-preflight", *cmd]
 
     def _credential_plans(self) -> tuple[auth_token.CredentialPlan, ...]:
-        from booley.config.agent import project_credential_policy
+        """One plan per listed Agent CLI, each under its own ``[agent.auth]`` policy.
 
-        _, policy = project_credential_policy(self.worktree)
-        return tuple(auth_token.credential_plan(app, policy) for app in auth_token.CREDENTIALS)
+        A Project that lists no CLI gets exactly its effective default CLI (the
+        environment's ``BOOLEY_PRIMARY_PROVIDER`` / ``BOOLEY_AGENT_APP``, else Claude).
+        """
+        from booley.config.agent import project_credential_policies, resolve_default_cli
+
+        resolved = resolve_default_cli(None)
+        found = project_credential_policies(
+            self.worktree, selected=resolved[0] if resolved else None
+        )
+        return tuple(auth_token.credential_plan(cli, found.policies[cli]) for cli in found.clis)
 
     def _append_api_key_env_file(
         self, docker_cmd: list[str], plans: tuple[auth_token.CredentialPlan, ...] | None = None

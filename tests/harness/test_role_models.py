@@ -269,3 +269,67 @@ def test_specialists_match_registered_specialist_names():
 def test_models_is_a_recognized_top_level_table():
     audit = project_schema.audit_known_tables({"models": {}})
     assert audit.findings == ()
+
+
+def test_sandbox_settings_take_each_cli_policy_from_spec_record(tmp_path, monkeypatch):
+    """A Specialist subprocess reads each listed CLI's policy from the issued spec record."""
+    data = {
+        "agent": {"clis": ["claude", "codex"], "default": "claude"},
+    }
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", "claude=subscription,codex=api_key")
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
+
+    settings = bc.settings_from_data(data, lazy=True)
+
+    assert dict(settings.auth) == {"claude": "subscription", "codex": "api_key"}
+
+
+def test_malformed_spec_record_falls_back_to_the_default_cli_hand_off(monkeypatch):
+    data = {"agent": {"clis": ["claude", "codex"], "default": "claude"}}
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", "claude=subscription,codex=gateway")
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "api_key")
+
+    settings = bc.settings_from_data(data, lazy=True)
+
+    assert dict(settings.auth) == {"claude": "api_key", "codex": "auto"}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["claude", "claude=bogus", "gemini=auto", "claude=auto,claude=auto", "codex=gateway", "=auto"],
+)
+def test_cli_record_decoding_is_strict(raw):
+    with pytest.raises(ValueError):
+        bc.decode_cli_policies(raw)
+
+
+def test_cli_record_round_trips_in_order():
+    policies = {"codex": "api_key", "claude": "auto"}
+    assert bc.decode_cli_policies(bc.encode_cli_policies(policies)) == policies
+    assert bc.decode_cli_policies("") == {}
+
+
+def test_project_credential_policies_name_the_set_default_and_each_policy(tmp_path):
+    _write_toml(
+        tmp_path,
+        '[agent]\nclis = ["codex", "claude"]\ndefault = "claude"\n\n'
+        '[agent.auth]\ncodex = "api_key"\n',
+    )
+    found = bc.project_credential_policies(tmp_path, booley_dir=tmp_path / ".booley")
+    assert (found.clis, found.default, dict(found.policies)) == (
+        ("codex", "claude"),
+        "claude",
+        {"codex": "api_key", "claude": "auto"},
+    )
+
+
+def test_project_credential_policies_use_the_selected_cli_when_undeclared(tmp_path):
+    root = _write_toml(tmp_path, "")
+    booley_dir = root / ".booley"
+    assert bc.project_credential_policies(root, booley_dir=booley_dir).clis == ("claude",)
+    assert bc.project_credential_policies(root, booley_dir=booley_dir, selected="codex").clis == (
+        "codex",
+    )
+    assert bc.project_credential_policies(root, booley_dir=booley_dir, selected="none").clis == (
+        "claude",
+    )

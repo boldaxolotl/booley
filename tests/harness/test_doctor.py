@@ -588,10 +588,31 @@ def test_doctor_fails_and_does_not_stamp_agent_app_drift(
 
     output = colors.strip_ansi(capsys.readouterr().out)
     assert rc == 1
-    assert "  ✗  devcontainer.json BOOLEY_AGENT_APP 'claude'" in output
+    assert "  ✗  devcontainer.json Agent CLIs ['claude'] (BOOLEY_AGENT_APP 'claude')" in output
     assert re.search(r"^  ✗ failed +1$", output, re.M)
-    assert "[agent] provider 'codex'" in output
+    assert "[agent] clis ['codex']" in output
     assert doctor_stamp.load_stamp(booley_dir) is None
+
+
+def test_mcp_checks_report_spec_issued_for_other_cli_set(tmp_path, monkeypatch, capsys):
+    booley_dir = _write_project(tmp_path)
+    toml_path = booley_dir / "booley.toml"
+    toml_path.write_text(
+        toml_path.read_text(encoding="utf-8")
+        + '\n[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n',
+        encoding="utf-8",
+    )
+    dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+
+    rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+    output = colors.strip_ansi(capsys.readouterr().out)
+    assert rc == 1
+    assert (
+        "Agent CLIs ['claude'] (BOOLEY_AGENT_APP 'claude') != [agent] clis ['claude', 'codex']"
+        in output
+    )
 
 
 def test_doctor_warns_when_devcontainer_missing(tmp_path, monkeypatch, capsys):
@@ -9330,7 +9351,7 @@ def test_intentionally_omitted_token_seed_does_not_warn(tmp_path, monkeypatch, a
         native.parent.mkdir(parents=True)
         native.write_text('{"tokens":{"access_token":"SYNTHETIC_LOGIN"},"OPENAI_API_KEY":null}')
     plan = auth_token.credential_plan(app, policy)
-    spec = dc.build_devcontainer_spec(app, credential_plan=plan)
+    spec = dc.build_devcontainer_spec(app, cli_seeds=[dc.CliSeeds(plan)])
     dc.write_devcontainer(data.parent, spec)
     report = inspection.Findings()
     monkeypatch.setattr(inspection, "_image_current", lambda *args: True)
@@ -9402,7 +9423,8 @@ def test_seed_mount_policy_warns_only_for_missing_permitted_seed(
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "unrelated"))
     plan = auth_token.credential_plan(app, policy)
     spec = dc.build_devcontainer_spec(
-        app, credential_plan=plan, token_seed_source=str(plan.token_seed) if mounted else None
+        app,
+        cli_seeds=[dc.CliSeeds(plan, token_source=str(plan.token_seed) if mounted else None)],
     )
     request = inspection.RuntimeInspectionRequest(data.parent, "test-image", None)
     report = inspection.Findings()

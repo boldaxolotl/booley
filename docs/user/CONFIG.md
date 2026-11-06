@@ -150,7 +150,10 @@ clis = ["claude", "codex"]   # the Agent CLIs this Project may use
 default = "claude"           # must be one of them
 ```
 
-Without `clis`, the Project uses only the default CLI. Without `default`, the
+Without `clis`, the Project uses only the default CLI. `clis` also decides
+which logins the Sandbox receives, see
+[Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox).
+Without `default`, the
 first entry of `clis` is the default. `provider` is the older name for
 `default` and still works; `booley init` asks for it (default `claude`) and
 keeps your answer on re-runs, and `booley init --provider codex` sets it

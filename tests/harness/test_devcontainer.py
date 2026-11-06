@@ -1027,7 +1027,7 @@ def test_explicit_policy_partitions_persistent_state(tmp_path, monkeypatch):
         dc.build_devcontainer_spec(
             "claude",
             project_id="one-project",
-            credential_plan=auth_token.credential_plan("claude", mode),
+            cli_seeds=[dc.CliSeeds(auth_token.credential_plan("claude", mode))],
         )
         for mode in ("auto", "subscription", "api_key")
     ]

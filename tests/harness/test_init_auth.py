@@ -130,9 +130,10 @@ def test_issued_policy_uses_authorized_source_not_ambient_auth_handoff(
         InitContext(project_root=data.parent), init_cmd._NANGATE_PDK_NOT_REQUESTED, "claude", None
     )
     assert sources.project_data_source == selected
-    assert sources.credential_plan.policy == "api_key"
-    assert sources.credential_plan.selected.mode == auth_token.MODE_API_KEY
-    assert sources.auth_source is None
+    (plan,) = sources.credential_plans
+    assert plan.policy == "api_key"
+    assert plan.selected.mode == auth_token.MODE_API_KEY
+    assert plan.subscription_seed is None
 
 
 def test_overridden_credential_is_a_hint_under_the_winning_source(monkeypatch):
