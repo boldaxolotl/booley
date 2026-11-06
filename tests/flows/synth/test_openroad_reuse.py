@@ -8,6 +8,7 @@ reporting) is the production code.
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import shutil
@@ -306,13 +307,23 @@ _UNPROVABLE_SDC_LINES = {
 }
 
 
-@pytest.mark.parametrize("construct", [*sorted(_UNPROVABLE_SDC_LINES), "liberty_include_file"])
-def test_unprovable_tcl_never_reuses(bench: Bench, construct: str) -> None:
+_LIBERTY = "cell/lib/NangateOpenCellLibrary_typical_ccs.lib"
+_UNPROVABLE_OTHER: dict[str, Callable[[Bench, pytest.MonkeyPatch], None]] = {
+    "liberty_include_file": lambda b, _: _append(b.lib / _LIBERTY, "include_file(x);"),
+    "liberty_gzip": lambda b, _: (b.lib / _LIBERTY).write_bytes(gzip.compress(b"library(x){}")),
+    "relative_path_entry": lambda b, mp: mp.setenv("PATH", f".:{b.root / 'bin'}:/usr/bin:/bin"),
+}
+
+
+@pytest.mark.parametrize("construct", [*sorted(_UNPROVABLE_SDC_LINES), *sorted(_UNPROVABLE_OTHER)])
+def test_unprovable_tcl_never_reuses(
+    bench: Bench, monkeypatch: pytest.MonkeyPatch, construct: str
+) -> None:
     bench.run_fresh()
     bench.run_hit()  # the control SDC (comment, bus bits, brace-list, two getters) reuses
 
-    if construct == "liberty_include_file":
-        _append(bench.lib / "cell/lib/NangateOpenCellLibrary_typical_ccs.lib", "include_file(x);")
+    if construct in _UNPROVABLE_OTHER:
+        _UNPROVABLE_OTHER[construct](bench, monkeypatch)
     else:
         bench.sdc = SDC + _UNPROVABLE_SDC_LINES[construct] + "\n"
 

@@ -53,7 +53,6 @@ import unicodedata
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from booley.flows.synth.backends import pipeline
 from booley.flows.synth.backends.openroad import timing as openroad_timing
@@ -82,7 +81,7 @@ _IMAGE_ENV = (
 )
 # Strict SDC / wire-RC line grammar: constraint commands with no file operand
 # or I/O, and no Tcl builtins at all.
-_COMMANDS = frozenset({
+_SDC_COMMANDS = frozenset({
     "create_clock", "create_generated_clock", "set_input_delay", "set_output_delay",
     "set_false_path", "set_multicycle_path", "set_max_delay", "set_min_delay",
     "set_clock_groups", "set_clock_uncertainty", "set_clock_latency", "set_clock_transition",
@@ -91,7 +90,7 @@ _COMMANDS = frozenset({
     "set_disable_timing", "set_timing_derate", "set_ideal_network", "set_units", "group_path",
     "set_dont_touch", "set_layer_rc", "set_wire_rc",
 })
-_GETTERS = frozenset({
+_SDC_GETTERS = frozenset({
     "get_ports", "get_pins", "get_cells", "get_nets", "get_clocks", "all_inputs",
     "all_outputs", "all_clocks", "all_registers", "current_design",
 })
@@ -123,6 +122,15 @@ class Producer:
 
     run_id: str
     started_at: str  # UTC RFC 3339 with Z
+
+
+@dataclass(frozen=True)
+class SlotEntry:
+    """A published slot: its producer and the generation directory holding its files."""
+
+    producer: Producer
+    generation: Path
+    files: tuple[str, ...]
 
 
 def openroad_reuse_key(inputs: OpenRoadInputs | None) -> str | None:
@@ -163,29 +171,11 @@ def collect_openroad_inputs(
         ("wire_rc", pdk.layer_rc),
         ("liberty", spec.liberty),
     )
-    work_root = plan.build_dir.parent.resolve()
     sdc_files = tuple((f"sdc[{i}]", path) for i, path in enumerate(spec.timing.sdc))
-    reason = next(
-        (
-            f"{role} path {path} is relative"
-            for role, path in pdk_files + sdc_files
-            if not path.is_absolute()
-        ),
-        None,
-    ) or next(
-        (
-            f"{role} {path} is outside the Target work root"
-            for role, path in sdc_files
-            if not path.resolve().is_relative_to(work_root)
-        ),
-        None,
-    )
-    reason = reason or _tcl_files_decline_reason((("wire_rc", pdk.layer_rc), *sdc_files))
-    reason = reason or _liberty_decline_reason(spec.liberty)
     environment = _environment_record()
-    if environment is None:
-        reason = reason or "LD_PRELOAD or LD_AUDIT is set"
-    if reason is not None:
+    reason = _decline_reason(plan.build_dir.parent, pdk_files, sdc_files)
+    if reason is not None or environment is None:
+        reason = reason or "a preload library is set, or PATH has a relative entry"
         logger.info("OpenROAD reuse declined: %s", reason)
         return None
     files = (
@@ -200,6 +190,27 @@ def collect_openroad_inputs(
         ("environment", environment),
     )
     return OpenRoadInputs(files=files, texts=texts)
+
+
+def _decline_reason(
+    work_root: Path,
+    pdk_files: tuple[tuple[str, Path], ...],
+    sdc_files: tuple[tuple[str, Path], ...],
+) -> str | None:
+    """Why a file input cannot be keyed soundly, or ``None``."""
+    for role, path in pdk_files + sdc_files:
+        if not path.is_absolute():
+            # OpenROAD resolves it in the build dir, Booley in its own cwd.
+            return f"{role} path {path} is relative"
+    root = work_root.resolve()
+    for role, path in sdc_files:
+        if not path.resolve().is_relative_to(root):
+            return f"{role} {path} is outside the Target work root"
+    wire_rc = next(path for role, path in pdk_files if role == "wire_rc")
+    liberty = next(path for role, path in pdk_files if role == "liberty")
+    return _tcl_files_decline_reason((("wire_rc", wire_rc), *sdc_files)) or (
+        _liberty_decline_reason(liberty)
+    )
 
 
 def sandbox_identity() -> tuple[tuple[str, str], ...] | None:
@@ -253,9 +264,9 @@ def _line_decline_reason(raw: str) -> str | None:
     match = _COMMAND_LINE.fullmatch(raw)
     if match is None:
         return "argument is not a plain word, brace-list or getter"
-    if match["cmd"] not in _COMMANDS:
+    if match["cmd"] not in _SDC_COMMANDS:
         return f"command {match['cmd']!r} is not allowed"
-    bracket = next((g for g in _BRACKET_COMMAND.findall(raw) if g not in _GETTERS), None)
+    bracket = next((g for g in _BRACKET_COMMAND.findall(raw) if g not in _SDC_GETTERS), None)
     if bracket is not None:
         return f"bracket command {bracket!r} is not allowed"
     return None
@@ -277,12 +288,24 @@ def _liberty_decline_reason(liberty: Path) -> str | None:
         content = liberty.read_bytes()
     except OSError as exc:
         return f"liberty {liberty} is unreadable: {exc}"
-    return f"liberty {liberty} uses include_file" if b"include_file" in content else None
+    # A gzip liberty (read transparently) would hide include_file from this check.
+    if content.startswith(b"\x1f\x8b") or b"include_file" in content:
+        return f"liberty {liberty} is compressed or uses include_file"
+    return None
 
 
 def _environment_record() -> str | None:
-    """Sorted ``NAME=value`` lines of the keyed environment; ``None`` declines."""
-    if os.environ.get("LD_PRELOAD") or os.environ.get("LD_AUDIT"):
+    """Sorted ``NAME=value`` lines of the keyed environment; ``None`` declines.
+
+    Preloaded libraries name code the key would not hash.
+    """
+    preload = Path("/etc/ld.so.preload")
+    if os.environ.get("LD_PRELOAD") or os.environ.get("LD_AUDIT") or preload.exists():
+        return None
+    # A relative (or empty) PATH entry resolves from Booley's cwd, not the build dir.
+    if any(
+        not Path(entry).is_absolute() for entry in os.environ.get("PATH", "").split(os.pathsep)
+    ):
         return None
     names = sorted(
         name for name in os.environ if name in _ENV_EXACT or name.startswith(_ENV_PREFIXES)
@@ -321,10 +344,12 @@ def _ldd_paths(output: str) -> list[Path]:
     """Resolved library paths from ``ldd`` output; raises on an unresolved library."""
     paths: list[Path] = []
     for line in output.splitlines():
+        mapped = "=>" in line
         target = line.split("=>", 1)[-1].strip()
-        if target.startswith("not found"):
-            raise OSError(f"unresolved library: {line.strip()}")
-        if target.startswith("/"):
+        if mapped and not target.startswith("/"):
+            # "not found", or a relative LD_LIBRARY_PATH entry ldd resolved from its cwd.
+            raise OSError(f"library not resolved to an absolute path: {line.strip()}")
+        if target.startswith("/"):  # the vdso has no file
             paths.append(Path(target.split(" (", 1)[0]).resolve())
     return paths
 
@@ -370,32 +395,38 @@ class ReuseSlot:
     def __init__(self, root: Path) -> None:
         self.root = root
 
-    def matches(self, key: str) -> bool:
-        """Whether the published manifest was stored under *key*."""
-        manifest = self._manifest()
-        return manifest is not None and manifest.get("key") == key
-
-    def restore(self, key: str, build_dir: Path) -> Producer | None:
-        """Copy a matching slot's outputs into *build_dir* as new files; ``None`` on a miss."""
-        manifest = self._manifest()
-        if manifest is None or manifest.get("key") != key:
+    def lookup(self, key: str) -> SlotEntry | None:
+        """The published entry when it was stored under *key*, else ``None``."""
+        try:
+            manifest = json.loads((self.root / _MANIFEST).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             return None
-        generation = self.root / str(manifest.get("generation", ""))
+        if not isinstance(manifest, dict) or manifest.get("schema") != _SLOT_SCHEMA:
+            return None
+        if manifest.get("key") != key:
+            return None
+        return SlotEntry(
+            producer=Producer(**manifest["producer"]),
+            generation=self.root / manifest["generation"],
+            files=tuple(manifest["files"]),
+        )
+
+    def restore(self, entry: SlotEntry, build_dir: Path) -> bool:
+        """Copy *entry*'s outputs into *build_dir* as new files; ``False`` leaves none."""
         copied: list[Path] = []
         try:
-            for name in manifest["files"]:
+            for name in entry.files:
                 destination = build_dir / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 # copyfile, not copy2: new mtimes keep the stale-artifact guard unchanged.
-                shutil.copyfile(generation / name, destination)
+                shutil.copyfile(entry.generation / name, destination)
                 copied.append(destination)
-            producer = Producer(**manifest["producer"])
-        except (OSError, KeyError, TypeError) as exc:
+        except OSError as exc:
             logger.info("OpenROAD reuse slot %s unusable: %s", self.root, exc)
             for path in copied:
                 path.unlink(missing_ok=True)
-            return None
-        return producer
+            return False
+        return True
 
     def store(self, key: str, build_dir: Path, design: str, producer: Producer) -> None:
         """Publish this run's OpenROAD outputs under *key*, replacing the slot."""
@@ -428,15 +459,6 @@ class ReuseSlot:
         """Remove the slot so an unfinished OpenROAD run can never leave one that hits."""
         (self.root / _MANIFEST).unlink(missing_ok=True)
         self._remove_generations(keep=None)
-
-    def _manifest(self) -> dict[str, Any] | None:
-        try:
-            manifest = json.loads((self.root / _MANIFEST).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        if not isinstance(manifest, dict) or manifest.get("schema") != _SLOT_SCHEMA:
-            return None
-        return manifest
 
     def _remove_generations(self, keep: str | None) -> None:
         if not self.root.is_dir():

@@ -1516,16 +1516,16 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             openroad_reuse.collect_openroad_inputs(plan, identity)
         )
         slot = self._openroad_slot(target)
-        if key is not None and not self.args.fresh_openroad and slot.matches(key):
+        entry = slot.lookup(key) if key is not None and not self.args.fresh_openroad else None
+        if entry is not None:
             from booley.flows.terminal_progress import announce_unit
 
             # Before the copy: the log observer replays the restored openroad.log.
             announce_unit("candidate: OpenROAD reused", target=target)
-            producer = slot.restore(key, plan.build_dir)
-            if producer is not None:
+            if slot.restore(entry, plan.build_dir):
                 # The stage marker attributes the run to OpenROAD exactly as a fresh run.
                 stdout = yosys.stdout.rstrip("\n") + "\nBOOLEY_STAGE: sta\n"
-                return _SynthRun(replace(yosys, stdout=stdout), producer=producer)
+                return _SynthRun(replace(yosys, stdout=stdout), producer=entry.producer)
         slot.invalidate()
         openroad = self._run_openroad_stage(plan, timeout, start)
         return _SynthRun(_merge_stage_results(yosys, openroad), key=key, identity=identity)
@@ -1827,14 +1827,13 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         slot; they are interpreted exactly as a fresh run's, and labelled.
         """
         outcome, output = self._read_boundary_output(plan, proc_result)
+        metrics = _parse_synth_output(output, elapsed, plan.spec.timing.mode)
         if producer is not None:
             # At the end: run.log keeps only the tail of very long output.
             output += (
                 f"\nBOOLEY_OPENROAD_REUSED: run_id={producer.run_id} "
                 f"started_at={producer.started_at}"
             )
-        metrics = _parse_synth_output(output, elapsed, plan.spec.timing.mode)
-        if producer is not None:
             metrics.openroad_reuse = {
                 "producer_run_id": producer.run_id,
                 "producer_started_at": producer.started_at,
@@ -2748,15 +2747,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 if group.category == "combinational_loop" and group.disposition == "advisory"
             )
         if cur.openroad_reuse:
-            producer = cur.openroad_reuse
-            when = format_clock(producer.get("producer_started_at"))
-            lines.append(
-                note_line(
-                    tgt,
-                    "REUSED",
-                    f"OpenROAD results reused from run {producer.get('producer_run_id')} ({when})",
-                )
-            )
+            lines.append(self._format_reuse_line(tgt, cur.openroad_reuse))
         if cur.failure_output:
             lines.append(self._format_failure_output(tgt, cur))
         if cur.log_path:
@@ -3111,6 +3102,13 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         """``+1.2%`` against the baseline, ``—`` when it cannot be computed."""
         pct = cls._compute_delta_pct(current, baseline)
         return f"{pct:+.1f}%" if pct is not None else MISSING
+
+    @staticmethod
+    def _format_reuse_line(tgt: str, producer: dict[str, str]) -> str:
+        """Name the run whose OpenROAD results this run reused."""
+        when = format_clock(producer.get("producer_started_at"))
+        run = producer.get("producer_run_id")
+        return note_line(tgt, "REUSED", f"OpenROAD results reused from run {run} ({when})")
 
     @staticmethod
     def _format_io_bound_line(tgt: str, cur: SynthMetrics) -> str:
