@@ -666,9 +666,10 @@ def _insert_agent_fields(content: str, fields: dict[str, str]) -> str:
     """Record ``fields`` in ``[agent]``, leaving the rest of the file byte-identical.
 
     With an existing ``agent`` table each missing key lands directly after the
-    table's last non-blank line (after a multi-line value's closing line, and
-    before the blank lines separating it from the next header). Without one,
-    an ``[agent]`` table is appended at the end of the file.
+    table's last non-blank line: after a multi-line value's closing line and
+    after a whole-line comment in the table body, but before the blank lines
+    that separate the table from the next header. Without one, an ``[agent]``
+    table is appended at the end of the file.
     """
     document = tomlkit.parse(content)
     if "agent" not in document:

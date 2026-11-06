@@ -477,8 +477,7 @@ def test_recorded_auth_follows_last_agent_key(tmp_path, before, after):
 
     written = config.read_text(encoding="utf-8")
     assert written == after
-    if "notes" in before:
-        assert tomllib.loads(written)["agent"]["notes"] == [["a", "b"]]
+    assert tomllib.loads(written)["agent"]["auth"] == "auto"
 
 
 def test_persisting_auth_preserves_existing_git_identity(tmp_path):
