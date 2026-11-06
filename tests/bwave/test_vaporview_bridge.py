@@ -199,6 +199,24 @@ def test_ping_rejects_unsupported_or_malformed_reports(home, servers, result):
         bridge.BridgeClient(server.path).ping()
 
 
+def test_ping_without_trusted_is_unknown(home, servers):
+    server = _serve(servers, home, "window-1.sock", lambda req: _ok(_ping()))
+    assert bridge.BridgeClient(server.path).ping().trusted is None
+
+
+@pytest.mark.parametrize("trusted", [True, False])
+def test_ping_reports_workspace_trust(home, servers, trusted):
+    server = _serve(servers, home, "window-1.sock", lambda req: _ok(_ping(trusted=trusted)))
+    assert bridge.BridgeClient(server.path).ping().trusted is trusted
+
+
+@pytest.mark.parametrize("trusted", ["no", 0, 1])
+def test_ping_rejects_non_boolean_trusted(home, servers, trusted):
+    server = _serve(servers, home, "window-1.sock", lambda req: _ok(_ping(trusted=trusted)))
+    with pytest.raises(bridge.BridgeProtocolError, match="trusted"):
+        bridge.BridgeClient(server.path).ping()
+
+
 def test_discover_finds_live_bridges_and_prunes_dead_sockets(home, servers):
     live = _serve(servers, home, "window-1.sock", lambda req: _ok(_ping()))
     dead_path = bridge.bridge_dir(home) / "window-2.sock"
@@ -291,9 +309,18 @@ def test_doctor_summary_reports_each_window_without_raising(home, servers):
 
     summary = bridge.doctor_summary(home)
 
-    assert summary["bridges"][0] == {"vaporview": vaporview.VERIFIED_VERSION, "error": None}
-    assert summary["bridges"][1] == {"vaporview": None, "error": "VaporView is not installed"}
+    assert summary["bridges"][0] == {
+        "vaporview": vaporview.VERIFIED_VERSION,
+        "error": None,
+        "trusted": None,
+    }
+    assert summary["bridges"][1] == {
+        "vaporview": None,
+        "error": "VaporView is not installed",
+        "trusted": None,
+    }
     assert summary["bridges"][2]["vaporview"] is None
+    assert summary["bridges"][2]["trusted"] is None
     assert "malformed" in summary["bridges"][2]["error"]
 
 

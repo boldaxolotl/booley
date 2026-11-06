@@ -14,6 +14,7 @@ import tomllib
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import MagicMock
 
 import pytest
@@ -2871,7 +2872,9 @@ class TestViewerBridgeCheck:
             first_target="x",
         )
 
-    _HEALTHY: tuple[dict, ...] = ({"vaporview": vaporview.VERIFIED_VERSION, "error": None},)
+    _HEALTHY: tuple[dict, ...] = (
+        {"vaporview": vaporview.VERIFIED_VERSION, "error": None, "trusted": True},
+    )
 
     def _run(
         self,
@@ -2941,7 +2944,10 @@ class TestViewerBridgeCheck:
         rec = self._run(
             tmp_path,
             monkeypatch,
-            bridges=[*self._HEALTHY, {"vaporview": None, "error": "VaporView is not installed"}],
+            bridges=[
+                *self._HEALTHY,
+                {"vaporview": None, "error": "VaporView is not installed", "trusted": True},
+            ],
             extension_state=ExtensionState.MISSING,
         )
 
@@ -2970,6 +2976,59 @@ class TestViewerBridgeCheck:
         failure = next(m for lvl, m in rec.events if lvl == "fail")
         assert "could not determine whether VaporView is installed" in failure
         assert "VaporView extension is not installed" not in failure
+
+    _UNTRUSTED: ClassVar[dict] = {
+        "vaporview": None,
+        "error": "VaporView (lramseyer.vaporview) is not installed in this VS Code window",
+        "trusted": False,
+    }
+
+    def test_untrusted_window_skips_instead_of_failing(self, tmp_path, monkeypatch):
+        """Restricted Mode disables VaporView, so the bridge cannot see it: not a fault."""
+        rec = self._run(tmp_path, monkeypatch, bridges=[self._UNTRUSTED], in_container=True)
+
+        assert rec.kinds() == {"skip"}
+        skipped = next(m for lvl, m in rec.events if lvl == "skip")
+        assert "workspace trust" in skipped
+        assert "booley doctor" in skipped
+
+    def test_untrusted_window_with_missing_vaporview_still_fails(self, tmp_path, monkeypatch):
+        from booley.runtime.vaporview import ExtensionState
+
+        rec = self._run(
+            tmp_path,
+            monkeypatch,
+            bridges=[self._UNTRUSTED],
+            extension_state=ExtensionState.MISSING,
+        )
+
+        assert rec.kinds() == {"fail"}
+        failure = next(m for lvl, m in rec.events if lvl == "fail")
+        assert "--install-extension /usr/local/libexec/booley/vaporview-" in failure
+
+    def test_untrusted_window_beside_a_healthy_one_passes(self, tmp_path, monkeypatch):
+        rec = self._run(tmp_path, monkeypatch, bridges=[*self._HEALTHY, self._UNTRUSTED])
+
+        assert rec.kinds() == {"pass"}
+        passed = next(m for lvl, m in rec.events if lvl == "pass")
+        assert "waits for workspace trust" in passed
+
+    def test_untrusted_and_trusted_broken_windows_still_fail(self, tmp_path, monkeypatch):
+        broken = {"vaporview": None, "error": "VaporView reports no version", "trusted": True}
+
+        rec = self._run(tmp_path, monkeypatch, bridges=[self._UNTRUSTED, broken])
+
+        assert rec.kinds() == {"fail"}
+        failure = next(m for lvl, m in rec.events if lvl == "fail")
+        assert "no version" in failure
+
+    def test_broken_window_without_trust_field_still_fails(self, tmp_path, monkeypatch):
+        """An older extension never reports trust; absence is not 'untrusted'."""
+        legacy = {**self._UNTRUSTED, "trusted": None}
+
+        rec = self._run(tmp_path, monkeypatch, bridges=[legacy])
+
+        assert rec.kinds() == {"fail"}
 
     def test_healthy_bridge_does_not_probe_extension_state(self, tmp_path, monkeypatch):
         rec = self._run(
@@ -3201,23 +3260,31 @@ def test_vaporview_extension_probe_preserves_state_and_prefix(monkeypatch, retur
         (
             0,
             f'{{"bridges": [{{"vaporview": "{vaporview.VERIFIED_VERSION}", "error": null}}]}}',
-            [{"vaporview": vaporview.VERIFIED_VERSION, "error": None}],
+            [{"vaporview": vaporview.VERIFIED_VERSION, "error": None, "trusted": None}],
+        ),
+        (
+            0,
+            '{"bridges": [{"vaporview": null, "error": "gone", "trusted": false}]}',
+            [{"vaporview": None, "error": "gone", "trusted": False}],
         ),
         (0, '{"bridges": []}', []),
         (1, "Traceback (ImportError)", None),
         (0, "not json", None),
         (0, "[]", None),
         (0, '{"bridges": [{"vaporview": 5, "error": null}]}', None),
+        (0, '{"bridges": [{"vaporview": null, "error": null, "trusted": "no"}]}', None),
         (FileNotFoundError("docker"), "", None),
         (subprocess.TimeoutExpired("docker", 20), "", None),
     ],
     ids=[
         "healthy",
+        "trusted-false",
         "none",
         "old-booley",
         "garbage",
         "not-object",
         "bad-version",
+        "bad-trusted",
         "no-docker",
         "timeout",
     ],
