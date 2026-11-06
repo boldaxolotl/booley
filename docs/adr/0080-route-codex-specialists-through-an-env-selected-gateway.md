@@ -1,6 +1,6 @@
 # Route Codex Specialists through an env-selected gateway
 
-Status: accepted (amended 2026-10-29: token command; amended for interactive Codex, #2270; text-only Specialists, #2269; and text-only runs without a tool allowlist or a cached model, #2437; see Amendments)
+Status: accepted (amended 2026-10-29: token command; amended for interactive Codex, #2270; text-only Specialists, #2269; and text-only runs without a tool allowlist or a cached model, #2437; `[agent.auth] codex = "gateway"`, #2753; see Amendments)
 
 ## Context
 
@@ -140,3 +140,7 @@ amend the #2269 bullets above; the originals stay as history.
   model in the Codex models cache". A cache that cannot be read or parsed, or
   that lists the model twice, still fails loud: that is a fault, not a missing
   model.
+
+## Amendments (#2753)
+
+- [ADR 0084](0084-run-each-specialist-on-the-agent-cli-its-model-implies.md) supersedes the "Environment only" bullet: `[agent.auth] codex = "gateway"` is valid and honored inside a Sandbox; URL and token still come only from the environment.

@@ -152,7 +152,7 @@ def test_auto_choice_reaches_every_consumer(sandbox, monkeypatch, capsys, kind):
         set_agent_settings(None)  # Specialists load lazily; the MCP server loads the Project
         read_settings()
         settings = get_agent_settings()
-        assert (settings.provider, settings.auth) == (app, policy)
+        assert (settings.default_cli, settings.auth_for(app)) == (app, policy)
     assert doctor._configured_provider(None) == app
     assert doctor._configured_auth_policy(None) == policy
     monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
@@ -170,7 +170,10 @@ def test_consumers_keep_the_start_choice_when_a_credential_appears_later(
 
     assert doctor._configured_provider(None) == "codex"
     assert doctor._configured_auth_policy(None) == "gateway"
-    assert (get_agent_settings().provider, get_agent_settings().auth) == ("codex", "gateway")
+    assert (get_agent_settings().default_cli, get_agent_settings().auth_for("codex")) == (
+        "codex",
+        "gateway",
+    )
     assert config_agent.env_auth_handoff() == "gateway"
 
 
@@ -246,7 +249,7 @@ def test_visitor_credential_beats_a_configured_gateway(
 
     assert f"app:{app} " in status
     assert not config_agent.gateway_handoff_active()
-    assert get_agent_settings().auth == "auto"
+    assert set(get_agent_settings().auth.values()) == {"auto"}
     assert "booley_gateway" not in _codex_config(sandbox.home)
 
 

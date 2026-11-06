@@ -162,7 +162,6 @@ class TestFiltering:
     def test_filtered_dests(self):
         p = _make_parser()
         p.add_argument("--report-dir", type=Path)
-        p.add_argument("--model", choices=["a", "b"])
         p.add_argument("--instruction")
         p.add_argument("--transcript-dir", type=Path)
         p.add_argument("--max-turns", type=int)
@@ -176,7 +175,6 @@ class TestFiltering:
             "instruction",
             "transcript_dir",
             "timeout_ms",
-            "model",
             "max_turns",
             "help",
         ):
@@ -286,7 +284,6 @@ def test_specialist_schemas_expose_bounded_agent_controls(
 
     assert schema["additionalProperties"] is False
     assert {
-        "model",
         "max_turns",
         "timeout_ms",
         "timeout",
@@ -302,11 +299,10 @@ def test_specialist_custom_schema_keeps_public_agent_controls() -> None:
                 "type": "object",
                 "properties": {
                     "custom": {"type": "string"},
-                    "model": {"type": "string"},
                     "max_turns": {"type": "integer"},
                     "timeout_ms": {"type": "integer"},
                 },
-                "required": ["custom", "model", "max_turns", "timeout_ms"],
+                "required": ["custom", "max_turns", "timeout_ms"],
             }
 
     schema = flow_schema(CustomSchemaReviewer())

@@ -1,32 +1,33 @@
-"""Tests for [models.roles] — per-agent model pins.
+"""Tests for the Agent CLI set (``[agent]``) and per-Specialist model pins (``[models]``).
 
-Covers the knob end to end: parsing/validation, resolution precedence in
-AgentSettings and the specialist subprocess consumer path,
-subprocesses via the lazy config), and doctor's schema checks.
+Covers parsing/validation, resolution in AgentSettings, the eager loader and the
+Specialist subprocess (lazy) path, Sandbox credential policy, and Doctor's audits.
+Symbols added with the per-Specialist model table are imported inside test bodies so
+these tests fail in their bodies, not at collection, against older code.
 """
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from booley.audit import project_schema
+from booley.audit.config_common import ConfigFindingSeverity
 from booley.config import agent as bc
-from booley.config.agent import (
-    _KNOWN_ROLES,
-    _MODEL_TIERS,
-    AgentSettings,
-    BackendConfigError,
-    _parse_role_models,
-    _parse_tier_models,
-    _resolve_tier_models,
-    load_agent_settings,
-)
+from booley.config.agent import AgentSettings, BackendConfigError, load_agent_settings
 
-# Pins that once looked valid but that no agent call ever read.
-RETIRED_ROLE_NAMES = ("developer", "recovery", "triage_report")
+# Booley's built-in models per Agent CLI: (Specialist model, internal model, Specialist effort).
+_BUILTIN = {
+    "claude": ("claude-opus-5-5", "claude-sonnet-5-5", None),
+    "codex": ("gpt-6.1-sol", "gpt-6-luna", "high"),
+}
+
+
+# Literal (not bc.SPECIALISTS) so collection works on any version; the drift guard
+# below keeps the Specialist vocabulary itself honest.
+_SPECIALIST_NAMES = ("coverage_analyst", "mutation_tester", "reviewer")
 
 
 @pytest.fixture(autouse=True)
@@ -52,276 +53,203 @@ def _write_toml(root: Path, body: str) -> Path:
     return root
 
 
-# --- parsing -----------------------------------------------------------------
-
-
-class TestParseRoleModels:
-    def test_absent_roles_table_is_empty(self):
-        assert _parse_role_models({}) == {}
-        assert _parse_role_models({"heavy": "claude-opus-4-8"}) == {}
-
-    def test_parses_every_known_role(self):
-        section = {"roles": dict.fromkeys(_KNOWN_ROLES, "claude-opus-4-8")}
-        assert _parse_role_models(section) == dict.fromkeys(_KNOWN_ROLES, "claude-opus-4-8")
-
-    def test_values_are_stripped(self):
-        assert _parse_role_models({"roles": {"reviewer": "  light  "}}) == {"reviewer": "light"}
-
-    def test_unknown_role_raises(self):
-        # The whole point of the knob is that a pin is honored; a typo that
-        # silently bills a different model is the failure mode to prevent.
-        with pytest.raises(BackendConfigError, match="unknown role 'reviwer'") as excinfo:
-            _parse_role_models({"roles": {"reviwer": "claude-opus-4-8"}})
-        # Only Specialist roles are offered as the valid set.
-        assert "valid roles are coverage_analyst, mutation_tester, reviewer." in str(excinfo.value)
-
-    def test_retired_role_raises(self):
-        # These pins never changed any model; refuse them so they cannot
-        # silently do nothing.
-        for role in RETIRED_ROLE_NAMES:
-            with pytest.raises(BackendConfigError, match="retired") as excinfo:
-                _parse_role_models({"roles": {role: "heavy"}})
-            assert repr(role) in str(excinfo.value)
-            assert "remove" in str(excinfo.value)
-
-    @pytest.mark.parametrize("bad", [42, "", "   ", None, ["claude-opus-4-8"]])
-    def test_non_string_or_empty_value_raises(self, bad):
-        with pytest.raises(BackendConfigError, match="is invalid"):
-            _parse_role_models({"roles": {"reviewer": bad}})
-
-    def test_roles_not_a_table_raises(self):
-        with pytest.raises(BackendConfigError, match="must be a table"):
-            _parse_role_models({"roles": "claude-opus-4-8"})
-
-
-class TestParseTierModels:
-    def test_sparse_only_declared_tiers(self):
-        # Undeclared tiers must stay absent so they can follow whichever
-        # provider ultimately wins — see _resolve_tier_models.
-        assert _parse_tier_models({"heavy": "x"}) == {"heavy": "x"}
-
-    def test_none_when_nothing_declared(self):
-        assert _parse_tier_models({"roles": {"reviewer": "light"}}) is None
-
-    def test_ignores_non_string_tier(self):
-        assert _parse_tier_models({"heavy": 7, "light": "y"}) == {"light": "y"}
-
-    def test_overrides_merge_over_provider_defaults(self):
-        tiers = _resolve_tier_models("codex", {"heavy": "gpt-custom"})
-        assert tiers["heavy"] == "gpt-custom"
-        # Undeclared tiers stay on the *codex* defaults, not Claude's.
-        assert tiers["light"] == bc._PROVIDER_TIER_MODELS["codex"]["light"]
-
-
-# --- resolution --------------------------------------------------------------
-
-
-class TestModelForRole:
-    def _cfg(self, roles):
-        return AgentSettings(
-            tier_models={"heavy": "big", "standard": "mid", "light": "small"},
-            role_models=roles,
-        )
-
-    def test_unpinned_role_falls_back_to_tier(self):
-        assert self._cfg({}).model_for_role("reviewer", "standard") == "mid"
-
-    def test_pin_to_literal_model_id_wins(self):
-        cfg = self._cfg({"reviewer": "claude-opus-4-8"})
-        assert cfg.model_for_role("reviewer", "standard") == "claude-opus-4-8"
-
-    def test_pin_to_tier_name_resolves_through_tier_table(self):
-        # A tier-named pin keeps tracking that tier's [models] override.
-        cfg = self._cfg({"mutation_tester": "light"})
-        assert cfg.model_for_role("mutation_tester", "standard") == "small"
-
-    def test_pin_only_affects_its_own_role(self):
-        cfg = self._cfg({"reviewer": "big"})
-        assert cfg.model_for_role("mutation_tester", "standard") == "mid"
-
-    def test_pin_below_floor_is_honored(self):
-        # An explicit pin deliberately beats min_model: the floor guards
-        # Booley's tier defaults, not a choice the user wrote down.
-        cfg = self._cfg({"reviewer": "light"})
-        assert cfg.model_for_role("reviewer", "heavy") == "small"
-
-    def test_model_settings_maps_every_resolved_model(self):
-        cfg = AgentSettings(
-            tier_models={"heavy": "big", "standard": "mid", "light": "mid"},
-            role_models={
-                "reviewer": "light",
-                "mutation_tester": "custom",
-                "coverage_analyst": "big",
-            },
-        )
-        assert cfg.model_settings() == {
-            "big": ("[models] heavy", "[models.roles] coverage_analyst"),
-            "mid": ("[models] standard", "[models] light", "[models.roles] reviewer"),
-            "custom": ("[models.roles] mutation_tester",),
-        }
-
-    def test_model_settings_under_gateway_pin_is_the_pin(self):
-        cfg = AgentSettings(role_models={"reviewer": "light"}, model_pin="gw-model")
-        assert cfg.model_settings() == {"gw-model": ("BOOLEY_GATEWAY_MODEL",)}
-
-
 # --- load path ---------------------------------------------------------------
 
 
-class TestLoadAgentSettings:
-    @pytest.mark.parametrize(
-        ("provider", "expected"),
+_PROVIDER_AND_STRING_AUTH_RESOLVE_AS_TODAY_CASES = ["claude", "codex"]
+
+
+def test_provider_and_string_auth_resolve_as_today(tmp_path):
+    """A pre-existing ``provider`` + string ``auth`` config keeps today's models."""
+    for cli in _PROVIDER_AND_STRING_AUTH_RESOLVE_AS_TODAY_CASES:
+        _write_toml(tmp_path, f'[agent]\nprovider = "{cli}"\nauth = "subscription"\n')
+        settings = load_agent_settings(tmp_path)
+        specialist_model, internal_model, effort = _BUILTIN[cli]
+
+        assert settings.default_cli == cli
+        assert settings.auth_for(cli) == "subscription"
+        for name in sorted(bc.SPECIALISTS):
+            assert settings.cli_for_specialist(name) == cli
+            assert settings.model_for_specialist(name) == specialist_model
+        assert settings.internal_model() == internal_model
+        assert settings.effort_for(cli) == effort
+
+
+_INVALID_CONFIG_FAILS_LOADING_NAMING_KEY_CASES = [
+    ('[models]\nreviwer = "claude-opus-5-5"\n', ("reviwer",)),
+    ('[models]\nreviewer = "o3-mini"\n', ("reviewer",)),
+    ('[agent]\ndefault = "claude"\n\n[models]\nreviewer = "gpt-6-luna"\n', ("reviewer", "codex")),
+    ('[agent]\ndefault = "claude"\nprovider = "codex"\n', ("default", "provider")),
+    ('[agent.auth]\nclaude = "gateway"\n', ("[agent.auth] claude",)),
+    ('[agent]\nclis = ["claude", "codex"]\nauth = "gateway"\n', ("[agent] auth", "claude")),
+]
+
+
+def test_invalid_config_fails_loading_naming_key(tmp_path):
+    """Loading and Doctor's audit refuse the same config with the same message."""
+    for body, keys in _INVALID_CONFIG_FAILS_LOADING_NAMING_KEY_CASES:
+        from booley.audit.agent_schema import audit_agent_table, audit_models_table
+
+        _write_toml(tmp_path, body)
+        with pytest.raises(BackendConfigError) as excinfo:
+            load_agent_settings(tmp_path)
+        message = str(excinfo.value)
+        for key in keys:
+            assert key in message
+
+        data = tomllib.loads(body)
+        findings = audit_agent_table(data).findings + audit_models_table(data).findings
+        fails = [f.message for f in findings if f.severity is ConfigFindingSeverity.FAIL]
+        assert fails == [message]
+
+
+_RETIRED_MODEL_KEYS_FAIL_WITH_MIGRATION_ENTRIES_CASES = [
+    (
+        '[models]\nstandard = "claude-sonnet-5-5"\n',
+        ["[models]", *(f'{n} = "claude-sonnet-5-5"' for n in _SPECIALIST_NAMES)],
+    ),
+    (
+        '[agent]\ndefault = "claude"\n\n[models.roles]\nreviewer = "gpt-6-luna"\n',
         [
-            (
-                "claude",
-                {
-                    "heavy": "claude-fable-5-1",
-                    "standard": "claude-opus-5-5",
-                    "light": "claude-sonnet-5-5",
-                },
-            ),
-            (
-                "codex",
-                {
-                    "heavy": "gpt-6-astra",
-                    "standard": "gpt-6.1-sol",
-                    "light": "gpt-6-luna",
-                },
-            ),
+            "[models]",
+            'reviewer = "gpt-6-luna"',
+            'mutation_tester = "claude-opus-5-5"',
+            "[agent]",
+            'clis = ["claude", "codex"]',
         ],
-        ids=["claude", "codex"],
+    ),
+]
+
+
+def test_retired_model_keys_fail_with_migration_entries(tmp_path):
+    """Tier keys and ``[models.roles]`` fail, showing the equivalent new lines."""
+    for body, expected in _RETIRED_MODEL_KEYS_FAIL_WITH_MIGRATION_ENTRIES_CASES:
+        _write_toml(tmp_path, body)
+        with pytest.raises(BackendConfigError) as excinfo:
+            load_agent_settings(tmp_path)
+        lines = str(excinfo.value).splitlines()
+        for line in expected:
+            assert line in lines
+
+
+_EAGER_AND_LAZY_RESOLVE_THE_SAME_DEFAULT_CLI_CASES = [
+    (
+        {"BOOLEY_PRIMARY_PROVIDER": "codex"},
+        '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n',
+        "codex",
+    ),
+    ({"BOOLEY_AGENT_APP": "codex"}, "", "codex"),
+    ({"BOOLEY_AGENT_APP": "none"}, "", "claude"),
+    ({}, '[agent]\ndefault = "codex"\n', "codex"),
+    ({}, '[agent]\nclis = ["codex", "claude"]\n', "codex"),
+]
+
+
+def test_eager_and_lazy_resolve_the_same_default_cli(tmp_path, monkeypatch):
+    """The MCP server's eager loader and a Specialist's lazy loader agree on the CLI."""
+    for env, body, expected in _EAGER_AND_LAZY_RESOLVE_THE_SAME_DEFAULT_CLI_CASES:
+        for name in ("BOOLEY_PRIMARY_PROVIDER", "BOOLEY_AGENT_APP", "BOOLEY_DIR"):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        _write_toml(tmp_path, body)
+
+        eager = load_agent_settings(tmp_path).default_cli
+        monkeypatch.setattr(bc, "_agent_settings", None)
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+        lazy = bc.get_agent_settings().default_cli
+
+        assert (eager, lazy) == (expected, expected)
+
+
+@pytest.mark.parametrize(
+    ("model_pin", "expected"),
+    [
+        pytest.param(
+            None,
+            {
+                "claude-opus-5-5": ("[models] coverage_analyst", "[models] mutation_tester"),
+                "gpt-6-luna": ("[models] reviewer",),
+            },
+            id="pins",
+        ),
+        pytest.param(
+            "gw-model",
+            {
+                "claude-opus-5-5": ("[models] coverage_analyst", "[models] mutation_tester"),
+                "gw-model": ("BOOLEY_GATEWAY_MODEL",),
+            },
+            id="gateway-pin-codex-only",
+        ),
+    ],
+)
+def test_model_settings_maps_each_model_to_its_keys(model_pin, expected):
+    """Every Specialist model maps to the key selecting it; the gateway pin hits Codex only."""
+    settings = AgentSettings(
+        clis=("claude", "codex"),
+        specialist_models={"reviewer": "gpt-6-luna"},
+        model_pin=model_pin,
     )
-    def test_default_tiers_by_provider(self, tmp_path, provider, expected):
-        """A project with only [agent] provider gets that provider's current tiers."""
-        _write_toml(tmp_path, f'[agent]\nprovider = "{provider}"\n')
-        load_agent_settings(tmp_path)
-        cfg = bc.get_agent_settings()
-        assert {tier: cfg.model_for_tier(tier) for tier in expected} == expected
+    assert settings.model_settings() == expected
 
-    def test_roles_land_in_backend_config(self, tmp_path):
-        _write_toml(
-            tmp_path,
-            '[agent]\nprovider = "claude"\n\n'
-            '[models.roles]\nreviewer = "claude-sonnet-4-6"\nmutation_tester = "light"\n',
-        )
-        load_agent_settings(tmp_path)
-        cfg = bc.get_agent_settings()
-        assert cfg.model_for_role("reviewer", "heavy") == "claude-sonnet-4-6"
-        assert cfg.model_for_role("mutation_tester", "heavy") == cfg.model_for_tier("light")
 
-    def test_retired_role_refuses_to_load(self, tmp_path):
-        from booley.audit.agent_schema import audit_models_table
+def test_project_credential_policy_refuses_toml_gateway(tmp_path):
+    """Sandbox Issuance cannot route Codex through the gateway from booley.toml yet."""
+    _write_toml(tmp_path, '[agent]\nprovider = "codex"\nauth = "gateway"\n')
+    with pytest.raises(BackendConfigError, match="gateway"):
+        bc.project_credential_policy(tmp_path, booley_dir=tmp_path / ".booley")
 
-        _write_toml(tmp_path, '[models.roles]\ndeveloper = "heavy"\n')
-        with pytest.raises(BackendConfigError, match="retired") as excinfo:
-            load_agent_settings(tmp_path)
-        # The same error Doctor reports for the same [models] data.
-        doctor = audit_models_table({"models": {"roles": {"developer": "heavy"}}})
-        assert [finding.message for finding in doctor.findings] == [str(excinfo.value)]
+    _write_toml(
+        tmp_path,
+        '[agent]\nclis = ["claude", "codex"]\ndefault = "codex"\n\n'
+        '[agent.auth]\nclaude = "api_key"\ncodex = "subscription"\n',
+    )
+    assert bc.project_credential_policy(tmp_path, booley_dir=tmp_path / ".booley") == (
+        "codex",
+        "subscription",
+    )
 
-    def test_models_honored_without_an_agent_table(self, tmp_path):
-        # Regression: [models] used to be read only when [agent] existed, so
-        # every model setting in an [agent]-less project was silently inert.
-        _write_toml(tmp_path, '[models]\nheavy = "custom-heavy"\n')
-        load_agent_settings(tmp_path)
-        assert bc.get_agent_settings().model_for_tier("heavy") == "custom-heavy"
 
-    def test_tier_override_is_sparse(self, tmp_path):
-        _write_toml(tmp_path, '[models]\nheavy = "custom-heavy"\n')
-        load_agent_settings(tmp_path)
-        cfg = bc.get_agent_settings()
-        assert cfg.model_for_tier("light") == bc._PROVIDER_TIER_MODELS["claude"]["light"]
-
-    def test_unknown_role_refuses_to_load(self, tmp_path):
-        _write_toml(tmp_path, '[models.roles]\nnope = "claude-opus-4-8"\n')
-        with pytest.raises(BackendConfigError, match="unknown role"):
+def test_malformed_clis_entries_fail_naming_the_key(tmp_path):
+    """A nested list or table in ``clis`` is a config error, not an unhashable crash."""
+    for entry in ('["claude"]', "{ a = 1 }", '"claude", "claude"', '"gemini"'):
+        _write_toml(tmp_path, f"[agent]\nclis = [{entry}]\n")
+        with pytest.raises(BackendConfigError, match="clis"):
             load_agent_settings(tmp_path)
 
 
-class TestSpecialistSubprocessPath:
-    """A specialist subprocess resolves settings lazily.
-
-    It resolves through _lazy_agent_settings → _project_config_from_env, so the
-    project's pins have to survive that path or the knob silently does nothing
-    for exactly the agents it was built to configure.
-    """
-
-    def test_lazy_config_picks_up_role_pins(self, tmp_path, monkeypatch):
-        _write_toml(tmp_path, '[models.roles]\nreviewer = "claude-opus-4-8"\n')
-        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-        cfg = bc.get_agent_settings()
-        assert cfg.model_for_role("reviewer", "standard") == "claude-opus-4-8"
-
-    def test_lazy_config_refuses_retired_role(self, tmp_path, monkeypatch):
-        _write_toml(tmp_path, '[models.roles]\nrecovery = "light"\n')
-        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-        with pytest.raises(BackendConfigError, match="retired"):
-            bc.get_agent_settings()
-
-    def test_env_provider_handoff_still_applies_project_models(self, tmp_path, monkeypatch):
-        # The developer hands off BOOLEY_PRIMARY_PROVIDER, which settles the
-        # provider — but the project's pins must still apply.
-        _write_toml(
-            tmp_path,
-            '[models]\nheavy = "custom-heavy"\n\n[models.roles]\nreviewer = "heavy"\n',
-        )
-        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-        monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")
-        cfg = bc.get_agent_settings()
-        assert cfg.provider == "claude"
-        assert cfg.model_for_role("reviewer", "light") == "custom-heavy"
-
-    def test_no_booley_dir_leaves_roles_empty(self):
-        assert bc.get_agent_settings().role_models == {}
+def test_project_credential_policy_refuses_gateway_for_any_listed_cli(tmp_path):
+    """Sandbox Issuance refuses a toml ``gateway`` even when Codex is not the default CLI."""
+    _write_toml(
+        tmp_path,
+        '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n\n[agent.auth]\ncodex = "gateway"\n',
+    )
+    with pytest.raises(BackendConfigError, match="gateway"):
+        bc.project_credential_policy(tmp_path, booley_dir=tmp_path / ".booley")
 
 
-class TestSpecialistResolvesRolePin:
-    def test_resolve_model_consults_role_pin(self, monkeypatch):
-        from booley.specialists.reviewer import ReviewerSpecialist
+def test_models_audit_reports_an_environment_error_without_an_agent_table(monkeypatch):
+    """With no ``[agent]`` table to report it, the ``[models]`` audit reports the failure."""
+    from booley.audit.agent_schema import audit_models_table
 
-        cfg = AgentSettings(
-            tier_models=dict(bc._DEFAULT_TIER_MODELS),
-            role_models={"reviewer": "claude-haiku-4-5"},
-        )
-        monkeypatch.setattr(bc, "_agent_settings", cfg)
+    def _boom(_declared):
+        raise BackendConfigError("environment boom")
 
-        specialist = ReviewerSpecialist()
-        specialist._args = SimpleNamespace(model=None)
-        assert specialist._resolve_model() == "claude-haiku-4-5"
+    monkeypatch.setattr(bc, "resolve_default_cli", _boom)
+    audit = audit_models_table({"models": {"reviewer": "claude-opus-5-5"}})
 
-    def test_standalone_fallback_uses_current_standard_model(self, monkeypatch):
-        """Without harness config the fallback is the current standard model."""
-        from booley.specialists.reviewer import ReviewerSpecialist
-
-        def _unavailable():
-            raise AttributeError("no harness settings")
-
-        monkeypatch.setattr("booley.config.settings.get_agent_settings", _unavailable)
-        specialist = ReviewerSpecialist()
-        specialist._args = SimpleNamespace(model=None)
-        assert specialist._resolve_model() == "claude-opus-5-5"
-
-    def test_unpinned_specialist_uses_floor_tier(self, monkeypatch):
-        from booley.specialists.reviewer import ReviewerSpecialist
-
-        cfg = AgentSettings(tier_models=dict(bc._DEFAULT_TIER_MODELS))
-        monkeypatch.setattr(bc, "_agent_settings", cfg)
-
-        specialist = ReviewerSpecialist()
-        specialist._args = SimpleNamespace(model=None)
-        assert specialist._resolve_model() == cfg.model_for_tier(specialist.min_model)
+    assert [f.message for f in audit.findings] == ["environment boom"]
 
 
 # --- vocabulary drift guard --------------------------------------------------
 
 
-def test_known_roles_match_specialist_names():
-    """_KNOWN_ROLES is hand-maintained; this fails if a specialist is added or renamed.
+def test_specialists_match_registered_specialist_names():
+    """SPECIALISTS is hand-maintained; this fails if a Specialist is added or renamed.
 
     The config layer can't import the MCP tool registry (bare Specialist
-    subprocesses import it at startup), so the role vocabulary is a literal.
-    This test is what keeps that literal honest — including for specialists
-    currently hidden from discovery via registry.SKIP_MODULES.
+    subprocesses import it at startup), so the vocabulary is a literal. This
+    test keeps it honest, including for Specialists hidden via registry.SKIP_MODULES.
     """
     from booley.mcp.registry import extract_mcp_tool_info
 
@@ -332,79 +260,12 @@ def test_known_roles_match_specialist_names():
         if (info := extract_mcp_tool_info(py_file, builtin=True)) and info.kind == "specialist"
     }
     assert specialists, "no specialists discovered — the AST probe broke, not the vocabulary"
-    assert specialists == _KNOWN_ROLES
+    assert specialists == bc.SPECIALISTS
 
 
-class TestDoctorModelsTable:
-    """Doctor surfaces a bad [models] before the first ticket dies on it."""
-
-    def _run(self, models, fixes: list[str] | None = None):
-        from booley.audit.agent_schema import audit_models_table
-        from tests.diagnostic_helpers import _record_audit
-
-        passes: list[str] = []
-        warns: list[str] = []
-        fails: list[str] = []
-
-        def record_fail(msg: str, fix: str = "") -> None:
-            fails.append(msg)
-            if fixes is not None:
-                fixes.append(fix)
-
-        valid = _record_audit(
-            audit_models_table({} if models is None else {"models": models}),
-            passed=passes.append,
-            warned=lambda msg, fix="": warns.append(msg),
-            failed=record_fail,
-        )
-        return valid, passes, warns, fails
-
-    def test_absent_models_table_is_fine(self):
-        valid, passes, warns, fails = self._run(None)
-        assert valid and not passes and not warns and not fails
-
-    def test_fails_on_unknown_role(self):
-        fixes: list[str] = []
-        valid, _passes, _warns, fails = self._run({"roles": {"reviwer": "claude-opus-4-8"}}, fixes)
-        assert not valid
-        assert any("reviwer" in m for m in fails)
-        assert fixes == ["use one of: coverage_analyst, mutation_tester, reviewer"]
-
-    def test_fails_on_retired_role(self):
-        for role in RETIRED_ROLE_NAMES:
-            fixes: list[str] = []
-            valid, passes, _warns, fails = self._run(
-                {"roles": {"reviewer": "claude-opus-4-8", role: "heavy"}}, fixes
-            )
-            assert not valid
-            assert len(fails) == 1 and role in fails[0] and "retired" in fails[0]
-            assert fixes == [f"delete the {role} line from [models.roles]"]
-            assert not any("[models.roles] pins" in m for m in passes)
-
-    def test_fails_when_models_is_not_a_table(self):
-        valid, _passes, _warns, fails = self._run("claude-opus-4-8")
-        assert not valid
-        assert any("[models] must be a table" in m for m in fails)
-
-    def test_warns_on_a_stray_key(self):
-        # A misspelled tier is inert, not fatal — warn rather than fail.
-        valid, _passes, warns, fails = self._run({"heavyy": "claude-opus-4-8"})
-        assert valid and not fails
-        assert any("heavyy" in m for m in warns)
-
-    def test_reports_pins_and_tier_overrides(self):
-        valid, passes, warns, fails = self._run(
-            {"heavy": "custom-heavy", "roles": {"reviewer": "claude-sonnet-4-6"}}
-        )
-        assert valid and not warns and not fails
-        assert any("heavy" in m for m in passes)
-        assert any("reviewer=claude-sonnet-4-6" in m for m in passes)
-
-    def test_models_is_a_recognized_top_level_table(self):
-        audit = project_schema.audit_known_tables({"models": {}})
-        assert audit.findings == ()
+# --- Doctor ------------------------------------------------------------------
 
 
-def test_tier_names_and_role_names_do_not_collide():
-    """model_for_role() reads a pin as a tier name first, so overlap would shadow."""
-    assert not (_KNOWN_ROLES & set(_MODEL_TIERS))
+def test_models_is_a_recognized_top_level_table():
+    audit = project_schema.audit_known_tables({"models": {}})
+    assert audit.findings == ()

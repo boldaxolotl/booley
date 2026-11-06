@@ -8,10 +8,13 @@ is the Codespaces demo. The decision record is
 
 ## Setup
 
-The policy is selected by the environment, not by `booley.toml`
-(`[agent] auth = "gateway"` is rejected). Set these in the environment of a
+The policy is selected by the environment. Set these in the environment of a
 Sandbox that does not come from `booley init`, such as a Codespace or a
-hand-written devcontainer. Booley-issued Sandboxes take their policy from
+hand-written devcontainer. `booley.toml` may also declare
+`[agent.auth] codex = "gateway"` (Codex only; a string `auth = "gateway"` is
+rejected while `claude` is listed), which is honored inside a Sandbox, but
+Booley's own Sandbox Issuance refuses it until it can issue a gateway Sandbox
+per Agent CLI ([#2755](https://github.com/boldaxolotl/booley/issues/2755)). Booley-issued Sandboxes take their policy from
 `booley.toml`, and a host export is ignored (`booley doctor` warns about it).
 
 | Variable | Meaning |
@@ -25,8 +28,9 @@ With `BOOLEY_AGENT_APP=auto`, leave `BOOLEY_PRIMARY_AUTH` unset or `auto`:
 the gateway is then used only when the user has no Claude or Codex
 credential (see [the agent app](../user/SANDBOX.md#agent-app-in-a-hand-written-spec-booley_agent_app)).
 
-`[agent] provider` must be `codex`. Codex Specialists use the gateway; no
-OpenAI or Anthropic credential and no Codex login reaches them. The gateway
+`[agent] default` (or its older name `provider`) must be `codex`. Codex
+Specialists use the gateway; no OpenAI or Anthropic credential and no Codex
+login reaches them. The gateway
 host must be reachable from the Sandbox. Text-only Codex Specialists such as
 `coverage_analyst` use the gateway too, on the same model as other Specialists.
 They need no Codex models cache: Booley writes the model's catalog entry.
@@ -117,13 +121,13 @@ reports the incomplete environment.
 ## Pinning one model and effort
 
 The pin applies only when `BOOLEY_PRIMARY_AUTH=gateway` is honored (inside a
-Sandbox) and `[agent] provider` is `codex`. `config.agent._gateway_pin` is the
+Sandbox) for Codex, so `codex` must be in `[agent] clis`. `config.agent._gateway_pin` is the
 single place that decides this; `booley doctor` mirrors the condition in
 `_check_gateway_model_pin`. Two optional environment variables:
 
 | Variable | Effect |
 | --- | --- |
-| `BOOLEY_GATEWAY_MODEL` | One model id (no whitespace or control characters), passed to Codex as is. Replaces every `[models]` tier, every `[models.roles]` pin and every Specialist minimum-tier floor, including the model Doctor's developer probe uses. |
+| `BOOLEY_GATEWAY_MODEL` | One model id (no whitespace or control characters), passed to Codex as is. Replaces the model of every Specialist that runs on Codex (a `gpt-*` `[models]` entry, or no entry while Codex is the default Agent CLI), and Booley's internal model when Codex is the default, including the model Doctor's developer probe uses. A Specialist pinned to a `claude-*` model keeps it. |
 | `BOOLEY_GATEWAY_EFFORT` | Reasoning effort for every Codex Specialist call and the mutation creator and developer probe calls: `none` (no reasoning, not "unset"), `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` or `persistent` (case-insensitive). Unset, each call keeps its usual effort. Whether the gateway's model supports a level is the gateway's call. |
 
 Notes:

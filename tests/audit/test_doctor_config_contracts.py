@@ -258,7 +258,7 @@ def test_windows_rejects_host_provisioning_during_config_audit(tmp_path, monkeyp
 
 
 class TestValidateAgentTable:
-    """A typo'd provider is fatal, not advisory: `_parse_provider` raises rather
+    """A typo'd provider is fatal, not advisory: `parse_agent_section` raises rather
     than run a backend the project never chose, so every agent run dies with a
     BackendConfigError. Doctor must be where that surfaces."""
 
