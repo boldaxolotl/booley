@@ -1147,11 +1147,16 @@ def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) ->
         main_dir = resolve_common_booley_dir(project_root).resolve()
         # Git lists the primary checkout first; only linked worktrees can hold stale copies.
         linked = list_worktrees(primary_checkout(project_root))[1:]
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip() or f"git exited {exc.returncode}"
+        reporter.skip_(
+            f"Common Booley State in worktrees skipped - cannot list worktrees: {detail}"
+        )
+        return
     except (
         BooleyLayoutError,
         OSError,
         subprocess.TimeoutExpired,
-        subprocess.CalledProcessError,
         SourceCheckoutProjectError,
     ) as exc:
         reporter.skip_(f"Common Booley State in worktrees skipped - cannot list worktrees: {exc}")
@@ -1166,7 +1171,11 @@ def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) ->
             untracked = _untracked_common_paths(entry.path, booley_dir)
         except FileNotFoundError:
             continue  # A baseline worktree removed while scanning.
-        except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or "").strip() or f"git exited {exc.returncode}"
+            reporter.skip_(f"Common Booley State in {booley_dir} skipped - {detail}")
+            continue
+        except (OSError, ValueError) as exc:
             reporter.skip_(f"Common Booley State in {booley_dir} skipped - {exc}")
             continue
         scanned += 1
