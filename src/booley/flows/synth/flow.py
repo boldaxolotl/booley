@@ -40,7 +40,11 @@ from booley.evidence.timing import (
     worst_clock,
 )
 from booley.flows.cli_help import CliHelp
-from booley.flows.eda_failures import classify_eda_failure
+from booley.flows.eda_failures import (
+    classify_eda_failure,
+    first_tool_diagnostic,
+    strip_failure_markers,
+)
 from booley.flows.job_resources import SYNTH_PHASES, resource_phase
 from booley.flows.plan import (
     CommandPlan,
@@ -1544,8 +1548,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 or "synthesis"
             )
             log = getattr(outcome, "stage_log", "") or "\n".join((result.stdout, result.stderr))
-            diagnostic = _first_tool_diagnostic(log)
-            metrics.infra_error = f"{stage}: {diagnostic[:500]}"
+            metrics.infra_error = _prefix_tool(stage, first_tool_diagnostic(log))
             metrics.returncode = 2
             metrics.termination = "infrastructure_error"
         if metrics.termination != "completed":
@@ -1667,13 +1670,13 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
                 _latch_diagnostic(metrics)
             ):
                 metrics.failure_output = _latch_diagnostic(metrics) + "\n" + metrics.failure_output
-            reason_lines = metrics.failure_output.splitlines()
+            reason = metrics.infra_error or _design_failure_reason(metrics)
             logger.error(
                 "Synth %s: boundary run failed (rc=%d, timed_out=%s): %s (full output: %s)",
                 target,
                 result.returncode,
                 result.timed_out,
-                reason_lines[0] if reason_lines else "(no output)",
+                reason,
                 metrics.log_path or "not persisted",
             )
 
@@ -3116,30 +3119,16 @@ def _synth_target_warnings(top: str, defines: list[str]) -> list[str]:
     return warnings
 
 
-def _first_tool_diagnostic(text: str) -> str:
-    """Keep the first actual tool diagnostic, ignoring execution wrappers."""
-    lines = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip()
-        and not line.startswith(("BOOLEY_STAGE:", "BOOLEY_EDA_FAILURE", "make:", "make["))
-    ]
-    return next(
-        (
-            line
-            for line in lines
-            if re.search(
-                r"(?i)(?:^|:\s|\]\s|\[)(?:error|fatal)\b|\bunrecognized (?:option|argument)\b|\bunknown (?:command|option|argument)\b|\bunsupported (?:command|option)\b|\b(?:not found|no such file|permission denied)\b|^usage:",
-                line,
-            )
-        ),
-        lines[0] if lines else "no diagnostic available",
-    )
+def _prefix_tool(tool: str, diagnostic: str) -> str:
+    """Name the failing tool once: keep a diagnostic that already starts with it."""
+    if re.match(rf"\s*{re.escape(tool)}\s*:", diagnostic, re.IGNORECASE):
+        return diagnostic
+    return f"{tool}: {diagnostic}"
 
 
 def _error_excerpt(output: str, max_lines: int = 12) -> str:
-    """Retain the bounded nonempty tail of the failing tool's output."""
-    lines = [line.rstrip() for line in output.splitlines() if line.strip()]
+    """Retain the bounded nonempty tail of the failing tool's output, minus markers."""
+    lines = [line.rstrip() for line in strip_failure_markers(output).splitlines() if line.strip()]
     return "\n".join(lines[-max_lines:])
 
 
