@@ -158,8 +158,18 @@ def is_harness_infra_line(line: str) -> bool:
     return bool(_HARNESS_INFRA_MARKER_RE.match(line))
 
 
+def describe_error_message_count(count: int) -> str:
+    """Human label for a counted-message total: ``1 assertion/fatal error message``.
+
+    The counters lump ``$error``/``$fatal``/simulator fatal lines with assertion
+    failures, so the label must not claim they are all SVA (#2807).
+    """
+    noun = "message" if count == 1 else "messages"
+    return f"{count} assertion/fatal error {noun}"
+
+
 def count_sva_errors(output: str) -> int:
-    """Count SVA assertion error/fatal messages in simulator output."""
+    """Count assertion and error/fatal messages in simulator output."""
     count = (
         output.count("$error")
         + output.count("] Error:")

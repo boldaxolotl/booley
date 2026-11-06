@@ -95,7 +95,7 @@ from booley.flows.sim.live_progress import (
     publish_checkpoint,
 )
 from booley.flows.sim.request import SimRequest
-from booley.flows.sim.result import parse_summary_line
+from booley.flows.sim.result import describe_error_message_count, parse_summary_line
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
 from booley.flows.sim.unpublished_results import started_coverage_campaign
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
@@ -2219,10 +2219,12 @@ def _append_test_failure_lines(tests: list[TestResult], lines: list[str]) -> Non
     for tr in tests:
         if tr.passed:
             continue
-        sva = f"  {tr.sva_errors} SVA errors" if tr.sva_errors else ""
+        messages = f"  {describe_error_message_count(tr.sva_errors)}" if tr.sva_errors else ""
         cycles = f"  {tr.cycles:,} cyc" if tr.cycles is not None else ""
         build = f"  (incl. {format_duration(tr.build_s)} build)" if tr.build_s >= 1 else ""
-        lines.append(f"  FAIL {tr.name:<20s} {format_duration(tr.elapsed_s)}{build}{cycles}{sva}")
+        lines.append(
+            f"  FAIL {tr.name:<20s} {format_duration(tr.elapsed_s)}{build}{cycles}{messages}"
+        )
 
         if tr.error_tail:
             _append_error_excerpt(tr.error_tail, lines)
@@ -6611,8 +6613,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         The MCP server tail-truncates the EDA tool's stdout (keeping the end), so
         everything that must always survive — each target's verdict, per-test
-        cycle counts, SVA error count, timeout flag, and (on failure) the
-        run.log pointer plus the build-context lines — is repeated here in
+        cycle counts, assertion/fatal error message count, timeout flag, and
+        (on failure) the run.log pointer plus the build-context lines — is repeated here in
         compact form after all verbose detail. A passing target stays clean:
         the pointer/build lines exist to be acted on, and a benchmark sweep
         showed agents shelling out for exactly this context only on failures.
@@ -6625,7 +6627,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             verdict = _verdict_word(inconclusive=r.inconclusive, passed=r.passed)
             tests_passed = sum(1 for t in r.tests if t.passed)
             sva_errors = sum(t.sva_errors for t in r.tests)
-            flags = f", sva_errors={sva_errors}" if sva_errors else ""
+            flags = f", {describe_error_message_count(sva_errors)}" if sva_errors else ""
             if any(t.timed_out for t in r.tests):
                 flags += ", TIMED OUT"
             elapsed = _human_elapsed(r.elapsed_s) if human else _report_elapsed(r.elapsed_s)

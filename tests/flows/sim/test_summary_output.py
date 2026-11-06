@@ -129,9 +129,10 @@ def test_summary_spells_out_inconclusive_and_hides_zero_sva_errors(colored, term
     status = sim._test_status_line(inconclusive.tests[0])
     for blob in (colors.strip_ansi(out), text, status):
         assert not re.search(r"\bINCO\b", blob)
-        assert "sva_errors=0" not in blob
+        assert "0 assertion/fatal" not in blob
         assert "INCONCLUSIVE" in blob
-    assert "sva_errors=2" in text
+    assert "2 assertion/fatal error messages" in text
+    assert "sva_errors=" not in text
     # A Target without tests renders its header and no table of its own.
     after = text.split("[sim] none:", 1)[1]
     assert "Result" not in after
@@ -199,3 +200,12 @@ def test_deferred_summary_falls_back_when_the_report_changed(colored):
         )
     assert "\x1b" not in stderr.getvalue() and stderr.getvalue().startswith("pre-sim line")
     assert stdout.getvalue() == ""
+
+
+def test_failed_test_line_names_assertion_fatal_messages():
+    """The per-test FAIL line must not call a counted ``$fatal`` an SVA error (#2807)."""
+    lines = sim._target_display_lines(_results()[1])
+
+    fail_line = next(ln for ln in lines if "FAIL smoke" in ln)
+    assert "2 assertion/fatal error messages" in fail_line
+    assert "SVA" not in fail_line
