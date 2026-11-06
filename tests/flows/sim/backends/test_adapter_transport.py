@@ -722,4 +722,3 @@ def test_native_fatal_only_failure_names_assertion_fatal_messages(count: int, la
     assert assessment.inconclusive is False
     message = native_verdict_message("Verilator", assessment, 1, RunTermination())
     assert message == f"\nVerilator sim FAILED ({label})"
-    assert "SVA" not in message
