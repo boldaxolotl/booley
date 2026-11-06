@@ -2835,12 +2835,24 @@ def _check_cli_credentials(
     )
     if plan.selected is None and not is_default:
         return  # the missing-credential WARN already names the fix; no login to rotate
+    _check_cli_rotation_risk(cli, reporter, auth_policy, plan, is_default=is_default)
+
+
+def _check_cli_rotation_risk(
+    cli: str,
+    reporter: _Reporter,
+    policy: str,
+    plan: auth_token.CredentialPlan,
+    *,
+    is_default: bool,
+) -> None:
+    """Check *cli*'s OAuth token and subscription credential health."""
     _check_oauth_token(
         cli,
         reporter.pass_,
         reporter.warn_,
         reporter.skip_,
-        policy=auth_policy,
+        policy=policy,
         _note=reporter.note_,
         plan=plan,
         is_default=is_default,
@@ -2849,7 +2861,7 @@ def _check_cli_credentials(
         cli,
         reporter.pass_,
         reporter.warn_,
-        policy=auth_policy,
+        policy=policy,
         plan=plan,
         display_overrides=reporter.display_overrides,
     )
@@ -2860,7 +2872,7 @@ def _missing_credential_fix(cli: str, policy: str) -> str:
     if cli == auth_token.APP_CLAUDE:
         if policy == "api_key":
             return f"export {auth_token.API_KEY_ENV[cli]}"
-        return "run claude and use /login, or on the host: booley auth"
+        return "run claude and use /login, or on the host: booley auth --cli claude"
     host_login = f"booley auth --cli {cli}"
     if policy == "subscription":
         return "codex login"

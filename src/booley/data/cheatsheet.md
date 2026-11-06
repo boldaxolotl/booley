@@ -9,7 +9,7 @@ and nested actions.
 
 On the host, bare `booley` prints help and a getting-started hint.
 Inside the Sandbox, for Interactive Mode, we recommend `booley` / `booley chat`, which launches
-`claude` or `codex` according to `[agent].provider`.
+the default Agent CLI (`booley chat --cli <name>` picks another allowed one).
 
 | Command | Purpose |
 |---------|---------|
