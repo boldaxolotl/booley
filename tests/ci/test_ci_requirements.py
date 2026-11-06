@@ -66,7 +66,7 @@ def _workflow_texts() -> list[tuple[str, str]]:
     for path in sorted((_ROOT / ".github/actions").rglob("action.yml")):
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
         scripts.extend(
-            (str(path.relative_to(_ROOT)), step["run"])
+            (path.relative_to(_ROOT).as_posix(), step["run"])
             for step in document["runs"].get("steps", ())
             if "run" in step
         )
