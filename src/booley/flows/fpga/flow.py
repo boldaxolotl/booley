@@ -1425,7 +1425,9 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         suffix = f" ({'; '.join(failures)})" if failures else ""
         result = compose_result(
             short_sha if self.args.baseline else None,
-            self._summary_table_lines(configs, current_results, baseline_results),
+            self._summary_table_lines(
+                configs, current_results, baseline_results, implementation_reports
+            ),
             notes,
             f"RESULT: {verdict}{suffix}",
         )
@@ -1463,20 +1465,23 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         configs: list[str],
         current_results: dict[str, FpgaMetrics],
         baseline_results: dict[str, FpgaMetrics],
+        reports: dict[str, ImplementationReport],
     ) -> list[str]:
         """The per-Target table; baseline deltas sit on a dimmed row under their Target."""
         headers = ["Target", "LUT", "FF", "BRAM", "DSP", "WNS", "WHS", "Fmax", "Time", "Status"]
         rows: list[list[str]] = []
         for cfg in configs:
             cur = current_results[cfg]
-            rows.append(self._summary_row(cfg, cur))
+            rows.append(
+                self._summary_row(cfg, cur, comparison_error=reports[cfg].grade == "error")
+            )
             delta_row = self._delta_row(cur, baseline_results.get(cfg))
             if delta_row:
                 rows.append(delta_row)
         return render_table(headers, rows, max_widths={0: TARGET_WIDTH})
 
     @staticmethod
-    def _summary_row(cfg: str, cur: FpgaMetrics) -> list[str]:
+    def _summary_row(cfg: str, cur: FpgaMetrics, *, comparison_error: bool) -> list[str]:
         """Cells of one Target's table row (``—`` for a metric the run lacks)."""
         # Timing-worst clock, named only for multi-clock designs.
         worst = worst_clock(cur.per_clock)
@@ -1488,6 +1493,9 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             status = "ERROR"
         elif not cur.passed:
             status = "FAIL"
+        elif comparison_error:
+            # The baseline could not be compared: RESULT is ERROR and names this Target.
+            status = "ERROR (baseline)"
         else:
             status = "PASS"
         return [
