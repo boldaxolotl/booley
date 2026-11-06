@@ -40,6 +40,12 @@ async function vaporview() {
     return extension;
 }
 
+// Whether VS Code trusts this window's workspace; null when it does not say.
+function workspaceTrusted() {
+    const trusted = vscode.workspace && vscode.workspace.isTrusted;
+    return typeof trusted === 'boolean' ? trusted : null;
+}
+
 async function openDocumentUris() {
     const uris = await vscode.commands.executeCommand('waveformViewer.getOpenDocuments');
     return Array.isArray(uris) ? uris.filter(uri => typeof uri === 'string') : [];
@@ -243,6 +249,9 @@ class Bridge {
             focused: Boolean(vscode.window.state && vscode.window.state.focused),
             lastFocused: this.lastFocused,
             documents: [],
+            // Restricted Mode disables VaporView, so "not installed" is then
+            // not a fault. Unknown trust is null, never false.
+            trusted: workspaceTrusted(),
         };
         try {
             const extension = await vaporview();

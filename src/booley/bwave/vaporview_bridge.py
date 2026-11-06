@@ -37,6 +37,7 @@ from typing import Any
 from booley.core.boundary import (
     BoundaryError,
     is_str_list,
+    require_bool_value,
     require_dict,
     require_finite_number,
     require_opt_str,
@@ -95,6 +96,9 @@ class BridgeInfo:
     last_focused: float
     documents: tuple[str, ...]
     error: str | None = None
+    # VS Code workspace trust of the window; None when the bridge does not say
+    # (an older extension). VaporView is disabled while a window is untrusted.
+    trusted: bool | None = None
 
 
 def bridge_dir(home: Path | None = None) -> Path:
@@ -210,6 +214,7 @@ def _parse_ping(socket_path: Path, result: Any) -> BridgeInfo:
         documents = report.get("documents")
         if not is_str_list(documents):
             raise BoundaryError(f"ping documents must be a list of paths, got {documents!r}")
+        trusted = report.get("trusted")
         return BridgeInfo(
             socket_path=socket_path,
             vaporview=require_opt_str(report, "vaporview"),
@@ -217,6 +222,7 @@ def _parse_ping(socket_path: Path, result: Any) -> BridgeInfo:
             last_focused=require_finite_number(report.get("lastFocused"), field="lastFocused"),
             documents=tuple(documents),
             error=require_opt_str(report, "error"),
+            trusted=None if trusted is None else require_bool_value(trusted, field="trusted"),
         )
     except BoundaryError as exc:
         raise BridgeProtocolError(f"ping: malformed bridge reply: {exc}") from exc
@@ -312,7 +318,10 @@ def doctor_summary(home: Path | None = None) -> dict[str, Any]:
     bridges, problems = discover(home)
     return {
         "bridges": [
-            *({"vaporview": info.vaporview, "error": info.error} for info in bridges),
-            *({"vaporview": None, "error": problem} for problem in problems),
+            *(
+                {"vaporview": info.vaporview, "error": info.error, "trusted": info.trusted}
+                for info in bridges
+            ),
+            *({"vaporview": None, "error": problem, "trusted": None} for problem in problems),
         ]
     }

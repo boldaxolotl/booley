@@ -72,6 +72,7 @@ from booley.core.boundary import (
     BoundaryError,
     is_str_list,
     require_bool,
+    require_bool_value,
     require_dict,
     require_int,
     require_list,
@@ -3889,20 +3890,27 @@ def _viewer_bridges(argv_prefix: list[str]) -> list[dict] | None:
     try:
         report = require_dict(json.loads(result.stdout), field="bridge probe")
         entries = require_list(report.get("bridges"), field="bridge probe bridges")
-        return [
-            {
-                "vaporview": require_opt_str(entry, "vaporview"),
-                "error": require_opt_str(entry, "error"),
-            }
-            for entry in (require_dict(item, field="bridge entry") for item in entries)
-        ]
+        return [_bridge_entry(require_dict(item, field="bridge entry")) for item in entries]
     except (ValueError, BoundaryError):
         return None
 
 
-def _bridge_dark_fix(argv_prefix: list[str]) -> str:
-    """Choose recovery from an authoritative remote extension observation."""
-    state = _vaporview_extension_state(argv_prefix)
+def _bridge_entry(entry: dict) -> dict:
+    """Validate one bridge report; ``trusted`` is None when the bridge omits it."""
+    trusted = entry.get("trusted")
+    return {
+        "vaporview": require_opt_str(entry, "vaporview"),
+        "error": require_opt_str(entry, "error"),
+        "trusted": None if trusted is None else require_bool_value(trusted, field="trusted"),
+    }
+
+
+def _bridge_dark_fix(argv_prefix: list[str], state: vaporview.ExtensionState | None = None) -> str:
+    """Choose recovery from an authoritative remote extension observation.
+
+    ``state`` is a registry observation the caller already made; None probes.
+    """
+    state = _vaporview_extension_state(argv_prefix) if state is None else state
     if state is vaporview.ExtensionState.MISSING:
         return "VaporView extension is not installed. " + _BRIDGE_MISSING_EXTENSION_FIX
     if state is vaporview.ExtensionState.UNKNOWN:
@@ -3922,17 +3930,40 @@ def _report_viewer_bridges(
     if not bridges:
         _fail(f"{description}: no window answered{where}", _bridge_dark_fix(argv_prefix))
         return
+    # Restricted Mode disables VaporView, so a window that reports itself
+    # untrusted cannot show it: that is waiting for the user, not a fault.
     broken = [entry for entry in bridges if entry["vaporview"] is None]
-    if broken:
+    waiting = [entry for entry in broken if entry["trusted"] is False]
+    state = _vaporview_extension_state(argv_prefix) if waiting else None
+    # The registry does not depend on trust, so a really absent VaporView
+    # (MISSING) is never hidden behind a window that is not yet trusted.
+    if state is vaporview.ExtensionState.MISSING:
+        waiting = []
+    if len(broken) > len(waiting):
         reasons = "; ".join(sorted({entry["error"] or "no detail" for entry in broken}))
         _fail(
             f"{description}: {len(broken)} of {len(bridges)} window(s){where} report no "
             f"usable VaporView ({reasons})",
-            _bridge_dark_fix(argv_prefix),
+            _bridge_dark_fix(argv_prefix, state),
         )
         return
-    count = f" ({len(bridges)} windows)" if len(bridges) > 1 else ""
-    _pass(f"{description}{count}")
+    _report_waiting_for_trust(description, len(bridges), len(waiting), where, _pass, _skip)
+
+
+def _report_waiting_for_trust(
+    description: str, windows: int, waiting: int, where: str, _pass: Check, _skip: Check
+) -> None:
+    """Pass or skip a bridge inventory in which no window is broken."""
+    if not waiting:
+        count = f" ({windows} windows)" if windows > 1 else ""
+        _pass(f"{description}{count}")
+    elif waiting < windows:
+        _pass(f"{description} ({windows} windows; {waiting} waiting for workspace trust)")
+    else:
+        _skip(
+            f"{description} - VaporView waits for workspace trust in {waiting} "
+            f"window(s){where}; trust the folder, then run `booley doctor`"
+        )
 
 
 def _check_viewer_bridge(
