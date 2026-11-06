@@ -597,9 +597,9 @@ def _env_auth() -> str:
 
 
 def project_credential_policy(
-    project_root: Path, *, booley_dir: Path | None = None
+    project_root: Path, *, booley_dir: Path | None = None, cli: str | None = None
 ) -> tuple[str, str]:
-    """The default CLI and its declared auth policy at an already-selected root.
+    """The CLI (default unless `cli` names one) and its declared auth policy at a root.
 
     Reads booley.toml only (no environment) and fails closed on invalid input.
     """
@@ -626,7 +626,7 @@ def project_credential_policy(
     if not isinstance(agent, dict):
         raise BackendConfigError("booley.toml [agent] must be a table")
     declared = parse_agent_section(agent)
-    cli = declared.default or _DEFAULT_PROVIDER
+    cli = cli or declared.default or _DEFAULT_PROVIDER
     auth = declared.auth
     policies = {auth} if isinstance(auth, str) else set((auth or {}).values())
     if GATEWAY_AUTH in policies:  # whichever listed CLI asks for it, not only the default's

@@ -1,4 +1,4 @@
-"""Launch the agent CLI selected by the current Project."""
+"""Launch the Agent CLI the current Project allows: its default, or the one `--cli` names."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from booley.config.agent import AgentSettings
 from booley.config.gateway import GatewayConfigError
 from booley.config.settings import BackendConfigError, get_agent_settings, load_agent_settings
 from booley.harness import codex_chat
@@ -51,12 +52,32 @@ def _cli_not_found(provider: str) -> int:
     return 2
 
 
+def _selected_cli(requested: str | None, settings: AgentSettings) -> str | None:
+    """Return the CLI to launch, or None after reporting a `--cli` the Project forbids.
+
+    No request means the default CLI, so the flagless launch never reads `clis`.
+    """
+    if requested is None:
+        return settings.default_cli
+    if requested in settings.clis:
+        return requested
+    print(
+        f"ERROR: Agent CLI '{requested}' is not allowed in this Project; "
+        f"allowed: {', '.join(settings.clis)} (booley.toml [agent] clis).",
+        file=sys.stderr,
+    )
+    return None
+
+
 def run(args: argparse.Namespace, project_root: Path) -> int:
-    """Replace Booley with the Project's configured interactive agent CLI."""
+    """Replace Booley with the Project's default (or `--cli`-chosen) interactive Agent CLI."""
     try:
         booley_dir = resolve_checkout_booley_dir(project_root)
         load_agent_settings(project_root, booley_dir=booley_dir)
-        provider = get_agent_settings().default_cli
+        # Bare `booley` builds its namespace without chat options, so `cli` may be absent.
+        provider = _selected_cli(getattr(args, "cli", None), get_agent_settings())
+        if provider is None:
+            return 2
     except GatewayConfigError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
