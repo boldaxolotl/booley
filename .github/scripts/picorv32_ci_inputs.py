@@ -4,6 +4,7 @@ from __future__ import annotations
 
 PICORV32_INPUT_FILES = frozenset(
     {
+        ".github/ci/constraints.txt",
         ".github/contracts/picorv32-demo.toml",
         ".github/scripts/export_demo_contract.py",
         ".github/scripts/goal_mode_driver.py",

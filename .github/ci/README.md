@@ -263,3 +263,28 @@ follows the recorded source. Registry hits and local builds (including
 fallbacks) each get their own budget, derived from measured runs of that
 source, so a slow hit cannot hide behind the local-build ceiling. A lane that
 stopped before writing its record is judged against the local budget.
+
+## Dependency constraints
+
+`.github/ci/constraints.txt` pins every package the project and its extras can
+install, for Linux and Windows on every CI Python version (one universal,
+unhashed `uv pip compile`; pip rejects hashed constraints with an editable
+install). Every CI install of the project passes `-c`, and each pip cache keys on
+it. Regenerate it from the repository root with the command in its header:
+
+```bash
+uv pip compile pyproject.toml --all-extras --universal --python-version 3.11 -o .github/ci/constraints.txt
+```
+
+- `release-semantic` runs `ci_constraints.py` before its own project install, so a
+  stale file fails there with the regenerate command. The other jobs do not wait
+  for it and may also fail with pip's `ResolutionImpossible`.
+- The check catches an added, removed, or re-pinned direct dependency and a wrong
+  compile command. It does not notice a new extra or marker on an existing direct
+  requirement.
+- A constraints-only change is classified like `pyproject.toml`: every job runs,
+  Windows legs included.
+- Still unconstrained: the setuptools build backend in pip's isolated build
+  environment, pip, and uv. Built-wheel installs (`publish.yml`,
+  `docker-publish.yml`, `isolated_host_install_smoke.py`) and image Dockerfile
+  installs stay unconstrained on purpose: they verify what users get.

@@ -153,6 +153,9 @@ jobs:
       - name: Install semantic-check dependency
         run: pip install -r .github/ci/requirements-lint.txt
 
+      - name: Check dependency constraints are current
+        run: python .github/scripts/ci_constraints.py
+
       - name: Validate release semantics
         run: >-
           PYTHONPATH=.github/scripts python -m release_validation.semantic
@@ -195,9 +198,12 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            .github/ci/constraints.txt
 
       - name: Install package with test dependencies
-        run: pip install -e ".[test]"
+        run: pip install -e ".[test]" -c .github/ci/constraints.txt
 
       # README, website and documentation-only pull requests skip the Python
       # test lanes, so this job runs the content tests that read those files.
@@ -253,7 +259,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install pinned CI quality tools
-        run: pip install -e ".[quality]"
+        run: pip install -e ".[quality]" -c .github/ci/constraints.txt
 
       - name: Install actionlint v1.7.12
         shell: bash
@@ -367,9 +373,12 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            .github/ci/constraints.txt
 
       - name: Install package with test dependencies
-        run: pip install -e ".[test]"
+        run: pip install -e ".[test]" -c .github/ci/constraints.txt
 
       - name: Run full compatibility suite
         if: matrix.mode == 'full'
@@ -456,9 +465,12 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            .github/ci/constraints.txt
 
       - name: Install package with test dependencies
-        run: pip install -e ".[test]"
+        run: pip install -e ".[test]" -c .github/ci/constraints.txt
 
       # Native B-Wave tests need the Rust binary and run in bwave-integration;
       # the classifier already drops modules marked native as a whole.
@@ -519,9 +531,12 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            .github/ci/constraints.txt
 
       - name: Install package with test dependencies
-        run: pip install -e ".[test]"
+        run: pip install -e ".[test]" -c .github/ci/constraints.txt
 
       - name: Run duration-balanced coverage shard
         env:
@@ -630,9 +645,12 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            .github/ci/constraints.txt
 
       - name: Install coverage gate dependencies
-        run: pip install -e ".[test]"
+        run: pip install -e ".[test]" -c .github/ci/constraints.txt
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -748,6 +766,9 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            .github/ci/constraints.txt
 
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
@@ -761,7 +782,7 @@ jobs:
         run: cargo build --locked --manifest-path crates/bwave/Cargo.toml
 
       - name: Install package with test dependencies
-        run: pip install -e ".[test]"
+        run: pip install -e ".[test]" -c .github/ci/constraints.txt
 
       - name: Run B-Wave crate Python tests
         shell: bash
@@ -980,6 +1001,10 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            .github/ci/constraints.txt
+            .github/ci/requirements-runners.txt
 
       - name: Install host-side test dependencies
         run: pip install -r .github/ci/requirements-runners.txt

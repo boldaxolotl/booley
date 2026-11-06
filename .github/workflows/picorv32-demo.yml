@@ -8,6 +8,7 @@ on:
     # nightly, and manual validation unconditional below.
     paths:
       - ".github/actions/prepare-picorv32-demo/**"
+      - ".github/ci/constraints.txt"
       - ".github/contracts/picorv32-demo.toml"
       - ".github/scripts/export_demo_contract.py"
       - ".github/scripts/goal_mode_driver.py"

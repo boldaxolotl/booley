@@ -102,6 +102,7 @@ _PACKAGING_FILES = {
     "MANIFEST.in",
     "THIRD_PARTY_NOTICES.md",
     "VERSION",
+    ".github/ci/constraints.txt",
     "pyproject.toml",
     "setup.cfg",
     "setup.py",

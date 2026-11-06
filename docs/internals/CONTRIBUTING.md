@@ -32,6 +32,13 @@ pip install -e ".[dev]"     # editable install + test deps (pytest, pytest-async
 pytest                      # full suite, serial; scope to a path/-k for a fast subset
 ```
 
+CI installs with `-c .github/ci/constraints.txt`, a committed file that pins every
+dependency version. The plain install above always works; to reproduce CI's exact
+versions, add the flag: `pip install -e ".[dev]" -c .github/ci/constraints.txt`.
+After changing dependencies in `pyproject.toml`, regenerate the file with
+`uv pip compile pyproject.toml --all-extras --universal --python-version 3.11 -o .github/ci/constraints.txt`
+or CI fails with that command in its message.
+
 Booley needs **Python 3.11+**. For venv, PATH, and Windows problems, see
 [TROUBLESHOOTING.md](../user/TROUBLESHOOTING.md).
 
