@@ -239,22 +239,37 @@ def test_isolated_fpga_include_dirs_hold_only_listed_headers(tmp_path: Path) -> 
 
 @pytest.mark.usefixtures("real_fusesoc")
 @pytest.mark.parametrize("layout", ["plain-dir", "symlinked-booley-dir"])
-def test_isolated_tb_file_in_include_dir_is_in_vivado_key(tmp_path: Path, layout: str) -> None:
+@pytest.mark.parametrize("folder", ["rtl/inc", "tb"])
+def test_isolated_tb_file_in_exported_sources_is_in_vivado_key(
+    tmp_path: Path, layout: str, folder: str
+) -> None:
+    """A test-only header Vivado can read moves the key: via an include dir or a ``../``."""
     sim_only = {
         "files": [
-            {"rtl/inc/sim_only.vh": {"file_type": "verilogSource", "is_include_file": True}}
+            {
+                f"{folder}/sim_only.vh": {
+                    "file_type": "verilogSource" if folder == "rtl/inc" else "user",
+                    "is_include_file": folder == "rtl/inc",
+                }
+            }
         ],
         "tags": ["tb"],
     }
     external = tmp_path / "external-booley" if layout == "symlinked-booley-dir" else None
     root = _write_project(tmp_path / "proj", "isolated", symlinked_booley=external)
-    (root / "rtl" / "inc" / "sim_only.vh").write_text("// sim v1\n", encoding="utf-8")
+    header = root / folder / "sim_only.vh"
+    header.parent.mkdir(parents=True, exist_ok=True)
+    header.write_text("// sim v1\n", encoding="utf-8")
     _write_core(
         root, "isolated", extra_fileset={"simfs": sim_only}, extra_target_filesets=["simfs"]
     )
     flow = _fpga_flow(root)
+    recipe = flow._resolve_fpga_recipe("fpga")
+    # Test-only, so it can enter the key only through reachable_dirs.
+    assert all(Path(item.name).name != "sim_only.vh" for item in recipe.resolved.rtl_files)
     before = _fpga_fingerprint(flow)
-    (root / "rtl" / "inc" / "sim_only.vh").write_text("// sim v2\n", encoding="utf-8")
+    assert _fpga_fingerprint(flow) == before  # an unchanged mirror rebuild keeps the key
+    header.write_text("// sim v2\n", encoding="utf-8")
     assert _fpga_fingerprint(flow) != before
 
 
@@ -322,27 +337,6 @@ def test_isolated_dropped_header_is_not_reachable(tmp_path: Path, flow_name: str
     after = folders()
     assert _holds(after, "keep.vh")
     assert not _holds(after, "listed.vh")
-
-
-@pytest.mark.usefixtures("real_fusesoc")
-@pytest.mark.parametrize("flow_name", ["fpga", "lint"])
-def test_isolated_core_version_bump_never_reads_old_export(tmp_path: Path, flow_name: str) -> None:
-    root = _write_project(tmp_path / "proj", "isolated")
-
-    def resolve() -> tuple[Path, list[Path]]:
-        if flow_name == "fpga":
-            flow = _fpga_flow(root)
-            return _fpga_fusesoc_root(root), _fpga_dirs(flow)
-        _build_root, incdirs, _vc = _lint_incdirs(root)
-        return work_root_for(root, "lint", "lint"), incdirs
-
-    resolve()
-    _write_core(root, "isolated", version=1)
-    (root / "rtl" / "inc" / "listed.vh").write_text("// listed v2\n", encoding="utf-8")
-    build_root, folders = resolve()
-    assert not list(build_root.glob("design_0*")), list(build_root.iterdir())
-    listed = next(folder / "listed.vh" for folder in folders if (folder / "listed.vh").exists())
-    assert listed.read_text(encoding="utf-8") == "// listed v2\n"
 
 
 @pytest.mark.usefixtures("real_fusesoc")

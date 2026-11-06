@@ -622,20 +622,29 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             recipe_snapshot=snapshot,
             recipe_fingerprint=fpga_recipe_snapshot_fingerprint(snapshot),
             source_evidence=run_evidence.capture_flow_source_evidence(work_dir, target),
-            reachable_dirs=self._reachable_dirs(target, sv_files, v_files, include_dirs),
+            reachable_dirs=self._reachable_dirs(target, resolved, sv_files, v_files, include_dirs),
         )
 
     def _reachable_dirs(
         self,
         target: str,
+        resolved: Any,
         sv_files: Sequence[Path],
         v_files: Sequence[Path],
         include_dirs: Sequence[Path],
     ) -> tuple[Path, ...]:
-        """Folders whose files must join the cache key; empty outside isolated Projects."""
+        """Folders whose files must join the cache key; empty outside isolated Projects.
+
+        The whole build root is included: it holds only FuseSoC output of listed
+        files, so a test-only header a source reaches through ``../`` counts too.
+        """
         if not native_cores_ignored(self._target_handle(target).project_root):
             return ()
-        folders = {*include_dirs, *(path.parent for path in (*sv_files, *v_files))}
+        folders = {
+            Path(resolved.build_root),
+            *include_dirs,
+            *(path.parent for path in (*sv_files, *v_files)),
+        }
         return tuple(sorted(folders))
 
     def _resolve_fpga_target(self, target: str, *, build_root: Path | None) -> Any:

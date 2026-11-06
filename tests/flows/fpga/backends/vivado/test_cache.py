@@ -416,7 +416,7 @@ def test_reachable_files_walk_is_bounded_outside_build_root(tmp_path: Path) -> N
 
     base = key()
     (user / "deep" / "buried.vh").write_text("// buried v2\n", encoding="utf-8")
-    assert key() == base  # a subfolder of a user folder is never walked
+    assert key() == base  # accepted limit (plan R3): user subfolders are not walked
     (inside / "deep" / "buried.vh").write_text("// inside v2\n", encoding="utf-8")
     changed = key()
     assert changed != base  # a subfolder of the build root is
