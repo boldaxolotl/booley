@@ -309,6 +309,19 @@ def _launch_finalized(endpoint: Specialist, tmp_path: Path) -> McpToolResult:
 _OPUS_THEN_LUNA = ("claude-opus-5-5", "gpt-6-luna")
 
 
+def _refusal_memory() -> dict:
+    """The process refusal memory of the model fallback list.
+
+    Empty when the module is absent, so the regression tests fail in their bodies, not in
+    fixture setup, on a base that predates the list form.
+    """
+    try:
+        from booley.runtime import model_fallback
+    except ImportError:
+        return {}
+    return model_fallback._REFUSED
+
+
 @pytest.fixture
 def logins(monkeypatch):
     """Set which Agent CLIs have a login; the process refusal memory starts empty."""
@@ -318,9 +331,7 @@ def logins(monkeypatch):
     monkeypatch.setattr(
         auth_token, "cli_logged_in", lambda cli, *_a, **_kw: cli in logged_in, raising=False
     )
-    from booley.runtime import model_fallback
-
-    refused = model_fallback._REFUSED
+    refused = _refusal_memory()
     refused.clear()
     yield logged_in
     refused.clear()
