@@ -30,12 +30,8 @@ def flow_negative_flags(endpoint: Any) -> dict[str, str]:
     Taken from the parser that parses the call, so ``false`` over MCP reaches
     the endpoint as ``--no-x`` even when a custom schema hook shapes the schema.
     """
-    parser = (
-        build_parser(endpoint)
-        if isinstance(endpoint, BuiltinFlow)
-        else getattr(endpoint, "_parser", None)
-    )
-    return negative_flags(parser) if parser is not None else {}
+    parser = build_parser(endpoint) if isinstance(endpoint, BuiltinFlow) else endpoint._parser
+    return negative_flags(parser)
 
 
 def flow_schema(endpoint: Any) -> dict[str, Any]:
