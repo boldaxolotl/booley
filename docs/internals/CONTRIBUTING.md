@@ -349,6 +349,13 @@ contributors do not need write access to request review. Mergify updates and
 validates queued PRs one at a time before merging them. Delete the branch only
 after Mergify reports the PR merged.
 
+CI skips draft pull requests: `Tests`, the PicoRV32 demo contract, and the
+project site build start when the PR is opened ready or marked ready for
+review. `confidential-content` still runs on drafts. Open a draft while the
+change is still moving to save shared runner time; to test a draft anyway, run
+`Tests` through `workflow_dispatch` on its branch (the full suite, image builds
+included).
+
 `main` is kept releasable, but merging a pull request does not publish a new
 Booley version. Releases are deliberate: a versioned commit on `main` is tagged
 with a matching `v*` tag, which triggers the package and container publishing
