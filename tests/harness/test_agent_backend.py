@@ -73,7 +73,7 @@ def test_unclassified_stream_exception_keeps_traceback_at_debug(caplog) -> None:
         patch.object(cb, "_dump_crash_context"),
         pytest.raises(RuntimeError, match="provider exploded"),
     ):
-        cb._handle_stream_exception(failure, False, deque(), deque(), 0, 1, None)
+        cb._handle_stream_exception(failure, False, deque(), deque(), 0, 1, None, model="test")
 
     ordinary = [
         record
@@ -96,7 +96,7 @@ def test_result_error_classification_uses_terminal_text() -> None:
     failure.errors = []
 
     with patch.object(cb, "_dump_crash_context"), pytest.raises(UsageLimitError):
-        cb._handle_stream_exception(failure, False, deque(), deque(), 0, 1, None)
+        cb._handle_stream_exception(failure, False, deque(), deque(), 0, 1, None, model="test")
 
 
 # ===========================================================================

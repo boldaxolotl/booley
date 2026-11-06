@@ -391,13 +391,15 @@ def test_probe_cost_accounting_and_completeness_are_independent(
         "measure_developer_rss",
         lambda _: developer_probe.ProbeMeasurement(1024, True, usage),
     )
+    monkeypatch.setattr(developer_probe, "probe_model_access", lambda *_args, **_kw: usage)
     if storage_fails:
         monkeypatch.setattr(
             developer_probe, "record_measurement", Mock(side_effect=OSError("unwritable"))
         )
     reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
     doctor._track_developer_probe(project, reporter, tracker)
-    assert reporter.agent_calls == [doctor._AgentCallRecord("agent probe", usage)]
+    assert reporter.agent_calls[0] == doctor._AgentCallRecord("agent probe", usage)
+    assert {call.label for call in reporter.agent_calls[1:]} <= {"model probe"}
     assert tracker.missing == (("developer-probe",) if storage_fails else ())
 
 
@@ -429,6 +431,7 @@ def _model_probe_world(tmp_path, monkeypatch, *, gateway=False):
     ):
         monkeypatch.delenv(name, raising=False)
     if gateway:
+        monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
         monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
         monkeypatch.setenv("BOOLEY_GATEWAY_URL", "https://gateway.example/v1")
         monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC_GATEWAY_TOKEN")
@@ -603,6 +606,12 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
         "measure_developer_rss",
         lambda _project: _qualification_measurement(missing),
     )
+    monkeypatch.setattr(
+        developer_probe,
+        "probe_model_access",
+        lambda *_args, **_kw: developer_probe.ProbeUsage(1, 0, 1, 0.0),
+        raising=False,
+    )
     return audit
 
 
@@ -699,7 +708,7 @@ def test_runtime_policy_full_doctor_qualification(
         assert record.reasons == tuple(sorted(blocking | extra))
         assert [r.code for r in result.deep_status.reasons] == ["latest-attempt-failed"]
     elif expected is deep.DeepOutcome.INCOMPLETE:
-        assert record.reasons == ("developer-probe",)
+        assert record.reasons == ("developer-probe", "model-access")
     else:
         assert not record.reasons
     assert result.deep_status.current is (expected is deep.DeepOutcome.SUCCESS)
@@ -708,7 +717,7 @@ def test_runtime_policy_full_doctor_qualification(
     )
     assert commands == ["smoke", "good", "bad", "core"]
     assert set(completions) == {
-        *([] if missing == "developer" else ["developer-probe"]),
+        *([] if missing == "developer" else ["developer-probe", "model-access"]),
         "sim.smoke.d97e8ce47f651215",
         "sim.selftest.good",
         "sim.selftest.bad",
@@ -748,7 +757,7 @@ def test_pending_review_qualifies_once_and_ack_preserves_deep(tmp_path, monkeypa
     assert final.clean and final.deep_status.current
     assert deep.deep_stamp_path(audit.booley_dir).read_bytes() == before
     assert commands == ["smoke", "good", "bad", "core"]
-    assert len(completions) == 5
+    assert len(completions) == 6
 
 
 @pytest.mark.parametrize("waived,missing", [(False, None), (True, None), (True, "developer")])

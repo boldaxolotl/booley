@@ -145,6 +145,7 @@ from booley.runtime import (
 )
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
+from booley.runtime.agent_errors import ModelUnavailableError
 from booley.runtime.booley_dir import (
     BOOLEY_DIR_NAME,
     contains,
@@ -417,6 +418,8 @@ class _AgentCallRecord:
 
     label: str
     usage: developer_probe.ProbeUsage | None
+    # What made the call fail (the provider's own error when known); None = it succeeded.
+    error: BaseException | None = None
 
 
 def _agent_usage_summary(calls: list[_AgentCallRecord]) -> str:
@@ -1354,12 +1357,14 @@ def _track_developer_probe(
 ) -> None:
     """Measure the agent before EDA children can contaminate its RSS observation."""
     tracker.require("developer-probe")
+    tracker.require("model-access")
     if reporter.agent_check_enabled("Specialist provider authorization and memory probe"):
         record = _run_developer_probe(
             project, reporter.pass_, reporter.skip_, reporter.fail_, completeness=tracker
         )
         if record is not None:
             reporter.record_agent_call(record)
+        _run_model_access_probes(project, reporter, tracker, record)
 
 
 def _deep_identity_reasons(image_id: str | None, sandbox_version: str | None) -> tuple[str, ...]:
@@ -2003,10 +2008,13 @@ def _run_developer_probe(
         measurement = developer_probe.measure_developer_rss(project.project_root)
     except Exception as exc:  # noqa: BLE001 — fail-soft by contract (Decision 12); SKIP, never crash
         record = (
-            _AgentCallRecord("agent probe", getattr(exc, "usage", None))
+            _AgentCallRecord("agent probe", getattr(exc, "usage", None), exc.__cause__ or exc)
             if getattr(exc, "agent_called", False)
             else None
         )
+        if record is not None and isinstance(record.error, ModelUnavailableError):
+            _fail(str(record.error), _MODEL_REFUSAL_FIX)
+            return record
         if getattr(exc, "agent_failure", False):
             _fail(
                 f"Specialist provider probe could not complete a trivial call — every "
@@ -2037,6 +2045,86 @@ def _run_developer_probe(
     if completeness is not None:
         completeness.completed("developer-probe", measurement.peak_rss_bytes > 0)
     return record
+
+
+_MODEL_REFUSAL_FIX = (
+    "change the config key named above to a model this account can use "
+    "(booley.toml cannot change once a Goal is entered)"
+)
+
+
+def _run_model_access_probes(
+    project: ProjectAudit,
+    reporter: _Reporter,
+    tracker: doctor_deep.DeepCheckTracker,
+    light_record: _AgentCallRecord | None,
+) -> None:
+    """Probe every other model the Project resolves, so a refusal fails Doctor, not a Goal.
+
+    The memory probe already exercised the light-tier model. Each remaining distinct model
+    (the other tiers and every ``[models.roles]`` pin) gets one trivial provider turn. A
+    gateway fixes the model server-side, so it adds no probe. Without a working light-tier
+    call (host run, auth failure, usage cap) the extra spend is pointless and the check
+    stays incomplete.
+    """
+    from booley.config.agent import load_agent_settings
+    from booley.harness import developer_probe
+
+    if light_record is None:
+        return
+    if light_record.error is not None and not isinstance(
+        light_record.error, ModelUnavailableError
+    ):
+        reporter.skip_("Specialist model access probes skipped - the provider probe failed")
+        return
+    settings = load_agent_settings(project.project_root, booley_dir=project.booley_dir)
+    if settings.auth == GATEWAY_AUTH:
+        tracker.completed("model-access", True)
+        return
+    light = settings.model_for_tier("light")
+    probed_all = True
+    for model, keys in settings.model_settings().items():
+        if model == light:
+            continue
+        _announce_long_check(
+            f"provider-backed check: Specialist model access probe for {model}",
+            "one provider turn; usually seconds, times out after "
+            f"{format_duration(developer_probe.PROBE_TIMEOUT_S)}",
+        )
+        if not _probe_one_model(project, reporter, model, keys):
+            probed_all = False
+            break
+    tracker.completed("model-access", probed_all)
+
+
+def _probe_one_model(
+    project: ProjectAudit, reporter: _Reporter, model: str, keys: tuple[str, ...]
+) -> bool:
+    """Probe *model*, grade the verdict, and return whether the next model may be probed."""
+    from booley.harness import developer_probe
+
+    try:
+        usage = developer_probe.probe_model_access(project.project_root, model)
+    except Exception as exc:  # noqa: BLE001 — fail-soft by contract; grade it, never crash
+        cause = exc.__cause__ or exc
+        if getattr(exc, "agent_called", False):
+            reporter.record_agent_call(
+                _AgentCallRecord("model probe", getattr(exc, "usage", None), cause)
+            )
+        if isinstance(cause, ModelUnavailableError):
+            reporter.fail_(str(cause), _MODEL_REFUSAL_FIX)
+            return True
+        if getattr(exc, "agent_failure", False):
+            reporter.fail_(
+                f"Specialist model {model} probe could not complete a trivial call: {exc}",
+                "check the provider's error in the harness log",
+            )
+        else:
+            reporter.skip_(f"Specialist model {model} probe skipped - {exc}")
+        return False
+    reporter.record_agent_call(_AgentCallRecord("model probe", usage))
+    reporter.pass_(f"Specialist model {model} accepted by the provider ({', '.join(keys)})")
+    return True
 
 
 def _booley_dockerfile() -> Path | None:
