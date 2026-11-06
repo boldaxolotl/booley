@@ -4181,6 +4181,7 @@ def _run_flow_audit(
 ) -> None:
     """Validate enabled Flows and run Sandbox dry-run smoke checks."""
     _check_design_size(project, _pass, _note)
+    rejected_cores = _fusesoc_rejected_cores(project.project_root)
     for flow_name in _PLAIN_DOCTOR_FLOWS:
         if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} disabled in booley.toml")
@@ -4206,7 +4207,13 @@ def _run_flow_audit(
                 )
         if flow_name == "sim":
             _check_sim_run_cwd(project, _pass, _warn)
-        targets = _check_doctor_targets(project, flow_name, _fail)
+        targets = _check_doctor_targets(
+            project,
+            flow_name,
+            _fail,
+            _skip=_skip,
+            rejected_cores=rejected_cores,
+        )
         if not targets:
             continue
         _check_flow_runtime_reality(
@@ -4219,6 +4226,13 @@ def _run_flow_audit(
             _fail=_fail,
         )
         for target in targets:
+            rejected_core = _rejected_target_core(project, target, rejected_cores)
+            if rejected_core is not None:
+                _skip(
+                    f"{flow_name} dry-run [{target}] skipped - FuseSoC rejects "
+                    f"{rejected_core.name}; see the .core schema FAIL under FuseSoC .core checks"
+                )
+                continue
             _run_flow_check(
                 project,
                 flow_name,
@@ -4233,6 +4247,22 @@ def _run_flow_audit(
                 _skip=_skip,
                 _fail=_fail,
             )
+
+
+def _rejected_target_core(
+    project: ProjectAudit,
+    target: str,
+    rejected_cores: Mapping[Path, fusesoc_registry.FuseSocCoreRejection],
+) -> Path | None:
+    """Return the FuseSoC-rejected core hosting Doctor Target *target*, if any."""
+    if not rejected_cores:
+        return None
+    try:
+        core_file = TargetCatalog.build(project.project_root).select(target).core_file
+    except FuseSocError:
+        return None  # target-resolution diagnostics report this elsewhere
+    core_file = lexical_stealth_path(project.project_root, core_file)
+    return core_file if core_file in rejected_cores else None
 
 
 def _check_flow_runtime_reality(
@@ -4460,12 +4490,14 @@ def _check_core_schema(
     *,
     _note: Check | None = None,
 ) -> None:
-    """Flag CAPI2 array-field schema violations in any discovered ``.core``.
+    """Flag CAPI2 schema violations in any discovered ``.core``.
 
     Booley's tolerant ``yaml.safe_load`` accepts a scalar — or a bare ``depend:``
-    that parses to ``None`` — where FuseSoC's schema demands an array; cheap
-    enumeration then greenlights a ``.core`` the deep resolve later rejects with
-    ``... must be array``. Reproduce that verdict host-side (no subprocess).
+    that parses to ``None`` — where FuseSoC's schema demands an array, and an
+    unknown property (a ``booley:`` mapping beside ``flow_options``); cheap
+    enumeration then greenlights a ``.core`` the deep resolve later rejects.
+    Reproduce FuseSoC's verdict host-side (no subprocess): Booley's array-field
+    subset plus FuseSoC's own parser.
 
     Severity follows ownership. A violation FAILs when the core is one the
     project actually drives — it hosts a Doctor-selected Target — or
@@ -4480,18 +4512,16 @@ def _check_core_schema(
     owned_cores = _owned_core_files(project, root)
     schema_clean = True
     for core_file in fusesoc_registry.discover_cores(root):
-        errors = fusesoc_registry.core_schema_errors(core_file)
-        if not errors:
+        findings, rejection = _core_schema_findings(core_file)
+        if not findings:
             continue
         schema_clean = False
-        owned = core_file in owned_cores
-        for msg in errors:
+        # A misplaced ``booley:`` marker is the project's own Doctor intent that
+        # FuseSoC's rejection hides from Booley's reader, so the core is driven.
+        owned = core_file in owned_cores or (rejection is not None and rejection.misplaced_booley)
+        for msg, fix in findings:
             if owned:
-                _fail(
-                    f".core schema {core_file.name}: {msg}",
-                    "fix the .core — FuseSoC's CAPI2 schema requires this "
-                    "(caught here so it does not only surface under --deep)",
-                )
+                _fail(f".core schema {core_file.name}: {msg}", fix)
             else:
                 note_sink(
                     f".core schema {core_file.name}: {msg} — vendored core, no "
@@ -4499,7 +4529,68 @@ def _check_core_schema(
                     "so only that core's own Targets are unusable"
                 )
     if schema_clean:
-        _pass(".core CAPI2 array-field schema valid")
+        _pass(".core CAPI2 schema valid")
+
+
+_CORE_SCHEMA_FIX = (
+    "fix the .core — FuseSoC's CAPI2 schema requires this "
+    "(caught here so it does not only surface under --deep)"
+)
+
+
+def _core_schema_findings(
+    core_file: Path,
+) -> tuple[list[tuple[str, str]], fusesoc_registry.FuseSocCoreRejection | None]:
+    """Return ``([(message, fix), ...], FuseSoC's rejection)`` for one ``.core``.
+
+    Booley's host-side subset runs first; FuseSoC's own verdict follows as one
+    more row unless a FuseSoC-class subset row (array fields, per-file keys)
+    already describes the same CAPI2 entry. Booley-only metadata rows never
+    suppress it: they do not say why FuseSoC ignores the file.
+    """
+    findings = [(msg, _CORE_SCHEMA_FIX) for msg in fusesoc_registry.core_schema_errors(core_file)]
+    rejection = _fusesoc_core_rejection(core_file)
+    if rejection is None:
+        return findings, None
+    entry = rejection.entry
+    if entry is not None and any(
+        msg == entry or msg.startswith((f"{entry}.", f"{entry} "))
+        for msg, _ in findings
+        if ".flow_options.booley" not in msg
+    ):
+        return findings, rejection
+    fix = _CORE_SCHEMA_FIX
+    if rejection.misplaced_booley:
+        fix = f"move the booley: mapping under targets.{rejection.target}.flow_options"
+    findings.append(
+        (
+            f"{rejection.message} — FuseSoC ignores this whole .core, "
+            "so none of its Targets resolve",
+            fix,
+        )
+    )
+    return findings, rejection
+
+
+def _fusesoc_core_rejection(
+    core_file: Path,
+) -> fusesoc_registry.FuseSocCoreRejection | None:
+    """FuseSoC's verdict on a readable ``.core``; unreadable files have their own row."""
+    try:
+        fusesoc_registry.read_core(core_file)
+    except FuseSocError:
+        return None
+    return fusesoc_registry.fusesoc_core_rejection(core_file)
+
+
+def _fusesoc_rejected_cores(root: Path) -> dict[Path, fusesoc_registry.FuseSocCoreRejection]:
+    """Map every discovered ``.core`` FuseSoC ignores to its rejection."""
+    rejected: dict[Path, fusesoc_registry.FuseSocCoreRejection] = {}
+    for core_file in fusesoc_registry.discover_cores(root):
+        rejection = _fusesoc_core_rejection(core_file)
+        if rejection is not None:
+            rejected[core_file] = rejection
+    return rejected
 
 
 _RECURSIVE_SYMLINK_FIX = (
@@ -7806,10 +7897,33 @@ def _project_target_matrix(project: ProjectAudit) -> target_matrix.DoctorTargetM
     return target_matrix.build_doctor_target_matrix(project.project_root)
 
 
-def _check_doctor_targets(project: ProjectAudit, flow_name: str, _fail: Fail) -> list[str]:
-    """Validate and return the Target matrix selected for *flow_name*."""
+def _check_doctor_targets(
+    project: ProjectAudit,
+    flow_name: str,
+    _fail: Fail,
+    *,
+    _skip: Check | None = None,
+    rejected_cores: Mapping[Path, fusesoc_registry.FuseSocCoreRejection] | None = None,
+) -> list[str]:
+    """Validate and return the Target matrix selected for *flow_name*.
+
+    A Flow with no Doctor Target is a FAIL, unless FuseSoC rejects a core whose
+    misplaced ``booley: {doctor: [...]}`` mapping names this Flow: the marker is
+    invisible to Booley's reader, and the schema FAIL already names the cause.
+    """
     targets = _doctor_targets(project, flow_name)
     if not targets:
+        misplaced = sorted(
+            core.name
+            for core, rejection in (rejected_cores or {}).items()
+            if flow_name in rejection.misplaced_flows
+        )
+        if misplaced and _skip is not None:
+            _skip(
+                f"{flow_name} has no Doctor Target - FuseSoC rejects "
+                f"{', '.join(misplaced)}; see the .core schema FAIL"
+            )
+            return []
         try:
             available = [
                 handle.selector for handle in TargetCatalog.build(project.project_root).list()

@@ -753,6 +753,26 @@ class TestDryRun:
         with pytest.raises(fusesoc_registry.FuseSocError, match="inspection failed"):
             flow._lint_plan_inspection(_target_handle("broken", project_root=tmp_path))
 
+    def test_dry_run_names_rejected_core(self, tmp_path: Path) -> None:
+        """A Target in a core FuseSoC ignores fails with the core and the reason."""
+        (tmp_path / "bad.core").write_text(
+            "CAPI=2:\nname: acme:ip:bad:0\ntargets:\n"
+            "  lite:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+            "    filesetz: [rtl]\n",
+            encoding="utf-8",
+        )
+        handle = TargetCatalog.build(tmp_path).select("lite")
+        flow = LintFlow()
+        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+
+        plan = flow._plan_lint((handle,))
+
+        assert len(plan.aggregate_errors) == 1
+        error = plan.aggregate_errors[0]
+        assert "FuseSoC rejected" in error
+        assert "bad.core" in error
+        assert "filesetz" in error
+
     def test_plan_rejects_error_command(self, tmp_path: Path, monkeypatch) -> None:
         target = _target_handle("broken", project_root=tmp_path)
         target.core_file.write_text("CAPI=2:\nname: ::broken:0\n", encoding="utf-8")
