@@ -507,3 +507,15 @@ def test_session_owner_of_relocated_worktree_uses_configured_namespace(tmp_path,
 
     assert (context.project_root, context.checkout, context.booley_dir) == (root, moved, state)
     assert context.cwd == "/work/state/worktrees/goal"
+
+
+def test_unreadable_configuration_means_no_configured_booley_directory(tmp_path):
+    """A retired-layout ``[project].dir`` raises on selection; discovery treats it as no match."""
+    from booley.runtime.project_discovery import _is_configured_booley_dir
+
+    outer = tmp_path / "checkout"
+    outer.mkdir()
+    subprocess.run(["git", "init", str(outer)], check=True, capture_output=True, timeout=30)
+    (outer / "booley.toml").write_text('[project]\ndir = ".booley_project"\n', encoding="utf-8")
+
+    assert not _is_configured_booley_dir(outer / ".booley_project")
