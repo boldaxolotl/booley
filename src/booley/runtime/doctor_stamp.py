@@ -7,14 +7,14 @@ multi-hour ticket sweep before anyone thought to re-run doctor. The stamp
 closes that gap cheaply.
 
 On every doctor run that ends with **zero FAILs and zero active WARNs**, doctor
-records a timestamp plus an environment fingerprint into project runtime state at
-``<booley_dir>/runtime/doctor_stamp.json`` (beside the developer probe and
+records a timestamp plus an environment fingerprint into the Main Booley Directory
+at ``<booley_dir>/runtime/doctor_stamp.json`` (beside the developer probe and
 the slot store -- the same ADR 0028 bookkeeping home, bind-mounted into the
 Sandbox, so a host-written stamp is readable in-container and vice
-versa). Session start (``booley session up``) and the per-sweep ticket loop
-then check the stamp in microseconds -- no docker round-trips -- and emit a
-prominent advisory when doctor's blessing has gone stale or the fingerprint
-no longer matches the config on disk.
+versa). The init advisory and the health record then check the stamp in
+microseconds -- no docker round-trips -- and emit a prominent advisory when
+doctor's blessing has gone stale or the fingerprint no longer matches the
+config on disk.
 
 The fingerprint deliberately contains only inputs both launch contexts hash to the
 same bytes (``booley.toml``, ``doctor-waivers.toml``, and
@@ -32,7 +32,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,7 +40,7 @@ from booley.audit.doctor_waivers import WAIVER_FILENAME
 from booley.audit.health import HEALTHY_MAX_AGE_DAYS
 from booley.core.differences import format_differences
 from booley.runtime import runtime_context
-from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.booley_dir import resolve_main_checkout_root
 from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.filesystem_utils import (
     is_transient_read_error,
@@ -87,14 +86,19 @@ def _sha256_or_none(path: Path) -> str | None:
 def compute_fingerprint(booley_dir: Path, project_root: Path) -> dict[str, str | None]:
     """Hash the config inputs whose drift should invalidate the stamp.
 
-    Both files are identical bytes on host and in-container (Booley Directory and
-    workspace are bind-mounted), so a fingerprint recorded on either side
-    compares cleanly on the other.
+    The stamp describes the Sandbox and installed package, not one checkout's
+    code (ADR 0082), so *booley_dir* is the Main Booley Directory and the
+    devcontainer comes from the main checkout, never a linked worktree's
+    per-folder copy. Both are identical bytes on host and in-container
+    (bind-mounted), so a fingerprint recorded on either side compares cleanly
+    on the other.
     """
     return {
         "booley_toml_sha256": _sha256_or_none(booley_dir / "booley.toml"),
         "doctor_waivers_sha256": _sha256_or_none(booley_dir / WAIVER_FILENAME),
-        "devcontainer_json_sha256": _sha256_or_none(devcontainer_path(project_root)),
+        "devcontainer_json_sha256": _sha256_or_none(
+            devcontainer_path(resolve_main_checkout_root(project_root))
+        ),
     }
 
 
@@ -248,26 +252,3 @@ def check_stamp(
         now=now,
     )
     return advisory.message if advisory else None
-
-
-def warn_if_stale(
-    project_root: Path,
-    emit: Callable[[str], None],
-    *,
-    emphasize_action: Callable[[str], str] | None = None,
-) -> None:
-    """Run the stamp check and hand any nag to *emit*; never raises.
-
-    The one-call entry point for session start and the ticket sweep: the
-    stamp is advisory, so an unresolvable Booley Directory (or any other surprise)
-    silently skips the check rather than blocking real work.
-    """
-    try:
-        advisory = check_stamp_advisory(resolve_booley_dir(project_root), project_root)
-    except Exception:  # noqa: BLE001 — advisory by contract; never block a session or sweep on the stamp
-        return
-    if advisory:
-        message = advisory.message
-        if advisory.requires_action and emphasize_action:
-            message = emphasize_action(message)
-        emit(message)

@@ -17,7 +17,7 @@ from booley.runtime.booley_dir import (
     resolve_checkout_booley_dir,
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
-from tests.booley_dir_topology import (
+from tests.booley_checkouts_support import (
     commit_all,
     init_repo,
     isolate_git,

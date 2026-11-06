@@ -1861,8 +1861,90 @@ def test_route_fact_does_not_hide_abnormal_termination(process):
     ],
 )
 def test_startup_cause_skips_success_summary_and_echoed_tcl(diagnostic):
+    from booley.flows.eda_failures import first_tool_diagnostic
+
     text = '0 Critical Warnings and 0 Errors encountered.\nputs "error"\n' + diagnostic
-    assert FpgaImplFlow._first_startup_cause(text) == diagnostic
+    assert first_tool_diagnostic(text, default="no route completion evidence") == diagnostic
+
+
+_FPGA_MARKER = (
+    "BOOLEY_EDA_FAILURE token=0123456789abcdef0123456789abcdef "
+    "kind=missing_eda_tool stage=vivado subject=vivado"
+)
+
+
+def _run_failing_fpga(tmp_path: Path, state_file: Path, stdout: str, stderr: str):
+    """Run fpga_impl with a mocked failing make invocation; return (result, report)."""
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file)
+    work_root = tmp_path / "wr"
+    with (
+        patch.object(
+            FpgaImplFlow,
+            "_prepare_fpga_command",
+            return_value=_PreparedFpgaCommand(["make", "-C", "wr"], work_root, "", False),
+        ),
+        patch.object(
+            FpgaImplFlow,
+            "_execute_local",
+            return_value=SubprocessResult(returncode=1, stdout=stdout, stderr=stderr),
+        ),
+        patch(
+            "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
+            return_value={"lut_count": 10, "ff_count": 5},
+        ),
+    ):
+        result = flow._run()
+    report = json.loads((tmp_path / "reports" / "fpga_default.json").read_text(encoding="utf-8"))
+    return result, report
+
+
+@pytest.mark.parametrize(
+    ("diagnostic_lines", "cause"),
+    [
+        (
+            "ERROR: [Common 17-69] Command failed: bogus option",
+            "ERROR: [Common 17-69] Command failed: bogus option",
+        ),
+        ("vivado: unrecognized option -bogus", "vivado: unrecognized option -bogus"),
+    ],
+    ids=["error-line", "unrecognized"],
+)
+def test_2808_fpga_failure_text_follows_shared_rules(
+    tmp_path: Path, state_file: Path, diagnostic_lines: str, cause: str
+) -> None:
+    """Issue #2808: FPGA cause skips noise lines and no marker reaches failure text."""
+    result, report = _run_failing_fpga(
+        tmp_path,
+        state_file,
+        stdout=(
+            "make: Entering directory '/wr'\n"
+            f"{_FPGA_MARKER}\n"
+            "/bin/sh: lsb_release: command not found\n"
+            "WARNING: [Vivado 12-584] port foo not found\n"
+        ),
+        stderr=f"{diagnostic_lines}\nmake: *** [Makefile:9: impl] Error 1\n",
+    )
+    assert result.exit_code == EXIT_ERROR
+    assert report["infra_error"] == f"Vivado did not reach route_design: {cause}"
+    assert "BOOLEY_EDA_FAILURE" not in report["metrics"]["failure_output"]
+    assert "BOOLEY_EDA_FAILURE" not in result.report_text
+
+
+def test_2808_fpga_infrastructure_diagnostic_hides_marker(
+    tmp_path: Path, state_file: Path
+) -> None:
+    """Issue #2808: an infrastructure-classified Vivado failure shows no marker line."""
+    result, report = _run_failing_fpga(
+        tmp_path,
+        state_file,
+        stdout=f"{_FPGA_MARKER}\n",
+        stderr="make: vivado: No such file or directory\n",
+    )
+    assert result.exit_code == EXIT_ERROR
+    assert report["infra_error"].startswith("missing tool: vivado")
+    assert "BOOLEY_EDA_FAILURE" not in report["metrics"]["failure_output"]
+    assert "BOOLEY_EDA_FAILURE" not in result.report_text
 
 
 @pytest.mark.parametrize("topology", ["standalone", "linked"])
@@ -2100,6 +2182,65 @@ def test_summary_record_keeps_every_metric_with_delta_sub_row(
     for token in ("125.0s", "0.123 ns", "0.010 ns", "170.2 MHz [slow]", "PASS"):
         assert token in rows[0], token
     assert f"{_DIM}" in out.getvalue(), "delta sub-row is dimmed on the console"
+
+
+@pytest.mark.parametrize(
+    ("baseline_error", "current_wns", "expected_rows", "expected_result"),
+    [
+        pytest.param(
+            False,
+            -0.3,
+            {"default": "PASS", "tight": "FAIL"},
+            "RESULT: FAIL (tight: timing not met",
+            id="timing-violation-is-fail",
+        ),
+        pytest.param(
+            True,
+            0.5,
+            {"default": "ERROR (baseline)", "tight": "PASS"},
+            "RESULT: ERROR (baseline default: ",
+            id="baseline-error",
+        ),
+        pytest.param(
+            True,
+            -0.3,
+            {"default": "ERROR (baseline)", "tight": "PASS"},
+            "RESULT: ERROR (baseline default: ",
+            id="failed-target-with-baseline-error",
+        ),
+    ],
+)
+def test_summary_rows_agree_with_result_reasons(
+    tmp_path: Path,
+    state_file: Path,
+    baseline_error: bool,
+    current_wns: float,
+    expected_rows: dict[str, str],
+    expected_result: str,
+) -> None:
+    """Each row's Status agrees with the RESULT line; the FPGA Flow has no WARN verdict."""
+    flow = _flow(tmp_path, state_file)
+    if baseline_error:
+        flow.args.baseline = "abc1234"
+        current = {"default": _passing_fpga(wns_ns=current_wns), "tight": _passing_fpga()}
+        baseline = {
+            "default": FpgaMetrics(infra_error="baseline broke", returncode=2),
+            "tight": _passing_fpga(),
+        }
+    else:
+        current = {"default": _passing_fpga(), "tight": _passing_fpga(wns_ns=current_wns)}
+        baseline = {}
+    result = flow._aggregate_results(list(current), current, baseline, "abc1234")
+    _, rows = _fpga_table(result.report_text)
+    statuses = {
+        row.split()[0]: row[
+            min(i for w in ("PASS", "FAIL", "ERROR") if (i := row.find(w)) >= 0) :
+        ].rstrip()
+        for row in rows
+        if not row.lstrip().startswith("Δ")
+    }
+    assert statuses == expected_rows
+    assert expected_result in result.report_text
 
 
 def test_summary_notes_drop_the_flow_prefix(

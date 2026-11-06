@@ -33,8 +33,10 @@ class ResultText(NamedTuple):
 
 
 def status_cell(text: str) -> str:
-    """Colour a Status cell: green for ``PASS``, red for anything else."""
-    return colors.green(text) if text.startswith("PASS") else colors.red(text)
+    """Colour a Status cell: green for ``PASS``, amber for ``WARN``, red for anything else."""
+    if text.startswith("PASS"):
+        return colors.green(text)
+    return colors.amber(text) if text.startswith("WARN") else colors.red(text)
 
 
 def note_line(subject: str, label: str, text: str) -> str:

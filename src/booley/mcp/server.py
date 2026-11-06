@@ -476,8 +476,14 @@ def _resolve_transcript_dir(
     return transcript_dir
 
 
-def _params_to_argv(params: dict[str, Any]) -> list[str]:
+def _params_to_argv(
+    params: dict[str, Any], negative_flags: Mapping[str, str] | None = None
+) -> list[str]:
     """Convert MCP params dict to CLI argv list.
+
+    ``True`` sends the flag. ``False`` sends nothing, except for a paired option
+    named in *negative_flags* (param -> ``--no-x``), where it sends the negative
+    flag so the call can override a Target default.
 
     Option-like values (a ``--test`` selector such as ``--meminit=...``) are
     rendered in the one-token ``--flag=value`` form: as the *next* argv item,
@@ -495,6 +501,8 @@ def _params_to_argv(params: dict[str, Any]) -> list[str]:
         if isinstance(value, bool):
             if value:
                 argv.append(flag)
+            elif negative_flags and key in negative_flags:
+                argv.append(negative_flags[key])
             continue
 
         if isinstance(value, list):
@@ -1414,7 +1422,7 @@ def _endpoint_command(
 ) -> list[str]:
     """Build the canonical subprocess command for one endpoint definition."""
     arguments = dict(arguments)
-    argv = _params_to_argv(arguments)
+    argv = _params_to_argv(arguments, definition.get("negative_flags"))
     if definition.get("is_specialist"):
         transcript_dir = (
             _resolve_transcript_dir(name, call_counts, context=context)

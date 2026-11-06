@@ -16,7 +16,14 @@ import booley
 from booley.audit.diagnostic_results import DiagnosticFinding, Severity
 from booley.harness import auto_doctor, doctor
 from booley.harness import doctor_deep as deep
+from booley.harness.setup import readiness
 from booley.runtime import doctor_stamp, health
+from booley.runtime.booley_dir import (
+    reset_cache,
+    resolve_checkout_booley_dir,
+    resolve_common_booley_dir,
+)
+from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 
 IMAGE = "sha256:" + "a" * 64
 OTHER_IMAGE = "sha256:" + "b" * 64
@@ -35,7 +42,7 @@ def _codes(status):
 
 def _observe_in(tmp_path, monkeypatch):
     """Observe currency the way an in-Sandbox Doctor does, with the matching image."""
-    monkeypatch.setattr(doctor, "resolve_checkout_booley_dir", lambda _: tmp_path)
+    monkeypatch.setattr(doctor, "resolve_common_booley_dir", lambda _: tmp_path)
     monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setenv(IMAGE_ENV, IMAGE)
     return doctor.observe_deep_status(tmp_path)
@@ -48,7 +55,11 @@ def _report(booley_dir, findings, summary=None):
         {}, findings, int(any(f.severity == Severity.FAIL for f in findings))
     )
     return doctor._report_deep_currency(
-        booley_dir, SimpleNamespace(booley_dir=booley_dir), result, summary, True
+        booley_dir,
+        SimpleNamespace(booley_dir=booley_dir, common_booley_dir=booley_dir),
+        result,
+        summary,
+        True,
     )
 
 
@@ -235,12 +246,14 @@ def test_project_edits_and_plain_stamps_preserve_deep_currency(tmp_path, name):
 def _stub_orchestration(tmp_path, monkeypatch):
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
-    project = SimpleNamespace(booley_dir=booley_dir, project_root=tmp_path)
+    project = SimpleNamespace(
+        booley_dir=booley_dir, common_booley_dir=booley_dir, project_root=tmp_path
+    )
     monkeypatch.setattr(doctor, "_run_project_phase", lambda *_args, **_kw: (None, project))
     monkeypatch.setattr(doctor, "_run_runtime_phase", lambda *_args: None)
     monkeypatch.setattr(doctor, "_run_flow_and_core_phase", lambda *_args: None)
     # Observe currency as an in-Sandbox Doctor does, with the matching image.
-    monkeypatch.setattr(doctor, "resolve_checkout_booley_dir", lambda _: booley_dir)
+    monkeypatch.setattr(doctor, "resolve_common_booley_dir", lambda _: booley_dir)
     monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setenv(IMAGE_ENV, IMAGE)
     return booley_dir
@@ -318,7 +331,7 @@ def test_storage_failure_does_not_claim_new_current_evidence(tmp_path, monkeypat
     path = deep.deep_stamp_path(tmp_path)
     before = path.read_bytes() if saved else None
     previous = deep.load_deep_record(tmp_path)
-    monkeypatch.setattr(doctor, "resolve_checkout_booley_dir", lambda _: tmp_path)
+    monkeypatch.setattr(doctor, "resolve_common_booley_dir", lambda _: tmp_path)
     monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setenv(IMAGE_ENV, IMAGE)
     publication = Mock(side_effect=OSError("publication failed"))
@@ -329,7 +342,7 @@ def test_storage_failure_does_not_claim_new_current_evidence(tmp_path, monkeypat
     original = doctor.DoctorRunResult({}, findings, 0 if clean else 1)
     result = doctor._report_deep_currency(
         tmp_path,
-        SimpleNamespace(booley_dir=tmp_path),
+        SimpleNamespace(booley_dir=tmp_path, common_booley_dir=tmp_path),
         original,
         deep.DeepAttemptSummary((), (), IMAGE),
         True,
@@ -383,7 +396,7 @@ def test_persisted_reports_include_status_without_scheduling_or_dedup_changes(
 def test_completed_invalid_config_attempt_vetoes_previous_success(tmp_path, monkeypatch):
     booley_dir = _stub_orchestration(tmp_path, monkeypatch)
     deep.record_deep_attempt(booley_dir, _record())
-    monkeypatch.setattr(doctor, "resolve_checkout_booley_dir", lambda _: booley_dir)
+    monkeypatch.setattr(doctor, "resolve_common_booley_dir", lambda _: booley_dir)
 
     def invalid(_root, reporter, **_kwargs):
         reporter.fail_("project configuration invalid")
@@ -408,7 +421,7 @@ def test_host_currency_uses_sandbox_execution_version(
 ):
     success = _record(version="validated")
     deep.record_deep_attempt(tmp_path, success)
-    monkeypatch.setattr(doctor, "resolve_checkout_booley_dir", lambda _: tmp_path)
+    monkeypatch.setattr(doctor, "resolve_common_booley_dir", lambda _: tmp_path)
     monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(booley, "__version__", host_version)
     probe = subprocess.CompletedProcess([], 0, f"{IMAGE}\n{sandbox_version or ''}\n", "")
@@ -447,7 +460,7 @@ def test_host_identity_reads_selected_sandbox(tmp_path, monkeypatch, selected, s
 def test_inside_currency_uses_live_package_version(tmp_path, monkeypatch):
     success = _record(version="validated")
     deep.record_deep_attempt(tmp_path, success)
-    monkeypatch.setattr(doctor, "resolve_checkout_booley_dir", lambda _: tmp_path)
+    monkeypatch.setattr(doctor, "resolve_common_booley_dir", lambda _: tmp_path)
     monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setattr(booley, "__version__", "upgraded")
     monkeypatch.setenv(IMAGE_ENV, IMAGE)
@@ -456,7 +469,7 @@ def test_inside_currency_uses_live_package_version(tmp_path, monkeypatch):
 
 def test_inside_identity_comes_from_issued_image_variable(tmp_path, monkeypatch):
     deep.record_deep_attempt(tmp_path, _record())
-    monkeypatch.setattr(doctor, "resolve_checkout_booley_dir", lambda _: tmp_path)
+    monkeypatch.setattr(doctor, "resolve_common_booley_dir", lambda _: tmp_path)
     monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setenv(IMAGE_ENV, IMAGE)
     assert doctor.observe_deep_status(tmp_path).current
@@ -487,7 +500,7 @@ def test_only_exact_pending_warning_is_exempt(
     )
     reported = doctor._report_deep_currency(
         tmp_path,
-        SimpleNamespace(booley_dir=booley_dir),
+        SimpleNamespace(booley_dir=booley_dir, common_booley_dir=booley_dir),
         result,
         deep.DeepAttemptSummary((), (), IMAGE),
         True,
@@ -510,7 +523,7 @@ def test_waivers_never_supply_missing_execution(tmp_path, monkeypatch, missing, 
     result = doctor.DoctorRunResult({}, (finding,), 0)
     reported = doctor._report_deep_currency(
         tmp_path,
-        SimpleNamespace(booley_dir=booley_dir),
+        SimpleNamespace(booley_dir=booley_dir, common_booley_dir=booley_dir),
         result,
         deep.DeepAttemptSummary(missing, (), IMAGE),
         True,
@@ -531,3 +544,41 @@ def test_typed_timestamp_uses_unknown_display_when_unparseable(tmp_path):
     )
     assert status.current
     assert status.render() == f"deep Doctor current (Booley {booley.__version__}, unknown)"
+
+
+def _audit(root):
+    """The ProjectAudit Doctor builds for *root*'s own checkout."""
+    return readiness.ProjectAudit(
+        project_root=root,
+        booley_dir=resolve_checkout_booley_dir(root),
+        booley_toml={},
+        configs_toml={},
+        first_target="",
+    )
+
+
+@pytest.mark.parametrize("runtime", RUNTIMES)
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_clean_run_from_worktree_is_current_in_main(tmp_path, monkeypatch, layout, runtime):
+    """A clean Doctor run blesses the Sandbox for main and its worktrees alike."""
+    main, worktree = linked_worktree(tmp_path, monkeypatch, layout=layout, runtime=runtime)
+    monkeypatch.setattr(doctor, "_run_runtime_phase", lambda *_args: None)
+    monkeypatch.setattr(doctor, "_run_flow_and_core_phase", lambda *_args: None)
+    monkeypatch.setattr(
+        doctor, "_run_deep_phase", lambda *_args: deep.DeepAttemptSummary((), (), IMAGE)
+    )
+    monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setenv(IMAGE_ENV, IMAGE)
+    for runner, reader in ((worktree, main), (main, worktree)):
+        monkeypatch.setattr(
+            doctor, "_run_project_phase", lambda *_a, root=runner, **_k: (None, _audit(root))
+        )
+        doctor.run_doctor_result(argparse.Namespace(deep=True), runner)
+        reset_cache()  # the reader is another process in real use
+        common = resolve_common_booley_dir(reader)
+        assert common == main / ".booley"
+        assert doctor_stamp.check_stamp_advisory(common, reader) is None
+        assert doctor.observe_deep_status(reader).current
+        assert not (worktree / ".booley" / "runtime" / "doctor_stamp.json").exists()
+        assert not deep.deep_stamp_path(worktree / ".booley").exists()
+        reset_cache()

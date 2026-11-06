@@ -41,8 +41,9 @@ from booley.runtime import (
     vaporview,
 )
 from booley.runtime import devcontainer as dc
-from booley.runtime.booley_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
+from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
     _Rec,
@@ -2371,7 +2372,14 @@ class TestCoreAudit:
         doctor._run_core_audit(
             project, rec.p, rec.w, rec.s, lambda msg, fix="": failures.append((msg, fix))
         )
-        matches = [item for item in failures if "flow_options.defines" in item[0]]
+        # A bare ``defines:`` (null) is also a CAPI2 schema violation, so FuseSoC's
+        # own verdict adds one ``.core schema`` row; the Target-level row is the one
+        # that carries the vlogdefine advice.
+        matches = [
+            item
+            for item in failures
+            if "flow_options.defines" in item[0] and not item[0].startswith(".core schema")
+        ]
         assert len(matches) == 1
         message, fix = matches[0]
         assert "::demo:0#sim" in message
@@ -3318,7 +3326,16 @@ targets:
     )
     c = _Collector()
     doctor._check_sim_traceable(tmp_path, _verilator_sim_ref(core), c._pass, c._warn)
-    assert any("cannot trace" in m and "sim_x" in m for m in c.warned)
+    [message] = c.warned
+    assert "cannot trace" in message and "sim_x" in message
+    assert (message.check_id, message.subject) == ("sim.trace-unavailable", "sim_x")
+    # The Simulation Flow reports a zero-signal traced run as inconclusive; the
+    # WARN must not promise a silent pass.
+    assert " passes" not in message.lower()
+    assert "inconclusive (exit 1)" in message
+    # The remedy names the trace arguments the owned main must honor.
+    assert "+trace and +tracefile=<file>" in message
+    assert "[flows.sim].trace_args" in message
     assert not c.passed
 
 
@@ -3659,13 +3676,40 @@ def _schema_audit(tmp_path, booley_toml=None) -> doctor.ProjectAudit:
     )
 
 
-def test_check_core_schema_flags_scalar_depend(tmp_path):
-    """A schema violation in a core the project drives is a FAIL."""
-    _write_core(tmp_path, _BAD_DEPEND_CORE)
+_BAD_FILE_KEY_CORE = """\
+CAPI=2:
+name: ::demo:0
+filesets:
+  rtl:
+    files: [rtl/dut.sv: {file_type: systemVerilogSource, vendored: true}]
+targets:
+  sim:
+    flow: sim
+    flow_options: {booley: {doctor: [sim]}}
+    filesets: [rtl]
+"""
+
+
+@pytest.mark.parametrize(
+    ("core_text", "expected"),
+    [
+        (_BAD_DEPEND_CORE, "depend must be array"),
+        (_BAD_FILE_KEY_CORE, "vendored"),
+    ],
+    ids=["scalar-depend", "per-file-key"],
+)
+def test_check_core_schema_flags_single_fuse_soc_class_violation(tmp_path, core_text, expected):
+    """A schema violation in a core the project drives is exactly one FAIL.
+
+    The Booley subset and FuseSoC's own verdict describe the same CAPI2 entry,
+    so the FuseSoC row must not duplicate the subset row.
+    """
+    _write_core(tmp_path, core_text)
     project = _schema_audit(tmp_path, {"flows": {"sim": {}}})
     c = _Collector()
     doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail)
-    assert any("depend must be array" in msg for msg, _ in c.failed)
+    assert len(c.failed) == 1
+    assert expected in c.failed[0][0]
 
 
 def test_check_core_setup_hazards_fails_selected_provider(tmp_path):
@@ -3778,6 +3822,170 @@ def test_check_core_schema_passes_clean_core(tmp_path):
     doctor._check_core_schema(_schema_audit(tmp_path), tmp_path, c._pass, c._warn, c._fail)
     assert not c.failed
     assert any("schema valid" in m for m in c.passed)
+
+
+_MISPLACED_BOOLEY_CORE = """\
+CAPI=2:
+name: acme:ip:picorv32_impl:0
+filesets:
+  rtl:
+    files: [rtl/top.sv: {file_type: systemVerilogSource}]
+targets:
+  lint_core:
+    flow: lint
+    flow_options: {tool: verilator, booley: {doctor: [lint]}}
+    filesets: [rtl]
+    toplevel: top
+  synth_core:
+    flow: generic
+    flow_options: {tool: yosys, arch: xilinx, booley: {doctor: [synth]}}
+    filesets: [rtl]
+    toplevel: top
+  fpga_core:
+    flow: generic
+    flow_options: {tool: vivado, part: xc7a35tcsg324-1}
+    booley: {doctor: [fpga]}
+    filesets: [rtl]
+    toplevel: top
+"""
+
+_UNKNOWN_PROPERTY_CORE = """\
+CAPI=2:
+name: ::demo:0
+filesets:
+  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
+targets:
+  lint:
+    filesetz: [rtl]
+    flow: lint
+    flow_options: {tool: verilator, booley: {doctor: [lint]}}
+    filesets: [rtl]
+    toplevel: dut
+"""
+
+
+def _misplaced_booley_project(root: Path) -> doctor.ProjectAudit:
+    (root / "rtl").mkdir()
+    (root / "rtl" / "top.sv").write_text("module top; endmodule\n", encoding="utf-8")
+    _write_core(root, _MISPLACED_BOOLEY_CORE, name="picorv32_impl.core")
+    flows = {name: {"enabled": True} for name in ("lint", "synth", "fpga")}
+    flows["sim"] = {"enabled": False}
+    return _schema_audit(root, {"flows": flows})
+
+
+def test_misplaced_booley_key_yields_one_fail_and_skips_sibling_dry_runs(tmp_path, monkeypatch):
+    """A `booley:` mapping beside `flow_options` makes FuseSoC ignore the whole core.
+
+    The phase reports that once, names core/Target/key and the fix, and does not
+    dry-run (and FAIL) every sibling Target of the ignored core.
+    """
+    project = _misplaced_booley_project(tmp_path)
+    monkeypatch.setattr(doctor, "_check_design_size", lambda *args, **kwargs: None)
+    monkeypatch.setattr(doctor, "_check_flow_runtime_reality", lambda *args, **kwargs: None)
+    dry_runs: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        doctor,
+        "_run_flow_check",
+        lambda _project, flow_name, **kwargs: dry_runs.append((flow_name, kwargs["target"])),
+    )
+    reporter = doctor._Reporter.create()
+
+    doctor._run_flow_and_core_phase(
+        project,
+        doctor._DoctorFlowRuntime(tmp_path, None),
+        False,
+        reporter,
+        lambda _message: None,
+    )
+
+    fails = [f for f in reporter.findings if f.severity == "fail"]
+    assert len(fails) == 1, [f.message for f in fails]
+    assert "picorv32_impl.core" in fails[0].message
+    assert "fpga_core" in fails[0].message
+    assert "booley" in fails[0].message
+    assert "targets.fpga_core.flow_options" in fails[0].fix
+    assert dry_runs == []
+    skips = [f.message for f in reporter.findings if f.severity == "skip"]
+    for target in ("lint_core", "synth_core"):
+        assert any(target in m and "picorv32_impl.core" in m for m in skips), skips
+    assert any("fpga has no Doctor Target" in m and "picorv32_impl.core" in m for m in skips)
+
+
+def test_check_core_schema_fails_unknown_target_property(tmp_path):
+    """Another property FuseSoC's CAPI2 schema forbids is one FAIL naming the key."""
+    _write_core(tmp_path, _UNKNOWN_PROPERTY_CORE)
+    project = _schema_audit(tmp_path, {"flows": {"lint": {}}})
+    c = _Collector()
+    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail)
+    assert len(c.failed) == 1
+    message, fix = c.failed[0]
+    assert "design.core" in message
+    assert "targets.lint" in message
+    assert "filesetz" in message
+    assert "flow_options" not in fix
+
+
+_SOLE_MISPLACED_CORE = """\
+CAPI=2:
+name: ::solo:0
+filesets:
+  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
+targets:
+  fpga_core:
+    flow: generic
+    flow_options: {tool: vivado, part: xc7a35tcsg324-1}
+    booley: {doctor: [fpga]}
+    filesets: [rtl]
+    toplevel: dut
+"""
+
+
+def test_misplaced_booley_in_sole_target_core_is_an_owned_fail_with_hint(tmp_path):
+    """The misplaced marker is the core's only Doctor intent, yet the core is driven.
+
+    No Doctor-selected Target remains for Booley's reader, so ownership must come
+    from the misplaced marker; otherwise the row is a hint-less vendored-core NOTE.
+    """
+    _write_core(tmp_path, _SOLE_MISPLACED_CORE)
+    project = _schema_audit(tmp_path, {"flows": {"fpga": {}}})
+    c = _Collector()
+    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail, _note=c._note)
+    assert c.noted == []
+    assert len(c.failed) == 1
+    message, fix = c.failed[0]
+    assert "fpga_core" in message
+    assert "targets.fpga_core.flow_options" in fix
+
+
+def test_booley_only_schema_row_does_not_hide_fusesoc_reason(tmp_path):
+    """An unsupported Booley key does not say why FuseSoC ignores the file."""
+    _write_core(
+        tmp_path,
+        _UNKNOWN_PROPERTY_CORE.replace("{doctor: [lint]}", "{doctor: [lint], bogus: 1}"),
+    )
+    project = _schema_audit(tmp_path, {"flows": {"lint": {}}})
+    c = _Collector()
+    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail)
+    assert any("not a supported Booley Target key" in msg for msg, _ in c.failed)
+    assert any("filesetz" in msg for msg, _ in c.failed)
+
+
+def test_no_doctor_target_skip_is_limited_to_flows_the_misplaced_marker_names(tmp_path):
+    """An unrelated rejected core must not turn another Flow's missing Target into a SKIP."""
+    from booley.fusesoc import fusesoc_registry as fr
+
+    core = _write_core(tmp_path, _BAD_DEPEND_CORE)
+    project = _schema_audit(tmp_path, {"flows": {"synth": {}}})
+    rejection = fr.fusesoc_core_rejection(core)
+    assert rejection is not None
+    rec = _Rec()
+    skipped: list[str] = []
+    targets = doctor._check_doctor_targets(
+        project, "synth", rec.f, _skip=skipped.append, rejected_cores={core: rejection}
+    )
+    assert targets == []
+    assert skipped == []
+    assert any("synth has no Doctor Target" in message for message in rec.fails())
 
 
 def test_yosys_target_without_arch_warns(tmp_path):
@@ -4415,6 +4623,8 @@ def test_custom_image_freshness_warns_when_image_predates_dockerfile(tmp_path, m
     proj = tmp_path / "myproj"
     (proj / ".booley").mkdir(parents=True)
     _write_project_dockerfile(proj, mtime=2000.0)
+    monkeypatch.setenv("BOOLEY_DIR", str(proj / ".booley"))
+    reset_cache()
     project = _derived_project_audit(proj)
     monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 1000.0)
 
@@ -4435,6 +4645,8 @@ def test_custom_image_freshness_passes_when_image_newer(tmp_path, monkeypatch):
     proj = tmp_path / "myproj"
     (proj / ".booley").mkdir(parents=True)
     _write_project_dockerfile(proj, mtime=1000.0)
+    monkeypatch.setenv("BOOLEY_DIR", str(proj / ".booley"))
+    reset_cache()
     project = _derived_project_audit(proj)
     monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 2000.0)
 
@@ -4804,7 +5016,36 @@ class TestWorktreePortability:
     def _project(self, root: Path):
         booley_dir = root / ".booley"
         booley_dir.mkdir(exist_ok=True)
-        return SimpleNamespace(project_root=root, booley_dir=booley_dir)
+        return SimpleNamespace(
+            project_root=root, booley_dir=booley_dir, common_booley_dir=booley_dir
+        )
+
+    @pytest.mark.parametrize("runtime", RUNTIMES)
+    @pytest.mark.parametrize("layout", LAYOUTS)
+    def test_lists_main_registry_from_linked_worktree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout, runtime
+    ):
+        """The worktree registry is Common Booley State: a worktree sees main's."""
+        main, worktree = linked_worktree(tmp_path, monkeypatch, layout=layout, runtime=runtime)
+        registered = {main / ".booley" / "worktrees" / ("s1" if layout == "snapshot" else "p1")}
+        project = readiness.ProjectAudit(
+            project_root=worktree,
+            booley_dir=resolve_checkout_booley_dir(worktree),
+            booley_toml={},
+            configs_toml={},
+            first_target="",
+        )
+
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, None, "image", False)
+        )
+
+        listed = {
+            Path(item.message.split(": ", 1)[0])
+            for item in report.findings
+            if "worktree metadata" in item.message
+        }
+        assert registered <= listed
 
     def test_two_capable_sides_and_enabled_policy_pass(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -5172,7 +5413,9 @@ class TestWorktreePortability:
         outer.mkdir(parents=True)
         ignored.mkdir()
         (outer / ".git").touch()
-        project = SimpleNamespace(project_root=tmp_path, booley_dir=booley_dir)
+        project = SimpleNamespace(
+            project_root=tmp_path, booley_dir=booley_dir, common_booley_dir=booley_dir
+        )
         monkeypatch.setattr(
             readiness,
             "resolve_checkout_booley_dir",
@@ -5196,7 +5439,9 @@ class TestWorktreePortability:
         (administration / "gitdir").write_text(
             f"{os.path.relpath(worktree / '.git', administration)}\n", encoding="utf-8"
         )
-        project = SimpleNamespace(project_root=tmp_path, booley_dir=booley_dir)
+        project = SimpleNamespace(
+            project_root=tmp_path, booley_dir=booley_dir, common_booley_dir=booley_dir
+        )
         findings = readiness.Findings()
 
         readiness._inspect_live_worktrees(project, findings)
@@ -5260,7 +5505,9 @@ class TestWorktreePortability:
         (worktree / ".git").write_text(f"gitdir: {administration}\n", encoding="utf-8")
         (administration / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")
 
-        project = SimpleNamespace(project_root=tmp_path, booley_dir=booley_dir)
+        project = SimpleNamespace(
+            project_root=tmp_path, booley_dir=booley_dir, common_booley_dir=booley_dir
+        )
         report = readiness.inspect_worktree_portability(
             readiness.WorktreePortabilityRequest(project, None, "image", False)
         )
@@ -5322,7 +5569,9 @@ class TestWorktreePortability:
             ],
             check=True,
         )
-        project = SimpleNamespace(project_root=tmp_path, booley_dir=booley_dir)
+        project = SimpleNamespace(
+            project_root=tmp_path, booley_dir=booley_dir, common_booley_dir=booley_dir
+        )
 
         paths = readiness._live_worktree_paths(project)
         problems = readiness._worktree_metadata_problems(paired)
@@ -7648,6 +7897,32 @@ class TestSubscriptionCredsHealth:
         assert rec.kinds() == {"warn"}
         assert "expired" in rec.events[0][1]
 
+    @pytest.mark.parametrize("seeded", [False, True], ids=["unseeded", "seeded"])
+    def test_expired_login_fix_follows_seed(self, creds_home, monkeypatch, tmp_path, seeded):
+        """Only a seeded Sandbox (or the host) can blame host rotation / offer `booley auth`."""
+        creds = creds_home / ".claude" / ".credentials.json"
+        creds.write_text(self._EXPIRED)
+        seed = tmp_path / "seed-creds.json"
+        monkeypatch.setitem(dc._APP_CREDS_SEED_TARGET, auth_token.APP_CLAUDE, str(seed))
+        if seeded:
+            seed.write_text(self._VALID)  # valid seed: the seed-expired WARN stays quiet
+        _set_venue(monkeypatch, True)
+        reporter = doctor._Reporter.create()
+
+        doctor._check_subscription_creds_health(
+            auth_token.APP_CLAUDE, reporter.pass_, reporter.warn_
+        )
+
+        (finding,) = [f for f in reporter.findings if f.severity is Severity.WARN]
+        assert finding.check_id == "agent.subscription-credential-expired"
+        message = finding.message.replace(str(creds), "")
+        if seeded:
+            assert "host has rotated" in message
+            assert "booley auth --app claude" in finding.fix
+        else:
+            assert "host" not in message and "rotat" not in message
+            assert "booley auth" not in finding.fix and "/login" in finding.fix
+
     def test_expired_login_with_stored_token_is_harmless(self, creds_home):
         (creds_home / ".claude" / ".credentials.json").write_text(self._EXPIRED)
         auth_token.store_token("sk-ant-oat01-x")
@@ -9638,3 +9913,85 @@ def test_doctor_fails_on_booley_dir_pin_mismatch(tmp_path, monkeypatch):
     subprocess.run(["git", "init", str(inner)], check=True, capture_output=True, timeout=30)
     with pytest.raises(booley_dir_pin.BooleyDirPinError):
         cli._require_command_project("doctor", inner)
+
+
+class TestDoctorCommonStateFromWorktree:
+    """Doctor's Common Booley State (probes, Dockerfile, Ticket Board) lives in main."""
+
+    @pytest.fixture
+    def worktree_project(self, tmp_path, monkeypatch):
+        main, worktree = linked_worktree(tmp_path, monkeypatch, layout="snapshot", runtime="host")
+        project = readiness.ProjectAudit(
+            project_root=worktree,
+            booley_dir=resolve_checkout_booley_dir(worktree),
+            booley_toml={"sandbox": {"memory": "100g"}},
+            configs_toml={},
+            first_target="",
+        )
+        return main / ".booley", project
+
+    def test_developer_probe_is_read_from_main(self, worktree_project):
+        common, project = worktree_project
+        developer_probe.record_measurement(common, 1 << 29)
+        rec = _Rec()
+
+        doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
+
+        assert rec.kinds() == {"pass"}
+        assert "measured agent RSS" in rec.events[0][1]
+
+    def test_synth_probe_is_read_from_main(self, worktree_project, monkeypatch):
+        from booley.harness import synth_probe
+
+        common, project = worktree_project
+        monkeypatch.setattr(doctor.target_matrix, "doctor_targets", lambda *_args: ("t",))
+        synth_probe.record_measurement(common, "t", 512.0)
+
+        assert "calibrated peak 0.5g" in doctor._heavy_memory_reservation(project).evidence
+
+    def test_project_dockerfile_is_read_from_main(self, worktree_project, monkeypatch):
+        common, project = worktree_project
+        _write_project_dockerfile(common.parent, mtime=2000.0)
+        monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 1000.0)
+        warns: list[str] = []
+
+        doctor._check_custom_image_freshness(
+            project, "docker", "custom", lambda _m: None, warns.append
+        )
+
+        assert warns and "predates" in warns[0]
+
+    def test_ticket_board_leftovers_and_handle_maps_are_read_from_main(
+        self, worktree_project, monkeypatch, capsys
+    ):
+        common, project = worktree_project
+        (common / "tickets" / "board").mkdir(parents=True)
+        (common / "tickets" / "board" / "T-1.json").write_text("{}", encoding="utf-8")
+        stores: list[Path] = []
+        real_store = doctor.handle_maps.HandleStore
+        monkeypatch.setattr(
+            doctor.handle_maps,
+            "HandleStore",
+            lambda directory, **kwargs: (
+                stores.append(directory) or real_store(directory, **kwargs)
+            ),
+        )
+        for name in (
+            "_check_project_gitignore",
+            "_check_goal_history_ignored",
+            "_check_project_trackability",
+            "_check_git_state",
+            "_check_repo_footprint",
+            "_check_custom_endpoints_and_criteria",
+        ):
+            monkeypatch.setattr(doctor, name, lambda *_args, **_kwargs: None)
+        reporter = doctor._Reporter.create()
+        reporter.agent_check_enabled = lambda _name: False  # type: ignore[method-assign]
+
+        doctor._run_project_checks(project, reporter)
+
+        assert (
+            f"leftover Ticket Board data in {common / 'tickets' / 'board'}"
+            in capsys.readouterr().out
+        )
+        assert stores and set(stores) == {common}

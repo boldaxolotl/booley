@@ -29,13 +29,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from booley.core.config_paths import GOALSETS_DIR
 from booley.criteria.templates import TEMPLATE_REGISTRY, CriterionSpec
 from booley.goals.capabilities import CRITERION_FOR_FAMILY
 from booley.goals.model import REVIEW_KINDS, REVIEW_VERDICTS, SPEC_REVIEW_KIND, GoalFamily
 from booley.runtime.guarded_write import WriteOutcome, guarded_write
-
-# Directory, inside the Booley Directory, that holds every Goalset.
-GOALSETS_DIR = "goalsets"
 
 # Goalsets ``init`` seeds, in the order it writes them. ``default`` is never
 # seeded: whether every entry carries a Goalset is the Project's decision.

@@ -167,8 +167,7 @@
       },
       "flatten": {
         "type": "boolean",
-        "default": true,
-        "description": "Preserve hierarchy through synthesis (overrides the selected Target)."
+        "description": "Flatten the hierarchy before tech-mapping (overrides the selected Target's flow_options.flatten)."
       },
       "frontend": {
         "type": "string",
@@ -202,7 +201,7 @@
       },
       "generic_abc_before_mapping": {
         "type": "boolean",
-        "default": true
+        "description": "Expert Yosys: run generic ABC before technology mapping (overrides the selected Target)"
       },
       "abc_delay_ps": {
         "type": "integer",
@@ -218,15 +217,15 @@
       },
       "repair_setup": {
         "type": "boolean",
-        "default": true
+        "description": "Expert OpenROAD: repair setup timing (overrides the selected Target)"
       },
       "repair_hold": {
         "type": "boolean",
-        "default": true
+        "description": "Expert OpenROAD: repair hold timing (overrides the selected Target)"
       },
       "gate_cloning": {
         "type": "boolean",
-        "default": true
+        "description": "Expert OpenROAD: enable gate cloning (overrides the selected Target)"
       },
       "setup_margin_ns": {
         "type": "number",

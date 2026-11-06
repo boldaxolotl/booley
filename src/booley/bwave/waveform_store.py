@@ -304,10 +304,17 @@ def discover_waveform(
     *,
     cache_dir: Path,
     convert_raw_vcd: bool = True,
+    store_name: str | None = None,
 ) -> DiscoveryResult:
-    """Discover a store or raw VCD without publishing into the work directory."""
-    cached, cached_invalid, cached_error = _stores_in(cache_dir)
-    published, published_invalid, published_error = _stores_in(work_dir)
+    """Discover a store or raw VCD without publishing into the work directory.
+
+    ``store_name`` restricts store discovery to that one file name in each
+    directory, so an unrelated ``*.fst`` beside it is neither selected nor
+    reported as ambiguous. ``None`` keeps the B-Wave CLI's glob over every
+    ``*.fst``.
+    """
+    cached, cached_invalid, cached_error = _stores_in(cache_dir, store_name)
+    published, published_invalid, published_error = _stores_in(work_dir, store_name)
     skipped = (*cached_invalid, *published_invalid)
     if cached_error or published_error:
         return DiscoveryResult(
@@ -543,13 +550,20 @@ def _store_metadata(metadata: BWaveListMetadata) -> StoreMetadata:
 
 def _stores_in(
     directory: Path,
+    store_name: str | None = None,
 ) -> tuple[list[Path], tuple[StoreInspection, ...], str]:
     if not directory.is_dir():
         return [], (), ""
     valid: list[Path] = []
     invalid: list[StoreInspection] = []
     try:
-        candidates = sorted(directory.glob("*.fst"))
+        candidates = (
+            sorted(directory.glob("*.fst"))
+            if store_name is None
+            else [directory / store_name]
+            if (directory / store_name).is_file()
+            else []
+        )
     except OSError as exc:
         return [], (), f"ERROR: Unable to inspect waveform directory {directory}: {exc}"
     for candidate in candidates:

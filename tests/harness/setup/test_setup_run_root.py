@@ -12,6 +12,8 @@ import pytest
 from booley.feedback import findings, render
 from booley.feedback.findings import Finding, append, log_path, read_log
 from booley.harness.setup import cleanup_cli
+from booley.runtime.booley_dir import reset_cache
+from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 from tests.conftest import symlink_or_skip
 
 MARKER = ".booley-setup-run"
@@ -113,7 +115,9 @@ def test_apply_refuses_symlinked_boundaries(tmp_path, capsys, link, entry):
     assert (real / "tmp" / "setup" / "r" / MARKER).exists()
 
 
-def test_symlinked_booley_directory_prepares_previews_and_removes_with_snapshot(tmp_path, capsys):
+def test_symlinked_booley_directory_prepares_previews_and_removes_with_snapshot(
+    tmp_path, capsys, monkeypatch
+):
     """A linked ``.booley`` is followed; attached evidence is still snapshotted first."""
     project = tmp_path / "project"
     project.mkdir()
@@ -121,6 +125,8 @@ def test_symlinked_booley_directory_prepares_previews_and_removes_with_snapshot(
     store.mkdir()
     booley_dir = project / ".booley"
     symlink_or_skip(booley_dir, store, target_is_directory=True)
+    monkeypatch.delenv("BOOLEY_DIR")  # host run: the Project's own entry is the selection
+    reset_cache()
     run_root = booley_dir / "tmp" / "setup" / "r1"
     code, out = _cli(project, capsys, "prepare", "--run-id", "r1")
     assert (code, out.get("status")) == (0, "prepared"), out
@@ -373,3 +379,31 @@ def test_prepare_refuses_when_tmp_is_a_file(tmp_path, capsys):
     (booley_dir / "tmp").write_text("not a directory", encoding="utf-8")
     code, out = _cli(tmp_path, capsys, "prepare", "--run-id", "r1")
     assert code == 2 and "error" in out
+
+
+@pytest.mark.parametrize("runtime", RUNTIMES)
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_apply_from_worktree_materializes_into_main(
+    tmp_path, capsys, monkeypatch, layout, runtime
+):
+    """The run root is the worktree's; the Findings Log and its evidence are main's."""
+    main, worktree = linked_worktree(tmp_path, monkeypatch, layout=layout, runtime=runtime)
+    common = main / ".booley"
+    run_root = worktree / ".booley" / "tmp" / "setup" / "r1"
+    assert _cli(worktree, capsys, "prepare", "--run-id", "r1")[1]["status"] == "prepared"
+    source = run_root / "doctor.log"
+    source.write_text("evidence\n", encoding="utf-8")
+    append(Finding(title="doctor finding", attachments=[str(source)]), common)
+
+    code, out = _cli(worktree, capsys, "preview", "--run-id", "r1")
+    assert (code, {row["path"]: row["attached"] for row in out["files"]}["doctor.log"]) == (
+        0,
+        True,
+    )
+    code, out = _cli(worktree, capsys, "apply", "--run-id", "r1")
+
+    assert (code, out["status"], out["kept"]) == (0, "removed", [])
+    assert not run_root.exists()
+    attachment = Path(read_log(common).entries[0].attachments[0])
+    assert attachment.is_relative_to(common / "setup-evidence") and attachment.is_file()
+    assert not (worktree / ".booley" / "setup-evidence").exists()

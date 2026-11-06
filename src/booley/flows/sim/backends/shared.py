@@ -183,47 +183,93 @@ def trace_file_stamp(path: Path) -> tuple[int, int, int] | None:
     return stat.st_mtime_ns, stat.st_size, stat.st_ino
 
 
-def _declared_trace_matches(pattern: str, search_dirs: list[Path]) -> list[Path]:
-    candidate = Path(pattern)
-    if candidate.is_absolute():
-        return sorted(path for path in candidate.parent.glob(candidate.name) if path.is_file())
-    for base in search_dirs:
-        matches = sorted(path for path in base.glob(pattern) if path.is_file())
-        if matches:
-            return matches
-    return []
+def _declared_trace_matches(patterns: tuple[str, ...], roots: tuple[Path, ...]) -> list[Path]:
+    """Return every file a declared pattern names, in pattern then root order.
+
+    Each pattern is searched in every root (an absolute pattern once), so a
+    copy that an earlier root's match would shadow is still seen. Files are
+    deduplicated by resolved path.
+    """
+    matches: dict[Path, Path] = {}
+    for pattern in patterns:
+        candidate = Path(pattern)
+        if candidate.is_absolute():
+            bases, glob = [candidate.parent], candidate.name
+        else:
+            bases, glob = list(roots), pattern
+        for base in bases:
+            for path in sorted(base.glob(glob)):
+                if path.is_file():
+                    matches.setdefault(path.resolve(), path)
+    return list(matches.values())
 
 
-def snapshot_declared_trace_files(
-    trace_files: list[str] | None,
-    search_dirs: list[Path],
-) -> TraceFileSnapshot:
-    """Snapshot declared artifacts so only current-run output can be adopted."""
-    snapshot: TraceFileSnapshot = {}
-    for pattern in trace_files or []:
-        for match in _declared_trace_matches(pattern, search_dirs):
+@dataclass(frozen=True)
+class TraceSelection:
+    """The waveform one run produced, or the reason none could be chosen."""
+
+    path: Path | None
+    # Fresh declared stores when more than one exists and Booley owns none.
+    ambiguous: tuple[Path, ...] = ()
+
+
+def ambiguous_trace_reason(stores: tuple[Path, ...]) -> str:
+    """Explain why several fresh declared stores cannot be narrowed to one."""
+    names = ", ".join(str(store) for store in stores)
+    return (
+        "trace requested but the current run produced several declared waveform "
+        f"stores and Booley cannot choose one: {names} (narrow "
+        "[flows.sim].trace_files to the one waveform to query)"
+    )
+
+
+@dataclass(frozen=True)
+class CurrentRunTraces:
+    """The one freshness filter that decides which waveform a run produced.
+
+    A run's trace is a Booley-owned output (what :meth:`TraceSession.find`
+    returns after :meth:`begin` cleared them) or a file matching the declared
+    ``[flows.sim].trace_files`` patterns whose stamp changed since
+    :meth:`begin`. Nothing else is ever adopted: a leftover or undeclared
+    waveform is not evidence about this run.
+    """
+
+    session: TraceSession
+    patterns: tuple[str, ...]
+    roots: tuple[Path, ...]
+    before: TraceFileSnapshot
+
+    @classmethod
+    def begin(
+        cls,
+        session: TraceSession,
+        *,
+        raw_trace_paths: tuple[Path, ...] = (),
+        patterns: tuple[str, ...] = (),
+        roots: tuple[Path, ...] = (),
+    ) -> CurrentRunTraces:
+        """Clear Booley-owned outputs, then snapshot declared files in every root."""
+        session.reset_for_run(raw_trace_paths)
+        before: TraceFileSnapshot = {}
+        for match in _declared_trace_matches(patterns, roots):
             stamp = trace_file_stamp(match)
             if stamp is not None:
-                snapshot[match.resolve()] = stamp
-    return snapshot
+                before[match.resolve()] = stamp
+        return cls(session, patterns, roots, before)
 
-
-def adopt_declared_trace_files(
-    trace: TraceSession,
-    trace_files: list[str] | None,
-    search_dirs: list[Path],
-    before: TraceFileSnapshot | None = None,
-) -> Path | None:
-    """Adopt the first fresh, nonempty declared trace artifact."""
-    for pattern in trace_files or []:
-        for match in _declared_trace_matches(pattern, search_dirs):
-            if before is not None and before.get(match.resolve()) == trace_file_stamp(match):
-                continue
-            if not match.is_file() or (size := match.stat().st_size) == 0:
-                continue
+    def select(self) -> TraceSelection:
+        """Choose this run's waveform: owned output first, else one fresh declared file."""
+        owned = self.session.find()
+        if owned is not None:
+            return TraceSelection(owned)
+        fresh = self._fresh_declared()
+        stores = tuple(path for path in fresh if path.suffix.lower() != ".vcd")
+        if len(stores) > 1:
+            return TraceSelection(None, ambiguous=stores)
+        for match in fresh:
             if match.suffix.lower() != ".vcd":
-                return match
-            if size > MAX_ADOPTED_VCD_BYTES:
+                return TraceSelection(match)
+            if (size := match.stat().st_size) > MAX_ADOPTED_VCD_BYTES:
                 print(
                     f"WARNING: declared trace {match} is {size:,} bytes, over the "
                     f"{MAX_ADOPTED_VCD_BYTES:,}-byte finalize-time conversion cap; "
@@ -231,9 +277,27 @@ def adopt_declared_trace_files(
                     "earn TRACE_OK (convert it separately with `bwave build`, "
                     "or scope the dump down)"
                 )
-                return match
-            trace.postprocess(match)
-            found = trace.find()
-            if found is not None:
-                return found
-    return None
+                return TraceSelection(match)
+            self.session.postprocess(match)
+            # Owned-only lookup: the converted store, or the VCD that
+            # postprocess retained when conversion failed.
+            converted = self.session.find()
+            if converted is not None:
+                return TraceSelection(converted)
+        return TraceSelection(None)
+
+    def _fresh_declared(self) -> list[Path]:
+        """Declared nonempty files written since :meth:`begin`, never Booley-owned names."""
+        if not self.patterns:
+            return []
+        owned = {path.resolve() for path in self.session.owned_outputs}
+        fresh: list[Path] = []
+        for match in _declared_trace_matches(self.patterns, self.roots):
+            resolved = match.resolve()
+            stamp = trace_file_stamp(match)
+            if resolved in owned or stamp is None or stamp[1] == 0:
+                continue
+            if self.before.get(resolved) == stamp:
+                continue
+            fresh.append(match)
+        return fresh

@@ -876,7 +876,7 @@ def run_doctor_result(
 
     result = reporter.result(reporter.finish())
     if project is not None and result.clean and result.health_evidence and record_clean:
-        doctor_stamp.record_clean_run(project.booley_dir, project_root, deep=deep)
+        doctor_stamp.record_clean_run(project.common_booley_dir, project_root, deep=deep)
     return _report_deep_currency(project_root, project, result, summary, record_clean)
 
 
@@ -891,7 +891,7 @@ def _report_deep_currency(
     if summary is not None and persist:
         try:
             booley_dir = (
-                project.booley_dir if project else resolve_checkout_booley_dir(project_root)
+                project.common_booley_dir if project else resolve_common_booley_dir(project_root)
             )
         except (FileNotFoundError, OSError):
             booley_dir = None
@@ -933,7 +933,7 @@ def observe_deep_status(
     """Read and report currency without starting checks or modifying evidence."""
     record = None
     with contextlib.suppress(FileNotFoundError, OSError):
-        record = doctor_deep.load_deep_record(resolve_checkout_booley_dir(project_root))
+        record = doctor_deep.load_deep_record(resolve_common_booley_dir(project_root))
     image_id, version = _observe_sandbox_identity(project_root, container)
     return doctor_deep.evaluate_deep_status(record, version=version, image_id=image_id)
 
@@ -996,9 +996,11 @@ def _run_project_phase(
     reporter.diagnostics(loaded.report)
     booley_dir, project = loaded.booley_dir, loaded.project
     mode = readiness.ReadinessMode.INSPECT if read_only else readiness.ReadinessMode.RECONCILE
-    _check_upgrade_review(booley_dir, reporter)
+    # Goal and upgrade-review records are Common Booley State, read from main.
+    common_dir = resolve_common_booley_dir(project_root) if booley_dir is not None else None
+    _check_upgrade_review(common_dir, reporter)
     _check_legacy_source_stashes(project_root, reporter)
-    _check_goal_presence(project_root, booley_dir, reporter)
+    _check_goal_presence(project_root, common_dir, reporter)
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
@@ -1766,7 +1768,7 @@ def _heavy_memory_reservation(project: ProjectAudit) -> resource_policy.HeavyMem
     raw = jobs.get("heavy_memory") if isinstance(jobs, dict) else None
     from booley.harness import synth_probe
 
-    measurement = synth_probe.load_measurement(project.booley_dir)
+    measurement = synth_probe.load_measurement(project.common_booley_dir)
     calibration = (
         resource_policy.SynthesisMemoryCalibration(
             target=str(measurement["target"]),
@@ -1830,7 +1832,7 @@ def _check_memory_invariant(
     if reservation.error:
         _warn(reservation.error)
         return
-    orch, measured = _developer_mem_bytes(project.booley_dir)
+    orch, measured = _developer_mem_bytes(project.common_booley_dir)
     requirement = resource_policy.memory_requirement(
         max_heavy=caps.max_heavy,
         heavy_job_bytes=reservation.bytes,
@@ -2038,7 +2040,9 @@ def _run_developer_probe(
         return record
     record = _AgentCallRecord("agent probe", measurement.usage)
     try:
-        path = developer_probe.record_measurement(project.booley_dir, measurement.peak_rss_bytes)
+        path = developer_probe.record_measurement(
+            project.common_booley_dir, measurement.peak_rss_bytes
+        )
     except Exception as exc:  # noqa: BLE001 — fail-soft by contract; the paid call is still accounted
         _skip(
             f"Specialist provider memory probe skipped - {exc} (memory invariant keeps the 1g fallback)"
@@ -2213,7 +2217,7 @@ def _check_custom_image_freshness(
         return
     if image == DOCKER_IMAGE or image == pi.project_image_name(project.project_root):
         return  # base / auto-generated derived — covered by the sibling checks
-    dockerfile = project.booley_dir / "docker" / "Dockerfile"
+    dockerfile = project.common_booley_dir / "docker" / "Dockerfile"
     if not dockerfile.is_file():
         return  # no project Dockerfile to compare against (e.g. externally built)
     created = _image_created_epoch(docker_exe, image)
@@ -3073,6 +3077,18 @@ def _rotation_free_state(
     return api_key, env_token, stored
 
 
+def _host_login_can_rotate(provider: str) -> bool:
+    """Whether a host-side login may hold *provider*'s refresh token too.
+
+    On the host the agents use the host login itself. In a Sandbox only a
+    credential seeded from the host shares its refresh token, and Booley
+    binds that seed at the app's sidecar path.
+    """
+    if not runtime_context.inside_session_runtime():
+        return True
+    return Path(dc._APP_CREDS_SEED_TARGET[provider]).is_file()
+
+
 def _check_oauth_token(
     provider: str,
     _pass: Check,
@@ -3096,6 +3112,8 @@ def _check_oauth_token(
     Stays a WARN (see :class:`_Reporter`) under automatic credential selection:
     it names a real, reachable failure mode with a one-command remedy. An
     explicit ``auth = "subscription"`` accepts that tradeoff, so it is a NOTE.
+    In a Sandbox without the app's seed sidecar the login was made inside it, no
+    host-side login shares its refresh token, and the finding is a NOTE too.
     Only the *other* provider's line is dropped -- see :func:`_configured_provider`.
     """
     note_sink = _note or _pass
@@ -3114,6 +3132,12 @@ def _check_oauth_token(
     api_key, env_token, stored = _rotation_free_state(provider, policy, plan)
 
     if not api_key and not env_token and not stored:
+        if not _host_login_can_rotate(provider):
+            note_sink(
+                f"{label}: no rotation-free credential; agents use a refreshing login made "
+                "inside the Sandbox, which no host-side login can revoke"
+            )
+            return
         message = (
             f"{label}: no rotation-free credential; agents use a refreshing one, which a "
             "host-side login can revoke mid-run"
@@ -3236,15 +3260,25 @@ def _check_subscription_creds_health(
                 )
             )
         else:
+            if _host_login_can_rotate(app):
+                suffix, fix = (
+                    ") and refresh fails once the host has rotated the shared refresh token — agents then crash at launch",
+                    f"booley auth --app {app}  (or refresh the host login and recreate the container)",
+                )
+            else:
+                suffix, fix = (
+                    ") and must refresh when an agent starts — agents crash at launch if that refresh fails",
+                    "sign in again inside the Sandbox: run claude and use /login",
+                )
             _warn(
                 _subscription_expiry_message(
                     expiry,
                     now,
                     f"subscription login at {creds_path} is expired (",
-                    ") and refresh fails once the host has rotated the shared refresh token — agents then crash at launch",
+                    suffix,
                     display_overrides=display_overrides,
                 ),
-                f"booley auth --app {app}  (or refresh the host login and recreate the container)",
+                fix,
             )
     elif expiry is not None:
         _pass(
@@ -3690,10 +3724,8 @@ def _run_project_checks(
         reporter.skip_("Project checks skipped - project config invalid")
         return
 
-    _check_ticket_leftovers(project.booley_dir, reporter.warn_)
-    common = _common_booley_dir(project.project_root, reporter)
-    if common is not None:
-        _check_handle_map_size(common, reporter.warn_)
+    _check_ticket_leftovers(project.common_booley_dir, reporter.warn_)
+    _check_handle_map_size(project.common_booley_dir, reporter.warn_)
     _check_project_gitignore(project.booley_dir, reporter.pass_, reporter.warn_)
     _check_goal_history_ignored(
         project.project_root, project.booley_dir, reporter.pass_, reporter.warn_
@@ -4165,6 +4197,7 @@ def _run_flow_audit(
 ) -> None:
     """Validate enabled Flows and run Sandbox dry-run smoke checks."""
     _check_design_size(project, _pass, _note)
+    rejected_cores = _fusesoc_rejected_cores(project.project_root)
     for flow_name in _PLAIN_DOCTOR_FLOWS:
         if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} disabled in booley.toml")
@@ -4190,7 +4223,13 @@ def _run_flow_audit(
                 )
         if flow_name == "sim":
             _check_sim_run_cwd(project, _pass, _warn)
-        targets = _check_doctor_targets(project, flow_name, _fail)
+        targets = _check_doctor_targets(
+            project,
+            flow_name,
+            _fail,
+            _skip=_skip,
+            rejected_cores=rejected_cores,
+        )
         if not targets:
             continue
         _check_flow_runtime_reality(
@@ -4203,6 +4242,13 @@ def _run_flow_audit(
             _fail=_fail,
         )
         for target in targets:
+            rejected_core = _rejected_target_core(project, target, rejected_cores)
+            if rejected_core is not None:
+                _skip(
+                    f"{flow_name} dry-run [{target}] skipped - FuseSoC rejects "
+                    f"{rejected_core.name}; see the .core schema FAIL under FuseSoC .core checks"
+                )
+                continue
             _run_flow_check(
                 project,
                 flow_name,
@@ -4217,6 +4263,22 @@ def _run_flow_audit(
                 _skip=_skip,
                 _fail=_fail,
             )
+
+
+def _rejected_target_core(
+    project: ProjectAudit,
+    target: str,
+    rejected_cores: Mapping[Path, fusesoc_registry.FuseSocCoreRejection],
+) -> Path | None:
+    """Return the FuseSoC-rejected core hosting Doctor Target *target*, if any."""
+    if not rejected_cores:
+        return None
+    try:
+        core_file = TargetCatalog.build(project.project_root).select(target).core_file
+    except FuseSocError:
+        return None  # target-resolution diagnostics report this elsewhere
+    core_file = lexical_stealth_path(project.project_root, core_file)
+    return core_file if core_file in rejected_cores else None
 
 
 def _check_flow_runtime_reality(
@@ -4444,12 +4506,14 @@ def _check_core_schema(
     *,
     _note: Check | None = None,
 ) -> None:
-    """Flag CAPI2 array-field schema violations in any discovered ``.core``.
+    """Flag CAPI2 schema violations in any discovered ``.core``.
 
     Booley's tolerant ``yaml.safe_load`` accepts a scalar — or a bare ``depend:``
-    that parses to ``None`` — where FuseSoC's schema demands an array; cheap
-    enumeration then greenlights a ``.core`` the deep resolve later rejects with
-    ``... must be array``. Reproduce that verdict host-side (no subprocess).
+    that parses to ``None`` — where FuseSoC's schema demands an array, and an
+    unknown property (a ``booley:`` mapping beside ``flow_options``); cheap
+    enumeration then greenlights a ``.core`` the deep resolve later rejects.
+    Reproduce FuseSoC's verdict host-side (no subprocess): Booley's array-field
+    subset plus FuseSoC's own parser.
 
     Severity follows ownership. A violation FAILs when the core is one the
     project actually drives — it hosts a Doctor-selected Target — or
@@ -4464,18 +4528,16 @@ def _check_core_schema(
     owned_cores = _owned_core_files(project, root)
     schema_clean = True
     for core_file in fusesoc_registry.discover_cores(root):
-        errors = fusesoc_registry.core_schema_errors(core_file)
-        if not errors:
+        findings, rejection = _core_schema_findings(core_file)
+        if not findings:
             continue
         schema_clean = False
-        owned = core_file in owned_cores
-        for msg in errors:
+        # A misplaced ``booley:`` marker is the project's own Doctor intent that
+        # FuseSoC's rejection hides from Booley's reader, so the core is driven.
+        owned = core_file in owned_cores or (rejection is not None and rejection.misplaced_booley)
+        for msg, fix in findings:
             if owned:
-                _fail(
-                    f".core schema {core_file.name}: {msg}",
-                    "fix the .core — FuseSoC's CAPI2 schema requires this "
-                    "(caught here so it does not only surface under --deep)",
-                )
+                _fail(f".core schema {core_file.name}: {msg}", fix)
             else:
                 note_sink(
                     f".core schema {core_file.name}: {msg} — vendored core, no "
@@ -4483,7 +4545,68 @@ def _check_core_schema(
                     "so only that core's own Targets are unusable"
                 )
     if schema_clean:
-        _pass(".core CAPI2 array-field schema valid")
+        _pass(".core CAPI2 schema valid")
+
+
+_CORE_SCHEMA_FIX = (
+    "fix the .core — FuseSoC's CAPI2 schema requires this "
+    "(caught here so it does not only surface under --deep)"
+)
+
+
+def _core_schema_findings(
+    core_file: Path,
+) -> tuple[list[tuple[str, str]], fusesoc_registry.FuseSocCoreRejection | None]:
+    """Return ``([(message, fix), ...], FuseSoC's rejection)`` for one ``.core``.
+
+    Booley's host-side subset runs first; FuseSoC's own verdict follows as one
+    more row unless a FuseSoC-class subset row (array fields, per-file keys)
+    already describes the same CAPI2 entry. Booley-only metadata rows never
+    suppress it: they do not say why FuseSoC ignores the file.
+    """
+    findings = [(msg, _CORE_SCHEMA_FIX) for msg in fusesoc_registry.core_schema_errors(core_file)]
+    rejection = _fusesoc_core_rejection(core_file)
+    if rejection is None:
+        return findings, None
+    entry = rejection.entry
+    if entry is not None and any(
+        msg == entry or msg.startswith((f"{entry}.", f"{entry} "))
+        for msg, _ in findings
+        if ".flow_options.booley" not in msg
+    ):
+        return findings, rejection
+    fix = _CORE_SCHEMA_FIX
+    if rejection.misplaced_booley:
+        fix = f"move the booley: mapping under targets.{rejection.target}.flow_options"
+    findings.append(
+        (
+            f"{rejection.message} — FuseSoC ignores this whole .core, "
+            "so none of its Targets resolve",
+            fix,
+        )
+    )
+    return findings, rejection
+
+
+def _fusesoc_core_rejection(
+    core_file: Path,
+) -> fusesoc_registry.FuseSocCoreRejection | None:
+    """FuseSoC's verdict on a readable ``.core``; unreadable files have their own row."""
+    try:
+        fusesoc_registry.read_core(core_file)
+    except FuseSocError:
+        return None
+    return fusesoc_registry.fusesoc_core_rejection(core_file)
+
+
+def _fusesoc_rejected_cores(root: Path) -> dict[Path, fusesoc_registry.FuseSocCoreRejection]:
+    """Map every discovered ``.core`` FuseSoC ignores to its rejection."""
+    rejected: dict[Path, fusesoc_registry.FuseSocCoreRejection] = {}
+    for core_file in fusesoc_registry.discover_cores(root):
+        rejection = _fusesoc_core_rejection(core_file)
+        if rejection is not None:
+            rejected[core_file] = rejection
+    return rejected
 
 
 _RECURSIVE_SYMLINK_FIX = (
@@ -5359,7 +5482,7 @@ def _check_icarus_sv_language_mode(
 
 
 # Verilator's own build-a-binary entry points: both generate the vanilla auto
-# main (`traceEverOn(true)` but no tracer object), so `simulate --trace` has
+# main (`traceEverOn(true)` but no tracer object), so `sim --trace` has
 # nothing to hook. A trace-capable Verilator sim Target instead ships a cppSource
 # `--exe` main that opens the VCD or FST tracer matching its authored options —
 # so the presence of either flag is the definitive "cannot trace" signal.
@@ -5379,11 +5502,14 @@ def _check_sim_traceable(
     is authored, and never *synthesises* a tracer. A Target built with Verilator's
     auto ``--main`` (or ``--binary``) has no C++ main to construct a
     ``VerilatedVcdC`` or ``VerilatedFstC``, so the trace option hooks into nothing: the
-    run PASSES but the store is a bare ~443-byte FST header with **0 signals** —
-    a silent trap that otherwise surfaces only on the first trace run. The
+    run produces no usable waveform (typically a bare ~443-byte FST header with
+    **0 signals**), and a run that would otherwise pass is reported inconclusive
+    (exit 1; an Error, exit 2, if the trace pipeline stalls) — a trap that
+    otherwise surfaces only on the first trace run. The
     remedy is the convention traceable sim Targets already follow: a committed
-    ``cppSource`` ``--exe`` main that opens the matching tracer, and drop
-    ``--main``.
+    ``cppSource`` ``--exe`` main that opens the matching tracer and honors
+    ``+trace``/``+tracefile=<file>`` (or the project's declared
+    ``[flows.sim].trace_args``), and drop ``--main``/``--binary``.
 
     Verilator-only by design: for Icarus/Xcelium/VCS the trace overlay
     *auto-supplies* the ``booley_vcd_dump`` module from Booley's ``refs/`` when
@@ -5419,10 +5545,14 @@ def _check_sim_traceable(
         _warning_sink(_warn, "sim.trace-unavailable", subject=offending)(
             f"Verilator sim Target(s) cannot trace: {offending} — they build with "
             "Verilator's auto --main/--binary, which has no tracer for "
-            "`sim --trace` to hook, so a trace run PASSES with an empty "
-            "0-signal waveform store and no error. Give each a cppSource --exe "
-            "main that opens the matching VCD/FST tracer and drop --main from "
-            "verilator_options (mirror a traceable sim Target's tb_cpp fileset)."
+            "`sim --trace` to hook, so a traced run produces no usable waveform: "
+            "one that would otherwise pass ends inconclusive (exit 1), or as an "
+            "Error (exit 2) if the trace pipeline stalls. Give each "
+            "a cppSource --exe main that opens the matching VCD/FST tracer and "
+            "handles Booley's +trace and +tracefile=<file> arguments (or declare "
+            "[flows.sim].trace_args for the options your main accepts), and drop "
+            "--main/--binary from verilator_options (mirror a traceable sim Target's "
+            "tb_cpp fileset)."
         )
 
 
@@ -6319,7 +6449,7 @@ def _report_native_dependencies(
     _warn: Check,
 ) -> None:
     """Report curated native packages, honoring the project image recipe."""
-    dockerfile = project.booley_dir / "docker" / "Dockerfile"
+    dockerfile = project.common_booley_dir / "docker" / "Dockerfile"
     declared = {
         package for package in needed if _dockerfile_declares_native_package(dockerfile, package)
     }
@@ -6731,7 +6861,7 @@ def _grade_core_resolution(
 _CORE_RESOLVE_SNIPPET = (
     "import json, os, sys\n"
     "from pathlib import Path\n"
-    "from booley.runtime.booley_dir import resolve_booley_dir\n"
+    "from booley.runtime.booley_dir import resolve_checkout_booley_dir\n"
     "from booley.fusesoc import fusesoc_registry as fr\n"
     "from booley.targets.catalog import TargetCatalog\n"
     "root = os.getcwd()\n"
@@ -6740,7 +6870,7 @@ _CORE_RESOLVE_SNIPPET = (
     "out = []\n"
     "for target in targets:\n"
     "    selector = target['selector']\n"
-    "    br = resolve_booley_dir(Path(root)) / 'runtime/doctor/core-resolve' / target['build_key']\n"
+    "    br = resolve_checkout_booley_dir(Path(root)) / 'runtime/doctor/core-resolve' / target['build_key']\n"
     "    try:\n"
     "        fr.resolve_target_handle(catalog.select(selector), build_root=br)\n"
     "        out.append({'selector': selector, 'ok': True})\n"
@@ -7727,7 +7857,7 @@ def _record_synth_memory_calibration(
     from booley.harness import synth_probe
 
     synth_probe.record_measurement(
-        project.booley_dir,
+        project.common_booley_dir,
         target,
         float(peak),
         selected_targets=_doctor_targets(project, "synth"),
@@ -7783,10 +7913,33 @@ def _project_target_matrix(project: ProjectAudit) -> target_matrix.DoctorTargetM
     return target_matrix.build_doctor_target_matrix(project.project_root)
 
 
-def _check_doctor_targets(project: ProjectAudit, flow_name: str, _fail: Fail) -> list[str]:
-    """Validate and return the Target matrix selected for *flow_name*."""
+def _check_doctor_targets(
+    project: ProjectAudit,
+    flow_name: str,
+    _fail: Fail,
+    *,
+    _skip: Check | None = None,
+    rejected_cores: Mapping[Path, fusesoc_registry.FuseSocCoreRejection] | None = None,
+) -> list[str]:
+    """Validate and return the Target matrix selected for *flow_name*.
+
+    A Flow with no Doctor Target is a FAIL, unless FuseSoC rejects a core whose
+    misplaced ``booley: {doctor: [...]}`` mapping names this Flow: the marker is
+    invisible to Booley's reader, and the schema FAIL already names the cause.
+    """
     targets = _doctor_targets(project, flow_name)
     if not targets:
+        misplaced = sorted(
+            core.name
+            for core, rejection in (rejected_cores or {}).items()
+            if flow_name in rejection.misplaced_flows
+        )
+        if misplaced and _skip is not None:
+            _skip(
+                f"{flow_name} has no Doctor Target - FuseSoC rejects "
+                f"{', '.join(misplaced)}; see the .core schema FAIL"
+            )
+            return []
         try:
             available = [
                 handle.selector for handle in TargetCatalog.build(project.project_root).list()

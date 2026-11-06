@@ -1,4 +1,4 @@
-"""Git topologies for Booley Directory tests: main, linked Snapshot, Paired Checkout."""
+"""Git checkout fixtures: a main Project, its Snapshot worktree and its Paired Checkout."""
 
 from __future__ import annotations
 
@@ -47,13 +47,13 @@ def main_project(tmp_path: Path, *, relative: str = ".booley", toml: str = "") -
     return main
 
 
-def snapshot(main: Path, *, relative: str = ".booley") -> Path:
+def snapshot(main: Path, *, relative: str = ".booley", name: str = "s1") -> Path:
     """A linked worktree carrying a copy (Snapshot) of the Booley Directory."""
     import shutil
 
     from tests.project_runtime_git_support import git
 
-    worktree = main / relative / "worktrees" / "s1"
+    worktree = main / relative / "worktrees" / name
     git(main, "worktree", "add", "-q", "--detach", str(worktree))
     shutil.copytree(
         main / relative,
@@ -64,18 +64,54 @@ def snapshot(main: Path, *, relative: str = ".booley") -> Path:
     return worktree
 
 
-def paired_checkout(main: Path) -> Path:
-    """A linked worktree whose ``.booley`` is a worktree of the Versioned Booley Directory."""
+def paired_checkout(main: Path, location: Path | None = None) -> Path:
+    """A linked worktree whose ``.booley`` is a worktree of the Versioned Booley Directory.
+
+    *location* defaults to a sibling of *main*; pass ``main/.booley/worktrees/<name>``
+    to register it like an Interactive Worktree.
+    """
     from tests.project_runtime_git_support import git
 
     versioned = main / ".booley"
     init_repo(versioned)
     (versioned / ".gitignore").write_text("worktrees/\n", encoding="utf-8")
     commit_all(versioned)
-    worktree = main.parent / "paired"
+    worktree = location or main.parent / "paired"
     git(main, "worktree", "add", "-q", "--detach", str(worktree))
     git(versioned, "worktree", "add", "-q", "--detach", str(worktree / ".booley"))
     return worktree
+
+
+LAYOUTS = ("snapshot", "paired")
+RUNTIMES = ("host", "sandbox")
+
+
+def linked_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, layout: str, runtime: str
+) -> tuple[Path, Path]:
+    """Return ``(main, worktree)``: a linked worktree registered in main's ``worktrees/``.
+
+    Main and the worktree carry *different* ``devcontainer.json`` bytes, as real
+    per-folder seeding produces. ``runtime="host"`` selects each checkout's own
+    Booley Directory by walk-up; ``"sandbox"`` selects main's through
+    ``BOOLEY_DIR``, as the Sandbox does.
+    """
+    from booley.runtime.booley_dir import reset_cache
+
+    isolate_git(tmp_path, monkeypatch)
+    main = main_project(tmp_path)
+    if layout == "snapshot":
+        worktree = snapshot(main)
+    else:
+        worktree = paired_checkout(main, main / ".booley" / "worktrees" / "p1")
+    for root in (main, worktree):
+        devcontainer = root / ".devcontainer" / "devcontainer.json"
+        devcontainer.parent.mkdir(parents=True, exist_ok=True)
+        devcontainer.write_text(f'{{"name": "{root.name}"}}\n', encoding="utf-8")
+    if runtime == "sandbox":
+        monkeypatch.setenv("BOOLEY_DIR", str(main / ".booley"))
+    reset_cache()
+    return main, worktree
 
 
 def enter_worktree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:

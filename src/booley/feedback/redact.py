@@ -40,8 +40,9 @@ from pathlib import Path
 
 from booley.audit.project_schema import REDACT_EXTRA_PROBLEM
 from booley.commit_policy.policy import banned_spans, parse_stealth_vocabulary
-from booley.core.booley_dir import BOOLEY_DIR_NAME
+from booley.core.booley_dir import BOOLEY_DIR_NAME, resolve_main_checkout_root
 from booley.core.boundary import BoundaryError, is_str_list
+from booley.runtime.worktrees import list_worktrees
 
 logger = logging.getLogger(__name__)
 
@@ -293,11 +294,23 @@ def _register_path_literals(plan: RedactionPlan, project_root: Path) -> None:
     plan.patterns.extend((pattern, r"<home>") for pattern in _HOME_PATTERNS)
 
 
+def _repository_checkouts(project_root: Path) -> tuple[Path, ...]:
+    """Every checkout of *project_root*'s repository: the Findings Log is shared by all."""
+    main_root = resolve_main_checkout_root(project_root)
+    try:
+        linked = tuple(entry.path for entry in list_worktrees(main_root))
+    except (OSError, subprocess.SubprocessError):
+        linked = ()
+    return tuple(dict.fromkeys((project_root, main_root, *linked)))
+
+
 def build_plan(project_root: Path, booley_dir: Path | None = None) -> RedactionPlan:
     """Assemble the substitutions for *project_root*.
 
     Args:
         project_root: The Project Root — the thing whose identity is at stake.
+            Every other checkout of its repository is redacted too, because one
+            Findings Log (Common Booley State) holds rows from all of them.
         booley_dir: The Booley Directory, holding ``booley.toml``. Defaults to
             ``<project_root>/.booley``.
     """
@@ -305,7 +318,9 @@ def build_plan(project_root: Path, booley_dir: Path | None = None) -> RedactionP
     booley_toml = _load_toml(booley_dir / "booley.toml")
     plan = RedactionPlan()
 
-    _register_path_literals(plan, project_root)
+    checkouts = _repository_checkouts(project_root)
+    for checkout in checkouts:
+        _register_path_literals(plan, checkout)
 
     # 2. Git remotes — URL and slug. The slug alone identifies the project on
     #    GitHub, so stripping only the URL would leak it anyway.
@@ -331,7 +346,7 @@ def build_plan(project_root: Path, booley_dir: Path | None = None) -> RedactionP
     # 4. Design identifiers → stable <module-N>.
     if redact_identifiers_enabled(booley_toml):
         candidates = _config_identifiers(booley_toml) | _core_identifiers(project_root)
-        candidates.add(project_root.name)
+        candidates.update(checkout.name for checkout in checkouts)
         keep = sorted(
             name
             for name in candidates

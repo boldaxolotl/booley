@@ -65,16 +65,14 @@ from booley.flows.sim.adapter_transport import (
 )
 from booley.flows.sim.backends.shared import (
     BOOLEY_DUMP_VCD_NAME,
+    CurrentRunTraces,
     RunLogProgress,
     RunTermination,
-    TraceFileSnapshot,
-    adopt_declared_trace_files,
+    ambiguous_trace_reason,
     append_child_cpu_marker,
     child_cpu_snapshot,
     find_icarus_image,
     format_idle_note,
-    snapshot_declared_trace_files,
-    trace_file_stamp,
 )
 from booley.flows.sim.result import (
     extract_vrfc_warnings,
@@ -97,12 +95,8 @@ class _IcarusRun:
     image: Path
     command: list[str]
     trace: TraceSession | None
-    # Declared trace files (and their stamps) that existed before vvp started.
-    declared_before: TraceFileSnapshot
-
-    @property
-    def trace_roots(self) -> list[Path]:
-        return _trace_roots(self.run_cwd, self.work_dir, self.build_dir)
+    # Freshness filter for this run's waveform; None when tracing is off.
+    current: CurrentRunTraces | None
 
 
 def _trace_roots(run_cwd: Path, work_dir: Path, build_dir: Path) -> list[Path]:
@@ -362,15 +356,17 @@ def _prepare_icarus_run(
         plusargs.append("+trace")
     command = _build_vvp_cmd(_find_vvp(), build, image, plusargs)
     trace = _new_trace_session(work, trace_scope) if vcd else None
-    if trace is not None:
-        trace.reset_for_run((run / _DEFAULT_VCD_NAME,))
-    # One snapshot per root: a stale copy that an earlier root's match would
-    # shadow in a first-match search must still be recognised as stale.
-    declared_before: TraceFileSnapshot = {}
-    if trace is not None:
-        for root in _trace_roots(run, work, build):
-            declared_before.update(snapshot_declared_trace_files(trace_files, [root]))
-    return _IcarusRun(build, run, work, image, command, trace, declared_before)
+    current = (
+        CurrentRunTraces.begin(
+            trace,
+            raw_trace_paths=(run / _DEFAULT_VCD_NAME,),
+            patterns=tuple(trace_files),
+            roots=tuple(_trace_roots(run, work, build)),
+        )
+        if trace is not None
+        else None
+    )
+    return _IcarusRun(build, run, work, image, command, trace, current)
 
 
 def _execute_icarus_run(
@@ -403,38 +399,18 @@ def _execute_icarus_run(
         heartbeat.stop()
 
 
-def _drop_unchanged(run: _IcarusRun, path: Path | None) -> Path | None:
-    """Drop a declared file whose stamp is unchanged since before vvp started."""
-    if path is None:
-        return None
-    stamp = run.declared_before.get(path.resolve())
-    return None if stamp is not None and stamp == trace_file_stamp(path) else path
-
-
-def _find_current_trace(
-    run: _IcarusRun, trace: TraceSession, trace_files: list[str]
-) -> Path | None:
-    """Return this run's trace candidate (store or raw VCD), minus unchanged declared files."""
-    trace.postprocess(run.run_cwd / _DEFAULT_VCD_NAME)
-    found = _drop_unchanged(run, trace.find())
-    if found is None and trace_files:
-        found = _drop_unchanged(
-            run,
-            adopt_declared_trace_files(
-                trace, trace_files, run.trace_roots, before=run.declared_before
-            ),
-        )
-    return found
-
-
 def _finalize_icarus_trace(
     run: _IcarusRun,
     proc,
     trace_files: list[str],
 ) -> tuple[str, AdapterTraceResult | None]:
-    if run.trace is None:
+    if run.trace is None or run.current is None:
         return "", None
-    found = _find_current_trace(run, run.trace, trace_files)
+    run.trace.postprocess(run.run_cwd / _DEFAULT_VCD_NAME)
+    selection = run.current.select()
+    if selection.ambiguous:
+        return _icarus_trace_incident(run, proc, ambiguous_trace_reason(selection.ambiguous))
+    found = selection.path
     if found is not None:
         inspection = run.trace.inspect(found)
         if not inspection.usable:
@@ -449,13 +425,7 @@ def _finalize_icarus_trace(
                 "trace requested but retained waveform is not queryable: "
                 f"{inspection.failure_reason}"
             )
-            incident = run.trace.write_incident(reason, sim_proc=proc)
-            print(f"ERROR: {reason}")
-            print(f"TRACE_INCIDENT: {incident}")
-            return (
-                f"\nERROR: {reason}\nTRACE_INCIDENT: {incident}",
-                AdapterTraceResult("incident", path=str(incident), detail=reason),
-            )
+            return _icarus_trace_incident(run, proc, reason)
         print(f"TRACE_OK: {found}")
         return f"\nTRACE_OK: {found}", AdapterTraceResult("ok", path=str(found))
     reason = "trace requested but no queryable .fst store or .vcd was produced"
@@ -469,6 +439,12 @@ def _finalize_icarus_trace(
             " (a testbench writing its dump under its own name needs "
             "[flows.sim].trace_files to declare it)"
         )
+    return _icarus_trace_incident(run, proc, reason)
+
+
+def _icarus_trace_incident(run: _IcarusRun, proc, reason: str) -> tuple[str, AdapterTraceResult]:
+    """Record a trace incident and return its output line and adapter result."""
+    assert run.trace is not None
     incident = run.trace.write_incident(reason, sim_proc=proc)
     print(f"ERROR: {reason}")
     print(f"TRACE_INCIDENT: {incident}")

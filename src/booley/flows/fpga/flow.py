@@ -48,7 +48,12 @@ from booley.evidence.fields import (
 )
 from booley.evidence.timing import per_clock_from_json, worst_clock
 from booley.flows.cli_help import CliHelp
-from booley.flows.eda_failures import EdaFailure, classify_eda_failure
+from booley.flows.eda_failures import (
+    EdaFailure,
+    classify_eda_failure,
+    first_tool_diagnostic,
+    strip_failure_markers,
+)
 from booley.flows.fpga.cli import FpgaArguments
 from booley.flows.fpga.request import FpgaRequest
 from booley.flows.job_resources import resource_phase
@@ -940,35 +945,16 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             return
         failure = self._classify_vivado_failure(result, evidence)
         if failure is not None:
-            metrics.failure_output = failure.diagnostic
+            metrics.failure_output = strip_failure_markers(failure.diagnostic)
             metrics.returncode = 2 if failure.kind == "infrastructure" else 1
             if failure.kind == "infrastructure":
                 metrics.infra_error = failure.reason
             return
         text = "\n".join((stdout, stderr, evidence))
-        cause = self._first_startup_cause(text)
+        cause = first_tool_diagnostic(text, default="no route completion evidence")
         metrics.returncode = 2
         metrics.infra_error = f"Vivado did not reach route_design: {cause}"
         metrics.failure_output = self._failure_tail(stdout + "\n" + evidence, stderr).strip()
-
-    @staticmethod
-    def _first_startup_cause(text: str) -> str:
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        return next(
-            (
-                line[:500]
-                for line in lines
-                if re.search(
-                    r"^(?:ERROR|FATAL)(?::|\s)|"
-                    r"^[\w.+/-]+:\s*(?:error|fatal)(?::|\s)|"
-                    r"^(?:could not|cannot|failed to|missing)\b|"
-                    r"^application-specific initialization failed:",
-                    line,
-                    re.IGNORECASE,
-                )
-            ),
-            "no route completion evidence",
-        )
 
     def _route_evidence(
         self, work_root: Path, *, min_mtime: float | None = None
@@ -1082,10 +1068,10 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         undiagnosable.
         """
         sections = []
-        stdout_tail = "\n".join(log_text.splitlines()[-40:])
+        stdout_tail = "\n".join(strip_failure_markers(log_text).splitlines()[-40:])
         if stdout_tail.strip():
             sections.append(f" Log tail:\n{stdout_tail}")
-        stderr_tail = "\n".join(stderr_text.splitlines()[-40:])
+        stderr_tail = "\n".join(strip_failure_markers(stderr_text).splitlines()[-40:])
         if stderr_tail.strip():
             sections.append(f" stderr tail:\n{stderr_tail}")
         return "".join(sections)
@@ -1425,7 +1411,9 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         suffix = f" ({'; '.join(failures)})" if failures else ""
         result = compose_result(
             short_sha if self.args.baseline else None,
-            self._summary_table_lines(configs, current_results, baseline_results),
+            self._summary_table_lines(
+                configs, current_results, baseline_results, implementation_reports
+            ),
             notes,
             f"RESULT: {verdict}{suffix}",
         )
@@ -1463,20 +1451,23 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         configs: list[str],
         current_results: dict[str, FpgaMetrics],
         baseline_results: dict[str, FpgaMetrics],
+        reports: dict[str, ImplementationReport],
     ) -> list[str]:
         """The per-Target table; baseline deltas sit on a dimmed row under their Target."""
         headers = ["Target", "LUT", "FF", "BRAM", "DSP", "WNS", "WHS", "Fmax", "Time", "Status"]
         rows: list[list[str]] = []
         for cfg in configs:
             cur = current_results[cfg]
-            rows.append(self._summary_row(cfg, cur))
+            rows.append(
+                self._summary_row(cfg, cur, comparison_error=reports[cfg].grade == "error")
+            )
             delta_row = self._delta_row(cur, baseline_results.get(cfg))
             if delta_row:
                 rows.append(delta_row)
         return render_table(headers, rows, max_widths={0: TARGET_WIDTH})
 
     @staticmethod
-    def _summary_row(cfg: str, cur: FpgaMetrics) -> list[str]:
+    def _summary_row(cfg: str, cur: FpgaMetrics, *, comparison_error: bool) -> list[str]:
         """Cells of one Target's table row (``—`` for a metric the run lacks)."""
         # Timing-worst clock, named only for multi-clock designs.
         worst = worst_clock(cur.per_clock)
@@ -1486,6 +1477,10 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             fmax = f"{worst.fmax_mhz:.1f} MHz{tag}"
         if cur.infra_error:
             status = "ERROR"
+        elif comparison_error:
+            # The baseline could not be compared: RESULT is ERROR and names this Target,
+            # even when its own run also failed.
+            status = "ERROR (baseline)"
         elif not cur.passed:
             status = "FAIL"
         else:

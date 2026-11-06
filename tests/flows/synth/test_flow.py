@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -66,7 +67,7 @@ from booley.flows.synth.recipe import (
     synthesis_recipe_snapshot_fingerprint,
 )
 from booley.flows.synth.timing import StaTimingConfig
-from booley.flows.synth.warnings import parse_synth_diagnostics
+from booley.flows.synth.warnings import WarningSummary, parse_synth_diagnostics
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import EndpointOutcome
@@ -1317,7 +1318,9 @@ class TestFormatting:
             per_clock={"clk": make_clock_timing("clk", 2.0, 0.75, 0.1)},
             wns_ns=0.25,
         )
-        row = flow._summary_row("lite", cur, None, False)
+        row = flow._summary_row(
+            "lite", cur, None, False, baseline_not_meaningful=False, comparison_error=False
+        )
         assert row[:6] == ["lite", "8.2 kGE", "1,250 ps", "800 MHz", "+0.250 ns", "0.0s"]
         assert row[6] == "PASS"
 
@@ -1330,14 +1333,23 @@ class TestFormatting:
                 "slow": make_clock_timing("slow", 4.0, 0.0, 0.1),  # 4000 ps (worst)
             },
         )
-        row = flow._summary_row("lite", cur, None, False)
+        row = flow._summary_row(
+            "lite", cur, None, False, baseline_not_meaningful=False, comparison_error=False
+        )
         # The worst (lowest-Fmax) clock is 'slow'; its name tags the Fmax.
         assert row[2] == "4,000 ps"
         assert row[3] == "250 MHz [slow]"
 
     def test_table_row_negative_slack_shows_sign(self, flow_and_state):
         flow, _ = flow_and_state
-        row = flow._summary_row("k", SynthMetrics(cells=10, wns_ns=-1.5), None, False)
+        row = flow._summary_row(
+            "k",
+            SynthMetrics(cells=10, wns_ns=-1.5),
+            None,
+            False,
+            baseline_not_meaningful=False,
+            comparison_error=False,
+        )
         assert "-1.500 ns" in row
 
     def test_logical_frequency_is_labelled_as_estimated(self):
@@ -5575,8 +5587,13 @@ def test_1095_public_frontend_failure(
         "error" if expected_exit == EXIT_ERROR else "fail"
     )
     if expected_exit == EXIT_ERROR:
-        assert diagnostic in report["infra_error"]
-        assert "RESULT: ERROR — lite:" in result.report_text
+        # Issue #2808: the tool prefix appears exactly once, never doubled.
+        expected_reason = (
+            diagnostic if diagnostic.startswith(f"{tool}:") else f"{tool}: {diagnostic}"
+        )
+        assert report["infra_error"] == expected_reason
+        assert f"{tool}: {tool}:" not in result.report_text
+        assert f"RESULT: ERROR — lite: {report['infra_error']}" in result.report_text
     else:
         assert not report["infra_error"]
 
@@ -5601,6 +5618,46 @@ def test_1095_public_missing_sv2v_names_remediation(flow_and_state, tmp_path):
     assert report["termination"] == "infrastructure_error"
     assert "RESULT: ERROR — lite: missing tool: sv2v. Rebuild" in result.report_text
     assert report["infra_error"] in result.report_text
+
+
+def test_2808_missing_sv2v_reason_skips_make_and_hides_marker(
+    flow_and_state, tmp_path, caplog: pytest.LogCaptureFixture
+):
+    """Issue #2808: a missing sv2v reports its remediation, not a make line or marker."""
+    flow, _ = flow_and_state
+    plan = dataclasses.replace(
+        _stub_plan(tmp_path, "lite", mode="logical"), attempt_token=_LATCH_TOKEN
+    )
+    marker = (
+        f"BOOLEY_EDA_FAILURE token={_LATCH_TOKEN} kind=missing_eda_tool stage=sv2v subject=sv2v"
+    )
+    process = SubprocessResult(
+        returncode=2,
+        stdout=(
+            "make: Entering directory '/work/b'\n"
+            "BOOLEY_STAGE: sv2v\n"
+            f"{marker}\n"
+            "make: *** [Makefile:12: sv2v] Error 127\n"
+            "make: Leaving directory '/work/b'\n"
+        ),
+    )
+    with (
+        caplog.at_level(logging.ERROR, logger="booley.flows.synth.flow"),
+        patch.object(flow, "_configure_synth", return_value=plan),
+        patch.object(flow, "_execute_boundary", return_value=process),
+    ):
+        result = flow._run()
+    report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+    assert result.exit_code == EXIT_ERROR
+    assert report["termination"] == "infrastructure_error"
+    assert report["infra_error"].startswith("missing tool: sv2v")
+    failed = [r.getMessage() for r in caplog.records if "boundary run failed" in r.getMessage()]
+    assert len(failed) == 1
+    assert "missing tool: sv2v" in failed[0]
+    assert "make: Entering" not in failed[0]
+    assert "BOOLEY_EDA_FAILURE" not in result.report_text
+    assert "BOOLEY_EDA_FAILURE" not in report["failure_output"]
+    assert "BOOLEY_EDA_FAILURE" not in caplog.text
 
 
 @pytest.mark.parametrize("tool", ["sv2v", "openroad"])
@@ -6077,6 +6134,150 @@ class TestSummaryTable:
         assert rows[0].rstrip().endswith("FAIL (timing)")
         assert rows[1].rstrip().endswith("PASS")
         assert "RESULT: FAIL" in result.report_text
+
+    @staticmethod
+    def _status_by_target(report_text: str) -> dict[str, str]:
+        """Map each table row's Target to its Status cell (the row's trailing text)."""
+        _, rows = TestSummaryTable._table(report_text)
+        statuses: dict[str, str] = {}
+        for row in rows:
+            target = row.split()[0]
+            # Status is the last column; its text starts at PASS/WARN/FAIL/ERROR.
+            marker = min(
+                (i for word in ("PASS", "WARN", "FAIL", "ERROR") if (i := row.find(word)) >= 0),
+            )
+            statuses[target] = row[marker:].rstrip()
+        return statuses
+
+    @staticmethod
+    def _result_line(report_text: str) -> str:
+        return next(ln for ln in report_text.splitlines() if ln.startswith("RESULT:"))
+
+    def test_advisory_timing_violation_warns_only_its_row(self, flow_and_state, monkeypatch):
+        flow, _ = flow_and_state
+        self._force_color(monkeypatch)
+        out = self._tty(monkeypatch)
+        result = flow._aggregate_results(
+            ["lite", "ok"],
+            {"lite": self._passing(wns_ns=-0.2), "ok": self._passing()},
+            {},
+            None,
+        )
+        assert self._status_by_target(result.report_text) == {
+            "lite": "WARN (timing)",
+            "ok": "PASS",
+        }
+        assert self._result_line(result.report_text).startswith("RESULT: WARN -- timing VIOLATED")
+        assert result.exit_code == 0
+        assert f"{_AMBER}WARN (timing)\x1b[0m" in out.getvalue()
+
+    def test_meaningless_baseline_warns_compared_rows(self, flow_and_state):
+        flow, _ = flow_and_state
+        flow.args.baseline = "abc1234"
+        flow._baseline_selfcompare_msg = "baseline delta not meaningful"
+        result = flow._aggregate_results(
+            ["core", "slow"],
+            {"core": self._passing(), "slow": self._passing(wns_ns=-0.1)},
+            {"core": self._passing(), "slow": self._passing()},
+            "abc1234",
+        )
+        assert self._status_by_target(result.report_text) == {
+            "core": "WARN (baseline)",
+            "slow": "WARN (baseline, timing)",
+        }
+        assert "RESULT: WARN -- baseline delta not meaningful" in result.report_text
+
+    def test_baseline_error_row_is_error(self, flow_and_state):
+        flow, _ = flow_and_state
+        flow.args.baseline = "abc1234"
+        flow._baseline_selfcompare_msg = "baseline delta not meaningful"
+        broken_baseline = SynthMetrics(infra_error="boom", returncode=2)
+        result = flow._aggregate_results(
+            ["core"], {"core": self._passing()}, {"core": broken_baseline}, "abc1234"
+        )
+        assert self._status_by_target(result.report_text) == {"core": "ERROR (baseline)"}
+        assert self._result_line(result.report_text).startswith("RESULT: ERROR")
+
+    def test_failed_target_with_uncomparable_baseline_is_error(self, flow_and_state):
+        """RESULT is ERROR and names a failing Target whose baseline broke; its row agrees."""
+        flow, _ = flow_and_state
+        flow.args.baseline = "abc1234"
+        flow._baseline_selfcompare_msg = None
+        result = flow._aggregate_results(
+            ["broken", "ok", "slow"],
+            {
+                "broken": SynthMetrics(returncode=1),
+                "ok": self._passing(),
+                "slow": self._passing(wns_ns=-0.1),
+            },
+            {
+                "broken": SynthMetrics(returncode=1),
+                "ok": self._passing(),
+                "slow": SynthMetrics(infra_error="boom", returncode=2),
+            },
+            "abc1234",
+        )
+        assert self._status_by_target(result.report_text) == {
+            "broken": "ERROR (baseline)",
+            "ok": "PASS",
+            "slow": "ERROR (baseline)",
+        }
+        assert self._result_line(result.report_text).startswith("RESULT: ERROR")
+
+    @pytest.mark.parametrize(
+        ("current", "expected_rows", "verdict"),
+        [
+            pytest.param(
+                {"core": {}, "edge": {}},
+                {"core": "PASS", "edge": "PASS"},
+                "PASS",
+                id="pass",
+            ),
+            pytest.param(
+                {
+                    "core": {},
+                    "slow": {"wns_ns": -0.1},
+                    "noisy": {
+                        "warning_summary": WarningSummary(by_disposition={"advisory": 2}),
+                    },
+                },
+                {"core": "PASS", "slow": "WARN (timing)", "noisy": "WARN (EDA warnings)"},
+                "WARN",
+                id="warn",
+            ),
+            pytest.param(
+                {"core": {}, "broken": None},
+                {"core": "PASS", "broken": "FAIL (rc=1, no metrics)"},
+                "FAIL",
+                id="fail",
+            ),
+            pytest.param(
+                {"broken": None, "slow": {"wns_ns": -0.1}},
+                {"broken": "FAIL (rc=1, no metrics)", "slow": "WARN (timing)"},
+                "FAIL",
+                id="fail-with-warn-elsewhere",
+            ),
+        ],
+    )
+    def test_row_statuses_agree_with_result_reasons(
+        self, flow_and_state, current, expected_rows, verdict
+    ):
+        flow, _ = flow_and_state
+        metrics = {
+            name: SynthMetrics(returncode=1) if overrides is None else self._passing(**overrides)
+            for name, overrides in current.items()
+        }
+        result = flow._aggregate_results(list(metrics), metrics, {}, None)
+        statuses = self._status_by_target(result.report_text)
+        assert statuses == expected_rows
+        result_line = self._result_line(result.report_text)
+        assert result_line.startswith(f"RESULT: {verdict}")
+        for target, status in statuses.items():
+            if f"{target}:" in result_line:
+                # A Target the RESULT line names carries the RESULT verdict word.
+                assert status.startswith(verdict), (target, status, result_line)
+            if status == "PASS":
+                assert f"{target}:" not in result_line
 
     def test_area_unit_is_kge_everywhere(self, flow_and_state):
         flow, _ = flow_and_state

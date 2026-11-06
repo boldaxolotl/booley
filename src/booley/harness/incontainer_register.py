@@ -9,7 +9,7 @@ from pathlib import Path
 from booley.config import agent_app
 from booley.config.gateway import GATEWAY_AUTH, GatewayConfigError, gateway_settings_from_env
 from booley.runtime import atomic_files, auth_token, health, incontainer_setup
-from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.booley_dir import resolve_booley_dir, resolve_common_booley_dir
 
 
 def launch_auto_doctor(project_root: Path | None = None) -> str:
@@ -27,7 +27,7 @@ def observe_upgrade(project_root: Path | None = None) -> str:
     try:
         from booley.harness import upgrade_cli, upgrade_review
 
-        status = upgrade_review.observe(resolve_booley_dir(project_root or Path.cwd()))
+        status = upgrade_review.observe(resolve_common_booley_dir(project_root or Path.cwd()))
         if status.condition is not upgrade_review.ReviewCondition.CURRENT:
             print(f"warning: {upgrade_cli.render_status(status)}", file=sys.stderr)
         return status.condition.value

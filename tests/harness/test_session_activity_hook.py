@@ -19,7 +19,7 @@ from booley.runtime.chat_sessions import reserve_codex_chat
 from booley.runtime.handles import HandleStore
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import ActivityStore
-from tests.booley_dir_topology import (
+from tests.booley_checkouts_support import (
     enter_worktree,
     isolate_git,
     main_project,

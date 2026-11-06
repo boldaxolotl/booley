@@ -16,7 +16,7 @@ from booley.runtime import job_records
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.session_paths import project_job_roots, session_jobs_dir
 from booley.runtime.timefmt import rfc3339_from_epoch
-from tests.booley_dir_topology import enter_worktree
+from tests.booley_checkouts_support import enter_worktree
 
 
 @pytest.fixture
@@ -210,7 +210,9 @@ def test_doctor_reads_session_state_from_main(worktree, monkeypatch):
         "_check_custom_endpoints_and_criteria",
     ):
         monkeypatch.setattr(doctor, name, lambda *_a, **_kw: None)
-    project = SimpleNamespace(project_root=tree, booley_dir=tree / ".booley")
+    project = SimpleNamespace(
+        project_root=tree, booley_dir=tree / ".booley", common_booley_dir=main
+    )
     reporter = doctor._Reporter.create()
     reporter.agent_check_enabled = lambda _name: False
     doctor._run_project_checks(project, reporter)

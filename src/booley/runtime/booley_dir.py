@@ -17,6 +17,7 @@ from booley.core.booley_dir import (
     resolve_booley_dir,
     resolve_checkout_booley_dir,
     resolve_common_booley_dir,
+    resolve_main_checkout_root,
 )
 
 __all__ = [
@@ -32,6 +33,7 @@ __all__ = [
     "resolve_booley_dir",
     "resolve_checkout_booley_dir",
     "resolve_common_booley_dir",
+    "resolve_main_checkout_root",
 ]
 
 
