@@ -479,13 +479,17 @@ def test_pretrust_viewer_bridge_publishes_no_fail(tmp_path: Path, monkeypatch):
         server.bind(str(socket_path))
         server.listen(4)
 
+        server.settimeout(5)
+
         def serve() -> None:
-            while True:
+            # Bounded: the check pings each window a handful of times at most.
+            for _ in range(8):
                 try:
                     conn, _ = server.accept()
                 except OSError:
                     return
                 with conn:
+                    conn.settimeout(5)
                     conn.recv(65536)
                     conn.sendall((json.dumps(pretrust_ping) + "\n").encode())
 

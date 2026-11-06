@@ -3560,9 +3560,12 @@ def _bridge_entry(entry: dict) -> dict:
     }
 
 
-def _bridge_dark_fix(argv_prefix: list[str]) -> str:
-    """Choose recovery from an authoritative remote extension observation."""
-    state = _vaporview_extension_state(argv_prefix)
+def _bridge_dark_fix(argv_prefix: list[str], state: vaporview.ExtensionState | None = None) -> str:
+    """Choose recovery from an authoritative remote extension observation.
+
+    ``state`` is a registry observation the caller already made; None probes.
+    """
+    state = _vaporview_extension_state(argv_prefix) if state is None else state
     if state is vaporview.ExtensionState.MISSING:
         return "VaporView extension is not installed. " + _BRIDGE_MISSING_EXTENSION_FIX
     if state is vaporview.ExtensionState.UNKNOWN:
@@ -3586,16 +3589,17 @@ def _report_viewer_bridges(
     # untrusted cannot show it: that is waiting for the user, not a fault.
     broken = [entry for entry in bridges if entry["vaporview"] is None]
     waiting = [entry for entry in broken if entry["trusted"] is False]
-    if waiting and _vaporview_extension_state(argv_prefix) is not vaporview.ExtensionState.MISSING:
-        # The registry does not depend on trust, so a really absent VaporView
-        # (MISSING) is never hidden behind a window that is not yet trusted.
-        broken = [entry for entry in broken if entry["trusted"] is not False]
-    if broken:
+    state = _vaporview_extension_state(argv_prefix) if waiting else None
+    # The registry does not depend on trust, so a really absent VaporView
+    # (MISSING) is never hidden behind a window that is not yet trusted.
+    if state is vaporview.ExtensionState.MISSING:
+        waiting = []
+    if len(broken) > len(waiting):
         reasons = "; ".join(sorted({entry["error"] or "no detail" for entry in broken}))
         _fail(
             f"{description}: {len(broken)} of {len(bridges)} window(s){where} report no "
             f"usable VaporView ({reasons})",
-            _bridge_dark_fix(argv_prefix),
+            _bridge_dark_fix(argv_prefix, state),
         )
         return
     _report_waiting_for_trust(description, len(bridges), len(waiting), where, _pass, _skip)
@@ -3609,7 +3613,7 @@ def _report_waiting_for_trust(
         count = f" ({windows} windows)" if windows > 1 else ""
         _pass(f"{description}{count}")
     elif waiting < windows:
-        _pass(f"{description} ({windows} windows; {waiting} waits for workspace trust)")
+        _pass(f"{description} ({windows} windows; {waiting} waiting for workspace trust)")
     else:
         _skip(
             f"{description} - VaporView waits for workspace trust in {waiting} "

@@ -3011,7 +3011,7 @@ class TestViewerBridgeCheck:
 
         assert rec.kinds() == {"pass"}
         passed = next(m for lvl, m in rec.events if lvl == "pass")
-        assert "waits for workspace trust" in passed
+        assert "waiting for workspace trust" in passed
 
     def test_untrusted_and_trusted_broken_windows_still_fail(self, tmp_path, monkeypatch):
         broken = {"vaporview": None, "error": "VaporView reports no version", "trusted": True}
@@ -3021,6 +3021,22 @@ class TestViewerBridgeCheck:
         assert rec.kinds() == {"fail"}
         failure = next(m for lvl, m in rec.events if lvl == "fail")
         assert "no version" in failure
+        assert "2 of 2 window(s)" in failure
+        assert "not installed in this VS Code window" in failure
+
+    def test_untrusted_window_with_unknown_registry_skips(self, tmp_path, monkeypatch):
+        """An undeterminable registry state does not turn a waiting window into a FAIL."""
+        from booley.runtime.vaporview import ExtensionState
+
+        rec = self._run(
+            tmp_path,
+            monkeypatch,
+            bridges=[self._UNTRUSTED],
+            extension_state=ExtensionState.UNKNOWN,
+            in_container=True,
+        )
+
+        assert rec.kinds() == {"skip"}
 
     def test_broken_window_without_trust_field_still_fails(self, tmp_path, monkeypatch):
         """An older extension never reports trust; absence is not 'untrusted'."""
