@@ -61,6 +61,7 @@ behavioral guidance, not a security boundary.
 | [`AREAS.md`](AREAS.md) | Booley capabilities mapped to the mission areas that exercise them |
 | [`missions/`](missions/) | Mission files plus their prompts, Goalsets and ad-hoc Goal lists, fixtures, specs, and evaluators |
 | [`shared/coverage/`](shared/coverage/RUNBOOK.md) | Native-coverage fixture Project, expected values, fault injectors, and evaluator |
+| [`shared/codespaces/`](shared/codespaces/RUNBOOK.md) | Browser-driven Codespace on the picorv32 demo with a candidate image: setup, reading the terminal, GUI-vs-CLI oracles, evidence, cleanup |
 
 ## Checking changes
 
