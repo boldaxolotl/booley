@@ -41,6 +41,7 @@ from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     materialize_worktree_submodules,
 )
+from booley.runtime.worktree_snapshot import SKIPPED_PREFIX
 
 # Same single-path-component rule the script enforces; checking it at the
 # CLI boundary gives an argparse error before any process starts.
@@ -133,6 +134,10 @@ def _create_outer(name: str, project_root: Path, *, paired_project: bool) -> Non
         ]
         detail = "\n".join(errors) or result.stderr.strip() or "(no output)"
         raise WorktreeCreationError(detail)
+    # Name the Booley Directory paths the Snapshot left behind for lack of a classification.
+    for line in result.stderr.splitlines():
+        if line.startswith(SKIPPED_PREFIX):
+            print(line, file=sys.stderr)
 
 
 def run(args: argparse.Namespace, project_root: Path) -> int:
