@@ -6,7 +6,9 @@ on:
     branches: [main]
   # Run on stacked PRs as well as PRs targeting main. Each optimization phase
   # has its own reviewable base branch and must retain the same CI coverage.
+  # Draft PRs skip every job (see `changes`); ready_for_review starts CI.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       windows_shard_count:
@@ -69,6 +71,10 @@ concurrency:
 
 jobs:
   changes:
+    # Draft PRs skip CI until marked ready (ready_for_review re-runs it);
+    # Mergify's speculative queue PRs are drafts too, so they still run.
+    # Every other job needs this one, so they all skip with it.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft || startsWith(github.head_ref, 'mergify/merge-queue/')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -1700,7 +1706,8 @@ jobs:
       - scanner-smoke
       - bwave-smoke
       - flake-stress
-    if: always()
+    # Skipped with `changes` on a draft PR; otherwise always resolve status.
+    if: always() && needs.changes.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -1717,7 +1724,7 @@ jobs:
   ci-metrics:
     name: ci-metrics
     needs: ci-required
-    if: always()
+    if: always() && needs.ci-required.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

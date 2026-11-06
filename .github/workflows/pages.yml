@@ -16,6 +16,7 @@ on:
       - "src/booley/runtime/docs_links.py"
       - ".github/workflows/pages.yml"
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "website/**"
       - "docs/user/**"
@@ -34,6 +35,9 @@ concurrency:
 jobs:
   build:
     name: build
+    # Draft PRs skip CI until marked ready (ready_for_review re-runs it);
+    # Mergify's speculative queue PRs are drafts too, so they still run.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft || startsWith(github.head_ref, 'mergify/merge-queue/')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
