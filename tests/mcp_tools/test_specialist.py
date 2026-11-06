@@ -290,7 +290,6 @@ def test_provider_exception_preserves_report_and_persists_traceback(
 
 
 def test_refused_model_reports_actionable_message(tmp_path: Path, monkeypatch) -> None:
-    from booley.config import agent as agent_config
     from booley.runtime.agent_errors import ModelUnavailableError
 
     state_file = tmp_path / "state.json"
@@ -299,10 +298,6 @@ def test_refused_model_reports_actionable_message(tmp_path: Path, monkeypatch) -
     monkeypatch.setattr(
         "booley.runtime.runtime_context.container_only_error", lambda _command: None
     )
-    settings = agent_config.AgentSettings(
-        tier_models={"heavy": "h", "standard": "gpt-refused", "light": "l"}, provider="codex"
-    )
-    monkeypatch.setattr(agent_config, "_agent_settings", settings)
     refusal = ModelUnavailableError(
         model="gpt-refused",
         provider="codex",

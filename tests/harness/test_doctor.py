@@ -924,7 +924,7 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
         return developer_probe.ProbeUsage(1, 0, 1, 0.0)
 
     monkeypatch.setattr(developer_probe, "measure_developer_rss", measure)
-    monkeypatch.setattr(developer_probe, "probe_model_access", probe, raising=False)
+    monkeypatch.setattr(developer_probe, "probe_model_access", probe)
     doctor.run_doctor_result(
         argparse.Namespace(verbose=False, deep=deep), tmp_path, record_clean=False
     )
@@ -6218,7 +6218,10 @@ class TestDeveloperProbe:
         from booley.runtime import agent_config as config_mod
         from booley.runtime.agent_errors import ModelUnavailableError
 
-        monkeypatch.setattr(config_mod, "load_backend_config", lambda root: None)
+        loaded = []
+        monkeypatch.setattr(
+            config_mod, "load_backend_config", lambda root, **kw: loaded.append(kw)
+        )
         monkeypatch.setattr(
             config_mod, "get_backend_config", lambda: SimpleNamespace(settings=AgentSettings())
         )
@@ -6235,8 +6238,11 @@ class TestDeveloperProbe:
         monkeypatch.setattr(agent_mod, "call_agent", fake_call)
 
         if outcome == "accepted":
-            usage = developer_probe.probe_model_access(tmp_path, "some-model")
+            usage = developer_probe.probe_model_access(
+                tmp_path, "some-model", booley_dir=tmp_path / "bd"
+            )
             assert (seen, usage.input_tokens) == (["some-model"], 7)
+            assert loaded == [{"booley_dir": tmp_path / "bd"}]  # same config as the model list
             return
         with pytest.raises(developer_probe.ProbeError) as excinfo:
             developer_probe.probe_model_access(tmp_path, "some-model")

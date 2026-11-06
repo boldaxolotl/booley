@@ -262,7 +262,11 @@ def _measure_in(
 
 
 def probe_model_access(
-    project_root: Path, model: str, *, timeout_s: int = PROBE_TIMEOUT_S
+    project_root: Path,
+    model: str,
+    *,
+    booley_dir: Path | None = None,
+    timeout_s: int = PROBE_TIMEOUT_S,
 ) -> ProbeUsage:
     """Ask the provider for one trivial turn on *model*; return the spend.
 
@@ -272,12 +276,14 @@ def probe_model_access(
     """
     try:
         with owned_tempdir("booley-model-probe-") as work:
-            return _probe_model_in(project_root, model, work, timeout_s)
+            return _probe_model_in(project_root, booley_dir, model, work, timeout_s)
     except OSError as exc:  # fail-soft by contract: an unusable temp dir becomes a doctor SKIP
         raise ProbeError(f"model probe failed: {exc}") from exc
 
 
-def _probe_model_in(project_root: Path, model: str, work: Path, timeout_s: int) -> ProbeUsage:
+def _probe_model_in(
+    project_root: Path, booley_dir: Path | None, model: str, work: Path, timeout_s: int
+) -> ProbeUsage:
     """Run the model probe call in *work* (see :func:`probe_model_access`)."""
     import asyncio
 
@@ -286,7 +292,7 @@ def _probe_model_in(project_root: Path, model: str, work: Path, timeout_s: int) 
     from booley.runtime.agent_errors import UsageLimitError
 
     try:
-        config_mod.load_backend_config(project_root)
+        config_mod.load_backend_config(project_root, booley_dir=booley_dir)
         params = _probe_params(
             config_mod.get_backend_config().settings, model, work, timeout_s, "doctor-model-probe"
         )

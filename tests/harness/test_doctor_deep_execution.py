@@ -474,7 +474,7 @@ def _run_model_probes(project, monkeypatch, *, refused=(), light=None):
         return usage
 
     monkeypatch.setattr(developer_probe, "measure_developer_rss", measure)
-    monkeypatch.setattr(developer_probe, "probe_model_access", probe, raising=False)
+    monkeypatch.setattr(developer_probe, "probe_model_access", probe)
     reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
     doctor._track_developer_probe(project, reporter, tracker)
     return probed, reporter, tracker
@@ -539,6 +539,32 @@ def test_deep_skips_model_probes_when_the_provider_probe_failed(tmp_path, monkey
 
     assert probed == []
     assert tracker.missing == ("developer-probe", "model-access")
+
+
+def test_deep_model_probe_failure_fails_and_stops_probing(tmp_path, monkeypatch):
+    """A non-refusal agent failure on a model probe FAILs and spends nothing more."""
+    from booley.harness import developer_probe
+
+    project = _model_probe_world(tmp_path, monkeypatch)
+    usage = developer_probe.ProbeUsage(5, 0, 1, 0.001)
+    probed = []
+
+    def probe(_root, model, **_kw):
+        probed.append(model)
+        raise developer_probe.ProbeError("model probe failed: boom", agent_failure=True)
+
+    monkeypatch.setattr(
+        developer_probe,
+        "measure_developer_rss",
+        lambda _root: developer_probe.ProbeMeasurement(1024, True, usage),
+    )
+    monkeypatch.setattr(developer_probe, "probe_model_access", probe)
+    reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
+    doctor._track_developer_probe(project, reporter, tracker)
+
+    assert len(probed) == 1
+    assert len(_messages(reporter, Severity.FAIL)) == 1
+    assert tracker.missing == ("model-access",)
 
 
 def test_deep_gateway_auth_runs_no_extra_model_probe(tmp_path, monkeypatch):
@@ -610,7 +636,6 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
         developer_probe,
         "probe_model_access",
         lambda *_args, **_kw: developer_probe.ProbeUsage(1, 0, 1, 0.0),
-        raising=False,
     )
     return audit
 

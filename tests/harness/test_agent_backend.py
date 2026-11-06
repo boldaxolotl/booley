@@ -34,7 +34,7 @@ from booley.runtime.agent_config import (
     load_backend_config,
     set_backend_config,
 )
-from booley.runtime.agent_errors import AgentProviderError
+from booley.runtime.agent_errors import AgentProviderError, ModelUnavailableError
 
 
 def _capturing_successful_query():
@@ -710,7 +710,7 @@ def _settings_resolving_to_refused_model(provider: str):
 
 
 def _assert_actionable_refusal(error, *, provider: str, detail_fragment: str) -> None:
-    assert type(error).__name__ == "ModelUnavailableError"
+    assert isinstance(error, ModelUnavailableError)
     assert error.provider == provider
     assert error.model == _REFUSED_MODEL
     message = str(error)
@@ -792,7 +792,7 @@ async def test_claude_model_refusal_is_terminal_and_actionable(tmp_path, monkeyp
     monkeypatch.setattr(cb, "query", refused_query)
     monkeypatch.setattr(cb.anyio, "sleep", sleep)
 
-    with pytest.raises((AgentProviderError, ResultError)) as raised:
+    with pytest.raises(ModelUnavailableError) as raised:
         await ClaudeSDKBackend().call(
             AgentCallParams(prompt="work", model=_REFUSED_MODEL, cwd=tmp_path)
         )

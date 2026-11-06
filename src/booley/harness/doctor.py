@@ -1355,7 +1355,10 @@ def _track_developer_probe(
     reporter: _Reporter,
     tracker: doctor_deep.DeepCheckTracker,
 ) -> None:
-    """Measure the agent before EDA children can contaminate its RSS observation."""
+    """Measure the agent before EDA children can contaminate its RSS observation.
+
+    Then probe every other resolved model for provider access (``model-access``).
+    """
     tracker.require("developer-probe")
     tracker.require("model-access")
     if reporter.agent_check_enabled("Specialist provider authorization and memory probe"):
@@ -2047,10 +2050,7 @@ def _run_developer_probe(
     return record
 
 
-_MODEL_REFUSAL_FIX = (
-    "change the config key named above to a model this account can use "
-    "(booley.toml cannot change once a Goal is entered)"
-)
+_MODEL_REFUSAL_FIX = "re-run `booley doctor --deep` after changing the setting named above"
 
 
 def _run_model_access_probes(
@@ -2104,7 +2104,9 @@ def _probe_one_model(
     from booley.harness import developer_probe
 
     try:
-        usage = developer_probe.probe_model_access(project.project_root, model)
+        usage = developer_probe.probe_model_access(
+            project.project_root, model, booley_dir=project.booley_dir
+        )
     except Exception as exc:  # noqa: BLE001 — fail-soft by contract; grade it, never crash
         cause = exc.__cause__ or exc
         if getattr(exc, "agent_called", False):
