@@ -68,7 +68,7 @@ runs:
       shell: bash
       run: >-
         python -m pip install --disable-pip-version-check --quiet
-        "${GITHUB_WORKSPACE}"
+        -c "${GITHUB_WORKSPACE}/.github/ci/constraints.txt" "${GITHUB_WORKSPACE}"
 
     # Readiness runs the project's deterministic preparation
     # hook. Use the same reviewed multilib Newlib toolchain family as Booley's

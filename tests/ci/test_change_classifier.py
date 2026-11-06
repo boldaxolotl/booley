@@ -14,7 +14,14 @@ import yaml
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
-from ci_changes import ALL_JOBS, STRESS_JOB, build_test_matrix, classify, required_jobs
+from ci_changes import (
+    ALL_JOBS,
+    DEFAULT_WINDOWS_SHARD_COUNT,
+    STRESS_JOB,
+    build_test_matrix,
+    classify,
+    required_jobs,
+)
 from picorv32_ci_inputs import RISCV_IMAGE_FILES
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
@@ -191,6 +198,20 @@ def test_windows_shard_experiment_builds_complete_matrix(shard_count: int) -> No
     assert [entry["shard_index"] for entry in shards] == list(range(shard_count))
     assert all(entry["shard_count"] == shard_count for entry in shards)
     assert len({entry["name"] for entry in entries}) == len(entries)
+
+
+def test_constraints_file_runs_the_full_python_matrix() -> None:
+    """AC4: a constraints-only change selects every job, including the Windows test legs."""
+    categories = classify([".github/ci/constraints.txt"])
+
+    assert "packaging" in categories
+    assert required_jobs(categories) == set(ALL_JOBS) - {STRESS_JOB}
+    windows = {
+        entry["python"]
+        for entry in build_test_matrix(DEFAULT_WINDOWS_SHARD_COUNT)["include"]
+        if entry["os"] == "windows-latest"
+    }
+    assert windows == {"3.11", "3.13", "3.14"}
 
 
 def test_classifier_emits_requested_windows_shard_matrix(tmp_path: Path) -> None:

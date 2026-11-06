@@ -24,9 +24,12 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            .github/ci/constraints.txt
 
       - name: Install pinned mutation environment
-        run: pip install -e ".[test,mutation]"
+        run: pip install -e ".[test,mutation]" -c .github/ci/constraints.txt
 
       - name: Record mutation toolchain
         shell: bash
@@ -89,6 +92,9 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            .github/ci/constraints.txt
 
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
@@ -103,7 +109,7 @@ jobs:
       - name: Install pinned fuzz and differential dependencies
         run: |
           cargo install cargo-fuzz --version 0.13.2 --locked
-          pip install -e ".[test]"
+          pip install -e ".[test]" -c .github/ci/constraints.txt
 
       # The differential suite generates its oracle VCDs with real simulators
       # and skips each case whose simulator is absent; the zero-skip assertion
@@ -190,8 +196,12 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            .github/ci/constraints.txt
+            .github/ci/requirements-build.txt
       - name: Install worktree test environment
-        run: pip install -e ".[test]" -r .github/ci/requirements-build.txt
+        run: pip install -e ".[test]" -c .github/ci/constraints.txt -r .github/ci/requirements-build.txt
       - name: Build canonical Sandbox Image
         shell: bash
         run: |
