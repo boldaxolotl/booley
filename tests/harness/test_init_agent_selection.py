@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import tomllib
 import warnings
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -426,6 +427,59 @@ def test_existing_provider_only_receives_and_persists_default_auth(tmp_path):
     assert config.read_text(encoding="utf-8") == ('[agent]\nprovider = "claude"\nauth = "auto"\n')
 
 
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        pytest.param(
+            '[agent]\nprovider = "codex"\n\n[sandbox]\nenabled = true\n',
+            '[agent]\nprovider = "codex"\nauth = "auto"\n\n[sandbox]\nenabled = true\n',
+            id="trailing-blank",
+        ),
+        pytest.param(
+            '[agent]\nprovider = "codex"\n[sandbox]\nenabled = true\n',
+            '[agent]\nprovider = "codex"\nauth = "auto"\n[sandbox]\nenabled = true\n',
+            id="no-blank",
+        ),
+        pytest.param(
+            '[sandbox]\nenabled = true\n\n[agent]\nprovider = "codex"\n\n',
+            '[sandbox]\nenabled = true\n\n[agent]\nprovider = "codex"\nauth = "auto"\n\n',
+            id="last-table",
+        ),
+        pytest.param(
+            '[agent]\nprovider = "codex"\nnotes = [\n  ["a", "b"],\n]\n\n[sandbox]\n',
+            '[agent]\nprovider = "codex"\nnotes = [\n  ["a", "b"],\n]\nauth = "auto"\n\n[sandbox]\n',
+            id="nested-array",
+        ),
+        pytest.param(
+            '[agent]\nprovider = "codex"\n\n# sandbox settings\n[sandbox]\nenabled = true\n',
+            '[agent]\nprovider = "codex"\n\n# sandbox settings\nauth = "auto"\n'
+            "[sandbox]\nenabled = true\n",
+            id="comment-before-header",
+        ),
+        pytest.param(
+            '[agent.git]\nname = "E"\n',
+            '[agent]\nprovider = "claude"\nauth = "auto"\n\n[agent.git]\nname = "E"\n',
+            id="agent-git-only",
+        ),
+    ],
+)
+def test_recorded_auth_follows_last_agent_key(tmp_path, before, after):
+    """New [agent] keys land after the table's last non-blank line, not after
+    the blank lines that separate it from the next header."""
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    config = booley_dir / "booley.toml"
+    config.write_text(before, encoding="utf-8")
+    ctx = InitContext(project_root=tmp_path, interactive=False)
+
+    resolved = init_cmd._resolve_agent_selection(ctx, _args(seed=True), config)
+    assert init_cmd._step_agent_config(ctx, resolved, config)
+
+    written = config.read_text(encoding="utf-8")
+    assert written == after
+    assert tomllib.loads(written)["agent"]["auth"] == "auto"
+
+
 def test_persisting_auth_preserves_existing_git_identity(tmp_path):
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
@@ -443,7 +497,7 @@ def test_persisting_auth_preserves_existing_git_identity(tmp_path):
     assert resolved == init_cmd.AgentSelection("claude", "auto", False, True)
     assert init_cmd._step_agent_config(ctx, resolved, config)
     assert config.read_text(encoding="utf-8") == (
-        '[agent]\nprovider = "claude"\n\nauth = "auto"\n'
+        '[agent]\nprovider = "claude"\nauth = "auto"\n\n'
         '[agent.git]\nname = "Expected Developer"\n'
         'email = "developer-identity.invalid"\n'
     )
