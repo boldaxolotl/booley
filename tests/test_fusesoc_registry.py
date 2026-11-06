@@ -3014,3 +3014,67 @@ def test_fusesoc_core_rejection_ignores_files_fusesoc_skips_silently(tmp_path: P
     headerless = tmp_path / "headerless.core"
     headerless.write_text("name: acme:ip:x:0\ntargets: {a: {bogus: 1}}\n", encoding="utf-8")
     assert fusesoc_registry.fusesoc_core_rejection(headerless) is None
+
+
+# ---------------------------------------------------------------------------
+# #2893: build_library_plan gives isolated builds a fresh private mirror
+# ---------------------------------------------------------------------------
+
+
+def _library_plan_project(tmp_path: Path, stealth: str | None) -> Path:
+    root = tmp_path / "proj"
+    (root / ".booley" / "cores").mkdir(parents=True)
+    (root / ".booley" / "booley.toml").write_text(stealth or "", encoding="utf-8")
+    return root
+
+
+@pytest.mark.parametrize("stealth", [None, "[stealth]\nenabled = true\n"])
+def test_build_library_plan_is_none_without_isolation(tmp_path: Path, stealth: str | None) -> None:
+    root = _library_plan_project(tmp_path, stealth)
+    build = tmp_path / "build"
+    (build / "old-tree").mkdir(parents=True)
+    assert fusesoc_registry.build_library_plan(root, build) is None
+    assert (build / "old-tree").is_dir()
+    assert not (build / "core-mirror").exists()
+
+
+def test_build_library_plan_clears_build_root_directories(tmp_path: Path) -> None:
+    root = _library_plan_project(
+        tmp_path, "[stealth]\nenabled = true\nignore_native_cores = true\n"
+    )
+    build = tmp_path / "build"
+    (build / "design_0" / "lint").mkdir(parents=True)
+    (build / "core-mirror").mkdir()
+    (build / "run.log").write_text("keep\n", encoding="utf-8")
+    plan = fusesoc_registry.build_library_plan(root, build)
+    assert plan is not None
+    assert plan.roots == ((build / "core-mirror").resolve(),)
+    assert not (build / "design_0").exists()
+    assert (build / "run.log").read_text(encoding="utf-8") == "keep\n"
+
+
+def test_build_library_plan_accepts_missing_build_root(tmp_path: Path) -> None:
+    root = _library_plan_project(
+        tmp_path, "[stealth]\nenabled = true\nignore_native_cores = true\n"
+    )
+    build = tmp_path / "not" / "yet"
+    plan = fusesoc_registry.build_library_plan(root, build)
+    assert plan is not None
+    assert (build / "core-mirror").is_dir()
+
+
+def test_build_library_plan_reports_unclearable_build_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _library_plan_project(
+        tmp_path, "[stealth]\nenabled = true\nignore_native_cores = true\n"
+    )
+    build = tmp_path / "build"
+    (build / "old-tree").mkdir(parents=True)
+
+    def _refuse(_path: object) -> None:
+        raise OSError("busy")
+
+    monkeypatch.setattr(fusesoc_registry.shutil, "rmtree", _refuse)
+    with pytest.raises(fusesoc_registry.TargetResolutionError, match="could not mirror"):
+        fusesoc_registry.build_library_plan(root, build)

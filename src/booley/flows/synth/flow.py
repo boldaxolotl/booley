@@ -1277,7 +1277,11 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         ref = getattr(self, "_target_execution_refs", {}).get(target)
         if ref is not None:
             return resolve_target_execution_ref(handle, ref, build_root=selected_root)
-        return fusesoc_registry.resolve_target_handle(handle, build_root=selected_root)
+        return fusesoc_registry.resolve_target_handle(
+            handle,
+            build_root=selected_root,
+            library_plan=fusesoc_registry.build_library_plan(handle.project_root, selected_root),
+        )
 
     def _target_handle(self, target: str) -> TargetHandle:
         """Return the selected handle, reselecting only in a baseline checkout."""

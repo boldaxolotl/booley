@@ -118,6 +118,9 @@ def install_lenient_target_catalog(
     )
 
     def resolve_handle(handle: TargetHandle, **kwargs):
+        # Flows pass the build's library plan (None unless the Project isolates
+        # native cores); the legacy resolver below has no such parameter.
+        kwargs.pop("library_plan", None)
         return fusesoc_registry._resolve_target(
             handle.selector,
             project_root=handle.project_root,

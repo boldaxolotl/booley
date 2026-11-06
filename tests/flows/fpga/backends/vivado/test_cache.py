@@ -354,3 +354,113 @@ def test_string_guard_precedes_cache_lookup(tmp_path, monkeypatch):
     )
     with pytest.raises(ValueError, match="Vivado does not support string/file"):
         flow._prepare_fpga_command("fpga_demo")
+
+
+def _reachable_target(tmp_path: Path) -> ResolvedTarget:
+    """A Target whose build root holds one listed source and one export folder."""
+    build = tmp_path / "build"
+    (build / "src" / "inc" / "deep").mkdir(parents=True)
+    (build / "rtl.sv").write_text("module top; endmodule\n", encoding="utf-8")
+    return ResolvedTarget(
+        name="t",
+        vlnv="::demo:0",
+        toplevel="top",
+        eda_tool="vivado",
+        files=(ResolvedFile(name="rtl.sv", file_type="systemVerilogSource"),),
+        parameters={},
+        build_root=build,
+        edam_path=build / "t.eda.yml",
+        flow_options={"tool": "vivado", "part": "xc7a35tcpg236-1"},
+    )
+
+
+def _forbidden_walk(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+    raise AssertionError("non-isolated fingerprint must not walk reachable dirs")
+
+
+def test_default_payload_has_no_reachable_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without reachable_dirs the key equals a call that never heard of them."""
+    resolved = _reachable_target(tmp_path)
+    (resolved.build_root / "src" / "inc" / "extra.vh").write_text("// x\n", encoding="utf-8")
+    with monkeypatch.context() as guard:
+        # The legacy payload must never reach the reachable-file walk.
+        guard.setattr(fpga_cache, "_reachable_file_evidence", _forbidden_walk)
+        plain = fpga_cache.input_fingerprint(resolved, {}, out_of_context=False)
+        assert plain == fpga_cache.input_fingerprint(
+            resolved, {}, out_of_context=False, reachable_dirs=()
+        )
+    assert plain != fpga_cache.input_fingerprint(
+        resolved,
+        {},
+        out_of_context=False,
+        reachable_dirs=(resolved.build_root / "src" / "inc",),
+    )
+
+
+def test_reachable_files_walk_is_bounded_outside_build_root(tmp_path: Path) -> None:
+    """Inside the build root the walk is recursive; a user folder counts only its own files."""
+    resolved = _reachable_target(tmp_path)
+    inside = resolved.build_root / "src" / "inc"
+    user = tmp_path / "user"
+    (user / "deep").mkdir(parents=True)
+    (user / "top.vh").write_text("// top v1\n", encoding="utf-8")
+    (user / "deep" / "buried.vh").write_text("// buried v1\n", encoding="utf-8")
+    (inside / "deep" / "buried.vh").write_text("// inside v1\n", encoding="utf-8")
+
+    def key() -> str:
+        return fpga_cache.input_fingerprint(
+            resolved, {}, out_of_context=False, reachable_dirs=(inside, user)
+        )
+
+    base = key()
+    (user / "deep" / "buried.vh").write_text("// buried v2\n", encoding="utf-8")
+    assert key() == base  # accepted limit (plan R3): user subfolders are not walked
+    (inside / "deep" / "buried.vh").write_text("// inside v2\n", encoding="utf-8")
+    changed = key()
+    assert changed != base  # a subfolder of the build root is
+    (user / "top.vh").write_text("// top v2\n", encoding="utf-8")
+    assert key() != changed  # a user folder's own file is
+
+
+def test_reachable_files_tolerate_missing_user_folder(tmp_path: Path) -> None:
+    """A reachable folder that cannot be listed adds nothing, like an empty one."""
+    resolved = _reachable_target(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    gone = tmp_path / "does-not-exist"
+    assert fpga_cache.input_fingerprint(
+        resolved, {}, out_of_context=False, reachable_dirs=(gone,)
+    ) == fpga_cache.input_fingerprint(resolved, {}, out_of_context=False, reachable_dirs=(empty,))
+
+
+def test_reachable_file_unreadable_is_keyed_as_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reachable file that cannot be hashed still enters the key, flagged missing."""
+    resolved = _reachable_target(tmp_path)
+    user = tmp_path / "user"
+    user.mkdir()
+    (user / "locked.vh").write_text("// v1\n", encoding="utf-8")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    real_hash = fpga_cache._hash_file
+
+    def _locked_only(path: Path) -> tuple[str, int]:
+        if path.name == "locked.vh":
+            raise OSError("permission denied")
+        return real_hash(path)
+
+    monkeypatch.setattr(fpga_cache, "_hash_file", _locked_only)
+    with_locked = fpga_cache.input_fingerprint(
+        resolved, {}, out_of_context=False, reachable_dirs=(user,)
+    )
+    without_file = fpga_cache.input_fingerprint(
+        resolved, {}, out_of_context=False, reachable_dirs=(empty,)
+    )
+    assert with_locked != without_file  # the unreadable file is still in the key
+    monkeypatch.setattr(fpga_cache, "_hash_file", real_hash)
+    assert with_locked != fpga_cache.input_fingerprint(
+        resolved, {}, out_of_context=False, reachable_dirs=(user,)
+    )  # and its entry differs from the readable one

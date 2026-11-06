@@ -452,4 +452,5 @@ def resolve_target_execution_ref(
     return fusesoc_registry.resolve_target_handle(
         handle,
         build_root=build_root,
+        library_plan=fusesoc_registry.build_library_plan(handle.project_root, build_root),
     )

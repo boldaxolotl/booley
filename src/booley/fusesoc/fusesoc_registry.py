@@ -36,6 +36,7 @@ import functools
 import hashlib
 import logging
 import os
+import shutil
 import subprocess
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -388,6 +389,30 @@ def prepare_private_mirror_plan(project_root: Path | str, mirror_root: Path) -> 
     except (CoreProjectionError, OSError) as exc:
         raise TargetResolutionError(f"could not mirror stealth cores: {exc}") from exc
     return CoreLibraryPlan((mirror_root.resolve(),), (frozenset(),), tuple(mirrored.items()))
+
+
+def build_library_plan(project_root: Path | str, build_root: Path | str) -> CoreLibraryPlan | None:
+    """Return the library view one build under *build_root* resolves through.
+
+    ignore_native_cores: remove every directory directly under *build_root*
+    (earlier FuseSoC work trees, possibly for an older core version or tool,
+    and the previous mirror), then render a fresh private source mirror at
+    ``build_root/core-mirror``. Top-level files (the lint ``run.log``) stay.
+    Otherwise ``None``: the Project's shared prepared view, nothing touched.
+    """
+    if not native_cores_ignored(project_root):
+        return None
+    build = Path(build_root)
+    try:
+        if build.is_dir():
+            for child in build.iterdir():
+                # is_dir() follows symlinks; rmtree then refuses the link and
+                # the build fails loudly instead of deleting through it.
+                if child.is_dir():
+                    shutil.rmtree(child)
+    except OSError as exc:
+        raise TargetResolutionError(f"could not mirror stealth cores: {exc}") from exc
+    return prepare_private_mirror_plan(project_root, build / "core-mirror")
 
 
 def core_setup_hazards(project_root: Path | str) -> list[CoreSetupHazard]:
