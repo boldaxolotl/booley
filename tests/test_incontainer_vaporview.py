@@ -7,12 +7,14 @@ import json
 import os
 import subprocess
 import sys
+import zipfile
 from io import StringIO
 from pathlib import Path
 
 import pytest
 
 from booley.runtime import incontainer_vaporview as iv
+from booley.runtime import vaporview_vsix as vsix
 
 _VERSION = iv.vaporview.VERIFIED_VERSION
 _REAL_BUNDLE = Path.home() / ".cache/vv160-research/vsix/extension/dist/extension.js"
@@ -641,3 +643,226 @@ class TestInstallRaceWait:
     def test_malformed_budget_falls_back_to_default(self, monkeypatch, value):
         monkeypatch.setenv(iv._WAIT_ENV, value)
         assert iv._wait_budget_seconds() == iv._WAIT_SECONDS_DEFAULT
+
+
+class TestPatchExtensionTexts:
+    """The text-level edit the image build applies to the bundled VSIX."""
+
+    def test_patches_manifest_and_bundle(self):
+        patched = iv.patch_extension_texts(json.dumps(_vanilla_manifest()), _VANILLA_BUNDLE)
+        assert patched is not None
+        manifest, bundle = patched
+        colors = _color_properties(json.loads(manifest))
+        assert colors["vaporview.customColor5"]["scope"] == "machine"
+        assert iv._bundle_sha256(bundle) == iv._PATCHED_BUNDLE_SHA256
+
+    def test_fixed_point_returns_none(self):
+        patched = iv.patch_extension_texts(json.dumps(_vanilla_manifest()), _VANILLA_BUNDLE)
+        assert patched is not None
+        assert iv.patch_extension_texts(*patched) is None
+
+    def test_patched_manifest_beside_vanilla_bundle_patches_only_the_bundle(self):
+        manifest, _bundle = iv.patch_extension_texts(
+            json.dumps(_vanilla_manifest()), _VANILLA_BUNDLE
+        )
+        assert iv.patch_extension_texts(manifest, _VANILLA_BUNDLE)[0] == manifest
+
+    def test_invalid_json_is_rejected(self):
+        with pytest.raises(iv.ExtensionPatchError, match="not valid JSON"):
+            iv.patch_extension_texts("{", _VANILLA_BUNDLE)
+
+    def test_other_version_is_rejected(self):
+        manifest = _vanilla_manifest()
+        manifest["version"] = "9.9.9"
+        with pytest.raises(
+            iv.ExtensionPatchError, match=f"verified lramseyer.vaporview {_VERSION}"
+        ):
+            iv.patch_extension_texts(json.dumps(manifest), _VANILLA_BUNDLE)
+
+    def test_unknown_bundle_is_rejected(self):
+        with pytest.raises(iv.ExtensionPatchError, match="not the official VaporView"):
+            iv.patch_extension_texts(json.dumps(_vanilla_manifest()), "other build")
+
+
+class TestPatchVsix:
+    """Image-build patching of the bundled VSIX (#2701)."""
+
+    _EXTRA = "extension/readme.md"
+
+    def _vsix(self, path: Path, manifest: dict | None = None, bundle: str = _VANILLA_BUNDLE):
+        """Write a minimal VSIX shaped like the official one."""
+        members = {
+            "extension.vsixmanifest": "<PackageManifest/>",
+            vsix._MANIFEST_MEMBER: json.dumps(manifest or _vanilla_manifest()),
+            vsix._BUNDLE_MEMBER: bundle,
+            self._EXTRA: "# VaporView",
+        }
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name, text in members.items():
+                info = zipfile.ZipInfo(name, date_time=(2026, 10, 25, 21, 56, 0))
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = 0o644 << 16
+                archive.writestr(info, text)
+        path.chmod(0o644)
+        return path
+
+    def _member(self, path: Path, name: str) -> str:
+        with zipfile.ZipFile(path) as archive:
+            return archive.read(name).decode("utf-8")
+
+    def test_patches_both_members_and_keeps_the_rest(self, tmp_path):
+        path = self._vsix(tmp_path / "vaporview.vsix")
+        mode = path.stat().st_mode
+        with zipfile.ZipFile(path) as archive:
+            before = [(i.filename, i.date_time, i.compress_type) for i in archive.infolist()]
+
+        assert vsix.patch_vsix(path) is True
+
+        with zipfile.ZipFile(path) as archive:
+            after = [(i.filename, i.date_time, i.compress_type) for i in archive.infolist()]
+        assert after[:-1] == before
+        assert after[-1][0] == vsix._NOTICE_MEMBER
+        assert self._member(path, vsix._NOTICE_MEMBER) == vsix.extension_notice()
+        assert self._member(path, self._EXTRA) == "# VaporView"
+        bundle = self._member(path, vsix._BUNDLE_MEMBER)
+        assert iv._bundle_sha256(bundle) == iv._PATCHED_BUNDLE_SHA256
+        colors = _color_properties(json.loads(self._member(path, vsix._MANIFEST_MEMBER)))
+        assert colors["vaporview.customColor7"]["scope"] == "machine"
+        assert path.stat().st_mode == mode
+        assert [p.name for p in tmp_path.iterdir()] == ["vaporview.vsix"]  # no temp left
+
+    def test_second_run_leaves_the_file_byte_identical(self, tmp_path):
+        path = self._vsix(tmp_path / "vaporview.vsix")
+        vsix.patch_vsix(path)
+        first = path.read_bytes()
+        assert vsix.patch_vsix(path) is False
+        assert path.read_bytes() == first
+
+    def test_output_is_deterministic(self, tmp_path):
+        one = self._vsix(tmp_path / "one.vsix")
+        two = self._vsix(tmp_path / "two.vsix")
+        vsix.patch_vsix(one)
+        vsix.patch_vsix(two)
+        assert one.read_bytes() == two.read_bytes()
+
+    @pytest.mark.parametrize(
+        ("kwargs", "reason"),
+        [
+            ({"bundle": "other build"}, "not the official VaporView"),
+            ({"manifest": {**_vanilla_manifest(), "version": "9.9.9"}}, "not the verified"),
+        ],
+    )
+    def test_unverified_vsix_fails_and_stays_untouched(self, tmp_path, kwargs, reason):
+        path = self._vsix(tmp_path / "vaporview.vsix", **kwargs)
+        original = path.read_bytes()
+        with pytest.raises(vsix.VsixPatchError, match=reason) as excinfo:
+            vsix.patch_vsix(path)
+        assert str(path) in str(excinfo.value)
+        assert path.read_bytes() == original
+
+    def test_missing_member_fails(self, tmp_path):
+        path = tmp_path / "vaporview.vsix"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("extension.vsixmanifest", "<PackageManifest/>")
+        with pytest.raises(vsix.VsixPatchError, match="not a readable VaporView VSIX"):
+            vsix.patch_vsix(path)
+
+    @pytest.mark.parametrize("content", [None, b"not a zip"])
+    def test_missing_or_corrupt_file_fails(self, tmp_path, content):
+        path = tmp_path / "vaporview.vsix"
+        if content is not None:
+            path.write_bytes(content)
+        with pytest.raises(vsix.VsixPatchError, match="cannot patch VSIX"):
+            vsix.patch_vsix(path)
+
+    def test_installed_patched_vsix_needs_no_attach_time_edit(self, tmp_path, monkeypatch):
+        """The race fix: VS Code extracts an already-patched extension."""
+        path = self._vsix(tmp_path / "vaporview.vsix")
+        vsix.patch_vsix(path)
+        home = tmp_path / "home"
+        target = home / ".vscode-server" / "extensions" / f"lramseyer.vaporview-{_VERSION}"
+        with zipfile.ZipFile(path) as archive:
+            for name in (vsix._MANIFEST_MEMBER, vsix._BUNDLE_MEMBER):
+                destination = target / name.removeprefix("extension/")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(archive.read(name))
+
+        batch = iv._patch_installed(home)
+
+        assert (batch.found, batch.changed, batch.complete) == (1, 0, True)
+
+    _SHA = "c" * 64
+
+    def _source_notice(self, path: Path, vsix_path: Path) -> Path:
+        """A SOURCE.txt in the base image's shape (see Dockerfile.base)."""
+        path.write_text(
+            "VaporView 1.6.0 (lramseyer.vaporview), GPL-3.0, see LICENSE.txt.\n"
+            f"Redistributed unmodified as {vsix_path}\n"
+            f"(Open VSX build, sha256 {self._SHA}).\n"
+            "Corresponding source: https://github.com/Lramseyer/vaporview\n"
+            "  tag 1.6.0-rel, commit " + "d" * 40 + "\n" + vsix._ATTACH_HOOK_STATEMENT,
+            encoding="utf-8",
+        )
+        return path
+
+    def test_main_patches_and_writes_both_notices(self, tmp_path, capsys):
+        path = self._vsix(tmp_path / "vaporview.vsix")
+        notice = tmp_path / "licenses" / "MODIFICATIONS.txt"
+        source = self._source_notice(tmp_path / "SOURCE.txt", path)
+        argv = ["--vsix", str(path), "--notice", str(notice), "--source-notice", str(source)]
+
+        assert vsix.main(argv) == 0
+
+        shipped = hashlib.sha256(path.read_bytes()).hexdigest()
+        text = notice.read_text(encoding="utf-8")
+        assert shipped in text
+        assert "Lramseyer/vaporview#207" in text
+        assert "GPL-3.0" in text
+        if os.name == "posix":  # Windows has no group/other permission bits
+            assert notice.stat().st_mode & 0o777 == 0o644
+        rewritten = source.read_text(encoding="utf-8")
+        assert "unmodified" not in rewritten
+        assert "attach hook" not in rewritten
+        assert f"Made from the official Open VSX build (sha256 {self._SHA})." in rewritten
+        assert f"Shipped modified as {path} (sha256 {shipped});" in rewritten
+        assert "Corresponding source: https://github.com/Lramseyer/vaporview" in rewritten
+        assert f"patched {path}" in capsys.readouterr().out
+
+        # A rebuild over the already-patched image changes nothing.
+        assert vsix.main(argv) == 0
+        assert source.read_text(encoding="utf-8") == rewritten
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == shipped
+
+    def test_rewrite_refreshes_the_shipped_hash(self, tmp_path):
+        source = self._source_notice(tmp_path / "SOURCE.txt", tmp_path / "v.vsix")
+        once = vsix.rewrite_source_notice(source.read_text(encoding="utf-8"), "a" * 64)
+        twice = vsix.rewrite_source_notice(once, "b" * 64)
+        assert twice == once.replace("a" * 64, "b" * 64)
+
+    def test_unrecognized_source_notice_fails(self):
+        with pytest.raises(vsix.VsixPatchError, match="no recognized VaporView"):
+            vsix.rewrite_source_notice("VaporView, some other wording\n", "a" * 64)
+
+    def test_edited_vsix_without_notice_gains_only_the_notice(self, tmp_path):
+        """An already-edited VSIX without the in-extension notice still gets one."""
+        manifest, bundle = iv.patch_extension_texts(
+            json.dumps(_vanilla_manifest()), _VANILLA_BUNDLE
+        )
+        path = self._vsix(tmp_path / "vaporview.vsix", json.loads(manifest), bundle)
+        assert vsix.patch_vsix(path) is True
+        assert self._member(path, vsix._NOTICE_MEMBER) == vsix.extension_notice()
+        assert self._member(path, vsix._BUNDLE_MEMBER) == bundle
+        assert vsix.patch_vsix(path) is False
+
+    def test_main_fails_loudly_on_an_unverified_vsix(self, tmp_path, capsys):
+        path = self._vsix(tmp_path / "vaporview.vsix", bundle="other build")
+        notice = tmp_path / "MODIFICATIONS.txt"
+        source = self._source_notice(tmp_path / "SOURCE.txt", path)
+        before = source.read_text(encoding="utf-8")
+        argv = ["--vsix", str(path), "--notice", str(notice), "--source-notice", str(source)]
+
+        assert vsix.main(argv) == 1
+
+        assert not notice.exists()
+        assert source.read_text(encoding="utf-8") == before
+        assert str(path) in capsys.readouterr().err

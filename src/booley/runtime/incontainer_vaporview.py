@@ -32,6 +32,12 @@ color properties present. Upstream follow-ups whose release lets Booley delete
 this module: Lramseyer/vaporview#207 (theme lookup in remote windows) and
 machine-scoped custom colors.
 
+**Now a fallback.** The image build already applies these edits to the bundled
+VSIX through :func:`patch_extension_texts` (see
+:mod:`booley.runtime.vaporview_vsix`), so a current image installs a patched
+extension and this hook only verifies it. The hook still patches containers
+from older images and installs that did not come from the bundled VSIX.
+
 Idempotent and defensive: a no-op if the extension is absent (install may still
 be in flight) or already patched, and it never raises out of :func:`main` — a
 patch failure must not fail the attach hook. VS Code reads the manifest and
@@ -242,22 +248,64 @@ def _prepare_compatible_bundle(extension_dir: Path) -> tuple[Path, str | None, s
         source = bundle.read_text(encoding="utf-8")
     except OSError as exc:
         return bundle, None, f"bundle is not readable yet ({exc})"
+    updated, problem = _prepare_bundle_source(source)
+    return bundle, updated, problem
+
+
+def _prepare_bundle_source(source: str) -> tuple[str | None, str | None]:
+    """Patch the exact supported bundle text in memory.
+
+    Returns the replacement text (``None`` when *source* is already the
+    verified patched build) and an incomplete-state detail (``None`` on
+    success). Any bundle but the official one is refused, never rewritten.
+    """
     fingerprint = _bundle_sha256(source)
     if fingerprint == _PATCHED_BUNDLE_SHA256:
-        return bundle, None, None
+        return None, None
     if fingerprint != _SUPPORTED_BUNDLE_SHA256:
         return (
-            bundle,
             None,
             f"bundle fingerprint {fingerprint} is not the official VaporView "
             f"{vaporview.VERIFIED_VERSION} build",
         )
     updated, changed, problem = _prepare_theme_source(source)
     if problem is not None:
-        return bundle, None, problem
+        return None, problem
     if not changed or _bundle_sha256(updated) != _PATCHED_BUNDLE_SHA256:
-        return bundle, None, "prepared bundle does not match the verified patched build"
-    return bundle, updated, None
+        return None, "prepared bundle does not match the verified patched build"
+    return updated, None
+
+
+class ExtensionPatchError(ValueError):
+    """The extension files are not the verified VaporView build Booley patches."""
+
+
+def patch_extension_texts(manifest_text: str, bundle_text: str) -> tuple[str, str] | None:
+    """Apply both compatibility edits to a VaporView manifest and bundle text.
+
+    This is the same verified edit the attach hook makes on disk, exposed for
+    callers that hold the files elsewhere (the image build patches the bundled
+    VSIX with it). Returns the patched ``(manifest, bundle)`` texts, or
+    ``None`` when both are already at the patched fixed point. Raises
+    :class:`ExtensionPatchError` for any other version or bundle.
+    """
+    try:
+        manifest = json.loads(manifest_text)
+    except ValueError as exc:
+        raise ExtensionPatchError(f"manifest is not valid JSON ({exc})") from exc
+    if not isinstance(manifest, dict) or not _manifest_is_complete(manifest):
+        raise ExtensionPatchError(
+            f"manifest is not the verified {vaporview.EXTENSION_ID} "
+            f"{vaporview.VERIFIED_VERSION} manifest"
+        )
+    manifest_changed = patch_manifest(manifest)
+    updated_bundle, problem = _prepare_bundle_source(bundle_text)
+    if problem is not None:
+        raise ExtensionPatchError(problem)
+    if not manifest_changed and updated_bundle is None:
+        return None
+    patched_manifest = json.dumps(manifest, indent=2) + "\n" if manifest_changed else manifest_text
+    return patched_manifest, bundle_text if updated_bundle is None else updated_bundle
 
 
 def _installation_is_patched(path: Path) -> bool:
