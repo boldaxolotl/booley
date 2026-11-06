@@ -16,7 +16,11 @@ from typing import Any
 
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.feedback import findings, materialize
-from booley.runtime.booley_dir import BOOLEY_DIR_NAME, resolve_checkout_booley_dir
+from booley.runtime.booley_dir import (
+    BOOLEY_DIR_NAME,
+    resolve_checkout_booley_dir,
+    resolve_common_booley_dir,
+)
 
 MARKER = ".booley-setup-run"
 
@@ -76,13 +80,21 @@ def prepare(project_root: Path, run_id: str | None = None) -> dict[str, Any]:
     return _report("prepared", run_root)
 
 
-def _attached(booley_dir: Path, run_root: Path) -> tuple[set[Path], int]:
-    """Attachment paths under the run root, and the Findings Log's corrupt-line count."""
-    log = findings.read_log(booley_dir)
+def _attached(booley_dir: Path, project_root: Path, run_root: Path) -> tuple[set[Path], int]:
+    """Attachment paths under the run root, and the Findings Log's corrupt-line count.
+
+    The run root belongs to this checkout (*booley_dir*), the Findings Log to the
+    Main Booley Directory (Common Booley State).
+    """
+    common_dir = resolve_common_booley_dir(project_root)
+    log = findings.read_log(common_dir)
     raw = (a for finding in log.entries for a in finding.attachments)
     # Attachments resolve to the entry's physical target; compare in the lexical spelling.
     paths = {
-        lexical_booley_path(booley_dir, materialize.normalize_attachment_path(a, booley_dir))
+        lexical_booley_path(
+            booley_dir,
+            materialize.normalize_attachment_path(a, common_dir, checkout_dir=booley_dir),
+        )
         for a in raw
     }
     return {p for p in paths if p.is_relative_to(run_root)}, log.corrupt_lines
@@ -103,7 +115,9 @@ def preview(project_root: Path, run_id: str) -> dict[str, Any]:
     booley_dir, run_root = _locate(project_root, run_id)
     if not run_root.exists():
         return _report("gone", run_root)
-    return _report("preview", run_root, _inventory(run_root, _attached(booley_dir, run_root)[0]))
+    return _report(
+        "preview", run_root, _inventory(run_root, _attached(booley_dir, project_root, run_root)[0])
+    )
 
 
 def apply(project_root: Path, run_id: str) -> dict[str, Any]:
@@ -113,16 +127,18 @@ def apply(project_root: Path, run_id: str) -> dict[str, Any]:
         return _report("gone", run_root)
     if not (run_root / MARKER).is_file():
         raise CleanupRefusedError(f"{run_root} has no {MARKER} marker; remove it by hand")
-    attached, corrupt = _attached(booley_dir, run_root)
+    attached, corrupt = _attached(booley_dir, project_root, run_root)
     report = _report("removed", run_root, _inventory(run_root, attached))
-    blockers = attached or {findings.log_path(booley_dir)}
+    common_dir = resolve_common_booley_dir(project_root)
+    blockers = attached or {findings.log_path(common_dir)}
     if corrupt:
         return _keep(report, f"{corrupt} corrupt Findings Log line(s)", blockers)
     try:
-        materialize.materialize_attachments(booley_dir, attached)
+        materialize.materialize_attachments(common_dir, attached, checkout_dir=booley_dir)
     except (RuntimeError, OSError, ValueError) as exc:  # corrupt log, lock timeout, I/O
         return _keep(report, str(exc), blockers)
-    left, corrupt_now = _attached(booley_dir, run_root)  # a half-written append shows as corrupt
+    # A half-written append shows as corrupt.
+    left, corrupt_now = _attached(booley_dir, project_root, run_root)
     if left or corrupt_now != corrupt:
         return _keep(report, "Findings Log changed during cleanup", left or blockers)
     try:  # children first, marker last: a failed removal stays retryable

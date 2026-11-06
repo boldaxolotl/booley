@@ -41,8 +41,9 @@ from booley.runtime import (
     vaporview,
 )
 from booley.runtime import devcontainer as dc
-from booley.runtime.booley_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
+from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
     _Rec,
@@ -4415,6 +4416,8 @@ def test_custom_image_freshness_warns_when_image_predates_dockerfile(tmp_path, m
     proj = tmp_path / "myproj"
     (proj / ".booley").mkdir(parents=True)
     _write_project_dockerfile(proj, mtime=2000.0)
+    monkeypatch.setenv("BOOLEY_DIR", str(proj / ".booley"))
+    reset_cache()
     project = _derived_project_audit(proj)
     monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 1000.0)
 
@@ -4435,6 +4438,8 @@ def test_custom_image_freshness_passes_when_image_newer(tmp_path, monkeypatch):
     proj = tmp_path / "myproj"
     (proj / ".booley").mkdir(parents=True)
     _write_project_dockerfile(proj, mtime=1000.0)
+    monkeypatch.setenv("BOOLEY_DIR", str(proj / ".booley"))
+    reset_cache()
     project = _derived_project_audit(proj)
     monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 2000.0)
 
@@ -4804,7 +4809,36 @@ class TestWorktreePortability:
     def _project(self, root: Path):
         booley_dir = root / ".booley"
         booley_dir.mkdir(exist_ok=True)
-        return SimpleNamespace(project_root=root, booley_dir=booley_dir)
+        return SimpleNamespace(
+            project_root=root, booley_dir=booley_dir, common_booley_dir=booley_dir
+        )
+
+    @pytest.mark.parametrize("runtime", RUNTIMES)
+    @pytest.mark.parametrize("layout", LAYOUTS)
+    def test_lists_main_registry_from_linked_worktree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout, runtime
+    ):
+        """The worktree registry is Common Booley State: a worktree sees main's."""
+        main, worktree = linked_worktree(tmp_path, monkeypatch, layout=layout, runtime=runtime)
+        registered = {main / ".booley" / "worktrees" / ("s1" if layout == "snapshot" else "p1")}
+        project = readiness.ProjectAudit(
+            project_root=worktree,
+            booley_dir=resolve_checkout_booley_dir(worktree),
+            booley_toml={},
+            configs_toml={},
+            first_target="",
+        )
+
+        report = readiness.inspect_worktree_portability(
+            readiness.WorktreePortabilityRequest(project, None, "image", False)
+        )
+
+        listed = {
+            Path(item.message.split(": ", 1)[0])
+            for item in report.findings
+            if "worktree metadata" in item.message
+        }
+        assert registered <= listed
 
     def test_two_capable_sides_and_enabled_policy_pass(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -5172,7 +5206,9 @@ class TestWorktreePortability:
         outer.mkdir(parents=True)
         ignored.mkdir()
         (outer / ".git").touch()
-        project = SimpleNamespace(project_root=tmp_path, booley_dir=booley_dir)
+        project = SimpleNamespace(
+            project_root=tmp_path, booley_dir=booley_dir, common_booley_dir=booley_dir
+        )
         monkeypatch.setattr(
             readiness,
             "resolve_checkout_booley_dir",
@@ -5196,7 +5232,9 @@ class TestWorktreePortability:
         (administration / "gitdir").write_text(
             f"{os.path.relpath(worktree / '.git', administration)}\n", encoding="utf-8"
         )
-        project = SimpleNamespace(project_root=tmp_path, booley_dir=booley_dir)
+        project = SimpleNamespace(
+            project_root=tmp_path, booley_dir=booley_dir, common_booley_dir=booley_dir
+        )
         findings = readiness.Findings()
 
         readiness._inspect_live_worktrees(project, findings)
@@ -5260,7 +5298,9 @@ class TestWorktreePortability:
         (worktree / ".git").write_text(f"gitdir: {administration}\n", encoding="utf-8")
         (administration / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")
 
-        project = SimpleNamespace(project_root=tmp_path, booley_dir=booley_dir)
+        project = SimpleNamespace(
+            project_root=tmp_path, booley_dir=booley_dir, common_booley_dir=booley_dir
+        )
         report = readiness.inspect_worktree_portability(
             readiness.WorktreePortabilityRequest(project, None, "image", False)
         )
@@ -5322,7 +5362,9 @@ class TestWorktreePortability:
             ],
             check=True,
         )
-        project = SimpleNamespace(project_root=tmp_path, booley_dir=booley_dir)
+        project = SimpleNamespace(
+            project_root=tmp_path, booley_dir=booley_dir, common_booley_dir=booley_dir
+        )
 
         paths = readiness._live_worktree_paths(project)
         problems = readiness._worktree_metadata_problems(paired)
@@ -9664,3 +9706,85 @@ def test_doctor_fails_on_booley_dir_pin_mismatch(tmp_path, monkeypatch):
     subprocess.run(["git", "init", str(inner)], check=True, capture_output=True, timeout=30)
     with pytest.raises(booley_dir_pin.BooleyDirPinError):
         cli._require_command_project("doctor", inner)
+
+
+class TestDoctorCommonStateFromWorktree:
+    """Doctor's Common Booley State (probes, Dockerfile, Ticket Board) lives in main."""
+
+    @pytest.fixture
+    def worktree_project(self, tmp_path, monkeypatch):
+        main, worktree = linked_worktree(tmp_path, monkeypatch, layout="snapshot", runtime="host")
+        project = readiness.ProjectAudit(
+            project_root=worktree,
+            booley_dir=resolve_checkout_booley_dir(worktree),
+            booley_toml={"sandbox": {"memory": "100g"}},
+            configs_toml={},
+            first_target="",
+        )
+        return main / ".booley", project
+
+    def test_developer_probe_is_read_from_main(self, worktree_project):
+        common, project = worktree_project
+        developer_probe.record_measurement(common, 1 << 29)
+        rec = _Rec()
+
+        doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
+
+        assert rec.kinds() == {"pass"}
+        assert "measured agent RSS" in rec.events[0][1]
+
+    def test_synth_probe_is_read_from_main(self, worktree_project, monkeypatch):
+        from booley.harness import synth_probe
+
+        common, project = worktree_project
+        monkeypatch.setattr(doctor.target_matrix, "doctor_targets", lambda *_args: ("t",))
+        synth_probe.record_measurement(common, "t", 512.0)
+
+        assert "calibrated peak 0.5g" in doctor._heavy_memory_reservation(project).evidence
+
+    def test_project_dockerfile_is_read_from_main(self, worktree_project, monkeypatch):
+        common, project = worktree_project
+        _write_project_dockerfile(common.parent, mtime=2000.0)
+        monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 1000.0)
+        warns: list[str] = []
+
+        doctor._check_custom_image_freshness(
+            project, "docker", "custom", lambda _m: None, warns.append
+        )
+
+        assert warns and "predates" in warns[0]
+
+    def test_ticket_board_leftovers_and_handle_maps_are_read_from_main(
+        self, worktree_project, monkeypatch, capsys
+    ):
+        common, project = worktree_project
+        (common / "tickets" / "board").mkdir(parents=True)
+        (common / "tickets" / "board" / "T-1.json").write_text("{}", encoding="utf-8")
+        stores: list[Path] = []
+        real_store = doctor.handle_maps.HandleStore
+        monkeypatch.setattr(
+            doctor.handle_maps,
+            "HandleStore",
+            lambda directory, **kwargs: (
+                stores.append(directory) or real_store(directory, **kwargs)
+            ),
+        )
+        for name in (
+            "_check_project_gitignore",
+            "_check_goal_history_ignored",
+            "_check_project_trackability",
+            "_check_git_state",
+            "_check_repo_footprint",
+            "_check_custom_endpoints_and_criteria",
+        ):
+            monkeypatch.setattr(doctor, name, lambda *_args, **_kwargs: None)
+        reporter = doctor._Reporter.create()
+        reporter.agent_check_enabled = lambda _name: False  # type: ignore[method-assign]
+
+        doctor._run_project_checks(project, reporter)
+
+        assert (
+            f"leftover Ticket Board data in {common / 'tickets' / 'board'}"
+            in capsys.readouterr().out
+        )
+        assert stores and set(stores) == {common}

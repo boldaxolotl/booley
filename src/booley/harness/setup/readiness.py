@@ -35,7 +35,11 @@ from booley.harness.setup.guidance_links import (
 )
 from booley.harness.setup.project_origin import read_project_origin
 from booley.harness.setup.scaffold import is_scaffold_core_description
-from booley.runtime.booley_dir import resolve_checkout_booley_dir
+from booley.runtime.booley_dir import (
+    resolve_checkout_booley_dir,
+    resolve_common_booley_dir,
+    resolve_main_checkout_root,
+)
 from booley.runtime.git import _git_common_dir
 from booley.runtime.worktree_paths import worktree_state_dir
 from booley.targets.catalog import TargetCatalog
@@ -63,6 +67,11 @@ class ProjectAudit:
     configs_toml: dict[str, dict[str, Any]]
     first_target: str
     eda: dict[str, EdaConfig] = field(default_factory=dict)
+
+    @property
+    def common_booley_dir(self) -> Path:
+        """The Main Booley Directory holding Common Booley State, e.g. the worktree registry."""
+        return resolve_common_booley_dir(self.project_root)
 
 
 @dataclass(frozen=True)
@@ -320,7 +329,11 @@ def _worktree_metadata_problems(worktree: Path) -> tuple[str, ...]:
 
 
 def _live_worktree_paths(project: ProjectAudit) -> tuple[Path, ...]:
-    root = worktree_state_dir(project.project_root, booley_dir=project.booley_dir) / "worktrees"
+    # The registry is Common Booley State: a linked worktree reads main's, not its own.
+    registry = worktree_state_dir(
+        resolve_main_checkout_root(project.project_root), booley_dir=project.common_booley_dir
+    )
+    root = registry / "worktrees"
     if not root.is_dir():
         return ()
     worktrees: list[Path] = []
@@ -332,11 +345,7 @@ def _live_worktree_paths(project: ProjectAudit) -> tuple[Path, ...]:
             paired = resolve_checkout_booley_dir(outer)
         except (FileNotFoundError, ValueError):
             continue
-        if (
-            paired != project.booley_dir
-            and paired.is_relative_to(outer)
-            and (paired / ".git").is_file()
-        ):
+        if paired.is_relative_to(outer) and (paired / ".git").is_file():
             worktrees.append(paired)
     return tuple(worktrees)
 

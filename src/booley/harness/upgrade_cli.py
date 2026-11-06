@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.harness import upgrade_review
-from booley.runtime.booley_dir import resolve_checkout_booley_dir
+from booley.runtime.booley_dir import resolve_common_booley_dir
 
 
 @dataclass(frozen=True)
@@ -82,7 +82,8 @@ def render_status(status: upgrade_review.ReviewStatus) -> str:
 
 def run(args: argparse.Namespace, project_root: Path) -> int:
     """Execute one upgrade review subcommand."""
-    booley_dir = resolve_checkout_booley_dir(project_root)
+    # The review is Common Booley State: one record per Project, whichever checkout runs this.
+    booley_dir = resolve_common_booley_dir(project_root)
     command = getattr(args, "upgrade_command", None) or "status"
     is_status = command == "status"
     if is_status:

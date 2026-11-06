@@ -453,10 +453,10 @@ def record_command(
     result: Any,
 ) -> None:
     """Append the command's records to the Project history; never raise."""
-    from booley.runtime.booley_dir import resolve_booley_dir
+    from booley.runtime.booley_dir import resolve_common_booley_dir
 
     try:
-        booley_dir = resolve_booley_dir()
+        booley_dir = resolve_common_booley_dir()
     except (OSError, RuntimeError, ValueError):
         return
     try:
