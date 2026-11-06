@@ -9,9 +9,10 @@ directly instead of reaching them through a farm of resolution symlinks.
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -307,6 +308,20 @@ def _render_projection(root: Path, core_file: Path) -> str:
 
 
 def _render_isolated_core(root: Path, core_file: Path) -> str:
+    body = _parse_rebasable_core(core_file)
+    resolved_root = root.resolve()
+    _rewrite_fileset_paths(
+        body,
+        core_file,
+        lambda raw, _is_file: _absolute_fileset_path(raw, resolved_root, core_file),
+    )
+    source = core_file.relative_to(root).as_posix()
+    rendered = yaml.safe_dump(body, sort_keys=False)
+    return f"CAPI=2:\n{_MARKER_PREFIX}{source}\n{rendered}"
+
+
+def _parse_rebasable_core(core_file: Path) -> dict[str, Any]:
+    """Parse an authored core and refuse any key whose paths cannot be rebased."""
     try:
         doc = yaml.safe_load(core_file.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
@@ -325,13 +340,83 @@ def _render_isolated_core(root: Path, core_file: Path) -> str:
         raise CoreProjectionError(
             f"native-core isolation cannot safely rebase {names} in {core_file}"
         )
-    _absolutize_filesets(body, root.resolve(), core_file)
-    source = core_file.relative_to(root).as_posix()
-    rendered = yaml.safe_dump(body, sort_keys=False)
-    return f"CAPI=2:\n{_MARKER_PREFIX}{source}\n{rendered}"
+    return body
 
 
-def _absolutize_filesets(body: dict[str, Any], root: Path, core_file: Path) -> None:
+def render_private_mirror(project_root: Path | str, mirror_root: Path) -> dict[Path, Path]:
+    """Write a private core registry that names in-checkout files relatively.
+
+    The shared isolated registry names every source by absolute path, so
+    FuseSoC exports nothing and a build that edits its export would edit the
+    checkout.  Each authored core is rendered here with its in-checkout fileset
+    files copied under *mirror_root* at their Project-relative paths and named
+    relatively, so FuseSoC exports them into the build.  Files that resolve
+    outside the checkout stay absolute (and uncopied).
+
+    *mirror_root* must not exist: callers hand over a freshly emptied build
+    folder, and a leftover mirror is an error rather than silent reuse.
+
+    Returns each resolved authored core mapped to its mirror core.
+    """
+    root = Path(project_root)
+    resolved_root = root.resolve()
+    mirror_root.mkdir(parents=True, exist_ok=False)
+    mirrored: dict[Path, Path] = {}
+    for core_file in authoritative_cores(root):
+        relative = _require_stealth_relative(root, core_file)
+        body = _parse_rebasable_core(core_file)
+        _rewrite_fileset_paths(
+            body, core_file, _mirror_rewriter(resolved_root, mirror_root, core_file)
+        )
+        source = f".booley/cores/{relative}"
+        destination = mirror_root / f"{_ISOLATED_CORE_PREFIX}{quote(relative, safe='')}"
+        rendered = yaml.safe_dump(body, sort_keys=False)
+        destination.write_text(f"CAPI=2:\n{_MARKER_PREFIX}{source}\n{rendered}", encoding="utf-8")
+        mirrored[core_file.resolve()] = destination
+    return mirrored
+
+
+def _mirror_rewriter(
+    resolved_root: Path, mirror_root: Path, core_file: Path
+) -> Callable[[str, bool], str]:
+    """Return a path rewriter that copies in-checkout files under *mirror_root*."""
+
+    def rewrite(raw: str, is_file: bool) -> str:
+        absolute = _absolute_fileset_path(raw, resolved_root, core_file)
+        if Path(raw).is_absolute():
+            return absolute  # an absolute name is the author's own boundary choice
+        try:
+            relative = Path(absolute).relative_to(resolved_root)
+        except ValueError:
+            return absolute  # resolves outside the checkout: never copied, never mutable
+        if is_file:
+            _copy_into_mirror(Path(absolute), mirror_root / relative, core_file)
+        return relative.as_posix()
+
+    return rewrite
+
+
+def _copy_into_mirror(source: Path, destination: Path, core_file: Path) -> None:
+    """Copy one regular file; a missing source is left for the source preflight."""
+    if not source.exists():
+        return
+    if not source.is_file():
+        raise CoreProjectionError(f"mirrored fileset entry is not a regular file: {source}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copyfile(source, destination)
+    except OSError as exc:
+        raise CoreProjectionError(f"could not mirror {source} for {core_file}: {exc}") from exc
+
+
+def _rewrite_fileset_paths(
+    body: dict[str, Any], core_file: Path, rewrite: Callable[[str, bool], str]
+) -> None:
+    """Rewrite every fileset file name and ``include_path`` through *rewrite*.
+
+    *rewrite* receives the raw text and whether it names a file (``True``) or an
+    include directory (``False``).
+    """
     filesets = body.get("filesets") or {}
     if not isinstance(filesets, Mapping):
         raise CoreProjectionError(f"filesets is not a mapping in {core_file}")
@@ -343,19 +428,19 @@ def _absolutize_filesets(body: dict[str, Any], root: Path, core_file: Path) -> N
             continue
         if not isinstance(files, list):
             raise CoreProjectionError(f"filesets.{name}.files is not an array in {core_file}")
-        fileset["files"] = [_absolutize_file_entry(entry, root, core_file) for entry in files]
+        fileset["files"] = [_rewrite_file_entry(entry, core_file, rewrite) for entry in files]
 
 
-def _absolutize_file_entry(entry: Any, root: Path, core_file: Path) -> Any:
+def _rewrite_file_entry(entry: Any, core_file: Path, rewrite: Callable[[str, bool], str]) -> Any:
     if isinstance(entry, str):
-        return _absolute_fileset_path(entry, root, core_file)
+        return rewrite(entry, True)
     if not isinstance(entry, Mapping) or len(entry) != 1:
         raise CoreProjectionError(f"invalid fileset entry in {core_file}: {entry!r}")
     path, raw_attrs = next(iter(entry.items()))
     attrs = dict(raw_attrs) if isinstance(raw_attrs, Mapping) else raw_attrs
     if isinstance(attrs, dict) and isinstance(attrs.get("include_path"), str):
-        attrs["include_path"] = _absolute_fileset_path(attrs["include_path"], root, core_file)
-    return {_absolute_fileset_path(str(path), root, core_file): attrs}
+        attrs["include_path"] = rewrite(attrs["include_path"], False)
+    return {rewrite(str(path), True): attrs}
 
 
 def _absolute_fileset_path(raw: str, root: Path, core_file: Path) -> str:

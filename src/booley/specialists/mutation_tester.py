@@ -100,6 +100,7 @@ from booley.flows.target_test_suite import (
     require_runnable_target_test_suite,
 )
 from booley.fusesoc import fusesoc_registry
+from booley.fusesoc.core_projection import native_cores_ignored
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.paths import refs_dir
@@ -1826,18 +1827,30 @@ replacement must differ, and every proposal must remain a single source edit.
         """Resolve one mutation Target without swallowing tool-authority errors."""
         catalog = TargetCatalog.build(work_dir)
         handle = catalog.select(target, for_flow="sim")
+        mirror_root: Path | None = None
+        private_library: dict[str, fusesoc_registry.CoreLibraryPlan] = {}
         if mutation is not None:
             validate_mutation_closure(catalog.core_closure((handle,)) or frozenset())
+            if native_cores_ignored(handle.project_root):
+                # The shared isolated registry names every source absolutely, so
+                # a mutant would have no private copy: give this variant its own.
+                mirror_root = build_path / "core-mirror"
+                private_library["core_library"] = fusesoc_registry.prepare_private_mirror_plan(
+                    handle.project_root, mirror_root
+                )
         prepared = prepare_simulation_build(
             handle,
             build_root=build_path,
             lane_kind="unreserved",
+            **private_library,
             # The Target's env table is a build input of the Simulation Flow;
             # a mutant must build and run under the same one.
             environment=_target_environment(work_dir, handle.identity),
         )
         if mutation is not None:
-            materialize_build_mutation(mutation[0], mutation[1], work_dir, prepared.resolved)
+            materialize_build_mutation(
+                mutation[0], mutation[1], work_dir, prepared.resolved, mirror_root=mirror_root
+            )
         return handle, prepared
 
     def cocotb_target(self, target: str, work_dir: Path) -> CocotbSimTarget | None:
