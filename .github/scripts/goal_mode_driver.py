@@ -321,7 +321,7 @@ async def mutation_smoke(
             "work_dir": str(worktree),
             "target": target,
             "scope": scope,
-            "count": 1,
+            "count": "1",
             "min_detected": 0,
             "diagnostic": True,
         },

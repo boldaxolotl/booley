@@ -623,7 +623,12 @@ def test_mutation_smoke_seeds_one_proposal_lock_and_requires_exit_zero(tmp_path)
     ((name, arguments),) = calls
     assert name == "mutation_tester"
     assert arguments["target"] == "sim_core" and arguments["scope"] == "rtl/dut.sv"
-    assert (arguments["count"], arguments["min_detected"], arguments["diagnostic"]) == (1, 0, True)
+    # `count` is a string argument in the MCP schema (an integer count or "auto").
+    assert (arguments["count"], arguments["min_detected"], arguments["diagnostic"]) == (
+        "1",
+        0,
+        True,
+    )
     runtime = driver.record_paths(booley_dir, _ID).runtime_dir
     lock = driver.mutation_lock.load_lock(runtime)
     assert lock is not None and lock.count == 1 and lock.scope == ["rtl/dut.sv"]
