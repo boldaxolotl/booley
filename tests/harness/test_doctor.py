@@ -936,7 +936,7 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
     assert (
         "Specialist provider live authorization check completed successfully" in output
     ) is deep
-    # Plain Doctor never calls a model; deep Doctor probes each distinct non-light model.
+    # Plain Doctor never calls a model; deep Doctor probes each distinct Specialist model.
     assert rss_calls == ([tmp_path] if deep else [])
     assert bool(model_calls) is deep
 
@@ -6438,9 +6438,9 @@ class TestDeveloperProbe:
             in colors.strip_ansi(seen_before_call[0])
         )
         assert (
-            # The memory probe plus one call for each non-light tier model.
-            "Agent-backed checks: 3 agent calls, 1,434 input tokens (1,000 cached), "
-            "66 output tokens, cost $0.0051." in capsys.readouterr().out
+            # The memory probe plus one call for the one built-in Specialist model.
+            "Agent-backed checks: 2 agent calls, 1,334 input tokens (1,000 cached), "
+            "61 output tokens, cost $0.0041." in capsys.readouterr().out
         )
 
     def test_long_check_announcement_flushes_stdout(self, monkeypatch):
@@ -6514,8 +6514,11 @@ class TestDeveloperProbe:
                 self.settings = self
                 self.effort_pin = None
 
-            def model_for_tier(self, tier):
+            def internal_model(self):
                 return "test-model"
+
+            def cli_for_model_id(self, model):
+                return None
 
         monkeypatch.setattr(config_mod, "get_backend_config", _Cfg)
 
@@ -6616,9 +6619,11 @@ class TestDeveloperProbe:
                 self.settings = self
                 self.effort_pin = None
 
-            def model_for_tier(self, tier):
-                assert tier == "light"  # cheapest real call
+            def internal_model(self):  # the cheapest real call
                 return "test-model"
+
+            def cli_for_model_id(self, model):
+                return None
 
         monkeypatch.setattr(config_mod, "get_backend_config", _Cfg)
 
@@ -6659,8 +6664,11 @@ class TestDeveloperProbe:
                 self.settings = self
                 self.effort_pin = None
 
-            def model_for_tier(self, tier):
+            def internal_model(self):
                 return "test-model"
+
+            def cli_for_model_id(self, model):
+                return None
 
         monkeypatch.setattr(config_mod, "get_backend_config", _Cfg)
 

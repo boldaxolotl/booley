@@ -868,7 +868,6 @@ class ReviewerSpecialist(Specialist):
     config_aware: bool = False
     accepts_target: bool = False
     non_persisting_dry_run: bool = True
-    min_model: str = "standard"
     default_max_turns: int = 30
     default_timeout: int = 1800  # 30 min
     min_timeout: int = 600  # 10 min — read-only, faster

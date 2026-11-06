@@ -338,13 +338,32 @@ def test_endpoint_help_is_allowed_on_host(tmp_path, capsys):
         "--project",
         "--report-dir",
         "--diagnostic",
-        "--model",
         "--max-turns",
         "--timeout",
     ]:
         assert flag in output
     assert "--work-dir" not in output
     assert "--timeout-ms" not in output
+
+
+def test_specialists_have_no_model_flag_or_schema_field():
+    """`[models]` alone picks a Specialist's model: no flag, no MCP field, no hidden dest."""
+    from booley.mcp.registry import discover_mcp_inventory
+    from booley.mcp.schema_extractor import SPECIALIST_CLI_ONLY_DESTS
+
+    specialists = [
+        cli._load_mcp_tool_class(info)
+        for info in discover_mcp_inventory()
+        if info.kind == "specialist"
+    ]
+    assert {"reviewer", "mutation_tester", "coverage_analyst"} <= {s.name for s in specialists}
+    for specialist in specialists:
+        endpoint = specialist()
+        assert "--model" not in endpoint._parser._option_string_actions, specialist.name
+        with pytest.raises(SystemExit):
+            endpoint.parse_args(["--model", "heavy"])
+        assert "model" not in flow_schema(endpoint)["properties"], specialist.name
+    assert "model" not in SPECIALIST_CLI_ONLY_DESTS
 
 
 def test_empty_registry_and_load_failure(tmp_path, monkeypatch, capsys):

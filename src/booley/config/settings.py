@@ -19,8 +19,6 @@ logger = logging.getLogger(__name__)
 # --- Re-exports: validated agent settings (owned by agent.py) ---
 from .agent import (  # noqa: F401 — re-exported as public API of configuration settings
     _DEFAULT_PROVIDER,
-    _DEFAULT_TIER_MODELS,
-    _PROVIDER_TIER_MODELS,
     SANDBOX_IMAGE,
     AgentSettings,
     BackendConfigError,

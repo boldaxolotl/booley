@@ -114,8 +114,9 @@ Manual `Tests` workflow runs accept three dispatch inputs for the Ubuntu legs:
 A non-default count or scheduler is rejected outside `workflow_dispatch`, so
 pull requests, pushes, and reusable-workflow calls run two Ubuntu shards per
 Python version with `loadscope`. The maintainer adopted that default from the
-experiment's recommendation (arm C); its sustained behavior over ordinary
-validations is tracked separately from the controlled samples. When Ubuntu is
+experiment's recommendation (arm C). Its sustained behavior over ordinary
+validations, kept apart from the controlled samples, is in the record's
+[Sustained cohort](linux-shard-experiment.md#sustained-cohort) section. When Ubuntu is
 sharded, `test-verify` also verifies each Linux group with the selected count,
 using the same exact-union check as the Windows shards.
 

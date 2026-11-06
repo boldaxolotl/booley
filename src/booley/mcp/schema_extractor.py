@@ -30,7 +30,7 @@ _FILTERED_DESTS = frozenset(
 
 # Specialist controls stay private through both parser and custom-schema routes.
 SPECIALIST_CLI_ONLY_DESTS = frozenset(
-    {"model", "max_turns", "timeout", "timeout_ms", "report_dir", "transcript_dir"}
+    {"max_turns", "timeout", "timeout_ms", "report_dir", "transcript_dir"}
 )
 
 # Agent-facing schema for the shared --work-dir arg. Curated rather than
@@ -138,7 +138,7 @@ def extract_schema(parser: argparse.ArgumentParser) -> dict[str, Any]:
     """
     actions = list(parser._actions)
     action_dests = {action.dest for action in actions}
-    is_specialist = {"model", "max_turns", "transcript_dir", "timeout_ms"} <= action_dests
+    is_specialist = {"max_turns", "transcript_dir", "timeout_ms"} <= action_dests
     pairs = _boolean_pairs(parser)
     negative_actions = {id(negative) for _, negative in pairs.values()}
     properties: dict[str, Any] = {}

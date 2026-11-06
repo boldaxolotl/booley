@@ -40,6 +40,10 @@ How and where Booley work runs. The **Sandbox** is the execution environment; **
 The agent of an agent session (Claude Code or Codex) in a **Sandbox**. It authors code and chooses which **Booley Flows** and **Specialists** to use. It exists in **Interactive Mode** and in **Goal Mode**, whether a human is steering or the work is unattended.
 _Avoid_: coding agent, host agent, main agent, outer agent, the agent session in Goal Mode
 
+**Agent CLI**:
+The coding-agent program an agent runs on: Claude Code (`claude`) or Codex (`codex`). A Project lists the Agent CLIs it may use and names a default, which runs the **Developer Agent** and Booley's own calls; each **Specialist** runs on the Agent CLI its model implies (`claude-*` on Claude Code, `gpt-*` on Codex). Each Agent CLI has its own sign-in and billing policy.
+_Avoid_: agent app, provider (in user-facing text)
+
 **Sandbox**:
 The isolated execution environment for one opened project folder, and the place where all Booley work executes. It owns filesystem access, shell execution, git operations, EDA subprocesses, MCP servers, logs, and secrets; the host may provision immutable EDA installation files and narrowly scoped license connectivity, but never execution authority. Goal Mode runs in a linked git worktree on its own Goal Branch inside the Sandbox; the branch and its commits are durable artifacts, while the worktree is Sandbox-scoped scratch. Docker is the default implementation, not the domain concept.
 _Avoid_: Session Runtime, Session Container, Docker Session, MCP sandbox, per-ticket sandbox

@@ -12,11 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from booley.config.agent import _PROVIDER_TIER_MODELS, AgentSettings
-from booley.config.settings import (
-    _DEFAULT_TIER_MODELS,
-    BackendConfigError,
-)
+from booley.config.agent import AgentSettings
+from booley.config.settings import BackendConfigError
 from booley.runtime.agent_backend import (
     AgentBackend,
     ClaudeSDKBackend,
@@ -180,34 +177,28 @@ class TestRuntimeBackendConfig:
         self.mock_active = MagicMock()
         self.mock_active.name = "MockActive"
 
-    def test_model_for_tier_known(self):
-        cfg = BackendConfig(
-            settings=AgentSettings(
-                tier_models={"heavy": "opus", "standard": "sonnet", "light": "haiku"}
-            ),
-            active_backend=self.mock_active,
-        )
-        assert cfg.settings.model_for_tier("heavy") == "opus"
-        assert cfg.settings.model_for_tier("standard") == "sonnet"
-        assert cfg.settings.model_for_tier("light") == "haiku"
-
-    def test_model_for_tier_unknown_falls_back_to_standard(self):
-        cfg = BackendConfig(
-            settings=AgentSettings(
-                tier_models={"heavy": "opus", "standard": "sonnet", "light": "haiku"}
-            ),
-            active_backend=self.mock_active,
-        )
-        assert cfg.settings.model_for_tier("nonexistent") == "sonnet"
-
     def test_pairs_settings_with_active_backend(self):
-        settings = AgentSettings(tier_models=dict(_DEFAULT_TIER_MODELS))
+        settings = AgentSettings()
         cfg = BackendConfig(
             settings=settings,
             active_backend=self.mock_active,
         )
         assert cfg.settings is settings
         assert cfg.active_backend is self.mock_active
+
+    def test_backend_for_builds_other_cli_once_with_its_auth(self):
+        """The default CLI uses the active backend; another listed CLI gets its own, cached."""
+        settings = AgentSettings(
+            default_cli="claude", clis=("claude", "codex"), auth={"codex": "api_key"}
+        )
+        cfg = BackendConfig(settings=settings, active_backend=self.mock_active)
+
+        codex = cfg.backend_for("codex")
+
+        assert cfg.backend_for("claude") is self.mock_active
+        assert isinstance(codex, CodexBackend)
+        assert codex._auth_mode == "api_key"
+        assert cfg.backend_for("codex") is codex
 
 
 # ===========================================================================
@@ -229,8 +220,7 @@ class TestLoadBackendConfig:
         cfg = get_backend_config()
         assert cfg is not None
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
-        assert cfg.settings.provider == "claude"
-        assert cfg.settings.tier_models == _PROVIDER_TIER_MODELS["claude"]
+        assert (cfg.settings.default_cli, cfg.settings.clis) == ("claude", ("claude",))
 
     def test_direct_settings_reload_refreshes_runtime_backend(self, tmp_path):
         """Runtime notices a Config reload performed by a config-only caller."""
@@ -245,27 +235,30 @@ class TestLoadBackendConfig:
 
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, CodexBackend)
-        assert cfg.settings.provider == "codex"
+        assert cfg.settings.default_cli == "codex"
 
-    def test_explicit_models_override_defaults(self, tmp_path):
-        """[models] section overrides the hardcoded codex tier models."""
+    def test_models_pin_on_second_cli(self, tmp_path):
+        """A [models] pin on a listed non-default CLI selects that CLI for the Specialist."""
         toml_dir = tmp_path / ".booley"
         toml_dir.mkdir(parents=True)
         (toml_dir / "booley.toml").write_text(
             textwrap.dedent("""\
             [agent]
-            auth = "subscription"
+            clis = ["claude", "codex"]
+
+            [agent.auth]
+            codex = "api_key"
 
             [models]
-            heavy = "gpt-5.5-turbo"
-            standard = "gpt-5.4-mini"
-            light = "gpt-5.4-mini"
+            reviewer = "gpt-6-luna"
         """)
         )
         load_backend_config(tmp_path)
-        cfg = get_backend_config()
-        assert cfg.settings.tier_models["heavy"] == "gpt-5.5-turbo"
-        assert cfg.settings.tier_models["light"] == "gpt-5.4-mini"
+        settings = get_backend_config().settings
+        assert settings.default_cli == "claude"
+        assert settings.cli_for_specialist("reviewer") == "codex"
+        assert settings.model_for_specialist("reviewer") == "gpt-6-luna"
+        assert (settings.auth_for("claude"), settings.auth_for("codex")) == ("auto", "api_key")
 
     def test_claude_provider_opt_in(self, tmp_path):
         """[agent] provider = 'claude' flips the active backend to Claude."""
@@ -283,8 +276,7 @@ class TestLoadBackendConfig:
         load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
-        assert cfg.settings.provider == "claude"
-        assert cfg.settings.tier_models == _PROVIDER_TIER_MODELS["claude"]
+        assert (cfg.settings.default_cli, cfg.settings.clis) == ("claude", ("claude",))
 
     def test_retired_primary_alias_is_ignored(self, tmp_path):
         from booley.runtime.agent_backend import ClaudeSDKBackend
@@ -301,7 +293,7 @@ class TestLoadBackendConfig:
         load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
-        assert cfg.settings.provider == "claude"
+        assert cfg.settings.default_cli == "claude"
 
     def test_invalid_provider_raises(self, tmp_path):
         """An invalid provider is a hard error — never a silent fallback."""
@@ -324,8 +316,7 @@ class TestLoadBackendConfig:
         load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert cfg is not None
-        assert cfg.settings.provider == "claude"
-        assert cfg.settings.tier_models == _PROVIDER_TIER_MODELS["claude"]
+        assert (cfg.settings.default_cli, cfg.settings.clis) == ("claude", ("claude",))
 
     def test_default_provider_is_claude(self, tmp_path):
         """With no provider set, the default is claude (never a silent codex)."""
@@ -340,7 +331,7 @@ class TestLoadBackendConfig:
         load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
-        assert cfg.settings.provider == "claude"
+        assert cfg.settings.default_cli == "claude"
 
     def test_auth_from_toml(self, tmp_path):
         """The single auth field is loaded from toml."""
@@ -354,7 +345,7 @@ class TestLoadBackendConfig:
         )
         load_backend_config(tmp_path)
         cfg = get_backend_config()
-        assert cfg.settings.auth == "subscription"
+        assert cfg.settings.auth_for("claude") == "subscription"
 
     def test_retired_primary_auth_alias_is_ignored(self, tmp_path):
         toml_dir = tmp_path / ".booley"
@@ -367,7 +358,7 @@ class TestLoadBackendConfig:
         )
         load_backend_config(tmp_path)
         cfg = get_backend_config()
-        assert cfg.settings.auth == "auto"
+        assert cfg.settings.auth_for("claude") == "auto"
 
     def test_lazy_default_honors_provider_env(self, monkeypatch):
         """get_backend_config() reads BOOLEY_PRIMARY_PROVIDER for nested agents."""
@@ -377,7 +368,7 @@ class TestLoadBackendConfig:
         set_backend_config(None)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
-        assert cfg.settings.provider == "claude"
+        assert cfg.settings.default_cli == "claude"
 
     def test_provider_handoff_preserves_project_auth(self, tmp_path, monkeypatch):
         (tmp_path / "booley.toml").write_text(
@@ -388,7 +379,7 @@ class TestLoadBackendConfig:
         monkeypatch.delenv("BOOLEY_PRIMARY_AUTH", raising=False)
         set_backend_config(None)
 
-        assert get_backend_config().settings.auth == "subscription"
+        assert get_backend_config().settings.auth_for("codex") == "subscription"
 
     def test_codex_resume_command_and_thread_id(self, tmp_path, monkeypatch):
         from booley.runtime._codex_backend import _codex_build_cmd, _codex_thread_id
@@ -412,7 +403,7 @@ class TestLoadBackendConfig:
         set_backend_config(None)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
-        assert cfg.settings.provider == "claude"
+        assert cfg.settings.default_cli == "claude"
 
     def test_lazy_resolves_provider_from_project_toml(self, tmp_path, monkeypatch):
         """No env hand-off → resolve provider from BOOLEY_DIR/booley.toml.
@@ -436,8 +427,8 @@ class TestLoadBackendConfig:
         set_backend_config(None)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, CodexBackend)
-        assert cfg.settings.provider == "codex"
-        assert cfg.settings.auth == "subscription"
+        assert cfg.settings.default_cli == "codex"
+        assert cfg.settings.auth_for("codex") == "subscription"
 
     def test_lazy_raises_in_container_without_provider(self, tmp_path, monkeypatch):
         """Inside a container with no env, no toml, no app signal → fail loud."""
@@ -488,7 +479,7 @@ class TestLoadBackendConfig:
         set_backend_config(None)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, CodexBackend)
-        assert cfg.settings.provider == "codex"
+        assert cfg.settings.default_cli == "codex"
 
     def test_agent_app_none_does_not_resolve(self, tmp_path, monkeypatch):
         """BOOLEY_AGENT_APP='none' is not a provider → still fail loud in container."""
@@ -512,7 +503,7 @@ class TestLoadBackendConfig:
         set_backend_config(None)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
-        assert cfg.settings.provider == "claude"
+        assert cfg.settings.default_cli == "claude"
 
     def test_booley_toml_preferred_over_pipeline_toml(self, tmp_path):
         """booley.toml takes precedence when both exist."""
@@ -532,7 +523,7 @@ class TestLoadBackendConfig:
         )
         load_backend_config(tmp_path)
         cfg = get_backend_config()
-        assert cfg.settings.auth == "subscription"
+        assert cfg.settings.auth_for("claude") == "subscription"
 
 
 # ===========================================================================
@@ -695,28 +686,28 @@ async def test_codex_no_output_provider_failure_is_terminal(tmp_path, monkeypatc
 
 
 _REFUSED_MODEL = "gpt-refused-model"
+_REFUSED_CLAUDE_MODEL = "claude-refused-model"
 
 
-def _settings_resolving_to_refused_model(provider: str):
-    """Settings whose [models] standard tier and reviewer role both pick the refused model."""
+def _settings_resolving_to_refused_model(provider: str, model: str):
+    """Settings whose [models] reviewer and mutation_tester pins both pick the refused model."""
     from booley.config import agent as agent_config
 
     settings = AgentSettings(
-        tier_models={**_PROVIDER_TIER_MODELS[provider], "standard": _REFUSED_MODEL},
-        role_models={"reviewer": _REFUSED_MODEL},
-        provider=provider,
+        default_cli=provider,
+        specialist_models={"reviewer": model, "mutation_tester": model},
     )
     return settings, agent_config
 
 
-def _assert_actionable_refusal(error, *, provider: str, detail_fragment: str) -> None:
+def _assert_actionable_refusal(error, *, provider: str, model: str, detail_fragment: str) -> None:
     assert type(error).__name__ == "ModelUnavailableError"
     assert error.provider == provider
-    assert error.model == _REFUSED_MODEL
+    assert error.model == model
     message = str(error)
-    assert _REFUSED_MODEL in message
-    assert "[models] standard" in message
-    assert "[models.roles] reviewer" in message
+    assert model in message
+    assert "[models] reviewer" in message
+    assert "[models] mutation_tester" in message
     assert "Protected Input" in message
     # The raw provider text is kept on the exception, not in the message.
     assert detail_fragment in error.detail
@@ -741,7 +732,7 @@ async def test_codex_model_refusal_is_terminal_and_actionable(
     from booley.core.models import AgentCallParams
     from booley.runtime import _codex_backend as cb
 
-    settings, agent_config = _settings_resolving_to_refused_model("codex")
+    settings, agent_config = _settings_resolving_to_refused_model("codex", _REFUSED_MODEL)
     monkeypatch.setattr(agent_config, "_agent_settings", settings)
     events = []
     if source == "error":
@@ -760,7 +751,9 @@ async def test_codex_model_refusal_is_terminal_and_actionable(
             AgentCallParams(prompt="work", model=_REFUSED_MODEL, cwd=tmp_path)
         )
 
-    _assert_actionable_refusal(raised.value, provider="codex", detail_fragment=detail[:40])
+    _assert_actionable_refusal(
+        raised.value, provider="codex", model=_REFUSED_MODEL, detail_fragment=detail[:40]
+    )
     subprocess_call.assert_awaited_once()
     sleep.assert_not_awaited()
 
@@ -772,10 +765,10 @@ async def test_claude_model_refusal_is_terminal_and_actionable(tmp_path, monkeyp
     from booley.core.models import AgentCallParams
     from booley.runtime import _claude_backend as cb
 
-    settings, agent_config = _settings_resolving_to_refused_model("claude")
+    settings, agent_config = _settings_resolving_to_refused_model("claude", _REFUSED_CLAUDE_MODEL)
     monkeypatch.setattr(agent_config, "_agent_settings", settings)
     detail = (
-        f"There's an issue with the selected model ({_REFUSED_MODEL}). "
+        f"There's an issue with the selected model ({_REFUSED_CLAUDE_MODEL}). "
         "It may not exist or you may not have access to it."
     )
     attempts = []
@@ -794,11 +787,16 @@ async def test_claude_model_refusal_is_terminal_and_actionable(tmp_path, monkeyp
 
     with pytest.raises((AgentProviderError, ResultError)) as raised:
         await ClaudeSDKBackend().call(
-            AgentCallParams(prompt="work", model=_REFUSED_MODEL, cwd=tmp_path)
+            AgentCallParams(prompt="work", model=_REFUSED_CLAUDE_MODEL, cwd=tmp_path)
         )
 
-    _assert_actionable_refusal(raised.value, provider="claude", detail_fragment="selected model")
-    assert attempts == [_REFUSED_MODEL]
+    _assert_actionable_refusal(
+        raised.value,
+        provider="claude",
+        model=_REFUSED_CLAUDE_MODEL,
+        detail_fragment="selected model",
+    )
+    assert attempts == [_REFUSED_CLAUDE_MODEL]
     sleep.assert_not_awaited()
 
 

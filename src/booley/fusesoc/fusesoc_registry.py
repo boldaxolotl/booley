@@ -61,6 +61,7 @@ from booley.fusesoc.core_projection import (
     projection_enabled,
     reconcile_isolated_registry,
     reconcile_projected_cores,
+    render_private_mirror,
     stealth_core_relative,
 )
 from booley.targets.domain import (
@@ -374,6 +375,19 @@ def prepare_core_library_plan(project_root: Path | str) -> CoreLibraryPlan:
         for library_root in library_roots
     )
     return CoreLibraryPlan(library_roots, ignored, operational)
+
+
+def prepare_private_mirror_plan(project_root: Path | str, mirror_root: Path) -> CoreLibraryPlan:
+    """Describe a private per-build registry that names in-checkout files relatively.
+
+    Used by builds that edit their own exported sources (Mutation Tester) in a
+    Project whose shared isolated registry names every source by absolute path.
+    """
+    try:
+        mirrored = render_private_mirror(project_root, mirror_root)
+    except (CoreProjectionError, OSError) as exc:
+        raise TargetResolutionError(f"could not mirror stealth cores: {exc}") from exc
+    return CoreLibraryPlan((mirror_root.resolve(),), (frozenset(),), tuple(mirrored.items()))
 
 
 def core_setup_hazards(project_root: Path | str) -> list[CoreSetupHazard]:
@@ -2408,11 +2422,17 @@ def setup_command_for_handle(
     resolution_vlnv: str | None = None,
     fusesoc_cmd: Sequence[str] = DEFAULT_FUSESOC_CMD,
     backend_arguments: Sequence[str] = (),
+    library_plan: CoreLibraryPlan | None = None,
 ) -> list[str]:
-    """Build FuseSoC setup argv from catalog-authorized Target facts."""
+    """Build FuseSoC setup argv from catalog-authorized Target facts.
+
+    *library_plan* replaces the Project's own prepared library view, e.g. with
+    a per-build private mirror.
+    """
     root = require_current_target_handle(handle)
     try:
-        library_plan = prepare_core_library_plan(root)
+        if library_plan is None:
+            library_plan = prepare_core_library_plan(root)
         library_plan.operational_core(handle.core_file)
     except (CoreProjectionError, OSError) as exc:
         raise TargetResolutionError(f"could not project stealth cores: {exc}") from exc
@@ -2626,6 +2646,7 @@ def resolve_target_handle(
     env: Mapping[str, str] | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     backend_arguments: Sequence[str] = (),
+    library_plan: CoreLibraryPlan | None = None,
 ) -> ResolvedTarget:
     """Resolve a catalog-authorized handle without selecting its token again."""
     root = require_current_target_handle(handle)
@@ -2637,6 +2658,7 @@ def resolve_target_handle(
         resolution_vlnv=resolution_vlnv,
         fusesoc_cmd=fusesoc_cmd,
         backend_arguments=backend_arguments,
+        library_plan=library_plan,
     )
     source_ref = TargetRef(
         name=handle.name,

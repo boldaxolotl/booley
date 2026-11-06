@@ -824,8 +824,8 @@ def test_default_wrapper_keeps_role_usage_and_exposes_only_evidence_tool(tmp_pat
     set_backend_config(
         BackendConfig(
             settings=AgentSettings(
-                provider="claude",
-                role_models={"coverage_analyst": "chosen-model"},
+                default_cli="claude",
+                specialist_models={"coverage_analyst": "claude-chosen-model"},
             ),
             active_backend=ClaudeSDKBackend(),
         )
@@ -846,7 +846,7 @@ def test_default_wrapper_keeps_role_usage_and_exposes_only_evidence_tool(tmp_pat
     assert result.exit_code == 0
     assert result.outcome.input_tokens == 20
     assert result.outcome.output_tokens == 5
-    assert options_seen[0].model == "chosen-model"
+    assert options_seen[0].model == "claude-chosen-model"
     assert options_seen[0].tools == []
     assert set(options_seen[0].mcp_servers) == {"booley"}
     server_env = options_seen[0].mcp_servers["booley"]["env"]

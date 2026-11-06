@@ -336,7 +336,7 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         "Or run `booley specialist <name> [args...]` inside the Sandbox. "
         "`booley specialist` lists visible Specialists; "
         "`booley specialist <name> --help` shows their arguments. "
-        "`--model`, `--max-turns`, and `--timeout` are CLI-only controls.",
+        "`--max-turns` and `--timeout` are CLI-only controls.",
         "",
         "For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. "
         "Common options are `-C/--project PATH`, `--report-dir`, "

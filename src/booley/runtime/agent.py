@@ -67,8 +67,8 @@ async def call_agent(
 ) -> AgentResult:
     """Call an agent via the configured backend.
 
-    Routes through BackendConfig: uses the active backend with the
-    caller-provided model.
+    Routes through BackendConfig: uses the backend of the call's Agent CLI (the
+    default CLI unless ``params.agent_cli`` names another) with the caller-provided model.
 
     The backend runs the agent CLI/SDK as a plain subprocess — Booley is
     container-only (ADR 0028), so specialists already execute inside the
@@ -76,9 +76,8 @@ async def call_agent(
     """
     cfg = get_backend_config()
 
-    return await cfg.active_backend.call(
-        params, on_event=on_event, on_start=_once_start_notice(params)
-    )
+    backend = cfg.backend_for(params.agent_cli or cfg.settings.default_cli)
+    return await backend.call(params, on_event=on_event, on_start=_once_start_notice(params))
 
 
 def extract_json(text: str) -> dict[str, Any] | None:

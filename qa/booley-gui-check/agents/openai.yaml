@@ -1,0 +1,7 @@
+interface:
+  display_name: "Booley GUI check"
+  short_description: "Check one PR's GUI change in a Codespace"
+  default_prompt: "Use $booley-gui-check to check this pull request's GUI change in a Codespace."
+
+policy:
+  allow_implicit_invocation: false
