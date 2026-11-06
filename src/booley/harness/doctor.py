@@ -4507,11 +4507,13 @@ def _check_core_schema(
     owned_cores = _owned_core_files(project, root)
     schema_clean = True
     for core_file in fusesoc_registry.discover_cores(root):
-        findings = _core_schema_findings(core_file)
+        findings, rejection = _core_schema_findings(core_file)
         if not findings:
             continue
         schema_clean = False
-        owned = core_file in owned_cores
+        # A misplaced ``booley:`` marker is the project's own Doctor intent that
+        # FuseSoC's rejection hides from Booley's reader, so the core is driven.
+        owned = core_file in owned_cores or (rejection is not None and rejection.misplaced_booley)
         for msg, fix in findings:
             if owned:
                 _fail(f".core schema {core_file.name}: {msg}", fix)
@@ -4531,21 +4533,27 @@ _CORE_SCHEMA_FIX = (
 )
 
 
-def _core_schema_findings(core_file: Path) -> list[tuple[str, str]]:
-    """Return ``(message, fix)`` for every schema problem in one ``.core``.
+def _core_schema_findings(
+    core_file: Path,
+) -> tuple[list[tuple[str, str]], fusesoc_registry.FuseSocCoreRejection | None]:
+    """Return ``([(message, fix), ...], FuseSoC's rejection)`` for one ``.core``.
 
     Booley's host-side subset runs first; FuseSoC's own verdict follows as one
-    more row unless a subset row already describes the same CAPI2 entry.
+    more row unless a FuseSoC-class subset row (array fields, per-file keys)
+    already describes the same CAPI2 entry. Booley-only metadata rows never
+    suppress it: they do not say why FuseSoC ignores the file.
     """
     findings = [(msg, _CORE_SCHEMA_FIX) for msg in fusesoc_registry.core_schema_errors(core_file)]
     rejection = _fusesoc_core_rejection(core_file)
     if rejection is None:
-        return findings
+        return findings, None
     entry = rejection.entry
     if entry is not None and any(
-        msg == entry or msg.startswith((f"{entry}.", f"{entry} ")) for msg, _ in findings
+        msg == entry or msg.startswith((f"{entry}.", f"{entry} "))
+        for msg, _ in findings
+        if ".flow_options.booley" not in msg
     ):
-        return findings
+        return findings, rejection
     fix = _CORE_SCHEMA_FIX
     if rejection.misplaced_booley:
         fix = f"move the booley: mapping under targets.{rejection.target}.flow_options"
@@ -4556,7 +4564,7 @@ def _core_schema_findings(core_file: Path) -> list[tuple[str, str]]:
             fix,
         )
     )
-    return findings
+    return findings, rejection
 
 
 def _fusesoc_core_rejection(
@@ -7887,19 +7895,21 @@ def _check_doctor_targets(
 ) -> list[str]:
     """Validate and return the Target matrix selected for *flow_name*.
 
-    A Flow with no Doctor Target is a FAIL, unless FuseSoC rejects an owned core:
-    Booley's reader cannot see Doctor markers in a file FuseSoC ignores (a
-    misplaced ``booley:`` mapping is the reported case), and the schema FAIL
-    already names the cause.
+    A Flow with no Doctor Target is a FAIL, unless FuseSoC rejects a core whose
+    misplaced ``booley: {doctor: [...]}`` mapping names this Flow: the marker is
+    invisible to Booley's reader, and the schema FAIL already names the cause.
     """
     targets = _doctor_targets(project, flow_name)
     if not targets:
-        owned = _owned_core_files(project, project.project_root)
-        rejected_owned = sorted(core.name for core in (rejected_cores or {}) if core in owned)
-        if rejected_owned and _skip is not None:
+        misplaced = sorted(
+            core.name
+            for core, rejection in (rejected_cores or {}).items()
+            if flow_name in rejection.misplaced_flows
+        )
+        if misplaced and _skip is not None:
             _skip(
                 f"{flow_name} has no Doctor Target - FuseSoC rejects "
-                f"{', '.join(rejected_owned)}; see the .core schema FAIL"
+                f"{', '.join(misplaced)}; see the .core schema FAIL"
             )
             return []
         try:

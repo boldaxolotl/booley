@@ -3688,7 +3688,7 @@ targets:
     ],
     ids=["scalar-depend", "per-file-key"],
 )
-def test_check_core_schema_flags_scalar_depend(tmp_path, core_text, expected):
+def test_check_core_schema_flags_single_fuse_soc_class_violation(tmp_path, core_text, expected):
     """A schema violation in a core the project drives is exactly one FAIL.
 
     The Booley subset and FuseSoC's own verdict describe the same CAPI2 entry,
@@ -3913,6 +3913,69 @@ def test_check_core_schema_fails_unknown_target_property(tmp_path):
     assert "targets.lint" in message
     assert "filesetz" in message
     assert "flow_options" not in fix
+
+
+_SOLE_MISPLACED_CORE = """\
+CAPI=2:
+name: ::solo:0
+filesets:
+  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}
+targets:
+  fpga_core:
+    flow: generic
+    flow_options: {tool: vivado, part: xc7a35tcsg324-1}
+    booley: {doctor: [fpga]}
+    filesets: [rtl]
+    toplevel: dut
+"""
+
+
+def test_misplaced_booley_in_sole_target_core_is_an_owned_fail_with_hint(tmp_path):
+    """The misplaced marker is the core's only Doctor intent, yet the core is driven.
+
+    No Doctor-selected Target remains for Booley's reader, so ownership must come
+    from the misplaced marker; otherwise the row is a hint-less vendored-core NOTE.
+    """
+    _write_core(tmp_path, _SOLE_MISPLACED_CORE)
+    project = _schema_audit(tmp_path, {"flows": {"fpga": {}}})
+    c = _Collector()
+    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail, _note=c._note)
+    assert c.noted == []
+    assert len(c.failed) == 1
+    message, fix = c.failed[0]
+    assert "fpga_core" in message
+    assert "targets.fpga_core.flow_options" in fix
+
+
+def test_booley_only_schema_row_does_not_hide_fusesoc_reason(tmp_path):
+    """An unsupported Booley key does not say why FuseSoC ignores the file."""
+    _write_core(
+        tmp_path,
+        _UNKNOWN_PROPERTY_CORE.replace("{doctor: [lint]}", "{doctor: [lint], bogus: 1}"),
+    )
+    project = _schema_audit(tmp_path, {"flows": {"lint": {}}})
+    c = _Collector()
+    doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail)
+    assert any("not a supported Booley Target key" in msg for msg, _ in c.failed)
+    assert any("filesetz" in msg for msg, _ in c.failed)
+
+
+def test_no_doctor_target_skip_is_limited_to_flows_the_misplaced_marker_names(tmp_path):
+    """An unrelated rejected core must not turn another Flow's missing Target into a SKIP."""
+    from booley.fusesoc import fusesoc_registry as fr
+
+    core = _write_core(tmp_path, _BAD_DEPEND_CORE)
+    project = _schema_audit(tmp_path, {"flows": {"synth": {}}})
+    rejection = fr.fusesoc_core_rejection(core)
+    assert rejection is not None
+    rec = _Rec()
+    skipped: list[str] = []
+    targets = doctor._check_doctor_targets(
+        project, "synth", rec.f, _skip=skipped.append, rejected_cores={core: rejection}
+    )
+    assert targets == []
+    assert skipped == []
+    assert any("synth has no Doctor Target" in message for message in rec.fails())
 
 
 def test_yosys_target_without_arch_warns(tmp_path):

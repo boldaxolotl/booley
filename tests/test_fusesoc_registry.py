@@ -2980,3 +2980,37 @@ class TestSymlinkedBooleyDirectory:
         plan = fusesoc_registry.prepare_core_library_plan(project)
         # The outside core stays its own operational core, not a projection.
         assert plan.operational_core(foreign).samefile(foreign)
+
+
+_VERDICT_CORE = """\
+CAPI=2:
+name: acme:ip:verdict:0
+filesets:
+  rtl: {{files: [{path}: {{file_type: systemVerilogSource}}]}}
+targets:
+  lint: {{flow: lint, filesets: [rtl], toplevel: top{extra}}}
+"""
+
+
+def test_fusesoc_core_rejection_matches_fusesoc_on_valid_and_invalid_cores(tmp_path: Path) -> None:
+    """Valid cores (incl. Windows separators inspection normalizes) pass; unknown keys fail."""
+    valid = tmp_path / "valid.core"
+    valid.write_text(_VERDICT_CORE.format(path="rtl\\top.sv", extra=""), encoding="utf-8")
+    assert fusesoc_registry.fusesoc_core_rejection(valid) is None
+
+    invalid = tmp_path / "invalid.core"
+    invalid.write_text(
+        _VERDICT_CORE.format(path="rtl/top.sv", extra=", bogus: 1"), encoding="utf-8"
+    )
+    rejection = fusesoc_registry.fusesoc_core_rejection(invalid)
+    assert rejection is not None
+    assert rejection.target == "lint"
+    assert "bogus" in rejection.message
+    assert not rejection.misplaced_booley
+
+
+def test_fusesoc_core_rejection_ignores_files_fusesoc_skips_silently(tmp_path: Path) -> None:
+    """FuseSoC's scan skips a core without the ``CAPI=2:`` first line: no verdict."""
+    headerless = tmp_path / "headerless.core"
+    headerless.write_text("name: acme:ip:x:0\ntargets: {a: {bogus: 1}}\n", encoding="utf-8")
+    assert fusesoc_registry.fusesoc_core_rejection(headerless) is None
