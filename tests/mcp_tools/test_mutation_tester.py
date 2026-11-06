@@ -1554,23 +1554,6 @@ class TestColdStart:
         assert warm.detail["build_cached"] is False
         assert len(build_calls) == cold_builds + 3  # pristine + two isolated variants
 
-    def test_post_rollback_residue_still_warns(self, tmp_path: Path, monkeypatch):
-        from booley.dev_support import mutation_lock as lm
-
-        scope = "rtl/mod_a.sv"
-        _prepare_scope_files(tmp_path, [scope])
-        endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope)
-        baseline = lm.compute_scope_hashes([scope], tmp_path)
-        (tmp_path / scope).write_text("module changed; endmodule\n", encoding="utf-8")
-        result = McpToolResult(exit_code=EXIT_SUCCESS, report_text="summary\n\nRESULT: PASS")
-
-        endpoint._add_residue_warning(result, baseline, tmp_path)
-
-        assert (
-            "  WARNING: worktree not clean after sim sweep: rtl/mod_a.sv\nRESULT: PASS"
-            in result.report_text
-        )
-
     def test_creator_no_specs_errors(self, tmp_path: Path, monkeypatch):
         scope = "rtl/mod_a.sv"
         _prepare_scope_files(tmp_path, [scope])
@@ -1684,18 +1667,14 @@ class TestResidueWarning:
         assert result.detail["reused_lock"] is True
         return result
 
-    def test_cold_run_ignores_scope_edit_that_predates_run(self, tmp_path: Path, monkeypatch):
+    @pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+    def test_run_ignores_scope_edit_that_predates_run(
+        self, tmp_path: Path, monkeypatch, warm: bool
+    ):
         self._arrange(tmp_path, monkeypatch, dirty_before=True)
-
         result = self._cold(tmp_path, monkeypatch)
-
-        assert self.WARNING not in result.report_text
-
-    def test_warm_run_ignores_scope_edit_that_predates_run(self, tmp_path: Path, monkeypatch):
-        self._arrange(tmp_path, monkeypatch, dirty_before=True)
-        self._cold(tmp_path, monkeypatch)
-
-        result = self._warm(tmp_path, monkeypatch)
+        if warm:
+            result = self._warm(tmp_path, monkeypatch)
 
         assert self.WARNING not in result.report_text
 

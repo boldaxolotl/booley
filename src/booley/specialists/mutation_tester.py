@@ -2607,8 +2607,6 @@ replacement must differ, and every proposal must remain a single source edit.
         if not residue:
             return
         warning_prefix = "  WARNING: worktree not clean after sim sweep"
-        if warning_prefix in result.report_text:
-            return
         lines = result.report_text.splitlines()
         result_index = next(
             (index for index, line in enumerate(lines) if line.startswith("RESULT: ")),
