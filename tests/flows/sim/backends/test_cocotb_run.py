@@ -846,7 +846,7 @@ def test_killed_cocotb_run_publishes_partial_results(tmp_path: Path) -> None:
     )
 
     _, _, termination = crun._execute_cocotb_run(
-        _child_run(tmp_path, script, ["t1", "t2"]), 2, 0, 0, identity, ()
+        _child_run(tmp_path, script, ["t1", "t2"]), 5, 0, 0, identity, ()
     )
 
     assert termination.kind == "timeout"

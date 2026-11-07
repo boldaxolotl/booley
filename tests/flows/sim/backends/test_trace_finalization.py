@@ -86,7 +86,6 @@ def test_unqueryable_store_is_an_incident(tmp_path: Path):
         ((), (Path("searched"),), KNOB_HINT),
         ((), (), ""),
     ],
-    ids=["declared-patterns", "roots-searched", "no-roots"],
 )
 def test_missing_trace_names_what_was_searched_for(
     patterns: tuple[str, ...], roots: tuple[Path, ...], hint: str
@@ -100,7 +99,6 @@ def test_missing_trace_names_what_was_searched_for(
 @pytest.mark.parametrize(
     ("vcd_fallback", "oversize", "status"),
     [(True, False, "ok"), (False, False, "incident"), (True, True, "incident")],
-    ids=["enabled", "disabled", "oversize-even-when-enabled"],
 )
 def test_vcd_fallback_only_when_enabled(
     tmp_path: Path, monkeypatch, vcd_fallback: bool, oversize: bool, status: str

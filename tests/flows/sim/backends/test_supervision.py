@@ -125,9 +125,6 @@ def test_deadline_line_leaves_a_dying_child_to_the_abort_that_started_it(
     assert trace.incidents == []
 
 
-# --- timer, baseline and process-group kill ---
-
-
 def test_silent_simulator_is_killed_by_the_timer(tmp_path: Path):
     """F-13/F-21: a sim that prints nothing is still killed at its budget."""
     start = time.monotonic()
@@ -136,6 +133,17 @@ def test_silent_simulator_is_killed_by_the_timer(tmp_path: Path):
     assert time.monotonic() - start < KILLED_WITHIN_S
     assert (termination.kind, termination.failure_kind) == ("timeout", "timeout")
     assert "printed NO output at all" in "".join(lines)
+
+
+def test_lines_buffered_behind_the_deadline_kill_are_still_read(
+    tmp_path: Path, never_firing_timer
+):
+    script = "import sys, time; sys.stdout.write('a\\nb\\n'); sys.stdout.flush(); time.sleep(1)"
+
+    lines, _, termination = run_supervised(_launch(tmp_path, script, timeout_s=0))
+
+    assert termination.kind == "timeout"
+    assert list(lines)[:2] == ["a\n", "b\n"]
 
 
 def test_child_that_closes_stdout_is_killed_at_the_deadline(tmp_path: Path):

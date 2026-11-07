@@ -49,14 +49,13 @@ def finalize_trace(
     if artifact is not None:
         output = f"TRACE_OK: {artifact.path}\n{artifact.metadata_line()}"
         print(output)
-        evidence = AdapterTraceResult(
+        return f"\n{output}", AdapterTraceResult(
             "ok",
             path=str(artifact.path),
             top_scope=artifact.top_scope,
             signal_count=artifact.signal_count,
             total_ticks=artifact.total_ticks,
         )
-        return f"\n{output}", evidence
     if selection.ambiguous:
         reason = ambiguous_trace_reason(selection.ambiguous)
     elif found is None or inspection is None:

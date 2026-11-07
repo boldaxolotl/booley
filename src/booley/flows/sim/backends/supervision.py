@@ -46,7 +46,7 @@ class SimulatorLaunch:
     max_rundir_bytes: int = 0
     runtime_inputs: tuple[str, ...] = ()
     sim_time_grace_s: float = 0.0  # > 0 arms the frozen-clock guard (Cocotb prints sim time)
-    trace: TraceSession | None = None  # with ``conversion``: stall monitor + kill incidents
+    trace: TraceSession | None = None  # kill incidents; with ``conversion`` also a stall monitor
     conversion: StreamingConversion | None = None
     on_line: Callable[[str], None] | None = None
 
@@ -105,7 +105,7 @@ class _Supervisor:
         return True
 
     def stop_after(self, line: str) -> bool:
-        """Kill on a fatal ``$readmemh`` or a passed deadline; True ends the read."""
+        """Kill on a fatal ``$readmemh`` (True ends the read) or a passed deadline (reads on)."""
         launch = self.launch
         missing = parse_readmemh_fatal(line)
         if missing and self.proc.poll() is None:
@@ -117,11 +117,10 @@ class _Supervisor:
             # Another abort already owns the dying child: no second kill or incident.
             if self._abort() is None and self._kill(self._timeout_detail()):
                 self.timed_out = True
-                return True
         return False
 
     def drain(self) -> None:
-        """Stream output until EOF or a runner kill, then reap the child."""
+        """Stream output until EOF or a fatal kill, then reap the child."""
         assert self.proc.stdout is not None
         for line in self.proc.stdout:
             print(line, end="", flush=True)

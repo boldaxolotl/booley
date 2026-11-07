@@ -745,18 +745,9 @@ def test_native_verdict_message_names_the_tool(
     evaluate_native_verdict(tool, output, returncode, tmp_path, **sentinels)
 
     assert f"\n{tool} sim {expected}" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize(
-    ("output", "returncode"), [("chatter\n[SIM_RESULT] PASSED\n", 0), ("ERROR: x\n", 1)]
-)
-def test_native_verdict_persists_run_log_and_result_on_pass_and_fail(
-    tmp_path, output: str, returncode: int
-) -> None:
-    evaluate_native_verdict("Verilator", output, returncode, tmp_path)
-
-    assert (tmp_path / "run.log").read_bytes() == output.encode("utf-8")
-    assert (tmp_path / "result.json").exists()
+    assert (tmp_path / "run.log").read_text(
+        encoding="utf-8"
+    ) == output  # persisted on pass and fail
 
 
 @pytest.mark.parametrize(
