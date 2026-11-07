@@ -62,10 +62,12 @@ def test_the_child_restores_entry_dispositions_before_launch(
 
 
 @_needs_fork
-@pytest.mark.parametrize("number", [signal.SIGTERM, signal.SIGKILL])
+# Signal names, not numbers: Windows has no SIGKILL, and collection runs there too.
+@pytest.mark.parametrize("name", ["SIGTERM", "SIGKILL"])
 def test_a_signal_death_is_re_raised_on_the_parent(
-    monkeypatch: pytest.MonkeyPatch, number: signal.Signals
+    monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
+    number: signal.Signals = getattr(signal, name)
     events: list[tuple[str, object]] = []
     monkeypatch.setattr(signal, "signal", lambda sig, action: events.append(("signal", sig)))
     monkeypatch.setattr(os, "kill", lambda pid, sig: events.append(("kill", (pid, sig))))
