@@ -178,7 +178,7 @@ def _public_hook_endpoint(flow, invocation):
 
     endpoint = SimpleNamespace(
         args=SimpleNamespace(report_dir=invocation.parent, slug=""),
-        refresh_campaign_report_detail=flow.refresh_campaign_report_detail,
+        refresh_report_detail=flow.refresh_report_detail,
         name="sim",
         endpoint_kind="flow",
         _acceptance_recorder=flow._acceptance_recorder,
@@ -188,6 +188,12 @@ def _public_hook_endpoint(flow, invocation):
         _selected_target="sim",
         _eda_tool="icarus",
         _raw_argv=None,
+        report_schema="booley.simulation-report/v3",
+        _skip_report_detail_refresh=False,
+        _eda_tools={},
+        _pre_run_head=None,
+        _automatic_target_notice="",
+        _automatic_target_notice_published=False,
         _console_publication_requested=True,
         _stdout_witness=None,
         _human_report=None,
@@ -568,7 +574,7 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
     result = flow._campaign_endpoint_outcome([campaign])
     endpoint = SimpleNamespace(
         args=SimpleNamespace(report_dir=invocation.parent, slug=""),
-        refresh_campaign_report_detail=flow.refresh_campaign_report_detail,
+        refresh_report_detail=flow.refresh_report_detail,
         name="sim",
         endpoint_kind="flow",
         _acceptance_recorder=flow._acceptance_recorder,
@@ -578,6 +584,12 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
         _selected_target="sim",
         _eda_tool="verilator",
         _raw_argv=None,
+        report_schema="booley.simulation-report/v3",
+        _skip_report_detail_refresh=False,
+        _eda_tools={},
+        _pre_run_head=None,
+        _automatic_target_notice="",
+        _automatic_target_notice_published=False,
     )
     assert write_report(endpoint, result) == invocation / "report.json"
     assert result.exit_code == 2

@@ -218,7 +218,7 @@ class CoverageAnalystSpecialist(Specialist):
             timeout_seconds=self.timeout_seconds(
                 max(self.min_timeout * 1000, self.args.timeout_ms)
             ),
-            transcript_path=self._transcript_path(),
+            transcript_path=self.transcript_path(),
             label=self.name,
             reasoning_effort=self._resolve_effort(),
             max_turns=self.args.max_turns,

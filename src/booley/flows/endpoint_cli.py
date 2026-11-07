@@ -127,9 +127,7 @@ def add_common_args(
     )
 
 
-def human_endpoint_parser(
-    endpoint, *, durations: bool | None = None, project: Path | None = None
-) -> argparse.ArgumentParser:
+def human_endpoint_parser(endpoint, *, project: Path | None = None) -> argparse.ArgumentParser:
     """Build the parser a person sees: human controls, full command name, CLI wording.
 
     The extension's argument hook fills a fresh parser, so the cached transport
@@ -142,7 +140,6 @@ def human_endpoint_parser(
     )
     from booley.flows.cli_help import present_command
     from booley.flows.cli_selection import apply_project_selection
-    from booley.specialists.specialist import Specialist
 
     transport = endpoint._parser
     parser = HumanParser(add_help=transport.add_help, **parser_settings(transport))
@@ -158,8 +155,7 @@ def human_endpoint_parser(
     if "--project" not in occupied and "-C" not in occupied:
         add_canonical_project_args(parser)
     timeout = transport._option_string_actions.get("--timeout-ms")
-    if durations is None:
-        durations = isinstance(endpoint, Specialist)
+    durations = endpoint.endpoint_kind == "specialist"
     if durations and timeout is not None and "--timeout" not in occupied:
         add_duration_option(parser, timeout.help)
     apply_project_selection(parser, project)

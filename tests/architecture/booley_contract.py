@@ -432,7 +432,6 @@ APPROVED_LEGACY_SCCS = (
             "harness",
             "mcp",
             "runtime",
-            "specialists",
         )
     ),
     frozenset(("booley.fusesoc", "booley.targets")),

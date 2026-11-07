@@ -76,9 +76,9 @@ def _apply_default_endpoint_report_root(endpoint: EndpointState) -> EndpointOutc
     return None
 
 
-def _canonicalize_simulation_report_root(endpoint: EndpointState) -> EndpointOutcome | None:
+def _canonicalize_flow_report_root(endpoint: EndpointState) -> EndpointOutcome | None:
     """Normalize the image's authenticated Project alias before side effects."""
-    if endpoint.endpoint_kind != "flow" or endpoint.name != "sim":
+    if endpoint.endpoint_kind != "flow":
         return None
     try:
         endpoint.args.report_dir = canonical_project_alias_path(
@@ -92,9 +92,9 @@ def _canonicalize_simulation_report_root(endpoint: EndpointState) -> EndpointOut
 
 
 def _prepare_endpoint_report_root(endpoint: EndpointState) -> EndpointOutcome | None:
-    """Select the default root and canonicalize Simulation report inputs."""
+    """Select the default root and canonicalize Flow report inputs."""
     result = _apply_default_endpoint_report_root(endpoint)
-    return result if result is not None else _canonicalize_simulation_report_root(endpoint)
+    return result if result is not None else _canonicalize_flow_report_root(endpoint)
 
 
 def prepare_execution(
@@ -131,11 +131,8 @@ def prepare_execution(
 
 def _prepare_target_and_binding(endpoint: EndpointState) -> EndpointOutcome | None:
     """Resolve omission before binding while preserving explicit rejection order."""
-    prepares_target = hasattr(endpoint, "prepare_target_endpoint")
-    implicit_target = (
-        prepares_target
-        and not endpoint.args.target
-        and not getattr(endpoint.args, "resume_from", None)
+    implicit_target = not endpoint._selected_target and not getattr(
+        endpoint.args, "resume_from", None
     )
     if implicit_target:
         target_error = endpoint.prepare_target_endpoint()
@@ -149,7 +146,7 @@ def _prepare_target_and_binding(endpoint: EndpointState) -> EndpointOutcome | No
             endpoint._publish_console_report(binding_error)
             endpoint._report_criteria.project(binding_error)
             return binding_error
-    if not implicit_target and prepares_target:
+    if not implicit_target:
         target_error = endpoint.prepare_target_endpoint()
         if target_error is not None:
             endpoint.write_report(target_error)
@@ -185,11 +182,8 @@ def _prepared_execution(endpoint: EndpointState, simulation: object | None) -> P
 def _transcript_diagnostic_path(endpoint: EndpointState) -> Path | None:
     if getattr(endpoint.args, "transcript_dir", None) is None:
         return None
-    resolver = getattr(endpoint, "_transcript_path", None)
-    if not callable(resolver):
-        return None
     try:
-        return resolver()
+        return endpoint.transcript_path()
     except Exception:
         logger.debug("Could not resolve endpoint transcript diagnostic path", exc_info=True)
         return None

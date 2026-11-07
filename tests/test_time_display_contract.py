@@ -149,7 +149,12 @@ def _protected_transport():
         report_text = f"RESULT: {'PASS' if passed else 'FAIL'}\n  elapsed 3661.0s"
         stdout = io.StringIO()
         witness = endpoint_reporting._StdoutWitness(stdout)
-        endpoint = SimpleNamespace(_console_publication_requested=True, _stdout_witness=witness)
+        endpoint = SimpleNamespace(
+            _console_publication_requested=True,
+            _stdout_witness=witness,
+            _automatic_target_notice="",
+            _automatic_target_notice_published=False,
+        )
         outcome = EndpointOutcome(exit_code=0 if passed else 1, report_text=report_text)
         with redirect_stdout(witness):
             print(report_text)
