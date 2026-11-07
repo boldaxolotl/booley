@@ -176,7 +176,7 @@ def cli_help() -> dict[str, str]:
         parser = (
             build_parser(endpoint, human=True)
             if isinstance(endpoint, BuiltinFlow)
-            else human_endpoint_parser(endpoint, durations=True)
+            else human_endpoint_parser(endpoint)
         )
         rendered.update(parser_help(parser, f"booley {info.kind} {info.name}"))
     rendered.update(parser_help(bwave_cli._build_parser(), "bwave"))

@@ -19,7 +19,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
+from typing import Any, ClassVar, Generic, TypeVar, cast
 
 from booley.core.boundary import BoundaryError
 from booley.evidence.acceptance import PairedProjectBaseline
@@ -40,9 +40,6 @@ from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome, Execu
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.targets.catalog import PreparedTargetSelection
 from booley.targets.domain import TARGET_AWARE_FLOWS, FuseSocError, TargetHandle
-
-if TYPE_CHECKING:
-    from booley.flows.terminal_progress import TerminalProgress
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +186,7 @@ class FlowMechanics:
     """
 
     endpoint_kind = "flow"
+    report_schema = "booley.flow-report/v1"
     target_required = True
 
     def _resolve_display_label(self) -> str | None:
@@ -442,13 +440,10 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         EndpointState.__init__(self)  # new invocation id, display identity, Criteria ledger, ...
         self.configure_flow_execution(adapter)
         self._args = request
-        self.terminal_progress: TerminalProgress | None = None
         self.publication_resources = contextlib.ExitStack()
         # Baseline worktrees held open in `publication_resources`, by revision; each
         # revision is materialized once per invocation and shared (#1959).
         self.baseline_worktrees: dict[str, Path] = {}
-        self._simulation_campaign_outcomes: tuple[Any, ...] = ()
-        self._simulation_acceptance_outcomes: tuple[Any, ...] = ()
         self.reset_report_metadata()
         job_resources.clear_label()  # a stage label must not outlive its invocation
 
@@ -460,8 +455,6 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         """Clear invocation-local metadata before admission gates."""
         super().reset_report_metadata()
         self.cycle_report_json: str | None = None
-        self._automatic_target_notice = ""
-        self._automatic_target_notice_published = False
         self._prepared_target_selection = None
         self.begin_invocation()
 

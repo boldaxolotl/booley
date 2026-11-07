@@ -199,7 +199,7 @@ def _contains_whole_line_block(
 
 def emit_progress(endpoint: EndpointState, line: str) -> None:
     """Write progress independently to the event transport and optional CLI sink."""
-    observer = getattr(endpoint, "terminal_progress", None)
+    observer = endpoint.terminal_progress
     if observer is not None:
         observer.stage_changed(line)
     _write_display_event(
@@ -213,7 +213,7 @@ def emit_progress(endpoint: EndpointState, line: str) -> None:
 
 def emit_completion(endpoint: EndpointState, line: str, *, repeats_at_end: bool = False) -> None:
     """Render one completed unit immediately inside the open endpoint box."""
-    observer = getattr(endpoint, "terminal_progress", None)
+    observer = endpoint.terminal_progress
     if observer is not None and not repeats_at_end:
         observer.stage_changed(line)
     _write_display_event(
@@ -279,8 +279,8 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
     if report_dir is None:
         return None
     report_dir.mkdir(parents=True, exist_ok=True)
-    if not getattr(endpoint, "_skip_report_detail_refresh", False):
-        _refresh_report_detail(endpoint, result)
+    if not endpoint._skip_report_detail_refresh:
+        endpoint.refresh_report_detail(result)
     project(endpoint, result)
     report = _report_document(endpoint, result)
     inv_dir = endpoint._reserved_invocation_dir
@@ -293,12 +293,6 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
     atomic_write_json(flat_path, report)
     endpoint._reserved_invocation_dir = None
     return inv_path
-
-
-def _refresh_report_detail(endpoint: EndpointState, result: EndpointOutcome) -> None:
-    refresh = getattr(endpoint, "refresh_campaign_report_detail", None)
-    if callable(refresh):
-        refresh(result)
 
 
 def _process_resources() -> dict[str, float] | None:
@@ -343,18 +337,12 @@ def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[s
     ):
         del report["criterion_key"]
         del report["criterion_met"]
-    if endpoint.endpoint_kind == "flow":
-        report["$schema"] = (
-            "booley.simulation-report/v3" if endpoint.name == "sim" else "booley.flow-report/v1"
-        )
-    elif endpoint.endpoint_kind == "specialist":
-        report["$schema"] = "booley.specialist-report/v1"
-    elif endpoint.name == "sim":
-        report["$schema"] = "booley.simulation-report/v2"
+    if endpoint.report_schema is not None:
+        report["$schema"] = endpoint.report_schema
     mode = result.detail.get("mode")
     if isinstance(mode, str) and mode:
         report["mode"] = mode
-    tools = getattr(endpoint, "_eda_tools", {})
+    tools = endpoint._eda_tools
     if len(tools) > 1 and (endpoint.endpoint_kind == "flow" or any(tools.values())):
         report["eda_tools"] = dict(tools)
     elif endpoint._eda_tool:
@@ -452,7 +440,7 @@ def _finalize_result(endpoint: EndpointState, result: EndpointOutcome) -> None:
 
 def _stamp_git_diff_stats(endpoint: EndpointState, result: EndpointOutcome) -> None:
     """Compute lines_added/lines_removed from git diff --numstat."""
-    ref = getattr(endpoint, "_pre_run_head", None)
+    ref = endpoint._pre_run_head
     if not ref:
         return
     try:
@@ -511,8 +499,8 @@ def _publish_console_report(endpoint: EndpointState, result: EndpointOutcome) ->
     if not endpoint._console_publication_requested:
         return
     _publish_console_verdict(endpoint, result)
-    notice = getattr(endpoint, "_automatic_target_notice", "")
-    if notice and not getattr(endpoint, "_automatic_target_notice_published", False):
+    notice = endpoint._automatic_target_notice
+    if notice and not endpoint._automatic_target_notice_published:
         print(notice, file=sys.stderr, flush=True)
         endpoint._automatic_target_notice_published = True
 
@@ -617,7 +605,7 @@ def _finish_main(
     finally:
         try:
             try:
-                observer = getattr(endpoint, "terminal_progress", None)
+                observer = endpoint.terminal_progress
                 if observer is not None:
                     observer.close()
                 endpoint._publish_console_report(result)
@@ -692,7 +680,7 @@ def _publish_report_with_recovery(
 
 
 def _recover_report_publication(endpoint: EndpointState, result: EndpointOutcome) -> None:
-    previous = getattr(endpoint, "_skip_report_detail_refresh", False)
+    previous = endpoint._skip_report_detail_refresh
     endpoint._skip_report_detail_refresh = True
     try:
         _publish_report(endpoint, result)

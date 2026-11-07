@@ -122,7 +122,7 @@ class AdmissionGate:
                 store.release(token)
 
 
-def authorize_simulation_targets(
+def authorize_targets(
     endpoint: EndpointState,
     targets: tuple[TargetHandle, ...],
 ) -> EndpointOutcome | None:
@@ -139,7 +139,7 @@ def authorize_simulation_targets(
     return EndpointOutcome(
         exit_code=EXIT_ERROR,
         report_text=(
-            "sim: Goal Mode has no authorized Criterion binding for Target(s): "
+            f"{endpoint.name}: Goal Mode has no authorized Criterion binding for Target(s): "
             + ", ".join(missing)
         ),
     )

@@ -155,7 +155,7 @@ def classify_git_diff(endpoint: EndpointState) -> set[str]:
 
     Returns set of category strings (may be empty if no changes).
     """
-    ref = getattr(endpoint, "_pre_run_head", None) or "HEAD"
+    ref = endpoint._pre_run_head or "HEAD"
     work_dir = endpoint.args.work_dir
     try:
         result = subprocess.run(

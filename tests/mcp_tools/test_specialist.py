@@ -570,7 +570,7 @@ class TestTranscriptPath:
         endpoint = ReviewSpecialist()
         with patch.dict(os.environ, env):
             endpoint.parse_args(["--transcript-dir", str(transcript_dir)])
-        path = endpoint._transcript_path()
+        path = endpoint.transcript_path()
         assert path is not None
         assert path.name == "review_test.jsonl"
         assert transcript_dir.exists()
@@ -581,7 +581,7 @@ class TestTranscriptPath:
         endpoint = ReviewSpecialist()
         with patch.dict(os.environ, env):
             endpoint.parse_args([])
-        assert endpoint._transcript_path() is None
+        assert endpoint.transcript_path() is None
 
 
 # ===========================================================================

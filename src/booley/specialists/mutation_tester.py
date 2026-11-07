@@ -1440,7 +1440,7 @@ replacement must differ, and every proposal must remain a single source edit.
             specs, elapsed = self._invoke_creator(prompt, resume=round_idx > 1, attempt=round_idx)
         except Exception as exc:  # noqa: BLE001 — normalize the creator-provider boundary
             log_exception(logger, exc, summary=f"Creator invocation failed on round {round_idx}")
-            diagnostic_path = self._write_provider_diagnostic(exc, self._transcript_path())
+            diagnostic_path = self._write_provider_diagnostic(exc, self.transcript_path())
             error = McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text=exception_report_text("mutation creator", exc, diagnostic_path),

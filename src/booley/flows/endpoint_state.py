@@ -47,7 +47,7 @@ from booley.runtime.endpoint_execution import (
 )
 
 if TYPE_CHECKING:
-    from booley.flows.terminal_progress import ProgressText
+    from booley.flows.terminal_progress import ProgressText, TerminalProgress
     from booley.targets.domain import TargetHandle
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,9 @@ class EndpointState(ABC):
     """Per-invocation state and services, independent of request transport."""
 
     endpoint_kind: ClassVar[str] = "mcp_tool"
+    # The ``$schema`` the report document declares. Project-local endpoints
+    # declare none; each shipped endpoint kind (and the Simulation Flow) names its own.
+    report_schema: ClassVar[str | None] = None
 
     # --- Class-level metadata (override in subclasses) ---
     name: str = ""
@@ -130,6 +133,11 @@ class EndpointState(ABC):
         self._invocation_id = self._display_identity.invocation_id
         self._reserved_invocation_dir: Path | None = None
         self._skip_report_detail_refresh = False
+        # The live terminal observer; only a CLI-attached Flow sets one.
+        self.terminal_progress: TerminalProgress | None = None
+        # An omitted-Target selection announced once on the CLI (see prepare_target_endpoint).
+        self._automatic_target_notice = ""
+        self._automatic_target_notice_published = False
         # Transport adapters opt in to automatic stdout/stderr verdict
         # publication. Typed in-process execution stays side-effect free.
         self._console_publication_requested = False
@@ -156,11 +164,25 @@ class EndpointState(ABC):
         """Start resolved EDA identity afresh for every invocation."""
         self._eda_tool = None
         self._eda_tools = {}
+        self._automatic_target_notice = ""
+        self._automatic_target_notice_published = False
         if self._args is None:
             return
         target = self._selected_target
         targets = target.split(",") if isinstance(target, str) else target
         self.set_report_targets([item.strip() for item in targets if item.strip()])
+
+    def refresh_report_detail(self, result: EndpointOutcome) -> None:
+        """Refresh derived report detail before it is written; most endpoints have none."""
+        return
+
+    def transcript_path(self) -> Path | None:
+        """Path of this invocation's agent transcript, or ``None`` when it keeps none."""
+        return None
+
+    def prepare_target_endpoint(self) -> EndpointOutcome | None:
+        """Resolve Target selection before admission; only built-in Flows select Targets."""
+        return None
 
     def set_report_targets(self, targets: list[str]) -> None:
         """Preserve selection cardinality even when some Targets never resolve."""

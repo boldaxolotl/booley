@@ -6167,6 +6167,8 @@ class TestSummaryTable:
             _stdout_witness=witness,
             _human_report=None,
             endpoint_kind="flow",
+            _automatic_target_notice="",
+            _automatic_target_notice_published=False,
             announce_success_report=False,
         )
         _publish_console_report(endpoint, result)
