@@ -199,7 +199,10 @@ if job == 0:
     os.tcsetpgrp(0, os.getpgrp())
     signal.signal(signal.SIGTTOU, signal.SIG_DFL)
     os.execv(sys.executable, [sys.executable, driver, provider])
-os.setpgid(job, job)
+try:  # both sides set the group, as shells do; EACCES means the job already exec'd
+    os.setpgid(job, job)
+except PermissionError:
+    pass
 os.tcsetpgrp(0, job)
 stops = 0
 while True:
