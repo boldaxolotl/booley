@@ -4135,7 +4135,7 @@ def test_cpp_guidance_preview_and_project_overlay(tmp_path, scope, labels):
     # Use the established project overlay path.
     from booley.specialists.reviewer import _STYLE_OVERLAYS
 
-    overlay = tmp_path / _STYLE_OVERLAYS["tb"]
+    overlay = tmp_path / ".booley" / _STYLE_OVERLAYS["tb"]
     overlay.parent.mkdir(parents=True, exist_ok=True)
     overlay.write_text("Project C lifecycle rule")
     prompt = endpoint._build_system_prompt("quality")

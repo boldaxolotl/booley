@@ -153,7 +153,8 @@ def checkout_booley_dir(checkout_root: Path) -> Path:
     if tomllib is not None and toml_path.is_file():
         try:
             with toml_path.open("rb") as f:
-                value = as_dict(tomllib.load(f).get("project"), default={}).get("dir")
+                project = as_dict(tomllib.load(f).get("project"), default={}) or {}
+                value = project.get("dir")
         except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
             value = None
         if isinstance(value, str) and "\x00" not in value:

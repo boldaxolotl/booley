@@ -11,6 +11,7 @@ import argparse
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -153,6 +154,15 @@ def test_stdlib_booley_dir_tolerates_undecodable_configuration(tmp_path: Path) -
 
     assert policy.checkout_booley_dir(tmp_path) == tmp_path / ".booley"
     assert own_booley_dir(tmp_path) == tmp_path / ".booley"
+
+
+def test_stdlib_booley_dir_without_tomllib_is_the_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write(tmp_path / "booley.toml", '[project]\ndir = "state"\n')
+    monkeypatch.setitem(sys.modules, "tomllib", None)
+
+    assert policy.checkout_booley_dir(tmp_path) == tmp_path / ".booley"
 
 
 def test_booley_dir_repository_matches_project_discovery(tmp_path: Path) -> None:

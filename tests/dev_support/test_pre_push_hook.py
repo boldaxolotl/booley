@@ -2001,6 +2001,7 @@ def test_bundle_import_falls_back_to_flat_commit_policy_module(
 
     flat = types.ModuleType("booley_commit_policy")
     flat.validate_push_configuration = lambda root: "flat-module"
+    flat.checkout_booley_dir = lambda root: Path(root) / ".booley"
     monkeypatch.setitem(sys.modules, "booley.commit_policy.policy", None)
     monkeypatch.setitem(sys.modules, "booley_commit_policy", flat)
     spec = importlib.util.spec_from_file_location("bundled_pre_push", pre_push_hook.__file__)
