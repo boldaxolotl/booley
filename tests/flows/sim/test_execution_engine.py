@@ -2808,7 +2808,9 @@ def test_trace_candidates_ignore_relocated_runtime(tmp_path: Path) -> None:
     )
 
     reason = outcome.tests[0].reason
-    assert reason.endswith("listed, not adopted): run/new.vcd")
+    # run_cwd = "run" is read from the relocated state/booley.toml, so the
+    # candidate is named relative to it.
+    assert reason.endswith("listed, not adopted): new.vcd")
     assert "attempt.vcd" not in reason
 
 
