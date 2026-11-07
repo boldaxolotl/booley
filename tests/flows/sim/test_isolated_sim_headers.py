@@ -253,6 +253,7 @@ def test_isolated_traced_sim_resolves_through_mirror(tmp_path: Path) -> None:
     finally:
         overlay.cleanup()
     folders = [Path(folder).resolve() for folder in prepared.resolved.rtl_include_dirs]
+    assert _holds(folders, "listed.vh")
     assert not _holds(folders, "unlisted.vh")
     assert all(folder.is_relative_to(prepared.build_root.resolve()) for folder in folders)
     dump = [item for item in prepared.resolved.files if item.name.endswith("booley_vcd_dump.sv")]

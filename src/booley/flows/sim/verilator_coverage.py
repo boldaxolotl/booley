@@ -1033,7 +1033,7 @@ def _normalize_points(
 def _match_source(
     sources: Mapping[str, CoverageSource],
     native_path: str,
-    foreign_paths: Mapping[str, str] = MappingProxyType({}),
+    foreign_paths: Mapping[str, str],
 ) -> CoverageSource:
     """Match Verilator's staged/absolute filename to one resolved Target input."""
     if native_path in sources:

@@ -161,19 +161,18 @@ def _prepared_source_identity(
     project_root: Path,
     *,
     is_packaged_dump: bool,
-    mirrored: str | None = None,
+    mirrored: str | None,
 ) -> Path:
     """Name one prepared source; *mirrored* is its Project-relative private-mirror path."""
     declared = Path(name)
-    relative = (
-        _PACKAGED_DUMP_IDENTITY
-        if is_packaged_dump
-        else Path(mirrored)
-        if mirrored is not None
-        else source.relative_to(project_root)
-        if declared.is_absolute()
-        else declared
-    )
+    if is_packaged_dump:
+        relative = _PACKAGED_DUMP_IDENTITY
+    elif mirrored is not None:
+        relative = Path(mirrored)
+    elif declared.is_absolute():
+        relative = source.relative_to(project_root)
+    else:
+        relative = declared
     if relative.is_absolute() or ".." in relative.parts:
         raise SimulationBuildSlotError(f"prepared Simulation source has unsafe name: {name}")
     return relative

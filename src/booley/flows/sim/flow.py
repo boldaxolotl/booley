@@ -3372,7 +3372,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                         preview.groups, preview.run_groups, preview.commands, strict=True
                     )
                 ]
-            except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+            except (
+                fusesoc_registry.FuseSocError,
+                SimulationBuildPreparationError,
+                OSError,
+                ValueError,
+            ) as exc:
                 errors.append(f"{target}: {exc}")
                 continue
             planned[(role, target)] = preview.run_groups
@@ -6695,7 +6700,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
             scripts = [item[2] for item in preview.commands if item[:2] == ("sh", "-c")]
             command = "\n".join(scripts) or None
-        except (fusesoc_registry.FuseSocError, OSError, ValueError):
+        except (
+            fusesoc_registry.FuseSocError,
+            SimulationBuildPreparationError,
+            OSError,
+            ValueError,
+        ):
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command

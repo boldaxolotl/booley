@@ -259,7 +259,7 @@ def generation_neutral_core_path(
 
 
 def capture_core_closure(
-    edam_path: Path, project_root: Path, generation: Path | None = None
+    edam_path: Path, project_root: Path, generation: Path
 ) -> dict[str, str] | None:
     """Hash every resolved FuseSoC core, or decline when one is not provable.
 
@@ -292,9 +292,9 @@ def capture_core_closure(
             if has_generated_core_behavior(yaml.safe_load(core_file.read_text(encoding="utf-8"))):
                 return None
             relative = (
-                generation is not None
-                and generation_neutral_core_path(core_file, project_root, generation)
-            ) or core_file.relative_to(root).as_posix()
+                generation_neutral_core_path(core_file, project_root, generation)
+                or core_file.relative_to(root).as_posix()
+            )
             closure[str(name)] = f"{relative}:{hash_file(core_file)}"
         return closure
     except (OSError, UnicodeError, yaml.YAMLError):

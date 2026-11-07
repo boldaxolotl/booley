@@ -222,14 +222,15 @@ def test_core_closure_hashes_every_dependency_core(tmp_path: Path) -> None:
     rtl.write_text("CAPI=2:\nname: a:b:rtl:1\n", encoding="utf-8")
     edam = _edam(project / ".booley" / "g", {"a:b:adapter:1": adapter, "a:b:rtl:1": rtl})
 
-    closure = capture_core_closure(edam, project)
+    generation = project / ".booley" / "g"
+    closure = capture_core_closure(edam, project, generation)
 
     assert closure == {
         "a:b:adapter:1": f"adapter.core:{_sha(adapter)}",
         "a:b:rtl:1": f"rtl/rtl.core:{_sha(rtl)}",
     }
     rtl.write_text("CAPI=2:\nname: a:b:rtl:1\ndescription: edited\n", encoding="utf-8")
-    assert capture_core_closure(edam, project) != closure
+    assert capture_core_closure(edam, project, generation) != closure
 
 
 @pytest.mark.parametrize("linked", [False, True], ids=["plain", "linked"])
@@ -250,11 +251,7 @@ def test_core_closure_names_a_mirror_core_without_its_generation(
         core.parent.mkdir(parents=True)
         core.write_text(f"CAPI=2:\nname: a:b:demo:1\ndescription: {text}\n", encoding="utf-8")
         edam = _edam(generation / "acme_demo" / "sim", {"a:b:demo:1": core})
-        closures.append(capture_core_closure(edam, project, generation=generation))
-        # Without the generation, today's per-generation Project-relative name.
-        assert capture_core_closure(edam, project) == {
-            "a:b:demo:1": f"{core.relative_to(project).as_posix()}:{_sha(core)}"
-        }
+        closures.append(capture_core_closure(edam, project, generation))
     assert closures[0] is not None and closures[2] is not None
     assert closures[0] == closures[1] != closures[2]
     assert closures[0]["a:b:demo:1"].startswith(
@@ -269,7 +266,7 @@ def test_core_closure_keeps_the_name_of_a_core_outside_the_generation(tmp_path: 
     core.write_text("CAPI=2:\nname: a:b:demo:1\n", encoding="utf-8")
     generation = project / ".booley" / "g"
     edam = _edam(generation / "sim", {"a:b:demo:1": core})
-    assert capture_core_closure(edam, project, generation=generation) == {
+    assert capture_core_closure(edam, project, generation) == {
         "a:b:demo:1": f"demo.core:{_sha(core)}"
     }
 
@@ -305,7 +302,7 @@ def test_core_closure_reads_cores_through_the_booley_dir_entry(tmp_path: Path, c
     """Only the entry link is followed; a core behind a deeper link still declines."""
     project, edam, core = _core_behind_linked_booley_dir(tmp_path, case)
 
-    closure = capture_core_closure(edam, project)
+    closure = capture_core_closure(edam, project, project / ".booley" / "g")
 
     if case == "below":
         assert closure is None
@@ -330,7 +327,7 @@ def test_core_closure_declines_unprovable_cores(tmp_path: Path, case: str) -> No
     edam = _edam(project / "g", {} if case == "no-cores" else {"a:b:demo:1": core})
     if case == "malformed-edam":
         edam.write_text(": not yaml : [", encoding="utf-8")
-    assert capture_core_closure(edam, project) is None
+    assert capture_core_closure(edam, project, project / ".booley" / "g") is None
 
 
 # --------------------------------------------------------------------------
