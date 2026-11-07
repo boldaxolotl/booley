@@ -86,6 +86,7 @@ from booley.goals.protected_inputs import (
     ProtectedInputRoots,
     ProtectedSnapshot,
     protected_input_violations,
+    rules_booley_dir,
     snapshot_protected_inputs,
 )
 from booley.goals.rules import goal_mode_rules
@@ -323,6 +324,7 @@ def _enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResul
             active.declared_protected_inputs,
             routing_guidance=env.routing_guidance,
             paired_checkout=active.paired_project_base_sha is not None,
+            booley_dir=rules_booley_dir(work_dir),
         ),
         recovered,
     )

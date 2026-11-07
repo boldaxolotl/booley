@@ -7539,7 +7539,7 @@ class TestDisplayReportDir:
         mount = tmp_path / "project-mount"
         mount.mkdir()
         monkeypatch.setattr(doctor.dc, "BOOLEY_DIR_TARGET", mount.as_posix())
-        project = SimpleNamespace(booley_dir=mount)
+        project = SimpleNamespace(booley_dir=mount, project_root=tmp_path)
         report_dir = mount / "tmp" / "doctor" / "flow-reports"
         hint = doctor._display_report_dir(project, report_dir)
         assert hint == ".booley/tmp/doctor/flow-reports (under the Project Root)"
@@ -7547,7 +7547,7 @@ class TestDisplayReportDir:
     def test_host_path_is_printed_verbatim(self, tmp_path: Path):
         from types import SimpleNamespace
 
-        project = SimpleNamespace(booley_dir=tmp_path / ".booley")
+        project = SimpleNamespace(booley_dir=tmp_path / ".booley", project_root=tmp_path)
         report_dir = tmp_path / ".booley" / "tmp" / "doctor" / "flow-reports"
         assert doctor._display_report_dir(project, report_dir) == str(report_dir)
 
@@ -7556,7 +7556,7 @@ class TestDisplayReportDir:
         # repo-relative would point at files that are not there.
         from types import SimpleNamespace
 
-        project = SimpleNamespace(booley_dir=tmp_path / "elsewhere")
+        project = SimpleNamespace(booley_dir=tmp_path / "elsewhere", project_root=tmp_path)
         report_dir = tmp_path / "elsewhere" / "tmp" / "doctor" / "flow-reports"
         assert doctor._display_report_dir(project, report_dir) == str(report_dir)
 
@@ -8747,7 +8747,7 @@ def test_containment_report_alias_and_symlinks(tmp_path, monkeypatch):
         return original(path, other)
 
     monkeypatch.setattr(Path, "samefile", samefile)
-    project = SimpleNamespace(booley_dir=root)
+    project = SimpleNamespace(booley_dir=root, project_root=tmp_path)
     assert (
         doctor._display_report_dir(project, alias / "reports")
         == ".booley/reports (under the Project Root)"
@@ -8780,14 +8780,18 @@ def test_containment_report_rebased_alias_child_symlink(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(doctor.dc, "BOOLEY_DIR_TARGET", root.as_posix())
     assert (
-        doctor._display_report_dir(SimpleNamespace(booley_dir=root), alias / "input")
+        doctor._display_report_dir(
+            SimpleNamespace(booley_dir=root, project_root=tmp_path), alias / "input"
+        )
         == ".booley/target (under the Project Root)"
     )
     (root / "target").rmdir()
     (root / "real").mkdir()
     (root / "target").symlink_to(root / "real", target_is_directory=True)
     assert (
-        doctor._display_report_dir(SimpleNamespace(booley_dir=root), alias / "input")
+        doctor._display_report_dir(
+            SimpleNamespace(booley_dir=root, project_root=tmp_path), alias / "input"
+        )
         == ".booley/real (under the Project Root)"
     )
 
@@ -10148,3 +10152,85 @@ class TestDoctorCommonStateFromWorktree:
             in capsys.readouterr().out
         )
         assert stores and set(stores) == {common}
+
+
+# ---------------------------------------------------------------------------
+# Relocated Booley Directory ([project].dir = "tools/booley", issue #2919)
+# ---------------------------------------------------------------------------
+
+
+def _relocated_project(tmp_path: Path, *, stealth: bool = False) -> tuple[Path, Path]:
+    """Return ``(root, booley_dir)`` for a Git checkout whose Booley Directory is relocated."""
+    from booley.runtime.booley_dir import reset_cache
+
+    root = tmp_path / "rtl"
+    root.mkdir()
+    _history_git(root, "init", "-q", "-b", "main")
+    (root / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
+    project = root / "tools" / "booley"
+    project.mkdir(parents=True)
+    flag = "true" if stealth else "false"
+    (project / "booley.toml").write_bytes(f"[stealth]\nenabled = {flag}\n".encode())
+    reset_cache()
+    return root, project
+
+
+def test_goal_history_exclusion_reported_for_relocated_booley_dir(tmp_path):
+    root, project = _relocated_project(tmp_path)
+    (root / ".git/info/exclude").write_bytes(b"/tools/booley/goals/history/\n")
+    reporter = doctor._Reporter.create()
+
+    doctor._check_goal_history_ignored(root, project, reporter.pass_, reporter.warn_)
+
+    findings = reporter.findings or []
+    assert [(f.severity, f.check_id) for f in findings] == [("warn", "goals.history-ignored")]
+    assert "tools/booley/goals/history/doctor-probe.md" in findings[0].message
+
+
+def test_goal_history_versioned_hint_for_relocated_booley_dir(tmp_path):
+    root, project = _relocated_project(tmp_path)
+    _history_git(project, "init", "-q", "-b", "main")
+
+    layout, _hint = doctor._goal_history_layout_advice(root)
+
+    assert "Independently versioned" in layout
+
+
+def test_stealth_exclude_check_requires_relocated_entry(tmp_path):
+    root, _project = _relocated_project(tmp_path, stealth=True)
+    exclude = root / ".git/info/exclude"
+    exclude.write_bytes(b"/.devcontainer\n/tools/booley\n")
+    findings: list[doctor.DoctorWarning] = []
+    doctor._check_devcontainer_excludes(root, lambda _msg: None, findings.append)
+    assert findings == []
+
+    # Only the default spelling present: the relocated entry is reported missing.
+    exclude.write_bytes(b"/.devcontainer\n/.booley\n")
+    doctor._check_devcontainer_excludes(root, lambda _msg: None, findings.append)
+    assert [f.subject for f in findings] == ["tools/booley"]
+
+
+def test_sandbox_commands_pass_relocated_booley_dir(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    root, project = _relocated_project(tmp_path)
+    audit = doctor.ProjectAudit(root, project, {}, {}, "sim")
+
+    probe = doctor._mcp_probe_command(audit, "docker", "booley:test")
+    wrapped = doctor._docker_wrap("docker", "booley:test", root, ["true"])
+    assert "BOOLEY_DIR=/work/tools/booley" in probe
+    assert "BOOLEY_DIR=/work/tools/booley" in wrapped
+
+    # In-Sandbox Doctor sees the relocated directory at /work/tools/booley.
+    sandbox_dir = Path("/work/tools/booley")
+    in_sandbox = SimpleNamespace(booley_dir=sandbox_dir, project_root=root)
+    # `/work` exists only in the Sandbox, so stub the containment lookup.
+    monkeypatch.setattr(doctor, "contains", lambda path, booley_dir: path)
+    hint = doctor._display_report_dir(in_sandbox, sandbox_dir / "tmp" / "r")
+    assert hint == "tools/booley/tmp/r (under the Project Root)"
+
+    # The default spelling is unchanged.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    default_audit = doctor.ProjectAudit(plain, plain / ".booley", {}, {}, "sim")
+    assert "BOOLEY_DIR=/work/.booley" in doctor._mcp_probe_command(default_audit, "docker", "i")

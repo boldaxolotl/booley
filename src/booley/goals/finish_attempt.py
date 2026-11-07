@@ -64,7 +64,7 @@ def validate_attempt(frozen: dict[str, Any], operation: LifecycleOperation) -> N
             raise ValueError("attempt revision must be nonnegative")
         if frozen["destination_before"] != "absent" or frozen["mode"] != "100644":
             raise ValueError("invalid publication destination/mode")
-        _validate_path(frozen["path"], record.id, operation.request.operation_id)
+        prefix = _validate_path(frozen["path"], record.id, operation.request.operation_id)
         _validate_package(frozen, operation, record)
         validate_capture(frozen["private_capture"], frozen["package"]["input_proof"])
         validate_presentation(operation, frozen)
@@ -72,7 +72,7 @@ def validate_attempt(frozen: dict[str, Any], operation: LifecycleOperation) -> N
         if skip not in {
             None,
             "summary kept local; Stealth publication is skipped",
-            "summary kept local; `.booley` is git-excluded",
+            excluded_skip_reason(prefix),
             "summary kept local; Paired Checkout preserves independent Booley history",
         }:
             raise ValueError("invalid publication skip identity")
@@ -82,18 +82,37 @@ def validate_attempt(frozen: dict[str, Any], operation: LifecycleOperation) -> N
         raise LifecycleError(f"invalid frozen finish attempt: {exc}") from exc
 
 
-def _validate_path(raw: object, record_id: str, operation_id: str) -> None:
+def excluded_skip_reason(prefix: PurePosixPath) -> str:
+    """The skip text for a Booley Directory that Git excludes (writer and validator share it)."""
+    return f"summary kept local; `{prefix}` is git-excluded"
+
+
+def _validate_path(raw: object, record_id: str, operation_id: str) -> PurePosixPath:
+    """Check the sealed publication path and return its Booley Directory prefix.
+
+    Only the sealed text is judged, never the live ``booley.toml``: attempts are
+    replayed later (prior-attempt history, saved results, abandon recovery), and
+    a Project that changed its directory since must not strand them. The path
+    must be ``<prefix>/goals/history/<id>[-<operation>].md`` with a relative
+    *prefix* made of plain components.
+    """
     path = require_str_value(raw, field="publication path")
-    allowed = {
-        f".booley/goals/history/{record_id}.md",
-        f".booley/goals/history/{record_id}-{operation_id}.md",
-    }
+    names = {f"{record_id}.md", f"{record_id}-{operation_id}.md"}
+    # Split the raw text: PurePosixPath would silently drop `.` and empty parts.
+    parts = path.split("/")
+    prefix = PurePosixPath(*parts[:-3])
     if (
-        path not in allowed
+        len(parts) < 4
+        or parts[-3:-1] != ["goals", "history"]
+        or parts[-1] not in names
+        or "\\" in path
+        or "\x00" in path
+        or any(part in {"", ".", ".."} for part in parts[:-3])
         or PurePosixPath(path).is_absolute()
         or PureWindowsPath(path).is_absolute()
     ):
         raise ValueError("publication path differs from its literal confined operation path")
+    return prefix
 
 
 def _validate_package(

@@ -735,3 +735,23 @@ class TestCheckoutOwnBooleyDir:
 
         with pytest.raises(BooleyDirOutsideCheckoutError, match=r"relative \[project\]\.dir"):
             own_booley_dir_relative(root)
+
+
+def test_own_booley_dir_repo_path_relocated_default_and_outside(tmp_path: Path) -> None:
+    """Repository path: relocated spelling, default ``.booley``, absolute falls back."""
+    from booley.runtime.booley_dir import own_booley_dir_repo_path
+
+    relocated = tmp_path / "relocated"
+    relocated.mkdir()
+    (relocated / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
+    default = tmp_path / "default"
+    default.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "booley.toml").write_bytes(
+        f'[project]\ndir = "{(tmp_path / "external").as_posix()}"\n'.encode()
+    )
+
+    assert own_booley_dir_repo_path(relocated).as_posix() == "tools/booley"
+    assert own_booley_dir_repo_path(default).as_posix() == ".booley"
+    assert own_booley_dir_repo_path(outside).as_posix() == ".booley"

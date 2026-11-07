@@ -857,3 +857,30 @@ def test_refresh_prepares_spec_in_host_egress_mode(project_local_booley_dir, iss
     assert networks == [dc.UNPROXIED_NETWORK]
     assert spec["containerEnv"]["BOOLEY_EGRESS"] == "unproxied"
     assert not images.spec_is_current(project)
+
+
+def test_forward_finalization_excludes_relocated_booley_dir_in_stealth(
+    tmp_path, monkeypatch, isolated_refresh_outputs
+):
+    from booley import commit_policy
+    from booley.runtime import dashboard_tasks
+    from booley.runtime import git as runtime_git
+    from booley.runtime.booley_dir import reset_cache
+
+    (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
+    (tmp_path / "tools/booley").mkdir(parents=True)
+    reset_cache()
+    excluded: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        session_refresh.runtime_spec, "authorized_project_data_source", lambda _root: tmp_path
+    )
+    monkeypatch.setattr(commit_policy, "stealth_enabled", lambda _root: True)
+    monkeypatch.setattr(dashboard_tasks, "reconcile", lambda _project, _directory: None)
+    monkeypatch.setattr(
+        runtime_git, "add_git_excludes", lambda _project, names: excluded.append(tuple(names))
+    )
+
+    isolated_refresh_outputs(tmp_path)
+
+    assert excluded == [(".devcontainer", ".claude", ".booley", "tools/booley")]
+    reset_cache()

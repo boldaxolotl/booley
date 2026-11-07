@@ -745,3 +745,123 @@ def test_new_paired_skip_reason_precedes_stealth_and_exclusion(
     assert _skip_publication(layout.worktree, paired, ".booley/goals/history/test.md") == (
         "summary kept local; Paired Checkout preserves independent Booley history"
     )
+
+
+# ---------------------------------------------------------------------------
+# A relocated Booley Directory (`[project].dir = "tools/booley"`, issue #2919)
+# ---------------------------------------------------------------------------
+
+RELOCATED = "tools/booley"
+
+
+@pytest.fixture
+def relocated_layout(tmp_path, monkeypatch):
+    """Like ``layout`` but the Booley Directory lives at ``<main>/tools/booley`` (depth 2).
+
+    The root ``booley.toml`` carries ``[project] dir`` and is committed, so the
+    linked worktree inherits it; the worktree's own snapshot is
+    ``<worktree>/tools/booley``.
+    """
+    from booley.core.booley_dir import reset_cache
+    from booley.flows import target_test_plan_loading
+    from booley.goals import entry as entry_module
+    from booley.goals import test_run_freezing
+    from booley.mcp import sim_baseline_jobs
+    from tests.goals.conftest import (
+        FakeCatalog,
+        counting_draw,
+        fake_target_identity,
+        fake_test_plan,
+        pending_baseline_launch,
+        write_project_files,
+    )
+
+    main = tmp_path / "main"
+    main.mkdir()
+    git(main, "init", "-q", "-b", "main")
+    git(main, "config", "core.autocrlf", "false")
+    (main / "booley.toml").write_bytes(f'[project]\ndir = "{RELOCATED}"\n'.encode())
+    (main / "rtl.v").write_bytes(b"module top; endmodule\n")
+    git(main, "add", "-A")
+    git(main, "commit", "-q", "-m", "base")
+    (main / ".git" / "info" / "exclude").write_bytes(f"/{RELOCATED}\n".encode())
+    control = main / RELOCATED
+    write_project_files(control)
+    worktree = control / "worktrees" / "wt"
+    git(main, "worktree", "add", "-q", "-b", "work", str(worktree))
+    write_project_files(worktree / RELOCATED)
+    monkeypatch.setenv("BOOLEY_DIR", str(control))
+    monkeypatch.setattr(entry_module, "TargetCatalog", FakeCatalog)
+    monkeypatch.setattr(target_test_plan_loading, "load_checkout_target_test_plan", fake_test_plan)
+    monkeypatch.setattr(target_test_plan_loading, "checkout_target_identity", fake_target_identity)
+    monkeypatch.setattr(test_run_freezing, "draw_seeds", counting_draw(501))
+    stamps = iter(f"20261006T12{minute:02d}00Z" for minute in range(60))
+    monkeypatch.setattr(entry_module, "compact_utc_now", lambda: next(stamps))
+    monkeypatch.setattr(sim_baseline_jobs, "launch_baseline", pending_baseline_launch)
+    reset_cache()
+    yield SimpleNamespace(main=main, control=control, worktree=worktree)
+    reset_cache()
+
+
+def relocated_publication_layout(layout: SimpleNamespace) -> SimpleNamespace:
+    """:func:`publication_layout` for the relocated directory: versioned inputs, then a Goal."""
+    from booley.goals.entry import EntryRequest
+    from tests.goals.conftest import TESTS_TOML, TOP_CORE, entry_environment
+
+    (layout.main / ".git/info/exclude").write_bytes(b"")
+    git(layout.worktree, "config", "core.excludesfile", str(layout.main / "no-global-excludes"))
+    project = layout.worktree / RELOCATED
+    (project / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
+    (layout.control / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
+    (project / ".gitignore").write_bytes(PROJECT_GITIGNORE.encode())
+    (project / "tests.toml").write_bytes(TESTS_TOML)
+    (layout.worktree / "top.core").write_bytes(TOP_CORE.encode())
+    git(layout.worktree, "add", RELOCATED, "top.core")
+    git(layout.worktree, "commit", "-qm", "Versioned Booley Directory inputs")
+    layout.record = enter_goal_mode(
+        EntryRequest(
+            work_dir=layout.worktree,
+            slug="evidence",
+            goals=parse_goal_args([{"family": "LINT", "target": "top"}]),
+        ),
+        entry_environment(layout),
+    ).record
+    publish(layout)
+    git(layout.main, "config", "user.name", "Goal Test")
+    git(layout.main, "config", "user.email", "goal@test.invalid")
+    return layout
+
+
+def test_relocated_booley_dir_publishes_history_under_configured_path(relocated_layout):
+    complete = relocated_publication_layout(relocated_layout)
+    call = request(complete)
+    first = finish_goal(call, environment(complete))
+    assert first["status"] == "finished"
+    history = first["history_path"]
+    assert history.startswith(f"{RELOCATED}/goals/history/") and history.endswith(".md")
+    assert not (complete.worktree / ".booley").exists()
+    # The summary is committed at the relocated path, and the tree is clean.
+    assert git(complete.worktree, "show", f"HEAD:{history}")
+    assert git(complete.worktree, "status", "--porcelain") == ""
+    # An identical retry replays the frozen attempt (sealed-prefix validation).
+    assert finish_goal(call, environment(complete)) == first
+
+
+def test_relocated_excluded_booley_dir_skip_names_configured_path(tmp_path):
+    from booley.goals.finish import _skip_publication  # pyright: ignore[reportPrivateUsage]
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    (root / "booley.toml").write_bytes(f'[project]\ndir = "{RELOCATED}"\n'.encode())
+    (root / RELOCATED).mkdir(parents=True)
+    (root / RELOCATED / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
+    (root / ".git" / "info" / "exclude").write_bytes(f"/{RELOCATED}\n".encode())
+    path = f"{RELOCATED}/goals/history/g.md"
+    assert (
+        _skip_publication(root, root / RELOCATED, path)
+        == f"summary kept local; `{RELOCATED}` is git-excluded"
+    )
+    # Not excluded: nothing is skipped.
+    (root / ".git" / "info" / "exclude").write_bytes(b"")
+    assert _skip_publication(root, root / RELOCATED, path) is None

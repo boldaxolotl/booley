@@ -133,3 +133,20 @@ def test_refresh_preview_does_not_plan_or_apply_stopped_runtime_cleanup(tmp_path
     adapter.prepare_spec(tmp_path, RefreshImage("booley-sandbox", "sha256:prepared"))
     preview.assert_called_once_with(tmp_path, sources.build, expected_image_id="sha256:prepared")
     forbidden.assert_not_called()
+
+
+def test_exclude_names_cover_relocated_booley_dir_in_stealth(tmp_path, monkeypatch):
+    from booley.runtime.booley_dir import reset_cache
+
+    (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
+    (tmp_path / "tools/booley").mkdir(parents=True)
+    reset_cache()
+    monkeypatch.setattr(interactive, "stealth_enabled", lambda _root: True)
+
+    assert interactive._exclude_names(tmp_path) == (
+        ".devcontainer",
+        ".claude",
+        ".booley",
+        "tools/booley",
+    )
+    reset_cache()

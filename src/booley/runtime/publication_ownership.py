@@ -68,10 +68,10 @@ class PublicationOwnership:
             raise FileCommitError("operation-owned staging bytes were substituted")
         return path
 
-    def _summary_anchor(self, destination: Path, *, create: bool = True) -> Path:
+    def _summary_anchor(self, destination: Path, root: Path, *, create: bool = True) -> Path:
         # Equal devices do not prove equal mounts: bind aliases can reject links.
         # Always stage through the destination's local managed Project hierarchy.
-        root = destination.parents[3]
+        # *root* is the worktree root: the Booley Directory prefix may be any depth.
         parent = destination.parent.parent / (".publication-" + self.directory.name)
         _require_anchor(parent, root)
         relative = (parent / "staging").relative_to(root).as_posix()
@@ -92,15 +92,21 @@ class PublicationOwnership:
         _require_anchor(parent, root)
         return parent
 
-    def validate_summary_anchor(self, destination: Path) -> None:
-        """Check containment and managed ignore policy before the finishing fence."""
-        self._summary_anchor(destination, create=False)
+    def validate_summary_anchor(self, destination: Path, root: Path) -> None:
+        """Check containment and managed ignore policy before the finishing fence.
 
-    def materialize(self, destination: Path, content: bytes) -> None:
-        """The staging inode lives in the destination's ignored managed hierarchy."""
+        *root* is the worktree root that contains *destination*.
+        """
+        self._summary_anchor(destination, root, create=False)
+
+    def materialize(self, destination: Path, root: Path, content: bytes) -> None:
+        """The staging inode lives in the destination's ignored managed hierarchy.
+
+        *root* is the worktree root that contains *destination*.
+        """
         self.directory.mkdir(parents=True, exist_ok=True)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        stage = self.inode("summary-staging", self._summary_anchor(destination), content)
+        stage = self.inode("summary-staging", self._summary_anchor(destination, root), content)
         try:
             os.link(stage, destination)
         except FileExistsError:

@@ -38,6 +38,7 @@ from booley.goals.model import goal_arg_json_schema
 from booley.goals.paths import SLUG_MAX_LENGTH, SLUG_PATTERN
 from booley.goals.presentation import goal_addresses
 from booley.goals.proposals import ProposalError
+from booley.goals.protected_inputs import rules_booley_dir
 from booley.goals.rules import goal_mode_rules
 from booley.goals.session_key import session_key
 from booley.goals.state_store import GoalStateError
@@ -201,6 +202,7 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
                         view.record.declared_protected_inputs,
                         routing_guidance=work_dir_guidance(),
                         paired_checkout=view.record.paired_project_base_sha is not None,
+                        booley_dir=rules_booley_dir(Path(view.record.worktree_path)),
                     )
                 if not views:
                     text += "\n\n" + goal_mode_rules(routing_guidance=work_dir_guidance())

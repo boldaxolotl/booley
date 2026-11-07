@@ -118,3 +118,19 @@ def test_git_error_transport_remains_oserror(repository, monkeypatch, failure):
     monkeypatch.setattr(git_ignore.subprocess, "run", fail)
     with pytest.raises(OSError, match="timed out" if failure == "timeout" else "test Git failure"):
         ignored_paths(repository, [repository / "absent"])
+
+
+def test_stealth_exclude_names_cover_default_and_relocated(tmp_path):
+    from booley.runtime.booley_dir import reset_cache
+    from booley.runtime.git import stealth_exclude_names
+
+    # Default Project: exactly the default spelling, no duplicate.
+    reset_cache()
+    assert stealth_exclude_names(tmp_path) == (".booley",)
+
+    # Relocated Project: `.booley` (full init still works there) plus the own directory.
+    (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
+    (tmp_path / "tools/booley").mkdir(parents=True)
+    reset_cache()
+    assert stealth_exclude_names(tmp_path) == (".booley", "tools/booley")
+    reset_cache()

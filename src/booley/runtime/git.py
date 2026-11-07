@@ -11,6 +11,7 @@ from pathlib import Path
 
 from booley.commit_policy import validate_message
 from booley.core import scope_matching
+from booley.core.booley_dir import BOOLEY_DIR_NAME, own_booley_dir_repo_path
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.git_facts import run_remembered
 from booley.runtime.guarded_write import SymlinkTargetError, replace_regular_file
@@ -239,6 +240,17 @@ def git_excludes_pending(
     """Return whether the honored Git exclude needs reconciliation, without writing."""
     _path, lines = _git_exclude_update(wt, names, header=header)
     return lines is not None
+
+
+def stealth_exclude_names(root: Path) -> tuple[str, ...]:
+    """Return the Booley Directory names a Stealth Project hides via ``info/exclude``.
+
+    Always the default ``.booley`` (full ``booley init`` works there), plus the
+    checkout's own relocated ``[project].dir`` when it differs. Default
+    projects therefore yield exactly ``(".booley",)``.
+    """
+    own = own_booley_dir_repo_path(root).as_posix()
+    return tuple(dict.fromkeys((BOOLEY_DIR_NAME, own)))
 
 
 def add_git_excludes(
