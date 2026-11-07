@@ -155,9 +155,16 @@ When the work does not fit, split it before it becomes `ready-for-agent`:
   sub-issues cover all of them.
 
 The pipeline skips an issue that has open sub-issues. When its planner finds
-the work too large for one PR, it posts a proposed split, moves the issue back
-to `needs-triage`, and releases it. Once the maintainer accepts the split,
-triage files the sub-issues and relabels the parent `tracker`.
+the work too large for one PR, the pipeline splits the issue itself, with no
+maintainer approval:
+
+- It files one native GitHub sub-issue per piece. The body holds the AI
+  disclaimer, `Part of #<parent>.`, the audit context, and `Blocked by: #<n>`
+  lines. The Agent Brief goes in an author comment on each sub-issue. Labels:
+  the category plus `ready-for-agent`.
+- It posts a split table on the parent, relabels it from `ready-for-agent` to
+  `tracker`, and releases it.
+- It admits the sub-issues to its own queue.
 
 ## Legacy format
 
