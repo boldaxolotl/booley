@@ -38,7 +38,7 @@ def host_lifecycle_lock(
     *,
     wait_timeout_s: float = DEFAULT_WAIT_TIMEOUT_SECONDS,
 ) -> Iterator[None]:
-    """Hold the host-wide lock, waiting by default for bounded contention."""
+    """Hold the host-wide lock, waiting up to *wait_timeout_s* under contention."""
     booley_config = config_dir()
     shared_config = booley_config.parent
     if not shared_config.exists():

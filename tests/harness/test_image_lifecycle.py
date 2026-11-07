@@ -474,7 +474,7 @@ def _check_project(
     *,
     artifact_policy: lifecycle.ArtifactPolicy = lifecycle.ArtifactPolicy.LOCAL_ONLY,
 ) -> lifecycle.LifecycleResult:
-    """Project a Project image CHECK: plan the graph, then report it without mutation."""
+    """Run a Project image CHECK: plan the graph, then report it without mutation."""
     observed = lifecycle.plan(
         lifecycle.ProjectImageScope(root),
         docker=docker,

@@ -150,8 +150,9 @@ def _write_managed_files(docker_dir: Path, requirements_body: str) -> None:
     """Write the managed ``Dockerfile`` + ``requirements.txt`` pair as init stamps them."""
     docker_dir.mkdir(parents=True, exist_ok=True)
     dockerfile_body, requirements_content = pi.managed_project_image_files(requirements_body)
-    (docker_dir / "Dockerfile").write_text(dockerfile_body, encoding="utf-8")
-    (docker_dir / "requirements.txt").write_text(requirements_content, encoding="utf-8")
+    # Bytes, as production writes them: ``write_text`` would turn LF into CRLF on Windows.
+    (docker_dir / "Dockerfile").write_bytes(dockerfile_body.encode("utf-8"))
+    (docker_dir / "requirements.txt").write_bytes(requirements_content.encode("utf-8"))
 
 
 class TestManagedFileGuard:

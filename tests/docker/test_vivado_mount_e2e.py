@@ -56,12 +56,17 @@ def _require_prerequisites() -> tuple[str, Path]:
         )
         if probe.returncode != 0:
             pytest.skip(f"Docker {kind} {name!r} is absent; run `booley init --force`")
-    if not host_sidecars._inspect_network(host_sidecars._DockerCli()).current:
-        pytest.fail(
-            f"Docker network {dc.EGRESS_NETWORK!r} is not host-isolated; "
-            "stop Sessions, remove the stale network and booley-proxy, then run "
-            "`booley init --force`"
-        )
+    fix_hint = (
+        f"Docker network {dc.EGRESS_NETWORK!r} is not host-isolated; "
+        "stop Sessions, remove the stale network and booley-proxy, then run "
+        "`booley init --force`"
+    )
+    try:
+        host_isolated = host_sidecars._inspect_network(host_sidecars._DockerCli()).current
+    except host_sidecars.SidecarError as exc:
+        pytest.fail(f"{fix_hint} ({exc})")
+    if not host_isolated:
+        pytest.fail(fix_hint)
     return docker, root
 
 

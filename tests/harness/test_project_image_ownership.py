@@ -439,8 +439,8 @@ def test_lone_user_requirements_build_and_remain_current(
     requirements.write_bytes(body)
     recipe = directory / "Dockerfile"
     if legacy_recipe:
-        recipe.write_text(
-            lifecycle.project_image.managed_project_image_files("")[0], encoding="utf-8"
+        recipe.write_bytes(
+            lifecycle.project_image.managed_project_image_files("")[0].encode("utf-8")
         )
     before_recipe = recipe.read_bytes() if recipe.exists() else None
     planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
