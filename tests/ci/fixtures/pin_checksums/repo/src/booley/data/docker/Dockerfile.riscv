@@ -1,0 +1,30 @@
+# Trimmed excerpt of Dockerfile.riscv at the recorded pins (frozen test fixture).
+ARG XPACK_GCC_VERSION=15.2.0-1
+ARG XPACK_GCC_SHA256=d5b3ed0da4e5c23f5af47975cf65a0f23328dd53c80a5f63d1360dc7f7a741e5
+RUN echo ">>> Installing xPack ${XPACK_GCC_VERSION}..." \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_GCC_VERSION}/xpack-riscv-none-elf-gcc-${XPACK_GCC_VERSION}-linux-x64.tar.gz" \
+        -o /tmp/riscv-toolchain.tar.gz
+
+ARG ISA_MANUAL_RELEASE=20250508
+ARG DEBUG_SPEC_RELEASE=1.0
+ARG PSABI_RELEASE=v1.0
+ARG ISA_UNPRIVILEGED_PDF_SHA256=865c950af0695f4f39d81fbeedf33ecbefe4b8728155e106e3ca9f6f8722d565
+ARG ISA_UNPRIVILEGED_HTML_SHA256=98bee6773c8fa24ca8c1ae128f06a80a613debee50cd1f644b398d15fd4d935f
+ARG ISA_PRIVILEGED_PDF_SHA256=9b4564b8db079abe3c768b0a73d4975d0f8b6a10bd7fa94b930bf909a9e24879
+ARG ISA_PRIVILEGED_HTML_SHA256=466ca918d704f48ffdcbe1e5ce1f59d2c69a5cb0a1200897da2641721728f5a9
+ARG DEBUG_SPEC_SHA256=82bdd88506edb7ebc78c3461d7218c796cff58a02698d3fbd323b6f2cc05a66e
+ARG PSABI_SHA256=8dee2d287f69bfcda7919b8709333b82ac149c4d3d4291c4a61417c4a2fab2d5
+RUN echo ">>> Downloading specifications..." \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-unprivileged-${ISA_MANUAL_RELEASE}.pdf" \
+        -o /opt/riscv-docs/riscv-unprivileged-20250508.pdf \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-unprivileged-${ISA_MANUAL_RELEASE}.html" \
+        -o /opt/riscv-docs/riscv-unprivileged-20250508.html \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-privileged-${ISA_MANUAL_RELEASE}.pdf" \
+        -o /opt/riscv-docs/riscv-privileged-20250508.pdf \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-privileged-${ISA_MANUAL_RELEASE}.html" \
+        -o /opt/riscv-docs/riscv-privileged-20250508.html \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-debug-spec/releases/download/${DEBUG_SPEC_RELEASE}/riscv-debug-specification.pdf" \
+        -o /opt/riscv-docs/riscv-debug-specification.pdf \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv-non-isa/riscv-elf-psabi-doc/releases/download/${PSABI_RELEASE}/riscv-abi.pdf" \
+        -o /opt/riscv-docs/riscv-abi.pdf \
+    && true
