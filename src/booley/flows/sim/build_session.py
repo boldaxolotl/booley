@@ -390,7 +390,10 @@ def _reuse_input_key(
             "target": prepared.target_identity,
             "inputs": dict(inputs),
             "core": hash_file(core_file),
-            "core_path": str(core_file),
+            "core_path": build_reuse.generation_neutral_core_path(
+                core_file, project_root, prepared.work_root
+            )
+            or str(core_file),
             "tool": tool,
             "recipe": recipe,
             "versions": _recipe_package_versions(),

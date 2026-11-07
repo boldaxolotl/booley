@@ -115,6 +115,12 @@ class CoverageTarget:
     harness: CoverageHarness
     sources: tuple[CoverageSource, ...]
     custom_main_hooks: tuple[str, ...] = ()
+    foreign_paths: Mapping[str, str] = MappingProxyType({})
+    """Private-mirror export name -> Project-relative path, for isolated Projects.
+
+    Names a non-source file (a header) that a native record points at by the
+    path the build read it under, so reports never show the mirror.
+    """
 
 
 @dataclass(frozen=True)
@@ -1019,12 +1025,16 @@ def _normalize_points(
         if record.attributes.get("t") not in _RECORD_METRICS:
             continue
         native_path = record.attributes.get("f", "")
-        source = _match_source(sources, native_path)
+        source = _match_source(sources, native_path, request.target.foreign_paths)
         points.append(_point_for_record(record, source, incidence.get(identity, {})))
     return tuple(sorted(points, key=lambda point: (point.identity.metric, point.id)))
 
 
-def _match_source(sources: Mapping[str, CoverageSource], native_path: str) -> CoverageSource:
+def _match_source(
+    sources: Mapping[str, CoverageSource],
+    native_path: str,
+    foreign_paths: Mapping[str, str] = MappingProxyType({}),
+) -> CoverageSource:
     """Match Verilator's staged/absolute filename to one resolved Target input."""
     if native_path in sources:
         return sources[native_path]
@@ -1036,7 +1046,13 @@ def _match_source(sources: Mapping[str, CoverageSource], native_path: str) -> Co
             matches.append(source)
     if len(matches) == 1:
         return matches[0]
-    return CoverageSource(native_path=native_path, path=native_path, kind="foreign")
+    named = {
+        path
+        for export, path in foreign_paths.items()
+        if normalized == export or normalized.endswith(f"/{export}")
+    }
+    path = named.pop() if len(named) == 1 else native_path
+    return CoverageSource(native_path=native_path, path=path, kind="foreign")
 
 
 def _capabilities_and_findings(
@@ -1290,7 +1306,9 @@ def _native_source_presence(
     return tuple(
         sorted(
             {
-                _match_source(sources, record.attributes.get("f", "")).path
+                _match_source(
+                    sources, record.attributes.get("f", ""), request.target.foreign_paths
+                ).path
                 for item in collected
                 for record in item.records
             }

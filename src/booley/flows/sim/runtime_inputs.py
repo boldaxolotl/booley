@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING
 
 from booley.flows.sim.campaign_durability import durable_copy, durable_directory
+from booley.fusesoc.fusesoc_registry import mirrored_source_path
 
 if TYPE_CHECKING:
     from booley.fusesoc.fusesoc_registry import ResolvedTarget
@@ -62,12 +63,18 @@ class RuntimeInputBinding:
         }
 
 
-def declared_runtime_inputs(resolved: ResolvedTarget) -> tuple[str, ...]:
-    """Return build-relative ``user`` files staged by FuseSoC ``copyto``."""
+def declared_runtime_inputs(resolved: ResolvedTarget, project_root: Path) -> tuple[str, ...]:
+    """Return build-relative ``user`` files staged by FuseSoC ``copyto``.
+
+    A file only exported from the build's private source mirror is no input:
+    like any file the Project names absolutely, it stays where it is.
+    """
     return tuple(
         file.name
         for file in resolved.files
-        if file.file_type.lower() == "user" and not Path(file.name).is_absolute()
+        if file.file_type.lower() == "user"
+        and not Path(file.name).is_absolute()
+        and mirrored_source_path(project_root, file) is None
     )
 
 

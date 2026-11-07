@@ -241,8 +241,30 @@ def has_generated_core_behavior(core_data: object) -> bool:
 # --------------------------------------------------------------------------
 
 
-def capture_core_closure(edam_path: Path, project_root: Path) -> dict[str, str] | None:
+def generation_neutral_core_path(
+    core_file: Path, project_root: Path, generation: Path
+) -> str | None:
+    """Name a core of the build's private mirror without the generation id.
+
+    A core rendered into the build's own mirror lies inside *generation* and
+    changes path with every build, so a reuse key names it
+    ``<generation>/<path below it>``. Returns ``None`` for any other core, which
+    keeps its own spelling. *core_file* is spelled as :func:`capture_core_closure`
+    spells it.
+    """
+    lexical = lexical_booley_path(simulation_booley_dir(project_root), generation.resolve())
+    if not core_file.is_relative_to(lexical):
+        return None
+    return f"<generation>/{core_file.relative_to(lexical).as_posix()}"
+
+
+def capture_core_closure(
+    edam_path: Path, project_root: Path, generation: Path | None = None
+) -> dict[str, str] | None:
     """Hash every resolved FuseSoC core, or decline when one is not provable.
+
+    A core inside *generation* (a private source mirror) is recorded without
+    the generation id, so an unchanged rebuild keeps the same record.
 
     Call while Booley's trace and coverage overlay cores still exist: they are
     removed right after preparation, before the reuse key is computed. Every
@@ -269,7 +291,10 @@ def capture_core_closure(edam_path: Path, project_root: Path) -> dict[str, str] 
                 return None
             if has_generated_core_behavior(yaml.safe_load(core_file.read_text(encoding="utf-8"))):
                 return None
-            relative = core_file.relative_to(root).as_posix()
+            relative = (
+                generation is not None
+                and generation_neutral_core_path(core_file, project_root, generation)
+            ) or core_file.relative_to(root).as_posix()
             closure[str(name)] = f"{relative}:{hash_file(core_file)}"
         return closure
     except (OSError, UnicodeError, yaml.YAMLError):
@@ -915,6 +940,7 @@ __all__ = [
     "capture_core_closure",
     "collect_read_closure",
     "elf_dependencies",
+    "generation_neutral_core_path",
     "has_generated_core_behavior",
     "hash_file",
     "is_elf",

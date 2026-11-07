@@ -14,6 +14,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import cast
 
+from fusesoc.vlnv import Vlnv
+
 from booley.core.build_paths import work_root_for
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.eda_failures import new_attempt_token
@@ -42,7 +44,11 @@ from booley.flows.sim.config import (
     resolve_pre_sim_commands,
 )
 from booley.flows.sim.coverage_campaign import CoverageFinding
-from booley.flows.sim.coverage_overlay import CoverageOverlay, write_coverage_overlay
+from booley.flows.sim.coverage_overlay import (
+    CoverageOverlay,
+    coverage_overlay_vlnv,
+    write_coverage_overlay,
+)
 from booley.flows.sim.execution.attempt import (
     AdapterAttemptOutcome,
     AdapterAttemptRequest,
@@ -71,6 +77,8 @@ from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
     core_target_coverage_errors,
     coverage_target_metadata_errors,
+    mirrored_export_name,
+    native_cores_ignored,
 )
 from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
@@ -552,6 +560,7 @@ def prepare_coverage_collection(
             harness=harness,
             sources=tuple(_coverage_source(item) for item in inspection.inputs if _is_hdl(item)),
             custom_main_hooks=hooks,
+            foreign_paths=_mirror_export_paths(handle, inspection, trace=trace),
         ),
         selected_tests=_selected_runs(handle, inspection, selected_tests, test_runs),
         artifact_root=artifact_root,
@@ -651,6 +660,27 @@ def _is_hdl(item: TargetInput) -> bool:
         }
         and not item.is_include
     )
+
+
+def _mirror_export_paths(
+    handle: TargetHandle, inspection: TargetInspection, *, trace: bool
+) -> dict[str, str]:
+    """Map each input's private-mirror export name to its Project-relative path.
+
+    Empty unless the Project isolates native cores. The coverage build resolves
+    the Target's own core under the coverage overlay VLNV, so its files export
+    under that name; dependency cores keep their own.
+    """
+    if not native_cores_ignored(handle.project_root):
+        return {}
+    target_core = str(Vlnv(handle.vlnv))
+    overlay_core = coverage_overlay_vlnv(handle.vlnv, trace=trace)
+    return {
+        mirrored_export_name(
+            overlay_core if str(Vlnv(item.core)) == target_core else item.core, item.path
+        ): item.path
+        for item in inspection.inputs
+    }
 
 
 def _coverage_source(item: TargetInput) -> CoverageSource:
