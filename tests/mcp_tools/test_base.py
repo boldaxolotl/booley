@@ -1397,7 +1397,7 @@ class TestMcpToolMain:
                 parser.add_argument("--dry-run", action="store_true")
                 parser.add_argument("--transcript-dir", type=Path)
 
-            def _transcript_path(self):
+            def transcript_path(self):
                 self.args.transcript_dir.mkdir(parents=True, exist_ok=True)
                 return self.args.transcript_dir / "dry-run.jsonl"
 
@@ -1425,16 +1425,14 @@ class TestMcpToolMain:
         class Endpoint:
             args = argparse.Namespace(transcript_dir=tmp_path)
 
-            def _transcript_path(self):
+            def transcript_path(self):
                 return expected
 
         assert _transcript_diagnostic_path(Endpoint()) == expected
 
-    def test_transcript_diagnostic_path_ignores_missing_resolver(self, tmp_path: Path):
-        endpoint = mock.Mock(
-            args=argparse.Namespace(transcript_dir=tmp_path),
-            _transcript_path=None,
-        )
+    def test_transcript_diagnostic_path_uses_declared_default(self, tmp_path: Path):
+        endpoint = ConcreteMcpTool()
+        endpoint._args = argparse.Namespace(transcript_dir=tmp_path)
 
         assert _transcript_diagnostic_path(endpoint) is None
 
@@ -1442,7 +1440,7 @@ class TestMcpToolMain:
         class Endpoint:
             args = argparse.Namespace(transcript_dir=tmp_path)
 
-            def _transcript_path(self):
+            def transcript_path(self):
                 raise OSError("unavailable")
 
         assert _transcript_diagnostic_path(Endpoint()) is None
@@ -2207,6 +2205,8 @@ class TestNoReportDirWarning:
 def test_final_headline_contract_preserves_generic_endpoint(tmp_path, kind, calls):
     tool = ConcreteMcpTool()
     tool.endpoint_kind = kind
+    # The schema is declared per endpoint class; this double declares what its kind writes.
+    tool.report_schema = None if kind == "mcp_tool" else f"booley.{kind}-report/v1"
     tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
     tool.read_state()
     for key, met in calls:
@@ -2304,7 +2304,7 @@ def test_compatibility_detail_refresh_cannot_replace_final_headline(tmp_path, mo
         result.criterion_met = True
         result.detail["artifact"] = "retained"
 
-    monkeypatch.setattr(tool, "refresh_campaign_report_detail", refresh, raising=False)
+    monkeypatch.setattr(tool, "refresh_report_detail", refresh)
     report = final_report_omits_headline(tool, McpToolResult())
     assert tool.state.criteria["actual"].met is False
     assert report["detail"]["artifact"] == "retained"
@@ -2318,17 +2318,60 @@ def test_preexisting_met_state_is_not_a_current_report_evaluation(tmp_path):
     assert tool.state.criteria["prior"].met is True
 
 
-def test_generic_sim_named_endpoint_keeps_legacy_schema(tmp_path):
-    tool = ConcreteMcpTool()
-    tool.name = "sim"
-    tool.parse_args(["--report-dir", str(tmp_path / "reports")])
-    result = McpToolResult(criterion_key="legacy", criterion_met=False)
+def test_project_local_sim_endpoint_writes_project_local_schema(tmp_path):
+    """A Project-local endpoint named ``sim`` is not the Simulation Flow."""
     from booley.flows.endpoint_report_criteria import freeze
 
-    freeze(tool)
-    report = json.loads(tool.write_report(result).read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == ("legacy", False)
-    assert report["$schema"] == "booley.simulation-report/v2"
+    class OtherTool(ConcreteMcpTool):
+        name = "other"
+
+    documents = {}
+    for tool in (ConcreteMcpTool(), OtherTool()):
+        if tool.name == "test_endpoint":
+            tool.name = "sim"
+        tool.parse_args(["--report-dir", str(tmp_path / tool.name / "reports")])
+        freeze(tool)
+        result = McpToolResult(criterion_key="legacy", criterion_met=False)
+        documents[tool.name] = json.loads(tool.write_report(result).read_text())
+    sim, other = documents["sim"], documents["other"]
+    assert (sim["criterion_key"], sim["criterion_met"]) == ("legacy", False)
+    assert "$schema" not in sim
+    assert sim.keys() == other.keys()
+
+
+def test_report_schema_follows_endpoint_kind(tmp_path):
+    """Each endpoint kind writes its own schema, whatever the endpoint is named."""
+    from booley.flows.lint.flow import LintFlow
+    from booley.flows.lint.request import LintRequest
+    from booley.specialists.reviewer import ReviewerSpecialist
+    from tests.flows.test_flow_base import EchoFlow
+
+    class SimNamedFlow(EchoFlow):
+        name = "sim"
+
+    lint = LintFlow()
+    lint._args = LintRequest(
+        target="chosen", work_dir=tmp_path, report_dir=tmp_path / "lint-reports"
+    )
+    custom = SimNamedFlow()
+    custom.parse_args(["--target", "t", "--report-dir", str(tmp_path / "custom-reports")])
+    specialist = ReviewerSpecialist()
+    specialist.parse_args(
+        ["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "specialist-reports")]
+    )
+    schemas = {
+        endpoint_name: json.loads(endpoint.write_report(McpToolResult()).read_text())["$schema"]
+        for endpoint_name, endpoint in {
+            "specialist": specialist,
+            "custom": custom,
+            "lint": lint,
+        }.items()
+    }
+    assert schemas == {
+        "specialist": "booley.specialist-report/v1",
+        "custom": "booley.flow-report/v1",
+        "lint": "booley.flow-report/v1",
+    }
 
 
 @pytest.mark.parametrize("result_type", [McpToolResult, EndpointOutcome])

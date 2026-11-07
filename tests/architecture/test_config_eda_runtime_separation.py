@@ -69,37 +69,45 @@ def test_downward_consumption_remains_allowed():
 
 def test_approved_cyclic_groups_are_tightened_to_actual_groups():
     root = Path(__file__).resolve().parents[2] / "src" / "booley"
-    actual = {
-        frozenset(group)
-        for group in top_level_package_sccs(analyze_imports(root))
-        if len(group) > 1
-    }
+    dependencies = analyze_imports(root)
+    actual = {frozenset(group) for group in top_level_package_sccs(dependencies) if len(group) > 1}
     assert set(BOOLEY_SOURCE_DEPENDENCY_CONTRACT.approved_sccs) == actual, (
         "Tighten approved SCC metadata after a split so separated groups cannot recombine"
     )
-
-
-@pytest.mark.parametrize(
-    "separated",
-    [
-        "audit",
-        "commit_policy",
-        "config",
-        "core",
-        "docker",
-        "eda",
-        "evidence",
-        "presentation",
-        "projects",
-        "review",
-    ],
-)
-def test_separated_packages_cannot_join_the_remaining_group(separated):
-    dependencies = (
-        Dependency("booley.runtime.seed", f"booley.{separated}.seed", Path("seed.py"), 1, 0),
-        Dependency(f"booley.{separated}.seed", "booley.runtime.seed", Path("seed.py"), 2, 0),
+    # The Flow layer sits below the Specialist layer: no edge back up.
+    upward = sorted(
+        f"{dependency.path}:{dependency.line}"
+        for dependency in dependencies
+        if dependency.source.startswith("booley.flows")
+        and dependency.target.startswith("booley.specialists")
     )
+    assert upward == [], f"booley.flows imports booley.specialists: {upward}"
+
+
+# Packages already split out of the remaining group. One test covers all of them
+# so the criterion names a single collectable node.
+SEPARATED_PACKAGES = (
+    "audit",
+    "commit_policy",
+    "config",
+    "core",
+    "docker",
+    "eda",
+    "evidence",
+    "presentation",
+    "projects",
+    "review",
+    "specialists",
+)
+
+
+def test_separated_packages_cannot_join_the_remaining_group():
     contract = ArchitectureContract(approved_sccs=BOOLEY_SOURCE_DEPENDENCY_CONTRACT.approved_sccs)
-    problems = evaluate_contract(dependencies, contract)
-    assert len(problems) == 1
-    assert problems[0].kind == "scc"
+    for separated in SEPARATED_PACKAGES:
+        dependencies = (
+            Dependency("booley.runtime.seed", f"booley.{separated}.seed", Path("seed.py"), 1, 0),
+            Dependency(f"booley.{separated}.seed", "booley.runtime.seed", Path("seed.py"), 2, 0),
+        )
+        problems = evaluate_contract(dependencies, contract)
+        assert len(problems) == 1, separated
+        assert problems[0].kind == "scc", separated
