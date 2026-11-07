@@ -158,9 +158,19 @@ def _initialized_project(project_root: Path) -> Path:
     from booley.core.booley_layout import require_current_layout
 
     require_current_layout(project)
-    if not project.is_dir() or not (project / ".booley").is_dir():
+    if not project.is_dir() or not _has_booley_dir(project):
         raise ProjectInventoryError(f"not an initialized Booley Project: {project}")
     return project
+
+
+def _has_booley_dir(project: Path) -> bool:
+    """Whether *project* has its own Booley Directory (``.booley`` or a relative ``[project].dir``)."""
+    from booley.core.booley_dir import BooleyDirOutsideCheckoutError, own_booley_dir_relative
+
+    try:
+        return (project / own_booley_dir_relative(project)).is_dir()
+    except BooleyDirOutsideCheckoutError:
+        return False
 
 
 def _existing_search_root(search_root: Path) -> Path:
@@ -190,7 +200,9 @@ def _discover_under(search_root: Path) -> set[Path]:
 def _is_initialized_checkout(path: Path) -> bool:
     from booley.core.booley_layout import Layout, classify_layout
 
-    return (path / ".git").exists() and classify_layout(path) in {Layout.CURRENT, Layout.RETIRED}
+    if not (path / ".git").exists():
+        return False
+    return classify_layout(path) in {Layout.CURRENT, Layout.RETIRED} or _has_booley_dir(path)
 
 
 def _child_directories(path: Path) -> list[Path]:
@@ -216,7 +228,7 @@ def _status(project_root: Path) -> ProjectStatus:
 
     if classify_layout(project_root) is Layout.RETIRED:
         return ProjectStatus.MIGRATION_NEEDED
-    if (project_root / ".booley").is_dir():
+    if _has_booley_dir(project_root):
         return ProjectStatus.PRESENT
     return ProjectStatus.UNINITIALIZED
 

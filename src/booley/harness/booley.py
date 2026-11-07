@@ -58,7 +58,7 @@ from booley.harness.worktree_cmd import add_subparser as add_worktree_subparser
 from booley.harness.worktree_cmd import run as run_worktree
 from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
-from booley.runtime.booley_dir import BOOLEY_DIR_NAME
+from booley.runtime.booley_dir import own_booley_dir
 from booley.runtime.docs_links import docs_url
 from booley.runtime.lifecycle_lock import LifecycleLockError
 from booley.runtime.paths import cheatsheet_path
@@ -1627,7 +1627,7 @@ def _discover_project_mcp_tools(project_root: Path) -> list[McpToolInfo]:
     """
     from booley.mcp.registry import discover_mcp_tools
 
-    return discover_mcp_tools(project_mcp_tools_dir=project_root / BOOLEY_DIR_NAME / "mcp_tools")
+    return discover_mcp_tools(project_mcp_tools_dir=own_booley_dir(project_root) / "mcp_tools")
 
 
 def _load_mcp_tool_class(info: McpToolInfo) -> type | None:

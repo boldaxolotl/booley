@@ -1746,6 +1746,23 @@ class TestPromptConstruction:
             f"## {label} style guide — project overlay"
         )
 
+    def test_style_overlay_reads_relocated_booley_dir(self, state_file: Path, tmp_path: Path):
+        """A relative ``[project].dir`` moves the overlay with the Booley Directory."""
+        (tmp_path / "booley.toml").write_text('[project]\ndir = "state"\n')
+        overlay = tmp_path / "state" / "rtl_style_guide.md"
+        overlay.parent.mkdir()
+        overlay.write_text("Relocated overlay rule.\n")
+        stale = tmp_path / ".booley" / "rtl_style_guide.md"
+        stale.parent.mkdir()
+        stale.write_text("Default-location rule.\n")
+
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--work-dir", str(tmp_path)]
+        )
+
+        assert endpoint._read_style_overlay("rtl") == "Relocated overlay rule.\n"
+
     @pytest.mark.parametrize(
         ("category", "scope", "focus"),
         [

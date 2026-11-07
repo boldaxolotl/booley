@@ -17,7 +17,7 @@ from typing import Any
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.feedback import findings, materialize
 from booley.runtime.booley_dir import (
-    BOOLEY_DIR_NAME,
+    own_booley_dir_relative,
     resolve_checkout_booley_dir,
     resolve_common_booley_dir,
 )
@@ -54,11 +54,13 @@ def _locate(project_root: Path, run_id: str) -> tuple[Path, Path]:
         raise CleanupRefusedError("run_id must be one safe ASCII path component")
     root = project_root.resolve()
     try:
-        booley_dir = resolve_checkout_booley_dir(root)
+        selected = resolve_checkout_booley_dir(root)
+        # The checkout's own directory, spelled lexically; an outside one is refused here.
+        booley_dir = root / own_booley_dir_relative(root)
     except (OSError, RuntimeError, ValueError) as exc:
         raise CleanupRefusedError(f"cannot resolve the Booley Directory: {exc}") from exc
-    if booley_dir != root / BOOLEY_DIR_NAME or not booley_dir.is_dir():
-        raise CleanupRefusedError("no .booley directory was found")
+    if selected.resolve() != booley_dir.resolve() or not booley_dir.is_dir():
+        raise CleanupRefusedError("no Booley Directory was found")
     run_root = booley_dir / "tmp" / "setup" / run_id
     # The Booley Directory entry itself may be a followed link; everything below it may not.
     for path in (*reversed(run_root.parents[:2]), run_root):

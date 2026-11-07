@@ -21,7 +21,9 @@ from pathlib import Path
 try:
     from booley import commit_policy as _shared_validation
     from booley.commit_policy.policy import (
+        checkout_booley_dir,
         find_banned,
+        is_booley_dir_repository,
         source_checkout_policy_owner,
         stealth_enabled,
     )
@@ -45,13 +47,21 @@ except ImportError:
     try:
         from booley import commit_policy as _shared_validation
         from booley.commit_policy.policy import (
+            checkout_booley_dir,
             find_banned,
+            is_booley_dir_repository,
             source_checkout_policy_owner,
             stealth_enabled,
         )
     except ImportError:
         import booley_commit_validation as _shared_validation
-        from booley_commit_policy import find_banned, source_checkout_policy_owner, stealth_enabled
+        from booley_commit_policy import (
+            checkout_booley_dir,
+            find_banned,
+            is_booley_dir_repository,
+            source_checkout_policy_owner,
+            stealth_enabled,
+        )
 
     run_command = None
     for _mod in ("booley.core.run_command", "core.run_command", "run_command"):
@@ -100,7 +110,6 @@ SUBJECT_RE = _shared_validation.SUBJECT_RE
 validate_message = _shared_validation.validate_message
 
 
-_PROJECT_CONFIG_DIRS = (Path(".booley"),)
 _PROJECT_CONFIG_NAMES = ("booley.toml", "pipeline.toml")
 
 
@@ -109,15 +118,11 @@ def _has_project_config(repo_root: Path) -> bool:
     if source_checkout_policy_owner(repo_root):
         return False
 
-    nested = (
-        repo_root / subdir / name
-        for subdir in _PROJECT_CONFIG_DIRS
-        for name in _PROJECT_CONFIG_NAMES
-    )
-    if any(path.is_file() for path in nested):
+    booley_dir = checkout_booley_dir(repo_root)
+    if any((booley_dir / name).is_file() for name in _PROJECT_CONFIG_NAMES):
         return True
 
-    is_state_repo = repo_root.name == ".booley" or (
+    is_state_repo = is_booley_dir_repository(repo_root) or (
         repo_root.name == "project" and repo_root.parent.name == ".booley"
     )
     return is_state_repo and any((repo_root / name).is_file() for name in _PROJECT_CONFIG_NAMES)

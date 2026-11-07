@@ -73,7 +73,9 @@ def _resolve_main_repo_root(work_dir: Path) -> Path | None:
 
 
 def _load_toml_from_root(root: Path) -> dict | None:
-    """Load booley.toml under ``root/.booley/`` (legacy fallback included).
+    """Load booley.toml under the checkout's Booley Directory (legacy fallback included).
+
+    The directory is ``root``'s own ``[project].dir``, else ``root/.booley``.
 
     Returns the parsed dict, or None if no readable TOML is present. A file
     that exists but fails to parse/read is logged (not silently equated with
@@ -81,10 +83,10 @@ def _load_toml_from_root(root: Path) -> dict | None:
     quiet fallback to whatever the caller does when this returns None.
     Never touches the CWD-derived module cache — pure function over *root*.
     """
-    candidates = (
-        root / ".booley" / "booley.toml",
-        root / ".booley" / "pipeline.toml",
-    )
+    from booley.core.booley_dir import own_booley_dir
+
+    booley_dir = own_booley_dir(root)
+    candidates = (booley_dir / "booley.toml", booley_dir / "pipeline.toml")
     for path in candidates:
         if not path.is_file():
             continue

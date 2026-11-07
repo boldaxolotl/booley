@@ -407,3 +407,38 @@ def test_apply_from_worktree_materializes_into_main(
     attachment = Path(read_log(common).entries[0].attachments[0])
     assert attachment.is_relative_to(common / "setup-evidence") and attachment.is_file()
     assert not (worktree / ".booley" / "setup-evidence").exists()
+
+
+def test_relocated_booley_dir_run_root_round_trip(tmp_path, capsys, monkeypatch):
+    """A relative ``[project].dir`` hosts the setup run root."""
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    (tmp_path / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+    (tmp_path / "state").mkdir()
+    run_root = tmp_path / "state" / "tmp" / "setup" / "r1"
+
+    code, out = _cli(tmp_path, capsys, "prepare", "--run-id", "r1")
+    assert (code, out.get("status"), out.get("run_root")) == (0, "prepared", str(run_root))
+    assert (run_root / MARKER).is_file()
+
+    code, out = _cli(tmp_path, capsys, "apply", "--run-id", "r1")
+    assert (code, out["status"]) == (0, "removed")
+    assert not run_root.exists()
+    assert not (tmp_path / ".booley").exists()
+
+
+def test_absolute_booley_dir_run_root_is_still_refused(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "booley.toml").write_text(
+        f'[project]\ndir = "{outside.as_posix()}"\n', encoding="utf-8"
+    )
+
+    code, out = _cli(project, capsys, "prepare", "--run-id", "r1")
+
+    assert code == 2 and "Booley Directory" in out["error"]
+    assert not (outside / "tmp").exists()

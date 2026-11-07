@@ -29,7 +29,8 @@ def resolve_toml(directory: Path) -> Path:
 
 def resolve_booley_toml(project_root: Path) -> Path:
     """Resolve configuration from the current checkout's Booley Directory."""
+    from booley.core.booley_dir import own_booley_dir
     from booley.core.booley_layout import require_current_layout
 
     require_current_layout(project_root)
-    return resolve_toml(project_root / ".booley")
+    return resolve_toml(own_booley_dir(project_root))

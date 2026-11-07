@@ -25,6 +25,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -1211,6 +1212,25 @@ def test_seed_image_inspection_preserves_sequential_headings(repo, monkeypatch, 
             int(n) for n in re.findall(r"^Step (\d+)", capsys.readouterr().out, re.MULTILINE)
         ]
         assert numbers == list(range(1, len(numbers) + 1)), "seed headings must be sequential"
+
+
+def test_seed_relocated_booley_dir_passes_pdk_root(repo, monkeypatch):
+    """``--seed`` follows ``[project].dir``: a relocated directory still counts as seeded."""
+    (repo / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+    (repo / "state").mkdir()
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        init_cmd,
+        "_step_image_lifecycle",
+        lambda *_a, **_k: SimpleNamespace(status=init_cmd.ImageLifecycleStatus.CURRENT),
+    )
+    monkeypatch.setattr(init_cmd, "_step_interactive", lambda _ctx, **kwargs: seen.append(kwargs))
+    monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
+    monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: repo.parent / "pdk")
+
+    init_cmd._run_seed(InitContext(project_root=repo), init_cmd.AgentSelection("claude", "x"))
+
+    assert seen[0]["nangate_pdk_root"] == repo.parent / "pdk"
 
 
 def test_check_only_reports_directory_backfills_as_pending(repo, monkeypatch, capsys):

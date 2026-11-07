@@ -9,8 +9,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.booley_dir import own_booley_dir
 from booley.core.booley_dir_links import lexical_booley_path
-from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.harness.setup.common import (
     InitContext,
     WriteOutcome,
@@ -73,7 +73,7 @@ def _shell_bundle_resolution(project_root: Path, bundle_path: Path) -> str:
     """Resolve a checkout-local bundle, including a secondary worktree."""
     root = project_root.resolve()
     # A bundle reached through a symlinked Booley Directory entry stays $ROOT-relative.
-    physical = lexical_booley_path(root / BOOLEY_DIR_NAME, bundle_path.resolve())
+    physical = lexical_booley_path(own_booley_dir(root), bundle_path.resolve())
     try:
         relative = physical.relative_to(root).as_posix()
     except ValueError:

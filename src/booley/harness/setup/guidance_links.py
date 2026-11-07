@@ -21,7 +21,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from booley.runtime.booley_dir import BOOLEY_DIR_NAME
+from booley.runtime.booley_dir import own_booley_dir
 from booley.runtime.git import add_git_excludes
 from booley.runtime.init_plan import (
     InitAction,
@@ -210,12 +210,16 @@ def _portable_target(project_root: Path, canon: Path) -> Path:
     the repo that does not exist. The host then sees two dangling links and an
     editor or host-side agent reads no guidance at all.
 
-    ``<project_root>/.booley/AGENTS.md`` names the same file in both
+    ``<own Booley Directory>/AGENTS.md`` (``<project_root>/.booley`` unless a
+    relative ``[project].dir`` relocates it) names the same file in both
     contexts (the container reaches it through the workspace mount), so prefer it
-    whenever it exists. Falls back to *canon* for a relocated Booley Directory
-    (``[project].dir`` override), where no such repo-local path exists.
+    whenever it exists. Falls back to *canon* when the Booley Directory is
+    outside the Project Root, where no such repo-local path exists.
     """
-    repo_local = project_root / BOOLEY_DIR_NAME / CANON_NAME
+    booley_dir = own_booley_dir(project_root)
+    if not booley_dir.is_relative_to(Path(os.path.normpath(project_root.absolute()))):
+        return canon
+    repo_local = booley_dir / CANON_NAME
     return repo_local if repo_local.is_file() else canon
 
 

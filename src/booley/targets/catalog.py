@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
+from booley.core.booley_dir import own_booley_dir
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.fusesoc.target_inspection import (
     # Intentional private adapter seam: TargetCatalog is the only production
@@ -289,7 +290,7 @@ class TargetCatalog:
                 }
             )
         )
-        projection_config = self.project_root / ".booley" / "booley.toml"
+        projection_config = own_booley_dir(self.project_root) / "booley.toml"
         self._require_fresh()
         return TargetCompileSurface(
             project_root=self.project_root,
