@@ -509,6 +509,9 @@ def test_isolated_icarus_reuse_declines_option_operands(
     lib = root.resolve() / "ext"
     lib.mkdir()
     (root / "rtl" / "top.v").write_text("module top; endmodule\n", encoding="utf-8")
+    _write_project_core(root, user_files=False, headers=False)
+    # Control: the stock recipe reuses, so a None key below comes from the option.
+    assert _icarus_key(_prepare(root, "sim_icarus", name="control"), root) is not None
     _write_project_core(
         root, user_files=False, headers=False, icarus_options=_unstock_options(lib)[case]
     )
