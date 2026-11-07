@@ -506,9 +506,11 @@ def test_typed_failure_releases_admission_and_restores_stdout(failure, runtime, 
     import sys
     from unittest.mock import Mock
 
+    from booley.config.jobs import SlotCaps
+
     flow = LintFlow()
     claim = object()
-    store = Mock()
+    store = Mock(caps=SlotCaps())
     monkeypatch.setattr(EndpointState, "_acquire_job_slot", lambda self: (store, claim))
 
     def run():
