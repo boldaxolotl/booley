@@ -877,6 +877,114 @@ def test_mutmut_configuration_lives_only_in_setup_cfg() -> None:
     assert _mutmut_config()["pytest_add_cli_args_test_selection"] == ["tests/harness/"]
 
 
+@pytest.mark.parametrize(
+    ("initial", "expected"),
+    [
+        pytest.param("stats", None, id="stats"),
+        pytest.param("booley.harness.setup.x.x_foo__mutmut_1", "unchanged", id="mutant"),
+        pytest.param(None, None, id="unset"),
+    ],
+)
+def test_mutmut_stats_mode_is_hidden_from_child_processes(
+    monkeypatch: pytest.MonkeyPatch, initial: str | None, expected: str | None
+) -> None:
+    """Only mutmut's stats marker is removed; mutant names still reach children."""
+    from tests import conftest
+
+    if initial is None:
+        monkeypatch.delenv("MUTANT_UNDER_TEST", raising=False)
+    else:
+        monkeypatch.setenv("MUTANT_UNDER_TEST", initial)
+
+    conftest.hide_mutmut_stats_mode_from_children()
+
+    expected_value = initial if expected == "unchanged" else expected
+    assert os.environ.get("MUTANT_UNDER_TEST") == expected_value
+
+
+_STATS_MODE_PROBE = '''\
+"""Pytest plugin: record the stats-mode variable a session sees after configuration."""
+
+import os
+import pathlib
+
+
+def pytest_collection_finish(session):
+    value = os.environ.get("MUTANT_UNDER_TEST")
+    pathlib.Path(os.environ["STATS_MODE_PROBE_OUT"]).write_text(repr(value), encoding="utf-8")
+'''
+
+
+def test_pytest_session_hides_mutmut_stats_mode_from_children(tmp_path: Path) -> None:
+    """The real ``pytest_configure`` boundary strips the marker before any test runs.
+
+    The unit cases above call the helper directly; this one fails if the call is
+    ever dropped from ``tests/conftest.py``'s configure hook.
+    """
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "mutmut_env_probe.py").write_bytes(_STATS_MODE_PROBE.encode("utf-8"))
+    probe_out = tmp_path / "probe-out.txt"
+    environment = dict(os.environ)
+    for name in (
+        "BOOLEY_DIR",
+        "BOOLEY_PYTEST_EVIDENCE_DIR",
+        "BOOLEY_PYTEST_TIMING_FILE",
+        "PYTEST_ADDOPTS",
+        "PYTEST_XDIST_WORKER",
+        "PYTEST_XDIST_TESTRUNUID",
+    ):
+        environment.pop(name, None)
+    environment["MUTANT_UNDER_TEST"] = "stats"
+    environment["STATS_MODE_PROBE_OUT"] = str(probe_out)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(probe_dir), *filter(None, [environment.get("PYTHONPATH")])]
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:xdist",
+            "-p",
+            "no:cacheprovider",
+            "-p",
+            "mutmut_env_probe",
+            "--test-profile",
+            "python",
+            f"--basetemp={tmp_path / 'child'}",
+            "--collect-only",
+            "-q",
+            "tests/test_pytest_configuration.py::test_mutmut_configuration_lives_only_in_setup_cfg",
+        ],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert probe_out.read_text(encoding="utf-8") == "None"
+
+
+def test_mutmut_pytest_options_show_failing_test_traceback() -> None:
+    """A stats-collection failure must print a short traceback and a summary.
+
+    ``--tb=no`` hid the cause of every failed campaign, and mutmut already adds
+    ``-x`` to each of its runs, so repeating it is redundant.
+    """
+    options = _mutmut_config()["pytest_add_cli_args"]
+
+    assert "--tb=short" in options
+    assert "-rfE" in options
+    assert "--tb=no" not in options
+    assert "-x" not in options
+
+
 def test_mutation_sandbox_mirrors_every_tracked_checkout_entry() -> None:
     """mutmut's ``mutants/`` copy stays a faithful Booley source checkout.
 
