@@ -231,7 +231,8 @@ ERROR: post-setup hook failed (rc=3); log: .../.booley/worktrees/.logs/<name>.lo
 ```
 
 Booley removed the worktree and its `booley-worktree/<name>` branch, so nothing
-is left to clean up. Read the log the error names for the hook's output. Fix
+is left to clean up, unless the error also says `outer rollback failed`. Read
+the log the error names for the hook's output. Fix
 `.booley/hooks/post-setup.*`, commit the fix if your Booley Directory is its own
 Git repository (a Paired Checkout starts from its last commit), and run the
 command again. The same cleanup follows a failed submodule fill.
