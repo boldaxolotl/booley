@@ -169,7 +169,7 @@ def test_detached_endpoint_inventory():
         if info.kind == "flow":
             parser = build_parser(endpoint, human=True)
         else:
-            parser = human_endpoint_parser(endpoint, durations=True)
+            parser = human_endpoint_parser(endpoint)
         assert_controls(parser, timeout=True)
 
 
@@ -294,7 +294,7 @@ def test_tail_selection_matches_endpoint_parse(projects):
 def test_tail_selection_ignores_payload_text():
     from booley.harness.endpoint_help import tail_project_selections
 
-    parser = human_endpoint_parser(ReviewerSpecialist(), durations=True)
+    parser = human_endpoint_parser(ReviewerSpecialist())
     for tail in (
         ["--instruction", "--project", "--scope", "rtl"],
         ["--instruction", "text --project b", "--", "--project", "../b"],
@@ -535,7 +535,7 @@ def test_complete_specialist_schemas_are_compatible():
             continue
         endpoint = cli._load_mcp_tool_class(info)()
         assert flow_schema(endpoint) == expected[info.name]
-        human_endpoint_parser(endpoint, durations=True)
+        human_endpoint_parser(endpoint)
         assert flow_schema(endpoint) == expected[info.name]
 
 
@@ -610,3 +610,30 @@ def test_canonical_synth_help_uses_initialized_project(
     positions = [output.index(title) for title in titles]
     assert positions == sorted(positions)
     assert list(projects[0].joinpath(".booley").iterdir()) == []
+
+
+def test_duration_option_follows_endpoint_kind():
+    """Specialists take ``--timeout``; a Project-local endpoint declaring ``--timeout-ms`` does not."""
+    import inspect
+
+    from booley.flows.cli_arguments import parse_duration
+
+    assert "durations" not in inspect.signature(human_endpoint_parser).parameters
+    specialist = human_endpoint_parser(ReviewerSpecialist())
+    timeout = specialist._option_string_actions["--timeout"]
+    assert timeout.type is parse_duration
+
+    class TimeoutTool(McpTool):
+        name = "timeout_tool"
+        description = "Declares only the millisecond timeout."
+
+        def _add_args(self, parser: argparse.ArgumentParser) -> None:
+            from booley.flows.cli_arguments import add_timeout_args
+
+            add_timeout_args(parser)
+
+        def _run(self):
+            raise AssertionError("not executed")
+
+    local = human_endpoint_parser(TimeoutTool())
+    assert "--timeout" not in local._option_string_actions
