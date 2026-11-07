@@ -81,7 +81,10 @@ Agents use the read-only Agent Readiness Check at
 `.github/scripts/agent_readiness.py` before creating a linked worktree and
 again before editing it. It uses one shared tools-only environment, never
 installs Booley from any checkout, and runs commands against the active
-worktree's source. Develop readiness defaults to the `python` test profile: its
+worktree's source. At `handoff` it names CI's lint-job checks: `ruff
+check .`, `ruff format --check .`, and `pyright` (the strict boundary check,
+configured by `[tool.pyright]` in `pyproject.toml`, resolving third-party
+imports in the shared environment). Develop readiness defaults to the `python` test profile: its
 broad command runs `tests/ --test-profile python`, excluding every
 `native_bwave` test. It includes every Goal recovery and authority
 permutation, as every complete-suite CI run does.
