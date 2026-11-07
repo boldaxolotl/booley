@@ -326,8 +326,11 @@ def _has_unstock_iverilog_command(command: str, script_name: str) -> bool:
     return seen != {"-c", "-o"}
 
 
-def _has_unstock_icarus_makefile(text: str, image: str) -> bool:
+def _has_unstock_icarus_makefile(text: str, iverilog_command: str) -> bool:
     """Return whether the Makefile holds a line Make honours but the recipe split misses.
+
+    *iverilog_command* has passed ``_has_unstock_iverilog_command``, so it holds
+    one ``-o <image>`` pair; the image is a legal rule header.
 
     Make splits on ``\\n`` only and reads non-recipe lines as assignments,
     directives or rules, so every such line must be blank, a plain comment or one
@@ -335,6 +338,8 @@ def _has_unstock_icarus_makefile(text: str, image: str) -> bool:
     """
     if not _ICARUS_MAKEFILE_TEXT.fullmatch(text):
         return True
+    tokens = iverilog_command.split(" ")
+    image = tokens[tokens.index("-o") + 1]
     targets = "|".join(
         re.escape(name)
         for name in ("all", "pre_build", "post_build", "pre_run", "run", "post_run", image)
@@ -372,28 +377,18 @@ def _has_unsupported_icarus_recipe(prepared: PreparedSimulationBuild, project_ro
             prepared.work_root.resolve()
         ):
             return True
-    makefile_text = (root / "Makefile").read_text(encoding="utf-8")
+    # Make drops a CR only before a LF, so read the bytes: universal newlines would
+    # turn a lone CR into a line break the Makefile check below could not see.
+    makefile_text = (root / "Makefile").read_bytes().decode("utf-8").replace("\r\n", "\n")
     commands = [line.strip() for line in makefile_text.splitlines() if line.startswith("\t")]
     if len(commands) != 2 or not (
         commands[0].startswith("$(EDALIZE_LAUNCHER) iverilog ")
         and commands[1].startswith("$(EDALIZE_LAUNCHER) vvp ")
     ):
         return True
-    return fusesoc_registry.native_cores_ignored(project_root) and _has_unstock_icarus_recipe(
-        makefile_text, commands[0], scripts[0].name
-    )
-
-
-def _has_unstock_icarus_recipe(
-    makefile_text: str, iverilog_command: str, script_name: str
-) -> bool:
-    """Return whether an isolated Project's Makefile or ``iverilog`` line is not stock."""
-    tokens = iverilog_command.split(" ")
-    image = tokens[tokens.index("-o") + 1] if "-o" in tokens[:-1] else None
-    return (
-        image is None
-        or _has_unstock_icarus_makefile(makefile_text, image)
-        or _has_unstock_iverilog_command(iverilog_command, script_name)
+    return fusesoc_registry.native_cores_ignored(project_root) and (
+        _has_unstock_iverilog_command(commands[0], scripts[0].name)
+        or _has_unstock_icarus_makefile(makefile_text, commands[0])
     )
 
 
