@@ -31,6 +31,7 @@ import pytest
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
+
 _FIXTURES = Path(__file__).parent / "fixtures/pin_checksums"
 _RECORDED: dict[str, Any] = json.loads((_FIXTURES / "recorded.json").read_text(encoding="utf-8"))
 
@@ -112,13 +113,13 @@ _CASES: dict[str, tuple[str, str, frozenset[str], dict[str, list[str]]]] = {
 
 @functools.cache
 def _script() -> Any:
-    """Load the script on first use so a missing script fails the test body."""
+    """Load the script on first use so a missing script fails the test body (red evidence)."""
     return importlib.import_module("pin_checksums")
 
 
 def _stand_in(url: str) -> bytes:
     body = f"stand-in for {url}\n".encode()
-    return body + b"\0" * (1_048_583 if _LARGE_STAND_IN in url else 0)
+    return body + b"\0" * ((1 << 20) + 7 if _LARGE_STAND_IN in url else 0)
 
 
 class _Upstream:
@@ -130,7 +131,8 @@ class _Upstream:
 
     def __call__(self, request: Any) -> io.BytesIO:
         url = request.full_url
-        self.requests.append((url, dict(request.header_items())))
+        # Only unredirected headers: a token in a regular header would follow a redirect.
+        self.requests.append((url, dict(request.unredirected_hdrs)))
         if url in self._overrides:
             body = self._overrides[url]
         elif url in _RECORDED:
@@ -211,27 +213,34 @@ def test_known_pin_rewrites_paired_values_from_recorded_upstream(
         assert ("Authorization" in headers) == on_api, url
 
 
+def _locations(pin: Any) -> list[Any]:
+    """Every value location the script reads or writes for ``pin``."""
+    found = [pin.version, *([pin.npm] if pin.npm else [])]
+    for download in pin.downloads:
+        found += [*download.sha, *download.url_copies]
+        found += [] if isinstance(download.url, str) else [download.url]
+    return found + ([pin.vsix.tag, pin.vsix.commit] if pin.vsix else [])
+
+
 def test_real_files_hold_every_pin_location_once() -> None:
-    script = _script()
-    tree = script.Tree(_ROOT)
-    assert set(script.PINS) == {dep for dep, *_ in _CASES.values()}
-    for pin in script.PINS.values():
-        for value in pin.values:
+    tree = _script().Tree(_ROOT)
+    assert set(_script().PINS) == {dep for dep, *_ in _CASES.values()}
+    for pin in _script().PINS.values():
+        for value in _locations(pin):
             tree.read(value)
         for download in pin.downloads:
             assert tree.url(download, pin.version.file).startswith("https://")
 
 
 def test_second_run_changes_nothing(tmp_path: Path) -> None:
-    script = _script()
     root = _checkout(tmp_path, list(_CASES))
     upgrades = [(dep, version) for dep, version, *_ in _CASES.values()]
-    upstream = script.Upstream(_Upstream())
+    upstream = _script().Upstream(_Upstream())
 
-    first = script.rewrite(root, upgrades, upstream)
+    first = _script().rewrite(root, upgrades, upstream)
     assert first
     assert _snapshot(root) == _snapshot(_FIXTURES / "repo")
-    assert script.rewrite(root, upgrades, upstream) == []
+    assert _script().rewrite(root, upgrades, upstream) == []
     assert _snapshot(root) == _snapshot(_FIXTURES / "repo")
 
 
@@ -241,13 +250,24 @@ _VERIBLE_URL = (
     "verible-v0.0-4296-g0f262651-linux-static-x86_64.tar.gz"
 )
 _NODE_INDEX_URL = "https://nodejs.org/dist/index.json"
+_VAPORVIEW_META_URL = "https://open-vsx.org/api/lramseyer/vaporview/1.6.0"
+_SV2V_RELEASE_URL = "https://api.github.com/repos/zachjs/sv2v/releases/tags/v0.0.13"
+_NODE_SUMS_URL = "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt"
 _VAPORVIEW_SHA_URL = (
     "https://open-vsx.org/api/lramseyer/vaporview/1.6.0/file/lramseyer.vaporview-1.6.0.sha256"
 )
 
 
+def _vaporview_meta(repository: str | None = None, **files: str) -> dict[str, bytes | None]:
+    """Override the recorded Open VSX metadata of VaporView with different fields."""
+    meta = json.loads(json.dumps(_RECORDED[_VAPORVIEW_META_URL]))
+    meta["files"].update(files)
+    meta["repository"] = repository or meta["repository"]
+    return {_VAPORVIEW_META_URL: json.dumps(meta).encode()}
+
+
 @pytest.mark.parametrize(
-    ("good", "bad", "bad_version", "overrides", "dropped_arg"),
+    ("good", "bad", "bad_version", "overrides", "edit"),
     [
         pytest.param("verible", "sv2v", None, {_SV2V_URL: None}, None, id="download-failure"),
         pytest.param(
@@ -261,7 +281,62 @@ _VAPORVIEW_SHA_URL = (
             None,
             id="openvsx-metadata-mismatch",
         ),
-        pytest.param("verible", "sv2v", None, {}, "SV2V_SHA256", id="missing-companion-value"),
+        pytest.param(
+            "verible",
+            "sv2v",
+            None,
+            {},
+            (r"^ARG SV2V_SHA256=.*\n", ""),
+            id="missing-companion-value",
+        ),
+        pytest.param(
+            "verible",
+            "sv2v",
+            None,
+            {},
+            ("/sv2v-Linux.zip", "/sv2v-Linux-x64.zip"),
+            id="download-not-in-dockerfile",
+        ),
+        pytest.param(
+            "sv2v",
+            "vaporview",
+            None,
+            _vaporview_meta(sha256="https://evil.example/x.sha256"),
+            None,
+            id="foreign-host",
+        ),
+        pytest.param(
+            "sv2v",
+            "vaporview",
+            None,
+            _vaporview_meta(repository="https://github.com/evil/vaporview"),
+            None,
+            id="openvsx-wrong-repository",
+        ),
+        pytest.param(
+            "sv2v",
+            "vaporview",
+            None,
+            _vaporview_meta(download="https://open-vsx.org/api/other.vsix"),
+            None,
+            id="openvsx-wrong-download",
+        ),
+        pytest.param(
+            "verible",
+            "sv2v",
+            None,
+            {_SV2V_RELEASE_URL: b'{"assets": null}'},
+            None,
+            id="malformed-upstream-json",
+        ),
+        pytest.param(
+            "sv2v",
+            "node",
+            None,
+            {_NODE_SUMS_URL: b"0" * 64 + b"  node-v24.21.0-linux-x64.tar.xz\n"},
+            None,
+            id="node-shasums-mismatch",
+        ),
         pytest.param("verible", "sv2v", "v9.9.9", {}, None, id="version-not-applied"),
         pytest.param(
             "verible",
@@ -278,16 +353,14 @@ def test_failure_exits_nonzero_and_leaves_files_unchanged(
     bad: str,
     bad_version: str | None,
     overrides: dict[str, bytes | None],
-    dropped_arg: str | None,
+    edit: tuple[str, str] | None,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     root = _checkout(tmp_path, list(_CASES))
-    if dropped_arg:
+    if edit:
         dockerfile = root / _BASE
-        text = re.sub(
-            rf"^ARG {dropped_arg}=.*\n", "", dockerfile.read_bytes().decode(), flags=re.M
-        )
+        text = re.sub(edit[0], edit[1], dockerfile.read_bytes().decode(), flags=re.M)
         dockerfile.write_bytes(text.encode())
     before = _snapshot(root)
     bad_dep, version = _CASES[bad][:2]
@@ -295,10 +368,13 @@ def test_failure_exits_nonzero_and_leaves_files_unchanged(
         tmp_path, [(_CASES[good][0], _CASES[good][1]), (bad_dep, bad_version or version)]
     )
 
-    assert _run(root, data_file, _Upstream(overrides)) == 1
+    upstream = _Upstream(overrides)
+
+    assert _run(root, data_file, upstream) == 1
 
     assert _snapshot(root) == before
     assert bad_dep in capsys.readouterr().err
+    assert "evil.example" not in upstream.hosts()
 
 
 def test_replace_failure_removes_temp_files(
@@ -336,11 +412,12 @@ def test_bad_data_file_is_a_usage_error(contents: str, tmp_path: Path) -> None:
 def test_unknown_dep_names_are_ignored(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = _checkout(tmp_path, list(_CASES))
     before = _snapshot(root)
-    unknown = [("YosysHQ/yosys", "v0.99"), ("openroad", "1.2.3"), ("left-pad", "1.3.0")]
+    # A digest-only Docker pin has no tag: Renovate renders its newValue empty.
+    unknown = [("YosysHQ/yosys", "v0.99"), ("openroad", "1.2.3"), ("docker.io/x/y", "")]
     upstream = _Upstream()
 
     assert _run(root, _data_file(tmp_path, unknown), upstream) == 0
 
     assert upstream.requests == []
     assert _snapshot(root) == before
-    assert "ignored left-pad" in capsys.readouterr().err
+    assert "ignored docker.io/x/y" in capsys.readouterr().err

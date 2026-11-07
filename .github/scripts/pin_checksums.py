@@ -23,15 +23,16 @@ Pins are known by depName: a GitHub repository (release assets),
 ``openvsx:<namespace>/<name>`` (VSIX files) or ``node``. Unknown names are
 ignored. The files must already carry the new version (Renovate applied the
 bump). Exit 0: done, or nothing to do. Exit 1: a download failed, a companion
-value is missing, or upstream metadata disagrees with the artifact; no file was
-changed. Exit 2: unusable data file.
+value is missing, or upstream metadata disagrees with the artifact; files are
+written only after every upgrade succeeded. Exit 2: unusable data file. A
+digest-only pin renders an empty ``newValue``: that is fine for an unknown pin.
 
 The URL is read from the build's own download line, so the script hashes what
 the build downloads. It fetches only from the hosts each pin already uses plus
 ``api.github.com`` (release asset digests, VSIX source tags: the API Renovate's
-GitHub datasources query). Redirects are followed, as the build's ``curl -fsSL``
-does. ``GITHUB_TOKEN``, when set, goes to ``api.github.com`` only (60
-unauthenticated requests per hour per IP).
+GitHub datasources query). Redirects (to CDN hosts) are followed; only the URL
+the script builds is checked against the hosts. ``GITHUB_TOKEN``, when set, goes
+to ``api.github.com`` only (60 unauthenticated requests per hour per IP).
 
 Trust on first download: a recomputed sha256 trusts whatever upstream serves at
 that moment. The cross-checks (GitHub release digest, Open VSX ``.sha256``, Node
@@ -63,6 +64,7 @@ from typing import IO, Any, Literal
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / "src"))
 
+from booley.core.boundary import require_list, require_str_value
 from booley.runtime.dockerfile_syntax import build_arguments
 
 Opener = Callable[[urllib.request.Request], IO[bytes]]
@@ -137,17 +139,6 @@ class Pin:
     hosts: frozenset[str]
     vsix: Vsix | None = None
     npm: Value | None = None
-
-    @property
-    def values(self) -> tuple[Value, ...]:
-        """Every location the script reads or writes for this pin."""
-        found: list[Value] = [self.version]
-        for download in self.downloads:
-            found += [*download.sha, *download.url_copies]
-            found += [download.url] if not isinstance(download.url, str) else []
-        found += [self.vsix.tag, self.vsix.commit] if self.vsix else []
-        found += [self.npm] if self.npm else []
-        return tuple(found)
 
 
 _BASE = "src/booley/data/docker/Dockerfile.base"
@@ -295,6 +286,7 @@ class Tree:
         return self.text(value.file)[start:end]
 
     def write(self, value: Value, new: str) -> None:
+        """Queue ``new`` for ``value`` after checking it cannot break out of its line."""
         if not _WRITABLE.fullmatch(new):
             raise PinError(f"refusing to write unexpected value {new!r} to {value.file}")
         start, end = self._span(value)
@@ -382,17 +374,23 @@ def _get(data: Any, *path: str) -> Any:
     return data
 
 
-Write = tuple[Value, str]
+PendingValue = tuple[Value, str]
 
 
-def _check_release(pin: Pin, tree: Tree, url: str, digest: str, up: Upstream) -> list[Write]:
+def _check_release(
+    pin: Pin, tree: Tree, url: str, digest: str, upstream: Upstream
+) -> list[PendingValue]:
     """Cross-check the digest GitHub publishes for the release asset, when it publishes one."""
     match = _RELEASE_URL.fullmatch(url)
     if match is None:
         raise PinError(f"{url} is not a GitHub release asset")
     repo, tag, name = match.groups()
-    release = up.json_at(f"{_API}/repos/{repo}/releases/tags/{tag}", pin.hosts)
-    assets = [asset for asset in _get(release, "assets") if _get(asset, "name") == name]
+    release = upstream.json_at(f"{_API}/repos/{repo}/releases/tags/{tag}", pin.hosts)
+    assets = [
+        asset
+        for asset in require_list(_get(release, "assets"), field="assets")
+        if _get(asset, "name") == name
+    ]
     if not assets:
         raise PinError(f"release {tag} of {repo} has no asset {name}")
     published = assets[0].get("digest")
@@ -401,16 +399,16 @@ def _check_release(pin: Pin, tree: Tree, url: str, digest: str, up: Upstream) ->
     return []
 
 
-def _tag_commit(up: Upstream, hosts: frozenset[str], repo: str, tag: str) -> str:
+def _tag_commit(upstream: Upstream, hosts: frozenset[str], repo: str, tag: str) -> str:
     """Resolve a tag to its commit, peeling annotated tags."""
-    target = _get(up.json_at(f"{_API}/repos/{repo}/git/ref/tags/{tag}", hosts), "object")
+    target = _get(upstream.json_at(f"{_API}/repos/{repo}/git/ref/tags/{tag}", hosts), "object")
     for _ in range(_MAX_TAG_PEEL):
-        kind, sha = _get(target, "type"), _get(target, "sha")
+        kind, sha = _get(target, "type"), require_str_value(_get(target, "sha"), field="sha")
         if kind == "commit":
             return sha
         if kind != "tag":
             break
-        target = _get(up.json_at(f"{_API}/repos/{repo}/git/tags/{sha}", hosts), "object")
+        target = _get(upstream.json_at(f"{_API}/repos/{repo}/git/tags/{sha}", hosts), "object")
     raise PinError(f"tag {tag} of {repo} does not resolve to a commit")
 
 
@@ -418,57 +416,63 @@ def _repository_key(url: str) -> str:
     return url.lower().removeprefix("git+").removesuffix("/").removesuffix(".git")
 
 
-def _check_openvsx(pin: Pin, tree: Tree, url: str, digest: str, up: Upstream) -> list[Write]:
+def _check_openvsx(
+    pin: Pin, tree: Tree, url: str, digest: str, upstream: Upstream
+) -> list[PendingValue]:
     """Cross-check Open VSX metadata and resolve the source tag and commit."""
     vsix = pin.vsix
     assert vsix is not None, "an openvsx pin always carries a Vsix"
     version = tree.read(pin.version)
-    meta = up.json_at(f"https://open-vsx.org/api/{vsix.extension}/{version}", pin.hosts)
+    meta = upstream.json_at(f"https://open-vsx.org/api/{vsix.extension}/{version}", pin.hosts)
     if _get(meta, "version") != version or _get(meta, "files", "download") != url:
         raise PinError(f"Open VSX describes a different file than the build downloads ({url})")
-    repository = _get(meta, "repository")
+    repository = require_str_value(_get(meta, "repository"), field="repository")
     if _repository_key(repository) != _repository_key(f"https://github.com/{vsix.repo}"):
         raise PinError(f"Open VSX points at {repository}, not {vsix.repo}")
-    published = (up.text(_get(meta, "files", "sha256"), pin.hosts).split() or [""])[0].lower()
+    sha_url = require_str_value(_get(meta, "files", "sha256"), field="files.sha256")
+    published = (upstream.text(sha_url, pin.hosts).split() or [""])[0].lower()
     if published != digest:
         raise PinError(f"downloaded sha256 {digest} but Open VSX publishes {published!r}")
     tag = vsix.tag_format.format(version=version)
-    return [(vsix.tag, tag), (vsix.commit, _tag_commit(up, pin.hosts, vsix.repo, tag))]
+    return [(vsix.tag, tag), (vsix.commit, _tag_commit(upstream, pin.hosts, vsix.repo, tag))]
 
 
-def _check_node(pin: Pin, tree: Tree, url: str, digest: str, up: Upstream) -> list[Write]:
+def _check_node(
+    pin: Pin, tree: Tree, url: str, digest: str, upstream: Upstream
+) -> list[PendingValue]:
     """Cross-check ``SHASUMS256.txt`` and read the npm version bundled with this Node."""
     base, _, name = url.rpartition("/")
-    sums = up.text(f"{base}/SHASUMS256.txt", pin.hosts)
+    sums = upstream.text(f"{base}/SHASUMS256.txt", pin.hosts)
     published = dict(line.split()[::-1] for line in sums.splitlines() if len(line.split()) == 2)
     if published.get(name) != digest:
         raise PinError(
             f"downloaded sha256 {digest} but SHASUMS256.txt lists {published.get(name)}"
         )
-    index = up.json_at("https://nodejs.org/dist/index.json", pin.hosts)
+    index = upstream.json_at("https://nodejs.org/dist/index.json", pin.hosts)
     release = f"v{tree.read(pin.version).removeprefix('v')}"
+    index = require_list(index, field="dist/index.json")
     npm = [_get(entry, "npm") for entry in index if _get(entry, "version") == release]
     if len(npm) != 1:
         raise PinError(f"dist/index.json lists {len(npm)} entries for {release}")
     assert pin.npm is not None, "a node pin always names its npm version"
-    return [(pin.npm, npm[0])]
+    return [(pin.npm, require_str_value(npm[0], field="npm"))]
 
 
 _CHECKS = {"release": _check_release, "openvsx": _check_openvsx, "node": _check_node}
 
 
-def _apply(pin: Pin, new_value: str, tree: Tree, up: Upstream) -> None:
+def _apply(pin: Pin, new_value: str, tree: Tree, upstream: Upstream) -> None:
     """Recompute every paired value of ``pin`` from upstream and queue it in ``tree``."""
     version = tree.read(pin.version)
     if version.removeprefix("v") != new_value.removeprefix("v"):
         raise PinError(f"the files pin {version} but the upgrade is to {new_value}")
-    writes: list[Write] = []
+    writes: list[PendingValue] = []
     for download in pin.downloads:
         url = tree.url(download, pin.version.file)
-        digest = up.sha256(url, pin.hosts)
+        digest = upstream.sha256(url, pin.hosts)
         writes += [(value, digest) for value in download.sha]
         writes += [(value, url) for value in download.url_copies]
-        writes += _CHECKS[pin.kind](pin, tree, url, digest, up)
+        writes += _CHECKS[pin.kind](pin, tree, url, digest, upstream)
     for value, new in writes:
         tree.write(value, new)
 
@@ -505,12 +509,13 @@ def rewrite(root: Path, upgrades: Sequence[Upgrade], upstream: Upstream) -> list
             continue
         try:
             _apply(pin, new_value, tree, upstream)
-        except PinError as error:
+        except (PinError, ValueError) as error:  # ValueError: malformed upstream JSON shape
             raise PinError(f"{dep_name}: {error}") from error
     return _publish(tree)
 
 
 def _load_upgrades(path: Path) -> list[Upgrade]:
+    """Read Renovate's update description; raise ``ValueError`` when it is unusable."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
@@ -521,13 +526,14 @@ def _load_upgrades(path: Path) -> list[Upgrade]:
     upgrades: list[Upgrade] = []
     for entry in entries:
         names = (entry.get("depName"), entry.get("newValue")) if isinstance(entry, dict) else ()
-        if len(names) != 2 or not all(isinstance(name, str) and name for name in names):
+        if len(names) != 2 or not all(isinstance(name, str) for name in names) or not names[0]:
             raise ValueError(f"{path}: every upgrade needs a depName and a newValue")
         upgrades.append((names[0], names[1]))
     return upgrades
 
 
 def main(argv: Sequence[str] | None = None, *, opener: Opener | None = None) -> int:
+    """Run the script; return the exit code (0 done, 1 pin failure, 2 bad data file)."""
     parser = argparse.ArgumentParser(description="Rewrite pin checksums after a Renovate bump.")
     parser.add_argument("data_file", type=Path, help="Renovate update description (JSON)")
     parser.add_argument("--root", type=Path, default=_ROOT, help="checkout to rewrite")
