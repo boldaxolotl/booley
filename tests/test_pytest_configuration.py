@@ -779,6 +779,27 @@ def test_lint_job_uses_quality_only_dependencies() -> None:
     assert install_step["run"] == 'pip install -e ".[quality]" -c .github/ci/constraints.txt'
 
 
+def _assert_worktree_mounts_disk_and_failure_gating(job: dict) -> None:
+    """#2896: free disk before the build, never skip the preflight, gate the evidence steps."""
+    names = [item.get("name") for item in job["steps"]]
+    step = _named_step(job, "Run required worktree mount cases")
+    assert "Free unused runner disk" in names
+    free_disk = _named_step(job, "Free unused runner disk")
+    assert free_disk["uses"] == "./.github/actions/free-runner-disk"
+    assert "if" not in free_disk
+    assert names.index(free_disk["name"]) < names.index("Build canonical Sandbox Image")
+    deep_tests_text = (REPOSITORY_ROOT / ".github/workflows/deep-tests.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT" not in deep_tests_text
+    # A failed build leaves only the build step red: the evidence steps key off
+    # which steps ran instead of `always()`.
+    assert _named_step(job, "Build canonical Sandbox Image")["id"] == "build-image"
+    assert step["id"] == "worktree-pytest"
+    upload = _named_step(job, "Upload worktree execution evidence")
+    assert upload["if"] == "always() && steps.build-image.outcome != 'skipped'"
+
+
 def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
     workflow = _deep_tests_workflow()
     assert set(workflow.get("on", workflow.get(True))) == {"schedule", "workflow_dispatch"}
@@ -796,8 +817,8 @@ def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
     assert "if" not in step
     names = [item.get("name") for item in job["steps"]]
     assert names.index("Build canonical Sandbox Image") < names.index(step["name"])
+    _assert_worktree_mounts_disk_and_failure_gating(job)
     upload = _named_step(job, "Upload worktree execution evidence")
-    assert upload["if"] == "always()"
     assert upload["with"]["if-no-files-found"] == "error"
     assert step["env"]["BOOLEY_REQUIRE_WORKTREE_DOCKER"] == "1"
     assert step["env"]["BOOLEY_WORKTREE_DOCKER_IMAGE"] == "booley-sandbox:latest"
@@ -808,7 +829,10 @@ def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
     assert " -m " not in command.replace("python -m pytest", "pytest")
     assert " -n " not in command
     evidence = _named_step(job, "Assert worktree execution evidence")
-    assert evidence["if"] == "always()"
+    assert evidence["if"] == (
+        "always() && (steps.worktree-pytest.outcome == 'success' "
+        "|| steps.worktree-pytest.outcome == 'failure')"
+    )
     assert 'assert_junit.py "${RUNNER_TEMP}/worktree-mounts.xml"' in evidence["run"]
     assert "--min-tests 1 --max-skips 0" in evidence["run"]
     for item in [job, *job["steps"]]:
