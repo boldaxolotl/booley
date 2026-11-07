@@ -47,7 +47,7 @@ def test_bundled_commit_msg_hook_honors_relocated_booley_dir(tmp_path: Path) -> 
     )
 
     assert result.returncode == 1, result.stderr
-    assert "commit message" in result.stderr.lower() or "subject" in result.stderr.lower()
+    assert "Commit message validation FAILED" in result.stderr
 
 
 def _convention(enabled: bool = True):

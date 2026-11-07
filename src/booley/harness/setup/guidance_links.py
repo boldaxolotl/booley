@@ -21,7 +21,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from booley.runtime.booley_dir import own_booley_dir
+from booley.runtime.booley_dir import BooleyDirOutsideCheckoutError, own_booley_dir_relative
 from booley.runtime.git import add_git_excludes
 from booley.runtime.init_plan import (
     InitAction,
@@ -216,10 +216,10 @@ def _portable_target(project_root: Path, canon: Path) -> Path:
     whenever it exists. Falls back to *canon* when the Booley Directory is
     outside the Project Root, where no such repo-local path exists.
     """
-    booley_dir = own_booley_dir(project_root)
-    if not booley_dir.is_relative_to(Path(os.path.normpath(project_root.absolute()))):
+    try:
+        repo_local = project_root / own_booley_dir_relative(project_root) / CANON_NAME
+    except BooleyDirOutsideCheckoutError:
         return canon
-    repo_local = booley_dir / CANON_NAME
     return repo_local if repo_local.is_file() else canon
 
 

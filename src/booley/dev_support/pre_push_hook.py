@@ -827,7 +827,7 @@ def _inside_checkout_or_runtime_project_state(
         relative is not None
         and bool(relative.parts)
         and relative.parts[0].casefold() == _BOOLEY_DIR_NAME.casefold()
-    ) or (own_state != root and (normalized == own_state or own_state in normalized.parents))
+    ) or (own_state != root and _inside_project_state(path, own_state))
     return inside_checkout_state or _inside_project_state(path, booley_dir)
 
 

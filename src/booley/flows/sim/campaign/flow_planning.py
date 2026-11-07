@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from booley.core.booley_dir import own_booley_dir
+from booley.core.booley_dir import BooleyDirOutsideCheckoutError, own_booley_dir_relative
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.flows.sim.config import (
@@ -396,14 +395,14 @@ def _required_suite(
         raw = b""
         relative = ""
     else:
-        path = own_booley_dir(root) / "tests.toml"
         try:
-            raw = path.read_bytes()
-        except OSError as exc:
+            suite_file = own_booley_dir_relative(root) / "tests.toml"
+            raw = (root / suite_file).read_bytes()
+        except (OSError, BooleyDirOutsideCheckoutError) as exc:
             raise SimulationCampaignIntegrityError(
                 "registered Required Simulation Suite has no readable tests.toml"
             ) from exc
-        relative = path.relative_to(Path(os.path.normpath(root.absolute()))).as_posix()
+        relative = suite_file.as_posix()
     return {
         "names": ordered,
         "default_invocation": not backed,

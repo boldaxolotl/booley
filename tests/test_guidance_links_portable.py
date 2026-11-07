@@ -82,17 +82,6 @@ class TestPortableTarget:
 
         assert _portable_target(project_root, canon) == canon
 
-    def test_relocated_booley_dir_falls_back_to_canon(self, tmp_path: Path):
-        """A [project].dir override has no repo-local path to name."""
-        project_root = tmp_path / "repo"
-        (project_root / ".git" / "info").mkdir(parents=True)
-        elsewhere = tmp_path / "elsewhere"
-        elsewhere.mkdir()
-        canon = elsewhere / CANON_NAME
-        canon.write_text("# AGENTS\n", encoding="utf-8")
-
-        assert _portable_target(project_root, canon) == canon
-
 
 class TestEnsureGuidanceLinks:
     def test_creates_both_links_readable_from_the_host(self, tmp_path: Path):

@@ -1787,6 +1787,19 @@ class TestLoadAgentSettingsFromToml:
 
         assert self._get().settings.default_cli == "claude"
 
+    def test_nested_relocated_booley_dir_is_read_in_place(self, tmp_path, monkeypatch):
+        # ``dir = "cfg/state"``: the Booley Directory's parent is not the Project Root,
+        # so the loader must read BOOLEY_DIR itself rather than ``<parent>/.booley``.
+        (tmp_path / "booley.toml").write_text('[project]\ndir = "cfg/state"\n')
+        state = tmp_path / "cfg" / "state"
+        state.mkdir(parents=True)
+        (state / "booley.toml").write_text('[agent]\nprovider = "codex"\n')
+        monkeypatch.setenv("BOOLEY_DIR", str(state))
+
+        self._load()
+
+        assert self._get().settings.default_cli == "codex"
+
     def test_falls_back_to_cwd_when_env_unset(self, tmp_path, monkeypatch):
         root = self._write_project(
             tmp_path,

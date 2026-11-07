@@ -19,7 +19,7 @@ import pytest
 from booley.commit_policy import policy
 from booley.core.booley_dir import own_booley_dir
 from booley.dev_support import validate_commit_msg
-from booley.runtime.project_discovery import _is_configured_booley_dir  # pyright: ignore[reportPrivateUsage]
+from booley.runtime.project_discovery import _is_configured_booley_dir
 
 _posix_git = pytest.mark.skipif(
     shutil.which("git") is None or os.name == "nt",
@@ -34,13 +34,13 @@ name = "{name}"
 paths = []
 
 [flows.lint]
-enabled = false
+enabled = {lint}
 
 [stealth]
-enabled = false
+enabled = {stealth}
 
 [agent]
-clis = ["claude", "codex"]
+clis = {clis}
 """
 
 
@@ -75,13 +75,21 @@ def relocated_checkouts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict
     _git(root, "add", "README.md", "booley.toml")
     _git(root, "commit", "-m", "init")
     state = root / "state"
-    _write(state / "booley.toml", _STATE_TOML.format(name="main-name"))
+    _write(
+        state / "booley.toml",
+        _STATE_TOML.format(
+            name="main-name", lint="false", stealth="false", clis='["claude", "codex"]'
+        ),
+    )
     _write(state / "tests.toml", "[tests]\n")
     _write(state / "rtl_style_guide.md", "relocated style\n")
     _write(state / "AGENTS.md", "guidance\n")
     assert worktree_cmd.run(argparse.Namespace(name="demo"), root) == 0
     worktree = state / "worktrees" / "demo"
-    _write(worktree / "state" / "booley.toml", _STATE_TOML.format(name="worktree-name"))
+    _write(
+        worktree / "state" / "booley.toml",
+        _STATE_TOML.format(name="worktree-name", lint="true", stealth="true", clis='["codex"]'),
+    )
     return {"main": root, "worktree": worktree}
 
 
@@ -102,17 +110,18 @@ def test_configuration_readers_use_relocated_booley_dir(
     state = root / "state"
 
     assert resolve_booley_toml(root) == state / "booley.toml"
-    assert settings._load_booley_toml(root)["project"]["name"] == name  # pyright: ignore[reportPrivateUsage]
-    assert flow_enabled("lint", root) is False
-    rtl_config = shared_infra._load_rtl_config(root)  # pyright: ignore[reportPrivateUsage]
+    assert settings._load_booley_toml(root)["project"]["name"] == name
+    is_main = checkout == "main"
+    assert flow_enabled("lint", root) is not is_main
+    rtl_config = shared_infra._load_rtl_config(root)
     assert rtl_config is not None and rtl_config["project"]["name"] == name
     monkeypatch.setattr(agent, "_agent_settings", None)
-    assert agent.load_agent_settings(root).clis == ("claude", "codex")
-    suite = flow_planning._required_suite(root, ["t"])  # pyright: ignore[reportPrivateUsage]
+    assert agent.load_agent_settings(root).clis == (("claude", "codex") if is_main else ("codex",))
+    suite = flow_planning._required_suite(root, ["t"])
     assert suite["source_path"] == "state/tests.toml"
-    assert policy.stealth_enabled(root) is False
-    assert validate_commit_msg._has_project_config(root)  # pyright: ignore[reportPrivateUsage]
-    assert validate_commit_msg._has_project_config(state)  # pyright: ignore[reportPrivateUsage]
+    assert policy.stealth_enabled(root) is not is_main
+    assert validate_commit_msg._has_project_config(root)
+    assert validate_commit_msg._has_project_config(state)
 
     discovered: list[Path | None] = []
 
@@ -186,9 +195,9 @@ def test_git_marker_accepts_a_gitdir_file_and_rejects_empty_sentinels(tmp_path: 
     (empty / ".git").mkdir(parents=True)
     unreadable.mkdir()
 
-    assert policy._has_git_marker(linked) is True  # pyright: ignore[reportPrivateUsage]
-    assert policy._has_git_marker(empty) is False  # pyright: ignore[reportPrivateUsage]
-    assert policy._has_git_marker(unreadable) is False  # pyright: ignore[reportPrivateUsage]
+    assert policy._has_git_marker(linked) is True
+    assert policy._has_git_marker(empty) is False
+    assert policy._has_git_marker(unreadable) is False
 
 
 def test_relocated_versioned_booley_dir_loads_policy_from_its_own_repository(
@@ -211,8 +220,8 @@ def test_project_inventory_discovers_relocated_project(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
 
     assert root in inventory.discover_projects((tmp_path,))
-    assert inventory._status(root) is inventory.ProjectStatus.PRESENT  # pyright: ignore[reportPrivateUsage]
-    inventory.remember_project(root)
+    assert inventory._status(root) is inventory.ProjectStatus.PRESENT
+    assert inventory.remember_project(root) == root.resolve()
 
 
 def test_inventory_ignores_booley_dir_outside_the_checkout(tmp_path: Path) -> None:
@@ -223,5 +232,18 @@ def test_inventory_ignores_booley_dir_outside_the_checkout(tmp_path: Path) -> No
         _write(project / "booley.toml", f'[project]\ndir = "{value}"\n')
         (project / ".git").mkdir()
 
-        assert inventory._has_booley_dir(project) is False  # pyright: ignore[reportPrivateUsage]
-        assert inventory._is_initialized_checkout(project) is False  # pyright: ignore[reportPrivateUsage]
+        assert inventory._has_booley_dir(project) is False
+        assert inventory._is_initialized_checkout(project) is False
+
+
+def test_required_suite_reports_booley_dir_outside_the_checkout(tmp_path: Path) -> None:
+    from booley.flows.sim.campaign import flow_planning
+    from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
+
+    elsewhere = tmp_path / "elsewhere"
+    _write(elsewhere / "tests.toml", "[tests]\n")
+    project = tmp_path / "repo"
+    _write(project / "booley.toml", f'[project]\ndir = "{elsewhere.as_posix()}"\n')
+
+    with pytest.raises(SimulationCampaignIntegrityError, match=r"no readable tests\.toml"):
+        flow_planning._required_suite(project, ["t"])
