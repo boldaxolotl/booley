@@ -82,6 +82,7 @@ def test_verification_commands_are_stable(tmp_path, monkeypatch):
         "ruff.ci-format",
         "pyright.ci-check",
         "pytest.broad",
+        "coverage.changed-lines",
     ]
     assert commands[0].argv == (python, "-m", "ruff", "check", "src/", "tests/")
     assert commands[0].required_at == "before-commit"
@@ -89,7 +90,9 @@ def test_verification_commands_are_stable(tmp_path, monkeypatch):
     assert commands[3].argv == (python, "-m", "pyright", "--pythonpath", python)
     assert commands[3].cwd == str(tmp_path)
     assert commands[3].required_at == "handoff"
-    assert commands[-1].argv == (
+    report = readiness.coverage_xml_path(tmp_path)
+    broad, coverage = commands[-2:]
+    assert broad.argv == (
         python,
         "-m",
         "pytest",
@@ -101,14 +104,27 @@ def test_verification_commands_are_stable(tmp_path, monkeypatch):
         "--maxprocesses=8",
         "--dist=loadscope",
         f"--basetemp={readiness.pytest_basetemp(tmp_path)}",
+        "--cov=booley",
+        f"--cov-report=xml:{report}",
+        "--cov-fail-under=0",
     )
-    assert commands[-1].required_at == "optional-broad-verification"
+    assert broad.required_at == "optional-broad-verification"
+    # CI's changed-line gate reads the report the broad run wrote.
+    assert coverage.argv == (
+        python,
+        "-B",
+        str(tmp_path / ".github/scripts/changed_line_coverage.py"),
+        "--coverage-xml",
+        str(report),
+    )
+    assert (coverage.cwd, coverage.required_at) == (str(tmp_path), "handoff")
 
 
 def test_broad_pytest_keeps_default_basetemp_on_windows(tmp_path, monkeypatch):
     monkeypatch.setattr(readiness.sys, "platform", "win32")
     commands = readiness._verification_commands(tmp_path / "python.exe", tmp_path)
-    assert commands[-1].argv[-4:] == ("-n", "auto", "--maxprocesses=8", "--dist=loadscope")
+    assert commands[-2].argv[6:10] == ("-n", "auto", "--maxprocesses=8", "--dist=loadscope")
+    assert not any(arg.startswith("--basetemp") for arg in commands[-2].argv)
 
 
 def test_pytest_basetemp_is_per_checkout_and_outside_it(tmp_path, monkeypatch):
@@ -121,6 +137,17 @@ def test_pytest_basetemp_is_per_checkout_and_outside_it(tmp_path, monkeypatch):
     assert first.name.startswith("pytest-basetemp-")
     assert first == readiness.pytest_basetemp(tmp_path / "first")
     assert not first.is_relative_to(tmp_path / "first")
+
+
+def test_coverage_report_mirrors_the_checkout_outside_it(tmp_path, monkeypatch):
+    cache = tmp_path / "cache" / "agent-tools"
+    monkeypatch.setattr(readiness, "agent_tools_root", lambda: cache)
+    checkout = (tmp_path / "work" / "checkout").resolve()
+    report = readiness.coverage_xml_path(checkout)
+    assert report.is_relative_to(cache / "changed-line-coverage")
+    assert not report.is_relative_to(checkout)
+    # The pipeline's worktree-path normalization rewrites the mirrored part.
+    assert str(report.parent).endswith(str(checkout.relative_to(checkout.anchor)))
 
 
 def test_project_runner_pins_match_the_readiness_contract():
