@@ -52,6 +52,7 @@ from booley.runtime.session_activity import (
     WAITING_USER,
     WORKING,
     Activity,
+    process_identity_from_session_key,
 )
 from booley.runtime.timefmt import format_age, format_clock, format_duration, parse_timestamp
 
@@ -126,6 +127,17 @@ class Owner(Enum):
 #: Label of the Jobs window's owner filter that lists everything.
 ALL_SESSIONS = "All sessions"
 _HANDLE_NUMBER = re.compile(r"S(\d+)")
+
+
+def _display_session_key(key: str) -> str:
+    """Format process-backed session keys for display without changing the stored key."""
+    identity = process_identity_from_session_key(key)
+    if identity is None or identity.pid <= 0:
+        return key
+    namespace = re.fullmatch(r"pid:\[(\d+)\]", identity.identity_scope)
+    if identity.identity_scope.startswith("pid:") and namespace is None:
+        return key
+    return f"PID {identity.pid} · ns {namespace[1]}" if namespace else f"PID {identity.pid}"
 
 
 @dataclass(frozen=True)
@@ -937,7 +949,7 @@ class DashboardApp(App[None]):
         header.append_text(_join(activity, *([(info.warning, "yellow")] if info.warning else [])))
         header.append_text(Text.assemble("\n", ("Last Booley call: ", _CHROME)))
         header.append_text(_join((info.last_call or "—", _ACCENT), info.last_age))
-        header.append_text(Text.assemble("\n", ("Session key: ", _CHROME), (info.key, "dim")))
+        header.append_text(Text.assemble("\n", ("Session key: ", _CHROME), (_display_session_key(info.key), "dim")))
         return header, goal
 
     def _orientation(
@@ -1605,7 +1617,7 @@ class DashboardApp(App[None]):
             )
         ]
         if job.record.session_key:
-            owner.append(ResultLine("Session key", job.record.session_key))
+            owner.append(ResultLine("Session key", _display_session_key(job.record.session_key)))
         offset = next(index for index, row in enumerate(rows) if row.label == "Job")
         rows[offset:offset] = owner
         detail = Text()

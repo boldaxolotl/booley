@@ -300,6 +300,35 @@ ORIENTATION = (
 )
 
 
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        ("pid:pid:[4026532225]:4865:81331", "PID 4865 · ns 4026532225"),
+        ("pid:windows:4865:81331", "PID 4865"),
+        ("pid:ps:darwin:4865:81331", "PID 4865"),
+        ("pid:pid:[bad]:4865:81331", "pid:pid:[bad]:4865:81331"),
+        ("pid:pid:[4026532225]:bad:81331", "pid:pid:[4026532225]:bad:81331"),
+        ("codex:00", "codex:00"),
+    ],
+)
+def test_dashboard_shows_readable_session_key_without_changing_records(key: str, expected: str) -> None:
+    """Both details show a readable label while snapshots and Jobs retain their opaque keys."""
+    row = session_row(0, "wt0")
+    row = replace(row, attribution=replace(row.attribution, key=key))
+    job = job_view("one", "J-SIM1", "completed", session_key=key)
+    snapshot = snapshot_of([row], jobs=[job])
+    app = DashboardApp(lambda: snapshot)
+    app.snapshot = snapshot
+    app.navigation = replace(app.navigation, view="session", session=key)
+
+    header, _ = app._session_header()
+    assert f"Session key: {expected}" in header.plain
+    assert f"Session key: {expected}" in app._job_detail(job).plain
+    assert snapshot.sessions[0].attribution.key == key
+    assert snapshot.jobs.jobs[0].record.session_key == key
+    assert snapshot.session_handles[key] == "S1"
+
+
 def test_session_header_accents_facts_but_not_agent_written_summary():
     """Header facts carry accents; the agent-written summary stays plain but for headings."""
     rows = [session_row(0, "wt0", work_dir="/work/a", branch="goal/fixture", calls=ONE_CALL)]
