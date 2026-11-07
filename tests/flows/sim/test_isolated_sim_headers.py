@@ -13,6 +13,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -26,7 +27,7 @@ from booley.flows.sim.build import (
     simulation_setup_command,
 )
 from booley.flows.sim.build_reuse import stock_verilator_recipe
-from booley.flows.sim.build_session import snapshot_build_inputs
+from booley.flows.sim.build_session import SimulationBuildSession, snapshot_build_inputs
 from booley.flows.sim.coverage_overlay import write_coverage_overlay
 from booley.flows.sim.verilator_coverage import VERILATOR_COVERAGE_INSTRUMENTATION
 from booley.flows.sim.verilator_coverage_execution import prepare_coverage_collection
@@ -518,6 +519,29 @@ def test_isolated_icarus_reuse_declines_option_operands(
     if case == "duplicate-rule":
         assert "\npost_build: run\n" in makefile
     assert _icarus_key(prepared, root) is None
+
+
+@pytest.mark.usefixtures("real_fusesoc")
+def test_isolated_reuse_declines_source_named_like_a_booley_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A listed source named ``.a-*`` escapes the input hash, so the session declines reuse."""
+    _stub_icarus_identity(monkeypatch)
+    root = _write_project(tmp_path / "proj")
+    (root / "rtl" / "top.v").write_text("module top; endmodule\n", encoding="utf-8")
+    _write_project_core(root, user_files=False, headers=False)
+    session = SimpleNamespace(handle=SimpleNamespace(project_root=root), variant="")
+
+    def session_key(prepared: PreparedSimulationBuild) -> str | None:
+        inputs = snapshot_build_inputs(prepared)
+        return SimulationBuildSession.reusable_key(session, prepared, inputs, hooks=False)  # type: ignore[arg-type]
+
+    # Control: an ordinary name keys, so a None key below comes from the file name.
+    assert session_key(_prepare(root, "sim_icarus", name="control")) is not None
+    hidden = "rtl/.a-hidden.v"
+    (root / hidden).write_text("module m; endmodule\n", encoding="utf-8")
+    _write_project_core(root, user_files=False, headers=False, extra_files=(hidden,))
+    assert session_key(_prepare(root, "sim_icarus", name="hidden")) is None
 
 
 @pytest.mark.usefixtures("real_fusesoc")

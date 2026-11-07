@@ -94,6 +94,19 @@ _RUNTIME_INPUTS_DIR = ".booley-runtime-inputs"
 _RESERVED_PREFIXES = (".booley-adapter-", ".a-")
 
 
+def _has_unhashed_source_name(prepared: PreparedSimulationBuild) -> bool:
+    """Report a generation file the build-input snapshot skips by its name.
+
+    An isolated Project exports its sources and headers into the generation, where
+    a listed file named like a Booley-written one would escape the reuse key, so
+    its edit would reuse a stale build.
+    """
+    return any(
+        path.name.startswith(_RESERVED_PREFIXES) and _RUNTIME_INPUTS_DIR not in path.parts
+        for path in prepared.work_root.rglob("*")
+    )
+
+
 def snapshot_build_inputs(prepared: PreparedSimulationBuild) -> dict[str, str]:
     """Snapshot files already present in a newly resolved generation."""
     return _hash_generation(prepared, skip_reserved=True)
@@ -682,7 +695,10 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         """
         # A declined call must not leave an earlier identity scoping closures.
         self._verilator_identity = None
-        if hooks:
+        if hooks or (
+            fusesoc_registry.native_cores_ignored(self.handle.project_root)
+            and _has_unhashed_source_name(prepared)
+        ):
             return None
         environment = os.environ
         if prepared.eda_tool == "verilator":
