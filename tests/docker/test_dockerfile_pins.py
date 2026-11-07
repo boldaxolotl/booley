@@ -11,12 +11,12 @@ An ``ARG`` with a real default (any literal except empty or ``unknown``;
 ``unknown`` marks a build-time injection such as ``BOOLEY_VERSION``) must be
 one of the following.
 
-Primary pin: the physical line directly above the ``ARG`` is::
+Primary pin: the physical line directly above the ``ARG`` is one line (the
+keys after ``depName`` are optional)::
 
-    # renovate: datasource=<ds> depName=<name> [packageName=<p>]
-    #   [currentValue=<v>] [versioning=<scheme>] [extractVersion=<re>]
+    # renovate: datasource=<ds> depName=<name> [packageName=<p>] [currentValue=<v>] [versioning=<scheme>] [extractVersion=<re>]
 
-as a single line. Tokens are space-separated ``key=value`` with no spaces
+Tokens are space-separated ``key=value`` with no spaces
 inside a value, in exactly this order; ``datasource`` and ``depName`` are
 required. A missing required key and a wrong order are the same problem
 ("malformed annotation"), so the match strings of the Renovate config stay
@@ -29,7 +29,8 @@ checksum, source tag, bundled npm version). The line directly above the
 ``ARG`` is ``# pin-companion: <PRIMARY_ARG>``; the primary must be a primary
 pin of the same file.
 
-Manual pin: ``_MANUAL_PINS``, OpenROAD only. Its builder images are
+Manual pin: ``_MANUAL_PINS``, OpenROAD only; an exemption applies to the
+named Dockerfile alone. Its builder images are
 digest-only and Renovate's proposed digests follow ``:latest``, not the
 release or the source ref (#2552 finding 3), so it is refreshed by hand and
 the Renovate config keeps a matching rule (#2561). The listed images do not
@@ -37,7 +38,7 @@ change the guard's result (both ``FROM`` lines are digest-pinned); they
 record the decision and the real-file test fails when one goes stale.
 
 Not a pin: ``_NOT_PINS`` lists build inputs with a default that name no
-upstream dependency.
+upstream dependency, per Dockerfile.
 
 ``FROM`` rule: an image other than the symbolic parents (named contexts the
 build maps to a locally built or exact-digest image) must be
@@ -75,8 +76,9 @@ _ANNOTATION = re.compile(
 _COMPANION = re.compile(r"# pin-companion: ([A-Za-z_][A-Za-z0-9_]*)")
 
 # Refreshed by hand (see the module docstring); one entry per decision.
-_MANUAL_PINS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+_MANUAL_PINS: dict[str, tuple[str, frozenset[str], frozenset[str]]] = {
     "OpenROAD builder images are digest-only and Renovate proposes :latest digests (#2552)": (
+        "Dockerfile.base",
         frozenset(
             {
                 "OPENROAD_SOURCE_REF",
@@ -91,7 +93,7 @@ _MANUAL_PINS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
 
 # Build inputs with a default that name no upstream dependency.
 _NOT_PINS = {
-    "BOOLEY_LAYOUT_USER": (
+    ("Dockerfile.project-data-layout", "BOOLEY_LAYOUT_USER"): (
         "build input: src/booley/harness/image_lifecycle.py always passes it as a build argument"
     ),
 }
@@ -138,10 +140,12 @@ def pin_problems(name: str, contents: str) -> list[str]:
     lines = contents.splitlines()
     arguments = dockerfile_syntax.build_arguments(contents)
     primaries = _annotated_primaries(lines, arguments)
-    exempt = set(_NOT_PINS).union(*(names for names, _ in _MANUAL_PINS.values()))
+    exempt = set(_NOT_PINS) | {
+        (file_name, arg) for file_name, names, _ in _MANUAL_PINS.values() for arg in names
+    }
     problems: list[str] = []
     for argument in arguments:
-        if not _is_real_default(argument.default) or argument.name in exempt:
+        if not _is_real_default(argument.default) or (name, argument.name) in exempt:
             continue
         problem = _argument_problem(argument, _line_above(lines, argument.line), primaries)
         if problem is not None:
@@ -163,22 +167,22 @@ def test_sandbox_dockerfile_pins_are_annotated_or_allowlisted() -> None:
 
     assert not problems, "\n".join(problems)
 
-    # Stale exemptions: every exempt name still has a default somewhere, and
-    # every allowlisted image still appears in a FROM.
+    # Stale exemptions: every exempt name still has a default in its own
+    # Dockerfile, and every allowlisted image still appears in a FROM there.
     defaults = {
-        argument.name
-        for text in contents.values()
+        (file_name, argument.name)
+        for file_name, text in contents.items()
         for argument in dockerfile_syntax.build_arguments(text)
         if _is_real_default(argument.default)
     }
     images = {
-        reference.image.partition("@")[0]
-        for text in contents.values()
+        (file_name, reference.image.partition("@")[0])
+        for file_name, text in contents.items()
         for reference in dockerfile_syntax.from_references(text)
     }
-    for names, manual_images in _MANUAL_PINS.values():
-        assert names <= defaults
-        assert manual_images <= images
+    for file_name, names, manual_images in _MANUAL_PINS.values():
+        assert {(file_name, name) for name in names} <= defaults
+        assert {(file_name, image) for image in manual_images} <= images
     assert set(_NOT_PINS) <= defaults
 
 
@@ -186,7 +190,7 @@ _DIGEST = "sha256:" + "a" * 64
 
 _FIXTURES = {
     "unannotated-pin": (
-        "FROM base\nARG TOOL_VERSION=1.2.3\n",
+        "FROM booley-substrate\nARG TOOL_VERSION=1.2.3\n",
         "ARG TOOL_VERSION has no",
     ),
     "undigested-registry-from": (
@@ -201,9 +205,9 @@ _FIXTURES = {
         "# renovate: datasource=github-tags\nARG TOOL_VERSION=1.2.3\n",
         "ARG TOOL_VERSION malformed '# renovate:' annotation",
     ),
-    "annotation-out-of-order": (
-        "# renovate: depName=owner/tool datasource=github-tags\nARG TOOL_VERSION=1.2.3\n",
-        "ARG TOOL_VERSION malformed '# renovate:' annotation",
+    "exemption-in-other-file": (
+        "ARG OPENROAD_VERSION=1\n",
+        "ARG OPENROAD_VERSION has no",
     ),
     "arg-on-first-line": (
         "ARG TOOL_VERSION=1.2.3\n",
@@ -228,9 +232,9 @@ def test_pin_guard_accepts_annotated_pins_and_symbolic_parents() -> None:
         "ARG TOOL_VERSION=v1\n"
         "# pin-companion: TOOL_VERSION\n"
         "ARG TOOL_SHA256=abc\n"
-        "ARG BOOLEY_LAYOUT_USER=root\n"
+        "ARG OPENROAD_VERSION=1\n"
         f"FROM docker.io/library/ubuntu:26.04@{_DIGEST} AS build\n"
         + "".join(f"FROM {parent}\n" for parent in sorted(_SYMBOLIC_PARENTS))
     )
 
-    assert pin_problems("Dockerfile.fixture", contents) == []
+    assert pin_problems("Dockerfile.base", contents) == []
