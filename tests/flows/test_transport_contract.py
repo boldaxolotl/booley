@@ -506,7 +506,7 @@ def test_typed_failure_releases_admission_and_restores_stdout(failure, runtime, 
     import sys
     from unittest.mock import Mock
 
-    from booley.runtime.job_slots import SlotCaps
+    from booley.config.jobs import SlotCaps
 
     flow = LintFlow()
     claim = object()

@@ -187,10 +187,10 @@ def admission(
 ) -> Iterator[AdmissionContext | None]:
     """Gate, then hold one Flow-neutral admission through final reporting.
 
-    The decision depends only on the endpoint kind and the dry-run flag, never
-    on the endpoint name. A dry run takes no slot and yields ``None``; every
-    other invocation yields the borrowed ``AdmissionContext``. The slot is
-    released when the invocation body ends, however it ends.
+    The same for every endpoint: a non-Flow endpoint passes its binding gate
+    first; a dry run takes no slot and yields ``None``; every other invocation
+    yields the borrowed ``AdmissionContext``, whose slot (if any) is released
+    when the invocation body ends, however it ends.
     """
     if endpoint.endpoint_kind != "flow":
         rejection = endpoint._criterion_binding_gate()
@@ -236,6 +236,9 @@ def _admission_rejection(
             f"withdrawn (booley_cancel) before it started."
         )
     else:
+        logger.error(
+            "%s admission refused: invalid %s: %s", endpoint.name, RUNTIME_EXECUTION_ENV, exc
+        )
         text = f"{endpoint.name}: invalid {RUNTIME_EXECUTION_ENV}: {exc}"
     return EndpointOutcome(exit_code=EXIT_ERROR, report_text=text)
 

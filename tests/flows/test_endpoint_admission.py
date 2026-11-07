@@ -8,7 +8,7 @@ non-Simulation Flow, and must not depend on the endpoint's name.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -17,7 +17,7 @@ import pytest
 
 from booley.config.jobs import SlotCaps
 from booley.flows import endpoint_admission
-from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.endpoint_admission import AdmissionContext, AdmissionIdentityError
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.endpoint_state import EndpointState
 from booley.flows.sim.flow import SimulateFlow
@@ -41,6 +41,7 @@ def runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     from booley.runtime import runtime_context
 
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.chdir(tmp_path)
     for name in (
         "BOOLEY_STATE_FILE",
         "BOOLEY_TICKET_FILE",
@@ -68,10 +69,12 @@ class _FakeStore:
 class _Harness:
     """One real Flow wired so its invocation body and admission are observable."""
 
-    flow: Any
+    flow: SimulateFlow | AsicSynthesizeFlow
     request: Any
-    invocations: list[object] = field(default_factory=list)
-    admissions: list[object | None] = field(default_factory=list)
+    invocations: list[object] = field(default_factory=list[object])
+    admissions: list[AdmissionContext | None] = field(
+        default_factory=list[AdmissionContext | None]
+    )
     behavior: Callable[[], EndpointOutcome] = EndpointOutcome
 
     def execute(self) -> ExecutionResult:
@@ -101,9 +104,11 @@ def harness(
 
     original_admission = EndpointState.admission
 
-    def recording_admission(self: EndpointState, prepared: PreparedExecution) -> Any:
+    def recording_admission(
+        self: EndpointState, prepared: PreparedExecution
+    ) -> AbstractContextManager[AdmissionContext | None]:
         @contextmanager
-        def record() -> Iterator[object | None]:
+        def record() -> Iterator[AdmissionContext | None]:
             with original_admission(self, prepared) as borrowed:
                 observed.admissions.append(borrowed)
                 yield borrowed
@@ -209,10 +214,6 @@ def test_disagreeing_token_identity_names_endpoint(
     assert store.released == [claim]
 
 
-def _succeed() -> EndpointOutcome:
-    return EndpointOutcome()
-
-
 def _fail() -> EndpointOutcome:
     raise RuntimeError("endpoint failed")
 
@@ -224,7 +225,7 @@ def _cancel() -> EndpointOutcome:
 @pytest.mark.parametrize(
     ("ending", "behavior"),
     (
-        pytest.param("success", _succeed, id="success"),
+        pytest.param("success", EndpointOutcome, id="success"),
         pytest.param("failure", _fail, id="failure"),
         pytest.param("cancelled", _cancel, id="cancelled"),
     ),
@@ -285,6 +286,7 @@ class _StubEndpoint:
     def __init__(self, name: str, job_class: str | None) -> None:
         self.name = name
         self._job_class = job_class
+        self.acquisitions = 0
 
     def _resolve_job_class(self) -> str | None:
         return self._job_class
@@ -296,14 +298,13 @@ class _StubEndpoint:
         return None
 
     def _acquire_job_slot(self) -> tuple[object | None, object | None]:
+        self.acquisitions += 1
         return endpoint_admission._acquire_job_slot(self)  # type: ignore[arg-type]
 
 
+@pytest.mark.usefixtures("runtime")
 @pytest.mark.parametrize("case", ("unclassed", "inherited", "no_runtime"))
-def test_no_slot_cases_admit_unmanaged(
-    case: str, runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    del runtime
+def test_no_slot_cases_admit_unmanaged(case: str, monkeypatch: pytest.MonkeyPatch) -> None:
     endpoint = _StubEndpoint("custom", None if case == "unclassed" else job_slots.CLASS_HEAVY)
     if case == "inherited":
         monkeypatch.setenv(job_slots.INHERITED_SLOT_ENV, "heavy/slot")
@@ -321,14 +322,13 @@ def test_no_slot_cases_admit_unmanaged(
         assert borrowed.slot_store is None
         assert borrowed.outer_token is None
         assert borrowed.max_heavy == 1
+    assert endpoint.acquisitions == 1
 
 
+@pytest.mark.usefixtures("runtime")
 @pytest.mark.parametrize("name", ("sim", "other"))
-def test_admission_ignores_endpoint_name(
-    name: str, runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_admission_ignores_endpoint_name(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """A Simulation payload on a differently named endpoint is admitted identically."""
-    del runtime
     endpoint = _StubEndpoint(name, job_slots.CLASS_HEAVY)
     store, claim = _FakeStore(), object()
     monkeypatch.setattr(endpoint, "_acquire_job_slot", lambda: (store, claim))
@@ -375,3 +375,29 @@ def test_binding_gate_rejects_before_slot_for_non_flow_endpoints(
     ):
         pytest.fail("a rejected endpoint must not be admitted")
     assert rejected.value.outcome is rejection
+
+
+@pytest.mark.usefixtures("runtime")
+@pytest.mark.parametrize(
+    "failure",
+    (
+        job_slots.QueueFullError("full"),
+        job_slots.ClaimLostError("vanished"),
+        AdmissionIdentityError("mismatch"),
+    ),
+    ids=("queue_full", "claim_lost", "identity"),
+)
+def test_body_failures_are_not_remapped_to_admission_rejections(
+    failure: Exception, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only entering admission is mapped; the invocation body's errors pass through."""
+    endpoint = _StubEndpoint("sim", job_slots.CLASS_HEAVY)
+    store, claim = _FakeStore(), object()
+    monkeypatch.setattr(endpoint, "_acquire_job_slot", lambda: (store, claim))
+
+    with (
+        pytest.raises(type(failure)),
+        endpoint_admission.admission(endpoint, _prepared(simulation=object())),  # type: ignore[arg-type]
+    ):
+        raise failure
+    assert store.released == [claim]
