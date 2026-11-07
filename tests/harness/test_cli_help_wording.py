@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import inspect
 import re
 import shlex
 import subprocess
@@ -141,7 +142,12 @@ def _all_help() -> dict[str, str]:
 
 
 def test_help_has_no_internal_vocabulary() -> None:
+    # Durations follow the endpoint kind: the page builder has no caller override.
+    assert "durations" not in inspect.signature(human_endpoint_parser).parameters
     pages = _all_help()
+    for command, endpoint in ENDPOINTS.items():
+        if not isinstance(endpoint, BuiltinFlow):
+            assert "--timeout DURATION" in pages[command], command
     assert len(pages) > len(ENDPOINTS) + 20  # the walk really descended the command tree
     flat = {command: " ".join(text.split()) for command, text in pages.items()}
     stale = sorted(key for key in ALLOWED if key[1] not in flat[key[0]])

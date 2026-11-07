@@ -37,6 +37,7 @@ from booley.flows.display import format_flow_display_label
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.execution_persistence import (
+    FlowExecutionAdapter,
     execution_goal_name,
     frozen_test_runs_for,
     register_campaign_for,
@@ -61,6 +62,7 @@ from booley.flows.progress_lifecycle import (
     progress_document,
     supersede_progress,
 )
+from booley.flows.request import FlowRequest
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.campaign.test_run_report import ROW_LIMIT as TEST_RUN_ROW_LIMIT
 from booley.flows.sim.campaign.test_run_report import (
@@ -2618,6 +2620,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self._coverage_execution_factory = coverage_execution
         self._campaign_publication_checkpoint = campaign_publication_checkpoint
 
+    def _start_invocation(
+        self, adapter: FlowExecutionAdapter, request: FlowRequest | None = None
+    ) -> None:
+        """Start an invocation with no Campaign outcomes: only this Flow keeps them."""
+        super()._start_invocation(adapter, request)
+        self._simulation_campaign_outcomes: tuple[Any, ...] = ()
+        self._simulation_acceptance_outcomes: tuple[Any, ...] = ()
+
     def begin_invocation(self) -> None:
         """Start this invocation's Test Run decisions afresh.
 
@@ -2629,6 +2639,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     request_type = SimRequest
     argument_adapter = SimArguments
+    report_schema = "booley.simulation-report/v3"
     target_required = False
 
     name: str = "sim"
@@ -2718,7 +2729,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             logger.warning("Simulation cycle count metadata unavailable", exc_info=True)
             self.cycle_report_json = '{"cycle_counts_error":"unavailable"}'
 
-    def refresh_campaign_report_detail(self, result: EndpointOutcome) -> None:
+    def refresh_report_detail(self, result: EndpointOutcome) -> None:
         """Bind final projection references after acceptance publication."""
         outcomes = self._simulation_campaign_outcomes
         invocation = self._reserved_invocation_dir
@@ -2790,7 +2801,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         # campaign execution to prepare and keeps the generic lifecycle.
         if "_run" in self.__dict__ or self._mode.elaborates_only:
             return None
-        from booley.flows.endpoint_admission import authorize_simulation_targets
+        from booley.flows.endpoint_admission import authorize_targets
 
         try:
             prepared = self._prepare_campaign_targets()
@@ -2822,7 +2833,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 coverage_error = self._prepare_coverage()
                 if coverage_error is not None:
                     return coverage_error
-            rejection = authorize_simulation_targets(self, targets)
+            rejection = authorize_targets(self, targets)
         except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,

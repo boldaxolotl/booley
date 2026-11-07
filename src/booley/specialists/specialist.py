@@ -72,6 +72,7 @@ class Specialist(McpTool):
     """
 
     endpoint_kind = "specialist"
+    report_schema = "booley.specialist-report/v1"
 
     # Specialists are model-API-bound with ~no local footprint (ADR 0028):
     # every Specialist admits under the LIGHT class pool.
@@ -220,7 +221,7 @@ class Specialist(McpTool):
 
         return get_agent_settings().effort_for(cli)
 
-    def _transcript_path(self) -> Path | None:
+    def transcript_path(self) -> Path | None:
         """Resolve transcript file path."""
         transcript_dir = self.args.transcript_dir
         if transcript_dir is None:
@@ -493,7 +494,7 @@ class Specialist(McpTool):
             output_format=self._output_format(),
             max_turns=self.args.max_turns,
             timeout_seconds=self.timeout_seconds(),
-            transcript_path=self._transcript_path(),
+            transcript_path=self.transcript_path(),
             label=self.name,
             needs_skills=self._needs_skills(),
             reasoning_effort=self._resolve_effort(),
