@@ -999,3 +999,24 @@ Cyclic top-level package groups:
 - booley.fusesoc, booley.targets
 
 ```
+
+## Current snapshot: 08 NOV 2026 — Flow/Specialist edge removed
+
+`booley.flows` no longer imports `booley.specialists`: the human parser builder
+reads `endpoint_kind` to decide whether a `--timeout` duration is offered instead
+of testing for the Specialist class. `booley.specialists` leaves the approved
+legacy group, and `booley.flows <-> booley.specialists` is no longer a mutual
+pair. No direction permission or SCC member is added.
+
+Measured with `python3 tests/architecture/report.py --top 10`:
+
+```text
+Parsed Python modules: 706
+Normalized dependency facts: 4066
+Unique normalized edges: 3614
+
+Cyclic top-level package groups:
+- booley.agent_workspace, booley.bwave, booley.criteria, booley.dev_support, booley.feedback, booley.flows, booley.goals, booley.harness, booley.mcp, booley.runtime
+- booley.fusesoc, booley.targets
+
+```
