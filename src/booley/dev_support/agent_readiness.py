@@ -748,10 +748,30 @@ def _verification_commands(
                 "--test-profile",
                 test_profile,
                 *_broad_pytest_options(root),
+                # Same measurement as CI's coverage shards; the global ratchet
+                # stays in CI, so the run itself never fails on a percentage.
+                "--cov=booley",
+                f"--cov-report=xml:{coverage_xml_path(root)}",
+                "--cov-fail-under=0",
             ),
             str(root),
             "test",
             "optional-broad-verification",
+        ),
+        # CI's "Enforce 90% changed-line coverage" step, run on the report the
+        # broad command above wrote for this same tree.
+        Command(
+            "coverage.changed-lines",
+            (
+                str(python),
+                "-B",
+                str(root / ".github/scripts/changed_line_coverage.py"),
+                "--coverage-xml",
+                str(coverage_xml_path(root)),
+            ),
+            str(root),
+            "coverage",
+            "handoff",
         ),
     )
 
@@ -795,6 +815,18 @@ def pytest_basetemp(root: Path) -> Path:
     """
     checkout_key = hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]
     return agent_tools_root() / f"pytest-basetemp-{checkout_key}"
+
+
+def coverage_xml_path(root: Path) -> Path:
+    """Return the per-checkout Cobertura report path inside the shared tools cache.
+
+    The checkout's absolute path is mirrored below the cache rather than
+    hashed: the issue pipeline compares commands across worktrees after
+    replacing each worktree's path, which a mirrored path takes part in.
+    """
+    resolved = root.resolve()
+    relative = resolved.relative_to(resolved.anchor)
+    return agent_tools_root() / "changed-line-coverage" / relative / "coverage.xml"
 
 
 def _within(path: Path, parent: Path) -> bool:
