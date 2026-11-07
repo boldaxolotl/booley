@@ -7,7 +7,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, Protocol
@@ -115,7 +115,7 @@ class CoverageTarget:
     harness: CoverageHarness
     sources: tuple[CoverageSource, ...]
     custom_main_hooks: tuple[str, ...] = ()
-    foreign_paths: Mapping[str, str] = MappingProxyType({})
+    foreign_paths: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     """Private-mirror export name -> Project-relative path, for isolated Projects.
 
     Names a non-source file (a header) that a native record points at by the
@@ -386,10 +386,10 @@ def _coverage_run(
 
 def _parse_attributes(identity: str) -> Mapping[str, str]:
     attributes: dict[str, str] = {}
-    for field in identity.split("\x01"):
-        if not field:
+    for pair in identity.split("\x01"):
+        if not pair:
             continue
-        key, separator, value = field.partition("\x02")
+        key, separator, value = pair.partition("\x02")
         if not separator or not key or key in attributes:
             raise _NativeRecordError("malformed or duplicate native coverage attribute")
         attributes[key] = value

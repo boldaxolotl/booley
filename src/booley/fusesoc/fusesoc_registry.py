@@ -40,7 +40,7 @@ import shutil
 import subprocess
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any
 
 import yaml
@@ -447,8 +447,10 @@ def mirrored_source_path(project_root: Path | str, file: ResolvedFile) -> str | 
     """
     if file.core is None or not native_cores_ignored(project_root):
         return None
-    name = PurePosixPath(file.name)
-    prefix = PurePosixPath("src") / Vlnv(file.core).sanitized_name
+    # FuseSoC joins export names with the host separator, so Windows spells
+    # them ``src\\<core>\\<path>``; the host flavour reads either spelling.
+    name = PurePath(file.name)
+    prefix = PurePath("src") / Vlnv(file.core).sanitized_name
     if name.is_absolute() or not name.is_relative_to(prefix):
         return None
     rest = name.relative_to(prefix)

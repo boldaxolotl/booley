@@ -10,6 +10,7 @@ from the mirror, the dry-run preview and the unchanged non-isolated behavior.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -328,11 +329,19 @@ def _write_project_core(
     )
 
 
+# The Icarus recipe check reads the Edalize command file with POSIX shell quoting, which
+# eats the backslashes of Windows file names, so Icarus reuse never keys there.
+icarus_reuse_posix_only = pytest.mark.skipif(
+    os.name == "nt", reason="Icarus build reuse declines Windows-spelled file names"
+)
+
+
 def _icarus_key(prepared: PreparedSimulationBuild, root: Path) -> str | None:
     """The Icarus reuse key of one prepared build, with the host tool identity pinned."""
     return build_session._reuse_input_key(prepared, snapshot_build_inputs(prepared), "", root, {})
 
 
+@icarus_reuse_posix_only
 @pytest.mark.usefixtures("real_fusesoc")
 def test_isolated_icarus_reuse_key_is_stable_and_follows_edits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -453,7 +462,9 @@ def test_isolated_coverage_foreign_paths_cover_prepared_headers(
     )
     headers = {item.name for item in prepared.resolved.files if item.is_include}
     assert {name for name in headers if "dep.vh" in name or "listed.vh" in name}
-    for name in headers:
+    for header in headers:
+        # FuseSoC joins export names with the host separator; Verilator records them with "/".
+        name = header.replace("\\", "/")
         assert name in request.target.foreign_paths, name
         # ``src/<core>/<Project-relative path>``
         assert request.target.foreign_paths[name] == name.split("/", 2)[2]
@@ -491,6 +502,7 @@ def _unstock_options(lib: Path) -> dict[str, dict[str, list[str]]]:
     }
 
 
+@icarus_reuse_posix_only
 @pytest.mark.usefixtures("real_fusesoc")
 @pytest.mark.parametrize("case", list(_unstock_options(Path("lib"))))
 def test_isolated_icarus_reuse_declines_option_operands(
@@ -521,6 +533,7 @@ def test_isolated_icarus_reuse_declines_option_operands(
     assert _icarus_key(prepared, root) is None
 
 
+@icarus_reuse_posix_only
 @pytest.mark.usefixtures("real_fusesoc")
 @pytest.mark.parametrize(
     "hidden", ["rtl/.a-hidden.v", "rtl/run.log", "rtl/.booley-runtime-inputs/m.v"]
@@ -547,6 +560,7 @@ def test_isolated_reuse_declines_source_named_like_a_booley_file(
     assert session_key(_prepare(root, "sim_icarus", name="hidden")) is None
 
 
+@icarus_reuse_posix_only
 @pytest.mark.usefixtures("real_fusesoc")
 def test_isolated_icarus_reuse_declines_quoted_file_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -567,6 +581,7 @@ def test_isolated_icarus_reuse_declines_quoted_file_name(
     assert _icarus_key(prepared, root) is None
 
 
+@icarus_reuse_posix_only
 @pytest.mark.usefixtures("real_fusesoc")
 def test_isolated_icarus_reuse_keeps_stock_options(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -582,6 +597,7 @@ def test_isolated_icarus_reuse_keeps_stock_options(
     assert _icarus_key(_prepare(root, "sim_icarus", name="g2"), root) == first
 
 
+@icarus_reuse_posix_only
 @pytest.mark.usefixtures("real_fusesoc")
 @pytest.mark.parametrize("variant", ["plain", "projected"])
 def test_unisolated_icarus_option_decision_unchanged(
