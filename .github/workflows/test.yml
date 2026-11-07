@@ -359,8 +359,9 @@ jobs:
     name: test / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     # Complete suites use the same bound as full-python-matrix.yml. Shard and
-    # compatibility legs are governed by the per-step limits below (5/5/6 setup,
-    # 12 pytest); their 25m job limit is only a backstop.
+    # compatibility legs fail fast on a stalled step through the per-step limits
+    # below; typical jobs finish far inside the 25m job limit, which only backstops
+    # a run whose steps are all slow but each within its own limit.
     timeout-minutes: ${{ matrix.mode == 'full' && 30 || 25 }}
     env:
       PYTHONFAULTHANDLER: "1"
@@ -509,7 +510,7 @@ jobs:
     if: fromJSON(needs.changes.outputs.jobs)['coverage-shards']
     name: coverage-shards / ${{ matrix.name }}
     runs-on: ubuntu-latest
-    # Setup steps 5+5+6, coverage pytest 15, plus the always-run publish/upload steps.
+    # Setup-step limits plus the pytest-step limit below, plus the always-run publish/upload steps.
     timeout-minutes: 35
     env:
       TEST_MARK_EXPRESSION: 'not native_bwave'
