@@ -184,7 +184,7 @@ def _record_build_markers(
     (build_path / _EDALIZE_BINDIR_MARKER).write_text(rel, encoding="utf-8")
     (build_path / _EDALIZE_EDA_TOOL_MARKER).write_text(prepared.eda_tool, encoding="utf-8")
     (build_path / _RUNTIME_INPUTS_MARKER).write_text(
-        json.dumps(declared_runtime_inputs(prepared.resolved)), encoding="utf-8"
+        json.dumps(declared_runtime_inputs(prepared.resolved, work_dir)), encoding="utf-8"
     )
     return rel
 
@@ -1834,6 +1834,7 @@ replacement must differ, and every proposal must remain a single source edit.
             validate_mutation_closure(catalog.core_closure((handle,)) or frozenset())
             # The shared isolated registry names every source absolutely, so a
             # mutant would have no private copy: give this variant its own.
+            # (The pristine baseline gets its mirror from the simulation build.)
             mirror_plan = fusesoc_registry.build_library_plan(handle.project_root, build_path)
             if mirror_plan is not None:
                 private_library["core_library"] = mirror_plan
@@ -1969,10 +1970,16 @@ replacement must differ, and every proposal must remain a single source edit.
             raise UnsupportedSimTargetError(
                 "private mutation build marker missing; rerun the mutation sweep"
             )
+        if fusesoc_registry.native_cores_ignored(work_dir):
+            # Re-resolving would clear the built image under *build_path*
+            # (the private mirror is rendered into it) and mark it built.
+            raise UnsupportedSimTargetError(
+                "baseline build marker missing; rerun the mutation sweep"
+            )
         # Defensive: baseline marker lost — re-resolve.
         _handle, prepared = self._resolve_elab_target(target, work_dir, build_path)
         rel = _record_build_markers(build_path, prepared, work_dir)
-        return _PinnedBuild(rel, declared_runtime_inputs(prepared.resolved))
+        return _PinnedBuild(rel, declared_runtime_inputs(prepared.resolved, work_dir))
 
     def _target_identity(self, target: str) -> str:
         """The identity (``vlnv#name``) of *target* in the checkout this run mutates."""

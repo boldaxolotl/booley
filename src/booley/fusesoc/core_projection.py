@@ -292,26 +292,44 @@ def render_private_mirror(project_root: Path | str, mirror_root: Path) -> dict[P
 
     Returns each resolved authored core mapped to its mirror core.
     """
+    mirror_root.mkdir(parents=True, exist_ok=False)
+    return _mirror_cores(project_root, mirror_root, write=True)
+
+
+def describe_private_mirror(project_root: Path | str, mirror_root: Path) -> dict[Path, Path]:
+    """Return what :func:`render_private_mirror` would map, writing nothing.
+
+    Every authored core is still parsed and rewritten, so a core the real
+    render rejects (generators, ``$``/``?`` paths, malformed filesets, a
+    fileset entry that is not a regular file) is rejected here with the same
+    error.
+    """
+    return _mirror_cores(project_root, mirror_root, write=False)
+
+
+def _mirror_cores(project_root: Path | str, mirror_root: Path, *, write: bool) -> dict[Path, Path]:
     root = Path(project_root)
     resolved_root = root.resolve()
-    mirror_root.mkdir(parents=True, exist_ok=False)
     mirrored: dict[Path, Path] = {}
     for core_file in authoritative_cores(root):
         relative = _require_stealth_relative(root, core_file)
         body = _parse_rebasable_core(core_file)
         _rewrite_fileset_paths(
-            body, core_file, _mirror_rewriter(resolved_root, mirror_root, core_file)
+            body, core_file, _mirror_rewriter(resolved_root, mirror_root, core_file, copy=write)
         )
         source = core_file.relative_to(root).as_posix()
         destination = mirror_root / f"{_ISOLATED_CORE_PREFIX}{quote(relative, safe='')}"
-        rendered = yaml.safe_dump(body, sort_keys=False)
-        destination.write_text(f"CAPI=2:\n{_MARKER_PREFIX}{source}\n{rendered}", encoding="utf-8")
+        if write:
+            rendered = yaml.safe_dump(body, sort_keys=False)
+            destination.write_text(
+                f"CAPI=2:\n{_MARKER_PREFIX}{source}\n{rendered}", encoding="utf-8"
+            )
         mirrored[core_file.resolve()] = destination
     return mirrored
 
 
 def _mirror_rewriter(
-    resolved_root: Path, mirror_root: Path, core_file: Path
+    resolved_root: Path, mirror_root: Path, core_file: Path, *, copy: bool
 ) -> Callable[[str, bool], str]:
     """Return a path rewriter that copies in-checkout files under *mirror_root*."""
 
@@ -324,18 +342,24 @@ def _mirror_rewriter(
         except ValueError:
             return absolute  # resolves outside the checkout: never copied, never mutable
         if is_file:
-            _copy_into_mirror(Path(absolute), mirror_root / relative, core_file)
+            _copy_into_mirror(Path(absolute), mirror_root / relative, core_file, copy=copy)
         return relative.as_posix()
 
     return rewrite
 
 
-def _copy_into_mirror(source: Path, destination: Path, core_file: Path) -> None:
-    """Copy one regular file; a missing source is left for the source preflight."""
+def _copy_into_mirror(source: Path, destination: Path, core_file: Path, *, copy: bool) -> None:
+    """Copy one regular file; a missing source is left for the source preflight.
+
+    With ``copy`` false nothing is written but the same refusals apply, so a
+    dry-run preview rejects exactly the entries the real render rejects.
+    """
     if not source.exists():
         return
     if not source.is_file():
         raise CoreProjectionError(f"mirrored fileset entry is not a regular file: {source}")
+    if not copy:
+        return
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
         shutil.copyfile(source, destination)

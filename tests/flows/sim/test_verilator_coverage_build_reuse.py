@@ -259,3 +259,31 @@ def test_tampered_retained_read_closure_file_rebuilds(coverage_env: Path) -> Non
     assert _HIT not in rebuilt.output
     assert invoker.builds == 2
     assert execution.authenticated_image()[0] != old_root
+
+
+@pytest.mark.parametrize("variant", [_PLAIN, _TRACED], ids=["plain", "traced"])
+def test_isolated_coverage_source_edit_rebuilds_and_never_launches_old_image(
+    coverage_env: Path, variant: SimulationBuildVariant
+) -> None:
+    """AC2: an isolated coverage build is reused, and a source edit rebuilds it."""
+    engine._isolate_native_cores(coverage_env)
+    invoker = _Invoker(coverage_env)
+    execution = _execution(coverage_env, invoker)
+    _build(execution, coverage_env, variant)
+    old_root = execution.authenticated_image()[0]
+    assert _HIT in _build(execution, coverage_env, variant).output
+    assert invoker.builds == 1
+    engine._edit_keeping_mtime(
+        coverage_env / "rtl" / "tb.sv", '`include "defs.svh"\nmodule tb; // NEW\nendmodule\n'
+    )
+
+    rebuilt = _build(execution, coverage_env, variant)
+    new_root, artifacts = execution.authenticated_image()
+    run = execution.run(_run_request(coverage_env))
+
+    assert _HIT not in rebuilt.output
+    assert invoker.builds == 2
+    assert new_root != old_root
+    assert "IMAGE=NEW" in artifacts[0].read_text(encoding="utf-8")
+    assert run.verdict == "pass", run.output
+    assert len(invoker.launches) == 1 and "IMAGE=NEW" in invoker.launches[0]

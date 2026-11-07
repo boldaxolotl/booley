@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import contextvars
 import hashlib
 import importlib.metadata
@@ -91,6 +92,26 @@ def _runtime_artifacts(prepared: PreparedSimulationBuild) -> tuple[Path, ...]:
 _RUNTIME_INPUTS_DIR = ".booley-runtime-inputs"
 # Files Booley itself writes into a generation around a build or launch.
 _RESERVED_PREFIXES = (".booley-adapter-", ".a-")
+
+
+def _has_unhashed_source_name(prepared: PreparedSimulationBuild) -> bool:
+    """Report a generation file the build-input snapshot skips by its name or folder.
+
+    An isolated Project exports its sources and headers into the generation, where
+    a listed file named like one Booley writes (a reserved prefix, ``run.log`` or a
+    file under the runtime-input folder) would escape the reuse key, so its edit
+    would reuse a stale build. Only Booley's own run log and overlay are exempt.
+    """
+    own = (prepared.build_root / RUN_LOG_NAME, prepared.build_root / _RUNTIME_INPUTS_DIR)
+    return any(
+        (
+            path.name == RUN_LOG_NAME
+            or path.name.startswith(_RESERVED_PREFIXES)
+            or _RUNTIME_INPUTS_DIR in path.parts
+        )
+        and not any(path == item or item in path.parents for item in own)
+        for path in prepared.work_root.rglob("*")
+    )
 
 
 def snapshot_build_inputs(prepared: PreparedSimulationBuild) -> dict[str, str]:
@@ -290,11 +311,95 @@ def _has_unsupported_source(prepared: PreparedSimulationBuild, core_file: Path) 
     return False
 
 
-def _has_unsupported_icarus_recipe(prepared: PreparedSimulationBuild) -> bool:
-    """Allow only local source operands and the stock Edalize Icarus commands."""
+_ICARUS_TOKEN = re.compile(r"[A-Za-z0-9_.=+,:/-]+")
+_ICARUS_MAKEFILE_TEXT = re.compile(r"[\x20-\x7e\t\n]*")
+_ICARUS_FILE_TOKEN = r"[A-Za-z0-9_.+,/-]+"
+_ICARUS_COMMENT = re.compile(r"#[A-Za-z0-9 _.,:/-]*")
+# Each ``.scr`` line is empty or a relative name of non-empty ``/``-separated segments
+# whose first character is not ``+``, ``-`` or ``/``; Edalize ends every line with ``\n``.
+_ICARUS_SCRIPT = re.compile(rb"(?:(?:[A-Za-z0-9_.][A-Za-z0-9_.+,-]*(?:/[A-Za-z0-9_.+,-]+)*)?\n)*")
+# Rule headers Edalize writes per target; ``run`` appears twice (recipe, then ``run: pre_run``).
+_ICARUS_STOCK_HEADERS = {"run": 2}
+
+
+def _has_unstock_iverilog_command(command: str, script_name: str) -> bool:
+    """Return whether *command* carries an ``iverilog`` option beyond the stock ones.
+
+    Stock means Edalize's attached ``-s<top>``, one ``-c <script_name>``, one
+    ``-o <image>`` and attached ``-g<x>``/``-D<x>`` options from the Target. Make
+    expands ``$`` and ``/bin/sh`` runs the recipe, so every token also has to be
+    plain characters. Anything else may read files the reuse key never hashes.
+    """
+    tokens = command.removeprefix("$(EDALIZE_LAUNCHER) ").split(" ")
+    if tokens[0] != "iverilog" or not all(_ICARUS_TOKEN.fullmatch(token) for token in tokens):
+        return True
+    seen: set[str] = set()
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"-c", "-o"}:
+            if token in seen or index + 1 >= len(tokens):
+                return True
+            operand = tokens[index + 1]
+            if operand.startswith("-") or (token == "-c" and operand != script_name):
+                return True
+            seen.add(token)
+            index += 2
+            continue
+        if not (len(token) > 2 and token[:2] in {"-s", "-g", "-D"}):
+            return True
+        index += 1
+    return seen != {"-c", "-o"}
+
+
+def _has_unstock_icarus_makefile(text: str, iverilog_command: str) -> bool:
+    """Return whether the Makefile holds a line Make honours but the recipe split misses.
+
+    *iverilog_command* has passed ``_has_unstock_iverilog_command``, so it holds
+    one ``-o <image>`` pair; the image is a legal rule header.
+
+    Make splits on ``\\n`` only and reads non-recipe lines as assignments,
+    directives or rules, so every such line must be blank, a plain comment or one
+    of Edalize's rule headers. Edalize writes each rule header once (``run`` twice),
+    so an extra header is an inserted line, and Make would merge its prerequisites
+    (for example pulling the ``run`` recipe into the build).
+    """
+    if not _ICARUS_MAKEFILE_TEXT.fullmatch(text):
+        return True
+    tokens = iverilog_command.split(" ")
+    image = tokens[tokens.index("-o") + 1]
+    targets = "|".join(
+        re.escape(name)
+        for name in ("all", "pre_build", "post_build", "pre_run", "run", "post_run", image)
+    )
+    header = re.compile(
+        rf"(?P<target>{targets}):(?: {_ICARUS_FILE_TOKEN})*(?: \|(?: {_ICARUS_FILE_TOKEN})+)? *"
+    )
+    counts: collections.Counter[str] = collections.Counter()
+    for line in text.split("\n"):
+        if not line or line.startswith("\t") or _ICARUS_COMMENT.fullmatch(line):
+            continue
+        match = header.fullmatch(line)
+        if match is None:
+            return True
+        counts[match["target"]] += 1
+    return any(count > _ICARUS_STOCK_HEADERS.get(target, 1) for target, count in counts.items())
+
+
+def _has_unsupported_icarus_recipe(prepared: PreparedSimulationBuild, project_root: Path) -> bool:
+    """Allow only local source operands and the stock Edalize Icarus commands.
+
+    An isolated Project (#2895) also has to use the stock ``iverilog`` options and
+    Makefile shape, because option operands name files the reuse key does not hash.
+    """
     root = prepared.build_root
     scripts = tuple(root.glob("*.scr"))
     if len(scripts) != 1:
+        return True
+    isolated = fusesoc_registry.native_cores_ignored(project_root)
+    # iverilog's command-file reader splits and quotes differently from ``shlex``, so an
+    # isolated Project accepts only plain file-name lines.
+    if isolated and not _ICARUS_SCRIPT.fullmatch(scripts[0].read_bytes()):
         return True
     for line in scripts[0].read_text(encoding="utf-8").splitlines():
         tokens = shlex.split(line)
@@ -307,17 +412,18 @@ def _has_unsupported_icarus_recipe(prepared: PreparedSimulationBuild) -> bool:
             prepared.work_root.resolve()
         ):
             return True
-    makefile = root / "Makefile"
-    commands = [
-        line.strip()
-        for line in makefile.read_text(encoding="utf-8").splitlines()
-        if line.startswith("\t")
-    ]
-    if len(commands) != 2:
-        return True
-    return not (
+    # Make drops a CR only before a LF, so read the bytes: universal newlines would
+    # turn a lone CR into a line break the Makefile check below could not see.
+    makefile_text = (root / "Makefile").read_bytes().decode("utf-8").replace("\r\n", "\n")
+    commands = [line.strip() for line in makefile_text.splitlines() if line.startswith("\t")]
+    if len(commands) != 2 or not (
         commands[0].startswith("$(EDALIZE_LAUNCHER) iverilog ")
         and commands[1].startswith("$(EDALIZE_LAUNCHER) vvp ")
+    ):
+        return True
+    return isolated and (
+        _has_unstock_iverilog_command(commands[0], scripts[0].name)
+        or _has_unstock_icarus_makefile(makefile_text, commands[0])
     )
 
 
@@ -344,7 +450,7 @@ def _eligible_core_file(prepared: PreparedSimulationBuild, project_root: Path) -
     if (
         build_reuse.has_generated_core_behavior(core_data)
         or _has_unsupported_source(prepared, core_file)
-        or _has_unsupported_icarus_recipe(prepared)
+        or _has_unsupported_icarus_recipe(prepared, project_root)
     ):
         return None
     return core_file
@@ -390,7 +496,10 @@ def _reuse_input_key(
             "target": prepared.target_identity,
             "inputs": dict(inputs),
             "core": hash_file(core_file),
-            "core_path": str(core_file),
+            "core_path": build_reuse.generation_neutral_core_path(
+                core_file, project_root, prepared.work_root
+            )
+            or str(core_file),
             "tool": tool,
             "recipe": recipe,
             "versions": _recipe_package_versions(),
@@ -593,7 +702,10 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         """
         # A declined call must not leave an earlier identity scoping closures.
         self._verilator_identity = None
-        if hooks:
+        if hooks or (
+            fusesoc_registry.native_cores_ignored(self.handle.project_root)
+            and _has_unhashed_source_name(prepared)
+        ):
             return None
         environment = os.environ
         if prepared.eda_tool == "verilator":

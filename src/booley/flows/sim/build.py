@@ -153,7 +153,9 @@ def prepare_simulation_build(
     """Resolve and prepare the simulator image used by normal Simulation.
 
     *core_library* replaces the Project's prepared FuseSoC library view, e.g.
-    with a private per-build mirror that a build may edit.
+    with a private per-build mirror that a build may edit. Without it, an
+    ``ignore_native_cores`` Project resolves through a fresh private mirror
+    under the build root, which holds only fileset-listed files.
     """
     try:
         return _prepare_simulation_build(
@@ -189,6 +191,10 @@ def _prepare_simulation_build(
     root, inspection, backend_arguments = _simulation_recipe_inputs(handle, lane_kind=lane_kind)
     target = handle.selector
     work_root = build_root or work_root_for(root, "sim", target, variant=variant)
+    if core_library is None:
+        # Isolated Projects resolve through a private mirror so the build reads
+        # only fileset-listed headers; ``None`` elsewhere (shared view).
+        core_library = fusesoc_registry.build_library_plan(root, work_root)
     resolved = fusesoc_registry.resolve_target_handle(
         handle,
         build_root=work_root,
@@ -206,7 +212,7 @@ def _prepare_simulation_build(
         cache_policy, build_environment = _verilator_cache_environment(
             root, build_environment, Path(resolved.build_root)
         )
-        core_closure = capture_core_closure(resolved.edam_path, root)
+        core_closure = capture_core_closure(resolved.edam_path, root, generation=work_root)
     _stage_doctor_overlay(root, resolved.build_root)
     fileset = {
         "rtl": tuple(inspection.rtl_files),
@@ -268,14 +274,18 @@ def simulation_setup_command(
 ) -> list[str]:
     """Preview the exact FuseSoC setup command used by Simulation preparation."""
     try:
-        _, _, backend_arguments = _simulation_recipe_inputs(
+        root, _, backend_arguments = _simulation_recipe_inputs(
             handle,
             lane_kind=lane_kind,
             inspection=inspection,
         )
+        # Isolated Projects name the private mirror the run will render.
+        library_plan = fusesoc_registry.describe_build_library_plan(root, build_root)
     except (fusesoc_registry.FuseSocError, OSError) as exc:
         raise SimulationBuildPreparationError(str(exc)) from exc
     kwargs: dict[str, Any] = {"build_root": build_root}
+    if library_plan is not None:
+        kwargs["library_plan"] = library_plan
     if resolution_vlnv is not None:
         kwargs["resolution_vlnv"] = resolution_vlnv
     if backend_arguments:
