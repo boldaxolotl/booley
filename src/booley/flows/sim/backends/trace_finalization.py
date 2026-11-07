@@ -51,11 +51,10 @@ def finalize_trace(
         print(output)
         evidence = AdapterTraceResult(
             "ok",
-            str(artifact.path),
-            "",
-            artifact.top_scope,
-            artifact.signal_count,
-            artifact.total_ticks,
+            path=str(artifact.path),
+            top_scope=artifact.top_scope,
+            signal_count=artifact.signal_count,
+            total_ticks=artifact.total_ticks,
         )
         return f"\n{output}", evidence
     if selection.ambiguous:
@@ -65,7 +64,9 @@ def finalize_trace(
     elif vcd_fallback and found.suffix.lower() == ".vcd" and not selection.oversize:
         print(f"TRACE_FALLBACK: {found}")
         detail = f"native FST conversion unavailable: {inspection.failure_reason}"
-        return f"\nTRACE_FALLBACK: {found}", AdapterTraceResult("ok", str(found), detail)
+        return f"\nTRACE_FALLBACK: {found}", AdapterTraceResult(
+            "ok", path=str(found), detail=detail
+        )
     else:
         reason = f"trace requested but the retained waveform is not queryable: {inspection.failure_reason}"
     incident = session.write_incident(reason, sim_proc=sim_proc, bwave_proc=conversion)
@@ -73,5 +74,5 @@ def finalize_trace(
     print(f"TRACE_INCIDENT: {incident}")
     return (
         f"\nERROR: {reason}\nTRACE_INCIDENT: {incident}",
-        AdapterTraceResult("incident", str(incident), reason),
+        AdapterTraceResult("incident", path=str(incident), detail=reason),
     )

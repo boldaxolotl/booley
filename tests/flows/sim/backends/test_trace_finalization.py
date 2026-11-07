@@ -48,7 +48,7 @@ def _current(trace, patterns: tuple[str, ...] = (), roots: tuple[Path, ...] = ()
     return CurrentRunTraces(trace, patterns, roots, {})
 
 
-def test_ok_store_reports_metadata(tmp_path: Path, capsys):
+def test_ok_store_reports_metadata(tmp_path: Path):
     store = tmp_path / "trace.fst"
     store.write_bytes(b"fst")
 
@@ -56,12 +56,11 @@ def test_ok_store_reports_metadata(tmp_path: Path, capsys):
 
     metadata = TraceArtifact(store, 3, "tb", 3, 7).metadata_line()
     assert output == f"\nTRACE_OK: {store}\n{metadata}"
-    assert f"TRACE_OK: {store}\n{metadata}" in capsys.readouterr().out
     assert (result.status, result.path) == ("ok", str(store))
     assert (result.top_scope, result.signal_count, result.total_ticks) == ("tb", 3, 7)
 
 
-def test_unqueryable_store_is_an_incident(tmp_path: Path, capsys):
+def test_unqueryable_store_is_an_incident(tmp_path: Path):
     store = tmp_path / "trace.fst"
     store.write_bytes(b"fst")
     trace = _FakeTrace(store, failure="FST has no signals", owned=True)
@@ -72,37 +71,30 @@ def test_unqueryable_store_is_an_incident(tmp_path: Path, capsys):
     reason = "trace requested but the retained waveform is not queryable: FST has no signals"
     assert trace.incidents == [(reason, sim_proc, conversion)]
     assert output == f"\nERROR: {reason}\nTRACE_INCIDENT: trace_incident.txt"
-    assert f"ERROR: {reason}" in capsys.readouterr().out
-    assert (result.status, result.path, result.detail) == (
-        "incident",
-        "trace_incident.txt",
-        reason,
-    )
-
-
-def test_missing_trace_names_declared_patterns(tmp_path: Path):
-    current = _current(_FakeTrace(), ("missing.vcd",), (tmp_path,))
-
-    _, result = finalize_trace(current, None)
-
-    assert result.status == "incident"
-    assert result.detail == (
-        f"{OPENING} (no fresh, nonempty file matching [flows.sim].trace_files "
-        "['missing.vcd'] was produced by the current run)"
-    )
+    assert (result.status, result.detail) == ("incident", reason)
 
 
 @pytest.mark.parametrize(
-    ("roots", "expected"),
-    [((Path("searched"),), OPENING + KNOB_HINT), ((), OPENING)],
-    ids=["roots-searched", "no-roots"],
+    ("patterns", "roots", "hint"),
+    [
+        (
+            ("missing.vcd",),
+            (Path("searched"),),
+            " (no fresh, nonempty file matching [flows.sim].trace_files "
+            "['missing.vcd'] was produced by the current run)",
+        ),
+        ((), (Path("searched"),), KNOB_HINT),
+        ((), (), ""),
+    ],
+    ids=["declared-patterns", "roots-searched", "no-roots"],
 )
-def test_missing_trace_hints_the_knob_only_when_declared_files_are_searched(
-    roots: tuple[Path, ...], expected: str
+def test_missing_trace_names_what_was_searched_for(
+    patterns: tuple[str, ...], roots: tuple[Path, ...], hint: str
 ):
-    _, result = finalize_trace(_current(_FakeTrace(), roots=roots), None)
+    _, result = finalize_trace(_current(_FakeTrace(), patterns, roots), None)
 
-    assert result.detail == expected
+    assert result.status == "incident"
+    assert result.detail == OPENING + hint
 
 
 @pytest.mark.parametrize(

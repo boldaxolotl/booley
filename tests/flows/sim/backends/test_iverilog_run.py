@@ -10,6 +10,7 @@ The real vvp run + VCD→bwave postprocess is exercised end-to-end in the Sandbo
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -404,7 +405,7 @@ def test_icarus_adopts_declared_trace_rewritten_by_run(tmp_path: Path, monkeypat
 
 
 def _icarus_run(tmp_path: Path, command: list[str]) -> ir._IcarusRun:
-    return ir._IcarusRun(tmp_path, tmp_path, tmp_path, "sim", command, None)
+    return ir._IcarusRun(tmp_path, tmp_path, tmp_path, Path("sim"), command, None)
 
 
 def test_execute_passes_guard_inputs_to_the_runner(tmp_path: Path, monkeypatch):
@@ -418,7 +419,7 @@ def test_execute_passes_guard_inputs_to_the_runner(tmp_path: Path, monkeypatch):
 
     (launch,) = launches
     assert launch == SimulatorLaunch(
-        "iverilog", run.command, tmp_path, launch.env, 17, tmp_path, 4096, ("firmware.hex",)
+        "iverilog", run.command, tmp_path, os.environ.copy(), 17, tmp_path, 4096, ("firmware.hex",)
     )
 
 

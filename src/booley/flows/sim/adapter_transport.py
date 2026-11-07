@@ -705,6 +705,7 @@ __all__ = [
     "NativeVerdictAssessment",
     "add_transport_arguments",
     "assess_native_verdict",
+    "evaluate_native_verdict",
     "first_native_failure",
     "native_verdict_message",
     "partial_result_identity",

@@ -316,16 +316,18 @@ def test_execute_passes_guard_inputs_to_the_runner(tmp_path: Path, monkeypatch):
     vr._execute_supervised(["Vtb_top", "+x"], paths, {"K": "V"}, 42, trace, 1234, ("memory.hex",))
 
     (launch,) = launches
-    assert launch.label == "Verilator"
-    assert launch.command == ["Vtb_top", "+x"]
-    assert launch.run_cwd == run_cwd
-    assert launch.env == {"K": "V"}
-    assert launch.timeout_s == 42
-    assert launch.work_dir == work_dir
-    assert launch.max_rundir_bytes == 1234
-    assert launch.runtime_inputs == ("memory.hex",)
-    assert launch.trace is session
-    assert launch.conversion is conversion
+    assert launch == SimulatorLaunch(
+        "Verilator",
+        ["Vtb_top", "+x"],
+        run_cwd,
+        {"K": "V"},
+        42,
+        work_dir,
+        1234,
+        ("memory.hex",),
+        trace=session,
+        conversion=conversion,
+    )
 
 
 class _FinishedProcess:

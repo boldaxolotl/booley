@@ -114,7 +114,8 @@ class _Supervisor:
                 self.fatal = fatal
                 return True
         elif time.monotonic() > self.deadline and self.proc.poll() is None:
-            if self._kill(self._timeout_detail()):
+            # Another abort already owns the dying child: no second kill or incident.
+            if self._abort() is None and self._kill(self._timeout_detail()):
                 self.timed_out = True
                 return True
         return False

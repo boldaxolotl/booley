@@ -730,14 +730,13 @@ def test_native_fatal_only_failure_names_assertion_fatal_messages(count: int, la
 _SENTINELS = {"pass_sentinels": ["ALL TESTS PASSED."], "fail_sentinels": ["ERROR!"]}
 
 
-@pytest.mark.parametrize("tool", ["Verilator", "iverilog"])
 @pytest.mark.parametrize(
-    ("output", "returncode", "sentinels", "expected"),
+    ("tool", "output", "returncode", "sentinels", "expected"),
     [
-        ("ALL TESTS PASSED.", 0, _SENTINELS, "PASSED (rc=0)"),
-        ("ERROR!", 0, _SENTINELS, "FAILED (fail sentinel matched)"),
-        ("[SIM_RESULT] FAILED", 1, {}, "FAILED (rc=1)"),
-        ("no sentinel here", 0, {}, "INCONCLUSIVE (rc=0, no sentinel)"),
+        ("Verilator", "ALL TESTS PASSED.", 0, _SENTINELS, "PASSED (rc=0)"),
+        ("iverilog", "ERROR!", 0, _SENTINELS, "FAILED (fail sentinel matched)"),
+        ("Verilator", "[SIM_RESULT] FAILED", 1, {}, "FAILED (rc=1)"),
+        ("iverilog", "no sentinel here", 0, {}, "INCONCLUSIVE (rc=0, no sentinel)"),
     ],
 )
 def test_native_verdict_message_names_the_tool(

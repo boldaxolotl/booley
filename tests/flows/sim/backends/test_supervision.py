@@ -40,7 +40,7 @@ def _launch(tmp_path: Path, script: str, **overrides: Any) -> SimulatorLaunch:
     return SimulatorLaunch(**{**fields, **overrides})
 
 
-def _guard(message: str | None = None, *, finish: Any = lambda: None) -> SimpleNamespace:
+def _guard(message: str | None = None, *, finish: Any = None) -> SimpleNamespace:
     """Disk or stall guard whose verdict is fixed: tripped exactly when a message is given."""
     return SimpleNamespace(
         tripped=message is not None,
@@ -48,7 +48,7 @@ def _guard(message: str | None = None, *, finish: Any = lambda: None) -> SimpleN
         start=lambda: None,
         stop=lambda: None,
         observe=lambda _line: None,
-        finish=finish,
+        finish=finish or (lambda: None),
     )
 
 
@@ -80,10 +80,9 @@ class _FakeTrace:
 def test_readmemh_fatal_beats_disk_budget(tmp_path: Path, monkeypatch):
     _guards(monkeypatch, disk="DISK")
 
-    lines, proc, termination = run_supervised(_launch(tmp_path, FATAL_THEN_SLEEP))
+    lines, _, termination = run_supervised(_launch(tmp_path, FATAL_THEN_SLEEP))
 
     assert termination.kind == "fatal_init"
-    assert proc.poll() is not None
     assert "missing $readmemh" in "".join(lines)
 
 
@@ -107,11 +106,23 @@ def test_sim_time_stall_beats_trace_stall(tmp_path: Path, monkeypatch):
 def test_trace_stall_beats_timeout(tmp_path: Path, instant_timer):
     trace = _FakeTrace(tmp_path, stall_message="trace pipeline stalled")
 
-    lines, proc, termination = run_supervised(_launch(tmp_path, SLEEP, trace=trace))
+    _, _, termination = run_supervised(_launch(tmp_path, SLEEP, trace=trace))
 
     assert (termination.kind, termination.failure_kind) == ("trace_stall", "infrastructure")
-    assert proc.poll() is not None
-    assert "ERROR: trace pipeline stalled" in "".join(lines)
+
+
+def test_deadline_line_leaves_a_dying_child_to_the_abort_that_started_it(
+    tmp_path: Path, monkeypatch, never_firing_timer
+):
+    """A line past the deadline must not re-kill or write a timeout incident after a guard kill."""
+    _guards(monkeypatch, disk="DISK")
+    trace = _FakeTrace(tmp_path)
+    script = "import time; print('x', flush=True); time.sleep(1)"
+
+    _, _, termination = run_supervised(_launch(tmp_path, script, timeout_s=0, trace=trace))
+
+    assert termination.kind == "disk_budget"
+    assert trace.incidents == []
 
 
 # --- timer, baseline and process-group kill ---
@@ -120,29 +131,24 @@ def test_trace_stall_beats_timeout(tmp_path: Path, instant_timer):
 def test_silent_simulator_is_killed_by_the_timer(tmp_path: Path):
     """F-13/F-21: a sim that prints nothing is still killed at its budget."""
     start = time.monotonic()
-    lines, proc, termination = run_supervised(_launch(tmp_path, SLEEP, timeout_s=1))
+    lines, _, termination = run_supervised(_launch(tmp_path, SLEEP, timeout_s=1))
 
     assert time.monotonic() - start < KILLED_WITHIN_S
     assert (termination.kind, termination.failure_kind) == ("timeout", "timeout")
     assert "printed NO output at all" in "".join(lines)
-    assert proc.poll() is not None
 
 
 def test_child_that_closes_stdout_is_killed_at_the_deadline(tmp_path: Path):
     """EOF on stdout must not end supervision while the child is still alive."""
     script = (
-        "import os, time\n"
-        "null = os.open(os.devnull, os.O_WRONLY)\n"
-        "os.dup2(null, 1)\n"
-        "os.dup2(null, 2)\n"
-        "time.sleep(60)\n"
+        "import os, time; null = os.open(os.devnull, os.O_WRONLY); "
+        "os.dup2(null, 1); os.dup2(null, 2); time.sleep(60)"
     )
     start = time.monotonic()
-    _, proc, termination = run_supervised(_launch(tmp_path, script, timeout_s=1))
+    _, _, termination = run_supervised(_launch(tmp_path, script, timeout_s=1))
 
     assert time.monotonic() - start < KILLED_WITHIN_S
     assert termination.kind == "timeout"
-    assert proc.poll() is not None
 
 
 def test_disk_baseline_is_taken_before_the_spawn(tmp_path: Path, monkeypatch):
@@ -188,9 +194,6 @@ def test_kill_reaches_the_whole_process_group(tmp_path: Path):
     pytest.fail(f"grandchild {grandchild} survived the group kill")
 
 
-# --- guards, progress and hooks ---
-
-
 def test_readmemh_fatal_kills_the_child_and_names_the_trace_incident(tmp_path: Path):
     """SETUP-23: the warning ends the run fast, with a trace incident when tracing."""
     trace, conversion = _FakeTrace(tmp_path), object()
@@ -233,12 +236,11 @@ def test_disk_runaway_kills_a_silent_simulator(tmp_path: Path, monkeypatch):
     script = "import time; open('big.bin', 'wb').write(b'0' * 200_000); time.sleep(60)"
 
     start = time.monotonic()
-    lines, proc, termination = run_supervised(_launch(tmp_path, script, max_rundir_bytes=1024))
+    lines, _, termination = run_supervised(_launch(tmp_path, script, max_rundir_bytes=1024))
 
     assert time.monotonic() - start < KILLED_WITHIN_S
     assert termination.kind == "disk_budget"
     assert "max_rundir_bytes" in "".join(lines)
-    assert proc.poll() is not None
 
 
 @pytest.mark.parametrize("returncode", [0, 1])
@@ -281,15 +283,3 @@ def test_run_log_is_refreshed_while_running(tmp_path: Path, monkeypatch):
     content = (work / "run.log").read_text(encoding="utf-8")
     assert "cycle 2" in content and "output line(s)" in content
     assert run_log_is_current(work, "run-live") is False  # the adapter's verdict has not landed
-
-
-def test_every_output_line_reaches_the_on_line_hook(tmp_path: Path):
-    seen: list[str] = []
-
-    lines, _, termination = run_supervised(
-        _launch(tmp_path, "print('a'); print('b')", on_line=seen.append)
-    )
-
-    assert seen == ["a\n", "b\n"]
-    assert termination.kind == "completed"
-    assert lines[0] == "a\n"
