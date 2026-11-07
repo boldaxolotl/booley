@@ -127,3 +127,31 @@ def test_paired_checkout_rule_only_when_requested(monkeypatch) -> None:
     assert "`goal_status`" in rules
     names = {tool.name for tool in _tools(monkeypatch)}
     _assert_guidance_names(rules, names, "paired Checkout rules")
+
+
+def test_rules_name_relocated_protected_inputs(tmp_path) -> None:
+    # The rules name the worktree's own Booley Directory (`[project].dir`), issue #2919.
+    from booley.goals.protected_inputs import rules_booley_dir
+
+    (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
+    spelling = rules_booley_dir(tmp_path)
+    assert spelling == "tools/booley"
+    rules = goal_mode_rules(routing_guidance=work_dir_guidance(), booley_dir=spelling)
+    assert "`tools/booley/hooks/`" in rules
+    assert "`tools/booley/.managed/`" in rules
+    assert "`.booley/hooks/`" not in rules
+
+
+def test_rules_default_to_the_default_booley_directory(tmp_path) -> None:
+    from booley.goals.protected_inputs import rules_booley_dir
+
+    assert rules_booley_dir(tmp_path) == ".booley"
+    rules = goal_mode_rules(routing_guidance=work_dir_guidance())
+    assert "`.booley/hooks/`" in rules and "`.booley/booley.toml`" in rules
+
+
+def test_rules_directory_falls_back_to_default_for_a_retired_layout(tmp_path) -> None:
+    from booley.goals.protected_inputs import rules_booley_dir
+
+    (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = ".booley_project"\n')
+    assert rules_booley_dir(tmp_path) == ".booley"

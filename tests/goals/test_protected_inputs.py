@@ -509,3 +509,76 @@ def test_ignored_existing_bundle_mutation_is_protected(layout, tmp_path, paired,
     assert _violations(layout) == [WORKING]
     bundle.write_bytes(original)
     assert _violations(layout) == []
+
+
+# ---------------------------------------------------------------------------
+# A relocated Booley Directory (`[project].dir = "tools/booley"`, issue #2919)
+# ---------------------------------------------------------------------------
+
+RELOCATED = "tools/booley"
+
+
+def _relocated_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ProtectedInputRoots:
+    """A real Git checkout whose root `booley.toml` relocates the Booley Directory."""
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    root = tmp_path / "repo"
+    (root / RELOCATED / ".managed").mkdir(parents=True)
+    git(root, "init", "-q", "-b", "main")
+    (root / "booley.toml").write_bytes(f'[project]\ndir = "{RELOCATED}"\n'.encode())
+    (root / RELOCATED / "booley.toml").write_bytes(b"[project]\nname = 'demo'\n")
+    (root / RELOCATED / ".managed" / "bundle.sh").write_bytes(b"#!/bin/sh\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "base")
+    return ProtectedInputRoots(root, root / RELOCATED)
+
+
+def test_relocated_booley_dir_managed_bundle_is_protected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    roots = _relocated_repo(tmp_path, monkeypatch)
+    encoded = {path.encode() for path in resolve_protected_inputs(roots)}
+    # The relocated spellings join the fixed `.booley` candidates.
+    assert {
+        f"worktree:{RELOCATED}/.managed",
+        f"main:{RELOCATED}/.managed",
+        f"worktree:{RELOCATED}/hooks",
+        f"worktree:{RELOCATED}/booley.toml",
+        f"main:{RELOCATED}/booley.toml",
+        f"main:{RELOCATED}/mcp_tools",
+        "worktree:.booley/.managed",
+        "main:.booley/.managed",
+    } <= encoded
+    snapshot = snapshot_protected_inputs(roots)
+    (roots.worktree / RELOCATED / ".managed" / "bundle.sh").write_bytes(b"#!/bin/sh\nrm -rf /\n")
+    assert _check_roots(snapshot, roots) == [WORKING]
+
+
+def _check_roots(snapshot: ProtectedSnapshot, roots: ProtectedInputRoots) -> list[str]:
+    return protected_input_violations(
+        snapshot.encoded_paths, snapshot.working_digest, snapshot.head_digest, roots
+    )
+
+
+def test_default_booley_dir_candidates_are_not_duplicated(layout: SimpleNamespace) -> None:
+    encoded = [path.encode() for path in resolve_protected_inputs(_roots(layout))]
+    assert len(encoded) == len(set(encoded))
+    assert not any(RELOCATED in path for path in encoded)
+
+
+def test_retired_booley_dir_selection_is_a_protected_input_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    roots = _relocated_repo(tmp_path, monkeypatch)
+    (roots.worktree / "booley.toml").write_bytes(b'[project]\ndir = ".booley_project"\n')
+    with pytest.raises(ProtectedInputError, match="needs migration"):
+        resolve_protected_inputs(roots)
+
+
+def test_unreadable_checkout_configuration_reads_as_the_default_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    roots = _relocated_repo(tmp_path, monkeypatch)
+    (roots.worktree / "booley.toml").write_bytes(b"[project\n")  # invalid TOML
+    encoded = {path.encode() for path in resolve_protected_inputs(roots)}
+    assert "worktree:.booley/.managed" in encoded
+    assert f"worktree:{RELOCATED}/.managed" not in encoded

@@ -200,6 +200,43 @@ def test_grant_rejects_non_booley_directory(tmp_path: Path, private_state: Path)
         eda_grant_support.add_grant(unrelated, "vivado", installation="vivado_2025_2")
 
 
+def test_relocated_booley_dir_is_a_project_marker(tmp_path: Path, private_state: Path) -> None:
+    _registered(tmp_path)
+    project = tmp_path / "relocated"
+    (project / "tools" / "booley").mkdir(parents=True)
+    (project / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
+
+    grant = eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
+
+    assert grant.project_root == str(project.resolve())
+
+
+@pytest.mark.parametrize("marker", [".git", ".booley"])
+def test_default_project_markers_are_still_accepted(
+    tmp_path: Path, private_state: Path, marker: str
+) -> None:
+    _registered(tmp_path)
+    project = tmp_path / "plain"
+    (project / marker).mkdir(parents=True)
+
+    grant = eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
+
+    assert grant.project_root == str(project.resolve())
+
+
+def test_retired_layout_marker_check_is_an_authority_error(
+    tmp_path: Path, private_state: Path
+) -> None:
+    _registered(tmp_path)
+    project = tmp_path / "retired"
+    project.mkdir()
+    # A retired directory name makes the Booley Directory lookup raise BooleyLayoutError.
+    (project / "booley.toml").write_bytes(b'[project]\ndir = ".booley_project"\n')
+
+    with pytest.raises(authority.AuthorityError, match="needs migration"):
+        eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
+
+
 @pytest.mark.parametrize("root", [Path("/"), Path.home(), Path("/etc"), Path("/tmp")])
 def test_grant_rejects_broad_or_system_root(
     tmp_path: Path, private_state: Path, root: Path

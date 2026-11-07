@@ -399,6 +399,19 @@ def own_booley_dir_relative(checkout_root: Path) -> PurePosixPath:
     return PurePosixPath(*directory.relative_to(root).parts)
 
 
+def own_booley_dir_repo_path(checkout_root: Path) -> PurePosixPath:
+    """Return the checkout's own Booley Directory as a repository-relative path.
+
+    :func:`own_booley_dir_relative`, except a directory outside the checkout
+    (unsupported for repository paths) keeps the default ``.booley`` spelling,
+    so those layouts behave as before.
+    """
+    try:
+        return own_booley_dir_relative(checkout_root)
+    except BooleyDirOutsideCheckoutError:
+        return PurePosixPath(BOOLEY_DIR_NAME)
+
+
 def in_checkout_booley_dir(checkout_root: Path) -> Path:
     """Return the checkout's own Booley Directory when it lies inside the checkout.
 

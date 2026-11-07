@@ -148,6 +148,19 @@ def test_second_entry_on_an_active_worktree_is_refused(layout: SimpleNamespace) 
         enter_goal_mode(_request(layout, slug="other"), _env(layout))
 
 
+def test_entry_rules_name_the_relocated_booley_directory(layout: SimpleNamespace) -> None:
+    (layout.worktree / "booley.toml").write_text(
+        '[project]\ndir = "tools/booley"\n', encoding="utf-8"
+    )
+    git(layout.worktree, "add", "booley.toml")
+    git(layout.worktree, "commit", "-m", "relocate the Booley Directory")
+
+    rendered = enter_goal_mode(_request(layout), _env(layout)).render()
+
+    assert "`tools/booley/hooks/`" in rendered
+    assert "`.booley/hooks/`" not in rendered
+
+
 def test_booley_dir_inside_the_worktree_is_refused(layout: SimpleNamespace) -> None:
     env = EntryEnvironment(
         booley_dir=layout.worktree / ".booley", routing_guidance="Explicit test routing guidance."

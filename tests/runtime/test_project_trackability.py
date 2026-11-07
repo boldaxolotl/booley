@@ -442,3 +442,20 @@ def test_broken_input_tree_owner_does_not_hide_other_trees(project):
         ".booley/booley.toml",
         ".booley/hooks/check.py",
     }
+
+
+def test_relocated_history_probe_uses_configured_directory(project):
+    root, _selected = project
+    (root / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
+    relocated = root / "tools" / "booley"
+    relocated.mkdir(parents=True)
+    (relocated / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
+    (root / ".git/info/exclude").write_bytes(b"/tools/booley/goals/history/\n")
+    reset_cache()
+
+    assert pt.history_probe(root) == "tools/booley/goals/history/doctor-probe.md"
+
+    inspection = pt.inspect_project_trackability(root, relocated)
+    history = [group for group in inspection.ignored if group.history]
+    assert [group.paths for group in history] == [("tools/booley/goals/history/doctor-probe.md",)]
+    reset_cache()

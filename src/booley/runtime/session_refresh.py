@@ -842,12 +842,14 @@ def finalize_project(project: Path) -> None:
     """Reconcile ancillary files only after the runtime has committed forward."""
     from booley.commit_policy import stealth_enabled
     from booley.runtime import dashboard_tasks
-    from booley.runtime.git import add_git_excludes
+    from booley.runtime.git import add_git_excludes, stealth_exclude_names
 
     source = runtime_spec.authorized_project_data_source(project)
     dashboard_tasks.reconcile(project, source)
     names = (".devcontainer", ".claude")
-    add_git_excludes(project, (*names, ".booley") if stealth_enabled(project) else names)
+    add_git_excludes(
+        project, (*names, *stealth_exclude_names(project)) if stealth_enabled(project) else names
+    )
 
 
 def _cleanup_owned_images(project: Path) -> None:

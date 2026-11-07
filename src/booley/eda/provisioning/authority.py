@@ -12,6 +12,8 @@ from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from booley.core.booley_dir import own_booley_dir_repo_path
+from booley.core.booley_layout import BooleyLayoutError
 from booley.core.differences import format_differences
 from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
@@ -494,7 +496,14 @@ def _validate_new_grant_project(project: Path) -> None:
     authority_root = state_dir().resolve()
     if _paths_overlap(project, authority_root):
         raise AuthorityError(f"Project Root overlaps the private EDA authority: {project}")
-    if not any((project / marker).exists() for marker in _PROJECT_MARKERS):
+    try:
+        # ``.git`` or the Project's own Booley Directory (``.booley`` unless relocated).
+        has_marker = (project / ".git").exists() or (
+            project / own_booley_dir_repo_path(project)
+        ).exists()
+    except BooleyLayoutError as exc:
+        raise AuthorityError(str(exc)) from exc
+    if not has_marker:
         markers = " or ".join(_PROJECT_MARKERS)
         raise AuthorityError(
             f"not a Booley Project Root: {project} has no canonical {markers} marker"

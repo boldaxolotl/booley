@@ -7,10 +7,13 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from jsonschema.exceptions import SchemaError
 
+from booley.core.booley_layout import BooleyLayoutError
 from booley.mcp import server as mcp_server
 
 
@@ -88,3 +91,37 @@ def test_probe_and_live_server_share_catalog_validation(
         mcp_server.build_mcp_probe_payload()
     with pytest.raises(error_type):
         mcp_server._build_server()
+
+
+def test_mcp_probe_accepts_relocated_interactive_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Logs under the checkout's relocated Booley Directory are ok; the default is not."""
+    from booley.runtime.booley_dir import reset_cache
+
+    (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    monkeypatch.setattr(mcp_server, "_maybe_configure_interactive_logs_dir", lambda: None)
+    monkeypatch.setattr(mcp_server, "_load_agent_settings_from_toml", lambda: None)
+    monkeypatch.setattr(
+        mcp_server,
+        "_build_mcp_catalog",
+        lambda _lifetime: (SimpleNamespace(list_tools=list), [], []),
+    )
+
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "tools/booley/.interactive_logs/abc"))
+    assert mcp_server.build_mcp_probe_payload()["logs_dir_ok"] is True
+
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / ".booley/.interactive_logs/abc"))
+    assert mcp_server.build_mcp_probe_payload()["logs_dir_ok"] is False
+
+    # A retired layout in the working directory reads as "not ok", never a traceback.
+    monkeypatch.setattr(
+        mcp_server,
+        "own_booley_dir_repo_path",
+        Mock(side_effect=BooleyLayoutError("retired layout")),
+    )
+    assert mcp_server.build_mcp_probe_payload()["logs_dir_ok"] is False
+    reset_cache()

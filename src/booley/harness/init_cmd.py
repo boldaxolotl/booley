@@ -157,7 +157,7 @@ from booley.runtime.booley_dir import (
 from booley.runtime.checkout_role import is_booley_qa_skill_path
 from booley.runtime.docker_capacity import DockerCapacityError
 from booley.runtime.docs_links import docs_url
-from booley.runtime.git import add_git_excludes
+from booley.runtime.git import add_git_excludes, stealth_exclude_names
 from booley.runtime.guarded_write import SymlinkTargetError, replace_regular_file
 from booley.runtime.image_lifecycle import (
     ImageLifecycleError,
@@ -502,7 +502,10 @@ def _step_core_projections(ctx: InitContext) -> None:
     # Explicit Stealth also hides the Booley Directory itself, so the hidden
     # footprint holds even when the Interactive step returns early (offline).
     add_git_excludes(
-        ctx.project_root, [PROJECTED_CORE_GLOB, ".booley"] if enabled else [PROJECTED_CORE_GLOB]
+        ctx.project_root,
+        [PROJECTED_CORE_GLOB, *stealth_exclude_names(ctx.project_root)]
+        if enabled
+        else [PROJECTED_CORE_GLOB],
     )
     try:
         result = reconcile_projected_cores(ctx.project_root)

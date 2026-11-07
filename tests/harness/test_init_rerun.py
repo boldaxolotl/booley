@@ -1443,3 +1443,31 @@ def test_full_init_starts_no_docker_process(repo, tmp_path, monkeypatch):
 
     assert _run_full_init(repo) == 0
     assert not marker.exists(), "Init started the docker executable"
+
+
+def test_core_projection_step_excludes_relocated_booley_dir_in_stealth(tmp_path, monkeypatch):
+    """Stealth init hides both `.booley` and the relocated Booley Directory."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    subprocess.run(
+        ["git", "init", "-q", str(root)],
+        capture_output=True,
+        check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
+    (root / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
+    project = root / "tools" / "booley"
+    project.mkdir(parents=True)
+    (project / "booley.toml").write_bytes(b"[stealth]\nenabled = true\n")
+    # Core projection still reads the default `.booley` entry, which full init creates.
+    (root / ".booley").mkdir()
+    (root / ".booley/booley.toml").write_bytes(b"[stealth]\nenabled = true\n")
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+
+    init_cmd._step_core_projections(InitContext(project_root=root))
+
+    exclude = (root / ".git/info/exclude").read_text(encoding="utf-8").splitlines()
+    assert "/.booley" in exclude
+    assert "/tools/booley" in exclude
+    reset_cache()

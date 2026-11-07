@@ -7,7 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.runtime.booley_dir import BOOLEY_DIR_NAME, resolve_checkout_booley_dir
+from booley.runtime.booley_dir import own_booley_dir_repo_path, resolve_checkout_booley_dir
 from booley.runtime.git_attributes_policy import has_managed_attributes
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.project_gitignore import project_transient_pattern
@@ -37,7 +37,6 @@ FIX = (
     "edit the reported exclusion (including excluded ancestors) to allow the named paths, "
     "then rerun booley init or booley doctor"
 )
-HISTORY_PROBE = f"{BOOLEY_DIR_NAME}/goals/history/doctor-probe.md"
 
 
 def history_probe(root: Path) -> str | None:
@@ -47,9 +46,10 @@ def history_probe(root: Path) -> str | None:
     at its physical target. A target outside the RTL checkout has no RTL path: the
     owning checkout (or its absence) is reported by Project trackability instead.
     """
-    entry = root / BOOLEY_DIR_NAME
+    relative = own_booley_dir_repo_path(root)
+    entry = root / relative
     if not entry.is_symlink():
-        return HISTORY_PROBE
+        return f"{relative}/goals/history/doctor-probe.md"
     try:
         physical = entry.resolve() / "goals/history/doctor-probe.md"
         return physical.relative_to(root.resolve()).as_posix()
@@ -263,7 +263,12 @@ def _candidates(selected: Path, owners: set[Path], errors: list[str]) -> list[Pa
 
 
 def _groups(
-    owner: Path, role: str, selected: Path, matches: tuple[IgnoreMatch, ...], embedded: bool
+    owner: Path,
+    role: str,
+    selected: Path,
+    matches: tuple[IgnoreMatch, ...],
+    embedded: bool,
+    probe: str | None,
 ) -> list[IgnoredInputs]:
     if not matches:
         return []
@@ -282,7 +287,7 @@ def _groups(
                     for name in ("goals/history", "tickets/history")
                     if path.is_relative_to(selected / name)
                 ),
-                "goals/history" if match.path == HISTORY_PROBE else "",
+                "goals/history" if match.path == probe else "",
             )
         key = (match.source, match.line, match.pattern, family)
         grouped.setdefault(key, []).append(match.path)
@@ -360,7 +365,7 @@ def inspect_project_trackability(
                 if owner not in {primary, rtl_owner}:
                     role += f" ({owner.relative_to(selected).as_posix()})"
                 ignored.extend(
-                    _groups(owner, role, selected, matches, embedded and owner == primary)
+                    _groups(owner, role, selected, matches, embedded and owner == primary, probe)
                 )
             except OSError as exc:
                 errors.append(str(exc))
