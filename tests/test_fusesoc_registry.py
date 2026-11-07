@@ -14,7 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from booley.fusesoc import core_projection, fusesoc_registry, selftest_overlay
-from booley.fusesoc.core_projection import STATE_CORES_SUBDIR, CoreProjectionError
+from booley.fusesoc.core_projection import CoreProjectionError
 from booley.fusesoc.fusesoc_registry import (
     DEFAULT_FUSESOC_CMD,
     CoreCollisionError,
@@ -64,6 +64,9 @@ from tests.fusesoc_test_support import (
     touch_declared_sources,
 )
 from tests.fusesoc_test_support import write_core as _write_core
+
+# Spelled out, not imported: the layout is the contract the production constant must match.
+STATE_CORES_SUBDIR = "cores"
 
 
 def _stealth_root(project: Path) -> Path:
