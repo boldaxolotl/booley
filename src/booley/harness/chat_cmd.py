@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import shutil
 import sys
@@ -13,6 +14,7 @@ from booley.config.gateway import GatewayConfigError
 from booley.config.settings import BackendConfigError, get_agent_settings, load_agent_settings
 from booley.harness import codex_chat
 from booley.runtime.booley_dir import resolve_checkout_booley_dir, resolve_common_booley_dir
+from booley.runtime.foreground_child import run_foreground_child
 from booley.runtime.handles import reserve_session_handle
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import process_session_key
@@ -69,8 +71,33 @@ def _selected_cli(requested: str | None, settings: AgentSettings) -> str | None:
     return None
 
 
+def _launch(provider: str, project_root: Path, agent_args: list[str]) -> int:
+    """Exec the agent CLI; runs in the forked child, so identities are the agent's own.
+
+    Returns an exit code only when the launch fails: on success the process is replaced.
+    """
+    try:
+        executable, argv = provider, [provider]
+        if provider == "codex":
+            try:
+                executable, argv = codex_chat.command(resolve_common_booley_dir(project_root))
+            except (OSError, ValueError, RuntimeError) as exc:
+                print(f"NOTE: Codex tab handle is unavailable: {exc}", file=sys.stderr)
+        elif provider == "claude":
+            argv = _claude_argv(project_root, agent_args)
+        # Last statement before the process is replaced: the CLI exists and the
+        # launch arguments are settled, so the notice only precedes a real start.
+        print(f"Booley is starting the {provider} interactive agent.", file=sys.stderr)
+        os.execvp(executable, [*argv, *agent_args])
+    except FileNotFoundError:
+        return _cli_not_found(provider)
+    except OSError as exc:
+        print(f"ERROR: could not launch agent CLI '{provider}': {exc}", file=sys.stderr)
+    return 2
+
+
 def run(args: argparse.Namespace, project_root: Path) -> int:
-    """Replace Booley with the Project's default (or `--cli`-chosen) interactive Agent CLI."""
+    """Run the Project's default (or `--cli`-chosen) interactive Agent CLI as a foreground child."""
     try:
         booley_dir = resolve_checkout_booley_dir(project_root)
         load_agent_settings(project_root, booley_dir=booley_dir)
@@ -89,21 +116,7 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
     if shutil.which(provider, mode=os.F_OK) is None:
         return _cli_not_found(provider)
 
-    try:
-        executable, argv = provider, [provider]
-        if provider == "codex":
-            try:
-                executable, argv = codex_chat.command(resolve_common_booley_dir(project_root))
-            except (OSError, ValueError, RuntimeError) as exc:
-                print(f"NOTE: Codex tab handle is unavailable: {exc}", file=sys.stderr)
-        elif provider == "claude":
-            argv = _claude_argv(project_root, args.agent_args)
-        # Last statement before the process is replaced: the CLI exists and the
-        # launch arguments are settled, so the notice only precedes a real start.
-        print(f"Booley is starting the {provider} interactive agent.", file=sys.stderr)
-        os.execvp(executable, [*argv, *args.agent_args])
-    except FileNotFoundError:
-        return _cli_not_found(provider)
-    except OSError as exc:
-        print(f"ERROR: could not launch agent CLI '{provider}': {exc}", file=sys.stderr)
-    return 2
+    # The child, not Booley, reserves the handle: the handle belongs to the agent's process.
+    return run_foreground_child(
+        functools.partial(_launch, provider, project_root, args.agent_args)
+    )
