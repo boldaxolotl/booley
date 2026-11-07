@@ -199,6 +199,8 @@ def test_isolated_sim_include_dirs_hold_only_listed_headers(tmp_path: Path, sele
     assert str(root) not in text
     assert str(prepared.work_root) not in text
     assert mirror.is_dir()
+    _write_project_core(root, headers=False)
+    assert not list(_prepare(root, selector).work_root.rglob("listed.vh"))
 
 
 def _prepare_coverage(

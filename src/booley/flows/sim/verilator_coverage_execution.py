@@ -560,7 +560,7 @@ def prepare_coverage_collection(
             harness=harness,
             sources=tuple(_coverage_source(item) for item in inspection.inputs if _is_hdl(item)),
             custom_main_hooks=hooks,
-            foreign_paths=_mirror_export_paths(handle, inspection, trace=trace),
+            foreign_paths=MappingProxyType(_mirror_export_paths(handle, inspection, trace=trace)),
         ),
         selected_tests=_selected_runs(handle, inspection, selected_tests, test_runs),
         artifact_root=artifact_root,
