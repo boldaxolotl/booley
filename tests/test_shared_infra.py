@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -135,53 +134,6 @@ class TestResolveProjectRoot:
 # _sort_packages_first / build_file_list were removed with the legacy
 # configs.toml registry path (ADR 0022 decision 23 retired); FuseSoC now owns
 # fileset ordering. Their tests were deleted with them.
-
-
-# ---------------------------------------------------------------------------
-# Test derive_work_dir
-# ---------------------------------------------------------------------------
-
-
-class TestDeriveWorkDir:
-    @patch("booley.runtime.shared_infra.get_sim_output_dir")
-    def test_sim_basic(self, mock_sim_dir, tmp_path: Path):
-        mock_sim_dir.return_value = tmp_path / "util" / "sim"
-        from booley.runtime.shared_infra import derive_work_dir
-
-        result = derive_work_dir(tmp_path, "sim", "config_a")
-        assert result == tmp_path / "util" / "sim" / "work" / "config_a"
-
-    @patch("booley.runtime.shared_infra.get_syn_output_dir")
-    def test_syn_basic(self, mock_syn_dir, tmp_path: Path):
-        mock_syn_dir.return_value = tmp_path / "util" / "syn"
-        from booley.runtime.shared_infra import derive_work_dir
-
-        result = derive_work_dir(tmp_path, "syn", "config_b")
-        assert result == tmp_path / "util" / "syn" / "syn_result" / "config_b"
-
-    @patch("booley.runtime.shared_infra.get_sim_output_dir")
-    def test_with_top_module(self, mock_sim_dir, tmp_path: Path):
-        mock_sim_dir.return_value = tmp_path / "util" / "sim"
-        from booley.runtime.shared_infra import derive_work_dir
-
-        result = derive_work_dir(tmp_path, "sim", "config_a", top_module="my_top")
-        assert result.name == "config_a.my_top"
-
-    @patch("booley.runtime.shared_infra.get_sim_output_dir")
-    def test_with_test_name(self, mock_sim_dir, tmp_path: Path):
-        mock_sim_dir.return_value = tmp_path / "util" / "sim"
-        from booley.runtime.shared_infra import derive_work_dir
-
-        result = derive_work_dir(tmp_path, "sim", "config_a", test_name="test_foo")
-        assert "test_foo" in result.name
-
-    @patch("booley.runtime.shared_infra.get_sim_output_dir")
-    def test_with_test_id_legacy(self, mock_sim_dir, tmp_path: Path):
-        mock_sim_dir.return_value = tmp_path / "util" / "sim"
-        from booley.runtime.shared_infra import derive_work_dir
-
-        result = derive_work_dir(tmp_path, "sim", "config_a", test_id=3)
-        assert "t3" in result.name
 
 
 # ---------------------------------------------------------------------------

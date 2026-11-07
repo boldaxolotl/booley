@@ -24,6 +24,7 @@ from booley.core.boundary import (
 from booley.core.differences import format_differences
 from booley.core.egress_modes import EGRESS_MODES
 from booley.runtime import interactive_docker as legacy
+from booley.runtime.devcontainer import PROXY_PORT
 from booley.runtime.docker_capacity import (
     BuildEstimateClass,
     DockerBuildPlan,
@@ -1106,7 +1107,7 @@ def _parked_refresh_predecessors(docker: _DockerPort) -> tuple[_ActiveSession, .
 
 def _proxy_run_args(policy: SandboxHostPolicy, fingerprint: str) -> list[str]:
     args = _base_run_args(legacy.PROXY_CONTAINER, "egress-proxy", fingerprint)
-    args += ["-e", f"PROXY_PORT={legacy.PROXY_PORT}"]
+    args += ["-e", f"PROXY_PORT={PROXY_PORT}"]
     if policy.egress_allowlist:
         args += ["-e", f"PROXY_ALLOWLIST={json.dumps(list(policy.egress_allowlist))}"]
     args.append(legacy.PROXY_IMAGE)
