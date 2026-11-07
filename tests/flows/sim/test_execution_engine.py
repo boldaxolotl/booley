@@ -2727,11 +2727,16 @@ def _run_owned_main(
     config: str = 'run_cwd = "run"\n',
     detail: str = _BACKEND_TRACE_HINT,
     preexisting: tuple[str, ...] = (),
+    booley_dir: str = ".booley",
 ) -> SimulationTargetOutcome:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
-    project = tmp_path / ".booley"
-    project.mkdir()
+    project = tmp_path / booley_dir
+    project.mkdir(exist_ok=True)
+    if booley_dir != ".booley":
+        (tmp_path / "booley.toml").write_text(
+            f'[project]\ndir = "{booley_dir}"\n', encoding="utf-8"
+        )
     (project / "booley.toml").write_text(f"[flows.sim]\n{config}", encoding="utf-8")
     (tmp_path / "run").mkdir()
     for name in preexisting:
@@ -2792,6 +2797,18 @@ def test_trace_candidates_exclude_stale_owned_and_other_attempt_files(tmp_path: 
     reason = outcome.tests[0].reason
     assert reason.endswith("listed, not adopted): run/dump.vcd, run/new.vcd")
     assert "old.vcd" not in reason
+    assert "attempt.vcd" not in reason
+
+
+def test_trace_candidates_ignore_relocated_runtime(tmp_path: Path) -> None:
+    outcome = _run_owned_main(
+        tmp_path,
+        ("run/new.vcd", "state/.runtime/other/attempt.vcd"),
+        booley_dir="state",
+    )
+
+    reason = outcome.tests[0].reason
+    assert reason.endswith("listed, not adopted): run/new.vcd")
     assert "attempt.vcd" not in reason
 
 
