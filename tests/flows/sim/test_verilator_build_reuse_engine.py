@@ -241,6 +241,17 @@ def _write_core(project: Path, *, options: str) -> None:
     )
 
 
+def _isolate_native_cores(project: Path) -> None:
+    """Move the Project's core into ``.booley/cores/`` and isolate native cores (plain layout)."""
+    booley = project / ".booley"
+    (booley / "booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
+    )
+    (booley / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    (booley / "cores").mkdir()
+    (project / "demo.core").rename(booley / "cores" / "demo.core")
+
+
 def _edit_keeping_mtime(path: Path, text: str) -> None:
     """Change bytes without moving mtime, so only content hashing can notice."""
     old = path.stat()

@@ -156,16 +156,23 @@ def _is_packaged_dump_source(attempt: _Attempt, source: Path, project_root: Path
 
 
 def _prepared_source_identity(
-    name: str, source: Path, project_root: Path, *, is_packaged_dump: bool
+    name: str,
+    source: Path,
+    project_root: Path,
+    *,
+    is_packaged_dump: bool,
+    mirrored: str | None,
 ) -> Path:
+    """Name one prepared source; *mirrored* is its Project-relative private-mirror path."""
     declared = Path(name)
-    relative = (
-        _PACKAGED_DUMP_IDENTITY
-        if is_packaged_dump
-        else source.relative_to(project_root)
-        if declared.is_absolute()
-        else declared
-    )
+    if is_packaged_dump:
+        relative = _PACKAGED_DUMP_IDENTITY
+    elif mirrored is not None:
+        relative = Path(mirrored)
+    elif declared.is_absolute():
+        relative = source.relative_to(project_root)
+    else:
+        relative = declared
     if relative.is_absolute() or ".." in relative.parts:
         raise SimulationBuildSlotError(f"prepared Simulation source has unsafe name: {name}")
     return relative
@@ -419,6 +426,7 @@ class PreparedOrdinaryGroup:
                 source,
                 project_root,
                 is_packaged_dump=is_packaged_dump,
+                mirrored=fusesoc_registry.mirrored_source_path(project_root, item),
             )
             if relative in identities:
                 raise SimulationBuildSlotError(
@@ -1799,7 +1807,7 @@ def prepare_simulation_work(
         trace=trace,
         trace_mode=trace_mode,
         trace_scope=prepared.toplevel,
-        runtime_inputs=declared_runtime_inputs(prepared.resolved),
+        runtime_inputs=declared_runtime_inputs(prepared.resolved, root),
         top=prepared.toplevel,
         cocotb_module=prepared.resolved.cocotb_module or "",
         result_verbosity=options.result_verbosity,

@@ -27,6 +27,7 @@ from booley.flows.sim.request import SimRequest
 from tests.conftest import symlink_or_skip
 from tests.flows.sim.test_verilator_build_reuse_engine import (
     _edit_keeping_mtime,
+    _isolate_native_cores,
     _select,
     _write_core,
     _write_fake_verilator,
@@ -157,6 +158,33 @@ def test_flow_sim_input_edit_misses_then_hits(
     _assert_hit(_flow_sim(flow_project, reports, "first"))
 
 
+@pytest.mark.parametrize("edit", [_edit_rtl, _edit_include], ids=["rtl", "include"])
+def test_isolated_flow_sim_input_edit_misses_then_hits(
+    flow_project: Path, tmp_path: Path, edit: Callable[[Path], None]
+) -> None:
+    """AC2: an isolated build is reused, and editing a source or listed header prevents reuse."""
+    _isolate_native_cores(flow_project)
+    reports = tmp_path / "reports"
+    _assert_built(_flow_sim(flow_project, reports, "first"), "missing provenance")
+    _assert_hit(_flow_sim(flow_project, reports, "first"))
+    edit(flow_project)
+    _assert_built(_flow_sim(flow_project, reports, "first"), "changed source, recipe, or tool")
+    _assert_hit(_flow_sim(flow_project, reports, "first"))
+
+
+def test_isolated_flow_sim_unlisted_header_edit_is_not_an_input(
+    flow_project: Path, tmp_path: Path
+) -> None:
+    """A header no fileset lists is neither exported nor read, so editing it keeps reuse."""
+    _isolate_native_cores(flow_project)
+    unlisted = flow_project / "inc" / "other.svh"
+    unlisted.write_text("// OTHER v1\n", encoding="utf-8")
+    reports = tmp_path / "reports"
+    _flow_sim(flow_project, reports, "first")
+    _edit_keeping_mtime(unlisted, "// OTHER v2\n")
+    _assert_hit(_flow_sim(flow_project, reports, "first"))
+
+
 _RUN_CWD_FIRMWARE = 'pre_run_commands = ["printf fw > \\"$BOOLEY_RUN_CWD/firmware.hex\\""]'
 
 
@@ -277,11 +305,27 @@ def test_symlinked_booley_directory_accepts_declared_source_below_entry(
         symlink_or_skip(entry, external, target_is_directory=True)
 
     reports = tmp_path / "reports"
-    build = _flow_sim(flow_project, reports, "first")
-
-    # Isolated cores (``ignore_native_cores``) decline build reuse in either layout.
-    _assert_built(build, "reuse unsupported")
+    _assert_built(_flow_sim(flow_project, reports, "first"), "missing provenance")
     (manifest,) = reports.glob("sim/*/targets/sim/campaign/manifest.json")
     document = json.loads(manifest.read_text(encoding="utf-8"))
     closure = [item["path"] for item in document["build_variants"][0]["source_closure"]]
     assert ".booley/sim/helper.cpp" in closure
+    # AC3: no report names the build's private mirror, and the planned sources
+    # keep their Project-relative names (so a resumed Campaign authenticates).
+    generated = document["planning_disclosures"][0]["generated_files"]
+    assert {item["path"] for item in generated} == {
+        "rtl/tb.sv",
+        "inc/defs.svh",
+        ".booley/sim/helper.cpp",
+    }
+    assert all(item["source_path"] == item["path"] for item in generated)
+    run = manifest.parents[3]
+    assert not [p for p in run.rglob("*") if p.is_file() and b"core-mirror" in p.read_bytes()]
+    # The second identical run reuses the image in the plain layout. A linked
+    # ``.booley`` still misses: FuseSoC writes the EDAM ``core_file`` through
+    # the link, which names the generation (#2853 owns that gap).
+    second = _flow_sim(flow_project, reports, "first")
+    if linked:
+        _assert_built(second, "changed source, recipe, or tool")
+    else:
+        _assert_hit(second)

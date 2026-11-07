@@ -40,13 +40,14 @@ import shutil
 import subprocess
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any
 
 import yaml
 from fusesoc.capi2 import exprs as _fusesoc_exprs
 from fusesoc.capi2.coreparser import Core2Parser
 from fusesoc.core import Core as FuseSocCore
+from fusesoc.vlnv import Vlnv
 
 from booley.core.booley_dir import BOOLEY_DIR_NAME, in_checkout_booley_dir
 from booley.core.booley_dir_links import resolve_through_entry
@@ -55,6 +56,7 @@ from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_PREFIX,
     CoreProjectionError,
+    describe_private_mirror,
     isolated_core_path,
     isolated_registry_root,
     native_cores_ignored,
@@ -407,6 +409,52 @@ def build_library_plan(project_root: Path | str, build_root: Path | str) -> Core
     except OSError as exc:
         raise TargetResolutionError(f"could not mirror stealth cores: {exc}") from exc
     return prepare_private_mirror_plan(project_root, build / "core-mirror")
+
+
+def describe_build_library_plan(
+    project_root: Path | str, build_root: Path | str
+) -> CoreLibraryPlan | None:
+    """Return the plan :func:`build_library_plan` would make, touching nothing.
+
+    For previews: the same ``None`` outside isolated Projects, and the same
+    refusal of a core that cannot be mirrored.
+    """
+    if not native_cores_ignored(project_root):
+        return None
+    mirror_root = Path(build_root) / "core-mirror"
+    try:
+        mirrored = describe_private_mirror(project_root, mirror_root)
+    except (CoreProjectionError, OSError) as exc:
+        raise TargetResolutionError(f"could not mirror stealth cores: {exc}") from exc
+    return CoreLibraryPlan((mirror_root.resolve(),), (frozenset(),), tuple(mirrored.items()))
+
+
+def mirrored_export_name(core: str, project_relative: str) -> str:
+    """Name FuseSoC gives the export of a private-mirror file of *core*.
+
+    The mirror names every in-checkout fileset file Project-relatively, so the
+    export is ``src/<core>/<Project-relative path>``.
+    """
+    return (PurePosixPath("src") / Vlnv(core).sanitized_name / project_relative).as_posix()
+
+
+def mirrored_source_path(project_root: Path | str, file: ResolvedFile) -> str | None:
+    """Return the Project-relative path of a file resolved through a private mirror.
+
+    ``None`` for any other file and for every Project that does not isolate
+    native cores, whose names are then used exactly as FuseSoC wrote them.
+    Reports name sources by this path so the mirror stays invisible.
+    """
+    if file.core is None or not native_cores_ignored(project_root):
+        return None
+    # FuseSoC joins export names with the host separator, so Windows spells
+    # them ``src\\<core>\\<path>``; the host flavour reads either spelling.
+    name = PurePath(file.name)
+    prefix = PurePath("src") / Vlnv(file.core).sanitized_name
+    if name.is_absolute() or not name.is_relative_to(prefix):
+        return None
+    rest = name.relative_to(prefix)
+    return rest.as_posix() if rest.parts else None
 
 
 def core_setup_hazards(project_root: Path | str) -> list[CoreSetupHazard]:
