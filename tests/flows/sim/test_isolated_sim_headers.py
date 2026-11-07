@@ -31,7 +31,11 @@ from booley.flows.sim.coverage_overlay import write_coverage_overlay
 from booley.flows.sim.verilator_coverage import VERILATOR_COVERAGE_INSTRUMENTATION
 from booley.flows.sim.verilator_coverage_execution import prepare_coverage_collection
 from booley.flows.sim.workload import capture_workload_inputs
-from booley.fusesoc.fusesoc_registry import setup_command_for_handle
+from booley.fusesoc.fusesoc_registry import (
+    ResolvedFile,
+    mirrored_source_path,
+    setup_command_for_handle,
+)
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.flows.test_isolated_build_headers import real_fusesoc  # noqa: F401  (fixture)
@@ -347,6 +351,33 @@ def test_isolated_mirrored_names_stay_project_relative(tmp_path: Path) -> None:
     rows = {row["path"] for row in capture_workload_inputs(root, prepared.resolved)}
     assert {"rtl/top.v", "rtl/inc/listed.vh", "data/plain.hex"} <= rows
     assert not [path for path in rows if "core-mirror" in path or path.startswith("src/")]
+
+
+@pytest.mark.parametrize(
+    ("name", "core", "expected"),
+    [
+        ("src/acme_lib_design_1/rtl/top.v", "acme:lib:design:1", "rtl/top.v"),
+        ("src/acme_lib_design_1", "acme:lib:design:1", None),
+        ("/abs/rtl/top.v", "acme:lib:design:1", None),
+        ("src/acme_lib_other_1/rtl/top.v", "acme:lib:design:1", None),
+        ("src/acme_lib_design_1/rtl/top.v", None, None),
+    ],
+    ids=["mirrored", "core-folder-itself", "absolute", "other-core", "no-core"],
+)
+def test_mirrored_source_path_names_only_mirrored_files(
+    tmp_path: Path, name: str, core: str | None, expected: str | None
+) -> None:
+    """Only a file under its own core's export folder maps back to a Project path."""
+    root = _write_project(tmp_path / "proj")
+    assert mirrored_source_path(root, ResolvedFile(name, "verilogSource", core=core)) == expected
+
+
+def test_mirrored_source_path_is_none_without_isolation(tmp_path: Path) -> None:
+    root = _write_project(tmp_path / "proj", "plain")
+    file = ResolvedFile(
+        "src/acme_lib_design_1/rtl/top.v", "verilogSource", core="acme:lib:design:1"
+    )
+    assert mirrored_source_path(root, file) is None
 
 
 @pytest.mark.usefixtures("real_fusesoc")
