@@ -1696,6 +1696,34 @@ def test_relocated_booley_dir_hosts_snapshot_worktree(tmp_path, monkeypatch, cap
     assert not (root / ".booley").exists()
 
 
+@_real_script
+def test_relocated_worktree_builds_and_discovers_in_its_own_directory(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """#2917 (AC1): Flow builds and core discovery use ``<checkout>/state`` in main and worktree.
+
+    Host-side: a Sandbox cannot be issued for a project-authored ``[project].dir``.
+    """
+    from booley.core.build_paths import work_root_for
+    from booley.fusesoc.fusesoc_registry import discover_cores
+
+    root = _configured_project(tmp_path, monkeypatch, "state")
+    _write(root / "state" / "booley.toml", "[submodules]\npaths = []\n")
+    _write(root / "state" / "cores" / "ip" / "top.core", "CAPI=2:\nname: x:ip:top:1.0\n")
+
+    assert _new("demo", root) == 0
+
+    worktree = root / "state" / "worktrees" / "demo"
+    capsys.readouterr()
+    for checkout in (root, worktree):
+        assert work_root_for(checkout, "sim", "cfg") == (
+            checkout / "state" / ".runtime" / "edalize" / "sim" / "cfg"
+        )
+        assert discover_cores(checkout) == [checkout / "state" / "cores" / "ip" / "top.core"]
+    assert not (root / ".booley").exists()
+    assert not (worktree / ".booley").exists()
+
+
 @pytest.mark.parametrize("source", ["project-dir", "ambient"])
 @_real_script
 def test_booley_dir_outside_checkout_is_refused_without_leftovers(

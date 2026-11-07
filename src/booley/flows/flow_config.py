@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from booley.core.booley_dir import in_checkout_booley_dir
 from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
@@ -57,7 +58,9 @@ def _maybe_resolve(target: str, work_dir: Path | None) -> Any:
         return None
     try:
         handle = TargetCatalog.build(work_dir).select(target)
-        build_root = work_dir / ".booley" / ".runtime" / "edalize" / "payload" / handle.name
+        build_root = (
+            in_checkout_booley_dir(work_dir) / ".runtime" / "edalize" / "payload" / handle.name
+        )
         return fusesoc_registry.resolve_target_handle(handle, build_root=build_root)
     except FuseSocError as exc:
         logging.getLogger(__name__).debug(

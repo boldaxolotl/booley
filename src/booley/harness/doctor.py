@@ -98,7 +98,7 @@ from booley.fusesoc import (
     fusesoc_registry,
     selftest_overlay,
 )
-from booley.fusesoc.core_projection import lexical_stealth_path
+from booley.fusesoc.core_projection import STATE_CORES_SUBDIR, lexical_stealth_path
 from booley.harness import (
     doctor_deep,
     host_diagnostics,
@@ -150,6 +150,7 @@ from booley.runtime.agent_errors import ModelUnavailableError
 from booley.runtime.booley_dir import (
     BOOLEY_DIR_NAME,
     contains,
+    in_checkout_booley_dir,
     own_booley_dir,
     resolve_checkout_booley_dir,
     resolve_common_booley_dir,
@@ -1835,7 +1836,7 @@ def _check_worktree_core_shadow_guard(
     # Marker absent — is there an actual stale worktree .core to shadow right now?
     # Authored stealth cores (.booley/cores/, ADR 0036) are sources, not
     # shadow threats — they are scanned deliberately and must not be counted.
-    stealth_root = booley_dir / fusesoc_registry.STATE_CORES_SUBDIR
+    stealth_root = booley_dir / STATE_CORES_SUBDIR
     worktrees = _worktree_core_directory(booley_dir, project_root)
     shadow_cores = [
         p
@@ -6339,7 +6340,8 @@ def _check_core_files_tracked(
     on_disk = [rel for rel in referenced if (root / rel).is_file()]
     if not on_disk:
         return
-    state_prefix = fusesoc_registry.state_cores_dir(root).parent.name  # ".booley"
+    state_dir = in_checkout_booley_dir(root)
+    state_prefix = state_dir.relative_to(root).as_posix()  # ".booley" or the relocated dir
     host_files = [
         rel for rel in on_disk if not rel.replace("\\", "/").startswith(state_prefix + "/")
     ]
@@ -6386,14 +6388,16 @@ def _check_core_files_tracked(
     host_tracked = _tracked_set(root)
     if host_tracked is not None:
         untracked += [rel for rel in host_files if not _is_tracked(rel, host_tracked)]
-    state_dir = root / state_prefix
     if state_files and (state_dir / ".git").exists():
         state_tracked = _tracked_set(state_dir)
         if state_tracked is not None:
             untracked += [
                 rel
                 for rel in state_files
-                if not _is_tracked(str(PurePosixPath(*Path(rel).parts[1:])), state_tracked)
+                if not _is_tracked(
+                    PurePosixPath(rel.replace("\\", "/")).relative_to(state_prefix).as_posix(),
+                    state_tracked,
+                )
             ]
     if untracked:
         shown = ", ".join(untracked[:5]) + (", …" if len(untracked) > 5 else "")

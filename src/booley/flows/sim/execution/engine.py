@@ -23,7 +23,7 @@ from booley.config.tests_toml_rules import (
     option_key,
     validate_env_table,
 )
-from booley.core.booley_dir import BOOLEY_DIR_NAME
+from booley.core.booley_dir import in_checkout_booley_dir
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.flows import artifacts as flow_artifacts
 from booley.flows import edam as edam_layer
@@ -2679,7 +2679,7 @@ def _trace_candidates_clause(
     owned = {work_dir / "trace.fst", work_dir / "trace.vcd"}
     if attempt.work.adapter in {"icarus", "cocotb"}:
         owned.add(trace_policy.run_cwd / BOOLEY_DUMP_VCD_NAME)
-    ignored = {(root / BOOLEY_DIR_NAME / ".runtime").resolve()}
+    ignored = {(in_checkout_booley_dir(root) / ".runtime").resolve()}
     ignored.add((resolve_checkout_booley_dir(root) / ".runtime").resolve())
     listed, omitted = trace_policy.fresh_candidates(
         owned=frozenset(owned),
