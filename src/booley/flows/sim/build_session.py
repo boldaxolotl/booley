@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import contextvars
 import hashlib
 import importlib.metadata
@@ -294,6 +295,11 @@ _ICARUS_TOKEN = re.compile(r"[A-Za-z0-9_.=+,:/-]+")
 _ICARUS_MAKEFILE_TEXT = re.compile(r"[\x20-\x7e\t\n]*")
 _ICARUS_FILE_TOKEN = r"[A-Za-z0-9_.+,/-]+"
 _ICARUS_COMMENT = re.compile(r"#[A-Za-z0-9 _.,:/-]*")
+# Each ``.scr`` line is empty or a relative name of non-empty ``/``-separated segments
+# whose first character is not ``+``, ``-`` or ``/``; Edalize ends every line with ``\n``.
+_ICARUS_SCRIPT = re.compile(rb"(?:(?:[A-Za-z0-9_.][A-Za-z0-9_.+,-]*(?:/[A-Za-z0-9_.+,-]+)*)?\n)*")
+# Rule headers Edalize writes per target; ``run`` appears twice (recipe, then ``run: pre_run``).
+_ICARUS_STOCK_HEADERS = {"run": 2}
 
 
 def _has_unstock_iverilog_command(command: str, script_name: str) -> bool:
@@ -334,7 +340,9 @@ def _has_unstock_icarus_makefile(text: str, iverilog_command: str) -> bool:
 
     Make splits on ``\\n`` only and reads non-recipe lines as assignments,
     directives or rules, so every such line must be blank, a plain comment or one
-    of Edalize's rule headers.
+    of Edalize's rule headers. Edalize writes each rule header once (``run`` twice),
+    so an extra header is an inserted line, and Make would merge its prerequisites
+    (for example pulling the ``run`` recipe into the build).
     """
     if not _ICARUS_MAKEFILE_TEXT.fullmatch(text):
         return True
@@ -345,15 +353,17 @@ def _has_unstock_icarus_makefile(text: str, iverilog_command: str) -> bool:
         for name in ("all", "pre_build", "post_build", "pre_run", "run", "post_run", image)
     )
     header = re.compile(
-        rf"(?:{targets}):(?: {_ICARUS_FILE_TOKEN})*(?: \|(?: {_ICARUS_FILE_TOKEN})+)? *"
+        rf"(?P<target>{targets}):(?: {_ICARUS_FILE_TOKEN})*(?: \|(?: {_ICARUS_FILE_TOKEN})+)? *"
     )
-    return any(
-        line
-        and not line.startswith("\t")
-        and not _ICARUS_COMMENT.fullmatch(line)
-        and not header.fullmatch(line)
-        for line in text.split("\n")
-    )
+    counts: collections.Counter[str] = collections.Counter()
+    for line in text.split("\n"):
+        if not line or line.startswith("\t") or _ICARUS_COMMENT.fullmatch(line):
+            continue
+        match = header.fullmatch(line)
+        if match is None:
+            return True
+        counts[match["target"]] += 1
+    return any(count > _ICARUS_STOCK_HEADERS.get(target, 1) for target, count in counts.items())
 
 
 def _has_unsupported_icarus_recipe(prepared: PreparedSimulationBuild, project_root: Path) -> bool:
@@ -365,6 +375,11 @@ def _has_unsupported_icarus_recipe(prepared: PreparedSimulationBuild, project_ro
     root = prepared.build_root
     scripts = tuple(root.glob("*.scr"))
     if len(scripts) != 1:
+        return True
+    isolated = fusesoc_registry.native_cores_ignored(project_root)
+    # iverilog's command-file reader splits and quotes differently from ``shlex``, so an
+    # isolated Project accepts only plain file-name lines.
+    if isolated and not _ICARUS_SCRIPT.fullmatch(scripts[0].read_bytes()):
         return True
     for line in scripts[0].read_text(encoding="utf-8").splitlines():
         tokens = shlex.split(line)
@@ -386,7 +401,7 @@ def _has_unsupported_icarus_recipe(prepared: PreparedSimulationBuild, project_ro
         and commands[1].startswith("$(EDALIZE_LAUNCHER) vvp ")
     ):
         return True
-    return fusesoc_registry.native_cores_ignored(project_root) and (
+    return isolated and (
         _has_unstock_iverilog_command(commands[0], scripts[0].name)
         or _has_unstock_icarus_makefile(makefile_text, commands[0])
     )

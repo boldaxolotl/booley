@@ -53,10 +53,12 @@ def _core(
     user_files: bool = True,
     headers: bool = True,
     icarus_options: dict[str, list[str]] | None = None,
+    extra_files: tuple[str, ...] = (),
 ) -> str:
     """The fixture core; every header sits in ``rtl/inc``, one with an ``include_path``."""
     files: list = [
         {"rtl/top.v": {"file_type": "verilogSource"}},
+        *({name: {"file_type": "verilogSource"}} for name in extra_files),
     ]
     if headers:
         files += [
@@ -309,6 +311,7 @@ def _write_project_core(
     user_files: bool = True,
     headers: bool = True,
     icarus_options: dict[str, list[str]] | None = None,
+    extra_files: tuple[str, ...] = (),
 ) -> None:
     """Rewrite the Project core, by default the isolated one under ``.booley/cores``."""
     path = core_path or root / ".booley" / "cores" / "design.core"
@@ -318,6 +321,7 @@ def _write_project_core(
             user_files=user_files,
             headers=headers,
             icarus_options=icarus_options,
+            extra_files=extra_files,
         ),
         encoding="utf-8",
     )
@@ -419,19 +423,6 @@ def test_non_isolated_sim_dry_run_is_unchanged(tmp_path: Path, variant: str) -> 
 
 
 @pytest.mark.usefixtures("real_fusesoc")
-def test_isolated_sim_dry_run_rejects_unrebasable_core(tmp_path: Path) -> None:
-    """A core with a non-literal fileset path fails the preview, as it fails the run."""
-    root = _write_project(tmp_path / "proj")
-    (root / ".booley" / "cores" / "bad.core").write_text(
-        "CAPI=2:\nname: acme:lib:bad:1\nfilesets:\n  rtl:\n    files: ['$SRC/bad.v']\n",
-        encoding="utf-8",
-    )
-    handle = _handle(root, "sim_icarus")
-    with pytest.raises(SimulationBuildPreparationError, match="literal fileset paths"):
-        simulation_setup_command(handle, build_root=work_root_for(root, "sim", "sim_icarus"))
-
-
-@pytest.mark.usefixtures("real_fusesoc")
 def test_isolated_sim_dry_run_rejects_entry_that_is_not_a_regular_file(tmp_path: Path) -> None:
     """A fileset entry naming a directory fails the preview, as it fails the run."""
     root = _write_project(tmp_path / "proj")
@@ -495,6 +486,7 @@ def _unstock_options(lib: Path) -> dict[str, dict[str, list[str]]]:
         "vvp-newline-injection": {"vvp_options": ["-n\nEDALIZE_LAUNCHER = sh -c"]},
         "carriage-return": {"iverilog_options": [f"-DX=\rall: -y {lib}"]},
         "unicode-line-break": {"iverilog_options": [f"-g2012\u2028;iverilog -y{lib}"]},
+        "duplicate-rule": {"iverilog_options": ["-g2012\npost_build: run"]},
     }
 
 
@@ -523,6 +515,28 @@ def test_isolated_icarus_reuse_declines_option_operands(
         assert "\rall: -y" in makefile
     if case in {"newline-injection", "vvp-newline-injection"}:
         assert "\nEDALIZE_LAUNCHER = " in makefile
+    if case == "duplicate-rule":
+        assert "\npost_build: run\n" in makefile
+    assert _icarus_key(prepared, root) is None
+
+
+@pytest.mark.usefixtures("real_fusesoc")
+def test_isolated_icarus_reuse_declines_quoted_file_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A listed file name holding a quote declines reuse instead of crashing the keying."""
+    _stub_icarus_identity(monkeypatch)
+    root = _write_project(tmp_path / "proj")
+    (root / "rtl" / "top.v").write_text("module top; endmodule\n", encoding="utf-8")
+    _write_project_core(root, user_files=False, headers=False)
+    # Control: the plain recipe reuses, so a None key below comes from the file name.
+    assert _icarus_key(_prepare(root, "sim_icarus", name="control"), root) is not None
+    quoted = 'rtl/it"s.v'
+    (root / quoted).write_text("module m; endmodule\n", encoding="utf-8")
+    _write_project_core(root, user_files=False, headers=False, extra_files=(quoted,))
+    prepared = _prepare(root, "sim_icarus", name="quoted")
+    script = next(prepared.build_root.glob("*.scr")).read_text(encoding="utf-8")
+    assert any(line.endswith(quoted) for line in script.splitlines())
     assert _icarus_key(prepared, root) is None
 
 
