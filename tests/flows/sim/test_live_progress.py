@@ -460,7 +460,8 @@ def test_hdl_backend_exceptions_are_visible_before_child_completion(tmp_path, mo
     from threading import Event
 
     from booley.flows.run_log import begin_run_log
-    from booley.flows.sim.backends import shared, verilator
+    from booley.flows.sim.backends import shared
+    from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
 
     evidence = tmp_path / "evidence"
     evidence.mkdir()
@@ -490,14 +491,15 @@ def test_hdl_backend_exceptions_are_visible_before_child_completion(tmp_path, mo
     ]
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
-            verilator._stream_output,
-            command,
-            tmp_path,
-            os.environ.copy(),
-            5,
-            None,
-            None,
-            work_dir=evidence,
+            run_supervised,
+            SimulatorLaunch(
+                label="Verilator",
+                command=command,
+                run_cwd=tmp_path,
+                env=os.environ.copy(),
+                timeout_s=5,
+                work_dir=evidence,
+            ),
         )
         try:
             assert observed.wait(5)

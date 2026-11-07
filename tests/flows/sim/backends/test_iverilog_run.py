@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -21,8 +21,9 @@ from booley.flows.sim.adapter_transport import (
     read_adapter_result,
 )
 from booley.flows.sim.backends import icarus as ir
-from booley.flows.sim.backends.shared import CurrentRunTraces, find_icarus_image
-from booley.flows.sim.trace_session import TraceInspection
+from booley.flows.sim.backends import shared
+from booley.flows.sim.backends.shared import find_icarus_image
+from booley.flows.sim.trace_session import TraceArtifact, TraceInspection
 
 
 def test_find_image_strips_scr_extension(tmp_path: Path):
@@ -100,19 +101,6 @@ def test_parse_args_round_trips_sentinels():
     assert args.fail_sentinels == ["ERROR!", "TIMEOUT"]
 
 
-def test_evaluate_verdict_honors_custom_sentinels(tmp_path: Path, capsys):
-    # TB emits its own wording; no [SIM_RESULT] marker. With the configured
-    # pass sentinel the run-half must still call it a PASS.
-    ir._evaluate_verdict(
-        "ALL TESTS PASSED.",
-        0,
-        tmp_path,
-        pass_sentinels=["ALL TESTS PASSED."],
-        fail_sentinels=["ERROR!"],
-    )
-    assert "PASSED" in capsys.readouterr().out
-
-
 @pytest.mark.parametrize("bad", ["0", "-5"])
 def test_parse_args_rejects_non_positive_timeout(bad: str):
     # A non-positive timeout would fire threading.Timer immediately; reject at CLI.
@@ -126,117 +114,6 @@ def test_run_icarus_image_missing_image_returns_error(tmp_path: Path):
     assert "no vvp image" in out
 
 
-def test_icarus_marks_raw_trace_as_fallback_after_postprocess(tmp_path: Path, capsys):
-    raw_trace = tmp_path / "dump.vcd"
-    raw_trace.write_text("$enddefinitions $end\n", encoding="utf-8")
-
-    class NonQueryableTrace:
-        def postprocess(self, _path):
-            return None
-
-        def find(self):
-            return raw_trace
-
-        def inspect(self, _path):
-            return TraceInspection(None, "retained trace is raw .vcd")
-
-        def write_incident(self, reason, *, sim_proc):
-            incident = tmp_path / "trace_incident.txt"
-            incident.write_text(reason, encoding="utf-8")
-            return incident
-
-    trace = NonQueryableTrace()
-    run = ir._IcarusRun(
-        build_dir=tmp_path,
-        run_cwd=tmp_path,
-        work_dir=tmp_path,
-        image=tmp_path / "sim",
-        command=[],
-        trace=trace,
-        current=CurrentRunTraces(trace, (), (), {}),
-    )
-
-    output, result = ir._finalize_icarus_trace(run, SimpleNamespace(returncode=0), [])
-
-    assert result is not None
-    assert result.status == "ok"
-    assert "TRACE_FALLBACK" in output
-    assert "TRACE_OK" not in capsys.readouterr().out
-
-
-def test_icarus_marks_unqueryable_fst_as_incident(tmp_path: Path, capsys):
-    retained = tmp_path / "trace.fst"
-
-    class NonQueryableTrace:
-        def postprocess(self, _path):
-            return None
-
-        def find(self):
-            return retained
-
-        def inspect(self, _path):
-            return TraceInspection(None, "FST has no signals")
-
-        def write_incident(self, reason, *, sim_proc):
-            incident = tmp_path / "trace_incident.txt"
-            incident.write_text(reason, encoding="utf-8")
-            return incident
-
-    trace = NonQueryableTrace()
-    run = ir._IcarusRun(
-        build_dir=tmp_path,
-        run_cwd=tmp_path,
-        work_dir=tmp_path,
-        image=tmp_path / "sim",
-        command=[],
-        trace=trace,
-        current=CurrentRunTraces(trace, (), (), {}),
-    )
-
-    output, result = ir._finalize_icarus_trace(run, SimpleNamespace(returncode=1), [])
-
-    assert result is not None
-    assert result.status == "incident"
-    assert "TRACE_INCIDENT" in output
-    # Reaches the "not queryable" branch, not the "nothing produced" one.
-    assert "retained waveform is not queryable" in capsys.readouterr().out
-
-
-def test_icarus_names_trace_files_when_declared_patterns_matched_nothing(tmp_path: Path):
-    class NoTrace:
-        owned_outputs = frozenset()
-
-        def postprocess(self, _path):
-            return None
-
-        def find(self):
-            return None
-
-        def write_incident(self, reason, *, sim_proc):
-            incident = tmp_path / "trace_incident.txt"
-            incident.write_text(reason, encoding="utf-8")
-            return incident
-
-    trace = NoTrace()
-    run = ir._IcarusRun(
-        build_dir=tmp_path,
-        run_cwd=tmp_path,
-        work_dir=tmp_path,
-        image=tmp_path / "sim",
-        command=[],
-        trace=trace,
-        current=CurrentRunTraces(trace, ("missing.vcd",), (tmp_path,), {}),
-    )
-
-    _output, result = ir._finalize_icarus_trace(
-        run, SimpleNamespace(returncode=0), ["missing.vcd"]
-    )
-
-    assert result is not None
-    assert result.status == "incident"
-    assert "[flows.sim].trace_files ['missing.vcd']" in result.detail
-
-
 def test_run_icarus_image_creates_missing_work_dir(tmp_path: Path):
     """The run-half owns its output dir: a caller-derived work dir that does not
     exist yet is created before any run (parity with the Verilator run-half)."""
@@ -246,60 +123,6 @@ def test_run_icarus_image_creates_missing_work_dir(tmp_path: Path):
     # No image present → returns early after the mkdir, before any vvp run.
     ir.run_icarus_image(build_dir=build_dir, work_dir=work_dir)
     assert work_dir.is_dir()
-
-
-def test_evaluate_verdict_pass_writes_result(tmp_path: Path, capsys):
-    ir._evaluate_verdict("[SIM_RESULT] PASSED", 0, tmp_path)
-    out = capsys.readouterr().out
-    assert "PASSED" in out
-    assert (tmp_path / "result.json").exists()
-
-
-def test_evaluate_verdict_inconclusive_on_silent_rc0(tmp_path: Path, capsys):
-    ir._evaluate_verdict("no sentinel here", 0, tmp_path)
-    assert "INCONCLUSIVE" in capsys.readouterr().out
-
-
-def test_evaluate_verdict_fail_sentinel_rc0_avoids_confusing_rc0(tmp_path: Path, capsys):
-    # A FAIL sentinel with a clean exit must NOT print the confusing "(rc=0)".
-    ir._evaluate_verdict("[SIM_RESULT] FAILED", 0, tmp_path)
-    out = capsys.readouterr().out
-    assert "FAILED (fail sentinel matched)" in out
-    assert "rc=0" not in out
-
-
-def test_evaluate_verdict_fail_sentinel_rc1_cites_rc(tmp_path: Path, capsys):
-    ir._evaluate_verdict("[SIM_RESULT] FAILED", 1, tmp_path)
-    assert "FAILED (rc=1)" in capsys.readouterr().out
-
-
-def test_evaluate_verdict_pass_writes_run_log(tmp_path: Path, capsys):
-    """The full raw output lands in run.log next to result.json on a PASS."""
-    output = "vvp banner\nsome TB chatter\n[SIM_RESULT] PASSED\n"
-    ir._evaluate_verdict(output, 0, tmp_path)
-    assert (tmp_path / "run.log").read_text(encoding="utf-8") == output
-
-
-def test_evaluate_verdict_fail_writes_run_log(tmp_path: Path, capsys):
-    """run.log is written on a FAIL too — that's when it matters most."""
-    output = "ERROR: scoreboard mismatch\n[SIM_RESULT] FAILED\n"
-    ir._evaluate_verdict(output, 1, tmp_path)
-    assert (tmp_path / "run.log").read_text(encoding="utf-8") == output
-
-
-def test_evaluate_verdict_captures_uppercase_error_bang(tmp_path: Path, capsys):
-    """Project fail sentinels commonly use uppercase ``ERROR!`` wording."""
-    output = "[0]ERROR! list crc 0x1234 - should be 0x5678\n"
-    ir._evaluate_verdict(output, 0, tmp_path, fail_sentinels=["ERROR!"])
-    result = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
-    assert result["first_error"] == output.strip()
-
-
-@pytest.mark.parametrize("line", ["Error at cycle 9", "Error :( expected 1"])
-def test_evaluate_verdict_captures_common_error_spellings(tmp_path: Path, capsys, line: str):
-    ir._evaluate_verdict(f"{line}\n[SIM_RESULT] FAILED\n", 1, tmp_path)
-    result = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
-    assert result["first_error"] == line
 
 
 @pytest.mark.skipif(
@@ -385,65 +208,6 @@ def test_parse_args_round_trips_max_rundir_bytes():
     assert ir._parse_args(["--build-dir", "b"]).max_rundir_bytes == 0
 
 
-def test_stream_output_kills_on_missing_readmemh(tmp_path: Path):
-    """SETUP-23: the missing-$readmemh warning kills the run fast, not at the
-    wall-clock timeout — a real spinning child is torn down on the warning line."""
-    import sys
-    import time
-
-    run = tmp_path / "run"
-    run.mkdir()
-    # Emit the warning, flush, then spin so only the guard can end it.
-    script = (
-        "import sys, time; "
-        'print("Cannot open firmware.hex for reading."); sys.stdout.flush(); '
-        "time.sleep(60)"
-    )
-    start = time.monotonic()
-    lines, proc, _termination = ir._stream_output([sys.executable, "-c", script], run, timeout=30)
-    elapsed = time.monotonic() - start
-    out = "".join(lines)
-    assert "missing $readmemh" in out
-    assert elapsed < 15  # killed on the warning, well before the 30s timeout
-    assert proc.poll() is not None
-
-
-def test_stream_output_kills_on_disk_runaway(tmp_path: Path, monkeypatch):
-    """SETUP-25: a run dir over budget is killed even with no stdout (silent
-    runaway) — the watchdog polls the dir while the stdout loop is blocked."""
-    import functools
-    import sys
-    import time
-
-    import booley.flows.sim.run_guard as rg
-
-    # Poll fast so the test doesn't wait out the 5s production interval.
-    monkeypatch.setattr(
-        rg,
-        "DiskBudgetGuard",
-        functools.partial(rg.DiskBudgetGuard, interval=0.02),
-    )
-    run = tmp_path / "run"
-    run.mkdir()
-    # Write 200KB up front, then spin silently — no stdout for the loop to see.
-    script = (
-        f'open({str(run / "big.bin")!r}, "wb").write(b"0" * 200_000); import time; time.sleep(60)'
-    )
-    start = time.monotonic()
-    lines, proc, _termination = ir._stream_output(
-        [sys.executable, "-c", script],
-        run,
-        timeout=30,
-        max_rundir_bytes=1024,
-    )
-    elapsed = time.monotonic() - start
-    out = "".join(lines)
-    assert "run directory" in out and "budget" in out
-    assert "max_rundir_bytes" in out
-    assert elapsed < 15  # killed on the disk breach, not at the timeout
-    assert proc.poll() is not None
-
-
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason="run-half execs a POSIX vvp stub; real sims run in-container",
@@ -462,12 +226,12 @@ def test_disk_kill_is_published_as_aborted_infrastructure(tmp_path: Path, monkey
 def _run_disk_kill_adapter(tmp_path: Path, monkeypatch):
     import functools
 
-    import booley.flows.sim.run_guard as rg
+    from booley.flows.sim.backends import supervision
 
     monkeypatch.setattr(
-        rg,
+        supervision,
         "DiskBudgetGuard",
-        functools.partial(rg.DiskBudgetGuard, interval=0.02),
+        functools.partial(supervision.DiskBudgetGuard, interval=0.02),
     )
     build = tmp_path / "build"
     run = tmp_path / "run"
@@ -505,131 +269,6 @@ def _run_disk_kill_adapter(tmp_path: Path, monkeypatch):
     return read_adapter_result(identity)
 
 
-def test_disk_baseline_is_taken_before_the_spawn(tmp_path: Path, monkeypatch):
-    """A3: the pre-existing-bytes snapshot must predate vvp.
-
-    ``dir_size_bytes`` is a recursive scandir walk — seconds on the multi-GB
-    trees this budget exists for — so a baseline taken after the Popen absorbs
-    everything vvp dumped during the walk, silently raising the budget.
-    """
-    import subprocess
-    import sys
-
-    import booley.flows.sim.run_guard as rg
-
-    order: list[str] = []
-    real_snapshot = rg.snapshot_dir_baseline
-    real_popen = subprocess.Popen
-
-    def _snapshot(rundir, budget):
-        order.append("baseline")
-        return real_snapshot(rundir, budget)
-
-    def _popen(*args, **kwargs):
-        order.append("spawn")
-        return real_popen(*args, **kwargs)
-
-    monkeypatch.setattr(rg, "snapshot_dir_baseline", _snapshot)
-    monkeypatch.setattr(subprocess, "Popen", _popen)
-
-    run = tmp_path / "run"
-    run.mkdir()
-    ir._stream_output([sys.executable, "-c", "pass"], run, timeout=30, max_rundir_bytes=1 << 20)
-    assert order == ["baseline", "spawn"]
-
-
-@pytest.mark.parametrize("returncode", [0, 1])
-def test_final_disk_budget_after_natural_exit(tmp_path, monkeypatch, returncode):
-    import io
-    from types import SimpleNamespace
-
-    import booley.flows.sim.run_guard as guard_module
-    import booley.runtime.platform_paths as platform
-
-    def spawn(*args, **kwargs):
-        (tmp_path / "output.bin").write_bytes(b"x" * 9)
-        return SimpleNamespace(
-            stdout=io.StringIO("PASS\n"),
-            returncode=returncode,
-            pid=4321,
-            poll=lambda: returncode,
-            wait=lambda **kwargs: returncode,
-        )
-
-    monkeypatch.setattr(ir.subprocess, "Popen", spawn)
-    monkeypatch.setattr(guard_module, "supervise_child", lambda proc: None)
-
-    def unexpected_kill(proc):
-        pytest.fail("already exited child must not be killed")
-
-    monkeypatch.setattr(platform, "kill_process_tree", unexpected_kill)
-    lines, proc, termination = ir._stream_output(["fake"], tmp_path, 30, max_rundir_bytes=8)
-    assert termination.kind == "disk_budget"
-    assert termination.failure_kind == "infrastructure"
-    assert proc.returncode == returncode
-    assert "simulation aborted:" in "".join(lines)
-    work = tmp_path / "work"
-    work.mkdir()
-    ir._evaluate_verdict(
-        "".join(lines), returncode, work, pass_sentinels=["PASS"], termination=termination
-    )
-    result = json.loads((work / "result.json").read_text())
-    assert result["passed"] is False
-    assert not result.get("inconclusive", False)
-
-
-@pytest.mark.parametrize("prior", ["fatal_init", "timeout"])
-def test_final_disk_preserves_prior_abort(tmp_path, monkeypatch, prior):
-    import io
-    import threading
-    from types import SimpleNamespace
-
-    import booley.flows.sim.run_guard as guard_module
-    import booley.runtime.platform_paths as platform
-
-    timers = []
-    alive = [True]
-
-    class Timer:
-        def __init__(self, delay, callback):
-            timers.append(callback)
-
-        def start(self):
-            pass
-
-        def cancel(self):
-            pass
-
-    def wait(**kwargs):
-        if prior == "timeout" and alive[0]:
-            timers[0]()
-        alive[0] = False
-        return 0
-
-    def spawn(*args, **kwargs):
-        (tmp_path / "output.bin").write_bytes(b"x" * 9)
-        line = "$readmemh: Cannot open memory.hex\n" if prior == "fatal_init" else "PASS\n"
-        return SimpleNamespace(
-            stdout=io.StringIO(line),
-            returncode=0,
-            pid=4321,
-            poll=lambda: None if alive[0] else 0,
-            wait=wait,
-        )
-
-    monkeypatch.setattr(threading, "Timer", Timer)
-    monkeypatch.setattr(ir.subprocess, "Popen", spawn)
-    monkeypatch.setattr(guard_module, "supervise_child", lambda proc: None)
-    monkeypatch.setattr(platform, "kill_process_tree", lambda proc: alive.__setitem__(0, False))
-    monkeypatch.setattr(
-        guard_module.DiskBudgetGuard,
-        "finish",
-        lambda guard: pytest.fail("prior abort must skip final scan"),
-    )
-    _, _, termination = ir._stream_output(["fake"], tmp_path, 30, max_rundir_bytes=8)
-    assert termination.kind == prior
-
-
 class _FakeTraceSession:
     """Trace seam stub: Booley-owned discovery sees only the store a VCD
     conversion publishes, so the outcome depends on the declared-file filter."""
@@ -653,9 +292,12 @@ class _FakeTraceSession:
         return self._published if self._published and self._published.exists() else None
 
     def inspect(self, path):
-        return TraceInspection(SimpleNamespace(path=path))
+        if path.suffix == ".vcd":  # a raw VCD is never queryable
+            return TraceInspection(None, "retained trace is raw .vcd")
+        size = path.stat().st_size if path.exists() else 0
+        return TraceInspection(TraceArtifact(path, size, "tb", 1, 1))
 
-    def write_incident(self, reason, *, sim_proc):
+    def write_incident(self, reason, *, sim_proc, bwave_proc=None):
         incident = self._work_dir / "trace_incident.txt"
         incident.write_text(reason, encoding="utf-8")
         return incident
@@ -670,6 +312,7 @@ def _run_traced_icarus(
     vvp_body: str,
     stale_name: str = "tb_dump.fst",
     converts_to_store: bool = False,
+    timeout: int = 30,
 ) -> str:
     """Run the full traced Icarus path with stale declared files pre-created."""
     build_dir = tmp_path / "build"
@@ -688,13 +331,13 @@ def _run_traced_icarus(
     session = _FakeTraceSession(
         work_dir, published=work_dir / "trace.fst" if converts_to_store else None
     )
-    monkeypatch.setattr(ir, "_new_trace_session", lambda *_args: session)
+    monkeypatch.setattr(ir, "TraceSession", lambda *_args, **_kwargs: session)
     return ir.run_icarus_image(
         build_dir=build_dir,
         run_cwd=run_cwd,
         work_dir=work_dir,
         vcd=True,
-        timeout=30,
+        timeout=timeout,
         trace_files=trace_files,
     )
 
@@ -758,3 +401,56 @@ def test_icarus_adopts_declared_trace_rewritten_by_run(tmp_path: Path, monkeypat
     )
 
     assert f"TRACE_OK: {(tmp_path / 'run').resolve() / 'tb_dump.fst'}" in output
+
+
+def _icarus_run(tmp_path: Path, command: list[str]) -> ir._IcarusRun:
+    return ir._IcarusRun(tmp_path, tmp_path, tmp_path, "sim", command, None)
+
+
+def test_execute_passes_guard_inputs_to_the_runner(tmp_path: Path, monkeypatch):
+    from booley.flows.sim.backends.supervision import SimulatorLaunch
+
+    launches: list[SimulatorLaunch] = []
+    monkeypatch.setattr(ir, "run_supervised", launches.append)
+    run = _icarus_run(tmp_path, ["vvp", "-n", "image"])
+
+    ir._execute_icarus_run(run, 17, 4096, ("firmware.hex",))
+
+    (launch,) = launches
+    assert launch == SimulatorLaunch(
+        "iverilog", run.command, tmp_path, launch.env, 17, tmp_path, 4096, ("firmware.hex",)
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX vvp stub")
+def test_printing_icarus_run_is_stopped_at_the_deadline(
+    tmp_path: Path, monkeypatch, never_firing_timer
+):
+    """Only the per-line deadline check can end this run: the timer never fires."""
+    chatty = "i=0; while [ $i -lt 800 ]; do echo tick $i; sleep 0.01; i=$((i+1)); done"
+
+    start = time.monotonic()
+    output = _run_traced_icarus(
+        tmp_path, monkeypatch, trace_files=[], stale_dirs=(), vvp_body=chatty, timeout=1
+    )
+
+    assert time.monotonic() - start < 6
+    assert "ERROR: iverilog simulation timed out (1s)" in output
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX vvp stub")
+def test_icarus_oversize_declared_vcd_never_falls_back(tmp_path: Path, monkeypatch):
+    """A declared VCD over the conversion cap is an incident, never TRACE_FALLBACK."""
+    monkeypatch.setattr(shared, "MAX_ADOPTED_VCD_BYTES", 16)
+
+    output = _run_traced_icarus(
+        tmp_path,
+        monkeypatch,
+        trace_files=["tb_dump.vcd"],
+        stale_dirs=(),
+        vvp_body="head -c 64 /dev/zero > tb_dump.vcd",
+    )
+
+    assert "TRACE_INCIDENT" in output
+    assert "TRACE_FALLBACK" not in output
+    assert "TRACE_OK" not in output

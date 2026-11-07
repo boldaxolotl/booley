@@ -14,7 +14,11 @@ import os
 import re
 import shlex
 import subprocess
+import sys
+import time
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -22,11 +26,13 @@ import pytest
 from booley.flows.sim.adapter_transport import (
     AdapterTestResult,
     AdapterTransportIdentity,
+    partial_result_identity,
     read_adapter_result,
 )
 from booley.flows.sim.backends import cocotb as crun
 from booley.flows.sim.backends.shared import RunTermination
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX
+from booley.flows.sim.run_guard import SIM_TIME_STALL_MARKER
 
 # ---------------------------------------------------------------------------
 # G1 — filter builder
@@ -702,161 +708,6 @@ def test_partial_cocotb_abort_preserves_completed_test_and_publishes_termination
     ]
 
 
-def test_disk_baseline_is_taken_before_the_spawn(tmp_path: Path, monkeypatch):
-    """A3: the pre-existing-bytes snapshot must predate the simulator.
-
-    Same reason as the other two run-halves: ``dir_size_bytes`` is a recursive
-    walk that takes seconds on a multi-GB run dir, and a baseline taken after
-    the Popen quietly absorbs whatever the sim wrote during it.
-    """
-    import sys
-
-    import booley.flows.sim.run_guard as rg
-
-    order: list[str] = []
-    real_snapshot = rg.snapshot_dir_baseline
-    real_popen = subprocess.Popen
-
-    def _snapshot(rundir, budget):
-        order.append("baseline")
-        return real_snapshot(rundir, budget)
-
-    def _popen(*args, **kwargs):
-        order.append("spawn")
-        return real_popen(*args, **kwargs)
-
-    monkeypatch.setattr(rg, "snapshot_dir_baseline", _snapshot)
-    monkeypatch.setattr(subprocess, "Popen", _popen)
-
-    run = tmp_path / "run"
-    run.mkdir()
-    _lines, proc, _timed_out = crun._stream_output(
-        [sys.executable, "-c", "pass"],
-        run,
-        os.environ.copy(),
-        30,
-        max_rundir_bytes=1 << 20,
-    )
-    assert order == ["baseline", "spawn"]
-    assert proc.stdout is not None
-    assert proc.stdout.closed
-
-
-@pytest.mark.parametrize("returncode", [0, 1])
-def test_final_disk_budget_after_natural_exit(tmp_path, monkeypatch, returncode):
-    import io
-    from types import SimpleNamespace
-
-    import booley.flows.sim.run_guard as guard_module
-    import booley.runtime.platform_paths as platform
-
-    def spawn(*args, **kwargs):
-        (tmp_path / "output.bin").write_bytes(b"x" * 9)
-        return SimpleNamespace(
-            stdout=io.StringIO("PASS\n"),
-            returncode=returncode,
-            pid=4321,
-            poll=lambda: returncode,
-            wait=lambda **kwargs: returncode,
-        )
-
-    monkeypatch.setattr(crun.subprocess, "Popen", spawn)
-    monkeypatch.setattr(guard_module, "supervise_child", lambda proc: None)
-
-    def unexpected_kill(proc):
-        pytest.fail("already exited child must not be killed")
-
-    monkeypatch.setattr(platform, "kill_process_tree", unexpected_kill)
-    lines, proc, termination = crun._stream_output(["fake"], tmp_path, {}, 30, max_rundir_bytes=8)
-    assert termination.kind == "disk_budget"
-    assert termination.failure_kind == "infrastructure"
-    assert proc.returncode == returncode
-    assert "simulation aborted:" in "".join(lines)
-    work = tmp_path / "work"
-    work.mkdir()
-    results_file = tmp_path / "results.xml"
-    results_file.write_text(
-        '<testsuites><testsuite><testcase name="done" classname="test_demo" time="0.1"/></testsuite></testsuites>'
-    )
-    output, passed = crun._evaluate_verdict(
-        "".join(lines), returncode, False, work, results_file, ["done"], termination=termination
-    )
-    assert passed is False
-    identity = AdapterTransportIdentity(
-        "cocotb", "attempt", "acme:lib:dut:1#sim", ("done",), tmp_path / "adapter.json"
-    )
-    crun._publish_adapter_result(
-        identity, output, passed, termination=termination, simulator_returncode=returncode
-    )
-    result = read_adapter_result(identity)
-    assert result.termination == "disk_budget"
-    assert result.failure_kind == "infrastructure"
-    assert result.simulator_returncode == returncode
-
-
-@pytest.mark.parametrize("prior", ["fatal_init", "timeout", "sim_time_stall"])
-def test_final_disk_preserves_prior_abort(tmp_path, monkeypatch, prior):
-    import io
-    import threading
-    from types import SimpleNamespace
-
-    import booley.flows.sim.run_guard as guard_module
-    import booley.runtime.platform_paths as platform
-
-    stalls = []
-    real_stall = guard_module.SimTimeStallGuard
-
-    def stall_guard(*args):
-        guard = real_stall(*args)
-        stalls.append(guard)
-        return guard
-
-    monkeypatch.setattr(guard_module, "SimTimeStallGuard", stall_guard)
-    timers = []
-    alive = [True]
-
-    class Timer:
-        def __init__(self, delay, callback):
-            timers.append(callback)
-
-        def start(self):
-            pass
-
-        def cancel(self):
-            pass
-
-    def wait(**kwargs):
-        if prior == "sim_time_stall":
-            stalls[0].tripped = True
-        if prior == "timeout" and alive[0]:
-            timers[0]()
-        alive[0] = False
-        return 0
-
-    def spawn(*args, **kwargs):
-        (tmp_path / "output.bin").write_bytes(b"x" * 9)
-        line = "$readmemh: Cannot open memory.hex\n" if prior == "fatal_init" else "PASS\n"
-        return SimpleNamespace(
-            stdout=io.StringIO(line),
-            returncode=0,
-            pid=4321,
-            poll=lambda: None if alive[0] else 0,
-            wait=wait,
-        )
-
-    monkeypatch.setattr(threading, "Timer", Timer)
-    monkeypatch.setattr(crun.subprocess, "Popen", spawn)
-    monkeypatch.setattr(guard_module, "supervise_child", lambda proc: None)
-    monkeypatch.setattr(platform, "kill_process_tree", lambda proc: alive.__setitem__(0, False))
-    monkeypatch.setattr(
-        guard_module.DiskBudgetGuard,
-        "finish",
-        lambda guard: pytest.fail("prior abort must skip final scan"),
-    )
-    _, _, termination = crun._stream_output(["fake"], tmp_path, {}, 30, max_rundir_bytes=8)
-    assert termination.kind == prior
-
-
 def test_live_exception_log_before_cocotb_child_completes(tmp_path, monkeypatch):
     """Real streaming writes diagnostics to the evidence root while the child waits."""
     import sys
@@ -916,6 +767,99 @@ def test_live_exception_log_before_cocotb_child_completes(tmp_path, monkeypatch)
     assert proc.returncode == 0
     assert not termination.aborted
     assert "final diagnostic" in log.read_text()
+
+
+def _child_run(tmp_path: Path, script: str, tests: list[str], env=None) -> crun._CocotbRun:
+    """A `_CocotbRun` whose simulator is a tiny unbuffered Python child running *script*."""
+    command = [sys.executable, "-u", "-c", script]
+    return crun._CocotbRun(
+        tmp_path, tmp_path, tmp_path, tmp_path / "results.xml", tests, env or {}, command, None
+    )
+
+
+def test_execute_passes_guard_inputs_to_the_runner(tmp_path: Path, monkeypatch) -> None:
+    identity = AdapterTransportIdentity(
+        "cocotb", "a", "acme:lib:dut:1#sim", ("t1",), tmp_path / "r"
+    )
+    run = _child_run(tmp_path, "pass", ["t1"], env={"COCOTB_TEST_FILTER": "t1"})
+    from booley.flows.sim.backends.supervision import SimulatorLaunch
+
+    launches: list[SimulatorLaunch] = []
+    monkeypatch.setattr(crun, "run_supervised", launches.append)
+
+    crun._execute_cocotb_run(run, 77, 1234, 9.5, identity, ("mem.hex",))
+
+    (launch,) = launches
+    assert callable(launch.on_line)
+    assert replace(launch, on_line=None) == SimulatorLaunch(
+        "cocotb", run.command, tmp_path, run.env, 77, tmp_path, 1234, ("mem.hex",), 9.5
+    )
+
+
+def test_printing_cocotb_run_is_stopped_at_the_deadline(
+    tmp_path: Path, never_firing_timer
+) -> None:
+    """Only the per-line deadline check can end this run: the timer never fires."""
+    script = "import time\nfor i in range(800):\n    print('tick', i, flush=True)\n    time.sleep(0.01)\n"
+
+    started = time.monotonic()
+    _, proc, termination = crun._execute_cocotb_run(
+        _child_run(tmp_path, script, ["t"]), 1, 0, 0, None, ()
+    )
+
+    assert termination.kind == "timeout"
+    assert time.monotonic() - started < 6
+    assert proc.poll() is not None
+    assert "last output" in termination.detail
+
+
+def test_sim_time_stall_ends_cocotb_run_and_beats_timeout(
+    tmp_path: Path, monkeypatch, instant_timer
+) -> None:
+    stalled = SimpleNamespace(
+        tripped=True,
+        message=f"{SIM_TIME_STALL_MARKER} past 0.00 ns in 1s of wall clock.",
+        start=lambda: None,
+        observe=lambda _line: None,
+        stop=lambda: None,
+    )
+    from booley.flows.sim.backends import supervision
+
+    monkeypatch.setattr(supervision, "SimTimeStallGuard", lambda *_a, **_k: stalled)
+    run = _child_run(tmp_path, "import time; time.sleep(60)", ["t"])
+
+    _, proc, termination = crun._execute_cocotb_run(run, 30, 0, 5.0, None, ())
+
+    assert termination.kind == "sim_time_stall"
+    assert termination.failure_kind == "infrastructure"
+    assert proc.poll() is not None
+
+
+def test_killed_cocotb_run_publishes_partial_results(tmp_path: Path) -> None:
+    """Without the per-line hook only the initial publish runs and every test reads timeout."""
+    identity = AdapterTransportIdentity(
+        "cocotb", "a", "acme:lib:dut:1#sim", ("t1", "t2"), tmp_path / "adapter.json"
+    )
+    script = (
+        "import time\n"
+        "print('0.00ns INFO cocotb.regression running t1 (1/2)', flush=True)\n"
+        "time.sleep(0.3)\n"
+        "print('1.00ns INFO cocotb.regression t1 passed', flush=True)\n"
+        "print('1.00ns INFO cocotb.regression running t2 (2/2)', flush=True)\n"
+        "time.sleep(60)\n"
+    )
+
+    _, proc, termination = crun._execute_cocotb_run(
+        _child_run(tmp_path, script, ["t1", "t2"]), 2, 0, 0, identity, ()
+    )
+
+    assert termination.kind == "timeout"
+    assert proc.poll() is not None
+    partial = read_adapter_result(partial_result_identity(identity))
+    assert [(t.name, t.verdict) for t in partial.test_results] == [
+        ("t1", "pass"),
+        ("t2", "timeout"),
+    ]
 
 
 @pytest.mark.parametrize("eda_tool,backend", [("icarus", "iverilog"), ("verilator", "verilator")])
