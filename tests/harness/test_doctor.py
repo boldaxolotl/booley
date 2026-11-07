@@ -10270,8 +10270,10 @@ def test_sandbox_commands_pass_relocated_booley_dir(tmp_path, monkeypatch):
     # In-Sandbox Doctor sees the relocated directory at /work/tools/booley.
     sandbox_dir = Path("/work/tools/booley")
     in_sandbox = SimpleNamespace(booley_dir=sandbox_dir, project_root=root)
-    # `/work` exists only in the Sandbox, so stub the containment lookup.
-    monkeypatch.setattr(doctor, "contains", lambda path, booley_dir: path)
+    # `/work` exists only in the Sandbox, so stub the containment lookup. Resolve
+    # like the real lookup does: on Windows a drive-less path gains a drive, and
+    # the code compares against the resolved Booley Directory.
+    monkeypatch.setattr(doctor, "contains", lambda path, booley_dir: Path(path).resolve())
     hint = doctor._display_report_dir(in_sandbox, sandbox_dir / "tmp" / "r")
     assert hint == "tools/booley/tmp/r (under the Project Root)"
 
