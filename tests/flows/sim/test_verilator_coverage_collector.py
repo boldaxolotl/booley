@@ -1195,6 +1195,46 @@ def test_native_source_presence_precedes_metric_filtering(
         assert result.unrecognized_records
 
 
+@pytest.mark.parametrize("isolated", [True, False], ids=["isolated", "non-isolated"])
+def test_native_record_in_a_mirrored_header_is_named_by_project_path(
+    tmp_path: Path, isolated: bool
+) -> None:
+    """AC3: a header the build read through its private mirror shows its Project path."""
+    request = _request(tmp_path, "mirrored-header")
+    if isolated:
+        target = replace(
+            request.target,
+            foreign_paths={
+                "src/acme_demo_counter-booleycoverage_1/rtl/inc/defs.svh": "rtl/inc/defs.svh"
+            },
+        )
+        request = replace(request, target=target)
+    export = "src/acme_demo_counter-booleycoverage_1/rtl/inc/defs.svh"
+    payload = _HEADER + _native_record("line", "block").replace("rtl/counter.sv", export)
+
+    result = collect(request, _PresenceExecution(payload))
+
+    assert result.status == "complete", _collection_detail(result)
+    # Non-isolated Projects keep the native name, as before.
+    assert result.native_sources == (("rtl/inc/defs.svh",) if isolated else (export,))
+    (point,) = result.points
+    assert point.identity.source == result.native_sources[0]
+
+
+def test_native_record_in_the_authored_source_matches_through_the_mirror_name(
+    tmp_path: Path,
+) -> None:
+    """A native ``src/<core>/rtl/counter.sv`` suffix-matches the Project-relative input."""
+    export = "src/acme_demo_counter-booleycoverage_1/rtl/counter.sv"
+    payload = _HEADER + _native_record("line", "block").replace("rtl/counter.sv", export)
+
+    result = collect(_request(tmp_path, "mirrored-source"), _PresenceExecution(payload))
+
+    assert result.status == "complete", _collection_detail(result)
+    (point,) = result.points
+    assert point.identity.source == "rtl/counter.sv"
+
+
 @pytest.mark.parametrize("verdict", ["pass", "fail"])
 @pytest.mark.parametrize("artifact_error", [False, True])
 def test_authenticated_cleanup_warning_survives_collection(

@@ -232,6 +232,48 @@ def test_core_closure_hashes_every_dependency_core(tmp_path: Path) -> None:
     assert capture_core_closure(edam, project) != closure
 
 
+@pytest.mark.parametrize("linked", [False, True], ids=["plain", "linked"])
+def test_core_closure_names_a_mirror_core_without_its_generation(
+    tmp_path: Path, linked: bool
+) -> None:
+    """AC2: a core of the build's private mirror keys the same in every generation."""
+    project = tmp_path / "project"
+    project.mkdir()
+    if linked:
+        symlinked_booley_dir(project, tmp_path / "external")
+    else:
+        (project / ".booley").mkdir()
+    closures = []
+    for generation_name, text in (("g1", "a"), ("g2", "a"), ("g3", "b")):
+        generation = project / ".booley" / ".runtime" / "edalize" / "sim" / "g" / generation_name
+        core = generation / "core-mirror" / "booley-isolated-demo.core"
+        core.parent.mkdir(parents=True)
+        core.write_text(f"CAPI=2:\nname: a:b:demo:1\ndescription: {text}\n", encoding="utf-8")
+        edam = _edam(generation / "acme_demo" / "sim", {"a:b:demo:1": core})
+        closures.append(capture_core_closure(edam, project, generation=generation))
+        # Without the generation, today's per-generation Project-relative name.
+        assert capture_core_closure(edam, project) == {
+            "a:b:demo:1": f"{core.relative_to(project).as_posix()}:{_sha(core)}"
+        }
+    assert closures[0] is not None and closures[2] is not None
+    assert closures[0] == closures[1] != closures[2]
+    assert closures[0]["a:b:demo:1"].startswith(
+        "<generation>/core-mirror/booley-isolated-demo.core:"
+    )
+
+
+def test_core_closure_keeps_the_name_of_a_core_outside_the_generation(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / ".booley").mkdir(parents=True)
+    core = project / "demo.core"
+    core.write_text("CAPI=2:\nname: a:b:demo:1\n", encoding="utf-8")
+    generation = project / ".booley" / "g"
+    edam = _edam(generation / "sim", {"a:b:demo:1": core})
+    assert capture_core_closure(edam, project, generation=generation) == {
+        "a:b:demo:1": f"demo.core:{_sha(core)}"
+    }
+
+
 def _core_behind_linked_booley_dir(tmp_path: Path, case: str) -> tuple[Path, Path, Path]:
     """Project whose ``.booley`` is a symlink; return ``(project, edam, core)``.
 
