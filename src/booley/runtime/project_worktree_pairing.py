@@ -6,6 +6,7 @@ import os
 import shlex
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from booley.runtime.booley_dir import own_booley_dir
@@ -16,10 +17,8 @@ from booley.runtime.incontainer_git_identity import (
     apply_git_identity,
     load_git_identity,
 )
-from booley.runtime.project_gitignore import missing_gitignore_patterns, project_transient_pattern
 from booley.runtime.project_repositories import (
     GitDirectoryInspectionError,
-    ProjectRepositoryChange,
     common_git_dir,
     git_directories,
     is_standalone_git_repository,
@@ -31,6 +30,13 @@ from booley.runtime.worktree_paths import worktree_creation_config
 
 class ProjectPairingError(RuntimeError):
     """A user worktree cannot preserve committed Project inputs."""
+
+
+@dataclass(frozen=True)
+class ProjectPairing:
+    """A created Paired Checkout and the uncommitted source paths it left out."""
+
+    left_out: tuple[str, ...]
 
 
 def project_pairing_source(project_root: Path) -> Path | None:
@@ -64,16 +70,18 @@ def _require_base(source: Path, branch: str) -> str:
     head = run_git(source, "rev-parse", "--verify", "HEAD^{commit}")
     if head.returncode:
         raise ProjectPairingError("commit the Booley Directory's repository first")
-    status = _require_git(
-        source, "status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules"
-    )
-    changes = parse_porcelain_z(status)
-    if changes:
-        _refuse_dirty_project(source, changes)
     _require_git(source, "check-ref-format", "--branch", branch)
     if run_git(source, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0:
         raise ProjectPairingError(f"Project branch {branch!r} already exists; choose another name")
     return head.stdout.strip()
+
+
+def _left_out_paths(source: Path) -> tuple[str, ...]:
+    """Uncommitted and untracked paths of *source*: what a checkout of its HEAD omits."""
+    status = _require_git(
+        source, "status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules"
+    )
+    return tuple(change.path for change in parse_porcelain_z(status))
 
 
 def _refuse_registered(source: Path, nested: Path) -> None:
@@ -93,39 +101,6 @@ def _refuse_registered(source: Path, nested: Path) -> None:
                 f"`git -C {shlex.quote(str(source.resolve()))} worktree remove "
                 f"{shlex.quote(str(target))}`; inspect locks before unlocking or forcing removal"
             )
-
-
-def _listed_paths(paths: list[str]) -> str:
-    listed = ", ".join(paths[:5])
-    return listed + (f" and {len(paths) - 5} more" if len(paths) > 5 else "")
-
-
-def _refuse_dirty_project(source: Path, changes: tuple[ProjectRepositoryChange, ...]) -> None:
-    ignore = source / ".gitignore"
-    stale = set(
-        missing_gitignore_patterns(
-            ignore.read_text(encoding="utf-8", errors="replace") if ignore.exists() else ""
-        )
-    )
-    transient, inputs = [], []
-    for change in changes:
-        group = (
-            transient
-            if change.status == "??" and project_transient_pattern(change.path) in stale
-            else inputs
-        )
-        group.append(change.path)
-    remedies = []
-    if transient:
-        remedies.append(
-            f"transient state: {_listed_paths(transient)}; Project .gitignore is missing "
-            "current Booley patterns; run `booley init` from a host terminal, then commit the updated .gitignore"
-        )
-    if inputs:
-        remedies.append(f"inputs: {_listed_paths(inputs)}; commit them in `{source.name}` first")
-    raise ProjectPairingError(
-        "Booley Directory's repository has uncommitted changes; " + "; ".join(remedies)
-    )
 
 
 @contextmanager
@@ -218,13 +193,19 @@ def _rollback_pair(source: Path, nested: Path, branch: str, base: str) -> None:
 
 def pair_project_worktree(
     project_root: Path, worktree: Path, name: str, *, source: Path | None
-) -> bool:
-    """Replace the script's snapshot with a new Project branch, rolling back failures."""
+) -> ProjectPairing | None:
+    """Replace the script's snapshot with a new Project branch, rolling back failures.
+
+    The checkout is made from the source's HEAD commit, so uncommitted and
+    untracked files are left out; they are returned for the caller to report.
+    ``None`` means the Project has no Versioned Booley Directory to pair.
+    """
     if source is None:
-        return False
+        return None
     branch = f"booley-worktree/{name}"
     with _project_lock(source):
         base = _require_base(source, branch)
+        left_out = _left_out_paths(source)
         _refuse_registered(source, own_booley_dir(worktree))
         nested = _remove_copy(worktree)
         try:
@@ -253,7 +234,7 @@ def pair_project_worktree(
             if isinstance(exc, (GitIdentityError, GitDirectoryInspectionError, ValueError)):
                 raise ProjectPairingError(str(exc)) from exc
             raise
-    return True
+    return ProjectPairing(left_out)
 
 
 def rollback_project_pairing(source: Path, worktree: Path, name: str) -> None:

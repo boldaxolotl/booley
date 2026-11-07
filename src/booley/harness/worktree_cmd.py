@@ -8,9 +8,11 @@ it inside the checkout), on a detached
 HEAD at the workspace's current commit unless the name uses the
 ``<branch>--<description>`` convention to check out an existing branch.
 A Versioned Booley Directory gets a Paired Checkout on ``booley-worktree/<name>``
-at its clean HEAD; a non-versioned Booley Directory gets a Snapshot.
+at its last commit (uncommitted files are named in a warning and left out); a
+non-versioned Booley Directory gets a Snapshot.
 Selected git submodules (and the Paired Checkout's) are then populated offline
-from the main checkout; any failure rolls the whole creation back.
+from the main checkout and the Project's post-setup hook runs in the new
+worktree; any failure rolls the whole creation back.
 """
 
 from __future__ import annotations
@@ -21,14 +23,18 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
+from booley.flows.execution import FlowConfigError, flow_enabled
 from booley.runtime.booley_dir import BooleyDirOutsideCheckoutError, own_booley_dir
 from booley.runtime.docs_links import docs_url
 from booley.runtime.paths import worktree_create_script
 from booley.runtime.platform_paths import bash_bin
+from booley.runtime.project_prepare import find_post_setup_hook, prepare_project
 from booley.runtime.project_repositories import run_git
 from booley.runtime.project_worktree_pairing import (
+    ProjectPairing,
     ProjectPairingError,
     pair_project_worktree,
     project_pairing_source,
@@ -51,6 +57,9 @@ _WORKTREE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 # Bounds the script so a wedged Git call cannot hang the CLI.
 _CREATE_TIMEOUT_S = 300
+
+# Left-out Project files named in the warning before it falls back to a count.
+_LEFT_OUT_LISTED = 10
 
 
 def worktree_name(value: str) -> str:
@@ -81,7 +90,12 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
             "(live run and session state stays behind). The outer worktree starts on a "
             "detached HEAD at the current commit; a "
             "<branch>--<description> name checks out that existing branch instead. "
-            "Selected git submodules are populated offline from the main checkout. "
+            "The Paired Checkout comes from the Booley Directory repository's last "
+            "commit: uncommitted and untracked files there are named in a warning and "
+            "left out, and a repository with no commits is refused. "
+            "Selected git submodules are populated offline from the main checkout, "
+            "then the Project's post-setup hook runs in the new worktree; if either "
+            "fails, the creation is rolled back. "
             "An existing destination is refused and left untouched. Prints the "
             "worktree path."
         ),
@@ -101,6 +115,10 @@ def worktree_path(project_root: Path, name: str) -> Path:
 
 class WorktreeCreationError(Exception):
     """The outer worktree script could not create the requested checkout."""
+
+
+# Failures reported as one ERROR line; anything else is a defect and propagates.
+_REPORTED_FAILURES = (WorktreeCreationError, ProjectPairingError, OSError)
 
 
 def _create_outer(name: str, project_root: Path, *, paired_project: bool) -> None:
@@ -142,6 +160,15 @@ def _create_outer(name: str, project_root: Path, *, paired_project: bool) -> Non
             print(line, file=sys.stderr)
 
 
+@dataclass(frozen=True)
+class _Created:
+    """A worktree whose registration and submodule fill succeeded; setup remains."""
+
+    worktree: Path
+    source: Path | None
+    paired: bool
+
+
 def run(args: argparse.Namespace, project_root: Path) -> int:
     """Keep checkout/pair registration atomic with respect to directory migration."""
     from booley.core.layout_lock import layout_gate
@@ -152,39 +179,102 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     with layout_gate(project_root):
-        return _run_current(args, project_root)
+        created = _run_current(args, project_root)
+    if isinstance(created, int):
+        return created
+    # The post-setup hook can take minutes, so it runs after the gate is released.
+    return _finish_setup(args.name, project_root, created)
 
 
-def _run_current(args: argparse.Namespace, project_root: Path) -> int:
+def _run_current(args: argparse.Namespace, project_root: Path) -> _Created | int:
     """Create the outer and paired checkouts atomically; print removal steps on failure."""
     worktree = worktree_path(project_root, args.name)
     created = False
-    paired_created = False
+    pairing: ProjectPairing | None = None
     source = None
     try:
         source = project_pairing_source(project_root)
         validate_project_pairing(source, args.name)
         _create_outer(args.name, project_root, paired_project=source is not None)
         created = True
-        paired = pair_project_worktree(project_root, worktree, args.name, source=source)
-        paired_created = paired
+        pairing = pair_project_worktree(project_root, worktree, args.name, source=source)
+        if pairing is not None and pairing.left_out and source is not None:
+            print(_left_out_warning(pairing.left_out, source), file=sys.stderr)
+        print("Filling git submodules from the main checkout...", file=sys.stderr)
         _populate_submodules(worktree)
     except BaseException as exc:
         if created:
             _rollback_creation(
-                project_root, worktree, args.name, exc, source if paired_created else None
+                project_root, worktree, args.name, exc, source if pairing is not None else None
             )
-        if not isinstance(exc, (WorktreeCreationError, ProjectPairingError, OSError)):
+        if not isinstance(exc, _REPORTED_FAILURES):
             raise
-        print(f"ERROR: {exc}", file=sys.stderr)
-        if source is not None and _is_named_pair(worktree, args.name):
-            print(
-                worktree_removal_instructions(project_root, worktree, args.name), file=sys.stderr
-            )
-        return 1
-    print(worktree)
-    print(_ready_notice(args.name, paired=paired), file=sys.stderr)
+        return _report_failure(project_root, worktree, args.name, exc, source)
+    return _Created(worktree, source, paired=pairing is not None)
+
+
+def _finish_setup(name: str, project_root: Path, created: _Created) -> int:
+    """Run the post-setup hook; on any failure take the gate again and roll back."""
+    try:
+        _run_post_setup(project_root, created.worktree, name)
+    except BaseException as exc:
+        _rollback_creation(
+            project_root,
+            created.worktree,
+            name,
+            exc,
+            created.source if created.paired else None,
+            regate=True,
+        )
+        if not isinstance(exc, _REPORTED_FAILURES):
+            raise
+        return _report_failure(project_root, created.worktree, name, exc, created.source)
+    print(created.worktree)
+    print(_ready_notice(name, paired=created.paired), file=sys.stderr)
     return 0
+
+
+def _report_failure(
+    project_root: Path, worktree: Path, name: str, failure: BaseException, source: Path | None
+) -> int:
+    """Print a rolled-back creation's error, plus removal steps if a rollback left the pair."""
+    print(f"ERROR: {failure}", file=sys.stderr)
+    if source is not None and _is_named_pair(worktree, name):
+        print(worktree_removal_instructions(project_root, worktree, name), file=sys.stderr)
+    return 1
+
+
+def _left_out_warning(paths: tuple[str, ...], source: Path) -> str:
+    """One warning naming the first uncommitted Project files the Paired Checkout lacks."""
+    listed = ", ".join(paths[:_LEFT_OUT_LISTED])
+    if len(paths) > _LEFT_OUT_LISTED:
+        listed += f", and {len(paths) - _LEFT_OUT_LISTED} more"
+    return (
+        f"WARNING: the Paired Checkout was made from the last commit of {source.name}; "
+        f"{len(paths)} uncommitted or untracked file(s) there were left out: {listed}. "
+        f"Commit them in {source.name} to include them in later worktrees."
+    )
+
+
+def _run_post_setup(project_root: Path, worktree: Path, name: str) -> None:
+    """Run the Project's post-setup hook in *worktree*, logging its output."""
+    hook = find_post_setup_hook(worktree)
+    if hook is None:
+        return
+    log = own_booley_dir(project_root) / "worktrees" / ".logs" / f"{name}.log"
+    print(
+        f"Running post-setup hook {os.path.relpath(hook, worktree)} (log: {log})...",
+        file=sys.stderr,
+    )
+    try:
+        sim_enabled = flow_enabled("sim", worktree)
+    except FlowConfigError as exc:
+        raise WorktreeCreationError(
+            f"cannot read the new worktree's Flow settings: {exc}"
+        ) from exc
+    result = prepare_project(worktree, worktree, slug=name, sim_flow_enabled=sim_enabled, log=log)
+    if not result.ok:
+        raise WorktreeCreationError(f"{result.error}; log: {log}")
 
 
 def _ready_notice(name: str, *, paired: bool) -> str:
@@ -209,16 +299,33 @@ def _rollback_creation(
     name: str,
     failure: BaseException,
     paired_source: Path | None = None,
+    *,
+    regate: bool = False,
 ) -> None:
-    """Undo creation: the Paired Checkout and its branch first, then the outer worktree."""
+    """Undo creation: the Paired Checkout and its branch first, then the outer worktree.
+
+    *regate* takes the layout gate for the rollback, for a caller that released
+    it (the post-setup hook runs outside the gate).
+    """
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.core.layout_lock import layout_gate
+
     try:
-        if paired_source is not None:
-            rollback_project_pairing(paired_source, worktree, name)
-        rollback_outer_worktree(root, worktree)
-        remove_creation_lock(root, name)
-    except (OSError, ProjectPairingError) as cleanup:
+        if regate:
+            with layout_gate(root):
+                _undo_creation(root, worktree, name, paired_source)
+        else:
+            _undo_creation(root, worktree, name, paired_source)
+    except (OSError, ProjectPairingError, BooleyLayoutError) as cleanup:
         failure.add_note(f"outer rollback failed: {cleanup}")
         print(f"ERROR: outer rollback failed: {cleanup}", file=sys.stderr)
+
+
+def _undo_creation(root: Path, worktree: Path, name: str, paired_source: Path | None) -> None:
+    if paired_source is not None:
+        rollback_project_pairing(paired_source, worktree, name)
+    rollback_outer_worktree(root, worktree)
+    remove_creation_lock(root, name)
 
 
 def _is_named_pair(worktree: Path, name: str) -> bool:
