@@ -26,7 +26,7 @@ import tomllib
 from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.booley_dir_pin import require_pinned_entry
@@ -86,20 +86,14 @@ def _resolve_from_toml(current: Path) -> Path | None:
     for parent in [current, *current.parents]:
         toml_path = parent / "booley.toml"
         if toml_path.is_file():
-            try:
-                with toml_path.open("rb") as f:
-                    cfg = tomllib.load(f)
-                project = as_dict(cfg.get("project")) or {}
-                dir_val = as_str(project.get("dir"), default="")
-                if dir_val and "\x00" not in dir_val:
-                    p = Path(dir_val)
-                    if not p.is_absolute():
-                        p = (parent / p).resolve()
-                    validate_selection(p)
-                    if p.is_dir():
-                        return p
-            except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
-                logger.warning("Failed to read %s: %s", toml_path, e)
+            dir_val = _configured_dir(toml_path)
+            if dir_val:
+                p = Path(dir_val)
+                if not p.is_absolute():
+                    p = (parent / p).resolve()
+                validate_selection(p)
+                if p.is_dir():
+                    return p
             # booley.toml found but no override — fall through
             break
     return None
@@ -338,6 +332,71 @@ def checkout_booley_dir_relative_to(project_root: Path) -> Path:
     if relative == Path():
         raise ValueError("Booley Directory cannot be the checkout root")
     return relative
+
+
+class BooleyDirOutsideCheckoutError(ValueError):
+    """A checkout's Booley Directory is not strictly inside the checkout."""
+
+    def __init__(self, directory: Path | str, root: Path | str) -> None:
+        super().__init__(
+            f"Booley Directory {directory} is outside the checkout {root}; "
+            "worktrees need it inside the checkout: "
+            "set a relative [project].dir in booley.toml"
+        )
+
+
+def _configured_dir(toml_path: Path) -> str:
+    """Return ``[project].dir`` from one ``booley.toml``, or ``""`` when absent or unreadable."""
+    if not toml_path.is_file():
+        return ""
+    try:
+        with toml_path.open("rb") as f:
+            cfg = tomllib.load(f)
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
+        logger.warning("Failed to read %s: %s", toml_path, e)
+        return ""
+    value = as_str((as_dict(cfg.get("project")) or {}).get("dir")) or ""
+    return "" if "\x00" in value else value
+
+
+def _own_booley_dir_and_kind(checkout_root: Path) -> tuple[Path, Path, bool]:
+    """Return ``(lexical root, Booley Directory, configured value is absolute)``."""
+    root = Path(os.path.normpath(checkout_root.absolute()))
+    configured = _configured_dir(root / "booley.toml")
+    if not configured:
+        return root, root / BOOLEY_DIR_NAME, False
+    value = Path(configured)
+    directory = Path(os.path.normpath(root / value))
+    validate_selection(directory)
+    return root, directory, value.is_absolute()
+
+
+def own_booley_dir(checkout_root: Path) -> Path:
+    """Return one checkout's own Booley Directory, spelled lexically under its root.
+
+    Only ``<root>/booley.toml`` ``[project].dir`` selects it (no walk-up past the
+    root), else ``<root>/.booley``. Unlike :func:`resolve_checkout_booley_dir` this
+    never reads ``BOOLEY_DIR`` or the process cache, resolves no symlink, and
+    does not require the directory to exist, so a Sandbox mount spelling such as
+    ``/booley-project`` can never leak into a path built from it.
+    """
+    return _own_booley_dir_and_kind(checkout_root)[1]
+
+
+def own_booley_dir_relative(checkout_root: Path) -> PurePosixPath:
+    """Return :func:`own_booley_dir` relative to the root, for a directory inside it.
+
+    Unlike :func:`checkout_booley_dir_relative_to` (ambient and symlink-resolving),
+    this reads only the checkout itself.
+
+    Raises:
+        BooleyDirOutsideCheckoutError: ``[project].dir`` is absolute, or the
+            result is the root itself or not below it.
+    """
+    root, directory, absolute = _own_booley_dir_and_kind(checkout_root)
+    if absolute or directory == root or not directory.is_relative_to(root):
+        raise BooleyDirOutsideCheckoutError(directory, root)
+    return PurePosixPath(*directory.relative_to(root).parts)
 
 
 def reset_cache() -> None:

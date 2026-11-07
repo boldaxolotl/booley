@@ -452,3 +452,70 @@ def test_unpinned_linked_ancestor_does_not_block_nested_discovery(tmp_path, monk
         subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
 
     assert discover_project_root(inner) == inner
+
+
+def test_relocated_paired_checkout_is_not_a_checkout_candidate(tmp_path, monkeypatch):
+    """A Paired Checkout at ``<worktree>/state`` is data, never mistaken for an RTL checkout."""
+    from booley.runtime.project_discovery import _checkout_candidates, discover_project_root
+
+    outer = tmp_path / "checkout"
+    outer.mkdir()
+    (outer / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+    data = outer / "state"
+    data.mkdir()
+    subprocess.run(["git", "init", str(outer)], check=True, capture_output=True, timeout=30)
+    subprocess.run(["git", "init", str(data)], check=True, capture_output=True, timeout=30)
+    # A Paired Checkout's ``.git`` is a file; model one without needing a commit.
+    (data / ".git").rename(tmp_path / "project.git")
+    (data / ".git").write_text(f"gitdir: {tmp_path / 'project.git'}\n", encoding="utf-8")
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+
+    _current, checkouts = _checkout_candidates(data / "child")
+
+    assert checkouts == [outer.resolve()]
+    assert discover_project_root(data) == outer
+
+
+def test_session_owner_of_relocated_worktree_uses_configured_namespace(tmp_path, monkeypatch):
+    from tests.harness.test_session_runtime import _linked_project
+
+    from booley.runtime.project_discovery import discover_session_context
+
+    root, linked = _linked_project(tmp_path, monkeypatch, sandbox_pointer=True)
+    state = root / "state"
+    state.mkdir()
+    (root / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+    moved = state / "worktrees" / "goal"
+    moved.parent.mkdir()
+    # Windows cannot rename a directory that is the process working directory.
+    monkeypatch.chdir(tmp_path)
+    # Sandbox-written pointers name /work/<state>/worktrees/goal.
+    linked.rename(moved)
+    admin = root / ".git" / "worktrees" / "goal"
+    (moved / ".git").write_text("gitdir: /work/.git/worktrees/goal\n", encoding="utf-8")
+    (admin / "gitdir").write_text("/work/state/worktrees/goal/.git\n", encoding="utf-8")
+
+    context = discover_session_context(moved)
+
+    assert (context.project_root, context.checkout, context.booley_dir) == (root, moved, state)
+    assert context.cwd == "/work/state/worktrees/goal"
+
+
+def test_unreadable_configuration_means_no_configured_booley_directory(tmp_path):
+    """A retired-layout ``[project].dir`` raises on selection; discovery treats it as no match."""
+    from booley.runtime.project_discovery import (
+        _is_configured_booley_dir,
+        _session_owner,
+    )
+
+    outer = tmp_path / "checkout"
+    outer.mkdir()
+    subprocess.run(["git", "init", str(outer)], check=True, capture_output=True, timeout=30)
+    (outer / "booley.toml").write_text('[project]\ndir = ".booley_project"\n', encoding="utf-8")
+
+    assert not _is_configured_booley_dir(outer / ".booley_project")
+    # Session ownership also skips such an ancestor instead of crashing on it.
+    inner = outer / "wt"
+    inner.mkdir()
+    assert _session_owner(inner) == outer.resolve()

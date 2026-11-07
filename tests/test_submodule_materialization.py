@@ -217,6 +217,45 @@ def test_materializes_paired_project_submodules_in_composite_ticket(
     assert _git(materialized, "rev-parse", "HEAD").stdout.strip() == dependency_sha
 
 
+@pytest.mark.parametrize("worktree_dir", ["state", "other"])
+def test_materializes_relocated_paired_project_submodules(
+    tmp_path: Path, worktree_dir: str
+) -> None:
+    """The source is main's own directory even when the worktree's branch names another."""
+    dependency = tmp_path / "dependency"
+    _init_repo(dependency)
+    dependency_sha = _commit_file(dependency, "paired dependency\n", "dependency")
+
+    source = tmp_path / "source"
+    _init_repo(source)
+    (source / ".gitignore").write_text("/state\n", encoding="utf-8")
+    (source / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+    _git(source, "add", ".gitignore", "booley.toml")
+    _git(source, "commit", "-qm", "outer")
+    project = source / "state"
+    _init_repo(project)
+    _add_submodule(project, dependency, "vendor/dependency")
+    _set_submodule_url(project, "vendor/dependency")
+    (project / "booley.toml").write_text("[submodules]\npaths = []\n", encoding="utf-8")
+    _git(project, "add", ".gitmodules", "booley.toml", "vendor/dependency")
+    _git(project, "commit", "-qm", "project")
+
+    # The worktree's commit names its own directory; main keeps ``state``.
+    (source / "booley.toml").write_text(f'[project]\ndir = "{worktree_dir}"\n', encoding="utf-8")
+    _git(source, "commit", "-qam", "dir", "--allow-empty")
+    branch_sha = _git(source, "rev-parse", "HEAD").stdout.strip()
+    _git(source, "reset", "-q", "--hard", "HEAD~1")
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination, branch_sha)
+    _add_worktree(project, destination / worktree_dir, "HEAD")
+
+    materialize_worktree_submodules(destination)
+
+    materialized = destination / worktree_dir / "vendor" / "dependency"
+    assert (materialized / "source.sv").read_text(encoding="utf-8") == "paired dependency\n"
+    assert _git(materialized, "rev-parse", "HEAD").stdout.strip() == dependency_sha
+
+
 def test_composite_materialization_normalizes_invalid_paired_checkout(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
