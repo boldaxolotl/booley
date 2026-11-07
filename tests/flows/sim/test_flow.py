@@ -1247,6 +1247,22 @@ class TestDryRun:
         assert units == []
         assert errors == ["lite: preview failed"]
 
+    def test_plan_reports_a_refused_private_mirror_as_a_planning_error(
+        self, tmp_path: Path
+    ) -> None:
+        """A mirror refusal (#2895) is a planning error, not an escaped exception."""
+        from booley.flows.sim.build import SimulationBuildPreparationError
+
+        flow = _make_flow(tmp_path, config="lite")
+        execution = MagicMock()
+        execution.preview.side_effect = SimulationBuildPreparationError("mirror refused")
+        flow._simulation_execution_override = execution
+
+        units, errors = flow._plan_simulation_targets(["lite"], {}, role="ordinary", revision=None)
+
+        assert units == []
+        assert errors == ["lite: mirror refused"]
+
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     def test_dry_run_prints_json(self, _mock_backend, _mock_tests, tmp_path: Path, capsys):

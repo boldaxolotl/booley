@@ -10,7 +10,7 @@ from typing import Any
 
 from booley.criteria.cycle_count import PROVENANCE_LIMITATION
 from booley.evidence.recipe import jsonable
-from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
+from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget, mirrored_source_path
 
 WORKLOAD_SNAPSHOT_SCHEMA = 1
 
@@ -26,6 +26,9 @@ def _role(file: ResolvedFile) -> str:
 
 
 def _identity(root: Path, file: ResolvedFile, path: Path) -> str:
+    mirrored = mirrored_source_path(root, file)
+    if mirrored is not None:
+        return mirrored
     try:
         return path.relative_to(root.resolve()).as_posix()
     except ValueError:

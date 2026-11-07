@@ -354,16 +354,16 @@ def test_icarus_recipe_declines_external_and_extra_commands(tmp_path: Path) -> N
         encoding="utf-8",
     )
     prepared = SimpleNamespace(build_root=work, work_root=work)
-    assert build_session._has_unsupported_icarus_recipe(prepared)
+    assert build_session._has_unsupported_icarus_recipe(prepared, tmp_path)
     descriptor.write_text("top.sv\n", encoding="utf-8")
-    assert not build_session._has_unsupported_icarus_recipe(prepared)
+    assert not build_session._has_unsupported_icarus_recipe(prepared, tmp_path)
     descriptor.write_text("-I/tmp\n", encoding="utf-8")
-    assert build_session._has_unsupported_icarus_recipe(prepared)
+    assert build_session._has_unsupported_icarus_recipe(prepared, tmp_path)
     descriptor.write_text("../outside.sv\n", encoding="utf-8")
-    assert build_session._has_unsupported_icarus_recipe(prepared)
+    assert build_session._has_unsupported_icarus_recipe(prepared, tmp_path)
     descriptor.write_text("\ntop.sv\n", encoding="utf-8")
     makefile.write_text("all:\n\tiverilog top.sv\n", encoding="utf-8")
-    assert build_session._has_unsupported_icarus_recipe(prepared)
+    assert build_session._has_unsupported_icarus_recipe(prepared, tmp_path)
 
 
 def test_reuse_closure_declines_dynamic_core_metadata_and_environment(

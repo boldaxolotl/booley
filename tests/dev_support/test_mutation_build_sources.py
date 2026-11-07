@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -19,7 +20,13 @@ from booley.dev_support.mutation_build_sources import (
     validate_mutation_closure,
 )
 from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
-from booley.specialists.mutation_tester import MutationSpec, MutationTesterSpecialist
+from booley.specialists.mutation_tester import (
+    _RUNTIME_INPUTS_MARKER,
+    MutationSpec,
+    MutationTesterSpecialist,
+    UnsupportedSimTargetError,
+    _record_build_markers,
+)
 
 
 def _fixture(tmp_path, header=False, copyto=None, eda_tool=None, name=None, defect=None):
@@ -235,7 +242,9 @@ def test_ignore_native_cores_mutation_writes_only_private_export(tmp_path, monke
     resolve = MutationTesterSpecialist._resolve_elab_target
     # First use projects the shared registry; that is not a mutation side effect.
     resolve("sim", root, tmp_path / "pristine-build")
-    assert not (tmp_path / "pristine-build" / "core-mirror").exists()  # baseline: shared registry
+    # The pristine baseline builds from the same kind of private mirror, so it
+    # cannot pass on a header only the checkout holds.
+    assert (tmp_path / "pristine-build" / "core-mirror").is_dir()
     spec = MutationSpec(1, "literal", "rtl/inc/message.svh", 1, "BASELINE", "MUTANT")
     variants = MutationVariantPlan.resolve([spec], root, ["rtl/inc/message.svh"])
     before = _tree_snapshot(root, excluded=build_path)
@@ -252,6 +261,43 @@ def test_ignore_native_cores_mutation_writes_only_private_export(tmp_path, monke
     if shutil.which("iverilog"):
         _run(["make", "all"], Path(prepared.resolved.build_root))
         assert "MUTANT" in _run(["make", "run"], Path(prepared.resolved.build_root))
+
+
+def test_isolated_mutant_marker_skips_uncopied_user_files(tmp_path, monkeypatch):
+    """Only ``copyto`` inputs are staged into the run folder; a mirrored user file is not."""
+    root, build_path = _ignore_native_layout(tmp_path, monkeypatch, "main")
+    (root / "data").mkdir()
+    for name in ("plain.hex", "copied.hex"):
+        (root / "data" / name).write_text("00\n", encoding="utf-8")
+    core = root / ".booley" / "cores" / "dut.core"
+    body = yaml.safe_load(core.read_text(encoding="utf-8"))
+    body["filesets"]["rtl"]["files"] += [
+        {"data/plain.hex": {"file_type": "user"}},
+        {"data/copied.hex": {"file_type": "user", "copyto": "copied.hex"}},
+    ]
+    core.write_text("CAPI=2:\n" + yaml.safe_dump(body), encoding="utf-8")
+    spec = MutationSpec(1, "literal", "rtl/inc/message.svh", 1, "BASELINE", "MUTANT")
+    variants = MutationVariantPlan.resolve([spec], root, ["rtl/inc/message.svh"])
+    _handle, prepared = MutationTesterSpecialist._resolve_elab_target(
+        "sim", root, build_path, (variants, 1)
+    )
+    _record_build_markers(build_path, prepared, root)
+    marker = build_path / _RUNTIME_INPUTS_MARKER
+    assert json.loads(marker.read_text(encoding="utf-8")) == ["copied.hex"]
+
+
+def test_pinned_build_fallback_refuses_in_isolated_project(tmp_path, monkeypatch):
+    """A lost baseline marker must not re-resolve into (and clear) the built image."""
+    root, _build_path = _ignore_native_layout(tmp_path, monkeypatch, "main")
+    build_path = tmp_path / "baseline-build"
+    build_path.mkdir()
+    image = build_path / "compiled" / "image"
+    image.parent.mkdir()
+    image.write_text("built\n", encoding="utf-8")
+    specialist = MutationTesterSpecialist.__new__(MutationTesterSpecialist)
+    with pytest.raises(UnsupportedSimTargetError, match="baseline build marker missing"):
+        specialist._pinned_build("sim", root, build_path)
+    assert image.read_text(encoding="utf-8") == "built\n"
 
 
 def test_ignore_native_cores_guard_refuses_out_of_checkout_source(tmp_path, monkeypatch):
