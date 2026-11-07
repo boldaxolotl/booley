@@ -58,6 +58,20 @@ def _named_step(job: dict, name: str) -> dict:
     return next(step for step in job["steps"] if step.get("name") == name)
 
 
+def _uses_step(job: dict, action: str) -> dict:
+    """Return the first step that runs the given action (`uses` prefix, e.g. 'actions/checkout@')."""
+    return next(step for step in job["steps"] if str(step.get("uses", "")).startswith(action))
+
+
+def _setup_step_limits(job: dict) -> list[int | None]:
+    """Step limits of checkout, setup-python and the package install, in that order."""
+    return [
+        _uses_step(job, "actions/checkout@").get("timeout-minutes"),
+        _uses_step(job, "actions/setup-python@").get("timeout-minutes"),
+        _named_step(job, "Install package with test dependencies").get("timeout-minutes"),
+    ]
+
+
 def _suite_config(pytestconfig: pytest.Config):
     config_path = Path(__file__).with_name("conftest.py")
     return next(
@@ -532,16 +546,27 @@ def test_matrix_uses_test_only_dependencies() -> None:
 
 
 def test_matrix_enforces_the_ci_duration_budget() -> None:
-    """Bound full suites at thirty minutes and shard/compatibility legs at fifteen."""
+    """Bound full suites at thirty minutes and shard/compatibility legs at twenty-five."""
     workflow = _test_workflow()
     test_job = workflow["jobs"]["test"]
 
-    assert test_job["timeout-minutes"] == "${{ matrix.mode == 'full' && 30 || 15 }}"
+    assert test_job["timeout-minutes"] == "${{ matrix.mode == 'full' && 30 || 25 }}"
     assert _workflow("full-python-matrix.yml")["jobs"]["test"]["timeout-minutes"] == 30
 
     pytest_steps = [step for step in test_job["steps"] if "pytest " in str(step.get("run", ""))]
     assert pytest_steps
     assert all("--timeout=60" in step["run"] for step in pytest_steps)
+
+
+def test_test_job_bounds_setup_and_pytest_steps() -> None:
+    """Setup steps get 5/5/6 minutes in every mode; shard and compatibility pytest get 12."""
+    job = _test_workflow()["jobs"]["test"]
+
+    assert _setup_step_limits(job) == [5, 5, 6]
+    for name in ("Run focused Windows compatibility suite", "Run duration-balanced shard"):
+        assert _named_step(job, name).get("timeout-minutes") == 12
+    # `full` keeps the job-level 30-minute bound instead of a step limit.
+    assert "timeout-minutes" not in _named_step(job, "Run full compatibility suite")
 
 
 def test_flake_stress_repeats_changed_modules_on_linux_and_windows() -> None:
@@ -631,8 +656,18 @@ def test_coverage_shards_have_dedicated_matrix() -> None:
     ]
     assert coverage_shards["needs"] == "changes"
     assert coverage_shards["runs-on"] == "ubuntu-latest"
-    assert coverage_shards["timeout-minutes"] == 15
     assert coverage_shards["strategy"]["fail-fast"] is False
+
+
+def test_coverage_shards_bound_setup_and_pytest_steps() -> None:
+    """Coverage shards share the setup limits; the job limit fits setup plus pytest."""
+    job = _test_workflow()["jobs"]["coverage-shards"]
+    pytest_limit = _named_step(job, "Run duration-balanced coverage shard").get("timeout-minutes")
+
+    assert _setup_step_limits(job) == [5, 5, 6]
+    assert pytest_limit == 15
+    # 35 = setup 5 + 5 + 6 + pytest 15, plus margin for the always-run publish/upload steps.
+    assert job["timeout-minutes"] == 35
 
 
 def test_coverage_job_exactly_verifies_before_combining() -> None:
