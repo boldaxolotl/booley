@@ -1142,14 +1142,13 @@ def _resolve_config_seed_source(app: str) -> Path | None:
 
 
 def _report_seeded_mounts(
-    app: str,
-    seeding_auth: bool,
+    auth_apps: list[str],
     seeding_config: bool,
     host_skills: list[tuple[str, str]],
     mask_paths: list[str],
 ) -> None:
     """Print the ``ok`` lines for what the seeded devcontainer spec mounts."""
-    if seeding_auth:
+    for app in auth_apps:
         ok(f"mounting {app} auth token read-only")
     if seeding_config:
         ok("seeding ~/.claude.json (carries feature-gate grants, e.g. Fable)")
@@ -1248,10 +1247,7 @@ class _InteractiveSpecSources:
     app: str
     nangate_pdk_root: Path | object
     runtime_image_id: str | None
-    credential_plan: auth_token.CredentialPlan
-    auth_source: Path | None
-    token_seed: Path | None
-    config_seed: Path | None
+    credential_plans: tuple[auth_token.CredentialPlan, ...]
     host_skills: tuple[tuple[str, str], ...]
     mask_paths: tuple[str, ...]
     project_data_source: Path
@@ -1271,16 +1267,13 @@ class _InteractiveSpecSources:
             )
         return dc.build_devcontainer_spec(
             self.app,
-            credential_plan=self.credential_plan,
+            cli_seeds=[_cli_seeds(plan) for plan in self.credential_plans],
             image=self.runtime_image_id or pi.project_sandbox_image(self.project_root),
             booley_dir_source=docker_mount_path(inputs.project_data_source),
             project_id=dc.canonical_project_id(self.project_root),
-            auth_token_source=(docker_mount_path(self.auth_source) if self.auth_source else None),
-            config_seed_source=(docker_mount_path(self.config_seed) if self.config_seed else None),
             mcp_start_command=dc.mcp_post_start_command(),
             memory=self.memory,
             dashboard=self.dashboard,
-            token_seed_source=(docker_mount_path(self.token_seed) if self.token_seed else None),
             host_skills=list(self.host_skills),
             trusted_eda_mounts=trusted_eda_mounts,
             protected_devcontainer_source=docker_mount_path(
@@ -1294,27 +1287,65 @@ class _InteractiveSpecSources:
         )
 
 
+def _cli_seeds(plan: auth_token.CredentialPlan) -> dc.CliSeeds:
+    """The docker-path sources behind one Agent CLI's credential plan."""
+
+    def source(path: Path | None) -> str | None:
+        return docker_mount_path(path) if path else None
+
+    return dc.CliSeeds(
+        plan,
+        login_source=source(plan.subscription_seed),
+        token_source=source(plan.token_seed),
+        config_source=source(plan.config_seed),
+    )
+
+
+def _credential_plans(
+    app: str, project_root: Path, source: Path
+) -> tuple[auth_token.CredentialPlan, ...]:
+    """One plan per Agent CLI the Project allows, each under its own ``[agent.auth]`` policy.
+
+    ``none`` gets its single plan under the default policy, which only carries that
+    policy into the spec. A CLI whose host credentials conflict with its policy
+    (for example an ambiguous ``~/.claude.json``) fails the whole issuance, naming it.
+    """
+    from booley.config.agent import project_credential_policies
+
+    found = project_credential_policies(project_root, booley_dir=source, selected=app)
+    if app in auth_token.CREDENTIALS and app not in found.clis:
+        raise RuntimeSpecError(
+            f"{app} is not in [agent] clis {list(found.clis)}; add it there or choose a listed CLI"
+        )
+    # ``none`` seeds nothing, so its single plan only carries the default policy.
+    clis = found.clis if app in found.clis else (app,)
+    plans = []
+    for cli in clis:
+        policy = found.policies.get(cli, found.policies[found.default])
+        try:
+            plans.append(auth_token.credential_plan(cli, policy))
+        except ValueError as exc:
+            raise RuntimeSpecError(
+                f"{cli} credentials conflict with auth = '{policy}': {exc}; "
+                f"remove the conflict or set {cli} to 'auto' in [agent.auth]"
+            ) from exc
+    return tuple(plans)
+
+
 def _interactive_spec_sources(
     ctx: InitContext,
     nangate_pdk_root: Path | object,
     agent_app: str | None,
     runtime_image_id: str | None,
 ) -> _InteractiveSpecSources:
-    from booley.config.agent import project_credential_policy
-
     source = authorized_project_data_source(ctx.project_root)
     app = agent_app or _select_interactive_app(ctx.project_root, source)
-    _, policy = project_credential_policy(ctx.project_root, booley_dir=source)
-    plan = auth_token.credential_plan(app, policy)
     return _InteractiveSpecSources(
-        credential_plan=plan,
+        credential_plans=_credential_plans(app, ctx.project_root, source),
         project_root=ctx.project_root,
         app=app,
         nangate_pdk_root=nangate_pdk_root,
         runtime_image_id=runtime_image_id,
-        auth_source=plan.subscription_seed,
-        token_seed=plan.token_seed,
-        config_seed=plan.config_seed,
         host_skills=tuple(_resolve_host_skills_sources(ctx.project_root, source)),
         mask_paths=tuple(_project_mask_paths(ctx.project_root, source)),
         project_data_source=source,
@@ -1349,9 +1380,8 @@ def _report_interactive_changes(
         path = dc.devcontainer_path(ctx.project_root)
         ok(f"wrote {path.relative_to(ctx.project_root)} (app={sources.app})")
         _report_seeded_mounts(
-            sources.app,
-            bool(sources.auth_source),
-            bool(sources.config_seed),
+            [plan.app for plan in sources.credential_plans if plan.subscription_seed],
+            any(plan.config_seed for plan in sources.credential_plans),
             list(sources.host_skills),
             list(sources.mask_paths),
         )

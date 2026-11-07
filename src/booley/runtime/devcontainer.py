@@ -15,9 +15,15 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from booley.config.agent import SANDBOX_IMAGE
+from booley.config.agent import (
+    AGENT_CLIS_ENV,
+    SANDBOX_IMAGE,
+    decode_cli_policies,
+    encode_cli_policies,
+)
 from booley.core.project_identity import project_name_id
 from booley.runtime import auth_token
 from booley.runtime import vaporview as _vaporview
@@ -378,6 +384,24 @@ def spec_agent_app(spec: dict) -> str | None:
     return app if isinstance(app, str) else None
 
 
+def spec_cli_policies(spec: dict) -> dict[str, str]:
+    """The Agent CLIs *spec* allows, each with its recorded auth policy.
+
+    Reads ``remoteEnv.BOOLEY_AGENT_CLIS``. A spec issued before that record existed
+    allows its single ``BOOLEY_AGENT_APP`` under ``BOOLEY_PRIMARY_AUTH``; ``none`` and
+    ``auto`` allow no CLI. Raises ``ValueError`` when the record is malformed.
+    """
+    remote = spec.get("remoteEnv")
+    remote = remote if isinstance(remote, dict) else {}
+    raw = remote.get(AGENT_CLIS_ENV)
+    if isinstance(raw, str):
+        return decode_cli_policies(raw)
+    app = spec_agent_app(spec)
+    if app in _APP_STATE_DIR:
+        return {app: str(remote.get("BOOLEY_PRIMARY_AUTH") or "auto")}
+    return {}
+
+
 def spec_state_is_persisted(spec: dict) -> bool | None:
     """Whether *spec* persists its agent app's home-state across rebuilds.
 
@@ -679,16 +703,89 @@ def _mask_mounts(mask_paths: Sequence[str], mask_source: str) -> list[str]:
     return mounts
 
 
+@dataclass(frozen=True, slots=True)
+class CliSeeds:
+    """One Agent CLI's credential plan and the docker-path sources its seeds mount from.
+
+    A login or token source is mounted only when the plan selected that seed (the plan,
+    not the caller, decides what the CLI's ``[agent.auth]`` policy lets into the Sandbox);
+    the Claude config source is the plan's own seed, which the issuance validator rechecks.
+    """
+
+    plan: auth_token.CredentialPlan
+    login_source: str | None = None
+    token_source: str | None = None
+    config_source: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Seed:
+    """What one CLI's seeds and state volume contribute to a spec, after policy filtering."""
+
+    app: str
+    policy: str
+    login: str | None
+    token: str | None
+    config: str | None
+    env_keys: tuple[str, ...]
+
+
+def _planned_seeds(app: str, cli_seeds: Sequence[CliSeeds]) -> list[_Seed]:
+    """Filter each CLI's sources through its plan; *app* must be one of the planned CLIs."""
+    apps = [seeds.plan.app for seeds in cli_seeds]
+    if len(set(apps)) != len(apps) or app not in apps:
+        raise ValueError(f"credential plans {apps} must be distinct and include {app!r}")
+    return [
+        _Seed(
+            seeds.plan.app,
+            seeds.plan.policy,
+            seeds.login_source if seeds.plan.subscription_seed else None,
+            seeds.token_source if seeds.plan.token_seed else None,
+            seeds.config_source,
+            tuple(key for key, _ in seeds.plan.values),
+        )
+        for seeds in cli_seeds
+    ]
+
+
+def _cli_seed_mounts(seeds: Sequence[_Seed], project_id: str) -> list[str]:
+    """Per CLI, in order: token seed, login seed, Claude config seed, state volume."""
+    mounts: list[str] = []
+    for seed in seeds:
+        # Rotation-free credential stored by `booley auth` (see
+        # _APP_TOKEN_SEED_TARGET): mounted read-only for incontainer_register to
+        # apply on every start. Re-minting rewrites the host file in place (same
+        # inode), so a running container sees the fresh value on its next start;
+        # only `booley auth --clear` (an unlink) needs a container rebuild.
+        token_target = _APP_TOKEN_SEED_TARGET.get(seed.app)
+        if seed.token and token_target:
+            mounts.append(_bind_mount(seed.token, token_target, readonly=True))
+        # The CLI's credential file is refreshed in-container (see
+        # _APP_CREDS_SEED_TARGET): bind the host credential read-only at the sidecar
+        # seed path and copy it onto the writable real path, so the in-container
+        # refresh can write. A direct read-only bind at the auth target would make
+        # that write fail and 401 the session once the token expires.
+        creds_target = _APP_CREDS_SEED_TARGET.get(seed.app)
+        if seed.login and creds_target:
+            mounts.append(_bind_mount(seed.login, creds_target, readonly=True))
+        # Seed source for the user config (Claude only): a read-only bind at a
+        # sidecar path outside ~/.claude/, copied into ~/.claude.json at create
+        # time so cached feature-gate grants (e.g. Fable) survive. See
+        # _CLAUDE_CONFIG_SEED_TARGET. Kept off the state volume on purpose.
+        if seed.config and seed.app == APP_CLAUDE:
+            mounts.append(_bind_mount(seed.config, _CLAUDE_CONFIG_SEED_TARGET, readonly=True))
+        # Persist the CLI's home-state dir (plans, transcripts, todos) across
+        # rebuilds. The creds bind is a sidecar OUTSIDE this dir, so the volume owns
+        # the real credentials file and the seeded copy lands on it writably.
+        state_mount = state_volume_mount(seed.app, project_id, seed.policy)
+        if state_mount:
+            mounts.append(state_mount)
+    return mounts
+
+
 def _build_mounts(
-    app: str,
-    project_id: str,
+    seed_mounts: Sequence[str],
     booley_dir_source: str,
-    auth_token_source: str | None,
-    auth_target: str | None,
-    seeding_creds: bool,
-    config_seed_source: str | None,
-    seeding_config: bool,
-    token_seed_source: str | None,
     host_skills: Sequence[tuple[str, str]],
     trusted_eda_mounts: Sequence[tuple[str, str]],
     protected_devcontainer_source: str,
@@ -696,37 +793,7 @@ def _build_mounts(
     mask_source: str = "",
 ) -> list[str]:
     """Build the ``mounts`` list for :func:`build_devcontainer_spec`."""
-    mounts = [_bind_mount(booley_dir_source, BOOLEY_DIR_TARGET)]
-    # Rotation-free credential stored by `booley auth` (see
-    # _APP_TOKEN_SEED_TARGET): mounted read-only for incontainer_register to
-    # apply on every start. Re-minting rewrites the host file in place (same
-    # inode), so a running container sees the fresh value on its next start;
-    # only `booley auth --clear` (an unlink) needs a container rebuild.
-    token_seed_target = _APP_TOKEN_SEED_TARGET.get(app)
-    if token_seed_source and token_seed_target:
-        mounts.append(_bind_mount(token_seed_source, token_seed_target, readonly=True))
-    # The app's credential file is refreshed in-container (see
-    # _APP_CREDS_SEED_TARGET): bind the host credential read-only at the sidecar
-    # seed path and copy it onto the writable real path, so the in-container
-    # refresh can write. A direct read-only bind at the auth target would make
-    # that write fail and 401 the session once the token expires.
-    if auth_token_source and auth_target:
-        creds_bind_target = _creds_seed_target_for_app(app) if seeding_creds else auth_target
-        mounts.append(_bind_mount(auth_token_source, creds_bind_target, readonly=True))
-    # Seed source for the user config (Claude only): a read-only bind at a
-    # sidecar path outside ~/.claude/, copied into ~/.claude.json at create time
-    # so cached feature-gate grants (e.g. Fable) survive. See
-    # _CLAUDE_CONFIG_SEED_TARGET. Kept off the state volume on purpose — the seed
-    # is re-applied from the host on every create, not persisted stale.
-    if seeding_config:
-        mounts.append(_bind_mount(config_seed_source, _CLAUDE_CONFIG_SEED_TARGET, readonly=True))
-    # Persist the agent's home-state dir (plans, transcripts, todos) across
-    # rebuilds. The creds bind is a sidecar OUTSIDE this dir for both apps, so the
-    # volume owns the real credentials file (~/.claude/.credentials.json,
-    # ~/.codex/auth.json) and the seeded copy lands on it writably.
-    state_mount = state_volume_mount(app, project_id)
-    if state_mount:
-        mounts.append(state_mount)
+    mounts = [_bind_mount(booley_dir_source, BOOLEY_DIR_TARGET), *seed_mounts]
     # User's HOST agent skills ([sandbox] mount_host_skills): one read-only bind
     # per skill at the sidecar (see HOST_SKILLS_SIDECAR). The host source is the
     # REAL directory (init resolves ~/.claude/skills symlinks before mounting),
@@ -822,12 +889,29 @@ def _build_run_args(memory: str, egress: str) -> list[str]:
     return run_args
 
 
+def _seed_commands(seeds: Sequence[_Seed]) -> tuple[str | None, list[str]]:
+    """The Claude config-seed command (create only) and each CLI's credential-seed command."""
+    config_command = (
+        f"cp -n {_CLAUDE_CONFIG_SEED_TARGET} {_CLAUDE_CONFIG_TARGET} 2>/dev/null || true"
+        if any(seed.config and seed.app == APP_CLAUDE for seed in seeds)
+        else None
+    )
+    creds_commands = [
+        command
+        for seed in seeds
+        if (
+            command := _build_creds_seed_command(
+                bool(seed.login) and seed.app in _APP_CREDS_SEED_TARGET,
+                _auth_target_for_app(seed.app),
+                _creds_seed_target_for_app(seed.app),
+            )
+        )
+    ]
+    return config_command, creds_commands
+
+
 def _build_post_create_command(
-    seeding_config: bool,
-    seeding_creds: bool,
-    auth_target: str | None,
-    seed_source: str | None,
-    mcp_start_command: str | None,
+    config_command: str | None, creds_commands: Sequence[str], mcp_start_command: str | None
 ) -> str | None:
     """Build the ``postCreateCommand`` string for :func:`build_devcontainer_spec`.
 
@@ -840,17 +924,11 @@ def _build_post_create_command(
     grants. ``cp -n`` never clobbers an already-populated config (e.g. a
     resumed container), and the config target is ephemeral so a rebuild
     re-seeds fresh from the host. The config seed stays a create-time concern;
-    the credential seed does NOT — see :func:`_build_creds_seed_command`.
+    the credential seeds do NOT — see :func:`_build_creds_seed_command`.
     """
-    seed_cmd = (
-        f"cp -n {_CLAUDE_CONFIG_SEED_TARGET} {_CLAUDE_CONFIG_TARGET} 2>/dev/null || true"
-        if seeding_config
-        else None
-    )
-    creds_seed_cmd = _build_creds_seed_command(seeding_creds, auth_target, seed_source)
     return "; ".join(
         command
-        for command in (seed_cmd, creds_seed_cmd, _runtime_start_tail(mcp_start_command))
+        for command in (config_command, *creds_commands, _runtime_start_tail(mcp_start_command))
         if command
     )
 
@@ -912,41 +990,30 @@ def _git_environment(project_source: str | None, fixed: dict[str, str] | None) -
     return environment
 
 
-def _policy_sources(
-    app: str, plan: auth_token.CredentialPlan | None, login: str | None, token: str | None
-) -> tuple[str | None, str | None]:
-    if plan is None:
-        return login, token
-    if plan.app != app:
-        raise ValueError("credential plan provider differs from Sandbox app")
-    return login if plan.subscription_seed else None, token if plan.token_seed else None
-
-
-def _policy_state_mounts(
-    app: str, project_id: str, mounts: list[str], plan: auth_token.CredentialPlan | None
-) -> list[str]:
-    if plan is None:
-        return mounts
-    old_state = state_volume_mount(app, project_id)
-    new_state = state_volume_mount(app, project_id, plan.policy)
-    return [str(new_state) if mount == old_state else mount for mount in mounts]
-
-
 def _policy_remote_environment(
-    remote: dict[str, str], plan: auth_token.CredentialPlan | None
+    remote: dict[str, str], app: str, seeds: Sequence[_Seed], *, planned: bool
 ) -> None:
-    remote["BOOLEY_PRIMARY_AUTH"] = plan.policy if plan else "auto"
+    """Record the default CLI's policy, the allowed CLI set, and the forwarded keys."""
+    remote["BOOLEY_PRIMARY_AUTH"] = next(seed.policy for seed in seeds if seed.app == app)
     remote["BOOLEY_CREDENTIAL_SCHEMA"] = auth_token.CREDENTIAL_SCHEMA
-    if plan is not None:
+    clis = {seed.app: seed.policy for seed in seeds if seed.app in _APP_STATE_DIR}
+    if app in clis:
+        remote[AGENT_CLIS_ENV] = encode_cli_policies(clis)
+    if planned:
         for key in auth_token.CREDENTIAL_ENV_KEYS:
             remote.pop(key, None)
-        remote.update({key: f"${{localEnv:{key}}}" for key, _ in plan.values})
+        remote.update({key: f"${{localEnv:{key}}}" for seed in seeds for key in seed.env_keys})
+
+
+def spec_name(clis: Sequence[str], app: str) -> str:
+    """The spec name: ``Booley Interactive (<app>)``, or the allowed set when several CLIs."""
+    return f"Booley Interactive ({', '.join(clis) if len(clis) > 1 else app})"
 
 
 def build_devcontainer_spec(
     app: str = APP_NONE,
     *,
-    credential_plan: auth_token.CredentialPlan | None = None,
+    cli_seeds: Sequence[CliSeeds] | None = None,
     image: str = SANDBOX_IMAGE,
     booley_dir_source: str = DEFAULT_BOOLEY_DIR_SOURCE,
     project_id: str = "${localWorkspaceFolderBasename}",
@@ -969,8 +1036,13 @@ def build_devcontainer_spec(
     """Build the ``devcontainer.json`` dict for an Interactive Mode session.
 
     Args:
-        app: one of :data:`SUPPORTED_APPS`; selects the auth-token target, seeds
-            and state volume. ``"none"`` configures no agent.
+        app: one of :data:`SUPPORTED_APPS`: the default Agent CLI, which the in-container
+            registrar configures. ``"none"`` configures no agent.
+        cli_seeds: one :class:`CliSeeds` per allowed Agent CLI (``app`` among them, or the
+            single ``none`` plan that only carries the policy). Each CLI gets its own
+            token seed, login seed, Claude config seed and state volume, filtered by
+            its plan, and the spec records the set in ``BOOLEY_AGENT_CLIS``. ``None``
+            builds the single-app spec from the explicit source arguments below.
         image: the prebuilt Sandbox Image (``booley-sandbox`` by default; the
             published ref can be substituted by the caller).
         booley_dir_source: host-side mount source for ``.booley``.
@@ -1050,40 +1122,30 @@ def build_devcontainer_spec(
         # exact visibility the project configured away.
         raise ValueError("mask_paths given without mask_source (the empty host dir to bind)")
 
-    auth_token_source, token_seed_source = _policy_sources(
-        app, credential_plan, auth_token_source, token_seed_source
-    )
-    auth_target = _auth_target_for_app(app)
-    # Both apps refresh their credential file in-container, so both need the
-    # sidecar-seed + writable-copy treatment (see _APP_CREDS_SEED_TARGET).
-    seeding_creds = bool(auth_token_source) and app in _APP_CREDS_SEED_TARGET
-    seeding_config = bool(config_seed_source) and app == APP_CLAUDE
+    if cli_seeds is None:
+        seeds = [_Seed(app, "auto", auth_token_source, token_seed_source, config_seed_source, ())]
+    elif auth_token_source or token_seed_source or config_seed_source:
+        raise ValueError("seed sources belong in cli_seeds when credential plans are given")
+    else:
+        seeds = _planned_seeds(app, cli_seeds)
 
     mounts = _build_mounts(
-        app,
-        project_id,
+        _cli_seed_mounts(seeds, project_id),
         booley_dir_source,
-        auth_token_source,
-        auth_target,
-        seeding_creds,
-        config_seed_source,
-        seeding_config,
-        token_seed_source,
         host_skills,
         trusted_eda_mounts,
         protected_devcontainer_source,
         mask_paths,
         mask_source,
     )
-    mounts = _policy_state_mounts(app, project_id, mounts, credential_plan)
     identity_env = _git_environment(booley_dir_source, fixed_container_env)
     remote_env = _build_remote_env(app, forward_oauth_token, local_timezone, egress)
-    _policy_remote_environment(remote_env, credential_plan)
+    _policy_remote_environment(remote_env, app, seeds, planned=cli_seeds is not None)
     remote_env.update(identity_env)
     run_args = _build_run_args(memory, egress)
 
     spec: dict = {
-        "name": f"Booley Interactive ({app})",
+        "name": spec_name([seed.app for seed in seeds], app),
         "image": image,
         "workspaceMount": _bind_mount("${localWorkspaceFolder}", WORK_DIR),
         "workspaceFolder": WORK_DIR,
@@ -1117,21 +1179,14 @@ def build_devcontainer_spec(
     if egress == "unproxied":
         spec["containerEnv"]["BOOLEY_EGRESS"] = "unproxied"
 
-    seed_source = _creds_seed_target_for_app(app)
-    post_create = _build_post_create_command(
-        seeding_config, seeding_creds, auth_target, seed_source, mcp_start_command
-    )
+    config_command, creds_commands = _seed_commands(seeds)
+    post_create = _build_post_create_command(config_command, creds_commands, mcp_start_command)
     if post_create:
         spec["postCreateCommand"] = post_create
     # Re-seed credentials on every start, then revive the MCP endpoint: a resumed
     # container must not run agents against the token it froze at create time.
     post_start = "; ".join(
-        command
-        for command in (
-            _build_creds_seed_command(seeding_creds, auth_target, seed_source),
-            _runtime_start_tail(mcp_start_command),
-        )
-        if command
+        command for command in (*creds_commands, _runtime_start_tail(mcp_start_command)) if command
     )
     if post_start:
         spec["postStartCommand"] = post_start

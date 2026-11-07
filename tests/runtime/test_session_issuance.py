@@ -3040,7 +3040,7 @@ def test_sealing_rejects_policy_violations_before_issuance(
     request.addfinalizer(reset_cache)
     spec = dc.build_devcontainer_spec(
         "claude",
-        credential_plan=auth_token.credential_plan("claude", "api_key"),
+        cli_seeds=[dc.CliSeeds(auth_token.credential_plan("claude", "api_key"))],
         project_id=dc.canonical_project_id(project),
         protected_devcontainer_source=str(project / ".devcontainer"),
         mcp_start_command=dc.mcp_post_start_command(),
@@ -3562,3 +3562,331 @@ def test_invalidation_survives_transient_unlink_sharing_error(issued, monkeypatc
     runtime_spec.invalidate_project(str(project.resolve()))
     assert not current.exists()
     assert attempts[current] == 2
+
+
+# --- multi-CLI Sandbox issuance (#2894) ----------------------------------------------
+
+
+def _multi_cli_project(issued, monkeypatch, request, toml: str, app: str = "claude"):
+    """A pinned, unsealed spec for *app* built by the init path from *toml*.
+
+    The host home holds a login for both Agent CLIs and a Claude config. Returns
+    ``(project, spec, home)``.
+    """
+    from booley.harness import init_cmd
+    from booley.harness.setup.common import InitContext
+    from booley.runtime import auth_token
+
+    project = issued[0]
+    home = project.parent / "credential-home"
+    home.mkdir(exist_ok=True)
+    for variable in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(variable, str(home))
+    for key in (*auth_token.CREDENTIAL_ENV_KEYS, "BOOLEY_PRIMARY_AUTH", "CODEX_HOME"):
+        monkeypatch.delenv(key, raising=False)
+    logins = {
+        "claude": {"claudeAiOauth": {"accessToken": "SYNTHETIC_CLAUDE_LOGIN"}},
+        "codex": {"tokens": {"access_token": "SYNTHETIC_CODEX_LOGIN"}, "OPENAI_API_KEY": None},
+    }
+    for cli, body in logins.items():
+        login = auth_token.subscription_creds_path(cli)
+        login.parent.mkdir(parents=True, exist_ok=True)
+        login.write_text(json.dumps(body))
+    (home / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True}))
+    (project / ".booley" / "booley.toml").write_text(toml)
+    reset_cache()
+    request.addfinalizer(reset_cache)
+    sources = init_cmd._interactive_spec_sources(
+        InitContext(project_root=project), init_cmd._NANGATE_PDK_NOT_REQUESTED, app, None
+    )
+    spec = sources.build(
+        runtime_spec.SessionSpecInputs(sources.project_data_source, (), (), None, None)
+    )
+    runtime_spec.pin_image(spec)
+    return project, spec, home
+
+
+def _seal_copy(project: Path, spec: dict) -> None:
+    runtime_spec.seal(project, json.loads(json.dumps(spec)))
+
+
+def _issue_spec(project: Path, spec: dict) -> Path:
+    runtime_spec.seal(project, spec)
+    path = dc.write_devcontainer(project, spec)
+    runtime_spec.issue(project, spec, path)
+    return path
+
+
+def _with_codex(spec: dict, project: Path, home: Path, policy: str = "auto") -> None:
+    """Turn a Claude-only *spec* into a Claude+Codex one: record, name, login, volume, hook."""
+    claude_policy = spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"]
+    spec["name"] = "Booley Interactive (claude, codex)"
+    spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = f"claude={claude_policy},codex={policy}"
+    project_id = dc.canonical_project_id(project)
+    claude_volume = dc.state_volume_mount("claude", project_id, claude_policy)
+    spec["mounts"].insert(
+        spec["mounts"].index(claude_volume) + 1, dc.state_volume_mount("codex", project_id, policy)
+    )
+    spec["mounts"].insert(
+        1,
+        f"source={home / '.codex' / 'auth.json'},"
+        f"target={dc._APP_CREDS_SEED_TARGET['codex']},type=bind,readonly",
+    )
+    fragment = next(f for f in runtime_spec._FIXED_SEED_FRAGMENTS if ".codex-auth-seed" in f)
+    for key in ("postCreateCommand", "postStartCommand"):
+        *head, tail = spec[key].split("; ")
+        spec[key] = "; ".join([*head, fragment, tail])
+
+
+_CLAUDE_AND_CODEX = '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n'
+
+
+def test_issued_multi_cli_spec_seals_and_validates(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_AND_CODEX)
+    path = _issue_spec(project, spec)
+    runtime_spec.validate(project, json.loads(path.read_text()), path)
+
+
+def _set_toml(project: Path, request, toml: str) -> None:
+    (project / ".booley" / "booley.toml").write_text(toml)
+    reset_cache()
+    request.addfinalizer(reset_cache)
+
+
+def test_sealing_accepts_seeds_for_every_listed_cli(issued, monkeypatch, request):
+    project, spec, home = _multi_cli_project(
+        issued, monkeypatch, request, '[agent]\nclis = ["claude"]\n'
+    )
+    _set_toml(project, request, _CLAUDE_AND_CODEX)
+    _with_codex(spec, project, home)
+    _seal_copy(project, spec)
+
+
+_DAMAGED_RECORDS = {
+    "widened-record": "claude=auto,codex=auto",
+    "app-outside-record": "codex=auto",
+    "malformed-record": "claude=auto,bogus=auto",
+    "gateway-record": "claude=auto,codex=gateway",
+}
+
+
+_REFUSALS = {
+    **dict.fromkeys(
+        ("login-bind", "token-bind", "seed-hook", "state-subpath-bind", "claude-config-seed"),
+        "credential seed violates",
+    ),
+    **dict.fromkeys(("state-volume", "stray-volume"), "agent state is not scoped"),
+    "credential-env": "credential environment has drifted",
+    "widened-record": "Sandbox identity has drifted",
+    "app-outside-record": "Agent CLIs codex=auto differ from",
+    "app-outside-clis-empty-record": "Agent CLI codex is not in",
+    "typeless-volume": "agent state is not scoped",
+    "claude-config-bind": "credential seed violates",
+    **dict.fromkeys(("malformed-record", "gateway-record"), "Agent CLI record is malformed"),
+}
+
+
+def _damage_empty_record(spec: dict, project: Path, home: Path) -> None:
+    """An empty record must not let an app outside ``clis`` forward its own key."""
+    spec["name"] = "Booley Interactive (codex)"
+    spec["remoteEnv"].update(
+        BOOLEY_AGENT_APP="codex",
+        BOOLEY_AGENT_CLIS="",
+        OPENAI_API_KEY="${localEnv:OPENAI_API_KEY}",
+    )
+
+
+def _damage_typeless_volume(spec: dict, project: Path, home: Path) -> None:
+    """``docker run --mount`` defaults a mount with no type to a volume."""
+    volume = (
+        f"source=booley-codex-state-{dc.canonical_project_id(project)},target={dc.AGENT_HOME}/x"
+    )
+    spec["mounts"].insert(1, volume)
+
+
+def _damage_claude_config_bind(spec: dict, project: Path, home: Path) -> None:
+    """A bind at the real Claude config file may carry a primary API key."""
+    source = home / ".claude.json"
+    spec["mounts"].insert(
+        1, f"source={source},target={dc._CLAUDE_CONFIG_TARGET},type=bind,readonly"
+    )
+
+
+_MOUNT_AND_APP_DAMAGE = {
+    "app-outside-clis-empty-record": _damage_empty_record,
+    "typeless-volume": _damage_typeless_volume,
+    "claude-config-bind": _damage_claude_config_bind,
+}
+
+
+def _damage_spec(spec: dict, project: Path, home: Path, damage: str) -> None:
+    """Apply one way of smuggling a seed or record for a CLI outside the set."""
+    remote, mounts = spec["remoteEnv"], spec["mounts"]
+    codex = dc._APP_CREDS_SEED_TARGET["codex"]
+    project_id = dc.canonical_project_id(project)
+    codex_fragment = next(f for f in runtime_spec._FIXED_SEED_FRAGMENTS if ".codex-auth" in f)
+
+    def bind(source: str, target: str) -> str:
+        return f"source={source},target={target},type=bind,readonly"
+
+    if damage == "login-bind":
+        mounts.insert(1, bind(home / ".codex" / "auth.json", codex))
+    elif damage == "token-bind":
+        mounts.insert(1, bind(home / ".codex" / "auth.json", dc._APP_TOKEN_SEED_TARGET["codex"]))
+    elif damage == "seed-hook":
+        spec["postStartCommand"] = f"{codex_fragment}; {spec['postStartCommand']}"
+    elif damage == "state-volume":
+        mounts.insert(1, dc.state_volume_mount("codex", project_id))
+    elif damage == "credential-env":
+        remote["OPENAI_API_KEY"] = "${localEnv:OPENAI_API_KEY}"
+    elif damage in _DAMAGED_RECORDS:
+        remote["BOOLEY_AGENT_CLIS"] = _DAMAGED_RECORDS[damage]
+    elif damage == "state-subpath-bind":
+        mounts.insert(1, bind(home / ".codex" / "auth.json", f"{dc.AGENT_HOME}/.codex/auth.json"))
+    elif damage == "claude-config-seed":
+        mounts.insert(1, bind(home / ".claude.json", dc._CLAUDE_CONFIG_SEED_TARGET))
+    elif damage in _MOUNT_AND_APP_DAMAGE:
+        _MOUNT_AND_APP_DAMAGE[damage](spec, project, home)
+    elif damage == "stray-volume":
+        stray = dc.state_volume_mount("codex", project_id).replace(".codex", "/stray")
+        mounts.insert(1, stray)
+    else:
+        raise AssertionError(damage)
+
+
+def test_sealing_refuses_seed_for_unlisted_cli(issued, monkeypatch, request):
+    for damage, refusal in _REFUSALS.items():
+        # Claude-config seeds are only unlisted for a Codex-only Project; the rest use Claude-only.
+        app = "codex" if damage in {"claude-config-seed", "claude-config-bind"} else "claude"
+        project, spec, home = _multi_cli_project(
+            issued, monkeypatch, request, f'[agent]\nclis = ["{app}"]\n', app
+        )
+        _seal_copy(project, spec)  # the undamaged spec seals
+        _damage_spec(spec, project, home, damage)
+        try:
+            runtime_spec.seal(project, spec)
+        except runtime_spec.RuntimeSpecError as exc:
+            assert re.search(refusal, str(exc)), f"{damage}: refused for another reason: {exc}"
+        else:
+            pytest.fail(f"{damage}: sealed")
+
+
+def test_sealing_checks_claude_config_seed_under_claude_policy(issued, monkeypatch, request):
+    toml = _CLAUDE_AND_CODEX + '\n[agent.auth]\nclaude = "auto"\ncodex = "subscription"\n'
+    project, spec, home = _multi_cli_project(
+        issued, monkeypatch, request, '[agent]\nclis = ["claude"]\n'
+    )
+    # Credential fields are allowed in Claude's config under Claude's own auto policy,
+    # whatever stricter policy another listed CLI has.
+    (home / ".claude.json").write_text(json.dumps({"customApiKeyResponses": {"a": ["x"]}}))
+    _set_toml(project, request, toml)
+    _with_codex(spec, project, home, "subscription")
+    _seal_copy(project, spec)
+
+
+def _mixed_policy_spec(issued, monkeypatch, request, claude: str, codex: str):
+    """Issue and validate a Claude+Codex spec whose CLIs follow different ``[agent.auth]`` policies."""
+    toml = _CLAUDE_AND_CODEX + f'\n[agent.auth]\nclaude = "{claude}"\ncodex = "{codex}"\n'
+    project, spec, home = _multi_cli_project(issued, monkeypatch, request, toml)
+    policies = {"claude": claude, "codex": codex}
+    assert dc.spec_cli_policies(spec) == policies
+    project_id = dc.canonical_project_id(project)
+    for cli, policy in policies.items():
+        assert dc.state_volume_mount(cli, project_id, policy) in spec["mounts"]
+    path = _issue_spec(project, json.loads(json.dumps(spec)))  # issue a copy; keep *spec* unsealed
+    runtime_spec.validate(project, json.loads(path.read_text()), path)
+    return project, spec, home
+
+
+def _damage_codex_login(spec: dict, home: Path) -> None:
+    login = f"source={home / '.codex' / 'auth.json'},target={dc._APP_CREDS_SEED_TARGET['codex']}"
+    spec["mounts"].insert(1, f"{login},type=bind,readonly")
+
+
+def _damage_codex_token(spec: dict, home: Path) -> None:
+    token = f"source={home / 'token'},target={dc._APP_TOKEN_SEED_TARGET['codex']}"
+    spec["mounts"].insert(1, f"{token},type=bind,readonly")
+
+
+def _damage_codex_env(spec: dict, home: Path) -> None:
+    spec["remoteEnv"]["OPENAI_API_KEY"] = "${localEnv:OPENAI_API_KEY}"
+
+
+_MIXED_POLICY_CASES = (
+    # (case, claude policy, codex policy, damage, expected refusal)
+    ("codex-api-key-login", "subscription", "api_key", _damage_codex_login, "seed violates"),
+    ("codex-subscription-token", "api_key", "subscription", _damage_codex_token, "seed violates"),
+    (
+        "codex-subscription-env",
+        "api_key",
+        "subscription",
+        _damage_codex_env,
+        "credential environment has drifted",
+    ),
+)
+
+
+def test_mixed_policy_spec_seals_and_refuses_forbidden_seed(issued, monkeypatch, request):
+    for case, claude, codex, damage, refusal in _MIXED_POLICY_CASES:
+        project, spec, home = _mixed_policy_spec(issued, monkeypatch, request, claude, codex)
+        damage(spec, home)
+        with pytest.raises(runtime_spec.RuntimeSpecError, match=refusal) as caught:
+            runtime_spec.seal(project, spec)
+        assert caught.value, case
+
+
+def test_default_change_without_clis_requires_refresh(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(
+        issued, monkeypatch, request, '[agent]\ndefault = "claude"\n'
+    )
+    path = _issue_spec(project, spec)
+    runtime_spec.validate(project, spec, path)
+    _set_toml(project, request, '[agent]\ndefault = "codex"\n')
+    with pytest.raises(
+        runtime_spec.RuntimeSpecError,
+        match=r"without \[agent\] clis only \[agent\] default.*booley session refresh",
+    ):
+        runtime_spec.validate(project, spec, path)
+
+
+def test_cli_set_change_requires_refresh(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(
+        issued, monkeypatch, request, '[agent]\nclis = ["claude"]\n'
+    )
+    path = _issue_spec(project, spec)
+    runtime_spec.validate(project, spec, path)
+    _set_toml(project, request, _CLAUDE_AND_CODEX)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"Agent CLIs.*differ.*refresh"):
+        runtime_spec.validate(project, spec, path)
+
+
+def test_invalid_agent_config_fails_validation_as_spec_error(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(
+        issued, monkeypatch, request, '[agent]\nclis = ["claude"]\n'
+    )
+    path = _issue_spec(project, spec)
+    _set_toml(project, request, '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "auto"\n')
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"\[agent\] is invalid"):
+        runtime_spec.validate(project, spec, path)
+
+
+def test_legacy_single_cli_spec_without_record_still_validates(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(
+        issued, monkeypatch, request, '[agent]\nprovider = "claude"\n'
+    )
+    spec["remoteEnv"].pop("BOOLEY_AGENT_CLIS", None)
+    # A spec issued before the record existed allows its single app under the primary policy.
+    assert dc.spec_cli_policies(spec) == {"claude": "auto"}
+    path = _issue_spec(project, spec)
+    runtime_spec.validate(project, spec, path)
+
+
+def test_none_app_spec_keeps_default_policy(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(
+        issued, monkeypatch, request, '[agent]\nauth = "subscription"\n', "none"
+    )
+    assert spec["name"] == "Booley Interactive (none)"
+    assert spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "subscription"
+    assert dc.spec_cli_policies(spec) == {}  # no CLI is seeded for ``none``
+    path = _issue_spec(project, spec)
+    runtime_spec.validate(project, spec, path)
