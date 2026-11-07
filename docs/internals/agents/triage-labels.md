@@ -14,7 +14,7 @@ label.
 
 `tracker` is this repository's tracking state for a parent issue whose work
 was split into sub-issues. A tracker has no Agent Brief and is never
-`ready-for-agent`. Triage applies it once the maintainer accepts a split, in
-place of `needs-triage`, so "needs attention" sweeps skip the parent. Close a
-tracker when its last sub-issue closes. A split the pipeline proposes stays
-`needs-triage` until the maintainer accepts it.
+`ready-for-agent`. Whoever files the sub-issues applies it, in place of the
+parent's triage label, so "needs attention" sweeps skip the parent: triage
+after a split it makes, or the pipeline when its planner splits a
+`ready-for-agent` issue. Close a tracker when its last sub-issue closes.
