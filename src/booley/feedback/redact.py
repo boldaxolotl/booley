@@ -41,10 +41,12 @@ from pathlib import Path
 from booley.audit.project_schema import REDACT_EXTRA_PROBLEM
 from booley.commit_policy.policy import banned_spans, parse_stealth_vocabulary
 from booley.core.booley_dir import (
+    BOOLEY_DIR_NAME,
     own_booley_dir,
     own_booley_dir_repo_path,
     resolve_main_checkout_root,
 )
+from booley.core.booley_layout import BooleyLayoutError
 from booley.core.boundary import BoundaryError, is_str_list
 from booley.runtime.worktrees import list_worktrees
 
@@ -290,12 +292,18 @@ def _register_path_literals(plan: RedactionPlan, project_root: Path) -> None:
     # may pass either the entry or its target (BOOLEY_DIR), so key on the entry. Register
     # every spelling of the target: the link's own text (``ls -l``) and the fully
     # resolved path differ whenever the target is reached through another link.
-    own_dir = own_booley_dir_repo_path(project_root)
-    entry = project_root / own_dir
-    if entry.is_symlink():
-        for literal in _entry_target_spellings(entry):
-            plan.literals[literal] = f"<repo>/{own_dir}"
-            plan.path_literals.add(literal)
+    # Both the default `.booley` (full init still works in a relocated Project) and
+    # the own directory; another worktree's retired layout only costs its relocation.
+    try:
+        own_dir = own_booley_dir_repo_path(project_root).as_posix()
+    except BooleyLayoutError:
+        own_dir = BOOLEY_DIR_NAME
+    for name in dict.fromkeys((BOOLEY_DIR_NAME, own_dir)):
+        entry = project_root / name
+        if entry.is_symlink():
+            for literal in _entry_target_spellings(entry):
+                plan.literals[literal] = f"<repo>/{name}"
+                plan.path_literals.add(literal)
     home = Path.home()
     if home != project_root and str(home) not in plan.literals:
         literal = str(home)

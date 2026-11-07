@@ -133,4 +133,10 @@ def test_stealth_exclude_names_cover_default_and_relocated(tmp_path):
     (tmp_path / "tools/booley").mkdir(parents=True)
     reset_cache()
     assert stealth_exclude_names(tmp_path) == (".booley", "tools/booley")
+
+    # Project-authored text that a gitignore pattern would read differently is not excluded.
+    for unsafe in ("*", "x[1]", "trailing ", "a\\nb"):
+        (tmp_path / "booley.toml").write_text(f'[project]\ndir = "{unsafe}"\n', encoding="utf-8")
+        reset_cache()
+        assert stealth_exclude_names(tmp_path) == (".booley",), unsafe
     reset_cache()

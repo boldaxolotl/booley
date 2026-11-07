@@ -107,11 +107,13 @@ def _validate_path(raw: object, record_id: str, operation_id: str) -> PurePosixP
         or parts[-1] not in names
         or "\\" in path
         or "\x00" in path
-        or any(part in {"", ".", ".."} for part in parts[:-3])
+        or any(part in {"", ".", ".."} or ":" in part for part in parts[:-3])
         or PurePosixPath(path).is_absolute()
         or PureWindowsPath(path).is_absolute()
     ):
-        raise ValueError("publication path differs from its literal confined operation path")
+        raise ValueError(
+            "publication path is not a confined <directory>/goals/history/<id>.md path"
+        )
     return prefix
 
 

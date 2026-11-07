@@ -321,7 +321,7 @@ def test_bound_request_read_survives_transient_sharing_error(complete, monkeypat
         pytest.param("./a/goals/history/{id}.md", None, id="dot-component"),
         pytest.param("goals/history/{id}.md", None, id="no-prefix"),
         pytest.param("a/goals/history/other.md", None, id="foreign-name"),
-        pytest.param("C:/a/goals/history/{id}.md", None, id="windows-drive"),
+        pytest.param("C:x/a/goals/history/{id}.md", None, id="windows-drive"),
     ],
 )
 def test_frozen_attempt_validates_sealed_history_prefix(path, skip_prefix):
@@ -330,20 +330,9 @@ def test_frozen_attempt_validates_sealed_history_prefix(path, skip_prefix):
     from booley.goals.finish_attempt import _validate_path, excluded_skip_reason
 
     if skip_prefix is None:
-        with pytest.raises(ValueError, match="literal confined operation path"):
+        with pytest.raises(ValueError, match="not a confined"):
             _validate_path(path.format(id="g1", op="op1"), "g1", "op1")
         return
     prefix = _validate_path(path.format(id="g1", op="op1"), "g1", "op1")
     assert prefix.as_posix() == skip_prefix
     assert excluded_skip_reason(prefix) == f"summary kept local; `{skip_prefix}` is git-excluded"
-
-
-def test_default_excluded_skip_text_is_unchanged():
-    from pathlib import PurePosixPath
-
-    from booley.goals.finish_attempt import excluded_skip_reason
-
-    assert (
-        excluded_skip_reason(PurePosixPath(".booley"))
-        == "summary kept local; `.booley` is git-excluded"
-    )

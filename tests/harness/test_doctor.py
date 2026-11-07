@@ -10199,7 +10199,7 @@ def test_goal_history_versioned_hint_for_relocated_booley_dir(tmp_path):
 def test_stealth_exclude_check_requires_relocated_entry(tmp_path):
     root, _project = _relocated_project(tmp_path, stealth=True)
     exclude = root / ".git/info/exclude"
-    exclude.write_bytes(b"/.devcontainer\n/tools/booley\n")
+    exclude.write_bytes(b"/.devcontainer\n/.booley\n/tools/booley\n")
     findings: list[doctor.DoctorWarning] = []
     doctor._check_devcontainer_excludes(root, lambda _msg: None, findings.append)
     assert findings == []
@@ -10208,6 +10208,12 @@ def test_stealth_exclude_check_requires_relocated_entry(tmp_path):
     exclude.write_bytes(b"/.devcontainer\n/.booley\n")
     doctor._check_devcontainer_excludes(root, lambda _msg: None, findings.append)
     assert [f.subject for f in findings] == ["tools/booley"]
+
+    # The writers also hide `.booley`, so Doctor requires it beside the relocated entry.
+    findings.clear()
+    exclude.write_bytes(b"/.devcontainer\n/tools/booley\n")
+    doctor._check_devcontainer_excludes(root, lambda _msg: None, findings.append)
+    assert [f.subject for f in findings] == [".booley"]
 
 
 def test_sandbox_commands_pass_relocated_booley_dir(tmp_path, monkeypatch):

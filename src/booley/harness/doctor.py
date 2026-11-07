@@ -158,7 +158,7 @@ from booley.runtime.booley_dir import (
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.docs_links import docs_url
 from booley.runtime.gateway_token import GatewayTokenCommandError, run_token_command
-from booley.runtime.git import _git_common_dir
+from booley.runtime.git import _git_common_dir, stealth_exclude_names
 from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_gitignore import missing_gitignore_patterns
@@ -3288,7 +3288,7 @@ def _check_devcontainer_excludes(
     from booley.commit_policy import stealth_enabled
 
     required = (
-        (".devcontainer", own_booley_dir_repo_path(project_root).as_posix())
+        (".devcontainer", *stealth_exclude_names(project_root))
         if stealth_enabled(project_root)
         else (".devcontainer",)
     )
@@ -7981,12 +7981,12 @@ def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
     repo-relative rendering that resolves on both host and runtime; any other Booley Directory
     (host default, or an explicit ``[project].dir`` override) is printed as-is.
     """
-    own_dir = own_booley_dir_repo_path(project.project_root)
     if project.booley_dir.as_posix() not in {
         dc.BOOLEY_DIR_TARGET,
         _sandbox_booley_dir(project.project_root),
     }:
         return str(report_dir)
+    own_dir = own_booley_dir_repo_path(project.project_root)
     canonical = contains(report_dir, booley_dir=project.booley_dir)
     if canonical is None:
         return str(report_dir)

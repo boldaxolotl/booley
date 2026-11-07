@@ -16,6 +16,8 @@ import pytest
 
 from booley.feedback.redact import (
     GENERIC_IDENTIFIERS,
+    RedactionPlan,
+    _register_path_literals,
     apply_plan,
     build_plan,
     diff_summary,
@@ -95,6 +97,24 @@ class TestScrubbing:
         out, _ = apply_plan(f"see {target}/runtime/x.log", build_plan(project))
 
         assert out == "see <repo>/tools/booley/runtime/x.log"
+
+    def test_symlinked_default_entry_is_hidden_in_a_relocated_project(self, project):
+        """Full init still works beside a relocated directory, so its `.booley` link stays private."""
+        (project / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
+        target = project.parent / "default-entry-elsewhere"
+        (project / ".booley").rename(target)
+        symlink_or_skip(project / ".booley", target)
+
+        out, _ = apply_plan(f"see {target}/x.log", build_plan(project, project / "tools/booley"))
+
+        assert out == "see <repo>/.booley/x.log"
+
+    def test_another_checkout_with_a_retired_layout_does_not_break_redaction(self, project):
+        other = project.parent / "old-branch-checkout"
+        other.mkdir()
+        (other / "booley.toml").write_bytes(b'[project]\ndir = ".booley_project"\n')
+
+        _register_path_literals(RedactionPlan(), other)
 
     def test_redact_default_reads_relocated_booley_toml(self, project):
         """``redact(text, root)`` finds ``booley.toml`` in the relocated directory."""
