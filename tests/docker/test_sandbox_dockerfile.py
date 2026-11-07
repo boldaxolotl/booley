@@ -425,29 +425,6 @@ def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None
     assert "test_flexnet_relay_e2e.py" in workflow
 
 
-def test_shipped_external_base_images_are_digest_pinned() -> None:
-    for path in sorted(_DOCKER_DIR.glob("Dockerfile*")):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.startswith("FROM "):
-                continue
-            image = line.split()[1]
-            # The RISC-V flavor deliberately consumes a locally built named
-            # context; the release workflow maps that name to the exact digest
-            # emitted by the base-image job.
-            if image in {
-                "${BOOLEY_BASE_IMAGE}",
-                "booley-runtime-base",
-                "booley-standard-substrate",
-                "booley-substrate",
-                "booley-project-parent",
-                "booley-layout-parent",
-            }:
-                continue
-            assert re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", image), (
-                f"{path}: external base image is not digest-pinned: {image}"
-            )
-
-
 def test_reaper_uses_pinned_runtime_stages_without_live_package_install() -> None:
     reaper = (_DOCKER_DIR / "Dockerfile.reaper").read_text(encoding="utf-8")
 

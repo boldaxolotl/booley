@@ -58,7 +58,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # actual ISA/ABI is selected by the projects' explicit -march/-mabi flags, which
 # the multilib set resolves regardless of the driver's name.
 # ---------------------------------------------------------------------------
+# renovate: datasource=github-releases depName=xpack-dev-tools/riscv-none-elf-gcc-xpack versioning=regex:^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)-(?<build>\d+)$ extractVersion=^v(?<version>.+)$
 ARG XPACK_GCC_VERSION=15.2.0-1
+# pin-companion: XPACK_GCC_VERSION
 ARG XPACK_GCC_SHA256=aaaa8060c914851a3e5ee1ba82cc3d6f80972f90638a05c6e823a37557a33758
 RUN echo ">>> Installing xPack RISC-V GNU toolchain ${XPACK_GCC_VERSION} (multilib newlib)..." \
     && mkdir -p /opt/riscv \
@@ -111,6 +113,7 @@ ENV PATH="/opt/riscv/bin:${PATH}"
 # refreshed, and accepted. The explicit checks make a broken build fail the
 # image loudly.
 # ---------------------------------------------------------------------------
+# renovate: datasource=git-refs depName=riscv-isa-sim packageName=https://github.com/riscv-software-src/riscv-isa-sim currentValue=master
 ARG SPIKE_REF=609dbe0b9994154833039209fa37151e7c05e9d4
 RUN echo ">>> Building Spike (riscv-isa-sim) ${SPIKE_REF} from source..." \
     && git init /tmp/spike \
@@ -143,21 +146,30 @@ RUN echo ">>> Building Spike (riscv-isa-sim) ${SPIKE_REF} from source..." \
 # ratified releases; it is NOT every document RVI has ever published (that set
 # is unbounded and lives across dozens of extension repos), but it is the
 # canonical reference for ISA/privileged/debug/ABI questions.
-# ISA channel: newest date-named release, refreshed at each Booley release
-# currency audit (ADR 0071); per-merge snapshots are not the channel.
+# ISA channel: newest date-named release; a newer one lands in its own
+# dependency-update PR (ADR 0071); per-merge snapshots are not the channel.
 #   riscv-isa-unprivileged.{pdf,html} — unprivileged ISA manual
 #   riscv-isa-privileged.{pdf,html}   — privileged ISA manual
 #   riscv-debug-specification.pdf  — external debug support
 #   riscv-abi.pdf                  — ELF psABI / calling convention
 # ---------------------------------------------------------------------------
+# renovate: datasource=github-releases depName=riscv/riscv-isa-manual versioning=regex:^(?<major>\d{8})$
 ARG ISA_MANUAL_RELEASE=20250508
+# renovate: datasource=github-releases depName=riscv/riscv-debug-spec
 ARG DEBUG_SPEC_RELEASE=1.0
+# renovate: datasource=github-releases depName=riscv-non-isa/riscv-elf-psabi-doc
 ARG PSABI_RELEASE=v1.0
+# pin-companion: ISA_MANUAL_RELEASE
 ARG ISA_UNPRIVILEGED_PDF_SHA256=cef2e63c08c6f82cf7acc9056a589954f5b1adf6f7dccaa38cd75278b093e984
+# pin-companion: ISA_MANUAL_RELEASE
 ARG ISA_UNPRIVILEGED_HTML_SHA256=3cd7425244ec9c23822d81cc740ea649395c148d06bf57bb9c09b7855cbfaa44
+# pin-companion: ISA_MANUAL_RELEASE
 ARG ISA_PRIVILEGED_PDF_SHA256=d0228bbecc76943aaa5685e381e0263a8c750d18b1b0c452b086b0ddd15a4955
+# pin-companion: ISA_MANUAL_RELEASE
 ARG ISA_PRIVILEGED_HTML_SHA256=d9d45fb094478c9df43583660ed132733ad5320ea1dca70a83fe3085b211a1fe
+# pin-companion: DEBUG_SPEC_RELEASE
 ARG DEBUG_SPEC_SHA256=ce2787b25233a6109c9bc767b2bc497798148b721390f72fb9b48ff0ed986fc8
+# pin-companion: PSABI_RELEASE
 ARG PSABI_SHA256=a8d06bdcaa82a6a4567a1904dc27ef1ca1043ebaa1f523558c927a9d72bc23d9
 RUN echo ">>> Downloading ratified RISC-V International specifications..." \
     && mkdir -p /opt/riscv-docs \
