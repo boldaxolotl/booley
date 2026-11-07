@@ -15,7 +15,16 @@ import pytest
 
 # CPython's crash probe bypasses ctypes' Windows SEH wrapper and disables core
 # dumps / Windows Error Reporting before dereferencing NULL in native code.
-_NATIVE_CRASH = "__import__('faulthandler')._read_null()"
+_READ_NULL = "__import__('faulthandler')._read_null()"
+# Linux ignores RLIMIT_CORE when core_pattern pipes to a crash collector such
+# as Ubuntu's apport, which then files a report and pops a desktop dialog.
+# Clearing the dumpable flag (PR_SET_DUMPABLE == 4) skips the core dump, so
+# no collector runs; faulthandler still writes the stack and the signal exit
+# status is unchanged.
+_SUPPRESS_LINUX_CORE_COLLECTOR = "__import__('ctypes').CDLL(None).prctl(4, 0, 0, 0, 0); "
+_NATIVE_CRASH = (
+    _SUPPRESS_LINUX_CORE_COLLECTOR + _READ_NULL if sys.platform.startswith("linux") else _READ_NULL
+)
 _NATIVE_EXIT_CODES = (
     {0xC0000005}
     if os.name == "nt"
