@@ -40,7 +40,7 @@ RUNNER_EXTRAS = {
         "pytest-cov",
         "coverage",
     ),
-    "quality": ("ruff",),
+    "quality": ("ruff", "pyright"),
 }
 _EXACT_PIN_RE = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*([0-9][^\s;,*=]*)\s*")
 # Names the cache root, so checkouts speaking another receipt schema build under
@@ -639,7 +639,7 @@ def validate_environment(
     if not isinstance(installed, dict) or any(
         installed.get(name) != version for name, version in pins.items()
     ):
-        return False, "shared tools environment has mismatched Ruff/Pytest runner pins"
+        return False, "shared tools environment has mismatched Ruff/Pyright/Pytest runner pins"
     return True, "shared tools environment matches the repository fingerprint"
 
 
@@ -721,6 +721,17 @@ def _verification_commands(
             (*common, "ruff", "format", "--check", "."),
             str(root),
             "format",
+            "handoff",
+        ),
+        # CI's "Pyright strict boundary checks" step runs bare `pyright`, which
+        # reads [tool.pyright] from this checkout's pyproject.toml. --pythonpath
+        # pins third-party import resolution to the shared environment instead
+        # of whatever `python` is first on PATH.
+        Command(
+            "pyright.ci-check",
+            (*common, "pyright", "--pythonpath", str(python)),
+            str(root),
+            "typecheck",
             "handoff",
         ),
     )

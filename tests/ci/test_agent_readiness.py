@@ -80,10 +80,15 @@ def test_verification_commands_are_stable(tmp_path, monkeypatch):
         "ruff.agent-gate",
         "ruff.ci-check",
         "ruff.ci-format",
+        "pyright.ci-check",
         "pytest.broad",
     ]
     assert commands[0].argv == (python, "-m", "ruff", "check", "src/", "tests/")
     assert commands[0].required_at == "before-commit"
+    # CI's bare `pyright` step, with imports resolved in the shared environment.
+    assert commands[3].argv == (python, "-m", "pyright", "--pythonpath", python)
+    assert commands[3].cwd == str(tmp_path)
+    assert commands[3].required_at == "handoff"
     assert commands[-1].argv == (
         python,
         "-m",
@@ -134,14 +139,16 @@ def test_project_runner_pins_match_the_readiness_contract():
         "pytest-cov",
         "coverage",
         "ruff",
+        "pyright",
     }
     for extra in ("test", "dev"):
         declared = {item.split("==", 1)[0]: item for item in extras[extra]}
         for name, version in pins.items():
-            if name != "ruff":
+            if name not in readiness.RUNNER_EXTRAS["quality"]:
                 assert declared.get(name) == f"{name}=={version}"
     quality = {item.split("==", 1)[0]: item for item in extras["quality"]}
-    assert quality["ruff"] == f"ruff=={pins['ruff']}"
+    for name in readiness.RUNNER_EXTRAS["quality"]:
+        assert quality[name] == f"{name}=={pins[name]}"
 
 
 def _write_project(root: Path, test: list[str], quality: list[str]) -> None:
@@ -167,11 +174,12 @@ _RUNNER_NAMES = (
 def test_runner_pins_derive_from_project_metadata(tmp_path):
     """A version bump in pyproject.toml alone changes the pins; no second edit exists."""
     test = [f"{name}=={index}.0.1" for index, name in enumerate(_RUNNER_NAMES, start=1)]
-    _write_project(tmp_path, [*test, "hypothesis>=1.0"], ["Ruff==9.9.9"])
+    _write_project(tmp_path, [*test, "hypothesis>=1.0"], ["Ruff==9.9.9", "pyright==8.8.8"])
     pins = readiness.runner_pins(tmp_path)
     assert pins == {
         **{name: f"{index}.0.1" for index, name in enumerate(_RUNNER_NAMES, start=1)},
         "ruff": "9.9.9",
+        "pyright": "8.8.8",
     }
 
 
@@ -181,6 +189,7 @@ _UNPINNED_RUNNER_CASES = (
     ("pytest", "pytest===1"),
     ("coverage", None),
     ("ruff", "ruff>=0.1"),
+    ("pyright", "pyright>=1.1"),
 )
 
 
@@ -190,7 +199,9 @@ def test_runner_without_exact_pin_is_a_usage_error(tmp_path):
         root = tmp_path / str(index)
         root.mkdir()
         test = [f"{name}==1" for name in _RUNNER_NAMES if name != culprit or culprit == "pytest"]
-        quality = ["ruff==1"] if culprit != "ruff" else [bad_requirement]
+        quality = [
+            bad_requirement if culprit == name else f"{name}==1" for name in ("ruff", "pyright")
+        ]
         if culprit == "pytest":
             test = [bad_requirement if item.startswith("pytest==") else item for item in test]
         _write_project(root, test, quality)
@@ -326,7 +337,7 @@ def test_git_write_policy_is_closed(monkeypatch, value):
 
 
 STALE = "shared tools environment receipt or interpreter is stale"
-PINS = "shared tools environment has mismatched Ruff/Pytest runner pins"
+PINS = "shared tools environment has mismatched Ruff/Pyright/Pytest runner pins"
 
 
 def _runner_pins() -> dict[str, str]:
