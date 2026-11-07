@@ -1,0 +1,10 @@
+# Trimmed excerpt of test.yml at the recorded pin (frozen test fixture).
+      - name: Install actionlint v1.7.12
+        shell: bash
+        env:
+          ACTIONLINT_SHA256: e280fd2a19f23453fc6ddaed6aba31fb834a9cb7f931e35c30f1cec0d3f8977e
+        run: |
+          archive="${RUNNER_TEMP}/actionlint.tar.gz"
+          curl --fail --silent --show-error --location \
+            --output "${archive}" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
