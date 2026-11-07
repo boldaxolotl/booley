@@ -33,7 +33,6 @@ from booley.flows.sim.verilator_coverage_execution import prepare_coverage_colle
 from booley.flows.sim.workload import capture_workload_inputs
 from booley.fusesoc.fusesoc_registry import (
     ResolvedFile,
-    mirrored_source_path,
     setup_command_for_handle,
 )
 from booley.targets.catalog import TargetCatalog
@@ -53,6 +52,7 @@ def _core(
     absolute_include: Path | None = None,
     user_files: bool = True,
     headers: bool = True,
+    icarus_options: dict[str, list[str]] | None = None,
 ) -> str:
     """The fixture core; every header sits in ``rtl/inc``, one with an ``include_path``."""
     files: list = [
@@ -73,7 +73,7 @@ def _core(
     targets = {
         "sim_icarus": {
             "flow": "sim",
-            "flow_options": {"tool": "icarus"},
+            "flow_options": {"tool": "icarus", **(icarus_options or {})},
             "filesets": ["rtl"],
             "toplevel": "top",
         },
@@ -301,8 +301,26 @@ def test_isolated_absolute_include_keeps_reuse_off(tmp_path: Path) -> None:
     assert stock_verilator_recipe(prepared.build_root) is None
 
 
-def _write_project_core(root: Path, **kwargs: Path | bool) -> None:
-    (root / ".booley" / "cores" / "design.core").write_text(_core(**kwargs), encoding="utf-8")
+def _write_project_core(
+    root: Path,
+    core_path: Path | None = None,
+    *,
+    absolute_include: Path | None = None,
+    user_files: bool = True,
+    headers: bool = True,
+    icarus_options: dict[str, list[str]] | None = None,
+) -> None:
+    """Rewrite the Project core, by default the isolated one under ``.booley/cores``."""
+    path = core_path or root / ".booley" / "cores" / "design.core"
+    path.write_text(
+        _core(
+            absolute_include=absolute_include,
+            user_files=user_files,
+            headers=headers,
+            icarus_options=icarus_options,
+        ),
+        encoding="utf-8",
+    )
 
 
 def _icarus_key(prepared: PreparedSimulationBuild, root: Path) -> str | None:
@@ -352,6 +370,8 @@ def test_mirrored_source_path_names_only_mirrored_files(
     tmp_path: Path, name: str, core: str | None, expected: str | None
 ) -> None:
     """Only a file under its own core's export folder maps back to a Project path."""
+    from booley.fusesoc.fusesoc_registry import mirrored_source_path  # new API under test
+
     root = _write_project(tmp_path / "proj")
     assert mirrored_source_path(root, ResolvedFile(name, "verilogSource", core=core)) == expected
 
@@ -456,3 +476,94 @@ def test_isolated_coverage_recipe_is_checkout_independent(tmp_path: Path) -> Non
         prepared, _vlnv = _prepare_coverage(root, trace=False)
         recipes.append(_recipe_text(prepared))
     assert recipes[0] == recipes[1]
+
+
+def _stub_icarus_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the host tool identities so the Icarus key is non-None without ``iverilog``."""
+    monkeypatch.setattr(build_session, "_icarus_tool_identity", lambda: "iverilog-test")
+    monkeypatch.setattr(build_session, "_python_recipe_identity", lambda: "recipe-test")
+
+
+def _unstock_options(lib: Path) -> dict[str, dict[str, list[str]]]:
+    """Option sets that make ``iverilog`` or Make read files the reuse key never hashes."""
+    return {
+        "y-attached": {"iverilog_options": [f"-y{lib}"]},
+        "y-separate": {"iverilog_options": ["-y", f"{lib}"]},
+        "incdir": {"iverilog_options": [f"-I{lib}"]},
+        "library-file": {"iverilog_options": [f"-l{lib / 'm.v'}"]},
+        "command-file": {"iverilog_options": [f"-f{lib / 'm.v'}"]},
+        "extra-c": {"iverilog_options": ["-c", f"{lib / 'm.v'}"]},
+        "shell-expansion": {"iverilog_options": [f"-DX$${{IFS}}-y$${{IFS}}{lib}"]},
+        "bundled-flag": {"iverilog_options": [f"-Sf{lib / 'm.v'}"]},
+        "o-trailing": {"iverilog_options": ["-o"]},
+        "warning-flag": {"iverilog_options": ["-Wall"]},
+        "newline-injection": {"iverilog_options": ["-g2012\nEDALIZE_LAUNCHER = sh -c"]},
+        "vvp-newline-injection": {"vvp_options": ["-n\nEDALIZE_LAUNCHER = sh -c"]},
+        "unicode-line-break": {"iverilog_options": [f"-g2012\u2028;iverilog -y{lib}"]},
+        "rule-recipe-injection": {"iverilog_options": [f"-g2012\npre_build: ; cp {lib}/m.v x.v"]},
+    }
+
+
+@pytest.mark.usefixtures("real_fusesoc")
+@pytest.mark.parametrize("case", list(_unstock_options(Path("lib"))))
+def test_isolated_icarus_reuse_declines_option_operands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """R4-1: an unstock ``iverilog`` option or Makefile line keeps isolated Icarus reuse off."""
+    _stub_icarus_identity(monkeypatch)
+    root = _write_project(tmp_path / "proj")
+    lib = root.resolve() / "ext"
+    lib.mkdir()
+    (lib / "m.v").write_text("module m; endmodule\n", encoding="utf-8")
+    (root / "rtl" / "top.v").write_text("module top; endmodule\n", encoding="utf-8")
+    _write_project_core(root, user_files=False, headers=False)
+    assert _icarus_key(_prepare(root, "sim_icarus", name="control"), root) is not None
+    _write_project_core(
+        root, user_files=False, headers=False, icarus_options=_unstock_options(lib)[case]
+    )
+    prepared = _prepare(root, "sim_icarus", name=case)
+    makefile = (prepared.build_root / "Makefile").read_text(encoding="utf-8")
+    if case == "shell-expansion":
+        assert "$${IFS}" in makefile
+    if case in {"newline-injection", "vvp-newline-injection", "rule-recipe-injection"}:
+        assert any(
+            line.startswith(("EDALIZE_LAUNCHER = ", "pre_build: ;"))
+            for line in makefile.split("\n")
+        )
+    assert _icarus_key(prepared, root) is None
+
+
+@pytest.mark.usefixtures("real_fusesoc")
+def test_isolated_icarus_reuse_keeps_stock_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attached ``-g``/``-D`` options are stock, so isolated reuse still keys the same."""
+    _stub_icarus_identity(monkeypatch)
+    root = _write_project(tmp_path / "proj")
+    options = {"iverilog_options": ["-g2012", "-DWIDTH=8"]}
+    _write_project_core(root, user_files=False, headers=False, icarus_options=options)
+    (root / "rtl" / "top.v").write_text("module top; endmodule\n", encoding="utf-8")
+    first = _icarus_key(_prepare(root, "sim_icarus", name="g1"), root)
+    assert first is not None
+    assert _icarus_key(_prepare(root, "sim_icarus", name="g2"), root) == first
+
+
+@pytest.mark.usefixtures("real_fusesoc")
+@pytest.mark.parametrize("variant", ["plain", "projected"])
+def test_unisolated_icarus_option_decision_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variant: str
+) -> None:
+    """AC4: without isolation an operand option still keys, exactly as before this change."""
+    _stub_icarus_identity(monkeypatch)
+    root = _write_project(tmp_path / "proj", variant)
+    lib = root.resolve() / "ext"
+    lib.mkdir()
+    (root / "rtl" / "top.v").write_text("module top; endmodule\n", encoding="utf-8")
+    _write_project_core(
+        root,
+        root / "design.core",
+        user_files=False,
+        headers=False,
+        icarus_options={"iverilog_options": [f"-y{lib}"]},
+    )
+    assert _icarus_key(_prepare(root, "sim_icarus"), root) is not None

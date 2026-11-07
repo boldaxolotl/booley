@@ -290,8 +290,73 @@ def _has_unsupported_source(prepared: PreparedSimulationBuild, core_file: Path) 
     return False
 
 
-def _has_unsupported_icarus_recipe(prepared: PreparedSimulationBuild) -> bool:
-    """Allow only local source operands and the stock Edalize Icarus commands."""
+_ICARUS_TOKEN = re.compile(r"[A-Za-z0-9_.=+,:/-]+")
+_ICARUS_MAKEFILE_TEXT = re.compile(r"[\x20-\x7e\t\n]*")
+_ICARUS_FILE_TOKEN = r"[A-Za-z0-9_.+,/-]+"
+_ICARUS_COMMENT = re.compile(r"#[A-Za-z0-9 _.,:/-]*")
+
+
+def _has_unstock_iverilog_command(command: str, script_name: str) -> bool:
+    """Return whether *command* carries an ``iverilog`` option beyond the stock ones.
+
+    Stock means Edalize's attached ``-s<top>``, one ``-c <script_name>``, one
+    ``-o <image>`` and attached ``-g<x>``/``-D<x>`` options from the Target. Make
+    expands ``$`` and ``/bin/sh`` runs the recipe, so every token also has to be
+    plain characters. Anything else may read files the reuse key never hashes.
+    """
+    tokens = command.removeprefix("$(EDALIZE_LAUNCHER) ").split(" ")
+    if tokens[0] != "iverilog" or not all(_ICARUS_TOKEN.fullmatch(token) for token in tokens):
+        return True
+    seen: set[str] = set()
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"-c", "-o"}:
+            if token in seen or index + 1 >= len(tokens):
+                return True
+            operand = tokens[index + 1]
+            if operand.startswith("-") or (token == "-c" and operand != script_name):
+                return True
+            seen.add(token)
+            index += 2
+            continue
+        if not (len(token) > 2 and token[:2] in {"-s", "-g", "-D"}):
+            return True
+        index += 1
+    return seen != {"-c", "-o"}
+
+
+def _has_unstock_icarus_makefile(text: str, image: str) -> bool:
+    """Return whether the Makefile holds a line Make honours but the recipe split misses.
+
+    Make splits on ``\\n`` only and reads non-recipe lines as assignments,
+    directives or rules, so every such line must be blank, a plain comment or one
+    of Edalize's rule headers.
+    """
+    if not _ICARUS_MAKEFILE_TEXT.fullmatch(text):
+        return True
+    targets = "|".join(
+        re.escape(name)
+        for name in ("all", "pre_build", "post_build", "pre_run", "run", "post_run", image)
+    )
+    header = re.compile(
+        rf"(?:{targets}):(?: {_ICARUS_FILE_TOKEN})*(?: \|(?: {_ICARUS_FILE_TOKEN})+)? *"
+    )
+    return any(
+        line
+        and not line.startswith("\t")
+        and not _ICARUS_COMMENT.fullmatch(line)
+        and not header.fullmatch(line)
+        for line in text.split("\n")
+    )
+
+
+def _has_unsupported_icarus_recipe(prepared: PreparedSimulationBuild, project_root: Path) -> bool:
+    """Allow only local source operands and the stock Edalize Icarus commands.
+
+    An isolated Project (#2895) also has to use the stock ``iverilog`` options and
+    Makefile shape, because option operands name files the reuse key does not hash.
+    """
     root = prepared.build_root
     scripts = tuple(root.glob("*.scr"))
     if len(scripts) != 1:
@@ -307,17 +372,28 @@ def _has_unsupported_icarus_recipe(prepared: PreparedSimulationBuild) -> bool:
             prepared.work_root.resolve()
         ):
             return True
-    makefile = root / "Makefile"
-    commands = [
-        line.strip()
-        for line in makefile.read_text(encoding="utf-8").splitlines()
-        if line.startswith("\t")
-    ]
-    if len(commands) != 2:
-        return True
-    return not (
+    makefile_text = (root / "Makefile").read_text(encoding="utf-8")
+    commands = [line.strip() for line in makefile_text.splitlines() if line.startswith("\t")]
+    if len(commands) != 2 or not (
         commands[0].startswith("$(EDALIZE_LAUNCHER) iverilog ")
         and commands[1].startswith("$(EDALIZE_LAUNCHER) vvp ")
+    ):
+        return True
+    return fusesoc_registry.native_cores_ignored(project_root) and _has_unstock_icarus_recipe(
+        makefile_text, commands[0], scripts[0].name
+    )
+
+
+def _has_unstock_icarus_recipe(
+    makefile_text: str, iverilog_command: str, script_name: str
+) -> bool:
+    """Return whether an isolated Project's Makefile or ``iverilog`` line is not stock."""
+    tokens = iverilog_command.split(" ")
+    image = tokens[tokens.index("-o") + 1] if "-o" in tokens[:-1] else None
+    return (
+        image is None
+        or _has_unstock_icarus_makefile(makefile_text, image)
+        or _has_unstock_iverilog_command(iverilog_command, script_name)
     )
 
 
@@ -344,7 +420,7 @@ def _eligible_core_file(prepared: PreparedSimulationBuild, project_root: Path) -
     if (
         build_reuse.has_generated_core_behavior(core_data)
         or _has_unsupported_source(prepared, core_file)
-        or _has_unsupported_icarus_recipe(prepared)
+        or _has_unsupported_icarus_recipe(prepared, project_root)
     ):
         return None
     return core_file
