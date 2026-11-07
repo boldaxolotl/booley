@@ -522,10 +522,13 @@ def test_isolated_icarus_reuse_declines_option_operands(
 
 
 @pytest.mark.usefixtures("real_fusesoc")
+@pytest.mark.parametrize(
+    "hidden", ["rtl/.a-hidden.v", "rtl/run.log", "rtl/.booley-runtime-inputs/m.v"]
+)
 def test_isolated_reuse_declines_source_named_like_a_booley_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hidden: str
 ) -> None:
-    """A listed source named ``.a-*`` escapes the input hash, so the session declines reuse."""
+    """A listed source the input snapshot skips by name escapes the hash, so reuse declines."""
     _stub_icarus_identity(monkeypatch)
     root = _write_project(tmp_path / "proj")
     (root / "rtl" / "top.v").write_text("module top; endmodule\n", encoding="utf-8")
@@ -538,7 +541,7 @@ def test_isolated_reuse_declines_source_named_like_a_booley_file(
 
     # Control: an ordinary name keys, so a None key below comes from the file name.
     assert session_key(_prepare(root, "sim_icarus", name="control")) is not None
-    hidden = "rtl/.a-hidden.v"
+    (root / hidden).parent.mkdir(exist_ok=True)
     (root / hidden).write_text("module m; endmodule\n", encoding="utf-8")
     _write_project_core(root, user_files=False, headers=False, extra_files=(hidden,))
     assert session_key(_prepare(root, "sim_icarus", name="hidden")) is None

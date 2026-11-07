@@ -95,14 +95,21 @@ _RESERVED_PREFIXES = (".booley-adapter-", ".a-")
 
 
 def _has_unhashed_source_name(prepared: PreparedSimulationBuild) -> bool:
-    """Report a generation file the build-input snapshot skips by its name.
+    """Report a generation file the build-input snapshot skips by its name or folder.
 
     An isolated Project exports its sources and headers into the generation, where
-    a listed file named like a Booley-written one would escape the reuse key, so
-    its edit would reuse a stale build.
+    a listed file named like one Booley writes (a reserved prefix, ``run.log`` or a
+    file under the runtime-input folder) would escape the reuse key, so its edit
+    would reuse a stale build. Only Booley's own run log and overlay are exempt.
     """
+    own = (prepared.build_root / RUN_LOG_NAME, prepared.build_root / _RUNTIME_INPUTS_DIR)
     return any(
-        path.name.startswith(_RESERVED_PREFIXES) and _RUNTIME_INPUTS_DIR not in path.parts
+        (
+            path.name == RUN_LOG_NAME
+            or path.name.startswith(_RESERVED_PREFIXES)
+            or _RUNTIME_INPUTS_DIR in path.parts
+        )
+        and not any(path == item or item in path.parents for item in own)
         for path in prepared.work_root.rglob("*")
     )
 
