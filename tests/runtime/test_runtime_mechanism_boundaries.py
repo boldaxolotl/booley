@@ -95,6 +95,9 @@ def test_owned_process_group_primitives_stay_in_runtime_module() -> None:
         _SOURCE_ROOT / "runtime" / "process_group.py",
         # A Specialist terminates its own inherited group, not an owned child.
         _SOURCE_ROOT / "specialists" / "specialist.py",
+        # `booley chat` job control: relays Ctrl-Z/fg and forwards signals to the
+        # agent's terminal group (ADR 0082); it never spawns or reaps an owned group.
+        _SOURCE_ROOT / "runtime" / "foreground_child.py",
     }
     allowed_detached_spawns = allowed_calls | {
         # One-shot record cleanup outlives its caller; no child group is owned or terminated.
