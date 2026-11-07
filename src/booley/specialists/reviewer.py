@@ -52,7 +52,7 @@ from booley.mcp.base import (
     EXIT_SUCCESS,
     McpToolResult,
 )
-from booley.runtime.booley_dir import resolve_common_booley_dir
+from booley.runtime.booley_dir import own_booley_dir, resolve_common_booley_dir
 from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.file_lock import LockContentionError, nonblocking_file_lock
@@ -231,11 +231,11 @@ def _guide_paths() -> dict[str, str]:
     }
 
 
-# Project style-guide overlays, resolved against work_dir. Absence is the
+# Project style-guide overlay file names, read from work_dir's own Booley Directory. Absence is the
 # normal case for a project that has not authored one — never warn on a miss.
 _STYLE_OVERLAYS = {
-    "rtl": ".booley/rtl_style_guide.md",
-    "tb": ".booley/tb_style_guide.md",
+    "rtl": "rtl_style_guide.md",
+    "tb": "tb_style_guide.md",
 }
 
 
@@ -1332,7 +1332,7 @@ class ReviewerSpecialist(Specialist):
         if not rel:
             return ""
         root = Path(self.args.work_dir) if self.args.work_dir else Path.cwd()
-        path = root / rel
+        path = own_booley_dir(root) / rel
         if not path.is_file():
             return ""
         logger.info("Applying project style guide overlay: %s", path)

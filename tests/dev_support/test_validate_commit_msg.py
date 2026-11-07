@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +17,37 @@ from booley.dev_support.validate_commit_msg import (
     validate_diff,
     validate_message,
 )
+
+
+def test_bundled_commit_msg_hook_honors_relocated_booley_dir(tmp_path: Path) -> None:
+    """The installed hook reads ``[project].dir`` without importing Booley (``-S``)."""
+    from booley.harness.setup.project_git_hook_bundle import build_project_git_hook_bundle
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=60)
+    (repo / "booley.toml").write_bytes(b'[project]\ndir = "state"\n')
+    (repo / "state").mkdir()
+    (repo / "state" / "booley.toml").write_bytes(
+        b"[stealth]\nenabled = true\nenforce_convention = true\n"
+    )
+    bundle = repo / "state" / ".managed" / "project-git-hooks.pyz"
+    bundle.parent.mkdir()
+    bundle.write_bytes(build_project_git_hook_bundle().content)
+    message = tmp_path / "message.txt"
+    message.write_bytes(b"not a conventional subject\n")
+
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", str(bundle), "commit-msg", str(message)],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert "Commit message validation FAILED" in result.stderr
 
 
 def _convention(enabled: bool = True):

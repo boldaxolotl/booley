@@ -55,9 +55,9 @@ from commit_msg_utils import (
 )
 
 try:
-    from booley.commit_policy.policy import validate_push_configuration
+    from booley.commit_policy.policy import checkout_booley_dir, validate_push_configuration
 except ImportError:
-    from booley_commit_policy import validate_push_configuration
+    from booley_commit_policy import checkout_booley_dir, validate_push_configuration
 
 _MAX_SYMLINK_TARGET_BYTES = 64 * 1024
 _SYMLINK_MODE = "120000"
@@ -822,11 +822,12 @@ def _inside_checkout_or_runtime_project_state(
         relative = normalized.relative_to(root)
     except ValueError:
         relative = None
+    own_state = checkout_booley_dir(root)
     inside_checkout_state = (
         relative is not None
         and bool(relative.parts)
         and relative.parts[0].casefold() == _BOOLEY_DIR_NAME.casefold()
-    )
+    ) or (own_state != root and _inside_project_state(path, own_state))
     return inside_checkout_state or _inside_project_state(path, booley_dir)
 
 

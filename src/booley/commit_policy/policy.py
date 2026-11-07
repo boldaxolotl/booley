@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -127,8 +128,69 @@ def parse_stealth_vocabulary(
     return _unique_terms(words + substrings), _unique_terms(identities + substrings)
 
 
-_TOML_SUBDIRS = [Path(".booley")]
 _TOML_NAMES = ("booley.toml", "pipeline.toml")
+_DEFAULT_BOOLEY_DIR = ".booley"
+
+
+def checkout_booley_dir(checkout_root: Path) -> Path:
+    """Return one checkout's own Booley Directory, spelled lexically under its root.
+
+    Standard-library mirror of ``booley.core.booley_dir.own_booley_dir`` for the
+    installed Git hooks, which cannot import Booley: a non-empty string
+    ``[project].dir`` in ``<root>/booley.toml`` selects the directory, else it is
+    ``<root>/.booley``. An unreadable or malformed ``booley.toml`` means "not
+    configured", as for the packaged resolver. Unlike it, this does not validate
+    the selection, so a retired ``.booley_project`` value is followed as a path
+    rather than refused.
+    """
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        tomllib = None
+    root = Path(os.path.normpath(checkout_root.absolute()))
+    configured = ""
+    toml_path = root / "booley.toml"
+    if tomllib is not None and toml_path.is_file():
+        try:
+            with toml_path.open("rb") as f:
+                project = as_dict(tomllib.load(f).get("project"), default={}) or {}
+                value = project.get("dir")
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            value = None
+        if isinstance(value, str) and "\x00" not in value:
+            configured = value
+    if not configured:
+        return root / _DEFAULT_BOOLEY_DIR
+    return Path(os.path.normpath(root / configured))
+
+
+def _has_git_marker(path: Path) -> bool:
+    """Whether *path* is a Git checkout root (a ``.git`` directory or a ``gitdir:`` file)."""
+    marker = path / ".git"
+    try:
+        if marker.is_dir():
+            return (marker / "HEAD").is_file()
+        return marker.is_file() and marker.read_text(
+            encoding="utf-8", errors="replace"
+        ).startswith("gitdir:")
+    except OSError:
+        return False
+
+
+def is_booley_dir_repository(root: Path) -> bool:
+    """Whether *root* is a Booley Directory's own Git repository.
+
+    True for a directory named ``.booley`` and for a directory its nearest strict
+    Git ancestor selects through ``[project].dir`` (a relocated Versioned Booley
+    Directory or Paired Checkout). Mirrors ``project_discovery`` without importing it.
+    """
+    location = Path(os.path.normpath(root.absolute()))
+    if location.name == _DEFAULT_BOOLEY_DIR:
+        return True
+    for ancestor in location.parents:
+        if _has_git_marker(ancestor):
+            return checkout_booley_dir(ancestor) == location
+    return False
 
 
 def _load_booley_config(
@@ -150,15 +212,14 @@ def _load_booley_config(
         return {}
     root = Path(booley_dir if booley_dir is not None else project_root).resolve()
 
-    state_repo = root.name == ".booley"
-    directories = (
-        (Path(),)
-        if booley_dir is not None
-        else ((Path(), *_TOML_SUBDIRS) if state_repo else _TOML_SUBDIRS)
-    )
-    for subdir in directories:
+    if booley_dir is not None:
+        directories = (root,)
+    else:
+        own = checkout_booley_dir(root)
+        directories = (root, own) if is_booley_dir_repository(root) else (own,)
+    for directory in directories:
         for name in _TOML_NAMES:
-            toml_path = root / subdir / name
+            toml_path = directory / name
             if _configuration_candidate(toml_path, strict=strict):
                 try:
                     with toml_path.open("rb") as f:

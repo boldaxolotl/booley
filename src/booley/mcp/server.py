@@ -2296,9 +2296,9 @@ def _load_agent_settings_from_toml() -> None:
     reads ``BOOLEY_DIR/booley.toml`` when the env hand-off is absent —
     so they no longer silently fall back to a default provider either.)
 
-    ``BOOLEY_DIR`` points at the ``.booley`` dir when set, but
-    ``load_agent_settings`` wants the Project Root that *contains* it, so use the
-    parent (else CWD). A missing/unparseable booley.toml is handled inside
+    ``BOOLEY_DIR`` names the Booley Directory itself when set, wherever
+    ``[project].dir`` put it, so it is passed through as-is; the Project Root is
+    its parent (else CWD). A missing/unparseable booley.toml is handled inside
     ``load_agent_settings`` (defaults preserved); the broad guard only covers
     import-time surprises so a config hiccup never blocks server startup.
     """
@@ -2307,7 +2307,7 @@ def _load_agent_settings_from_toml() -> None:
 
         booley_dir = os.environ.get("BOOLEY_DIR", "")
         project_root = Path(booley_dir).parent if booley_dir else Path.cwd()
-        load_agent_settings(project_root)
+        load_agent_settings(project_root, booley_dir=Path(booley_dir) if booley_dir else None)
     except Exception:
         logger.debug("Failed to load agent settings from booley.toml", exc_info=True)
 

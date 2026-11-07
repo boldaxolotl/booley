@@ -148,6 +148,7 @@ from booley.runtime import project_image as pi
 from booley.runtime.booley_dir import (
     booley_dir_for_init,
     init_booley_dir_scope,
+    own_booley_dir,
     reset_cache,
     resolve_booley_dir,
     resolve_checkout_booley_dir,
@@ -2095,7 +2096,7 @@ def _run_seed(ctx: InitContext, selection: AgentSelection) -> int:
     if not ctx.check_only and sys.stdout.isatty():
         print(section_header(f"Seeding Interactive Mode for {ctx.project_root}"))
         print()
-    if "BOOLEY_DIR" not in os.environ and not (ctx.project_root / ".booley").is_dir():
+    if "BOOLEY_DIR" not in os.environ and not own_booley_dir(ctx.project_root).is_dir():
         _step_interactive(ctx, agent_app=selection.provider)
         return _print_summary(ctx)
     pdk_root = nangate_pdk.cache_root() if nangate_pdk.is_ready() else None

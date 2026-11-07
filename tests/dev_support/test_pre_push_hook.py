@@ -283,6 +283,29 @@ class TestMain:
         assert _push(_head(repo)) == 1
         assert f"tracked path exposes project state: {relative_path}" in capsys.readouterr().err
 
+    def test_blocks_tracked_relocated_state_with_external_alias(self, repo, monkeypatch, capsys):
+        """A relative ``[project].dir`` names checkout state just as ``.booley`` does."""
+        _configure_external_project_state(repo, monkeypatch)
+        monkeypatch.setattr(pre_push_hook, "validate_push_configuration", lambda root: None)
+        (repo / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+        path = repo / "state" / "docs" / "example.md"
+        path.parent.mkdir(parents=True)
+        path.write_text("private project state\n", encoding="utf-8")
+        _git(repo, "add", "state/docs/example.md")
+        _git(repo, "commit", "-q", "--no-verify", "-m", "docs: add example")
+
+        assert _push(_head(repo)) == 1
+        assert (
+            "tracked path exposes project state: state/docs/example.md" in capsys.readouterr().err
+        )
+
+    def test_booley_dir_equal_to_the_checkout_does_not_flag_every_path(self, repo, monkeypatch):
+        _configure_external_project_state(repo, monkeypatch)
+        monkeypatch.setattr(pre_push_hook, "validate_push_configuration", lambda root: None)
+        (repo / "booley.toml").write_text('[project]\ndir = "."\n', encoding="utf-8")
+
+        assert _push(_commit(repo, "docs: add notes")) == 0
+
     def test_blocks_checkout_state_symlink_when_runtime_uses_external_alias(
         self, repo, monkeypatch, capsys
     ):
@@ -1978,6 +2001,7 @@ def test_bundle_import_falls_back_to_flat_commit_policy_module(
 
     flat = types.ModuleType("booley_commit_policy")
     flat.validate_push_configuration = lambda root: "flat-module"
+    flat.checkout_booley_dir = lambda root: Path(root) / ".booley"
     monkeypatch.setitem(sys.modules, "booley.commit_policy.policy", None)
     monkeypatch.setitem(sys.modules, "booley_commit_policy", flat)
     spec = importlib.util.spec_from_file_location("bundled_pre_push", pre_push_hook.__file__)

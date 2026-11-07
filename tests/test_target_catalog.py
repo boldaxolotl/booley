@@ -937,6 +937,16 @@ targets:
 """)
 
 
+def test_compile_inputs_optional_config_follows_relocated_booley_dir(tmp_path):
+    _category_sim_core(tmp_path)
+    (tmp_path / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+    catalog = TargetCatalog.build(tmp_path)
+
+    surface = catalog.compile_inputs(catalog.select("sim"))
+
+    assert surface.optional_paths == (tmp_path / "state" / "booley.toml",)
+
+
 def test_typed_sim_harness_roles_preserve_selected_compile_inputs(tmp_path):
     _category_sim_core(tmp_path)
     catalog = TargetCatalog.build(tmp_path)

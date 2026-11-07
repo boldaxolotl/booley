@@ -18,6 +18,7 @@ from booley.config.gateway import (
 )
 from booley.config.jobs import SlotCaps, parse_caps
 from booley.config.sandbox import SANDBOX_IMAGE, project_sandbox_image
+from booley.core.booley_dir import own_booley_dir
 from booley.core.config_paths import resolve_toml
 
 if TYPE_CHECKING:
@@ -601,7 +602,7 @@ def load_agent_settings(project_root: Path, *, booley_dir: Path | None = None) -
     silently run a backend or model the project didn't ask for.
     """
     global _agent_settings
-    data = _read_toml(_resolve_booley_toml(booley_dir or project_root / ".booley"))
+    data = _read_toml(_resolve_booley_toml(booley_dir or own_booley_dir(project_root)))
     settings = settings_from_data(data or {}, lazy=False)
     if data is not None:
         try:

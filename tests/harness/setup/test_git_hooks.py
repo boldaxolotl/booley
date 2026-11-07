@@ -702,6 +702,21 @@ class TestProjectGitHookMigration:
         below = _shell_bundle_resolution(plain, plain / ".booley" / ".managed" / "bundle.pyz")
         assert below == f"BUNDLE={shlex.quote(str(elsewhere / 'bundle.pyz'))}\n"
 
+    def test_shell_bundle_resolution_through_symlinked_relocated_entry(
+        self, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "project"
+        root.mkdir()
+        (root / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+        real = tmp_path / "real-booley-dir"
+        (real / ".managed").mkdir(parents=True)
+        (real / ".managed" / "bundle.pyz").write_bytes(b"bundle")
+        symlink_or_skip(root / "state", real)
+
+        linked = _shell_bundle_resolution(root, root / "state" / ".managed" / "bundle.pyz")
+
+        assert linked.splitlines()[0] == 'BUNDLE="$ROOT/state/.managed/bundle.pyz"'
+
     def test_check_only_lists_every_pending_action_without_writing(self, tmp_path: Path) -> None:
         hooks = self._seed(
             tmp_path, {"boundary.py": _legacy_source("boundary.py"), "run_command.py": b"edit\n"}

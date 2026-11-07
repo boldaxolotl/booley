@@ -56,12 +56,27 @@ class TestPortableTarget:
         assert target == project_root / BOOLEY_DIR_NAME / CANON_NAME
         assert ".." not in str(target)
 
-    def test_relocated_booley_dir_falls_back_to_canon(self, tmp_path: Path):
-        """A [project].dir override has no repo-local path to name."""
+    def test_relocated_inside_checkout_names_repo_local_path(self, tmp_path: Path):
         project_root = tmp_path / "repo"
         (project_root / ".git" / "info").mkdir(parents=True)
+        (project_root / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+        canon = project_root / "state" / CANON_NAME
+        canon.parent.mkdir()
+        canon.write_text("# AGENTS\n", encoding="utf-8")
+        mounted = tmp_path / "booley-project" / CANON_NAME
+        mounted.parent.mkdir()
+        mounted.write_text("# AGENTS\n", encoding="utf-8")
+
+        assert _portable_target(project_root, mounted) == project_root / "state" / CANON_NAME
+
+    def test_booley_dir_outside_the_checkout_falls_back_to_canon(self, tmp_path: Path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir()
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
+        (project_root / "booley.toml").write_text(
+            f'[project]\ndir = "{elsewhere.as_posix()}"\n', encoding="utf-8"
+        )
         canon = elsewhere / CANON_NAME
         canon.write_text("# AGENTS\n", encoding="utf-8")
 
