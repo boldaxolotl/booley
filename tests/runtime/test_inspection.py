@@ -510,6 +510,7 @@ class TestDevcontainerSpecStaleness:
         monkeypatch,
         image: str | None = None,
         declared_provider: str | None = None,
+        declared_clis: tuple[str, ...] | None = None,
     ) -> _Rec:
         from booley.runtime import devcontainer as dc
 
@@ -528,6 +529,7 @@ class TestDevcontainerSpecStaleness:
                     image or dc.SANDBOX_IMAGE,
                     None,
                     declared_provider=declared_provider,
+                    **({"declared_clis": declared_clis} if declared_clis else {}),
                     expected_cache_mount=doctor.nangate_pdk.CONTAINER_ROOT
                     if doctor.nangate_pdk.is_ready()
                     else None,
@@ -775,6 +777,54 @@ class TestDevcontainerSpecStaleness:
         rec = self._run(tmp_path, monkeypatch, declared_provider=dc.APP_CODEX)
         assert rec.fails() and all("BOOLEY_AGENT_APP" in m for m in rec.fails())
         assert not any(lvl == "warn" for lvl, _ in rec.events)
+
+    @staticmethod
+    def _two_cli_spec(app: str) -> dict:
+        from booley.runtime import devcontainer as dc
+
+        spec = dc.build_devcontainer_spec(app)
+        spec["name"] = "Booley Interactive (claude, codex)"
+        spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = "claude=auto,codex=auto"
+        return spec
+
+    def test_spec_for_allowed_cli_set_passes(self, tmp_path, monkeypatch):
+        # Either listed CLI may be the registered one: the Sandbox seeds both.
+        from booley.runtime import devcontainer as dc
+
+        dc.write_devcontainer(tmp_path, self._two_cli_spec(dc.APP_CODEX))
+        rec = self._run(
+            tmp_path, monkeypatch, declared_provider="claude", declared_clis=("claude", "codex")
+        )
+        assert rec.kinds() == {"pass"}
+
+    def test_spec_for_other_cli_set_fails_naming_both_sets(self, tmp_path, monkeypatch):
+        from booley.runtime import devcontainer as dc
+
+        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
+        rec = self._run(
+            tmp_path, monkeypatch, declared_provider="claude", declared_clis=("claude", "codex")
+        )
+        (message,) = rec.fails()
+        assert "['claude']" in message and "['claude', 'codex']" in message
+        assert not any(lvl == "warn" for lvl, _ in rec.events)
+
+    def test_none_spec_under_declared_clis_fails(self, tmp_path, monkeypatch):
+        from booley.runtime import devcontainer as dc
+
+        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_NONE))
+        rec = self._run(
+            tmp_path, monkeypatch, declared_provider="claude", declared_clis=("claude", "codex")
+        )
+        assert any("BOOLEY_AGENT_APP 'none'" in m for m in rec.fails())
+
+    def test_malformed_cli_record_fails(self, tmp_path, monkeypatch):
+        from booley.runtime import devcontainer as dc
+
+        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = "claude=auto,bogus=auto"
+        dc.write_devcontainer(tmp_path, spec)
+        rec = self._run(tmp_path, monkeypatch, declared_provider="claude")
+        assert any("record is malformed" in m for m in rec.fails())
 
     def test_stale_claude_spec_warns_not_fails(self, tmp_path, monkeypatch):
         from booley.runtime import devcontainer as dc

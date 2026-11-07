@@ -283,3 +283,115 @@ def test_ephemeral_auth_uses_runner_project_policy(tmp_path, monkeypatch):
         assert "SYNTHETIC" not in " ".join(command)
     finally:
         runner._env_file.unlink(missing_ok=True)
+
+
+def test_ephemeral_shell_forwards_only_listed_cli_credentials(tmp_path, monkeypatch):
+    """``booley shell`` mounts and exports credentials for the listed CLIs only."""
+    from booley.runtime import auth_token
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    for key in (
+        "BOOLEY_DIR",
+        "BOOLEY_PRIMARY_AUTH",
+        "BOOLEY_PRIMARY_PROVIDER",
+        "BOOLEY_AGENT_APP",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_OPENAI")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_ANTHROPIC")
+    data = tmp_path / "project" / ".booley"
+    data.mkdir(parents=True)
+    (data / "booley.toml").write_text('[agent]\nclis = ["claude"]\n')
+    for app, body in (
+        ("claude", '{"claudeAiOauth":{"accessToken":"SYNTHETIC_LOGIN"}}'),
+        ("codex", '{"tokens":{"access_token":"SYNTHETIC_LOGIN"},"OPENAI_API_KEY":null}'),
+    ):
+        login = auth_token.subscription_creds_path(app)
+        login.parent.mkdir(parents=True, exist_ok=True)
+        login.write_text(body)
+    runner = DockerRunner(
+        DockerSandboxConfig(image="test-image", needs_network=False), data.parent
+    )
+
+    command = " ".join(runner._build_docker_cmd(["true"]))
+    try:
+        body = runner._env_file.read_text()
+        assert "ANTHROPIC_API_KEY=SYNTHETIC_ANTHROPIC" in body
+        assert "OPENAI_API_KEY" not in body
+        assert ".claude/.credentials.json" in command
+        assert ".codex" not in command
+    finally:
+        runner._env_file.unlink(missing_ok=True)
+
+
+_INVALID_AGENT_CONFIGS = {
+    "default-not-listed": '[agent]\ndefault = "codex"\nclis = ["claude"]\n',
+    "unlisted-auth-key": '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "auto"\n',
+}
+
+
+def test_ephemeral_shell_without_credentials_on_invalid_agent_config(
+    tmp_path, monkeypatch, capsys
+):
+    """An invalid ``[agent]`` warns and starts the shell with no logins and no API keys."""
+    from booley.runtime import auth_token
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    for key in (
+        "BOOLEY_DIR",
+        "BOOLEY_PRIMARY_AUTH",
+        "BOOLEY_PRIMARY_PROVIDER",
+        "BOOLEY_AGENT_APP",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_OPENAI")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_ANTHROPIC")
+    data = tmp_path / "project" / ".booley"
+    data.mkdir(parents=True)
+    for app, body in (
+        ("claude", '{"claudeAiOauth":{"accessToken":"SYNTHETIC_LOGIN"}}'),
+        ("codex", '{"tokens":{"access_token":"SYNTHETIC_LOGIN"},"OPENAI_API_KEY":null}'),
+    ):
+        login = auth_token.subscription_creds_path(app)
+        login.parent.mkdir(parents=True, exist_ok=True)
+        login.write_text(body)
+
+    for case, toml in _INVALID_AGENT_CONFIGS.items():
+        (data / "booley.toml").write_text(toml)
+        runner = DockerRunner(
+            DockerSandboxConfig(image="test-image", needs_network=False), data.parent
+        )
+
+        command = " ".join(runner._build_docker_cmd(["true"]))
+
+        assert ".credentials.json" not in command, case
+        assert ".codex" not in command, case
+        assert runner._env_file is None, case
+        assert "starting without Agent CLI logins or API keys" in capsys.readouterr().err, case
+
+
+def test_ephemeral_shell_ignores_ambiguous_agent_app_environment(tmp_path, monkeypatch):
+    """An unresolvable ``BOOLEY_AGENT_APP`` falls back to Claude instead of stopping the shell."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
+    monkeypatch.setenv("BOOLEY_AGENT_APP", "auto")
+    data = tmp_path / "project" / ".booley"
+    data.mkdir(parents=True)
+    (data / "booley.toml").write_text('[agent]\nclis = ["claude", "codex"]\n')
+    runner = DockerRunner(
+        DockerSandboxConfig(image="test-image", needs_network=False), data.parent
+    )
+
+    plans = runner._credential_plans()
+
+    assert [plan.app for plan in plans] == ["claude", "codex"]

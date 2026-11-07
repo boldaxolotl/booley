@@ -62,6 +62,7 @@ class RuntimeInspectionRequest:
     image: str
     docker_exe: str | None
     declared_provider: str | None = None
+    declared_clis: tuple[str, ...] | None = None
     eda: dict[str, EdaConfig] | None = None
     fpga_enabled: bool = False
     expected_cache_mount: str | None = None
@@ -133,8 +134,9 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
 
     *request.image* is the project-resolved ``[sandbox].image``; the spec's own
     ``image`` must match it, else the Sandbox runs a stale image.
-    *request.declared_provider* is the project's *explicit* ``[agent] provider``
-    (``None`` = undeclared); the spec's ``BOOLEY_AGENT_APP`` must match it.
+    *request.declared_provider* is the project's *explicit* ``[agent] provider`` and
+    *request.declared_clis* its explicit ``[agent] clis`` (``None`` = undeclared); the
+    spec's recorded Agent CLI set must match them.
     """
     if _devcontainer_tracked(request.project_root):
         report.fail(
@@ -188,14 +190,7 @@ def _provider_persistence_current(
             f"registers the other app while Specialists still use '{pinned}'; remove "
             f"[agent] provider or set BOOLEY_AGENT_APP to '{pinned}'",
         )
-    elif pinned is not None and spec_app is not None and spec_app != pinned:
-        report.fail(
-            f"devcontainer.json BOOLEY_AGENT_APP '{spec_app}' != [agent] provider "
-            f"'{request.declared_provider}': the Booley MCP entry is registered for "
-            f"'{spec_app}', so a '{request.declared_provider}' session sees no Booley "
-            f"MCP tools, and '{request.declared_provider}' home-state is not persisted",
-            request.remedy,
-        )
+    elif not _cli_set_current(request, spec, spec_app, report):
         return False
     if spec_state_is_persisted(spec) is False:
         _spec_warning(
@@ -204,6 +199,33 @@ def _provider_persistence_current(
             "devcontainer.json is stale: no persistent volume for the agent's "
             "home-state - in-container transcripts/plans are lost on every "
             "rebuild",
+        )
+        return False
+    return True
+
+
+def _cli_set_current(
+    request: RuntimeInspectionRequest, spec: dict, spec_app: str | None, report: Findings
+) -> bool:
+    """Whether the spec's recorded Agent CLI set is the one ``[agent]`` allows."""
+    declared = request.declared_clis or (
+        (pinned,) if (pinned := request.declared_provider) else None
+    )
+    if declared is None or spec_app is None or spec_app == agent_app.AUTO_APP:
+        return True
+    try:
+        recorded = tuple(dc.spec_cli_policies(spec))
+    except ValueError as exc:
+        report.fail(f"devcontainer.json Agent CLI record is malformed: {exc}", request.remedy)
+        return False
+    if set(recorded) != set(declared) or (
+        spec_app in auth_token.CREDENTIALS and spec_app not in recorded
+    ):
+        report.fail(
+            f"devcontainer.json Agent CLIs {list(recorded)} (BOOLEY_AGENT_APP '{spec_app}') != "
+            f"[agent] clis {list(declared)}: the Sandbox seeds credentials and state for a "
+            "different set, and the Booley MCP entry may be registered for the wrong CLI",
+            request.remedy,
         )
         return False
     return True
@@ -272,12 +294,15 @@ def _seed_mounts_current(
 def _expected_token_seed(
     request: RuntimeInspectionRequest, app: str, report: Findings
 ) -> bool | None:
-    from booley.config.agent import BackendConfigError, project_credential_policy
+    from booley.config.agent import BackendConfigError, project_credential_policies
     from booley.core.booley_layout import BooleyLayoutError
     from booley.core.checkout_role import SourceCheckoutProjectError
 
     try:
-        _, policy = project_credential_policy(request.project_root, booley_dir=request.booley_dir)
+        found = project_credential_policies(
+            request.project_root, booley_dir=request.booley_dir, selected=app
+        )
+        policy = found.policies.get(app, found.policies[found.default])
         return auth_token.credential_plan(app, policy).token_seed is not None
     except (
         BackendConfigError,

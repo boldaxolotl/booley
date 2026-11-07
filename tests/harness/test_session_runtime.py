@@ -5328,3 +5328,59 @@ def test_lasting_spec_sharing_error_is_a_session_error(tmp_path, monkeypatch):
         sr._load_spec(tmp_path)
     assert caught.value.__cause__.winerror == 32
     assert attempts[path] > 1
+
+
+def _two_cli_spec(*, app: str = "claude", record: str, **remote_env: str) -> dict:
+    """A Claude-default spec recording *record* as its Agent CLI set."""
+    spec = _spec()
+    spec["remoteEnv"]["BOOLEY_AGENT_APP"] = app
+    spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = record
+    spec["remoteEnv"].update(remote_env)
+    return spec
+
+
+def test_docker_run_argv_forwards_every_listed_cli_credential(workspace, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_OPENAI")
+    placeholder = {"OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}"}
+
+    command = sr.docker_run_argv(
+        _two_cli_spec(record="claude=auto,codex=api_key", **placeholder), workspace, "test"
+    )
+
+    assert command.environment["OPENAI_API_KEY"] == "SYNTHETIC_OPENAI"
+    assert "OPENAI_API_KEY" in _flag_values(command, "-e")
+    with pytest.raises(sr.SessionError, match="credential environment"):
+        sr.docker_run_argv(_two_cli_spec(record="claude=auto", **placeholder), workspace, "test")
+
+
+def test_docker_run_argv_requires_api_key_only_for_default_cli(workspace, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_ANTHROPIC")
+    placeholders = {
+        "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
+        "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
+    }
+    # A missing key for the non-default Codex must not block the whole Sandbox.
+    sr.docker_run_argv(
+        _two_cli_spec(
+            record="claude=api_key,codex=api_key", **placeholders, BOOLEY_PRIMARY_AUTH="api_key"
+        ),
+        workspace,
+        "test",
+    )
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    with pytest.raises(sr.SessionError, match=r"requires.*credential"):
+        sr.docker_run_argv(
+            _two_cli_spec(
+                record="claude=api_key,codex=api_key",
+                **placeholders,
+                BOOLEY_PRIMARY_AUTH="api_key",
+            ),
+            workspace,
+            "test",
+        )
+
+
+def test_docker_run_argv_refuses_malformed_cli_record(workspace):
+    with pytest.raises(sr.SessionError, match="Agent CLI record"):
+        sr.docker_run_argv(_two_cli_spec(record="claude=auto,bogus=auto"), workspace, "test")

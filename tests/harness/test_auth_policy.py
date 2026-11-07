@@ -536,6 +536,32 @@ def test_auth_status_uses_the_requested_cli_policy(clean_env, monkeypatch, capsy
     assert "codex: agents run on" in output
 
 
+@pytest.mark.parametrize(
+    "toml",
+    ['[agent]\nauth = "api_key"\n', '[agent.auth]\ncodex = "api_key"\n'],
+    ids=["string-auth", "per-cli-auth"],
+)
+def test_auth_status_requested_cli_is_allowed_when_project_declares_none(
+    clean_env, monkeypatch, capsys, toml
+):
+    """With no ``[agent]`` CLI declared, ``--cli codex`` is the allowed set, as at issuance."""
+    import argparse
+
+    from booley.harness import auth_cmd
+
+    root = clean_env / "project"
+    data = root / ".booley"
+    data.mkdir(parents=True)
+    (data / "booley.toml").write_text(toml)
+    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_API_KEY")
+
+    code = auth_cmd.run_auth(argparse.Namespace(status=True, app="codex"), root)
+
+    output = capsys.readouterr().out
+    assert code == 0
+    assert "auth policy 'api_key'" in output
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("app", ["claude", "codex"])
 @pytest.mark.parametrize("policy", ["auto", "subscription", "api_key"])

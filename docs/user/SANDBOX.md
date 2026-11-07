@@ -68,6 +68,36 @@ Sandbox. The Sandbox is unavailable while the new container starts. A Sandbox
 using a [floating license](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy)
 can't be refreshed in place: run `booley session down` first.
 
+## Agent CLI logins in the Sandbox
+
+The Sandbox receives a login only for the Agent CLIs your Project lists in
+[`[agent] clis`](CONFIG.md#agent-clis-agent). For each listed CLI it gets:
+
+- the login you made on the host (Claude's or Codex's login file),
+- the token stored by `booley auth`,
+- the API key from your shell, forwarded for that CLI only, and
+- its own volume for session history, kept across rebuilds.
+
+An unlisted CLI gets none of these, even if you are logged in to it on the host.
+With `clis = ["claude"]` the Sandbox holds only Claude's login; with
+`clis = ["claude", "codex"]` it holds both.
+
+Each CLI follows its own [`[agent.auth]`](CONFIG.md#pinning-what-bills-agent-auth)
+policy. For example, with `claude = "subscription"` and `codex = "api_key"`, Claude's
+login is copied in and its API key is not forwarded, while Codex gets its API key
+and no login. The Developer Agent's window connects to the CLI that was `default`
+when the Sandbox was issued (run `booley session refresh` after changing `default`
+to move it); Specialists use whichever listed CLI their model needs.
+
+After you change `clis` or `auth`, or change `default` in a Project that sets
+no `clis` (the set is then just the default CLI), the Sandbox refuses to start until you run
+`booley session refresh` (or `booley init --seed` and rebuild the container).
+`booley doctor` reports a Sandbox that was issued for a different set of CLIs.
+
+Adding a CLI to `clis` hands that CLI's login to the next refreshed Sandbox. The
+agent inside the Sandbox can edit `booley.toml`, so review changes to `[agent]`
+before you refresh.
+
 ## Host configuration (`config.toml`)
 
 Settings that apply to every Project on this machine live in
