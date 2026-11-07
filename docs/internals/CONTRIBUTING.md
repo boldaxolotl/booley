@@ -84,7 +84,11 @@ installs Booley from any checkout, and runs commands against the active
 worktree's source. At `handoff` it names CI's lint-job checks: `ruff
 check .`, `ruff format --check .`, and `pyright` (the strict boundary check,
 configured by `[tool.pyright]` in `pyproject.toml`, resolving third-party
-imports in the shared environment). Develop readiness defaults to the `python` test profile: its
+imports in the shared environment). Its `coverage.changed-lines` handoff
+command repeats CI's 90% changed-line coverage gate against the newest merge
+base with `main`, reading the coverage report that a passing `pytest.broad`
+run wrote for the same tree outside the checkout; it refuses a missing or
+stale report. Develop readiness defaults to the `python` test profile: its
 broad command runs `tests/ --test-profile python`, excluding every
 `native_bwave` test. It includes every Goal recovery and authority
 permutation, as every complete-suite CI run does.

@@ -95,8 +95,8 @@ def test_full_readiness_advertises_guarded_command(
 ) -> None:
     monkeypatch.setattr(readiness, "native_test_problem", lambda root: None)
     assert readiness._native_test_check(tmp_path).status is readiness.Status.READY
-    command = readiness._verification_commands(Path(sys.executable), tmp_path, "full")[-1]
-    assert command.id == "pytest.broad"
+    commands = readiness._verification_commands(Path(sys.executable), tmp_path, "full")
+    (command,) = (command for command in commands if command.id == "pytest.broad")
     assert command.required_at == "optional-broad-verification"
     assert command.argv[4:6] == ("--test-profile", "full")
 

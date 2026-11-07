@@ -230,6 +230,7 @@ def pytest_configure(config: pytest.Config) -> None:
     warning-free (principle 12) in bare environments.
     """
     _configure_test_profile(config)
+    _begin_coverage_stamp(config)
     # Imported here: pytest_plugins must load it first for assertion rewriting.
     from tests.timeout_headroom import timeout_plugin_loaded
 
@@ -241,10 +242,38 @@ def pytest_configure(config: pytest.Config) -> None:
             config.option.timeout = _DEFAULT_TEST_TIMEOUT_S
 
 
+# (report, fingerprint) of a controller run that writes Cobertura XML; see
+# booley.dev_support.changed_line_coverage.
+_COVERAGE_STAMP = pytest.StashKey[tuple[Path, str]]()
+_SESSION_PASSED = pytest.StashKey[bool]()
+
+
+def _begin_coverage_stamp(config: pytest.Config) -> None:
+    """Invalidate a pytest-cov XML report's stamp before this run rewrites it."""
+    reports = getattr(config.option, "cov_report", None)  # absent without pytest-cov
+    xml = reports.get("xml") if isinstance(reports, dict) else None
+    if not xml or hasattr(config, "workerinput"):
+        return
+    from booley.dev_support.changed_line_coverage import begin_stamp
+
+    report = Path(xml).resolve()
+    config.stash[_COVERAGE_STAMP] = (report, begin_stamp(_SOURCE_ROOT, report))
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Remember whether the run passed; pytest-cov writes its XML after this."""
+    session.config.stash[_SESSION_PASSED] = exitstatus == pytest.ExitCode.OK
+
+
 def pytest_unconfigure(config: pytest.Config) -> None:
-    """Remove the worker-only temp root after its tests and children exit."""
-    del config  # hook signature; cleanup uses the module-owned path
+    """Stamp a green run's coverage report, then remove the worker-only temp root."""
     global _XDIST_WORKER_TEMP
+
+    stamp = config.stash.get(_COVERAGE_STAMP, None)
+    if stamp is not None and config.stash.get(_SESSION_PASSED, False):
+        from booley.dev_support.changed_line_coverage import finish_stamp
+
+        finish_stamp(_SOURCE_ROOT, *stamp)
 
     if _XDIST_WORKER_TEMP is not None:
         shutil.rmtree(_XDIST_WORKER_TEMP)
