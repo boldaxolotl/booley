@@ -13,8 +13,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from booley.core.booley_dir import BOOLEY_DIR_NAME
 from booley.goals.declared_inputs import DeclaredCapture
-from booley.goals.protected_inputs import PROTECTED_INPUT_NAMES
+from booley.goals.protected_inputs import protected_input_names
 
 WORK_DIR_GUIDANCE = (
     "Pass `work_dir` (the absolute worktree root) to Booley Flows, Specialists, "
@@ -54,13 +55,17 @@ def goal_mode_rules(
     *,
     routing_guidance: str,
     paired_checkout: bool = False,
+    booley_dir: str = BOOLEY_DIR_NAME,
 ) -> str:
     """The Goal Mode rules as Markdown bullets, ending with a newline.
+
+    *booley_dir* is the worktree's Booley Directory as a repository-relative
+    path, named in the protected-input list.
 
     *paired_checkout* adds the statement that the worktree's Booley Directory is a
     separate Git repository whose changes need their own commit.
     """
-    protected = ", ".join(f"`{name}`" for name in PROTECTED_INPUT_NAMES)
+    protected = ", ".join(f"`{name}`" for name in protected_input_names(booley_dir))
     if declared is not None:
         protected += "; Project-declared files: " + ", ".join(
             f"`{row.path}`" for row in declared.working

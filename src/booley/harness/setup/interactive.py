@@ -12,13 +12,13 @@ from booley.eda.provisioning.licensing.flexnet_docker import (
     resources_for_session,
 )
 from booley.runtime import dashboard_tasks, interactive_docker, session_issuance, session_runtime
-from booley.runtime.git import add_git_excludes, git_excludes_pending
+from booley.runtime.git import add_git_excludes, git_excludes_pending, stealth_exclude_names
 
 
 def _exclude_names(root: Path) -> tuple[str, ...]:
     """Fresh non-Stealth Projects keep durable Project content trackable."""
     names = (".devcontainer", ".claude")
-    return (*names, ".booley") if stealth_enabled(root) else names
+    return (*names, *stealth_exclude_names(root)) if stealth_enabled(root) else names
 
 
 @dataclass(frozen=True, slots=True)

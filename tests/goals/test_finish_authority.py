@@ -306,3 +306,33 @@ def test_bound_request_read_survives_transient_sharing_error(complete, monkeypat
     with bind_operation(GoalStore(complete.control), call) as operation:
         hold_opens(monkeypatch, {operation_dir / "request.json": 1})
         assert read_bound_request(operation, call.operation_id).operation_id == call.operation_id
+
+
+@pytest.mark.parametrize(
+    ("path", "skip_prefix"),
+    [
+        pytest.param(".booley/goals/history/{id}.md", ".booley", id="pre-upgrade-default"),
+        pytest.param("tools/booley/goals/history/{id}.md", "tools/booley", id="relocated"),
+        pytest.param("a/b/c/goals/history/{id}-{op}.md", "a/b/c", id="deep-operation-suffix"),
+        pytest.param("../x/goals/history/{id}.md", None, id="traversal"),
+        pytest.param("/abs/goals/history/{id}.md", None, id="absolute"),
+        pytest.param("a//b/goals/history/{id}.md", None, id="empty-component"),
+        pytest.param("a\\b/goals/history/{id}.md", None, id="backslash"),
+        pytest.param("./a/goals/history/{id}.md", None, id="dot-component"),
+        pytest.param("goals/history/{id}.md", None, id="no-prefix"),
+        pytest.param("a/goals/history/other.md", None, id="foreign-name"),
+        pytest.param("C:x/a/goals/history/{id}.md", None, id="windows-drive"),
+    ],
+)
+def test_frozen_attempt_validates_sealed_history_prefix(path, skip_prefix):
+    # Only the sealed text is judged (never the live booley.toml), so attempts
+    # frozen before the Booley Directory moved still replay.
+    from booley.goals.finish_attempt import _validate_path, excluded_skip_reason
+
+    if skip_prefix is None:
+        with pytest.raises(ValueError, match="not a confined"):
+            _validate_path(path.format(id="g1", op="op1"), "g1", "op1")
+        return
+    prefix = _validate_path(path.format(id="g1", op="op1"), "g1", "op1")
+    assert prefix.as_posix() == skip_prefix
+    assert excluded_skip_reason(prefix) == f"summary kept local; `{skip_prefix}` is git-excluded"

@@ -57,6 +57,13 @@ legacy ``pipeline.toml``        Every reader above falls back to it beside      
 ``FUSESOC_IGNORE``              Core discovery scans the ``work_dir`` root.                       ``worktree:FUSESOC_IGNORE``
 =============================== ================================================================= ========================================
 
+In the table, ``.booley`` stands for ``.booley`` **or** the checkout's own
+``[project].dir`` (a relocated Booley Directory such as ``tools/booley``): the
+``worktree`` and ``main`` candidates are digested at both spellings, because
+some readers still use the fixed path. For the default directory the two
+spellings are one and the list is unchanged. A checkout whose configuration
+selects a retired layout raises :class:`ProtectedInputError`.
+
 Encoding rules:
 
 - A directory is digested recursively by its files and symlinks; adding or
@@ -104,7 +111,12 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from booley.config.protected_inputs import protected_input_declarations
-from booley.core.booley_dir import BOOLEY_DIR_NAME, resolve_checkout_booley_dir
+from booley.core.booley_dir import (
+    BOOLEY_DIR_NAME,
+    own_booley_dir_repo_path,
+    resolve_checkout_booley_dir,
+)
+from booley.core.booley_layout import BooleyLayoutError
 from booley.goals.checkout import CheckoutError, GoalCheckout, TreeEntry
 from booley.goals.declared_inputs import (
     DeclaredCapture,
@@ -122,16 +134,37 @@ from booley.runtime.git_facts import repository_facts
 if TYPE_CHECKING:
     from booley.goals.model import GoalRecord
 
-# The protected set as the rules text names it (ADR 0067 "Protected inputs").
-PROTECTED_INPUT_NAMES: tuple[str, ...] = (
-    "booley.toml",
-    f"{BOOLEY_DIR_NAME}/booley.toml",
-    f"{BOOLEY_DIR_NAME}/hooks/",
-    f"{BOOLEY_DIR_NAME}/.managed/",
-    f"{BOOLEY_DIR_NAME}/generators/",
-    f"{BOOLEY_DIR_NAME}/mcp_tools/",
-    "FUSESOC_IGNORE",
-)
+
+def protected_input_names(booley_dir: str = BOOLEY_DIR_NAME) -> tuple[str, ...]:
+    """The protected set as the rules text names it (ADR 0067 "Protected inputs").
+
+    *booley_dir* is the checkout's Booley Directory as a repository-relative
+    path; the default keeps the historical ``.booley`` spelling.
+    """
+    return (
+        "booley.toml",
+        f"{booley_dir}/booley.toml",
+        f"{booley_dir}/hooks/",
+        f"{booley_dir}/.managed/",
+        f"{booley_dir}/generators/",
+        f"{booley_dir}/mcp_tools/",
+        "FUSESOC_IGNORE",
+    )
+
+
+def rules_booley_dir(worktree: Path) -> str:
+    """The worktree's Booley Directory spelling for the Goal rules text.
+
+    The rules are advisory prose, so a retired layout (which the protected
+    input resolution reports as an error) falls back to the default spelling
+    instead of failing a status or entry response.
+    """
+    try:
+        return own_booley_dir_repo_path(worktree).as_posix()
+    except BooleyLayoutError:
+        return BOOLEY_DIR_NAME
+
+
 # Every name a Project configuration file may have, newest first (resolve_toml).
 CONFIG_FILE_NAMES: tuple[str, ...] = ("booley.toml", "pipeline.toml")
 # The legacy Booley Directory layout resolve_booley_toml still reads.
@@ -282,12 +315,34 @@ def resolve_protected_inputs(roots: ProtectedInputRoots) -> tuple[ProtectedPath,
     return _with_declared_paths(paths, declared, roots)
 
 
+def _own_dir(checkout: Path) -> str:
+    """One checkout's own Booley Directory as a repository path, for protected candidates.
+
+    Raises:
+        ProtectedInputError: The checkout selects a retired Booley layout.
+    """
+    try:
+        return own_booley_dir_repo_path(checkout).as_posix()
+    except BooleyLayoutError as exc:
+        raise ProtectedInputError(str(exc)) from exc
+
+
 def _builtin_inputs(roots: ProtectedInputRoots) -> tuple[ProtectedPath, ...]:
     worktree, project, main = RootKind.WORKTREE, RootKind.PROJECT, RootKind.MAIN
+    # Fixed `.booley` candidates stay (some readers still use that path); the
+    # checkout's own `[project].dir` spelling is added beside each. For the
+    # default directory both spellings are equal and `dict.fromkeys` drops one.
+    main_checkout = roots.main_checkout()
+    worktree_dirs = (BOOLEY_DIR_NAME, _own_dir(roots.worktree))
+    main_dirs = (
+        (BOOLEY_DIR_NAME, _own_dir(main_checkout))
+        if main_checkout is not None
+        else (BOOLEY_DIR_NAME,)
+    )
     config_dirs = [
         (project, ""),
-        (worktree, BOOLEY_DIR_NAME),
-        (main, BOOLEY_DIR_NAME),
+        *((worktree, name) for name in worktree_dirs),
+        *((main, name) for name in main_dirs),
         _checkout_booley_dir(roots),
         (worktree, ""),  # the checkout root's own booley.toml
     ]
@@ -299,16 +354,16 @@ def _builtin_inputs(roots: ProtectedInputRoots) -> tuple[ProtectedPath, ...]:
     checkout_kind, checkout_dir = _checkout_booley_dir(roots)
     paths += [
         ProtectedPath(project, "hooks"),
-        ProtectedPath(worktree, f"{BOOLEY_DIR_NAME}/hooks"),
+        *(ProtectedPath(worktree, f"{name}/hooks") for name in worktree_dirs),
         # Preparation reads the hooks of the directory Flow readers resolve,
         # which a `[project].dir` override moves away from the fixed path.
         ProtectedPath(checkout_kind, _join(checkout_dir, "hooks")),
-        ProtectedPath(worktree, f"{BOOLEY_DIR_NAME}/.managed"),
-        ProtectedPath(main, f"{BOOLEY_DIR_NAME}/.managed"),
+        *(ProtectedPath(worktree, f"{name}/.managed") for name in worktree_dirs),
+        *(ProtectedPath(main, f"{name}/.managed") for name in main_dirs),
         ProtectedPath(project, ".managed"),
         ProtectedPath(project, "generators"),
         ProtectedPath(project, "mcp_tools"),
-        ProtectedPath(main, f"{BOOLEY_DIR_NAME}/mcp_tools"),
+        *(ProtectedPath(main, f"{name}/mcp_tools") for name in main_dirs),
         ProtectedPath(worktree, "FUSESOC_IGNORE"),
     ]
     return tuple(dict.fromkeys(paths))

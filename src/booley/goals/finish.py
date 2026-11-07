@@ -25,6 +25,7 @@ from booley.goals.completion_history import (
     validate_canonical_ownership,
 )
 from booley.goals.ended_records import schedule_ended_cleanup
+from booley.goals.finish_attempt import excluded_skip_reason
 from booley.goals.finish_presentation import (
     freeze_presentation,
     frozen_response,
@@ -85,6 +86,7 @@ from booley.review.goal_package import (
     GoalReviewContext,
 )
 from booley.runtime.atomic_files import atomic_write_once
+from booley.runtime.booley_dir import own_booley_dir_repo_path
 from booley.runtime.git_facts import repository_facts
 from booley.runtime.history_commit import FileCommitError
 from booley.runtime.job_records import JobRecordError
@@ -294,7 +296,7 @@ def _publication_preflight(
     raw_git(operation.root, "var", "GIT_COMMITTER_IDENT")
     PublicationOwnership(
         operation.directory, operation.write_sealed, operation.read_sealed, env.checkpoint
-    ).validate_summary_anchor(operation.root / path)
+    ).validate_summary_anchor(operation.root / path, operation.root)
 
 
 def _frozen_attempt(
@@ -480,7 +482,8 @@ def _publication_path(operation: LifecycleOperation, record: GoalRecord) -> str:
         operations.glob("*/attempt.json")
     )
     suffix = "" if not attempts else "-" + operation.request.operation_id
-    return f".booley/goals/history/{record.id}{suffix}.md"
+    prefix = own_booley_dir_repo_path(operation.root)
+    return f"{prefix}/goals/history/{record.id}{suffix}.md"
 
 
 def _skip_publication(root: Path, project: Path, path: str) -> str | None:
@@ -493,7 +496,9 @@ def _skip_publication(root: Path, project: Path, path: str) -> str | None:
         raise LifecycleError(
             f"cannot inspect summary exclusion: git check-ignore exited {result.returncode}: {result.stderr.strip()}"
         )
-    return "summary kept local; `.booley` is git-excluded" if result.returncode == 0 else None
+    if result.returncode != 0:
+        return None
+    return excluded_skip_reason(own_booley_dir_repo_path(root))
 
 
 def _read_attempt(operation: LifecycleOperation) -> dict[str, Any]:
@@ -788,7 +793,7 @@ def _publish(
     ownership = PublicationOwnership(
         operation.directory, operation.write_sealed, operation.read_sealed, env.checkpoint
     )
-    ownership.materialize(destination, content)
+    ownership.materialize(destination, operation.root, content)
     env.checkpoint("destination-materialized")
 
     def journal(commit: str) -> None:

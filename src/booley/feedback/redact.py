@@ -40,7 +40,13 @@ from pathlib import Path
 
 from booley.audit.project_schema import REDACT_EXTRA_PROBLEM
 from booley.commit_policy.policy import banned_spans, parse_stealth_vocabulary
-from booley.core.booley_dir import BOOLEY_DIR_NAME, resolve_main_checkout_root
+from booley.core.booley_dir import (
+    BOOLEY_DIR_NAME,
+    own_booley_dir,
+    own_booley_dir_repo_path,
+    resolve_main_checkout_root,
+)
+from booley.core.booley_layout import BooleyLayoutError
 from booley.core.boundary import BoundaryError, is_str_list
 from booley.runtime.worktrees import list_worktrees
 
@@ -179,10 +185,15 @@ def _core_identifiers(project_root: Path) -> set[str]:
     """
     names: set[str] = set()
     name_re = re.compile(r"^\s*(?:name|toplevel)\s*:\s*(.+?)\s*$", re.MULTILINE)
+    # The checkout's own Booley Directory, wherever ``[project].dir`` puts it.
+    own_dir = project_root / own_booley_dir_repo_path(project_root)
     for core in sorted(project_root.rglob("*.core")):
         # Skip anything under a Booley state or VCS dir — those hold copies, and
         # walking them doubles the work on a big repo for no new names.
-        if any(part in {".git", ".booley", ".runtime"} for part in core.parts):
+        # A relocated Booley Directory (``[project].dir``) holds such copies too.
+        if core.is_relative_to(own_dir) or any(
+            part in {".git", ".booley", ".runtime"} for part in core.parts
+        ):
             continue
         try:
             text = core.read_text(encoding="utf-8", errors="replace")
@@ -281,11 +292,18 @@ def _register_path_literals(plan: RedactionPlan, project_root: Path) -> None:
     # may pass either the entry or its target (BOOLEY_DIR), so key on the entry. Register
     # every spelling of the target: the link's own text (``ls -l``) and the fully
     # resolved path differ whenever the target is reached through another link.
-    entry = project_root / BOOLEY_DIR_NAME
-    if entry.is_symlink():
-        for literal in _entry_target_spellings(entry):
-            plan.literals[literal] = f"<repo>/{BOOLEY_DIR_NAME}"
-            plan.path_literals.add(literal)
+    # Both the default `.booley` (full init still works in a relocated Project) and
+    # the own directory; another worktree's retired layout only costs its relocation.
+    try:
+        own_dir = own_booley_dir_repo_path(project_root).as_posix()
+    except BooleyLayoutError:
+        own_dir = BOOLEY_DIR_NAME
+    for name in dict.fromkeys((BOOLEY_DIR_NAME, own_dir)):
+        entry = project_root / name
+        if entry.is_symlink():
+            for literal in _entry_target_spellings(entry):
+                plan.literals[literal] = f"<repo>/{name}"
+                plan.path_literals.add(literal)
     home = Path.home()
     if home != project_root and str(home) not in plan.literals:
         literal = str(home)
@@ -312,9 +330,10 @@ def build_plan(project_root: Path, booley_dir: Path | None = None) -> RedactionP
             Every other checkout of its repository is redacted too, because one
             Findings Log (Common Booley State) holds rows from all of them.
         booley_dir: The Booley Directory, holding ``booley.toml``. Defaults to
-            ``<project_root>/.booley``.
+            the checkout's own Booley Directory (``<project_root>/.booley`` unless
+            ``[project].dir`` relocates it).
     """
-    booley_dir = booley_dir or (project_root / ".booley")
+    booley_dir = booley_dir or own_booley_dir(project_root)
     booley_toml = _load_toml(booley_dir / "booley.toml")
     plan = RedactionPlan()
 

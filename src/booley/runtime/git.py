@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Iterable
@@ -11,6 +12,7 @@ from pathlib import Path
 
 from booley.commit_policy import validate_message
 from booley.core import scope_matching
+from booley.core.booley_dir import BOOLEY_DIR_NAME, own_booley_dir_repo_path
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.git_facts import run_remembered
 from booley.runtime.guarded_write import SymlinkTargetError, replace_regular_file
@@ -239,6 +241,26 @@ def git_excludes_pending(
     """Return whether the honored Git exclude needs reconciliation, without writing."""
     _path, lines = _git_exclude_update(wt, names, header=header)
     return lines is not None
+
+
+# Characters that make a literal path spell something else in a gitignore pattern.
+_UNSAFE_EXCLUDE_NAME = re.compile(r"[\x00-\x1f\x7f*?\[\]\\]|\s$")
+
+
+def stealth_exclude_names(root: Path) -> tuple[str, ...]:
+    """Return the Booley Directory names a Stealth Project hides via ``info/exclude``.
+
+    Always the default ``.booley`` (full ``booley init`` works there), plus the
+    checkout's own relocated ``[project].dir`` when it differs. Default
+    projects therefore yield exactly ``(".booley",)``.
+    """
+    own = own_booley_dir_repo_path(root).as_posix()
+    # `[project].dir` is Project-authored text and lands verbatim in a Git ignore
+    # file: a glob, escape, newline or trailing space would hide other files or
+    # add rules. Such a name is simply not excluded.
+    if _UNSAFE_EXCLUDE_NAME.search(own):
+        own = BOOLEY_DIR_NAME
+    return tuple(dict.fromkeys((BOOLEY_DIR_NAME, own)))
 
 
 def add_git_excludes(

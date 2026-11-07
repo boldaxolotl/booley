@@ -152,13 +152,14 @@ from booley.runtime.booley_dir import (
     contains,
     in_checkout_booley_dir,
     own_booley_dir,
+    own_booley_dir_repo_path,
     resolve_checkout_booley_dir,
     resolve_common_booley_dir,
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.docs_links import docs_url
 from booley.runtime.gateway_token import GatewayTokenCommandError, run_token_command
-from booley.runtime.git import _git_common_dir
+from booley.runtime.git import _git_common_dir, stealth_exclude_names
 from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_gitignore import missing_gitignore_patterns
@@ -3288,7 +3289,9 @@ def _check_devcontainer_excludes(
     from booley.commit_policy import stealth_enabled
 
     required = (
-        (".devcontainer", ".booley") if stealth_enabled(project_root) else (".devcontainer",)
+        (".devcontainer", *stealth_exclude_names(project_root))
+        if stealth_enabled(project_root)
+        else (".devcontainer",)
     )
     missing = [name for name in required if f"/{name}" not in body]
     if missing:
@@ -4056,6 +4059,15 @@ def _run_mcp_probe(
     _check_mcp_probe_result(project, result, verbose, _pass, _warn, _fail)
 
 
+def _sandbox_booley_dir(project_root: Path) -> str:
+    """Return the in-Sandbox ``BOOLEY_DIR`` for the repo mounted at ``/work``.
+
+    The Project's own Booley Directory (``.booley`` by default, or the
+    checkout's relocated ``[project].dir``) under the ``/work`` bind mount.
+    """
+    return f"/work/{own_booley_dir_repo_path(project_root).as_posix()}"
+
+
 def _mcp_probe_command(project: ProjectAudit, docker_exe: str, image: str) -> list[str]:
     return [
         docker_exe,
@@ -4067,7 +4079,7 @@ def _mcp_probe_command(project: ProjectAudit, docker_exe: str, image: str) -> li
         "-w",
         "/work",
         "-e",
-        "BOOLEY_DIR=/work/.booley",
+        f"BOOLEY_DIR={_sandbox_booley_dir(project.project_root)}",
         "-e",
         "BOOLEY_MCP_MODE=interactive",
         image,
@@ -4341,10 +4353,9 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
 
 
 def _goal_history_layout_advice(root: Path) -> tuple[str, str]:
-    from booley.runtime.booley_dir import BOOLEY_DIR_NAME
     from booley.runtime.project_repositories import RepositoryCheckoutError, is_git_worktree_root
 
-    project = root / BOOLEY_DIR_NAME
+    project = root / own_booley_dir_repo_path(root)
     healthy = is_git_worktree_root(project)
     if (project / ".git").exists() and not healthy:
         raise RepositoryCheckoutError(f"Booley repository metadata is unavailable at {project}")
@@ -7974,13 +7985,17 @@ def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
     repo-relative rendering that resolves on both host and runtime; any other Booley Directory
     (host default, or an explicit ``[project].dir`` override) is printed as-is.
     """
-    if project.booley_dir.as_posix() not in {dc.BOOLEY_DIR_TARGET, "/work/.booley"}:
+    if project.booley_dir.as_posix() not in {
+        dc.BOOLEY_DIR_TARGET,
+        _sandbox_booley_dir(project.project_root),
+    }:
         return str(report_dir)
+    own_dir = own_booley_dir_repo_path(project.project_root)
     canonical = contains(report_dir, booley_dir=project.booley_dir)
     if canonical is None:
         return str(report_dir)
     rel = canonical.relative_to(project.booley_dir.resolve())
-    return f"{BOOLEY_DIR_NAME}/{rel.as_posix()} (under the Project Root)"
+    return f"{own_dir}/{rel.as_posix()} (under the Project Root)"
 
 
 def _run_flow_check_subprocess(
@@ -8616,7 +8631,7 @@ def _docker_wrap(
         "--network",
         "none",
         "-e",
-        "BOOLEY_DIR=/work/.booley",
+        f"BOOLEY_DIR={_sandbox_booley_dir(project_root)}",
         "-e",
         "BOOLEY_IN_SANDBOX=1",
         *selftest_env,

@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
 from booley import __version__
-from booley.core.booley_layout import BOOLEY_DIR_NAME, INTERACTIVE_LOGS_DIR_NAME
+from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME, BooleyLayoutError
 from booley.core.boundary import BoundaryError, require_finite_number
 from booley.flows.endpoint_events import (
     _endpoint_end_event,
@@ -115,7 +115,11 @@ from booley.mcp.session_registry import Attribution
 from booley.mcp.tool_changes import ChangingToolsServer, ToolChanges
 from booley.runtime import job_records as jobrec
 from booley.runtime import pid, runtime_context
-from booley.runtime.booley_dir import resolve_booley_dir, resolve_common_booley_dir
+from booley.runtime.booley_dir import (
+    own_booley_dir_repo_path,
+    resolve_booley_dir,
+    resolve_common_booley_dir,
+)
 from booley.runtime.bootstrap_mode import should_run_outer_bookkeeping
 from booley.runtime.build_metadata import format_status_line
 from booley.runtime.checkout_role import SourceCheckoutProjectError
@@ -1973,9 +1977,22 @@ def build_mcp_probe_payload() -> dict[str, Any]:
         "tools": [tool.name for tool in application.list_tools()],
         "errors": discovery_errors,
         "logs_dir": logs_dir,
-        "logs_dir_ok": f"/{BOOLEY_DIR_NAME}/{INTERACTIVE_LOGS_DIR_NAME}/"
-        in logs_dir.replace("\\", "/"),
+        "logs_dir_ok": _logs_dir_in_own_booley_dir(logs_dir),
     }
+
+
+def _logs_dir_in_own_booley_dir(logs_dir: str) -> bool:
+    """Whether *logs_dir* sits under the probe's own Booley Directory.
+
+    Doctor runs the probe with the Project Root as the working directory, so the
+    directory spelling (``.booley`` by default, or the relocated ``[project].dir``)
+    comes from that checkout. An unusable layout reads as "not ok".
+    """
+    try:
+        booley_dir = own_booley_dir_repo_path(Path.cwd()).as_posix()
+    except BooleyLayoutError:
+        return False
+    return f"/{booley_dir}/{INTERACTIVE_LOGS_DIR_NAME}/" in logs_dir.replace("\\", "/")
 
 
 def _sdk_tool_result(
