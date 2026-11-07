@@ -98,7 +98,7 @@ from booley.fusesoc import (
     fusesoc_registry,
     selftest_overlay,
 )
-from booley.fusesoc.core_projection import lexical_stealth_path
+from booley.fusesoc.core_projection import STATE_CORES_SUBDIR, lexical_stealth_path
 from booley.harness import (
     doctor_deep,
     host_diagnostics,
@@ -1836,7 +1836,7 @@ def _check_worktree_core_shadow_guard(
     # Marker absent — is there an actual stale worktree .core to shadow right now?
     # Authored stealth cores (.booley/cores/, ADR 0036) are sources, not
     # shadow threats — they are scanned deliberately and must not be counted.
-    stealth_root = booley_dir / fusesoc_registry.STATE_CORES_SUBDIR
+    stealth_root = booley_dir / STATE_CORES_SUBDIR
     worktrees = _worktree_core_directory(booley_dir, project_root)
     shadow_cores = [
         p

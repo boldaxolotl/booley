@@ -561,7 +561,7 @@ def _check_stealth_cores(
     project_root: Path, booley_dir: Path, report: Findings, *, stealth_enabled: bool, repair: bool
 ) -> None:
     """Diagnose stranded/colliding authored cores and inspect or repair projections."""
-    stealth_root = booley_dir / fusesoc_registry.STATE_CORES_SUBDIR
+    stealth_root = booley_dir / core_projection.STATE_CORES_SUBDIR
     authored = tuple(sorted(stealth_root.rglob("*.core"))) if stealth_root.is_dir() else ()
     if stealth_enabled is False and authored:
         report.fail(

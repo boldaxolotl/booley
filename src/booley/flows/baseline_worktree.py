@@ -386,9 +386,13 @@ def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> None
     project_root = Path(os.path.normpath(str(project_root)))
     wt_dir = Path(os.path.normpath(str(wt_dir)))
     dst = in_checkout_booley_dir(wt_dir)
-    # Walk-up finds only a directory named ``.booley``: a relocated one is absent
+    # Walk-up finds only a directory named ``.booley``: a relocated one (either side,
+    # since the baseline ref may not carry the ``[project].dir`` setting) is absent
     # from the baseline checkout, so it must be mirrored even without stealth cores.
-    walk_up_finds_it = dst == wt_dir / BOOLEY_DIR_NAME
+    walk_up_finds_it = (
+        dst == wt_dir / BOOLEY_DIR_NAME
+        and in_checkout_booley_dir(project_root) == project_root / BOOLEY_DIR_NAME
+    )
     if not (src / "cores").is_dir() and resolved_without_copy and walk_up_finds_it:
         return
     try:

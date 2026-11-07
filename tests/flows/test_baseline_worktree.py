@@ -240,12 +240,37 @@ def test_relocated_booley_directory_is_mirrored_to_its_own_path(
     (state / "booley.toml").write_text("# state\n", encoding="utf-8")
     if stealth_cores:
         (state / "cores" / "ip").mkdir(parents=True)
-        (state / "cores" / "ip" / "top.core").write_text("CAPI=2:\nname: x:ip:top:1.0\n")
+        (state / "cores" / "ip" / "top.core").write_text(
+            "CAPI=2:\nname: x:ip:top:1.0\n", encoding="utf-8"
+        )
 
     with baseline_worktree(tmp_path, "HEAD~1") as wt:
         assert (wt / "state" / "booley.toml").read_text(encoding="utf-8") == "# state\n"
         assert (wt / "state" / "cores" / "ip" / "top.core").is_file() is stealth_cores
         assert not (wt / ".booley").exists()
+
+
+def test_relocated_directory_is_mirrored_when_the_baseline_ref_lacks_the_setting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2917: a root ``booley.toml`` the ref does not carry leaves the baseline on ``.booley``.
+
+    Walk-up then finds only ``<wt>/.booley``, so the relocated source is mirrored there
+    even without stealth cores instead of leaving the baseline with no Booley Directory.
+    """
+    from booley.core.booley_dir import reset_cache
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    _init_repo(tmp_path)
+    (tmp_path / ".git" / "info" / "exclude").write_text("/state\n/booley.toml\n", encoding="utf-8")
+    (tmp_path / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "booley.toml").write_text("# state\n", encoding="utf-8")
+
+    with baseline_worktree(tmp_path, "HEAD~1") as wt:
+        assert (wt / ".booley" / "booley.toml").read_text(encoding="utf-8") == "# state\n"
 
 
 def test_relocated_paired_checkout_baseline_lands_in_its_own_directory(

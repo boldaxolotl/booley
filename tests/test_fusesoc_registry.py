@@ -13,11 +13,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from booley.fusesoc import fusesoc_registry, selftest_overlay
-from booley.fusesoc.core_projection import CoreProjectionError
+from booley.fusesoc import core_projection, fusesoc_registry, selftest_overlay
+from booley.fusesoc.core_projection import STATE_CORES_SUBDIR, CoreProjectionError
 from booley.fusesoc.fusesoc_registry import (
     DEFAULT_FUSESOC_CMD,
-    STATE_CORES_SUBDIR,
     CoreCollisionError,
     FuseSocError,
     MissingSourceError,
@@ -280,7 +279,7 @@ class TestStealthCores:
     a second discovery root and handed to FuseSoC as a second --cores-root."""
 
     def test_default_stealth_root_is_structural(self, tmp_path: Path):
-        assert _stealth_root(tmp_path) == tmp_path / ".booley" / STATE_CORES_SUBDIR
+        assert core_projection.stealth_core_root(tmp_path) == _stealth_root(tmp_path)
 
     def test_stealth_cores_discovered_worktrees_still_skipped(self, tmp_path: Path):
         _write_core(tmp_path / "ip")
@@ -3162,6 +3161,9 @@ class TestRelocatedBooleyDirectory:
         assert marker.endswith(" state/cores/design.core")
         if mode == "isolated":
             assert operational.parent == (state / "tmp" / "fusesoc-isolated-cores").resolve()
+            assert operational == core_projection.isolated_core_path(project, core).resolve()
+        else:
+            assert operational == core_projection.projected_core_path(project, core).resolve()
         assert not (project / ".booley").exists()
 
     def test_private_mirror_marker_names_the_relocated_core(self, tmp_path: Path):

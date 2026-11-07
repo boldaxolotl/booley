@@ -69,6 +69,10 @@ def _stealth_config(project_root: Path | str) -> dict[str, Any]:
     return dict(stealth) if isinstance(stealth, dict) else {}
 
 
+STATE_CORES_SUBDIR = "cores"
+"""Stealth authored-cores subdirectory of the Booley Directory (ADR 0036)."""
+
+
 def stealth_core_root(project_root: Path | str) -> Path:
     """Return the stealth authored-cores root, ``<Booley Directory>/cores`` (ADR 0036).
 
@@ -76,7 +80,7 @@ def stealth_core_root(project_root: Path | str) -> Path:
     Purely structural -- no ``BOOLEY_DIR`` or process cache -- so discovery stays a
     deterministic function of the tree it is handed.
     """
-    return in_checkout_booley_dir(Path(project_root)) / "cores"
+    return in_checkout_booley_dir(Path(project_root)) / STATE_CORES_SUBDIR
 
 
 def authoritative_cores(project_root: Path | str) -> tuple[Path, ...]:

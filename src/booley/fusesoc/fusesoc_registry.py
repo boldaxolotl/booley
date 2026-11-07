@@ -126,7 +126,6 @@ _STATE_DIR_NAME = ".booley"
 # ``FUSESOC_IGNORE`` only on directories it walks *into*, never on ancestors of
 # a scan root, so the ``.booley/FUSESOC_IGNORE`` marker does not veto
 # this subtree (verified against the pinned fusesoc 2.4.6 ``find_cores``).
-STATE_CORES_SUBDIR = "cores"
 
 
 # Filename infix Booley stamps onto a generated ``--trace`` overlay ``.core`` (see
@@ -270,7 +269,7 @@ def discover_cores(project_root: Path | str) -> list[Path]:
     stealth_root = stealth_core_root(root)
     if stealth_root.is_dir():
         # Second root, not an exception to the Booley Directory skip: the skip above
-        # stays fail-closed for everything else under .booley/, and the
+        # stays fail-closed for everything else under the Booley Directory, and the
         # scan below judges exclusions relative to the stealth root (so a
         # FUSESOC_IGNORE *at or under* it is honored, matching FuseSoC).
         cores += _scan_core_root(stealth_root)
@@ -1010,7 +1009,7 @@ def _enumerate_all(project_root: Path | str) -> dict[str, list[TargetRef]]:
             repo_file, state_file = (other, core_file) if zone == "state" else (core_file, other)
             raise CoreCollisionError(
                 f"core VLNV {_vlnv_key(vlnv)!r} is authored in both core roots: "
-                f"{repo_file} (repo tree) and {state_file} (stealth cores); "
+                f"{repo_file} (repo tree) and {state_file} ({stealth_root.relative_to(root).as_posix()}/); "
                 "rename or delete one — cross-root precedence is never silent (ADR 0036)"
             )
         seen.setdefault(zone, core_file)

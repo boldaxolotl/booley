@@ -68,7 +68,9 @@ def test_booley_dir_outside_checkout_keeps_checkout_local_builds(tmp_path: Path)
     checkout.mkdir()
     outside = tmp_path / "outside-state"
     outside.mkdir()
-    (checkout / "booley.toml").write_text(f'[project]\ndir = "{outside.as_posix()}"\n')
+    (checkout / "booley.toml").write_text(
+        f'[project]\ndir = "{outside.as_posix()}"\n', encoding="utf-8"
+    )
     assert work_root_for(checkout, "sim", "cfg") == (
         checkout / ".booley" / ".runtime" / "edalize" / "sim" / "cfg"
     )
