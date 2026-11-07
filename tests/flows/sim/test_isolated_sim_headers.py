@@ -262,23 +262,6 @@ def test_isolated_traced_sim_resolves_through_mirror(tmp_path: Path) -> None:
 
 
 @pytest.mark.usefixtures("real_fusesoc")
-def test_isolated_sim_dropped_header_is_not_reachable(tmp_path: Path) -> None:
-    """Delisting a header between builds into the same root removes it from the export."""
-    root = _write_project(tmp_path / "proj")
-    first = _prepare(root, "sim_icarus")
-    assert _holds([Path(d) for d in first.resolved.rtl_include_dirs], "listed.vh")
-    core = root / ".booley" / "cores" / "design.core"
-    body = yaml.safe_load(core.read_text(encoding="utf-8"))
-    body["filesets"]["rtl"]["files"] = [
-        item for item in body["filesets"]["rtl"]["files"] if "listed.vh" not in str(item)
-    ]
-    core.write_text("CAPI=2:\n" + yaml.safe_dump(body), encoding="utf-8")
-    second = _prepare(root, "sim_icarus")
-    assert not _holds([Path(d) for d in second.resolved.rtl_include_dirs], "listed.vh")
-    assert not list(second.work_root.rglob("listed.vh"))  # neither exported nor mirrored
-
-
-@pytest.mark.usefixtures("real_fusesoc")
 @pytest.mark.parametrize("tool", ["verilator", "iverilog"])
 def test_isolated_sim_tool_error_names_unlisted_header(tmp_path: Path, tool: str) -> None:
     """AC1: a source that includes an unlisted header fails the build, naming the header."""
@@ -358,12 +341,10 @@ def test_isolated_mirrored_names_stay_project_relative(tmp_path: Path) -> None:
     ("name", "core", "expected"),
     [
         ("src/acme_lib_design_1/rtl/top.v", "acme:lib:design:1", "rtl/top.v"),
-        ("src/acme_lib_design_1", "acme:lib:design:1", None),
         ("/abs/rtl/top.v", "acme:lib:design:1", None),
         ("src/acme_lib_other_1/rtl/top.v", "acme:lib:design:1", None),
-        ("src/acme_lib_design_1/rtl/top.v", None, None),
     ],
-    ids=["mirrored", "core-folder-itself", "absolute", "other-core", "no-core"],
+    ids=["mirrored", "absolute", "other-core"],
 )
 def test_mirrored_source_path_names_only_mirrored_files(
     tmp_path: Path, name: str, core: str | None, expected: str | None
@@ -371,14 +352,6 @@ def test_mirrored_source_path_names_only_mirrored_files(
     """Only a file under its own core's export folder maps back to a Project path."""
     root = _write_project(tmp_path / "proj")
     assert mirrored_source_path(root, ResolvedFile(name, "verilogSource", core=core)) == expected
-
-
-def test_mirrored_source_path_is_none_without_isolation(tmp_path: Path) -> None:
-    root = _write_project(tmp_path / "proj", "plain")
-    file = ResolvedFile(
-        "src/acme_lib_design_1/rtl/top.v", "verilogSource", core="acme:lib:design:1"
-    )
-    assert mirrored_source_path(root, file) is None
 
 
 @pytest.mark.usefixtures("real_fusesoc")

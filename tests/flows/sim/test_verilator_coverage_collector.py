@@ -1250,6 +1250,9 @@ def test_mirror_export_name_settles_inputs_that_share_a_name_suffix() -> None:
     matched = _match_source(sources, "src/acme_demo_counter-booleycoverage_1/rtl/tb.sv", exports)
 
     assert matched is nested
+    header = "src/acme_demo_counter-booleycoverage_1/rtl/tb.vh"
+    named = _match_source(sources, header, {**exports, header: "rtl/tb.vh"})
+    assert (named.kind, named.path) == ("foreign", "rtl/tb.vh")
 
 
 @pytest.mark.parametrize("verdict", ["pass", "fail"])

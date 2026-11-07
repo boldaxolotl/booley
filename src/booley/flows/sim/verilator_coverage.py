@@ -1040,14 +1040,16 @@ def _match_source(
         return sources[native_path]
     normalized = native_path.replace("\\", "/")
     # An export name is unique per input, so it settles a name the suffix rule
-    # below would call ambiguous (`tb.sv` beside `rtl/tb.sv`).
+    # below would call ambiguous (`tb.sv` beside `rtl/tb.sv`), or match a root
+    # source by file name alone.
     named = {
         path
         for export, path in foreign_paths.items()
         if normalized == export or normalized.endswith(f"/{export}")
     }
-    if len(named) == 1 and next(iter(named)) in sources:
-        return sources[next(iter(named))]
+    if len(named) == 1:
+        (path,) = named
+        return sources.get(path) or CoverageSource(native_path, path, "foreign")
     matches = []
     for declared, source in sources.items():
         suffix = declared.replace("\\", "/").lstrip("/")
@@ -1055,8 +1057,7 @@ def _match_source(
             matches.append(source)
     if len(matches) == 1:
         return matches[0]
-    path = next(iter(named)) if len(named) == 1 else native_path
-    return CoverageSource(native_path=native_path, path=path, kind="foreign")
+    return CoverageSource(native_path=native_path, path=native_path, kind="foreign")
 
 
 def _capabilities_and_findings(
