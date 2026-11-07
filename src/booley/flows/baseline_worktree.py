@@ -35,7 +35,11 @@ from booley.evidence.acceptance import PairedBaselineMode, PairedProjectBaseline
 from booley.evidence.fields import BASELINE_REF_PARAM
 from booley.flows.terminal_progress import announce_unit
 from booley.fusesoc.fusesoc_registry import prepare_core_library_plan
-from booley.runtime.booley_dir import BOOLEY_DIR_NAME, resolve_checkout_booley_dir
+from booley.runtime.booley_dir import (
+    BOOLEY_DIR_NAME,
+    in_checkout_booley_dir,
+    resolve_checkout_booley_dir,
+)
 from booley.runtime.project_gitignore import is_project_transient_path
 from booley.runtime.project_repositories import (
     is_standalone_git_repository,
@@ -218,7 +222,7 @@ def _install_paired_project_baseline(
     if policy.mode is PairedBaselineMode.ABSENT:
         raise BaselineWorktreeError("unexpected Paired Checkout: the baseline policy expects none")
     base_sha = policy.sha if policy.pinned else _paired_project_base_sha(repository.worktree)
-    destination = wt_dir / ".booley"
+    destination = in_checkout_booley_dir(wt_dir)
     source = repository.worktree.resolve()
     _git(source, "config", "gc.worktreePruneExpire", "never", timeout=30)
     add = _git(
@@ -351,10 +355,13 @@ def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> None
     source is the checkout's *own* Booley Directory, not the selected one:
     inside the Sandbox ``BOOLEY_DIR`` names the Main Booley Directory, but a
     linked worktree's baseline must read that worktree's cores and
-    ``booley.toml``. Without stealth cores the baseline keeps no ``.booley/``
+    ``booley.toml``. The mirror lands at the baseline checkout's own Booley
+    Directory (``[project].dir`` from its committed ``booley.toml``, else
+    ``.booley``). Without stealth cores the baseline keeps no ``.booley/``
     when it would resolve that same directory anyway (main checkout, or a host
-    worktree whose own directory is found by walk-up); otherwise the directory
-    is mirrored so the baseline does not fall back to main's configuration.
+    worktree whose own directory is found by walk-up, which finds only a
+    ``.booley``); otherwise the directory is mirrored so the baseline does not
+    fall back to main's configuration.
     Without a Paired Checkout, the *live* content is the pragmatic choice;
     Paired Checkouts take the separate fork-point worktree path before this
     helper is called.
@@ -376,11 +383,18 @@ def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> None
     # The baseline checkout lives under ``worktree_state_dir`` (``_baseline_dir``),
     # so without a copy it resolves that directory.
     resolved_without_copy = worktree_state_dir(project_root).resolve() == src.resolve()
-    if not (src / "cores").is_dir() and resolved_without_copy:
-        return
     project_root = Path(os.path.normpath(str(project_root)))
     wt_dir = Path(os.path.normpath(str(wt_dir)))
-    dst = wt_dir / BOOLEY_DIR_NAME
+    dst = in_checkout_booley_dir(wt_dir)
+    # Walk-up finds only a directory named ``.booley``: a relocated one (either side,
+    # since the baseline ref may not carry the ``[project].dir`` setting) is absent
+    # from the baseline checkout, so it must be mirrored even without stealth cores.
+    walk_up_finds_it = (
+        dst == wt_dir / BOOLEY_DIR_NAME
+        and in_checkout_booley_dir(project_root) == project_root / BOOLEY_DIR_NAME
+    )
+    if not (src / "cores").is_dir() and resolved_without_copy and walk_up_finds_it:
+        return
     try:
         for relative in _authored_booley_paths(src):
             _copy_entry(src / relative, dst / relative)

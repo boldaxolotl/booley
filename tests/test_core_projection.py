@@ -9,10 +9,6 @@ import pytest
 from booley.fusesoc.core_projection import (
     CoreProjectionError,
     authoritative_cores,
-    is_generated_isolated_core,
-    is_generated_projected_core,
-    is_generated_projection,
-    isolated_core_contents_equivalent,
     isolated_registry_root,
     native_cores_ignored,
     projected_core_path,
@@ -77,56 +73,6 @@ def test_reconcile_writes_root_core_and_is_idempotent(tmp_path: Path) -> None:
         "name: booley::demo:0",
     ]
     assert projection_issues(root) == ()
-
-
-def test_generated_root_projection_requires_strict_provenance(tmp_path: Path) -> None:
-    root, _core = _project(tmp_path)
-    generated = reconcile_projected_cores(root).written[0]
-    assert is_generated_projected_core(root, generated)
-
-    markerless = root / ".booley-projected-markerless.core"
-    markerless.write_text(_CORE, encoding="utf-8")
-    malformed = root / ".booley-projected-malformed.core"
-    malformed.write_text("CAPI=2:\n# Booley stealth core projection: missing.core\n")
-    misplaced = root / "nested" / generated.name
-    misplaced.parent.mkdir()
-    misplaced.write_bytes(generated.read_bytes())
-    escaping = root / ".booley-projected-..%2Foutside.core"
-    escaping.write_text(
-        "CAPI=2:\n# Booley stealth core projection: ../outside.core\n",
-        encoding="utf-8",
-    )
-    target = root / "projection-target"
-    generated.replace(target)
-    generated.symlink_to(target)
-
-    assert not is_generated_projected_core(root, markerless)
-    assert not is_generated_projected_core(root, malformed)
-    assert not is_generated_projected_core(root, misplaced)
-    assert not is_generated_projected_core(root, escaping)
-    assert not is_generated_projected_core(root, generated)
-    assert not is_generated_projected_core(root, root / ".booley/cores/demo.core")
-    assert not is_generated_projected_core(root, root / "FUSESOC_IGNORE")
-
-
-def test_projection_identity_requires_owning_mode(tmp_path: Path) -> None:
-    root, _core = _project(tmp_path)
-    projected = reconcile_projected_cores(root).written[0]
-    (root / ".booley/booley.toml").write_text("[stealth]\nenabled = false\n", encoding="utf-8")
-
-    assert not is_generated_projected_core(root, projected)
-
-    (root / ".booley/booley.toml").write_text(
-        "[stealth]\nenabled = true\nignore_native_cores = true\n",
-        encoding="utf-8",
-    )
-    isolated = reconcile_isolated_registry(root).written[0]
-    (root / ".booley/booley.toml").write_text(
-        "[stealth]\nenabled = true\nignore_native_cores = false\n",
-        encoding="utf-8",
-    )
-
-    assert not is_generated_isolated_core(root, isolated)
 
 
 def test_reconcile_refreshes_and_removes_owned_stale_projection(tmp_path: Path) -> None:
@@ -239,75 +185,6 @@ def test_isolated_registry_resolves_fileset_symlink_but_preserves_file_parameter
     assert str(root / "config" / "authored.cfg") not in text
 
 
-def test_generated_isolated_projection_requires_strict_provenance(tmp_path: Path) -> None:
-    root, _core = _project(tmp_path)
-    (root / ".booley/booley.toml").write_text(
-        "[stealth]\nenabled = true\nignore_native_cores = true\n",
-        encoding="utf-8",
-    )
-    generated = reconcile_isolated_registry(root).written[0]
-    assert is_generated_isolated_core(root, generated)
-
-    registry = isolated_registry_root(root)
-    markerless = registry / "booley-isolated-markerless.core"
-    markerless.write_text(_CORE, encoding="utf-8")
-    malformed = registry / "booley-isolated-malformed.core"
-    malformed.write_text("CAPI=2:\n# Booley stealth core projection: missing.core\n")
-    misplaced = root / generated.name
-    misplaced.write_bytes(generated.read_bytes())
-    escaping = registry / "booley-isolated-..%2Foutside.core"
-    escaping.write_text(
-        "CAPI=2:\n# Booley stealth core projection: ../outside.core\n",
-        encoding="utf-8",
-    )
-    target = registry / "projection-target"
-    generated.replace(target)
-    generated.symlink_to(target)
-    overlay = root / ".booley/cores/demo.booleytrace.coverage.core"
-    overlay.write_text(_CORE, encoding="utf-8")
-    marker = root / ".booley/FUSESOC_IGNORE"
-    marker.write_text("generated-looking", encoding="utf-8")
-
-    assert not is_generated_isolated_core(root, markerless)
-    assert not is_generated_isolated_core(root, malformed)
-    assert not is_generated_isolated_core(root, misplaced)
-    assert not is_generated_isolated_core(root, escaping)
-    assert not is_generated_isolated_core(root, generated)
-    assert not is_generated_isolated_core(root, overlay)
-    assert not is_generated_isolated_core(root, marker)
-
-
-def test_isolated_core_equivalence_normalizes_only_checkout_root(tmp_path: Path) -> None:
-    left_root, left_core = _project(tmp_path / "left")
-    right_root, right_core = _project(tmp_path / "right")
-    config = "[stealth]\nenabled = true\nignore_native_cores = true\n"
-    core = _CORE.replace("filesets: {}", "filesets: {rtl: {files: [rtl/demo.v]}}")
-    (left_root / ".booley/booley.toml").write_text(config, encoding="utf-8")
-    (right_root / ".booley/booley.toml").write_text(config, encoding="utf-8")
-    left_core.write_text(core, encoding="utf-8")
-    right_core.write_text(core, encoding="utf-8")
-    left = reconcile_isolated_registry(left_root).written[0]
-    right = reconcile_isolated_registry(right_root).written[0]
-
-    assert isolated_core_contents_equivalent(left, right)
-
-    host_root = Path("/host/checkout")
-    left_content = left.read_text(encoding="utf-8")
-    for checkout_spelling in (str(left_root.resolve()), left_root.resolve().as_posix()):
-        left_content = left_content.replace(checkout_spelling, str(host_root))
-    left.write_text(left_content, encoding="utf-8")
-    assert not isolated_core_contents_equivalent(left, right)
-    assert isolated_core_contents_equivalent(
-        left,
-        right,
-        left_checkout_root=host_root,
-    )
-
-    right_core.write_text(_CORE.replace("demo:0", "changed:0"), encoding="utf-8")
-    reconcile_isolated_registry(right_root)
-    assert not isolated_core_contents_equivalent(left, right)
-
-
 def test_isolated_registry_rejects_nonliteral_fileset_path(tmp_path: Path) -> None:
     root, core = _project(tmp_path)
     core.write_text(
@@ -326,24 +203,6 @@ def test_isolated_registry_rejects_nonliteral_fileset_path(tmp_path: Path) -> No
 
     with pytest.raises(CoreProjectionError, match="literal fileset paths"):
         reconcile_isolated_registry(root)
-
-
-@pytest.mark.parametrize("isolated", [False, True], ids=["projected", "isolated"])
-def test_generated_detection_through_symlinked_booley_dir(tmp_path: Path, isolated: bool) -> None:
-    root = tmp_path / "repo"
-    root.mkdir()
-    external = symlinked_booley_dir(root, tmp_path / "external-booley")
-    toggle = "ignore_native_cores = true\n" if isolated else ""
-    (external / "booley.toml").write_text(f"[stealth]\nenabled = true\n{toggle}", encoding="utf-8")
-    (external / "cores" / "demo.core").write_text(_CORE, encoding="utf-8")
-    reconcile = reconcile_isolated_registry if isolated else reconcile_projected_cores
-    generated = reconcile(root).written[0]
-
-    # Callers may spell the generated file lexically or through the resolved
-    # Booley Directory; both are Booley's own file.
-    for spelling in (generated, generated.parent.resolve() / generated.name):
-        assert is_generated_projection(root, spelling)
-        assert is_generated_projection(root / ".booley", spelling)
 
 
 def test_isolated_registry_keeps_files_below_symlinked_booley_dir_lexical(

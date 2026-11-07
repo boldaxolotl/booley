@@ -412,6 +412,20 @@ def own_booley_dir_repo_path(checkout_root: Path) -> PurePosixPath:
         return PurePosixPath(BOOLEY_DIR_NAME)
 
 
+def in_checkout_booley_dir(checkout_root: Path) -> Path:
+    """Return the checkout's own Booley Directory when it lies inside the checkout.
+
+    ``<root>/<[project].dir>`` for a relative ``[project].dir``, else ``<root>/.booley``,
+    keeping the caller's spelling of *checkout_root*. A directory outside the checkout
+    (absolute ``[project].dir``) also yields ``<root>/.booley``: build trees and checkout
+    core roots stay per checkout. Never reads ``BOOLEY_DIR`` or the process cache.
+    """
+    try:
+        return checkout_root / own_booley_dir_relative(checkout_root)
+    except BooleyDirOutsideCheckoutError:
+        return checkout_root / BOOLEY_DIR_NAME
+
+
 def reset_cache() -> None:
     """Clear cached result — for tests only."""
     global _cache

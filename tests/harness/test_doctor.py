@@ -4283,6 +4283,46 @@ targets:
     assert any("boot.hex" in m and "untracked" in m for m in c2.warned)
 
 
+def test_core_files_tracked_judges_relocated_state_repo(tmp_path):
+    """#2917: files under a relocated (two-component) Booley Directory are judged by
+    that directory's own repo, not the host's."""
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    (tmp_path / "booley.toml").write_text('[project]\ndir = "tools/booley"\n', encoding="utf-8")
+    state_dir = tmp_path / "tools" / "booley"
+    state_cores = state_dir / "cores"
+    (state_cores / "fw").mkdir(parents=True)
+    (state_cores / "fw" / "boot.hex").write_text("00\n", encoding="utf-8")
+    _write_core(
+        state_cores,
+        """\
+CAPI=2:
+name: ::demo-booley:0
+filesets:
+  fw:
+    files:
+      - fw/boot.hex: {file_type: user, copyto: boot.hex}
+targets:
+  sim: {flow: sim, filesets: [fw]}
+""",
+    )
+    subprocess.run(["git", "init", "-q"], cwd=state_dir, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+    subprocess.run(["git", "add", "-A"], cwd=state_dir, check=True, timeout=SUBPROCESS_TIMEOUT_S)
+
+    c = _Collector()
+    doctor._check_core_files_tracked(tmp_path, c._pass, c._warn)
+    assert not c.warned
+
+    subprocess.run(
+        ["git", "rm", "--cached", "-q", "cores/fw/boot.hex"],
+        cwd=state_dir,
+        check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
+    c2 = _Collector()
+    doctor._check_core_files_tracked(tmp_path, c2._pass, c2._warn)
+    assert any("boot.hex" in m and "untracked" in m for m in c2.warned)
+
+
 def _readmem_repo(tmp_path) -> None:
     """A repo whose TB boots via $readmemh from a memory image NOT in any .core."""
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, timeout=SUBPROCESS_TIMEOUT_S)
