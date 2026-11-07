@@ -300,8 +300,9 @@ def describe_private_mirror(project_root: Path | str, mirror_root: Path) -> dict
     """Return what :func:`render_private_mirror` would map, writing nothing.
 
     Every authored core is still parsed and rewritten, so a core the real
-    render rejects (generators, ``$``/``?`` paths, malformed filesets) is
-    rejected here with the same error.
+    render rejects (generators, ``$``/``?`` paths, malformed filesets, a
+    fileset entry that is not a regular file) is rejected here with the same
+    error.
     """
     return _mirror_cores(project_root, mirror_root, write=False)
 
@@ -340,19 +341,25 @@ def _mirror_rewriter(
             relative = Path(absolute).relative_to(resolved_root)
         except ValueError:
             return absolute  # resolves outside the checkout: never copied, never mutable
-        if is_file and copy:
-            _copy_into_mirror(Path(absolute), mirror_root / relative, core_file)
+        if is_file:
+            _copy_into_mirror(Path(absolute), mirror_root / relative, core_file, copy=copy)
         return relative.as_posix()
 
     return rewrite
 
 
-def _copy_into_mirror(source: Path, destination: Path, core_file: Path) -> None:
-    """Copy one regular file; a missing source is left for the source preflight."""
+def _copy_into_mirror(source: Path, destination: Path, core_file: Path, *, copy: bool) -> None:
+    """Copy one regular file; a missing source is left for the source preflight.
+
+    With ``copy`` false nothing is written but the same refusals apply, so a
+    dry-run preview rejects exactly the entries the real render rejects.
+    """
     if not source.exists():
         return
     if not source.is_file():
         raise CoreProjectionError(f"mirrored fileset entry is not a regular file: {source}")
+    if not copy:
+        return
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
         shutil.copyfile(source, destination)

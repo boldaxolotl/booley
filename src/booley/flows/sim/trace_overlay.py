@@ -86,8 +86,8 @@ def _inject_dump_module(
     FuseSoC stages it into the build before :meth:`TraceOverlay.cleanup` removes
     the copy. The design's tracked files remain untouched (ADR 0017/0018).
 
-    Native-core isolation converts fileset paths to absolute paths and therefore
-    does not stage the copy. That branch references the persistent packaged source
+    In a native-core-isolated Project the copy is not staged: the overlay core
+    sits outside the private mirror's Project-relative files. That branch references the persistent packaged source
     directly so cleanup cannot delete a later Makefile dependency. Returns the
     ephemeral copy to clean, or ``None`` for the packaged-source branch.
     """

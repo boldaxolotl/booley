@@ -1235,6 +1235,23 @@ def test_native_record_in_the_authored_source_matches_through_the_mirror_name(
     assert point.identity.source == "rtl/counter.sv"
 
 
+def test_mirror_export_name_settles_inputs_that_share_a_name_suffix() -> None:
+    """``tb.sv`` beside ``rtl/tb.sv`` stay two sources, not a header-looking foreign file."""
+    from booley.flows.sim.verilator_coverage import _match_source
+
+    top = CoverageSource("tb.sv", "tb.sv", "testbench")
+    nested = CoverageSource("rtl/tb.sv", "rtl/tb.sv", "rtl")
+    exports = {
+        "src/acme_demo_counter-booleycoverage_1/tb.sv": "tb.sv",
+        "src/acme_demo_counter-booleycoverage_1/rtl/tb.sv": "rtl/tb.sv",
+    }
+    sources = {"tb.sv": top, "rtl/tb.sv": nested}
+
+    matched = _match_source(sources, "src/acme_demo_counter-booleycoverage_1/rtl/tb.sv", exports)
+
+    assert matched is nested
+
+
 @pytest.mark.parametrize("verdict", ["pass", "fail"])
 @pytest.mark.parametrize("artifact_error", [False, True])
 def test_authenticated_cleanup_warning_survives_collection(

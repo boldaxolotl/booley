@@ -404,6 +404,20 @@ def test_isolated_sim_dry_run_rejects_unrebasable_core(tmp_path: Path) -> None:
 
 
 @pytest.mark.usefixtures("real_fusesoc")
+def test_isolated_sim_dry_run_rejects_entry_that_is_not_a_regular_file(tmp_path: Path) -> None:
+    """A fileset entry naming a directory fails the preview, as it fails the run."""
+    root = _write_project(tmp_path / "proj")
+    (root / "rtl" / "dir.v").mkdir()
+    (root / ".booley" / "cores" / "bad.core").write_text(
+        "CAPI=2:\nname: acme:lib:bad:1\nfilesets:\n  rtl:\n    files: [rtl/dir.v]\n",
+        encoding="utf-8",
+    )
+    handle = _handle(root, "sim_icarus")
+    with pytest.raises(SimulationBuildPreparationError, match="not a regular file"):
+        simulation_setup_command(handle, build_root=work_root_for(root, "sim", "sim_icarus"))
+
+
+@pytest.mark.usefixtures("real_fusesoc")
 @pytest.mark.parametrize("trace", [False, True], ids=["plain", "trace"])
 def test_isolated_coverage_foreign_paths_cover_prepared_headers(
     tmp_path: Path, trace: bool
