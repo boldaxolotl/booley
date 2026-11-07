@@ -42,7 +42,9 @@ WORKDIR /
 # image's flex/bison/libfl-dev (line ~23) plus cmake/gawk here. Submodules are
 # fetched full (NOT --shallow-submodules): sv-elab/slang pin non-tip commits a
 # shallow submodule fetch can miss.
+# renovate: datasource=github-tags depName=YosysHQ/yosys
 ARG YOSYS_VERSION=v0.69
+# pin-companion: YOSYS_VERSION
 ARG YOSYS_REF=9f75ca1f9834a39a863915b5dae0c7b1e33533bc
 RUN echo ">>> Building Yosys ${YOSYS_VERSION} (${YOSYS_REF}) + slang from source (this takes a while)..." \
     && apt-get update && apt-get install -y --no-install-recommends \
@@ -66,7 +68,9 @@ RUN echo ">>> Building Yosys ${YOSYS_VERSION} (${YOSYS_REF}) + slang from source
     && rm -rf /tmp/yosys
 
 # Icarus Verilog is built from source because Ubuntu packages lag releases.
+# renovate: datasource=github-tags depName=steveicarus/iverilog versioning=regex:^v(?<major>\d+)_(?<minor>\d+)$
 ARG ICARUS_VERSION=v13_0
+# pin-companion: ICARUS_VERSION
 ARG ICARUS_REF=dfeee909ed9f20b4870dd93423156c0170c0e1ff
 RUN echo ">>> Building Icarus Verilog ${ICARUS_VERSION} (${ICARUS_REF}) from source..." \
     && apt-get update && apt-get install -y --no-install-recommends \
@@ -91,7 +95,9 @@ RUN echo ">>> Building Icarus Verilog ${ICARUS_VERSION} (${ICARUS_REF}) from sou
 # v5.052 is the first stable release after the v5.050 nested-shift miscompile
 # fix (a6f4dd031f50387ae0169490c6d8843b91dd1c07). Keep the full immutable
 # release commit beside the human-readable tag.
+# renovate: datasource=github-tags depName=verilator/verilator
 ARG VERILATOR_VERSION=v5.052
+# pin-companion: VERILATOR_VERSION
 ARG VERILATOR_REF=ea338be98e1e838d3518809ce8899f85a009963c
 RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from source (this takes a while)..." \
     && apt-get update && apt-get install -y --no-install-recommends help2man liblz4-dev \
@@ -213,7 +219,9 @@ RUN git config --system --add safe.directory '*' \
     && git config --system user.email "dev@localhost"
 
 # sv2v (pinned release binary)
+# renovate: datasource=github-releases depName=zachjs/sv2v
 ARG SV2V_VERSION=v0.0.13
+# pin-companion: SV2V_VERSION
 ARG SV2V_SHA256=552799a1d76cd177b9b4cc63a3e77823a3d2a6eb4ec006569288abeff28e1ff8
 RUN echo ">>> Installing sv2v ${SV2V_VERSION}..." \
     && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/zachjs/sv2v/releases/download/${SV2V_VERSION}/sv2v-Linux.zip" \
@@ -225,7 +233,9 @@ RUN echo ">>> Installing sv2v ${SV2V_VERSION}..." \
 
 # Verible (pinned prebuilt static binary — the sv2v pattern). Bundled
 # lint EDA tool for .core lint Targets with flow_options.tool: verible (ADR 0033).
+# renovate: datasource=github-releases depName=chipsalliance/verible versioning=regex:^v(?<major>\d+)\.(?<minor>\d+)-(?<patch>\d+)-g[0-9a-f]+$
 ARG VERIBLE_VERSION=v0.0-4296-g0f262651
+# pin-companion: VERIBLE_VERSION
 ARG VERIBLE_SHA256=8569defb891d2316067613ea00442af28a7a09d405d95b54c0c91f9942d26635
 RUN echo ">>> Installing Verible ${VERIBLE_VERSION}..." \
     && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/chipsalliance/verible/releases/download/${VERIBLE_VERSION}/verible-${VERIBLE_VERSION}-linux-static-x86_64.tar.gz" \
@@ -245,9 +255,13 @@ RUN echo ">>> Installing Verible ${VERIBLE_VERSION}..." \
 # booley.runtime.vaporview.VERIFIED_VERSION (tests enforce the lockstep).
 # VaporView is GPL-3.0: the unmodified VSIX ships with its license and a pointer
 # to its corresponding source.
+# renovate: datasource=custom.openvsx depName=lramseyer/vaporview
 ARG VAPORVIEW_VERSION=1.6.0
+# pin-companion: VAPORVIEW_VERSION
 ARG VAPORVIEW_SHA256=c1d2972d131613711e26f941ba694c4592ccbe18771b35cf24a4f23ffefa1b3a
+# pin-companion: VAPORVIEW_VERSION
 ARG VAPORVIEW_SOURCE_TAG=1.6.0-rel
+# pin-companion: VAPORVIEW_VERSION
 ARG VAPORVIEW_SOURCE_COMMIT=d401914c3021596fccf343603aa5a8208c21d28c
 RUN echo ">>> Bundling VaporView ${VAPORVIEW_VERSION} VSIX..." \
     && curl --proto '=https' --tlsv1.2 -fsSL "https://open-vsx.org/api/lramseyer/vaporview/${VAPORVIEW_VERSION}/file/lramseyer.vaporview-${VAPORVIEW_VERSION}.vsix" \
@@ -278,9 +292,13 @@ RUN echo ">>> Bundling VaporView ${VAPORVIEW_VERSION} VSIX..." \
 # matching booley.runtime.devcontainer VSIX path (tests enforce the lockstep).
 # Both are MIT: the build fails unless the shipped LICENSE.txt says so, and the
 # license, third-party notices and a source pointer ship beside the image.
+# renovate: datasource=custom.openvsx depName=mshr-h/veriloghdl
 ARG VERILOGHDL_VERSION=1.29.0
+# pin-companion: VERILOGHDL_VERSION
 ARG VERILOGHDL_SHA256=fd52004fd9e70c6e7627387e8f4134dfc3528e82c25d9495452bc659739ebae6
+# pin-companion: VERILOGHDL_VERSION
 ARG VERILOGHDL_SOURCE_TAG=v1.29.0
+# pin-companion: VERILOGHDL_VERSION
 ARG VERILOGHDL_SOURCE_COMMIT=53484f7c5bc6313cf648955d050dbffcd3fe6855
 RUN echo ">>> Bundling Verilog-HDL ${VERILOGHDL_VERSION} VSIX..." \
     && curl --proto '=https' --tlsv1.2 -fsSL "https://open-vsx.org/api/mshr-h/veriloghdl/${VERILOGHDL_VERSION}/file/mshr-h.veriloghdl-${VERILOGHDL_VERSION}.vsix" \
@@ -306,9 +324,13 @@ RUN echo ">>> Bundling Verilog-HDL ${VERILOGHDL_VERSION} VSIX..." \
         /usr/local/share/booley/licenses/veriloghdl/SOURCE.txt \
     && rm -f /tmp/veriloghdl.vsix
 
+# renovate: datasource=custom.openvsx depName=ms-vscode/live-server
 ARG LIVE_PREVIEW_VERSION=0.4.20
+# pin-companion: LIVE_PREVIEW_VERSION
 ARG LIVE_PREVIEW_SHA256=672ff5bbed08a3d2387a63837c0087ba95108db1ca3f4656837cace48884a133
+# pin-companion: LIVE_PREVIEW_VERSION
 ARG LIVE_PREVIEW_SOURCE_TAG=v0.4.20
+# pin-companion: LIVE_PREVIEW_VERSION
 ARG LIVE_PREVIEW_SOURCE_COMMIT=5b3ce20cdd17ca462825606863a1b95f368695fc
 RUN echo ">>> Bundling Live Preview ${LIVE_PREVIEW_VERSION} VSIX..." \
     && curl --proto '=https' --tlsv1.2 -fsSL "https://open-vsx.org/api/ms-vscode/live-server/${LIVE_PREVIEW_VERSION}/file/ms-vscode.live-server-${LIVE_PREVIEW_VERSION}.vsix" \
@@ -337,8 +359,11 @@ RUN echo ">>> Bundling Live Preview ${LIVE_PREVIEW_VERSION} VSIX..." \
 # Node.js 24 LTS + agent CLIs. Download exact publisher artifacts and verify
 # them before execution; neither a mutable setup script nor semver ranges are
 # allowed in the release image.
+# renovate: datasource=node-version depName=node
 ARG NODE_VERSION=24.21.0
+# pin-companion: NODE_VERSION
 ARG NPM_VERSION=11.19.0
+# pin-companion: NODE_VERSION
 ARG NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
 COPY src/booley/data/docker/agent-clis-package.json /opt/agent-clis/package.json
 COPY src/booley/data/docker/agent-clis-package-lock.json /opt/agent-clis/package-lock.json
