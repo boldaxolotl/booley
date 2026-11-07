@@ -74,6 +74,7 @@ from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.conftest import symlink_or_skip
+from tests.fusesoc_test_support import relocated_project
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
@@ -4509,11 +4510,9 @@ _STEALTH_CORE_TEXT = (
 )
 
 
-def _author_stealth_core(root: Path, rtl_body: str) -> None:
-    """Author a stealth .core + its rtl source under ``root/.booley/cores/``."""
-    from booley.fusesoc.fusesoc_registry import state_cores_dir
-
-    cores = state_cores_dir(root)
+def _author_stealth_core(root: Path, rtl_body: str, booley_dir: str = ".booley") -> None:
+    """Author a stealth .core + its rtl source under ``root/<booley_dir>/cores/``."""
+    cores = root / booley_dir / "cores"
     cores.mkdir(parents=True, exist_ok=True)
     (cores / "design.core").write_text(_STEALTH_CORE_TEXT, encoding="utf-8")
     rtl = cores / "rtl" / "dut.sv"
@@ -4541,6 +4540,21 @@ class TestBaselineSelfCompareWarning:
         body = "module dut(input logic clk); endmodule\n"
         _author_stealth_core(cur, body)
         _author_stealth_core(wt, body)  # byte-identical stealth RTL
+        msg = _baseline_self_compare_warning(cur, wt)
+        assert msg is not None
+        assert "self-comparison" in msg
+
+    def test_baseline_self_compare_warning_sees_relocated_stealth_cores(self, tmp_path: Path):
+        from booley.flows.synth.flow import _baseline_self_compare_warning
+
+        cur = tmp_path / "cur"
+        wt = tmp_path / "wt"
+        body = "module dut(input logic clk); endmodule\n"
+        for root in (cur, wt):
+            relocated_project(root)
+            _author_stealth_core(root, body, "state")  # byte-identical stealth RTL
+        assert not (cur / ".booley").exists()
+        assert (cur / "state" / "cores" / "design.core").is_file()
         msg = _baseline_self_compare_warning(cur, wt)
         assert msg is not None
         assert "self-comparison" in msg

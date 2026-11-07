@@ -14,7 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from booley.fusesoc import fusesoc_registry, selftest_overlay
-from booley.fusesoc.core_projection import CoreProjectionError, is_generated_projection
+from booley.fusesoc.core_projection import CoreProjectionError
 from booley.fusesoc.fusesoc_registry import (
     DEFAULT_FUSESOC_CMD,
     STATE_CORES_SUBDIR,
@@ -47,7 +47,6 @@ from booley.fusesoc.fusesoc_registry import (
     parse_edam,
     possible_target_parameter_names,
     read_core,
-    state_cores_dir,
     target_parameter_definitions,
     target_source_files_for_ref,
     vendored_files,
@@ -60,8 +59,17 @@ from booley.targets.domain import AmbiguousTargetError, UnknownTargetError
 from booley.targets.target_surface import collect_surface, detail_payload, surface_payload
 from tests.conftest import require_symlinks, symlink_or_skip
 from tests.fusesoc_test_support import CORE_TEXT as _CORE_TEXT
-from tests.fusesoc_test_support import symlinked_booley_dir, touch_declared_sources
+from tests.fusesoc_test_support import (
+    relocated_project,
+    symlinked_booley_dir,
+    touch_declared_sources,
+)
 from tests.fusesoc_test_support import write_core as _write_core
+
+
+def _stealth_root(project: Path) -> Path:
+    """The default (``.booley``) stealth authored-cores root of *project*."""
+    return project / ".booley" / STATE_CORES_SUBDIR
 
 
 def enumerate_targets(project_root: Path | str):
@@ -245,7 +253,7 @@ class TestCoreSetupHazards:
         assert core_setup_hazards(tmp_path) == []
 
     def test_fusesoc_ignore_at_state_cores_root_suppresses_recursive_link(self, tmp_path: Path):
-        stealth_root = state_cores_dir(tmp_path)
+        stealth_root = _stealth_root(tmp_path)
         library = stealth_root / "lib"
         library.mkdir(parents=True)
         (stealth_root / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
@@ -271,13 +279,13 @@ class TestStealthCores:
     cores under .booley/cores/ — the one state-dir subtree scanned as
     a second discovery root and handed to FuseSoC as a second --cores-root."""
 
-    def test_state_cores_dir_is_structural(self, tmp_path: Path):
-        assert state_cores_dir(tmp_path) == tmp_path / ".booley" / STATE_CORES_SUBDIR
+    def test_default_stealth_root_is_structural(self, tmp_path: Path):
+        assert _stealth_root(tmp_path) == tmp_path / ".booley" / STATE_CORES_SUBDIR
 
     def test_stealth_cores_discovered_worktrees_still_skipped(self, tmp_path: Path):
         _write_core(tmp_path / "ip")
         stealth = _CORE_TEXT.replace("::demo_core:0", "::stealth:0")
-        _write_core(state_cores_dir(tmp_path), stealth)
+        _write_core(_stealth_root(tmp_path), stealth)
         # Transient state stays invisible even with the stealth root active.
         _write_core(tmp_path / ".booley" / "worktrees" / "t1")
         _write_core(tmp_path / ".booley" / ".baseline-wt-9-x")
@@ -289,7 +297,7 @@ class TestStealthCores:
         # The stealth root is scanned as a ROOT, so the ancestor marker (which
         # gates the repo-root walk) must not hide the authored cores.
         stealth = _CORE_TEXT.replace("::demo_core:0", "::stealth:0")
-        _write_core(state_cores_dir(tmp_path), stealth)
+        _write_core(_stealth_root(tmp_path), stealth)
         (tmp_path / ".booley" / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
         assert [p.parent.name for p in discover_cores(tmp_path)] == [STATE_CORES_SUBDIR]
 
@@ -297,22 +305,22 @@ class TestStealthCores:
         # A FUSESOC_IGNORE *at or under* the stealth root is honored — same
         # semantics FuseSoC's own walk applies to a scan root.
         stealth = _CORE_TEXT.replace("::demo_core:0", "::stealth:0")
-        _write_core(state_cores_dir(tmp_path), stealth)
-        (state_cores_dir(tmp_path) / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        _write_core(_stealth_root(tmp_path), stealth)
+        (_stealth_root(tmp_path) / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
         assert discover_cores(tmp_path) == []
 
     def test_cross_root_vlnv_collision_is_fatal(self, tmp_path: Path):
         # Same logical VLNV in both roots = the worktree-shadowing bug reborn
         # as an authoring mistake; enumeration refuses rather than pick a side.
         _write_core(tmp_path / "ip")
-        _write_core(state_cores_dir(tmp_path))  # identical ::demo_core:0
+        _write_core(_stealth_root(tmp_path))  # identical ::demo_core:0
         with pytest.raises(CoreCollisionError, match="both core roots"):
             enumerate_targets(tmp_path)
 
     def test_cross_root_collision_ignores_version_segment(self, tmp_path: Path):
         _write_core(tmp_path / "ip")
         other_version = _CORE_TEXT.replace("::demo_core:0", "::demo_core:1")
-        _write_core(state_cores_dir(tmp_path), other_version)
+        _write_core(_stealth_root(tmp_path), other_version)
         with pytest.raises(CoreCollisionError, match="both core roots"):
             enumerate_targets(tmp_path)
 
@@ -320,8 +328,8 @@ class TestStealthCores:
         # Two *versions* of one core in the SAME zone keep first-wins semantics.
         stealth_v0 = _CORE_TEXT.replace("::demo_core:0", "::stealth:0")
         stealth_v1 = _CORE_TEXT.replace("::demo_core:0", "::stealth:1")
-        _write_core(state_cores_dir(tmp_path) / "a", stealth_v0)
-        _write_core(state_cores_dir(tmp_path) / "b", stealth_v1)
+        _write_core(_stealth_root(tmp_path) / "a", stealth_v0)
+        _write_core(_stealth_root(tmp_path) / "b", stealth_v1)
         refs = enumerate_targets(tmp_path)
         assert set(refs) == {"sim"}
 
@@ -329,10 +337,10 @@ class TestStealthCores:
         from booley.fusesoc.fusesoc_registry import _setup_command
 
         stealth = _CORE_TEXT.replace("::demo_core:0", "::stealth:0")
-        _write_core(state_cores_dir(tmp_path), stealth)
+        _write_core(_stealth_root(tmp_path), stealth)
         cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
         roots = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--cores-root"]
-        assert roots == [str(tmp_path), str(state_cores_dir(tmp_path))]
+        assert roots == [str(tmp_path), str(_stealth_root(tmp_path))]
         # Global option: both must precede the 'run' subcommand.
         assert max(i for i, a in enumerate(cmd) if a == "--cores-root") < cmd.index("run")
 
@@ -354,7 +362,7 @@ class TestStealthCores:
             .replace("rtl/counter.sv", "counter.sv")
             .replace("tb/tb_counter.sv", "tb_counter.sv")
         )
-        canonical = _write_core(state_cores_dir(tmp_path), core_text, create_sources=False)
+        canonical = _write_core(_stealth_root(tmp_path), core_text, create_sources=False)
         for name in ("counter_pkg.sv", "counter.sv", "tb_counter.sv"):
             (tmp_path / name).touch()
 
@@ -379,7 +387,7 @@ class TestStealthCores:
             "[stealth]\nenabled = true\nignore_native_cores = true\n",
             encoding="utf-8",
         )
-        canonical = _write_core(state_cores_dir(tmp_path), create_sources=False)
+        canonical = _write_core(_stealth_root(tmp_path), create_sources=False)
         (tmp_path / "native.core").write_text("CAPI=1\n", encoding="utf-8")
 
         cmd = _setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
@@ -398,7 +406,7 @@ class TestStealthCores:
             "[stealth]\nenabled = true\n",
             encoding="utf-8",
         )
-        canonical = _write_core(state_cores_dir(tmp_path), create_sources=False)
+        canonical = _write_core(_stealth_root(tmp_path), create_sources=False)
         projected = projected_core_path(tmp_path, canonical)
         foreign_content = "CAPI=2:\nname: foreign::core:0\n"
         projected.write_text(foreign_content, encoding="utf-8")
@@ -1224,6 +1232,22 @@ class TestTryResolveTarget:
         assert resolved is not None
         assert resolved.toplevel == "tb_counter"
         assert resolved.vlnv == "::demo_core:0"
+
+    def test_default_build_root_follows_relocated_booley_dir(self, tmp_path: Path):
+        project = tmp_path / "proj"
+        state = relocated_project(project)
+        _write_core(project / "ip")
+
+        def fake_runner(cmd, **kwargs):
+            out = state / ".runtime" / "edalize" / "payload" / "sim" / "demo_core_0" / "sim"
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "demo_core_0.eda.yml").write_text(_EDAM_TEXT, encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        resolved = _try_resolve_target("sim", project_root=project, runner=fake_runner)
+        assert resolved is not None
+        assert resolved.vlnv == "::demo_core:0"
+        assert not (project / ".booley").exists()
 
     def test_none_on_setup_failure(self, tmp_path: Path):
         project = tmp_path / "proj"
@@ -2861,8 +2885,8 @@ class TestSymlinkedBooleyDirectory:
             view = []
             for core in discover_cores(project):
                 operational = plan.operational_core(core)
-                assert is_generated_projection(project, operational)
                 marker = operational.read_text(encoding="utf-8").splitlines()[1]
+                assert marker.startswith("# Booley stealth core projection: ")
                 view.append((operational.name, marker))
             return view
 
@@ -3078,3 +3102,73 @@ def test_build_library_plan_reports_unclearable_build_root(
     monkeypatch.setattr(fusesoc_registry.shutil, "rmtree", _refuse)
     with pytest.raises(fusesoc_registry.TargetResolutionError, match="could not mirror"):
         fusesoc_registry.build_library_plan(root, build)
+
+
+# ---------------------------------------------------------------------------
+# #2917: core discovery follows a relocated Booley Directory
+# ---------------------------------------------------------------------------
+
+
+def _relocated_stealth_project(tmp_path: Path, mode: str = "") -> tuple[Path, Path]:
+    """A Project whose Booley Directory is ``state`` and holds one stealth core.
+
+    Deliberately no ``state/FUSESOC_IGNORE``: the directory itself, not the
+    marker, must keep worktree copies out of discovery.
+    """
+    project = tmp_path / "proj"
+    state = relocated_project(project)
+    (state / "booley.toml").write_text(mode, encoding="utf-8")
+    _write_core(state / "cores", _CORE_TEXT.replace("::demo_core:0", "::stealth:0"))
+    for relative in ("rtl/counter_pkg.sv", "rtl/counter.sv", "tb/tb_counter.sv"):
+        (project / relative).parent.mkdir(parents=True, exist_ok=True)
+        (project / relative).write_text("// fixture\n", encoding="utf-8")
+    return project, state
+
+
+class TestRelocatedBooleyDirectory:
+    def test_discovery_scans_stealth_root_and_skips_the_directory(self, tmp_path: Path):
+        project, state = _relocated_stealth_project(tmp_path)
+        _write_core(state / "worktrees" / "w" / "ip", _CORE_TEXT.replace("::demo_core:0", "::s:0"))
+        assert discover_cores(project) == [state / "cores" / "design.core"]
+
+    def test_cross_root_collision_names_the_relocated_zone(self, tmp_path: Path):
+        project, _state = _relocated_stealth_project(tmp_path)
+        _write_core(project / "ip", _CORE_TEXT.replace("::demo_core:0", "::stealth:0"))
+        with pytest.raises(CoreCollisionError, match="both core roots"):
+            enumerate_targets(project)
+
+    def test_snapshot_id_tracks_relocated_config(self, tmp_path: Path):
+        project, state = _relocated_stealth_project(tmp_path)
+        before = fusesoc_registry.target_snapshot_id(project)
+        (state / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
+        assert fusesoc_registry.target_snapshot_id(project) != before
+
+    def test_library_ignore_and_hazard_scan_skip_the_directory(self, tmp_path: Path):
+        project, state = _relocated_stealth_project(tmp_path)
+        worktree = state / "worktrees" / "w"
+        worktree.mkdir(parents=True)
+        symlink_or_skip(worktree / "self", worktree, target_is_directory=True)
+        ignored = fusesoc_registry._core_library_ignored_dirs(project)
+        assert str(state.resolve()) in ignored
+        assert core_setup_hazards(project) == []
+
+    @pytest.mark.parametrize("mode", sorted(_SYMLINK_MODES))
+    def test_core_library_plan_follows_the_directory(self, tmp_path: Path, mode: str):
+        project, state = _relocated_stealth_project(tmp_path, _SYMLINK_MODES[mode])
+        plan = fusesoc_registry.prepare_core_library_plan(project)
+        (core,) = discover_cores(project)
+        operational = plan.operational_core(core)
+        marker = operational.read_text(encoding="utf-8").splitlines()[1]
+        assert marker.endswith(" state/cores/design.core")
+        if mode == "isolated":
+            assert operational.parent == (state / "tmp" / "fusesoc-isolated-cores").resolve()
+        assert not (project / ".booley").exists()
+
+    def test_private_mirror_marker_names_the_relocated_core(self, tmp_path: Path):
+        project, _state = _relocated_stealth_project(tmp_path, _SYMLINK_MODES["isolated"])
+        plan = fusesoc_registry.build_library_plan(project, tmp_path / "build")
+        assert plan is not None
+        (mirror,) = [m for _core, m in plan._operational_cores]
+        assert (
+            mirror.read_text(encoding="utf-8").splitlines()[1].endswith(" state/cores/design.core")
+        )

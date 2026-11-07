@@ -85,3 +85,15 @@ def symlinked_booley_dir(project: Path, external: Path) -> Path:
     (external / "cores").mkdir(parents=True)
     symlink_or_skip(project / ".booley", external, target_is_directory=True)
     return external
+
+
+def relocated_project(project: Path, directory: str = "state") -> Path:
+    """Relocate *project*'s Booley Directory to ``<project>/<directory>`` (#2917).
+
+    Writes the root ``booley.toml`` ``[project].dir`` entry and creates the
+    directory. Returns it.
+    """
+    booley_dir = project / directory
+    booley_dir.mkdir(parents=True, exist_ok=True)
+    (project / "booley.toml").write_text(f'[project]\ndir = "{directory}"\n', encoding="utf-8")
+    return booley_dir

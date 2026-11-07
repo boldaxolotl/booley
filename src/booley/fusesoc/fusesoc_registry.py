@@ -48,7 +48,7 @@ from fusesoc.capi2 import exprs as _fusesoc_exprs
 from fusesoc.capi2.coreparser import Core2Parser
 from fusesoc.core import Core as FuseSocCore
 
-from booley.core.booley_dir import BOOLEY_DIR_NAME
+from booley.core.booley_dir import BOOLEY_DIR_NAME, in_checkout_booley_dir
 from booley.core.booley_dir_links import resolve_through_entry
 from booley.core.boundary import as_dict, is_str_list
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
@@ -64,6 +64,7 @@ from booley.fusesoc.core_projection import (
     reconcile_projected_cores,
     render_private_mirror,
     stealth_core_relative,
+    stealth_core_root,
 )
 from booley.targets.domain import (
     CoreCollisionError,
@@ -101,7 +102,8 @@ _IMPLICIT_TARGET = "default"
 # unearthed under these are resolution artifacts, not authored design-description.
 _BUILD_DIR_NAMES = frozenset({"build", "_build", ".runtime"})
 
-# The Booley Directory. It holds transient checkouts — per-ticket git
+# The Booley Directory (``.booley``, or the checkout's relative ``[project].dir``;
+# discovery skips both). It holds transient checkouts — per-ticket git
 # worktrees (``.booley/worktrees/<name>``) and ephemeral baseline
 # worktrees (``.booley/.baseline-wt-*``) — each a full clone carrying a
 # COPY of the project's ``.core`` files with the same VLNV. A stale copy left
@@ -237,17 +239,6 @@ def core_target_toplevel(core_doc: Mapping[str, Any], name: str) -> str:
     return str(toplevel) if toplevel else ""
 
 
-def state_cores_dir(project_root: Path | str) -> Path:
-    """The stealth authored-cores root, ``<root>/.booley/cores`` (ADR 0036).
-
-    Purely structural — no env-var or config resolution — so
-    :func:`discover_cores` stays a deterministic function of the tree it is
-    handed. A relocated Booley Directory (``BOOLEY_DIR``) is out of scope
-    for stealth cores; ``booley doctor`` reports the mismatch.
-    """
-    return Path(project_root) / _STATE_DIR_NAME / STATE_CORES_SUBDIR
-
-
 def is_stealth_core(project_root: Path | str, path: Path) -> bool:
     """True when *path* lies under the stealth core root, in either spelling."""
     return stealth_core_relative(project_root, path) is not None
@@ -257,13 +248,14 @@ def discover_cores(project_root: Path | str) -> list[Path]:
     """Return every authored ``.core`` under *project_root*, sorted.
 
     Two roots are scanned: *project_root* itself, and — when it exists — the
-    stealth authored-cores dir ``.booley/cores/`` (ADR 0036), the one
+    stealth authored-cores dir ``<Booley Directory>/cores/`` (ADR 0036), the one
     subtree of the Booley Directory that holds sources rather than transient state.
 
     Git metadata and generated build/cache trees (``build/``, ``.runtime/``)
     are skipped — a ``.core`` copied there by a prior resolution is an
     artifact, not a source.
-    The rest of the ``.booley/`` state tree is skipped (:data:`_STATE_DIR_NAME`):
+    The rest of the Booley Directory (:data:`_STATE_DIR_NAME`, or the relocated
+    ``[project].dir``) is skipped:
     its per-ticket / baseline git worktrees carry stale VLNV-colliding copies of
     the project's cores that must never shadow the authored source. Directories
     carrying a ``FUSESOC_IGNORE`` marker file are skipped as well, mirroring
@@ -272,8 +264,10 @@ def discover_cores(project_root: Path | str) -> list[Path]:
     project's selectable Targets.
     """
     root = Path(project_root)
-    cores = [] if native_cores_ignored(root) else _scan_core_root(root)
-    stealth_root = state_cores_dir(root)
+    cores = (
+        [] if native_cores_ignored(root) else _scan_core_root(root, in_checkout_booley_dir(root))
+    )
+    stealth_root = stealth_core_root(root)
     if stealth_root.is_dir():
         # Second root, not an exception to the Booley Directory skip: the skip above
         # stays fail-closed for everything else under .booley/, and the
@@ -288,7 +282,7 @@ def target_snapshot_id(project_root: Path | str) -> str:
     root = Path(project_root).resolve()
     digest = hashlib.sha256(str(root).encode())
     paths = list(discover_cores(root))
-    projection_config = root / _STATE_DIR_NAME / "booley.toml"
+    projection_config = in_checkout_booley_dir(root) / "booley.toml"
     if projection_config.is_file():
         paths.append(projection_config)
     for path in sorted(set(paths)):
@@ -323,6 +317,7 @@ class CoreLibraryPlan:
 
 def _core_library_ignored_dirs(root: Path) -> frozenset[str]:
     """Return real paths CoreManager must prune from the Project-root library."""
+    booley_dir = in_checkout_booley_dir(root)
     excluded_roots: set[Path] = set()
     symlink_targets: set[Path] = set()
     for current, dirnames, _filenames in os.walk(root, followlinks=False):
@@ -331,7 +326,7 @@ def _core_library_ignored_dirs(root: Path) -> frozenset[str]:
         for name in dirnames:
             candidate = directory / name
             resolved = Path(os.path.realpath(candidate))
-            if name == _STATE_DIR_NAME or name in _BUILD_DIR_NAMES:
+            if name == _STATE_DIR_NAME or candidate == booley_dir or name in _BUILD_DIR_NAMES:
                 excluded_roots.add(resolved)
                 continue
             retained.append(name)
@@ -350,7 +345,7 @@ def prepare_core_library_plan(project_root: Path | str) -> CoreLibraryPlan:
     """Reconcile and describe the FuseSoC library view for one Project."""
     root = Path(project_root).resolve()
     cores = tuple(path.resolve() for path in discover_cores(root))
-    stealth_root = state_cores_dir(root).resolve()
+    stealth_root = stealth_core_root(root).resolve()
     if projection_enabled(root):
         reconcile_projected_cores(root)
     if native_cores_ignored(root):
@@ -427,11 +422,13 @@ def core_setup_hazards(project_root: Path | str) -> list[CoreSetupHazard]:
     """
     root = Path(project_root)
     hazards = (
-        [] if native_cores_ignored(root) else _recursive_symlink_hazards(root, skip_state_dir=True)
+        []
+        if native_cores_ignored(root)
+        else _recursive_symlink_hazards(root, in_checkout_booley_dir(root))
     )
-    stealth_root = state_cores_dir(root)
+    stealth_root = stealth_core_root(root)
     if stealth_root.is_dir():
-        hazards.extend(_recursive_symlink_hazards(stealth_root, skip_state_dir=False))
+        hazards.extend(_recursive_symlink_hazards(stealth_root, None))
     for core_file in discover_cores(root):
         try:
             provider = read_core(core_file).get("provider")
@@ -448,18 +445,25 @@ def core_setup_hazards(project_root: Path | str) -> list[CoreSetupHazard]:
     return sorted(hazards, key=lambda h: (h.kind, str(h.path)))
 
 
-def _recursive_symlink_hazards(scan_root: Path, *, skip_state_dir: bool) -> list[CoreSetupHazard]:
-    """Find directory links that resolve to their own ancestor."""
+def _recursive_symlink_hazards(scan_root: Path, skip: Path | None) -> list[CoreSetupHazard]:
+    """Find directory links that resolve to their own ancestor.
+
+    *skip* is the Booley Directory pruned from a Project-root walk (``None`` for
+    the stealth core root, which is scanned in full); the default ``.booley``
+    name is pruned with it.
+    """
     hazards: list[CoreSetupHazard] = []
     excluded = {".git", *_BUILD_DIR_NAMES}
-    if skip_state_dir:
+    if skip is not None:
         excluded.add(_STATE_DIR_NAME)
     for current, dirnames, filenames in os.walk(scan_root, followlinks=False):
         directory = Path(current)
         if (directory / "FUSESOC_IGNORE").is_file():
             dirnames.clear()
             continue
-        dirnames[:] = [name for name in dirnames if name not in excluded]
+        dirnames[:] = [
+            name for name in dirnames if name not in excluded and directory / name != skip
+        ]
         for name in (*dirnames, *filenames):
             link = directory / name
             if not link.is_symlink():
@@ -494,8 +498,12 @@ def _recursive_symlink_hazards(scan_root: Path, *, skip_state_dir: bool) -> list
     return hazards
 
 
-def _scan_core_root(root: Path) -> list[Path]:
-    """Collect authored ``.core`` files under one scan root (unsorted)."""
+def _scan_core_root(root: Path, skip: Path | None = None) -> list[Path]:
+    """Collect authored ``.core`` files under one scan root (unsorted).
+
+    *skip* is an extra directory to prune, the relocated Booley Directory of a
+    Project-root walk; the default ``.booley`` name is always pruned.
+    """
     cores: list[Path] = []
     excluded = {".git", _STATE_DIR_NAME, *_BUILD_DIR_NAMES}
     for current, dirnames, filenames in os.walk(root, followlinks=False):
@@ -506,7 +514,9 @@ def _scan_core_root(root: Path) -> list[Path]:
         # Prune before descent so mutable Git object directories cannot race
         # discovery. Exclusions are relative to this scan root, preserving the
         # F-13 rule for Project roots that are themselves ticket worktrees.
-        dirnames[:] = [name for name in dirnames if name not in excluded]
+        dirnames[:] = [
+            name for name in dirnames if name not in excluded and directory / name != skip
+        ]
         for name in filenames:
             if not name.endswith(".core"):
                 continue
@@ -979,6 +989,7 @@ def _enumerate_all(project_root: Path | str) -> dict[str, list[TargetRef]]:
     # vlnv key -> zone ('repo'|'state') -> first declaring core file. Same-zone
     # duplicates stay legal (two *versions* of one core); cross-zone is fatal.
     zones: dict[str, dict[str, Path]] = {}
+    stealth_root = stealth_core_root(root)
     for core_file in discover_cores(root):
         try:
             doc = read_core(core_file)
@@ -992,14 +1003,14 @@ def _enumerate_all(project_root: Path | str) -> dict[str, list[TargetRef]]:
         if not isinstance(vlnv, str) or not vlnv:
             logger.debug("skipping core without a name: %s", core_file)
             continue
-        zone = "state" if _STATE_DIR_NAME in core_file.relative_to(root).parts else "repo"
+        zone = "state" if core_file.is_relative_to(stealth_root) else "repo"
         seen = zones.setdefault(_vlnv_key(vlnv), {})
         other = seen.get("repo" if zone == "state" else "state")
         if other is not None:
             repo_file, state_file = (other, core_file) if zone == "state" else (core_file, other)
             raise CoreCollisionError(
                 f"core VLNV {_vlnv_key(vlnv)!r} is authored in both core roots: "
-                f"{repo_file} (repo tree) and {state_file} (.booley/cores/); "
+                f"{repo_file} (repo tree) and {state_file} (stealth cores); "
                 "rename or delete one — cross-root precedence is never silent (ADR 0036)"
             )
         seen.setdefault(zone, core_file)
@@ -2755,7 +2766,7 @@ def _try_resolve_target(
     Unlike :func:`resolve_target` (which raises), this never propagates a
     :class:`FuseSocError`; it is the soft, "prefer the ``.core`` if there is one"
     entry point. *build_root* defaults to a payload-dedicated dir under
-    ``project_root/.booley/.runtime``; extra *kwargs* are forwarded to
+    the checkout's Booley Directory ``.runtime``; extra *kwargs* are forwarded to
     :func:`resolve_target` (e.g. ``runner`` for tests).
     """
     proot = Path(project_root)
@@ -2765,7 +2776,7 @@ def _try_resolve_target(
         logger.debug("try_resolve_target(%s): resolution failed: %s", target, exc)
         return None
     if build_root is None:
-        build_root = proot / ".booley" / ".runtime" / "edalize" / "payload" / ref.name
+        build_root = in_checkout_booley_dir(proot) / ".runtime" / "edalize" / "payload" / ref.name
     try:
         return _resolve_target(
             ref.name,

@@ -54,13 +54,24 @@ def test_canonical_checkout_ignores_ambient_project_overrides(
     ambient.mkdir()
     monkeypatch.setenv("BOOLEY_DIR", str(ambient))
     monkeypatch.chdir(tmp_path)
-    expected = checkout / ".booley" / ".runtime" / "edalize" / "sim" / "cfg"
+    expected = checkout / "custom-state" / ".runtime" / "edalize" / "sim" / "cfg"
     assert work_root_for("checkout", "sim", "cfg") == expected
     alias = tmp_path / "alias"
     symlink_or_skip(alias, checkout, target_is_directory=True)
     assert work_root_for(alias, "sim", "cfg") == expected
     assert work_root_for(tmp_path / "another-checkout", "sim", "cfg") != expected
     assert not expected.exists()
+
+
+def test_booley_dir_outside_checkout_keeps_checkout_local_builds(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    outside = tmp_path / "outside-state"
+    outside.mkdir()
+    (checkout / "booley.toml").write_text(f'[project]\ndir = "{outside.as_posix()}"\n')
+    assert work_root_for(checkout, "sim", "cfg") == (
+        checkout / ".booley" / ".runtime" / "edalize" / "sim" / "cfg"
+    )
 
 
 @pytest.mark.parametrize("selection", ["root", "nested", "symlink", "linked-worktree"])

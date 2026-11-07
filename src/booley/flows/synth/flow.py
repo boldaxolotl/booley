@@ -1072,9 +1072,9 @@ def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
     recipes differ, because that is a meaningful comparison even with identical
     RTL sources.
     """
-    from booley.fusesoc.fusesoc_registry import state_cores_dir
+    from booley.fusesoc.core_projection import stealth_core_root
 
-    if not state_cores_dir(project_root).is_dir():
+    if not stealth_core_root(project_root).is_dir():
         return None
     try:
         cur = compute_source_fingerprint(project_root)["rtl"]["digest"]

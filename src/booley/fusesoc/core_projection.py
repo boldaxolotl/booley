@@ -20,13 +20,11 @@ from urllib.parse import quote
 
 import yaml
 
-from booley.core.booley_dir import BOOLEY_DIR_NAME
+from booley.core.booley_dir import BOOLEY_DIR_NAME, in_checkout_booley_dir
 from booley.core.booley_dir_links import resolve_through_entry
-from booley.core.boundary import as_dict
 
 PROJECTED_CORE_PREFIX = ".booley-projected-"
 PROJECTED_CORE_GLOB = f"{PROJECTED_CORE_PREFIX}*.core"
-ISOLATED_REGISTRY_SUBDIR = Path(".booley/tmp/fusesoc-isolated-cores")
 _ISOLATED_CORE_PREFIX = "booley-isolated-"
 _MARKER_PREFIX = "# Booley stealth core projection: "
 
@@ -62,7 +60,7 @@ def native_cores_ignored(project_root: Path | str) -> bool:
 
 
 def _stealth_config(project_root: Path | str) -> dict[str, Any]:
-    config = Path(project_root) / ".booley" / "booley.toml"
+    config = in_checkout_booley_dir(Path(project_root)) / "booley.toml"
     try:
         with config.open("rb") as stream:
             stealth = tomllib.load(stream).get("stealth")
@@ -71,9 +69,19 @@ def _stealth_config(project_root: Path | str) -> dict[str, Any]:
     return dict(stealth) if isinstance(stealth, dict) else {}
 
 
+def stealth_core_root(project_root: Path | str) -> Path:
+    """Return the stealth authored-cores root, ``<Booley Directory>/cores`` (ADR 0036).
+
+    The Booley Directory is the checkout's own (``[project].dir``, else ``.booley``).
+    Purely structural -- no ``BOOLEY_DIR`` or process cache -- so discovery stays a
+    deterministic function of the tree it is handed.
+    """
+    return in_checkout_booley_dir(Path(project_root)) / "cores"
+
+
 def authoritative_cores(project_root: Path | str) -> tuple[Path, ...]:
-    """Return projection-eligible cores under ``.booley/cores``."""
-    core_root = Path(project_root) / ".booley" / "cores"
+    """Return projection-eligible cores under the stealth core root."""
+    core_root = stealth_core_root(project_root)
     if not core_root.is_dir() or (core_root / "FUSESOC_IGNORE").is_file():
         return ()
     cores = (path for path in core_root.rglob("*.core") if not _under_ignore(path, core_root))
@@ -92,7 +100,7 @@ def stealth_core_relative(project_root: Path | str, path: Path) -> str | None:
     *path* itself is never resolved: a ``.core`` link inside the root that
     points elsewhere stays outside it.
     """
-    core_root = Path(project_root) / ".booley" / "cores"
+    core_root = stealth_core_root(project_root)
     for base in (core_root, core_root.resolve()):
         try:
             return path.relative_to(base).as_posix()
@@ -102,14 +110,14 @@ def stealth_core_relative(project_root: Path | str, path: Path) -> str | None:
 
 
 def lexical_stealth_path(project_root: Path | str, path: Path) -> Path:
-    """Re-spell a stealth core path as ``<root>/.booley/cores/<rel>``.
+    """Re-spell a stealth core path as ``<stealth core root>/<rel>``.
 
     Paths outside the stealth core root are returned unchanged.
     """
     relative = stealth_core_relative(project_root, path)
     if relative is None:
         return path
-    return Path(project_root) / ".booley" / "cores" / relative
+    return stealth_core_root(project_root) / relative
 
 
 def _require_stealth_relative(project_root: Path | str, core_file: Path) -> str:
@@ -148,7 +156,7 @@ def reconcile_projected_cores(project_root: Path | str) -> ProjectionResult:
 
 def isolated_registry_root(project_root: Path | str) -> Path:
     """Return the private FuseSoC registry used to exclude native cores."""
-    return Path(project_root) / ISOLATED_REGISTRY_SUBDIR
+    return in_checkout_booley_dir(Path(project_root)) / "tmp" / "fusesoc-isolated-cores"
 
 
 def isolated_core_path(project_root: Path | str, core_file: Path) -> Path:
@@ -156,84 +164,6 @@ def isolated_core_path(project_root: Path | str, core_file: Path) -> Path:
     root = Path(project_root)
     relative = _require_stealth_relative(root, core_file)
     return isolated_registry_root(root) / f"{_ISOLATED_CORE_PREFIX}{quote(relative, safe='')}"
-
-
-def is_generated_projected_core(project_root: Path, path: Path) -> bool:
-    """Identify a directly contained root projection, not a shaped user file."""
-    if not projection_enabled(project_root):
-        return False
-    if path.parent != project_root or path.is_symlink() or not path.is_file():
-        return False
-    if not path.name.startswith(PROJECTED_CORE_PREFIX) or path.suffix != ".core":
-        return False
-    source = _projection_source(project_root, path)
-    if source is None:
-        return False
-    try:
-        return projected_core_path(project_root, source) == path
-    except CoreProjectionError:
-        return False
-
-
-def is_generated_isolated_core(project_root: Path, path: Path) -> bool:
-    """Identify a directly contained Booley projection, not an authored core."""
-    if not native_cores_ignored(project_root):
-        return False
-    registry = isolated_registry_root(project_root)
-    if (
-        path.parent not in (registry, registry.resolve())
-        or path.is_symlink()
-        or not path.is_file()
-    ):
-        return False
-    if not path.name.startswith(_ISOLATED_CORE_PREFIX) or path.suffix != ".core":
-        return False
-    source = _projection_source(project_root, path)
-    if source is None:
-        return False
-    try:
-        expected = isolated_core_path(project_root, source)
-        return path in (expected, expected.parent.resolve() / expected.name)
-    except CoreProjectionError:
-        return False
-
-
-def is_generated_projection(repository: Path, path: Path) -> bool:
-    """Identify a projection owned by the repository's active stealth mode."""
-    project_root = repository.parent if repository.name == ".booley" else repository
-    return is_generated_projected_core(project_root, path) or is_generated_isolated_core(
-        project_root, path
-    )
-
-
-def _projection_source(project_root: Path, path: Path) -> Path | None:
-    try:
-        with path.open("r", encoding="utf-8") as stream:
-            if stream.readline().strip() != "CAPI=2:":
-                return None
-            marker = stream.readline().strip()
-        if not marker.startswith(_MARKER_PREFIX):
-            return None
-        raw_source = Path(marker[len(_MARKER_PREFIX) :])
-        if raw_source.is_absolute():
-            return None
-        source = (project_root / raw_source).resolve(strict=False)
-        source.relative_to((project_root / ".booley" / "cores").resolve())
-        return source
-    except (OSError, UnicodeError, ValueError):
-        return None
-
-
-def isolated_core_contents_equivalent(
-    left: Path,
-    right: Path,
-    *,
-    left_checkout_root: Path | None = None,
-) -> bool:
-    """Compare generated isolated cores independent of their checkout roots."""
-    left_content = _normalized_isolated_core(left, checkout_root=left_checkout_root)
-    right_content = _normalized_isolated_core(right)
-    return left_content is not None and left_content == right_content
 
 
 def reconcile_isolated_registry(project_root: Path | str) -> ProjectionResult:
@@ -368,7 +298,7 @@ def render_private_mirror(project_root: Path | str, mirror_root: Path) -> dict[P
         _rewrite_fileset_paths(
             body, core_file, _mirror_rewriter(resolved_root, mirror_root, core_file)
         )
-        source = f".booley/cores/{relative}"
+        source = core_file.relative_to(root).as_posix()
         destination = mirror_root / f"{_ISOLATED_CORE_PREFIX}{quote(relative, safe='')}"
         rendered = yaml.safe_dump(body, sort_keys=False)
         destination.write_text(f"CAPI=2:\n{_MARKER_PREFIX}{source}\n{rendered}", encoding="utf-8")
@@ -487,53 +417,6 @@ def _is_owned_projection(path: Path) -> bool:
             return stream.readline().startswith(_MARKER_PREFIX)
     except OSError:
         return False
-
-
-def _normalized_isolated_core(
-    path: Path,
-    *,
-    checkout_root: Path | None = None,
-) -> tuple[str, object] | None:
-    registry = path.parent
-    suffix = ISOLATED_REGISTRY_SUBDIR.parts
-    if tuple(registry.parts[-len(suffix) :]) != suffix:
-        return None
-    try:
-        content = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
-        return None
-    lines = content.splitlines()
-    if len(lines) < 2 or not lines[1].startswith(_MARKER_PREFIX):
-        return None
-    try:
-        document = as_dict(yaml.safe_load(content))
-    except yaml.YAMLError:
-        return None
-    if document is None or "CAPI=2" not in document:
-        return None
-    root = checkout_root or registry.parents[len(suffix) - 1].resolve()
-    return lines[1], _normalize_checkout_paths(document, str(root))
-
-
-def _normalize_checkout_paths(value: object, checkout_root: str) -> object:
-    if isinstance(value, str):
-        value = value.replace("\\", "/")
-        checkout_root = checkout_root.replace("\\", "/")
-        if value == checkout_root:
-            return "${BOOLEY_WORKTREE}"
-        if value.startswith(checkout_root + "/"):
-            return "${BOOLEY_WORKTREE}" + value[len(checkout_root) :]
-        return value
-    if isinstance(value, Mapping):
-        return {
-            _normalize_checkout_paths(key, checkout_root): _normalize_checkout_paths(
-                item, checkout_root
-            )
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_normalize_checkout_paths(item, checkout_root) for item in value]
-    return value
 
 
 def _under_ignore(path: Path, core_root: Path) -> bool:

@@ -223,6 +223,68 @@ def test_stealth_cores_copied_into_worktree(tmp_path: Path) -> None:
     assert (stealth / "top.core").is_file()
 
 
+@pytest.mark.parametrize("stealth_cores", [True, False], ids=["stealth-cores", "config-only"])
+def test_relocated_booley_directory_is_mirrored_to_its_own_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stealth_cores: bool
+) -> None:
+    """#2917: a relocated Booley Directory is mirrored to ``<wt>/<dir>``, never ``.booley``."""
+    from booley.core.booley_dir import reset_cache
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    (tmp_path / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+    _init_repo(tmp_path)
+    (tmp_path / ".git" / "info" / "exclude").write_text("/state\n", encoding="utf-8")
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "booley.toml").write_text("# state\n", encoding="utf-8")
+    if stealth_cores:
+        (state / "cores" / "ip").mkdir(parents=True)
+        (state / "cores" / "ip" / "top.core").write_text("CAPI=2:\nname: x:ip:top:1.0\n")
+
+    with baseline_worktree(tmp_path, "HEAD~1") as wt:
+        assert (wt / "state" / "booley.toml").read_text(encoding="utf-8") == "# state\n"
+        assert (wt / "state" / "cores" / "ip" / "top.core").is_file() is stealth_cores
+        assert not (wt / ".booley").exists()
+
+
+def test_relocated_paired_checkout_baseline_lands_in_its_own_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2917: the Paired Checkout baseline is checked out at the relocated directory."""
+    from booley.core.booley_dir import reset_cache
+
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    (outer / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+    _init_repo(outer)
+    (outer / ".git" / "info" / "exclude").write_text("/state\n", encoding="utf-8")
+
+    project = outer / "state"
+    (project / "cores").mkdir(parents=True)
+    _git(project, "init", "-q")
+    _git(project, "config", "user.email", "t@example.com")
+    _git(project, "config", "user.name", "Test")
+    (project / ".gitignore").write_text("/worktrees/\n", encoding="utf-8")
+    (project / "cores" / "top.core").write_text("recipe: baseline\n", encoding="utf-8")
+    _commit_all(project, "project baseline")
+
+    ticket = project / "worktrees" / "ticket"
+    _git(outer, "worktree", "add", "-b", "ticket", str(ticket), "HEAD")
+    paired = ticket / "state"
+    _git(project, "worktree", "add", "-b", "booley-ticket/ticket", str(paired), "master")
+    _git(paired, "branch", "--set-upstream-to=master")
+    (paired / "cores" / "top.core").write_text("recipe: current\n", encoding="utf-8")
+    _commit_all(paired, "change target recipe")
+
+    with baseline_worktree(ticket, "HEAD") as baseline:
+        frozen = baseline / "state" / "cores" / "top.core"
+        assert frozen.read_text(encoding="utf-8") == "recipe: baseline\n"
+        assert not (baseline / ".booley").exists()
+
+
 def test_paired_project_uses_ticket_fork_recipe(tmp_path: Path) -> None:
     """A ticket's Paired Checkout contributes its old Target definition."""
     outer = tmp_path / "outer"
