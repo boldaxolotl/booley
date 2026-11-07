@@ -7,7 +7,7 @@ import os
 import sys
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -44,7 +44,11 @@ class AdmissionIdentityError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class AdmissionContext:
-    """Borrowed outer heavy-admission facts for one Simulation invocation."""
+    """Borrowed outer admission facts for one admitted endpoint invocation.
+
+    ``max_heavy`` is the store's heavy cap, used by Simulation Campaign
+    capacity; other endpoints ignore it.
+    """
 
     mode: str
     slot_store: job_slots.SlotStore | None
@@ -77,7 +81,7 @@ class AdmissionContext:
 
 
 class AdmissionGate:
-    """Lazy admission entered once after Simulation Target authorization."""
+    """Lazy admission entered once, after Target authorization and the binding gate."""
 
     def __init__(self, endpoint: EndpointState) -> None:
         self._endpoint = endpoint
@@ -178,76 +182,62 @@ def _admission_cancellation_cause(
 
 
 @contextmanager
-def admission(endpoint: EndpointState, prepared: PreparedExecution) -> Iterator[object | None]:
-    """Validate the Target, then hold admission through final reporting."""
-    if endpoint.name == "sim" and prepared.simulation is not None:
-        with _simulation_admission(endpoint, prepared) as borrowed:
-            yield borrowed
-        return
-    slot_store: job_slots.SlotStore | None = None
-    slot_token = None
-    try:
-        if endpoint.endpoint_kind != "flow":
-            rejection = endpoint._criterion_binding_gate()
-            if rejection is not None:
-                raise EndpointRejectedError(rejection)
-        if prepared.non_persisting_dry_run:
-            yield None
-            return
-        try:
-            slot_store, slot_token = endpoint._acquire_job_slot()
-        except job_slots.QueueFullError as exc:
-            logger.error("Job admission refused: %s", exc)
-            raise EndpointRejectedError(
-                EndpointOutcome(
-                    exit_code=EXIT_ERROR,
-                    report_text=f"BLOCKED: {exc}. Retry when queued work drains.",
-                )
-            ) from exc
-        except job_slots.ClaimLostError as exc:
-            logger.error("Queued %s run was cancelled before it started", endpoint.name)
-            raise EndpointRejectedError(
-                EndpointOutcome(
-                    exit_code=EXIT_ERROR,
-                    report_text=(
-                        f"CANCELLED: this queued '{endpoint.name}' run was "
-                        f"withdrawn (booley_cancel) before it started."
-                    ),
-                )
-            ) from exc
-        endpoint._pre_run_head = endpoint._get_head_sha()
-        yield None
-    finally:
-        if slot_store is not None and slot_token is not None:
-            slot_store.release(slot_token)
-
-
-@contextmanager
-def _simulation_admission(
+def admission(
     endpoint: EndpointState, prepared: PreparedExecution
 ) -> Iterator[AdmissionContext | None]:
+    """Gate, then hold one Flow-neutral admission through final reporting.
+
+    The decision depends only on the endpoint kind and the dry-run flag, never
+    on the endpoint name. A dry run takes no slot and yields ``None``; every
+    other invocation yields the borrowed ``AdmissionContext``. The slot is
+    released when the invocation body ends, however it ends.
+    """
+    if endpoint.endpoint_kind != "flow":
+        rejection = endpoint._criterion_binding_gate()
+        if rejection is not None:
+            raise EndpointRejectedError(rejection)
     if prepared.non_persisting_dry_run:
         yield None
         return
-    gate = AdmissionGate(endpoint)
+    with ExitStack() as held:
+        borrowed = _enter_admission(endpoint, held)
+        endpoint._pre_run_head = endpoint._get_head_sha()
+        yield borrowed
+
+
+def _enter_admission(endpoint: EndpointState, held: ExitStack) -> AdmissionContext:
+    """Enter the gate on ``held``, mapping admission failures to a rejection.
+
+    Only entry failures are mapped; exceptions raised later by the invocation
+    body must pass through unchanged.
+    """
     try:
-        with gate.enter() as borrowed:
-            endpoint._pre_run_head = endpoint._get_head_sha()
-            yield borrowed
-    except job_slots.QueueFullError as exc:
-        raise EndpointRejectedError(
-            EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"BLOCKED: {exc}. Retry when queued work drains.",
-            )
-        ) from exc
-    except AdmissionIdentityError as exc:
-        raise EndpointRejectedError(
-            EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"sim: invalid {RUNTIME_EXECUTION_ENV}: {exc}",
-            )
-        ) from exc
+        return held.enter_context(AdmissionGate(endpoint).enter())
+    except (
+        job_slots.QueueFullError,
+        job_slots.ClaimLostError,
+        AdmissionIdentityError,
+    ) as exc:
+        raise EndpointRejectedError(_admission_rejection(endpoint, exc)) from exc
+
+
+def _admission_rejection(
+    endpoint: EndpointState,
+    exc: job_slots.QueueFullError | job_slots.ClaimLostError | AdmissionIdentityError,
+) -> EndpointOutcome:
+    """Map one admission failure to the outcome every endpoint reports."""
+    if isinstance(exc, job_slots.QueueFullError):
+        logger.error("Job admission refused: %s", exc)
+        text = f"BLOCKED: {exc}. Retry when queued work drains."
+    elif isinstance(exc, job_slots.ClaimLostError):
+        logger.error("Queued %s run was cancelled before it started", endpoint.name)
+        text = (
+            f"CANCELLED: this queued '{endpoint.name}' run was "
+            f"withdrawn (booley_cancel) before it started."
+        )
+    else:
+        text = f"{endpoint.name}: invalid {RUNTIME_EXECUTION_ENV}: {exc}"
+    return EndpointOutcome(exit_code=EXIT_ERROR, report_text=text)
 
 
 def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | None, object | None]:
