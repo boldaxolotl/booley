@@ -123,7 +123,7 @@ def test_candidate_is_prepared_before_running_target_is_parked(
     images.reissue.side_effect = lambda *_args, **_kwargs: events.append("reissue")
 
     with (
-        patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
+        patch.object(sr, "vscode_session_container", return_value=None),
         patch.object(session_refresh, "capture_session_spec", return_value=_snapshot(tmp_path)),
         patch.object(session_refresh, "_load_recovery_issuance", return_value=prior),
         patch.object(sr, "plan_session_refresh", return_value=parked),
@@ -154,7 +154,7 @@ def test_candidate_failure_leaves_running_session_and_spec_untouched(
     images.prepare.side_effect = RuntimeError("candidate build failed")
     monkeypatch.setattr(session_refresh, "_load_recovery_issuance", lambda *_: _issuance(tmp_path))
     with (
-        patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
+        patch.object(sr, "vscode_session_container", return_value=None),
         patch.object(session_refresh, "capture_session_spec") as capture,
         patch.object(sr, "park_planned_session") as park,
         pytest.raises(RuntimeError, match="candidate build failed"),
@@ -210,7 +210,7 @@ def test_incomplete_rollback_reports_recovery_container(tmp_path: Path, monkeypa
     images.prepare.return_value = _result()
     images.commit.side_effect = RuntimeError("commit failed")
     with (
-        patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
+        patch.object(sr, "vscode_session_container", return_value=None),
         patch.object(session_refresh, "capture_session_spec", return_value=_snapshot(tmp_path)),
         patch.object(session_refresh, "_load_recovery_issuance", return_value=_issuance(tmp_path)),
         patch.object(sr, "plan_session_refresh", return_value=parked),
@@ -237,7 +237,7 @@ def test_vscode_owner_is_rejected_before_image_inspection(tmp_path: Path) -> Non
     images = Mock(spec=session_refresh.RuntimeImageOperations)
     images.requires_license.return_value = False
     with (
-        patch.object(sr, "strict_conflicting_vscode_session", return_value="vscode-owned"),
+        patch.object(sr, "vscode_session_container", return_value="vscode-owned"),
         pytest.raises(sr.SessionError, match="VS Code owns"),
     ):
         session_refresh.refresh(tmp_path, images)
@@ -260,7 +260,7 @@ def test_current_graph_issuance_and_running_sandbox_are_a_true_noop(
     images.commit.return_value = result
     parked = replace(_parked(tmp_path), image_id="sha256:fresh")
     with (
-        patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
+        patch.object(sr, "vscode_session_container", return_value=None),
         patch.object(session_refresh, "capture_session_spec", return_value=_snapshot(tmp_path)),
         patch.object(
             session_refresh,
@@ -315,7 +315,7 @@ def test_vscode_start_after_creation_discards_new_candidate(tmp_path: Path, monk
     with (
         patch.object(
             sr,
-            "strict_conflicting_vscode_session",
+            "vscode_session_container",
             side_effect=[None, None, "vscode-owned"],
         ),
         patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
@@ -349,18 +349,6 @@ def test_vscode_start_after_creation_discards_new_candidate(tmp_path: Path, monk
     assert events == ["up", "restore-spec", "discard:True:True"]
 
 
-def test_invalid_recovery_issuance_is_a_session_error(tmp_path: Path) -> None:
-    with (
-        patch.object(
-            session_refresh.runtime_spec,
-            "load_issued_snapshot",
-            side_effect=session_refresh.runtime_spec.RuntimeSpecError("stamp drift"),
-        ),
-        pytest.raises(sr.SessionError, match=r"cannot preserve.*stamp drift"),
-    ):
-        session_refresh._load_recovery_issuance(tmp_path)
-
-
 def test_refresh_without_immutable_image_id_rolls_back_spec(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     result = session_refresh.RefreshImage("booley-sandbox", None)  # type: ignore[arg-type]
@@ -369,7 +357,7 @@ def test_refresh_without_immutable_image_id_rolls_back_spec(tmp_path: Path, monk
     images.requires_license.return_value = False
     images.prepare.return_value = result
     with (
-        patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
+        patch.object(sr, "vscode_session_container", return_value=None),
         patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
         patch.object(session_refresh, "_load_recovery_issuance", return_value=_issuance(tmp_path)),
         patch.object(sr, "plan_session_refresh", return_value=None),
@@ -700,7 +688,7 @@ def test_adding_license_refuses_before_parking_even_stopped_predecessor(tmp_path
     images = Mock(spec=session_refresh.RuntimeImageOperations)
     images.requires_license.return_value = True
     images.prepare.return_value = _result()
-    monkeypatch.setattr(sr, "strict_conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(sr, "vscode_session_container", lambda _root: None)
     monkeypatch.setattr(session_refresh, "capture_session_spec", lambda _root: _snapshot(tmp_path))
     monkeypatch.setattr(
         session_refresh, "_load_recovery_issuance", lambda *_args: _issuance(tmp_path)
@@ -724,7 +712,7 @@ def test_abort_failure_cannot_skip_parked_predecessor_recovery(tmp_path, monkeyp
     images.commit.side_effect = RuntimeError("commit failed")
     images.abort.side_effect = RuntimeError("cleanup inventory failed")
     restored = Mock()
-    monkeypatch.setattr(sr, "strict_conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(sr, "vscode_session_container", lambda _root: None)
     monkeypatch.setattr(session_refresh, "capture_session_spec", lambda _root: _snapshot(tmp_path))
     monkeypatch.setattr(
         session_refresh, "_load_recovery_issuance", lambda *_args: _issuance(tmp_path)
@@ -743,7 +731,7 @@ def test_unauthenticated_predecessor_requires_reseed_even_with_valid_stamp(tmp_p
     from booley.runtime import runtime_context
 
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(sr, "strict_conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(sr, "vscode_session_container", lambda _root: None)
     monkeypatch.setattr(
         session_refresh.runtime_spec, "load_issued_snapshot", lambda _root: _issuance(tmp_path)
     )
@@ -756,6 +744,23 @@ def test_unauthenticated_predecessor_requires_reseed_even_with_valid_stamp(tmp_p
         session_refresh._load_recovery_issuance(tmp_path, _snapshot(tmp_path))
     assert "booley init --seed" in str(caught.value)
     assert "booley session refresh" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("spec_content", "reason"),
+    [
+        (None, "prior Sandbox spec is missing"),
+        (b"{", "prior Sandbox spec is not valid JSON"),
+        (b"\xff", "prior Sandbox spec is not valid JSON"),
+        (b"[]", "prior Sandbox spec is not an object"),
+    ],
+)
+def test_recovery_issuance_refuses_an_unusable_prior_spec_snapshot(
+    tmp_path: Path, spec_content: bytes | None, reason: str
+) -> None:
+    snapshot = replace(_snapshot(tmp_path), spec_content=spec_content)
+    with pytest.raises(sr.SessionError, match=f"cannot preserve the prior Sandbox: {reason}"):
+        session_refresh._load_recovery_issuance(tmp_path, snapshot)
 
 
 @pytest.mark.parametrize("stealth", [False, True])
