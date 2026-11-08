@@ -1230,8 +1230,11 @@ def test_tty_lane_names_are_cut_to_fit(tmp_path, monkeypatch):
     assert rows[1].rstrip() == rows[1]
 
 
-# Captured from the pre-#2431 implementation: redirected records must never change.
+# Captured from the pre-#2431 implementation (extended on the #2885 base): redirected
+# records must never change.
 _RECORD = "[booley-progress] 2026-10-05T13:00:00Z sim Target=sim_demo"
+# Records keep the full 32-hex attempt token that human text shortens (#2885).
+_RESET_STAGE = "simulation: reset attempt=" + "0123456789abcdef" * 2
 REDIRECTED_GOLDEN = "\n".join(
     [
         f"{_RECORD} stage=simulation elapsed=0s ",
@@ -1245,6 +1248,11 @@ REDIRECTED_GOLDEN = "\n".join(
         f"{_RECORD} lane=alpha/1 stage=simulation: alpha elapsed=5s command started",
         f"{_RECORD} stage=lanes=1 elapsed=10s heartbeat (elapsed time; process health unknown)",
         f"{_RECORD} lane=alpha/1 stage=simulation: alpha elapsed=10s output: lane line",
+        f"{_RECORD} stage={_RESET_STAGE} elapsed=10s ",
+        f"{_RECORD} stage={_RESET_STAGE} elapsed=10s log=<ROOT>/run.log",
+        f"{_RECORD} stage={_RESET_STAGE} elapsed=10s "
+        "transcript=<ROOT>/.runtime/flow-console/invocation-ID/tool-output.log",
+        f"{_RECORD} stage={_RESET_STAGE} elapsed=10s log=<ROOT>/run.log",
         "",
     ]
 )
@@ -1282,7 +1290,13 @@ def test_redirected_progress_records_are_byte_identical(tmp_path, monkeypatch):
             sink._poll()
             now[0] = 10
             sink.tick()
+        # A 32-hex attempt token, a registered log and a command end stay verbatim in records.
+        announce_unit(f"simulation: reset attempt={'0123456789abcdef' * 2}")
+        (tmp_path / "run.log").touch()
+        sink.log_path_known(tmp_path / "run.log")
+        sink.end_command()
         sink._drain_end()
+    sink.footer()
     text = sink.stream.getvalue()
     assert "\x1b" not in text
     normalized = re.sub(
@@ -1295,3 +1309,287 @@ def test_redirected_progress_records_are_byte_identical(tmp_path, monkeypatch):
     sink.last_render = -1.0
     sink.tick()
     assert "sim · sim_demo · " in strip_ansi(sink.stream.getvalue())
+
+
+# --- Compact permanent output on a terminal (#2885) ----------------------------------
+
+TOKEN_40 = "0123456789abcdef0123456789abcdef01234567"
+HEX_32 = re.compile(r"[0-9a-f]{32}")
+
+
+def settled_lines(text):
+    """Lines left on screen once every live-panel clear sequence has been applied."""
+    lines = []
+    for chunk in re.split(r"(\x1b\[\d+A\x1b\[J)", text):
+        clear = re.fullmatch(r"\x1b\[(\d+)A\x1b\[J", chunk)
+        if clear:
+            del lines[-int(clear[1]) :]
+        else:
+            lines.extend(chunk.splitlines())
+    return lines
+
+
+def tty_observer(tmp_path, monkeypatch, *, flow="sim", target="sim_demo"):
+    """A TTY observer with a constant clock, so every elapsed time renders ``0s``."""
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", False)
+    return TerminalProgress(
+        flow,
+        target,
+        tmp_path,
+        stream=Screen(tty=True),
+        clock=lambda: 0.0,
+        dimensions=lambda: os.terminal_size((120, 24)),
+    )
+
+
+def test_tty_sim_attempt_leaves_compact_summary(tmp_path, monkeypatch):
+    from booley.flows.base import SubprocessResult
+    from booley.flows.sim.adapter_transport import AdapterTransportIdentity
+    from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
+    from booley.flows.sim.execution.pre_sim import _run_pre_sim_process
+
+    sink = tty_observer(tmp_path, monkeypatch)
+    identity = AdapterTransportIdentity(
+        "cocotb", TOKEN_40, "sim_demo", ("reset",), tmp_path / f"adapter-{TOKEN_40}.json"
+    )
+    request = AdapterAttemptRequest(("tool",), 30, identity, tmp_path)
+    code = (
+        "print('ALL TESTS PASSED.');"
+        f"print('BOOLEY_EDA_FAILURE token={TOKEN_40} detail');"
+        f"print('wrote {identity.result_path}')"
+    )
+
+    def invoke(_command, *, timeout):
+        done = _run_pre_sim_process(
+            [sys.executable, "-c", code], cwd=tmp_path, env=dict(os.environ), timeout=timeout
+        )
+        return SubprocessResult(done.returncode, done.stdout, done.stderr)
+
+    with sink.installed():
+        execute_adapter_attempt(invoke, request)
+    sink.footer()
+
+    text = sink.stream.getvalue()
+    assert "[booley-progress]" not in text
+    assert not HEX_32.search(text), "a full attempt token reached human text"
+    short = TOKEN_40[:8]
+    assert settled_lines(text) == [
+        f"done   sim_demo · simulation: reset attempt={short}   0s",
+        "    ALL TESTS PASSED.",
+        f"    BOOLEY_EDA_FAILURE token={short} detail",
+        f"    wrote {tmp_path / f'adapter-{short}.json'}",
+        f"transcript: {sink.log_path}",
+    ]
+    assert TOKEN_40.encode() in sink.log_path.read_bytes(), "transcript must keep the full token"
+
+
+def test_tty_stage_outside_command_shows_live_row(tmp_path, monkeypatch):
+    sink = tty_observer(tmp_path, monkeypatch, target="top")
+    sink.stage_changed("configure")
+    assert "[booley-progress]" not in sink.stream.getvalue()
+    assert "sim · top · configure" in sink.stream.getvalue()
+    sink.close()
+    assert settled_lines(sink.stream.getvalue()) == []
+
+
+def test_tty_two_target_lint_leaves_compact_output(tmp_path, monkeypatch):
+    from booley.core.build_paths import work_root_for
+    from booley.flows.base import SubprocessResult
+    from booley.fusesoc import fusesoc_registry
+
+    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv(INVOCATION_ORIGIN_ENV, raising=False)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setenv("LINES", "24")
+    monkeypatch.setattr("booley.harness.cli_goal_notice.warn_cli_goal_recording", lambda *_: None)
+    targets = ("lint_a", "lint_b")
+    source = write_lint_progress_core(tmp_path, targets)
+
+    def resolve(target, *, build_root, library_plan=None):
+        return fusesoc_registry.ResolvedTarget(
+            name=target.selector,
+            vlnv=target.vlnv,
+            toplevel="top",
+            eda_tool="verilator",
+            configured_eda_tool="verilator",
+            parameters={},
+            build_root=build_root,
+            edam_path=build_root / "demo.eda.yml",
+            files=(fusesoc_registry.ResolvedFile(str(source), "systemVerilogSource"),),
+        )
+
+    monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", resolve)
+    flow = LintFlow()
+    monkeypatch.setattr(flow, "_execute_boundary", lambda _: SubprocessResult(0))
+    screen = Screen(tty=True)
+    monkeypatch.setattr(sys, "stderr", screen)
+    result = execute_cli(flow, ["--work-dir", str(tmp_path), "--target", "lint_a,lint_b"])
+    assert result.exit_code == 0, result.outcome.report_text
+    assert "[booley-progress]" not in screen.getvalue()
+    logs = ", ".join(str(work_root_for(tmp_path, "lint", t) / "run.log") for t in targets)
+    # Only the --work-dir deprecation notice may precede the one paths line.
+    *notices, footer = settled_lines(screen.getvalue())
+    assert footer == f"logs: {logs}"
+    assert all("--work-dir is deprecated" in notice for notice in notices)
+
+
+def prepare_synth_unit(flow, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])
+    build = tmp_path / "synth"
+    build.mkdir()
+    plan = SimpleNamespace(
+        build_dir=build, spec=SimpleNamespace(timing=SimpleNamespace(mode="logical"))
+    )
+    monkeypatch.setattr(flow, "_resolve_synth_recipe", lambda _: SimpleNamespace(command=["spec"]))
+    monkeypatch.setattr(flow, "_configure_synth", lambda *_: plan)
+    script = (
+        f"import pathlib; pathlib.Path({str(build / 'yosys.log')!r})"
+        ".write_text('BOOLEY_STAGE: yosys\\nreal file-only line\\n')"
+    )
+    monkeypatch.setattr(flow, "_synth_boundary_cmd", lambda _: [sys.executable, "-c", script])
+    monkeypatch.setattr(
+        flow, "_interpret_boundary_run", lambda *args, **_: (SimpleNamespace(), args[2].stdout)
+    )
+    return flow._run_single_config, build / "yosys.log", "real file-only line"
+
+
+def prepare_fpga_unit(flow, tmp_path, monkeypatch):
+    from booley.flows.fpga.flow import _PreparedFpgaCommand
+
+    flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])
+    log = tmp_path / "demo.runs" / "impl_1" / "runme.log"
+    script = (
+        f"import pathlib; p=pathlib.Path({str(log)!r}); p.parent.mkdir(parents=True);"
+        " p.write_text('fresh implementation line\\n')"
+    )
+    prepared = _PreparedFpgaCommand(
+        [sys.executable, "-c", script],
+        tmp_path,
+        "",
+        False,
+        console_logs=(tmp_path / "vivado.log", log),
+    )
+    monkeypatch.setattr(flow, "_prepare_fpga_command", lambda _: prepared)
+    return flow._run_single_target, log, "fresh implementation line"
+
+
+@pytest.mark.parametrize(
+    ("flow_type", "prepare"),
+    [(AsicSynthesizeFlow, prepare_synth_unit), (FpgaImplFlow, prepare_fpga_unit)],
+    ids=["synth", "fpga"],
+)
+def test_tty_watched_log_flows_leave_compact_output(tmp_path, monkeypatch, flow_type, prepare):
+    flow = flow_type()
+    run_unit, log, watched_line = prepare(flow, tmp_path, monkeypatch)
+    sink = tty_observer(tmp_path, monkeypatch, flow=flow.name, target="demo")
+    with sink.installed():
+        run_unit("demo")
+    sink.footer()
+    text = sink.stream.getvalue()
+    assert "[booley-progress]" not in text
+    lines = settled_lines(text)
+    results = [line for line in lines if not line.startswith((" ", "transcript:"))]
+    assert len(results) == 1, lines
+    assert re.fullmatch(r"done   demo · candidate: [\w ]+   0s", results[0]), results
+    assert f"    {watched_line}" in lines
+    prefix = f"transcript: {sink.log_path} · logs: "
+    assert lines[-1].startswith(prefix)
+    assert lines[-1].removeprefix(prefix).split(", ")[-1] == str(log)
+
+
+def scripted_session(sink):
+    """Drive one serial command through the public hooks; returns after the footer."""
+    from booley.flows.terminal_progress import announce_unit
+
+    with patch.object(sink, "_run"), sink.installed():
+        announce_unit(f"simulation: reset attempt={TOKEN_40}")
+        sink.begin_command()
+        sink.observe("stdout", f"BOOLEY_EDA_FAILURE token={TOKEN_40}\nplain line\n".encode())
+        sink._poll()
+        sink.end_command()
+        sink._drain_end()
+    sink.footer()
+
+
+def test_transcript_bytes_do_not_depend_on_terminal(tmp_path, monkeypatch):
+    transcripts = {}
+    for name, tty in (("tty", True), ("redirected", False)):
+        work = tmp_path / name
+        work.mkdir()
+        monkeypatch.setenv("TERM", "xterm")
+        sink = TerminalProgress(
+            "sim",
+            "sim_demo",
+            work,
+            stream=Screen(tty=tty),
+            clock=lambda: 0.0,
+            dimensions=lambda: os.terminal_size((120, 24)),
+        )
+        scripted_session(sink)
+        transcripts[name] = sink.log_path.read_bytes()
+    assert transcripts["tty"] == transcripts["redirected"]
+    assert TOKEN_40.encode() in transcripts["tty"]
+
+
+@pytest.mark.parametrize(
+    ("script", "timeout", "status"),
+    [
+        ("print('ok')", 10, "done"),
+        ("import sys; sys.exit(3)", 10, "exit 3"),
+        ("import time; time.sleep(30)", 0.3, "timed out"),
+        ("import os,time; os.write(1,b'\\xff'); time.sleep(30)", 10, "stopped"),
+    ],
+    ids=["done", "exit", "timeout", "capture-error"],
+)
+def test_tty_result_line_names_the_process_outcome(tmp_path, monkeypatch, script, timeout, status):
+    sink = tty_observer(tmp_path, monkeypatch)
+    sink.stage_changed("simulation")
+    with sink.installed():
+        sink.begin_command()
+        with subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            start_new_session=True,
+        ) as process:
+            try:
+                communicate_observed(process, sink, timeout=timeout)
+            except UnicodeDecodeError:
+                assert status == "stopped"
+    assert settled_lines(sink.stream.getvalue())[0] == f"{status}   sim_demo · simulation   0s"
+
+
+def test_tty_lane_keeps_its_first_failing_status(tmp_path, monkeypatch):
+    from booley.flows.terminal_progress import progress_lane
+
+    sink = tty_observer(tmp_path, monkeypatch)
+    with patch.object(sink, "_run"), sink.installed():
+        with progress_lane("alpha/1"):
+            for status in ("done", "exit 2", "timed out"):
+                sink.begin_command()
+                sink.end_command(status)
+        sink._drain_end()
+    assert settled_lines(sink.stream.getvalue()) == ["exit 2   alpha/1   0s"]
+
+
+def test_tty_transcript_failure_prints_one_plain_line(tmp_path, monkeypatch):
+    sink = tty_observer(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "booley.flows.terminal_progress.runtime_dir",
+        lambda _: (_ for _ in ()).throw(PermissionError()),
+    )
+    with sink.installed():
+        sink.begin_command()
+        sink.end_command()
+    sink.footer()
+    text = sink.stream.getvalue()
+    assert "[booley-progress]" not in text
+    assert text.count("Observation transcript incomplete/unavailable") == 1
+    assert settled_lines(text)[0].startswith("Observation transcript incomplete/unavailable")

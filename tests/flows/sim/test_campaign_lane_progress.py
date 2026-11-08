@@ -280,3 +280,62 @@ def test_closed_lane_output_is_not_dropped_before_the_final_drain(tmp_path: Path
     text = "\n".join(_records(sink))
     assert "alpha line 599" in text
     assert "alpha last, no newline" in text
+
+
+def test_tty_lanes_are_summarised_once_after_an_intermediate_drain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal keeps one result line per lane, even when one lane's command ends
+    while the other lane is open but has not started a command (#2885)."""
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", False)
+    screen = Screen(tty=True)
+    sink = TerminalProgress(
+        "sim",
+        "sim_demo",
+        tmp_path,
+        stream=screen,
+        clock=lambda: 0.0,
+        dimensions=lambda: os.terminal_size((120, 24)),
+    )
+    labels: dict[str, str] = {}
+    alpha_done = threading.Event()
+
+    def alpha() -> None:
+        announce_unit("simulation: alpha")
+        _child(tmp_path, "print('alpha out')")
+        alpha_done.set()
+
+    def beta() -> None:
+        _wait(alpha_done)  # alpha's drain ran while beta's lane was still open
+        announce_unit("simulation: beta")
+        _child(tmp_path, "print('beta one')")
+        _child(tmp_path, "print('beta two')")
+
+    _run_two_lanes(tmp_path, sink, {"alpha": alpha, "beta": beta}, labels)
+
+    text = screen.getvalue()
+    assert "[booley-progress]" not in text
+    # Replay the live-panel clears; what remains is the permanent output.
+    lines: list[str] = []
+    for chunk in re.split(r"(\x1b\[\d+A\x1b\[J)", text):
+        clear = re.fullmatch(r"\x1b\[(\d+)A\x1b\[J", chunk)
+        if clear:
+            del lines[-int(clear[1]) :]
+        else:
+            lines.extend(chunk.splitlines())
+    results: dict[str, list[str]] = {}
+    current = ""
+    for line in lines:
+        if line.startswith("    "):
+            results[current].append(line.strip())
+        else:
+            status, label, elapsed = line.split("   ")
+            assert (status, elapsed) == ("done", "0s"), line
+            assert label not in results, f"{label} summarised twice"
+            current = label
+            results[label] = []
+    assert results == {
+        labels["alpha"]: ["alpha out"],
+        labels["beta"]: ["beta one", "beta two"],
+    }

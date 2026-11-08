@@ -143,7 +143,9 @@ When Simulation runs several tests in parallel (`[jobs].max_heavy` above 1;
 see [Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs)), each running test
 gets its own progress row and output lines, labelled `lane=<test>/<attempt>`.
 
-Booley prints the log paths before the run starts and again after the verdict:
+On a terminal, Booley prints the log paths once, on one line, after the verdict.
+In redirected output it prints them before the run starts and again after the
+verdict:
 
 - `tool-output.log`: the complete transcript of the EDA tool's output.
 - `run.log`: a capped snapshot of the latest output.
@@ -153,6 +155,10 @@ The paths are inside the Sandbox. To follow a run from a second terminal:
 ```bash
 booley session enter -- tail -f <printed tool-output.log path>
 ```
+
+A terminal run prints the path only at the end, so while it runs, follow the
+`tool-output.log` in the `.runtime/flow-console/invocation-*` directory that
+holds an `active` file.
 
 Use `tail -F` for `run.log`, because Booley replaces it as it updates.
 
