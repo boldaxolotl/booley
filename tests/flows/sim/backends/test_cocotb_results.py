@@ -3,16 +3,24 @@
 Table-driven from the spike S4 crash-shape inventory: pass/fail/skip
 suites, failure-text extraction,
 missing file, truncated XML, empty suite, duplicate test names — plus the
-selected-set reconciliation (C2) and the [COCOTB_RESULTS] line round-trip.
+selected-set reconciliation (C2), the payload encoder/decoder and the [COCOTB_RESULTS] line.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
+from booley.core.boundary import BoundaryError
 from booley.flows.sim.backends import cocotb_results as cr
+
+
+def _transported(results: cr.CocotbResults, selected: list[str] | None = None):
+    """Results as the decoder sees them after the encoder (compacted if *selected*)."""
+    carried = results if selected is None else cr.compact_results(results, selected)
+    return cr.decode_results_payload(cr.results_payload(carried))
 
 
 @pytest.mark.parametrize("prefix", ["", "counter.", "tests.counter."])
@@ -308,32 +316,21 @@ class TestResultsLineRoundTrip:
             ),
         )
         selected = ["run_test"]
-        compact = cr.parse_results_line(
-            cr.format_results_line(res, selected=selected, verbosity="compact")
-        )
-        full = cr.parse_results_line(cr.format_results_line(res))
-        assert compact is not None and full is not None
+        compact = _transported(res, selected)
+        full = _transported(res)
         assert cr.reconcile(selected, compact) == cr.reconcile(selected, full)
         detail = cr.reconcile(selected, compact)[0][2]
         assert detail.count('"run_test/ifg=12"') == 1
         assert '"run_test/ifg=0"' in detail
         assert detail.index("ifg=12") < detail.index("ifg=0")
-        repeated = cr.parse_results_line(
-            cr.format_results_line(compact, selected=selected, verbosity="compact")
-        )
-        assert repeated == compact
+        assert _transported(compact, selected) == compact
 
     def test_legacy_compact_transport_discloses_missing_candidate_names(self):
-        payload = '{"state":"ok","tests":[],"skipped_unselected":2}'
-        parsed = cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + payload)
-        assert parsed is not None
+        parsed = cr.decode_results_payload({"state": "ok", "tests": [], "skipped_unselected": 2})
         detail = cr.reconcile(["run_test"], parsed)[0][2]
         assert "names were not transported" in detail
         assert "cocotb_results.json" in detail
-        repeated = cr.parse_results_line(
-            cr.format_results_line(parsed, selected=["run_test"], verbosity="compact")
-        )
-        assert repeated is not None
+        repeated = _transported(parsed, ["run_test"])
         assert cr.reconcile(["run_test"], repeated)[0][2] == detail
 
     def test_diagnostic_names_cannot_fabricate_a_verdict(self):
@@ -351,14 +348,11 @@ class TestResultsLineRoundTrip:
 
     @pytest.mark.parametrize("names", [None, "test", {}, [1], ["test", False]])
     def test_invalid_reported_names_reject_transport(self, names):
-        import json
-
         payload = {"state": "ok", "tests": [], "reported_names": names}
-        assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + json.dumps(payload)) is None
+        with pytest.raises(BoundaryError):
+            cr.decode_results_payload(payload)
 
     def test_large_candidate_detail_is_safe_for_campaign_evidence(self):
-        import json
-
         from booley.flows.sim.campaign.codec import MAX_DETAIL_BYTES
 
         res = cr.CocotbResults(
@@ -367,10 +361,7 @@ class TestResultsLineRoundTrip:
                 cr.CocotbTest(f"test_{i}/value=界\n\x1b[31m", "m", "skipped") for i in range(200)
             ),
         )
-        compact = cr.parse_results_line(
-            cr.format_results_line(res, selected=["absent"], verbosity="compact")
-        )
-        assert compact is not None
+        compact = _transported(res, ["absent"])
         detail = cr.reconcile(["absent"], compact)[0][2]
         assert len(detail) <= 1200
         assert len(json.dumps({"reason": detail}).encode()) < MAX_DETAIL_BYTES
@@ -379,10 +370,11 @@ class TestResultsLineRoundTrip:
 
     def test_round_trip_preserves_everything(self):
         res = cr.parse_results_xml(_RESULTS_XML)
-        line = cr.format_results_line(res)
+        payload = cr.results_payload(res)
+        assert cr.decode_results_payload(payload) == res
+        line = cr.format_results_line(payload)
         assert line.startswith(cr.COCOTB_RESULTS_PREFIX)
-        parsed = cr.parse_results_line(f"noise\n{line}\ntrailing")
-        assert parsed == res
+        assert cr.parse_results_line(f"noise\n{line}\ntrailing") == res
 
     def test_missing_line_returns_none(self):
         assert cr.parse_results_line("no sentinel here\n") is None
@@ -390,13 +382,17 @@ class TestResultsLineRoundTrip:
     def test_malformed_line_returns_none_not_pass(self):
         assert cr.parse_results_line(f"{cr.COCOTB_RESULTS_PREFIX}{{broken") is None
 
-    def test_non_object_or_non_list_payload_returns_none(self):
+    def test_non_object_or_non_list_payload_is_rejected(self):
         for payload in ("[]", '"payload"', '{"tests": {}}'):
-            assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + payload) is None
+            with pytest.raises(BoundaryError):
+                cr.decode_results_payload(json.loads(payload))
+        # parse_results_line keeps its fail-safe: a rejected payload is "no results".
+        assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + "[]") is None
 
     def test_non_object_test_entries_reject_the_transport(self):
         payload = '{"state":"ok","tests":[null,{"name":"kept","status":"pass"}]}'
-        assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + payload) is None
+        with pytest.raises(BoundaryError):
+            cr.decode_results_payload(json.loads(payload))
 
     @pytest.mark.parametrize(
         "testcase",
@@ -412,7 +408,8 @@ class TestResultsLineRoundTrip:
     )
     def test_invalid_test_fields_reject_the_transport(self, testcase):
         payload = f'{{"state":"ok","tests":[{testcase}]}}'
-        assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + payload) is None
+        with pytest.raises(BoundaryError):
+            cr.decode_results_payload(json.loads(payload))
 
     @pytest.mark.parametrize(
         "payload",
@@ -425,12 +422,13 @@ class TestResultsLineRoundTrip:
         ],
     )
     def test_invalid_result_fields_reject_the_transport(self, payload):
-        assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + payload) is None
+        with pytest.raises(BoundaryError):
+            cr.decode_results_payload(json.loads(payload))
 
     def test_last_line_wins(self):
         res = cr.parse_results_xml(_RESULTS_XML)
-        older = cr.format_results_line(cr.CocotbResults(state=cr.STATE_EMPTY))
-        newer = cr.format_results_line(res)
+        older = cr.format_results_line(cr.results_payload(cr.CocotbResults(state=cr.STATE_EMPTY)))
+        newer = cr.format_results_line(cr.results_payload(res))
         assert cr.parse_results_line(f"{older}\n{newer}") == res
 
     def test_compact_line_keeps_selected_and_aggregates_other_skips(self):
@@ -443,10 +441,7 @@ class TestResultsLineRoundTrip:
                 cr.CocotbTest("unexpected", "m", "fail", "boom"),
             ),
         )
-        parsed = cr.parse_results_line(
-            cr.format_results_line(res, selected=["selected"], verbosity="compact")
-        )
-        assert parsed is not None
+        parsed = _transported(res, ["selected"])
         assert [test.name for test in parsed.tests] == ["selected", "unexpected"]
         assert parsed.skipped_unselected == 2
 
@@ -458,10 +453,7 @@ class TestResultsLineRoundTrip:
                 cr.CocotbTest("skip_a", "m", "skipped"),
             ),
         )
-        parsed = cr.parse_results_line(
-            cr.format_results_line(res, selected=["selected"], verbosity="full")
-        )
-        assert parsed == res
+        assert _transported(res) == res
 
 
 # ---------------------------------------------------------------------------
@@ -538,6 +530,5 @@ def test_failure_text_survives_the_results_line_round_trip(tmp_path: Path):
     res = cr.parse_results_xml(
         _write(tmp_path, _xml_with_failure('<failure message="Test failed with RANDOM_SEED=7" />'))
     )
-    parsed = cr.parse_results_line(cr.format_results_line(res))
-    assert parsed is not None
+    parsed = _transported(res)
     assert parsed.tests[0].failure_text == "Test failed with RANDOM_SEED=7"
