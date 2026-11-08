@@ -101,7 +101,9 @@ _STABLE_BASE_ORCHESTRATION_FILES = {
 }
 # The Renovate configuration and its runner. The runner runs only from the
 # default branch on a schedule, builds no image and feeds no other job, so a
-# change here needs the narrow `renovate-config` lane, not the full CI.
+# change here needs the narrow `renovate-config` lane, not the full CI. That lane
+# runs the pin audit of every workflow file; the remaining workflow-wide audits
+# run on the next default-branch push, which selects every job.
 _RENOVATE_FILES = {".github/renovate.json", ".github/workflows/renovate.yml"}
 _PACKAGING_FILES = {
     "LICENSE",

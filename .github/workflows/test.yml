@@ -937,10 +937,12 @@ jobs:
         run: pip install -e ".[test]" -c .github/ci/constraints.txt
 
       # A Renovate-only change no longer runs the Python lane, so the runner
-      # and configuration guards run here, before the image steps can fail.
+      # and configuration guards, and the pin audit of every workflow file that
+      # renovate.yml is subject to, run here before the image steps can fail.
       - name: Run the Renovate configuration guards
         run: >-
-          pytest tests/ci/test_renovate_config.py -q --tb=short
+          pytest tests/ci/test_renovate_config.py tests/ci/test_ci_requirements.py
+          -q --tb=short
           --basetemp "${RUNNER_TEMP}/pytest" --timeout=60
           --junitxml="${RUNNER_TEMP}/junit.xml"
 
@@ -962,6 +964,7 @@ jobs:
           IMAGE: ${{ steps.image.outputs.image }}
         shell: bash
         run: |
+          set -o pipefail
           docker run --rm --network none -v "${GITHUB_WORKSPACE}:/repo:ro" -w /repo "${IMAGE}" \
             renovate-config-validator --strict --no-global .github/renovate.json \
             2>&1 | tee "${RUNNER_TEMP}/renovate-validate.log"

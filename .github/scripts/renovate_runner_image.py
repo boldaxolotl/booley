@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-_RUNNER_WORKFLOW = Path(".github/workflows/renovate.yml")
+_RUNNER_WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/renovate.yml"
 _RUNNER_STEP = "Run Renovate"
 
 
@@ -27,7 +27,7 @@ def runner_image(workflow_text: str) -> str:
 
 
 def main() -> None:
-    """Print ``image=<reference>`` for the workflow at the working directory's repository."""
+    """Print ``image=<reference>`` for the repository this script lives in."""
     print(f"image={runner_image(_RUNNER_WORKFLOW.read_text(encoding='utf-8'))}")
 
 
