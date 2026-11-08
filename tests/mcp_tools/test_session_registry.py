@@ -1047,7 +1047,7 @@ def test_upsert_replaces_call_entry_in_place(registry):
         ("b", "started"),
     ]
     assert [call.at for call in calls] == sorted(call.at for call in calls)
-    registry.upsert(facts(), "sim", "completed", now=103, call_id="evicted")
+    registry.upsert(facts(), "sim", "completed", now=103, call_id="unknown")
     assert len(registry.snapshot().rows[0].calls) == 3
     for number in range(25):
         registry.upsert(facts(), "sim", "completed", now=110 + number, call_id=f"c{number}")

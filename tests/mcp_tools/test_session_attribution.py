@@ -560,3 +560,31 @@ async def test_cancelled_call_records_cancelled_outcome():
             observer,
         )
     assert observer.calls == [("codex:one", "ordinary", "cancelled")]
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_the_call_returned_keeps_its_real_outcome():
+    class CancelledWhileRecording(Observer):
+        async def record(self, facts, tool, outcome):
+            await super().record(facts, tool, outcome)
+            raise asyncio.CancelledError
+
+    async def dispatch(*_args):
+        return McpDispatchResult([SimpleNamespace(text="done")], False)
+
+    application = McpApplication(
+        [{"name": "ordinary", "schema": {"type": "object"}}],
+        dispatch=lambda *_: None,
+        request_dispatch=dispatch,
+        canonicalize=lambda value: value,
+        on_discovery_error=lambda _: None,
+    )
+    observer = CancelledWhileRecording()
+    with pytest.raises(asyncio.CancelledError):
+        await server._call_application_tool(
+            application,
+            CallToolRequestParams(name="ordinary", arguments={}, _meta={"threadId": "one"}),
+            context(),
+            observer,
+        )
+    assert observer.calls == [("codex:one", "ordinary", "completed")]
