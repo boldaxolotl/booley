@@ -508,3 +508,37 @@ async def test_moved_selection_stays_in_view_when_textual_does_not_scroll_it(mon
         assert app.row_keys[table.cursor_row] == "codex:24"
         visible = table.scrollable_content_region.height - table.header_height
         assert table.scroll_y <= table.cursor_row < table.scroll_y + visible
+
+
+@pytest.mark.parametrize(
+    ("key", "label"),
+    [
+        ("pid:pid:[4026532225]:4865:81331", "PID 4865 · ns 4026532225"),
+        ("pid:fixture-scope:4865:81331", "PID 4865 · ns fixture-scope"),
+        ("pid:windows:12:99", "PID 12"),
+        ("pid:ps:darwin:12:99", "PID 12"),
+        ("codex:00", "codex:00"),
+        ("worktree:path:/fixture/0", "worktree:path:/fixture/0"),
+        ("S1", "S1"),
+        ("pid:one", "pid:one"),
+        ("pid:123:7", "pid:123:7"),
+        ("", ""),
+    ],
+    ids=[
+        "linux-procfs",
+        "linux-other-scope",
+        "windows",
+        "posix-ps",
+        "thread",
+        "worktree",
+        "handle",
+        "malformed-process",
+        "legacy-process",
+        "empty",
+    ],
+)
+def test_session_key_label(key, label):
+    """Process keys read as PID (and namespace); every other key is shown unchanged."""
+    from booley.harness.dashboard import sessions
+
+    assert sessions.session_key_label(key) == label
