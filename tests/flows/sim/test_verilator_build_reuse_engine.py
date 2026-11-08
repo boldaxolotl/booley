@@ -461,8 +461,8 @@ def test_pre_sim_output_in_run_cwd_keeps_reuse(verilator_env: Path) -> None:
         encoding="utf-8",
     )
     recorder = _Recorder(verilator_env)
-    _assert_passed(_run(verilator_env, recorder))
-    second = _run(verilator_env, recorder)
+    _assert_passed(_run(verilator_env, recorder, legacy_run=True))
+    second = _run(verilator_env, recorder, legacy_run=True)
     _assert_passed(second)
     assert recorder.builds == 1
     assert second.builds[0].ran is False
@@ -528,6 +528,7 @@ def test_trace_and_plain_each_reuse_their_own_generation(verilator_env: Path) ->
     # Launches run a snapshot copy, so the generation path (booleytrace) is not visible.
     assert all("+trace" not in stdout for stdout in plain_launches)
     assert all("+trace" in stdout for stdout in trace_launches)
+    assert _flags_line(plain_launches[0]) == _flags_line(plain_launches[1])
     assert _flags_line(trace_launches[0]) == _flags_line(trace_launches[1])
     assert _flags_line(trace_launches[0]) != _flags_line(plain_launches[0])
 

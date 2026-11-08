@@ -83,7 +83,10 @@ def test_authenticated_build_publishes_execution_before_blocking_invoker(tmp_pat
             ),
         )
         outcome = run_prepared_group(
-            execution, handle, attempt_root=handle.project_root / "attempt"
+            execution,
+            handle,
+            attempt_root=handle.project_root / "attempt",
+            copy_build_root=True,
         )
     assert outcome.passed
     assert len(observations) == 2

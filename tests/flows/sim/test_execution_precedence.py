@@ -107,7 +107,11 @@ def _run(
         patch("booley.flows.sim.execution.engine.new_attempt_token", return_value=_TOKEN),
     ):
         return run_prepared_group(
-            execution, handle, ("smoke",), attempt_root=handle.project_root / "attempt"
+            execution,
+            handle,
+            ("smoke",),
+            attempt_root=handle.project_root / "attempt",
+            copy_build_root=True,
         )
 
 

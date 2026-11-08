@@ -497,7 +497,11 @@ def _run_execution(
             selection = DefaultSelection() if names is None else NamedTests(names)
             return execution.run(handle, selection)
         return run_prepared_group(
-            execution, handle, names or (), attempt_root=handle.project_root / "attempt"
+            execution,
+            handle,
+            names or (),
+            attempt_root=handle.project_root / "attempt",
+            copy_build_root=True,
         )
 
 
@@ -515,7 +519,8 @@ def _write_transport(
     adapter: str = "icarus",
     result_path: Path | None = None,
 ) -> None:
-    # run()-only tests still launch from the build root; pass its transport path.
+    # run()-only tests still launch from the build root and pass its transport path.
+    # ``result_path`` goes away with the engine-deletion part of #2337.
     identity = AdapterTransportIdentity(
         adapter,
         "abc123",
