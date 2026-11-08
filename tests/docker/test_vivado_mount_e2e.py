@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 from tests import eda_grant_support
+from tests.devcontainer_spec_support import build_spec
 
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, wrapper_sha256
@@ -88,7 +89,7 @@ def _issue_runtime(workspace: Path, vivado_root: Path) -> None:
     eda_grant_support.add_grant(workspace, "vivado", installation="vivado_2025_2")
 
     def build(inputs: runtime_spec.SessionSpecInputs) -> dict:
-        return dc.build_devcontainer_spec(
+        return build_spec(
             dc.APP_NONE,
             image=_IMAGE,
             booley_dir_source=docker_mount_path(inputs.project_data_source),

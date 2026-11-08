@@ -819,12 +819,7 @@ def _build_mounts(
     return mounts
 
 
-def _build_remote_env(
-    app: str,
-    forward_oauth_token: bool,
-    local_timezone: str,
-    egress: str,
-) -> dict[str, str]:
+def _build_remote_env(app: str, local_timezone: str, egress: str) -> dict[str, str]:
     """Build the ``remoteEnv`` dict for :func:`build_devcontainer_spec`."""
     remote_env = (
         {
@@ -848,16 +843,6 @@ def _build_remote_env(
     }
     if local_timezone:
         remote_env[LOCAL_TIMEZONE_ENV] = local_timezone
-
-    # Forward the app's rotation-free credential into in-container runs: Claude's
-    # one-year `claude setup-token` token, or Codex's API key. Referenced via
-    # ${localEnv:...} so the secret is read from the host at container-create time
-    # and never baked into the on-disk spec. Gated on the caller having actually
-    # found one (`booley auth` stores it; init only forwards when it resolves) so
-    # an empty value can't shadow the mounted subscription credentials.
-    credential = auth_token.credential_for_app(app)
-    if forward_oauth_token and credential is not None:
-        remote_env[credential.env_var] = f"${{localEnv:{credential.env_var}}}"
 
     return remote_env
 
@@ -990,19 +975,14 @@ def _git_environment(project_source: str | None, fixed: dict[str, str] | None) -
     return environment
 
 
-def _policy_remote_environment(
-    remote: dict[str, str], app: str, seeds: Sequence[_Seed], *, planned: bool
-) -> None:
+def _policy_remote_environment(remote: dict[str, str], app: str, seeds: Sequence[_Seed]) -> None:
     """Record the default CLI's policy, the allowed CLI set, and the forwarded keys."""
     remote["BOOLEY_PRIMARY_AUTH"] = next(seed.policy for seed in seeds if seed.app == app)
     remote["BOOLEY_CREDENTIAL_SCHEMA"] = auth_token.CREDENTIAL_SCHEMA
     clis = {seed.app: seed.policy for seed in seeds if seed.app in _APP_STATE_DIR}
     if app in clis:
         remote[AGENT_CLIS_ENV] = encode_cli_policies(clis)
-    if planned:
-        for key in auth_token.CREDENTIAL_ENV_KEYS:
-            remote.pop(key, None)
-        remote.update({key: f"${{localEnv:{key}}}" for seed in seeds for key in seed.env_keys})
+    remote.update({key: f"${{localEnv:{key}}}" for seed in seeds for key in seed.env_keys})
 
 
 def spec_name(clis: Sequence[str], app: str) -> str:
@@ -1013,16 +993,12 @@ def spec_name(clis: Sequence[str], app: str) -> str:
 def build_devcontainer_spec(
     app: str = APP_NONE,
     *,
-    cli_seeds: Sequence[CliSeeds] | None = None,
+    cli_seeds: Sequence[CliSeeds],
     image: str = SANDBOX_IMAGE,
     booley_dir_source: str = DEFAULT_BOOLEY_DIR_SOURCE,
     project_id: str = "${localWorkspaceFolderBasename}",
-    auth_token_source: str | None = None,
-    config_seed_source: str | None = None,
     mcp_start_command: str | None = None,
     memory: str = "",
-    forward_oauth_token: bool = False,
-    token_seed_source: str | None = None,
     host_skills: Sequence[tuple[str, str]] = (),
     trusted_eda_mounts: Sequence[tuple[str, str]] = (),
     protected_devcontainer_source: str = "",
@@ -1041,43 +1017,18 @@ def build_devcontainer_spec(
         cli_seeds: one :class:`CliSeeds` per allowed Agent CLI (``app`` among them, or the
             single ``none`` plan that only carries the policy). Each CLI gets its own
             token seed, login seed, Claude config seed and state volume, filtered by
-            its plan, and the spec records the set in ``BOOLEY_AGENT_CLIS``. ``None``
-            builds the single-app spec from the explicit source arguments below.
+            its plan, and the spec records the set in ``BOOLEY_AGENT_CLIS``.
         image: the prebuilt Sandbox Image (``booley-sandbox`` by default; the
             published ref can be substituted by the caller).
         booley_dir_source: host-side mount source for ``.booley``.
         project_id: canonical Project-root identity used to scope persistent
             container state. Production callers pass :func:`canonical_project_id`.
-        auth_token_source: host path to the agent auth token to mount read-only;
-            ``None`` mounts no token (e.g. ``app == "none"`` or API-key auth).
-        config_seed_source: host path to ``~/.claude.json`` to seed the
-            container's user config from (Claude only). Mounted read-only at a
-            sidecar path and copied into ``~/.claude.json`` by
-            ``postCreateCommand`` — before the MCP registrar — so cached
-            feature-gate grants (staged-rollout / promo model access such as
-            Fable), the stableID, and onboarding state carry over from the host
-            instead of being re-rolled empty on every container create. The host
-            file is never written (read-only + copy). ``None`` (or any non-Claude
-            app) mounts no seed.
         mcp_start_command: the shell command for ``postStartCommand`` that starts
             the in-container MCP server (WS4). ``None`` omits the hook.
         memory: the ONE container memory limit (ADR 0028 Decision 12), e.g.
             ``"8g"``, from ``[sandbox] memory`` in booley.toml. Rendered as a
             ``--memory`` run arg; the empty default sets no limit — matching
             the pre-ADR-0028 devcontainer, so existing installs are unchanged.
-        forward_oauth_token: when True (Claude app only), add a
-            ``CLAUDE_CODE_OAUTH_TOKEN`` remoteEnv entry that references the host
-            env (``${localEnv:...}``) so a ``claude setup-token`` credential
-            reaches headless in-container runs. ``booley init`` sets this only
-            when the var is present in the host env, so an empty value never
-            shadows the mounted subscription credentials.
-        token_seed_source: host path to the rotation-free credential stored by
-            ``booley auth``, mounted read-only at the app's
-            ``_APP_TOKEN_SEED_TARGET`` sidecar for ``incontainer_register`` to
-            apply on every container start. This is the path that reaches VS
-            Code's "Reopen in Container", where the remoteEnv ``${localEnv:...}``
-            reference resolves empty (VS Code never sees the shell's exports).
-            ``None`` mounts no sidecar.
         host_skills: ``(name, host_source)`` pairs for the user's HOST agent
             skills, from ``[sandbox] mount_host_skills`` (init resolves the
             real skill dirs behind ``~/.claude/skills`` / ``~/.agents/skills``,
@@ -1122,12 +1073,7 @@ def build_devcontainer_spec(
         # exact visibility the project configured away.
         raise ValueError("mask_paths given without mask_source (the empty host dir to bind)")
 
-    if cli_seeds is None:
-        seeds = [_Seed(app, "auto", auth_token_source, token_seed_source, config_seed_source, ())]
-    elif auth_token_source or token_seed_source or config_seed_source:
-        raise ValueError("seed sources belong in cli_seeds when credential plans are given")
-    else:
-        seeds = _planned_seeds(app, cli_seeds)
+    seeds = _planned_seeds(app, cli_seeds)
 
     mounts = _build_mounts(
         _cli_seed_mounts(seeds, project_id),
@@ -1139,8 +1085,8 @@ def build_devcontainer_spec(
         mask_source,
     )
     identity_env = _git_environment(booley_dir_source, fixed_container_env)
-    remote_env = _build_remote_env(app, forward_oauth_token, local_timezone, egress)
-    _policy_remote_environment(remote_env, app, seeds, planned=cli_seeds is not None)
+    remote_env = _build_remote_env(app, local_timezone, egress)
+    _policy_remote_environment(remote_env, app, seeds)
     remote_env.update(identity_env)
     run_args = _build_run_args(memory, egress)
 

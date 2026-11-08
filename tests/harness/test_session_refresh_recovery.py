@@ -21,6 +21,7 @@ from booley.runtime import session_runtime as sr
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.session_issuance import Issuance
 from booley.runtime.session_spec import SessionSpecSnapshot
+from tests.devcontainer_spec_support import build_spec
 from tests.session_issuance_support import issue_built
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "session_refresh"
@@ -264,7 +265,7 @@ def test_checked_in_committed_fixture_resumes_forward(
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:fresh")
     prepared, spec_path, replacement = issue_built(
         project,
-        lambda _inputs: dc.build_devcontainer_spec(
+        lambda _inputs: build_spec(
             dc.APP_NONE,
             mcp_start_command=dc.mcp_post_start_command(),
             protected_devcontainer_source=str(project / ".devcontainer"),

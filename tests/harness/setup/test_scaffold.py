@@ -36,6 +36,7 @@ from booley.runtime.booley_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
 from booley.targets.target_surface import collect_surface
 from tests.conftest import symlink_or_skip
+from tests.devcontainer_spec_support import build_spec
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 
 
@@ -610,7 +611,7 @@ def _seed_doctor_init_state(root: Path) -> None:
     ensure_guidance_links(root, booley_dir)
     _seed_interactive(root)
     dc.write_devcontainer(
-        root, dc.build_devcontainer_spec(dc.APP_CLAUDE, image=doctor.pi.project_image_name(root))
+        root, build_spec(dc.APP_CLAUDE, image=doctor.pi.project_image_name(root))
     )
     (root / ".git/info/attributes").unlink()
     (root / ".git/info/exclude").write_text("/.devcontainer\n/home/\n")

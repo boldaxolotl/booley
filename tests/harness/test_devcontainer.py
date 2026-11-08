@@ -10,6 +10,7 @@ from booley.runtime import devcontainer as dc
 from booley.runtime import vaporview
 from booley.runtime.dashboard_extension import VSIX_PATH
 from booley.runtime.incontainer_git_identity import GitIdentity, git_identity_environment
+from tests.devcontainer_spec_support import build_spec
 
 # ===========================================================================
 # build_devcontainer_spec
@@ -22,13 +23,13 @@ class TestBuildSpec:
         registrar = dc.mcp_post_start_command()
         expected_tail = f"{dc.git_identity_command()} && {registrar}"
 
-        spec = dc.build_devcontainer_spec(app, mcp_start_command=registrar)
+        spec = build_spec(app, mcp_start_command=registrar)
 
         for key in ("postCreateCommand", "postStartCommand"):
             assert spec[key].split("; ")[-1] == expected_tail
 
     def test_core_runtime_fields(self):
-        spec = dc.build_devcontainer_spec(dc.APP_NONE)
+        spec = build_spec(dc.APP_NONE)
         assert spec["image"] == "booley-sandbox"
         assert spec["workspaceFolder"] == dc.WORK_DIR
         assert spec["workspaceMount"] == (
@@ -41,7 +42,7 @@ class TestBuildSpec:
         assert spec["updateRemoteUserUID"] is False
 
     def test_egress_network_and_reaper_label(self):
-        spec = dc.build_devcontainer_spec(dc.APP_NONE)
+        spec = build_spec(dc.APP_NONE)
         assert spec["runArgs"] == [
             "--init",
             "--network",
@@ -61,7 +62,7 @@ class TestBuildSpec:
         must guard the venue where the agent actually runs, for every app and
         regardless of the optional memory limit."""
         for app in dc.SUPPORTED_APPS:
-            args = dc.build_devcontainer_spec(app, memory="8g")["runArgs"]
+            args = build_spec(app, memory="8g")["runArgs"]
             assert "--init" in args
             assert args[args.index("--cap-drop") + 1] == "ALL"
             assert args[args.index("--security-opt") + 1] == "no-new-privileges"
@@ -69,43 +70,33 @@ class TestBuildSpec:
 
     def test_memory_limit_rendered_when_set(self):
         """ADR 0028 Decision 12: [sandbox] memory feeds a --memory run arg."""
-        spec = dc.build_devcontainer_spec(dc.APP_NONE, memory="8g")
+        spec = build_spec(dc.APP_NONE, memory="8g")
         args = spec["runArgs"]
         assert args[args.index("--memory") + 1] == "8g"
 
     def test_no_memory_limit_by_default(self):
         """Empty memory (the default) sets no limit — pre-0028 parity."""
-        assert "--memory" not in dc.build_devcontainer_spec(dc.APP_NONE)["runArgs"]
+        assert "--memory" not in build_spec(dc.APP_NONE)["runArgs"]
 
-    def test_oauth_token_forwarded_only_when_requested(self):
-        """forward_oauth_token adds a ${localEnv:...} reference (never a baked
-        value) for the Claude app, and nothing otherwise."""
-        off = dc.build_devcontainer_spec(dc.APP_CLAUDE)["remoteEnv"]
-        assert "CLAUDE_CODE_OAUTH_TOKEN" not in off
-        on = dc.build_devcontainer_spec(dc.APP_CLAUDE, forward_oauth_token=True)["remoteEnv"]
-        assert on["CLAUDE_CODE_OAUTH_TOKEN"] == "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}"
-
-    def test_oauth_token_not_forwarded_for_codex(self):
-        """Codex ignores the Claude oauth token — never add it there."""
-        env = dc.build_devcontainer_spec(dc.APP_CODEX, forward_oauth_token=True)["remoteEnv"]
-        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+    def test_credential_plan_is_required(self):
+        """The builder has no no-plan path: omitting ``cli_seeds`` is a call error."""
+        with pytest.raises(TypeError, match="cli_seeds"):
+            dc.build_devcontainer_spec(dc.APP_CLAUDE)  # type: ignore[call-arg]
 
     def test_proxy_env_points_at_sidecar(self):
-        env = dc.build_devcontainer_spec(dc.APP_NONE)["remoteEnv"]
+        env = build_spec(dc.APP_NONE)["remoteEnv"]
         for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             assert env[key] == dc.PROXY_URL
         assert env["BOOLEY_MCP_MODE"] == "interactive"
         assert env["BOOLEY_DIR"] == dc.BOOLEY_DIR_TARGET
 
     def test_agent_app_env_matches_app(self):
-        assert (
-            dc.build_devcontainer_spec(dc.APP_CLAUDE)["remoteEnv"]["BOOLEY_AGENT_APP"] == "claude"
-        )
-        assert dc.build_devcontainer_spec(dc.APP_NONE)["remoteEnv"]["BOOLEY_AGENT_APP"] == "none"
+        assert build_spec(dc.APP_CLAUDE)["remoteEnv"]["BOOLEY_AGENT_APP"] == "claude"
+        assert build_spec(dc.APP_NONE)["remoteEnv"]["BOOLEY_AGENT_APP"] == "none"
 
     def test_initialize_command_is_fixed_host_validator(self):
         for app in dc.SUPPORTED_APPS:
-            assert dc.build_devcontainer_spec(app)["initializeCommand"] == [
+            assert build_spec(app)["initializeCommand"] == [
                 "booley",
                 "session",
                 "prepare",
@@ -114,7 +105,7 @@ class TestBuildSpec:
             ]
 
     def test_booley_dir_mount_default_source(self):
-        spec = dc.build_devcontainer_spec(dc.APP_NONE)
+        spec = build_spec(dc.APP_NONE)
         # Default is the co-located single-var form; nested defaults are NOT used
         # (the Dev Containers CLI mis-parses them into an invalid mount path).
         assert dc.DEFAULT_BOOLEY_DIR_SOURCE == "${localWorkspaceFolder}/.booley"
@@ -124,7 +115,7 @@ class TestBuildSpec:
         )
 
     def test_custom_booley_dir_source(self):
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_NONE,
             booley_dir_source="/host/proj/.booley",
         )
@@ -134,17 +125,17 @@ class TestBuildSpec:
 
     def test_unknown_app_rejected(self):
         with pytest.raises(ValueError, match="unknown app"):
-            dc.build_devcontainer_spec("emacs")
+            build_spec("emacs")
 
     def test_cache_identity_is_container_wide_without_eda_environment(self):
-        spec = dc.build_devcontainer_spec(dc.APP_NONE)
+        spec = build_spec(dc.APP_NONE)
         assert spec["containerEnv"] == {
             **git_identity_environment(GitIdentity("Dev", "dev@localhost")),
             "BOOLEY_COMPILER_CACHE_ROOT": "/booley-project/.runtime/compiler-cache/ccache",
         }
 
     def test_fixed_container_env_is_literal_host_policy(self):
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_NONE,
             fixed_container_env={"XILINXD_LICENSE_FILE": "2100@booley-license-xilinx"},
         )
@@ -155,14 +146,14 @@ class TestBuildSpec:
         }
 
     def test_local_timezone_is_forwarded_to_runtime_processes(self):
-        spec = dc.build_devcontainer_spec(dc.APP_NONE, local_timezone="Asia/Tbilisi")
+        spec = build_spec(dc.APP_NONE, local_timezone="Asia/Tbilisi")
 
         assert spec["remoteEnv"]["BOOLEY_LOCAL_TIMEZONE"] == "Asia/Tbilisi"
 
     def test_host_skills_render_readonly_sidecar_binds(self):
         # [sandbox] mount_host_skills: each host skill rides in as its own
         # read-only bind at the sidecar; init has already resolved the real dir.
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_CLAUDE,
             host_skills=[("deslop", "/host/skills/deslop"), ("grill-me", "/host/x/grill-me")],
         )
@@ -176,13 +167,13 @@ class TestBuildSpec:
         )
 
     def test_no_host_skills_adds_no_sidecar_bind(self):
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         assert not any(dc.HOST_SKILLS_SIDECAR in m for m in spec["mounts"])
 
     def test_mask_paths_render_readonly_empty_binds_over_work(self):
         # [sandbox] mask_paths: each entry hides a workspace subtree behind a
         # read-only bind of the always-empty host dir.
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_NONE,
             mask_paths=["secret/oracle", "notes.md"],
             mask_source="/home/u/.config/booley/empty-mask",
@@ -200,7 +191,7 @@ class TestBuildSpec:
         # .booley is visible TWICE (via /work and /booley-project), so
         # a subtree under it must be masked in both views or the bytes remain
         # readable through the second mount.
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_NONE,
             mask_paths=[".booley/oracle"],
             mask_source="/empty",
@@ -218,7 +209,7 @@ class TestBuildSpec:
         # Mount order is the over-mount mechanism: docker applies
         # workspaceMount first, then `mounts` in order, so a mask listed
         # BEFORE the project-dir mount would be buried by it.
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_CLAUDE,
             mask_paths=[".booley/oracle", "lanes/b"],
             mask_source="/empty",
@@ -237,7 +228,7 @@ class TestBuildSpec:
         # Trailing slashes / "." segments must not leak into mount targets —
         # docker would treat "target=/work/x/" and "target=/work/x" as
         # different strings even though they name the same path.
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_NONE,
             mask_paths=["a/./b/", "c//d"],
             mask_source="/empty",
@@ -246,7 +237,7 @@ class TestBuildSpec:
         assert f"source=/empty,target={dc.WORK_DIR}/c/d,type=bind,readonly" in spec["mounts"]
 
     def test_unproxied_spec_joins_routed_network_without_proxy_environment(self):
-        spec = dc.build_devcontainer_spec(dc.APP_NONE, egress="unproxied")
+        spec = build_spec(dc.APP_NONE, egress="unproxied")
         networks = [
             spec["runArgs"][i + 1] for i, a in enumerate(spec["runArgs"]) if a == "--network"
         ]
@@ -257,22 +248,22 @@ class TestBuildSpec:
         assert "BOOLEY_EGRESS" not in spec["remoteEnv"]
 
     def test_proxy_egress_leaves_spec_byte_identical(self):
-        base = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-        proxied = dc.build_devcontainer_spec(dc.APP_CLAUDE, egress="proxy")
+        base = build_spec(dc.APP_CLAUDE)
+        proxied = build_spec(dc.APP_CLAUDE, egress="proxy")
         assert json.dumps(base) == json.dumps(proxied)
 
     def test_no_mask_paths_leaves_spec_byte_identical(self):
         # The empty default must be a no-op: existing installs re-seed the
         # exact same spec they had before the knob existed.
-        base = dc.build_devcontainer_spec(dc.APP_CLAUDE)
-        with_empty = dc.build_devcontainer_spec(dc.APP_CLAUDE, mask_paths=(), mask_source="")
+        base = build_spec(dc.APP_CLAUDE)
+        with_empty = build_spec(dc.APP_CLAUDE, mask_paths=(), mask_source="")
         assert json.dumps(base) == json.dumps(with_empty)
 
     def test_mask_paths_without_mask_source_rejected(self):
         # Silently dropping masks would hand the agent exactly the visibility
         # the project configured away — misuse must be loud.
         with pytest.raises(ValueError, match="mask_source"):
-            dc.build_devcontainer_spec(dc.APP_NONE, mask_paths=["secret"])
+            build_spec(dc.APP_NONE, mask_paths=["secret"])
 
 
 class TestMaskPathsValidation:
@@ -304,7 +295,7 @@ class TestMaskPathsValidation:
 
 class TestAppExtension:
     def test_claude_spec_installs_no_agent_extension(self):
-        vscode = dc.build_devcontainer_spec(dc.APP_CLAUDE)["customizations"]["vscode"]
+        vscode = build_spec(dc.APP_CLAUDE)["customizations"]["vscode"]
         assert vscode["extensions"] == [
             vaporview.BUNDLED_VSIX,
             dc.HDL_VSIX,
@@ -319,7 +310,7 @@ class TestAppExtension:
         assert vscode["settings"]["vaporview.customColor7"] == "#2da44e"
 
     def test_codex_spec_installs_no_agent_extension(self):
-        vscode = dc.build_devcontainer_spec(dc.APP_CODEX)["customizations"]["vscode"]
+        vscode = build_spec(dc.APP_CODEX)["customizations"]["vscode"]
         assert vscode["extensions"] == [
             vaporview.BUNDLED_VSIX,
             dc.HDL_VSIX,
@@ -331,16 +322,16 @@ class TestAppExtension:
     def test_generated_spec_omits_tcl_highlighting(self):
         # The HDL extension owns .sdc/.xdc; no Tcl grammar or association is needed.
         for app in dc.SUPPORTED_APPS:
-            vscode = dc.build_devcontainer_spec(app)["customizations"]["vscode"]
+            vscode = build_spec(app)["customizations"]["vscode"]
             assert "bitwisecook.tcl" not in vscode["extensions"]
             assert "files.associations" not in vscode["settings"]
 
     def test_generated_spec_has_no_retired_entries(self):
         for app in dc.SUPPORTED_APPS:
-            assert dc.spec_retired_vscode_entries(dc.build_devcontainer_spec(app)) == []
+            assert dc.spec_retired_vscode_entries(build_spec(app)) == []
 
     def test_spec_installs_hdl_highlight_without_tcl(self):
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         vscode = spec["customizations"]["vscode"]
         vscode["extensions"] = [e for e in vscode["extensions"] if e != "bitwisecook.tcl"]
         vscode["settings"].pop("files.associations", None)
@@ -350,7 +341,7 @@ class TestAppExtension:
         # Waveform viewing isn't tied to an agent app, so "none" carries the
         # app-agnostic extensions (VaporView, its Booley bridge host, HDL
         # highlighting) but no agent extension.
-        vscode = dc.build_devcontainer_spec(dc.APP_NONE)["customizations"]["vscode"]
+        vscode = build_spec(dc.APP_NONE)["customizations"]["vscode"]
         assert vscode["extensions"] == [
             vaporview.BUNDLED_VSIX,
             dc.HDL_VSIX,
@@ -362,7 +353,7 @@ class TestAppExtension:
         # The Waveform Viewer (ADR 0078) and the Booley extension hosting its
         # bridge ride along regardless of agent app or Dashboard policy.
         for app in dc.SUPPORTED_APPS:
-            spec = dc.build_devcontainer_spec(app)
+            spec = build_spec(app)
             vscode = spec["customizations"]["vscode"]
             assert vaporview.BUNDLED_VSIX in vscode["extensions"]
             assert VSIX_PATH in vscode["extensions"]
@@ -374,17 +365,17 @@ class TestAppExtension:
         # The single detector booley doctor reads to surface a spec seeded
         # before the current Waveform Viewer setup (ADR 0078) landed.
         for app in dc.SUPPORTED_APPS:
-            assert dc.spec_installs_vaporview(dc.build_devcontainer_spec(app)) is True
+            assert dc.spec_installs_vaporview(build_spec(app)) is True
         # Older shapes: no customizations at all, or an agent extension
         # without VaporView.
         assert dc.spec_installs_vaporview({}) is False
-        legacy = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        legacy = build_spec(dc.APP_CLAUDE)
         legacy["customizations"]["vscode"]["extensions"] = ["Anthropic.claude-code"]
         assert dc.spec_installs_vaporview(legacy) is False
 
     def test_generated_spec_installs_the_bundled_vaporview_build(self):
         for app in dc.SUPPORTED_APPS:
-            extensions = dc.build_devcontainer_spec(app)["customizations"]["vscode"]["extensions"]
+            extensions = build_spec(app)["customizations"]["vscode"]["extensions"]
             assert [e for e in extensions if "vaporview" in e.lower()] == [vaporview.BUNDLED_VSIX]
 
     @pytest.mark.parametrize(
@@ -430,7 +421,7 @@ class TestAppExtension:
         ],
     )
     def test_spec_installs_vaporview_requires_only_the_bundled_vsix(self, entries, current):
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         extensions = spec["customizations"]["vscode"]["extensions"]
         spec["customizations"]["vscode"]["extensions"] = [
             e for e in extensions if not vaporview.is_vaporview_entry(e)
@@ -466,7 +457,7 @@ class TestAppExtension:
     def test_bundled_extension_detectors_reject_gallery_ids(
         self, detector, gallery_id, bundled, entries, current
     ):
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         extensions = spec["customizations"]["vscode"]["extensions"]
         spec["customizations"]["vscode"]["extensions"] = [
             e for e in extensions if e not in (gallery_id, bundled)
@@ -477,16 +468,16 @@ class TestAppExtension:
         # Doctor's detector for a spec that lacks the bundled HDL VSIX
         # (a spec seeded before the highlighting extension landed).
         for app in dc.SUPPORTED_APPS:
-            assert dc.spec_installs_hdl_highlight(dc.build_devcontainer_spec(app)) is True
+            assert dc.spec_installs_hdl_highlight(build_spec(app)) is True
         assert dc.spec_installs_hdl_highlight({}) is False
         # A missing HDL grammar extension means a stale spec.
-        legacy = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        legacy = build_spec(dc.APP_CLAUDE)
         legacy["customizations"]["vscode"]["extensions"] = [
             "Anthropic.claude-code",
             "lramseyer.vaporview",
         ]
         assert dc.spec_installs_hdl_highlight(legacy) is False
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         spec["customizations"]["vscode"]["extensions"].remove(dc.HDL_VSIX)
         assert dc.spec_installs_hdl_highlight(spec) is False
 
@@ -495,13 +486,13 @@ class TestAppExtension:
         # the attached container window or before per-attach tunnel isolation
         # was added (F-14).
         for app in dc.SUPPORTED_APPS:
-            assert dc.spec_installs_live_preview(dc.build_devcontainer_spec(app)) is True
+            assert dc.spec_installs_live_preview(build_spec(app)) is True
         assert dc.spec_installs_live_preview({}) is False
-        legacy = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        legacy = build_spec(dc.APP_CLAUDE)
         legacy["customizations"]["vscode"]["extensions"].remove(dc.LIVE_PREVIEW_VSIX)
         assert dc.spec_installs_live_preview(legacy) is False
         for value in (None, True):
-            stale = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+            stale = build_spec(dc.APP_CLAUDE)
             settings = stale["customizations"]["vscode"]["settings"]
             if value is None:
                 del settings["remote.restoreForwardedPorts"]
@@ -509,11 +500,11 @@ class TestAppExtension:
                 settings["remote.restoreForwardedPorts"] = value
             assert dc.spec_installs_live_preview(stale) is False
 
-        stale = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        stale = build_spec(dc.APP_CLAUDE)
         del stale["customizations"]["vscode"]["settings"]["livePreview.portNumber"]
         assert dc.spec_installs_live_preview(stale) is False
 
-        stale = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        stale = build_spec(dc.APP_CLAUDE)
         stale["postAttachCommand"] = dc.vaporview_patch_command()
         assert dc.spec_installs_live_preview(stale) is False
 
@@ -521,13 +512,13 @@ class TestAppExtension:
         # F-14: restored 3000/3001 tunnels can point the embedded browser at a
         # dead endpoint while Live Preview's newly allocated tunnel is healthy.
         for app in dc.SUPPORTED_APPS:
-            settings = dc.build_devcontainer_spec(app)["customizations"]["vscode"]["settings"]
+            settings = build_spec(app)["customizations"]["vscode"]["settings"]
             assert settings["remote.restoreForwardedPorts"] is False
             assert settings["livePreview.portNumber"] == dc._LIVE_PREVIEW_SEED_PORT
 
     def test_live_preview_randomizer_runs_before_extension_patch(self):
         for app in dc.SUPPORTED_APPS:
-            assert dc.build_devcontainer_spec(app)["postAttachCommand"] == (
+            assert build_spec(app)["postAttachCommand"] == (
                 f"{dc.live_preview_port_command()} && {dc.vaporview_patch_command()}"
             )
 
@@ -536,7 +527,7 @@ class TestAppExtension:
         # synced Python extension discover a host-created workspace .venv and
         # inject a delayed activation command into interactive terminals.
         for app in dc.SUPPORTED_APPS:
-            spec = dc.build_devcontainer_spec(app)
+            spec = build_spec(app)
             settings = spec["customizations"]["vscode"]["settings"]
             assert settings["python-envs.terminal.autoActivationType"] == "off"
             assert settings["python.terminal.activateEnvironment"] is False
@@ -544,14 +535,14 @@ class TestAppExtension:
 
     def test_python_terminal_autoactivation_detector_rejects_stale_specs(self):
         for key in dc._PYTHON_TERMINAL_SETTINGS:
-            spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+            spec = build_spec(dc.APP_CLAUDE)
             del spec["customizations"]["vscode"]["settings"][key]
             assert dc.spec_disables_python_terminal_activation(spec) is False
 
     def test_spec_installs_vaporview_requires_the_bridge_host(self):
         # Without the image-local Booley extension no window runs the bridge,
         # so scoped `bwave gui` has nothing to drive.
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         spec["customizations"]["vscode"]["extensions"].remove(VSIX_PATH)
         assert dc.spec_installs_vaporview(spec) is False
 
@@ -559,7 +550,7 @@ class TestAppExtension:
         # The previous generator pinned another VaporView build, enabled its
         # WCP endpoint, and installed the Booley extension only with the
         # Dashboard; a refresh must replace that whole shape.
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, dashboard=False)
+        spec = build_spec(dc.APP_CLAUDE, dashboard=False)
         vscode = spec["customizations"]["vscode"]
         vscode["extensions"] = [
             f"{vaporview.EXTENSION_ID}@1.5.4" if vaporview.is_vaporview_entry(e) else e
@@ -571,14 +562,14 @@ class TestAppExtension:
 
     def test_spec_installs_vaporview_rejects_presentation_palette_drift(self):
         for key in dc._VAPORVIEW_PRESENTATION_SETTINGS:
-            spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+            spec = build_spec(dc.APP_CLAUDE)
             del spec["customizations"]["vscode"]["settings"][key]
             assert dc.spec_installs_vaporview(spec) is False
 
     def test_spec_installs_vaporview_requires_the_attach_patch(self):
         # Without the postAttach patch the custom palette ignores the spec's
         # Machine settings and VaporView errors on the remote theme lookup.
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         assert dc.spec_installs_vaporview(spec) is True
         del spec["postAttachCommand"]
         assert dc.spec_installs_vaporview(spec) is False
@@ -589,7 +580,7 @@ class TestAppExtension:
         # Every app (incl. "none") gets the patch hook on attach — attach is
         # the first lifecycle point where the extension exists on disk.
         for app in dc.SUPPORTED_APPS:
-            spec = dc.build_devcontainer_spec(app)
+            spec = build_spec(app)
             assert spec["postAttachCommand"] == dc.post_attach_command()
             assert "booley.runtime.incontainer_vaporview" in spec["postAttachCommand"]
 
@@ -599,9 +590,9 @@ class TestAuthMount:
         # Claude's creds are bound read-only at the sidecar SEED path (outside
         # ~/.claude/) — never directly onto the real file — so the in-container
         # refresh can rewrite the writable copy without hitting an RO mount.
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_CLAUDE,
-            auth_token_source="/home/u/.claude/.credentials.json",
+            login_source="/home/u/.claude/.credentials.json",
         )
         auth = spec["mounts"][1]
         assert "source=/home/u/.claude/.credentials.json" in auth
@@ -616,9 +607,9 @@ class TestAuthMount:
     def test_claude_creds_seeded_into_writable_path_on_create(self):
         # Plain cp (not cp -n) re-seeds the freshest host token on every create;
         # chmod 600 keeps it agent-private after the copy.
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_CLAUDE,
-            auth_token_source="/home/u/.claude/.credentials.json",
+            login_source="/home/u/.claude/.credentials.json",
             mcp_start_command="python -m booley.harness.incontainer_register",
         )
         pc = spec["postCreateCommand"]
@@ -632,9 +623,9 @@ class TestAuthMount:
         # refresh. A read-only bind on that path makes the refresh write fail and
         # 401s the session, so Codex gets the same sidecar-seed + writable-copy
         # treatment as Claude.
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_CODEX,
-            auth_token_source="/home/u/.codex/auth.json",
+            login_source="/home/u/.codex/auth.json",
         )
         auth_mount = spec["mounts"][1]
         assert f"target={dc.AGENT_HOME}/.codex-auth-seed.json" in auth_mount
@@ -648,7 +639,7 @@ class TestAuthMount:
         assert f"chmod 600 {dc.AGENT_HOME}/.codex/auth.json" in spec["postCreateCommand"]
 
     def test_no_auth_when_source_absent(self):
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         # project-dir mount + persistent state volume (no auth)
         assert len(spec["mounts"]) == 2
         assert all("type=bind" in m or "type=volume" in m for m in spec["mounts"])
@@ -656,9 +647,9 @@ class TestAuthMount:
     def test_no_auth_for_app_none(self):
         # "none" has no auth target and no persistent state dir, so only the
         # project-dir mount remains.
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_NONE,
-            auth_token_source="/whatever",
+            login_source="/whatever",
         )
         assert len(spec["mounts"]) == 1
 
@@ -673,9 +664,9 @@ class TestTokenSeedMount:
     """
 
     def test_claude_token_seed_mounted_readonly_outside_state_dir(self):
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_CLAUDE,
-            token_seed_source="/home/u/.config/booley/claude-oauth-token",
+            token_source="/home/u/.config/booley/claude-oauth-token",
         )
         seed = next(m for m in spec["mounts"] if "oauth-token-seed" in m)
         assert "source=/home/u/.config/booley/claude-oauth-token" in seed
@@ -686,9 +677,9 @@ class TestTokenSeedMount:
         assert f"target={dc.AGENT_HOME}/.claude/" not in seed
 
     def test_codex_token_seed_mounted_readonly_outside_state_dir(self):
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_CODEX,
-            token_seed_source="/home/u/.config/booley/openai-api-key",
+            token_source="/home/u/.config/booley/openai-api-key",
         )
         seed = next(m for m in spec["mounts"] if "api-key-seed" in m)
         assert f"target={dc.AGENT_HOME}/.booley-api-key-seed" in seed
@@ -697,33 +688,33 @@ class TestTokenSeedMount:
 
     def test_no_token_seed_by_default(self):
         for app in dc.SUPPORTED_APPS:
-            spec = dc.build_devcontainer_spec(app)
+            spec = build_spec(app)
             assert all("token-seed" not in m and "api-key-seed" not in m for m in spec["mounts"])
 
     def test_no_token_seed_for_app_none(self):
-        spec = dc.build_devcontainer_spec(dc.APP_NONE, token_seed_source="/whatever")
+        spec = build_spec(dc.APP_NONE, token_source="/whatever")
         assert len(spec["mounts"]) == 1
 
     def test_token_value_never_baked_into_spec(self):
         # The spec must carry only the mount reference — never file contents.
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_CLAUDE,
-            token_seed_source="/home/u/.config/booley/claude-oauth-token",
-            forward_oauth_token=True,
+            token_source="/home/u/.config/booley/claude-oauth-token",
+            credentials={"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-synthetic"},
         )
         assert "sk-ant-" not in json.dumps(spec)
 
     def test_spec_mounts_token_seed_detector(self):
         # The single detector booley doctor reads to surface a spec seeded
         # before the credential was stored.
-        with_seed = dc.build_devcontainer_spec(dc.APP_CLAUDE, token_seed_source="/t")
+        with_seed = build_spec(dc.APP_CLAUDE, token_source="/t")
         assert dc.spec_mounts_token_seed(with_seed) is True
-        without = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        without = build_spec(dc.APP_CLAUDE)
         assert dc.spec_mounts_token_seed(without) is False
-        assert dc.spec_mounts_token_seed(dc.build_devcontainer_spec(dc.APP_NONE)) is None
+        assert dc.spec_mounts_token_seed(build_spec(dc.APP_NONE)) is None
 
     def test_spec_mounts_target_detector(self):
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_NONE,
             trusted_eda_mounts=(("/host/pdk", "/opt/pdk"),),
         )
@@ -734,30 +725,30 @@ class TestTokenSeedMount:
 
 class TestStateVolume:
     def test_claude_persists_claude_home(self):
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         vol = spec["mounts"][-1]
         assert "source=booley-claude-state-${localWorkspaceFolderBasename}" in vol
         assert f"target={dc.AGENT_HOME}/.claude" in vol
         assert "type=volume" in vol
 
     def test_codex_persists_codex_home(self):
-        spec = dc.build_devcontainer_spec(dc.APP_CODEX)
+        spec = build_spec(dc.APP_CODEX)
         vol = spec["mounts"][-1]
         assert "source=booley-codex-state-${localWorkspaceFolderBasename}" in vol
         assert f"target={dc.AGENT_HOME}/.codex" in vol
         assert "type=volume" in vol
 
     def test_none_has_no_state_volume(self):
-        spec = dc.build_devcontainer_spec(dc.APP_NONE)
+        spec = build_spec(dc.APP_NONE)
         assert all("type=volume" not in m for m in spec["mounts"])
 
     def test_codex_creds_seed_sits_outside_state_dir(self):
         # The seed must be a SIBLING of ~/.codex, never nested under it: the state
         # volume owns that dir and would shadow a seed placed inside it, leaving
         # the copy with nothing to copy from.
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_CODEX,
-            auth_token_source="/home/u/.codex/auth.json",
+            login_source="/home/u/.codex/auth.json",
         )
         seed_mount = spec["mounts"][1]
         assert f"target={dc.AGENT_HOME}/.codex-auth-seed.json" in seed_mount
@@ -767,9 +758,9 @@ class TestStateVolume:
     def test_claude_creds_seed_sits_outside_state_dir(self):
         # The Claude creds seed must be a sibling of ~/.claude, not nested under
         # it, else the state volume would shadow it.
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_CLAUDE,
-            auth_token_source="/home/u/.claude/.credentials.json",
+            login_source="/home/u/.claude/.credentials.json",
         )
         seed = next(m for m in spec["mounts"] if "claude-creds-seed" in m)
         assert f"target={dc.AGENT_HOME}/.claude/" not in seed
@@ -785,7 +776,7 @@ class TestStateVolume:
     def test_mount_name_matches_helper(self):
         # The spec's volume name must equal state_volume_name with the CLI's
         # basename placeholder — so doctor and the spec never diverge.
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         expected = dc.state_volume_name("claude", "${localWorkspaceFolderBasename}")
         assert f"source={expected}" in spec["mounts"][-1]
 
@@ -810,7 +801,7 @@ class TestStateVolume:
 class TestSpecAgentApp:
     @pytest.mark.parametrize("app", [dc.APP_CLAUDE, dc.APP_CODEX, dc.APP_NONE])
     def test_round_trips_the_built_app(self, app):
-        assert dc.spec_agent_app(dc.build_devcontainer_spec(app)) == app
+        assert dc.spec_agent_app(build_spec(app)) == app
 
     @pytest.mark.parametrize(
         "spec",
@@ -832,27 +823,27 @@ class TestSpecAgentApp:
 
 class TestSpecStateIsPersisted:
     def test_freshly_built_claude_spec_persists(self):
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         assert dc.spec_state_is_persisted(spec) is True
 
     def test_freshly_built_codex_spec_persists(self):
-        spec = dc.build_devcontainer_spec(dc.APP_CODEX)
+        spec = build_spec(dc.APP_CODEX)
         assert dc.spec_state_is_persisted(spec) is True
 
     def test_app_none_is_not_applicable(self):
         # No home-state dir to persist -> None (nothing to check), not False.
-        spec = dc.build_devcontainer_spec(dc.APP_NONE)
+        spec = build_spec(dc.APP_NONE)
         assert dc.spec_state_is_persisted(spec) is None
 
     def test_stale_claude_spec_missing_volume_is_false(self):
         # Reproduce a pre-fix spec: the claude app, but the state volume dropped.
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         spec["mounts"] = [m for m in spec["mounts"] if "type=volume" not in m]
         assert dc.spec_state_is_persisted(spec) is False
 
     def test_volume_at_wrong_target_is_false(self):
         # A volume mount that does not target the app's state dir does not count.
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         spec["mounts"] = [m for m in spec["mounts"] if "type=volume" not in m] + [
             "source=other,target=/home/agent/.cache,type=volume"
         ]
@@ -881,7 +872,7 @@ class TestConfigSeed:
     _MCP = "python -m booley.harness.incontainer_register"
 
     def test_seed_mounted_readonly_at_sidecar(self):
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, config_seed_source=self._SRC)
+        spec = build_spec(dc.APP_CLAUDE, config_source=self._SRC)
         seed = next(m for m in spec["mounts"] if "claude-config-seed" in m)
         assert f"source={self._SRC}" in seed
         assert f"target={dc.AGENT_HOME}/.claude-config-seed.json" in seed
@@ -890,17 +881,17 @@ class TestConfigSeed:
     def test_seed_sits_outside_the_state_dir(self):
         # The seed must NOT nest under the persisted ~/.claude volume, else it
         # would be shadowed; it lives at ~/.claude-config-seed.json (a sibling).
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, config_seed_source=self._SRC)
+        spec = build_spec(dc.APP_CLAUDE, config_source=self._SRC)
         seed = next(m for m in spec["mounts"] if "claude-config-seed" in m)
         assert f"target={dc.AGENT_HOME}/.claude/" not in seed
 
     def test_state_volume_still_last_with_seed(self):
         # Ordering contract: the persisted state volume stays the final mount so
         # it nests under the deeper auth bind (and spec_state_is_persisted holds).
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_CLAUDE,
-            auth_token_source="/home/u/.claude/.credentials.json",
-            config_seed_source=self._SRC,
+            login_source="/home/u/.claude/.credentials.json",
+            config_source=self._SRC,
         )
         assert "type=volume" in spec["mounts"][-1]
         assert dc.spec_state_is_persisted(spec) is True
@@ -908,9 +899,9 @@ class TestConfigSeed:
     def test_postcreate_seeds_before_registrar(self):
         # cp must precede the registrar so upsert_claude merges into the
         # host-derived config, not an empty one.
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_CLAUDE,
-            config_seed_source=self._SRC,
+            config_source=self._SRC,
             mcp_start_command=self._MCP,
         )
         pc = spec["postCreateCommand"]
@@ -926,10 +917,10 @@ class TestConfigSeed:
         # The host OAuth token rotates: a container resumed days after create
         # would otherwise run every agent session against a dead token and fail
         # with "Not logged in". postStart must re-copy the live host creds bind.
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_CLAUDE,
-            auth_token_source=self._SRC,
-            config_seed_source=self._SRC,
+            login_source=self._SRC,
+            config_source=self._SRC,
             mcp_start_command=self._MCP,
         )
         ps = spec["postStartCommand"]
@@ -944,17 +935,17 @@ class TestConfigSeed:
         assert "claude-config-seed" not in ps
 
     def test_postcreate_seed_only_when_no_mcp(self):
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, config_seed_source=self._SRC)
+        spec = build_spec(dc.APP_CLAUDE, config_source=self._SRC)
         assert spec["postCreateCommand"].startswith("cp -n")
         assert spec["postStartCommand"] == dc.git_identity_command()
 
     def test_no_seed_for_codex(self):
         # Only Claude caches these grants; Codex gets no seed even with a source.
-        spec = dc.build_devcontainer_spec(dc.APP_CODEX, config_seed_source=self._SRC)
+        spec = build_spec(dc.APP_CODEX, config_source=self._SRC)
         assert all("claude-config-seed" not in m for m in spec["mounts"])
 
     def test_no_seed_without_source(self):
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, mcp_start_command=self._MCP)
+        spec = build_spec(dc.APP_CLAUDE, mcp_start_command=self._MCP)
         assert all("claude-config-seed" not in m for m in spec["mounts"])
         assert "cp -n" not in spec["postCreateCommand"]
 
@@ -963,7 +954,7 @@ class TestMcpStartCommand:
     def test_registration_set_on_both_create_and_start(self):
         # postCreateCommand registers before the first session (avoids the race);
         # postStartCommand repeats it on resume/rebuild.
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_NONE,
             mcp_start_command="python -m booley.harness.incontainer_register",
         )
@@ -972,7 +963,7 @@ class TestMcpStartCommand:
         assert spec["postStartCommand"] == expected
 
     def test_identity_hooks_remain_without_registration(self):
-        spec = dc.build_devcontainer_spec(dc.APP_NONE)
+        spec = build_spec(dc.APP_NONE)
         assert spec["postStartCommand"] == dc.git_identity_command()
         assert spec["postCreateCommand"] == dc.git_identity_command()
 
@@ -989,20 +980,20 @@ class TestMcpStartCommand:
 
 class TestRenderAndWrite:
     def test_render_round_trips(self):
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         text = dc.render_devcontainer_json(spec)
         assert text.endswith("\n")
         assert json.loads(text) == spec
 
     def test_write_creates_file(self, tmp_path):
-        spec = dc.build_devcontainer_spec(dc.APP_NONE)
+        spec = build_spec(dc.APP_NONE)
         path = dc.write_devcontainer(tmp_path, spec)
         assert path == tmp_path / ".devcontainer" / "devcontainer.json"
         assert json.loads(path.read_text(encoding="utf-8")) == spec
 
     def test_write_overwrites_existing(self, tmp_path):
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_NONE))
-        path = dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CODEX))
+        dc.write_devcontainer(tmp_path, build_spec(dc.APP_NONE))
+        path = dc.write_devcontainer(tmp_path, build_spec(dc.APP_CODEX))
         assert json.loads(path.read_text(encoding="utf-8"))["name"].endswith("(codex)")
 
 
