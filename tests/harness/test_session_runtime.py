@@ -42,6 +42,7 @@ from booley.runtime.session_admission import (
 from booley.runtime.session_admission import (
     vscode_sandboxes as real_vscode_sandboxes,
 )
+from tests.devcontainer_spec_support import build_spec
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
 from tests.harness.booley_dir_support import select_booley_dir
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
@@ -112,7 +113,7 @@ def _spec(**kwargs) -> dict:
         "booley_dir_source": "/c/ws/i2c/.booley",
         "mcp_start_command": dc.mcp_post_start_command(),
     }
-    return dc.build_devcontainer_spec("claude", **{**defaults, **kwargs})
+    return build_spec("claude", **{**defaults, **kwargs})
 
 
 def _argv(spec: dict, workspace: Path) -> list[str]:
@@ -179,7 +180,7 @@ class TestDockerRunArgv:
         assert "source=/c/ws/i2c/.booley,target=/booley-project,type=bind" in mounts
 
     def test_readonly_credential_mounts_survive_translation(self, workspace: Path):
-        spec = _spec(auth_token_source="/c/home/.credentials.json")
+        spec = _spec(login_source="/c/home/.credentials.json")
         mounts = _flag_values(_argv(spec, workspace), "--mount")
         creds = [m for m in mounts if "claude-creds-seed" in m]
         assert creds and creds[0].endswith(",readonly")
@@ -220,7 +221,7 @@ class TestDockerRunArgv:
 
     def test_oauth_token_is_resolved_not_passed_literally(self, workspace: Path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-tok")
-        spec = _spec(forward_oauth_token=True)
+        spec = _spec(credentials={"CLAUDE_CODE_OAUTH_TOKEN": "PLAN_VALUE_UNUSED"})
         argv = _argv(spec, workspace)
         env = _flag_values(argv, "-e")
         assert "CLAUDE_CODE_OAUTH_TOKEN" in env
@@ -234,7 +235,7 @@ class TestHookArgv:
         assert argv == ["docker", "exec", "c1", "bash", "-lc", "a; b"]
 
     def test_post_create_hook_from_a_real_spec_is_a_shell_string(self):
-        spec = _spec(auth_token_source="/c/home/.credentials.json")
+        spec = _spec(login_source="/c/home/.credentials.json")
         # `;`-joined, so it cannot be exec'd as argv — the shell is required.
         assert ";" in spec["postCreateCommand"]
         assert sr.hook_argv("c1", spec["postCreateCommand"])[3:5] == ["bash", "-lc"]
@@ -4037,7 +4038,7 @@ def test_canonical_pin_checks_immutable_image_and_rejects_alias_mask(
 @pytest.mark.parametrize("vscode", [False, True])
 @pytest.mark.parametrize("drift", [None, "missing", "changed", "pre-image-identity"])
 def test_container_resume_requires_issued_git_environment(tmp_path, monkeypatch, vscode, drift):
-    spec = dc.build_devcontainer_spec(dc.APP_NONE, image="sha256:test")
+    spec = build_spec(dc.APP_NONE, image="sha256:test")
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
     runtime_spec.pin_image(spec)
     labels = {"devcontainer.local_folder": str(tmp_path)} if vscode else {}
@@ -4085,7 +4086,7 @@ def test_container_resume_requires_issued_git_environment(tmp_path, monkeypatch,
 def test_container_resume_matches_issued_egress_topology(
     tmp_path, monkeypatch, network_constant, matches
 ):
-    spec = dc.build_devcontainer_spec(dc.APP_NONE, image="sha256:test", egress="unproxied")
+    spec = build_spec(dc.APP_NONE, image="sha256:test", egress="unproxied")
     network = getattr(dc, network_constant)
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
     runtime_spec.pin_image(spec)
@@ -4118,7 +4119,7 @@ def test_container_resume_matches_issued_egress_topology(
 
 
 def test_docker_run_carries_literal_identity_and_cleanup_hooks(tmp_path):
-    spec = dc.build_devcontainer_spec(dc.APP_NONE)
+    spec = build_spec(dc.APP_NONE)
     argv = sr.docker_run_argv(spec, tmp_path, "test")
     for key, value in spec["containerEnv"].items():
         if key.startswith("GIT_CONFIG_"):
@@ -4249,7 +4250,9 @@ def test_mismatched_editor_stop_remove_down_releases_capacity(tmp_path, monkeypa
 def test_spawn_passes_credential_in_child_env_without_secret_argv(workspace, monkeypatch):
     captured = {}
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "SYNTHETIC_SECRET")
-    command = sr.docker_run_argv(_spec(forward_oauth_token=True), workspace, "test")
+    command = sr.docker_run_argv(
+        _spec(credentials={"CLAUDE_CODE_OAUTH_TOKEN": "PLAN_VALUE_UNUSED"}), workspace, "test"
+    )
     monkeypatch.setattr(
         sr.subprocess, "run", lambda argv, **kwargs: captured.update(argv=argv, **kwargs)
     )

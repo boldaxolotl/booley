@@ -12,6 +12,7 @@ import pytest
 
 from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
+from tests.devcontainer_spec_support import build_spec
 
 
 def stub_keeper(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -32,7 +33,7 @@ def plain_builder(
     """Return a builder for the unlicensed Sandbox spec most tests issue."""
 
     def build(_inputs: runtime_spec.SessionSpecInputs) -> dict[str, Any]:
-        return dc.build_devcontainer_spec(
+        return build_spec(
             app,
             mcp_start_command=dc.mcp_post_start_command(),
             protected_devcontainer_source=str(project / ".devcontainer"),

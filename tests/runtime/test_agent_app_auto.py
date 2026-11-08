@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.devcontainer_spec_support import build_spec
 
 from booley.config import agent as config_agent
 from booley.config.agent import BackendConfigError, get_agent_settings, load_agent_settings
@@ -355,7 +356,7 @@ def test_doctor_reports_the_auto_choice_and_accepts_an_unpinned_auto_spec(
 def _auto_spec_report(sandbox, monkeypatch, *, declared_provider):
     """The ``.configuration`` report for a generated spec whose app is ``auto``."""
     monkeypatch.setattr(inspection.idk, "image_id", lambda image: image)
-    spec = dc.build_devcontainer_spec("claude")
+    spec = build_spec("claude")
     spec["remoteEnv"]["BOOLEY_AGENT_APP"] = "auto"
     dc.write_devcontainer(sandbox.project, spec)
     request = inspection.RuntimeInspectionRequest(

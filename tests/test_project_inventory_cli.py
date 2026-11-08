@@ -18,6 +18,7 @@ from booley.projects import cli as project_inventory_cli
 from booley.projects import inventory as project_inventory
 from booley.runtime import image_keepers as runtime_image_keepers
 from booley.runtime.session_issuance import keeper_image
+from tests.devcontainer_spec_support import build_spec
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -744,7 +745,7 @@ def test_forget_release_requires_reissuance_before_admission(
     validator = _install_trusted_validator(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", str(validator.parent))
     project = _remember(tmp_path)
-    spec = dc.build_devcontainer_spec(
+    spec = build_spec(
         dc.APP_NONE,
         mcp_start_command=dc.mcp_post_start_command(),
         protected_devcontainer_source=str(project / ".devcontainer"),
