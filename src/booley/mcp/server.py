@@ -2029,12 +2029,22 @@ async def _call_application_tool(
     """Translate one application result or failure into MCP SDK types."""
     request = await _observed_request_context(context, params, observer)
     try:
-        if context is None and observer is None:
-            payload = await application.call_tool(params.name, params.arguments or {})
-        else:
-            payload = await application.call_tool(
-                params.name, params.arguments or {}, request_context=request
-            )
+        try:
+            if context is None and observer is None:
+                payload = await application.call_tool(params.name, params.arguments or {})
+            else:
+                payload = await application.call_tool(
+                    params.name, params.arguments or {}, request_context=request
+                )
+        except asyncio.CancelledError:
+            # The client went away mid-call: the call is over, not still running.
+            # record() queues the outcome before its first await, so the write
+            # survives a second cancel. A cancel after the call returned keeps
+            # its real outcome, so only the tool call itself is guarded here.
+            if observer is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await _record_presence(observer, request.attribution, params.name, "cancelled")
+            raise
         payload = await _observe_tool_completion(payload, request, params.name, observer)
         return _sdk_tool_result(payload)
     except UnknownMcpToolError as exc:
