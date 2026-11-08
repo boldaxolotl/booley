@@ -268,4 +268,4 @@ def test_paid_vivado_checkout_uses_production_relay_and_vendor_status_evidence(
         failed = _flow(container, timeout_ms=120_000)
         assert failed.returncode != 0, "paid Flow passed with its fixed relay stopped"
     finally:
-        session_runtime.down(workspace, remove=True)
+        session_runtime.down(workspace)
