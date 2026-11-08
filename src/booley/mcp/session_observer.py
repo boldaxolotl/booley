@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import secrets
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
@@ -17,6 +18,7 @@ from starlette.requests import Request
 from booley.config.goals import quiet_after
 from booley.mcp.session_peer import observed_peer
 from booley.mcp.session_registry import (
+    CALL_STARTED,
     Attribution,
     SessionRegistry,
     namespace,
@@ -41,26 +43,20 @@ MAX_HANDLES = 512
 @dataclass
 class _Observation:
     fallback: Attribution
-    sequence: int
+    call_id: str
     call: tuple[str, str, float]
     root: Path | None
     client_name: str
     request: Request | None
     done: asyncio.Future[Attribution | None]
     resolved: Attribution | None = None
-    superseded: bool = False
-
-    @property
-    def key(self) -> str:
-        if self.resolved is not None:
-            return self.resolved.key
-        if self.fallback.kind == "thread" or self.request is None:
-            return self.fallback.key
-        return "peer:" + str(self.request.scope)
 
 
 class SessionObserver:
-    """One presence writer drains a bounded queue, coalescing the latest call per key.
+    """One presence writer drains a bounded queue with one slot per call.
+
+    A call's start and outcome share its slot, so they merge when the start was
+    not written yet; two calls are never merged, so each keeps its own entry.
 
     Responses wait only for the advisory budget. Colliding callers retain their
     own observation/outcome handles; reads and idle maintenance have independent
@@ -86,8 +82,6 @@ class SessionObserver:
         self._read_pending: asyncio.Task[Any] | None = None
         self._queue: OrderedDict[str, _Observation] = OrderedDict()
         self._handles: OrderedDict[int, _Observation] = OrderedDict()
-        self._latest: OrderedDict[str, _Observation] = OrderedDict()
-        self._sequence = 0
         self._closed = asyncio.Event()
 
     async def _bounded(
@@ -127,24 +121,14 @@ class SessionObserver:
             logger.warning("Session observation handle capacity exceeded")
 
     def _enqueue(self, observation: _Observation) -> None:
-        if observation.superseded or self._closed.is_set():
+        if self._closed.is_set():
             return
-        key = observation.key
-        previous = self._queue.get(key)
-        if previous is not None and previous.sequence > observation.sequence:
-            observation.superseded = True
-            return
-        if previous is not None and previous is not observation:
-            previous.superseded = True
-            if not previous.done.done():
-                previous.done.set_result(None)
-        if key not in self._queue and len(self._queue) >= MAX_PENDING:
-            observation.superseded = True
+        if observation.call_id not in self._queue and len(self._queue) >= MAX_PENDING:
             if not observation.done.done():
                 observation.done.set_result(None)
             logger.warning("Session presence queue capacity exceeded; observation unavailable")
             return
-        self._queue[key] = observation
+        self._queue[observation.call_id] = observation
         if self._pending is None or self._pending.done():
             self._pending = asyncio.create_task(self._drain())
             self._pending.add_done_callback(_consume_failure)
@@ -152,13 +136,11 @@ class SessionObserver:
     async def _drain(self) -> None:
         while self._queue and not self._closed.is_set():
             _, observation = self._queue.popitem(last=False)
-            if observation.superseded:
-                continue
             try:
                 facts = await asyncio.to_thread(self._resolve, observation)
                 observation.resolved = facts
                 self._remember(facts, observation)
-                if self.writes and self._latest_observation(observation):
+                if self.writes:
                     call = observation.call
                     await asyncio.to_thread(self._publish, observation, call)
                     if observation.call != call:
@@ -169,20 +151,6 @@ class SessionObserver:
                 logger.debug("Session presence unavailable", exc_info=True)
                 if not observation.done.done():
                     observation.done.set_result(None)
-
-    def _latest_observation(self, observation: _Observation) -> bool:
-        key = observation.key
-        previous = self._latest.get(key)
-        if previous is not None and previous.sequence > observation.sequence:
-            observation.superseded = True
-            return False
-        if previous is not None and previous is not observation:
-            previous.superseded = True
-        self._latest[key] = observation
-        self._latest.move_to_end(key)
-        if len(self._latest) > MAX_HANDLES:
-            self._latest.popitem(last=False)
-        return True
 
     async def attribution(
         self,
@@ -215,11 +183,10 @@ class SessionObserver:
                 }
             )
         )
-        self._sequence += 1
         observation = _Observation(
             fallback,
-            self._sequence,
-            (tool, "started", self.now()),
+            secrets.token_hex(8),
+            (tool, CALL_STARTED, self.now()),
             root,
             client_name,
             peer_request,
@@ -258,6 +225,7 @@ class SessionObserver:
             predecessor_keys=(observation.fallback.key,)
             if observation.fallback.kind == "thread"
             else (),
+            call_id=observation.call_id,
         )
 
     async def resolved(
