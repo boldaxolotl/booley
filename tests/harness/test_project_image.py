@@ -1,13 +1,13 @@
-"""Tests for the project sandbox image builder (ADR 0018)."""
+"""Tests for the project sandbox image recipe generator (ADR 0018)."""
 
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from booley.runtime import project_image as pi
-from booley.runtime.docker_build import DockerBuildResult
 
 # ===========================================================================
 # project_image_name
@@ -146,93 +146,13 @@ class TestConsolidate:
         assert dropped == ["fusesoc[extra]==2.4.3", "booley @ https://example/booley.whl"]
 
 
-# ===========================================================================
-# build_project_image (mocked docker)
-# ===========================================================================
-
-
-class TestBuild:
-    def test_build_invokes_docker_with_context(self, tmp_path, monkeypatch):
-        docker_dir = tmp_path / "docker"
-        docker_dir.mkdir()
-        (docker_dir / "Dockerfile").write_text("FROM booley-sandbox\n", encoding="utf-8")
-        calls = []
-
-        def fake_run(cmd, **kw):
-            calls.append(cmd)
-            stdout = "sha256:base\n" if cmd[:3] == ["docker", "image", "inspect"] else ""
-            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
-
-        monkeypatch.setattr(pi.subprocess, "run", fake_run)
-        monkeypatch.setattr(
-            pi,
-            "run_docker_build",
-            lambda cmd, **_kwargs: calls.append(cmd) or DockerBuildResult(0),
-        )
-        assert pi.build_project_image("img", docker_dir) is True
-        build = next(command for command in calls if command[:2] == ["docker", "build"])
-        assert build[:3] == ["docker", "build", "-t"]
-        assert str(docker_dir) in build  # context is the small docker dir
-        assert "io.booley.build.parent-artifact-kind=local-image-id" in build
-        assert "io.booley.build.parent-artifact=sha256:base" in build
-
-    def test_build_missing_dockerfile(self, tmp_path):
-        assert pi.build_project_image("img", tmp_path / "nope") is False
-
-    def test_build_failure_reports_retained_diagnostics(self, tmp_path, monkeypatch, caplog):
-        docker_dir = tmp_path / "docker"
-        docker_dir.mkdir()
-        (docker_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
-        monkeypatch.setattr(pi, "docker_image_id", lambda _image: None)
-        monkeypatch.setattr(
-            pi,
-            "run_docker_build",
-            lambda *_args, **_kwargs: DockerBuildResult(
-                1, diagnostics=("ERROR: dependency install failed",)
-            ),
-            raising=False,
-        )
-        monkeypatch.setattr(
-            pi.subprocess,
-            "run",
-            lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 1, "", ""),
-        )
-
-        assert pi.build_project_image("img", docker_dir) is False
-
-        assert "ERROR: dependency install failed" in caplog.text
-
-    def test_build_timeout_reports_retained_diagnostics(self, tmp_path, monkeypatch, caplog):
-        docker_dir = tmp_path / "docker"
-        docker_dir.mkdir()
-        (docker_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
-        monkeypatch.setattr(pi, "docker_image_id", lambda _image: None)
-        monkeypatch.setattr(
-            pi,
-            "run_docker_build",
-            lambda *_args, **_kwargs: DockerBuildResult(
-                None, timed_out=True, diagnostics=("last build output",)
-            ),
-        )
-
-        assert pi.build_project_image("img", docker_dir) is False
-
-        assert "project image build timed out: last build output" in caplog.text
-
-    def test_build_capture_failure_is_reported(self, tmp_path, monkeypatch, caplog):
-        docker_dir = tmp_path / "docker"
-        docker_dir.mkdir()
-        (docker_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
-        monkeypatch.setattr(pi, "docker_image_id", lambda _image: None)
-        monkeypatch.setattr(
-            pi,
-            "run_docker_build",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("capture failed")),
-        )
-
-        assert pi.build_project_image("img", docker_dir) is False
-
-        assert "project image build failed: capture failed" in caplog.text
+def _write_managed_files(docker_dir: Path, requirements_body: str) -> None:
+    """Write the managed ``Dockerfile`` + ``requirements.txt`` pair as init stamps them."""
+    docker_dir.mkdir(parents=True, exist_ok=True)
+    dockerfile_body, requirements_content = pi.managed_project_image_files(requirements_body)
+    # Bytes, as production writes them: ``write_text`` would turn LF into CRLF on Windows.
+    (docker_dir / "Dockerfile").write_bytes(dockerfile_body.encode("utf-8"))
+    (docker_dir / "requirements.txt").write_bytes(requirements_content.encode("utf-8"))
 
 
 class TestManagedFileGuard:
@@ -242,7 +162,7 @@ class TestManagedFileGuard:
     def test_generated_header_is_managed(self, tmp_path):
         docker_dir = tmp_path / "docker"
         body, _, _, _ = pi.consolidated_requirements(tmp_path, [])
-        pi.write_project_image_files(docker_dir, body)
+        _write_managed_files(docker_dir, body)
         assert pi.is_managed_generated_file(docker_dir / "Dockerfile") is True
         assert pi.is_managed_generated_file(docker_dir / "requirements.txt") is True
 
@@ -257,7 +177,7 @@ class TestManagedFileGuard:
         # flags any edit as user-owned.
         docker_dir = tmp_path / "docker"
         body, _, _, _ = pi.consolidated_requirements(tmp_path, [])
-        pi.write_project_image_files(docker_dir, body)
+        _write_managed_files(docker_dir, body)
         df = docker_dir / "Dockerfile"
         df.write_text(df.read_text(encoding="utf-8") + "RUN echo mine\n", encoding="utf-8")
         assert pi.is_managed_generated_file(df) is False
@@ -273,7 +193,7 @@ class TestManagedFileGuard:
         # Still has the generated header but flagged hands-off.
         docker_dir = tmp_path / "docker"
         body, _, _, _ = pi.consolidated_requirements(tmp_path, [])
-        pi.write_project_image_files(docker_dir, body)
+        _write_managed_files(docker_dir, body)
         df = docker_dir / "Dockerfile"
         df.write_text(df.read_text() + "# booley:keep\nRUN echo mine\n", encoding="utf-8")
         assert pi.is_managed_generated_file(df) is False
@@ -301,36 +221,6 @@ class TestDockerfile:
 
         assert pi.dockerfile_parent_image(dockerfile) == expected
 
-    def test_build_stamps_the_exact_tagged_parent_artifact(self, tmp_path, monkeypatch):
-        docker_dir = tmp_path / "docker"
-        docker_dir.mkdir()
-        (docker_dir / "Dockerfile").write_text(
-            "FROM booley-sandbox-riscv:old\n",
-            encoding="utf-8",
-        )
-        calls = []
-
-        def fake_run(cmd, **_kwargs):
-            calls.append(cmd)
-            stdout = "sha256:old\n" if cmd[:3] == ["docker", "image", "inspect"] else ""
-            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
-
-        monkeypatch.setattr(pi.subprocess, "run", fake_run)
-        monkeypatch.setattr(
-            pi,
-            "run_docker_build",
-            lambda cmd, **_kwargs: calls.append(cmd) or DockerBuildResult(0),
-        )
-
-        assert pi.build_project_image("img", docker_dir) is True
-        inspect = next(
-            command for command in calls if command[:3] == ["docker", "image", "inspect"]
-        )
-        build = next(command for command in calls if command[:2] == ["docker", "build"])
-        assert inspect[3] == "booley-sandbox-riscv:old"
-        assert "io.booley.build.parent-artifact-kind=local-image-id" in build
-        assert "io.booley.build.parent-artifact=sha256:old" in build
-
     def test_multistage_parent_requires_explicit_directive(self, tmp_path):
         dockerfile = tmp_path / "Dockerfile"
         dockerfile.write_text(
@@ -349,7 +239,7 @@ class TestDockerfile:
     def test_installs_as_root_into_system(self, tmp_path):
         docker_dir = tmp_path / "docker"
         pi.consolidated_requirements(tmp_path, [])
-        pi.write_project_image_files(docker_dir, "alpha-pkg==1.2.3\n")
+        _write_managed_files(docker_dir, "alpha-pkg==1.2.3\n")
         body = (docker_dir / "Dockerfile").read_text(encoding="utf-8")
         assert "FROM booley-sandbox" in body
         assert "USER root" in body
@@ -359,27 +249,11 @@ class TestDockerfile:
 
     def test_builds_legacy_source_distributions_in_isolation(self, tmp_path):
         docker_dir = tmp_path / "docker"
-        pi.write_project_image_files(docker_dir, "legacy-package==1.0\n")
+        _write_managed_files(docker_dir, "legacy-package==1.0\n")
 
         body = (docker_dir / "Dockerfile").read_text(encoding="utf-8")
 
         assert "pip install --use-pep517" in body
-
-    def test_write_managed_dockerfile_writes_only_the_dockerfile(self, tmp_path):
-        """F-5 backfill: a hand-authored requirements.txt gets the managed
-        Dockerfile beside it — and nothing else — still stamped as managed so
-        a later re-init may regenerate it."""
-        docker_dir = tmp_path / "docker"
-        hand_reqs = "# mine\ncocotb==1.9.2\n"
-        docker_dir.mkdir()
-        (docker_dir / "requirements.txt").write_text(hand_reqs, encoding="utf-8")
-
-        dockerfile = pi.write_managed_dockerfile(docker_dir)
-
-        assert dockerfile == docker_dir / "Dockerfile"
-        assert pi.is_managed_generated_file(dockerfile)
-        assert (docker_dir / "requirements.txt").read_text(encoding="utf-8") == hand_reqs
-        assert sorted(p.name for p in docker_dir.iterdir()) == ["Dockerfile", "requirements.txt"]
 
 
 # ===========================================================================
