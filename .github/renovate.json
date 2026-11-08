@@ -572,10 +572,24 @@
       ]
     },
     {
+      "description": "PR note: FuseSoC behaviour comments.",
+      "matchDepNames": ["fusesoc"],
+      "prBodyNotes": [
+        "Re-verify the comments that cite behaviour of this FuseSoC release in `src/booley/fusesoc/core_projection.py` and `src/booley/fusesoc/fusesoc_registry.py`."
+      ]
+    },
+    {
+      "description": "PR note: Edalize behaviour comments and the Verible patch layer.",
+      "matchDepNames": ["edalize"],
+      "prBodyNotes": [
+        "Re-verify the comments that cite behaviour of this Edalize release in `src/booley/flows/edam.py` and `src/booley/flows/fpga/backends/vivado/edam.py`, and check whether the Verible patch layer in `src/booley/data/docker/Dockerfile` can now be deleted."
+      ]
+    },
+    {
       "description": "PR note: Ubuntu release prose.",
       "matchDepNames": ["docker.io/library/ubuntu"],
       "prBodyNotes": [
-        "If the tag changed, re-read the Ubuntu 26.04 prose in `src/booley/data/docker/Dockerfile.base`; Renovate does not rewrite it."
+        "If the tag changed, re-read the Ubuntu release prose in `src/booley/data/docker/Dockerfile.base` and the glibc claim in `src/booley/data/docker/Dockerfile`; Renovate does not rewrite them."
       ]
     },
     {

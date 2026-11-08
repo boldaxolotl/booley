@@ -844,7 +844,7 @@ def test_every_listed_copy_is_extracted_with_its_canonical_value() -> None:
 
 
 def test_copy_match_strings_use_only_re2_syntax() -> None:
-    """Renovate compiles match strings with RE2: no lookaround and no backreferences."""
+    """Match strings compile under RE2 in Renovate: reject lookaround and backreferences."""
     for manager in _config()["customManagers"]:
         for match_string in manager["matchStrings"]:
             assert not re.search(r"\(\?<?[=!]", match_string), match_string
@@ -885,6 +885,15 @@ _AGENT_CLI_PLACES = {
     "src/booley/runtime/text_only_agent.py": r"(?i)codex",
     "docs/internals/GATEWAY.md": r"(?i)codex",
 }
+_FUSESOC_PLACES = {
+    "src/booley/fusesoc/core_projection.py": r"FuseSoC",
+    "src/booley/fusesoc/fusesoc_registry.py": r"FuseSoC",
+}
+_EDALIZE_PLACES = {
+    "src/booley/flows/edam.py": r"(?i)edalize",
+    "src/booley/flows/fpga/backends/vivado/edam.py": r"(?i)edalize",
+    f"{_DOCKER_DIR}/Dockerfile": r"(?i)edalize",
+}
 _PROVENANCE: dict[str, dict[str, str]] = {
     "@openai/codex": _AGENT_CLI_PLACES,
     "@openai/codex-linux-x64": _AGENT_CLI_PLACES,
@@ -904,16 +913,24 @@ _PROVENANCE: dict[str, dict[str, str]] = {
     _HDL: {_DEVCONTAINER: r"veriloghdl"},
     _ACTIONLINT: {".github/actionlint.yaml": r"actionlint"},
     _SPIKE: {_EDA_DOC: r"Spike"},
-    _UBUNTU: {_DOCKERFILE_BASE: r"Ubuntu 26\.04"},
+    "fusesoc": _FUSESOC_PLACES,
+    "edalize": _EDALIZE_PLACES,
+    # Version-free needle: the prose may be re-read and reworded on a tag change.
+    _UBUNTU: {
+        _DOCKERFILE_BASE: r"Ubuntu \d+\.\d+",
+        f"{_DOCKER_DIR}/Dockerfile": r"Ubuntu \d+\.\d+",
+    },
 }
 
 # Mentions of an old version that stay on purpose: (file, dependency, fragment of the
-# line, why). A line not listed here fails the old-version test.
+# line, why). A line not listed here fails the old-version test. A fragment that is a
+# claim about a release holds no version number: a reviewer who follows the PR note and
+# rewrites the comment for the new release must not have to edit this test as well.
 _LEFTOVERS: tuple[tuple[str, str, str, str], ...] = (
     (
         "src/booley/config/tests_toml_rules.py",
         _VERILATOR,
-        "Verilator 5.052 accepts",
+        "Largest seed Booley accepts or draws",
         "limit measured on that release; the PR note asks for re-verification",
     ),
     (
@@ -943,32 +960,80 @@ _LEFTOVERS: tuple[tuple[str, str, str, str], ...] = (
     (
         "src/booley/bwave/cli.py",
         _VAPORVIEW,
-        "VaporView 1.6.0 ends with an empty view",
+        "ends with an empty view",
         "behaviour observed in that release; the PR note asks for re-verification",
     ),
     (
         _DEVCONTAINER,
         _HDL,
-        "mshr-h.veriloghdl 1.29.0, 2026-10",
+        "so nothing else is required",
         "dated grammar observation; the PR note asks for re-verification",
     ),
     (
         _DOCKERFILE_BASE,
         _UBUNTU,
-        "the Ubuntu 26.04 builder ships",
+        "builder ships",
         "prose about the OpenROAD builder image; the PR note names the file",
     ),
     (
         _DOCKERFILE_BASE,
         _UBUNTU,
-        "base ubuntu:26.04 image already occupies",
+        "image already occupies",
         "prose about the parent image; the PR note names the file",
     ),
     (
         _DOCKERFILE_BASE,
         _UBUNTU,
-        "Ubuntu 26.04's system Python",
+        "system Python refuses ensurepip",
         "prose about the parent image; the PR note names the file",
+    ),
+    (
+        f"{_DOCKER_DIR}/Dockerfile",
+        _UBUNTU,
+        "final image's Ubuntu",
+        "glibc claim about the final image; the PR note names the file",
+    ),
+    (
+        "src/booley/fusesoc/core_projection.py",
+        "fusesoc",
+        "parses fileset paths as expressions",
+        "behaviour of that release; the PR note asks for re-verification",
+    ),
+    (
+        "src/booley/fusesoc/fusesoc_registry.py",
+        "fusesoc",
+        "EDAM writer",
+        "behaviour of that release; the PR note asks for re-verification",
+    ),
+    (
+        "src/booley/flows/edam.py",
+        "edalize",
+        "empirically confirmed",
+        "behaviour of that release; the PR note asks for re-verification",
+    ),
+    (
+        "src/booley/flows/edam.py",
+        "edalize",
+        "has no dedicated flow in edalize",
+        "behaviour of that release; the PR note asks for re-verification",
+    ),
+    (
+        "src/booley/flows/fpga/backends/vivado/edam.py",
+        "edalize",
+        "exposes no ``strategy`` option",
+        "behaviour of that release; the PR note asks for re-verification",
+    ),
+    (
+        "src/booley/flows/fpga/backends/vivado/edam.py",
+        "edalize",
+        "vivado flow has no OOC knob",
+        "behaviour of that release; the PR note asks for re-verification",
+    ),
+    (
+        f"{_DOCKER_DIR}/Dockerfile",
+        "edalize",
+        "lint flow has no Verible node",
+        "reason for the patch layer; the PR note asks for re-verification",
     ),
 )
 
@@ -979,6 +1044,7 @@ def _old_forms(dep: str, extracted: list[_Extracted]) -> set[str]:
     forms: set[str] = set()
     values = [pin.value, *(e.current_value for e in extracted if e.dep_name == dep)]
     for value in values:
+        # The Spike copy tracks a branch ("master"), not a version; only its digest counts.
         if value is not None and value != "master":
             bare = value.removeprefix("v")
             forms.update({value, bare, f"v{bare}"})
@@ -1005,7 +1071,6 @@ def test_no_old_version_outside_a_match_in_copy_files() -> None:
     occurrence outside every match of that dependency is exactly what a bump leaves behind.
     """
     extracted = _extract_custom()
-    used: set[tuple[str, str, str]] = set()
     stray: list[str] = []
     for dep in dict.fromkeys(dep for _file, dep, _count in _COPIES):
         files = {file for file, copy_dep, _count in _COPIES if copy_dep == dep}
@@ -1018,20 +1083,11 @@ def test_no_old_version_outside_a_match_in_copy_files() -> None:
                     if any(start <= found.start() and found.end() <= end for start, end in spans):
                         continue
                     line = text[text.rfind("\n", 0, found.start()) + 1 :].split("\n", 1)[0]
-                    leftover = next(
-                        (
-                            entry
-                            for entry in _LEFTOVERS
-                            if entry[:2] == (file, dep) and entry[2] in line
-                        ),
-                        None,
-                    )
-                    if leftover is None:
+                    if not any(
+                        entry[:2] == (file, dep) and entry[2] in line for entry in _LEFTOVERS
+                    ):
                         stray.append(f"{file}: {dep} {form!r}: {line.strip()}")
-                    else:
-                        used.add(leftover[:3])
     assert not stray, "old versions outside any match:\n" + "\n".join(stray)
-    assert used == {entry[:3] for entry in _LEFTOVERS}, "a listed leftover no longer exists"
 
 
 _PATH_IN_NOTE = re.compile(r"`([\w.-]+(?:/[\w.-]+)+)`")
@@ -1056,9 +1112,9 @@ def test_provenance_dependencies_list_their_places() -> None:
         assert _noted_paths(dep) == set(places), dep
         for path, needle in places.items():
             assert re.search(needle, _text(path)), f"{path} no longer mentions {dep}"
-    for file, dep, fragment, reason in _LEFTOVERS:
+    for file, dep, fragment, _reason in _LEFTOVERS:
         assert file in _noted_paths(dep), f"{file} must be named in the {dep} notes"
-        assert fragment in _text(file) and reason, (file, dep)
+        assert fragment in _text(file), f"{file} no longer holds the leftover {fragment!r}"
 
 
 _OPENROAD_CHECKLIST_ARGS = (
