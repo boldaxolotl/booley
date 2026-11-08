@@ -15,11 +15,12 @@ from booley.flows.sim.adapter_transport import (
     write_adapter_result,
 )
 from booley.flows.sim.build import PreparedSimulationBuild
-from booley.flows.sim.execution import NamedTests, SimulationExecution, SimulationOptions
+from booley.flows.sim.execution import SimulationExecution, SimulationOptions
 from booley.flows.sim.execution.freshness import ArtifactValidationError
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.targets.domain import TargetHandle
 from tests.flows.sim.leased_session import canned_build_session, without_build_record
+from tests.flows.sim.prepared_group import run_prepared_group
 
 _TOKEN = "abc123"
 
@@ -85,13 +86,19 @@ def _run(
                 _TOKEN,
                 handle.identity,
                 ("smoke",),
-                prepared.build_root / f".a-{_TOKEN[:24]}.json",
+                handle.project_root / "attempt" / "execution-evidence" / f"adapter-{_TOKEN}.json",
             )
             write_adapter_result(identity, result)
         return without_build_record(process)
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions())
-    inspection = SimpleNamespace(toplevel="tb_core", eda_tool="icarus", flow_options={})
+    inspection = SimpleNamespace(
+        toplevel="tb_core",
+        eda_tool="icarus",
+        flow_options={},
+        core_closure=lambda _handles: (),
+        inputs=(),
+    )
     inspection.inspect = lambda _handle: inspection
     with (
         canned_build_session(),
@@ -99,7 +106,9 @@ def _run(
         patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
         patch("booley.flows.sim.execution.engine.new_attempt_token", return_value=_TOKEN),
     ):
-        return execution.run(handle, NamedTests(("smoke",)))
+        return run_prepared_group(
+            execution, handle, ("smoke",), attempt_root=handle.project_root / "attempt"
+        )
 
 
 def _passing_result() -> AdapterResult:
