@@ -3342,7 +3342,7 @@ def test_cycle_count_tries_sentinels_longest_first() -> None:
     ("output", "sentinels", "expected"),
     [
         pytest.param(
-            "log\n[SIM_CYCLES] stress 200\n[SIM_CYCLES]   pipeline smoke   42\nmore",
+            "log\n[SIM_CYCLES] stress 200\n[SIM_CYCLES]   smoke   42\nmore",
             (),
             ("observed", 42),
             id="observed",
@@ -3380,13 +3380,35 @@ def test_cycle_count_tries_sentinels_longest_first() -> None:
             ("observed", 9),
             id="configured-literal-replaces-default",
         ),
+        pytest.param(
+            "CoreMark completed in: smoke 12",
+            ("CoreMark completed in:",),
+            ("observed", 12),
+            id="configured-multi-word-sentinel",
+        ),
     ],
 )
 def test_cycle_count_well_formed_statuses(
     output: str, sentinels: tuple[str, ...], expected: tuple[str, int | None]
 ) -> None:
-    test_name = "pipeline smoke" if "pipeline" in output else "smoke"
-    assert _cycle_observation(output, test_name, sentinels) == expected
+    assert _cycle_observation(output, "smoke", sentinels) == expected
+
+
+def test_cycle_count_multi_word_test_name() -> None:
+    output = "[SIM_CYCLES]   pipeline smoke   42"
+    assert _cycle_observation(output, "pipeline smoke", ()) == ("observed", 42)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        pytest.param("[SIM_CYCLES] smoke nope\n[SIM_CYCLES] 5", id="bad-named-not-rescued"),
+        pytest.param("[SIM_CYCLES] stress 5\n[SIM_CYCLES] nope", id="bad-unnamed-beats-other"),
+        pytest.param("[SIM_CYCLES]\n[SIM_CYCLES] stress 5", id="empty-without-own-record"),
+    ],
+)
+def test_cycle_count_malformed_record_outranks_other_records(output: str) -> None:
+    assert _cycle_observation(output, "smoke", ()) == ("malformed", None)
 
 
 @pytest.mark.parametrize("copyto", ["firmware.hex", "data/firmware.hex", None])

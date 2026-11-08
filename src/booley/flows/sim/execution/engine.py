@@ -134,7 +134,7 @@ from .telemetry import parse_build_seconds, parse_run_seconds, process_resources
 
 _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
 _CYCLE_COUNT_RE = re.compile(r"[0-9]+")
-# Seconds the wrapper timeout adds for trace cleanup; the Flow and MCP watchdog reuse it.
+# Seconds added to the wrapper timeout under --trace for trace cleanup.
 TRACE_CLEANUP_MARGIN_S = 90
 _NO_SENTINEL = "no pass/fail sentinel detected, simulation exited cleanly"
 _NO_WAVEFORM = "the simulation passed, but --trace produced no queryable waveform"
