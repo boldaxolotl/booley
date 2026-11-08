@@ -6,6 +6,7 @@ import argparse
 import json
 import subprocess
 import sys
+import tempfile
 from functools import partial
 from pathlib import Path
 
@@ -48,11 +49,16 @@ def check_case(root: Path, harness: str, outcome: str) -> dict:
     write_project(root, harness, outcome)
     handle = TargetCatalog.build(root).select("sim", for_flow="sim")
     options = SimulationOptions(timeout_ms=2000)
-    ordinary = run_prepared_group(
-        SimulationExecution(invoke=partial(invoke, cwd=root), options=options),
-        handle,
-        ("check",),
-    )
+    # The launch writes owner-only (0700) evidence directories. The container
+    # user differs from the CI runner that uploads this work dir, so remove the
+    # attempt before the runner scans it (EACCES in the upload step otherwise).
+    with tempfile.TemporaryDirectory(prefix="attempt-", dir=root.parent) as attempt_dir:
+        ordinary = run_prepared_group(
+            SimulationExecution(invoke=partial(invoke, cwd=root), options=options),
+            handle,
+            ("check",),
+            attempt_root=Path(attempt_dir),
+        )
     coverage = collect_target_coverage(
         handle,
         selected_tests=("check",),
