@@ -48,7 +48,7 @@ def _run(
 
 
 def _document(run: RunDirectory, configured: str = TEMPLATE) -> dict[str, object]:
-    """Return the persisted run_directory document ``restore_run_directory`` reads."""
+    """Return the persisted run_directory document ``restore_run_directory_from_project_data`` reads."""
     return {
         "kind": "templated",
         "configured": configured,

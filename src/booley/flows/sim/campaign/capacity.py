@@ -21,7 +21,7 @@ from booley.runtime.job_slots import (
 )
 from booley.runtime.supervised_execution import SupervisedExecutionScope
 
-from .child_protocol import ChildExecutionRegistry
+from .child_protocol import ChildExecutionRegistry, PreparedChild
 from .model import SimulationCampaignManifest
 
 _MAX_CHILD_ACQUIRE_POLL_SECONDS = 0.01
@@ -61,7 +61,6 @@ class HeavyCapacity:
         self, admission: AdmissionContext, manifest: SimulationCampaignManifest, project_data: Path
     ) -> None:
         self._admission = admission
-        # Each child lane's execution identity lives and dies with its permit.
         self._lanes = ChildExecutionRegistry.from_project_data(
             manifest, project_data, booley_dir=project_data
         )
@@ -128,10 +127,9 @@ class HeavyCapacity:
         attempt_directory: Path,
         publish: Callable[[ExecutionId], None],
     ) -> Iterator[ChildHeavyPermit]:
-        """Give one lane its execution identity and heavy slot; retire both afterwards.
+        """Give one lane its identity and slot, retiring both on exit.
 
-        ``publish`` gets the lane ID before the slot is requested. The lane is marked
-        terminal on exit, and its slot is released only once that is proven.
+        ``publish`` gets the lane ID before the slot is requested.
         """
         store = self._admission.slot_store
         if not self.managed or store is None:
@@ -145,49 +143,61 @@ class HeavyCapacity:
             attempt_directory=attempt_directory,
             parent_execution_id=self.parent_execution_id,
         )
-        cause = "campaign_error"
         try:
             publish(child_id)
             if self._cancelled():
                 raise ClaimAbortedError("campaign shutdown requested")
             token = self._acquire_child(store, child_id)
-            scope = SupervisedExecutionScope(
-                child_id,
-                self._lanes.project_data,
-                lambda: token.lease_health.lost.is_set() or self.shutdown_requested,
-                lambda: self._child_cancellation_cause(permit),
-            )
-            permit = ChildHeavyPermit(work_item_id, child_id, token, token.lease_health, scope)
-            with self._gate:
-                self._held[token.lease_id] = permit
+        except BaseException:
+            self._lanes.mark_terminal(prepared, "campaign_error")
+            raise
+        with self._held_lane(store, work_item_id, prepared, token) as permit:
+            yield permit
+        if not store.token_absent(token):
+            raise HeavyCapacityError(f"child token remained after terminal proof: {child_id}")
+
+    @contextmanager
+    def _held_lane(
+        self, store, work_item_id: str, prepared: PreparedChild, token: SlotToken
+    ) -> Iterator[ChildHeavyPermit]:
+        """Run one lane's work on its slot; mark the lane terminal, then release the slot."""
+        child_id = prepared.execution_id
+        scope = SupervisedExecutionScope(
+            child_id,
+            self._lanes.project_data,
+            lambda: token.lease_health.lost.is_set() or self.shutdown_requested,
+            lambda: self._child_cancellation_cause(permit),
+        )
+        permit = ChildHeavyPermit(work_item_id, child_id, token, token.lease_health, scope)
+        with self._gate:
+            self._held[token.lease_id] = permit
+        lease_lost = f"heavy lease lost for child execution {child_id}"
+        cause = "campaign_error"
+        try:
             try:
                 try:
                     yield permit
                 except HeavyCapacityError as exc:
                     cause = self._failed_cause(exc, permit)
                     if permit.lease_health.lost.is_set() and not self.shutdown_requested:
-                        raise LeaseLostError(
-                            f"heavy lease lost for child execution {child_id}"
-                        ) from exc
+                        raise LeaseLostError(lease_lost) from exc
                     raise
                 cause = "completed" if self._confirm_lease(permit) else "lease_lost"
                 self._lanes.mark_terminal(prepared, cause)
                 if cause == "lease_lost":
-                    raise LeaseLostError(f"heavy lease lost for child execution {child_id}")
+                    raise LeaseLostError(lease_lost)
                 if self._cancelled():
                     raise ClaimAbortedError("campaign cancellation requested")
             finally:
                 self._retire(store, child_id, token)
-            if not store.token_absent(token):
-                raise HeavyCapacityError(f"child token remained after terminal proof: {child_id}")
         except BaseException:
+            # A "completed" cause here means marking it terminal itself failed.
             self._lanes.mark_terminal(
                 prepared, "campaign_error" if cause == "completed" else cause
             )
             raise
 
     def _retire(self, store, child_id: ExecutionId, token: SlotToken) -> None:
-        """Forget the lane, then release its slot once its execution is terminal."""
         with self._gate:
             self._waiting.pop(token.lease_id, None)
             self._held.pop(token.lease_id, None)
@@ -204,10 +214,8 @@ class HeavyCapacity:
         """The terminal cause of a lane whose work raised a capacity error."""
         from booley.flows.sim.execution.contract import PreSimScopeStoppedError
 
-        lost = permit.lease_health.lost.is_set() and isinstance(
-            exc.__cause__, PreSimScopeStoppedError
-        )
-        return "lease_lost" if lost else "campaign_error"
+        stopped = isinstance(exc.__cause__, PreSimScopeStoppedError)
+        return "lease_lost" if stopped and permit.lease_health.lost.is_set() else "campaign_error"
 
     def _child_cancellation_cause(self, permit: ChildHeavyPermit) -> str | None:
         if permit.lease_health.lost.is_set():
@@ -215,11 +223,7 @@ class HeavyCapacity:
         return self.cancellation_cause()
 
     def _confirm_lease(self, permit: ChildHeavyPermit) -> bool:
-        """Prove the lease is held before the lane is published terminal.
-
-        Reaping reclaims a terminal child's token, so once confirmed a lost token is
-        normal cleanup, which ``recover_lost_children`` skips.
-        """
+        """Prove the lease is held before the lane goes terminal; reaping is normal after."""
         store = self._admission.slot_store
         assert store is not None, "child permits exist only under managed admission"
         held = not permit.lease_health.lost.is_set() and store.renew(permit.token)
