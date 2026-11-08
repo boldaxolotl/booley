@@ -223,16 +223,10 @@ class PreparedSessionSpec:
     spec: dict[str, Any]
     digest: str
     inputs: SessionSpecInputs
-    prospective_issuance: Issuance | None = None
+    prospective_issuance: Issuance
 
 
 SpecBuilder = Callable[[SessionSpecInputs], dict[str, Any]]
-
-
-def _issuance_mapping(issuance: Issuance | None) -> dict[str, object]:
-    if issuance is None:
-        return {field.name: None for field in fields(Issuance)}
-    return asdict(issuance)
 
 
 def _authentication_differences(
@@ -474,8 +468,6 @@ def _issuance_requirements(
     project_root: Path,
     spec: dict[str, Any],
     prior: Issuance | None = None,
-    *,
-    include_relay_identity: bool,
 ) -> Iterator[eda_requirements.SessionEdaRequirements]:
     """Resolve EDA authority only when the runtime has an active consumer.
 
@@ -496,38 +488,7 @@ def _issuance_requirements(
         vivado_enabled=flow_enabled("fpga", project_root),
         prior_eda=prior_eda,
     ) as leased:
-        yield eda_requirements.with_relay_identity(leased) if include_relay_identity else leased
-
-
-def seal(project_root: Path, spec: dict[str, Any]) -> str:
-    """Add host-derived networks and issuance labels to a generated spec.
-
-    Docker 29 accepts repeated ``--network`` flags for user-defined networks,
-    which lets VS Code create a licensed runtime atomically on both its egress
-    network (the restricted egress network under host ``[sandbox] egress =
-    "proxy"``, the routed unproxied network otherwise) and its pre-created
-    private license network.
-    """
-    project = project_root.resolve(strict=True)
-    egress = _host_egress_mode()
-    project_data_path = authorized_project_data_source(project)
-    _pin_initialize_command(project, spec)
-    _pin_project_data_mount(
-        spec,
-        docker_mount_path(project_data_path),
-        project,
-        project_data_path,
-    )
-    _pin_devcontainer_mount(spec, project)
-    try:
-        with _issuance_requirements(project, spec, include_relay_identity=False) as requirements:
-            return _seal_with_requirements(project, spec, project_data_path, requirements, egress)
-    except (
-        FlowConfigError,
-        authority.AuthorityError,
-        eda_requirements.SessionRequirementsError,
-    ) as exc:
-        raise _runtime_authority_error(spec, exc) from exc
+        yield eda_requirements.with_relay_identity(leased)
 
 
 def _seal_with_requirements(
@@ -647,24 +608,7 @@ def _prepare_spec(
     # image's alias capability), so it belongs to the prospective issuance, not
     # to the host inputs: issue_prepared re-derives the issuance and compares
     # it, while a fresh authority snapshot can never observe a derived layout.
-    prospective = _prospective_issuance(
-        project,
-        spec,
-        digest,
-        requirements,
-        project_data_path,
-    )
-    return PreparedSessionSpec(spec, digest, inputs, prospective)
-
-
-def _prospective_issuance(
-    project: Path,
-    spec: dict[str, Any],
-    digest: str,
-    requirements: eda_requirements.SessionEdaRequirements,
-    project_data_path: Path,
-) -> Issuance:
-    return _issuance(
+    prospective = _issuance(
         project,
         spec,
         digest,
@@ -672,6 +616,7 @@ def _prospective_issuance(
         file_sha256=None,
         project_data_source=str(project_data_path),
     )
+    return PreparedSessionSpec(spec, digest, inputs, prospective)
 
 
 def _session_spec_inputs(
@@ -732,19 +677,20 @@ def _revalidate_prepared(
             "Sandbox authority changed after its specification was prepared: "
             + format_differences(asdict(prepared.inputs), asdict(current_inputs))
         )
-    prospective = _prospective_issuance(
+    prospective = _issuance(
         project,
         prepared.spec,
         prepared.digest,
         leased,
-        prepared.inputs.project_data_source,
+        file_sha256=None,
+        project_data_source=str(prepared.inputs.project_data_source),
     )
     if prepared.prospective_issuance != prospective:
         raise RuntimeSpecError(
             "Sandbox policy changed after its specification was prepared: "
             + format_differences(
-                _issuance_mapping(prepared.prospective_issuance),
-                _issuance_mapping(prospective),
+                asdict(prepared.prospective_issuance),
+                asdict(prospective),
             )
         )
 
@@ -779,27 +725,6 @@ def issue_prepared(
             )
     except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
         raise RuntimeSpecError(str(exc)) from exc
-
-
-def issue(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
-    """Validate trusted inputs and atomically issue the exact generated spec."""
-    project = project_root.resolve(strict=True)
-    project_data_source = str(authorized_project_data_source(project))
-    try:
-        with _issuance_requirements(project, spec, include_relay_identity=True) as requirements:
-            return _issue_document_with_requirements(
-                project,
-                spec,
-                spec_path,
-                requirements,
-                project_data_source,
-            )
-    except (
-        FlowConfigError,
-        authority.AuthorityError,
-        eda_requirements.SessionRequirementsError,
-    ) as exc:
-        raise _runtime_authority_error(spec, exc) from exc
 
 
 def _persist_prepared(
@@ -993,9 +918,7 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
     egress = _host_egress_mode()
     stamp = authenticate(project, spec, spec_path)
     try:
-        with _issuance_requirements(
-            project, spec, stamp, include_relay_identity=True
-        ) as requirements:
+        with _issuance_requirements(project, spec, stamp) as requirements:
             _validate_generated_spec(project, spec, requirements, stamp, egress)
             _validate_bind_sources(spec["mounts"])
             _validate_image_identity(project, spec, stamp)

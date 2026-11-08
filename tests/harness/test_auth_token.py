@@ -1280,7 +1280,7 @@ def _auth_reseed_boundaries(project, monkeypatch):
     monkeypatch.setattr(session_issuance, "_pin_initialize_command", lambda *a: None)
     monkeypatch.setattr(session_issuance, "_seal_with_requirements", lambda *a: "synthetic-digest")
     issued = SimpleNamespace(license_profile=None, project_data_layout="legacy")
-    monkeypatch.setattr(session_issuance, "_prospective_issuance", lambda *a: issued)
+    monkeypatch.setattr(session_issuance, "_issuance", lambda *a, **k: issued)
     monkeypatch.setattr(
         session_issuance,
         "inspect_prepared",
