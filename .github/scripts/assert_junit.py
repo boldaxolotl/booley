@@ -56,7 +56,15 @@ def main() -> int:
     parser.add_argument("--summary", type=Path)
     args = parser.parse_args()
 
-    counts = read_counts(args.junit)
+    try:
+        counts = read_counts(args.junit)
+    except FileNotFoundError:
+        raise SystemExit(
+            f"no JUnit file at {args.junit}: pytest didn't run or didn't finish; "
+            "see the earlier failed step"
+        ) from None
+    except ElementTree.ParseError as exc:
+        raise SystemExit(f"malformed JUnit file at {args.junit}: {exc}") from None
     line = summary_line(args.label, counts)
     print(line, end="")
     if args.summary is not None:

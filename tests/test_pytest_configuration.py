@@ -58,6 +58,20 @@ def _named_step(job: dict, name: str) -> dict:
     return next(step for step in job["steps"] if step.get("name") == name)
 
 
+def _uses_step(job: dict, action: str) -> dict:
+    """Return the first step that runs the given action (`uses` prefix, e.g. 'actions/checkout@')."""
+    return next(step for step in job["steps"] if str(step.get("uses", "")).startswith(action))
+
+
+def _setup_step_limits(job: dict) -> list[int | None]:
+    """Step limits of checkout, setup-python and the package install, in that order."""
+    return [
+        _uses_step(job, "actions/checkout@").get("timeout-minutes"),
+        _uses_step(job, "actions/setup-python@").get("timeout-minutes"),
+        _named_step(job, "Install package with test dependencies").get("timeout-minutes"),
+    ]
+
+
 def _suite_config(pytestconfig: pytest.Config):
     config_path = Path(__file__).with_name("conftest.py")
     return next(
@@ -532,16 +546,27 @@ def test_matrix_uses_test_only_dependencies() -> None:
 
 
 def test_matrix_enforces_the_ci_duration_budget() -> None:
-    """Bound full suites at thirty minutes and shard/compatibility legs at fifteen."""
+    """Bound full suites at thirty minutes and shard/compatibility legs at twenty-five."""
     workflow = _test_workflow()
     test_job = workflow["jobs"]["test"]
 
-    assert test_job["timeout-minutes"] == "${{ matrix.mode == 'full' && 30 || 15 }}"
+    assert test_job["timeout-minutes"] == "${{ matrix.mode == 'full' && 30 || 25 }}"
     assert _workflow("full-python-matrix.yml")["jobs"]["test"]["timeout-minutes"] == 30
 
     pytest_steps = [step for step in test_job["steps"] if "pytest " in str(step.get("run", ""))]
     assert pytest_steps
     assert all("--timeout=60" in step["run"] for step in pytest_steps)
+
+
+def test_test_job_bounds_setup_and_pytest_steps() -> None:
+    """Setup steps get 5/5/6 minutes in every mode; shard and compatibility pytest get 12."""
+    job = _test_workflow()["jobs"]["test"]
+
+    assert _setup_step_limits(job) == [5, 5, 6]
+    for name in ("Run focused Windows compatibility suite", "Run duration-balanced shard"):
+        assert _named_step(job, name).get("timeout-minutes") == 12
+    # `full` keeps the job-level 30-minute bound instead of a step limit.
+    assert "timeout-minutes" not in _named_step(job, "Run full compatibility suite")
 
 
 def test_flake_stress_repeats_changed_modules_on_linux_and_windows() -> None:
@@ -631,8 +656,18 @@ def test_coverage_shards_have_dedicated_matrix() -> None:
     ]
     assert coverage_shards["needs"] == "changes"
     assert coverage_shards["runs-on"] == "ubuntu-latest"
-    assert coverage_shards["timeout-minutes"] == 15
     assert coverage_shards["strategy"]["fail-fast"] is False
+
+
+def test_coverage_shards_bound_setup_and_pytest_steps() -> None:
+    """Coverage shards share the setup limits; the job limit fits setup plus pytest."""
+    job = _test_workflow()["jobs"]["coverage-shards"]
+    pytest_limit = _named_step(job, "Run duration-balanced coverage shard").get("timeout-minutes")
+
+    assert _setup_step_limits(job) == [5, 5, 6]
+    assert pytest_limit == 15
+    # 35 = setup 5 + 5 + 6 + pytest 15, plus margin for the always-run publish/upload steps.
+    assert job["timeout-minutes"] == 35
 
 
 def test_coverage_job_exactly_verifies_before_combining() -> None:
@@ -779,6 +814,27 @@ def test_lint_job_uses_quality_only_dependencies() -> None:
     assert install_step["run"] == 'pip install -e ".[quality]" -c .github/ci/constraints.txt'
 
 
+def _assert_worktree_mounts_disk_and_failure_gating(job: dict) -> None:
+    """#2896: free disk before the build, never skip the preflight, gate the evidence steps."""
+    names = [item.get("name") for item in job["steps"]]
+    step = _named_step(job, "Run required worktree mount cases")
+    assert "Free unused runner disk" in names
+    free_disk = _named_step(job, "Free unused runner disk")
+    assert free_disk["uses"] == "./.github/actions/free-runner-disk"
+    assert "if" not in free_disk
+    assert names.index(free_disk["name"]) < names.index("Build canonical Sandbox Image")
+    deep_tests_text = (REPOSITORY_ROOT / ".github/workflows/deep-tests.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "BOOLEY_SKIP_IMAGE_DISK_PREFLIGHT" not in deep_tests_text
+    # A failed build leaves only the build step red: the evidence steps key off
+    # which steps ran instead of `always()`.
+    assert _named_step(job, "Build canonical Sandbox Image")["id"] == "build-image"
+    assert step["id"] == "worktree-pytest"
+    upload = _named_step(job, "Upload worktree execution evidence")
+    assert upload["if"] == "always() && steps.build-image.outcome != 'skipped'"
+
+
 def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
     workflow = _deep_tests_workflow()
     assert set(workflow.get("on", workflow.get(True))) == {"schedule", "workflow_dispatch"}
@@ -796,8 +852,8 @@ def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
     assert "if" not in step
     names = [item.get("name") for item in job["steps"]]
     assert names.index("Build canonical Sandbox Image") < names.index(step["name"])
+    _assert_worktree_mounts_disk_and_failure_gating(job)
     upload = _named_step(job, "Upload worktree execution evidence")
-    assert upload["if"] == "always()"
     assert upload["with"]["if-no-files-found"] == "error"
     assert step["env"]["BOOLEY_REQUIRE_WORKTREE_DOCKER"] == "1"
     assert step["env"]["BOOLEY_WORKTREE_DOCKER_IMAGE"] == "booley-sandbox:latest"
@@ -808,7 +864,10 @@ def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
     assert " -m " not in command.replace("python -m pytest", "pytest")
     assert " -n " not in command
     evidence = _named_step(job, "Assert worktree execution evidence")
-    assert evidence["if"] == "always()"
+    assert evidence["if"] == (
+        "always() && (steps.worktree-pytest.outcome == 'success' "
+        "|| steps.worktree-pytest.outcome == 'failure')"
+    )
     assert 'assert_junit.py "${RUNNER_TEMP}/worktree-mounts.xml"' in evidence["run"]
     assert "--min-tests 1 --max-skips 0" in evidence["run"]
     for item in [job, *job["steps"]]:
@@ -875,6 +934,117 @@ def test_mutmut_configuration_lives_only_in_setup_cfg() -> None:
     assert "mutmut" not in project.get("tool", {})
     assert _mutmut_config()["only_mutate"] == ["src/booley/harness/setup/*.py"]
     assert _mutmut_config()["pytest_add_cli_args_test_selection"] == ["tests/harness/"]
+
+
+@pytest.mark.parametrize(
+    ("initial", "expected"),
+    [
+        pytest.param("stats", None, id="stats"),
+        pytest.param(
+            "booley.harness.setup.x.x_foo__mutmut_1",
+            "booley.harness.setup.x.x_foo__mutmut_1",
+            id="mutant",
+        ),
+        pytest.param(None, None, id="unset"),
+    ],
+)
+def test_mutmut_stats_mode_is_hidden_from_child_processes(
+    monkeypatch: pytest.MonkeyPatch, initial: str | None, expected: str | None
+) -> None:
+    """Only mutmut's stats marker is removed; mutant names still reach children."""
+    from tests import conftest
+
+    if initial is None:
+        monkeypatch.delenv("MUTANT_UNDER_TEST", raising=False)
+    else:
+        monkeypatch.setenv("MUTANT_UNDER_TEST", initial)
+
+    conftest.hide_mutmut_stats_mode_from_children()
+
+    assert os.environ.get("MUTANT_UNDER_TEST") == expected
+
+
+_STATS_MODE_PROBE = '''\
+"""Pytest plugin: record the stats-mode variable a session sees after configuration."""
+
+import os
+import pathlib
+
+
+def pytest_collection_finish(session):
+    value = os.environ.get("MUTANT_UNDER_TEST")
+    pathlib.Path(os.environ["STATS_MODE_PROBE_OUT"]).write_text(repr(value), encoding="utf-8")
+'''
+
+
+def test_pytest_session_hides_mutmut_stats_mode_from_children(tmp_path: Path) -> None:
+    """The real ``pytest_configure`` boundary strips the marker before any test runs.
+
+    The unit cases above call the helper directly; this one fails if the call is
+    ever dropped from ``tests/conftest.py``'s configure hook.
+    """
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "mutmut_env_probe.py").write_bytes(_STATS_MODE_PROBE.encode("utf-8"))
+    probe_out = tmp_path / "probe-out.txt"
+    environment = dict(os.environ)
+    for name in (
+        "BOOLEY_DIR",
+        "BOOLEY_PYTEST_EVIDENCE_DIR",
+        "BOOLEY_PYTEST_TIMING_FILE",
+        "PYTEST_ADDOPTS",
+        "PYTEST_XDIST_WORKER",
+        "PYTEST_XDIST_TESTRUNUID",
+    ):
+        environment.pop(name, None)
+    environment["MUTANT_UNDER_TEST"] = "stats"
+    environment["STATS_MODE_PROBE_OUT"] = str(probe_out)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(probe_dir), *filter(None, [environment.get("PYTHONPATH")])]
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:xdist",
+            "-p",
+            "no:cacheprovider",
+            "-p",
+            "mutmut_env_probe",
+            "--test-profile",
+            "python",
+            f"--basetemp={tmp_path / 'child'}",
+            "--collect-only",
+            "-q",
+            "tests/test_pytest_configuration.py::test_mutmut_configuration_lives_only_in_setup_cfg",
+        ],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert probe_out.read_text(encoding="utf-8") == "None"
+
+
+def test_mutmut_pytest_options_show_failing_test_traceback() -> None:
+    """A stats-collection failure must print a short traceback and a summary.
+
+    ``--tb=no`` hid the cause of every failed campaign, and mutmut already adds
+    ``-x`` to each of its runs, so repeating it is redundant.
+    """
+    options = _mutmut_config()["pytest_add_cli_args"]
+
+    assert "--tb=short" in options
+    assert "-rfE" in options
+    assert "--tb=no" not in options
+    assert "-x" not in options
 
 
 def test_mutation_sandbox_mirrors_every_tracked_checkout_entry() -> None:

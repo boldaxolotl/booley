@@ -68,7 +68,7 @@ def test_init_check_warns_once_through_real_planning(
         lambda project_root: computed.append(project_root) or real_body(project_root),
     )
 
-    init_cmd._reconcile_initialized_image(InitContext(project_root=root, check_only=True), None)
+    init_cmd._reconcile_initialized_image(InitContext(project_root=root, check_only=True))
 
     out = capsys.readouterr().out
     assert len(computed) > 1, "planning should compute the requirements body repeatedly"
@@ -88,7 +88,7 @@ def test_init_notes_each_curated_override_once(
         init_cmd.image_lifecycle, "reconcile_planned", lambda *a, **k: _current_result()
     )
 
-    init_cmd._reconcile_initialized_image(InitContext(project_root=root), None)
+    init_cmd._reconcile_initialized_image(InitContext(project_root=root))
 
     out = capsys.readouterr().out
     assert out.count("pin 'cocotb==1.5.1' overrides") == 1
@@ -144,7 +144,7 @@ def test_no_new_output_without_left_out_lines(
         init_cmd.image_lifecycle, "reconcile_planned", lambda *a, **k: _current_result()
     )
 
-    init_cmd._reconcile_initialized_image(InitContext(project_root=root), None)
+    init_cmd._reconcile_initialized_image(InitContext(project_root=root))
 
     out = capsys.readouterr().out
     assert "left out" not in out

@@ -1,7 +1,7 @@
 """Shared infrastructure for simulation, Yosys, and Booley Flow scripts.
 
-Extracts common functions (file-list building, work-dir derivation, path
-checking, delay parsing) so each Flow script doesn't duplicate them.
+Extracts common functions (file-list building, path checking, delay
+parsing) so each Flow script doesn't duplicate them.
 """
 
 from __future__ import annotations
@@ -206,18 +206,6 @@ def get_tb_source_dirs(project_root: Path | None = None) -> list[str]:
     return _core_source_dirs(project_root)[1]
 
 
-def get_sim_output_dir(project_root: Path | None = None) -> Path:
-    """Simulation output directory from [flows.sim].output_dir (fallback: 'util/sim')."""
-    root = project_root or resolve_project_root()
-    cfg = _load_rtl_config(project_root)
-    if cfg:
-        from booley.targets.flow_names import config_section
-
-        raw = config_section(cfg.get("flows", {}), "sim").get("output_dir", "util/sim")
-        return root / raw
-    return root / "util" / "sim"
-
-
 def get_syn_output_dir(project_root: Path | None = None) -> Path:
     """Synthesis output directory from [flows.synth].output_dir (fallback: 'util/syn')."""
     root = project_root or resolve_project_root()
@@ -303,84 +291,6 @@ def get_tb_prefixes(project_root: Path | None = None) -> tuple[str, ...]:
     return source_dir_prefixes(
         _core_source_dirs(project_root)[1], project_root or resolve_project_root()
     )
-
-
-def get_tb_dirs() -> tuple[list[Path], list[Path]]:
-    """TB source and include directories from the ``.core`` tb-tagged filesets.
-
-    Returns (tb_source_dirs, tb_include_dirs) as resolved absolute paths, keeping
-    only entries that resolve to real directories (a flat-repo file entry has no
-    directory of its own, mirroring the old ``[sources.*]`` behaviour). Falls
-    back to [resolve_project_root() / "tb"] when nothing resolves.
-    """
-    _rtl, tb_names, tb_incl = _core_source_dirs()
-
-    source_dirs: list[Path] = []
-    for d in tb_names:
-        p = resolve_project_root() / d
-        if p.is_dir():
-            source_dirs.append(p.resolve())
-    if not source_dirs:
-        fallback = resolve_project_root() / "tb"
-        if fallback.is_dir():
-            source_dirs.append(fallback.resolve())
-
-    include_dirs: list[Path] = []
-    for d in tb_incl:
-        p = resolve_project_root() / d
-        if p.is_dir():
-            include_dirs.append(p.resolve())
-
-    return source_dirs, include_dirs
-
-
-# ============================================================================
-# derive_work_dir — unified work directory derivation
-# ============================================================================
-
-
-def derive_work_dir(
-    project_root: Path,
-    flow_name: str,
-    config: str,
-    top_module: str | None = None,
-    *,
-    defines: list[str] | None = None,  # DEPRECATED: ignored, remove in Phase 2
-    test_id: int | None = None,
-    test_name: str | None = None,
-) -> Path:
-    """Derive a unique, isolated work directory for a Flow run.
-
-    Config name is the full label (e.g. "config_a_prot"), no suffix detection
-    from defines.
-
-    Args:
-        project_root: Repository root (``resolve_project_root()``).
-        flow_name: ``"sim"`` or ``"syn"`` — selects the output subtree.
-        config: Config name (e.g. ``"config_c"``, ``"config_a_prot"``).
-        top_module: Override top module (appended as suffix when not the default).
-        defines: DEPRECATED — ignored. Kept for backward compat.
-        test_id: DEPRECATED — use test_name. Kept for backward compat.
-        test_name: Optional test name for per-test isolation (sim only).
-
-    Returns:
-        Absolute Path to the work directory (not yet created).
-    """
-    name = config
-
-    # Append top module as suffix for work-dir isolation
-    if top_module:
-        name += f".{top_module}"
-
-    # Append test name (sim only) — fall back to numeric index for compat
-    if test_name is not None:
-        name += f".{test_name}"
-    elif test_id is not None:
-        name += f".t{test_id}"
-
-    if flow_name == "sim":
-        return get_sim_output_dir(project_root) / "work" / name
-    return get_syn_output_dir(project_root) / "syn_result" / name
 
 
 # ============================================================================

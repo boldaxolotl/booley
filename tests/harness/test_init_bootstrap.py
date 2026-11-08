@@ -170,23 +170,6 @@ def test_init_force_observes_host_bootstrap_without_refresh(
     assert observed == [(Intent.CHECK, {"verbose": False})]
 
 
-def test_init_without_a_usable_bootstrap_base_defers_to_project_planner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    expected = SimpleNamespace()
-    observed = []
-    monkeypatch.setattr(
-        init_cmd,
-        "_step_image_lifecycle",
-        lambda ctx, **kwargs: observed.append((ctx, kwargs)) or expected,
-    )
-    ctx = init_cmd.InitContext(project_root=tmp_path)
-    bootstrap_result = init_cmd.BootstrapResult(Intent.ENSURE, ())
-
-    assert init_cmd._reconcile_initialized_image(ctx, bootstrap_result) is expected
-    assert observed == [(ctx, {"report_requirements": True})]
-
-
 def test_init_managed_project_uses_planned_reconciliation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

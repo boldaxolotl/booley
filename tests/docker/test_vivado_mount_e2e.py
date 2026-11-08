@@ -23,8 +23,8 @@ from tests import eda_grant_support
 
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, wrapper_sha256
+from booley.harness import host_sidecars
 from booley.runtime import devcontainer as dc
-from booley.runtime import interactive_docker as idk
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime
 
@@ -56,12 +56,17 @@ def _require_prerequisites() -> tuple[str, Path]:
         )
         if probe.returncode != 0:
             pytest.skip(f"Docker {kind} {name!r} is absent; run `booley init --force`")
-    if not idk.network_is_internal() or not idk.network_is_host_isolated():
-        pytest.fail(
-            f"Docker network {dc.EGRESS_NETWORK!r} is not host-isolated; "
-            "stop Sessions, remove the stale network and booley-proxy, then run "
-            "`booley init --force`"
-        )
+    fix_hint = (
+        f"Docker network {dc.EGRESS_NETWORK!r} is not host-isolated; "
+        "stop Sessions, remove the stale network and booley-proxy, then run "
+        "`booley init --force`"
+    )
+    try:
+        host_isolated = host_sidecars._inspect_network(host_sidecars._DockerCli()).current
+    except host_sidecars.SidecarError as exc:
+        pytest.fail(f"{fix_hint} ({exc})")
+    if not host_isolated:
+        pytest.fail(fix_hint)
     return docker, root
 
 
