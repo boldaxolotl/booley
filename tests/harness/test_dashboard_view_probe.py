@@ -369,12 +369,16 @@ def test_claiming_the_view_covers_every_outcome(monkeypatch, capsys):
     assert command._bind_view(claim, "s", on_attach=True) is None
     assert retired == [stale]
 
+    # The retired process's address frees a moment after it shows as gone.
+    claim = _Claim(errno.EADDRINUSE, errno.EADDRINUSE, errno.EADDRINUSE, None)
+    assert command._bind_view(claim, "s", on_attach=True) is None
+    assert claim.binds == 4
+
     # Another newcomer won the race for the freed address.
-    claim = _Claim(errno.EADDRINUSE, errno.EADDRINUSE)
+    monkeypatch.setattr(command.view_probe, "RELEASE_GRACE_SECONDS", 0.2)
+    claim = _Claim(*[errno.EADDRINUSE] * 100)
     assert command._bind_view(claim, "s", on_attach=True) == command.ALREADY_OPEN
-    assert (
-        command._bind_view(_Claim(errno.EADDRINUSE, errno.EADDRINUSE), "s", on_attach=False) == 0
-    )
+    assert command._bind_view(_Claim(*[errno.EADDRINUSE] * 100), "s", on_attach=False) == 0
     assert "already open" in capsys.readouterr().out
 
     assert command._bind_view(_Claim(errno.EACCES), "s", on_attach=False) == 2

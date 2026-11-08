@@ -6,6 +6,7 @@ import os
 import socket
 import sys
 import threading
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from itertools import islice
@@ -123,6 +124,19 @@ def run_attach(root: Path, *, policy_only: bool = False) -> int:
     return run_dashboard(root, on_attach=True)
 
 
+def _bind(owner: socket.socket, address: str, patience: float) -> OSError | None:
+    """Bind *address*, retrying while it stays in use for up to *patience* seconds."""
+    deadline = time.monotonic() + patience
+    while True:
+        try:
+            owner.bind(address)
+            return None
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE or time.monotonic() >= deadline:
+                return exc
+        time.sleep(view_probe.POLL_SECONDS)
+
+
 def _bind_view(owner: socket.socket, scope: str, *, on_attach: bool) -> int | None:
     """Claim the Sandbox view; None when claimed, else the exit code of the refusal.
 
@@ -130,20 +144,23 @@ def _bind_view(owner: socket.socket, scope: str, *, on_attach: bool) -> int | No
     retried. Anything seen, starting, or unprovable keeps the view.
     """
     address = view_probe.socket_name(scope)
-    for attempt in range(2):
-        try:
-            owner.bind(address)
-            return None
-        except OSError as exc:
-            if exc.errno != errno.EADDRINUSE:
-                print(f"Dashboard unavailable: cannot reserve the Sandbox view: {exc}")
+    failure = _bind(owner, address, 0.0)
+    if failure is not None and failure.errno == errno.EADDRINUSE:
+        stale = view_probe.unseen_owner(scope)
+        if stale is not None:
+            if not view_probe.retire(stale):
+                print(
+                    "Dashboard unavailable: an unresponsive Dashboard still holds the Sandbox view"
+                )
                 return 2
-        stale = view_probe.unseen_owner(scope) if attempt == 0 else None
-        if stale is None:
-            break
-        if not view_probe.retire(stale):
-            print("Dashboard unavailable: an unresponsive Dashboard still holds the Sandbox view")
-            return 2
+            # The address frees when the process's last thread exits, which can
+            # be a moment after its main thread already shows as gone.
+            failure = _bind(owner, address, view_probe.RELEASE_GRACE_SECONDS)
+    if failure is None:
+        return None
+    if failure.errno != errno.EADDRINUSE:
+        print(f"Dashboard unavailable: cannot reserve the Sandbox view: {failure}")
+        return 2
     print("Booley Dashboard is already open in this Sandbox")
     return ALREADY_OPEN if on_attach else 0
 

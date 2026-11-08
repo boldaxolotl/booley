@@ -38,8 +38,10 @@ TERM_GRACE_SECONDS = 3.0
 KILL_GRACE_SECONDS = 2.0
 # Added to the re-probe wait so a rounded age never lands just under the threshold.
 _REPROBE_MARGIN = 0.1
-_POLL_SECONDS = 0.05
-_ACCEPT_POLL_SECONDS = 0.2
+POLL_SECONDS = 0.05
+# How long a newcomer keeps trying to claim the address of a Dashboard it just retired.
+RELEASE_GRACE_SECONDS = 3.0
+_ACCEPTPOLL_SECONDS = 0.2
 _MAX_REPLY_BYTES = 64
 # Gone states in /proc/<pid>/stat: zombie (not yet reaped) and dead.
 _GONE_STATES = frozenset("ZXx")
@@ -77,7 +79,7 @@ def serve(listener: socket.socket, state: ViewState, stop: threading.Event) -> t
     The thread never waits on the Dashboard's event loop, so a starting or busy
     Dashboard still replies and a hung one simply stops refreshing its age.
     """
-    listener.settimeout(_ACCEPT_POLL_SECONDS)
+    listener.settimeout(_ACCEPTPOLL_SECONDS)
 
     def loop() -> None:
         while not stop.is_set():
@@ -90,7 +92,7 @@ def serve(listener: socket.socket, state: ViewState, stop: threading.Event) -> t
                     return
                 # A transient failure (no free descriptor) must not silence the
                 # reply thread for good: a silent owner is taken for wedged.
-                stop.wait(_ACCEPT_POLL_SECONDS)
+                stop.wait(_ACCEPTPOLL_SECONDS)
                 continue
             with connection:
                 connection.settimeout(REPLY_SECONDS)
@@ -198,7 +200,7 @@ def _wait_gone(owner: ViewOwner, seconds: float) -> bool:
     while not _is_gone(owner):
         if time.monotonic() >= deadline:
             return False
-        time.sleep(_POLL_SECONDS)
+        time.sleep(POLL_SECONDS)
     return True
 
 
