@@ -424,6 +424,9 @@ testbench directory:
 run_cwd = "tests/work"   # relative to the Project Root
 ```
 
+`run_cwd` itself must not contain a `..` component: Booley refuses it before
+running. Paths the testbench opens from there, such as `../fw/…`, are fine.
+
 The directory must already exist in every checkout: Booley doesn't create it.
 Commit a placeholder file such as `.gitkeep` so it does. Tests that share it run
 one at a time. If the directory only receives per-run output, add the

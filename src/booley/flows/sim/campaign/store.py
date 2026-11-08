@@ -59,6 +59,8 @@ from .codec import (
     encode_simulation_attempt,
     encode_simulation_campaign_manifest,
     encode_simulation_result,
+    linked_manifest_path,
+    validate_relative_path,
 )
 from .model import (
     BundleBuildAttempt,
@@ -341,7 +343,14 @@ class CampaignStore:
         work_item_id = cast(str, item["work_item_id"])
         ordinal = cast(int, item["ordinal"]) + 1
         digest = work_item_id.rsplit(":", 1)[-1]
-        return self.root / "work-items" / f"{ordinal:04d}-{digest}"
+        name = f"{ordinal:04d}-{digest}"
+        # Decode does not check the id, and retention globs assume one component.
+        if "/" in name:
+            raise SimulationCampaignIntegrityError(
+                f"work-item directory name {name!r} is not one contained path component"
+            )
+        validate_relative_path(name)
+        return self.root / "work-items" / name
 
     def allocate_attempt_directory(self, work_item_id: str, attempt_id: str) -> tuple[int, Path]:
         attempts = self.work_item_directory(work_item_id) / "attempts"
@@ -879,7 +888,7 @@ def collect_pre_sim_firings(
             firings[firing.key] = firing
         for entry in manifest.document["prerequisites"]:
             reference = entry["manifest"]
-            edge = (store.root.parents[2] / reference["path"], reference["sha256"])
+            edge = (linked_manifest_path(store.root.parents[2], reference), reference["sha256"])
             chain = ancestors | {campaign_id}
             if (*edge, chain) not in queued:
                 queued.add((*edge, chain))

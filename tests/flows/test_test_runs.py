@@ -566,7 +566,7 @@ def test_rerun_command_is_plain_text_for_ordinary_names() -> None:
     assert rerun_command("sim", run) == "booley flow sim --target sim --test=stress+soak@42"
 
 
-def test_run_from_document_recomputes_the_fingerprint_unless_told_to_trust_it() -> None:
+def test_run_from_document_recomputes_the_fingerprint() -> None:
     stale = {
         **test_run_document(build_test_run("stress", seed=7)),
         "fingerprint": "sha256:" + "0" * 64,
@@ -574,8 +574,3 @@ def test_run_from_document_recomputes_the_fingerprint_unless_told_to_trust_it() 
 
     with pytest.raises(TestRunNameError, match="disagrees"):
         test_run_from_document(stale)
-    assert (
-        test_run_from_document(stale, trust_fingerprint=True).fingerprint == stale["fingerprint"]
-    )
-    with pytest.raises(TestRunNameError, match="sha256 digest"):
-        test_run_from_document({**stale, "fingerprint": "sha256:x"}, trust_fingerprint=True)

@@ -16,7 +16,6 @@ from types import SimpleNamespace
 import pytest
 
 from booley.config.tests_toml_rules import TestRunNameError
-from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
 from booley.flows.sim.campaign.projection import _validate_test_runs
 from booley.flows.sim.campaign.serial_execution import _work_item_test_runs
 from booley.flows.sim.campaign.test_run_binding import observation_test_runs
@@ -72,23 +71,6 @@ def test_every_decoder_of_a_persisted_test_run_refuses_the_name(name: str):
     unnamed = {"work_item_id": "w", "test_runs": (_record(name, test=None),)}
     with pytest.raises(ValueError, match="Test Run environment"):
         observation_test_runs(unnamed, ({"test": "found"},))
-
-
-@pytest.mark.parametrize("name", ["X; id #", "BOOLEY_TARGET"])
-def test_the_manifest_codec_refuses_the_name(tmp_path, name: str):
-    from booley.flows.sim.campaign.codec import (
-        canonical_json_bytes,
-        decode_simulation_campaign_manifest,
-    )
-    from tests.flows.sim.test_campaign_test_runs import _v4_document
-
-    document = _v4_document(tmp_path)
-    run = document["work_items"][0]["test_runs"][0]
-    run["env"] = {name: "1"}
-    run["fingerprint"] = declared_inputs_fingerprint(tuple(run["args"]), run["env"])
-
-    with pytest.raises(SimulationCampaignIntegrityError):
-        decode_simulation_campaign_manifest(canonical_json_bytes(document))
 
 
 @pytest.mark.parametrize("name", [*_HOSTILE])

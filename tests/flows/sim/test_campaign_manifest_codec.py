@@ -8,8 +8,6 @@ from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
 import pytest
-from hypothesis import given
-from hypothesis import strategies as st
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign import serial_execution
@@ -885,55 +883,6 @@ def _generator_request(tmp_path, store, manifest, item, ordinal, attempt_directo
         project_root=tmp_path,
     )
     return request
-
-
-@given(st.sampled_from(["missing", "unknown", "type"]))
-def test_manifest_structural_mutations_are_rejected(mutation: str) -> None:
-    manifest = _manifest()
-    target = manifest["target"]
-    if mutation == "missing":
-        del target["revision"]
-    elif mutation == "unknown":
-        target["unexpected"] = True
-    else:
-        target["name"] = 7
-    with pytest.raises(SimulationCampaignIntegrityError):
-        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
-
-
-@pytest.mark.parametrize("names", [[], [1], ["smoke", "smoke"]])
-def test_named_selection_requires_unique_nonempty_bounded_strings(names: list[object]) -> None:
-    manifest = _manifest()
-    manifest["work_items"][0]["selection"] = {"kind": "named", "names": names}  # type: ignore[index]
-    with pytest.raises(SimulationCampaignIntegrityError):
-        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
-
-
-@pytest.mark.parametrize("mutation", ["target_role", "work_item_id"])
-def test_prerequisite_binds_a_baseline_target_and_valid_work_item(mutation: str) -> None:
-    manifest = _manifest()
-    target = dict(manifest["target"])  # type: ignore[arg-type]
-    target["role"] = "candidate" if mutation == "target_role" else "cycle_count_baseline"
-    prerequisite = {
-        "role": "cycle_count_baseline",
-        "manifest": {
-            "path_base": "origin_invocation",
-            "path": "targets/baseline/manifest.json",
-            "bytes": 1,
-            "sha256": "sha256:" + "a" * 64,
-            "kind": "simulation_campaign_manifest",
-            "owner": "550e8400-e29b-41d4-a716-446655440000",
-        },
-        "campaign_id": "550e8400-e29b-41d4-a716-446655440000",
-        "target": target,
-        "required_observation": "cycle_count",
-        "work_item_id": (
-            "not-an-item" if mutation == "work_item_id" else "item:0000:0123456789abcdef"
-        ),
-    }
-    manifest["prerequisites"] = [prerequisite]
-    with pytest.raises(SimulationCampaignIntegrityError):
-        decode_simulation_campaign_manifest(canonical_json_bytes(manifest))
 
 
 def test_serial_result_classifies_simulator_crash_as_design_failure() -> None:

@@ -17,11 +17,16 @@ from booley.flows.sim.config import (
     resolve_run_cwd,
 )
 from booley.flows.sim.execution.contract import SimulationPreview
-from booley.flows.test_runs import TestRun, test_run_document
+from booley.flows.test_runs import TestRun, TestRunLimitError, test_run_document
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 
-from .codec import MANIFEST_SCHEMA, SimulationCampaignIntegrityError
+from .codec import (
+    MANIFEST_SCHEMA,
+    MAX_OBSERVATIONS,
+    MAX_WORK_ITEMS,
+    SimulationCampaignIntegrityError,
+)
 from .model import SimulationCampaignPlan, create_simulation_campaign_plan
 from .planning import (
     canonical_sha256,
@@ -193,8 +198,7 @@ def _manifest_document(
     prerequisite_documents,
     work_items,
 ):
-    # v4: every work item records its concrete Test Runs (ADR 0072). Older
-    # manifests name Tests only; they stay readable but are never written.
+    # v4: every work item records its concrete Test Runs (ADR 0072).
     return finalize_manifest(
         {
             "$schema": MANIFEST_SCHEMA,
@@ -425,6 +429,18 @@ def _selection_names(runs: Sequence[TestRun]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(run.test for run in runs if run.test is not None))
 
 
+def _require_campaign_fits(run_groups: Sequence[tuple[TestRun, ...]], selector: str) -> None:
+    """Refuse a plan beyond the campaign ceilings, whichever planner path built it."""
+    test_runs = sum(len(group) for group in run_groups)
+    if len(run_groups) > MAX_WORK_ITEMS or test_runs > MAX_OBSERVATIONS:
+        raise TestRunLimitError(
+            f"Target {selector} plans {len(run_groups)} work items and {test_runs} Test Runs; "
+            f"a campaign holds at most {MAX_WORK_ITEMS} work items and "
+            f"{MAX_OBSERVATIONS} Test Runs. Select fewer Tests or seeds, or in Goal Mode "
+            "fewer whole-suite Goals freeze runs of this Target"
+        )
+
+
 def _work_items(
     run_groups: Sequence[tuple[TestRun, ...]],
     target: Mapping[str, object],
@@ -434,6 +450,7 @@ def _work_items(
     *,
     kind: str,
 ) -> list[dict[str, object]]:
+    _require_campaign_fits(run_groups, str(target["selector"]))
     items = []
     collision = _collision_template(configured_cwd)
     for ordinal, runs in enumerate(run_groups):
