@@ -26,6 +26,7 @@ from booley.flows.sim.adapter_transport import (
     read_adapter_result,
 )
 from booley.flows.sim.backends import cocotb as crun
+from booley.flows.sim.backends import cocotb_results
 from booley.flows.sim.backends.cocotb_results import STATE_OK, CocotbResults, CocotbTest
 from booley.flows.sim.backends.shared import RunTermination
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX
@@ -1106,12 +1107,12 @@ def test_adapter_result_and_transports_match_pre_refactor_goldens(
     unselected-skipped tests; compact and full verbosity; a non-finite time).
     The adapter must also build its result without parsing that line.
     """
-    parsed_outputs: list[str] = []
 
     def forbidden_parse(output: str) -> None:
-        parsed_outputs.append(output)
         raise AssertionError("adapter parsed its own stdout line")
 
+    # Patch the defining module and the adapter's own namespace: either call style fails.
+    monkeypatch.setattr(cocotb_results, "parse_results_line", forbidden_parse)
     monkeypatch.setattr(crun, "parse_results_line", forbidden_parse, raising=False)
     for case, (
         xml,
@@ -1149,4 +1150,3 @@ def test_adapter_result_and_transports_match_pre_refactor_goldens(
             assert (work / "cocotb_results.json").read_text(encoding="utf-8") == _RESULTS_JSON, (
                 case
             )
-    assert parsed_outputs == []

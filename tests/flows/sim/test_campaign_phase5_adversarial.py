@@ -12,6 +12,7 @@ from typing import cast
 import pytest
 
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim.backends import cocotb_results
 from booley.flows.sim.campaign import serial_execution
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
@@ -1011,12 +1012,12 @@ def test_cocotb_campaign_rejects_malformed_results_file(tmp_path: Path, monkeypa
     wrapping it in a stdout line for the line parser.
     """
     reported = (SimulationTestOutcome(name="count", verdict="pass", passed=True),)
-    parsed_lines: list[str] = []
 
     def forbidden_parse(output: str) -> None:
-        parsed_lines.append(output)
         raise AssertionError("campaign decoded the file through the stdout-line parser")
 
+    # Patch the defining module and the campaign's own namespace: either call style fails.
+    monkeypatch.setattr(cocotb_results, "parse_results_line", forbidden_parse)
     monkeypatch.setattr(serial_execution, "parse_results_line", forbidden_parse, raising=False)
     for name, raw, message in (
         ("not-utf8", b"\xff", "Cocotb transport is not UTF-8"),
@@ -1027,7 +1028,6 @@ def test_cocotb_campaign_rejects_malformed_results_file(tmp_path: Path, monkeypa
         root.mkdir()
         with pytest.raises(SimulationCampaignIntegrityError, match=message):
             _run_cocotb(root, ("count",), reported, raw=raw)
-    assert parsed_lines == []
 
 
 def test_unfiltered_cocotb_binds_discovered_order_and_detail(tmp_path: Path) -> None:

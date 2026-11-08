@@ -11,10 +11,9 @@ missing file, truncated/unparseable XML, empty testsuite — therefore maps to
 
 The run-half (:mod:`booley.flows.sim.backends.cocotb`) parses the XML in-sandbox and
 re-emits it as a single ``[COCOTB_RESULTS]`` JSON line beside the usual
-``[SIM_SUMMARY]``; stdout consumers (the Simulation Flow report fan-out, the
-Mutation Tester) parse that line back, while the adapter itself publishes the
-results it already holds and never reads its own line. All of them share this
-module so the shapes cannot drift.
+``[SIM_SUMMARY]``; the Mutation Tester parses that line back, while the
+adapter itself publishes the results it already holds and never reads its own
+line. Both share this module so the shapes cannot drift.
 
 Empirical XML states this parser is frozen against (spike S4, cocotb 2.0.1 and 2.1.0):
 
