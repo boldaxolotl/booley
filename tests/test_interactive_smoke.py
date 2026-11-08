@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -23,7 +24,9 @@ import pytest
 from booley.core.booley_dir import reset_cache
 from booley.flows.implementation_comparison import target_pair_plans_for_handles
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.request import SimRequest
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
+from booley.runtime.endpoint_execution import ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from tests.conftest import symlink_or_skip
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
@@ -66,37 +69,35 @@ def _clear_ticket_env() -> None:
         reset_cache()
 
 
-def _make_interactive_simulate(
-    tmp_path: Path,
-    *,
-    config: str | None = "lite",
-    tb_top: str | None = "alu_tb",
-    extra_args: list[str] | None = None,
-) -> SimulateFlow:
-    """Build a SimulateFlow exactly as the MCP dispatch path would.
+def _interactive_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **tests: list[str]
+) -> None:
+    """Create a no-ticket Project with one sim Target per keyword and chdir into it.
 
-    Crucially: no state file, no BOOLEY_SLUG/BOOLEY_STATE_FILE env vars.
+    Each keyword names a Target and lists its configured Tests (empty: none).
+    No state file, no ``BOOLEY_SLUG``/``BOOLEY_STATE_FILE`` env vars.
     """
-    report_dir = tmp_path / "reports"
-    # tb_top left the surface (ADR 0021); it comes from the resolved Target.
-    # The `tb_top` kwarg is retained for call-site compat — tests that assert a
-    # specific tb_top stub `_tb_top_for_target` rather than passing an arg.
-    _ = tb_top
-    argv = [
-        "--work-dir",
-        str(tmp_path),
-        "--report-dir",
-        str(report_dir),
-    ]
-    if config is not None:
-        argv.extend(["--target", config])
-    if extra_args:
-        argv.extend(extra_args)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    monkeypatch.chdir(tmp_path)
+    data = tmp_path / ".booley"
+    data.mkdir()
+    registry = ""
+    for name, names in tests.items():
+        (tmp_path / f"{name}.core").write_text(
+            f"CAPI=2:\nname: ::sim_demo_{name}:0\ntargets:\n  {name}:\n    flow: sim\n"
+            "    flow_options:\n      tool: verilator\n    toplevel: tb_demo\n",
+            encoding="utf-8",
+        )
+        if names:
+            registry += f"[{name}]\ntests = {json.dumps(names)}\n"
+    (data / "tests.toml").write_text(registry, encoding="utf-8")
 
-    tool = SimulateFlow()
-    tool.parse_args(argv)
-    tool.read_state()
-    return tool
+
+def _execute(tmp_path: Path, **request: Any) -> ExecutionResult:
+    """Run ``SimulateFlow.execute`` the way the MCP dispatch path does."""
+    return SimulateFlow().execute(
+        SimRequest(work_dir=tmp_path, report_dir=tmp_path / "reports", **request)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -108,12 +109,14 @@ class TestRequiredArgsValidation:
     """``simulate`` must reject missing required args with a useful message
     instead of crashing with ``AttributeError`` deep in the call chain."""
 
-    def test_missing_config_returns_error(self, tmp_path: Path) -> None:
-        tool = _make_interactive_simulate(tmp_path, config=None)
-        result = tool._run()
+    def test_missing_config_returns_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _interactive_project(tmp_path, monkeypatch, lite=[], full=[])
+        result = _execute(tmp_path)
         assert result.exit_code == EXIT_ERROR
-        assert "--target" in result.report_text
-        assert "booley targets" in result.report_text
+        assert "--target is required" in result.outcome.report_text
+        assert "Eligible Targets: full, lite" in result.outcome.report_text
 
 
 # ---------------------------------------------------------------------------
@@ -125,60 +128,21 @@ class TestNoTicketDryRun:
     """End-to-end smoke: a fresh CWD with no state file can still drive
     ``simulate --dry-run`` to a clean exit."""
 
-    @patch(
-        "booley.flows.sim.flow._get_test_names",
-        return_value={"lite": ["smoke", "stress"]},
-    )
-    @patch.object(
-        SimulateFlow,
-        "_flow_enabled",
-        return_value=True,
-    )
     def test_dry_run_succeeds_without_state_file(
-        self,
-        _backend,
-        _tests,
-        tmp_path: Path,
-        capsys,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # A minimal sim `.core` lets the edalize dry-run show a real
-        # `fusesoc run --setup` command. enumerate_targets is a YAML read — no
-        # fusesoc execution and no source files needed; the dry-run is
-        # side-effect-free (slice-4 rework — no more legacy-path / resolve stub).
-        (tmp_path / "sim.core").write_text(
-            "CAPI=2:\n"
-            "name: ::sim_demo:0\n"
-            "targets:\n"
-            "  lite:\n"
-            "    flow: sim\n"
-            "    flow_options:\n"
-            "      tool: verilator\n"
-            "    toplevel: tb_demo\n",
-            encoding="utf-8",
-        )
-        tool = _make_interactive_simulate(
-            tmp_path,
-            config="lite",
-            extra_args=["--dry-run"],
-        )
+        _interactive_project(tmp_path, monkeypatch, lite=["smoke", "stress"])
         # Sanity: confirm we really are running without a state file —
         # this is the property the test is protecting.
-        assert tool._state is not None
-        assert tool._state._file_path is None
         assert not os.environ.get("BOOLEY_SLUG")
+        assert not os.environ.get("BOOLEY_STATE_FILE")
 
-        result = tool._run()
-        assert result.exit_code == EXIT_SUCCESS, result.report_text
+        result = _execute(tmp_path, target="lite", dry_run=True)
 
-        plan = json.loads(capsys.readouterr().out)
-        assert plan["flow"] == "sim"
-        assert len(plan["work_units"]) == 2  # one per test
-        for unit in plan["work_units"]:
-            # The preview shows the fusesoc --setup command without executing it.
-            script = " ".join(unit["commands"][0]["argv"])
-            assert "--setup" in script
-            assert "--target lite" in script
-            assert "sim_demo" in script  # the resolved vlnv from the .core
+        assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text
+        assert result.outcome.report_text == "lite: 2 pending work item(s)"  # one per Test
+        assert result.outcome.detail["mutated"] is False
+        assert not (tmp_path / "reports/sim/1").exists()
 
 
 # ---------------------------------------------------------------------------

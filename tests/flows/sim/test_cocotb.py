@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -706,40 +706,35 @@ class TestCocotbSimulatorEligibility:
 
 
 class TestCocotbDryRun:
-    def test_dry_run_emits_one_batched_command(self, tmp_path: Path, capsys):
-        flow = _make_cocotb_flow(tmp_path, extra_args=["--dry-run"])
-        with (
-            patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)),
-            patch(
-                "booley.fusesoc.fusesoc_registry._resolve_target",
-                side_effect=AssertionError("dry-run must not resolve"),
-            ),
-            flow.publication_resources,
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        commands = result.detail["work_units"][0]["commands"]
-        assert len(commands) == 1  # batched: one command for three tests
-        script = commands[0]["argv"][-1]
-        assert "fusesoc" in script and "--setup" in script
-        assert "booley.flows.sim.backends.cocotb" in script
-        assert script.count("--test=") == 3
-        assert "--eda-tool icarus" in script
-        assert "--cocotb-module test_counter" in script
-        assert str(tmp_path) not in json.dumps(result.detail)
+    def test_dry_run_batches_cocotb_tests_into_one_work_item(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.flows.sim.request import SimRequest
+        from booley.runtime.booley_dir import reset_cache
 
-    def test_dry_run_sv_target_unchanged(self, tmp_path: Path):
-        """G6 guard: a non-cocotb Target's dry-run command carries no cocotb."""
-        flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
-        with (
-            patch("booley.flows.sim.flow._get_test_names", return_value={}),
-            flow.publication_resources,
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        script = result.detail["work_units"][0]["commands"][0]["argv"][-1]
-        assert "cocotb" not in script
-        assert "booley.flows.sim.backends.verilator" in script
+        monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+        (tmp_path / "ccfg.core").write_text(_COCOTB_CORE_TEXT, encoding="utf-8")
+        (tmp_path / "rtl").mkdir()
+        (tmp_path / "rtl/counter.sv").write_text("module counter; endmodule\n", encoding="utf-8")
+        (tmp_path / "tb").mkdir()
+        (tmp_path / "tb/test_counter.py").write_text("", encoding="utf-8")
+        _write_test_registry(tmp_path, "ccfg", _TESTS["ccfg"])
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+        reset_cache()
+        monkeypatch.setattr(
+            "booley.fusesoc.fusesoc_registry._resolve_target",
+            MagicMock(side_effect=AssertionError("dry-run must not resolve")),
+        )
+
+        result = SimulateFlow().execute(
+            SimRequest(
+                target="ccfg", dry_run=True, work_dir=tmp_path, report_dir=tmp_path / "reports"
+            )
+        )
+
+        assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text
+        (preview,) = result.outcome.detail["campaign_preview"]
+        assert preview["work_items"] == 1  # batched: one work item for three tests
 
 
 class TestCocotbBuildFailureShape:

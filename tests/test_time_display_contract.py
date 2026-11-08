@@ -54,24 +54,8 @@ def test_old_formatters_are_removed():
 
 
 def test_human_sinks_use_adaptive_durations():
-    result = sim.TargetResult(
-        target="top",
-        passed=True,
-        elapsed_s=3661,
-        tests=[sim.TestResult(name="smoke", passed=True)],
-    )
-    assert sim._build_display_lines([result], 3661) == ["✓ PASS  1h 01m"], (
-        "human duration migration missing"
-    )
     lint = LintConfigResult("top", duration_s=61)
     assert _target_summary_line(lint).endswith("1m 01s")
-    failed = sim.TargetResult(
-        target="top",
-        passed=False,
-        elapsed_s=3661,
-        tests=[sim.TestResult(name="smoke", passed=False, elapsed_s=61, build_s=3600)],
-    )
-    assert "1m 01s  (incl. 1h 00m build)" in "\n".join(sim._build_display_lines([failed], 3661))
 
     synth = object.__new__(AsicSynthesizeFlow)
     assert "1h 01m" in synth._format_config_line(
@@ -88,21 +72,13 @@ def test_human_sinks_use_adaptive_durations():
     ).display.endswith("1m 01s")
 
 
-def _protected_outputs(root):
+def _protected_outputs(root, monkeypatch):
     """Fixed inputs also used to capture literal base output before source edits."""
     synth = object.__new__(AsicSynthesizeFlow)
     fpga = object.__new__(FpgaImplFlow)
-    simflow = object.__new__(sim.SimulateFlow)
-    simflow._build_context_lines = lambda _target: ["build: fixture"]
     outputs = []
     for passed in (True, False):
         for elapsed in (0.012, 61, 3661):
-            test = sim.TestResult(
-                name="smoke", passed=passed, elapsed_s=elapsed, build_s=3600, cycles=123
-            )
-            result = sim.TargetResult(target="top", passed=passed, tests=[test], elapsed_s=elapsed)
-            outputs.append(sim._test_status_line(test))
-            outputs.append(simflow._headline_lines([result]))
             outputs.append(
                 synth._format_config_line(
                     "top", SynthMetrics(elapsed_s=elapsed, returncode=0 if passed else 1), None
@@ -115,7 +91,6 @@ def _protected_outputs(root):
             )
             outputs.append(_lint_result_parts(["top"], [], elapsed))
             outputs.append(LintFlow._build_summary([]))
-            outputs.append(sim._test_report_entry(test))
     standalone = object.__new__(StandaloneMixin)
     standalone.args = SimpleNamespace(mode=SimpleNamespace(value="elab-only"))
     standalone.set_criterion = lambda *_a, **_k: None
@@ -127,8 +102,29 @@ def _protected_outputs(root):
     outputs.append(ReportEncoder.text_result(0, report["report_text"] + "\n", "", report))
     outputs.append(ReportEncoder.structured_report(report))
     outputs.extend(_protected_transport())
+    outputs.extend(_protected_campaign(root / "campaign", monkeypatch))
     outputs.append(_protected_targets(root))
     return json.dumps(outputs, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def _protected_campaign(root, monkeypatch):
+    """Campaign report lines and ``simulation.json`` test entries for a fixed passing campaign."""
+    from booley.flows.sim.acceptance import _campaign_projection
+    from booley.runtime.booley_dir import reset_cache
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _public_cycle_campaign
+
+    # These budgets size the cycle lines, so the golden must not depend on the host.
+    monkeypatch.delenv("BOOLEY_MCP_MAX_STDOUT_BYTES", raising=False)
+    monkeypatch.delenv("BOOLEY_MCP_MAX_STDERR_BYTES", raising=False)
+    root.mkdir()
+    reset_cache()
+    monkeypatch.setenv("BOOLEY_DIR", str(root))
+    outcome = _public_cycle_campaign(root, monkeypatch)
+    manifest = str(outcome.manifest_path.resolve())
+    lines = [
+        line.replace(manifest, "<manifest>") for line in sim._campaign_report_lines((outcome,))
+    ]
+    return [lines, _campaign_projection(outcome)["tests"]]
 
 
 def _protected_transport():
@@ -182,20 +178,15 @@ def _protected_targets(root):
 
 
 # Captured from the pinned pre-change tree, with additive lint finding fields;
-# the sim summary entries were regenerated for the per-Target table (#2429), and
-# the synth completion records spell the area unit kGE (#2428).
+# the synth completion records spell the area unit kGE (#2428).  The sim entries
+# are the campaign report lines and ``simulation.json`` test entries of the
+# ``_public_cycle_campaign`` fixture (#2977), replacing the legacy writer's.
 # Duration strings remain unchanged.
-PROTECTED_OUTPUTS = '["  smoke                PASS        123 cycles     12ms  (incl. 3600s build)",["","--- summary (Sandbox) ---","[sim] top: PASS (1/1 tests, 12ms)","  Test    Result   Cycles   Time   Build","  ─────   ──────   ──────   ────   ─────","  smoke   PASS     123      12ms   3600s"],"[synth] top          -- kGE   -- ps    0.0s","[fpga] top             -- LUTs   -- FFs   0.0s FAIL",[["0 warnings"],{"elapsed_s":0.01,"findings":[],"findings_total":0,"findings_truncated":false,"targets":["top"],"total_warnings":0}],[0,"RESULT: PASS"],{"build_s":3600,"cycle_observation":"missing","cycles":123,"elapsed_s":0.012,"error_tail":"","failure_kind":"","name":"smoke","passed":true,"phase_timings_s":{},"resources":{},"sva_errors":0,"termination":"completed","test_validated":true,"timed_out":false,"verdict":"pass"},"  smoke                PASS        123 cycles    61.0s  (incl. 3600s build)",["","--- summary (Sandbox) ---","[sim] top: PASS (1/1 tests, 61.0s)","  Test    Result   Cycles   Time    Build","  ─────   ──────   ──────   ─────   ─────","  smoke   PASS     123      61.0s   3600s"],"[synth] top          -- kGE   -- ps    61.0s","[fpga] top             -- LUTs   -- FFs   61.0s FAIL",[["0 warnings"],{"elapsed_s":61,"findings":[],"findings_total":0,"findings_truncated":false,"targets":["top"],"total_warnings":0}],[0,"RESULT: PASS"],{"build_s":3600,"cycle_observation":"missing","cycles":123,"elapsed_s":61,"error_tail":"","failure_kind":"","name":"smoke","passed":true,"phase_timings_s":{},"resources":{},"sva_errors":0,"termination":"completed","test_validated":true,"timed_out":false,"verdict":"pass"},"  smoke                PASS        123 cycles  3661.0s  (incl. 3600s build)",["","--- summary (Sandbox) ---","[sim] top: PASS (1/1 tests, 3661.0s)","  Test    Result   Cycles   Time      Build","  ─────   ──────   ──────   ───────   ─────","  smoke   PASS     123      3661.0s   3600s"],"[synth] top          -- kGE   -- ps    3661.0s","[fpga] top             -- LUTs   -- FFs   3661.0s FAIL",[["0 warnings"],{"elapsed_s":3661,"findings":[],"findings_total":0,"findings_truncated":false,"targets":["top"],"total_warnings":0}],[0,"RESULT: PASS"],{"build_s":3600,"cycle_observation":"missing","cycles":123,"elapsed_s":3661,"error_tail":"","failure_kind":"","name":"smoke","passed":true,"phase_timings_s":{},"resources":{},"sva_errors":0,"termination":"completed","test_validated":true,"timed_out":false,"verdict":"pass"},"  smoke                FAIL        123 cycles     12ms  (incl. 3600s build)",["","--- summary (Sandbox) ---","[sim] top: FAIL (0/1 tests, 12ms)","  Test    Result   Cycles   Time   Build","  ─────   ──────   ──────   ────   ─────","  smoke   FAIL     123      12ms   3600s","  build: fixture"],"[synth] top          -- kGE   -- ps    0.0s   FAIL (rc=1, no metrics)","[fpga] top             -- LUTs   -- FFs   0.0s FAIL",[["0 warnings"],{"elapsed_s":0.01,"findings":[],"findings_total":0,"findings_truncated":false,"targets":["top"],"total_warnings":0}],[0,"RESULT: PASS"],{"build_s":3600,"cycle_observation":"missing","cycles":123,"elapsed_s":0.012,"error_tail":"","failure_kind":"","name":"smoke","passed":false,"phase_timings_s":{},"resources":{},"sva_errors":0,"termination":"completed","test_validated":true,"timed_out":false,"verdict":"fail"},"  smoke                FAIL        123 cycles    61.0s  (incl. 3600s build)",["","--- summary (Sandbox) ---","[sim] top: FAIL (0/1 tests, 61.0s)","  Test    Result   Cycles   Time    Build","  ─────   ──────   ──────   ─────   ─────","  smoke   FAIL     123      61.0s   3600s","  build: fixture"],"[synth] top          -- kGE   -- ps    61.0s   FAIL (rc=1, no metrics)","[fpga] top             -- LUTs   -- FFs   61.0s FAIL",[["0 warnings"],{"elapsed_s":61,"findings":[],"findings_total":0,"findings_truncated":false,"targets":["top"],"total_warnings":0}],[0,"RESULT: PASS"],{"build_s":3600,"cycle_observation":"missing","cycles":123,"elapsed_s":61,"error_tail":"","failure_kind":"","name":"smoke","passed":false,"phase_timings_s":{},"resources":{},"sva_errors":0,"termination":"completed","test_validated":true,"timed_out":false,"verdict":"fail"},"  smoke                FAIL        123 cycles  3661.0s  (incl. 3600s build)",["","--- summary (Sandbox) ---","[sim] top: FAIL (0/1 tests, 3661.0s)","  Test    Result   Cycles   Time      Build","  ─────   ──────   ──────   ───────   ─────","  smoke   FAIL     123      3661.0s   3600s","  build: fixture"],"[synth] top          -- kGE   -- ps    3661.0s   FAIL (rc=1, no metrics)","[fpga] top             -- LUTs   -- FFs   3661.0s FAIL",[["0 warnings"],{"elapsed_s":3661,"findings":[],"findings_total":0,"findings_truncated":false,"targets":["top"],"total_warnings":0}],[0,"RESULT: PASS"],{"build_s":3600,"cycle_observation":"missing","cycles":123,"elapsed_s":3661,"error_tail":"","failure_kind":"","name":"smoke","passed":false,"phase_timings_s":{},"resources":{},"sva_errors":0,"termination":"completed","test_validated":true,"timed_out":false,"verdict":"fail"},["[sim:elab-only] standalone (1 modules, 0 shared, verilator) PASS   3661.0s"],"EXIT_CODE: 0\\n\\n--- stdout ---\\nRESULT: PASS\\n  elapsed 3661.0s\\n",{"passed":true,"reports":[{"elapsed_s":3661,"passed":true,"report_text":"RESULT: PASS\\n  elapsed 3661.0s"}]},"[booley-progress] 2026-10-08T10:00:00Z sim Target=top stage=preparing elapsed=1000s heartbeat (elapsed time; process health unknown)\\n","EXIT_CODE: 0\\n\\n--- stdout ---\\nRESULT: PASS\\n  elapsed 3661.0s\\n","EXIT_CODE: 1\\n\\n--- stdout ---\\nRESULT: FAIL\\n  elapsed 3661.0s\\n","{\\n  \\"cores\\": [\\n    {\\n      \\"vlnv\\": \\"acme:ip:alpha:1.0\\",\\n      \\"core_file\\": \\"alpha.core\\",\\n      \\"targets\\": [\\n        {\\n          \\"name\\": \\"sim\\",\\n          \\"selector\\": \\"sim\\",\\n          \\"flow\\": \\"sim\\",\\n          \\"eda_tool\\": \\"verilator\\",\\n          \\"cocotb_module\\": null,\\n          \\"toplevel\\": \\"tb_alpha\\",\\n          \\"doctor_flows\\": [\\n            \\"sim\\"\\n          ],\\n          \\"drivable_by\\": [\\n            \\"sim\\"\\n          ]\\n        },\\n        {\\n          \\"name\\": \\"synth\\",\\n          \\"selector\\": \\"synth\\",\\n          \\"flow\\": \\"generic\\",\\n          \\"eda_tool\\": \\"yosys\\",\\n          \\"cocotb_module\\": null,\\n          \\"toplevel\\": \\"alpha\\",\\n          \\"doctor_flows\\": [],\\n          \\"drivable_by\\": [\\n            \\"synth\\"\\n          ]\\n        }\\n      ]\\n    }\\n  ],\\n  \\"warnings\\": []\\n}\\n"]'
+PROTECTED_OUTPUTS = '["[synth] top          -- kGE   -- ps    0.0s","[fpga] top             -- LUTs   -- FFs   0.0s FAIL",[["0 warnings"],{"elapsed_s":0.01,"findings":[],"findings_total":0,"findings_truncated":false,"targets":["top"],"total_warnings":0}],[0,"RESULT: PASS"],"[synth] top          -- kGE   -- ps    61.0s","[fpga] top             -- LUTs   -- FFs   61.0s FAIL",[["0 warnings"],{"elapsed_s":61,"findings":[],"findings_total":0,"findings_truncated":false,"targets":["top"],"total_warnings":0}],[0,"RESULT: PASS"],"[synth] top          -- kGE   -- ps    3661.0s","[fpga] top             -- LUTs   -- FFs   3661.0s FAIL",[["0 warnings"],{"elapsed_s":3661,"findings":[],"findings_total":0,"findings_truncated":false,"targets":["top"],"total_warnings":0}],[0,"RESULT: PASS"],"[synth] top          -- kGE   -- ps    0.0s   FAIL (rc=1, no metrics)","[fpga] top             -- LUTs   -- FFs   0.0s FAIL",[["0 warnings"],{"elapsed_s":0.01,"findings":[],"findings_total":0,"findings_truncated":false,"targets":["top"],"total_warnings":0}],[0,"RESULT: PASS"],"[synth] top          -- kGE   -- ps    61.0s   FAIL (rc=1, no metrics)","[fpga] top             -- LUTs   -- FFs   61.0s FAIL",[["0 warnings"],{"elapsed_s":61,"findings":[],"findings_total":0,"findings_truncated":false,"targets":["top"],"total_warnings":0}],[0,"RESULT: PASS"],"[synth] top          -- kGE   -- ps    3661.0s   FAIL (rc=1, no metrics)","[fpga] top             -- LUTs   -- FFs   3661.0s FAIL",[["0 warnings"],{"elapsed_s":3661,"findings":[],"findings_total":0,"findings_truncated":false,"targets":["top"],"total_warnings":0}],[0,"RESULT: PASS"],["[sim:elab-only] standalone (1 modules, 0 shared, verilator) PASS   3661.0s"],"EXIT_CODE: 0\\n\\n--- stdout ---\\nRESULT: PASS\\n  elapsed 3661.0s\\n",{"passed":true,"reports":[{"elapsed_s":3661,"passed":true,"report_text":"RESULT: PASS\\n  elapsed 3661.0s"}]},"[booley-progress] 2026-10-08T10:00:00Z sim Target=top stage=preparing elapsed=1000s heartbeat (elapsed time; process health unknown)\\n","EXIT_CODE: 0\\n\\n--- stdout ---\\nRESULT: PASS\\n  elapsed 3661.0s\\n","EXIT_CODE: 1\\n\\n--- stdout ---\\nRESULT: FAIL\\n  elapsed 3661.0s\\n",["sim: PASS (Simulation Campaign f47ac10b-58cc-4372-a567-0e02b2c3d479)\\n  manifest: <manifest>\\n  smoke: cycles=1234"],[{"cycles":1234,"error_tail":"","execution":"completed","failure_kind":"","fingerprint":"sha256:91322b1b4c87aaeb037f7215f0be2422e8b5ec4e38dcf1f5dbf83a6670af1a3f","name":"smoke","passed":true,"seed":null,"sva_errors":0,"test_run":"smoke","timed_out":false,"variant":null}],"{\\n  \\"cores\\": [\\n    {\\n      \\"vlnv\\": \\"acme:ip:alpha:1.0\\",\\n      \\"core_file\\": \\"alpha.core\\",\\n      \\"targets\\": [\\n        {\\n          \\"name\\": \\"sim\\",\\n          \\"selector\\": \\"sim\\",\\n          \\"flow\\": \\"sim\\",\\n          \\"eda_tool\\": \\"verilator\\",\\n          \\"cocotb_module\\": null,\\n          \\"toplevel\\": \\"tb_alpha\\",\\n          \\"doctor_flows\\": [\\n            \\"sim\\"\\n          ],\\n          \\"drivable_by\\": [\\n            \\"sim\\"\\n          ]\\n        },\\n        {\\n          \\"name\\": \\"synth\\",\\n          \\"selector\\": \\"synth\\",\\n          \\"flow\\": \\"generic\\",\\n          \\"eda_tool\\": \\"yosys\\",\\n          \\"cocotb_module\\": null,\\n          \\"toplevel\\": \\"alpha\\",\\n          \\"doctor_flows\\": [],\\n          \\"drivable_by\\": [\\n            \\"synth\\"\\n          ]\\n        }\\n      ]\\n    }\\n  ],\\n  \\"warnings\\": []\\n}\\n"]'
 
 
-def test_human_output_changes_without_machine_or_report_changes(tmp_path):
-    result = sim.TargetResult(
-        target="top", passed=True, tests=[sim.TestResult(name="smoke", passed=True)]
-    )
-    assert sim._build_display_lines([result], 61) == ["✓ PASS  1m 01s"], (
-        "human output migration missing"
-    )
-    assert _protected_outputs(tmp_path) == PROTECTED_OUTPUTS
+def test_human_output_changes_without_machine_or_report_changes(tmp_path, monkeypatch):
+    assert _protected_outputs(tmp_path, monkeypatch) == PROTECTED_OUTPUTS
 
 
 def _completion_fixture(flow, elapsed):
