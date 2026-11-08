@@ -358,8 +358,11 @@ jobs:
     if: fromJSON(needs.changes.outputs.jobs)['test']
     name: test / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    # Complete suites use the same bound as full-python-matrix.yml; shards retain 15m.
-    timeout-minutes: ${{ matrix.mode == 'full' && 30 || 15 }}
+    # Complete suites use the same bound as full-python-matrix.yml. Shard and
+    # compatibility legs fail fast on a stalled step through the per-step limits
+    # below; typical jobs finish far inside the 25m job limit, which only backstops
+    # a run whose steps are all slow but each within its own limit.
+    timeout-minutes: ${{ matrix.mode == 'full' && 30 || 25 }}
     env:
       PYTHONFAULTHANDLER: "1"
       TEST_MARK_EXPRESSION: 'not native_bwave'
@@ -368,8 +371,10 @@ jobs:
       matrix: ${{ fromJSON(needs.changes.outputs.test_matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        timeout-minutes: 5
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -378,6 +383,7 @@ jobs:
             .github/ci/constraints.txt
 
       - name: Install package with test dependencies
+        timeout-minutes: 6
         run: pip install -e ".[test]" -c .github/ci/constraints.txt
 
       - name: Run full compatibility suite
@@ -396,6 +402,7 @@ jobs:
 
       - name: Run focused Windows compatibility suite
         if: matrix.mode == 'compatibility'
+        timeout-minutes: 12
         env:
           RUNNER_TEMP: ${{ runner.temp }}
           BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
@@ -409,6 +416,7 @@ jobs:
 
       - name: Run duration-balanced shard
         if: matrix.mode == 'shard'
+        timeout-minutes: 12
         env:
           PYTHONPATH: .github/scripts
           RUNNER_TEMP: ${{ runner.temp }}
@@ -502,7 +510,8 @@ jobs:
     if: fromJSON(needs.changes.outputs.jobs)['coverage-shards']
     name: coverage-shards / ${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Setup-step limits plus the pytest-step limit below, plus the always-run publish/upload steps.
+    timeout-minutes: 35
     env:
       TEST_MARK_EXPRESSION: 'not native_bwave'
     strategy:
@@ -526,8 +535,10 @@ jobs:
             shard_count: 3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        timeout-minutes: 5
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -536,9 +547,11 @@ jobs:
             .github/ci/constraints.txt
 
       - name: Install package with test dependencies
+        timeout-minutes: 6
         run: pip install -e ".[test]" -c .github/ci/constraints.txt
 
       - name: Run duration-balanced coverage shard
+        timeout-minutes: 15
         env:
           COVERAGE_FILE: ${{ runner.temp }}/.coverage.${{ matrix.shard_index }}
           PYTHONPATH: .github/scripts
