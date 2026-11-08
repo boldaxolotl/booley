@@ -9,7 +9,7 @@ from booley.flows.endpoint_admission import (
     AdmissionContext,
     AdmissionGate,
     _admission_cancellation_cause,
-    _simulation_admission,
+    admission,
 )
 from booley.flows.sim.campaign.model import _freeze_json
 from booley.flows.sim.config import parse_run_cwd_template
@@ -131,14 +131,20 @@ def test_simulation_admission_reports_malformed_runtime_identity(
     monkeypatch.setenv(RUNTIME_EXECUTION_ENV, "sim-20260925T153819Z-1")
 
     class Endpoint:
+        name = "sim"
+        endpoint_kind = "flow"
         _invocation_id = "sim-20260925T153819Z-1"
 
         @staticmethod
         def _acquire_job_slot():
             raise AssertionError("slot acquisition must not run")
 
+        @staticmethod
+        def _get_head_sha() -> str:
+            return "head"
+
         def admission(self, prepared):
-            return _simulation_admission(self, prepared)
+            return admission(self, prepared)
 
         @staticmethod
         def record_acceptance(_prepared, _outcome) -> None:
@@ -154,7 +160,7 @@ def test_simulation_admission_reports_malformed_runtime_identity(
     result = execute_endpoint(Endpoint(), prepared)  # type: ignore[arg-type]
 
     assert result.exit_code == 2
-    assert RUNTIME_EXECUTION_ENV in result.outcome.report_text
+    assert result.outcome.report_text.startswith(f"sim: invalid {RUNTIME_EXECUTION_ENV}: ")
 
 
 def test_unmanaged_admission_never_reports_cancellation() -> None:
