@@ -21,7 +21,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from booley.runtime import dashboard_extension, dashboard_tasks, devcontainer
+from booley.runtime import auth_token, dashboard_extension, dashboard_tasks, devcontainer
 
 OBSERVER = r"""
 const vscode = require('vscode');
@@ -138,7 +138,10 @@ def prepare(
     run(["git", "init", "-q", str(project)])
     dashboard_tasks.reconcile(project, data)
     observer_vsix(project / "observer.vsix", reload_window=reload_window)
-    customization = devcontainer.build_devcontainer_spec(dashboard=True)["customizations"]
+    plan = auth_token.CredentialPlan(devcontainer.APP_NONE, "auto", None, frozenset(), ())
+    customization = devcontainer.build_devcontainer_spec(
+        cli_seeds=[devcontainer.CliSeeds(plan)], dashboard=True
+    )["customizations"]
     customization["vscode"]["extensions"] = [dashboard_extension.VSIX_PATH, "/work/observer.vsix"]
     if baseline:
         task = {**dashboard_tasks.TASK, "runOptions": {"runOn": "folderOpen", "instanceLimit": 1}}

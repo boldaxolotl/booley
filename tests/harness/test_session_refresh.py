@@ -22,6 +22,7 @@ from tests.runtime import test_session_issuance as issuance_fixtures
 project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
 workspace = resolution_fixtures.workspace
 issued = issuance_fixtures.issued
+issued_preview = issuance_fixtures.issued_preview
 trusted_validator = issuance_fixtures.trusted_validator
 
 

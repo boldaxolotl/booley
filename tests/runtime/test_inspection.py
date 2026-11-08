@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path, PurePosixPath
 
 import pytest
+from tests.devcontainer_spec_support import build_spec
 from tests.diagnostic_helpers import (
     _inspection_request,
     _isolate_runtime_files,
@@ -582,14 +583,14 @@ class TestDevcontainerSpecStaleness:
     def test_fresh_claude_spec_passes(self, tmp_path, monkeypatch):
         from booley.runtime import devcontainer as dc
 
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
+        dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
         rec = self._run(tmp_path, monkeypatch)
         assert rec.kinds() == {"pass"}
 
     def test_verified_pdk_without_spec_mount_warns(self, tmp_path, monkeypatch):
         from booley.runtime import devcontainer as dc
 
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
+        dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
         monkeypatch.setattr(doctor.nangate_pdk, "is_ready", lambda: True)
 
         rec = self._run(tmp_path, monkeypatch)
@@ -603,7 +604,7 @@ class TestDevcontainerSpecStaleness:
     def test_verified_pdk_with_spec_mount_passes(self, tmp_path, monkeypatch):
         from booley.runtime import devcontainer as dc
 
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_CLAUDE,
             trusted_eda_mounts=(("/host/pdk", "/opt/pdk"),),
         )
@@ -619,7 +620,7 @@ class TestDevcontainerSpecStaleness:
         # project image (extra toolchain) — the openc910/Xuantie blocker shape.
         from booley.runtime import devcontainer as dc
 
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
+        dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
         rec = self._run(tmp_path, monkeypatch, image="openc910-booley-sandbox:latest")
         assert rec.fails() == []
         assert any(
@@ -631,7 +632,7 @@ class TestDevcontainerSpecStaleness:
         # Spec built for the same custom image the project configures: no drift.
         from booley.runtime import devcontainer as dc
 
-        spec = dc.build_devcontainer_spec(
+        spec = build_spec(
             dc.APP_CLAUDE,
             image="openc910-booley-sandbox:latest",
         )
@@ -647,7 +648,7 @@ class TestDevcontainerSpecStaleness:
         # cannot be resolved there; string-comparing the ID to the tag would be
         # a false stale-image warning.
         immutable_id = "sha256:" + "a" * 64
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, image=immutable_id)
+        spec = build_spec(dc.APP_CLAUDE, image=immutable_id)
         dc.write_devcontainer(tmp_path, spec)
         # Real temporary-directory Git inspection reports no tracked spec.
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
@@ -687,7 +688,7 @@ class TestDevcontainerSpecStaleness:
 
     def test_same_source_immutable_image_tag_move_passes(self, tmp_path, monkeypatch):
         old_id = "sha256:" + "a" * 64
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, image=old_id)
+        spec = build_spec(dc.APP_CLAUDE, image=old_id)
         dc.write_devcontainer(tmp_path, spec)
         monkeypatch.setattr(
             inspection.idk,
@@ -705,7 +706,7 @@ class TestDevcontainerSpecStaleness:
         old_id = "sha256:" + "a" * 64
         dc.write_devcontainer(
             tmp_path,
-            dc.build_devcontainer_spec(dc.APP_CLAUDE, image=old_id),
+            build_spec(dc.APP_CLAUDE, image=old_id),
         )
         monkeypatch.setattr(
             inspection.idk,
@@ -723,7 +724,7 @@ class TestDevcontainerSpecStaleness:
         old_id = "sha256:" + "a" * 64
         dc.write_devcontainer(
             tmp_path,
-            dc.build_devcontainer_spec(dc.APP_CLAUDE, image=old_id),
+            build_spec(dc.APP_CLAUDE, image=old_id),
         )
         monkeypatch.setattr(
             inspection.idk,
@@ -744,7 +745,7 @@ class TestDevcontainerSpecStaleness:
         # actually running — saw no Booley MCP tools at all.
         from booley.runtime import devcontainer as dc
 
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
+        dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
         rec = self._run(tmp_path, monkeypatch, declared_provider=dc.APP_CODEX)
         assert any("BOOLEY_AGENT_APP" in m and "codex" in m for m in rec.fails())
         assert not any(lvl == "warn" for lvl, _ in rec.events)
@@ -752,7 +753,7 @@ class TestDevcontainerSpecStaleness:
     def test_agent_app_matching_declared_provider_passes(self, tmp_path, monkeypatch):
         from booley.runtime import devcontainer as dc
 
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CODEX))
+        dc.write_devcontainer(tmp_path, build_spec(dc.APP_CODEX))
         rec = self._run(tmp_path, monkeypatch, declared_provider=dc.APP_CODEX)
         assert rec.kinds() == {"pass"}
 
@@ -761,7 +762,7 @@ class TestDevcontainerSpecStaleness:
         # there is nothing the on-disk app can be drift-checked against.
         from booley.runtime import devcontainer as dc
 
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
+        dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
         rec = self._run(tmp_path, monkeypatch, declared_provider=None)
         assert rec.kinds() == {"pass"}
 
@@ -771,7 +772,7 @@ class TestDevcontainerSpecStaleness:
         # the app drift must be what the user is told to fix.
         from booley.runtime import devcontainer as dc
 
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         assert dc.spec_state_is_persisted(spec) is True  # the misleading "all good"
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch, declared_provider=dc.APP_CODEX)
@@ -780,9 +781,8 @@ class TestDevcontainerSpecStaleness:
 
     @staticmethod
     def _two_cli_spec(app: str) -> dict:
-        from booley.runtime import devcontainer as dc
 
-        spec = dc.build_devcontainer_spec(app)
+        spec = build_spec(app)
         spec["name"] = "Booley Interactive (claude, codex)"
         spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = "claude=auto,codex=auto"
         return spec
@@ -800,7 +800,7 @@ class TestDevcontainerSpecStaleness:
     def test_spec_for_other_cli_set_fails_naming_both_sets(self, tmp_path, monkeypatch):
         from booley.runtime import devcontainer as dc
 
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
+        dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
         rec = self._run(
             tmp_path, monkeypatch, declared_provider="claude", declared_clis=("claude", "codex")
         )
@@ -811,7 +811,7 @@ class TestDevcontainerSpecStaleness:
     def test_none_spec_under_declared_clis_fails(self, tmp_path, monkeypatch):
         from booley.runtime import devcontainer as dc
 
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_NONE))
+        dc.write_devcontainer(tmp_path, build_spec(dc.APP_NONE))
         rec = self._run(
             tmp_path, monkeypatch, declared_provider="claude", declared_clis=("claude", "codex")
         )
@@ -820,7 +820,7 @@ class TestDevcontainerSpecStaleness:
     def test_malformed_cli_record_fails(self, tmp_path, monkeypatch):
         from booley.runtime import devcontainer as dc
 
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = "claude=auto,bogus=auto"
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch, declared_provider="claude")
@@ -829,7 +829,7 @@ class TestDevcontainerSpecStaleness:
     def test_stale_claude_spec_warns_not_fails(self, tmp_path, monkeypatch):
         from booley.runtime import devcontainer as dc
 
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         spec["mounts"] = [m for m in spec["mounts"] if "type=volume" not in m]
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch)
@@ -846,7 +846,7 @@ class TestDevcontainerSpecStaleness:
         # credential — surface the drift, don't fail.
         from booley.runtime import devcontainer as dc
 
-        dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
+        dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
         auth_token.store_token("sk-ant-oat01-stored")
         rec = self._run(tmp_path, monkeypatch)
@@ -858,7 +858,7 @@ class TestDevcontainerSpecStaleness:
 
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
         path = auth_token.store_token("sk-ant-oat01-stored")
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, token_seed_source=str(path))
+        spec = build_spec(dc.APP_CLAUDE, token_source=str(path))
         dc.write_devcontainer(tmp_path, spec)
         rec = _Rec()
         # Real temporary-directory Git inspection reports no tracked spec.
@@ -889,7 +889,7 @@ class TestDevcontainerSpecStaleness:
         # project 2026-07-14.
         from booley.runtime import devcontainer as dc
 
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         spec["customizations"]["vscode"]["extensions"] = ["Anthropic.claude-code"]
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch)
@@ -909,7 +909,7 @@ class TestDevcontainerSpecStaleness:
         from booley.runtime import devcontainer as dc
         from booley.runtime import vaporview
 
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         extensions = spec["customizations"]["vscode"]["extensions"]
         extensions[extensions.index(vaporview.BUNDLED_VSIX)] = gallery_entry
         dc.write_devcontainer(tmp_path, spec)
@@ -944,7 +944,7 @@ class TestDevcontainerSpecStaleness:
         # lists one is drift Doctor must send to a Sandbox refresh.
         from booley.runtime import devcontainer as dc
 
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         vscode = spec["customizations"]["vscode"]
         vscode["extensions"] = [
             e for e in vscode["extensions"] if e not in (bundled, gallery_entry)
@@ -963,7 +963,7 @@ class TestDevcontainerSpecStaleness:
         from booley.runtime import devcontainer as dc
         from booley.runtime import vaporview
 
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         from booley.runtime.dashboard_extension import VSIX_PATH
 
         spec["customizations"]["vscode"]["extensions"] = [
@@ -1011,7 +1011,7 @@ class TestDevcontainerSpecStaleness:
         ]
         for index, (injected, expected_names) in enumerate(cases):
             root = tmp_path / f"case{index}"
-            spec = dc.build_devcontainer_spec(dc.APP_CODEX)
+            spec = build_spec(dc.APP_CODEX)
             vscode = spec["customizations"]["vscode"]
             vscode["extensions"] += injected.get("extensions", [])
             if "associations" in injected:
@@ -1029,7 +1029,7 @@ class TestDevcontainerSpecStaleness:
     def test_spec_without_tcl_highlighting_is_current(self, tmp_path, monkeypatch):
         from booley.runtime import devcontainer as dc
 
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         vscode = spec["customizations"]["vscode"]
         vscode["extensions"] = [e for e in vscode["extensions"] if e != "bitwisecook.tcl"]
         vscode["settings"].pop("files.associations", None)
@@ -1042,7 +1042,7 @@ class TestDevcontainerSpecStaleness:
     def test_spec_without_live_preview_warns(self, tmp_path, monkeypatch):
         # Without the bundled Live Preview VSIX in the spec, the attached
         # container window cannot render review HTML.
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         spec["customizations"]["vscode"]["extensions"].remove(dc.LIVE_PREVIEW_VSIX)
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch)
@@ -1052,7 +1052,7 @@ class TestDevcontainerSpecStaleness:
     def test_spec_restoring_live_preview_ports_warns(self, tmp_path, monkeypatch):
         # F-14: an otherwise current spec can restore dead 3000/3001 tunnels
         # before Live Preview starts and leave the report preview blank.
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         spec["customizations"]["vscode"]["settings"]["remote.restoreForwardedPorts"] = True
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch)
@@ -1063,7 +1063,7 @@ class TestDevcontainerSpecStaleness:
         )
 
     def test_spec_without_live_preview_port_randomizer_warns(self, tmp_path, monkeypatch):
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         spec["postAttachCommand"] = dc.vaporview_patch_command()
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch)
@@ -1076,7 +1076,7 @@ class TestDevcontainerSpecStaleness:
     def test_spec_with_python_terminal_autoactivation_is_a_note(self, tmp_path, monkeypatch):
         # Existing specs should direct users to re-seed so a Settings-Synced
         # Python extension stops injecting delayed activation commands.
-        spec = dc.build_devcontainer_spec(dc.APP_CLAUDE)
+        spec = build_spec(dc.APP_CLAUDE)
         for key in dc._PYTHON_TERMINAL_SETTINGS:
             del spec["customizations"]["vscode"]["settings"][key]
         dc.write_devcontainer(tmp_path, spec)

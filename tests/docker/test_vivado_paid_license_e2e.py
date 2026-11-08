@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 from tests import eda_grant_support
+from tests.devcontainer_spec_support import build_spec
 from tests.license_evidence import (
     LicenseEvidenceError,
     parse_flexnet_lmstat,
@@ -29,6 +30,7 @@ from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
 from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime
+from booley.runtime.platform_paths import docker_mount_path
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "vivado_mount_poc"
 _PART_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,79}$")
@@ -110,18 +112,20 @@ def _issue(workspace: Path, p: Prerequisites) -> None:
         installation="vivado_2025_2",
         license_profile="approved_site",
     )
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        booley_dir_source=str((workspace / ".booley").resolve()),
-        mcp_start_command=dc.mcp_post_start_command(),
-        trusted_eda_mounts=((str(p.vivado_root), CONTAINER_TARGET),),
-        protected_devcontainer_source=str(workspace / ".devcontainer"),
-        fixed_container_env={"XILINXD_LICENSE_FILE": f"{p.lmgrd_port}@booley-license-xilinx"},
-    )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(workspace, spec)
-    path = dc.write_devcontainer(workspace, spec)
-    runtime_spec.issue(workspace, spec, path)
+
+    def build(inputs: runtime_spec.SessionSpecInputs) -> dict:
+        return build_spec(
+            dc.APP_NONE,
+            booley_dir_source=docker_mount_path(inputs.project_data_source),
+            mcp_start_command=dc.mcp_post_start_command(),
+            trusted_eda_mounts=inputs.trusted_eda_mounts,
+            protected_devcontainer_source=str(workspace / ".devcontainer"),
+            fixed_container_env=dict(inputs.fixed_container_environment),
+        )
+
+    # The fixture enables the fpga Flow, so preview requests the registered Vivado and licence.
+    prepared = runtime_spec.preview(workspace, build)
+    runtime_spec.issue_prepared(workspace, prepared, reconcile_dashboard=False)
 
 
 def _flow(container: str, *, timeout_ms: int = 600_000) -> subprocess.CompletedProcess[str]:
