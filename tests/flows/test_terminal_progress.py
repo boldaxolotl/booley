@@ -762,14 +762,15 @@ def test_campaign_worker_inherits_invocation_observer(tmp_path):
     from types import SimpleNamespace
 
     from booley.flows.sim.campaign.scheduler import BoundedCampaignScheduler, ScheduledAttempt
+    from booley.runtime.supervised_execution import SupervisedExecutionScope
 
     capacity = SimpleNamespace(
         managed=False,
         shutdown_requested=False,
         outer_permit=nullcontext,
+        outer_scope=lambda stopped: SupervisedExecutionScope(None, tmp_path, stopped),
         cancellation_cause=lambda: None,
     )
-    registry = SimpleNamespace(project_data=tmp_path)
     flow = SimulateFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "demo"])
 
@@ -782,7 +783,6 @@ def test_campaign_worker_inherits_invocation_observer(tmp_path):
 
     scheduler = BoundedCampaignScheduler(
         capacity,
-        registry,
         allocate=lambda item: ScheduledAttempt(item, "attempt", 1, tmp_path, "demo"),
         execute=execute,
     )

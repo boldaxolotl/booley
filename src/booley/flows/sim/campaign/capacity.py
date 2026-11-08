@@ -5,9 +5,11 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.runtime.execution_records import ExecutionId
@@ -17,6 +19,10 @@ from booley.runtime.job_slots import (
     LeaseHealth,
     SlotToken,
 )
+from booley.runtime.supervised_execution import SupervisedExecutionScope
+
+from .child_protocol import ChildExecutionRegistry
+from .model import SimulationCampaignManifest
 
 _MAX_CHILD_ACQUIRE_POLL_SECONDS = 0.01
 _SHUTDOWN_POLL_SLICES = 10
@@ -45,21 +51,20 @@ class ChildHeavyPermit:
     child_execution_id: ExecutionId
     token: SlotToken
     lease_health: LeaseHealth
+    scope: SupervisedExecutionScope
 
 
 class HeavyCapacity:
     """Deep adapter from an admitted endpoint context to campaign permits."""
 
     def __init__(
-        self,
-        admission: AdmissionContext,
-        *,
-        terminal_proof: Callable[[ExecutionId], bool],
-        recover_child: Callable[[ExecutionId], bool],
+        self, admission: AdmissionContext, manifest: SimulationCampaignManifest, project_data: Path
     ) -> None:
         self._admission = admission
-        self._terminal_proof = terminal_proof
-        self._recover_child = recover_child
+        # Each child lane's execution identity lives and dies with its permit.
+        self._lanes = ChildExecutionRegistry.from_project_data(
+            manifest, project_data, booley_dir=project_data
+        )
         self._shutdown = threading.Event()
         self._outer_entered = False
         self._waiting: dict[str, SlotToken] = {}
@@ -104,41 +109,116 @@ class HeavyCapacity:
             raise HeavyCapacityError("managed admission is missing its outer heavy token")
         yield HeavyPermit(self._admission.execution_id)
 
+    def outer_scope(self, stopped: Callable[[], bool]) -> SupervisedExecutionScope:
+        """The supervised scope of the outer lane's items."""
+        return SupervisedExecutionScope(
+            None,
+            self._lanes.project_data,
+            lambda: stopped() or self.shutdown_requested,
+            self.cancellation_cause,
+        )
+
     @contextmanager
     def child_permit(
-        self, work_item_id: str, child_execution_id: ExecutionId
+        self,
+        work_item_id: str,
+        *,
+        attempt_id: str,
+        attempt_ordinal: int,
+        attempt_directory: Path,
+        publish: Callable[[ExecutionId], None],
     ) -> Iterator[ChildHeavyPermit]:
-        """Acquire and safely retire one exact child heavy claim."""
+        """Give one lane its execution identity and heavy slot; retire both afterwards.
+
+        ``publish`` gets the lane ID before the slot is requested. The lane is marked
+        terminal on exit, and its slot is released only once that is proven.
+        """
         store = self._admission.slot_store
         if not self.managed or store is None:
             raise HeavyCapacityError("unmanaged campaigns cannot acquire child permits")
-        if self._cancelled():
-            raise ClaimAbortedError("campaign shutdown requested")
-        token = self._acquire_child(store, child_execution_id)
-        permit = ChildHeavyPermit(work_item_id, child_execution_id, token, token.lease_health)
-        with self._gate:
-            self._held[token.lease_id] = permit
+        child_id = ExecutionId(uuid.uuid4().hex)
+        prepared = self._lanes.prepare(
+            child_id,
+            work_item_id=work_item_id,
+            attempt_id=attempt_id,
+            attempt_ordinal=attempt_ordinal,
+            attempt_directory=attempt_directory,
+            parent_execution_id=self.parent_execution_id,
+        )
+        cause = "campaign_error"
         try:
-            yield permit
-            if not self._is_confirmed(permit) and not self.confirm_child_lease(permit):
-                raise LeaseLostError(f"heavy lease lost for child execution {child_execution_id}")
+            publish(child_id)
             if self._cancelled():
-                raise ClaimAbortedError("campaign cancellation requested")
-        finally:
+                raise ClaimAbortedError("campaign shutdown requested")
+            token = self._acquire_child(store, child_id)
+            scope = SupervisedExecutionScope(
+                child_id,
+                self._lanes.project_data,
+                lambda: token.lease_health.lost.is_set() or self.shutdown_requested,
+                lambda: self._child_cancellation_cause(permit),
+            )
+            permit = ChildHeavyPermit(work_item_id, child_id, token, token.lease_health, scope)
             with self._gate:
-                self._waiting.pop(token.lease_id, None)
-                self._held.pop(token.lease_id, None)
-                self._recovered_lost.discard(token.lease_id)
-                self._confirmed.discard(token.lease_id)
-            self._release_after_terminal(store, permit)
+                self._held[token.lease_id] = permit
+            try:
+                try:
+                    yield permit
+                except HeavyCapacityError as exc:
+                    cause = self._failed_cause(exc, permit)
+                    if permit.lease_health.lost.is_set() and not self.shutdown_requested:
+                        raise LeaseLostError(
+                            f"heavy lease lost for child execution {child_id}"
+                        ) from exc
+                    raise
+                cause = "completed" if self._confirm_lease(permit) else "lease_lost"
+                self._lanes.mark_terminal(prepared, cause)
+                if cause == "lease_lost":
+                    raise LeaseLostError(f"heavy lease lost for child execution {child_id}")
+                if self._cancelled():
+                    raise ClaimAbortedError("campaign cancellation requested")
+            finally:
+                self._retire(store, child_id, token)
+            if not store.token_absent(token):
+                raise HeavyCapacityError(f"child token remained after terminal proof: {child_id}")
+        except BaseException:
+            self._lanes.mark_terminal(
+                prepared, "campaign_error" if cause == "completed" else cause
+            )
+            raise
 
-    def confirm_child_lease(self, permit: ChildHeavyPermit) -> bool:
-        """Prove the child's lease is still held; call before publishing it terminal.
+    def _retire(self, store, child_id: ExecutionId, token: SlotToken) -> None:
+        """Forget the lane, then release its slot once its execution is terminal."""
+        with self._gate:
+            self._waiting.pop(token.lease_id, None)
+            self._held.pop(token.lease_id, None)
+            self._recovered_lost.discard(token.lease_id)
+            self._confirmed.discard(token.lease_id)
+        if not self._lanes.is_terminal(child_id):
+            store.begin_token_recovery(token)
+            self._lanes.cancel(child_id)
+        if self._lanes.is_terminal(child_id):
+            store.release(token)
 
-        Reaping reclaims the token of a terminal child, so a later check would
-        mistake that normal cleanup for a lost lease. Once confirmed, the work is
-        done: a token lost afterwards is reaping, not a lost lease, and neither
-        ``child_permit`` nor ``recover_lost_children`` treats it as one.
+    @staticmethod
+    def _failed_cause(exc: HeavyCapacityError, permit: ChildHeavyPermit) -> str:
+        """The terminal cause of a lane whose work raised a capacity error."""
+        from booley.flows.sim.execution.contract import PreSimScopeStoppedError
+
+        lost = permit.lease_health.lost.is_set() and isinstance(
+            exc.__cause__, PreSimScopeStoppedError
+        )
+        return "lease_lost" if lost else "campaign_error"
+
+    def _child_cancellation_cause(self, permit: ChildHeavyPermit) -> str | None:
+        if permit.lease_health.lost.is_set():
+            return f"Job Slot lease lost: {permit.token.job_class}/{permit.token.path.name}"
+        return self.cancellation_cause()
+
+    def _confirm_lease(self, permit: ChildHeavyPermit) -> bool:
+        """Prove the lease is held before the lane is published terminal.
+
+        Reaping reclaims a terminal child's token, so once confirmed a lost token is
+        normal cleanup, which ``recover_lost_children`` skips.
         """
         store = self._admission.slot_store
         assert store is not None, "child permits exist only under managed admission"
@@ -147,10 +227,6 @@ class HeavyCapacity:
             with self._gate:
                 self._confirmed.add(permit.token.lease_id)
         return held
-
-    def _is_confirmed(self, permit: ChildHeavyPermit) -> bool:
-        with self._gate:
-            return permit.token.lease_id in self._confirmed
 
     def _acquire_child(self, store, child_execution_id: ExecutionId) -> SlotToken:
         submitted: list[SlotToken] = []
@@ -213,11 +289,7 @@ class HeavyCapacity:
                 continue
             if token.execution_id is not None:
                 store.begin_token_recovery(token)
-                self._recover_child(token.execution_id)
-
-    def token_absent(self, token: SlotToken) -> bool:
-        store = self._admission.slot_store
-        return store is not None and store.token_absent(token)
+                self._lanes.cancel(token.execution_id)
 
     def hold_outer_until(self, exited: threading.Event) -> None:
         """Keep the outer slot held until ``exited`` is set (the last lane left)."""
@@ -248,7 +320,7 @@ class HeavyCapacity:
         for permit in lost:
             if store is not None:
                 store.begin_token_recovery(permit.token)
-            self._recover_child(permit.child_execution_id)
+            self._lanes.cancel(permit.child_execution_id)
 
     def _cancelled(self) -> bool:
         if self._shutdown.is_set():
@@ -259,14 +331,6 @@ class HeavyCapacity:
             self._admission.cancellation_cause() or "admission cancellation requested"
         )
         return True
-
-    def _release_after_terminal(self, store, permit: ChildHeavyPermit) -> None:
-        execution_id = permit.child_execution_id
-        if not self._terminal_proof(execution_id):
-            store.begin_token_recovery(permit.token)
-            self._recover_child(execution_id)
-        if self._terminal_proof(execution_id):
-            store.release(permit.token)
 
 
 __all__ = [

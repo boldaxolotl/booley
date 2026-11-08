@@ -14,12 +14,21 @@ from booley.flows.sim.campaign.run_directory import (
     claimed_run_directory,
     cleanup_interrupted_run_directory,
     expand_run_directory,
-    restore_run_directory,
+    restore_run_directory_from_project_data,
 )
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
 TEMPLATE = "work/{campaign}/{test}/{attempt}"
 ATTEMPT_MARKER = ".booley-simulation-attempt.json"
 PARENT_MARKER = ".booley-simulation-parent.json"
+
+
+def _restore(run: RunDirectory, root: Path) -> RunDirectory:
+    """Reconstruct a persisted run directory the way resume and prune do."""
+    project_data = resolve_checkout_booley_dir(root)
+    return restore_run_directory_from_project_data(
+        _document(run), project_data=project_data, booley_dir=project_data
+    )
 
 
 def _run(
@@ -150,7 +159,7 @@ def test_resume_cleanup_removes_recorded_empty_parents(
             parent.mkdir(parents=True, exist_ok=True)
             (parent / PARENT_MARKER).write_bytes(b"{}")
         assert not run.path.exists()
-    restored = restore_run_directory(_document(run), project_root=tmp_path)
+    restored = _restore(run, tmp_path)
     cleanup_interrupted_run_directory(restored, identity=identity)
     assert not run.path.exists()
     assert not (tmp_path / "work/c").exists()
@@ -164,7 +173,7 @@ def test_resume_cleanup_leaves_unrecorded_parents(tmp_path: Path) -> None:
     (run.path / ATTEMPT_MARKER).write_bytes(
         run_directory_module.canonical_json_bytes(dict(identity))
     )
-    restored = restore_run_directory(_document(run), project_root=tmp_path)
+    restored = _restore(run, tmp_path)
     assert cleanup_interrupted_run_directory(restored, identity=identity) is True
     assert not run.path.exists()
     assert (tmp_path / "work/c/t").is_dir()
@@ -177,7 +186,7 @@ def test_templated_run_locks_do_not_accumulate(tmp_path: Path) -> None:
             with claimed_run_directory(run, identity=identity):
                 pass
     run, identity = _run(tmp_path, "c3", "t1")
-    restored = restore_run_directory(_document(run), project_root=tmp_path)
+    restored = _restore(run, tmp_path)
     cleanup_interrupted_run_directory(restored, identity=identity)
     assert _lock_names(tmp_path) in ([], ["parents.lock"])
 
