@@ -20,6 +20,7 @@ from booley.harness import booley as tlr
 from booley.runtime import auth_token, issuance_invalidation, runtime_context, session_runtime
 from booley.runtime import devcontainer as dc
 from booley.runtime.platform_paths import docker_mount_path
+from tests.devcontainer_spec_support import build_spec
 
 _TOKEN = "sk-ant-oat01-abcdef123456"  # claude: one-year setup-token
 _API_KEY = "sk-proj-codex-abcdef123456"  # codex: API key (no setup-token exists)
@@ -133,11 +134,7 @@ class TestCodex:
     def test_spec_seeds_codex_auth_onto_writable_volume(self, home):
         # The regression: a read-only bind at ~/.codex/auth.json makes Codex's
         # own refresh write FAIL, 401ing the session once the token expires.
-        from booley.runtime import devcontainer as dc
-
-        spec = dc.build_devcontainer_spec(
-            dc.APP_CODEX, auth_token_source="/home/u/.codex/auth.json"
-        )
+        spec = build_spec(dc.APP_CODEX, login_source="/home/u/.codex/auth.json")
 
         assert all(f"target={dc.AGENT_HOME}/.codex/auth.json" not in m for m in spec["mounts"])
         assert f"{dc.AGENT_HOME}/.codex-auth-seed.json" in spec["postStartCommand"]

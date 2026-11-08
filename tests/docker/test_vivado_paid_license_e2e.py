@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 from tests import eda_grant_support
+from tests.devcontainer_spec_support import build_spec
 from tests.license_evidence import (
     LicenseEvidenceError,
     parse_flexnet_lmstat,
@@ -113,7 +114,7 @@ def _issue(workspace: Path, p: Prerequisites) -> None:
     )
 
     def build(inputs: runtime_spec.SessionSpecInputs) -> dict:
-        return dc.build_devcontainer_spec(
+        return build_spec(
             dc.APP_NONE,
             booley_dir_source=docker_mount_path(inputs.project_data_source),
             mcp_start_command=dc.mcp_post_start_command(),

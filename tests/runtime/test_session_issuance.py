@@ -16,6 +16,7 @@ from unittest.mock import Mock
 
 import pytest
 from tests import eda_grant_support
+from tests.devcontainer_spec_support import build_spec
 from tests.session_issuance_support import (
     damaged,
     fixed,
@@ -565,7 +566,7 @@ def issued_preview(
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
 
     def build(_inputs: runtime_spec.SessionSpecInputs) -> dict:
-        return dc.build_devcontainer_spec(
+        return build_spec(
             dc.APP_NONE,
             mcp_start_command=dc.mcp_post_start_command(),
             host_skills=(("example-skill", docker_mount_path(host_skill)),),
@@ -678,7 +679,7 @@ def test_policy_switch_is_cured_by_reissuing_in_host_mode(issued) -> None:
         runtime_spec.validate(project, spec, path)
 
     def build(inputs: runtime_spec.SessionSpecInputs) -> dict:
-        return dc.build_devcontainer_spec(
+        return build_spec(
             dc.APP_NONE,
             mcp_start_command=dc.mcp_post_start_command(),
             protected_devcontainer_source=str(project / ".devcontainer"),
@@ -931,7 +932,7 @@ def test_legacy_registrar_remains_valid_for_issued_specs(
     legacy = "python -m booley.runtime.incontainer_register"
     prepared, path, stamp = issue_built(
         project,
-        lambda _inputs: dc.build_devcontainer_spec(
+        lambda _inputs: build_spec(
             dc.APP_NONE,
             mcp_start_command=legacy,
             protected_devcontainer_source=str(project / ".devcontainer"),
@@ -1077,7 +1078,7 @@ def test_runtime_spec_rejects_non_mapping_container_environment(
     stub_keeper(monkeypatch)
     prepared = runtime_spec.preview(
         project,
-        lambda _inputs: dc.build_devcontainer_spec(
+        lambda _inputs: build_spec(
             dc.APP_NONE,
             protected_devcontainer_source=str(project / ".devcontainer"),
         ),
@@ -1291,7 +1292,7 @@ def test_missing_vivado_bind_names_source_and_target(
     monkeypatch.setattr(authority, "resolve_for_issuance", resolved)
     prepared, path, _stamp = issue_built(
         project,
-        lambda inputs: dc.build_devcontainer_spec(
+        lambda inputs: build_spec(
             dc.APP_NONE,
             mcp_start_command=dc.mcp_post_start_command(),
             trusted_eda_mounts=inputs.trusted_eda_mounts,
@@ -1426,7 +1427,7 @@ def test_legacy_no_eda_spec_cannot_bypass_issuance(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
-    spec = dc.build_devcontainer_spec(dc.APP_NONE)
+    spec = build_spec(dc.APP_NONE)
     path = dc.write_devcontainer(project, spec)
     with pytest.raises(runtime_spec.RuntimeSpecError):
         runtime_spec.validate(project, spec, path)
@@ -1592,7 +1593,7 @@ def test_readonly_false_does_not_satisfy_protected_mount(
 
 
 def test_nested_definition_mount_is_final() -> None:
-    spec = dc.build_devcontainer_spec(
+    spec = build_spec(
         dc.APP_NONE,
         trusted_eda_mounts=(("/opt/Xilinx/2025.2", "/opt/booley-eda/vivado"),),
         protected_devcontainer_source="/repo/.devcontainer",
@@ -1661,7 +1662,7 @@ def test_licensed_seal_gives_vscode_and_headless_the_same_networks_and_labels(
     _license_profile_stubs(monkeypatch, profile)
     prepared = runtime_spec.preview(
         project,
-        lambda inputs: dc.build_devcontainer_spec(
+        lambda inputs: build_spec(
             dc.APP_NONE,
             mcp_start_command=dc.mcp_post_start_command(),
             protected_devcontainer_source=str(project / ".devcontainer"),
@@ -1716,7 +1717,7 @@ def test_unproxied_licensed_seal_joins_routed_and_private_networks(
     stub_keeper(monkeypatch)
     prepared = runtime_spec.preview(
         project,
-        lambda inputs: dc.build_devcontainer_spec(
+        lambda inputs: build_spec(
             dc.APP_NONE,
             mcp_start_command=dc.mcp_post_start_command(),
             protected_devcontainer_source=str(project / ".devcontainer"),
@@ -2200,7 +2201,7 @@ def test_relay_image_bytes_are_bound_into_licensed_issuance(
     monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: first)
     prepared, path, stamp = issue_built(
         project,
-        lambda inputs: dc.build_devcontainer_spec(
+        lambda inputs: build_spec(
             dc.APP_NONE,
             mcp_start_command=dc.mcp_post_start_command(),
             protected_devcontainer_source=str(project / ".devcontainer"),
@@ -2553,7 +2554,7 @@ def test_previewed_spec_issues_for_every_project_data_layout(
     expected_layout = "canonical-alias" if alias_capable else "legacy"
 
     def build(inputs: runtime_spec.SessionSpecInputs) -> dict:
-        return dc.build_devcontainer_spec(
+        return build_spec(
             dc.APP_NONE,
             mcp_start_command=dc.mcp_post_start_command(),
             booley_dir_source=docker_mount_path(inputs.project_data_source),
@@ -2722,9 +2723,7 @@ def test_seal_pins_external_project_identity_over_builder_defaults(issued, tmp_p
         '[agent.git]\nname="Mounted Agent"\nemail="mounted@example.invalid"\n'
     )
     monkeypatch.setenv("BOOLEY_DIR", str(external))
-    built = dc.build_devcontainer_spec(
-        dc.APP_NONE, protected_devcontainer_source=str(project / ".devcontainer")
-    )
+    built = build_spec(dc.APP_NONE, protected_devcontainer_source=str(project / ".devcontainer"))
     assert built["remoteEnv"]["GIT_CONFIG_VALUE_0"] == "Dev"
     spec = runtime_spec.preview(project, fixed(built)).spec
     for section in ("containerEnv", "remoteEnv"):
@@ -2927,7 +2926,7 @@ def test_authorized_directory_source_refuses_an_ordinary_file(issued, monkeypatc
 @pytest.mark.parametrize("count", [0, 2])
 def test_seal_refuses_missing_or_duplicate_directory_authority(issued, count):
     project, _issued_spec, _path, _stamp = issued
-    spec = dc.build_devcontainer_spec(
+    spec = build_spec(
         dc.APP_NONE,
         mcp_start_command=dc.mcp_post_start_command(),
         protected_devcontainer_source=str(project / ".devcontainer"),
@@ -2942,7 +2941,7 @@ def test_seal_refuses_missing_or_duplicate_directory_authority(issued, count):
 
 def test_seal_refuses_an_already_mounted_directory_workspace_view(issued):
     project, _issued_spec, _path, _stamp = issued
-    spec = dc.build_devcontainer_spec(
+    spec = build_spec(
         dc.APP_NONE,
         mcp_start_command=dc.mcp_post_start_command(),
         protected_devcontainer_source=str(project / ".devcontainer"),
