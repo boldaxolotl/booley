@@ -422,16 +422,12 @@ def _bounded_string_list(
     *,
     count_limit: int,
     byte_limit: int,
-    unique: bool = False,
 ) -> list[str]:
     items = _exact_list(value, field, count_limit)
-    decoded = [
+    return [
         _bounded_string(item, f"{field}[{index}]", limit=byte_limit)
         for index, item in enumerate(items)
     ]
-    if unique and len(set(decoded)) != len(decoded):
-        raise SimulationCampaignIntegrityError(f"{field} must contain unique strings")
-    return decoded
 
 
 def _validate_common(value: Mapping[str, object]) -> None:
@@ -1062,7 +1058,7 @@ def _read_work_item(value: object, field: str) -> None:
     for name in require_list(selection.get("names"), field=f"{field}.selection.names"):
         require_str_value(name, field=f"{field}.selection.names[]")
     for index, run in enumerate(require_list(item.get("test_runs"), field=f"{field}.test_runs")):
-        # Full Test Run parsing stays at its uses; these two are read raw.
+        # Full Test Run parsing stays at its uses; name, fingerprint and test are read raw.
         entry = _read_strings(run, f"{field}.test_runs[{index}]", ("name", "fingerprint"))
         if entry.get("test") is not None:
             require_str_value(entry["test"], field=f"{field}.test_runs[{index}].test")

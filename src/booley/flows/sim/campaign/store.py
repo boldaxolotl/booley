@@ -344,7 +344,8 @@ class CampaignStore:
         ordinal = cast(int, item["ordinal"]) + 1
         digest = work_item_id.rsplit(":", 1)[-1]
         name = f"{ordinal:04d}-{digest}"
-        # Decode does not check the id, and retention globs assume one component.
+        # Decode does not check the id, and retention globs assume one component:
+        # refuse a "/" here, and a backslash (a separator on Windows) below.
         if "/" in name:
             raise SimulationCampaignIntegrityError(
                 f"work-item directory name {name!r} is not one contained path component"

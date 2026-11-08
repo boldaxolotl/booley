@@ -6,6 +6,7 @@ import hashlib
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import cast
 
 from booley.core.booley_dir import BooleyDirOutsideCheckoutError, own_booley_dir_relative
 from booley.core.booley_dir_links import lexical_booley_path
@@ -53,6 +54,22 @@ def _require_ordinary_hdl_inputs(
         raise SimulationCampaignIntegrityError("campaign revision is required")
 
 
+def _require_baseline_prerequisites(documents: Sequence[Mapping[str, object]]) -> None:
+    """Refuse a prerequisite whose Target was not planned as a Cycle Count baseline.
+
+    The coarse (Cocotb) planner labels its Target ``candidate``, so a Cocotb
+    Target cannot be the baseline of an ordinary HDL Target: its campaign would
+    not be where the prerequisite link points.
+    """
+    for document in documents:
+        target = cast(Mapping[str, object], document["target"])
+        if target.get("role") != "cycle_count_baseline":
+            raise SimulationCampaignIntegrityError(
+                f"prerequisite Target {target.get('selector')!r} was not planned as a Cycle "
+                "Count baseline (a Cocotb Target cannot be the baseline of an ordinary HDL Target)"
+            )
+
+
 def plan_ordinary_hdl_campaign(
     *,
     handle: TargetHandle,
@@ -71,6 +88,7 @@ def plan_ordinary_hdl_campaign(
 ) -> SimulationCampaignPlan:
     """Build one strict immutable plan from already-resolved Target facts."""
     _require_ordinary_hdl_inputs(handle, inspection, preview, role, revision)
+    _require_baseline_prerequisites(prerequisite_documents)
     root = handle.project_root.resolve()
     sources = _source_entries(root, inspection.inputs)
     if len(groups) != len(preview.commands):
