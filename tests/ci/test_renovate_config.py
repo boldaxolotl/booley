@@ -17,14 +17,17 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 _ROOT = Path(__file__).parents[2]
+sys.path.insert(0, str(_ROOT / ".github/scripts"))
 _CONFIG_PATH = _ROOT / ".github/renovate.json"
 _WORKFLOW_PATH = _ROOT / ".github/workflows/renovate.yml"
 _DOCKER_DIR = "src/booley/data/docker"
@@ -610,3 +613,59 @@ def test_runner_and_config_hold_every_update() -> None:
     """AC2 (pre-merge part): the runner cannot leak its token and nothing updates unapproved."""
     _assert_runner_exposes_nothing()
     _assert_config_holds_every_update()
+
+
+def _job_runs(job: dict[str, Any]) -> dict[str, str]:
+    """Return the job's ``run`` scripts keyed by step name, line continuations joined."""
+    return {
+        step["name"]: " ".join(step["run"].replace("\\\n", " ").split())
+        for step in job["steps"]
+        if "run" in step
+    }
+
+
+def test_ci_job_validates_config_strictly_and_proves_rejection() -> None:
+    """AC1: a required job validates the config strictly and proves an invalid one fails."""
+    from ci_changes import CONDITIONAL_JOBS
+
+    workflow = yaml.safe_load(_text(_TEST_WORKFLOW))
+    assert "renovate-config" in CONDITIONAL_JOBS
+    assert "renovate-config" in workflow["jobs"]["ci-required"]["needs"]
+    job = workflow["jobs"]["renovate-config"]
+    assert job["needs"] == "changes"
+    assert "['renovate-config']" in job["if"]
+    runs = _job_runs(job)
+
+    # The #2996 guards no longer ride on a full CI run for a Renovate-only change.
+    guards = runs["Run the Renovate configuration guards"]
+    assert "pytest tests/ci/test_renovate_config.py" in guards
+
+    # Strict, repo-config mode, offline, on the image derived from the runner.
+    validator = (
+        'docker run --rm --network none -v "${GITHUB_WORKSPACE}:/repo:ro" -w /repo "${IMAGE}"'
+        " renovate-config-validator --strict --no-global .github/renovate.json"
+    )
+    validate = runs["Validate the Renovate configuration strictly"]
+    assert validator in validate
+    assert 'grep -Fq "as repo config"' in validate
+
+    # The same command must fail on a copy with an unknown option, for that reason.
+    probe = runs["Prove the validator rejects an invalid configuration"]
+    assert validator.replace("${GITHUB_WORKSPACE}", "${probe}") in probe
+    assert "booleyValidatorProbe" in probe
+    assert "exit 1" in probe
+    assert 'grep -Fq "Invalid configuration option: booleyValidatorProbe"' in probe
+
+
+def test_validator_image_is_the_runner_image(monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:
+    """AC1: the validator image is read from the runner, never pinned a second time."""
+    import renovate_runner_image
+
+    _, run_step = _renovate_steps()
+    runner_text = _WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert renovate_runner_image.runner_image(runner_text) == run_step["env"]["IMAGE"]
+    assert "renovate/renovate:" not in _text(_TEST_WORKFLOW)
+
+    monkeypatch.chdir(_ROOT)
+    renovate_runner_image.main()
+    assert capsys.readouterr().out == f"image={run_step['env']['IMAGE']}\n"
