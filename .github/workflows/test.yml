@@ -990,25 +990,12 @@ jobs:
 
       # Issue #2681: the validations run concurrently and, with the image
       # builds, share the runner's `/` (RUNNER_TEMP and the Docker root), which
-      # has run out of space mid-group. Drop preinstalled toolchains this job
-      # never uses. /opt/hostedtoolcache itself stays: setup-python resolves
-      # Python from it. This sits before the duration clock on purpose, so the
-      # cleanup time does not count against the test-phase duration budget.
+      # has run out of space mid-group. The shared action drops preinstalled
+      # toolchains this job never uses. This sits before the duration clock on
+      # purpose, so the cleanup time does not count against the test-phase
+      # duration budget.
       - name: Free unused runner disk
-        shell: bash
-        run: |
-          echo "::group::Free disk before cleanup"
-          df -h || true
-          echo "::endgroup::"
-          sudo rm -rf \
-            /usr/local/lib/android \
-            /usr/share/dotnet \
-            /opt/ghc \
-            /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL
-          echo "::group::Free disk after cleanup"
-          df -h || true
-          echo "::endgroup::"
+        uses: ./.github/actions/free-runner-disk
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
