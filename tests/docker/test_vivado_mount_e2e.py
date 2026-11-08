@@ -428,7 +428,7 @@ def _assert_headless_lifecycle(docker: str, workspace: Path) -> None:
             )
         assert normalized[0] == normalized[1]
     finally:
-        session_runtime.down(workspace, remove=True)
+        session_runtime.down(workspace)
 
 
 @pytest.mark.slow()

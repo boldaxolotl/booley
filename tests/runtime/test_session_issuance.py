@@ -808,7 +808,9 @@ def test_real_revoke_reports_withdrawal_at_enter_and_cli(
         assert "corrupt" not in error
     else:
         with pytest.raises(session_runtime.SessionError) as refresh_error:
-            session_refresh._load_recovery_issuance(project)
+            session_refresh._load_recovery_issuance(
+                project, session_refresh.capture_session_spec(project)
+            )
         assert str(refresh_error.value).startswith(
             "cannot preserve the prior Sandbox: " + _WITHDRAWN_ISSUANCE
         )
@@ -3206,7 +3208,7 @@ def test_refresh_replaces_spec_drift_without_image_change(issued, monkeypatch, t
         container_id="old",
         image_id=current.image_id,
     )
-    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", lambda *_: None)
+    monkeypatch.setattr(session_runtime, "vscode_session_container", lambda *_: None)
     monkeypatch.setattr(session_runtime, "plan_session_refresh", lambda *_: parked)
     monkeypatch.setattr(session_runtime, "park_planned_session", lambda *_: events.append("park"))
     monkeypatch.setattr(session_runtime, "verify_refreshed_session", lambda *a, **k: None)
@@ -3356,7 +3358,7 @@ def test_real_grant_changes_refuse_refresh_then_allow_authorized_reseed(
 
     project, _spec, _path, stamp = issued
     monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
-    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(session_runtime, "vscode_session_container", lambda _root: None)
     monkeypatch.setattr(
         flexnet_docker, "cleanup_project_resources_for_identity", lambda _identity: ()
     )

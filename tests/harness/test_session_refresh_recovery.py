@@ -287,7 +287,7 @@ def test_checked_in_committed_fixture_resumes_forward(
         patch.object(sr, "_warn_on_stale_booley_bake"),
         patch.object(sr, "_warn_on_stale_session_containers"),
         patch.object(sr.idk, "container_exists", return_value=False),
-        patch.object(sr, "_container_matches_issuance", return_value=True),
+        patch.object(sr, "container_matches_issuance", return_value=True),
         patch.object(sr, "verify_refreshed_session"),
         patch.object(sr, "_create_session_container", created),
         patch.object(sr, "_run_hook"),
@@ -334,7 +334,7 @@ def test_refresh_persists_recovery_identity_before_parking(tmp_path: Path, monke
         raise RuntimeError("parking failed")
 
     with (
-        patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
+        patch.object(sr, "vscode_session_container", return_value=None),
         patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
         patch.object(session_refresh, "_load_recovery_issuance", return_value=issuance),
         patch.object(sr, "plan_session_refresh", return_value=parked, create=True),
@@ -603,7 +603,7 @@ def test_inline_recovery_keeps_journal_on_unrecoverable_failure(
         raise sr.SessionError("Docker unreachable")
 
     with (
-        patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
+        patch.object(sr, "vscode_session_container", return_value=None),
         patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
         patch.object(session_refresh, "_load_recovery_issuance", return_value=issuance),
         patch.object(sr, "plan_session_refresh", return_value=parked),
