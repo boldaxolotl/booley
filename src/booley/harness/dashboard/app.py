@@ -27,7 +27,7 @@ from booley.goals.model import OCCUPYING_STATES
 from booley.goals.presentation import proposal_presentation
 from booley.harness.colors import PALETTE_DODGER_BLUE, PALETTE_MAUVE, PALETTE_ORANGE
 from booley.harness.dashboard import sessions
-from booley.harness.dashboard.footer import footer_hints
+from booley.harness.dashboard.footer import BackTarget, footer_hints
 from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobSnapshot, JobView, target_arg
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
@@ -242,7 +242,7 @@ _ACTIVITY_STYLE = {
 BOOLEY_ACTIVITY = "Booley activity"
 
 
-def _back_target(view: str) -> str:
+def _back_target(view: str) -> BackTarget:
     """What Down returns to from the top bar: Help, a detail, or the list."""
     if view == "help":
         return "Help"

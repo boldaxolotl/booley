@@ -21,6 +21,7 @@ from tests.harness.test_dashboard_windows import JOB_ROW, PROPOSAL_ROW, open_row
 # The keys the Dashboard used to bind: session digits, Help, Jobs filters, Sessions, owner.
 RETIRED_KEYS = (*"123456789", "?", "j", "r", "a", "s", "u")
 OVERVIEW_FOOTER = "↑↓ move · ⏎ open · ←→ Sessions / Jobs"
+SCROLL_FOOTER = "↑↓ PgUp/PgDn scroll · ←→ Sessions / Jobs · esc back"
 
 
 @pytest.fixture(autouse=True)
@@ -196,8 +197,6 @@ async def test_help_describes_arrow_model_and_names_no_removed_key():
 
 # --- Scroll views take the keyboard and the footer says so (#2886) ---------------
 
-SCROLL_FOOTER = "↑↓ PgUp/PgDn scroll · ←→ Sessions / Jobs · esc back"
-
 
 @pytest.mark.asyncio
 async def test_opening_help_from_top_bar_focuses_help_and_scrolls():
@@ -229,7 +228,6 @@ async def test_footer_in_help_names_scrolling_and_escape():
         assert footer(app) == SCROLL_FOOTER
         await pilot.press("up")  # Help is at scroll 0, so up reaches the top bar
         assert footer(app) == "←→ choose · ⏎ apply · ↓ back to Help"
-        assert "back to list" not in footer(app)
 
 
 async def open_full_width_view(app, pilot, view):

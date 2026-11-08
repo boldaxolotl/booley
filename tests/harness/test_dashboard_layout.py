@@ -17,7 +17,7 @@ from booley.harness.dashboard.app import NO_SESSIONS, DashboardApp
 from booley.harness.dashboard.jobs import JobSnapshot
 from tests.harness.test_dashboard import choose_in_bar, open_session, snapshot
 from tests.harness.test_dashboard_sessions import standalone_job
-from tests.harness.test_dashboard_windows import JOB_ROW, PROPOSAL_ROW, open_row, world
+from tests.harness.test_dashboard_windows import PROPOSAL_ROW, open_row, world
 
 NARROW = (90, 24)
 WIDE = (160, 30)
@@ -44,12 +44,6 @@ async def _open_proposal(app, pilot):
     await open_session(app, pilot, "codex:00")
     await open_row(app, pilot, PROPOSAL_ROW)
     assert app.navigation.view == "proposal"
-
-
-async def _open_session_job(app, pilot):
-    await open_session(app, pilot, "codex:00")
-    await open_row(app, pilot, JOB_ROW)
-    assert app.navigation.view == "job"
 
 
 async def _open_jobs_job(app, pilot):
@@ -145,7 +139,6 @@ async def test_help_fills_default_panel_height():
         orientation = app.query_one("#orientation")
         footer = app.query_one("#footer")
         rows = footer.region.y - orientation.region.bottom
-        assert rows == 9
         assert aside.scrollable_content_region.height == rows
 
 

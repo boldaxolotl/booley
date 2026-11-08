@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
+# What Down returns to from the top bar.
+BackTarget = Literal["list", "detail", "Help"]
+
 MOVE = "↑↓ move"
 OPEN = "⏎ open"
 WINDOWS = "←→ Sessions / Jobs"
@@ -19,7 +24,7 @@ def footer_hints(
     jobs_list: bool,
     nested: bool,
     scrolling: bool,
-    back_to: str,
+    back_to: BackTarget,
 ) -> str:
     """The one footer line for the current cursor position.
 
