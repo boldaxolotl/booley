@@ -163,7 +163,6 @@ async def _switch_from_depth(depth):
                 await open_session(app, pilot, step[1])
             elif isinstance(step, tuple) and step[0] == "help":
                 await choose_in_bar(app, pilot, "Help")
-                await pilot.press("down")
             elif isinstance(step, tuple):
                 await open_row(app, pilot, step[1])
             else:
@@ -194,7 +193,8 @@ async def test_arrows_switch_windows_from_every_depth():
 async def test_switching_back_restores_detail_selection_and_scroll():
     current = world()
     app = DashboardApp(lambda: current)
-    async with app.run_test(size=(90, 12)) as pilot:
+    # Short enough that the Job detail still overflows its panel (no padding rows, #2886).
+    async with app.run_test(size=(90, 8)) as pilot:
         await pilot.press("right")
         assert app.navigation.view == "jobs"
         table = table_of(app)
@@ -311,14 +311,16 @@ async def test_up_on_first_row_focuses_top_bar_and_bar_keys():
         await pilot.press(*["right"] * 5, "enter")
         await pilot.pause()
         assert app.navigation.view == "help"
-        depth = len(app.windows["jobs"])
-        await pilot.press("enter")
-        assert len(app.windows["jobs"]) == depth  # Help is not stacked twice
-
-        await pilot.press("down")
-        await pilot.pause()
-        assert app.focused is app.query_one("#aside")  # Help has no list: the detail owns the keys
+        # Help has no list: the detail takes the keyboard at once (#2886).
+        assert app.focused is app.query_one("#aside")
         assert not _reverse_painted(bar)
+
+        depth = len(app.windows["jobs"])
+        await pilot.press("up")  # Help is at scroll 0, so up reaches the top bar
+        assert app.focused is bar
+        await pilot.press(*["right"] * 5, "enter")
+        await pilot.pause()
+        assert len(app.windows["jobs"]) == depth  # Help is not stacked twice
 
 
 @pytest.mark.asyncio
@@ -524,7 +526,6 @@ async def test_arrows_and_top_bar_reach_same_content_in_matching_window():
         assert app.navigation.view == "jobs"
 
         await choose_in_bar(app, pilot, "Help")
-        await pilot.press("down")
         assert app.navigation.view == "help"
         await pilot.press("left", "right")
         assert app.navigation.view == "help"
