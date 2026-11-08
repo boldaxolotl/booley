@@ -1219,7 +1219,7 @@ class DashboardApp(App[None]):
                     "call:" + str(index),
                     _activity_row(
                         "Booley call",
-                        f"{call.tool} · {call.outcome} · {format_clock(call.at, now=now)}",
+                        f"{call.tool} · {call.outcome} · {format_clock(call.ended_at or call.at, now=now)}",
                     ),
                 )
                 for index, call in enumerate(session.calls[-10:])
