@@ -151,24 +151,24 @@ class TestCodex:
 class TestResolution:
     def test_absent_resolves_to_none_not_empty_string(self, home):
         # The whole point: "" would shadow the mounted subscription creds.
-        assert auth_token.resolve_oauth_token() is None
+        assert auth_token.resolve_token(auth_token.APP_CLAUDE) is None
 
     def test_stored_token_resolves_without_any_export(self, home):
         auth_token.store_token(_TOKEN)
 
-        assert auth_token.resolve_oauth_token() == _TOKEN
+        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == _TOKEN
 
     def test_exported_token_wins_over_stored(self, home, monkeypatch):
         auth_token.store_token(_TOKEN)
         monkeypatch.setenv(auth_token.ENV_VAR, "sk-ant-oat01-exported")
 
-        assert auth_token.resolve_oauth_token() == "sk-ant-oat01-exported"
+        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == "sk-ant-oat01-exported"
 
     def test_blank_export_does_not_shadow_stored(self, home, monkeypatch):
         auth_token.store_token(_TOKEN)
         monkeypatch.setenv(auth_token.ENV_VAR, "   ")
 
-        assert auth_token.resolve_oauth_token() == _TOKEN
+        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == _TOKEN
 
     def test_container_seed_sidecar_fills_the_gap(self, isolated_home):
         # In-container `booley auth` storage lives on the HOST; the spec mounts
@@ -176,14 +176,14 @@ class TestResolution:
         seed = isolated_home / auth_token.TOKEN_SEED_BASENAME[auth_token.APP_CLAUDE]
         seed.write_text(f"{_TOKEN}\n")
 
-        assert auth_token.resolve_oauth_token() == _TOKEN
+        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == _TOKEN
 
     def test_config_store_wins_over_seed_sidecar(self, isolated_home):
         seed = isolated_home / auth_token.TOKEN_SEED_BASENAME[auth_token.APP_CLAUDE]
         seed.write_text("sk-ant-oat01-seed\n")
         auth_token.store_token(_TOKEN)
 
-        assert auth_token.resolve_oauth_token() == _TOKEN
+        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == _TOKEN
 
 
 class TestEffectiveCredential:

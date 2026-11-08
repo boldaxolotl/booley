@@ -37,7 +37,6 @@ from booley.runtime.image_build_contracts import (
     ImageBuildContractMetadataError,
     ImageBuildContracts,
     expected_image_build_contracts,
-    standard_substrate_contract,
 )
 from booley.runtime.image_identity import logical_selection_fingerprint_for_chain
 from booley.runtime.image_provenance import (
@@ -158,10 +157,9 @@ class HostImageScope:
 
 @dataclass(frozen=True, slots=True)
 class ProjectImageScope:
-    """One Project's selected image plus an optional reconciled host base."""
+    """One Project's selected Sandbox Image."""
 
     project_root: Path
-    base: LifecycleResult | None = None
 
 
 ImageScope: TypeAlias = HostImageScope | ProjectImageScope
@@ -219,8 +217,6 @@ class LifecycleResult:
     changed_images: tuple[str, ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
     payload_fingerprint: str | None = None
-    requires_spec_reseed: bool = False
-    requires_runtime_recreation: bool = False
     cleanup: ImageCleanup = field(default_factory=ImageCleanup)
     wheel_source_fingerprint: str | None = None
     wheel_sha256: str | None = None
@@ -292,7 +288,6 @@ class PreparedConvergence:
     """Built and verified candidates which have not changed managed tags."""
 
     plan: LifecyclePlan
-    input_snapshot: InputSnapshot
     candidates: tuple[PreparedImage, ...]
     prior_tags: tuple[TagSnapshot, ...]
 
@@ -749,11 +744,6 @@ def _compatibility_key(node: ImageNode) -> str:
         digest.update(value.encode())
         digest.update(b"\0")
     return digest.hexdigest()
-
-
-def standard_substrate_fingerprint(root: Path) -> str:
-    """Return the effective-input identity of the standard tool substrate."""
-    return standard_substrate_contract(root)
 
 
 def _expected_image_build_contracts() -> ImageBuildContracts:
@@ -1520,12 +1510,7 @@ def _prepare_graph(lifecycle_plan, transaction_id, resolved_docker, resolved_bui
     except BaseException:
         _discard_candidate_references(candidate_references, resolved_docker, owned.refs)
         raise
-    return PreparedConvergence(
-        lifecycle_plan,
-        lifecycle_plan.input_snapshot,
-        tuple(prepared),
-        prior_tags,
-    )
+    return PreparedConvergence(lifecycle_plan, tuple(prepared), prior_tags)
 
 
 def _prepare_node(
@@ -1589,11 +1574,11 @@ def validate(
         root, _selected_reference(root), resolved_docker, prepared.plan.acquisition_policy
     )
     current = _input_snapshot(nodes, resolved_docker)
-    if current != prepared.input_snapshot:
+    if current != prepared.plan.input_snapshot:
         raise ImageLifecycleError(
             "image inputs changed while candidates were being prepared: "
             + format_differences(
-                _input_snapshot_mapping(prepared.input_snapshot),
+                _input_snapshot_mapping(prepared.plan.input_snapshot),
                 _input_snapshot_mapping(current),
             )
         )
@@ -1671,8 +1656,6 @@ def commit(
         Status.CHANGED if changed else Status.CURRENT,
         changed_images=tuple(changed),
         payload_fingerprint=prepared.plan.nodes[-1].wheel_source_fingerprint,
-        requires_spec_reseed=bool(changed),
-        requires_runtime_recreation=bool(changed),
         wheel_source_fingerprint=prepared.plan.nodes[-1].wheel_source_fingerprint,
         wheel_sha256=final.wheel_sha256,
     )
@@ -1888,7 +1871,6 @@ def _mutate(
     docker: DockerPort,
     builder: BuildPort,
     *,
-    refreshable: frozenset[str] | None = None,
     shipped_sources: tuple[ArtifactSource, ...] = (ArtifactSource.LOCAL_BUILD,),
 ) -> tuple[str, ...]:
     changed = []
@@ -1899,9 +1881,7 @@ def _mutate(
         for node in nodes:
             sources = _sources_for_node(node, shipped_sources)
             current = _node_current_from(node, docker, sources)
-            refresh = intent is Intent.REFRESH and (
-                refreshable is None or node.reference in refreshable
-            )
+            refresh = intent is Intent.REFRESH
             if current and not refresh:
                 continue
             existed = docker.image_id(node.reference) is not None
@@ -2118,30 +2098,20 @@ def reconcile(
     builder: BuildPort | None = None,
     artifact_policy: ArtifactPolicy = ArtifactPolicy.LOCAL_ONLY,
 ) -> LifecycleResult:
-    """Reconcile one image graph under an explicit artifact-selection policy."""
+    """Reconcile the host base image under an explicit artifact-selection policy.
+
+    Project scopes are rejected: a Project image converges through ``plan``,
+    ``prepare`` and ``commit`` (or ``planned_result`` for a check).
+    """
+    if not isinstance(scope, HostImageScope):
+        raise TypeError(
+            "runtime image reconcile() supports only HostImageScope; "
+            "plan, prepare and commit a ProjectImageScope"
+        )
     resolved_docker = docker or _docker_adapter()
     if intent is not Intent.CHECK and builder is None:
-        if isinstance(scope, HostImageScope):
-            root = docker_data_dir().parents[3]
-        elif isinstance(scope, ProjectImageScope):
-            root = scope.project_root.resolve()
-        else:
-            raise TypeError("image lifecycle scope must be HostImageScope or ProjectImageScope")
-        builder = _build_adapter(root, resolved_docker, verbose=verbose)
-    if isinstance(scope, HostImageScope):
-        return _reconcile_host(intent, resolved_docker, builder, artifact_policy.sources)
-    if not isinstance(scope, ProjectImageScope):
-        raise TypeError("image lifecycle scope must be HostImageScope or ProjectImageScope")
-    lifecycle_plan = plan(
-        scope, docker=resolved_docker, artifact_policy=artifact_policy, intent=intent
-    )
-    if intent is Intent.CHECK or (
-        lifecycle_plan.nodes[0].role is ImageRole.EXTERNAL and len(lifecycle_plan.nodes) == 1
-    ):
-        return planned_result(lifecycle_plan, resolved_docker)
-    return commit(
-        prepare(lifecycle_plan, docker=resolved_docker, verbose=verbose), docker=resolved_docker
-    )
+        builder = _build_adapter(docker_data_dir().parents[3], resolved_docker, verbose=verbose)
+    return _reconcile_host(intent, resolved_docker, builder, artifact_policy.sources)
 
 
 def planned_result(lifecycle_plan: LifecyclePlan, docker: DockerPort) -> LifecycleResult:
@@ -2247,8 +2217,6 @@ def _verified_result(
         payload_fingerprint=(
             selected_node.payload.fingerprint or selected_node.wheel_source_fingerprint
         ),
-        requires_spec_reseed=bool(changed),
-        requires_runtime_recreation=bool(changed),
     )
 
 
