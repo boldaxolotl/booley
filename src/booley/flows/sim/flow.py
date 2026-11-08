@@ -106,6 +106,11 @@ from booley.flows.target_test_plan import (
     batch_test_runs,
 )
 from booley.flows.target_test_plan_loading import load_target_test_plan
+from booley.flows.target_test_suite import (
+    NoRunnableTestsError,
+    require_runnable_target_test_suite,
+    resolve_target_test_suite,
+)
 from booley.flows.terminal_progress import ProgressText
 from booley.flows.test_runs import (
     DEFAULT_SEED,
@@ -237,11 +242,6 @@ from .execution.artifacts import artifact_path_component as _artifact_path_compo
 from .execution.engine import simulation_adapter_kind, target_test_plan
 from .mode import SimulationMode, normalize_simulation_mode
 from .standalone import StandaloneMixin, _StandaloneOutcome, _StandalonePlanRecipe
-from .target_tests import (
-    NoRunnableTestsError,
-    require_runnable_target_test_suite,
-    resolve_target_test_suite,
-)
 from .test_run_invocation import (
     BaselineLink,
     BaselineRefusal,

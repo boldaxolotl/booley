@@ -193,7 +193,7 @@ def test_sim_request_rejects_unreadable_empty_and_duplicate_test_files(tmp_path:
         SimRequest(tests_file=empty)
     duplicate = tmp_path / "duplicate"
     duplicate.write_text("a\na\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="unique"):
+    with pytest.raises(ValueError, match="duplicate exact test name"):
         SimRequest(tests_file=duplicate)
 
 

@@ -7,7 +7,6 @@ import re
 from booley.flows.base import SubprocessResult
 
 _BUILD_MILLISECONDS_RE = re.compile(r"^BOOLEY_BUILD_MILLISECONDS: (\d+)$", re.MULTILINE)
-_BUILD_SECONDS_RE = re.compile(r"^BOOLEY_BUILD_SECONDS: (\d+)$", re.MULTILINE)
 _RUN_STAGE_RE = re.compile(
     r"^BOOLEY_RUN_STAGE token=[0-9a-f]+ rc=-?\d+ duration_ms=(\d+)$",
     re.MULTILINE,
@@ -19,12 +18,9 @@ _SIM_CPU_RE = re.compile(
 
 
 def parse_build_seconds(output: str) -> float:
-    """Extract build wall time, preferring milliseconds over the legacy marker."""
+    """Extract build wall time from the millisecond marker."""
     milliseconds = _BUILD_MILLISECONDS_RE.search(output)
-    if milliseconds:
-        return int(milliseconds.group(1)) / 1000
-    seconds = _BUILD_SECONDS_RE.search(output)
-    return float(seconds.group(1)) if seconds else 0.0
+    return int(milliseconds.group(1)) / 1000 if milliseconds else 0.0
 
 
 def parse_run_seconds(output: str) -> float | None:

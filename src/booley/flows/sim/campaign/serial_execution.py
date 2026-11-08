@@ -21,6 +21,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
 
+from booley.flows.artifact_durability import (
+    durable_copy,
+    durable_create,
+    durable_directory,
+)
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.sim.backends.cocotb_results import (
     COCOTB_RESULTS_PREFIX,
@@ -32,11 +37,6 @@ from booley.flows.sim.campaign.bundle import (
     SnapshotAttemptIdentity,
     authenticate_executable_snapshot,
     create_executable_snapshot,
-)
-from booley.flows.sim.campaign_durability import (
-    durable_copy,
-    durable_create,
-    durable_directory,
 )
 from booley.flows.sim.execution.contract import (
     PreSimEvidence,

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.core.boundary import require_bool_value
-from booley.flows.request import FlowRequest
+from booley.flows.request import FlowRequest, RequestFieldError
 from booley.flows.test_runs import (
     SEED_WITH_SEEDED_SELECTOR,
     SeedRequest,
@@ -55,8 +55,12 @@ class SimRequest(FlowRequest):
             raise ValueError("no_waivers must be boolean")
         self._normalize_campaign_paths()
         self._normalize_test_selection()
-        self._validate_resume_shape()
+        # The rules run in the order the CLI reported them, so an input that
+        # breaks several keeps its first message.
+        self._validate_mode_and_resume()
         self._consume_tests_file()
+        if self.test is not None:
+            _require_unique(self.test)
         self._validate_test_run_selection()
         if self.result_verbosity not in ("compact", "full"):
             raise ValueError("result_verbosity must be compact or full")
@@ -76,50 +80,19 @@ class SimRequest(FlowRequest):
             if (
                 not isinstance(self.test, tuple)
                 or not self.test
-                or any(not isinstance(name, str) or not name for name in self.test)
+                or any(not isinstance(name, str) for name in self.test)
             ):
                 raise ValueError("test must be a non-empty array of exact names")
-            if len(set(self.test)) != len(self.test):
-                raise ValueError("test names must be unique")
         if self.test is not None and self.tests_file is not None:
-            raise ValueError("test and tests_file are mutually exclusive")
+            raise RequestFieldError(
+                lambda n: f"{n('test')} and {n('tests_file')} are mutually exclusive"
+            )
 
-    def _consume_tests_file(self) -> None:
-        """Give typed callers the same exact-selection semantics as the CLI."""
-        if self.tests_file is None:
-            return
-        try:
-            text = self.tests_file.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise ValueError(f"cannot read tests_file {self.tests_file}: {exc}") from exc
-        names = tuple(
-            line.strip()
-            for line in text.splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        )
-        if not names:
-            raise ValueError("tests_file contains no test names")
-        if len(set(names)) != len(names):
-            raise ValueError("test names must be unique")
-        self.test = names
-        self.tests_file = None
-
-    def _validate_test_run_selection(self) -> None:
-        """Apply the Test Run grammar once, for the CLI and the MCP tool alike."""
-        try:
-            if self.seed is not None:
-                self.seed = parse_seed_request(self.seed)
-            selectors = [parse_test_selector(text) for text in self.test or ()]
-        except (TestRunNameError, TestRunLimitError) as exc:
-            raise ValueError(str(exc)) from exc
-        if self.seed is not None and any(
-            not isinstance(selector.seed_form, UnpinnedSeed) for selector in selectors
-        ):
-            raise ValueError(SEED_WITH_SEEDED_SELECTOR)
+    def _validate_mode_and_resume(self) -> None:
         if self.seed is not None and self.mode is not None and self.mode.elaborates_only:
-            raise ValueError("seed applies to simulation, not to an elaboration mode")
-
-    def _validate_resume_shape(self) -> None:
+            raise RequestFieldError(
+                lambda n: f"{n('seed')} applies to simulation, not to an elaboration mode"
+            )
         if self.resume_from is not None:
             conflicts = [
                 name
@@ -136,8 +109,52 @@ class SimRequest(FlowRequest):
                 if present
             ]
             if conflicts:
-                raise ValueError("resume_from cannot be combined with " + ", ".join(conflicts))
+                raise RequestFieldError(
+                    lambda n: (
+                        f"{n('resume_from')} cannot be combined with "
+                        + ", ".join(n(name) for name in conflicts)
+                    )
+                )
         elif self.no_waivers and not self.coverage:
-            raise ValueError("no_waivers requires coverage")
-        if self.mode is not None and self.mode.elaborates_only and self.resume_from is not None:
-            raise ValueError("elaboration modes cannot resume a Simulation Campaign")
+            raise RequestFieldError(lambda n: f"{n('no_waivers')} requires {n('coverage')}")
+
+    def _consume_tests_file(self) -> None:
+        """Give typed callers the same exact-selection semantics as the CLI."""
+        if self.tests_file is None:
+            return
+        try:
+            text = self.tests_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            unreadable = f"{self.tests_file}: {exc}"
+            raise RequestFieldError(
+                lambda n: f"cannot read {n('tests_file')} {unreadable}"
+            ) from exc
+        names = tuple(
+            line.strip()
+            for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        )
+        if not names:
+            raise RequestFieldError(lambda n: f"{n('tests_file')} contains no test names")
+        self.test = names
+        self.tests_file = None
+
+    def _validate_test_run_selection(self) -> None:
+        """Apply the Test Run grammar once, for the CLI and the MCP tool alike."""
+        try:
+            if self.seed is not None:
+                self.seed = parse_seed_request(self.seed)
+            selectors = [parse_test_selector(text) for text in self.test or ()]
+        except (TestRunNameError, TestRunLimitError) as exc:
+            raise ValueError(str(exc)) from exc
+        if self.seed is not None and any(
+            not isinstance(selector.seed_form, UnpinnedSeed) for selector in selectors
+        ):
+            raise ValueError(SEED_WITH_SEEDED_SELECTOR)
+
+
+def _require_unique(names: tuple[str, ...]) -> None:
+    """Refuse a repeated exact test name, whether it came from ``test`` or a file."""
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError("duplicate exact test name(s): " + ", ".join(duplicates))

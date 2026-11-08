@@ -472,8 +472,8 @@ These D10 adapter selector sets are exhaustive:
 - S5, Yosys: prefix `booley.flows.synth.backends.yosys`.
 
 For each S1-S3 source, D10 forbids targets in the other S1-S3 sets. Each S4-S5
-source cannot target the other S4-S5 set. Shared backend policy and the
-experimental simulator readers remain unclassified.
+source cannot target the other S4-S5 set. Shared backend policy
+remains unclassified.
 
 Other source edges remain unclassified pending design work. They have no
 architectural endorsement, and the checker must not generate permissions from
