@@ -57,10 +57,17 @@ function fakeEditor(options, records, settings) {
         TerminalExitReason: {Shutdown: 1, Process: 2, User: 3, Extension: 4},
         TabInputText,
         env: { remoteName: remote, sessionId: 'fixture-window' },
-        commands: { executeCommand: async (id, ...args) => {
-            commands.push(args.length ? [id, args[0].fsPath, args[1]] : id);
-            if (options.commandFails) { throw new Error('unknown command'); }
-        } },
+        commands: {
+            executeCommand: async (id, ...args) => {
+                commands.push(args.length ? [id, args[0].fsPath, args[1]] : id);
+                if (options.commandFails) { throw new Error('unknown command'); }
+            },
+            // The latest registration wins, as after an extension-host restart.
+            registerCommand: (id, handler) => {
+                records.registered[id] = handler;
+                return { dispose() {} };
+            },
+        },
         languages: {
             // Enough glob for the fixtures: `**/` prefix and `*` within a name.
             match: (selector, document) => {
@@ -117,7 +124,7 @@ function fileUri(fsPath) {
 function fixture(options = {}) {
     const {enabled = true, error, raw, delayed = false} = options;
     const records = {log: [], terminals: [], calls: [], listeners: {}, commands: [], messages: [],
-        tabs: [], closedTabs: []};
+        tabs: [], closedTabs: [], registered: {}};
     const {log, terminals, calls, listeners} = records;
     const settings = {protocol: options.protocol ?? 1, permission: options.permission,
         associations: options.associations};
@@ -146,9 +153,23 @@ function fixture(options = {}) {
     } };
     module.exports.activate(context);
     return { calls, commands: records.commands, messages: records.messages, context,
+        registered: records.registered,
+        // Run the command the way the Command Palette does.
+        runCommand: () => records.registered['booley.dashboard.open'](),
         tabs: records.tabs, closedTabs: records.closedTabs, log, terminals, listeners, vscode, settings, complete: () => complete(),
         reactivate: () => module.exports.activate({subscriptions: [], workspaceState: context.workspaceState}) };
 }
+
+// The command comes first so that its failure is the head of the suite's output.
+test('the open-Dashboard command is registered and contributed', async () => {
+    const f = fixture();
+    await tick();
+    assert.equal(typeof f.registered['booley.dashboard.open'], 'function');
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,
+        '../../src/booley/data/vscode/dashboard/package.json'), 'utf8'));
+    assert.deepEqual(manifest.contributes.commands, [{ command: 'booley.dashboard.open',
+        title: 'Open Dashboard', category: 'Booley' }]);
+});
 
 test('default-off application permission still opens one fixed remote process', async () => {
     const f = fixture();
@@ -501,4 +522,114 @@ test('a failed reopen keeps the text tab open', async () => {
     assert.deepEqual(withoutChatClose(f.commands), [OPEN_PREVIEW]);
     assert.deepEqual(f.closedTabs, []);
     assert.equal(f.tabs.length, 1);
+});
+
+// --- Booley: Open Dashboard ----------------------------------------------------
+
+const ALREADY_OPEN = JSON.stringify({ protocol: 1, enabled: false,
+    reason: 'The Dashboard is already open in this Sandbox.', already_open: true });
+
+test('the open-Dashboard command opens one fixed terminal in a trusted window', async () => {
+    // The first auto-open was skipped (protocol off), so the command has nothing to reveal.
+    const f = fixture({ protocol: 0 });
+    await tick();
+    assert.equal(f.terminals.length, 0);
+    await f.runCommand();
+    assert.equal(f.terminals.length, 1);
+    assert.equal(f.terminals[0].options.shellPath, '/usr/local/bin/booley');
+    assert.deepEqual(Array.from(f.terminals[0].options.shellArgs), ['dashboard']);
+    assert.equal(f.terminals[0].options.cwd.fsPath, '/work');
+    assert.equal(f.terminals[0].options.isTransient, true);
+    assert.equal(f.terminals[0].shown, true);
+    assert.equal(f.terminals[0].preserveFocus, undefined, 'the command takes focus');
+    assert.deepEqual(Array.from(f.calls[0].args), ['dashboard', '--attach-policy']);
+});
+
+test('the open-Dashboard command reveals the terminal this window shows', async () => {
+    const f = fixture();
+    await tick();
+    f.terminals[0].shown = false;
+    await f.runCommand();
+    assert.equal(f.terminals.length, 1);
+    assert.equal(f.terminals[0].shown, true);
+    assert.equal(f.calls.length, 1, 'no second policy read for a terminal we can show');
+});
+
+test('the open-Dashboard command adopts the terminal an earlier extension host created', async () => {
+    const f = fixture();
+    await tick();
+    for (const disposable of f.context.subscriptions) { disposable.dispose(); }
+    f.reactivate();
+    await tick();
+    f.terminals[0].shown = false;
+    await f.runCommand();
+    assert.equal(f.terminals.length, 1, 'adopted, not duplicated');
+    assert.equal(f.terminals[0].shown, true);
+    // An exited Dashboard is not shown any more: the command opens a fresh one.
+    f.terminals[0].exitStatus = { code: 0 };
+    await f.runCommand();
+    assert.equal(f.terminals.length, 2);
+});
+
+test('the open-Dashboard command opens nothing in an untrusted window', async () => {
+    const f = fixture({ trusted: false });
+    await tick();
+    await f.runCommand();
+    assert.equal(f.calls.length, 0, 'no policy read');
+    assert.equal(f.terminals.length, 0, 'no Dashboard opens');
+    assert.equal(f.messages.length, 1);
+    assert.match(f.messages[0].message, /trusted window/);
+    assert.match(f.log.at(-1), /trusted window/);
+});
+
+test('the open-Dashboard command says why a window is not a Sandbox', async () => {
+    for (const [options, reason] of [[{ remote: undefined }, /not a Booley Sandbox/],
+        [{ remote: 'ssh-remote' }, /remote 'ssh-remote'/],
+        [{ git: false }, /Git Project Root/]]) {
+        const f = fixture(options);
+        await tick();
+        await f.runCommand();
+        assert.equal(f.terminals.length, 0);
+        assert.match(f.messages.at(-1).message, reason);
+    }
+});
+
+test('the open-Dashboard command reports a Dashboard open elsewhere instead of a terminal', async () => {
+    const f = fixture({ protocol: 0, raw: ALREADY_OPEN });
+    await tick();
+    await f.runCommand();
+    assert.equal(f.terminals.length, 0);
+    assert.equal(f.messages.length, 1);
+    assert.equal(f.messages[0].message, 'The Dashboard is already open in this Sandbox.');
+});
+
+test('the open-Dashboard command waits for a pending auto-open instead of opening a second terminal', async () => {
+    const f = fixture({ delayed: true });
+    await tick();
+    assert.equal(f.terminals.length, 0, 'the policy read is still pending');
+    const command = f.runCommand();
+    await tick();
+    assert.equal(f.terminals.length, 0);
+    f.complete();
+    await command;
+    assert.equal(f.terminals.length, 1, 'one Dashboard, revealed by the command');
+    assert.equal(f.terminals[0].shown, true);
+    assert.equal(f.calls.length, 1);
+});
+
+test('the open-Dashboard command ignores the auto-open opt-outs', async () => {
+    const f = fixture({ protocol: 0, permission: 'off', enabled: false });
+    await tick();
+    assert.equal(f.terminals.length, 0, 'automatic open is off');
+    await f.runCommand();
+    assert.equal(f.terminals.length, 1);
+    assert.deepEqual(Array.from(f.terminals[0].options.shellArgs), ['dashboard']);
+});
+
+test('the open-Dashboard command shows a failed policy read in Output', async () => {
+    const f = fixture({ protocol: 0, error: new Error('policy unavailable') });
+    await tick();
+    await f.runCommand();
+    assert.equal(f.terminals.length, 0);
+    assert.match(f.log.at(-1), /Dashboard open failed: policy unavailable/);
 });

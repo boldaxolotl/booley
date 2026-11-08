@@ -2,8 +2,8 @@
   "name": "dashboard",
   "publisher": "booley",
   "displayName": "Booley Sandbox Integration",
-  "description": "Open the terminal Dashboard when attaching to a Booley Sandbox, close the unused Chat side bar once, reopen Codespaces startup files with their associated editor, and host the Viewer Bridge that `bwave gui` uses to show scoped waveform views.",
-  "version": "0.5.3",
+  "description": "Open the terminal Dashboard when attaching to a Booley Sandbox (and again with the Booley: Open Dashboard command), close the unused Chat side bar once, reopen Codespaces startup files with their associated editor, and host the Viewer Bridge that `bwave gui` uses to show scoped waveform views.",
+  "version": "0.6.0",
   "license": "Apache-2.0",
   "engines": { "vscode": "^1.95.0" },
   "main": "./extension.js",
@@ -11,6 +11,13 @@
   "activationEvents": ["onStartupFinished"],
   "capabilities": { "untrustedWorkspaces": { "supported": "limited" } },
   "contributes": {
+    "commands": [
+      {
+        "command": "booley.dashboard.open",
+        "title": "Open Dashboard",
+        "category": "Booley"
+      }
+    ],
     "configuration": {
       "title": "Booley Dashboard",
       "properties": {

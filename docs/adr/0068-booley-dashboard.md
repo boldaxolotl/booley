@@ -1,6 +1,6 @@
 # Booley Dashboard replaces the Console
 
-Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health; amended 2026-10-26: readability and navigation redesign; amended 2026-10-29: Jobs list columns; amended 2026-10-29: session end and tool-call registration, see Amendments)
+Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health; amended 2026-10-26: readability and navigation redesign; amended 2026-10-29: Jobs list columns; amended 2026-10-29: session end and tool-call registration; amended 2026-11-08: unseen Dashboards and the open command, see Amendments)
 
 The Console showed one Ticket execution at a time. Goal Mode (ADR 0067)
 removes Ticket execution and runs several agent sessions, often unattended,
@@ -413,3 +413,18 @@ Consequences:
 
 - A background shell the agent does wait for, such as a test run, still shows waiting for user input after `Stop`.
 - The hook ships in the Sandbox Image; a session running an older image keeps the previous mapping until the image is rebuilt.
+
+## Amendments (2026-11-08, unseen Dashboards and the open command)
+
+A reload of a browser-based VS Code window could not deliver the Dashboard terminal's disposal to the remote terminal host, so the Dashboard process survived with no terminal showing it. It still held the Sandbox socket, so the attach policy reported it as open and the reload's new auto-open attempt stopped, as did a manual `booley dashboard` (#2857). This amendment refines "A Sandbox socket remains the final singleton guard"; the socket still decides who owns the view, but a socket alone no longer proves the view is shown.
+
+- **Open means seen.** The Dashboard sends a terminal cursor-position request on its 2 s refresh and records when its terminal last answered. A terminal emulator attached to the pty answers, wherever it runs (any VS Code window, a plain terminal, tmux); a pty whose renderer is gone does not. A Dashboard counts as open while it answered within the last ~6 s. A Dashboard that starts counts its start as an answer. One unanswered for 15 s is unseen. Between 6 s and 15 s the check waits and asks once more, so a hidden browser tab or a busy Sandbox does not lose its Dashboard. Heartbeat and verdict live in one module (`view_probe`), and a small thread answers the check from the Dashboard process, so a starting or blocked UI cannot delay the answer.
+- **An unseen Dashboard is retired.** `booley dashboard` and `booley dashboard --on-attach` stop an unseen owner (`SIGTERM`, then `SIGKILL`) and start a new one. The signal goes only to a process whose start time still matches the one recorded when the owner was identified. `booley dashboard --attach-policy` reports `already_open: false` for an unseen Dashboard, so the extension's re-attempt after a reload opens the view again; the tab can take up to about 15 s to come back.
+- **No takeover without proof.** An owner that cannot prove it is unseen counts as open: one from an older Booley that never answers the check, one that belongs to another user, one that sends a malformed reply, or a socket bound but not yet listening. An owner that is alive but wedged and never replies is unseen.
+- **Open command.** The extension contributes `booley.dashboard.open` (**Booley: Open Dashboard**). In a trusted Sandbox window with one Git folder it reveals the Dashboard terminal the window shows (adopting one the extension created with its fixed launch if its own handle was lost to an extension-host restart), or opens one. It may reopen the Dashboard in the same session, which supersedes "deliberately closing it does not restart it in that session" for this explicit action only; the automatic attempt is unchanged. It is explicit like manual `booley dashboard`, so it ignores the attach protocol setting, the automatic-task preference and the Project's auto-open opt-outs, but not trust. In an untrusted window it opens nothing and says why. It waits for a pending automatic attempt instead of opening a second terminal, and reports an already-open Dashboard instead of opening another.
+
+Consequences:
+
+- A window whose connection stays down for more than 15 s while another window attaches loses its Dashboard to the newcomer, which becomes the view.
+- Recovery after a reload takes up to about 15 s instead of being immediate, in exchange for never stopping a view that is still shown.
+- The terminal stays transient; persistence across reloads is not restored.

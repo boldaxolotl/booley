@@ -42,6 +42,7 @@ from booley.harness.dashboard.results import (
     proposal_summary,
 )
 from booley.harness.dashboard.topbar import FILTER, HELP_ITEM, OWNER, WINDOW, TopBar
+from booley.harness.dashboard.view_probe import ViewState
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.review.goal_package import observation_facts
 from booley.runtime.handles import job_prefix
@@ -57,6 +58,10 @@ from booley.runtime.timefmt import format_age, format_clock, format_duration, pa
 
 logger = logging.getLogger(__name__)
 READ_BUDGET = 1.0
+# Seconds between snapshot refreshes, which also carry the view heartbeat.
+REFRESH_SECONDS = 2
+# Terminal request for the cursor position; the reply shows an emulator renders the view.
+CURSOR_POSITION_REQUEST = "\x1b[6n"
 # "Finished" lists this many newest Jobs; "All" lists everything the snapshot retains.
 FINISHED_JOBS = 50
 # An orphaned process is known dead even though its Job record never finalized.
@@ -667,10 +672,13 @@ class DashboardApp(App[None]):
         self,
         reader: Callable[[], DashboardSnapshot],
         opener: Callable[[str], str] = open_in_editor,
+        view_state: ViewState | None = None,
     ) -> None:
         super().__init__()
         self.reader = reader
         self.opener = opener
+        # Set by `booley dashboard`: the heartbeat that shows a terminal still renders this view.
+        self.view_state = view_state
         self.snapshot = DashboardSnapshot()
         # Each window keeps its own non-empty history; its first entry is the top level.
         self.windows: dict[str, list[Navigation]] = {
@@ -710,11 +718,24 @@ class DashboardApp(App[None]):
 
     async def on_mount(self) -> None:
         await self.refresh_snapshot()
-        self.set_interval(2, self.refresh_snapshot)
+        self.set_interval(REFRESH_SECONDS, self.refresh_snapshot)
         self.query_one(DataTable).focus()
+
+    def _request_view_heartbeat(self) -> None:
+        """Ask the terminal for its cursor position; only an attached emulator answers."""
+        driver = self._driver
+        if self.view_state is not None and driver is not None:
+            driver.write(CURSOR_POSITION_REQUEST)
+            driver.flush()
+
+    def on_cursor_position(self, _event: events.CursorPosition) -> None:
+        """The terminal answered the heartbeat: someone still sees this Dashboard."""
+        if self.view_state is not None:
+            self.view_state.answered()
 
     async def refresh_snapshot(self) -> None:
         """Retain slow reads until consumed; all failures leave a responsive stale view."""
+        self._request_view_heartbeat()
         if self._read_task is None:
             self._read_task = asyncio.create_task(asyncio.to_thread(self.reader))
         try:

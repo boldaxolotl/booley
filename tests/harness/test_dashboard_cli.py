@@ -22,6 +22,14 @@ def _keep_pytest_process_identity(monkeypatch):
     monkeypatch.setitem(sys.modules, "setproctitle", SimpleNamespace(setproctitle=lambda _: None))
 
 
+def _stub_view_probe(monkeypatch, *, unseen=None):
+    """In-process tests run no listener thread, and no running Dashboard is unseen."""
+    monkeypatch.setattr(
+        command.view_probe, "serve", lambda *_: SimpleNamespace(join=lambda **_: None)
+    )
+    monkeypatch.setattr(command.view_probe, "unseen_owner", lambda _scope: unseen)
+
+
 def test_repeat_attach_one_view_and_no_filesystem_lock(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(command.socket, "AF_UNIX", 1, raising=False)
     monkeypatch.setattr(command, "namespace", lambda: "pid:[fixture]")
@@ -29,8 +37,11 @@ def test_repeat_attach_one_view_and_no_filesystem_lock(tmp_path, monkeypatch, ca
     launched = []
     monkeypatch.setattr(command, "DashboardReader", lambda *_: SimpleNamespace(read=lambda: None))
     monkeypatch.setattr(
-        command, "DashboardApp", lambda *_: SimpleNamespace(run=lambda: launched.append("run"))
+        command,
+        "DashboardApp",
+        lambda *_, **__: SimpleNamespace(run=lambda: launched.append("run")),
     )
+    _stub_view_probe(monkeypatch)
 
     class Owner:
         def __enter__(self):
@@ -43,6 +54,9 @@ def test_repeat_attach_one_view_and_no_filesystem_lock(tmp_path, monkeypatch, ca
             assert address.startswith("\0booley-dashboard:")
             if launched:
                 raise OSError(errno.EADDRINUSE, "in use")
+
+        def listen(self):
+            return None
 
     monkeypatch.setattr(command.socket, "socket", lambda *_: Owner())
     assert command.run_dashboard(tmp_path) == 0
@@ -58,6 +72,7 @@ def test_attach_policy_is_read_only_and_disabled_attach_never_starts(
 ):
     monkeypatch.setattr(command, "resolve_common_booley_dir", lambda _: tmp_path)
     monkeypatch.setattr(command, "attach_blocker", lambda *_: "disabled by configuration")
+    monkeypatch.setattr(command, "_dashboard_is_open", lambda: False)
     monkeypatch.setattr(command, "run_dashboard", lambda *_: pytest.fail("must not start"))
     assert command.run_attach(tmp_path, policy_only=True) == 0
     assert json.loads(capsys.readouterr().out) == {
@@ -132,7 +147,10 @@ def test_dashboard_preflight_observes_without_reserving_a_socket(monkeypatch):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as owner:
         owner.bind("\0booley-dashboard:" + scope)
         with monkeypatch.context() as probe:
-            probe.setattr(command.socket, "socket", lambda *_: pytest.fail("probe must not bind"))
+            # Observing may connect to the owner but must never reserve an address.
+            probe.setattr(
+                socket.socket, "bind", lambda *_: pytest.fail("probe must not bind"), raising=True
+            )
             assert command._dashboard_is_open()
     assert not command._dashboard_is_open()
 
@@ -180,7 +198,7 @@ def _stub_dashboard(monkeypatch, tmp_path, *, run=None):
     import sys
 
     events = []
-    owner = SimpleNamespace(bind=lambda _: None)
+    owner = SimpleNamespace(bind=lambda _: None, listen=lambda: None)
 
     class Socket:
         def __enter__(self):
@@ -197,8 +215,9 @@ def _stub_dashboard(monkeypatch, tmp_path, *, run=None):
     monkeypatch.setattr(
         command,
         "DashboardApp",
-        lambda *_: SimpleNamespace(run=run or (lambda: events.append("run"))),
+        lambda *_, **__: SimpleNamespace(run=run or (lambda: events.append("run"))),
     )
+    _stub_view_probe(monkeypatch)
     monkeypatch.setattr(command, "_PLATFORM", "linux", raising=False)
     monkeypatch.setitem(sys.modules, "setproctitle", SimpleNamespace(setproctitle=events.append))
     monkeypatch.setenv("TERM", "xterm-256color")
@@ -269,7 +288,7 @@ def test_dashboard_restores_title_on_all_exit_paths(tmp_path, monkeypatch):
                 if failure is not None:
                     raise failure
 
-            patch.setattr(command, "DashboardApp", lambda *_: SimpleNamespace(run=run))
+            patch.setattr(command, "DashboardApp", lambda *_, **__: SimpleNamespace(run=run))
             patch.setattr(sys, "stdout", stream)
             if failure is None:
                 assert command.run_dashboard(tmp_path) == 0
@@ -486,7 +505,7 @@ def test_dashboard_restores_title_if_app_construction_fails(tmp_path, monkeypatc
     monkeypatch.setattr(sys, "stdout", stream)
     failure = RuntimeError("construction failed")
 
-    def fail(*_):
+    def fail(*_, **__):
         raise failure
 
     monkeypatch.setattr(command, "DashboardApp", fail)

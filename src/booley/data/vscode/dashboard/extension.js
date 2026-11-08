@@ -7,6 +7,7 @@ const path = require('node:path');
 
 const BOOLEY = '/usr/local/bin/booley';
 const PROTOCOL = 'booley.dashboard.attachProtocol';
+const OPEN_COMMAND = 'booley.dashboard.open';
 // VS Code remote names whose workspace extension host runs inside the Sandbox;
 // GitHub Codespaces reports `codespaces`.
 const REMOTES = new Set(['dev-container', 'attached-container', 'codespaces']);
@@ -58,7 +59,10 @@ class AttachController {
         this.abort = new AbortController();
         this.attempted = context.workspaceState.get('attachAttempts', []).includes(vscode.env.sessionId);
         this.disposed = false;
+        // The automatic open in flight, so the command never races it into a second terminal.
+        this.opening = undefined;
         context.subscriptions.push(this.output, this,
+            vscode.commands.registerCommand(OPEN_COMMAND, () => this.openByCommand()),
             vscode.workspace.onDidGrantWorkspaceTrust(() => { void this.open(); }),
             vscode.workspace.onDidChangeConfiguration(event => {
                 if (event.affectsConfiguration(PROTOCOL)) { void this.open(); }
@@ -66,39 +70,52 @@ class AttachController {
             vscode.window.onDidCloseTerminal(closed => this.closed(closed)));
     }
 
-    eligibleRoot() {
-        if (this.disposed) { return undefined; }
+    // The Sandbox Project root this window may show the Dashboard for, or the
+    // reason it may not. An explicit request (the command) is not automatic, so
+    // the attach protocol, the automatic-task preference and the Project's
+    // auto-open opt-outs do not apply, like a manual `booley dashboard`.
+    rootOrReason(explicit) {
+        if (this.disposed) { return { quiet: true }; }
         const remote = vscode.env.remoteName;
         // A local window (no remote) is never a Sandbox; stay quiet there.
-        if (remote === undefined || remote === null) { return undefined; }
+        if (remote === undefined || remote === null) {
+            return { quiet: true, reason: 'This window is not a Booley Sandbox.' };
+        }
         if (!REMOTES.has(remote)) {
-            this.output.appendLine(`Dashboard auto-open skipped: remote '${remote}' is not a Sandbox remote.`);
-            return undefined;
+            return { reason: explicit
+                ? `Booley: Open Dashboard needs a Booley Sandbox window, not remote '${remote}'.`
+                : `Dashboard auto-open skipped: remote '${remote}' is not a Sandbox remote.` };
         }
         if (!vscode.workspace.isTrusted) {
-            this.output.appendLine('Dashboard auto-open waits for workspace trust; this window is untrusted.');
-            return undefined;
+            return { reason: explicit
+                ? 'Booley: Open Dashboard needs a trusted window; trust this workspace first.'
+                : 'Dashboard auto-open waits for workspace trust; this window is untrusted.' };
         }
-        if (vscode.workspace.getConfiguration().get(PROTOCOL) !== 1) {
-            this.output.appendLine('Dashboard auto-open skipped: the attach protocol is not enabled.');
-            return undefined;
-        }
-        const permission = vscode.workspace.getConfiguration('task').inspect('allowAutomaticTasks');
-        if (permission?.globalValue === 'off') {
-            this.output.appendLine('Dashboard attach disabled by your automatic-task preference.');
-            return undefined;
+        if (!explicit) {
+            if (vscode.workspace.getConfiguration().get(PROTOCOL) !== 1) {
+                return { reason: 'Dashboard auto-open skipped: the attach protocol is not enabled.' };
+            }
+            const permission = vscode.workspace.getConfiguration('task').inspect('allowAutomaticTasks');
+            if (permission?.globalValue === 'off') {
+                return { reason: 'Dashboard attach disabled by your automatic-task preference.' };
+            }
         }
         const folders = vscode.workspace.workspaceFolders || [];
         if (folders.length !== 1) {
-            this.output.appendLine('Dashboard attach requires one opened Sandbox Project folder.');
-            return undefined;
+            return { reason: 'Dashboard attach requires one opened Sandbox Project folder.' };
         }
         const root = folders[0].uri;
         if (!fs.existsSync(path.join(root.fsPath, '.git'))) {
-            this.output.appendLine('Dashboard auto-open requires a Git Project Root.');
-            return undefined;
+            return { reason: explicit ? 'The Dashboard requires a Git Project Root.'
+                : 'Dashboard auto-open requires a Git Project Root.' };
         }
-        return root;
+        return { root };
+    }
+
+    eligibleRoot() {
+        const found = this.rootOrReason(false);
+        if (found.reason && !found.quiet) { this.output.appendLine(found.reason); }
+        return found.root;
     }
 
     async open() {
@@ -106,6 +123,17 @@ class AttachController {
         const root = this.eligibleRoot();
         if (!root) { return; }
         this.attempted = true;
+        const attaching = this.attach(root);
+        this.opening = attaching;
+        try {
+            await attaching;
+        } finally {
+            if (this.opening === attaching) { this.opening = undefined; }
+        }
+    }
+
+    // The automatic open after the window passed `eligibleRoot`; it never rejects.
+    async attach(root) {
         try {
             const attempts = this.context.workspaceState.get('attachAttempts', []);
             await this.context.workspaceState.update('attachAttempts',
@@ -124,14 +152,7 @@ class AttachController {
             // can end up behind the Dashboard. A Codespaces lifecycle-command
             // terminal is never in use, even though VS Code may flag it interacted.
             const busy = this.terminalInUse();
-            const terminal = vscode.window.createTerminal({
-                name: 'Booley Dashboard',
-                shellPath: BOOLEY,
-                shellArgs: ['dashboard', '--on-attach'],
-                cwd: root,
-                isTransient: true,
-            });
-            this.terminal = terminal;
+            const terminal = this.createDashboardTerminal(root, ['dashboard', '--on-attach']);
             if (busy) {
                 this.offer(terminal);
             } else {
@@ -143,6 +164,70 @@ class AttachController {
                 this.output.show(true);
             }
         }
+    }
+
+    // The one fixed launch of the Dashboard terminal; the view survives an
+    // extension-host restart, never a reload (hence transient).
+    createDashboardTerminal(root, args) {
+        const terminal = vscode.window.createTerminal({
+            name: 'Booley Dashboard',
+            shellPath: BOOLEY,
+            shellArgs: args,
+            cwd: root,
+            isTransient: true,
+        });
+        this.terminal = terminal;
+        return terminal;
+    }
+
+    // The Dashboard terminal this window shows, if any. After an extension-host
+    // restart the terminal lives on but `this.terminal` is lost, so adopt one
+    // created by the fixed launch above (matched by launch, not by name).
+    shownDashboard() {
+        const live = vscode.window.terminals.filter(t => !t.exitStatus);
+        if (this.terminal && live.includes(this.terminal)) { return this.terminal; }
+        const adopted = live.find(t => t.creationOptions?.shellPath === BOOLEY &&
+            t.creationOptions.shellArgs?.[0] === 'dashboard');
+        if (adopted) { this.terminal = adopted; }
+        return adopted;
+    }
+
+    // Booley: Open Dashboard. Reveal the Dashboard this window shows, or open
+    // one. It is explicit, so the automatic-open opt-outs do not apply.
+    async openByCommand() {
+        if (this.opening) { await this.opening; }
+        const found = this.rootOrReason(true);
+        if (!found.root) {
+            this.explain(found.reason ?? 'Booley: Open Dashboard is unavailable.');
+            return;
+        }
+        const shown = this.shownDashboard();
+        if (shown) {
+            shown.show();
+            return;
+        }
+        try {
+            const result = await policy(found.root, this.abort.signal);
+            if (this.disposed) { return; }
+            if (result.already_open) {
+                this.explain(result.reason);
+                return;
+            }
+            this.attempted = true;
+            this.createDashboardTerminal(found.root, ['dashboard']).show();
+        } catch (error) {
+            if (!this.disposed) {
+                this.output.appendLine(`Dashboard open failed: ${error.message}`);
+                this.output.show(true);
+            }
+        }
+    }
+
+    // A command has no log to read: tell the person why nothing opened.
+    explain(reason) {
+        this.output.appendLine(reason);
+        this.output.show(true);
+        void Promise.resolve(vscode.window.showInformationMessage(reason)).then(() => {}, () => {});
     }
 
     // Whether a terminal the user has used is open. In a Codespace, log every
