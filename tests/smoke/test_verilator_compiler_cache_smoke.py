@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from tests.flows.sim.prepared_group import run_prepared_group
 
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.compiler_cache import (
@@ -25,7 +26,7 @@ from booley.flows.sim.compiler_cache import (
     execution_environment,
     resolve_policy,
 )
-from booley.flows.sim.execution import NamedTests, SimulationExecution, SimulationOptions
+from booley.flows.sim.execution import SimulationExecution, SimulationOptions
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.compiler_cache import COMPILER_CACHE_RELATIVE, COMPILER_CACHE_ROOT_ENV
 from booley.targets.catalog import TargetCatalog
@@ -121,8 +122,10 @@ def _simulate(root: Path) -> str:
         )
 
     handle = TargetCatalog.build(root).select("sim", for_flow="sim")
-    result = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=30000)).run(
-        handle, NamedTests(("check",))
+    result = run_prepared_group(
+        SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=30000)),
+        handle,
+        ("check",),
     )
     output = "\n".join(outputs)
     assert result.passed, f"{result}\n{output}"
