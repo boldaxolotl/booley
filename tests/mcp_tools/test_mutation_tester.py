@@ -1342,11 +1342,15 @@ def test_sim_forwards_project_verdict_sentinels(tmp_path: Path, monkeypatch):
     assert work.fail_sentinels == ("ERROR!",)
 
 
-@pytest.mark.parametrize("outcome", ["detected", "survived", "inconclusive"])
-@pytest.mark.parametrize("adapter", ["hdl", "cocotb"])
-def test_mutant_launch_grades_from_the_document(
-    tmp_path: Path, monkeypatch, capsys, adapter: str, outcome: str
-) -> None:
+def test_mutant_launch_grades_from_the_document(tmp_path: Path, monkeypatch, capsys) -> None:
+    for adapter in ("hdl", "cocotb"):
+        for outcome in ("detected", "survived", "inconclusive"):
+            _grade_mutant_launch(
+                tmp_path / f"{adapter}-{outcome}", monkeypatch, capsys, adapter, outcome
+            )
+
+
+def _grade_mutant_launch(tmp_path: Path, monkeypatch, capsys, adapter: str, outcome: str) -> None:
     """A mutant is graded from what its adapter process printed and returned.
 
     The fake simulator decodes the launch's work document first, so a launch
@@ -1355,6 +1359,7 @@ def test_mutant_launch_grades_from_the_document(
     from booley.flows.sim.adapter_contract import run_adapter_entry
     from booley.flows.sim.backends import cocotb_results as cr
 
+    tmp_path.mkdir()
     cocotb = adapter == "cocotb"
     # The real rejected-document answer of an adapter that cannot decode its argument.
     assert run_adapter_entry(["not a document"], lambda _work: 0) == 2

@@ -2627,13 +2627,15 @@ def test_preview_resolves_configuration_from_each_handle_root(tmp_path: Path) ->
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh -n syntax check")
-@pytest.mark.parametrize(
-    ("adapter", "run_name"),
-    [("verilator", "smoke@1"), ("icarus", "smoke")],  # only Verilator seeds natively
-)
-def test_preview_is_a_runnable_chain(tmp_path: Path, adapter: str, run_name: str) -> None:
+def test_preview_is_a_runnable_chain(tmp_path: Path) -> None:
+    # Only Verilator seeds natively.
+    for adapter, run_name in (("verilator", "smoke@1"), ("icarus", "smoke")):
+        _assert_preview_is_runnable(tmp_path / adapter, adapter, run_name)
+
+
+def _assert_preview_is_runnable(tmp_path: Path, adapter: str, run_name: str) -> None:
     project = tmp_path / ".booley"
-    project.mkdir()
+    project.mkdir(parents=True)
     (project / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n', encoding="utf-8")
     inspection = _inspection(cocotb=False)
     inspection.eda_tool = adapter

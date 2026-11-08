@@ -172,19 +172,18 @@ def test_document_fields_reach_run_verilated_binary(tmp_path: Path, monkeypatch)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX V<top> stub")
-@pytest.mark.parametrize(
-    ("printed", "expected_exit"),
-    [("ALL TESTS PASSED.", 0), ("ERROR!", 1)],
-)
-def test_document_launch_exits_with_the_sentinel_verdict(
-    tmp_path: Path, monkeypatch, capsys, printed: str, expected_exit: int
-):
+def test_document_launch_exits_with_the_sentinel_verdict(tmp_path: Path, monkeypatch, capsys):
+    for printed, expected_exit in (("ALL TESTS PASSED.", 0), ("ERROR!", 1)):
+        _launch_prints(tmp_path / str(expected_exit), monkeypatch, capsys, printed, expected_exit)
+
+
+def _launch_prints(tmp_path: Path, monkeypatch, capsys, printed: str, expected_exit: int):
     from booley.flows.sim import run_guard
     from booley.flows.sim.adapter_contract import encode_simulation_work
 
     monkeypatch.setattr(run_guard, "install_parent_death_guard", lambda: None)
     build = tmp_path / "build"
-    build.mkdir()
+    build.mkdir(parents=True)
     exe = build / "Vtb_top"
     # The simulator's own exit code (3) must not decide the verdict.
     exe.write_bytes(f"#!/bin/sh\necho '{printed}'\nexit 3\n".encode())
