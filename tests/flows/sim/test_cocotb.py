@@ -138,7 +138,7 @@ def _cocotb_output(
         passed = bool(entries) and all(s == "pass" for _, s, _ in entries)
     return (
         f"sim noise\n{sva_lines}"
-        f"{cr.format_results_line(results)}\n"
+        f"{cr.format_results_line(cr.results_payload(results))}\n"
         f"{format_summary(passed, sva_errors)}\n"
     )
 
@@ -333,7 +333,7 @@ class TestCocotbVerdictMatrix:
             tests=tuple(cr.CocotbTest(name, "test_counter", "skipped") for name in names),
         )
         out = (
-            cr.format_results_line(results, selected=["test_reset"], verbosity="compact")
+            cr.format_results_line(cr.results_payload(cr.compact_results(results, ["test_reset"])))
             + "\n"
             + format_summary(False, 0, inconclusive=True)
             + "\n"

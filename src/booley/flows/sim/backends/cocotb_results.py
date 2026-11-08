@@ -11,9 +11,10 @@ missing file, truncated/unparseable XML, empty testsuite — therefore maps to
 
 The run-half (:mod:`booley.flows.sim.backends.cocotb`) parses the XML in-sandbox and
 re-emits it as a single ``[COCOTB_RESULTS]`` JSON line beside the usual
-``[SIM_SUMMARY]``; ``simulate`` parses that line back and fans the per-test
-verdicts into its existing report shapes (``_test_report_entry``). Both halves
-share this module so the shapes cannot drift.
+``[SIM_SUMMARY]``; stdout consumers (the Simulation Flow report fan-out, the
+Mutation Tester) parse that line back, while the adapter itself publishes the
+results it already holds and never reads its own line. All of them share this
+module so the shapes cannot drift.
 
 Empirical XML states this parser is frozen against (spike S4, cocotb 2.0.1 and 2.1.0):
 
@@ -35,7 +36,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 from xml.etree import ElementTree
@@ -68,7 +70,8 @@ _RESULT_STATES = frozenset({STATE_OK, STATE_MISSING, STATE_UNPARSEABLE, STATE_EM
 _TEST_STATUSES = frozenset({VERDICT_PASS, VERDICT_FAIL, "skipped", "not_run"})
 
 # Structured per-test results line the cocotb run-half prints next to
-# [SIM_SUMMARY]; simulate scrapes it to fan out per-test report entries.
+# [SIM_SUMMARY] for stdout consumers; only format_results_line adds it and only
+# parse_results_line strips it.
 COCOTB_RESULTS_PREFIX = "[COCOTB_RESULTS] "
 
 # Cap per-test failure text crossing the stdout boundary — one verbose
@@ -452,26 +455,32 @@ def extra_tests(selected: list[str], results: CocotbResults) -> list[str]:
     return [t.name for t in results.tests if t.name not in wanted and t.status != "skipped"]
 
 
-def results_payload(
-    results: CocotbResults,
-    *,
-    selected: list[str] | None = None,
-    verbosity: str = "full",
-) -> dict[str, object]:
-    """Serialize results for transport while retaining selected-test evidence."""
-    if verbosity not in {"compact", "full"}:
-        raise ValueError(f"unsupported Cocotb result verbosity: {verbosity}")
-    tests = results.tests
-    skipped_unselected = results.skipped_unselected
+def compact_results(results: CocotbResults, selected: Sequence[str]) -> CocotbResults:
+    """Drop unselected skipped tests from *results*, counting them instead.
+
+    This is what the focused compact transport carries: selected tests and every
+    test that ran stay, the rest collapse into ``skipped_unselected`` and, when a
+    selected name is absent, ``reported_names`` keeps the candidate IDs.
+    """
+    wanted = set(selected)
     reported_names = results.reported_names
-    if verbosity == "compact" and selected is not None:
-        wanted = set(selected)
-        if wanted - {test.name for test in tests} and (reported_names or not skipped_unselected):
-            reported_names = _reported_names(results)
-        skipped_unselected += sum(
-            1 for test in tests if test.status == "skipped" and test.name not in wanted
-        )
-        tests = tuple(test for test in tests if test.name in wanted or test.status != "skipped")
+    if wanted - {test.name for test in results.tests} and (
+        reported_names or not results.skipped_unselected
+    ):
+        reported_names = _reported_names(results)
+    return replace(
+        results,
+        tests=tuple(
+            test for test in results.tests if test.name in wanted or test.status != "skipped"
+        ),
+        skipped_unselected=results.skipped_unselected
+        + sum(1 for test in results.tests if test.status == "skipped" and test.name not in wanted),
+        reported_names=reported_names,
+    )
+
+
+def results_payload(results: CocotbResults) -> dict[str, object]:
+    """Encode *results* as the JSON-ready transport payload."""
     payload: dict[str, object] = {
         "state": results.state,
         "detail": results.detail,
@@ -483,23 +492,17 @@ def results_payload(
                 "failure": t.failure_text,
                 "elapsed_s": t.elapsed_s,
             }
-            for t in tests
+            for t in results.tests
         ],
-        "skipped_unselected": skipped_unselected,
+        "skipped_unselected": results.skipped_unselected,
     }
-    if reported_names:
-        payload["reported_names"] = list(reported_names)
+    if results.reported_names:
+        payload["reported_names"] = list(results.reported_names)
     return payload
 
 
-def format_results_line(
-    results: CocotbResults,
-    *,
-    selected: list[str] | None = None,
-    verbosity: str = "full",
-) -> str:
-    """Serialize *results* as the one-line ``[COCOTB_RESULTS]`` sentinel."""
-    payload = results_payload(results, selected=selected, verbosity=verbosity)
+def format_results_line(payload: Mapping[str, object]) -> str:
+    """Print an encoded *payload* as the one-line ``[COCOTB_RESULTS]`` sentinel."""
     return COCOTB_RESULTS_PREFIX + json.dumps(payload, separators=(",", ":"))
 
 
@@ -529,8 +532,12 @@ def _transport_test(raw_test: object) -> CocotbTest:
     )
 
 
-def _transport_results(raw_payload: object) -> CocotbResults:
-    """Validate the complete results sentinel payload."""
+def decode_results_payload(raw_payload: object) -> CocotbResults:
+    """Validate and decode an encoded results payload; the one payload decoder.
+
+    Raises :class:`BoundaryError` for any payload :func:`results_payload` could
+    not have produced (wrong types, unknown state or status, non-finite time).
+    """
     payload = cast(dict[str, object], require_dict(raw_payload, field="COCOTB_RESULTS"))
     state = _transport_string(payload, "state", default=STATE_UNPARSEABLE)
     if state not in _RESULT_STATES:
@@ -568,7 +575,7 @@ def parse_results_line(output: str) -> CocotbResults | None:
         except json.JSONDecodeError:
             return None
         try:
-            return _transport_results(raw_payload)
+            return decode_results_payload(raw_payload)
         except BoundaryError:
             return None
     return None
