@@ -892,7 +892,6 @@ def _report_image_cleanup(ctx: InitContext, result: LifecycleResult) -> None:
 def _step_image_lifecycle(
     ctx: InitContext,
     *,
-    base_result: LifecycleResult | None = None,
     intent: ImageLifecycleIntent | None = None,
     report_requirements: bool = False,
 ) -> LifecycleResult | None:
@@ -909,7 +908,7 @@ def _step_image_lifecycle(
         if ctx.force
         else ImageLifecycleIntent.ENSURE
     )
-    scope = ProjectImageScope(ctx.project_root, base_result)
+    scope = ProjectImageScope(ctx.project_root)
     try:
         if report_requirements:
             _report_project_requirements(
@@ -2281,25 +2280,8 @@ def _project_config_migration_preflight(ctx: InitContext, path: Path) -> bool:
     return False
 
 
-def _usable_bootstrap_base(result: BootstrapResult) -> LifecycleResult | None:
-    base = result.base_image
-    if base is None or base.status not in {
-        ImageLifecycleStatus.CURRENT,
-        ImageLifecycleStatus.CHANGED,
-        ImageLifecycleStatus.EXTERNAL,
-    }:
-        return None
-    return base
-
-
-def _reconcile_initialized_image(
-    ctx: InitContext,
-    bootstrap_result: BootstrapResult | None,
-) -> LifecycleResult | None:
-    """Reconcile the Project image against Bootstrap's verified host base."""
-    base = _usable_bootstrap_base(bootstrap_result) if bootstrap_result else None
-    if base is not None:
-        return _step_image_lifecycle(ctx, base_result=base, report_requirements=True)
+def _reconcile_initialized_image(ctx: InitContext) -> LifecycleResult | None:
+    """Full-init image step: reconcile the Project image and report left-out pip requirements."""
     return _step_image_lifecycle(ctx, report_requirements=True)
 
 
@@ -2375,7 +2357,6 @@ def _run_project_init_steps(
     selection: AgentSelection,
     agent_config_path: Path,
     guidance_plan: InitPlan | None,
-    bootstrap_result: BootstrapResult | None = None,
 ) -> int:
     """Run seed-only or full project mutations after preflight succeeds."""
     if getattr(args, "seed", False):
@@ -2399,7 +2380,7 @@ def _run_project_init_steps(
         skip_credentials=getattr(args, "skip_credentials", False),
     )
     pdk_root = nangate_pdk.cache_root()
-    image_result = _reconcile_initialized_image(ctx, bootstrap_result)
+    image_result = _reconcile_initialized_image(ctx)
     runtime_image_id = _selected_runtime_image_id(image_result)
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
@@ -2556,8 +2537,7 @@ def _run_init_unlocked(
     if not _project_checkout_ready(ctx) or not _reconcile_booley_dir_pin(ctx, args):
         return _print_summary(ctx)
 
-    bootstrap_result = _reconcile_init_bootstrap(ctx, args)
-    if bootstrap_result is None:
+    if _reconcile_init_bootstrap(ctx, args) is None:
         return _print_summary(ctx)
 
     seed = getattr(args, "seed", False)
@@ -2581,7 +2561,6 @@ def _run_init_unlocked(
             selection,
             agent_config_path,
             guidance_plan,
-            bootstrap_result,
         )
 
 

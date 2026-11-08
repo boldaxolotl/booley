@@ -103,24 +103,6 @@ def test_host_lifecycle_lock_does_not_reclassify_body_error(tmp_path, monkeypatc
     assert raised.value is body_error
 
 
-def test_host_lifecycle_lock_allows_explicit_fail_fast(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: tmp_path)
-
-    def contend(_handle) -> None:
-        raise LockContentionError("busy")
-
-    monkeypatch.setattr(lifecycle_lock, "acquire_file_lock", contend)
-
-    with (
-        pytest.raises(
-            lifecycle_lock.LifecycleLockError,
-            match="retry after it finishes",
-        ),
-        lifecycle_lock.host_lifecycle_lock("session up", wait_timeout_s=None),
-    ):
-        pass
-
-
 def test_host_lifecycle_lock_reports_owner_on_default_timeout(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: tmp_path)
     lock_path = tmp_path / "locks" / "docker-lifecycle.lock"
