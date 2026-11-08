@@ -355,7 +355,7 @@ def _connection_label(row: SessionRow, now: float) -> str:
 
 
 def _owner_handle(job: JobView, handles: Mapping[str, str] | None) -> str | None:
-    """The owning session's handle; None for a standalone Job."""
+    """The owning session's handle, else its readable key; None for a standalone Job."""
     key = job.record.session_key
     if key is None:
         return None
@@ -1091,8 +1091,9 @@ class DashboardApp(App[None]):
     def _next_owner(self) -> str | Owner | None:
         """The owner filter after the current one; an unknown current one wraps to all sessions.
 
-        The current entry is found by label: the key that represents a handle
-        changes when an aliased session connects.
+        The current entry is found by its id (a handle or the stored key, see
+        ``_owner_filter_id``): the key that represents a handle changes when an
+        aliased session connects.
         """
         choices = self._owner_choices()
         labels = [label for _, label in choices]

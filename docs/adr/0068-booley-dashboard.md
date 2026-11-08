@@ -414,9 +414,9 @@ Consequences:
 - A background shell the agent does wait for, such as a test run, still shows waiting for user input after `Stop`.
 - The hook ships in the Sandbox Image; a session running an older image keeps the previous mapping until the image is rebuilt.
 
-## Amendments (2026-11-08): Readable process keys
+## Amendments (2026-11-08): Readable process keys (#2887)
 
-A `booley chat` tab is keyed `pid:<scope>:<pid>:<start>`, and on Linux the scope is itself `pid:[<namespace inode>]`, so the Dashboard printed `pid:pid:[4026532225]:4865:81331`. The key is a durable identifier, not a name a human reads. This amendment supersedes, for process keys only, the 2026-10-14 rule "Full keys remain secondary detail text" and the Pruning rule that an owner "shows the owner's session key when that session has no handle".
+A `booley chat` tab is keyed `pid:<scope>:<pid>:<start>`, and on Linux the scope is itself `pid:[<namespace inode>]`, so the Dashboard printed `pid:pid:[4026532225]:4865:81331`. The key is a durable identifier, not a name a human reads. This amendment supersedes, for process keys only, the 2026-10-14 rule "Full keys remain secondary detail text" and the 2026-10-29 Handle pruning rule that an owner "shows the owner's session key when that session has no handle".
 
 - **Process keys render as a PID identity.** Wherever the Dashboard shows a process key (the `Session key:` line of session details, the `Session key` and `Owner` lines of Job details, the Jobs list owner cell, and the Jobs owner filter in its orientation, empty-state text and top bar), it shows `PID <pid> · ns <inode>` for a Linux key. Windows and POSIX `ps` keys carry no namespace and show `PID <pid>`. The namespace is always shown for a Linux key, not only when it differs from the Dashboard's own, because retained Jobs can name owners from an earlier container where the namespace is what tells a reused PID apart.
 - **Everything else is unchanged.** A key that is not a process key (`codex:<thread>`, `worktree:path:...`), a handle, and a malformed `pid:` key display as stored. The row label stays `Session key:`.

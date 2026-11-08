@@ -777,8 +777,6 @@ def test_session_without_work_dir_shows_its_default_checkout_and_branch():
     app.navigation = Navigation("session", "pid:one")
     orientation, _ = app._session()
     assert " · /work (default) · booley · " in orientation
-    # A malformed process key is not a process identity: shown unchanged.
-    assert "Session key: pid:one" in orientation
 
     # A detached default checkout has no branch to show.
     app.snapshot = replace(

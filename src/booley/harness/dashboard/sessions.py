@@ -1,7 +1,8 @@
 """Grouped, column-aligned rows of the Dashboard Sessions overview.
 
 Pure presentation, no Textual: per-session facts and the list width in, ordered
-group headers and fitted rows out. Widths count terminal cells, not characters.
+group headers and fitted rows out, plus the readable form of a session key.
+Widths count terminal cells, not characters.
 """
 
 from __future__ import annotations
