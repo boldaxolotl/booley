@@ -242,6 +242,13 @@ _ACTIVITY_STYLE = {
 BOOLEY_ACTIVITY = "Booley activity"
 
 
+def _back_target(view: str) -> str:
+    """What Down returns to from the top bar: Help, a detail, or the list."""
+    if view == "help":
+        return "Help"
+    return "detail" if view in DEDICATED_VIEWS else "list"
+
+
 def _orientation_text(orientation: str | Text) -> Text:
     """Bold the title line of a plain orientation; a styled one is shown as built."""
     if isinstance(orientation, Text):
@@ -658,7 +665,7 @@ class DashboardApp(App[None]):
     #notices { height: auto; max-height: 6; display: none; }
     #body { height: 1fr; }
     #list { width: 1fr; }
-    #aside { width: 1fr; display: none; padding: 1; }
+    #aside { width: 1fr; display: none; padding: 0 1; }
     #empty { height: auto; }
     #footer { dock: bottom; height: 1; color: $text-muted; }
     """
@@ -852,6 +859,9 @@ class DashboardApp(App[None]):
             self._set_jobs_filter(job_filter=message.value)
         elif message.kind == OWNER:
             self._set_jobs_filter(session=self._next_owner())
+        # A scroll view has no list to hand the keyboard back to: it takes it (#2886).
+        if self.navigation.view in DEDICATED_VIEWS:
+            self._focus_content()
 
     def on_top_bar_left(self, _message: TopBar.Left) -> None:
         self._focus_content()
@@ -1335,11 +1345,14 @@ class DashboardApp(App[None]):
         """Refresh content while retaining row identity and scroll position."""
         orientation, keys, rows = self._content()
         self.query_one("#orientation", Static).update(_orientation_text(orientation))
-        self.query_one("#empty", Static).update(
+        empty = self.query_one("#empty", Static)
+        empty_text = (
             NO_SESSIONS
             if not self.snapshot.sessions and self.navigation.view == "overview"
             else (self._jobs_empty_text() if not rows and self.navigation.view == "jobs" else "")
         )
+        empty.update(empty_text)
+        empty.display = bool(empty_text)  # no text, no row (#2886)
         self.query_one("#resources", Static).update(_resource_text(self.snapshot.resources))
         self.query_one("#health", Static).update(_doctor_text(self.snapshot))
         notices = self.query_one("#notices", Static)
@@ -1642,6 +1655,8 @@ class DashboardApp(App[None]):
                     enter_opens=self._enter_target() is not None,
                     jobs_list=self.navigation.view == "jobs",
                     nested=len(self.windows[self.window]) > 1,
+                    scrolling=self.focused is self.query_one("#aside"),
+                    back_to=_back_target(self.navigation.view),
                 )
             )
 
