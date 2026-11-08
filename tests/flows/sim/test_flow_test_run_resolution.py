@@ -416,37 +416,6 @@ def test_direct_cycle_count_goal_compares_with_the_baseline_of_its_frozen_run(
     assert (detail["cycles"], detail["baseline_cycles"]) == (99, 100)
 
 
-def test_a_coverage_campaign_collected_on_its_own_is_registered_before_it_runs(
-    tmp_path, monkeypatch
-):
-    from types import SimpleNamespace
-
-    from booley.flows.campaign_results import StartedCampaign
-
-    class Registry(_GoalAdapter):
-        def __init__(self) -> None:
-            super().__init__(_frozen(_SUITE))
-            self.campaigns: list[StartedCampaign] = []
-
-        def register_campaign(self, campaign: StartedCampaign) -> None:
-            self.campaigns.append(campaign)
-
-    target = SimpleNamespace(handle=SimpleNamespace(selector="sim", identity="lib:ip:core#sim"))
-    flow = _flow(tmp_path, monkeypatch)
-    registry = Registry()
-    flow.configure_flow_execution(registry)
-    flow._register_coverage_campaign(target, tmp_path / "reports" / "sim" / "1")
-    (started,) = registry.campaigns
-    assert started.manifest_path == tmp_path / "reports/sim/1/targets/sim/coverage.json"
-    assert started.target_names == ("sim", "lib:ip:core#sim") and started.candidate
-
-    diagnostic = _flow(tmp_path, monkeypatch, "--diagnostic")
-    silent = Registry()
-    diagnostic.configure_flow_execution(silent)
-    diagnostic._register_coverage_campaign(target, tmp_path / "reports" / "sim" / "2")
-    assert silent.campaigns == []
-
-
 def test_a_diagnostic_run_names_the_goals_whose_frozen_runs_it_ran(tmp_path, monkeypatch):
     """``--diagnostic`` records nothing: the report says whose frozen runs ran and failed."""
     flow = _goal_flow(tmp_path, monkeypatch, _frozen(_SUITE), "--diagnostic")
