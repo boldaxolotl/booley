@@ -1027,7 +1027,7 @@ async def test_time_display_pilot_snapshots(monkeypatch):
     assert "Started 10m ago" in orientation
     assert "· 10m ago" in orientation
     assert "working · 10m 00s" in orientation.lower()
-    assert "14:00:00" in str(app._session_activity(None))
+    assert "14:00:00" in str(app._session_activity(None, app._session_row()[0]))
     for size in ((140, 40), (80, 25)):
         await _capture_time_pilot(monkeypatch, current, completed, orientation, size)
 
