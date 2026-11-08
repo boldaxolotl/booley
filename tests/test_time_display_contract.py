@@ -110,14 +110,14 @@ def _protected_outputs(root, monkeypatch):
 def _protected_campaign(root, monkeypatch):
     """Campaign report lines and ``simulation.json`` test entries for a fixed passing campaign."""
     from booley.flows.sim.acceptance import _campaign_projection
-    from booley.runtime.booley_dir import reset_cache
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _public_cycle_campaign
 
     # These budgets size the cycle lines, so the golden must not depend on the host.
     monkeypatch.delenv("BOOLEY_MCP_MAX_STDOUT_BYTES", raising=False)
     monkeypatch.delenv("BOOLEY_MCP_MAX_STDERR_BYTES", raising=False)
     root.mkdir()
-    reset_cache()
+    # monkeypatch restores the cache entry at teardown, so later tests do not see this root.
+    monkeypatch.setattr("booley.core.booley_dir._cache", None)
     monkeypatch.setenv("BOOLEY_DIR", str(root))
     outcome = _public_cycle_campaign(root, monkeypatch)
     manifest = str(outcome.manifest_path.resolve())

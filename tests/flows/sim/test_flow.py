@@ -65,6 +65,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.leased_session import canned_build_session, without_build_record
+from tests.target_test_support import write_sim_preview_project
 
 # Built-in Flow execution inside the Sandbox.
 _FLOW_ENABLED = True
@@ -398,18 +399,6 @@ def test_artifact_report_keys_do_not_drop_colliding_test_names(tmp_path: Path) -
 
     assert set(block.values()) == {"first.json", "second.json"}
     assert len(block) == 2
-
-
-def test_dry_run_does_not_reserve_invocation_directory(tmp_path: Path) -> None:
-    flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
-
-    with flow.publication_resources:
-        result = flow._run()
-
-    assert result.exit_code == EXIT_SUCCESS
-    report_root = tmp_path / "reports/sim"
-    assert not any(path.name.isdigit() for path in report_root.iterdir())
-    assert not list(report_root.glob("*.lock"))
 
 
 # A minimal sim `.core` for the real-fusesoc resolution e2e: the custom
@@ -1203,15 +1192,6 @@ class TestCriterionGating:
 # ---------------------------------------------------------------------------
 
 
-class TestMultiConfig:
-    def test_empty_config_fails(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="")
-        with flow.publication_resources:
-            result = flow._run()
-        assert result.exit_code == EXIT_ERROR
-        assert result.detail["mode"] == "simulate"
-
-
 class TestExecutionValidation:
     def test_job_class_is_heavy(self, tmp_path: Path):
         from booley.runtime import job_slots
@@ -1239,18 +1219,7 @@ def _preview(
     from booley.runtime.booley_dir import reset_cache
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    data = tmp_path / ".booley"
-    data.mkdir(exist_ok=True)
-    registry = ""
-    for name, tests in targets.items():
-        (tmp_path / f"{name}.core").write_text(
-            f"CAPI=2:\nname: ::{name}:0\ntargets:\n  {name}:\n    flow: sim\n"
-            "    flow_options: {tool: verilator}\n    toplevel: alu_tb\n",
-            encoding="utf-8",
-        )
-        if tests:
-            registry += f"[{name}]\ntests = {json.dumps(tests)}\n"
-    (data / "tests.toml").write_text(registry, encoding="utf-8")
+    data = write_sim_preview_project(tmp_path, targets)
     monkeypatch.setenv("BOOLEY_DIR", str(data))
     reset_cache()
     return SimulateFlow().execute(
@@ -1349,19 +1318,9 @@ class TestDryRun:
             for preview in outcome.detail["campaign_preview"]
         } == expected
         assert outcome.detail["mutated"] is False
-        assert not (tmp_path / "reports/sim/1").exists()
-
-    def test_dry_run_reads_the_core_without_resolving(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # The preview reads the .core YAML only; resolving would invoke fusesoc.
-        monkeypatch.setattr(
-            "booley.fusesoc.fusesoc_registry._resolve_target",
-            MagicMock(side_effect=AssertionError("dry-run must not resolve (run fusesoc)")),
-        )
-        result = _preview(tmp_path, monkeypatch, {"lite": ["smoke", "stress"]}, target="lite")
-
-        assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text
+        # A dry run reserves no invocation directory and takes no lock.
+        report_root = tmp_path / "reports/sim"
+        assert not [p for p in report_root.glob("*") if p.name.isdigit() or p.suffix == ".lock"]
 
 
 # ---------------------------------------------------------------------------

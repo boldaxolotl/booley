@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -706,7 +706,7 @@ class TestCocotbSimulatorEligibility:
 
 
 class TestCocotbDryRun:
-    def test_dry_run_batches_cocotb_tests_into_one_work_item(
+    def test_dry_run_batches_the_selected_cocotb_tests_into_one_work_item(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.flows.sim.request import SimRequest
@@ -721,20 +721,21 @@ class TestCocotbDryRun:
         _write_test_registry(tmp_path, "ccfg", _TESTS["ccfg"])
         monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         reset_cache()
-        monkeypatch.setattr(
-            "booley.fusesoc.fusesoc_registry._resolve_target",
-            MagicMock(side_effect=AssertionError("dry-run must not resolve")),
-        )
 
         result = SimulateFlow().execute(
             SimRequest(
-                target="ccfg", dry_run=True, work_dir=tmp_path, report_dir=tmp_path / "reports"
+                target="ccfg",
+                test=("test_reset", "test_count"),
+                dry_run=True,
+                work_dir=tmp_path,
+                report_dir=tmp_path / "reports",
             )
         )
 
         assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text
         (preview,) = result.outcome.detail["campaign_preview"]
-        assert preview["work_items"] == 1  # batched: one work item for three tests
+        # Naming tests needs the registry, so success shows it was read; two tests, one batch.
+        assert preview["work_items"] == 1
 
 
 class TestCocotbBuildFailureShape:

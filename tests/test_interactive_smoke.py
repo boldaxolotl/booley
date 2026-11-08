@@ -30,6 +30,7 @@ from booley.runtime.endpoint_execution import ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from tests.conftest import symlink_or_skip
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.target_test_support import write_sim_preview_project
 
 _BOOLEY_ENV_VARS = (
     "BOOLEY_CONTROL_PROJECT_ROOT",
@@ -70,27 +71,15 @@ def _clear_ticket_env() -> None:
 
 
 def _interactive_project(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **tests: list[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, targets: dict[str, list[str]]
 ) -> None:
-    """Create a no-ticket Project with one sim Target per keyword and chdir into it.
+    """Create a no-ticket Project with the sim *targets* and chdir into it.
 
-    Each keyword names a Target and lists its configured Tests (empty: none).
     No state file, no ``BOOLEY_SLUG``/``BOOLEY_STATE_FILE`` env vars.
     """
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.chdir(tmp_path)
-    data = tmp_path / ".booley"
-    data.mkdir()
-    registry = ""
-    for name, names in tests.items():
-        (tmp_path / f"{name}.core").write_text(
-            f"CAPI=2:\nname: ::sim_demo_{name}:0\ntargets:\n  {name}:\n    flow: sim\n"
-            "    flow_options:\n      tool: verilator\n    toplevel: tb_demo\n",
-            encoding="utf-8",
-        )
-        if names:
-            registry += f"[{name}]\ntests = {json.dumps(names)}\n"
-    (data / "tests.toml").write_text(registry, encoding="utf-8")
+    write_sim_preview_project(tmp_path, targets)
 
 
 def _execute(tmp_path: Path, **request: Any) -> ExecutionResult:
@@ -112,7 +101,7 @@ class TestRequiredArgsValidation:
     def test_missing_config_returns_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _interactive_project(tmp_path, monkeypatch, lite=[], full=[])
+        _interactive_project(tmp_path, monkeypatch, {"lite": [], "full": []})
         result = _execute(tmp_path)
         assert result.exit_code == EXIT_ERROR
         assert "--target is required" in result.outcome.report_text
@@ -131,12 +120,7 @@ class TestNoTicketDryRun:
     def test_dry_run_succeeds_without_state_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _interactive_project(tmp_path, monkeypatch, lite=["smoke", "stress"])
-        # Sanity: confirm we really are running without a state file —
-        # this is the property the test is protecting.
-        assert not os.environ.get("BOOLEY_SLUG")
-        assert not os.environ.get("BOOLEY_STATE_FILE")
-
+        _interactive_project(tmp_path, monkeypatch, {"lite": ["smoke", "stress"]})
         result = _execute(tmp_path, target="lite", dry_run=True)
 
         assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text

@@ -83,7 +83,7 @@ def _documented_fields(flow_name: str) -> set[str]:
 
 
 def _assert_documented(flow_name: str, payload: dict[str, Any]) -> None:
-    # JSON Schema keywords such as ``$schema`` are documented without the sigil.
+    # The identifier pattern in _documented_fields drops the ``$`` of keywords such as ``$schema``.
     missing = {key.removeprefix("$") for key in payload} - _documented_fields(flow_name)
     assert not missing, f"{flow_name} structured fields missing from reference: {sorted(missing)}"
 
@@ -185,6 +185,10 @@ def test_simulation_build_and_dry_run_timeout_contract_is_documented() -> None:
 def test_sim_report_fields_stay_documented(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The campaign helper relies on the isolation that tests/flows fixtures give.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    monkeypatch.setattr("booley.core.booley_dir._cache", None)
     # A coverage campaign writes the ordinary projection plus the coverage fields.
     _native_cycle_campaign(tmp_path, monkeypatch)
     (path,) = (tmp_path / "reports").glob("sim/*/targets/*/simulation.json")
