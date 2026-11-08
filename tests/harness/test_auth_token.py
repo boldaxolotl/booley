@@ -134,8 +134,6 @@ class TestCodex:
     def test_spec_seeds_codex_auth_onto_writable_volume(self, home):
         # The regression: a read-only bind at ~/.codex/auth.json makes Codex's
         # own refresh write FAIL, 401ing the session once the token expires.
-        from booley.runtime import devcontainer as dc
-
         spec = build_spec(dc.APP_CODEX, login_source="/home/u/.codex/auth.json")
 
         assert all(f"target={dc.AGENT_HOME}/.codex/auth.json" not in m for m in spec["mounts"])

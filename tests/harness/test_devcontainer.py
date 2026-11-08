@@ -81,7 +81,7 @@ class TestBuildSpec:
     def test_credential_plan_is_required(self):
         """The builder has no no-plan path: omitting ``cli_seeds`` is a call error."""
         with pytest.raises(TypeError, match="cli_seeds"):
-            dc.build_devcontainer_spec(dc.APP_CLAUDE)  # type: ignore[call-arg]
+            dc.build_devcontainer_spec(dc.APP_CLAUDE)
 
     def test_proxy_env_points_at_sidecar(self):
         env = build_spec(dc.APP_NONE)["remoteEnv"]

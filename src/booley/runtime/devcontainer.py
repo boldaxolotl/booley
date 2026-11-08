@@ -843,7 +843,6 @@ def _build_remote_env(app: str, local_timezone: str, egress: str) -> dict[str, s
     }
     if local_timezone:
         remote_env[LOCAL_TIMEZONE_ENV] = local_timezone
-
     return remote_env
 
 
