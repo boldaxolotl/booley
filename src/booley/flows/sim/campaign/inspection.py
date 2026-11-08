@@ -14,7 +14,6 @@ from booley.flows.campaign_results import (
     DurableCampaignResults,
     StartedCampaign,
 )
-from booley.runtime.execution_records import ExecutionId
 
 from .codec import SimulationCampaignIntegrityError
 from .coordinator import collected_result_facts
@@ -248,72 +247,28 @@ def recover_retained_campaign_resources(
     status: RetainedCampaignStatus, project_data: Path | None, *, booley_dir: Path | None = None
 ) -> None:
     """Recover interrupted lanes and interrupted owned run directories."""
-    from .child_protocol import ChildExecutionRegistry
-    from .run_directory import (
-        cleanup_interrupted_run_directory,
-        restore_run_directory_from_project_data,
-    )
+    from .child_protocol import recover_interrupted_attempts
 
     store = _store_for_manifest(status.manifest_path, booley_dir)
-    surviving_runs = _surviving_owned_run_directories(store, status.interrupted)
-    interrupted_lanes = _interrupted_lane_ids(store, status.interrupted)
-    if (surviving_runs or interrupted_lanes) and project_data is None:
-        raise SimulationCampaignIntegrityError(
-            "Booley Directory is required to recover retained Campaign resources"
-        )
+    interrupted = {
+        work_item_id: attempt.document
+        for work_item_id in status.interrupted
+        if (attempt := store.latest_attempt(work_item_id)) is not None
+    }
     if project_data is None:
+        if any(_has_resources_to_recover(document) for document in interrupted.values()):
+            raise SimulationCampaignIntegrityError(
+                "Booley Directory is required to recover retained Campaign resources"
+            )
         return
-    registry = ChildExecutionRegistry.from_project_data(
-        status.manifest, project_data, booley_dir=booley_dir
-    )
-    for lane_id in interrupted_lanes:
-        # Fail closed before any interrupted run directory is removed.
-        registry.recover_lane(lane_id)
-    for work_item_id in status.interrupted:
-        attempt = store.latest_attempt(work_item_id)
-        if attempt is None:
-            continue
-        document = attempt.document
-        run = restore_run_directory_from_project_data(
-            cast(Mapping[str, object], document["run_directory"]),
-            project_data=project_data,
-            booley_dir=booley_dir,
-        )
-        cleanup_interrupted_run_directory(
-            run,
-            identity={
-                "campaign_id": cast(str, document["campaign_id"]),
-                "work_item_id": work_item_id,
-                "attempt_id": cast(str, document["attempt_id"]),
-            },
-        )
+    recover_interrupted_attempts(status.manifest, interrupted, project_data, booley_dir=booley_dir)
 
 
-def _interrupted_lane_ids(
-    store: CampaignStore, interrupted: tuple[str, ...]
-) -> tuple[ExecutionId, ...]:
-    """Name the lane executions of interrupted attempts that were scheduled on a lane."""
-    lanes: list[ExecutionId] = []
-    for work_item_id in interrupted:
-        attempt = store.latest_attempt(work_item_id)
-        if attempt is not None and attempt.document["child_execution_id"] is not None:
-            lanes.append(ExecutionId(cast(str, attempt.document["child_execution_id"])))
-    return tuple(lanes)
-
-
-def _surviving_owned_run_directories(
-    store: CampaignStore, interrupted: tuple[str, ...]
-) -> tuple[Path, ...]:
-    surviving: list[Path] = []
-    for work_item_id in interrupted:
-        attempt = store.latest_attempt(work_item_id)
-        if attempt is None:
-            continue
-        run = cast(Mapping[str, object], attempt.document["run_directory"])
-        path = Path(cast(str, run["resolved"]))
-        if run["owned"] is True and path.exists():
-            surviving.append(path)
-    return tuple(surviving)
+def _has_resources_to_recover(attempt: Mapping[str, object]) -> bool:
+    """Whether an interrupted attempt ran on a lane or still has an owned run directory."""
+    run = cast(Mapping[str, object], attempt["run_directory"])
+    owned_run = run["owned"] is True and Path(cast(str, run["resolved"])).exists()
+    return attempt["child_execution_id"] is not None or owned_run
 
 
 def started_campaign(manifest_path: Path) -> StartedCampaign:

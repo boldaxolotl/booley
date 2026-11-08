@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover - Windows compatibility
     resource = None  # type: ignore[assignment]
 
 from booley.criteria.state import CriterionEntry, DevelopmentState
+from booley.flows.endpoint_admission import AdmissionGate
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.sim.acceptance import record_campaign_acceptance
 from booley.flows.sim.campaign import (
@@ -61,7 +62,7 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR, EndpointOutcome
-from booley.runtime.execution_records import ExecutionId
+from booley.runtime.execution_records import ExecutionId, atomic_write_json, execution_paths
 from tests.criteria.ledger_support import FixtureRecorder
 from tests.flows.sim.test_campaign_phase3_adversarial import _completed
 from tests.flows.sim.test_campaign_phase3_integrity import _admission, _manifest_for
@@ -980,8 +981,6 @@ def _interrupt_latest_attempt(
     Returns the owned run directory and the rewritten attempt document. With ``lane_id`` the
     attempt names that lane execution (a Campaign written by the current release).
     """
-    from booley.flows.sim.campaign.run_directory import expand_run_directory
-
     status = inspect_retained_campaign(store.manifest_path)
     work_item_id = status.completed[0]
     (store.work_item_directory(work_item_id) / "result.json").unlink()
@@ -991,12 +990,21 @@ def _interrupt_latest_attempt(
     progress = json.loads(progress_path.read_text())
     progress.update(completed_targets=[], pending_targets=["sim"], complete=False, phase="running")
     progress_path.write_text(json.dumps(progress))
+    return _own_attempt_run_directory(tmp_path, store, work_item_id, lane_id)
+
+
+def _own_attempt_run_directory(
+    tmp_path: Path, store: CampaignStore, work_item_id: str, lane_id: str | None
+) -> tuple[Path, dict[str, object]]:
+    """Give one work item's attempt an owned run directory and the lane it ran on."""
+    from booley.flows.sim.campaign.run_directory import expand_run_directory
+
     attempt_path = next(
         (store.work_item_directory(work_item_id) / "attempts").glob("*/attempt.json")
     )
     document = json.loads(attempt_path.read_bytes())
     project_root = tmp_path / "checkout"
-    project_root.mkdir()
+    project_root.mkdir(exist_ok=True)
     run = expand_run_directory(
         "work/{campaign}/{test}/{attempt}",
         project_root=project_root,
@@ -1075,6 +1083,64 @@ def test_full_pruning_recovers_interrupted_lane_before_run_directory_cleanup(
         assert (reports / "sim/1").exists()
 
 
+def test_resume_keeps_run_directories_of_an_unrecoverable_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resume recovers every lane first: one that cannot be proven terminal keeps all runs."""
+    from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
+    from tests.flows.sim.test_campaign_phase4 import (
+        _CampaignAdmissionEndpoint,
+        _interrupted_campaign,
+    )
+
+    case = _interrupted_campaign(tmp_path, monkeypatch, None)
+    project_data = case.project / ".booley"
+    attempts = {
+        item_id: json.loads(
+            next(
+                (case.store.work_item_directory(item_id) / "attempts").glob("*/attempt.json")
+            ).read_bytes()
+        )
+        for item_id in case.store.scan().complete
+    }
+    # The outer lane's item comes first in manifest order, ahead of the child lanes' items.
+    interrupted = [
+        item_id for item_id, doc in attempts.items() if doc["child_execution_id"] is None
+    ]
+    interrupted += [item_id for item_id, doc in attempts.items() if doc["child_execution_id"]][:1]
+    runs = []
+    for item_id in interrupted:
+        (case.store.work_item_directory(item_id) / "result.json").unlink()
+        lane = attempts[item_id]["child_execution_id"]
+        run, _document = _own_attempt_run_directory(tmp_path, case.store, item_id, lane)
+        runs.append(run)
+        if lane is not None:
+            # The crash left this lane's execution unfinished.
+            lane_record = execution_paths(ExecutionId(lane), booley_dir=project_data).record
+            atomic_write_json(lane_record, {"state": "waiting", "tree_terminal": False})
+    assert case.store.scan().interrupted == tuple(interrupted)
+
+    case.fault_enabled[0] = False
+    monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _self, _id: False)
+    with (
+        AdmissionGate(_CampaignAdmissionEndpoint(case.slots, None)).enter() as admission,
+        pytest.raises(SimulationCampaignIntegrityError, match="recovery is incomplete"),
+    ):
+        case.campaign.run(
+            ResumeCampaignRunRequest(
+                case.validated,
+                case.plan,
+                case.project,
+                case.invocation.parent,
+                CampaignPolicy(),
+                case.invocation,
+                admission,
+            )
+        )
+
+    assert all(run.exists() for run in runs)
+
+
 @pytest.mark.usefixtures("mandatory_file_locks")
 def test_complete_campaign_pruning_accepts_windows_lock_sentinel(tmp_path: Path) -> None:
     reports, project_data, store = _retained_invocation(tmp_path)
@@ -1149,6 +1215,20 @@ def test_interrupted_campaign_without_surviving_resources_needs_no_project_data(
 
     assert not (reports / "sim/1").exists()
     assert list((reports / "sim/.pruned-1").iterdir()) == []
+
+
+def test_interrupted_campaign_with_surviving_run_directory_needs_project_data(
+    tmp_path: Path,
+) -> None:
+    reports, _project_data, store = _retained_invocation(
+        tmp_path, reports=tmp_path / "external-reports"
+    )
+    run_path, _document = _interrupt_latest_attempt(tmp_path, reports, store)
+
+    with pytest.raises(CampaignRetentionError, match="Booley Directory is required"):
+        prune_invocation(reports, 1)
+
+    assert run_path.exists()
 
 
 def test_full_pruning_refuses_a_campaign_owned_by_resume(tmp_path: Path) -> None:
