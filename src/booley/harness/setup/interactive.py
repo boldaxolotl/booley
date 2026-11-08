@@ -99,10 +99,6 @@ def inspect(request: InteractiveInitRequest) -> InteractiveInitPlan:
         not licensed and shutil.which("docker") and _unlicensed_relay_pending(request.project_root)
     )
     desired_issuance = issuance or prepared.prospective_issuance
-    if desired_issuance is None:
-        raise session_issuance.RuntimeSpecError(
-            "prepared Sandbox specification lacks a prospective issuance"
-        )
     runtime_pending = session_runtime.plan_stopped_headless_runtime_reconciliation(
         request.project_root, desired_issuance
     ).pending
