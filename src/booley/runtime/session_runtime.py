@@ -1828,7 +1828,7 @@ def _writable_bind(raw: object) -> bool:
 
 def container_matches_issuance(  # noqa: PLR0911, PLR0912, PLR0915 - fail-closed inspect ladder
     name: str,
-    issuance: object,
+    issuance: Issuance,
     *,
     spec: dict,
     workspace: Path,

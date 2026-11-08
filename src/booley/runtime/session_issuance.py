@@ -391,10 +391,11 @@ def recovery_stamp_path(project_root: Path) -> Path:
 def load_issued_snapshot(project_root: Path) -> Issuance:
     """Load structurally valid prior issuance without consulting current authority.
 
-    Session refresh uses this recovery view before replacing an existing
-    container.  The current grant may legitimately have changed — healing that
-    drift is the point of refresh — while the sealed prior licence decision and
-    Project identity still have to be trusted before Docker mutation.
+    Session refresh reads the replacement issuance through this view after
+    reissuing, and remedy selection reads the prior one.  The current grant
+    may legitimately have changed — healing that drift is the point of
+    refresh — while the sealed licence decision and Project identity still
+    have to be trusted before Docker mutation.
     """
     project = project_root.resolve(strict=True)
     issuance = _load_stamp(_stamp_read_path(project))

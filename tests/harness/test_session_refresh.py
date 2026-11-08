@@ -746,6 +746,23 @@ def test_unauthenticated_predecessor_requires_reseed_even_with_valid_stamp(tmp_p
     assert "booley session refresh" not in str(caught.value)
 
 
+@pytest.mark.parametrize(
+    ("spec_content", "reason"),
+    [
+        (None, "prior Sandbox spec is missing"),
+        (b"{", "prior Sandbox spec is not valid JSON"),
+        (b"\xff", "prior Sandbox spec is not valid JSON"),
+        (b"[]", "prior Sandbox spec is not an object"),
+    ],
+)
+def test_recovery_issuance_refuses_an_unusable_prior_spec_snapshot(
+    tmp_path: Path, spec_content: bytes | None, reason: str
+) -> None:
+    snapshot = replace(_snapshot(tmp_path), spec_content=spec_content)
+    with pytest.raises(sr.SessionError, match=f"cannot preserve the prior Sandbox: {reason}"):
+        session_refresh._load_recovery_issuance(tmp_path, snapshot)
+
+
 @pytest.mark.parametrize("stealth", [False, True])
 def test_forward_finalization_uses_authorized_dashboard_source_and_exclusions(
     tmp_path, monkeypatch, isolated_refresh_outputs, stealth

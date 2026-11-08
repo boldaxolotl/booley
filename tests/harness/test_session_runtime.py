@@ -2081,12 +2081,12 @@ class TestUp:
         with (
             patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
             patch.object(sr, "container_matches_issuance", return_value=False),
-            patch.object(sr, "verify_refreshed_session") as verify_payload,
+            patch.object(sr, "verify_refreshed_session") as verify,
             pytest.raises(sr.SessionError, match="labels or network topology"),
         ):
             sr.up(workspace, rebuild=True, expected_image_id="sha256:fresh")
 
-        verify_payload.assert_not_called()
+        verify.assert_not_called()
         assert ["docker", "rm", "-f", name] in [_argv_of(call) for call in run.call_args_list]
 
     def test_old_container_cleanup_failure_keeps_verified_replacement(self, wired, caplog):
