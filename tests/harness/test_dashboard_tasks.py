@@ -13,6 +13,7 @@ from booley.runtime import dashboard_tasks as tasks
 from booley.runtime import devcontainer, session_issuance
 from booley.runtime.jsonc import Document
 from tests.conftest import symlink_or_skip
+from tests.devcontainer_spec_support import build_spec
 
 _REAL_TASK_FILE_TRACKED = tasks._task_file_tracked
 
@@ -321,21 +322,14 @@ def test_explicit_automatic_task_opt_out_and_knob(project):
 
 def test_spec_builder_pure_automatic_tasks_setting(tmp_path):
     before = list(tmp_path.iterdir())
-    settings = devcontainer.build_devcontainer_spec(dashboard=True)["customizations"]["vscode"][
-        "settings"
-    ]
+    settings = build_spec(dashboard=True)["customizations"]["vscode"]["settings"]
     assert settings["booley.dashboard.attachProtocol"] == 1
     assert "task.allowAutomaticTasks" not in settings
     assert (
-        devcontainer.build_devcontainer_spec()["customizations"]["vscode"]["settings"][
-            "booley.dashboard.attachProtocol"
-        ]
+        build_spec()["customizations"]["vscode"]["settings"]["booley.dashboard.attachProtocol"]
         == 0
     )
-    assert (
-        "task.allowAutomaticTasks"
-        not in devcontainer.build_devcontainer_spec()["customizations"]["vscode"]["settings"]
-    )
+    assert "task.allowAutomaticTasks" not in build_spec()["customizations"]["vscode"]["settings"]
     assert list(tmp_path.iterdir()) == before
 
 

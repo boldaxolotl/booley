@@ -14,7 +14,6 @@ from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign import coordinator
 from booley.flows.sim.campaign.capacity import HeavyCapacity, HeavyCapacityError
-from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.campaign.scheduler import BoundedCampaignScheduler
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.runtime.execution_records import ExecutionId
@@ -32,7 +31,6 @@ class _Campaign:
         self.store.publish_manifest(self.manifest)
         project = tmp_path / "project"
         (project / ".booley").mkdir(parents=True)
-        registry = ChildExecutionRegistry(self.manifest, project)
         self.slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=max_heavy))
         self.outer = self.slots.acquire(
             CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32)
@@ -49,10 +47,7 @@ class _Campaign:
             lambda: cause() is not None,
             cause,
         )
-        self.capacity = HeavyCapacity(
-            admission, terminal_proof=registry.is_terminal, recover_child=registry.cancel
-        )
-        self.registry = registry
+        self.capacity = HeavyCapacity(admission, self.manifest, project / ".booley")
         self.outer_message: str | None = None
 
     def run(self, items: int, trigger: Callable[[], None], child_failure: bool = False) -> None:
@@ -79,7 +74,6 @@ class _Campaign:
 
         scheduler = BoundedCampaignScheduler(
             self.capacity,
-            self.registry,
             allocate=lambda item: _scheduled_attempt(self.store, item),
             execute=execute,
         )
@@ -145,19 +139,15 @@ def test_outer_worker_failure_names_its_cause(tmp_path: Path) -> None:
 
 def test_child_cancellation_cause_names_a_lost_lease(tmp_path: Path) -> None:
     campaign = _Campaign(tmp_path, max_heavy=1)
-    scheduler = BoundedCampaignScheduler(
-        campaign.capacity, campaign.registry, allocate=lambda item: item, execute=lambda *_: None
-    )
     lost = threading.Event()
     permit = SimpleNamespace(
         lease_health=SimpleNamespace(lost=lost),
         token=SimpleNamespace(job_class="heavy", path=Path("child.json")),
     )
     try:
-        assert scheduler._child_cancellation_cause(permit) is None
+        assert campaign.capacity._child_cancellation_cause(permit) is None
         lost.set()
-        assert (
-            scheduler._child_cancellation_cause(permit) == "Job Slot lease lost: heavy/child.json"
-        )
+        cause = campaign.capacity._child_cancellation_cause(permit)
+        assert cause == "Job Slot lease lost: heavy/child.json"
     finally:
         campaign.slots.release(campaign.outer)

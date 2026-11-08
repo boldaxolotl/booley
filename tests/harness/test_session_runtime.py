@@ -42,6 +42,7 @@ from booley.runtime.session_admission import (
 from booley.runtime.session_admission import (
     vscode_sandboxes as real_vscode_sandboxes,
 )
+from tests.devcontainer_spec_support import build_spec
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
 from tests.harness.booley_dir_support import select_booley_dir
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
@@ -112,7 +113,7 @@ def _spec(**kwargs) -> dict:
         "booley_dir_source": "/c/ws/i2c/.booley",
         "mcp_start_command": dc.mcp_post_start_command(),
     }
-    return dc.build_devcontainer_spec("claude", **{**defaults, **kwargs})
+    return build_spec("claude", **{**defaults, **kwargs})
 
 
 def _argv(spec: dict, workspace: Path) -> list[str]:
@@ -179,7 +180,7 @@ class TestDockerRunArgv:
         assert "source=/c/ws/i2c/.booley,target=/booley-project,type=bind" in mounts
 
     def test_readonly_credential_mounts_survive_translation(self, workspace: Path):
-        spec = _spec(auth_token_source="/c/home/.credentials.json")
+        spec = _spec(login_source="/c/home/.credentials.json")
         mounts = _flag_values(_argv(spec, workspace), "--mount")
         creds = [m for m in mounts if "claude-creds-seed" in m]
         assert creds and creds[0].endswith(",readonly")
@@ -220,7 +221,7 @@ class TestDockerRunArgv:
 
     def test_oauth_token_is_resolved_not_passed_literally(self, workspace: Path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-tok")
-        spec = _spec(forward_oauth_token=True)
+        spec = _spec(credentials={"CLAUDE_CODE_OAUTH_TOKEN": "PLAN_VALUE_UNUSED"})
         argv = _argv(spec, workspace)
         env = _flag_values(argv, "-e")
         assert "CLAUDE_CODE_OAUTH_TOKEN" in env
@@ -234,7 +235,7 @@ class TestHookArgv:
         assert argv == ["docker", "exec", "c1", "bash", "-lc", "a; b"]
 
     def test_post_create_hook_from_a_real_spec_is_a_shell_string(self):
-        spec = _spec(auth_token_source="/c/home/.credentials.json")
+        spec = _spec(login_source="/c/home/.credentials.json")
         # `;`-joined, so it cannot be exec'd as argv — the shell is required.
         assert ";" in spec["postCreateCommand"]
         assert sr.hook_argv("c1", spec["postCreateCommand"])[3:5] == ["bash", "-lc"]
@@ -1113,7 +1114,7 @@ def wired(workspace: Path, request: pytest.FixtureRequest):
         ),
         patch.object(sr, "_strict_running_interactive_states", return_value=[]),
         patch.object(sr, "_strict_all_interactive_states", return_value=[]),
-        patch.object(sr, "_container_matches_issuance", return_value=True),
+        patch.object(sr, "container_matches_issuance", return_value=True),
         patch.object(sr, "_run") as run,
     ):
         run.return_value = subprocess.CompletedProcess([], 0, "", "")
@@ -1955,7 +1956,7 @@ class TestUp:
         workspace, run = wired
         with (
             patch.object(sr.idk, "container_exists", return_value=True),
-            patch.object(sr, "_container_matches_issuance", return_value=False),
+            patch.object(sr, "container_matches_issuance", return_value=False),
             pytest.raises(sr.SessionError, match="does not match the current host issuance"),
         ):
             sr.up(workspace)
@@ -2043,7 +2044,6 @@ class TestUp:
                 workspace,
                 rebuild=True,
                 expected_image_id="sha256:fresh",
-                expected_payload_fingerprint="payload-123",
             )
 
         argvs = [_argv_of(c) for c in run.call_args_list]
@@ -2071,7 +2071,6 @@ class TestUp:
                 workspace,
                 rebuild=True,
                 expected_image_id="sha256:fresh",
-                expected_payload_fingerprint="payload-123",
             )
 
         assert ["docker", "rm", "-f", name] in [_argv_of(call) for call in run.call_args_list]
@@ -2082,13 +2081,13 @@ class TestUp:
         exists = iter([False, False, True])
         with (
             patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
-            patch.object(sr, "_container_matches_issuance", return_value=False),
-            patch.object(sr, "verify_refreshed_session") as verify_payload,
+            patch.object(sr, "container_matches_issuance", return_value=False),
+            patch.object(sr, "verify_refreshed_session") as verify,
             pytest.raises(sr.SessionError, match="labels or network topology"),
         ):
             sr.up(workspace, rebuild=True, expected_image_id="sha256:fresh")
 
-        verify_payload.assert_not_called()
+        verify.assert_not_called()
         assert ["docker", "rm", "-f", name] in [_argv_of(call) for call in run.call_args_list]
 
     def test_old_container_cleanup_failure_keeps_verified_replacement(self, wired, caplog):
@@ -2298,11 +2297,6 @@ class TestUp:
         assert "restore rename failed" in str(raised.value)
         assert name in str(raised.value)
         assert raised.value.__cause__ is parking_error
-
-    def test_image_override_cannot_bypass_host_issued_spec(self, wired):
-        workspace, _run = wired
-        with pytest.raises(sr.SessionError, match="cannot bypass"):
-            sr.up(workspace, image_override="fresh-booley-image")
 
     def test_docker_run_failure_raises(self, wired):
         workspace, run = wired
@@ -3044,6 +3038,7 @@ class TestDownAndStatus:
             assert sr.down(workspace).headless is True
         commands = [_argv_of(call) for call in run.call_args_list]
         assert ["docker", "stop", sr.session_container_name(workspace)] in commands
+        assert ["docker", "rm", "-f", sr.session_container_name(workspace)] in commands
         assert not any(command[:3] == ["docker", "image", "rm"] for command in commands)
 
     def test_down_rejects_unproven_vscode_identity_before_mutation(
@@ -3389,7 +3384,7 @@ class TestRunProjectCommand:
                     name="vscode-runtime", container_id="vscode-runtime", vscode=True
                 ),
             ),
-            patch.object(sr, "_container_matches_issuance", return_value=True),
+            patch.object(sr, "container_matches_issuance", return_value=True),
             patch.object(sr, "_run_up_transaction") as start,
             patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
             patch("booley.runtime.runtime_attachment.run_command") as run,
@@ -3421,7 +3416,7 @@ class TestRunProjectCommand:
                     SimpleNamespace(name=request.name, container_id=request.name, vscode=False),
                 ],
             ),
-            patch.object(sr, "_container_matches_issuance", return_value=True),
+            patch.object(sr, "container_matches_issuance", return_value=True),
             patch.object(sr, "_run_up_transaction") as start,
             patch.object(sr, "_warn_on_stale_session_containers"),
             patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
@@ -3435,7 +3430,6 @@ class TestRunProjectCommand:
             request,
             rebuild=False,
             expected_image_id=None,
-            expected_payload_fingerprint=None,
         )
         run.assert_called_once_with(
             workspace,
@@ -3457,7 +3451,7 @@ class TestRunProjectCommand:
                     name="vscode-runtime", container_id="vscode-runtime", vscode=True
                 ),
             ),
-            patch.object(sr, "_container_matches_issuance", return_value=True),
+            patch.object(sr, "container_matches_issuance", return_value=True),
             patch.object(sr, "_run_up_transaction") as start,
             patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
             patch("booley.runtime.runtime_attachment.run_command") as run,
@@ -3533,7 +3527,7 @@ class TestRunProjectCommand:
                     name="stale-runtime", container_id="stale-runtime", vscode=True
                 ),
             ),
-            patch.object(sr, "_container_matches_issuance", return_value=False),
+            patch.object(sr, "container_matches_issuance", return_value=False),
             patch.object(sr, "_run_up_transaction") as start,
             patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
             pytest.raises(sr.SessionError, match="does not match the current host issuance"),
@@ -3551,7 +3545,7 @@ class TestRunProjectCommand:
                 "resolve_running_sandbox",
                 side_effect=sr.SessionError("multiple running Sandboxes"),
             ),
-            patch.object(sr, "_container_matches_issuance", return_value=True),
+            patch.object(sr, "container_matches_issuance", return_value=True),
             patch.object(sr, "_run_up_transaction") as start,
             patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
             pytest.raises(sr.SessionError, match="multiple running Sandboxes"),
@@ -3876,29 +3870,6 @@ class TestSessionRefresh:
 
         assert restore.call_count == 2
 
-    def test_runtime_probe_uses_isolated_import_and_exact_payload(self, tmp_path: Path):
-        image_id = "sha256:" + "a" * 64
-        completed = subprocess.CompletedProcess([], 0, stdout="payload-123\n", stderr="")
-        with (
-            patch.object(sr, "_docker_stdout", return_value=image_id),
-            patch.object(sr, "_run", return_value=completed) as run,
-        ):
-            sr.verify_refreshed_session(tmp_path, image_id, "payload-123")
-
-        argv = run.call_args.args[0]
-        assert argv[:3] == ["docker", "exec", sr.session_container_name(tmp_path)]
-        assert argv[3:6] == ["python3", "-I", "-c"]
-
-    def test_runtime_probe_rejects_payload_mismatch(self, tmp_path: Path):
-        image_id = "sha256:" + "a" * 64
-        completed = subprocess.CompletedProcess([], 0, stdout="old-payload\n", stderr="")
-        with (
-            patch.object(sr, "_docker_stdout", return_value=image_id),
-            patch.object(sr, "_run", return_value=completed),
-            pytest.raises(sr.SessionError, match="payload does not match"),
-        ):
-            sr.verify_refreshed_session(tmp_path, image_id, "payload-123")
-
     def test_runtime_probe_verifies_exact_wheel_identity(self, tmp_path: Path):
         image_id = "sha256:" + "a" * 64
         identity = json.dumps(
@@ -3920,12 +3891,14 @@ class TestSessionRefresh:
             sr.verify_refreshed_session(
                 tmp_path,
                 image_id,
-                None,
                 expected_wheel_source_fingerprint="wheel-source",
                 expected_wheel_sha256="b" * 64,
             )
 
         assert run.call_count == 1
+        argv = run.call_args.args[0]
+        assert argv[:3] == ["docker", "exec", sr.session_container_name(tmp_path)]
+        assert argv[3:6] == ["python3", "-I", "-c"]
 
     def test_runtime_probe_skips_optional_identity_checks_when_unrequested(
         self, tmp_path: Path
@@ -3935,7 +3908,7 @@ class TestSessionRefresh:
             patch.object(sr, "_docker_stdout", return_value=image_id),
             patch.object(sr, "_run") as run,
         ):
-            sr.verify_refreshed_session(tmp_path, image_id, None)
+            sr.verify_refreshed_session(tmp_path, image_id)
         run.assert_not_called()
 
     def test_runtime_probe_rejects_malformed_wheel_identity(self, tmp_path: Path):
@@ -3952,7 +3925,6 @@ class TestSessionRefresh:
             sr.verify_refreshed_session(
                 tmp_path,
                 image_id,
-                None,
                 expected_wheel_source_fingerprint="wheel-source",
             )
 
@@ -3978,7 +3950,6 @@ class TestSessionRefresh:
             sr.verify_refreshed_session(
                 tmp_path,
                 image_id,
-                None,
                 expected_wheel_source_fingerprint="wheel-source",
                 expected_wheel_sha256="b" * 64,
             )
@@ -4067,7 +4038,7 @@ def test_canonical_pin_checks_immutable_image_and_rejects_alias_mask(
 @pytest.mark.parametrize("vscode", [False, True])
 @pytest.mark.parametrize("drift", [None, "missing", "changed", "pre-image-identity"])
 def test_container_resume_requires_issued_git_environment(tmp_path, monkeypatch, vscode, drift):
-    spec = dc.build_devcontainer_spec(dc.APP_NONE, image="sha256:test")
+    spec = build_spec(dc.APP_NONE, image="sha256:test")
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
     runtime_spec.pin_image(spec)
     labels = {"devcontainer.local_folder": str(tmp_path)} if vscode else {}
@@ -4100,7 +4071,7 @@ def test_container_resume_requires_issued_git_environment(tmp_path, monkeypatch,
         "_docker_stdout",
         lambda argv: json.dumps(labels) if "--format" in argv else json.dumps([state]),
     )
-    assert sr._container_matches_issuance(
+    assert sr.container_matches_issuance(
         "test", SimpleNamespace(image_id="sha256:test"), spec=spec, workspace=tmp_path
     ) is (drift is None)
 
@@ -4115,7 +4086,7 @@ def test_container_resume_requires_issued_git_environment(tmp_path, monkeypatch,
 def test_container_resume_matches_issued_egress_topology(
     tmp_path, monkeypatch, network_constant, matches
 ):
-    spec = dc.build_devcontainer_spec(dc.APP_NONE, image="sha256:test", egress="unproxied")
+    spec = build_spec(dc.APP_NONE, image="sha256:test", egress="unproxied")
     network = getattr(dc, network_constant)
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
     runtime_spec.pin_image(spec)
@@ -4140,7 +4111,7 @@ def test_container_resume_matches_issued_egress_topology(
         lambda argv: json.dumps({}) if "--format" in argv else json.dumps([state]),
     )
     assert (
-        sr._container_matches_issuance(
+        sr.container_matches_issuance(
             "test", SimpleNamespace(image_id="sha256:test"), spec=spec, workspace=tmp_path
         )
         is matches
@@ -4148,7 +4119,7 @@ def test_container_resume_matches_issued_egress_topology(
 
 
 def test_docker_run_carries_literal_identity_and_cleanup_hooks(tmp_path):
-    spec = dc.build_devcontainer_spec(dc.APP_NONE)
+    spec = build_spec(dc.APP_NONE)
     argv = sr.docker_run_argv(spec, tmp_path, "test")
     for key, value in spec["containerEnv"].items():
         if key.startswith("GIT_CONFIG_"):
@@ -4167,7 +4138,7 @@ def test_startup_preserves_identity_drift_diagnostic(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runtime_spec, "validate", refuse)
     with pytest.raises(sr.SessionError, match=r"\[agent.git\].*refresh and recreate"):
-        sr._validate_up_request(tmp_path, None)
+        sr._validate_up_request(tmp_path)
 
 
 def test_startup_egress_drift_names_init_seed(tmp_path, monkeypatch):
@@ -4180,7 +4151,7 @@ def test_startup_egress_drift_names_init_seed(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runtime_spec, "validate", refuse)
     with pytest.raises(sr.SessionError) as raised:
-        sr._validate_up_request(tmp_path, None)
+        sr._validate_up_request(tmp_path)
     message = str(raised.value)
     assert "egress = 'unproxied'" in message
     assert "`booley init --seed`" in message
@@ -4213,7 +4184,7 @@ def test_startup_host_config_error_names_file_without_teardown(tmp_path, monkeyp
     config.write_text('[sandbox]\negress = "proxied"\n', encoding="utf-8")
     monkeypatch.setattr(sr, "_load_spec", lambda _root: {})
     with pytest.raises(sr.SessionError) as raised:
-        sr._validate_up_request(tmp_path, None)
+        sr._validate_up_request(tmp_path)
     message = str(raised.value)
     assert str(config) in message
     assert "sandbox.egress" in message
@@ -4279,7 +4250,9 @@ def test_mismatched_editor_stop_remove_down_releases_capacity(tmp_path, monkeypa
 def test_spawn_passes_credential_in_child_env_without_secret_argv(workspace, monkeypatch):
     captured = {}
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "SYNTHETIC_SECRET")
-    command = sr.docker_run_argv(_spec(forward_oauth_token=True), workspace, "test")
+    command = sr.docker_run_argv(
+        _spec(credentials={"CLAUDE_CODE_OAUTH_TOKEN": "PLAN_VALUE_UNUSED"}), workspace, "test"
+    )
     monkeypatch.setattr(
         sr.subprocess, "run", lambda argv, **kwargs: captured.update(argv=argv, **kwargs)
     )
@@ -4899,7 +4872,7 @@ def test_drift_remedy_has_one_state_appropriate_workflow(tmp_path, monkeypatch, 
 
     monkeypatch.setattr(session_issuance, "load_issued_snapshot", issuance)
     monkeypatch.setattr(session_issuance, "load_recovery_snapshot", forbidden)
-    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", vscode_owner)
+    monkeypatch.setattr(session_runtime, "vscode_session_container", vscode_owner)
     monkeypatch.setattr(
         session_runtime.project_image, "project_sandbox_image", lambda _root: "selected"
     )

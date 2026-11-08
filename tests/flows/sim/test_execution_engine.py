@@ -53,7 +53,11 @@ from booley.flows.sim.execution import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
-from booley.flows.sim.execution.engine import PreparedOrdinaryGroup, _preview_work
+from booley.flows.sim.execution.engine import (
+    PreparedOrdinaryGroup,
+    _cycle_observation,
+    _preview_work,
+)
 from booley.flows.sim.execution.freshness import ArtifactValidationError
 from booley.flows.sim.live_progress import LiveProgressSink, install_progress
 from booley.flows.sim.trace_recipe import TraceMode
@@ -3316,29 +3320,95 @@ def test_missing_literal_run_cwd_fails_plain_run_before_any_build(tmp_path: Path
 
 
 @pytest.mark.parametrize(
-    ("record", "expected"),
+    "output",
     [
-        ("[SIM_CYCLES] smoke 1234\n", 1234),
-        ("[SIM_CYCLES] smoke -1\n", None),
-        ("[SIM_CYCLES] smoke nope\n", None),
-        ("", None),
+        pytest.param("[SIM_CYCLES]", id="empty-payload"),
+        pytest.param("[SIM_CYCLES] smoke nope", id="non-digit-count"),
+        pytest.param("[SIM_CYCLES] nope", id="non-digit-unnamed"),
+        pytest.param("[SIM_CYCLES] smoke \u0661\u0662", id="non-ascii-digits"),
+        pytest.param("[SIM_CYCLES] smoke \u00b2", id="superscript-digit"),
     ],
 )
-def test_actual_engine_ascii_cycle_records(tmp_path, record, expected):
-    from dataclasses import replace
+def test_cycle_count_malformed_records(output: str) -> None:
+    assert _cycle_observation(output, "smoke", ()) == ("malformed", None)
 
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=False)
-    passing = _passing_attempt_invoker(
-        handle, prepared, (("abc123", ("smoke",)),), adapter="icarus"
-    )
 
-    def invoke(command, *, timeout):
-        result = passing(command, timeout=timeout)
-        return replace(result, stdout=result.stdout + record)
+def test_cycle_count_tries_sentinels_longest_first() -> None:
+    sentinels = ("CYCLES", "CYCLES TOTAL")
+    assert _cycle_observation("CYCLES TOTAL smoke 20", "smoke", sentinels) == ("observed", 20)
 
-    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
-    assert outcome.tests[0].cycles == expected
+
+@pytest.mark.parametrize(
+    ("output", "sentinels", "expected"),
+    [
+        pytest.param(
+            "log\n[SIM_CYCLES] stress 200\n[SIM_CYCLES]   smoke   42\nmore",
+            (),
+            ("observed", 42),
+            id="observed",
+        ),
+        pytest.param(
+            "[SIM_CYCLES]\n[SIM_CYCLES] smoke 4",
+            (),
+            ("observed", 4),
+            id="empty-record-does-not-cancel",
+        ),
+        pytest.param("[SIM_CYCLES] stress 42", (), ("wrong_test", None), id="wrong-test"),
+        pytest.param("ordinary output", (), ("missing", None), id="missing"),
+        pytest.param("[SIM_CYCLES] 42", (), ("legacy", 42), id="legacy"),
+        pytest.param(
+            "[SIM_CYCLES] smoke 41\n[SIM_CYCLES] smoke 42",
+            (),
+            ("duplicate", None),
+            id="duplicate-named",
+        ),
+        pytest.param(
+            "[SIM_CYCLES] 10\n[SIM_CYCLES] 20", (), ("duplicate", None), id="duplicate-unnamed"
+        ),
+        pytest.param(
+            "[SIM_CYCLES] smoke 7\n[SIM_CYCLES] 3", (), ("observed", 7), id="named-beats-unnamed"
+        ),
+        pytest.param(
+            "[SIM_CYCLES] stress 5\n[SIM_CYCLES] 3",
+            (),
+            ("legacy", 3),
+            id="other-test-and-unnamed",
+        ),
+        pytest.param(
+            "[SIM_CYCLES] smoke 10\nCYCLES[1] smoke 9",
+            ("CYCLES[1]",),
+            ("observed", 9),
+            id="configured-literal-replaces-default",
+        ),
+        pytest.param(
+            "CoreMark completed in: smoke 12",
+            ("CoreMark completed in:",),
+            ("observed", 12),
+            id="configured-multi-word-sentinel",
+        ),
+    ],
+)
+def test_cycle_count_well_formed_statuses(
+    output: str, sentinels: tuple[str, ...], expected: tuple[str, int | None]
+) -> None:
+    assert _cycle_observation(output, "smoke", sentinels) == expected
+
+
+def test_cycle_count_multi_word_test_name() -> None:
+    output = "[SIM_CYCLES]   pipeline smoke   42"
+    assert _cycle_observation(output, "pipeline smoke", ()) == ("observed", 42)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        pytest.param("[SIM_CYCLES] smoke nope\n[SIM_CYCLES] 5", id="bad-named-not-rescued"),
+        pytest.param("[SIM_CYCLES] stress 5\n[SIM_CYCLES] nope", id="bad-unnamed-beats-other"),
+        pytest.param("[SIM_CYCLES]\n[SIM_CYCLES] stress 5", id="empty-without-own-record"),
+    ],
+)
+def test_cycle_count_malformed_record_outranks_other_records(output: str) -> None:
+    assert _cycle_observation(output, "smoke", ()) == ("malformed", None)
 
 
 @pytest.mark.parametrize("copyto", ["firmware.hex", "data/firmware.hex", None])

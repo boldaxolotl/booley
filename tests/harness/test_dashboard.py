@@ -130,7 +130,9 @@ async def open_session(app, pilot, key):
 async def choose_in_bar(app, pilot, label):
     """Reach the top bar, arrow to the item whose label starts with `label`, apply it.
 
-    Focus stays on the bar afterwards; callers press `down` to return to the list.
+    Focus stays on the bar afterwards, unless the choice opens a full-width scroll view
+    (Help, a Goal, Job or proposal detail), which takes the keyboard; otherwise callers
+    press `down` to return to the list.
     """
     if not isinstance(app.focused, TopBar):
         await pilot.press("up")
@@ -280,7 +282,7 @@ async def test_owner_chip_back_to_all_sessions_preserves_filter(label, via_help)
         assert app.navigation.session == "codex:00"
         if via_help:
             await choose_in_bar(app, pilot, "Help")
-            await pilot.press("down", "escape")
+            await pilot.press("escape")
         for _ in range(3):
             await choose_in_bar(app, pilot, "Owner")
         assert app.navigation.view == "jobs"
@@ -327,7 +329,6 @@ async def test_session_arrows_help_back_and_quit():
         previous = app.navigation
         previous_rows = app.row_keys.copy()
         await choose_in_bar(app, pilot, "Help")
-        await pilot.press("down")
         assert app.navigation.view == "help"
         assert "read-only" in str(app.query_one("#detail", Static).render())
         await pilot.press("escape")
@@ -434,7 +435,7 @@ async def _inspect_jobs_window_and_help(app, pilot):
     assert app.navigation.session is None
     assert len(app.row_keys) == 1
     await choose_in_bar(app, pilot, "Help")
-    await pilot.press("down", "escape")
+    await pilot.press("escape")
     assert app.navigation.view == "jobs"
 
 
@@ -963,6 +964,21 @@ async def test_time_display_pilot_snapshots(monkeypatch):
     assert "14:00:00" in str(app._session_activity(None))
     for size in ((140, 40), (80, 25)):
         await _capture_time_pilot(monkeypatch, current, completed, orientation, size)
+
+
+def test_session_activity_shows_one_row_per_call_with_outcome_time(monkeypatch):
+    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
+    ended = RecentCall(STAMP, "sim", "completed", "a", "2026-10-08T10:05:00Z")
+    running = RecentCall("2026-10-08T10:06:00Z", "lint", "started", "b")
+    current = snapshot(1)
+    current = replace(current, sessions=(replace(current.sessions[0], calls=(ended, running)),))
+    app = DashboardApp(lambda: current)
+    app.snapshot = current
+    app.navigation = Navigation("session", "codex:00")
+    rows = [str(row) for key, row in app._session_activity(None) if key.startswith("call:")]
+    assert len(rows) == 2
+    assert "sim · completed · 14:05:00" in rows[0]
+    assert "lint · started · 14:06:00" in rows[1]
 
 
 def _check_time_edge_fields(current, completed):

@@ -16,6 +16,14 @@ from unittest.mock import Mock
 
 import pytest
 from tests import eda_grant_support
+from tests.devcontainer_spec_support import build_spec
+from tests.session_issuance_support import (
+    damaged,
+    fixed,
+    issue_built,
+    plain_builder,
+    stub_keeper,
+)
 
 from booley.config.host_config import host_config_path
 from booley.eda.provisioning import authority
@@ -106,8 +114,8 @@ def _stub_preview_dependencies(
     monkeypatch.setattr(runtime_spec, "_seal_with_requirements", lambda *_args: "digest")
     monkeypatch.setattr(
         runtime_spec,
-        "_prospective_issuance",
-        lambda *_args: SimpleNamespace(project_data_layout="legacy"),
+        "_issuance",
+        lambda *_args, **_kwargs: SimpleNamespace(project_data_layout="legacy"),
     )
     return captured
 
@@ -144,8 +152,35 @@ def test_preview_exposes_only_detached_inputs_and_does_not_persist(
         "vivado",
         "floating",
     )
-    assert prepared.prospective_issuance is not None
     assert not (project / ".devcontainer" / "devcontainer.json").exists()
+
+
+def test_prepared_spec_requires_prospective_issuance(tmp_path: Path) -> None:
+    """A prepared spec always carries the issuance that `issue_prepared` re-derives."""
+    inputs = runtime_spec.SessionSpecInputs(tmp_path, (), (), None, None)
+    spec = {"image": "sha256:pinned"}
+
+    with pytest.raises(TypeError, match="prospective_issuance"):
+        runtime_spec.PreparedSessionSpec(spec, "digest", inputs)  # pyright: ignore[reportCallIssue]
+
+
+def test_issue_prepared_refuses_prospective_issuance_that_differs_from_current(
+    issued_preview, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stamp prepared under another policy revision is refused with the difference named."""
+    project, prepared, _path, _stamp = issued_preview
+    stale = replace(
+        prepared,
+        prospective_issuance=replace(
+            prepared.prospective_issuance,
+            policy_revision=prepared.prospective_issuance.policy_revision + 1,
+        ),
+    )
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="Sandbox policy changed") as caught:
+        runtime_spec.issue_prepared(project, stale, reconcile_dashboard=False)
+
+    assert "policy_revision" in str(caught.value)
 
 
 def _set_host_egress(mode: str) -> None:
@@ -217,8 +252,8 @@ def test_issue_prepared_revalidates_authority_and_persists_exact_preview(
     )
     monkeypatch.setattr(
         runtime_spec,
-        "_prospective_issuance",
-        lambda *_args: events.append("validate policy") or prospective,
+        "_issuance",
+        lambda *_args, **_kwargs: events.append("validate policy") or prospective,
     )
     monkeypatch.setattr(
         runtime_spec.eda_requirements,
@@ -261,7 +296,7 @@ def test_issue_prepared_rejects_authority_drift_before_persisting(
         lambda *_args, **_kwargs: nullcontext(leased),
     )
     monkeypatch.setattr(runtime_spec, "_session_spec_inputs", lambda *_args: changed)
-    monkeypatch.setattr(runtime_spec, "_prospective_issuance", lambda *_args: prospective)
+    monkeypatch.setattr(runtime_spec, "_issuance", lambda *_args, **_kwargs: prospective)
     monkeypatch.setattr(
         runtime_spec.eda_requirements,
         "prepare_runtime_dependencies",
@@ -448,8 +483,8 @@ def _concurrent_licensed_project(
     monkeypatch.setattr(runtime_spec, "_spec_digest", lambda _spec: "digest")
     monkeypatch.setattr(
         runtime_spec,
-        "_prospective_issuance",
-        lambda *_args: SimpleNamespace(project_data_layout="legacy"),
+        "_issuance",
+        lambda *_args, **_kwargs: SimpleNamespace(project_data_layout="legacy"),
     )
     monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", lambda _root: ())
     return project
@@ -515,7 +550,7 @@ def test_resolve_image_id_rejects_missing_runtime_image(monkeypatch) -> None:
 
 
 @pytest.fixture
-def issued(
+def issued_preview(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     trusted_validator: Path,
@@ -529,17 +564,23 @@ def issued(
     (host_skill / "SKILL.md").write_text("# Example skill\n", encoding="utf-8")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        host_skills=(("example-skill", docker_mount_path(host_skill)),),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
-    path = dc.write_devcontainer(project, spec)
-    stamp = runtime_spec.issue(project, spec, path)
-    return project, spec, path, stamp
+
+    def build(_inputs: runtime_spec.SessionSpecInputs) -> dict:
+        return build_spec(
+            dc.APP_NONE,
+            mcp_start_command=dc.mcp_post_start_command(),
+            host_skills=(("example-skill", docker_mount_path(host_skill)),),
+            protected_devcontainer_source=str(project / ".devcontainer"),
+        )
+
+    prepared, path, stamp = issue_built(project, build, monkeypatch)
+    return project, prepared, path, stamp
+
+
+@pytest.fixture
+def issued(issued_preview):
+    project, prepared, path, stamp = issued_preview
+    return project, prepared.spec, path, stamp
 
 
 def test_issued_spec_seals_pinned_image_identity(issued) -> None:
@@ -568,19 +609,36 @@ def _egress_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return project
 
 
-def _issue_in_mode(project: Path, egress: str) -> tuple[dict, Path]:
-    """Build, pin, seal, write and issue an unlicensed spec in one egress mode."""
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-        egress=egress,
+def _license_profile_stubs(monkeypatch: pytest.MonkeyPatch, profile: SimpleNamespace) -> None:
+    """Make an active image-provisioned Vivado Flow resolve *profile* at preview and issue time.
+
+    Stubs the Flow and EDA config instead of writing ``booley.toml``, because host
+    provisioning configuration is rejected on Windows.
+    """
+
+    @contextmanager
+    def leased(_project: Path, _host_provisioning: bool):
+        yield None, profile
+
+    monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: True)
+    monkeypatch.setattr(
+        eda_requirements,
+        "load_eda_config",
+        lambda _project: {"vivado": SimpleNamespace(provisioning="image")},
     )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
-    path = dc.write_devcontainer(project, spec)
-    runtime_spec.issue(project, spec, path)
-    return spec, path
+    monkeypatch.setattr(authority, "resolve_for_inspection", lambda *_args: (None, profile))
+    monkeypatch.setattr(authority, "resolve_for_issuance", leased)
+
+
+def _issue_in_mode(
+    project: Path, egress: str, monkeypatch: pytest.MonkeyPatch
+) -> tuple[dict, Path]:
+    """Preview and issue an unlicensed spec in one egress mode."""
+
+    prepared, path, _stamp = issue_built(
+        project, plain_builder(project, egress=egress), monkeypatch
+    )
+    return prepared.spec, path
 
 
 @pytest.mark.parametrize(
@@ -596,7 +654,7 @@ def test_validate_rejects_spec_in_other_egress_mode(
     del trusted_validator
     project = _egress_project(tmp_path, monkeypatch)
     _set_host_egress(spec_mode)
-    spec, path = _issue_in_mode(project, spec_mode)
+    spec, path = _issue_in_mode(project, spec_mode, monkeypatch)
     _set_host_egress(host_mode)
     with pytest.raises(runtime_spec.EgressDriftError, match=f"egress = '{host_mode}'"):
         runtime_spec.validate(project, spec, path)
@@ -608,7 +666,7 @@ def test_unproxied_policy_issues_and_validates_unproxied_spec(
     del trusted_validator
     project = _egress_project(tmp_path, monkeypatch)
     _set_host_egress("unproxied")
-    spec, path = _issue_in_mode(project, "unproxied")
+    spec, path = _issue_in_mode(project, "unproxied", monkeypatch)
     assert runtime_spec.validate(project, spec, path).spec_sha256 == runtime_spec._spec_digest(
         spec
     )
@@ -621,7 +679,7 @@ def test_policy_switch_is_cured_by_reissuing_in_host_mode(issued) -> None:
         runtime_spec.validate(project, spec, path)
 
     def build(inputs: runtime_spec.SessionSpecInputs) -> dict:
-        return dc.build_devcontainer_spec(
+        return build_spec(
             dc.APP_NONE,
             mcp_start_command=dc.mcp_post_start_command(),
             protected_devcontainer_source=str(project / ".devcontainer"),
@@ -808,7 +866,9 @@ def test_real_revoke_reports_withdrawal_at_enter_and_cli(
         assert "corrupt" not in error
     else:
         with pytest.raises(session_runtime.SessionError) as refresh_error:
-            session_refresh._load_recovery_issuance(project)
+            session_refresh._load_recovery_issuance(
+                project, session_refresh.capture_session_spec(project)
+            )
         assert str(refresh_error.value).startswith(
             "cannot preserve the prior Sandbox: " + _WITHDRAWN_ISSUANCE
         )
@@ -821,19 +881,21 @@ def test_inspect_prepared_accepts_exact_current_issuance(issued) -> None:
         spec=spec,
         digest=stamp.spec_sha256,
         inputs=runtime_spec.SessionSpecInputs(project / ".booley", (), (), None, None),
+        prospective_issuance=stamp,
     )
 
     assert runtime_spec.inspect_prepared(project, prepared) == stamp
 
 
 def test_inspect_prepared_rejects_different_desired_spec(issued) -> None:
-    project, spec, _path, _stamp = issued
+    project, spec, _path, stamp = issued
     desired = json.loads(json.dumps(spec))
     desired["name"] = "changed desired spec"
     prepared = runtime_spec.PreparedSessionSpec(
         spec=desired,
         digest=runtime_spec._spec_digest(desired),
         inputs=runtime_spec.SessionSpecInputs(project / ".booley", (), (), None, None),
+        prospective_issuance=stamp,
     )
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="prepared specification"):
@@ -847,6 +909,7 @@ def test_inspect_prepared_rejects_missing_document_without_creating_it(issued) -
         spec=spec,
         digest=stamp.spec_sha256,
         inputs=runtime_spec.SessionSpecInputs(project / ".booley", (), (), None, None),
+        prospective_issuance=stamp,
     )
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="missing"):
@@ -867,17 +930,17 @@ def test_legacy_registrar_remains_valid_for_issued_specs(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     legacy = "python -m booley.runtime.incontainer_register"
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=legacy,
-        protected_devcontainer_source=str(project / ".devcontainer"),
+    prepared, path, stamp = issue_built(
+        project,
+        lambda _inputs: build_spec(
+            dc.APP_NONE,
+            mcp_start_command=legacy,
+            protected_devcontainer_source=str(project / ".devcontainer"),
+        ),
+        monkeypatch,
     )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
-    path = dc.write_devcontainer(project, spec)
-    stamp = runtime_spec.issue(project, spec, path)
 
-    assert runtime_spec.validate(project, spec, path) == stamp
+    assert runtime_spec.validate(project, prepared.spec, path) == stamp
 
 
 def test_recovery_snapshot_uses_sealed_issuance_without_current_authority(
@@ -893,8 +956,8 @@ def test_recovery_snapshot_uses_sealed_issuance_without_current_authority(
     assert runtime_spec.load_issued_snapshot(project) == stamp
 
 
-def test_legacy_eda_stamp_recovers_and_next_issue_migrates_to_runtime(issued) -> None:
-    project, spec, path, stamp = issued
+def test_legacy_eda_stamp_recovers_and_next_issue_migrates_to_runtime(issued_preview) -> None:
+    project, prepared, _path, stamp = issued_preview
     current = runtime_spec.stamp_path(project)
     legacy = runtime_spec._legacy_stamp_path(str(project.resolve()))
     legacy.parent.mkdir(parents=True, mode=0o700)
@@ -905,7 +968,7 @@ def test_legacy_eda_stamp_recovers_and_next_issue_migrates_to_runtime(issued) ->
     snapshot = session_spec.capture_session_spec(project)
     assert snapshot.stamp_path == current
     assert snapshot.stamp_content == legacy.read_bytes()
-    assert runtime_spec.issue(project, spec, path) == stamp
+    assert runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False) == stamp
     assert current.is_file()
     assert not legacy.exists()
 
@@ -963,23 +1026,16 @@ def test_no_eda_issuance_and_validation_never_open_authority_store(
     authority.state_dir().parent.parent.chmod(0o700)
     authority.state_path().write_text("not valid authority JSON", encoding="utf-8")
     authority.state_path().chmod(0o400)
-    monkeypatch.setattr(
-        authority,
-        "resolve_for_issuance",
-        lambda *_args, **_kwargs: pytest.fail("no-EDA runtime opened the authority store"),
-    )
+    for resolver in ("resolve_for_inspection", "resolve_for_issuance"):
+        monkeypatch.setattr(
+            authority,
+            resolver,
+            lambda *_args, **_kwargs: pytest.fail("no-EDA runtime opened the authority store"),
+        )
 
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
-    path = dc.write_devcontainer(project, spec)
-    stamp = runtime_spec.issue(project, spec, path)
+    prepared, path, stamp = issue_built(project, plain_builder(project), monkeypatch)
 
-    assert runtime_spec.validate(project, spec, path) == stamp
+    assert runtime_spec.validate(project, prepared.spec, path) == stamp
     assert authority.state_path().read_text(encoding="utf-8") == "not valid authority JSON"
     assert not (authority.state_dir() / "authority.lock").exists()
 
@@ -1019,14 +1075,20 @@ def test_runtime_spec_rejects_non_mapping_container_environment(
     project.mkdir()
     (project / ".booley").mkdir()
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        protected_devcontainer_source=str(project / ".devcontainer"),
+    stub_keeper(monkeypatch)
+    prepared = runtime_spec.preview(
+        project,
+        lambda _inputs: build_spec(
+            dc.APP_NONE,
+            protected_devcontainer_source=str(project / ".devcontainer"),
+        ),
     )
-    spec["containerEnv"] = []
+    stale = damaged(prepared, lambda spec: spec.update(containerEnv=[]))
 
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="containerEnv must be a mapping"):
-        runtime_spec.seal(project, spec)
+    with pytest.raises(
+        runtime_spec.RuntimeSpecError, match="environment sections must be objects"
+    ):
+        runtime_spec.issue_prepared(project, stale, reconcile_dashboard=False)
 
 
 def test_host_eda_issuance_still_requires_authority(
@@ -1050,22 +1112,31 @@ def test_host_eda_issuance_still_requires_authority(
     monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: True)
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
 
+    build = plain_builder(project)
+
+    def inspected(_project: Path, host_provisioning: bool):
+        assert host_provisioning is True
+        return None, None
+
     @contextmanager
     def required(_project: Path, host_provisioning: bool):
         assert host_provisioning is True
         raise authority.AuthorityError("host EDA authority was checked")
         yield None, None
 
+    monkeypatch.setattr(authority, "resolve_for_inspection", inspected)
+    prepared = runtime_spec.preview(project, build)
     monkeypatch.setattr(authority, "resolve_for_issuance", required)
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
+    monkeypatch.setattr(
+        authority,
+        "resolve_for_inspection",
+        lambda *_args: (_ for _ in ()).throw(authority.AuthorityError("host EDA preview checked")),
     )
-    runtime_spec.pin_image(spec)
 
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="host EDA preview checked"):
+        runtime_spec.preview(project, build)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="host EDA authority was checked"):
-        runtime_spec.seal(project, spec)
+        runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
 
 
 def test_requested_license_requires_issued_profile_identity(
@@ -1102,29 +1173,46 @@ def test_active_image_vivado_cannot_omit_license_marker_to_bypass_authority(
         raise authority.AuthorityError("active Vivado authority was checked")
         yield None, None
 
+    build = plain_builder(project)
+
+    monkeypatch.setattr(authority, "resolve_for_inspection", lambda *_args: (None, None))
+    prepared = runtime_spec.preview(project, build)
     monkeypatch.setattr(authority, "resolve_for_issuance", required)
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="active Vivado authority was checked"):
-        runtime_spec.seal(project, spec)
+        runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    monkeypatch.setattr(
+        authority,
+        "resolve_for_inspection",
+        lambda *_args: (_ for _ in ()).throw(authority.AuthorityError("active Vivado inspected")),
+    )
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="active Vivado inspected"):
+        runtime_spec.preview(project, build)
+
+
+def _run_operation(
+    operation: str,
+    project: Path,
+    prepared: runtime_spec.PreparedSessionSpec,
+    path: Path,
+) -> runtime_spec.Issuance:
+    """Run the issue-time or validate-time path over one issued, prepared spec."""
+    if operation == "issue":
+        return runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    return runtime_spec.validate(project, prepared.spec, path)
 
 
 @pytest.mark.parametrize("operation", ["issue", "validate"])
 def test_issuance_paths_reject_any_missing_generated_bind_source(
-    issued, tmp_path: Path, operation: str
+    issued_preview, tmp_path: Path, operation: str
 ) -> None:
-    project, spec, path, _stamp = issued
+    project, prepared, path, _stamp = issued_preview
     host_skill = tmp_path / "host-skills" / "example-skill"
     (host_skill / "SKILL.md").unlink()
     host_skill.rmdir()
 
     with pytest.raises(runtime_spec.RuntimeSpecError) as caught:
-        getattr(runtime_spec, operation)(project, spec, path)
+        _run_operation(operation, project, prepared, path)
 
     message = str(caught.value)
     assert "generated bind source" in message
@@ -1150,13 +1238,13 @@ def test_generated_bind_without_target_is_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("operation", ["issue", "validate"])
-def test_missing_project_data_bind_names_source_and_target(issued, operation: str) -> None:
-    project, spec, path, _stamp = issued
+def test_missing_project_data_bind_names_source_and_target(issued_preview, operation: str) -> None:
+    project, prepared, path, _stamp = issued_preview
     source = project / ".booley"
     source.rmdir()
 
     with pytest.raises(runtime_spec.RuntimeSpecError) as caught:
-        getattr(runtime_spec, operation)(project, spec, path)
+        _run_operation(operation, project, prepared, path)
 
     message = str(caught.value)
     assert docker_mount_path(source) in message
@@ -1200,17 +1288,18 @@ def test_missing_vivado_bind_names_source_and_target(
     def resolved(*_args):
         yield installation, None
 
+    monkeypatch.setattr(authority, "resolve_for_inspection", lambda *_args: (installation, None))
     monkeypatch.setattr(authority, "resolve_for_issuance", resolved)
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        trusted_eda_mounts=((vivado_source, CONTAINER_TARGET),),
-        protected_devcontainer_source=str(project / ".devcontainer"),
+    prepared, path, _stamp = issue_built(
+        project,
+        lambda inputs: build_spec(
+            dc.APP_NONE,
+            mcp_start_command=dc.mcp_post_start_command(),
+            trusted_eda_mounts=inputs.trusted_eda_mounts,
+            protected_devcontainer_source=str(project / ".devcontainer"),
+        ),
+        monkeypatch,
     )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
-    path = dc.write_devcontainer(project, spec)
-    runtime_spec.issue(project, spec, path)
     vivado_root.rmdir()
 
     @contextmanager
@@ -1222,14 +1311,22 @@ def test_missing_vivado_bind_names_source_and_target(
         yield  # pragma: no cover - makes this an intentionally failing context manager
 
     monkeypatch.setattr(authority, "resolve_for_issuance", unavailable)
+    issued_bytes = path.read_bytes()
 
     with pytest.raises(runtime_spec.RuntimeSpecError) as caught:
-        getattr(runtime_spec, operation)(project, spec, path)
+        _run_operation(operation, project, prepared, path)
 
     message = str(caught.value)
-    assert vivado_source in message
-    assert CONTAINER_TARGET in message
     assert "unavailable" in message
+    if operation == "validate":
+        # Only validation decorates the lease failure with its bind context.
+        assert vivado_source in message
+        assert CONTAINER_TARGET in message
+    else:
+        # `issue_prepared` reports the lease failure unchanged, before persisting anything.
+        assert str(vivado_root) in message
+        assert isinstance(caught.value.__cause__, eda_requirements.SessionRequirementsError)
+        assert path.read_bytes() == issued_bytes
 
 
 def test_issuance_records_project_scoped_image_keeper(issued) -> None:
@@ -1330,7 +1427,7 @@ def test_legacy_no_eda_spec_cannot_bypass_issuance(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
-    spec = dc.build_devcontainer_spec(dc.APP_NONE)
+    spec = build_spec(dc.APP_NONE)
     path = dc.write_devcontainer(project, spec)
     with pytest.raises(runtime_spec.RuntimeSpecError):
         runtime_spec.validate(project, spec, path)
@@ -1466,17 +1563,10 @@ def test_dangerous_full_spec_drift_is_rejected_before_issuance(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
-    mutate(spec)
-    path = dc.write_devcontainer(project, spec)
+    stub_keeper(monkeypatch)
+    prepared = runtime_spec.preview(project, plain_builder(project))
     with pytest.raises(runtime_spec.RuntimeSpecError, match=match):
-        runtime_spec.issue(project, spec, path)
+        runtime_spec.issue_prepared(project, damaged(prepared, mutate), reconcile_dashboard=False)
 
 
 def test_readonly_false_does_not_satisfy_protected_mount(
@@ -1490,21 +1580,20 @@ def test_readonly_false_does_not_satisfy_protected_mount(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
-    spec["mounts"][-1] = spec["mounts"][-1].replace("readonly", "readonly=false")
-    path = dc.write_devcontainer(project, spec)
+    stub_keeper(monkeypatch)
+    prepared = runtime_spec.preview(project, plain_builder(project))
+
+    def make_writable(spec: dict) -> None:
+        spec["mounts"][-1] = spec["mounts"][-1].replace("readonly", "readonly=false")
+
     with pytest.raises(runtime_spec.RuntimeSpecError, match="exact read-only"):
-        runtime_spec.issue(project, spec, path)
+        runtime_spec.issue_prepared(
+            project, damaged(prepared, make_writable), reconcile_dashboard=False
+        )
 
 
 def test_nested_definition_mount_is_final() -> None:
-    spec = dc.build_devcontainer_spec(
+    spec = build_spec(
         dc.APP_NONE,
         trusted_eda_mounts=(("/opt/Xilinx/2025.2", "/opt/booley-eda/vivado"),),
         protected_devcontainer_source="/repo/.devcontainer",
@@ -1547,13 +1636,12 @@ provisioning = "host"
         yield None, None
 
     monkeypatch.setattr(runtime_spec.authority, "resolve_for_issuance", resolved)
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
+    monkeypatch.setattr(
+        runtime_spec.authority,
+        "resolve_for_inspection",
+        lambda _project, host_provisioning: requested.append(host_provisioning) or (None, None),
     )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
+    issue_built(project, plain_builder(project), monkeypatch)
 
     assert runtime_spec.requested_license(project) is None
     assert requested == []
@@ -1571,20 +1659,17 @@ def test_licensed_seal_gives_vscode_and_headless_the_same_networks_and_labels(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     profile = SimpleNamespace(name="site", lmgrd_port=2100)
-
-    @contextmanager
-    def resolved(_project: Path, _host_provisioning: bool):
-        yield None, profile
-
-    monkeypatch.setattr(runtime_spec.authority, "resolve_for_issuance", resolved)
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-        fixed_container_env={"XILINXD_LICENSE_FILE": "2100@booley-license-xilinx"},
+    _license_profile_stubs(monkeypatch, profile)
+    prepared = runtime_spec.preview(
+        project,
+        lambda inputs: build_spec(
+            dc.APP_NONE,
+            mcp_start_command=dc.mcp_post_start_command(),
+            protected_devcontainer_source=str(project / ".devcontainer"),
+            fixed_container_env=dict(inputs.fixed_container_environment),
+        ),
     )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
+    spec = prepared.spec
 
     from booley.eda.provisioning.licensing.flexnet_docker import resources_for_session
     from booley.runtime.session_runtime import docker_run_argv
@@ -1626,22 +1711,21 @@ def test_unproxied_licensed_seal_joins_routed_and_private_networks(
     project = _egress_project(tmp_path, monkeypatch)
     _set_host_egress("unproxied")
     profile = SimpleNamespace(name="site", lmgrd_port=2100)
-
-    @contextmanager
-    def resolved(_project: Path, _host_provisioning: bool):
-        yield None, profile
-
-    monkeypatch.setattr(runtime_spec.authority, "resolve_for_issuance", resolved)
+    _license_profile_stubs(monkeypatch, profile)
+    monkeypatch.setattr(eda_requirements, "ensure_relay_image", lambda **_kwargs: False)
     monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: "sha256:" + "d" * 64)
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-        fixed_container_env={"XILINXD_LICENSE_FILE": "2100@booley-license-xilinx"},
-        egress="unproxied",
+    stub_keeper(monkeypatch)
+    prepared = runtime_spec.preview(
+        project,
+        lambda inputs: build_spec(
+            dc.APP_NONE,
+            mcp_start_command=dc.mcp_post_start_command(),
+            protected_devcontainer_source=str(project / ".devcontainer"),
+            fixed_container_env=dict(inputs.fixed_container_environment),
+            egress=inputs.egress,
+        ),
     )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
+    spec = prepared.spec
 
     from booley.eda.provisioning.licensing.flexnet_docker import resources_for_session
     from booley.runtime.session_runtime import docker_run_argv
@@ -1657,7 +1741,7 @@ def test_unproxied_licensed_seal_joins_routed_and_private_networks(
     argv = docker_run_argv(spec, project, "session")
     headless_networks = {argv[index + 1] for index, item in enumerate(argv) if item == "--network"}
     assert spec_networks == headless_networks == expected_networks
-    assert runtime_spec.issue(project, spec, dc.write_devcontainer(project, spec))
+    assert runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
 
 
 def test_issue_rejects_mutable_image_reference(
@@ -1671,16 +1755,16 @@ def test_issue_rejects_mutable_image_reference(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    spec["containerEnv"]["BOOLEY_SANDBOX_IMAGE_ID"] = spec["image"]
-    runtime_spec.seal(project, spec)
-    path = dc.write_devcontainer(project, spec)
+    stub_keeper(monkeypatch)
+    prepared = runtime_spec.preview(project, plain_builder(project))
+
+    def use_mutable_tag(spec: dict) -> None:
+        spec["image"] = dc.SANDBOX_IMAGE
+        spec["containerEnv"]["BOOLEY_SANDBOX_IMAGE_ID"] = dc.SANDBOX_IMAGE
+
+    stale = damaged(prepared, use_mutable_tag, image=dc.SANDBOX_IMAGE)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="image is mutable"):
-        runtime_spec.issue(project, spec, path)
+        runtime_spec.issue_prepared(project, stale, reconcile_dashboard=False)
 
 
 @pytest.mark.parametrize("source", ["/", "/home", "/tmp/evil,data"])
@@ -1743,15 +1827,8 @@ def test_seal_rejects_project_controlled_mount_source(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        booley_dir_source="/home/victim",
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="not authorized"):
-        runtime_spec.seal(project, spec)
+        runtime_spec.preview(project, plain_builder(project, booley_dir_source="/home/victim"))
 
 
 def test_seal_rejects_workspace_path_poisoned_booley(
@@ -1767,14 +1844,8 @@ def test_seal_rejects_workspace_path_poisoned_booley(
     poisoned.chmod(0o755)
     monkeypatch.setenv("PATH", str(poisoned.parent))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="trusted host Booley"):
-        runtime_spec.seal(project, spec)
+        runtime_spec.preview(project, plain_builder(project))
     assert trusted.is_file()
 
 
@@ -1792,14 +1863,8 @@ def test_seal_skips_tmp_path_poisoned_booley(
     monkeypatch.setenv("PATH", os.pathsep.join((str(poisoned.parent), str(trusted.parent))))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
-    assert Path(spec["initializeCommand"][0]) == trusted
+    prepared = runtime_spec.preview(project, plain_builder(project))
+    assert Path(prepared.spec["initializeCommand"][0]) == trusted
 
 
 def test_finder_uses_current_absolute_entry_point_before_path(
@@ -2067,23 +2132,31 @@ def test_seal_pins_absolute_host_executable_and_canonical_mount(issued) -> None:
     assert spec["mounts"][-1] == runtime_spec.expected_devcontainer_mount(project)
 
 
-def test_issue_rejects_missing_project_data_workspace_bind(issued) -> None:
-    project, spec, _path, _stamp = issued
-    spec["mounts"] = [mount for mount in spec["mounts"] if "target=/work/.booley," not in mount]
-    path = dc.write_devcontainer(project, spec)
+def test_issue_rejects_missing_project_data_workspace_bind(issued_preview) -> None:
+    project, prepared, _path, _stamp = issued_preview
+
+    def drop_workspace_view(spec: dict) -> None:
+        spec["mounts"] = [m for m in spec["mounts"] if "target=/work/.booley," not in m]
+
     with pytest.raises(runtime_spec.RuntimeSpecError, match="workspace view must be pinned"):
-        runtime_spec.issue(project, spec, path)
+        runtime_spec.issue_prepared(
+            project, damaged(prepared, drop_workspace_view), reconcile_dashboard=False
+        )
 
 
-def test_issue_rejects_readonly_project_data_workspace_bind(issued) -> None:
-    project, spec, _path, _stamp = issued
-    shadow = next(
-        index for index, mount in enumerate(spec["mounts"]) if "target=/work/.booley," in mount
-    )
-    spec["mounts"][shadow] += ",readonly"
-    path = dc.write_devcontainer(project, spec)
+def test_issue_rejects_readonly_project_data_workspace_bind(issued_preview) -> None:
+    project, prepared, _path, _stamp = issued_preview
+
+    def make_workspace_view_readonly(spec: dict) -> None:
+        shadow = next(
+            index for index, mount in enumerate(spec["mounts"]) if "target=/work/.booley," in mount
+        )
+        spec["mounts"][shadow] += ",readonly"
+
     with pytest.raises(runtime_spec.RuntimeSpecError, match="exact host-authorized bind"):
-        runtime_spec.issue(project, spec, path)
+        runtime_spec.issue_prepared(
+            project, damaged(prepared, make_workspace_view_readonly), reconcile_dashboard=False
+        )
 
 
 def test_validator_bytes_are_bound_into_issuance(
@@ -2096,18 +2169,10 @@ def test_validator_bytes_are_bound_into_issuance(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
-    path = dc.write_devcontainer(project, spec)
-    runtime_spec.issue(project, spec, path)
+    prepared, path, _stamp = issue_built(project, plain_builder(project), monkeypatch)
     trusted_validator.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     with pytest.raises(runtime_spec.RuntimeSpecError, match="validator has changed"):
-        runtime_spec.validate(project, spec, path)
+        runtime_spec.validate(project, prepared.spec, path)
 
 
 def test_relay_image_bytes_are_bound_into_licensed_issuance(
@@ -2130,27 +2195,24 @@ def test_relay_image_bytes_are_bound_into_licensed_issuance(
         2101,
     )
 
-    @contextmanager
-    def resolved(*_args):
-        yield None, profile
-
-    monkeypatch.setattr(authority, "resolve_for_issuance", resolved)
+    _license_profile_stubs(monkeypatch, profile)
+    monkeypatch.setattr(eda_requirements, "ensure_relay_image", lambda **_kwargs: False)
     first = "sha256:" + "a" * 64
     monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: first)
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-        fixed_container_env={"XILINXD_LICENSE_FILE": "2100@booley-license-xilinx"},
+    prepared, path, stamp = issue_built(
+        project,
+        lambda inputs: build_spec(
+            dc.APP_NONE,
+            mcp_start_command=dc.mcp_post_start_command(),
+            protected_devcontainer_source=str(project / ".devcontainer"),
+            fixed_container_env=dict(inputs.fixed_container_environment),
+        ),
+        monkeypatch,
     )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
-    path = dc.write_devcontainer(project, spec)
-    stamp = runtime_spec.issue(project, spec, path)
     assert stamp.relay_image_id == first
     monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: "sha256:" + "b" * 64)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="relay image has drifted"):
-        runtime_spec.validate(project, spec, path)
+        runtime_spec.validate(project, prepared.spec, path)
 
 
 def test_validate_rejects_post_issuance_project_data_symlink_swap(issued) -> None:
@@ -2163,16 +2225,9 @@ def test_validate_rejects_post_issuance_project_data_symlink_swap(issued) -> Non
         runtime_spec.validate(project, spec, path)
 
 
-def _sealed_fresh_spec(project: Path) -> dict:
-    """Build, pin and seal a default Sandbox spec for *project*."""
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
-    return spec
+def _fresh_preview(project: Path) -> runtime_spec.PreparedSessionSpec:
+    """Preview a default Sandbox spec for *project*."""
+    return runtime_spec.preview(project, plain_builder(project))
 
 
 def _link_booley_dir_entry(project: Path, target: Path) -> None:
@@ -2195,7 +2250,7 @@ def test_symlinked_booley_dir_entry_issues_the_real_directory_mounts(
     monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: alias_capable)
     entry = project / ".booley"
     (entry / "booley.toml").write_text("[project]\n", encoding="utf-8")
-    real_directory_mounts = list(_sealed_fresh_spec(project)["mounts"])
+    real_directory_mounts = list(_fresh_preview(project).spec["mounts"])
 
     external = tmp_path / "external-data"
     entry.rename(external)
@@ -2203,13 +2258,14 @@ def test_symlinked_booley_dir_entry_issues_the_real_directory_mounts(
     from booley.core import booley_dir_pin
 
     booley_dir_pin.write_pin(project, booley_dir_pin.current_target(entry))
-    spec = _sealed_fresh_spec(project)
+    prepared = _fresh_preview(project)
+    spec = prepared.spec
 
     assert spec["mounts"] == real_directory_mounts
     expected_source = docker_mount_path(entry)
     assert f"source={expected_source},target=/work/.booley,type=bind" in spec["mounts"]
-    path = dc.write_devcontainer(project, spec)
-    stamp = runtime_spec.issue(project, spec, path)
+    stamp = runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    path = dc.devcontainer_path(project)
     assert runtime_spec.validate(project, spec, path) == stamp
     assert stamp.project_data_source == str(entry)
     assert stamp.project_data_layout == ("canonical-alias" if alias_capable else "legacy")
@@ -2237,9 +2293,10 @@ def test_linked_entry_issuance_requires_the_host_pin(
     from booley.core import booley_dir_pin
 
     booley_dir_pin.write_pin(project, booley_dir_pin.current_target(entry))
-    spec = _sealed_fresh_spec(project)
-    path = dc.write_devcontainer(project, spec)
-    runtime_spec.issue(project, spec, path)
+    prepared = _fresh_preview(project)
+    spec = prepared.spec
+    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    path = dc.devcontainer_path(project)
     runtime_spec.validate(project, spec, path)
 
     def assert_refused(action) -> None:
@@ -2251,12 +2308,14 @@ def test_linked_entry_issuance_requires_the_host_pin(
     entry.unlink()
     entry.symlink_to(ext_b, target_is_directory=True)
     assert_refused(lambda: runtime_spec.validate(project, spec, path))
-    assert_refused(lambda: _sealed_fresh_spec(project))
-    assert_refused(lambda: runtime_spec.issue(project, spec, path))
+    assert_refused(lambda: _fresh_preview(project))
+    assert_refused(
+        lambda: runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    )
 
     entry.unlink()
     entry.symlink_to(os.path.relpath(ext_b, project), target_is_directory=True)
-    assert_refused(lambda: _sealed_fresh_spec(project))
+    assert_refused(lambda: _fresh_preview(project))
 
     # The pin is on the target, not the spelling: a relative link back to it passes.
     entry.unlink()
@@ -2334,25 +2393,15 @@ def test_seal_requires_canonical_hash_scoped_state_volume(
     (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
-    spec = dc.build_devcontainer_spec(
-        dc.APP_CLAUDE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="canonical Project"):
-        runtime_spec.seal(project, spec)
+        runtime_spec.preview(project, plain_builder(project, dc.APP_CLAUDE))
 
-    scoped = dc.build_devcontainer_spec(
-        dc.APP_CLAUDE,
-        project_id=dc.canonical_project_id(project),
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
+    scoped = runtime_spec.preview(
+        project,
+        plain_builder(project, dc.APP_CLAUDE, project_id=dc.canonical_project_id(project)),
     )
-    runtime_spec.pin_image(scoped)
-    runtime_spec.seal(project, scoped)
     expected = dc.state_volume_mount(dc.APP_CLAUDE, dc.canonical_project_id(project))
-    assert expected in scoped["mounts"]
+    assert expected in scoped.spec["mounts"]
 
 
 def test_image_contract_is_inspected_without_starting_candidate_code(
@@ -2471,24 +2520,21 @@ def test_canonical_alias_seal_keeps_shadow_and_rejects_alias_subtree_drift(
 
     project, _legacy, _path, _stamp = issued
     monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: True)
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
+    prepared, path, stamp = issue_built(project, plain_builder(project), monkeypatch)
+    spec = prepared.spec
     assert not any("target=/booley-project," in mount for mount in spec["mounts"])
     expected_source = docker_mount_path(project / ".booley")
     assert f"source={expected_source},target=/work/.booley,type=bind" in spec["mounts"]
-    path = dc.write_devcontainer(project, spec)
-    stamp = runtime_spec.issue(project, spec, path)
     assert stamp.project_data_layout == "canonical-alias"
     assert runtime_spec.validate(project, spec, path) == stamp
-    spec["mounts"].insert(1, f"source={expected_source},target={target},type=bind,readonly")
-    path = dc.write_devcontainer(project, spec)
+
+    def add_alias_subtree_mount(drifted: dict) -> None:
+        drifted["mounts"].insert(1, f"source={expected_source},target={target},type=bind,readonly")
+
     with pytest.raises(runtime_spec.RuntimeSpecError, match="alias-subtree"):
-        runtime_spec.issue(project, spec, path)
+        runtime_spec.issue_prepared(
+            project, damaged(prepared, add_alias_subtree_mount), reconcile_dashboard=False
+        )
 
 
 @pytest.mark.parametrize("alias_capable", [False, True], ids=["legacy", "canonical-alias"])
@@ -2508,7 +2554,7 @@ def test_previewed_spec_issues_for_every_project_data_layout(
     expected_layout = "canonical-alias" if alias_capable else "legacy"
 
     def build(inputs: runtime_spec.SessionSpecInputs) -> dict:
-        return dc.build_devcontainer_spec(
+        return build_spec(
             dc.APP_NONE,
             mcp_start_command=dc.mcp_post_start_command(),
             booley_dir_source=docker_mount_path(inputs.project_data_source),
@@ -2516,7 +2562,6 @@ def test_previewed_spec_issues_for_every_project_data_layout(
         )
 
     prepared = runtime_spec.preview(project, build)
-    assert prepared.prospective_issuance is not None
     assert prepared.prospective_issuance.project_data_layout == expected_layout
 
     stamp = runtime_spec.issue_prepared(project, prepared)
@@ -2531,36 +2576,29 @@ def test_canonical_alias_rejects_nonbind_mount_destination_synonyms(issued, monk
 
     project, _legacy, _path, _stamp = issued
     monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: True)
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
-    spec["mounts"].append(f"type=tmpfs,{key}=//booley-project/hidden")
-    path = dc.write_devcontainer(project, spec)
+    prepared = runtime_spec.preview(project, plain_builder(project))
+
+    def add_tmpfs_alias_mount(spec: dict) -> None:
+        spec["mounts"].append(f"type=tmpfs,{key}=//booley-project/hidden")
+
+    stub_keeper(monkeypatch)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="alias-subtree"):
-        runtime_spec.issue(project, spec, path)
+        runtime_spec.issue_prepared(
+            project, damaged(prepared, add_tmpfs_alias_mount), reconcile_dashboard=False
+        )
 
 
 def test_sealing_alias_probe_failure_is_a_runtime_spec_error(issued, monkeypatch):
     from booley.runtime import project_image
 
     project, _legacy, _path, _stamp = issued
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
 
     def unavailable(_image):
         raise project_image.DockerImageError("Docker alias probe unavailable")
 
     monkeypatch.setattr(project_image, "project_data_alias_capable", unavailable)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="alias probe unavailable"):
-        runtime_spec.seal(project, spec)
+        runtime_spec.preview(project, plain_builder(project))
 
 
 def test_validation_alias_probe_failure_is_a_runtime_spec_error(issued, monkeypatch):
@@ -2568,22 +2606,14 @@ def test_validation_alias_probe_failure_is_a_runtime_spec_error(issued, monkeypa
 
     project, _legacy, _path, _stamp = issued
     monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: True)
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
-    path = dc.write_devcontainer(project, spec)
-    runtime_spec.issue(project, spec, path)
+    prepared, path, _stamp = issue_built(project, plain_builder(project), monkeypatch)
 
     def unavailable(_image):
         raise project_image.DockerImageError("Docker alias probe unavailable")
 
     monkeypatch.setattr(project_image, "project_data_alias_capable", unavailable)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="alias probe unavailable"):
-        runtime_spec.validate(project, spec, path)
+        runtime_spec.validate(project, prepared.spec, path)
 
 
 @pytest.mark.parametrize(
@@ -2693,12 +2723,9 @@ def test_seal_pins_external_project_identity_over_builder_defaults(issued, tmp_p
         '[agent.git]\nname="Mounted Agent"\nemail="mounted@example.invalid"\n'
     )
     monkeypatch.setenv("BOOLEY_DIR", str(external))
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE, protected_devcontainer_source=str(project / ".devcontainer")
-    )
-    assert spec["remoteEnv"]["GIT_CONFIG_VALUE_0"] == "Dev"
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
+    built = build_spec(dc.APP_NONE, protected_devcontainer_source=str(project / ".devcontainer"))
+    assert built["remoteEnv"]["GIT_CONFIG_VALUE_0"] == "Dev"
+    spec = runtime_spec.preview(project, fixed(built)).spec
     for section in ("containerEnv", "remoteEnv"):
         assert spec[section]["GIT_CONFIG_VALUE_0"] == "Mounted Agent"
         assert spec[section]["GIT_CONFIG_VALUE_1"] == "mounted@example.invalid"
@@ -2780,17 +2807,13 @@ def test_previously_issued_legacy_prepare_survives_full_validation(
         original_pin(root, spec)
         spec["initializeCommand"][3] = "--project-root"
 
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
+    stub_keeper(monkeypatch)
     with monkeypatch.context() as old_issuer:
         old_issuer.setattr(runtime_spec, "_pin_initialize_command", old_issuer_pin)
-        runtime_spec.seal(project, spec)
-    path = dc.write_devcontainer(project, spec)
-    stamp = runtime_spec.issue(project, spec, path)
+        prepared = runtime_spec.preview(project, plain_builder(project))
+    spec = prepared.spec
+    stamp = runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    path = dc.devcontainer_path(project)
     assert spec["initializeCommand"] == [
         str(trusted_validator),
         "session",
@@ -2884,18 +2907,10 @@ def test_validation_refuses_lost_canonical_alias_capability(issued, monkeypatch)
 
     project, _legacy, _path, _stamp = issued
     monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: True)
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
-    path = dc.write_devcontainer(project, spec)
-    runtime_spec.issue(project, spec, path)
+    prepared, path, _stamp = issue_built(project, plain_builder(project), monkeypatch)
     monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: False)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="canonical Booley Directory alias"):
-        runtime_spec.validate(project, spec, path)
+        runtime_spec.validate(project, prepared.spec, path)
 
 
 def test_authorized_directory_source_refuses_an_ordinary_file(issued, monkeypatch, tmp_path):
@@ -2911,7 +2926,7 @@ def test_authorized_directory_source_refuses_an_ordinary_file(issued, monkeypatc
 @pytest.mark.parametrize("count", [0, 2])
 def test_seal_refuses_missing_or_duplicate_directory_authority(issued, count):
     project, _issued_spec, _path, _stamp = issued
-    spec = dc.build_devcontainer_spec(
+    spec = build_spec(
         dc.APP_NONE,
         mcp_start_command=dc.mcp_post_start_command(),
         protected_devcontainer_source=str(project / ".devcontainer"),
@@ -2921,19 +2936,19 @@ def test_seal_refuses_missing_or_duplicate_directory_authority(issued, count):
     assert len(selected) == 1
     spec["mounts"] = [raw for raw in mounts if raw not in selected] + selected * count
     with pytest.raises(runtime_spec.RuntimeSpecError, match="one exact writable bind"):
-        runtime_spec.seal(project, spec)
+        runtime_spec.preview(project, fixed(spec))
 
 
 def test_seal_refuses_an_already_mounted_directory_workspace_view(issued):
     project, _issued_spec, _path, _stamp = issued
-    spec = dc.build_devcontainer_spec(
+    spec = build_spec(
         dc.APP_NONE,
         mcp_start_command=dc.mcp_post_start_command(),
         protected_devcontainer_source=str(project / ".devcontainer"),
     )
     spec["mounts"].append("source=/untrusted,target=/work/.booley,type=bind")
     with pytest.raises(runtime_spec.RuntimeSpecError, match="workspace view is already mounted"):
-        runtime_spec.seal(project, spec)
+        runtime_spec.preview(project, fixed(spec))
 
 
 def test_runtime_directory_mount_requires_host_source_authority(issued):
@@ -3046,8 +3061,7 @@ def test_sealing_rejects_policy_violations_before_issuance(
         mcp_start_command=dc.mcp_post_start_command(),
     )
     spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] = "api_key"
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, json.loads(json.dumps(spec)))
+    runtime_spec.preview(project, fixed(spec))  # the undamaged spec previews
     if damage == "other-provider":
         spec["remoteEnv"]["OPENAI_API_KEY"] = "${localEnv:OPENAI_API_KEY}"
     elif damage == "wrong-placeholder":
@@ -3065,7 +3079,7 @@ def test_sealing_rejects_policy_violations_before_issuance(
         )
         spec["postStartCommand"] = f"{fragment}; {spec['postStartCommand']}"
     with pytest.raises(runtime_spec.RuntimeSpecError, match=r"credential|seed"):
-        runtime_spec.seal(project, spec)
+        runtime_spec.preview(project, fixed(spec))
 
 
 def _mutate_issuance_identity(setting, project, tmp_path, config, monkeypatch):
@@ -3206,7 +3220,7 @@ def test_refresh_replaces_spec_drift_without_image_change(issued, monkeypatch, t
         container_id="old",
         image_id=current.image_id,
     )
-    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", lambda *_: None)
+    monkeypatch.setattr(session_runtime, "vscode_session_container", lambda *_: None)
     monkeypatch.setattr(session_runtime, "plan_session_refresh", lambda *_: parked)
     monkeypatch.setattr(session_runtime, "park_planned_session", lambda *_: events.append("park"))
     monkeypatch.setattr(session_runtime, "verify_refreshed_session", lambda *a, **k: None)
@@ -3356,7 +3370,7 @@ def test_real_grant_changes_refuse_refresh_then_allow_authorized_reseed(
 
     project, _spec, _path, stamp = issued
     monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
-    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(session_runtime, "vscode_session_container", lambda _root: None)
     monkeypatch.setattr(
         flexnet_docker, "cleanup_project_resources_for_identity", lambda _identity: ()
     )
@@ -3440,13 +3454,22 @@ def test_fpga_disabled_prior_license_issuance_detects_withdrawn_grant(issued, mo
         runtime_spec.validate(project, spec, path)
 
 
+def test_issuance_requirements_rejects_non_mapping_container_env(tmp_path):
+    """`validate` is the only caller left, so the guard is checked on the helper itself."""
+    with (
+        pytest.raises(runtime_spec.RuntimeSpecError, match="containerEnv must be a mapping"),
+        runtime_spec._issuance_requirements(tmp_path, {"containerEnv": []}, None),
+    ):
+        pass
+
+
 def test_issuance_requirements_opens_lease_for_prior_stamp_without_marker(tmp_path, monkeypatch):
     seen: list[bool] = []
 
     @contextmanager
     def lease(_project, *, vivado_enabled, prior_eda):
         seen.append(prior_eda)
-        yield None
+        yield SimpleNamespace(license_profile=None)
 
     monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: False)
     monkeypatch.setattr(eda_requirements, "lease_requirements", lease)
@@ -3457,9 +3480,7 @@ def test_issuance_requirements_opens_lease_for_prior_stamp_without_marker(tmp_pa
     )
 
     for prior in priors:
-        with runtime_spec._issuance_requirements(
-            tmp_path, {"containerEnv": {}}, prior, include_relay_identity=False
-        ):
+        with runtime_spec._issuance_requirements(tmp_path, {"containerEnv": {}}, prior):
             pass
 
     assert seen == [False, True, True]
@@ -3606,15 +3627,10 @@ def _multi_cli_project(issued, monkeypatch, request, toml: str, app: str = "clau
     return project, spec, home
 
 
-def _seal_copy(project: Path, spec: dict) -> None:
-    runtime_spec.seal(project, json.loads(json.dumps(spec)))
-
-
-def _issue_spec(project: Path, spec: dict) -> Path:
-    runtime_spec.seal(project, spec)
-    path = dc.write_devcontainer(project, spec)
-    runtime_spec.issue(project, spec, path)
-    return path
+def _issue_spec(project: Path, spec: dict, monkeypatch: pytest.MonkeyPatch) -> tuple[dict, Path]:
+    """Preview and issue a copy of *spec*; return the issued spec and its document path."""
+    prepared, path, _stamp = issue_built(project, fixed(spec), monkeypatch)
+    return prepared.spec, path
 
 
 def _with_codex(spec: dict, project: Path, home: Path, policy: str = "auto") -> None:
@@ -3643,8 +3659,8 @@ _CLAUDE_AND_CODEX = '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n'
 
 def test_issued_multi_cli_spec_seals_and_validates(issued, monkeypatch, request):
     project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_AND_CODEX)
-    path = _issue_spec(project, spec)
-    runtime_spec.validate(project, json.loads(path.read_text()), path)
+    issued_spec, path = _issue_spec(project, spec, monkeypatch)
+    runtime_spec.validate(project, issued_spec, path)
 
 
 def _set_toml(project: Path, request, toml: str) -> None:
@@ -3659,7 +3675,7 @@ def test_sealing_accepts_seeds_for_every_listed_cli(issued, monkeypatch, request
     )
     _set_toml(project, request, _CLAUDE_AND_CODEX)
     _with_codex(spec, project, home)
-    _seal_copy(project, spec)
+    runtime_spec.preview(project, fixed(spec))
 
 
 _DAMAGED_RECORDS = {
@@ -3761,14 +3777,14 @@ def test_sealing_refuses_seed_for_unlisted_cli(issued, monkeypatch, request):
         project, spec, home = _multi_cli_project(
             issued, monkeypatch, request, f'[agent]\nclis = ["{app}"]\n', app
         )
-        _seal_copy(project, spec)  # the undamaged spec seals
+        runtime_spec.preview(project, fixed(spec))  # the undamaged spec previews
         _damage_spec(spec, project, home, damage)
         try:
-            runtime_spec.seal(project, spec)
+            runtime_spec.preview(project, fixed(spec))
         except runtime_spec.RuntimeSpecError as exc:
             assert re.search(refusal, str(exc)), f"{damage}: refused for another reason: {exc}"
         else:
-            pytest.fail(f"{damage}: sealed")
+            pytest.fail(f"{damage}: previewed")
 
 
 def test_sealing_checks_claude_config_seed_under_claude_policy(issued, monkeypatch, request):
@@ -3781,7 +3797,7 @@ def test_sealing_checks_claude_config_seed_under_claude_policy(issued, monkeypat
     (home / ".claude.json").write_text(json.dumps({"customApiKeyResponses": {"a": ["x"]}}))
     _set_toml(project, request, toml)
     _with_codex(spec, project, home, "subscription")
-    _seal_copy(project, spec)
+    runtime_spec.preview(project, fixed(spec))
 
 
 def _mixed_policy_spec(issued, monkeypatch, request, claude: str, codex: str):
@@ -3793,8 +3809,8 @@ def _mixed_policy_spec(issued, monkeypatch, request, claude: str, codex: str):
     project_id = dc.canonical_project_id(project)
     for cli, policy in policies.items():
         assert dc.state_volume_mount(cli, project_id, policy) in spec["mounts"]
-    path = _issue_spec(project, json.loads(json.dumps(spec)))  # issue a copy; keep *spec* unsealed
-    runtime_spec.validate(project, json.loads(path.read_text()), path)
+    issued_spec, path = _issue_spec(project, spec, monkeypatch)  # issues a copy of *spec*
+    runtime_spec.validate(project, issued_spec, path)
     return project, spec, home
 
 
@@ -3831,7 +3847,7 @@ def test_mixed_policy_spec_seals_and_refuses_forbidden_seed(issued, monkeypatch,
         project, spec, home = _mixed_policy_spec(issued, monkeypatch, request, claude, codex)
         damage(spec, home)
         with pytest.raises(runtime_spec.RuntimeSpecError, match=refusal) as caught:
-            runtime_spec.seal(project, spec)
+            runtime_spec.preview(project, fixed(spec))
         assert caught.value, case
 
 
@@ -3839,35 +3855,35 @@ def test_default_change_without_clis_requires_refresh(issued, monkeypatch, reque
     project, spec, _ = _multi_cli_project(
         issued, monkeypatch, request, '[agent]\ndefault = "claude"\n'
     )
-    path = _issue_spec(project, spec)
-    runtime_spec.validate(project, spec, path)
+    issued_spec, path = _issue_spec(project, spec, monkeypatch)
+    runtime_spec.validate(project, issued_spec, path)
     _set_toml(project, request, '[agent]\ndefault = "codex"\n')
     with pytest.raises(
         runtime_spec.RuntimeSpecError,
         match=r"without \[agent\] clis only \[agent\] default.*booley session refresh",
     ):
-        runtime_spec.validate(project, spec, path)
+        runtime_spec.validate(project, issued_spec, path)
 
 
 def test_cli_set_change_requires_refresh(issued, monkeypatch, request):
     project, spec, _ = _multi_cli_project(
         issued, monkeypatch, request, '[agent]\nclis = ["claude"]\n'
     )
-    path = _issue_spec(project, spec)
-    runtime_spec.validate(project, spec, path)
+    issued_spec, path = _issue_spec(project, spec, monkeypatch)
+    runtime_spec.validate(project, issued_spec, path)
     _set_toml(project, request, _CLAUDE_AND_CODEX)
     with pytest.raises(runtime_spec.RuntimeSpecError, match=r"Agent CLIs.*differ.*refresh"):
-        runtime_spec.validate(project, spec, path)
+        runtime_spec.validate(project, issued_spec, path)
 
 
 def test_invalid_agent_config_fails_validation_as_spec_error(issued, monkeypatch, request):
     project, spec, _ = _multi_cli_project(
         issued, monkeypatch, request, '[agent]\nclis = ["claude"]\n'
     )
-    path = _issue_spec(project, spec)
+    issued_spec, path = _issue_spec(project, spec, monkeypatch)
     _set_toml(project, request, '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "auto"\n')
     with pytest.raises(runtime_spec.RuntimeSpecError, match=r"\[agent\] is invalid"):
-        runtime_spec.validate(project, spec, path)
+        runtime_spec.validate(project, issued_spec, path)
 
 
 def test_legacy_single_cli_spec_without_record_still_validates(issued, monkeypatch, request):
@@ -3877,8 +3893,8 @@ def test_legacy_single_cli_spec_without_record_still_validates(issued, monkeypat
     spec["remoteEnv"].pop("BOOLEY_AGENT_CLIS", None)
     # A spec issued before the record existed allows its single app under the primary policy.
     assert dc.spec_cli_policies(spec) == {"claude": "auto"}
-    path = _issue_spec(project, spec)
-    runtime_spec.validate(project, spec, path)
+    issued_spec, path = _issue_spec(project, spec, monkeypatch)
+    runtime_spec.validate(project, issued_spec, path)
 
 
 def test_none_app_spec_keeps_default_policy(issued, monkeypatch, request):
@@ -3888,5 +3904,5 @@ def test_none_app_spec_keeps_default_policy(issued, monkeypatch, request):
     assert spec["name"] == "Booley Interactive (none)"
     assert spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "subscription"
     assert dc.spec_cli_policies(spec) == {}  # no CLI is seeded for ``none``
-    path = _issue_spec(project, spec)
-    runtime_spec.validate(project, spec, path)
+    issued_spec, path = _issue_spec(project, spec, monkeypatch)
+    runtime_spec.validate(project, issued_spec, path)

@@ -164,6 +164,7 @@ def _assert_uploads(workflow: dict, tmp_path: Path, actions: dict | None = None)
     assert audited_jobs == {
         "release-semantic",
         "docs-check",
+        "renovate-config",
         "test",
         "flake-stress",
         "coverage-shards",

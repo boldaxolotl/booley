@@ -1,0 +1,44 @@
+# Trimmed excerpt of Dockerfile.base at the recorded pins (frozen test fixture).
+ARG SV2V_VERSION=v0.0.13
+ARG SV2V_SHA256=30e3d83ea780b68c4b266900b173db1454b04f98dfece593e889b8a315b75e51
+RUN echo ">>> Installing sv2v ${SV2V_VERSION}..." \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/zachjs/sv2v/releases/download/${SV2V_VERSION}/sv2v-Linux.zip" \
+    -o /tmp/sv2v.zip
+
+ARG VERIBLE_VERSION=v0.0-4296-g0f262651
+ARG VERIBLE_SHA256=e76e117510739830255ec05485c2fe905dcdbd7ee137c7589446d32a15ee4505
+RUN echo ">>> Installing Verible ${VERIBLE_VERSION}..." \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/chipsalliance/verible/releases/download/${VERIBLE_VERSION}/verible-${VERIBLE_VERSION}-linux-static-x86_64.tar.gz" \
+    -o /tmp/verible.tar.gz
+
+ARG VAPORVIEW_VERSION=1.6.0
+ARG VAPORVIEW_SHA256=efaea5df08b23ad94efba9f0a686a9863c30d9c9662d06f872f527c22cd4b6a9
+ARG VAPORVIEW_SOURCE_TAG=1.6.0-rel
+ARG VAPORVIEW_SOURCE_COMMIT=d401914c3021596fccf343603aa5a8208c21d28c
+RUN echo ">>> Bundling VaporView ${VAPORVIEW_VERSION} VSIX..." \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://open-vsx.org/api/lramseyer/vaporview/${VAPORVIEW_VERSION}/file/lramseyer.vaporview-${VAPORVIEW_VERSION}.vsix" \
+    -o /tmp/vaporview.vsix
+
+ARG VERILOGHDL_VERSION=1.29.0
+ARG VERILOGHDL_SHA256=f657680f6eaf485923a3c2b07efd8cc3a8231f327762b2c8eb70062b4730709c
+ARG VERILOGHDL_SOURCE_TAG=v1.29.0
+ARG VERILOGHDL_SOURCE_COMMIT=53484f7c5bc6313cf648955d050dbffcd3fe6855
+RUN echo ">>> Bundling Verilog-HDL ${VERILOGHDL_VERSION} VSIX..." \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://open-vsx.org/api/mshr-h/veriloghdl/${VERILOGHDL_VERSION}/file/mshr-h.veriloghdl-${VERILOGHDL_VERSION}.vsix" \
+    -o /tmp/veriloghdl.vsix
+
+ARG LIVE_PREVIEW_VERSION=0.4.20
+ARG LIVE_PREVIEW_SHA256=9a06d671fa59ba9d29e53dcc452c463b03964bb929d93ab826325cd6c67c0397
+ARG LIVE_PREVIEW_SOURCE_TAG=v0.4.20
+ARG LIVE_PREVIEW_SOURCE_COMMIT=5b3ce20cdd17ca462825606863a1b95f368695fc
+RUN echo ">>> Bundling Live Preview ${LIVE_PREVIEW_VERSION} VSIX..." \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://open-vsx.org/api/ms-vscode/live-server/${LIVE_PREVIEW_VERSION}/file/ms-vscode.live-server-${LIVE_PREVIEW_VERSION}.vsix" \
+    -o /tmp/live-server.vsix
+
+ARG NODE_VERSION=24.21.0
+ARG NPM_VERSION=11.19.0
+ARG NODE_SHA256=8adedcec015224305033af191648a52f531178e18b254bbdac3778f25f5ad94d
+RUN echo ">>> Installing Node.js ${NODE_VERSION}..." \
+    && curl --proto '=https' --tlsv1.2 -fsSL \
+        "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+        -o /tmp/node.tar.xz

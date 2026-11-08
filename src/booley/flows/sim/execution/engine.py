@@ -8,7 +8,7 @@ import os
 import re
 import shlex
 import time
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -133,7 +133,9 @@ from .pre_sim import run_pre_sim_commands, test_run_environment
 from .telemetry import parse_build_seconds, parse_run_seconds, process_resources
 
 _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
-_TRACE_CLEANUP_MARGIN_S = 90
+_CYCLE_COUNT_RE = re.compile(r"[0-9]+")
+# Seconds added to the wrapper timeout under --trace for trace cleanup.
+TRACE_CLEANUP_MARGIN_S = 90
 _NO_SENTINEL = "no pass/fail sentinel detected, simulation exited cleanly"
 _NO_WAVEFORM = "the simulation passed, but --trace produced no queryable waveform"
 _NO_WAVEFORM_REMEDY = (
@@ -1316,7 +1318,7 @@ class SimulationExecution:
             trace_requested=self._options.trace,
             work=work,
             wrapper_timeout_s=work.timeout_s
-            + (_TRACE_CLEANUP_MARGIN_S if self._options.trace else 0),
+            + (TRACE_CLEANUP_MARGIN_S if self._options.trace else 0),
             pre_sim_commands=tuple(resolve_pre_sim_commands(handle.project_root)),
             simulator_environment=tuple(simulation_target_environment(handle).items()),
             cycle_sentinels=tuple(resolve_cycle_sentinels(handle.project_root)),
@@ -2728,21 +2730,40 @@ def _cycle_observation(
     name: str,
     configured_sentinels: tuple[str, ...],
 ) -> tuple[str, int | None]:
-    sentinels = configured_sentinels or (_DEFAULT_CYCLE_SENTINEL,)
+    """Classify the Cycle Count records of *output* for test *name*.
+
+    Returns ``(status, count)``. Statuses: ``observed`` (one named record),
+    ``legacy`` (one unnamed record), ``duplicate``, ``wrong_test`` (records
+    name only other tests), ``missing`` and ``malformed`` (a count that is not
+    ASCII digits, or an empty record with no valid record of its own). Only
+    ``observed`` and ``legacy`` carry a count.
+    """
+    # A line matches the longest sentinel it contains, so a sentinel that is a
+    # prefix of another cannot swallow its longer sibling.
+    sentinels = sorted(configured_sentinels or (_DEFAULT_CYCLE_SENTINEL,), key=len, reverse=True)
     records = _cycle_records(output, sentinels)
     named = [parts for parts in records if len(parts) >= 2 and " ".join(parts[:-1]) == name]
     legacy = [parts[0] for parts in records if len(parts) == 1]
-    if len(named) == 1 and named[0][-1].isdigit():
-        return "observed", int(named[0][-1])
+    if len(named) == 1:
+        return _counted("observed", named[0][-1])
     if len(named) > 1 or len(legacy) > 1:
         return "duplicate", None
-    if len(legacy) == 1 and legacy[0].isdigit():
-        return "legacy", int(legacy[0])
+    if len(legacy) == 1:
+        return _counted("legacy", legacy[0])
+    if any(not parts for parts in records):
+        return "malformed", None
     return ("wrong_test" if records else "missing"), None
 
 
-def _cycle_records(output: str, sentinels: tuple[str, ...]) -> list[list[str]]:
-    records = []
+def _counted(status: str, count: str) -> tuple[str, int | None]:
+    """Return *status* with the integer *count*, or ``malformed`` unless it is ASCII digits."""
+    if _CYCLE_COUNT_RE.fullmatch(count) is None:
+        return "malformed", None
+    return status, int(count)
+
+
+def _cycle_records(output: str, sentinels: Sequence[str]) -> list[list[str]]:
+    records: list[list[str]] = []
     for line in output.splitlines():
         sentinel = next((value for value in sentinels if value in line), None)
         if sentinel is not None:

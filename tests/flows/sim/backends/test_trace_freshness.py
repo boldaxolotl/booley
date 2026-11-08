@@ -162,7 +162,9 @@ def _run(
         )
         assert not isinstance(run, str)
         produce(dirs)
-        monkeypatch.setattr(crun, "_evaluate_verdict", lambda output, *_a, **_kw: (output, True))
+        monkeypatch.setattr(
+            crun, "_evaluate_verdict", lambda output, *_a, **_kw: (output, True, None)
+        )
         crun._complete_cocotb_run(run, deque(), _FINISHED, crun.RunTermination(), "compact", None)
         output = ""
     return output + "\n" + capsys.readouterr().out

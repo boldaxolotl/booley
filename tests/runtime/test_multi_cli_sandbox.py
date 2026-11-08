@@ -106,6 +106,8 @@ def test_single_cli_spec_seeds_only_claude_as_before(tmp_path, monkeypatch):
     assert spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] == "claude=auto"
     assert spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "auto"
     assert "OPENAI_API_KEY" not in spec["remoteEnv"]
+    # No Claude token exported or stored: nothing is forwarded over the mounted login.
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in spec["remoteEnv"]
     assert _CODEX_CREDS_SEED not in _targets(spec)
     assert _CLAUDE_CREDS_SEED in _targets(spec)
     assert _volumes(spec) == [dc.state_volume_mount("claude", dc.canonical_project_id(project))]

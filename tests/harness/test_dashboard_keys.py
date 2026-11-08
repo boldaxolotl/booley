@@ -16,11 +16,12 @@ from textual.widgets import DataTable, Static
 from booley.harness.dashboard.app import HELP, DashboardApp
 from booley.harness.dashboard.jobs import JobSnapshot
 from tests.harness.test_dashboard import choose_in_bar, open_session, snapshot
-from tests.harness.test_dashboard_windows import PROPOSAL_ROW, world
+from tests.harness.test_dashboard_windows import JOB_ROW, PROPOSAL_ROW, open_row, world
 
 # The keys the Dashboard used to bind: session digits, Help, Jobs filters, Sessions, owner.
 RETIRED_KEYS = (*"123456789", "?", "j", "r", "a", "s", "u")
 OVERVIEW_FOOTER = "↑↓ move · ⏎ open · ←→ Sessions / Jobs"
+SCROLL_FOOTER = "↑↓ PgUp/PgDn scroll · ←→ Sessions / Jobs · esc back"
 
 
 @pytest.fixture(autouse=True)
@@ -117,7 +118,7 @@ async def test_footer_in_detail_views_adds_esc_back():
         assert footer(app) == "↑↓ move · ⏎ open · ←→ Sessions / Jobs · esc back"
         await pilot.press("enter")
         assert app.navigation.view == "goal"
-        assert footer(app) == "↑↓ move · ←→ Sessions / Jobs · esc back"
+        assert footer(app) == SCROLL_FOOTER
 
 
 @pytest.mark.asyncio
@@ -168,7 +169,6 @@ async def test_help_describes_arrow_model_and_names_no_removed_key():
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(130, 40)) as pilot:
         await choose_in_bar(app, pilot, "Help")
-        await pilot.press("down")
         assert app.navigation.view == "help"
         text = str(app.query_one("#detail", Static).render())
         for phrase in (
@@ -193,3 +193,97 @@ async def test_help_describes_arrow_model_and_names_no_removed_key():
         assert "1-9" not in text and "1\u20139" not in text
         assert not re.search(r"(?:^|· )[1-9?jrasuq] \w", text, re.MULTILINE)
         assert "shortcut" not in text.lower() and "quit" not in text.lower()
+
+
+# --- Scroll views take the keyboard and the footer says so (#2886) ---------------
+
+
+@pytest.mark.asyncio
+async def test_opening_help_from_top_bar_focuses_help_and_scrolls():
+    current = snapshot(3)
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(90, 13)) as pilot:
+        await choose_in_bar(app, pilot, "Help")
+        assert app.navigation.view == "help"
+        aside = app.query_one("#aside")
+        assert app.focused is aside
+        assert aside.max_scroll_y >= 3  # room for PageDown to move
+        await pilot.press("pagedown")
+        await pilot.wait_for_animation()
+        assert aside.scroll_y > 0
+        await pilot.press("pageup")
+        await pilot.wait_for_animation()
+        assert aside.scroll_y == 0
+        await pilot.press("down")
+        await pilot.wait_for_animation()
+        assert aside.scroll_y == 1
+
+
+@pytest.mark.asyncio
+async def test_footer_in_help_names_scrolling_and_escape():
+    current = snapshot(3)
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(90, 24)) as pilot:
+        await choose_in_bar(app, pilot, "Help")
+        assert footer(app) == SCROLL_FOOTER
+        await pilot.press("up")  # Help is at scroll 0, so up reaches the top bar
+        assert footer(app) == "←→ choose · ⏎ apply · ↓ back to Help"
+
+
+async def open_full_width_view(app, pilot, view):
+    """Reach a full-width detail by Enter, in a world that has all of them."""
+    if view == "job":
+        await pilot.press("right", "enter")
+        await pilot.pause()
+    else:
+        await open_session(app, pilot, "codex:00")
+        if view == "goal":
+            await pilot.press("enter")
+        else:
+            await open_row(app, pilot, PROPOSAL_ROW if view == "proposal" else JOB_ROW)
+    assert app.navigation.view == view
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("view", ["goal", "job", "proposal"])
+async def test_footer_in_full_width_details_names_scrolling(view):
+    current = world()
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(90, 24)) as pilot:
+        await open_full_width_view(app, pilot, view)
+        assert app.focused is app.query_one("#aside")
+        assert footer(app) == SCROLL_FOOTER
+        await pilot.press("up")
+        assert footer(app) == "←→ choose · ⏎ apply · ↓ back to detail"
+
+
+@pytest.mark.asyncio
+async def test_window_tab_onto_full_width_view_focuses_it():
+    current = snapshot(3)
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(90, 24)) as pilot:
+        await choose_in_bar(app, pilot, "Help")
+        assert app.navigation.view == "help"
+        assert app.focused is app.query_one("#aside")
+
+        await pilot.press("right")
+        assert app.window == "jobs"
+        assert app.focused is app.query_one(DataTable)
+
+        # The Sessions window's history ends on Help: choosing its tab shows Help, focused.
+        await choose_in_bar(app, pilot, "Sessions")
+        assert app.window == "sessions"
+        assert app.navigation.view == "help"
+        assert app.focused is app.query_one("#aside")
+
+
+@pytest.mark.asyncio
+async def test_tab_into_side_panel_footer_names_scrolling():
+    current = snapshot(3)
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(160, 30)) as pilot:
+        assert app.query_one("#aside").display  # wide overview previews the row
+        assert footer(app) == OVERVIEW_FOOTER
+        await pilot.press("tab")
+        assert app.focused is app.query_one("#aside")
+        assert footer(app) == "↑↓ PgUp/PgDn scroll · ←→ Sessions / Jobs"

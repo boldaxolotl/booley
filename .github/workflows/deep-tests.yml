@@ -192,6 +192,11 @@ jobs:
       BUILDX_BUILDER: default
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Issue #2896: the image build preflight needs ~40 GiB free on the Docker
+      # storage filesystem, which a stock runner does not have. Same removal
+      # list as the Tests workflow's bwave-smoke job; the preflight stays on.
+      - name: Free unused runner disk
+        uses: ./.github/actions/free-runner-disk
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
@@ -203,6 +208,7 @@ jobs:
       - name: Install worktree test environment
         run: pip install -e ".[test]" -c .github/ci/constraints.txt -r .github/ci/requirements-build.txt
       - name: Build canonical Sandbox Image
+        id: build-image
         shell: bash
         run: |
           set -o pipefail
@@ -210,15 +216,20 @@ jobs:
           export PYTHON
           bash src/booley/data/docker/build.sh 2>&1 | tee "${RUNNER_TEMP}/worktree-image-build.log"
       - name: Run required worktree mount cases
+        id: worktree-pytest
         env:
           BOOLEY_REQUIRE_WORKTREE_DOCKER: '1'
           BOOLEY_WORKTREE_DOCKER_IMAGE: booley-sandbox:latest
         run: python -m pytest tests/docker/test_worktree_mount_paths_e2e.py -q --tb=short -rs --timeout=300 --junitxml="${RUNNER_TEMP}/worktree-mounts.xml"
+      # Only when pytest ran: after a build (or earlier) failure there is no
+      # JUnit file, and this step would add a second, misleading failure.
       - name: Assert worktree execution evidence
-        if: always()
+        if: always() && (steps.worktree-pytest.outcome == 'success' || steps.worktree-pytest.outcome == 'failure')
         run: python .github/scripts/assert_junit.py "${RUNNER_TEMP}/worktree-mounts.xml" --min-tests 1 --max-skips 0
+      # The build step tees its log, so once it ran a missing file is a real
+      # evidence gap; before it ran, upload would only add a second failure.
       - name: Upload worktree execution evidence
-        if: always()
+        if: always() && steps.build-image.outcome != 'skipped'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: worktree-mounts-evidence
