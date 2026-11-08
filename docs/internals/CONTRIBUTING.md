@@ -199,8 +199,8 @@ licensed installation of any of them, porting it is the single most valuable thi
 
 | Vendor | EDA tools worth porting |
 |---|---|
-| Synopsys | **VCS** (an internal/incubating parser exists, but there is no public integration), **SpyGlass** (lint), **Verdi** (waveform/debug), **Design Compiler**, **Fusion Compiler** |
-| Cadence | **Genus** (synth), **HAL** (lint), **Xcelium** (an internal/incubating parser exists, but there is no public integration) |
+| Synopsys | **VCS**, **SpyGlass** (lint), **Verdi** (waveform/debug), **Design Compiler**, **Fusion Compiler** |
+| Cadence | **Genus** (synth), **HAL** (lint), **Xcelium** |
 | Siemens (Mentor) | **Questa / ModelSim** (sim), **Questa Lint / AutoCheck** (lint) |
 
 **Lint is the cheapest high-value port on that table.** Booley's `lint` Flow

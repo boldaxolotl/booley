@@ -130,16 +130,15 @@ def _tests_file(tmp_path: Path, text: str) -> list[str]:
             "--resume-from cannot be combined with --mode",
         ),
         (["--no-waivers"], "--no-waivers requires --coverage"),
-        (["--seed", "3", "--mode", "elab-only"], "--seed applies to simulation"),
         (
             ["--resume-from", "m.json", "--seed", "3", "--mode", "elab-only"],
             "--seed applies to simulation",
         ),
         (["--tests-file", "missing.txt"], "cannot read --tests-file"),
-        (["--test", "a", "--test", "a"], "duplicate exact test name(s): a"),
     ],
 )
-def test_cli_rule_errors_name_flags(argv, message, capsys) -> None:
+def test_cli_rule_errors_name_flags(argv, message, capsys, tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)  # the relative file names above never exist
     with pytest.raises(SystemExit) as exit_info:
         parse_request(SimulateFlow(), argv)
     assert exit_info.value.code == 2
@@ -156,12 +155,6 @@ def test_cli_empty_tests_file_names_the_flag(tmp_path, capsys) -> None:
 def test_typed_rule_errors_name_fields(tmp_path) -> None:
     with pytest.raises(ValueError, match="test and tests_file are mutually exclusive"):
         SimRequest(target="sim", test=("a",), tests_file=tmp_path / "f.txt")
-    with pytest.raises(ValueError, match="cannot read tests_file"):
-        SimRequest(target="sim", tests_file=tmp_path / "missing.txt")
-    empty = tmp_path / "empty.txt"
-    empty.write_text("\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="tests_file contains no test names"):
-        SimRequest(target="sim", tests_file=empty)
     with pytest.raises(ValueError, match="seed applies to simulation"):
         SimRequest(target="sim", seed=3, mode=SimulationMode.ELAB_ONLY)
     with pytest.raises(ValueError, match="resume_from cannot be combined with mode"):

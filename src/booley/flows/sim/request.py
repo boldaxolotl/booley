@@ -55,8 +55,7 @@ class SimRequest(FlowRequest):
             raise ValueError("no_waivers must be boolean")
         self._normalize_campaign_paths()
         self._normalize_test_selection()
-        # The rules run in the order the CLI reported them, so an input that
-        # breaks several keeps its first message.
+        # Rule order decides which message wins when an input breaks several.
         self._validate_mode_and_resume()
         self._consume_tests_file()
         if self.test is not None:

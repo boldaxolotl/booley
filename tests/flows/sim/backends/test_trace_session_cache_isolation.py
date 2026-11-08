@@ -26,14 +26,6 @@ def _cache_patch(cache_root: Path):
     return patch("booley.bwave.waveform_store.tempfile.gettempdir", return_value=str(cache_root))
 
 
-def _session(work_dir: Path, cache_root: Path) -> TraceSession:
-    with _cache_patch(cache_root):
-        session = TraceSession(work_dir)
-        # Touch cache_dir inside the patch so the bucket is created there.
-        _ = session.cache_dir
-        return session
-
-
 def test_same_named_work_dirs_get_distinct_cache_buckets(tmp_path):
     cache_root = tmp_path / "bwave"
     a = tmp_path / "ticket_a" / "sim"

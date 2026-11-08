@@ -243,7 +243,6 @@ class TestHarnessInfraLines:
         [
             "ERROR: Verilator elaboration failed (rc=2)",
             "ERROR: iverilog compilation failed (rc=1)",
-            "ERROR: vcs elaboration failed (rc=2)",
             "ERROR: Verilator executable Vfpu not found in build/",
             "ERROR: Verilator simulation timed out (900s)",
             "ERROR: missing $readmemh memory-init file — foo",
@@ -291,7 +290,6 @@ class TestHarnessInfraLines:
             # (the harness's elaboration-failure markers + the run-halves' own messages).
             "ERROR: Verilator elaboration timed out (600s)",
             "ERROR: iverilog compilation timed out (600s)",
-            "ERROR: xcelium elaboration failed (rc=1)",
             "ERROR: cocotb simulation timed out (600s)",
             "ERROR: iverilog simulation timed out (900s) — last output 12s ago",
         ],

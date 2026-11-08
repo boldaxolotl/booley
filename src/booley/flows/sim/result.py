@@ -109,13 +109,13 @@ def parse_sim_verdict(
 
 # The EDA tool names Booley's own halves put in front of the markers below —
 # the harness's elaboration-failure markers ("Verilator elaboration failed",
-# "iverilog compilation failed", "xcelium/vcs elaboration failed") plus the run-halves'
+# "iverilog compilation failed") plus the run-halves'
 # own "<EDA-tool> simulation timed out" / "Verilator executable V<top> not found".
 # A closed list, deliberately: spelling these as ``\w+`` swallows testbench
 # prose. "ERROR: DUT compilation failed at time 100" is a TB talking about the
 # *design*; treating it as infra drops it from the SVA count and turns a FAIL
 # with rc=0 into an INCONCLUSIVE — a false-PASS-adjacent lie.
-_HARNESS_EDA_TOOL = r"(?i:verilator|iverilog|icarus|xcelium|xrun|vcs|cocotb)"
+_HARNESS_EDA_TOOL = r"(?i:verilator|iverilog|icarus|cocotb)"
 
 # Harness-emitted *infrastructure* markers — every ``ERROR:`` line Booley's own
 # build/run/trace/guard machinery prints. They all begin "ERROR: ...", which the
