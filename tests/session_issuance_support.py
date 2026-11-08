@@ -26,6 +26,22 @@ def stub_keeper(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("booley.runtime.interactive_docker.remove_image_tag", lambda _image: None)
 
 
+def plain_builder(
+    project: Path, app: str = dc.APP_NONE, **spec_options: Any
+) -> runtime_spec.SpecBuilder:
+    """Return a builder for the unlicensed Sandbox spec most tests issue."""
+
+    def build(_inputs: runtime_spec.SessionSpecInputs) -> dict[str, Any]:
+        return dc.build_devcontainer_spec(
+            app,
+            mcp_start_command=dc.mcp_post_start_command(),
+            protected_devcontainer_source=str(project / ".devcontainer"),
+            **spec_options,
+        )
+
+    return build
+
+
 def fixed(spec: dict[str, Any]) -> runtime_spec.SpecBuilder:
     """Return a builder that hands out a deep copy of an already built spec."""
     return lambda _inputs: copy.deepcopy(spec)
@@ -48,16 +64,22 @@ def damaged(
     mutate: Callable[[dict[str, Any]], None],
     **prospective_overrides: Any,
 ) -> runtime_spec.PreparedSessionSpec:
-    """Return *prepared* with its spec damaged after pinning, as a stale preview would be.
+    """Return *prepared* with its spec tampered with after pinning.
 
-    The digest and the prospective issuance follow the damaged spec, so revalidation
-    accepts it and the guard under test is the one that fires at issue time.
+    The digest, the prospective issuance and its run-argument labels follow the damaged
+    spec, so revalidation accepts it and the guard under test is the one that fires at
+    issue time. Digest and label damage cannot be injected this way, and a mutation that
+    changes the project-data layout must pass the matching ``project_data_layout``
+    override. The label rebuild mirrors `_seal_with_requirements`.
     """
     spec = copy.deepcopy(prepared.spec)
     mutate(spec)
     digest = runtime_spec._spec_digest(spec)
     prospective = replace(
         prepared.prospective_issuance, spec_sha256=digest, **prospective_overrides
+    )
+    assert runtime_spec._spec_project_data_layout(spec) == prospective.project_data_layout, (
+        "pass the new project_data_layout: revalidation would refuse it before the guard under test"
     )
     run_args: list[str] = []
     for item in spec["runArgs"]:

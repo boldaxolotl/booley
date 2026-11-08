@@ -95,6 +95,7 @@ def _issue_runtime(workspace: Path, vivado_root: Path) -> None:
             mcp_start_command=dc.mcp_post_start_command(),
             trusted_eda_mounts=inputs.trusted_eda_mounts,
             protected_devcontainer_source=str((workspace / ".devcontainer").resolve()),
+            fixed_container_env=dict(inputs.fixed_container_environment),
         )
 
     # The fixture enables the fpga Flow, so preview requests the registered Vivado.
