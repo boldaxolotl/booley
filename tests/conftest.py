@@ -233,9 +233,9 @@ def hide_mutmut_stats_mode_from_children() -> None:
     working directory (the harness autouse fixture), where mutmut finds no
     ``setup.cfg`` and the child dies with ``FileNotFoundError``.
 
-    Relies on (mutmut >= 3.8): ``set_mutant_under_test`` also keeps a
-    process-local copy, and ``get_mutant_under_test`` falls back to it when the
-    environment variable is missing. So the parent pytest process still records
+    Relies on (mutmut >= 3.8.1, upstream mutmut #511): ``set_mutant_under_test``
+    also keeps a process-local copy, and ``get_mutant_under_test`` falls back to
+    it when the environment variable is missing. So the parent pytest process still records
     which tests cover which functions, while a fresh child sees no mode at all and
     runs the original, unmutated functions. Its hits were never recorded anyway,
     so no stats are lost. A forked child keeps the in-memory copy and mutmut's

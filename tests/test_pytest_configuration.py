@@ -881,7 +881,11 @@ def test_mutmut_configuration_lives_only_in_setup_cfg() -> None:
     ("initial", "expected"),
     [
         pytest.param("stats", None, id="stats"),
-        pytest.param("booley.harness.setup.x.x_foo__mutmut_1", "unchanged", id="mutant"),
+        pytest.param(
+            "booley.harness.setup.x.x_foo__mutmut_1",
+            "booley.harness.setup.x.x_foo__mutmut_1",
+            id="mutant",
+        ),
         pytest.param(None, None, id="unset"),
     ],
 )
@@ -898,8 +902,7 @@ def test_mutmut_stats_mode_is_hidden_from_child_processes(
 
     conftest.hide_mutmut_stats_mode_from_children()
 
-    expected_value = initial if expected == "unchanged" else expected
-    assert os.environ.get("MUTANT_UNDER_TEST") == expected_value
+    assert os.environ.get("MUTANT_UNDER_TEST") == expected
 
 
 _STATS_MODE_PROBE = '''\
