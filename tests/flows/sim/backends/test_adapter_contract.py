@@ -71,7 +71,7 @@ def test_work_document_round_trips_every_field() -> None:
         "cocotb_module": "tests.counter",
         "tests": ("test_a", "test_b"),
         "result_verbosity": "full",
-        "sim_time_grace_s": 1.5,
+        "sim_time_grace_s": float("inf"),  # project config may say inf
         "adapter_result_path": "result.json",
         "attempt_token": "token",
         "target_identity": "target",
@@ -108,6 +108,7 @@ def test_work_document_rejects_wrong_schema_and_field_set() -> None:
         "plusargs": _document(plusargs="not-a-list"),
         "environment entries must be": _document(environment=[["only-a-name"]]),
         "timeout_s": _document(timeout_s=True),
+        "sim_time_grace_s must be a number": _document(sim_time_grace_s="1"),
         "must be a mapping": "[]",
         "Expecting value": "not json",
         "timeout must be positive": _document(timeout_s=0),

@@ -68,7 +68,7 @@ def test_traced_document_with_trace_args_starts(tmp_path: Path, monkeypatch):
     (build / "sim_cfg").write_bytes(b"")
     marker = tmp_path / "vvp-ran"
     fake_vvp = tmp_path / "fake_vvp"
-    fake_vvp.write_bytes(f"#!/bin/sh\ntouch '{marker}'\necho 'ALL TESTS PASSED.'\n".encode())
+    fake_vvp.write_bytes(f"#!/bin/sh\necho \"$@\">'{marker}'\necho 'ALL TESTS PASSED.'\n".encode())
     fake_vvp.chmod(0o755)
     monkeypatch.setattr(ir, "_find_vvp", lambda: str(fake_vvp))
     work = PreparedSimulationWork(
@@ -77,13 +77,14 @@ def test_traced_document_with_trace_args_starts(tmp_path: Path, monkeypatch):
         run_cwd="",
         timeout_s=30,
         work_dir=str(tmp_path / "work"),
+        plusargs=("test_id=2",),
         trace=True,
         trace_args=("--trace={file}",),
         pass_sentinels=("ALL TESTS PASSED.",),
     )
 
     assert ir.main([encode_simulation_work(work)]) == 0
-    assert marker.exists()
+    assert "+test_id=2" in marker.read_text(encoding="utf-8")
 
 
 def test_evaluate_verdict_honors_custom_sentinels(tmp_path: Path, capsys):

@@ -10,16 +10,6 @@ from booley.flows.sim.adapter_contract import PreparedSimulationWork
 _ADAPTER_MODULE_PREFIX = "booley.flows.sim.backends."
 
 
-def _words(command: Sequence[str] | str) -> list[str]:
-    """The words of an adapter argv, or of the script an ``sh -c`` launch runs."""
-    if isinstance(command, str):
-        return shlex.split(command)
-    parts = list(command)
-    if len(parts) == 3 and parts[1] == "-c":
-        return shlex.split(parts[2])
-    return parts
-
-
 def launched_work(command: Sequence[str] | str) -> PreparedSimulationWork:
     """Decode the work document that follows ``-m booley.flows.sim.backends.<adapter>``.
 
@@ -29,7 +19,9 @@ def launched_work(command: Sequence[str] | str) -> PreparedSimulationWork:
     """
     from booley.flows.sim.adapter_contract import decode_simulation_work
 
-    words = _words(command)
+    words = shlex.split(command) if isinstance(command, str) else list(command)
+    if len(words) == 3 and words[1] == "-c":  # an ``sh -c <script>`` tuple
+        words = shlex.split(words[2])
     for index in range(1, len(words) - 1):
         if words[index - 1] == "-m" and words[index].startswith(_ADAPTER_MODULE_PREFIX):
             return decode_simulation_work(words[index + 1])

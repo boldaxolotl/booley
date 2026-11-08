@@ -15,9 +15,8 @@ Target-owned native-FST lifecycle — as one Sandbox subprocess.
 Unlike the legacy runner it does **not** build anything and reads no
 ``configs.toml``/``build_file_list`` design-description: the binary location is
 passed in (the prepared work document's build dir, the edalize build dir holding
-``V<top>``), so once
-every legacy consumer is on this path the legacy file-list registry can be
-deleted (Unit 6).
+``V<top>``), so once every legacy consumer is on this path the legacy file-list
+registry can be deleted (Unit 6).
 """
 
 from __future__ import annotations

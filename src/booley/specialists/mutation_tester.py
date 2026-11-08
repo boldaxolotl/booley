@@ -2115,9 +2115,9 @@ replacement must differ, and every proposal must remain a single source edit.
     ) -> tuple[list[str], TestRunLaunch]:
         """The pinned adapter command of one mutant and its launch inputs.
 
-        The command carries the prepared work document the Simulation Flow
-        would build for the same Tests. Declared ``copyto`` inputs are part of
-        it, so the adapter classifies a missing ``$readmemh`` file as the Flow
+        The command carries a prepared work document of the fields a mutant
+        launch has always passed. Declared ``copyto`` inputs are part of it, so
+        the adapter classifies a missing ``$readmemh`` file as the Flow
         does. Paths stay relative to *work_dir* (the run cwd); the adapter
         resolves them absolute before switching to its run cwd. The adapter
         times out a hair before the hard subprocess kill so a clean TIMEOUT

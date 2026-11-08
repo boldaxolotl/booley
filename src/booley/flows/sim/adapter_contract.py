@@ -11,7 +11,6 @@ from typing import Literal
 from booley.core.boundary import (
     require_bool_value,
     require_dict,
-    require_finite_number,
     require_int,
     require_list,
     require_str_value,
@@ -108,6 +107,13 @@ def _environment_pairs(value: object, name: str) -> tuple[tuple[str, str], ...]:
     return tuple((pair[0], pair[1]) for pair in pairs)
 
 
+def _float(value: object, name: str) -> float:
+    """A float field; ``inf`` is legal (``sim_time_grace_s = inf`` in project config)."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise SimulationWorkError(f"{name} must be a number, got {value!r}")
+    return float(value)
+
+
 def _test_runs(value: object, name: str) -> tuple[TestRun, ...]:
     return tuple(
         test_run_from_document(entry, trust_fingerprint=True)
@@ -120,7 +126,7 @@ _FIELD_DECODERS: dict[str, Callable[[object, str], object]] = {
     "AdapterKind": lambda value, name: require_str_value(value, field=name),
     "str": lambda value, name: require_str_value(value, field=name, allow_empty=True),
     "int": lambda value, name: require_int(value, field=name),
-    "float": lambda value, name: require_finite_number(value, field=name),
+    "float": _float,
     "bool": lambda value, name: require_bool_value(value, field=name),
     "int | None": lambda value, name: None if value is None else require_int(value, field=name),
     "tuple[str, ...]": _string_tuple,
