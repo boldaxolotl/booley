@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import signal
 import socket
@@ -158,6 +159,55 @@ def test_nothing_listening_is_not_provably_unseen(scope):
 def test_reply_decides_the_verdict(owner_for, scope, reply, unseen):
     owner_for(reply)
     assert (view_probe.unseen_owner(scope) == _self_owner()) is unseen
+
+
+def test_one_late_reply_does_not_make_a_dashboard_unseen(owner_for, scope):
+    owner_for(None, b"0.200\n")  # too slow for the first look, answers the second
+    assert view_probe.unseen_owner(scope) is None
+
+
+def test_a_silent_owner_is_unseen_after_two_looks(owner_for, scope):
+    owner_for(None, None)
+    assert view_probe.unseen_owner(scope) == _self_owner()
+
+
+def test_serve_survives_a_transient_accept_failure():
+    sent: list[bytes] = []
+    stop = threading.Event()
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def settimeout(self, _seconds):
+            pass
+
+        def sendall(self, data):
+            sent.append(data)
+            stop.set()
+
+    class Listener:
+        calls = 0
+
+        def settimeout(self, _seconds):
+            pass
+
+        def fileno(self):
+            return 7  # still open
+
+        def accept(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError(errno.EMFILE, "no free descriptor")
+            return Connection(), None
+
+    server = view_probe.serve(Listener(), view_probe.ViewState(), stop)  # type: ignore[arg-type]
+    server.join(timeout=3)
+    assert not server.is_alive()
+    assert len(sent) == 1, "the reply thread gave up after one failed accept"
 
 
 def test_other_users_owner_is_not_provably_unseen(owner_for, scope, monkeypatch):

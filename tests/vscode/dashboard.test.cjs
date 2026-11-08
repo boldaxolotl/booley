@@ -40,6 +40,11 @@ function fakeEditor(options, records, settings) {
         open.push({ name: 'bash', creationOptions: { name: LIFECYCLE_NAME },
             state: { isInteractedWith: true } });
     }
+    // A Dashboard terminal this window already shows (created by the fixed launch).
+    if (options.dashboardTerminal) {
+        open.push({ name: 'Booley Dashboard', state: { isInteractedWith: false },
+            creationOptions: { shellPath: '/usr/local/bin/booley', shellArgs: ['dashboard', '--on-attach'] } });
+    }
     if (options.titledLifecycleTerminal) {
         open.push({ name: 'Codespaces: python -m booley.runtime.incontainer_vaporview',
             creationOptions: {}, state: { isInteractedWith: true } });
@@ -124,7 +129,7 @@ function fileUri(fsPath) {
 function fixture(options = {}) {
     const {enabled = true, error, raw, delayed = false} = options;
     const records = {log: [], terminals: [], calls: [], listeners: {}, commands: [], messages: [],
-        tabs: [], closedTabs: [], registered: {}};
+        tabs: [], closedTabs: [], registered: {}, timers: [], cleared: []};
     const {log, terminals, calls, listeners} = records;
     const settings = {protocol: options.protocol ?? 1, permission: options.permission,
         associations: options.associations};
@@ -132,13 +137,18 @@ function fixture(options = {}) {
     let complete;
     function execFile(command, args, options, callback) {
         calls.push({ command, args, options });
-        complete = () => callback(error, raw ?? JSON.stringify({
+        // A list of replies answers the policy reads in order; the last one repeats.
+        const answer = Array.isArray(raw) ? (raw.length > 1 ? raw.shift() : raw[0]) : raw;
+        complete = () => callback(error, answer ?? JSON.stringify({
             protocol: 1, enabled, reason: enabled ? '' : 'disabled by Project configuration',
         }), error ? 'policy unavailable' : '');
         if (!delayed) { queueMicrotask(complete); }
     }
     const module = { exports: {} };
-    vm.runInNewContext(source, { exports: module.exports, AbortController,
+    // Timers are recorded, not run: a test fires one by calling its `fn`.
+    const setTimeout = (fn, ms) => records.timers.push({ fn, ms });
+    const clearTimeout = id => records.cleared.push(id);
+    vm.runInNewContext(source, { exports: module.exports, AbortController, setTimeout, clearTimeout,
         require: name => {
             if (name === 'vscode') { return vscode; }
             if (name === 'node:child_process') { return {execFile}; }
@@ -156,6 +166,7 @@ function fixture(options = {}) {
         registered: records.registered,
         // Run the command the way the Command Palette does.
         runCommand: () => records.registered['booley.dashboard.open'](),
+        timers: records.timers, cleared: records.cleared,
         tabs: records.tabs, closedTabs: records.closedTabs, log, terminals, listeners, vscode, settings, complete: () => complete(),
         reactivate: () => module.exports.activate({subscriptions: [], workspaceState: context.workspaceState}) };
 }
@@ -632,4 +643,56 @@ test('the open-Dashboard command shows a failed policy read in Output', async ()
     await f.runCommand();
     assert.equal(f.terminals.length, 0);
     assert.match(f.log.at(-1), /Dashboard open failed: policy unavailable/);
+});
+
+test('the open-Dashboard command says a Dashboard is open even when the Project opts out of auto-open', async () => {
+    const f = fixture({ protocol: 0, raw: JSON.stringify({ protocol: 1, enabled: false,
+        reason: 'Dashboard attach disabled by [sandbox].dashboard.', already_open: true }) });
+    await tick();
+    await f.runCommand();
+    assert.equal(f.terminals.length, 0);
+    assert.equal(f.messages.at(-1).message, 'The Dashboard is already open in this Sandbox.');
+});
+
+// --- Reload: the old Dashboard still counts as seen for a few seconds -----------
+
+const ENABLED = JSON.stringify({ protocol: 1, enabled: true, reason: '' });
+
+test('an automatic open that finds the Dashboard still seen looks once more after it went unseen', async () => {
+    const f = fixture({ raw: [ALREADY_OPEN, ENABLED] });
+    await tick();
+    assert.equal(f.terminals.length, 0);
+    assert.equal(f.timers.length, 1);
+    assert.equal(f.timers[0].ms, 16000);
+    f.timers[0].fn();
+    await tick();
+    assert.equal(f.calls.length, 2);
+    assert.equal(f.terminals.length, 1, 'the Dashboard comes back without manual steps');
+    assert.deepEqual(Array.from(f.terminals[0].options.shellArgs), ['dashboard', '--on-attach']);
+});
+
+test('a Dashboard still shown after the second look stays alone and is not asked for again', async () => {
+    const f = fixture({ raw: [ALREADY_OPEN] });
+    await tick();
+    f.timers[0].fn();
+    await tick();
+    assert.equal(f.calls.length, 2);
+    assert.equal(f.terminals.length, 0);
+    assert.equal(f.timers.length, 1, 'one second look only');
+});
+
+test('the second look is skipped once this window shows a Dashboard or is deactivated', async () => {
+    const shown = fixture({ raw: [ALREADY_OPEN], dashboardTerminal: true });
+    await tick();
+    shown.timers[0].fn();
+    await tick();
+    assert.equal(shown.calls.length, 1, 'a Dashboard this window shows needs no second look');
+
+    const gone = fixture({ raw: [ALREADY_OPEN] });
+    await tick();
+    for (const disposable of gone.context.subscriptions) { disposable.dispose(); }
+    assert.equal(gone.cleared.length, 1, 'deactivation cancels the pending look');
+    gone.timers[0].fn();
+    await tick();
+    assert.equal(gone.calls.length, 1);
 });

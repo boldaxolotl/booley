@@ -76,7 +76,12 @@ def attach_policy(root: Path) -> dict[str, object]:
     reason = attach_blocker(root, resolve_common_booley_dir(root))
     # Computed even when a Project blocker applies, so the explicit open command
     # can tell an open Dashboard from a disabled automatic open.
-    already_open = _dashboard_is_open()
+    try:
+        already_open = _dashboard_is_open()
+    except RuntimeError:
+        if not reason:
+            raise
+        already_open = False  # a Project opt-out was always reported without probing
     if already_open and not reason:
         reason = "The Dashboard is already open in this Sandbox."
     return {"protocol": 1, "enabled": not reason, "reason": reason, "already_open": already_open}

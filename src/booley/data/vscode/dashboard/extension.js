@@ -14,6 +14,11 @@ const REMOTES = new Set(['dev-container', 'attached-container', 'codespaces']);
 // GitHub Codespaces runs devcontainer lifecycle commands (postAttachCommand
 // and friends) in terminals it names `Codespaces: <command>`.
 const LIFECYCLE_PREFIX = 'Codespaces: ';
+// A reload leaves the earlier Dashboard process answering for a few seconds, so an
+// automatic open straight after it can find the Dashboard still counted as seen.
+// Look once more when it will have gone unseen (`UNSEEN_AFTER`, view_probe.py: 15 s).
+const RECHECK_MS = 16000;
+const ALREADY_OPEN_REASON = 'The Dashboard is already open in this Sandbox.';
 
 // A Codespaces lifecycle-command terminal: Codespaces may send its command as
 // text, which VS Code also counts as interaction, so it never means the user
@@ -61,6 +66,7 @@ class AttachController {
         this.disposed = false;
         // The automatic open in flight, so the command never races it into a second terminal.
         this.opening = undefined;
+        this.recheck = undefined;
         context.subscriptions.push(this.output, this,
             vscode.commands.registerCommand(OPEN_COMMAND, () => this.openByCommand()),
             vscode.workspace.onDidGrantWorkspaceTrust(() => { void this.open(); }),
@@ -133,7 +139,7 @@ class AttachController {
     }
 
     // The automatic open after the window passed `eligibleRoot`; it never rejects.
-    async attach(root) {
+    async attach(root, rechecking = false) {
         try {
             const attempts = this.context.workspaceState.get('attachAttempts', []);
             await this.context.workspaceState.update('attachAttempts',
@@ -143,6 +149,7 @@ class AttachController {
             if (this.eligibleRoot()?.fsPath !== root.fsPath) { return; }
             if (!result.enabled) {
                 this.output.appendLine(result.reason);
+                if (result.already_open && !rechecking) { this.recheckLater(root); }
                 return;
             }
             // Sample before creating ours: a terminal that has received input since
@@ -164,6 +171,14 @@ class AttachController {
                 this.output.show(true);
             }
         }
+    }
+
+    // One more automatic attempt after `RECHECK_MS`, unless a Dashboard shows by then.
+    recheckLater(root) {
+        this.recheck = setTimeout(() => {
+            this.recheck = undefined;
+            if (!this.disposed && !this.shownDashboard()) { void this.attach(root, true); }
+        }, RECHECK_MS);
     }
 
     // The one fixed launch of the Dashboard terminal; the view survives an
@@ -210,7 +225,7 @@ class AttachController {
             const result = await policy(found.root, this.abort.signal);
             if (this.disposed) { return; }
             if (result.already_open) {
-                this.explain(result.reason);
+                this.explain(ALREADY_OPEN_REASON);
                 return;
             }
             this.attempted = true;
@@ -281,6 +296,7 @@ class AttachController {
     dispose() {
         this.disposed = true;
         this.abort.abort();
+        clearTimeout(this.recheck);
         // VS Code owns terminal lifetime across extension-host restarts.
     }
 }

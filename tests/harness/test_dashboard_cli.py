@@ -85,6 +85,27 @@ def test_attach_policy_is_read_only_and_disabled_attach_never_starts(
     assert list(tmp_path.iterdir()) == []
 
 
+def test_attach_policy_reports_an_opt_out_even_where_ownership_cannot_be_observed(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(command, "resolve_common_booley_dir", lambda _: tmp_path)
+    monkeypatch.setattr(command, "attach_blocker", lambda *_: "disabled by configuration")
+
+    def unobservable():
+        raise RuntimeError("Sandbox Dashboard ownership is unavailable")
+
+    monkeypatch.setattr(command, "_dashboard_is_open", unobservable)
+    assert command.attach_policy(tmp_path) == {
+        "protocol": 1,
+        "enabled": False,
+        "reason": "disabled by configuration",
+        "already_open": False,
+    }
+    monkeypatch.setattr(command, "attach_blocker", lambda *_: "")
+    with pytest.raises(RuntimeError, match="ownership is unavailable"):
+        command.attach_policy(tmp_path)
+
+
 def test_attach_rechecks_policy_before_launch_and_surfaces_bad_configuration(
     tmp_path, monkeypatch, capsys
 ):

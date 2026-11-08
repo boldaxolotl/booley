@@ -72,7 +72,7 @@ class ViewState:
 
 
 def serve(listener: socket.socket, state: ViewState, stop: threading.Event) -> threading.Thread:
-    """Answer every connection with the view age on its own thread, until *stop* is set.
+    """Answer every connection with the view age on its own thread, until *stop* or a closed socket.
 
     The thread never waits on the Dashboard's event loop, so a starting or busy
     Dashboard still replies and a hung one simply stops refreshing its age.
@@ -86,7 +86,12 @@ def serve(listener: socket.socket, state: ViewState, stop: threading.Event) -> t
             except TimeoutError:
                 continue
             except OSError:
-                return
+                if stop.is_set() or listener.fileno() == -1:
+                    return
+                # A transient failure (no free descriptor) must not silence the
+                # reply thread for good: a silent owner is taken for wedged.
+                stop.wait(_ACCEPT_POLL_SECONDS)
+                continue
             with connection:
                 connection.settimeout(REPLY_SECONDS)
                 try:
@@ -151,22 +156,36 @@ def _read_owner(scope: str) -> _Reading | None:
         return _Reading(owner, age) if math.isfinite(age) and age >= 0 else None
 
 
+def _pause_before_second_look(age: float | None) -> float | None:
+    """Seconds to wait before asking the owner once more, or None when one look decides.
+
+    A silent owner is asked again at once: a single late reply (a starved reply
+    thread, a loaded host) must not cost a watched Dashboard its view. An age
+    between seen and unseen waits until a silent owner would be unseen.
+    """
+    if age is None:
+        return 0.0
+    if SEEN_WITHIN < age < UNSEEN_AFTER:
+        return UNSEEN_AFTER - age + _REPROBE_MARGIN
+    return None
+
+
 def unseen_owner(scope: str) -> ViewOwner | None:
     """The Dashboard of *scope* when it is provably unseen, else None.
 
     Seen, still starting, and every case that cannot be proven return None.
     """
-    first = _read_owner(scope)
-    if first is None:
+    reading = _read_owner(scope)
+    if reading is None:
         return None
-    if first.age is not None and SEEN_WITHIN < first.age < UNSEEN_AFTER:
-        # Undecided: wait until a silent owner would be unseen and ask once more.
-        time.sleep(UNSEEN_AFTER - first.age + _REPROBE_MARGIN)
+    pause = _pause_before_second_look(reading.age)
+    if pause is not None:
+        time.sleep(pause)
         second = _read_owner(scope)
-        if second is None or second.owner != first.owner:
+        if second is None or second.owner != reading.owner:
             return None
-        first = second
-    return first.owner if first.age is None or first.age >= UNSEEN_AFTER else None
+        reading = second
+    return reading.owner if reading.age is None or reading.age >= UNSEEN_AFTER else None
 
 
 def _is_gone(owner: ViewOwner) -> bool:
