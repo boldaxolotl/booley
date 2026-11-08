@@ -75,7 +75,7 @@ class _Lane:
     # Compact-terminal bookkeeping: one result line per lane that ran a command.
     opened_at: float = 0.0
     closed_at: float = 0.0
-    started: bool = False
+    ran_command: bool = False
     status: str | None = None
 
 
@@ -107,9 +107,14 @@ def current_progress() -> TerminalProgress | None:
 def _human(text: str) -> str:
     """Shorten every hash-like hex run to its first 8 digits, for human text only.
 
-    Records and the transcript keep the full value.
+    Records and the transcript keep the full value. A run of one digit kind (a wide
+    binary or zero vector from the design) is data, not a hash, and stays whole.
     """
-    return _HEX_RUN.sub(r"\1", text)
+    return _HEX_RUN.sub(lambda m: m[1] if _is_hash(m[0]) else m[0], text)
+
+
+def _is_hash(run: str) -> bool:
+    return any(c.isdigit() for c in run) and any(c in "abcdef" for c in run)
 
 
 def sanitize(value: str, limit: int = 2048) -> str:
@@ -281,7 +286,8 @@ class TerminalProgress:
         self.tool_output: bool = tool_output
         self.started: float = clock()
         # Latched once, so one invocation's permanent output keeps one format even if
-        # the window is resized mid-run. Redirected output keeps the raw records.
+        # the window is resized mid-run (``tick`` then draws nothing instead of records).
+        # Redirected output keeps the raw records.
         self.compact: bool = not tool_output and self._terminal()[2]
         self.stage: str = "preparing"
         self.tail: deque[str] = deque(maxlen=6)
@@ -391,15 +397,6 @@ class TerminalProgress:
         self._clear()
         self._write(sanitize(text) + "\n")
 
-    def _render_idle(self) -> None:
-        """Draw the live panel now for a stage change made while no command runs.
-
-        During a command the writer thread keeps the panel current.
-        """
-        if self.worker is None and not self.closed and self._terminal()[2]:
-            self.last_render = float("-inf")
-            self.tick()
-
     def stage_changed(self, stage: str, *, target: str | None = None) -> None:
         """Record a stage change from the producing thread.
 
@@ -434,9 +431,7 @@ class TerminalProgress:
                 None,
             )
             lane.stage = new_stage
-            if self.compact:
-                self._render_idle()
-            else:
+            if not self.compact:  # a terminal shows stages in the live panel, during commands
                 self._record("", lane=lane)
 
     def _serial_stage_changed(self, stage: str, target: str | None) -> None:
@@ -459,9 +454,7 @@ class TerminalProgress:
                 None,
             )
             self.stage = new_stage
-            if self.compact:
-                self._render_idle()
-            else:
+            if not self.compact:
                 self._record("")
 
     def log_path_known(
@@ -523,7 +516,7 @@ class TerminalProgress:
                 # One lane's command start never clears another lane's tail.
                 lane.tail.clear()
                 lane.last_output = None
-                lane.started = True
+                lane.ran_command = True
             if stage is not None:
                 self.stage_changed(stage)
             if not self.compact:
@@ -656,13 +649,13 @@ class TerminalProgress:
             self._record(f"output: {line}", target=target, stage=stage, lane=lane)
         lane.pending.clear()
 
-    def _summarise_closed_lanes(self) -> None:
+    def _summarize_closed_lanes(self) -> None:
         """Compact terminal: one result line per closed lane, then forget it.
 
         Open lanes stay, with their pending lines, for a later drain or ``close``.
         """
         for lane in self._lanes:
-            if lane.closed and lane.started:
+            if lane.closed and lane.ran_command:
                 self._say_result(
                     lane.status or "done",
                     lane.label,
@@ -687,7 +680,7 @@ class TerminalProgress:
     def _finish_lanes(self) -> None:
         """Print (or, with live tool output, drop) every lane's unflushed lines."""
         if self.compact:
-            self._summarise_closed_lanes()
+            self._summarize_closed_lanes()
             return
         for lane in self._lanes:
             if self.tool_output:
@@ -752,7 +745,7 @@ class TerminalProgress:
             self._write("\n".join(rows) + "\n")
             self.rows = len(rows)
             self.last_render = now
-        elif now - self.last_record >= 5:
+        elif not self.compact and now - self.last_record >= 5:
             self._record(
                 "heartbeat (elapsed time; process health unknown)",
                 stage=f"lanes={len(open_lanes)}" if open_lanes else None,
@@ -861,14 +854,14 @@ class TerminalProgress:
             if self.abandoned:
                 self._release_transcript()
 
-    def end_command(self, status: str | None = None) -> None:
+    def end_command(self, status: str = "done") -> None:
         """Bound writer shutdown independently of the subprocess pipe readers.
 
         *status* is the command's process outcome (``done``, ``exit N``, ``timed out``,
         ``stopped``) for the compact result line; the first non-``done`` one wins.
         """
         with self._command_lock:
-            if status not in (None, "done"):
+            if status != "done":
                 lane = _LANE.get()
                 if lane is None:
                     self._unit_status = self._unit_status or status
@@ -918,14 +911,14 @@ class TerminalProgress:
             self.files.clear()
             self._clear()
             if self.compact:
-                self._summarise_serial_unit()
+                self._summarize_serial_unit()
             elif not self.tool_output:
                 for line in self.new_lines:
                     self._record(f"output: {line}")
                 self.new_lines.clear()
             self._finish_lanes()
 
-    def _summarise_serial_unit(self) -> None:
+    def _summarize_serial_unit(self) -> None:
         """Compact terminal: one result line for the serial commands since the last drain."""
         if self._unit_started is not None:
             self._say_result(
@@ -953,7 +946,7 @@ class TerminalProgress:
         with self.lock:
             self._clear()
             if self.compact:
-                self._summarise_closed_lanes()
+                self._summarize_closed_lanes()
             self._release_transcript()
             self.closed = True
 
@@ -968,23 +961,22 @@ class TerminalProgress:
 
     def footer(self) -> None:
         """Print final log paths. Serial-only: runs after the invocation, with no lane open."""
+        kept = [
+            (path, registration)
+            for path, registration in self.paths.items()
+            if not registration.temporary and path.is_file()
+        ]
         if self.compact:
-            logs = [
-                str(path)
-                for path, registration in self.paths.items()
-                if not registration.temporary and path.is_file()
-            ]
             parts = [f"transcript: {self.log_path}"] if self.log_path is not None else []
-            if logs:
-                parts.append("logs: " + ", ".join(logs))
+            if kept:
+                parts.append("logs: " + ", ".join(str(path) for path, _ in kept))
             if parts:
                 self._say(" · ".join(parts))
             return
         if self.log_path is not None:
             self._record(f"transcript={self.log_path}")
-        for path, registration in self.paths.items():
-            if not registration.temporary and path.is_file():
-                self._record(f"log={path}", target=registration.target, stage=registration.stage)
+        for path, registration in kept:
+            self._record(f"log={path}", target=registration.target, stage=registration.stage)
 
 
 def announce_unit(stage: str, *, target: str | None = None) -> None:

@@ -30,6 +30,7 @@ from booley.runtime.execution_records import ExecutionId
 from booley.runtime.job_slots import CLASS_HEAVY, SlotStore
 from tests.flows.sim.test_campaign_phase3 import _two_item_manifest
 from tests.flows.sim.test_campaign_phase4 import _managed
+from tests.flows.test_terminal_progress import settled_lines
 
 # Bound for every cross-lane wait so a regression fails instead of hanging.
 WAIT_S = 5
@@ -316,14 +317,7 @@ def test_tty_lanes_are_summarised_once_after_an_intermediate_drain(
 
     text = screen.getvalue()
     assert "[booley-progress]" not in text
-    # Replay the live-panel clears; what remains is the permanent output.
-    lines: list[str] = []
-    for chunk in re.split(r"(\x1b\[\d+A\x1b\[J)", text):
-        clear = re.fullmatch(r"\x1b\[(\d+)A\x1b\[J", chunk)
-        if clear:
-            del lines[-int(clear[1]) :]
-        else:
-            lines.extend(chunk.splitlines())
+    lines = settled_lines(text)  # the permanent output, live-panel clears applied
     results: dict[str, list[str]] = {}
     current = ""
     for line in lines:

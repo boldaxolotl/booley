@@ -117,13 +117,12 @@ def communicate_observed(
         if on_capture_complete is not None:
             on_capture_complete()
         if not completed:
+            status = "timed out"
             _shutdown(process, captures)
         for capture in captures:
             if capture.error is not None:
                 raise capture.error
-        if not completed:
-            status = "timed out"
-        else:
+        if completed:
             status = "done" if process.returncode == 0 else f"exit {process.returncode}"
         return captures[0].text(), captures[1].text(), not completed
     except BaseException:
