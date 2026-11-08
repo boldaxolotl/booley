@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 import pytest
+from tests.flows.sim.test_endpoint_campaign_lifecycle import _native_cycle_campaign
 from tests.target_test_support import make_target_handle
 
 from booley.flows.base import BooleyFlow
@@ -17,15 +18,7 @@ from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintConfigResult, LintFlow, LintWarning
 from booley.flows.sim.build import BuildOutcome
-from booley.flows.sim.flow import (
-    ElabOnlyTargetResult,
-    SimulateFlow,
-    TargetResult,
-    _test_report_entry,
-)
-from booley.flows.sim.flow import (
-    TestResult as SimTestResult,
-)
+from booley.flows.sim.flow import ElabOnlyTargetResult, SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -90,7 +83,8 @@ def _documented_fields(flow_name: str) -> set[str]:
 
 
 def _assert_documented(flow_name: str, payload: dict[str, Any]) -> None:
-    missing = set(payload) - _documented_fields(flow_name)
+    # JSON Schema keywords such as ``$schema`` are documented without the sigil.
+    missing = {key.removeprefix("$") for key in payload} - _documented_fields(flow_name)
     assert not missing, f"{flow_name} structured fields missing from reference: {sorted(missing)}"
 
 
@@ -188,39 +182,19 @@ def test_simulation_build_and_dry_run_timeout_contract_is_documented() -> None:
     assert "independent fixed 600-second budget" in config
 
 
-def test_sim_test_fields_stay_documented() -> None:
-    entry = _test_report_entry(
-        SimTestResult(
-            name="reset",
-            passed=False,
-            test_validated=False,
-            trace_path="trace.vcd",
-            run_log_path="run.log",
-            workload_snapshot={"fingerprint": "sha256"},
-        )
-    )
+def test_sim_report_fields_stay_documented(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A coverage campaign writes the ordinary projection plus the coverage fields.
+    _native_cycle_campaign(tmp_path, monkeypatch)
+    (path,) = (tmp_path / "reports").glob("sim/*/targets/*/simulation.json")
+    projection = _read_json(path)
 
-    _assert_documented("sim", entry)
-    _assert_documented("sim", entry["artifacts"])
-
-
-def test_sim_report_fields_stay_documented(tmp_path: Path) -> None:
-    sim, report_dir = _configured_flow(SimulateFlow, tmp_path, "sim_demo")
-    sim._compile_command_str = lambda _target: "make sim"  # type: ignore[method-assign]
-    sim._fileset_for_report = lambda _target: {"rtl": [], "tb": []}  # type: ignore[method-assign]
-    sim._artifacts_for = lambda _result: {}  # type: ignore[method-assign]
-    with sim.publication_resources:
-        sim._write_target_report(
-            TargetResult(
-                target="sim_demo",
-                target_identity="vendor:library:demo:1.0#sim_demo",
-                tb_top="tb",
-                eda_tool="verilator",
-                passed=True,
-                tests=[SimTestResult(name="reset", passed=True)],
-            )
-        )
-    _assert_documented("sim", _read_json(report_dir / "sim/1/targets/sim_demo/simulation.json"))
+    _assert_documented("sim", projection)
+    _assert_documented("sim", projection["tests"][0])
+    _assert_documented("sim", projection["test_runs"][0])
+    _assert_documented("sim", projection["campaign_manifest"])
+    _assert_documented("sim", projection["coverage_campaign"])
 
 
 def test_sim_elab_only_report_fields_stay_documented(tmp_path: Path) -> None:
