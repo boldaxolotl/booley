@@ -2046,6 +2046,13 @@ async def _call_application_tool(
         ) from None
     except MCPError:
         raise
+    except asyncio.CancelledError:
+        # The client went away: the call is over, not still running. record() queues
+        # the outcome before its first await, so the write survives a second cancel.
+        if observer is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await _record_presence(observer, request.attribution, params.name, "cancelled")
+        raise
     except Exception as exc:
         if observer is not None:
             await _record_presence(observer, request.attribution, params.name, "error")

@@ -651,7 +651,7 @@ async def test_concurrent_first_process_calls_keep_each_presence_and_own_outcome
 
 
 @pytest.mark.asyncio
-async def test_presence_queue_coalesces_latest_call_and_diagnoses_overflow(
+async def test_presence_queue_keeps_each_call_and_diagnoses_overflow(
     registry, monkeypatch, caplog
 ):
     import threading
@@ -683,9 +683,11 @@ async def test_presence_queue_coalesces_latest_call_and_diagnoses_overflow(
         release.set()
     await asyncio.wait_for(observer._pending, 2)
     rows = {row.attribution.key: row for row in registry.snapshot().rows}
-    assert set(rows) == {"codex:active", "codex:latest", "codex:second"}
-    assert rows["codex:latest"].calls[-1].tool == "call9"
-    assert rows["codex:latest"].calls[-1].outcome == "completed"
+    assert set(rows) == {"codex:active", "codex:latest"}
+    assert [(call.tool, call.outcome) for call in rows["codex:latest"].calls] == [
+        ("call0", "completed"),
+        ("call1", "completed"),
+    ]
     assert "queue capacity exceeded" in caplog.text
 
 
@@ -776,8 +778,6 @@ async def test_claude_peer_recovery_keeps_shared_worktree_presence_separate(
         assert rows[fallback.key].started_at == fallback_row.started_at
         assert [call.tool for call in rows[fallback.key].calls] == [
             "fallback_before",
-            "fallback_before",
-            "fallback_after",
             "fallback_after",
         ]
         assert {call.tool for call in rows[peer.key].calls} == {"process"}
@@ -945,3 +945,127 @@ def test_unusable_end_marker_leaves_the_row_to_quiet_after(registry, payload):
     # Control: the reader does consult markers, so a valid one hides the same row.
     path.write_bytes(_marker())
     assert registry.visible_snapshot(now=120, scope=SCOPE).rows == ()
+
+
+def _thread_observer(registry, monkeypatch, clock):
+    """An observer on a thread session whose clock is the one-item list ``clock``."""
+    observer = SessionObserver(now=lambda: clock[0], budget=1)
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+    return observer
+
+
+def _recent(registry):
+    return [(call.tool, call.outcome) for call in registry.snapshot().rows[0].calls]
+
+
+@pytest.mark.asyncio
+async def test_completed_call_is_one_recent_call_with_its_outcome(registry, monkeypatch):
+    clock = [100]
+    observer = _thread_observer(registry, monkeypatch, clock)
+    call = await observer.attribution({}, {"threadId": "one"}, "codex", tool="sim")
+    clock[0] = 105
+    await observer.record(call, "sim", "completed")
+    assert _recent(registry) == [("sim", "completed")]
+    entry = registry.snapshot().rows[0].calls[0]
+    assert (entry.at, entry.ended_at) == ("1970-01-01T00:01:40Z", "1970-01-01T00:01:45Z")
+
+
+@pytest.mark.asyncio
+async def test_running_call_is_started_then_replaced_in_place(registry, monkeypatch):
+    clock = [100]
+    observer = _thread_observer(registry, monkeypatch, clock)
+    first = await observer.attribution({}, {"threadId": "one"}, "codex", tool="sim")
+    assert _recent(registry) == [("sim", "started")]
+    started = registry.snapshot().rows[0].calls[0]
+    clock[0] = 105
+    await observer.record(first, "sim", "completed")
+    assert _recent(registry) == [("sim", "completed")]
+    ended = registry.snapshot().rows[0].calls[0]
+    assert started.ended_at == ""
+    assert (ended.call_id, ended.at) == (started.call_id, started.at)
+    assert ended.ended_at == "1970-01-01T00:01:45Z"
+    clock[0] = 110
+    await observer.attribution({}, {"threadId": "one"}, "codex", tool="lint")
+    assert _recent(registry) == [("sim", "completed"), ("lint", "started")]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_calls_to_one_tool_keep_separate_outcomes(
+    registry, monkeypatch, tmp_path
+):
+    clock = [100]
+    observer = _thread_observer(registry, monkeypatch, clock)
+    first_dir, second_dir = tmp_path / "first", tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    thread = {"threadId": "one"}
+    first = await observer.attribution({"work_dir": str(first_dir)}, thread, "codex", tool="sim")
+    clock[0] = 101
+    second = await observer.attribution({"work_dir": str(second_dir)}, thread, "codex", tool="sim")
+    await observer.record(first, "sim", "completed")
+    await observer.record(second, "sim", "error")
+    assert _recent(registry) == [("sim", "completed"), ("sim", "error")]
+    row = registry.snapshot().rows[0]
+    assert len({call.call_id for call in row.calls}) == 2
+    # The older call ending last must not move the row back to its work directory.
+    assert row.attribution.work_dir == str(second_dir.resolve())
+
+
+@pytest.mark.asyncio
+async def test_outcome_before_start_write_yields_one_recent_call(registry, monkeypatch):
+    import threading
+
+    from booley.mcp import session_observer
+
+    release = threading.Event()
+    entered = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def slow_peer(*_):
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(2)
+        return IDENTITY
+
+    monkeypatch.setattr(session_observer, "observed_peer", slow_peer)
+    observer = SessionObserver(now=lambda: 100, budget=0.001)
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+    call = await observer.attribution({}, {"threadId": "one"}, "codex", tool="sim")
+    await asyncio.wait_for(entered.wait(), 2)
+    await observer.record(call, "sim", "completed")
+    release.set()
+    await asyncio.wait_for(observer._pending, 2)
+    assert _recent(registry) == [("sim", "completed")]
+
+
+def test_upsert_replaces_call_entry_in_place(registry):
+    for now, call_id in ((100, "a"), (101, "b")):
+        registry.upsert(facts(), "sim", "started", now=now, call_id=call_id)
+    registry.upsert(facts(), "sim", "completed", now=102, call_id="a")
+    calls = registry.snapshot().rows[0].calls
+    assert [(call.call_id, call.outcome) for call in calls] == [
+        ("a", "completed"),
+        ("b", "started"),
+    ]
+    assert [call.at for call in calls] == sorted(call.at for call in calls)
+    registry.upsert(facts(), "sim", "completed", now=103, call_id="evicted")
+    assert len(registry.snapshot().rows[0].calls) == 3
+    for number in range(25):
+        registry.upsert(facts(), "sim", "completed", now=110 + number, call_id=f"c{number}")
+    assert len(registry.snapshot().rows[0].calls) == session_registry.CALL_HISTORY
+
+
+def test_rows_without_call_ids_parse(registry):
+    registry.upsert(facts(), "sim", "completed", now=100)
+    path = registry.path("codex:one")
+    data = json.loads(path.read_text())
+    for call in data["calls"]:
+        del call["call_id"], call["ended_at"]
+    path.write_text(json.dumps(data))
+    assert registry.snapshot().rows[0].calls[0].call_id == ""
+    data["calls"][0]["ended_at"] = "1970-01-01 00:01:45"
+    path.write_text(json.dumps(data))
+    assert "canonical UTC seconds" in registry.snapshot().diagnostics[0]
+    data["calls"][0]["ended_at"] = ""
+    data["calls"][0]["call_id"] = "x" * 65
+    path.write_text(json.dumps(data))
+    assert "call id is too long" in registry.snapshot().diagnostics[0]
