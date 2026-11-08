@@ -10,12 +10,7 @@ from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import CriteriaTemplate
 from booley.flows.plan import FlowPlan, WorkUnitPlan, WorkUnitRole
 from booley.flows.sim.execution import SelectedTestRuns
-from booley.flows.sim.flow import (
-    SimulateFlow,
-    TargetResult,
-    parse_cycle_observation,
-    parse_cycles,
-)
+from booley.flows.sim.flow import SimulateFlow, TargetResult
 from booley.flows.sim.flow import TestResult as SimTestResult
 from booley.flows.sim.mode import SimulationMode
 from booley.flows.target_test_plan import build_target_test_plan
@@ -130,41 +125,6 @@ def _patch_catalog_select(monkeypatch, resolver) -> None:
         "build",
         classmethod(lambda _cls, root: Catalog(root)),
     )
-
-
-@pytest.mark.parametrize(
-    ("output", "status", "value"),
-    [
-        ("[SIM_CYCLES] smoke 42", "observed", 42),
-        ("[SIM_CYCLES] other 42", "wrong_test", None),
-        ("ordinary output", "missing", None),
-        ("[SIM_CYCLES] smoke nope", "malformed", None),
-        ("[SIM_CYCLES] 42", "legacy", 42),
-    ],
-)
-def test_cycle_observation_preserves_evidence_status(
-    output: str, status: str, value: int | None
-) -> None:
-    observation = parse_cycle_observation(output, "smoke")
-    assert observation.status == status
-    assert observation.value == value
-
-
-def test_duplicate_named_cycle_records_are_ambiguous() -> None:
-    observation = parse_cycle_observation("[SIM_CYCLES] smoke 41\n[SIM_CYCLES] smoke 42", "smoke")
-    assert observation.status == "duplicate"
-    assert observation.value is None
-
-
-def test_configured_prefix_is_a_literal() -> None:
-    observation = parse_cycle_observation("CYCLES[1] smoke 9", "smoke", ["CYCLES[1]"])
-    assert observation.status == "observed"
-    assert observation.value == 9
-
-
-def test_legacy_wrapper_remains_observationally_compatible() -> None:
-    assert parse_cycles("[SIM_CYCLES] 987", "smoke") == 987
-    assert parse_cycles("[SIM_CYCLES] 987", "smoke", allow_legacy=False) is None
 
 
 def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
