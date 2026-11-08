@@ -1711,7 +1711,7 @@ def _resolve_max_rundir_bytes(work_dir: Path | None = None) -> int:
     killing an in-flight synth). Growth, not total size — see
     :class:`booley.flows.sim.run_guard.DiskBudgetGuard` for why (F-23). ``0`` disables
     the guard. Forwarded to the builtin
-    run-halves as ``--max-rundir-bytes``; mirrors the other ``_resolve_*`` knob
+    run-halves in the prepared work document; mirrors the other ``_resolve_*`` knob
     readers. Defaults to :data:`_DEFAULT_MAX_RUNDIR_BYTES` when unset.
     """
     try:

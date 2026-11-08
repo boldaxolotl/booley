@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -20,12 +19,13 @@ from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
-    AdapterTransportIdentity,
+    work_transport_identity,
     write_adapter_result,
 )
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.flow import SimulateFlow
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult, execute_endpoint
+from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.test_campaign_characterization import _AdapterAbortExecution, _plan
 
 
@@ -802,17 +802,9 @@ class _CardExecution(_AdapterAbortExecution):
     def _invoke_process(self, command, *, timeout):
         result = super()._invoke_process(command, timeout=timeout)
         if self.passing and "BOOLEY_BUILD_STAGE" not in command[-1]:
-            tokens = shlex.split(command[-1])
-            selected = tuple(
-                token.split("=", 1)[1] for token in tokens if token.startswith("--selected-test=")
-            )
-            identity = AdapterTransportIdentity(
-                "cocotb",
-                tokens[tokens.index("--attempt-token") + 1],
-                tokens[tokens.index("--target-identity") + 1],
-                selected,
-                Path(tokens[tokens.index("--adapter-result") + 1]),
-            )
+            identity = work_transport_identity(launched_work(command))
+            assert identity is not None
+            selected = identity.selected_tests
             write_adapter_result(
                 identity,
                 AdapterResult(

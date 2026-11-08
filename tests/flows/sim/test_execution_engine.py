@@ -68,6 +68,7 @@ from booley.runtime import paths as runtime_paths
 from booley.runtime.booley_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.leased_session import canned_build_session, split_invoker
 
 
@@ -2621,8 +2622,41 @@ def test_preview_resolves_configuration_from_each_handle_root(tmp_path: Path) ->
         current_preview = execution.preview(_handle(current), NamedTests(("now",)))
         baseline_preview = execution.preview(_handle(baseline), NamedTests(("then",)))
 
-    assert "--plusarg=test=now" in current_preview.commands[0][-1]
-    assert "--plusarg=case=0" in baseline_preview.commands[0][-1]
+    assert "test=now" in launched_work(current_preview.commands[0]).plusargs
+    assert "case=0" in launched_work(baseline_preview.commands[0]).plusargs
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh -n syntax check")
+@pytest.mark.parametrize(
+    ("adapter", "run_name"),
+    [("verilator", "smoke@1"), ("icarus", "smoke")],  # only Verilator seeds natively
+)
+def test_preview_is_a_runnable_chain(tmp_path: Path, adapter: str, run_name: str) -> None:
+    project = tmp_path / ".booley"
+    project.mkdir()
+    (project / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n', encoding="utf-8")
+    inspection = _inspection(cocotb=False)
+    inspection.eda_tool = adapter
+    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
+    with (
+        patch(
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
+            return_value=inspection,
+        ),
+        patch(
+            "booley.flows.sim.execution.engine.fusesoc_registry.setup_command_for_handle",
+            return_value=["setup"],
+        ),
+    ):
+        preview = execution.preview(_handle(tmp_path), NamedTests(("smoke",)))
+
+    shell, flag, script = preview.commands[0]
+    assert (shell, flag) == ("sh", "-c")
+    subprocess.run(["sh", "-n", "-c", script], check=True)
+    work = launched_work(script)
+    assert (work.adapter, work.eda_tool, work.top) == (adapter, adapter, "tb_demo")
+    assert work.tests == ("smoke",)
+    assert [run.name for run in work.test_runs] == [run_name]
 
 
 @pytest.mark.parametrize("fresh, expected", [(True, "pass"), (False, "inconclusive")])
@@ -3102,12 +3136,11 @@ def _assert_attempt_config_freezing(
     second_snapshot = second.tests[0].workload_snapshot
     assert first_snapshot is not None and second_snapshot is not None
     assert first.verdict == second.verdict == "pass"
-    assert "../first/*.fst" in run.commands[0]
-    assert "../second/*.fst" in run.commands[1]
-    assert "--run-cwd run" in run.commands[0]
-    assert "--run-cwd other-run" in run.commands[1]
-    assert "--timeout 1" in run.commands[0]
-    assert "--timeout 2" in run.commands[1]
+    first_work, second_work = (launched_work(command) for command in run.commands)
+    assert first_work.trace_files == ("../first/*.fst",)
+    assert second_work.trace_files == ("../second/*.fst",)
+    assert (first_work.run_cwd, second_work.run_cwd) == ("run", "other-run")
+    assert (first_work.timeout_s, second_work.timeout_s) == (1, 2)
     assert run.pre_sim_timeouts == run.invocation_timeouts == [91, 92]
     assert first_snapshot["controls"]["run_cwd"] == "run"
     assert second_snapshot["controls"]["run_cwd"] == "other-run"
@@ -3167,10 +3200,10 @@ def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("eda_tool", "artifact_names", "adapter_flag"),
+    ("eda_tool", "artifact_names"),
     [
-        ("icarus", ("demo.scr", "demo"), "--build-dir"),
-        ("verilator", ("Vtb_demo",), "--bin-dir"),
+        ("icarus", ("demo.scr", "demo")),
+        ("verilator", ("Vtb_demo",)),
     ],
 )
 @pytest.mark.parametrize("observed", [False, True])
@@ -3179,7 +3212,6 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
     tmp_path: Path,
     eda_tool: str,
     artifact_names: tuple[str, ...],
-    adapter_flag: str,
     observed: bool,
     log_failure: bool,
 ) -> None:
@@ -3241,11 +3273,11 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
     assert timeouts == [7, 5]
     assert len(commands) == 2
     launch = commands[1][-1]
-    assert adapter_flag in launch
-    assert str(snapshot) in launch
-    assert str(run_cwd) in launch
-    assert "--work-dir" in launch
-    assert str(snapshot.parent / "execution-evidence") in launch
+    work = launched_work(launch)
+    assert work.adapter == eda_tool
+    assert Path(work.build_dir) == snapshot
+    assert Path(work.run_cwd) == run_cwd
+    assert Path(work.work_dir) == snapshot.parent / "execution-evidence"
     assert str(prepared.build_root) not in launch
 
 

@@ -32,6 +32,7 @@ from booley.flows.sim.execution import (
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.flows.sim.launched_work import launched_work
 
 pytestmark = pytest.mark.skipif(
     os.name == "nt", reason="Verilator build reuse is proven in the POSIX Sandbox"
@@ -559,4 +560,6 @@ def test_native_fst_trace_mode_survives_a_reuse_hit(verilator_env: Path) -> None
     assert second.builds[0].ran is False
     assert second.builds[0].cache_decision.startswith("hit;")
     assert len(recorder.launch_commands) == 2
-    assert all("--trace-mode native_fst" in command for command in recorder.launch_commands)
+    assert all(
+        launched_work(command).trace_mode == "native_fst" for command in recorder.launch_commands
+    )

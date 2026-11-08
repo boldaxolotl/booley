@@ -62,6 +62,7 @@ from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.catalog import TargetCatalog
+from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.leased_session import canned_build_session, without_build_record
 
 # Built-in Flow execution inside the Sandbox.
@@ -1213,7 +1214,7 @@ class TestDryRun:
         assert len(plan["work_units"]) == 1
         command = plan["work_units"][0]["commands"][0]["argv"]
         assert command[:2] == ["sh", "-c"]
-        assert "--top alu_tb" in command[2]
+        assert launched_work(command).top == "alu_tb"
         assert "BOOLEY_TARGET=lite" in command[2]
 
     @patch(

@@ -34,16 +34,16 @@ Empirically-nailed Icarus run-half facts (notes-unitA-edalize-trace-runmany.md):
     from the edalize build dir.
 
 It builds nothing and reads no ``configs.toml`` / ``build_file_list``
-design-description: the build dir is passed in (``--build-dir``), so once every
+design-description: the build dir is passed in (the prepared work document), so once every
 Icarus consumer is on this path the legacy file-list registry can be deleted.
 """
 
 from __future__ import annotations
 
-import argparse
 import os
 import shutil
 import subprocess
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -51,17 +51,16 @@ from functools import partial
 from pathlib import Path
 
 from booley.flows.run_log import write_run_log
-from booley.flows.sim.adapter_contract import PreparedSimulationWork
+from booley.flows.sim.adapter_contract import PreparedSimulationWork, run_adapter_entry
 from booley.flows.sim.adapter_transport import (
     AdapterTraceResult,
     AdapterTransportIdentity,
-    add_transport_arguments,
+    NativeRun,
     assess_native_verdict,
     first_native_failure,
     native_verdict_message,
     publish_native_adapter_result,
-    transport_identity_from_args,
-    work_transport_arguments,
+    work_transport_identity,
 )
 from booley.flows.sim.backends.shared import (
     BOOLEY_DUMP_VCD_NAME,
@@ -77,7 +76,6 @@ from booley.flows.sim.backends.shared import (
 from booley.flows.sim.result import (
     extract_vrfc_warnings,
     format_summary,
-    parse_sim_verdict,
     write_result_json,
 )
 from booley.flows.sim.trace_session import TraceSession
@@ -102,37 +100,6 @@ class _IcarusRun:
 def _trace_roots(run_cwd: Path, work_dir: Path, build_dir: Path) -> list[Path]:
     """Directories searched for a testbench-declared trace file."""
     return [run_cwd, work_dir, build_dir]
-
-
-def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
-    """Render one parent-side Icarus adapter invocation."""
-    if work.adapter != "icarus":
-        raise ValueError(f"Icarus adapter cannot prepare {work.adapter!r} work")
-    cmd = [
-        "python3",
-        "-m",
-        "booley.flows.sim.backends.icarus",
-        "--build-dir",
-        work.build_dir,
-        "--timeout",
-        str(work.timeout_s),
-    ]
-    if work.max_rundir_bytes > 0:
-        cmd += ["--max-rundir-bytes", str(work.max_rundir_bytes)]
-    if work.run_cwd:
-        cmd += ["--run-cwd", work.run_cwd]
-    if work.work_dir:
-        cmd += ["--work-dir", work.work_dir]
-    if work.trace:
-        cmd.append("--trace")
-    cmd += [f"--plusarg={value}" for value in work.plusargs]
-    cmd += [f"--pass-sentinel={value}" for value in work.pass_sentinels]
-    cmd += [f"--fail-sentinel={value}" for value in work.fail_sentinels]
-    if work.trace:
-        cmd += [f"--trace-file={value}" for value in work.trace_files]
-    cmd += [f"--runtime-input={value}" for value in work.runtime_inputs]
-    cmd += work_transport_arguments(work)
-    return cmd
 
 
 _publish_adapter_result = publish_native_adapter_result
@@ -457,16 +424,19 @@ def _icarus_trace_incident(run: _IcarusRun, proc, reason: str) -> tuple[str, Ada
 def _icarus_setup_failure(
     detail: str,
     transport: AdapterTransportIdentity | None,
-) -> str:
+    pass_sentinels: list[str] | None,
+    fail_sentinels: list[str] | None,
+) -> NativeRun:
     print(detail)
-    _publish_adapter_result(
+    return _publish_adapter_result(
         transport,
         detail,
         1,
+        pass_sentinels=pass_sentinels,
+        fail_sentinels=fail_sentinels,
         failure_kind="infrastructure",
         detail=detail,
     )
-    return detail
 
 
 def run_icarus_image(
@@ -484,8 +454,8 @@ def run_icarus_image(
     max_rundir_bytes: int = 0,
     runtime_inputs: tuple[str, ...] = (),
     transport: AdapterTransportIdentity | None = None,
-) -> str:
-    """Run an edalize-built vvp image once and return its captured output."""
+) -> NativeRun:
+    """Run an edalize-built vvp image once and return its output and verdict."""
     declared = list(trace_files or [])
     run = _prepare_icarus_run(
         build_dir,
@@ -497,7 +467,7 @@ def run_icarus_image(
         declared,
     )
     if isinstance(run, str):
-        return _icarus_setup_failure(run, transport)
+        return _icarus_setup_failure(run, transport, pass_sentinels, fail_sentinels)
     lines, proc, termination = _execute_icarus_run(run, timeout, max_rundir_bytes, runtime_inputs)
     output = "".join(lines)
     _evaluate_verdict(
@@ -510,7 +480,7 @@ def run_icarus_image(
     )
     trace_output, trace_result = _finalize_icarus_trace(run, proc, declared)
     output += trace_output
-    _publish_adapter_result(
+    return _publish_adapter_result(
         transport,
         output,
         proc.returncode,
@@ -520,105 +490,34 @@ def run_icarus_image(
         trace=trace_result,
         termination=termination,
     )
-    return output
 
 
-def _positive_int(value: str) -> int:
-    """argparse type: reject non-positive timeouts at the CLI boundary.
-
-    A negative/zero ``--timeout`` reaches threading.Timer and would kill the
-    simulation instantly, so validate range here rather than misbehave later.
-    """
-    ivalue = int(value)  # raises ValueError -> argparse reports the bad token
-    if ivalue <= 0:
-        raise argparse.ArgumentTypeError(f"must be a positive integer, got {ivalue}")
-    return ivalue
-
-
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Run an edalize-built Icarus vvp image")
-    p.add_argument(
-        "--build-dir", required=True, help="dir holding the vvp image + .scr (edalize build dir)"
-    )
-    p.add_argument("--runtime-input", action="append", default=[])
-    p.add_argument("--run-cwd", default=None, help="cwd to run vvp from (TB vector/firmware base)")
-    p.add_argument("--work-dir", default=None, help="trace/result output dir")
-    p.add_argument("--timeout", type=_positive_int, default=600, help="run timeout (seconds)")
-    p.add_argument(
-        "--max-rundir-bytes",
-        type=int,
-        default=0,
-        dest="max_rundir_bytes",
-        help="kill the run if the run dir exceeds this many bytes (0=off; SETUP-25)",
-    )
-    p.add_argument("--trace", action="store_true", help="postprocess a B-Wave trace from dump.vcd")
-    p.add_argument("--trace-scope", default=None, help="scope the trace to a hierarchy")
-    p.add_argument(
-        "--trace-file",
-        action="append",
-        default=[],
-        dest="trace_files",
-        help="path (relative to --run-cwd/--work-dir/--build-dir, or absolute; "
-        "globs allowed) where the testbench writes its own dump. Repeatable; "
-        "checked when Booley's own trace artifacts are absent",
-    )
-    p.add_argument(
-        "--plusarg",
-        action="append",
-        default=[],
-        dest="plusargs",
-        help="plusarg passed to vvp (repeatable; +-prefix optional)",
-    )
-    # Project-configured verdict sentinels (booley.toml [flows.sim]); the
-    # The Simulation Flow forwards these so a project keeps its own TB wording.
-    p.add_argument(
-        "--pass-sentinel",
-        action="append",
-        default=[],
-        dest="pass_sentinels",
-        help="substring marking a PASS (repeatable; overrides the default)",
-    )
-    p.add_argument(
-        "--fail-sentinel",
-        action="append",
-        default=[],
-        dest="fail_sentinels",
-        help="substring marking a FAIL (repeatable; overrides the default)",
-    )
-    add_transport_arguments(p)
-    return p.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv)
-    transport = transport_identity_from_args(args, "icarus")
+def _run_work(work: PreparedSimulationWork) -> int:
+    """Run the prepared *work* as this process's one Icarus launch."""
     # Entry-point only (never the in-process API): tie this supervisor's life to
     # its parent's so simulate's wrapper timeout cannot orphan it (F-13).
     from booley.flows.sim.run_guard import install_parent_death_guard
 
     install_parent_death_guard()
-    output = run_icarus_image(
-        build_dir=Path(args.build_dir),
-        run_cwd=Path(args.run_cwd) if args.run_cwd else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None,
-        vcd=args.trace,
-        plusargs=args.plusargs,
-        timeout=args.timeout,
-        trace_scope=args.trace_scope,
-        trace_files=args.trace_files or None,
-        pass_sentinels=args.pass_sentinels or None,
-        fail_sentinels=args.fail_sentinels or None,
-        max_rundir_bytes=args.max_rundir_bytes,
-        runtime_inputs=tuple(args.runtime_input),
-        transport=transport,
+    run = run_icarus_image(
+        build_dir=Path(work.build_dir),
+        run_cwd=Path(work.run_cwd) if work.run_cwd else None,
+        work_dir=Path(work.work_dir) if work.work_dir else None,
+        vcd=work.trace,
+        plusargs=list(work.plusargs),
+        timeout=work.timeout_s,
+        trace_files=list(work.trace_files) if work.trace and work.trace_files else None,
+        pass_sentinels=list(work.pass_sentinels) or None,
+        fail_sentinels=list(work.fail_sentinels) or None,
+        max_rundir_bytes=work.max_rundir_bytes,
+        runtime_inputs=work.runtime_inputs,
+        transport=work_transport_identity(work),
     )
-    # Non-zero exit on a parsed FAIL so a shipped `&&` chain reflects the verdict.
-    verdict = parse_sim_verdict(
-        output,
-        pass_sentinels=args.pass_sentinels or None,
-        fail_sentinels=args.fail_sentinels or None,
-    )
-    return 0 if verdict is True else 1
+    return run.exit_code
+
+
+def main(argv: list[str] | None = None) -> int:
+    return run_adapter_entry(sys.argv[1:] if argv is None else argv, _run_work)
 
 
 if __name__ == "__main__":  # pragma: no cover - subprocess entry-point

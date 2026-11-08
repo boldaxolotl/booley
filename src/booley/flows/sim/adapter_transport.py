@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 from dataclasses import dataclass, replace
@@ -101,6 +100,19 @@ class NativeVerdictAssessment:
     sva_errors: int
     passed: bool
     inconclusive: bool
+
+
+@dataclass(frozen=True)
+class NativeRun:
+    """What one native simulator run printed and the verdict its sentinels gave."""
+
+    output: str
+    verdict: bool | None
+
+    @property
+    def exit_code(self) -> int:
+        """0 exactly for a PASS verdict, so a shipped ``&&`` chain follows it."""
+        return 0 if self.verdict is True else 1
 
 
 def partial_result_identity(identity: AdapterTransportIdentity) -> AdapterTransportIdentity:
@@ -422,33 +434,16 @@ def _optional_string_tuple(payload: dict[str, Any], field: str) -> tuple[str, ..
     return tuple(raw)
 
 
-def transport_arguments(identity: AdapterTransportIdentity | None) -> list[str]:
-    """Render the shared authenticated-result CLI arguments."""
-    if identity is None:
-        return []
-    args = [
-        "--adapter-result",
-        str(identity.result_path),
-        "--attempt-token",
-        identity.attempt_token,
-        "--target-identity",
-        identity.target_identity,
-    ]
-    return [*args, *(f"--selected-test={name}" for name in identity.selected_tests)]
-
-
-def work_transport_arguments(work: PreparedSimulationWork) -> list[str]:
-    """Render transport arguments carried by prepared adapter work."""
+def work_transport_identity(work: PreparedSimulationWork) -> AdapterTransportIdentity | None:
+    """The authenticated-result identity *work* carries; ``None`` without transport."""
     if not work.adapter_result_path:
-        return []
-    return transport_arguments(
-        AdapterTransportIdentity(
-            adapter=work.adapter,
-            attempt_token=work.attempt_token,
-            target_identity=work.target_identity,
-            selected_tests=work.tests,
-            result_path=Path(work.adapter_result_path),
-        )
+        return None
+    return AdapterTransportIdentity(
+        adapter=work.adapter,
+        attempt_token=work.attempt_token,
+        target_identity=work.target_identity,
+        selected_tests=work.tests,
+        result_path=Path(work.adapter_result_path),
     )
 
 
@@ -464,25 +459,36 @@ def publish_native_adapter_result(
     trace: AdapterTraceResult | None = None,
     detail: str = "",
     termination: RunTermination | None = None,
-) -> None:
-    """Normalize and publish terminal evidence for a native adapter."""
-    if identity is None:
-        return
-    write_adapter_result(
-        identity,
-        _native_adapter_result(
-            identity,
-            output,
-            returncode,
-            failure_kind=failure_kind,
-            pass_sentinels=pass_sentinels,
-            fail_sentinels=fail_sentinels,
-            trace_required=trace_required,
-            trace=trace,
-            detail=detail,
-            termination=termination or RunTermination(),
-        ),
+) -> NativeRun:
+    """Publish terminal evidence for a native adapter and return its verdict.
+
+    The returned run's exit code follows the sentinel verdict alone, whether
+    or not an authenticated result is published.
+    """
+    termination = termination or RunTermination()
+    assessment = assess_native_verdict(
+        output,
+        returncode,
+        pass_sentinels=pass_sentinels,
+        fail_sentinels=fail_sentinels,
+        termination=termination,
     )
+    if identity is not None:
+        write_adapter_result(
+            identity,
+            _native_adapter_result(
+                identity,
+                output,
+                returncode,
+                assessment,
+                failure_kind=failure_kind,
+                trace_required=trace_required,
+                trace=trace,
+                detail=detail,
+                termination=termination,
+            ),
+        )
+    return NativeRun(output, assessment.verdict)
 
 
 def assess_native_verdict(
@@ -543,22 +549,14 @@ def _native_adapter_result(
     identity: AdapterTransportIdentity,
     output: str,
     returncode: int,
+    assessment: NativeVerdictAssessment,
     *,
     failure_kind: AdapterFailureKind,
-    pass_sentinels: list[str] | None,
-    fail_sentinels: list[str] | None,
     trace_required: bool,
     trace: AdapterTraceResult | None,
     detail: str,
     termination: RunTermination,
 ) -> AdapterResult:
-    assessment = assess_native_verdict(
-        output,
-        returncode,
-        pass_sentinels=pass_sentinels,
-        fail_sentinels=fail_sentinels,
-        termination=termination,
-    )
     trace_missing, detail, inconclusive, kind = _native_result_fields(
         trace_required, trace, detail, termination, assessment, failure_kind
     )
@@ -659,35 +657,6 @@ def _native_failure_kind(
     return "inconclusive" if inconclusive else ""
 
 
-def add_transport_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add the optional authenticated-result channel to an adapter CLI."""
-    parser.add_argument("--adapter-result", default="")
-    parser.add_argument("--attempt-token", default="")
-    parser.add_argument("--target-identity", default="")
-    parser.add_argument("--selected-test", action="append", default=[])
-
-
-def transport_identity_from_args(
-    args: argparse.Namespace,
-    adapter: str,
-) -> AdapterTransportIdentity | None:
-    """Build an identity when transport was requested; reject partial identity."""
-    values = (args.adapter_result, args.attempt_token, args.target_identity)
-    if not any(values):
-        return None
-    if not all(values):
-        raise AdapterTransportError(
-            "adapter result transport requires path, attempt token, and Target identity"
-        )
-    return AdapterTransportIdentity(
-        adapter=adapter,
-        attempt_token=args.attempt_token,
-        target_identity=args.target_identity,
-        selected_tests=tuple(args.selected_test),
-        result_path=Path(args.adapter_result),
-    )
-
-
 __all__ = [
     "ADAPTER_RESULT_SCHEMA",
     "AdapterFailureKind",
@@ -698,16 +667,14 @@ __all__ = [
     "AdapterTransportError",
     "AdapterTransportIdentity",
     "AdapterVerdict",
+    "NativeRun",
     "NativeVerdictAssessment",
-    "add_transport_arguments",
     "assess_native_verdict",
     "first_native_failure",
     "native_verdict_message",
     "partial_result_identity",
     "publish_native_adapter_result",
     "read_adapter_result",
-    "transport_arguments",
-    "transport_identity_from_args",
-    "work_transport_arguments",
+    "work_transport_identity",
     "write_adapter_result",
 ]

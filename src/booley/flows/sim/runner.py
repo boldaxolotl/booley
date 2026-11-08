@@ -1,15 +1,10 @@
-"""Public selection and verdict configuration for simulation adapters."""
+"""Project verdict configuration for simulation adapters."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from booley.targets.flow_names import config_section
-
-SIM_RUN_HALVES: dict[str, str] = {
-    "icarus": "booley.flows.sim.backends.icarus",
-    "verilator": "booley.flows.sim.backends.verilator",
-}
 
 
 def resolve_sim_sentinels(work_dir: Path | None = None) -> tuple[list[str], list[str]]:

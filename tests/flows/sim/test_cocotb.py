@@ -10,6 +10,8 @@ formatters). The real icarus/verilator cocotb runs are the Sandbox e2e's job
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +24,7 @@ from booley.flows.sim.execution import engine as execution_engine
 from booley.flows.sim.result import format_summary
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.leased_session import canned_build_session
 from tests.flows.sim.test_flow import SimulateFlow, _make_flow
 
@@ -536,12 +539,13 @@ class TestCocotbBatching:
         assert result.exit_code == EXIT_SUCCESS
         assert len(calls) == 1  # one build + one sim process for 3 tests
         script = calls[0][-1]
-        assert "booley.flows.sim.backends.cocotb" in script
-        assert script.count("--test=") == 3
-        assert "--cocotb-module test_counter" in script
-        assert "--result-verbosity compact" in script
-        assert "--adapter-result" in script
-        assert "--selected-test=test_reset" in script
+        work = launched_work(script)
+        assert work.adapter == "cocotb"
+        assert len(work.tests) == 3
+        assert work.tests[0] == "test_reset"
+        assert work.cocotb_module == "test_counter"
+        assert work.result_verbosity == "compact"
+        assert work.adapter_result_path
 
     def test_full_result_verbosity_reaches_the_run_half(self, tmp_path: Path):
         flow = _make_cocotb_flow(
@@ -551,14 +555,15 @@ class TestCocotbBatching:
         with flow.publication_resources:
             result = flow._run()
         command = result.detail["work_units"][0]["commands"][0]["argv"]
-        assert "--result-verbosity full" in command[-1]
+        assert launched_work(command[-1]).result_verbosity == "full"
 
     def test_trace_scope_reaches_the_run_half(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path, extra_args=["--dry-run", "--trace"])
         with flow.publication_resources:
             result = flow._run()
         command = result.detail["work_units"][0]["commands"][0]["argv"]
-        assert "--expected-trace-scope counter" in command[-1]
+        work = launched_work(command[-1])
+        assert (work.trace, work.trace_scope) == (True, "counter")
 
     def test_exact_filter_prunes_the_selected_set(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path, extra_args=["--test", "test_count"])
@@ -591,9 +596,7 @@ class TestCocotbBatching:
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
-        script = calls[0][-1]
-        assert "--test=test_count" in script
-        assert "test_reset" not in script
+        assert launched_work(calls[0][-1]).tests == ("test_count",)
 
     def test_configured_skip_prunes_but_never_empties(self, tmp_path: Path):
         """Project-configured skip works unchanged on a Cocotb Target."""
@@ -636,9 +639,9 @@ class TestCocotbBatching:
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
-        script = calls[0][-1]
-        assert "test_fail_assert" not in script
-        assert "--test=test_reset" in script
+        work = launched_work(calls[0][-1])
+        assert "test_fail_assert" not in work.tests
+        assert work.tests[0] == "test_reset"
 
 
 # ---------------------------------------------------------------------------
@@ -706,6 +709,7 @@ class TestCocotbSimulatorEligibility:
 
 
 class TestCocotbDryRun:
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh -n syntax check")
     def test_dry_run_emits_one_batched_command(self, tmp_path: Path, capsys):
         flow = _make_cocotb_flow(tmp_path, extra_args=["--dry-run"])
         with (
@@ -723,9 +727,12 @@ class TestCocotbDryRun:
         script = commands[0]["argv"][-1]
         assert "fusesoc" in script and "--setup" in script
         assert "booley.flows.sim.backends.cocotb" in script
-        assert script.count("--test=") == 3
-        assert "--eda-tool icarus" in script
-        assert "--cocotb-module test_counter" in script
+        subprocess.run(["sh", "-n", "-c", script], check=True)
+        work = launched_work(script)
+        assert work.adapter == "cocotb"
+        assert work.tests == ("test_reset", "test_count", "test_fail_assert")
+        assert (work.eda_tool, work.cocotb_module) == ("icarus", "test_counter")
+        assert work.result_verbosity == "compact"
         assert str(tmp_path) not in json.dumps(result.detail)
 
     def test_dry_run_sv_target_unchanged(self, tmp_path: Path):
@@ -738,8 +745,8 @@ class TestCocotbDryRun:
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         script = result.detail["work_units"][0]["commands"][0]["argv"][-1]
-        assert "cocotb" not in script
-        assert "booley.flows.sim.backends.verilator" in script
+        work = launched_work(script)
+        assert (work.adapter, work.cocotb_module, work.tests) == ("verilator", "", ())
 
 
 class TestCocotbBuildFailureShape:
@@ -840,7 +847,7 @@ def test_run_cmd_forwards_the_sim_time_grace(tmp_path: Path):
     ):
         result = flow._run()
     command = result.detail["work_units"][0]["commands"][0]["argv"]
-    assert "--sim-time-grace 42.0" in command[-1]
+    assert launched_work(command[-1]).sim_time_grace_s == 42.0
 
 
 def test_missing_verilator_on_a_cocotb_target_is_exit_2(tmp_path: Path):
