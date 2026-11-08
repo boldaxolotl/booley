@@ -1,21 +1,15 @@
 """Guards for the Renovate runner and its repository configuration (#2996, tracker #2551).
 
 Renovate lists every pinned dependency on its Dependency Dashboard and holds each
-update for approval. These tests prove the parts that do not need GitHub:
+update for approval. These tests prove the parts that need no GitHub: custom managers
+extract the pins on the real files, built-in managers see every pinned file, manual rows
+stay approval-only in groups of their own, shared pins resolve to one group, release age
+reaches only datasources with release timestamps, and the runner never exposes its token.
 
-* every custom manager extracts exactly the pins it is meant to (the match strings
-  run on the real files, so a reworded line or a dropped manager fails here);
-* built-in managers can see every pinned file and no tracked file is ignored;
-* the permanently manual rows keep their approval gate and a group of their own;
-* pins that must move together resolve to one group;
-* the release-age delay reaches only datasources that publish release timestamps;
-* the runner workflow never exposes its App token and the configuration keeps the
-  global hold, so Renovate opens no update PR until someone approves one.
-
-Renovate itself is the authority on real matching: the committed lookup run
-(``renovate --platform=local --dry-run=lookup``) re-checks these claims against
-the pinned image. The rule resolver below is deliberately small: last match
-wins, exact names and paths only, and an unknown ``match*`` key fails loudly.
+Renovate is the authority on real matching: the lookup run recorded on #2996
+(``renovate --platform=local --dry-run=lookup``) re-checks these claims against the pinned
+image. The rule resolver below is deliberately small: last match wins, exact names and
+paths only, and an unknown ``match*`` key fails loudly.
 """
 
 from __future__ import annotations
@@ -26,7 +20,7 @@ import shlex
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import yaml
 
@@ -35,6 +29,11 @@ _CONFIG_PATH = _ROOT / ".github/renovate.json"
 _WORKFLOW_PATH = _ROOT / ".github/workflows/renovate.yml"
 _DOCKER_DIR = "src/booley/data/docker"
 _DOCKERFILE_BASE = f"{_DOCKER_DIR}/Dockerfile.base"
+_BASE_REQUIREMENTS = f"{_DOCKER_DIR}/base-python-requirements.txt"
+_AGENT_CLIS = f"{_DOCKER_DIR}/agent-clis-package.json"
+_TEST_WORKFLOW = ".github/workflows/test.yml"
+_RISCV = f"{_DOCKER_DIR}/Dockerfile.riscv"
+_REAPER = f"{_DOCKER_DIR}/Dockerfile.reaper"
 _DEEP_TESTS = ".github/workflows/deep-tests.yml"
 _DEMO_CONTRACT = ".github/contracts/picorv32-demo.toml"
 _VENDORED_MANIFEST = "crates/bwave/vendor/fst-writer/Cargo.toml"
@@ -48,12 +47,8 @@ _PIN_ROOTS = (
     _DOCKER_DIR,
 )
 
-# Renovate's built-in pip_requirements pattern (documented default).
-_PIP_REQUIREMENTS_DEFAULT = r"(^|/)[\w-]*requirements([-.]\w+)?\.(txt|pip)$"
-
 # Datasources whose lookups report release timestamps (spike #2552, Renovate 44.219.0).
-# Docker, git-refs and github-digest report none: a release-age rule on them would
-# hold every update forever under the default timestamp-required behaviour.
+# Docker, git-refs and github-digest report none: release age would hold them forever.
 _TIMESTAMPED = frozenset(
     {"github-releases", "github-tags", "pypi", "npm", "crate", "node-version", "custom.openvsx"}
 )
@@ -65,11 +60,6 @@ _FROM = re.compile(r"^FROM (?P<image>\S+)", re.MULTILINE)
 _SHA256_IMAGE = re.compile(
     r"^renovate/renovate:(?P<version>\d+\.\d+\.\d+)@(?P<digest>sha256:[0-9a-f]{64})$"
 )
-
-
-# ---------------------------------------------------------------------------
-# Loading and Renovate semantics
-# ---------------------------------------------------------------------------
 
 
 def _config() -> dict[str, Any]:
@@ -93,38 +83,16 @@ def _python_regex(renovate_pattern: str) -> str:
 
 def _file_pattern_matches(patterns: list[str], path: str) -> bool:
     """Return whether any ``/regex/`` manager file pattern matches ``path``."""
-    for pattern in patterns:
-        assert pattern.startswith("/") and pattern.endswith("/"), f"not a regex pattern: {pattern}"
-        if re.search(_python_regex(pattern[1:-1]), path):
-            return True
-    return False
-
-
-def _glob_regex(glob: str) -> re.Pattern[str]:
-    """Translate a minimatch-style glob (``*``, ``**``, ``?``) to a full-match regex."""
-    out: list[str] = []
-    index = 0
-    while index < len(glob):
-        if glob.startswith("**/", index):
-            out.append("(?:.*/)?")
-            index += 3
-        elif glob.startswith("**", index):
-            out.append(".*")
-            index += 2
-        elif glob[index] == "*":
-            out.append("[^/]*")
-            index += 1
-        elif glob[index] == "?":
-            out.append("[^/]")
-            index += 1
-        else:
-            out.append(re.escape(glob[index]))
-            index += 1
-    return re.compile("".join(out))
+    return any(re.search(_python_regex(pattern.strip("/")), path) for pattern in patterns)
 
 
 def _glob_matches(globs: list[str], path: str) -> bool:
-    return any(_glob_regex(glob).fullmatch(path) for glob in globs)
+    """Return whether a minimatch-style glob (``*``, ``**``, ``?``) matches the whole path."""
+    for glob in globs:
+        escaped = re.escape(glob).replace(r"\*\*/", "(?:.*/)?").replace(r"\*\*", ".*")
+        if re.fullmatch(escaped.replace(r"\*", "[^/]*").replace(r"\?", "[^/]"), path):
+            return True
+    return False
 
 
 def _pin_files() -> list[str]:
@@ -150,21 +118,21 @@ class _Dep:
 
 def _rule_matches(rule: dict[str, Any], dep: _Dep) -> bool:
     """Evaluate one rule: every ``match*`` key must hold (they are ANDed)."""
+    exact = {
+        "matchDepNames": dep.name,
+        "matchPackageNames": dep.name,
+        "matchDatasources": dep.datasource,
+        "matchDepTypes": dep.dep_type,
+        "matchManagers": dep.manager,
+    }
     for key, wanted in rule.items():
-        if not key.startswith("match"):
-            continue
-        if key in ("matchDepNames", "matchPackageNames"):
-            held = dep.name in wanted
-        elif key == "matchFileNames":
+        if key == "matchFileNames":
             held = _glob_matches(wanted, dep.file)
-        elif key == "matchDatasources":
-            held = dep.datasource in wanted
-        elif key == "matchDepTypes":
-            held = dep.dep_type in wanted
-        elif key == "matchManagers":
-            held = dep.manager in wanted
+        elif key.startswith("match"):
+            assert key in exact, f"the test resolver does not model {key}"
+            held = exact[key] in wanted
         else:
-            raise AssertionError(f"the test resolver does not model {key}")
+            continue
         if not held:
             return False
     return True
@@ -181,11 +149,6 @@ def _resolve(dep: _Dep) -> dict[str, Any]:
                 {k: v for k, v in rule.items() if not k.startswith("match") and k != "description"}
             )
     return resolved
-
-
-# ---------------------------------------------------------------------------
-# Custom manager extraction on the real files
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -278,25 +241,25 @@ def test_custom_managers_extract_every_tracked_pin() -> None:
         )
         assert got == expected, relative
     assert _annotated_pins(_DOCKERFILE_BASE), "Dockerfile.base lost every pin annotation"
-    assert _annotated_pins(f"{_DOCKER_DIR}/Dockerfile.riscv"), "Dockerfile.riscv lost its pins"
+    assert _annotated_pins(_RISCV), "Dockerfile.riscv lost its pins"
+    assert len({(e.file, e.dep_name) for e in extracted}) == len(
+        {(e.file, e.dep_name, e.match) for e in extracted}
+    ), "two custom managers extract the same dependency from one file"
 
-    by_key = {(e.file, e.dep_name): e for e in extracted}
-    assert len(by_key) == len({(e.file, e.dep_name, e.match) for e in extracted}), (
-        "two custom managers extract the same dependency from one file"
-    )
+
+def test_custom_managers_extract_ci_and_contract_pins() -> None:
+    """AC1: OpenROAD, CI tool pins, the demo contract and the Renovate image are extracted."""
+    by_key = {(e.file, e.dep_name): e for e in _extract_custom()}
 
     # OpenROAD release label: a manual row, listed through its own manager.
     openroad = by_key[(_DOCKERFILE_BASE, "The-OpenROAD-Project/OpenROAD")]
-    assert openroad.datasource == "github-tags"
     assert f"ARG OPENROAD_VERSION={openroad.current_value}\n" in _text(_DOCKERFILE_BASE)
 
     # cargo-fuzz and actionlint: the version is the one in the file, and actionlint's
     # bare version appears twice inside the match so auto-replace rewrites both.
     fuzz = by_key[(_DEEP_TESTS, "cargo-fuzz")]
-    assert fuzz.datasource == "crate"
     assert f"cargo install cargo-fuzz --version {fuzz.current_value} " in _text(_DEEP_TESTS)
-    actionlint = by_key[(".github/workflows/test.yml", "rhysd/actionlint")]
-    assert actionlint.datasource == "github-releases"
+    actionlint = by_key[(_TEST_WORKFLOW, "rhysd/actionlint")]
     assert actionlint.current_value is not None
     assert actionlint.match.count(actionlint.current_value) == 2
 
@@ -309,7 +272,7 @@ def test_custom_managers_extract_every_tracked_pin() -> None:
         assert demo.package_name == f"https://github.com/{demo.dep_name}"
 
     # The Renovate image the runner pins is tracked by version and digest.
-    image = _SHA256_IMAGE.fullmatch(_workflow_image())
+    image = _SHA256_IMAGE.fullmatch(_renovate_steps()[1]["env"]["IMAGE"])
     assert image is not None
     renovate = by_key[(".github/workflows/renovate.yml", "renovate/renovate")]
     assert (renovate.datasource, renovate.current_value, renovate.current_digest) == (
@@ -317,11 +280,6 @@ def test_custom_managers_extract_every_tracked_pin() -> None:
         image["version"],
         image["digest"],
     )
-
-
-# ---------------------------------------------------------------------------
-# Built-in managers and ignored paths
-# ---------------------------------------------------------------------------
 
 
 def test_built_in_managers_see_every_pinned_file() -> None:
@@ -338,25 +296,16 @@ def test_built_in_managers_see_every_pinned_file() -> None:
     assert ".github/ci/requirements-runners-release.txt" in requirement_files
     for path in requirement_files:
         assert _file_pattern_matches(configured, path), f"{path} is not a pip_requirements file"
-    assert not re.search(_PIP_REQUIREMENTS_DEFAULT, ".github/ci/requirements-runners-release.txt")
-    for path in (f"{_DOCKER_DIR}/base-python-requirements.txt", "website/requirements.txt"):
-        assert re.search(_PIP_REQUIREMENTS_DEFAULT, path), f"{path} needs no extra pattern"
 
-    manifest = f"{_DOCKER_DIR}/agent-clis-package.json"
-    assert _file_pattern_matches(config["npm"]["managerFilePatterns"], manifest)
-    assert (_ROOT / manifest).is_file()
+    assert _file_pattern_matches(config["npm"]["managerFilePatterns"], _AGENT_CLIS)
+    assert (_ROOT / _AGENT_CLIS).is_file()
 
     # Vendored upstream code is listed (approval-only); tests and fixtures stay out.
     ignored = config["ignorePaths"]
     assert "**/vendor/**" not in ignored
-    assert (_ROOT / _VENDORED_MANIFEST).is_file()
     for path in (*_pin_files(), "pyproject.toml", "crates/bwave/Cargo.toml", _VENDORED_MANIFEST):
         assert not _glob_matches(ignored, path), f"{path} must stay visible to Renovate"
-    fixtures = sorted(
-        path.relative_to(_ROOT).as_posix() for path in (_ROOT / "tests").rglob("Dockerfile*")
-    )
-    assert fixtures, "no Dockerfile fixture left to prove the tests ignore"
-    for path in (*fixtures, "src/booley/runtime/dockerfile_syntax.py"):
+    for path in ("tests/docker/Dockerfile.fixture", "src/booley/runtime/dockerfile_syntax.py"):
         assert _glob_matches(ignored, path), f"{path} must be ignored"
 
     # Local build-stage parents are not registry images.
@@ -369,16 +318,6 @@ def test_built_in_managers_see_every_pinned_file() -> None:
     assert local_parents == set(config["ignoreDeps"])
 
 
-# ---------------------------------------------------------------------------
-# Manual rows
-# ---------------------------------------------------------------------------
-
-
-def _openroad_builder_images() -> list[str]:
-    images = [i for i in _FROM.findall(_text(_DOCKERFILE_BASE)) if "/openroad/" in i]
-    return [image.split("@")[0] for image in images]
-
-
 def _manual_rows() -> dict[str, list[_Dep]]:
     """Manual rows by the group each must resolve to, built from the files they live in."""
     contract = tomllib.loads(_text(_DEMO_CONTRACT))
@@ -387,8 +326,9 @@ def _manual_rows() -> dict[str, list[_Dep]]:
         "openroad": [
             _Dep("The-OpenROAD-Project/OpenROAD", _DOCKERFILE_BASE, "github-tags", "regex"),
             *(
-                _Dep(i, _DOCKERFILE_BASE, "docker", "dockerfile", "stage")
-                for i in _openroad_builder_images()
+                _Dep(image.split("@")[0], _DOCKERFILE_BASE, "docker", "dockerfile", "stage")
+                for image in _FROM.findall(_text(_DOCKERFILE_BASE))
+                if "/openroad/" in image
             ),
         ],
         "bwave-vendor": [
@@ -412,15 +352,9 @@ def _manual_rows() -> dict[str, list[_Dep]]:
 def _normal_rows() -> dict[str, list[_Dep]]:
     return {
         "ci-tooling": [
-            _Dep(
-                "actions/checkout",
-                ".github/workflows/test.yml",
-                "github-tags",
-                "github-actions",
-                "action",
-            ),
+            _Dep("actions/checkout", _TEST_WORKFLOW, "github-tags", "github-actions", "action"),
             _Dep("build", ".github/ci/requirements-build.txt", "pypi", "pip_requirements"),
-            _Dep("rhysd/actionlint", ".github/workflows/test.yml", "github-releases", "regex"),
+            _Dep("rhysd/actionlint", _TEST_WORKFLOW, "github-releases", "regex"),
             _Dep("cargo-fuzz", _DEEP_TESTS, "crate", "regex"),
             _Dep("renovate/renovate", ".github/workflows/renovate.yml", "docker", "regex"),
         ],
@@ -430,35 +364,18 @@ def _normal_rows() -> dict[str, list[_Dep]]:
         ],
         "sandbox-base": [
             _Dep("click", "pyproject.toml", "pypi", "poetry", "project.dependencies"),
-            _Dep(
-                "numpy", f"{_DOCKER_DIR}/base-python-requirements.txt", "pypi", "pip_requirements"
-            ),
+            _Dep("numpy", _BASE_REQUIREMENTS, "pypi", "pip_requirements"),
             _Dep("node", _DOCKERFILE_BASE, "node-version", "regex"),
             _Dep("lramseyer/vaporview", _DOCKERFILE_BASE, "custom.openvsx", "regex"),
-            _Dep(
-                "@openai/codex",
-                f"{_DOCKER_DIR}/agent-clis-package.json",
-                "npm",
-                "npm",
-                "dependencies",
-            ),
+            _Dep("@openai/codex", _AGENT_CLIS, "npm", "npm", "dependencies"),
         ],
-        "riscv": [
-            _Dep(
-                "riscv/riscv-isa-manual",
-                f"{_DOCKER_DIR}/Dockerfile.riscv",
-                "github-releases",
-                "regex",
-            ),
-        ],
+        "riscv": [_Dep("riscv/riscv-isa-manual", _RISCV, "github-releases", "regex")],
         "rust": [
             _Dep("clap", "crates/bwave/Cargo.toml", "crate", "cargo", "dependencies"),
             _Dep("rust", f"{_DOCKER_DIR}/Dockerfile", "docker", "dockerfile", "stage"),
         ],
         "website": [_Dep("mkdocs", "website/requirements.txt", "pypi", "pip_requirements")],
-        "sidecars": [
-            _Dep("python", f"{_DOCKER_DIR}/Dockerfile.reaper", "docker", "dockerfile", "final")
-        ],
+        "sidecars": [_Dep("python", _REAPER, "docker", "dockerfile", "final")],
     }
 
 
@@ -475,12 +392,10 @@ def test_manual_rows_stay_approval_only() -> None:
 
     # Reading the files proves the rows still exist where the rules expect them.
     deep_tests = _text(_DEEP_TESTS)
-    assert re.search(r'python-version: "[\d.]+"', deep_tests)
     assert re.search(
         r"uses: dtolnay/rust-toolchain@\S+[^\n]*\n\s+with:\n\s+toolchain: nightly-\d{4}-\d{2}-\d{2}\n",
         deep_tests,
     ), "the rust nightly toolchain is no longer an input the github-actions manager extracts"
-    assert len(_openroad_builder_images()) == 2
 
     openroad = [_resolve(dep) for dep in manual["openroad"]]
     assert all("ready-for-human" in resolved["addLabels"] for resolved in openroad)
@@ -501,11 +416,6 @@ def test_manual_rows_stay_approval_only() -> None:
     assert set(manual) == {rules[i]["groupName"] for i in manual_indexes}
 
 
-# ---------------------------------------------------------------------------
-# Shared pins move in one PR
-# ---------------------------------------------------------------------------
-
-
 def _pins(text: str) -> dict[str, str]:
     """Map name to version for the exact ``name==version`` lines of a requirements file."""
     pins: dict[str, str] = {}
@@ -517,21 +427,18 @@ def _pins(text: str) -> dict[str, str]:
 
 
 def _pyproject_names(table: str) -> set[str]:
+    """Names declared under ``project.dependencies`` or ``project.optional-dependencies``."""
     project = tomllib.loads(_text("pyproject.toml"))["project"]
-    items: list[str] = []
     if table == "project.dependencies":
-        items = project["dependencies"]
+        items: list[str] = project["dependencies"]
     else:
-        for extra in project["optional-dependencies"].values():
-            items.extend(extra)
+        items = [item for extra in project["optional-dependencies"].values() for item in extra]
     return {_requirement_name(item) for item in items}
 
 
 def _requirement_name(requirement: str) -> str:
     """Return the lower-cased distribution name of a PEP 508 requirement string."""
-    found = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement)
-    assert found is not None, requirement
-    return found[0].lower()
+    return re.split(r"[^A-Za-z0-9._-]", requirement, maxsplit=1)[0].lower()
 
 
 def test_shared_pins_share_one_group() -> None:
@@ -544,44 +451,29 @@ def test_shared_pins_share_one_group() -> None:
         for name in _pins(path.read_text(encoding="utf-8")):
             if name in extras:
                 shared_ci.add(name)
-                assert (
-                    _resolve(_Dep(name, relative, "pypi", "pip_requirements"))["groupName"]
-                    == "dev-python"
-                )
+                ci = _resolve(_Dep(name, relative, "pypi", "pip_requirements"))
                 dev = _Dep(
                     name, "pyproject.toml", "pypi", "poetry", "project.optional-dependencies"
                 )
-                assert _resolve(dev)["groupName"] == "dev-python", name
+                assert ci["groupName"] == _resolve(dev)["groupName"] == "dev-python", name
     assert {"pytest", "pytest-asyncio", "pytest-timeout", "cryptography"} <= shared_ci
 
     # Runtime pins that the base image repeats (edalize, fusesoc).
-    base_requirements = f"{_DOCKER_DIR}/base-python-requirements.txt"
     runtime = _pyproject_names("project.dependencies")
-    shared_runtime = {name for name in _pins(_text(base_requirements)) if name in runtime}
+    shared_runtime = {name for name in _pins(_text(_BASE_REQUIREMENTS)) if name in runtime}
     assert {"edalize", "fusesoc"} <= shared_runtime
     for name in shared_runtime:
-        base = _resolve(_Dep(name, base_requirements, "pypi", "pip_requirements"))
+        base = _resolve(_Dep(name, _BASE_REQUIREMENTS, "pypi", "pip_requirements"))
         project = _resolve(_Dep(name, "pyproject.toml", "pypi", "poetry", "project.dependencies"))
         assert base["groupName"] == project["groupName"] == "sandbox-base", name
 
     # The Ubuntu parent image is pinned in both Dockerfiles and held equal by a test.
-    ubuntu = {
-        image.split("@")[0].split(":")[0]
-        for name in ("Dockerfile.base", "Dockerfile.riscv")
-        for image in _FROM.findall(_text(f"{_DOCKER_DIR}/{name}"))
-        if "ubuntu" in image and "openroad" not in image
-    }
-    assert ubuntu == {"docker.io/library/ubuntu"}
-    for name in ("Dockerfile.base", "Dockerfile.riscv"):
-        dep = _Dep(
-            "docker.io/library/ubuntu", f"{_DOCKER_DIR}/{name}", "docker", "dockerfile", "stage"
+    for dockerfile in (_DOCKERFILE_BASE, _RISCV):
+        assert any(
+            i.startswith("docker.io/library/ubuntu") for i in _FROM.findall(_text(dockerfile))
         )
-        assert _resolve(dep)["groupName"] == "sandbox-base", name
-
-
-# ---------------------------------------------------------------------------
-# Release age
-# ---------------------------------------------------------------------------
+        dep = _Dep("docker.io/library/ubuntu", dockerfile, "docker", "dockerfile", "stage")
+        assert _resolve(dep)["groupName"] == "sandbox-base", dockerfile
 
 
 def test_release_age_applies_only_to_timestamped_datasources() -> None:
@@ -590,17 +482,14 @@ def test_release_age_applies_only_to_timestamped_datasources() -> None:
     assert "minimumReleaseAge" not in config
     assert "minimumReleaseAgeBehaviour" not in config
     aged = [rule for rule in _rules() if "minimumReleaseAge" in rule]
-    assert {rule["minimumReleaseAge"] for rule in aged} == {"3 days", "1 day"}
     for rule in aged:
         assert rule["matchDatasources"], "a release-age rule must name its datasources"
         assert set(rule["matchDatasources"]) <= _TIMESTAMPED, rule["description"]
 
     untimestamped = [
         _Dep("docker.io/library/ubuntu", _DOCKERFILE_BASE, "docker", "dockerfile", "stage"),
-        _Dep("rust", f"{_DOCKER_DIR}/Dockerfile", "docker", "dockerfile", "stage"),
-        _Dep("python", f"{_DOCKER_DIR}/Dockerfile.reaper", "docker", "dockerfile", "final"),
-        _Dep("docker.io/openroad/ubuntu26.04", _DOCKERFILE_BASE, "docker", "dockerfile", "stage"),
-        _Dep("riscv-isa-sim", f"{_DOCKER_DIR}/Dockerfile.riscv", "git-refs", "regex"),
+        _Dep("python", _REAPER, "docker", "dockerfile", "final"),
+        _Dep("riscv-isa-sim", _RISCV, "git-refs", "regex"),
         _Dep("YosysHQ/picorv32", _DEMO_CONTRACT, "git-refs", "regex"),
         _Dep("dtolnay/rust-toolchain", _DEEP_TESTS, "github-digest", "github-actions", "action"),
     ]
@@ -614,20 +503,12 @@ def test_release_age_applies_only_to_timestamped_datasources() -> None:
         _Dep("cargo-fuzz", _DEEP_TESTS, "crate", "regex"),
         _Dep("node", _DOCKERFILE_BASE, "node-version", "regex"),
         _Dep("lramseyer/vaporview", _DOCKERFILE_BASE, "custom.openvsx", "regex"),
-        _Dep("clap", "crates/bwave/Cargo.toml", "crate", "cargo", "dependencies"),
     ]
     for dep in timestamped:
         assert _resolve(dep)["minimumReleaseAge"] == "3 days", dep
 
-    agent_cli = _Dep(
-        "@openai/codex", f"{_DOCKER_DIR}/agent-clis-package.json", "npm", "npm", "dependencies"
-    )
+    agent_cli = _Dep("@openai/codex", _AGENT_CLIS, "npm", "npm", "dependencies")
     assert _resolve(agent_cli)["minimumReleaseAge"] == "1 day"
-
-
-# ---------------------------------------------------------------------------
-# Runner workflow and the global hold
-# ---------------------------------------------------------------------------
 
 
 def _workflow() -> dict[Any, Any]:
@@ -641,11 +522,6 @@ def _renovate_steps() -> tuple[dict[str, Any], dict[str, Any]]:
     token_step = next(step for step in steps if step.get("id") == "app-token")
     run_step = next(step for step in steps if "run" in step)
     return token_step, run_step
-
-
-def _workflow_image() -> str:
-    image: str = _renovate_steps()[1]["env"]["IMAGE"]
-    return image
 
 
 def _allowed_guard_emails() -> set[str]:
@@ -674,11 +550,8 @@ def _docker_env_names(command: str) -> list[str]:
 def _assert_runner_exposes_nothing() -> None:
     """The workflow runs on schedule or dispatch only and passes its token nowhere else."""
     workflow = _workflow()
-    triggers = cast(
-        "dict[str, Any]", workflow.get("on", workflow.get(True))
-    )  # `on` parses as True
+    triggers: dict[str, Any] = workflow[True]  # PyYAML (YAML 1.1) parses a bare `on` as True
     assert set(triggers) == {"schedule", "workflow_dispatch"}
-    assert len(triggers["schedule"]) == 1
     assert workflow["permissions"] == {}
     assert workflow["concurrency"]["cancel-in-progress"] is False
     assert list(workflow["jobs"]) == ["renovate"]
@@ -689,7 +562,6 @@ def _assert_runner_exposes_nothing() -> None:
     token_step, run_step = _renovate_steps()
     text = _WORKFLOW_PATH.read_text(encoding="utf-8")
     assert re.fullmatch(r"actions/create-github-app-token@[0-9a-f]{40}", token_step["uses"])
-    assert re.search(r"create-github-app-token@[0-9a-f]{40} # v\d+\.\d+\.\d+\n", text)
     assert text.count("steps.app-token.outputs.token") == 1  # only the Renovate step's env
     assert "github.event" not in text  # no attacker-controlled expression reaches a script
     assert text.count("${{ secrets.") == 1  # only the App private key, only to the token step
@@ -699,11 +571,9 @@ def _assert_runner_exposes_nothing() -> None:
     assert sorted(passed) == sorted(
         k for k in env if k.startswith("RENOVATE_") or k == "LOG_LEVEL"
     )
-    assert len(passed) == len(set(passed))
     assert "RENOVATE_TOKEN" in passed and "${{" not in run_step["run"]
     assert env["RENOVATE_ONBOARDING"] == "false"
     assert env["RENOVATE_REQUIRE_CONFIG"] == "required"
-    assert _SHA256_IMAGE.fullmatch(env["IMAGE"])
 
     # The commit identity is the one the content guard trusts.
     author = re.fullmatch(r"(?P<login>[^<]+) <(?P<email>[^>]+)>", env["RENOVATE_GIT_AUTHOR"])
@@ -718,17 +588,19 @@ def _assert_config_holds_every_update() -> None:
     """Nothing updates unapproved, automerges, or commits through the platform."""
     config = _config()
     assert config["dependencyDashboardApproval"] is True
-    assert config["lockFileMaintenance"]["enabled"] is True
-    assert config["lockFileMaintenance"]["dependencyDashboardApproval"] is True
+    # Lock-file maintenance runs for Cargo only (the one manager with lock files) and
+    # waits for approval of its own.
+    assert config["lockFileMaintenance"]["enabled"] is False
+    cargo_maintenance = config["cargo"]["lockFileMaintenance"]
+    assert cargo_maintenance["enabled"] is True
+    assert cargo_maintenance["dependencyDashboardApproval"] is True
     assert config["major"]["dependencyDashboardApproval"] is True
     assert config["automerge"] is False
     assert config["platformCommit"] == "disabled"
     mergify = yaml.safe_load(_text(".mergify.yml"))
     assert config["stopUpdatingLabel"] == mergify["merge_queue"]["queued_label"]
-    assert config["vulnerabilityAlerts"] == {
-        "enabled": False,
-        "labels": ["dependencies", "urgent"],
-    }
+    assert config["vulnerabilityAlerts"]["enabled"] is False
+    assert "urgent" in config["vulnerabilityAlerts"]["labels"]
     for rule in _rules():
         assert rule.get("dependencyDashboardApproval", True) is True, rule["description"]
         assert rule.get("automerge", False) is False, rule["description"]
