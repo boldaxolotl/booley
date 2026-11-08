@@ -611,6 +611,7 @@ def test_readme_and_website_pull_request_outputs_the_narrow_set(tmp_path: Path) 
 _NOT_SELECTED_BY_SOURCE = {
     "bwave-integration",
     "bwave-smoke",
+    "renovate-config",
     "rust-test",
     "scanner-smoke",
     "sidecar-smoke",
@@ -672,6 +673,35 @@ def test_non_documentation_changes_keep_their_job_sets(
     paths: list[str], unselected: set[str]
 ) -> None:
     assert required_jobs(classify(paths)) == set(ALL_JOBS) - {STRESS_JOB} - unselected
+
+
+_RENOVATE_PATHS = (".github/renovate.json", ".github/workflows/renovate.yml")
+_RENOVATE_LANE = {"changes", "release-semantic", "renovate-config", "lint"}
+
+
+@pytest.mark.parametrize("path", _RENOVATE_PATHS)
+def test_renovate_change_selects_validation_not_full_ci(path: str) -> None:
+    """AC2: the Renovate configuration or runner selects its validation lane only."""
+    assert classify([path]) == {"renovate"}
+    assert required_jobs(classify([path])) == _RENOVATE_LANE
+
+
+def test_renovate_pull_request_outputs_only_the_validation_lane(tmp_path: Path) -> None:
+    """AC2: a pull request touching both Renovate files skips the Python, Rust and image lanes."""
+    repo, base = _repository(tmp_path)
+    for path in _RENOVATE_PATHS:
+        _write(repo, path)
+    head = _commit(repo, "renovate")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["full"] == "false"
+    assert outputs["workflow"] == "false"
+    assert outputs["renovate"] == "true"
+    assert _required(outputs) == _RENOVATE_LANE
+    assert _jobs(outputs)["renovate-config"] is True
+    for skipped in ("test", "coverage", "bwave-smoke", "package-artifacts"):
+        assert _jobs(outputs)[skipped] is False
 
 
 _CI_REQUIREMENT_FILES = (
@@ -1060,6 +1090,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
         "package-artifacts",
         "sidecar-smoke",
         "scanner-smoke",
+        "renovate-config",
         "bwave-smoke",
     }
     assert workflow["workflow"] == "true"
