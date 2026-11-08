@@ -1,0 +1,56 @@
+name: Renovate
+
+# Self-hosted Renovate (tracker #2551). It runs from the default branch only:
+# the `renovate` Environment deploys from main, so the GitHub App key never
+# reaches pull-request code. There is deliberately no pull_request trigger and
+# no checkout step: Renovate reads the repository through the API.
+on:
+  schedule:
+    # Every 4 hours. Group schedules in .github/renovate.json are whole days.
+    - cron: "23 */4 * * *"
+  workflow_dispatch:
+
+# The GitHub App installation token does all the writing.
+permissions: {}
+
+concurrency:
+  group: renovate
+  cancel-in-progress: false
+
+jobs:
+  renovate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: renovate
+    steps:
+      - name: Create the Renovate App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RENOVATE_APP_ID }}
+          private-key: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
+
+      - name: Run Renovate
+        env:
+          # Moved by Renovate itself (custom manager in .github/renovate.json).
+          IMAGE: renovate/renovate:44.219.0@sha256:7ae452492cd2393dbb8d401c6a3e7569bb7e6b5a7d2783739a6e4af576fd248a
+          # The token reaches the container by name (--env), never on the command line.
+          RENOVATE_TOKEN: ${{ steps.app-token.outputs.token }}
+          RENOVATE_PLATFORM: github
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          RENOVATE_ONBOARDING: "false"
+          RENOVATE_REQUIRE_CONFIG: required
+          RENOVATE_USERNAME: booley-renovate[bot]
+          RENOVATE_GIT_AUTHOR: booley-renovate[bot] <353471265+booley-renovate[bot]@users.noreply.github.com>
+          LOG_LEVEL: info
+        run: >-
+          docker run --rm
+          --env RENOVATE_TOKEN
+          --env RENOVATE_PLATFORM
+          --env RENOVATE_REPOSITORIES
+          --env RENOVATE_ONBOARDING
+          --env RENOVATE_REQUIRE_CONFIG
+          --env RENOVATE_USERNAME
+          --env RENOVATE_GIT_AUTHOR
+          --env LOG_LEVEL
+          "${IMAGE}"

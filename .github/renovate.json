@@ -1,0 +1,451 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "Renovate repository configuration (tracker #2551, part 1 #2996).",
+    "During this stage every update, lock-file maintenance included, waits for approval on the Dependency Dashboard (top-level dependencyDashboardApproval); the cutover (#2562) removes only that top-level hold.",
+    "Keep the exact-name selectors in packageRules in step with tests/ci/test_renovate_config.py."
+  ],
+  "extends": [
+    "config:recommended"
+  ],
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/examples/**",
+    "**/__tests__/**",
+    "**/test/**",
+    "**/tests/**",
+    "**/__fixtures__/**",
+    "src/booley/runtime/dockerfile_syntax.py"
+  ],
+  "ignoreDeps": [
+    "booley-runtime-base",
+    "booley-substrate",
+    "booley-standard-substrate",
+    "booley-project-parent",
+    "booley-layout-parent"
+  ],
+  "dependencyDashboardApproval": true,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "* * 1 * *"
+    ],
+    "dependencyDashboardApproval": true
+  },
+  "major": {
+    "dependencyDashboardApproval": true
+  },
+  "automerge": false,
+  "platformCommit": "disabled",
+  "stopUpdatingLabel": "queued",
+  "labels": [
+    "dependencies"
+  ],
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "vulnerabilityAlerts": {
+    "enabled": false,
+    "labels": [
+      "dependencies",
+      "urgent"
+    ]
+  },
+  "pip_requirements": {
+    "managerFilePatterns": [
+      "/(^|/)requirements-[\\w-]+\\.txt$/"
+    ]
+  },
+  "npm": {
+    "managerFilePatterns": [
+      "/(^|/)agent-clis-package\\.json$/"
+    ]
+  },
+  "customDatasources": {
+    "openvsx": {
+      "defaultRegistryUrlTemplate": "https://open-vsx.org/api/-/query?namespaceName={{ lookup (split packageName '/') 0 }}&extensionName={{ lookup (split packageName '/') 1 }}&includeAllVersions=true",
+      "format": "json",
+      "transformTemplates": [
+        "{ \"releases\": extensions.{ \"version\": version, \"releaseTimestamp\": timestamp } }"
+      ]
+    }
+  },
+  "customManagers": [
+    {
+      "description": "Sandbox Dockerfile pin annotations (tests/docker/test_dockerfile_pins.py owns the format): version pins and tag-plus-commit companions.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)Dockerfile[^/]*$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?(?: versioning=(?<versioning>\\S+))?(?: extractVersion=(?<extractVersion>\\S+))?\\nARG \\w+=(?<currentValue>\\S+)(?:\\n# pin-companion: \\w+\\nARG \\w+_REF=(?<currentDigest>[0-9a-f]{40}))?"
+      ]
+    },
+    {
+      "description": "Sandbox Dockerfile annotations of a pin that follows a branch: the ARG is the commit digest and currentValue is the branch.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)Dockerfile[^/]*$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) packageName=(?<packageName>\\S+) currentValue=(?<currentValue>\\S+)\\nARG \\w+=(?<currentDigest>[0-9a-f]{40})"
+      ]
+    },
+    {
+      "description": "OpenROAD release label (manual row: approval-only, a human refreshes the builder images and the source ref with it).",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)Dockerfile\\.base$/"
+      ],
+      "matchStrings": [
+        "ARG OPENROAD_VERSION=(?<currentValue>\\S+)"
+      ],
+      "datasourceTemplate": "github-tags",
+      "depNameTemplate": "The-OpenROAD-Project/OpenROAD",
+      "versioningTemplate": "regex:^(?<major>\\d{2})Q(?<minor>[1-4])$"
+    },
+    {
+      "description": "cargo-fuzz installed by the deep tests.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)deep-tests\\.yml$/"
+      ],
+      "matchStrings": [
+        "cargo install (?<depName>cargo-fuzz) --version (?<currentValue>\\S+)"
+      ],
+      "datasourceTemplate": "crate"
+    },
+    {
+      "description": "actionlint release download in the lint job. The version is bare in the URL; auto-replace rewrites both occurrences inside the match.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)test\\.yml$/"
+      ],
+      "matchStrings": [
+        "releases/download/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/actionlint_\\d+\\.\\d+\\.\\d+_linux_amd64"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "rhysd/actionlint",
+      "extractVersionTemplate": "^v(?<version>.+)$"
+    },
+    {
+      "description": "Demo contract: upstream IP commit (manual row: approval-only).",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/contracts/picorv32-demo\\.toml$/"
+      ],
+      "matchStrings": [
+        "upstream_repository = \"(?<depName>[^\"]+)\"\\nupstream_ref = \"(?<currentDigest>[0-9a-f]{40})\""
+      ],
+      "datasourceTemplate": "git-refs",
+      "packageNameTemplate": "https://github.com/{{{depName}}}",
+      "currentValueTemplate": "main"
+    },
+    {
+      "description": "Demo contract: demo project commit (manual row: approval-only).",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/contracts/picorv32-demo\\.toml$/"
+      ],
+      "matchStrings": [
+        "project_repository = \"(?<depName>[^\"]+)\"\\nproject_ref = \"(?<currentDigest>[0-9a-f]{40})\""
+      ],
+      "datasourceTemplate": "git-refs",
+      "packageNameTemplate": "https://github.com/{{{depName}}}",
+      "currentValueTemplate": "main"
+    },
+    {
+      "description": "The Renovate image the runner workflow pins by version and digest.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/renovate\\.yml$/"
+      ],
+      "matchStrings": [
+        "(?<depName>renovate/renovate):(?<currentValue>[\\d.]+)@(?<currentDigest>sha256:[0-9a-f]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Noise: runner images and apt packages are not pins.",
+      "matchDatasources": [
+        "github-runners",
+        "deb"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Noise: the VS Code engines range is a compatibility floor, not a pin.",
+      "matchDepTypes": [
+        "engines"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "The npm alias npm:@openai/codex@V-linux-x64 keeps its platform suffix. Its depName is the alias and its packageName is @openai/codex, so matchDepNames (not matchPackageNames) selects it.",
+      "matchManagers": [
+        "npm"
+      ],
+      "matchDepNames": [
+        "@openai/codex-linux-x64"
+      ],
+      "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)(?:-(?<compatibility>linux-x64))?$"
+    },
+    {
+      "description": "Release age (3 days) only for datasources that publish release timestamps (#2552). Docker, git-refs and github-digest report none: under timestamp-required they would wait forever.",
+      "matchDatasources": [
+        "github-releases",
+        "github-tags",
+        "pypi",
+        "npm",
+        "crate",
+        "node-version",
+        "custom.openvsx"
+      ],
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "Agent CLIs: 1 day release age.",
+      "matchFileNames": [
+        "src/booley/data/docker/agent-clis-package.json"
+      ],
+      "matchDatasources": [
+        "npm"
+      ],
+      "minimumReleaseAge": "1 day"
+    },
+    {
+      "description": "ci-tooling: workflow and composite-action uses.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "ci-tooling",
+      "schedule": [
+        "* * * * 1"
+      ]
+    },
+    {
+      "description": "ci-tooling: CI requirement files.",
+      "matchFileNames": [
+        ".github/ci/requirements-*.txt"
+      ],
+      "groupName": "ci-tooling",
+      "schedule": [
+        "* * * * 1"
+      ]
+    },
+    {
+      "description": "ci-tooling: CI tool pins (actionlint, cargo-fuzz, the Renovate image).",
+      "matchDepNames": [
+        "rhysd/actionlint",
+        "cargo-fuzz",
+        "renovate/renovate"
+      ],
+      "groupName": "ci-tooling",
+      "schedule": [
+        "* * * * 1"
+      ]
+    },
+    {
+      "description": "dev-python: pyproject.toml (the poetry manager reads its PEP 621 tables) extras; runtime dependencies move to sandbox-base below.",
+      "matchFileNames": [
+        "pyproject.toml"
+      ],
+      "groupName": "dev-python",
+      "schedule": [
+        "* * * * 1"
+      ]
+    },
+    {
+      "description": "dev-python: CI requirement pins that pyproject extras also pin move in one PR (lockstep: tests/ci/test_ci_requirements.py).",
+      "matchFileNames": [
+        ".github/ci/requirements-*.txt"
+      ],
+      "matchPackageNames": [
+        "pytest",
+        "pytest-asyncio",
+        "pytest-timeout",
+        "hypothesis",
+        "cryptography"
+      ],
+      "groupName": "dev-python",
+      "schedule": [
+        "* * * * 1"
+      ]
+    },
+    {
+      "description": "riscv: RISC-V tooling image pins. Placed before sandbox-base so the shared Ubuntu image still joins sandbox-base.",
+      "matchFileNames": [
+        "src/booley/data/docker/Dockerfile.riscv"
+      ],
+      "groupName": "riscv",
+      "schedule": [
+        "* * 1 * *"
+      ]
+    },
+    {
+      "description": "sandbox-base: runtime dependencies exported into the base image.",
+      "matchDepTypes": [
+        "project.dependencies"
+      ],
+      "matchFileNames": [
+        "pyproject.toml"
+      ],
+      "groupName": "sandbox-base",
+      "schedule": [
+        "* * * * 1"
+      ]
+    },
+    {
+      "description": "sandbox-base: copies of those runtime pins and the agent CLI manifest.",
+      "matchFileNames": [
+        "src/booley/data/docker/base-python-requirements.txt",
+        "src/booley/data/docker/agent-clis-package.json"
+      ],
+      "groupName": "sandbox-base",
+      "schedule": [
+        "* * * * 1"
+      ]
+    },
+    {
+      "description": "sandbox-base: Node, the editor extensions and the Ubuntu parent image (also pinned in Dockerfile.riscv, held equal by tests/docker/test_sandbox_dockerfile.py).",
+      "matchDepNames": [
+        "node",
+        "lramseyer/vaporview",
+        "mshr-h/veriloghdl",
+        "ms-vscode/live-server",
+        "docker.io/library/ubuntu"
+      ],
+      "groupName": "sandbox-base",
+      "schedule": [
+        "* * * * 1"
+      ]
+    },
+    {
+      "description": "EDA tools: monthly, one PR per tool (no group name).",
+      "matchDepNames": [
+        "YosysHQ/yosys",
+        "steveicarus/iverilog",
+        "verilator/verilator",
+        "zachjs/sv2v",
+        "chipsalliance/verible"
+      ],
+      "schedule": [
+        "* * 1 * *"
+      ]
+    },
+    {
+      "description": "rust: crates.io dependencies of the bwave crates.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "groupName": "rust",
+      "schedule": [
+        "* * 1 * *"
+      ]
+    },
+    {
+      "description": "rust: the Rust builder image.",
+      "matchDepNames": [
+        "rust"
+      ],
+      "matchDatasources": [
+        "docker"
+      ],
+      "groupName": "rust",
+      "schedule": [
+        "* * 1 * *"
+      ]
+    },
+    {
+      "description": "website: documentation site requirements.",
+      "matchFileNames": [
+        "website/requirements.txt"
+      ],
+      "groupName": "website",
+      "schedule": [
+        "* * * * 1"
+      ]
+    },
+    {
+      "description": "sidecars: sidecar image parents.",
+      "matchFileNames": [
+        "src/booley/data/docker/Dockerfile.egress-proxy",
+        "src/booley/data/docker/Dockerfile.flexnet-relay",
+        "src/booley/data/docker/Dockerfile.reaper"
+      ],
+      "groupName": "sidecars",
+      "schedule": [
+        "* * * * 1"
+      ]
+    },
+    {
+      "description": "Manual row, OpenROAD: release label and builder images stay approval-only and flagged for a human.",
+      "matchDepNames": [
+        "The-OpenROAD-Project/OpenROAD",
+        "docker.io/openroad/ubuntu26.04",
+        "docker.io/openroad/ubuntu26.04-dev"
+      ],
+      "dependencyDashboardApproval": true,
+      "groupName": "openroad",
+      "addLabels": [
+        "ready-for-human"
+      ],
+      "schedule": [
+        "at any time"
+      ]
+    },
+    {
+      "description": "Manual row, vendored crate: upstream-owned code stays approval-only.",
+      "matchFileNames": [
+        "crates/bwave/vendor/**"
+      ],
+      "dependencyDashboardApproval": true,
+      "groupName": "bwave-vendor",
+      "schedule": [
+        "at any time"
+      ]
+    },
+    {
+      "description": "Manual row, demo contract refs: approval-only.",
+      "matchDepNames": [
+        "YosysHQ/picorv32",
+        "boldaxolotl/booley-prj-picorv32"
+      ],
+      "dependencyDashboardApproval": true,
+      "groupName": "picorv32-demo",
+      "schedule": [
+        "at any time"
+      ]
+    },
+    {
+      "description": "Manual row, CI Python version (setup-python python-version inputs): approval-only.",
+      "matchDepTypes": [
+        "uses-with"
+      ],
+      "matchDepNames": [
+        "python"
+      ],
+      "dependencyDashboardApproval": true,
+      "groupName": "ci-python",
+      "schedule": [
+        "at any time"
+      ]
+    },
+    {
+      "description": "Manual row, Rust nightly toolchain (the dtolnay/rust-toolchain toolchain input, extracted by the github-actions manager): approval-only.",
+      "matchDepNames": [
+        "rust"
+      ],
+      "matchDepTypes": [
+        "uses-with"
+      ],
+      "dependencyDashboardApproval": true,
+      "groupName": "ci-rust-nightly",
+      "schedule": [
+        "at any time"
+      ]
+    }
+  ]
+}
