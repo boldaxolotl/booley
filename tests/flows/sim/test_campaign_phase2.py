@@ -23,7 +23,7 @@ from booley.flows.sim.campaign.codec import (
     decode_simulator_bundle,
 )
 from booley.flows.sim.campaign.coordinator import CampaignOutcome, CampaignRecoveryStatus
-from booley.flows.sim.campaign.facts import AcceptanceFacts, decode_acceptance_facts
+from booley.flows.sim.campaign.facts import AcceptanceFacts
 from booley.flows.sim.campaign.run_directory import (
     claimed_run_directory,
     expand_run_directory,
@@ -307,15 +307,135 @@ def _cycle_reconciliation(
     return result, recorder.changes
 
 
-def test_acceptance_facts_are_canonical_immutable_and_exact() -> None:
-    facts = AcceptanceFacts(_facts())
-    assert facts.canonical_bytes() == canonical_json_bytes(_facts())
-    assert facts.sha256.startswith("sha256:")
+def _v2_facts_with_coverage_and_cycle_baseline() -> dict[str, object]:
+    """v2 facts as the coordinator builds them: a Coverage Campaign reference
+    and a Cycle Count baseline prerequisite."""
+    campaign_id, baseline_id = (
+        "12345678-1234-4234-9234-123456789abc",
+        ("12345678-1234-4234-9234-123456789abd"),
+    )
+    attempt_id, work_item_id = (
+        "87654321-4321-4432-a234-cba987654321",
+        ("item:0000:0123456789abcdef"),
+    )
+    target = {
+        "vlnv": "acme:demo:counter:1.0",
+        "name": "sim_counter",
+        "selector": "sim_counter",
+        "project_identity": "project",
+        "revision": "abc",
+        "role": "candidate",
+        "display_name": "sim_counter",
+    }
+
+    def evidence(path: str, kind: str, owner: str, sha: str, size: int) -> dict[str, object]:
+        return {
+            "path_base": "origin_invocation",
+            "path": path,
+            "bytes": size,
+            "sha256": "sha256:" + sha,
+            "kind": kind,
+            "owner": owner,
+        }
+
+    return {
+        "$schema": "booley.simulation-acceptance-facts/v2",
+        "campaign_id": campaign_id,
+        "manifest_sha256": "sha256:" + "a" * 64,
+        "origin": {"execution_id": "", "invocation_id": 12},
+        "target": target,
+        "required_suite": {
+            "names": ["reset"],
+            "default_invocation": False,
+            "source_sha256": "sha256:" + "b" * 64,
+        },
+        "prerequisites": [
+            {
+                "role": "cycle_count_baseline",
+                "manifest": evidence(
+                    "baseline/manifest.json",
+                    "simulation_campaign_manifest",
+                    baseline_id,
+                    "4" * 64,
+                    10,
+                ),
+                "campaign_id": baseline_id,
+                "target": target | {"role": "cycle_count_baseline"},
+                "work_item_id": work_item_id,
+                "result": evidence(
+                    "baseline/result.json", "simulation_result", attempt_id, "4" * 64, 10
+                ),
+                "cycle_observation": {
+                    "test": "reset",
+                    "cycle_count": 1200,
+                    "unit": "cycles",
+                    "test_run": "reset@1",
+                    "test_run_fingerprint": "sha256:" + "5" * 64,
+                },
+            }
+        ],
+        "consumed_results": [],
+        "observations": [],
+        "coverage_reference": {
+            "reference": evidence(
+                "targets/sim_counter/coverage.json",
+                "coverage_campaign_reference",
+                campaign_id,
+                "36bef548ff917c687c66ecc28a01417429b7631c785dfd1397a1b714a757dfa2",
+                851,
+            ),
+            "document": {
+                "$schema": "booley.coverage-campaign-reference/v1",
+                "coverage_campaign": {
+                    "bytes": 5386,
+                    "campaign_id": "campaign:sim_counter:2026-09-01T10:30:00Z",
+                    "path": "campaign/work-items/0001-0123456789abcdef/attempts/"
+                    f"0001-{attempt_id}/coverage-campaign/coverage.json",
+                    "path_base": "origin_target",
+                    "schema": "booley.coverage-campaign/v5",
+                    "sha256": "sha256:"
+                    "27bf29435ca78e6e4020cbaecd5915b9bb126c99093329f418e02a64e4745437",
+                },
+                "origin_invocation_id": 12,
+                "producer_invocation_id": 19,
+                "simulation_attempt_id": attempt_id,
+                "simulation_campaign_id": campaign_id,
+                "simulation_manifest_sha256": "sha256:" + "a" * 64,
+                "simulation_work_item_id": work_item_id,
+                "target": {
+                    "identity": "acme:demo:counter:1.0#sim_counter",
+                    "selector": "sim_counter",
+                },
+            },
+        },
+    }
+
+
+def test_acceptance_facts_hold_the_built_document_without_decoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Facts keep the coordinator's bytes and digest, deep-frozen, with no decode."""
+    document = _v2_facts_with_coverage_and_cycle_baseline()
+
+    def no_decode(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("acceptance facts must not decode JSON")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(json, "loads", no_decode)
+        facts = AcceptanceFacts(document)
+        raw = facts.canonical_bytes()
+        digest = facts.sha256
+
+    # Pinned from the base commit of #2991, where these facts passed full validation.
+    assert hashlib.sha256(raw).hexdigest() == (
+        "097b6a7468db2ef2d3a4a6992cea148c5f34998ca4e5131162797e7bee5ad0e9"
+    )
+    assert digest == "sha256:5081a781d4df061f6f5d9a340644b6e73afe7a49aca5d17e26a8920530fb2545"
+    prerequisite = facts.document["prerequisites"][0]  # type: ignore[index]
     with pytest.raises(TypeError):
-        facts.document["campaign_id"] = "changed"  # type: ignore[index]
-    invalid = _facts() | {"unexpected": True}
-    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
-        decode_acceptance_facts(canonical_json_bytes(invalid))
+        prerequisite["cycle_observation"]["cycle_count"] = 0  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        facts.document["prerequisites"].append({})  # type: ignore[union-attr]
 
 
 def test_owned_run_directory_is_marked_and_cleaned(tmp_path: Path) -> None:
