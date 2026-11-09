@@ -7,9 +7,10 @@ work item leaves an authenticated result
 (:func:`booley.flows.sim.campaign.read_durable_results`).
 
 The reader also answers for a **Coverage Campaign collected on its own**
-(``coverage.json``) that an earlier run registered: its runs are durable only
-once the whole campaign is published, in one document. Before that it has no
-result; after it, it is complete. New runs no longer register that kind.
+(``coverage.json``), should a registration of that kind exist: its runs are
+durable only once the whole campaign is published, in one document. Before that
+it has no result; after it, it is complete. No release has saved such a
+registration and no run creates one (issue #3028).
 
 :func:`read_unpublished_results` is the reader entry points hand to Goal
 Mode.
