@@ -362,11 +362,11 @@ def _connection_label(row: SessionRow, now: float) -> str:
 
 
 def _owner_handle(job: JobView, handles: Mapping[str, str] | None) -> str | None:
-    """The owning session's handle; None for a standalone Job."""
+    """The owning session's handle, else its readable key; None for a standalone Job."""
     key = job.record.session_key
     if key is None:
         return None
-    return job.owner_handle or (handles or {}).get(key, "S?")
+    return sessions.session_key_label(job.owner_handle or (handles or {}).get(key, "S?"))
 
 
 def _owner_label(
@@ -947,7 +947,11 @@ class DashboardApp(App[None]):
         header.append_text(_join(activity, *([(info.warning, "yellow")] if info.warning else [])))
         header.append_text(Text.assemble("\n", ("Last Booley call: ", _CHROME)))
         header.append_text(_join((info.last_call or "—", _ACCENT), info.last_age))
-        header.append_text(Text.assemble("\n", ("Session key: ", _CHROME), (info.key, "dim")))
+        header.append_text(
+            Text.assemble(
+                "\n", ("Session key: ", _CHROME), (sessions.session_key_label(info.key), "dim")
+            )
+        )
         return header, goal
 
     def _orientation(
@@ -1059,6 +1063,10 @@ class DashboardApp(App[None]):
 
     def _owner_filter_label(self, owner: str | Owner | None) -> str:
         """Name an owner filter for the chip, the orientation and empty-state text."""
+        return sessions.session_key_label(self._owner_filter_id(owner))
+
+    def _owner_filter_id(self, owner: str | Owner | None) -> str:
+        """Identify an owner filter: a handle, else its durable key (never the readable form)."""
         if owner is None:
             return ALL_SESSIONS
         if owner is Owner.STANDALONE:
@@ -1093,12 +1101,13 @@ class DashboardApp(App[None]):
     def _next_owner(self) -> str | Owner | None:
         """The owner filter after the current one; an unknown current one wraps to all sessions.
 
-        The current entry is found by label: the key that represents a handle
-        changes when an aliased session connects.
+        The current entry is found by its id (a handle or the stored key, see
+        ``_owner_filter_id``): the key that represents a handle changes when an
+        aliased session connects.
         """
         choices = self._owner_choices()
         labels = [label for _, label in choices]
-        current = self._owner_filter_label(self._jobs_root().session)
+        current = self._owner_filter_id(self._jobs_root().session)
         if current not in labels:
             return None
         return choices[(labels.index(current) + 1) % len(choices)][0]
@@ -1618,7 +1627,9 @@ class DashboardApp(App[None]):
             )
         ]
         if job.record.session_key:
-            owner.append(ResultLine("Session key", job.record.session_key))
+            owner.append(
+                ResultLine("Session key", sessions.session_key_label(job.record.session_key))
+            )
         offset = next(index for index, row in enumerate(rows) if row.label == "Job")
         rows[offset:offset] = owner
         detail = Text()
