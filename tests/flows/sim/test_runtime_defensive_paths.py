@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.flows import artifact_durability as campaign_durability
+from booley.flows import artifact_durability
 from booley.flows.sim.build_session import SimulationBuildSlotError
 from booley.flows.sim.execution import pre_sim
 from booley.flows.sim.execution.contract import PreSimScopeStoppedError
@@ -177,11 +177,11 @@ def test_durable_publication_removes_partial_destination_on_failure(
         def __exit__(self, *_args):
             return False
 
-    monkeypatch.setattr(campaign_durability.os, "open", lambda *_args: 99)
-    monkeypatch.setattr(campaign_durability.os, "close", lambda _fd: None)
-    monkeypatch.setattr(campaign_durability.os, "fdopen", lambda *_args, **_kwargs: BrokenWriter())
+    monkeypatch.setattr(artifact_durability.os, "open", lambda *_args: 99)
+    monkeypatch.setattr(artifact_durability.os, "close", lambda _fd: None)
+    monkeypatch.setattr(artifact_durability.os, "fdopen", lambda *_args, **_kwargs: BrokenWriter())
     with pytest.raises(RuntimeError, match="write failed"):
-        campaign_durability.durable_create(destination, b"value")
+        artifact_durability.durable_create(destination, b"value")
     assert not destination.exists()
 
 
@@ -196,6 +196,6 @@ def test_durable_directory_accepts_concurrent_creation(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(Path, "mkdir", concurrent_mkdir)
 
-    campaign_durability.durable_directory(destination)
+    artifact_durability.durable_directory(destination)
 
     assert destination.is_dir()

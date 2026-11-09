@@ -83,7 +83,7 @@ _verible_first_error_line = eda_parsers.verible_first_error_line
 def _lint_eda_tool_family(eda_tool: str | None) -> str:
     """Normalize a Target's ``flow_options.tool`` to the lint parser family.
 
-    Mirrors :func:`booley.flows.sim.edam.normalize_eda_tool` (ADR 0022
+    Mirrors :func:`booley.flows.simulator_family.normalize_eda_tool` (ADR 0022
     decision 8: the EDA tool comes from the resolved Target, not the
     execution configuration).
     """

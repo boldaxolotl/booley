@@ -830,12 +830,8 @@ class TestBuildTimeAttribution:
     triage)."""
 
     def test_parse_build_seconds_extracts_marker(self):
-        output = "make stuff\nBOOLEY_BUILD_SECONDS: 5\n[SIM_RESULT] PASSED"
+        output = "make stuff\nBOOLEY_BUILD_MILLISECONDS: 5000\n[SIM_RESULT] PASSED"
         assert parse_build_seconds(output) == 5.0
-
-    def test_parse_build_seconds_prefers_millisecond_marker(self):
-        output = "BOOLEY_BUILD_MILLISECONDS: 17\nBOOLEY_BUILD_SECONDS: 0"
-        assert parse_build_seconds(output) == 0.017
 
     def test_parse_run_seconds_extracts_authenticated_wrapper_record(self):
         output = "BOOLEY_RUN_STAGE token=abc123 rc=0 duration_ms=19"
@@ -852,7 +848,7 @@ class TestBuildTimeAttribution:
     def test_parse_build_seconds_ignores_mid_line_mention(self):
         # Only a line-anchored marker counts — a log quoting the string must
         # not be parsed as a measurement.
-        assert parse_build_seconds("echo BOOLEY_BUILD_SECONDS: 9") == 0.0
+        assert parse_build_seconds("echo BOOLEY_BUILD_MILLISECONDS: 9000") == 0.0
 
     def test_build_run_script_brackets_the_make_half(self):
         script = _build_run_script(
@@ -863,6 +859,7 @@ class TestBuildTimeAttribution:
         assert lines[1] == "make -C bld"
         assert lines[2] == "_booley_build_rc=$?"
         assert "BOOLEY_BUILD_MILLISECONDS:" in script
+        assert "BOOLEY_BUILD_SECONDS" not in script
         assert script.index("BOOLEY_BUILD_STAGE token=") < script.index("python3 -m run")
         assert "BOOLEY_RUN_STAGE token=" in script
         assert script.endswith('exit "$_booley_run_rc"')

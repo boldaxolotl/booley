@@ -199,8 +199,8 @@ licensed installation of any of them, porting it is the single most valuable thi
 
 | Vendor | EDA tools worth porting |
 |---|---|
-| Synopsys | **VCS** (an internal/incubating parser exists, but there is no public integration), **SpyGlass** (lint), **Verdi** (waveform/debug), **Design Compiler**, **Fusion Compiler** |
-| Cadence | **Genus** (synth), **HAL** (lint), **Xcelium** (an internal/incubating parser exists, but there is no public integration) |
+| Synopsys | **VCS**, **SpyGlass** (lint), **Verdi** (waveform/debug), **Design Compiler**, **Fusion Compiler** |
+| Cadence | **Genus** (synth), **HAL** (lint), **Xcelium** |
 | Siemens (Mentor) | **Questa / ModelSim** (sim), **Questa Lint / AutoCheck** (lint) |
 
 **Lint is the cheapest high-value port on that table.** Booley's `lint` Flow
@@ -269,10 +269,7 @@ logs. That parsing lives in Booley and has to be written per EDA tool:
 - **Simulators** parse raw output into the structured sim result (shared
   helpers in `result.py`). See the existing adapters in
   [src/booley/flows/sim/backends/](../../src/booley/flows/sim/backends/):
-  `cocotb.py`, `icarus.py`, and `verilator.py`. Xcelium and VCS parsing code is
-  isolated under `backends/experimental/` as internal incubation material only:
-  those EDA tools are not selectable or
-  supported Booley simulators. A new simulator adapter can start as a sibling
+  `cocotb.py`, `icarus.py`, and `verilator.py`. A new simulator adapter can start as a sibling
   module, but it does not become public eligibility until the complete runtime
   policy and real licensed end-to-end evidence land with it.
 - **Synthesis / timing / impl** parse vendor report files into QoR

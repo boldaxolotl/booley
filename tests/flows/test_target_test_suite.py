@@ -2,7 +2,7 @@
 
 import pytest
 
-from booley.flows.sim.target_tests import (
+from booley.flows.target_test_suite import (
     NoRunnableTestsError,
     require_runnable_target_test_suite,
     resolve_target_test_suite,
