@@ -9,7 +9,7 @@ from unittest.mock import patch
 from booley.config.project_config import normalize_tests_toml
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.test_runs import build_test_run, test_run_document
+from booley.flows.test_runs import DEFAULT_SEED, build_test_run, test_run_document
 from booley.runtime.endpoint_execution import EXIT_FAILURE, EXIT_SUCCESS
 from tests.flows.sim.test_flow import (
     _FLOW_ENABLED,
@@ -139,9 +139,9 @@ def _coverage_run(test_run, verdict: str, **attributes):
     )
 
 
-def test_directly_collected_coverage_reports_rows_and_rerun_commands():
+def test_coverage_rows_and_rerun_commands():
+    from booley.flows.sim.campaign.test_run_report import informative_test_run_lines
     from booley.flows.sim.coverage_acceptance import coverage_test_run_rows
-    from booley.flows.sim.flow import _coverage_test_run_lines
 
     runs = [
         _coverage_run(_SHORT, "pass"),
@@ -155,11 +155,10 @@ def test_directly_collected_coverage_reports_rows_and_rerun_commands():
         {**test_run_document(_SOAK_7), "grade": "fail"},
         {**test_run_document(_SMOKE), "grade": "error"},
     ]
-    assert _coverage_test_run_lines("lite", rows)[-2:] == [
+    assert informative_test_run_lines("lite", rows, default_seed=DEFAULT_SEED)[-2:] == [
         "  Rerun a failed Test Run with the same seed:",
         "    booley flow sim --target lite --test=stress+soak@7",
     ]
-    assert _coverage_test_run_lines("lite", None) == []
 
 
 def test_coverage_rows_come_from_the_frozen_test_runs_only():
@@ -178,23 +177,17 @@ def test_coverage_rows_come_from_the_frozen_test_runs_only():
 
 def test_rows_are_informative_relative_to_the_targets_own_default_seed():
     """A Target with ``default_seed = 7``: ``@7`` is its plain run, ``@1`` is not."""
-    from booley.flows.sim.flow import (
-        _campaign_test_run_lines,
-        _coverage_test_run_lines,
-        _effective_default_seed,
-    )
+    from booley.flows.sim.campaign.test_run_report import informative_test_run_lines
+    from booley.flows.sim.flow import _campaign_test_run_lines, _effective_default_seed
 
     at_seven = [{**test_run_document(build_test_run("smoke", seed=7)), "grade": "pass"}]
     at_one = [{**test_run_document(_SMOKE), "grade": "pass"}]
 
-    assert _coverage_test_run_lines("lite", at_seven, 7) == []
-    assert _coverage_test_run_lines("lite", at_one, 7) == [
+    assert informative_test_run_lines("lite", at_seven, default_seed=7) == []
+    assert informative_test_run_lines("lite", at_one, default_seed=7) == [
         "  Test Runs: 1 (1 passed)",
         "    PASS         smoke@1",
     ]
-    # Without the Target's own value the Booley-wide Default Seed decides.
-    assert _coverage_test_run_lines("lite", at_one) == []
-    assert _coverage_test_run_lines("lite", at_seven) != []
     assert _effective_default_seed({"lite": 7}, "lite") == 7
     assert _effective_default_seed({"lite": None}, "lite") is None
     assert _effective_default_seed({}, "other") == 1

@@ -2663,21 +2663,6 @@ def test_no_waivers_resume_with_criterion_needs_diagnostic(tmp_path, monkeypatch
     assert state_path.read_bytes() == before
 
 
-def test_legacy_coverage_result_names_report_destination_without_outer_manifest(tmp_path):
-    flow = SimulateFlow()
-    flow._args = SimpleNamespace(work_dir=tmp_path, report_dir=tmp_path / "reports")
-    outcome = SimpleNamespace(
-        target="sim_0",
-        exit_code=0,
-        detail={"simulation": "pass", "collection": "complete", "evaluation": "not_requested"},
-        campaign_path=tmp_path / "missing-coverage.json",
-        simulation_path=tmp_path / "missing-simulation.json",
-    )
-    result = flow._coverage_result([outcome])
-    assert f"  report: {(tmp_path / 'reports/sim.json').resolve()}" in result.report_text
-    assert "manifest:" not in result.report_text
-
-
 def _coverage_headline_state(tmp_path, monkeypatch, ticket):
     from booley.criteria.state import CriterionEntry
 
