@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -40,6 +39,7 @@ from booley.flows.sim.campaign_reports import (
     simulation_booley_dir,
     write_compatibility_projection,
 )
+from booley.flows.sim.coverage_json import content_digest, coverage_mapping_document
 from booley.flows.sim.coverage_projection import project_coverage_criterion
 from booley.flows.sim.coverage_reference import (
     MAX_REFERENCE_BYTES,
@@ -664,7 +664,7 @@ def _resolve_facts_coverage(
         or outcome.coverage_reference != document
         or evidence["path"] != expected_path
         or evidence["bytes"] != len(raw)
-        or evidence["sha256"] != "sha256:" + hashlib.sha256(raw).hexdigest()
+        or evidence["sha256"] != content_digest(raw)
         or evidence["owner"] != facts["campaign_id"]
     ):
         raise AcceptanceRecordingError(
@@ -690,20 +690,12 @@ def _coverage_detail(
             "path_base": "reports_root",
             "path": relative_public_path,
             "bytes": len(raw),
-            "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "sha256": content_digest(raw),
             "nested_campaign_sha256": nested["sha256"],
         },
-        "evaluation": _plain_json(campaign.evaluation),
+        "evaluation": coverage_mapping_document(campaign.evaluation),
         "criterion_fingerprint": campaign.evaluation.get("criterion_fingerprint"),
     }
-
-
-def _plain_json(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {str(key): _plain_json(item) for key, item in value.items()}
-    if isinstance(value, tuple | list):
-        return [_plain_json(item) for item in value]
-    return value
 
 
 @dataclass(frozen=True, slots=True)

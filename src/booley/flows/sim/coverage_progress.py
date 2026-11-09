@@ -6,7 +6,7 @@ from pathlib import Path
 
 from booley.flows.progress_lifecycle import progress_document
 
-from .coverage_campaign import coverage_mapping_document
+from .coverage_json import coverage_mapping_document
 from .coverage_transaction import CoverageTargetOutcome
 from .live_progress import publish_checkpoint
 

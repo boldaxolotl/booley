@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import gzip
-import hashlib
 import io
 import json
 import os
@@ -29,11 +28,16 @@ from .coverage_campaign import (
     CoverageCampaignValidationError,
     CoverageRollup,
     DurableTargetIdentity,
-    FrozenJson,
     _decode_owned_coverage_campaign,
     derive_coverage_source_rollups,
     encode_coverage_campaign,
     encode_coverage_point,
+)
+from .coverage_json import (
+    MANIFEST_JSON,
+    POINT_STORE_LINE_JSON,
+    FrozenJson,
+    content_digest,
     freeze_coverage_mapping,
 )
 
@@ -46,7 +50,6 @@ POINT_STORE_NAME = "coverage-points.jsonl.gz"
 #: The one resource ceiling on a point store: its decompressed size, on write and read.
 MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 MAX_MANIFEST_BYTES = 16 * 1024 * 1024
-_SHA256_PREFIX = "sha256:"
 _MANIFEST_FIELDS = frozenset(
     {
         "$schema",
@@ -121,21 +124,8 @@ class CoverageCampaignStoreError(ValueError):
         super().__init__(f"{code}: {message}")
 
 
-def _canonical_line(value: object) -> bytes:
-    return (
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        + b"\n"
-    )
-
-
 def _write_line(stream: gzip.GzipFile, value: object, total: int) -> int:
-    line = _canonical_line(value)
+    line = POINT_STORE_LINE_JSON.encode(value)
     total += len(line)
     if total > MAX_UNCOMPRESSED_BYTES:
         raise CoverageCampaignStoreError(
@@ -165,7 +155,7 @@ def _point_store_bytes(
     data = buffer.getvalue()
     return data, CoveragePointStoreReference(
         path=POINT_STORE_NAME,
-        sha256=f"{_SHA256_PREFIX}{hashlib.sha256(data).hexdigest()}",
+        sha256=content_digest(data),
         bytes=len(data),
         uncompressed_bytes=uncompressed_bytes,
         point_count=len(campaign.points),
@@ -217,10 +207,6 @@ def _rollup_document(rollup: CoverageRollup) -> dict[str, object]:
     }
 
 
-def _manifest_bytes(document: Mapping[str, object]) -> bytes:
-    return json.dumps(document, sort_keys=True, indent=2, allow_nan=False).encode("utf-8") + b"\n"
-
-
 def publish_coverage_campaign(target_dir: Path, campaign: CoverageCampaign) -> CampaignPaths:
     """Publish a complete V5 Campaign without replacing existing final files."""
     if _contains_link(target_dir):
@@ -231,7 +217,7 @@ def publish_coverage_campaign(target_dir: Path, campaign: CoverageCampaign) -> C
     if campaign_path.exists() or points_path.exists():
         raise CoverageCampaignStoreError("Coverage Campaign publication cannot replace evidence")
     points_bytes, reference = _point_store_bytes(campaign)
-    manifest_bytes = _manifest_bytes(_manifest(campaign, reference))
+    manifest_bytes = MANIFEST_JSON.encode(_manifest(campaign, reference))
     if len(manifest_bytes) > MAX_MANIFEST_BYTES:
         raise CoverageCampaignStoreError(
             "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds its size limit"
@@ -364,7 +350,7 @@ def _load_manifest(
     summary = CoverageCampaignSummary(
         source_schema=schema,
         document=freeze_coverage_mapping(document),
-        manifest_sha256=f"{_SHA256_PREFIX}{hashlib.sha256(raw).hexdigest()}",
+        manifest_sha256=content_digest(raw),
         point_store=point_store,
     )
     return LoadedCoverageCampaign(summary, campaign)
