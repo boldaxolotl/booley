@@ -11,6 +11,7 @@ from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM, cycle_count_criterion_key
 from booley.flows.endpoint_acceptance import record_acceptance
 from booley.flows.endpoint_session import PreparedExecution
+from booley.flows.execution_persistence import EvidenceDiscarded
 from booley.flows.sim.acceptance import AcceptanceContext, SimulationAcceptanceCoordinator
 from booley.flows.sim.campaign.bundle import (
     SnapshotAttemptIdentity,
@@ -739,39 +740,87 @@ def test_relative_cycle_acceptance_fails_closed_on_mismatched_prerequisite_bindi
     assert changes[0].detail["baseline_observation"] == expected
 
 
-def test_generic_endpoint_delegates_campaign_acceptance_to_owning_flow() -> None:
+def _flow_with_campaign_outcomes(*selectors: str) -> SimulateFlow:
+    """A Simulation Flow holding one stand-in Campaign outcome per selector."""
+    flow = SimulateFlow()
+    flow._simulation_campaign_outcomes = tuple(
+        SimpleNamespace(target={"selector": selector}) for selector in selectors
+    )
+    return flow
+
+
+def _spy_hook(monkeypatch, flow: SimulateFlow) -> list[str]:
+    """Record each call of the Flow's declared acceptance hook, then delegate to it."""
+    calls: list[str] = []
+    hook = flow.record_flow_owned_acceptance
+
+    def record(outcome: EndpointOutcome) -> bool:
+        calls.append("hook")
+        return hook(outcome)
+
+    monkeypatch.setattr(flow, "record_flow_owned_acceptance", record)
+    return calls
+
+
+def _record_final(flow: SimulateFlow, outcome: EndpointOutcome) -> None:
+    record_acceptance(flow, PreparedExecution(None, None, False, False), outcome)
+
+
+def test_simulation_hook_keeps_partial_acceptance_when_recording_fails(monkeypatch) -> None:
+    flow = _flow_with_campaign_outcomes("first", "second")
+
+    def commit_one_then_fail(outcomes: tuple[object, ...]) -> None:
+        assert outcomes == flow._simulation_campaign_outcomes
+        flow._simulation_acceptance_outcomes = (
+            SimpleNamespace(committed=True, transaction_id="tx-1", reason="accepted"),
+        )
+        raise OSError("second Target recording failed")
+
+    monkeypatch.setattr(flow, "record_campaign_acceptance", commit_one_then_fail)
+    calls = _spy_hook(monkeypatch, flow)
+    outcome = EndpointOutcome()
+
+    with pytest.raises(OSError, match="second Target recording failed"):
+        _record_final(flow, outcome)
+
+    assert calls == ["hook"]
+    assert outcome.detail["acceptance"] == {
+        "status": "partial",
+        "targets": [
+            {"target": "first", "committed": True, "transaction_id": "tx-1", "reason": "accepted"}
+        ],
+    }
+
+
+def test_simulation_hook_propagates_discarded_evidence(monkeypatch) -> None:
+    flow = _flow_with_campaign_outcomes("first")
+    flow._pending_criteria_set = ("sim",)
+
+    def discard(_outcomes: tuple[object, ...]) -> None:
+        raise EvidenceDiscarded("Goal Mode abandoned")
+
+    monkeypatch.setattr(flow, "record_campaign_acceptance", discard)
+    calls = _spy_hook(monkeypatch, flow)
+    outcome = EndpointOutcome()
+
+    _record_final(flow, outcome)
+
+    assert calls == ["hook"]
+    assert flow.evidence_discarded == "Goal Mode abandoned"
+    assert flow._pending_criteria_set == ()
+    assert "acceptance" not in outcome.detail
+
+
+def test_cancelled_campaign_suppresses_acceptance_publication(monkeypatch) -> None:
+    flow = _flow_with_campaign_outcomes("partial")
+    flow._pending_criteria_set = ("sim",)
     received: list[tuple[object, ...]] = []
-    endpoint = SimpleNamespace(
-        _simulation_campaign_outcomes=("campaign-outcome",),
-        record_campaign_acceptance=received.append,
-        evidence_discarded=None,
-    )
+    monkeypatch.setattr(flow, "record_flow_owned_acceptance", lambda _outcome: received.append(()))
 
-    record_acceptance(
-        endpoint,  # type: ignore[arg-type]
-        PreparedExecution(None, None, False, False),
-        EndpointOutcome(),
-    )
-
-    assert received == [("campaign-outcome",)]
-
-
-def test_cancelled_campaign_suppresses_acceptance_publication() -> None:
-    received: list[tuple[object, ...]] = []
-    endpoint = SimpleNamespace(
-        _pending_criteria_set=("sim",),
-        _simulation_campaign_outcomes=("partial-outcome",),
-        record_campaign_acceptance=received.append,
-    )
-
-    record_acceptance(
-        endpoint,  # type: ignore[arg-type]
-        PreparedExecution(None, None, False, False),
-        EndpointOutcome(exit_code=EXIT_CANCELLED),
-    )
+    _record_final(flow, EndpointOutcome(exit_code=EXIT_CANCELLED))
 
     assert received == []
-    assert endpoint._pending_criteria_set == ()
+    assert flow._pending_criteria_set == ()
 
 
 def test_all_candidate_manifests_publish_before_first_baseline_work() -> None:
