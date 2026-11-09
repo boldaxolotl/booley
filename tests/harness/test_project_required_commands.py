@@ -273,6 +273,8 @@ def test_bare_and_explicit_chat_keep_launch_argv(cli_project, monkeypatch):
         raise SystemExit(0)
 
     monkeypatch.setattr(chat_cmd.os, "execvp", execute)
+    # Run the launch in-process: the mocked exec must not fork pytest.
+    monkeypatch.setattr(chat_cmd, "run_foreground_child", lambda launch: launch())
     for argv in (["booley"], ["booley", "chat"]):
         monkeypatch.setattr(sys, "argv", argv)
         with pytest.raises(SystemExit):
