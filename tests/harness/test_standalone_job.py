@@ -16,6 +16,7 @@ from booley.harness.dashboard.jobs import JobReader
 from booley.mcp.registry import McpToolInfo
 from booley.runtime import job_records
 from booley.runtime.handles import job_handle_expired
+from tests.conftest import symlink_or_skip
 from tests.goals import conftest as goal_fixtures
 
 layout = goal_fixtures.layout
@@ -320,3 +321,16 @@ def test_closed_standard_streams_do_not_fail_the_run(monkeypatch, project):
         job.discard()
     (rec,) = records(project)
     assert rec.status == "done"
+
+
+def test_report_root_is_the_resolved_booley_directory(monkeypatch, tmp_path):
+    """A symlinked ``.booley`` is recorded by its target: that is where the Dashboard looks."""
+    real = tmp_path / "elsewhere" / "booley-dir"
+    real.mkdir(parents=True)
+    root = tmp_path / "proj"
+    root.mkdir()
+    symlink_or_skip(root / ".booley", real, target_is_directory=True)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    assert shell_run(monkeypatch, root, "flow") == 0
+    (rec,) = job_records.list_records(real / JOBS_ROOT)
+    assert rec.report_root == str(real.resolve())

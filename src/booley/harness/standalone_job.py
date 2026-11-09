@@ -155,7 +155,9 @@ class StandaloneJob:
         except (OSError, ValueError, RuntimeError):
             return None
         try:
-            report_root: str | None = str(resolve_checkout_booley_dir(project_root))
+            # Resolved like the common directory the Dashboard scans from: a symlinked
+            # ``.booley`` is outside that scan root under its lexical name.
+            report_root: str | None = str(resolve_checkout_booley_dir(project_root).resolve())
         except (OSError, ValueError, RuntimeError):
             report_root = None
         started_at = utc_now_rfc3339()
