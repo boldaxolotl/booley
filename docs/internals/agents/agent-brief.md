@@ -70,16 +70,21 @@ of the brief:
 
 - `model` (required): a reviewer model the pipeline accepts, today
   `claude-fable-5-1` or `claude-opus-5-5`. It replaces the reviewer of the plan
-  and of the code; the planner and implementer keep their usual models.
+  and the Spec and adversarial reviewers of the code. The Standards reviewer,
+  the planner, and the implementer keep their usual models.
 - `effort` (required): the reviewer's effort, `low`, `medium`, `high`, or
   `xhigh`.
 - `rounds`: `1` (default) or `uncapped`. With `uncapped`, every fix starts
-  another review of the whole change, until one round has no open finding. A
-  finding closes only through a fix, or through a written rebuttal that the
-  next round's reviewer accepts.
+  another review of the whole change, until one round has no open finding
+  rated `medium` or higher on the pipeline's shared severity scale. `low` and
+  `nit` findings are fixed or declined without another round. A `medium`
+  or higher finding closes only through a fix, or through a written rebuttal
+  that the next round's reviewer accepts. A proposed split still gets one review round and
+  is filed without asking.
 - `park-after`: an integer of at least 2, allowed only with `rounds=uncapped`.
-  It is how many rounds may run without a clean one before the pipeline stops
-  and asks the maintainer. Default 5. The count covers rounds under the current
+  It is how many rounds may run without one that has no open `medium` or higher
+  finding before the pipeline stops and asks the maintainer. The maintainer's
+  answer can accept the parked head with its findings still open. Default 5. The count covers rounds under the current
   brief; a new brief starts it again.
 - `focus`: one quoted line that tells the reviewer what to look for first.
 
@@ -88,7 +93,8 @@ to the default review. Malformed means an unknown key or model, a repeated key,
 a missing `model` or `effort`, an unsupported `rounds` value, `park-after`
 without `rounds=uncapped`, a value spread over several lines, or unbalanced
 quotes. With `rounds=uncapped`, the pipeline queues the pull request only after
-a clean round on its current head.
+a round with no open `medium` or higher finding on its current head, or after
+the maintainer's answer to a park accepts that exact head.
 
 ## GUI
 

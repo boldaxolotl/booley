@@ -25,7 +25,6 @@ from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
     CocotbResults,
     CocotbTest,
-    format_results_line,
 )
 from booley.flows.sim.backends.shared import RunTermination
 
@@ -440,19 +439,15 @@ def test_cocotb_trace_incident_preserves_functional_verdicts(
     expected_kind,
 ) -> None:
     identity = replace(_identity(tmp_path), adapter="cocotb")
-    output = (
-        format_results_line(
-            CocotbResults(
-                state=STATE_OK,
-                tests=(CocotbTest("reset", "test_demo", test_status),),
-            )
-        )
-        + extra_output
+    results = CocotbResults(
+        state=STATE_OK,
+        tests=(CocotbTest("reset", "test_demo", test_status),),
     )
     cocotb._publish_adapter_result(
         identity,
-        output,
+        extra_output,
         False,
+        results=results,
         failure_kind=failure_kind,
         trace=AdapterTraceResult("incident", detail="waveform missing"),
     )
@@ -464,20 +459,19 @@ def test_cocotb_trace_incident_preserves_functional_verdicts(
 
 def test_cocotb_abort_after_all_tests_completed_cannot_pass_batch(tmp_path) -> None:
     identity = replace(_identity(tmp_path), adapter="cocotb", selected_tests=("first", "second"))
-    output = format_results_line(
-        CocotbResults(
-            state=STATE_OK,
-            tests=(
-                CocotbTest("first", "test_demo", "pass"),
-                CocotbTest("second", "test_demo", "pass"),
-            ),
-        )
+    results = CocotbResults(
+        state=STATE_OK,
+        tests=(
+            CocotbTest("first", "test_demo", "pass"),
+            CocotbTest("second", "test_demo", "pass"),
+        ),
     )
 
     cocotb._publish_adapter_result(
         identity,
-        output,
+        "",
         True,
+        results=results,
         termination=RunTermination("disk_budget", "disk full", "infrastructure"),
         simulator_returncode=0,
     )

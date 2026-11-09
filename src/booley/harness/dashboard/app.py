@@ -27,7 +27,7 @@ from booley.goals.model import OCCUPYING_STATES
 from booley.goals.presentation import proposal_presentation
 from booley.harness.colors import PALETTE_DODGER_BLUE, PALETTE_MAUVE, PALETTE_ORANGE
 from booley.harness.dashboard import sessions
-from booley.harness.dashboard.footer import footer_hints
+from booley.harness.dashboard.footer import BackTarget, footer_hints
 from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobSnapshot, JobView, target_arg
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
@@ -240,6 +240,13 @@ _ACTIVITY_STYLE = {
 # Header of the session list's second section: the Booley calls, Jobs and
 # proposals of the session (not its hook-reported Session activity).
 BOOLEY_ACTIVITY = "Booley activity"
+
+
+def _back_target(view: str) -> BackTarget:
+    """What Down returns to from the top bar: Help, a detail, or the list."""
+    if view == "help":
+        return "Help"
+    return "detail" if view in DEDICATED_VIEWS else "list"
 
 
 def _orientation_text(orientation: str | Text) -> Text:
@@ -658,7 +665,7 @@ class DashboardApp(App[None]):
     #notices { height: auto; max-height: 6; display: none; }
     #body { height: 1fr; }
     #list { width: 1fr; }
-    #aside { width: 1fr; display: none; padding: 1; }
+    #aside { width: 1fr; display: none; padding: 0 1; }
     #empty { height: auto; }
     #footer { dock: bottom; height: 1; color: $text-muted; }
     """
@@ -852,6 +859,9 @@ class DashboardApp(App[None]):
             self._set_jobs_filter(job_filter=message.value)
         elif message.kind == OWNER:
             self._set_jobs_filter(session=self._next_owner())
+        # A scroll view has no list to hand the keyboard back to: it takes it (#2886).
+        if self.navigation.view in DEDICATED_VIEWS:
+            self._focus_content()
 
     def on_top_bar_left(self, _message: TopBar.Left) -> None:
         self._focus_content()
@@ -1227,7 +1237,7 @@ class DashboardApp(App[None]):
                     "call:" + str(index),
                     _activity_row(
                         "Booley call",
-                        f"{call.tool} · {call.outcome} · {format_clock(call.at, now=now)}",
+                        f"{call.tool} · {call.outcome} · {format_clock(call.ended_at or call.at, now=now)}",
                     ),
                 )
                 for index, call in enumerate(session.calls[-10:])
@@ -1343,11 +1353,14 @@ class DashboardApp(App[None]):
         """Refresh content while retaining row identity and scroll position."""
         orientation, keys, rows = self._content()
         self.query_one("#orientation", Static).update(_orientation_text(orientation))
-        self.query_one("#empty", Static).update(
+        empty = self.query_one("#empty", Static)
+        empty_text = (
             NO_SESSIONS
             if not self.snapshot.sessions and self.navigation.view == "overview"
             else (self._jobs_empty_text() if not rows and self.navigation.view == "jobs" else "")
         )
+        empty.update(empty_text)
+        empty.display = bool(empty_text)  # no text, no row (#2886)
         self.query_one("#resources", Static).update(_resource_text(self.snapshot.resources))
         self.query_one("#health", Static).update(_doctor_text(self.snapshot))
         notices = self.query_one("#notices", Static)
@@ -1650,6 +1663,8 @@ class DashboardApp(App[None]):
                     enter_opens=self._enter_target() is not None,
                     jobs_list=self.navigation.view == "jobs",
                     nested=len(self.windows[self.window]) > 1,
+                    scrolling=self.focused is self.query_one("#aside"),
+                    back_to=_back_target(self.navigation.view),
                 )
             )
 

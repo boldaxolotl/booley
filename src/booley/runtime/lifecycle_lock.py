@@ -9,13 +9,7 @@ from contextlib import contextmanager
 from typing import TextIO
 
 from booley.runtime.auth_token import config_dir
-from booley.runtime.file_lock import (
-    LockContentionError,
-    LockTimeoutError,
-    acquire_file_lock,
-    release_file_lock,
-    wait_for_file_lock,
-)
+from booley.runtime.file_lock import LockTimeoutError, release_file_lock, wait_for_file_lock
 
 _LOCK_DIR = "locks"
 _LOCK_NAME = "docker-lifecycle.lock"
@@ -42,9 +36,9 @@ def _lock_owner(handle: TextIO) -> str:
 def host_lifecycle_lock(
     operation: str,
     *,
-    wait_timeout_s: float | None = DEFAULT_WAIT_TIMEOUT_SECONDS,
+    wait_timeout_s: float = DEFAULT_WAIT_TIMEOUT_SECONDS,
 ) -> Iterator[None]:
-    """Hold the host-wide lock, waiting by default for bounded contention."""
+    """Hold the host-wide lock, waiting up to *wait_timeout_s* under contention."""
     booley_config = config_dir()
     shared_config = booley_config.parent
     if not shared_config.exists():
@@ -62,27 +56,19 @@ def host_lifecycle_lock(
         if os.name != "nt":
             path.chmod(0o600)
         try:
-            if wait_timeout_s is None:
-                acquire_file_lock(handle)
-            else:
-                wait_for_file_lock(
-                    handle,
-                    timeout_s=wait_timeout_s,
-                    on_wait=lambda: logger.warning(
-                        "host Docker lifecycle is busy (%s); waiting up to %gs",
-                        _lock_owner(handle),
-                        wait_timeout_s,
-                    ),
-                )
-        except (LockContentionError, LockTimeoutError) as exc:
-            owner = _lock_owner(handle)
-            timeout = (
-                "retry after it finishes"
-                if wait_timeout_s is None
-                else f"timed out after waiting {wait_timeout_s:g}s"
+            wait_for_file_lock(
+                handle,
+                timeout_s=wait_timeout_s,
+                on_wait=lambda: logger.warning(
+                    "host Docker lifecycle is busy (%s); waiting up to %gs",
+                    _lock_owner(handle),
+                    wait_timeout_s,
+                ),
             )
+        except LockTimeoutError as exc:
             raise LifecycleLockError(
-                f"host Docker lifecycle is busy ({owner}); {timeout}"
+                f"host Docker lifecycle is busy ({_lock_owner(handle)}); "
+                f"timed out after waiting {wait_timeout_s:g}s"
             ) from exc
         try:
             handle.seek(0)

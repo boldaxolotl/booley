@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -109,6 +110,32 @@ def test_cancelled_campaign_stops_before_publication() -> None:
         SimulationCampaignCancellationError, match="cancelled: Job Slot token missing"
     ):
         SimulationCampaign._raise_if_cancelled(request)  # type: ignore[arg-type]
+
+
+def _capacity(admission: AdmissionContext, tmp_path: Path) -> HeavyCapacity:
+    """Real heavy capacity, with its lane registry, over a fresh Booley Directory."""
+    project_data = tmp_path / "project" / ".booley"
+    project_data.mkdir(parents=True, exist_ok=True)
+    return HeavyCapacity(admission, _two_item_manifest(), project_data)
+
+
+def _lane_registry(tmp_path: Path) -> ChildExecutionRegistry:
+    """A registry over the Booley Directory ``_capacity`` uses, to read lane records."""
+    project_data = tmp_path / "project" / ".booley"
+    return ChildExecutionRegistry.from_project_data(
+        _two_item_manifest(), project_data, booley_dir=project_data
+    )
+
+
+def _child_permit(capacity: HeavyCapacity, work_item_id: str = "item"):
+    """Enter a child lane for a dummy attempt."""
+    return capacity.child_permit(
+        work_item_id,
+        attempt_id="attempt",
+        attempt_ordinal=1,
+        attempt_directory=Path("attempt"),
+        publish=lambda _child: None,
+    )
 
 
 def _three_item_manifest(execution_id: str = ""):
@@ -237,14 +264,11 @@ def test_process_registration_closes_constructor_cancellation_race(
 def test_real_child_process_is_terminated_immediately_on_lease_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project_data, child_id, registry, _prepared, flow = _prepared_child(tmp_path, monkeypatch)
+    project_data, _child_id, registry, _prepared, flow = _prepared_child(tmp_path, monkeypatch)
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
     outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
-    capacity = HeavyCapacity(
-        _managed(store, outer),
-        terminal_proof=registry.is_terminal,
-        recover_child=registry.cancel,
-    )
+    capacity = _capacity(_managed(store, outer), tmp_path)
+    lane_ids: list[ExecutionId] = []
     child_registered = threading.Event()
     original_register = SupervisedProcessSet.register
 
@@ -258,9 +282,12 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
         with (
             pytest.raises(HeavyCapacityError, match="lease lost"),
             capacity.outer_permit(),
-            capacity.child_permit("item", child_id) as permit,
+            _child_permit(capacity) as permit,
         ):
-            record_path = execution_paths(child_id, booley_dir=project_data).record
+            lane_ids.append(permit.child_execution_id)
+            record_path = execution_paths(
+                permit.child_execution_id, booley_dir=project_data
+            ).record
 
             def lose_lease() -> None:
                 assert child_registered.wait(timeout=2)
@@ -271,10 +298,7 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
                 target=lose_lease,
             )
             killer.start()
-            scope = SupervisedExecutionScope(
-                child_id, project_data, permit.lease_health.lost.is_set
-            )
-            with supervised_execution_scope(scope):
+            with supervised_execution_scope(permit.scope):
                 flow._execute_local(
                     [sys.executable, "-c", "import time; time.sleep(30)"], timeout=35
                 )
@@ -282,33 +306,26 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
     finally:
         store.release(outer)
     assert time.monotonic() - started < 8
-    assert registry.is_terminal(child_id)
+    assert registry.is_terminal(lane_ids[0])
 
 
 def test_child_permit_checks_lease_loss_before_return(tmp_path: Path) -> None:
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
     outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
-    child_id = ExecutionId("b" * 32)
-    capacity = HeavyCapacity(
-        _managed(store, outer),
-        terminal_proof=lambda _execution_id: True,
-        recover_child=lambda _id: True,
-    )
+    capacity = _capacity(_managed(store, outer), tmp_path)
     try:
         with (
             capacity.outer_permit(),
             pytest.raises(HeavyCapacityError, match="lease lost"),
-            capacity.child_permit("item", child_id) as permit,
+            _child_permit(capacity) as permit,
         ):
             permit.token.path.unlink()
     finally:
         store.release(outer)
 
 
-def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child() -> None:
-    capacity = HeavyCapacity(
-        _unmanaged(), terminal_proof=lambda _execution_id: True, recover_child=lambda _id: True
-    )
+def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child(tmp_path: Path) -> None:
+    capacity = _capacity(_unmanaged(), tmp_path)
     with capacity.outer_permit() as permit:
         assert permit.execution_id is None
         assert isinstance(capacity.parent_execution_id, ExecutionId)
@@ -318,7 +335,7 @@ def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child() -> None:
         pass
     with (
         pytest.raises(HeavyCapacityError, match="cannot acquire child"),
-        capacity.child_permit("item", ExecutionId("b" * 32)),
+        _child_permit(capacity),
     ):
         pass
 
@@ -328,35 +345,21 @@ def test_managed_capacity_releases_and_reacquires_exact_child_tokens(
 ) -> None:
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
     outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
-    terminal: set[ExecutionId] = set()
-    recovered: list[ExecutionId] = []
-
-    def recover(execution_id: ExecutionId) -> bool:
-        recovered.append(execution_id)
-        terminal.add(execution_id)
-        return True
-
-    capacity = HeavyCapacity(
-        _managed(store, outer),
-        terminal_proof=terminal.__contains__,
-        recover_child=recover,
-    )
-    child_ids = [ExecutionId("b" * 32), ExecutionId("c" * 32)]
+    capacity = _capacity(_managed(store, outer), tmp_path)
     try:
         with capacity.outer_permit():
-            for index, execution_id in enumerate(child_ids):
-                with capacity.child_permit(f"item-{index}", execution_id) as permit:
+            for index in range(2):
+                with _child_permit(capacity, f"item-{index}") as permit:
                     holders, waiters = store.snapshot(CLASS_HEAVY)
                     assert waiters == []
                     assert {token.execution_id for token in holders} == {
                         ExecutionId("a" * 32),
-                        execution_id,
+                        permit.child_execution_id,
                     }
-                    assert permit.token.execution_id == execution_id
+                    assert permit.token.execution_id == permit.child_execution_id
                 holders, waiters = store.snapshot(CLASS_HEAVY)
                 assert [token.execution_id for token in holders] == [ExecutionId("a" * 32)]
                 assert waiters == []
-        assert recovered == child_ids
     finally:
         store.release(outer)
     assert store.snapshot(CLASS_HEAVY) == ([], [])
@@ -393,16 +396,12 @@ def test_real_slot_store_preserves_interactive_priority_and_peer_fifo(
 def test_capacity_cancellation_withdraws_a_real_queued_child(tmp_path: Path) -> None:
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
     outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
-    capacity = HeavyCapacity(
-        _managed(store, outer, max_heavy=1),
-        terminal_proof=lambda _execution_id: True,
-        recover_child=lambda _execution_id: True,
-    )
+    capacity = _capacity(_managed(store, outer, max_heavy=1), tmp_path)
     errors: list[BaseException] = []
 
     def wait_for_child() -> None:
         try:
-            with capacity.child_permit("queued", ExecutionId("b" * 32)):
+            with _child_permit(capacity, "queued"):
                 raise AssertionError("queued child unexpectedly acquired a slot")
         except BaseException as exc:  # noqa: BLE001 -- assertion inspects worker outcome
             errors.append(exc)
@@ -423,31 +422,66 @@ def test_capacity_cancellation_withdraws_a_real_queued_child(tmp_path: Path) -> 
 def test_capacity_exception_recovers_then_releases_exact_child(tmp_path: Path) -> None:
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
     outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
-    terminal: set[ExecutionId] = set()
-    child_id = ExecutionId("e" * 32)
-
-    def recover(execution_id: ExecutionId) -> bool:
-        terminal.add(execution_id)
-        return True
-
-    capacity = HeavyCapacity(
-        _managed(store, outer),
-        terminal_proof=terminal.__contains__,
-        recover_child=recover,
-    )
+    capacity = _capacity(_managed(store, outer), tmp_path)
     try:
         with (
             capacity.outer_permit(),
             pytest.raises(RuntimeError, match="injected worker failure"),
-            capacity.child_permit("item", child_id),
+            _child_permit(capacity) as permit,
         ):
             raise RuntimeError("injected worker failure")
         holders, waiters = store.snapshot(CLASS_HEAVY)
         assert [token.execution_id for token in holders] == [ExecutionId("a" * 32)]
         assert waiters == []
-        assert terminal == {child_id}
+        assert _lane_registry(tmp_path).is_terminal(permit.child_execution_id)
     finally:
         store.release(outer)
+
+
+@pytest.mark.parametrize(
+    ("when", "error", "match", "cause"),
+    [
+        ("before_slot", ClaimAbortedError, "shutdown requested", "campaign_error"),
+        ("in_work", HeavyCapacityError, "plain capacity failure", "orphan_recovered"),
+        ("after_work", ClaimAbortedError, "cancellation requested", "completed"),
+    ],
+)
+def test_child_permit_retires_the_lane_on_every_exit(
+    tmp_path: Path, when: str, error: type[Exception], match: str, cause: str
+) -> None:
+    store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
+    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
+    cancelled = threading.Event()
+    admission = replace(_managed(store, outer), cancellation=cancelled.is_set)
+    capacity = _capacity(admission, tmp_path)
+    lanes: list[ExecutionId] = []
+
+    def publish(child_id: ExecutionId) -> None:
+        lanes.append(child_id)
+        if when == "before_slot":
+            cancelled.set()
+
+    try:
+        with (
+            capacity.outer_permit(),
+            pytest.raises(error, match=match),
+            capacity.child_permit(
+                "item",
+                attempt_id="attempt",
+                attempt_ordinal=1,
+                attempt_directory=Path("attempt"),
+                publish=publish,
+            ),
+        ):
+            if when == "in_work":
+                raise HeavyCapacityError("plain capacity failure")
+            cancelled.set()
+    finally:
+        store.release(outer)
+    record = read_json(
+        execution_paths(lanes[0], booley_dir=_lane_registry(tmp_path).project_data).record
+    )
+    assert (record["state"], record["terminal_cause"]) == ("terminal", cause)
 
 
 def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(
@@ -455,16 +489,10 @@ def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(
 ) -> None:
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
     outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
-    terminal: set[ExecutionId] = set()
-    capacity = HeavyCapacity(
-        _managed(store, outer),
-        terminal_proof=terminal.__contains__,
-        recover_child=lambda execution_id: terminal.add(execution_id) is None,
-    )
-    first = ExecutionId("b" * 32)
+    capacity = _capacity(_managed(store, outer), tmp_path)
     competitor = None
     try:
-        with capacity.outer_permit(), capacity.child_permit("first", first):
+        with capacity.outer_permit(), _child_permit(capacity, "first"):
             competitor = store.submit(
                 CLASS_HEAVY,
                 pid=os.getpid(),
@@ -497,23 +525,23 @@ def test_lease_loss_starts_exact_child_recovery_before_work_returns(
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
     outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
-    recovered: list[ExecutionId] = []
-    child_id = ExecutionId("b" * 32)
-    capacity = HeavyCapacity(
-        _managed(store, outer),
-        terminal_proof=lambda execution_id: execution_id in recovered,
-        recover_child=lambda execution_id: recovered.append(execution_id) is None,
-    )
+    capacity = _capacity(_managed(store, outer), tmp_path)
+    registry = _lane_registry(tmp_path)
     try:
         with (
             pytest.raises(HeavyCapacityError, match="lease lost"),
             capacity.outer_permit(),
-            capacity.child_permit("item", child_id) as permit,
+            _child_permit(capacity) as permit,
         ):
             permit.token.path.unlink()
             _wait_until(permit.lease_health.lost.is_set)
             # The scheduler's await loop makes this call while the work still runs.
-            _wait_until(lambda: (capacity.recover_lost_children(), recovered == [child_id])[1])
+            _wait_until(
+                lambda: (
+                    capacity.recover_lost_children(),
+                    registry.is_terminal(permit.child_execution_id),
+                )[1]
+            )
     finally:
         store.release(outer)
     # A lost child lease is lane-scoped: it neither stops nor taints the campaign.
@@ -590,13 +618,9 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
         with gate:
             active -= 1
 
-    capacity = HeavyCapacity(
-        _managed(slot_store, outer),
-        terminal_proof=registry.is_terminal,
-        recover_child=registry.cancel,
-    )
+    capacity = HeavyCapacity(_managed(slot_store, outer), manifest, registry.project_data)
     try:
-        BoundedCampaignScheduler(capacity, registry, allocate=allocate, execute=execute).run(
+        BoundedCampaignScheduler(capacity, allocate=allocate, execute=execute).run(
             manifest.document["work_items"]
         )
     finally:
@@ -625,13 +649,10 @@ def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) ->
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
-    registry = ChildExecutionRegistry(manifest, project)
     admission = AdmissionContext(
         "unmanaged", None, None, 1, "interactive", "a" * 32, 0.01, lambda: False
     )
-    capacity = HeavyCapacity(
-        admission, terminal_proof=registry.is_terminal, recover_child=registry.cancel
-    )
+    capacity = HeavyCapacity(admission, manifest, project / ".booley")
 
     def allocate(item) -> ScheduledAttempt:
         attempt_id = os.urandom(16).hex()
@@ -643,7 +664,6 @@ def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) ->
     started = time.monotonic()
     BoundedCampaignScheduler(
         capacity,
-        registry,
         allocate=allocate,
         execute=lambda *_args: time.sleep(0.04),
     ).run(manifest.document["work_items"])
@@ -659,7 +679,6 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
-    registry = ChildExecutionRegistry(manifest, project)
     slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
     outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
     cancelled = threading.Event()
@@ -668,9 +687,7 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
     admission = AdmissionContext(
         "managed", slots, outer, 1, "interactive", "a" * 32, 0.05, cancelled.is_set
     )
-    capacity = HeavyCapacity(
-        admission, terminal_proof=registry.is_terminal, recover_child=registry.cancel
-    )
+    capacity = HeavyCapacity(admission, manifest, project / ".booley")
 
     def execute(*_args) -> None:
         entered.set()
@@ -678,7 +695,6 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
 
     scheduler = BoundedCampaignScheduler(
         capacity,
-        registry,
         allocate=lambda item: _scheduled_attempt(campaign_store, item),
         execute=execute,
     )
@@ -713,10 +729,6 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
     manifest = _two_item_manifest()
     campaign_store = CampaignStore(tmp_path / "campaign")
     campaign_store.publish_manifest(manifest)
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".booley").mkdir()
-    registry = ChildExecutionRegistry(manifest, project)
     # A zero budget means the shutdown deadline has always passed after the wait.
     capacity = SimpleNamespace(
         managed=False,
@@ -727,7 +739,6 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
     )
     scheduler = BoundedCampaignScheduler(
         capacity,  # type: ignore[arg-type]
-        registry,
         allocate=lambda item: _scheduled_attempt(campaign_store, item),
         execute=lambda *_args: None,
     )
@@ -764,9 +775,7 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_writes_no_chil
         _PARALLEL_SYNC_TIMEOUT_S,
         cancelled.is_set,
     )
-    capacity = HeavyCapacity(
-        admission, terminal_proof=registry.is_terminal, recover_child=registry.cancel
-    )
+    capacity = HeavyCapacity(admission, manifest, registry.project_data)
     attempts: list[Path] = []
 
     def allocate(item) -> ScheduledAttempt:
@@ -808,7 +817,6 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_writes_no_chil
     errors: list[BaseException] = []
     scheduler = BoundedCampaignScheduler(
         capacity,
-        registry,
         allocate=allocate,
         prepare_child=prepare,
         execute=lambda *_args: cancelled.wait(_PARALLEL_SYNC_TIMEOUT_S),
@@ -1251,8 +1259,6 @@ def test_cli_resume_announces_validated_origin_before_execution(
 def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scope_stop: bool
 ) -> None:
-    from dataclasses import replace
-
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
     manifest = _two_item_manifest()
     campaign_store = CampaignStore(tmp_path / "campaign")
@@ -1268,15 +1274,16 @@ def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
 
     execute = _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path)
 
+    # Recovery never completes, so the terminal cause comes from the lane itself.
+    monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _registry, _execution_id: False)
     capacity = HeavyCapacity(
         # Keep this cause test within the production shutdown budget.
         replace(_managed(slots, outer), timeout_seconds=30.0),
-        terminal_proof=registry.is_terminal,
-        recover_child=lambda _execution_id: False,
+        manifest,
+        registry.project_data,
     )
     scheduler = BoundedCampaignScheduler(
         capacity,
-        registry,
         allocate=lambda item: _scheduled_attempt(campaign_store, item),
         execute=execute,
     )
@@ -1403,54 +1410,44 @@ def test_attempt_scan_reads_no_child_entry(
     assert not [path for path in reads if "child-executions" in path.parts]
 
 
-@pytest.mark.parametrize("lane_recovers", [True, False])
-def test_resume_cleanup_recovers_an_interrupted_lane_before_its_run_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane_recovers: bool
+@pytest.mark.parametrize("lanes_recover", [True, False], ids=["recovered", "incomplete"])
+def test_interrupted_attempt_cleanup_recovers_every_lane_before_any_run_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lanes_recover: bool
 ) -> None:
-    """Resume cancels each interrupted lane first and keeps the run directory if it cannot."""
-    from booley.flows.sim.campaign import coordinator
-
+    """Every interrupted lane is made terminal first; one that cannot be keeps all run directories."""
     events: list[tuple[str, str]] = []
+    lanes = {"item-outer": None, "item-lane": "c" * 32}
     attempts = {
-        "item-lane": {"child_execution_id": "c" * 32, "run_directory": {}},
-        "item-outer": {"child_execution_id": None, "run_directory": {}},
+        item_id: {
+            "child_execution_id": lane,
+            "run_directory": {},
+            "campaign_id": "campaign",
+            "attempt_id": f"attempt-{item_id}",
+        }
+        for item_id, lane in lanes.items()
     }
-    store = SimpleNamespace(
-        latest_attempt=lambda item_id: SimpleNamespace(
-            document={
-                **attempts[item_id],
-                "campaign_id": "campaign",
-                "attempt_id": f"attempt-{item_id}",
-            }
-        )
-    )
-    recovery = SimpleNamespace(
-        items=[
-            SimpleNamespace(work_item_id="item-lane", state="interrupted"),
-            SimpleNamespace(work_item_id="item-outer", state="interrupted"),
-            SimpleNamespace(work_item_id="item-done", state="complete"),
-        ]
-    )
 
-    def recover_lane(execution_id) -> None:
+    def recover_lane(_registry, execution_id) -> None:
         events.append(("lane", str(execution_id)))
-        if not lane_recovers:
+        if not lanes_recover:
             raise SimulationCampaignIntegrityError("child execution recovery is incomplete")
 
-    registry = SimpleNamespace(recover_lane=recover_lane)
-    monkeypatch.setattr(coordinator, "restore_run_directory", lambda run, project_root: run)
+    monkeypatch.setattr(ChildExecutionRegistry, "recover_lane", recover_lane)
     monkeypatch.setattr(
-        coordinator,
+        child_protocol, "restore_run_directory_from_project_data", lambda run, **_kwargs: run
+    )
+    monkeypatch.setattr(
+        child_protocol,
         "cleanup_interrupted_run_directory",
         lambda run, identity: events.append(("run", identity["work_item_id"])),
     )
 
     def clean() -> None:
-        SimulationCampaign._cleanup_interrupted_runs(store, recovery, tmp_path, registry)
+        child_protocol.recover_interrupted_attempts(_two_item_manifest(), attempts, tmp_path)
 
-    if lane_recovers:
+    if lanes_recover:
         clean()
-        assert events == [("lane", "c" * 32), ("run", "item-lane"), ("run", "item-outer")]
+        assert events == [("lane", "c" * 32), ("run", "item-outer"), ("run", "item-lane")]
     else:
         with pytest.raises(SimulationCampaignIntegrityError, match="recovery is incomplete"):
             clean()

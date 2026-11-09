@@ -545,7 +545,7 @@ def shared_recovery_blocks_command(*, read_only: bool) -> bool:
 
 
 def _reject_existing_vscode(project_root: Path) -> None:
-    vscode = sr.strict_conflicting_vscode_session(project_root)
+    vscode = sr.vscode_session_container(project_root)
     if vscode:
         raise sr.SessionError(
             f"VS Code owns the active Sandbox {vscode!r}; use "
@@ -555,7 +555,7 @@ def _reject_existing_vscode(project_root: Path) -> None:
 
 def _reject_vscode_started(project_root: Path, consequence: str) -> None:
     try:
-        vscode = sr.strict_conflicting_vscode_session(project_root)
+        vscode = sr.vscode_session_container(project_root)
     except sr.SessionError as exc:
         raise sr.SessionError(f"{exc}; {consequence}") from exc
     if vscode:
@@ -563,22 +563,18 @@ def _reject_vscode_started(project_root: Path, consequence: str) -> None:
 
 
 def _load_recovery_issuance(
-    project_root: Path, snapshot: SessionSpecSnapshot | None = None
+    project_root: Path, snapshot: SessionSpecSnapshot
 ) -> runtime_spec.Issuance:
     try:
-        if snapshot is not None:
-            if snapshot.spec_content is None:
-                raise runtime_spec.RuntimeSpecError("prior Sandbox spec is missing")
-            try:
-                spec = json.loads(snapshot.spec_content)
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise runtime_spec.RuntimeSpecError(
-                    "prior Sandbox spec is not valid JSON"
-                ) from exc
-            if not isinstance(spec, dict):
-                raise runtime_spec.RuntimeSpecError("prior Sandbox spec is not an object")
-            return runtime_spec.load_recovery_snapshot(project_root, spec, snapshot.spec_path)
-        return runtime_spec.load_issued_snapshot(project_root)
+        if snapshot.spec_content is None:
+            raise runtime_spec.RuntimeSpecError("prior Sandbox spec is missing")
+        try:
+            spec = json.loads(snapshot.spec_content)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise runtime_spec.RuntimeSpecError("prior Sandbox spec is not valid JSON") from exc
+        if not isinstance(spec, dict):
+            raise runtime_spec.RuntimeSpecError("prior Sandbox spec is not an object")
+        return runtime_spec.load_recovery_snapshot(project_root, spec, snapshot.spec_path)
     except runtime_spec.RuntimeSpecError as exc:
         raise sr.SessionError(
             f"cannot preserve the prior Sandbox: {exc}; {sr.sandbox_remedy(project_root, recovery_unavailable=True)}"
@@ -770,7 +766,6 @@ def _try_complete_noop(
         sr.verify_refreshed_session(
             project,
             prepared.selected_id,
-            None,
             expected_wheel_source_fingerprint=(
                 prepared.wheel_source_fingerprint or prepared.payload_fingerprint
             ),

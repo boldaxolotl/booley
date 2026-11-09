@@ -15,6 +15,7 @@ import re
 import shlex
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -25,6 +26,8 @@ from booley.flows.sim.adapter_transport import (
     read_adapter_result,
 )
 from booley.flows.sim.backends import cocotb as crun
+from booley.flows.sim.backends import cocotb_results
+from booley.flows.sim.backends.cocotb_results import STATE_OK, CocotbResults, CocotbTest
 from booley.flows.sim.backends.shared import RunTermination
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX
 
@@ -655,7 +658,7 @@ def test_stall_diagnosis_replaces_the_useless_missing_xml_detail(tmp_path: Path,
         "     0.00ns INFO     cocotb.regression   running test_ravenoc\n"
         f"ERROR: {format_sim_time_stall(180)}\n"
     )
-    combined, passed = crun._evaluate_verdict(
+    combined, passed, _ = crun._evaluate_verdict(
         output,
         returncode=0,
         timed_out=False,
@@ -675,10 +678,8 @@ def test_partial_cocotb_abort_preserves_completed_test_and_publishes_termination
     identity = AdapterTransportIdentity(
         "cocotb", "attempt", "acme:lib:dut:1#sim", ("done", "later"), tmp_path / "adapter.json"
     )
-    output = (
-        '[COCOTB_RESULTS] {"state":"ok","detail":"","tests":['
-        '{"name":"done","module":"test_demo","status":"pass",'
-        '"failure":"","elapsed_s":0.1}],"skipped_unselected":0}\n'
+    results = CocotbResults(
+        state=STATE_OK, tests=(CocotbTest("done", "test_demo", "pass", elapsed_s=0.1),)
     )
     termination = RunTermination(
         "sim_time_stall", "simulator time did not advance", "infrastructure"
@@ -686,8 +687,9 @@ def test_partial_cocotb_abort_preserves_completed_test_and_publishes_termination
 
     crun._publish_adapter_result(
         identity,
-        output,
+        "",
         False,
+        results=results,
         termination=termination,
         simulator_returncode=-15,
     )
@@ -778,7 +780,7 @@ def test_final_disk_budget_after_natural_exit(tmp_path, monkeypatch, returncode)
     results_file.write_text(
         '<testsuites><testsuite><testcase name="done" classname="test_demo" time="0.1"/></testsuite></testsuites>'
     )
-    output, passed = crun._evaluate_verdict(
+    output, passed, transported = crun._evaluate_verdict(
         "".join(lines), returncode, False, work, results_file, ["done"], termination=termination
     )
     assert passed is False
@@ -786,7 +788,12 @@ def test_final_disk_budget_after_natural_exit(tmp_path, monkeypatch, returncode)
         "cocotb", "attempt", "acme:lib:dut:1#sim", ("done",), tmp_path / "adapter.json"
     )
     crun._publish_adapter_result(
-        identity, output, passed, termination=termination, simulator_returncode=returncode
+        identity,
+        output,
+        passed,
+        results=transported,
+        termination=termination,
+        simulator_returncode=returncode,
     )
     result = read_adapter_result(identity)
     assert result.termination == "disk_budget"
@@ -976,3 +983,170 @@ def test_rtl_fatal_failure_text_names_assertion_fatal_messages(capsys):
     out = capsys.readouterr().out
     assert "cocotb sim FAILED (0/1 tests failed, 2 assertion/fatal error messages)" in out
     assert "SVA" not in out
+
+
+# --- adapter result and transports are byte-stable (issue #3002) -------------
+
+_GOLDEN_XML = (
+    "<testsuites><testsuite>"
+    '<testcase name="done" classname="test_demo" time="0.25"/>'
+    '<testcase name="boom" classname="test_demo" time="0.5"><failure message="boom failed"/>'
+    "</testcase>"
+    '<testcase name="skip_me" classname="test_demo" time="0"><skipped/></testcase>'
+    "</testsuite></testsuites>"
+)
+_DONE = '{"name":"done","module":"test_demo","status":"pass","failure":"","elapsed_s":0.25}'
+_BOOM = (
+    '{"name":"boom","module":"test_demo","status":"fail","failure":"boom failed","elapsed_s":0.5}'
+)
+_SKIP = '{"name":"skip_me","module":"test_demo","status":"skipped","failure":"","elapsed_s":0.0}'
+_LINE_FULL = (
+    f'[COCOTB_RESULTS] {{"state":"ok","detail":"","tests":[{_DONE},{_BOOM},{_SKIP}],'
+    '"skipped_unselected":0}'
+)
+_LINE_FOCUSED_COMPACT = (
+    f'[COCOTB_RESULTS] {{"state":"ok","detail":"","tests":[{_DONE},{_BOOM}],'
+    '"skipped_unselected":1,"reported_names":["done","boom","skip_me"]}'
+)
+_RESULTS_JSON = """\
+{
+  "state": "ok",
+  "detail": "",
+  "tests": [
+    {
+      "name": "done",
+      "module": "test_demo",
+      "status": "pass",
+      "failure": "",
+      "elapsed_s": 0.25
+    },
+    {
+      "name": "boom",
+      "module": "test_demo",
+      "status": "fail",
+      "failure": "boom failed",
+      "elapsed_s": 0.5
+    },
+    {
+      "name": "skip_me",
+      "module": "test_demo",
+      "status": "skipped",
+      "failure": "",
+      "elapsed_s": 0.0
+    }
+  ],
+  "skipped_unselected": 0
+}
+"""
+_FOCUSED = ["done", "missing"]
+_MISSING_ID = (
+    "missing",
+    "inconclusive",
+    'no matching test ID "missing" in cocotb results. cocotb reported test IDs: '
+    '"done", "boom", "skip_me". Check tests.toml against the rendered IDs in results.xml.',
+)
+_DIAGNOSTIC = "results.xml reports extra non-selected test(s): {} — logged, not verdict-bearing"
+_UNFOCUSED_TESTS = (
+    ("done", "pass", ""),
+    ("boom", "fail", "boom failed"),
+    (
+        "skip_me",
+        "inconclusive",
+        "selected but reported skipped by cocotb — the test filter did not match it "
+        "(name/filter mismatch)",
+    ),
+)
+
+# case -> (xml, selection, verbosity, stdout line, failure_kind, per-test verdicts, diagnostics)
+_GOLDEN_CASES = {
+    "focused-compact": (
+        _GOLDEN_XML,
+        _FOCUSED,
+        "compact",
+        _LINE_FOCUSED_COMPACT,
+        "inconclusive",
+        (("done", "pass", ""), _MISSING_ID),
+        (_DIAGNOSTIC.format("boom"),),
+    ),
+    "focused-full": (
+        _GOLDEN_XML,
+        _FOCUSED,
+        "full",
+        _LINE_FULL,
+        "inconclusive",
+        (("done", "pass", ""), _MISSING_ID),
+        (_DIAGNOSTIC.format("boom, skip_me"),),
+    ),
+    "unfocused-compact": (_GOLDEN_XML, [], "compact", _LINE_FULL, "design", _UNFOCUSED_TESTS, ()),
+    "unfocused-full": (_GOLDEN_XML, [], "full", _LINE_FULL, "design", _UNFOCUSED_TESTS, ()),
+    # A non-finite time makes the transported payload undecodable: both selected tests
+    # become inconclusive for missing results (the line itself is not pinned here).
+    "nan-focused-compact": (
+        _GOLDEN_XML.replace('time="0.25"', 'time="nan"'),
+        _FOCUSED,
+        "compact",
+        None,
+        "inconclusive",
+        (
+            ("done", "inconclusive", "missing results"),
+            ("missing", "inconclusive", "missing results"),
+        ),
+        (),
+    ),
+}
+
+
+def test_adapter_result_and_transports_match_pre_refactor_goldens(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """Adapter result, stdout line and ``cocotb_results.json`` stay byte-stable.
+
+    Characterization: the literals were captured from the code that parsed the
+    adapter's own stdout line back into results, so this proves the refactor
+    changes nothing observable (selected-but-unreported, unselected-ran and
+    unselected-skipped tests; compact and full verbosity; a non-finite time).
+    The adapter must also build its result without parsing that line.
+    """
+
+    def forbidden_parse(output: str) -> None:
+        raise AssertionError("adapter parsed its own stdout line")
+
+    # Patch the defining module and the adapter's own namespace: either call style fails.
+    monkeypatch.setattr(cocotb_results, "parse_results_line", forbidden_parse)
+    monkeypatch.setattr(crun, "parse_results_line", forbidden_parse, raising=False)
+    for case, (
+        xml,
+        selection,
+        verbosity,
+        line,
+        failure_kind,
+        verdicts,
+        notes,
+    ) in _GOLDEN_CASES.items():
+        work = tmp_path / case
+        work.mkdir()
+        results_file = work / "results.xml"
+        results_file.write_text(xml, encoding="utf-8")
+        identity = AdapterTransportIdentity(
+            "cocotb", "attempt", "acme:lib:dut:1#sim", tuple(selection), work / "adapter.json"
+        )
+        run = crun._CocotbRun(work, work, work, results_file, list(selection), {}, [], None)
+
+        crun._complete_cocotb_run(
+            run, [], SimpleNamespace(returncode=0), RunTermination(), verbosity, identity
+        )
+
+        result = read_adapter_result(identity)
+        flags = (result.passed, result.inconclusive, result.failure_kind)
+        assert flags == (False, True, failure_kind), case
+        assert result.tests == tuple(selection or ("done", "boom", "skip_me")), case
+        assert tuple((t.name, t.verdict, t.detail) for t in result.test_results) == verdicts, case
+        assert result.diagnostics == notes, case
+        stdout_lines = capsys.readouterr().out.splitlines()
+        if line is not None:
+            assert [row for row in stdout_lines if row.startswith("[COCOTB_RESULTS]")] == [line], (
+                case
+            )
+            assert (work / "cocotb_results.json").read_text(encoding="utf-8") == _RESULTS_JSON, (
+                case
+            )

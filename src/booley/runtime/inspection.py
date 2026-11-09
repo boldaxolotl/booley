@@ -453,7 +453,7 @@ def _inspect_active_sandbox(
 ) -> None:
     try:
         selected = session_runtime.resolve_running_sandbox(request.project_root)
-        if selected is not None and not session_runtime._container_matches_issuance(
+        if selected is not None and not session_runtime.container_matches_issuance(
             selected.container_id,
             issuance,
             spec=spec,
@@ -481,7 +481,7 @@ def _inspect_live_runtime(
     drifted = [
         name
         for name in containers
-        if not session_runtime._container_matches_issuance(
+        if not session_runtime.container_matches_issuance(
             name,
             issuance,
             spec=spec,
