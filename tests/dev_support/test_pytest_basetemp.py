@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,7 +51,7 @@ def test_orphan_folder_and_marker_are_pruned(tools_root: Path, tmp_path: Path) -
     pruned = pytest_basetemp.record_and_prune(tools_root / "pytest-basetemp-own", checkout)
     assert pruned == (orphan,)
     assert not orphan.exists()
-    assert not orphan.with_name(f"{orphan.name}.checkout").exists()
+    assert not (tools_root / "pytest-basetemp-orphan.checkout").exists()
 
 
 def test_live_unmarked_and_foreign_folders_are_kept(tools_root: Path, tmp_path: Path) -> None:
@@ -83,7 +84,7 @@ def test_own_folder_is_kept_even_if_its_marker_names_a_missing_checkout(
 def test_deletion_errors_do_not_fail_and_keep_the_marker(
     tools_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    orphan = _basetemp(tools_root, "orphan", tmp_path / "gone")
+    _basetemp(tools_root, "orphan", tmp_path / "gone")
 
     def refuse(path: Path) -> None:
         raise PermissionError(f"denied: {path}")
@@ -92,7 +93,67 @@ def test_deletion_errors_do_not_fail_and_keep_the_marker(
     checkout = _checkout(tmp_path, "live")
     assert pytest_basetemp.record_and_prune(tools_root / "pytest-basetemp-own", checkout) == ()
     # The marker survives so a later session retries the deletion.
-    assert orphan.with_name(f"{orphan.name}.checkout").is_file()
+    assert (tools_root / "pytest-basetemp-orphan.checkout").is_file()
+
+
+def test_marker_write_failure_does_not_fail_and_still_prunes(
+    tools_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A disk out of inodes must not crash every session: pruning still frees space.
+    orphan = _basetemp(tools_root, "orphan", tmp_path / "gone")
+
+    def full_disk(self: Path, target: Path) -> Path:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Path, "replace", full_disk)
+    checkout = _checkout(tmp_path, "live")
+    assert pytest_basetemp.record_and_prune(tools_root / "pytest-basetemp-own", checkout) == (
+        orphan,
+    )
+    # Neither the marker nor its staging file is left behind.
+    assert sorted(path.name for path in tools_root.iterdir()) == []
+
+
+def test_folder_is_kept_when_its_checkout_cannot_be_checked(
+    tools_root: Path, tmp_path: Path
+) -> None:
+    # An unreadable parent makes stat fail with EACCES: the owner is unknown, not gone.
+    locked = tmp_path / "locked"
+    (locked / "worktree").mkdir(parents=True)
+    held = _basetemp(tools_root, "held", locked / "worktree")
+    locked.chmod(0)
+    try:
+        if os.access(locked, os.X_OK):
+            pytest.skip("running with privileges that ignore directory permissions")
+        checkout = _checkout(tmp_path, "live")
+        assert pytest_basetemp.record_and_prune(tools_root / "pytest-basetemp-own", checkout) == ()
+    finally:
+        locked.chmod(0o700)
+    assert held.is_dir()
+
+
+def test_symlinked_folder_is_never_followed_or_pruned(tools_root: Path, tmp_path: Path) -> None:
+    target = tmp_path / "elsewhere"
+    (target / "keep").mkdir(parents=True)
+    link = tools_root / "pytest-basetemp-link"
+    link.symlink_to(target, target_is_directory=True)
+    (tools_root / "pytest-basetemp-link.checkout").write_text(
+        f"{tmp_path / 'gone'}\n", encoding="utf-8"
+    )
+    checkout = _checkout(tmp_path, "live")
+    assert pytest_basetemp.record_and_prune(tools_root / "pytest-basetemp-own", checkout) == ()
+    assert link.is_symlink()
+    assert (target / "keep").is_dir()
+
+
+def test_marker_without_folder_is_removed_but_not_reported(
+    tools_root: Path, tmp_path: Path
+) -> None:
+    stale = tools_root / "pytest-basetemp-stale.checkout"
+    stale.write_text(f"{tmp_path / 'gone'}\n", encoding="utf-8")
+    checkout = _checkout(tmp_path, "live")
+    assert pytest_basetemp.record_and_prune(tools_root / "pytest-basetemp-own", checkout) == ()
+    assert not stale.exists()
 
 
 @pytest.mark.parametrize(

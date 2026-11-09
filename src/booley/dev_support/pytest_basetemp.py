@@ -45,10 +45,25 @@ def record_and_prune(basetemp: Path | str | None, checkout: Path) -> tuple[Path,
     own = Path(basetemp).resolve()
     if own.parent != tools_root or not own.name.startswith(_PREFIX):
         return ()
+    # Prune before recording: on a disk out of inodes the deletions are what
+    # make room for the marker. This run's own folder is never pruned: a marker
+    # left for it can only name this checkout's path, which exists.
+    pruned = tuple(
+        folder
+        for folder in map(_folder_for, _markers(tools_root))
+        if folder != own and _prune(folder)
+    )
     _write_marker(_marker_for(own), checkout.resolve())
-    candidates = sorted(tools_root.glob(f"{_PREFIX}*{_MARKER_SUFFIX}"))
-    # This run's own marker now names a live checkout, so its folder is never pruned.
-    return tuple(folder for folder in map(_folder_for, candidates) if _prune(folder))
+    return pruned
+
+
+def _markers(tools_root: Path) -> list[Path]:
+    """Return every basetemp marker in the tools root; none when it cannot be listed."""
+    try:
+        return sorted(tools_root.glob(f"{_PREFIX}*{_MARKER_SUFFIX}"))
+    except OSError as error:
+        _LOG.warning("could not list pytest basetemp markers in %s: %s", tools_root, error)
+        return []
 
 
 def _marker_for(folder: Path) -> Path:
@@ -60,10 +75,18 @@ def _folder_for(marker: Path) -> Path:
 
 
 def _write_marker(marker: Path, checkout: Path) -> None:
-    """Publish the marker atomically so a concurrent pruner never reads half a path."""
+    """Publish the marker atomically so a concurrent pruner never reads half a path.
+
+    A failed write (full disk, read-only cache) is logged, never raised: the
+    folder then stays unmarked, which only means it is never pruned.
+    """
     staging = marker.with_name(f"{marker.name}.{os.getpid()}.tmp")
-    staging.write_text(f"{checkout}\n", encoding="utf-8")
-    staging.replace(marker)
+    try:
+        staging.write_text(f"{checkout}\n", encoding="utf-8")
+        staging.replace(marker)
+    except OSError as error:
+        _LOG.warning("could not record pytest basetemp owner %s: %s", marker, error)
+        staging.unlink(missing_ok=True)
 
 
 def _recorded_checkout(marker: Path) -> Path | None:
@@ -76,20 +99,36 @@ def _recorded_checkout(marker: Path) -> Path | None:
     return path if recorded and path.is_absolute() else None
 
 
+def _checkout_removed(checkout: Path) -> bool:
+    """Return whether ``checkout`` is definitely gone.
+
+    Only "not found" counts. Any other error (permissions, an unmounted volume)
+    leaves the owner unknown, and an unknown owner keeps its folder.
+    """
+    try:
+        checkout.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def _prune(folder: Path) -> bool:
     """Delete one orphaned basetemp and its marker; return whether it was deleted."""
     marker = _marker_for(folder)
     owner = _recorded_checkout(marker)
-    if owner is None or owner.exists():
+    if owner is None or not _checkout_removed(owner):
         return False
     if folder.is_symlink() or any((folder / entry).exists() for entry in _FOREIGN_ENTRIES):
         return False
+    removed = folder.is_dir()
     try:
-        if folder.is_dir():
+        if removed:
             shutil.rmtree(folder)
         marker.unlink(missing_ok=True)
     except OSError as error:
         # Never fail the test session over cache cleanup; the marker remains.
         _LOG.warning("could not prune orphaned pytest basetemp %s: %s", folder, error)
         return False
-    return True
+    return removed
