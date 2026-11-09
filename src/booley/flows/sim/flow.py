@@ -37,6 +37,7 @@ from booley.flows.display import format_flow_display_label
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.execution_persistence import (
+    FlowExecutionAdapter,
     execution_goal_name,
     frozen_test_runs_for,
     register_campaign_for,
@@ -61,6 +62,7 @@ from booley.flows.progress_lifecycle import (
     progress_document,
     supersede_progress,
 )
+from booley.flows.request import FlowRequest
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.campaign.test_run_report import ROW_LIMIT as TEST_RUN_ROW_LIMIT
 from booley.flows.sim.campaign.test_run_report import (
@@ -232,7 +234,7 @@ from .execution import (
     SimulationTargetOutcome,
 )
 from .execution.artifacts import artifact_path_component as _artifact_path_component
-from .execution.engine import simulation_adapter_kind, target_test_plan
+from .execution.engine import TRACE_CLEANUP_MARGIN_S, simulation_adapter_kind, target_test_plan
 from .mode import SimulationMode, normalize_simulation_mode
 from .standalone import StandaloneMixin, _StandaloneOutcome, _StandalonePlanRecipe
 from .target_tests import (
@@ -260,8 +262,6 @@ def _target_is_cocotb(work_dir: Path, target: str) -> bool:
         return False
 
 
-# Default literal prefix for cycle count extraction from sim output.
-_DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
 # Patterns that indicate elaboration/compilation failure (before sim ran).
 # The `ERROR: <eda_tool> …` markers are Booley-echoed on build breakage (sandbox
 # script).
@@ -349,9 +349,6 @@ _DEFAULT_TIMEOUT_MS = default_timeout_ms("sim")
 # run (an Ibex ibex_tracer wrote 272MB/run) yet below the 27GB runaway that once
 # filled the disk; override via [flows.sim].max_rundir_bytes.
 _DEFAULT_MAX_RUNDIR_BYTES = 5 * 1024**3  # 5 GiB
-# Execution enablement is resolved once per run. Public simulation accepts only
-# the open-source Verilator and Icarus run halves.
-_TRACE_CLEANUP_MARGIN_S = 90
 
 # Max error lines shown per test in the display box
 _MAX_DISPLAY_ERRORS = 3
@@ -1655,84 +1652,6 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     replace_file(tmp, path)
 
 
-@dataclass(frozen=True)
-class CycleObservation:
-    """Typed result of parsing Cycle Count records for one named test."""
-
-    status: str
-    value: int | None = None
-
-
-def _cycle_records(
-    output: str,
-    sentinels: list[str],
-) -> tuple[list[tuple[str, str]], list[str], bool]:
-    """Collect named and legacy payloads without deciding admissibility."""
-    named: list[tuple[str, str]] = []
-    legacy: list[str] = []
-    malformed = False
-    for line in output.splitlines():
-        matched = next((sentinel for sentinel in sentinels if sentinel in line), None)
-        if matched is None:
-            continue
-        parts = line.split(matched, 1)[1].strip().split()
-        if len(parts) == 1:
-            legacy.append(parts[0])
-        elif len(parts) >= 2:
-            named.append((" ".join(parts[:-1]), parts[-1]))
-        else:
-            malformed = True
-    return named, legacy, malformed
-
-
-def parse_cycle_observation(
-    output: str,
-    test_name: str,
-    cycle_sentinels: list[str] | None = None,
-) -> CycleObservation:
-    """Parse named/default/configured records without discarding ambiguity."""
-    sentinels = [s for s in (cycle_sentinels or [_DEFAULT_CYCLE_SENTINEL]) if s]
-    sentinels.sort(key=len, reverse=True)
-    named, legacy, malformed = _cycle_records(output, sentinels)
-
-    matches = [record for record in named if record[0] == test_name]
-    observation = CycleObservation("missing")
-    if malformed:
-        observation = CycleObservation("malformed")
-    elif len(matches) > 1:
-        observation = CycleObservation("duplicate")
-    elif len(matches) == 1:
-        count = matches[0][1]
-        if not re.fullmatch(r"[0-9]+", count):
-            observation = CycleObservation("malformed")
-        else:
-            observation = CycleObservation("observed", int(count))
-    elif named:
-        observation = CycleObservation("wrong_test")
-    elif len(legacy) > 1:
-        observation = CycleObservation("duplicate")
-    elif len(legacy) == 1:
-        if not re.fullmatch(r"[0-9]+", legacy[0]):
-            observation = CycleObservation("malformed")
-        else:
-            observation = CycleObservation("legacy", int(legacy[0]))
-    return observation
-
-
-def parse_cycles(
-    output: str,
-    test_name: str,
-    cycle_sentinels: list[str] | None = None,
-    *,
-    allow_legacy: bool = True,
-) -> int | None:
-    """Compatibility value wrapper around :func:`parse_cycle_observation`."""
-    observation = parse_cycle_observation(output, test_name, cycle_sentinels)
-    if observation.status == "observed" or (allow_legacy and observation.status == "legacy"):
-        return observation.value
-    return None
-
-
 def _build_run_script(
     build_cmd: list[str],
     marker: str,
@@ -2618,6 +2537,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self._coverage_execution_factory = coverage_execution
         self._campaign_publication_checkpoint = campaign_publication_checkpoint
 
+    def _start_invocation(
+        self, adapter: FlowExecutionAdapter, request: FlowRequest | None = None
+    ) -> None:
+        """Start an invocation with no Campaign outcomes: only this Flow keeps them."""
+        super()._start_invocation(adapter, request)
+        self._simulation_campaign_outcomes: tuple[Any, ...] = ()
+        self._simulation_acceptance_outcomes: tuple[Any, ...] = ()
+
     def begin_invocation(self) -> None:
         """Start this invocation's Test Run decisions afresh.
 
@@ -2629,6 +2556,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     request_type = SimRequest
     argument_adapter = SimArguments
+    report_schema = "booley.simulation-report/v3"
     target_required = False
 
     name: str = "sim"
@@ -2718,7 +2646,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             logger.warning("Simulation cycle count metadata unavailable", exc_info=True)
             self.cycle_report_json = '{"cycle_counts_error":"unavailable"}'
 
-    def refresh_campaign_report_detail(self, result: EndpointOutcome) -> None:
+    def refresh_report_detail(self, result: EndpointOutcome) -> None:
         """Bind final projection references after acceptance publication."""
         outcomes = self._simulation_campaign_outcomes
         invocation = self._reserved_invocation_dir
@@ -2790,7 +2718,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         # campaign execution to prepare and keeps the generic lifecycle.
         if "_run" in self.__dict__ or self._mode.elaborates_only:
             return None
-        from booley.flows.endpoint_admission import authorize_simulation_targets
+        from booley.flows.endpoint_admission import authorize_targets
 
         try:
             prepared = self._prepare_campaign_targets()
@@ -2822,7 +2750,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 coverage_error = self._prepare_coverage()
                 if coverage_error is not None:
                     return coverage_error
-            rejection = authorize_simulation_targets(self, targets)
+            rejection = authorize_targets(self, targets)
         except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -3091,7 +3019,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     }
     # The MCP server computes mode-aware build, hook, execution, and finalization
     # headroom. This class default is only its defensive floor.
-    default_timeout: ClassVar[int] = (_DEFAULT_TIMEOUT_MS // 1000) * 2 + _TRACE_CLEANUP_MARGIN_S
+    default_timeout: ClassVar[int] = (_DEFAULT_TIMEOUT_MS // 1000) * 2 + TRACE_CLEANUP_MARGIN_S
 
     @property
     def _mode(self) -> SimulationMode:
@@ -3168,7 +3096,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """
         timeout_s = self._effective_timeout_ms() // 1000
         if self.args.trace:
-            timeout_s += _TRACE_CLEANUP_MARGIN_S
+            timeout_s += TRACE_CLEANUP_MARGIN_S
         return timeout_s
 
     def _cocotb_module_for_target(self, target: str) -> str | None:

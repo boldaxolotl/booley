@@ -117,3 +117,19 @@ def test_tool_identity_does_not_leak_between_invocations(tmp_path, monkeypatch):
     assert flow._eda_tool is None
     assert flow._eda_tools == {"sim": None}
     assert flow._target_eda_tools == {"sim": None}
+
+
+def test_simulation_outcomes_belong_to_simulation_flow(tmp_path, monkeypatch):
+    """Only the Simulation Flow keeps Campaign outcomes; other built-in Flows carry none."""
+    from booley.flows.lint.flow import LintFlow
+
+    lint = LintFlow()
+    assert not hasattr(lint, "_simulation_campaign_outcomes")
+    assert not hasattr(lint, "_simulation_acceptance_outcomes")
+
+    flow = _flow(tmp_path, monkeypatch, "--test", "stress")
+    flow._simulation_campaign_outcomes = ("stale",)
+    flow._simulation_acceptance_outcomes = ("stale",)
+    flow._start_invocation(StandaloneFlowExecution())
+    assert flow._simulation_campaign_outcomes == ()
+    assert flow._simulation_acceptance_outcomes == ()

@@ -192,26 +192,24 @@ def test_pre_outcome_coverage_failure_keeps_prepared_console_scope(
     ]
 
 
-@pytest.mark.parametrize(
-    ("observations", "expected"),
-    [
-        (({"test": "half"}, {"test": ""}), "2 targets · tests"),
-        (({"test": "half"},), "2 targets · test half"),
-    ],
+COMPLETION_LABEL_CASES = (
+    (({"test": "half"}, {"test": ""}), "2 targets · tests"),
+    (({"test": "half"},), "2 targets · test half"),
 )
-def test_campaign_completion_label_requires_complete_test_identity(
-    tmp_path: Path,
-    observations: tuple[dict[str, object], ...],
-    expected: str,
-) -> None:
+
+
+def test_campaign_completion_label_requires_complete_test_identity(tmp_path: Path) -> None:
     flow = SimulateFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_0,sim_1", "--coverage"])
 
-    label = flow._campaign_completed_display_label(
-        [SimpleNamespace(observations=observations)]  # type: ignore[list-item]
-    )
+    for observations, expected in COMPLETION_LABEL_CASES:
+        label = flow._campaign_completed_display_label(
+            [SimpleNamespace(observations=observations)]  # type: ignore[list-item]
+        )
+        assert label == expected
 
-    assert label == expected
+    # The Simulation Flow declares its report schema; shared code does not infer it from the name.
+    assert SimulateFlow.report_schema == "booley.simulation-report/v3"
 
 
 def _target_headline(report_text: str, selector: str) -> str:

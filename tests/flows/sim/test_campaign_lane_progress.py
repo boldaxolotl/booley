@@ -99,14 +99,10 @@ def _run_two_lanes(
         labels[name] = f"{name}/{attempt.attempt_id[:8]}"
         bodies[name]()
 
-    capacity = HeavyCapacity(
-        _managed(slot_store, outer),
-        terminal_proof=registry.is_terminal,
-        recover_child=registry.cancel,
-    )
+    capacity = HeavyCapacity(_managed(slot_store, outer), manifest, registry.project_data)
     try:
         with sink.installed():
-            BoundedCampaignScheduler(capacity, registry, allocate=allocate, execute=execute).run(
+            BoundedCampaignScheduler(capacity, allocate=allocate, execute=execute).run(
                 manifest.document["work_items"]  # type: ignore[attr-defined]
             )
             if finish is not None:

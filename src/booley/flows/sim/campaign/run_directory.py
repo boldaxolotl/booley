@@ -184,12 +184,6 @@ def _cleanup_interrupted_run_directory(run: RunDirectory, *, identity: Mapping[s
     return removed
 
 
-def restore_run_directory(document: Mapping[str, object], *, project_root: Path) -> RunDirectory:
-    """Reconstruct and authenticate one persisted attempt run directory."""
-    runtime = checkout_runtime_dir(project_root)
-    return _restore_run_directory(document, runtime, runtime.parent)
-
-
 def restore_run_directory_from_project_data(
     document: Mapping[str, object], *, project_data: Path, booley_dir: Path | None = None
 ) -> RunDirectory:
@@ -407,6 +401,5 @@ __all__ = [
     "expand_run_directory",
     "literal_run_path",
     "require_literal_run_directory",
-    "restore_run_directory",
     "restore_run_directory_from_project_data",
 ]

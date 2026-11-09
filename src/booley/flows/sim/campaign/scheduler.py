@@ -5,7 +5,6 @@ from __future__ import annotations
 import queue
 import threading
 import time
-import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import copy_context
@@ -13,15 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.flows.terminal_progress import progress_lane
-from booley.runtime.execution_records import ExecutionId
-from booley.runtime.job_slots import SlotToken
-from booley.runtime.supervised_execution import (
-    SupervisedExecutionScope,
-    supervised_execution_scope,
-)
+from booley.runtime.supervised_execution import supervised_execution_scope
 
-from .capacity import ChildHeavyPermit, HeavyCapacity, HeavyCapacityError, LeaseLostError
-from .child_protocol import ChildExecutionRegistry
+from .capacity import HeavyCapacity, LeaseLostError
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,12 +24,6 @@ class ScheduledAttempt:
     ordinal: int
     directory: Path
     collision_key: str
-
-
-@dataclass(slots=True)
-class _ChildRunState:
-    terminal_cause: str = "completed"
-    token: SlotToken | None = None
 
 
 def _lane_label(attempt: ScheduledAttempt) -> str:
@@ -61,14 +48,12 @@ class BoundedCampaignScheduler:
     def __init__(
         self,
         capacity: HeavyCapacity,
-        registry: ChildExecutionRegistry,
         *,
         allocate: Callable[[Mapping[str, object]], ScheduledAttempt],
         execute: Callable[[ScheduledAttempt, str | None], None],
         prepare_child: Callable[[ScheduledAttempt, str], None] | None = None,
     ) -> None:
         self._capacity = capacity
-        self._registry = registry
         self._allocate = allocate
         self._execute = execute
         self._prepare_child = prepare_child or (lambda _attempt, _child: None)
@@ -229,16 +214,20 @@ class BoundedCampaignScheduler:
             attempt = self._allocate(item)
         with self._collision_permit(attempt.collision_key), self._lane_scope(attempt):
             if outer:
-                scope = SupervisedExecutionScope(
-                    None,
-                    self._registry.project_data,
-                    lambda: self._stop.is_set() or self._capacity.shutdown_requested,
-                    self._capacity.cancellation_cause,
-                )
-                with supervised_execution_scope(scope):
+                with supervised_execution_scope(self._capacity.outer_scope(self._stop.is_set)):
                     self._execute(attempt, None)
                 return
-            self._run_child(item, attempt)
+            with (
+                self._capacity.child_permit(
+                    str(item["work_item_id"]),
+                    attempt_id=attempt.attempt_id,
+                    attempt_ordinal=attempt.ordinal,
+                    attempt_directory=attempt.directory,
+                    publish=lambda child: self._prepare_child(attempt, str(child)),
+                ) as permit,
+                supervised_execution_scope(permit.scope),
+            ):
+                self._execute(attempt, str(permit.child_execution_id))
 
     def _lane_scope(self, attempt: ScheduledAttempt) -> AbstractContextManager[None]:
         """Scope terminal progress to this attempt when lanes run concurrently."""
@@ -260,65 +249,6 @@ class BoundedCampaignScheduler:
             with self._collision_condition:
                 self._active_collisions.discard(key)
                 self._collision_condition.notify_all()
-
-    def _run_child(self, item: Mapping[str, object], attempt: ScheduledAttempt) -> None:
-        child_id = ExecutionId(uuid.uuid4().hex)
-        prepared = self._registry.prepare(
-            child_id,
-            work_item_id=str(item["work_item_id"]),
-            attempt_id=attempt.attempt_id,
-            attempt_ordinal=attempt.ordinal,
-            attempt_directory=attempt.directory,
-            parent_execution_id=self._capacity_parent_id(),
-        )
-        state = _ChildRunState()
-        try:
-            self._prepare_child(attempt, str(child_id))
-            self._execute_child(item, attempt, child_id, prepared, state)
-        except BaseException:
-            if state.terminal_cause == "completed":
-                state.terminal_cause = "campaign_error"
-            self._registry.mark_terminal(prepared, state.terminal_cause)
-            raise
-
-    def _execute_child(self, item, attempt, child_id, prepared, state) -> None:
-        with self._capacity.child_permit(str(item["work_item_id"]), child_id) as permit:
-            state.token = permit.token
-            scope = SupervisedExecutionScope(
-                child_id,
-                self._registry.project_data,
-                lambda: permit.lease_health.lost.is_set() or self._capacity.shutdown_requested,
-                lambda: self._child_cancellation_cause(permit),
-            )
-            try:
-                with supervised_execution_scope(scope):
-                    self._execute(attempt, str(child_id))
-            except HeavyCapacityError as exc:
-                from booley.flows.sim.execution.contract import PreSimScopeStoppedError
-
-                if (
-                    isinstance(exc.__cause__, PreSimScopeStoppedError)
-                    and permit.lease_health.lost.is_set()
-                ):
-                    state.terminal_cause = "lease_lost"
-                if permit.lease_health.lost.is_set() and not self._capacity.shutdown_requested:
-                    raise LeaseLostError(
-                        f"heavy lease lost for child execution {child_id}"
-                    ) from exc
-                raise
-            if not self._capacity.confirm_child_lease(permit):
-                state.terminal_cause = "lease_lost"
-            self._registry.mark_terminal(prepared, state.terminal_cause)
-        if state.token is not None and not self._capacity.token_absent(state.token):
-            raise HeavyCapacityError(f"child token remained after terminal proof: {child_id}")
-
-    def _child_cancellation_cause(self, permit: ChildHeavyPermit) -> str | None:
-        if permit.lease_health.lost.is_set():
-            return f"Job Slot lease lost: {permit.token.job_class}/{permit.token.path.name}"
-        return self._capacity.cancellation_cause()
-
-    def _capacity_parent_id(self) -> ExecutionId:
-        return self._capacity.parent_execution_id
 
 
 def _worker_failure_cause(exc: BaseException) -> str:

@@ -12,7 +12,7 @@ import pytest
 from booley.criteria.state import DevelopmentState
 from booley.evidence.acceptance import AcceptanceTargetBinding, ResolvedFlowAcceptance
 from booley.flows import endpoint_acceptance
-from booley.flows.endpoint_admission import authorize_simulation_targets
+from booley.flows.endpoint_admission import authorize_targets
 from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow, SimulationMode
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import TargetCatalog
@@ -32,6 +32,8 @@ def _handle(selector: str, identity: str, root: Path) -> TargetHandle:
 
 
 class _StrictEndpoint:
+    name = "sim"
+
     def __init__(self, authorized: set[str]) -> None:
         self.state = SimpleNamespace(strict_criteria=True)
         self.args = SimpleNamespace(diagnostic=False)
@@ -68,7 +70,7 @@ def test_strict_authorization_preserves_candidate_then_historical_baseline() -> 
     baseline = _handle("sim_old", "acme:lib:dut:1#sim_old", Path("/baseline"))
     endpoint = _StrictEndpoint({candidate.identity, baseline.identity})
 
-    rejection = authorize_simulation_targets(endpoint, (candidate, baseline))  # type: ignore[arg-type]
+    rejection = authorize_targets(endpoint, (candidate, baseline))  # type: ignore[arg-type]
 
     assert rejection is None
     assert endpoint.observed == [candidate, baseline]
@@ -97,7 +99,7 @@ def test_selection_rejection_precedes_target_authorization(
     )
     authorized: list[tuple[TargetHandle, ...]] = []
     monkeypatch.setattr(
-        "booley.flows.endpoint_admission.authorize_simulation_targets",
+        "booley.flows.endpoint_admission.authorize_targets",
         lambda _context, targets: authorized.append(targets),
     )
 
@@ -137,7 +139,7 @@ def test_invalid_pre_run_commands_refuse_before_authorization(
     monkeypatch.setattr(flow, "_effective_build_timeout_ms", lambda: 1000)
     authorized: list[tuple[TargetHandle, ...]] = []
     monkeypatch.setattr(
-        "booley.flows.endpoint_admission.authorize_simulation_targets",
+        "booley.flows.endpoint_admission.authorize_targets",
         lambda _context, targets: authorized.append(targets),
     )
     audit = audit_flow_tables({"flows": {"sim": {"pre_run_commands": "x"}}}, ())
@@ -176,7 +178,7 @@ def test_unfinished_coverage_refusal_precedes_target_authorization(
     )
     authorized: list[tuple[TargetHandle, ...]] = []
     monkeypatch.setattr(
-        "booley.flows.endpoint_admission.authorize_simulation_targets",
+        "booley.flows.endpoint_admission.authorize_targets",
         lambda _context, targets: authorized.append(targets),
     )
 
@@ -223,7 +225,7 @@ def test_strict_authorization_rejects_unbound_distinct_baseline() -> None:
     baseline = _handle("sim_old", "acme:lib:dut:1#sim_old", Path("/baseline"))
     endpoint = _StrictEndpoint({candidate.identity})
 
-    rejection = authorize_simulation_targets(endpoint, (candidate, baseline))  # type: ignore[arg-type]
+    rejection = authorize_targets(endpoint, (candidate, baseline))  # type: ignore[arg-type]
 
     assert rejection is not None
     assert rejection.exit_code == 2
@@ -244,7 +246,7 @@ def test_ticket_binding_authorizes_exact_historical_baseline_identity() -> None:
     candidate = _handle("sim", binding.candidate, Path("/candidate"))
     baseline = _handle("sim_old", binding.baseline, Path("/historical-baseline"))
 
-    assert authorize_simulation_targets(endpoint, (candidate, baseline)) is None  # type: ignore[arg-type]
+    assert authorize_targets(endpoint, (candidate, baseline)) is None  # type: ignore[arg-type]
 
 
 def test_ticket_binding_rejects_baseline_identity_drift() -> None:
@@ -260,7 +262,7 @@ def test_ticket_binding_rejects_baseline_identity_drift() -> None:
     candidate = _handle("sim", binding.candidate, Path("/candidate"))
     drifted = _handle("sim_old", "acme:lib:other:1#sim_old", Path("/baseline"))
 
-    rejection = authorize_simulation_targets(endpoint, (candidate, drifted))  # type: ignore[arg-type]
+    rejection = authorize_targets(endpoint, (candidate, drifted))  # type: ignore[arg-type]
 
     assert rejection is not None
     assert "sim_old" in rejection.report_text
@@ -388,3 +390,15 @@ def test_prepare_early_gate_keeps_unresolved_report_target_cardinality(monkeypat
 
     monkeypatch.setattr(context, "_apply_pre_state_gate", gate)
     assert prepare_execution(context) is rejected
+
+
+def test_target_authorization_names_running_flow() -> None:
+    """The refusal text names the Flow that asked, not a fixed Flow."""
+    candidate = _handle("sim", "acme:lib:dut:2#sim", Path("/candidate"))
+    endpoint = _StrictEndpoint(set())
+    endpoint.name = "lint"
+
+    rejection = authorize_targets(endpoint, (candidate,))  # type: ignore[arg-type]
+
+    assert rejection is not None
+    assert rejection.report_text.startswith("lint: Goal Mode has no authorized Criterion binding")

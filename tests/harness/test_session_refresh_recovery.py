@@ -21,6 +21,8 @@ from booley.runtime import session_runtime as sr
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.session_issuance import Issuance
 from booley.runtime.session_spec import SessionSpecSnapshot
+from tests.devcontainer_spec_support import build_spec
+from tests.session_issuance_support import issue_built
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "session_refresh"
 
@@ -261,16 +263,15 @@ def test_checked_in_committed_fixture_resumes_forward(
         lambda: {validator.parent.resolve(): validator.parent.parent.resolve()},
     )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:fresh")
-    monkeypatch.setattr("booley.runtime.interactive_docker.tag_image", lambda *_args: None)
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
+    prepared, spec_path, replacement = issue_built(
+        project,
+        lambda _inputs: build_spec(
+            dc.APP_NONE,
+            mcp_start_command=dc.mcp_post_start_command(),
+            protected_devcontainer_source=str(project / ".devcontainer"),
+        ),
+        monkeypatch,
     )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(project, spec)
-    spec_path = dc.write_devcontainer(project, spec)
-    replacement = runtime_spec.issue(project, spec, spec_path)
     journal_path = _write_restore_journal(
         config,
         project,
@@ -287,7 +288,7 @@ def test_checked_in_committed_fixture_resumes_forward(
         patch.object(sr, "_warn_on_stale_booley_bake"),
         patch.object(sr, "_warn_on_stale_session_containers"),
         patch.object(sr.idk, "container_exists", return_value=False),
-        patch.object(sr, "_container_matches_issuance", return_value=True),
+        patch.object(sr, "container_matches_issuance", return_value=True),
         patch.object(sr, "verify_refreshed_session"),
         patch.object(sr, "_create_session_container", created),
         patch.object(sr, "_run_hook"),
@@ -296,7 +297,7 @@ def test_checked_in_committed_fixture_resumes_forward(
         result = session_refresh.recover_project_locked(project)
 
     assert result.outcome is session_refresh.RecoveryOutcome.RESUMED
-    assert runtime_spec.validate(project, spec, spec_path) == replacement
+    assert runtime_spec.validate(project, prepared.spec, spec_path) == replacement
     created.assert_called_once()
     assert not journal_path.exists()
 
@@ -334,7 +335,7 @@ def test_refresh_persists_recovery_identity_before_parking(tmp_path: Path, monke
         raise RuntimeError("parking failed")
 
     with (
-        patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
+        patch.object(sr, "vscode_session_container", return_value=None),
         patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
         patch.object(session_refresh, "_load_recovery_issuance", return_value=issuance),
         patch.object(sr, "plan_session_refresh", return_value=parked, create=True),
@@ -603,7 +604,7 @@ def test_inline_recovery_keeps_journal_on_unrecoverable_failure(
         raise sr.SessionError("Docker unreachable")
 
     with (
-        patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
+        patch.object(sr, "vscode_session_container", return_value=None),
         patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
         patch.object(session_refresh, "_load_recovery_issuance", return_value=issuance),
         patch.object(sr, "plan_session_refresh", return_value=parked),

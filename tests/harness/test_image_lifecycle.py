@@ -468,6 +468,22 @@ def _project(tmp_path: Path, image: str | None = None) -> Path:
     return root
 
 
+def _check_project(
+    root: Path,
+    docker: FakeDocker,
+    *,
+    artifact_policy: lifecycle.ArtifactPolicy = lifecycle.ArtifactPolicy.LOCAL_ONLY,
+) -> lifecycle.LifecycleResult:
+    """Run a Project image CHECK: plan the graph, then report it without mutation."""
+    observed = lifecycle.plan(
+        lifecycle.ProjectImageScope(root),
+        docker=docker,
+        artifact_policy=artifact_policy,
+        intent=lifecycle.Intent.CHECK,
+    )
+    return lifecycle.planned_result(observed, docker)
+
+
 def _source_recipe_tree(tmp_path: Path) -> tuple[Path, Path]:
     source_root = tmp_path / "source"
     docker_dir = source_root / "src" / "booley" / "data" / "docker"
@@ -577,24 +593,6 @@ def test_incremental_plan_produces_a_true_noop_for_current_graph(
     current = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
 
     assert all(step.action is lifecycle.PlanAction.REUSE for step in current.steps)
-
-
-def test_project_check_recognizes_current_role_graph(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Characterize why issued-image diagnostics must not call legacy reconcile."""
-    root = _project(tmp_path)
-    docker = FakeDocker({})
-    _wire(monkeypatch, docker)
-    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
-    current = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
-    _install_planned_graph(docker, current.nodes)
-
-    legacy = lifecycle.reconcile(
-        lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK, docker=docker
-    )
-
-    assert legacy.status is lifecycle.Status.CURRENT
 
 
 def test_source_and_release_final_images_share_selection_fingerprint(
@@ -1021,6 +1019,21 @@ def test_runtime_plan_rejects_wrong_scope_and_external_image(tmp_path: Path) -> 
         lifecycle.plan(
             lifecycle.ProjectImageScope(_project(tmp_path, "acme/custom")), docker=docker
         )
+
+
+def test_runtime_reconcile_rejects_project_scope_like_any_unsupported_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Project images converge through plan/prepare/commit, never runtime reconcile()."""
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    messages: list[str] = []
+    for scope in (lifecycle.ProjectImageScope(_project(tmp_path)), object()):
+        with pytest.raises(TypeError) as raised:
+            lifecycle.reconcile(scope, lifecycle.Intent.CHECK, docker=docker)  # type: ignore[arg-type]
+        messages.append(str(raised.value))
+
+    assert messages[0] == messages[1]
 
 
 def test_runtime_provenance_and_prepared_candidate_validation(tmp_path: Path) -> None:
@@ -1578,7 +1591,7 @@ def test_check_rejects_same_version_with_different_payload(tmp_path: Path, monke
     )
     builder = _wire(monkeypatch, docker)
 
-    result = lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK)
+    result = _check_project(root, docker)
 
     assert result.status is lifecycle.Status.STALE
     assert result.selected_id is None
@@ -1609,7 +1622,7 @@ def test_check_rejects_local_base_when_stable_contract_changed(tmp_path: Path, m
     )
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="booley bootstrap"):
-        lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK)
+        _check_project(root, docker)
 
 
 def test_packaged_install_rejects_exact_local_parent_when_contract_is_unavailable(
@@ -1645,7 +1658,7 @@ def test_packaged_install_rejects_exact_local_parent_when_contract_is_unavailabl
     )
 
     with pytest.raises(lifecycle.InstalledImageContractError, match="compatibility metadata"):
-        lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK)
+        _check_project(root, docker)
 
 
 def _wire_distribution_pull(
@@ -2166,7 +2179,14 @@ def test_explicit_external_image_receives_zero_mutations(tmp_path: Path, monkeyp
     docker = FakeDocker({"registry.example/team/custom:latest": ("sha256:external", {})})
     builder = _wire(monkeypatch, docker)
 
-    result = lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.REFRESH)
+    def fail_prepare(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("an explicit external image must never be prepared")
+
+    monkeypatch.setattr(harness_lifecycle, "prepare", fail_prepare)
+
+    result = harness_lifecycle.reconcile_planned(
+        lifecycle.ProjectImageScope(root), lifecycle.Intent.REFRESH
+    )
 
     assert result.status is lifecycle.Status.EXTERNAL
     assert not builder.built
@@ -2190,10 +2210,11 @@ def test_invalid_sandbox_configuration_fails_loudly(
 ) -> None:
     root = _project(tmp_path)
     (root / ".booley" / "booley.toml").write_text(body, encoding="utf-8")
-    _wire(monkeypatch, FakeDocker({}))
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
 
     with pytest.raises(lifecycle.ImageLifecycleError, match=message):
-        lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK)
+        _check_project(root, docker)
 
 
 def test_missing_configured_requirement_fails_loudly(
@@ -2204,10 +2225,11 @@ def test_missing_configured_requirement_fails_loudly(
         '[sandbox]\npip_requirements = ["missing.txt"]\n',
         encoding="utf-8",
     )
-    _wire(monkeypatch, FakeDocker({}))
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
 
     with pytest.raises(lifecycle.ImageLifecycleError, match=r"missing\.txt"):
-        lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK)
+        _check_project(root, docker)
 
 
 def test_checkout_booley_dir_override_wins_over_literal_directory(tmp_path: Path, monkeypatch):
@@ -2221,7 +2243,7 @@ def test_checkout_booley_dir_override_wins_over_literal_directory(tmp_path: Path
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
 
-    lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK)
+    _check_project(root, docker)
 
     assert lifecycle._direct_booley_dir(root) == custom
 
@@ -3186,23 +3208,13 @@ def test_release_layout_child_retains_verified_parent_policy_and_zero_build_chec
     lifecycle.validate(prepared, docker=docker)
     committed = lifecycle.commit(prepared, docker=docker)
     before = list(docker.mutations)
-    checked = lifecycle.reconcile(
-        lifecycle.ProjectImageScope(root),
-        lifecycle.Intent.CHECK,
-        docker=docker,
-        artifact_policy=policy,
-    )
+    checked = _check_project(root, docker, artifact_policy=policy)
     assert checked.status is lifecycle.Status.CURRENT
     assert checked.selected_reference == committed.selected_reference
     assert checked.wheel_sha256 == "f" * 64
     assert docker.mutations == before
     docker.images.pop(checked.selected_reference)
-    missing = lifecycle.reconcile(
-        lifecycle.ProjectImageScope(root),
-        lifecycle.Intent.CHECK,
-        docker=docker,
-        artifact_policy=policy,
-    )
+    missing = _check_project(root, docker, artifact_policy=policy)
     assert missing.status is lifecycle.Status.STALE
     assert docker.mutations == before
 
@@ -3374,12 +3386,7 @@ def test_release_project_overlay_retains_wheel_identity_through_layout_convergen
     lifecycle.validate(prepared, docker=docker)
     committed = lifecycle.commit(prepared, docker=docker)
     before = list(docker.mutations)
-    checked = lifecycle.reconcile(
-        lifecycle.ProjectImageScope(root),
-        lifecycle.Intent.CHECK,
-        docker=docker,
-        artifact_policy=policy,
-    )
+    checked = _check_project(root, docker, artifact_policy=policy)
     assert checked.status is lifecycle.Status.CURRENT
     assert checked.selected_id == committed.selected_id
     assert docker.mutations == before
@@ -3426,7 +3433,7 @@ def test_cleanup_failure_after_adoption_is_diagnostic_and_abort_is_idempotent(
     monkeypatch.setattr(lifecycle, "_reconcile_layout_tag_cleanup", fail_cleanup)
     committed = lifecycle.commit(prepared, docker=docker)
     assert docker.image_id(committed.selected_reference) == committed.selected_id
-    assert committed.requires_spec_reseed
+    assert committed.changed_images
     assert committed.diagnostics[-1].code == "cleanup-deferred"
     before = list(docker.mutations)
     lifecycle.abort(prepared, docker=docker)
@@ -3649,10 +3656,8 @@ def test_official_project_check_accepts_the_published_release_image(
     docker = FakeDocker({selected: ("sha256:" + "8" * 64, _published_release_labels())})
     _wire_official_release(monkeypatch, docker)
 
-    result = lifecycle.reconcile(
-        lifecycle.ProjectImageScope(root),
-        lifecycle.Intent.CHECK,
-        artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+    result = _check_project(
+        root, docker, artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY
     )
 
     assert result.status is lifecycle.Status.CURRENT

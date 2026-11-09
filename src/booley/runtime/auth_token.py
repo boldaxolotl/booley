@@ -384,12 +384,6 @@ def _native_credential(
     return None
 
 
-def resolve_oauth_token() -> str | None:
-    """Claude's credential. Kept as a named helper: it is the one the generated
-    devcontainer spec references by name."""
-    return resolve_token(APP_CLAUDE)
-
-
 class CredentialStoreError(RuntimeError):
     """Credential storage is unsafe or unavailable; no secret belongs in the error."""
 

@@ -1,0 +1,34 @@
+name: Free unused runner disk
+description: Remove preinstalled toolchains the image-building jobs never use and log free disk, including the Docker storage filesystem.
+
+# Issues #2681 and #2896: image builds share the runner's `/` (RUNNER_TEMP and
+# the Docker root), which is nearly full on a stock hosted runner. The image
+# build preflight refuses to start without roughly 40 GiB free on the Docker
+# storage filesystem. /opt/hostedtoolcache itself stays: setup-python resolves
+# Python from it, so only CodeQL goes. The removal list lives here, once, for
+# `bwave-smoke` (Tests workflow) and `worktree-mounts` (Deep tests workflow).
+runs:
+  using: composite
+  steps:
+    - name: Free unused runner disk
+      shell: bash
+      run: |
+        # `df` prints only the mount, so name the Docker root it is measuring.
+        docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+        report_free_disk() {
+          echo "::group::Free disk $1 cleanup"
+          df -h || true
+          echo "Docker storage: ${docker_root:-unavailable}"
+          if [ -n "${docker_root}" ]; then
+            df -h "${docker_root}" || true
+          fi
+          echo "::endgroup::"
+        }
+        report_free_disk before
+        sudo rm -rf \
+          /usr/local/lib/android \
+          /usr/share/dotnet \
+          /opt/ghc \
+          /usr/local/.ghcup \
+          /opt/hostedtoolcache/CodeQL
+        report_free_disk after

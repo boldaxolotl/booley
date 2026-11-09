@@ -892,7 +892,6 @@ def _report_image_cleanup(ctx: InitContext, result: LifecycleResult) -> None:
 def _step_image_lifecycle(
     ctx: InitContext,
     *,
-    base_result: LifecycleResult | None = None,
     intent: ImageLifecycleIntent | None = None,
     report_requirements: bool = False,
 ) -> LifecycleResult | None:
@@ -909,7 +908,7 @@ def _step_image_lifecycle(
         if ctx.force
         else ImageLifecycleIntent.ENSURE
     )
-    scope = ProjectImageScope(ctx.project_root, base_result)
+    scope = ProjectImageScope(ctx.project_root)
     try:
         if report_requirements:
             _report_project_requirements(
@@ -1092,53 +1091,6 @@ def _select_interactive_app(
             if provider in AGENT_CLIS:
                 return provider
     return dc.APP_NONE
-
-
-def _resolve_auth_token_source(app: str) -> Path | None:
-    """Return the host path to *app*'s subscription auth token, if it exists.
-
-    Mounted read-only into the container (ADR 0018). Returns ``None`` for
-    API-key auth or ``none`` (nothing to mount).
-    """
-    creds = {
-        dc.APP_CLAUDE: Path.home() / ".claude" / ".credentials.json",
-        dc.APP_CODEX: Path.home() / ".codex" / "auth.json",
-    }.get(app)
-    return creds if creds and creds.is_file() else None
-
-
-def _resolve_token_seed_source(app: str) -> Path | None:
-    """Return the host path of *app*'s stored rotation-free credential, if any.
-
-    The file ``booley auth`` writes (``~/.config/booley/...``, mode 0600).
-    Mounted read-only at the app's token-seed sidecar so
-    ``incontainer_register`` can apply it on every container start — the only
-    route that reaches VS Code's "Reopen in Container", which resolves the
-    spec's ``${localEnv:...}`` against VS Code's own process env where the
-    stored file is invisible. Gated on the file actually existing: a bind
-    mount whose source is missing fails container creation outright.
-    """
-    if app not in auth_token.CREDENTIALS:
-        return None
-    return auth_token.token_path(app) if auth_token.read_stored_token(app) else None
-
-
-def _resolve_config_seed_source(app: str) -> Path | None:
-    """Return the host ``~/.claude.json`` to seed the container's user config.
-
-    Claude Code caches statsig feature-gate grants (staged-rollout / promo model
-    access such as Fable), the install stableID, and onboarding state in
-    ``~/.claude.json`` — a file that sits *outside* the persisted ``~/.claude/``
-    volume, so the container is born without it and gated models drop off the
-    in-container picker. Seeding the container's copy from the host carries the
-    grants across (mounted read-only + copied; the host file is never written).
-    Only Claude keeps this cache; returns ``None`` for other apps or when the
-    host config is absent (e.g. a machine that never ran Claude Code).
-    """
-    if app != dc.APP_CLAUDE:
-        return None
-    cfg = Path.home() / ".claude.json"
-    return cfg if cfg.is_file() else None
 
 
 def _report_seeded_mounts(
@@ -2281,25 +2233,8 @@ def _project_config_migration_preflight(ctx: InitContext, path: Path) -> bool:
     return False
 
 
-def _usable_bootstrap_base(result: BootstrapResult) -> LifecycleResult | None:
-    base = result.base_image
-    if base is None or base.status not in {
-        ImageLifecycleStatus.CURRENT,
-        ImageLifecycleStatus.CHANGED,
-        ImageLifecycleStatus.EXTERNAL,
-    }:
-        return None
-    return base
-
-
-def _reconcile_initialized_image(
-    ctx: InitContext,
-    bootstrap_result: BootstrapResult | None,
-) -> LifecycleResult | None:
-    """Reconcile the Project image against Bootstrap's verified host base."""
-    base = _usable_bootstrap_base(bootstrap_result) if bootstrap_result else None
-    if base is not None:
-        return _step_image_lifecycle(ctx, base_result=base, report_requirements=True)
+def _reconcile_initialized_image(ctx: InitContext) -> LifecycleResult | None:
+    """Full-init image step: reconcile the Project image and report left-out pip requirements."""
     return _step_image_lifecycle(ctx, report_requirements=True)
 
 
@@ -2375,7 +2310,6 @@ def _run_project_init_steps(
     selection: AgentSelection,
     agent_config_path: Path,
     guidance_plan: InitPlan | None,
-    bootstrap_result: BootstrapResult | None = None,
 ) -> int:
     """Run seed-only or full project mutations after preflight succeeds."""
     if getattr(args, "seed", False):
@@ -2399,7 +2333,7 @@ def _run_project_init_steps(
         skip_credentials=getattr(args, "skip_credentials", False),
     )
     pdk_root = nangate_pdk.cache_root()
-    image_result = _reconcile_initialized_image(ctx, bootstrap_result)
+    image_result = _reconcile_initialized_image(ctx)
     runtime_image_id = _selected_runtime_image_id(image_result)
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
@@ -2556,8 +2490,7 @@ def _run_init_unlocked(
     if not _project_checkout_ready(ctx) or not _reconcile_booley_dir_pin(ctx, args):
         return _print_summary(ctx)
 
-    bootstrap_result = _reconcile_init_bootstrap(ctx, args)
-    if bootstrap_result is None:
+    if _reconcile_init_bootstrap(ctx, args) is None:
         return _print_summary(ctx)
 
     seed = getattr(args, "seed", False)
@@ -2581,7 +2514,6 @@ def _run_init_unlocked(
             selection,
             agent_config_path,
             guidance_plan,
-            bootstrap_result,
         )
 
 

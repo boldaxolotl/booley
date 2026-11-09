@@ -40,6 +40,7 @@ CATEGORIES = (
     "workflow",
     "release",
     "ci_tooling",
+    "renovate",
     "full",
 )
 CONDITIONAL_JOBS = (
@@ -56,6 +57,7 @@ CONDITIONAL_JOBS = (
     "sidecar-smoke",
     "bwave-smoke",
     "scanner-smoke",
+    "renovate-config",
     "flake-stress",
 )
 # Selected by the pull request's changed test modules (ci_flake_stress.py),
@@ -97,6 +99,12 @@ _STABLE_BASE_FILES = set(stable_base_inputs(Path(__file__).parents[2]))
 _STABLE_BASE_ORCHESTRATION_FILES = {
     "src/booley/data/docker/stable-base-inputs.txt",
 }
+# The Renovate configuration and its runner. The runner runs only from the
+# default branch on a schedule, builds no image and feeds no other job, so a
+# change here needs the narrow `renovate-config` lane, not the full CI. That lane
+# runs the pin audit of every workflow file; the remaining workflow-wide audits
+# run on the next default-branch push, which selects every job.
+_RENOVATE_FILES = {".github/renovate.json", ".github/workflows/renovate.yml"}
 _PACKAGING_FILES = {
     "LICENSE",
     "MANIFEST.in",
@@ -259,12 +267,30 @@ def _documentation_categories(path: str) -> set[str]:
     return set()
 
 
+def _release_categories(path: str) -> set[str]:
+    """Return ``{"release"}`` for the version, release assets, publish workflows and changelogs."""
+    if (
+        path == "VERSION"
+        or path.startswith("release-assets/")
+        or path
+        in {
+            ".github/workflows/publish.yml",
+            ".github/workflows/docker-publish.yml",
+            "CHANGELOG.md",
+            "src/booley/data/refs/CHANGELOG.md",
+        }
+    ):
+        return {"release"}
+    return set()
+
+
 def _path_categories(path: str, *, contract_neutral: bool = False) -> set[str]:
+    if path in _RENOVATE_FILES:
+        return {"renovate"}
     categories = _documentation_categories(path)
     if path in _PACKAGING_FILES:
         categories.add("packaging")
-    if path == "VERSION" or path.startswith("release-assets/"):
-        categories.add("release")
+    categories.update(_release_categories(path))
     if path.startswith("src/booley/"):
         categories.add("python_source")
     if path == "src/booley/runtime/docs_links.py":
@@ -296,13 +322,6 @@ def _path_categories(path: str, *, contract_neutral: bool = False) -> set[str]:
     if path.startswith((".github/workflows/", ".github/actions/", ".github/scripts/")):
         categories.add("workflow")
     categories.update(_ci_tooling_categories(path))
-    if path in {
-        ".github/workflows/publish.yml",
-        ".github/workflows/docker-publish.yml",
-        "CHANGELOG.md",
-        "src/booley/data/refs/CHANGELOG.md",
-    }:
-        categories.add("release")
     return categories
 
 
@@ -338,10 +357,9 @@ def required_jobs(categories: set[str], *, stress: bool = False) -> set[str]:
     return jobs | {STRESS_JOB} if stress else jobs
 
 
-def _category_jobs(categories: set[str]) -> set[str]:
-    if categories & {"full", "workflow", "packaging", "release"}:
-        return set(ALL_JOBS) - {STRESS_JOB}
-    jobs = set(ALWAYS_JOBS)
+def _documentation_jobs(categories: set[str]) -> set[str]:
+    """Return the narrow jobs that README, website and documentation changes select."""
+    jobs: set[str] = set()
     if "docs" in categories:
         jobs.add("docs-check")
     if "site" in categories:
@@ -350,6 +368,13 @@ def _category_jobs(categories: set[str]) -> set[str]:
         jobs.update({"site-build", "lint"})
     if "readme" in categories:
         jobs.add("package-artifacts")
+    return jobs
+
+
+def _category_jobs(categories: set[str]) -> set[str]:
+    if categories & {"full", "workflow", "packaging", "release"}:
+        return set(ALL_JOBS) - {STRESS_JOB}
+    jobs = set(ALWAYS_JOBS) | _documentation_jobs(categories)
     if categories & {"python_source", "python_tests"}:
         jobs.update({"lint", "test", "test-verify", "coverage-shards", "coverage"})
     if "rust" in categories:
@@ -364,6 +389,9 @@ def _category_jobs(categories: set[str]) -> set[str]:
         jobs.update({"package-artifacts", "bwave-smoke"})
     if "sidecar" in categories:
         jobs.add("sidecar-smoke")
+    if "renovate" in categories:
+        # `lint` actionlints the workflow files, the runner among them.
+        jobs.update({"renovate-config", "lint"})
     if "ci_tooling" in categories:
         # The jobs that install the pinned tools, plus the Python lane whose
         # tests keep the requirements files in step with pyproject.toml. Not
