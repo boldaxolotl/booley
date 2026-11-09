@@ -9,6 +9,14 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `sim --trace` converts a declared `trace_files` VCD of any size; the 2 GiB
+  limit is gone. Post-run VCD-to-FST conversion now has its own
+  `[flows.sim].trace_convert_timeout_ms` budget (default `1800000`, 30 minutes)
+  on top of `timeout_ms`, so a simulation that passes near its timeout is no
+  longer reported as `timeout` while its waveform converts. A failed or
+  timed-out conversion keeps the simulation verdict and reports a trace
+  incident. Icarus no longer reports an unconverted raw VCD as a waveform.
+
 ## 0.4.0 - 04 NOV 2026
 
 Booley, until now "the open-source agentic RTL IDE", now describes itself as

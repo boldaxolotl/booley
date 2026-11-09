@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from booley.flows.sim.config import DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S
 from booley.flows.test_runs import TestRun
 
 AdapterKind = Literal["verilator", "icarus", "cocotb"]
@@ -37,6 +38,8 @@ class PreparedSimulationWork:
     trace_scope: str = ""
     trace_args: tuple[str, ...] = ()
     trace_files: tuple[str, ...] = ()
+    #: Budget of every post-run trace conversion in this attempt (seconds).
+    trace_convert_timeout_s: int = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S
     runtime_inputs: tuple[str, ...] = ()
     pass_sentinels: tuple[str, ...] = ()
     fail_sentinels: tuple[str, ...] = ()
@@ -52,6 +55,8 @@ class PreparedSimulationWork:
     def __post_init__(self) -> None:
         if self.timeout_s <= 0:
             raise ValueError("Simulation adapter timeout must be positive")
+        if self.trace_convert_timeout_s <= 0:
+            raise ValueError("Simulation trace conversion timeout must be positive")
         transport = (self.adapter_result_path, self.attempt_token, self.target_identity)
         if any(transport) and not all(transport):
             raise ValueError(

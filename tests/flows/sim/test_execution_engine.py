@@ -641,6 +641,7 @@ class _ChangingTraceRun:
                 'run_cwd = "other-run"\n'
                 'trace_files = ["../second/*.fst"]\n'
                 "timeout_ms = 2000\n"
+                "trace_convert_timeout_ms = 9000\n"
                 'cycle_sentinels = ["[NEW]"]\n'
                 'pre_run_commands = ["new"]\n',
                 encoding="utf-8",
@@ -866,6 +867,46 @@ def test_timeout_without_transport_recovers_cocotb_progress(tmp_path: Path) -> N
         ("active", "timeout"),
         ("later", "timeout"),
     ]
+
+
+@pytest.mark.parametrize("sim_passed", [True, False], ids=["passing_sim", "failing_sim"])
+@pytest.mark.parametrize(
+    ("timed_out", "returncode"),
+    [(True, -9), (False, -9), (False, 137), (False, 1)],
+    ids=["timeout", "sigkill", "shell137", "exception"],
+)
+def test_post_simulation_partial_survives_adapter_kill(
+    tmp_path: Path, timed_out: bool, returncode: int, sim_passed: bool
+) -> None:
+    """An adapter dying mid-conversion leaves the simulation verdict, never a timeout."""
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    identity = AdapterTransportIdentity(
+        "icarus", "abc123", handle.identity, ("smoke",), _evidence_path(handle)
+    )
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        partial = partial_result_identity(identity)
+        publish_native_adapter_result(
+            partial,
+            "[SIM_RESULT] PASSED\n" if sim_passed else "[SIM_RESULT] FAILED\n",
+            0 if sim_passed else 1,
+            trace_required=True,
+            trace=AdapterTraceResult("incident", detail="trace conversion had not finished"),
+        )
+        os.utime(partial.result_path, ns=(1, 1))
+        return SubprocessResult(
+            returncode=returncode,
+            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+            timed_out=timed_out,
+        )
+
+    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+
+    assert outcome.tests[0].timed_out is False
+    assert outcome.tests[0].verdict == ("inconclusive" if sim_passed else "fail")
+    assert outcome.verdict != "timeout"
 
 
 @pytest.mark.parametrize("simulator_returncode", [-15, 0, 7])
@@ -2107,19 +2148,19 @@ def _assert_execution_trace(
         )
         _assert_queryable_trace(outcome, cache_root)
     else:
-        traces = [
-            Path(artifact.path) for artifact in outcome.artifacts if artifact.kind == "trace"
-        ]
-        assert len(traces) == 1 and traces[0].suffix == ".vcd"
-        assert traces[0].read_text(encoding="utf-8") == (
+        # A VCD that failed to convert is a trace incident, never a waveform.
+        assert not any(artifact.kind == "trace" for artifact in outcome.artifacts)
+        (run_log,) = (Path(a.path) for a in outcome.artifacts if a.kind == "live_run_log")
+        work = run_log.parent  # the simulation work directory
+        assert (work / "trace.vcd").read_text(encoding="utf-8") == (
             "$date\nnow\n$end\n$timescale 1ns $end\n"
             "$scope module tb $end\n$var wire 1 ! signal $end\n"
             "$upscope $end\n$enddefinitions $end\n#0\n0!\n#1\n1!\n"
         )
-        assert "fixture conversion unavailable" in (
-            traces[0].parent / "trace.fst.stderr"
-        ).read_text(encoding="utf-8")
-        manifest = json.loads((traces[0].parent / "trace_status.json").read_text(encoding="utf-8"))
+        assert "fixture conversion unavailable" in (work / "trace.fst.stderr").read_text(
+            encoding="utf-8"
+        )
+        manifest = json.loads((work / "trace_status.json").read_text(encoding="utf-8"))
         assert any(
             attempt["kind"] == "vcd_postprocess" and attempt["status"] == "vcd_only"
             for attempt in manifest["attempts"]
@@ -2164,7 +2205,9 @@ def test_icarus_trace_reaches_execution_on_first_and_repeat_run(
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(trace=True))
     for _ in range(2):
         outcome = run_prepared_group(execution, handle, ("smoke",))
-        assert outcome.passed
+        # An unconvertible VCD leaves the Test Run inconclusive, not passed.
+        assert outcome.passed is queryable
+        assert outcome.verdict == ("pass" if queryable else "inconclusive")
         _assert_execution_trace(outcome, tmp_path / "bwave-cache", queryable=queryable)
         assert any("BOOLEY_BUILD_STAGE" in command[-1] for command in commands)
         assert any("booley.flows.sim.backends.icarus" in command[-1] for command in commands)
@@ -3052,7 +3095,10 @@ def _assert_attempt_config_freezing(
     assert "--run-cwd other-run" in run.commands[1]
     assert "--timeout 1" in run.commands[0]
     assert "--timeout 2" in run.commands[1]
-    assert run.pre_sim_timeouts == run.invocation_timeouts == [91, 92]
+    assert "--trace-convert-timeout 7" in run.commands[0]
+    assert "--trace-convert-timeout 9" in run.commands[1]
+    # simulation timeout + conversion budget + the fixed 90 s margin
+    assert run.pre_sim_timeouts == run.invocation_timeouts == [1 + 7 + 90, 2 + 9 + 90]
     assert first_snapshot["controls"]["run_cwd"] == "run"
     assert second_snapshot["controls"]["run_cwd"] == "other-run"
     assert first_snapshot["controls"]["pre_run_commands"] == ["old"]
@@ -3063,6 +3109,37 @@ def _assert_attempt_config_freezing(
     assert first_snapshot["inputs"][0]["bytes"] == len(f"generated{os.linesep}".encode())
     assert first.tests[0].cycles == 17
     assert second.tests[0].cycles == 23
+
+
+def test_traced_attempt_deadline_adds_conversion_budget(tmp_path: Path) -> None:
+    """A simulation passing near its timeout still has the whole conversion budget."""
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    project = tmp_path / ".booley"
+    project.mkdir()
+    config = project / "booley.toml"
+    config.write_text(
+        "[flows.sim]\ntimeout_ms = 5000\ntrace_convert_timeout_ms = 7000\n", encoding="utf-8"
+    )
+    traces = (tmp_path / "first" / "wave.fst", tmp_path / "second" / "wave.fst")
+    run = _ChangingTraceRun(handle, prepared, config, traces)
+    execution = SimulationExecution(
+        invoke=split_invoker(run.invoke), options=SimulationOptions(trace=True)
+    )
+    with (
+        canned_build_session(),
+        patch(
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
+            return_value=_inspection(cocotb=False),
+        ),
+        patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.NATIVE_FST)),
+        patch.object(execution, "_run_pre_sim", side_effect=run.pre_sim),
+        patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
+    ):
+        execution.run(handle, NamedTests(("smoke",)))
+
+    assert run.invocation_timeouts == [5 + 7 + 90]
+    assert "--timeout 5 " in run.commands[0] and "--trace-convert-timeout 7" in run.commands[0]
 
 
 def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
@@ -3083,6 +3160,7 @@ def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
         'run_cwd = "run"\n'
         'trace_files = ["../first/*.fst"]\n'
         "timeout_ms = 1000\n"
+        "trace_convert_timeout_ms = 7000\n"
         'cycle_sentinels = ["[OLD]"]\n'
         'pre_run_commands = ["old"]\n',
         encoding="utf-8",

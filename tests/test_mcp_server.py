@@ -465,7 +465,7 @@ class TestMcpToolTimeoutSeconds:
             {"timeout_ms": 10_000, "trace": True},
             {"default_timeout": 600},
         )
-        assert timeout == 4330
+        assert timeout == 4330 + 1800  # plus the default conversion budget
 
     def test_simulate_non_trace_timeout_gets_small_margin(self):
         timeout = self._mcp_tool_timeout_seconds(
@@ -509,7 +509,21 @@ class TestMcpToolTimeoutSeconds:
                 {"target": "a,b,c", "timeout_ms": 600_000, "trace": True},
                 {"default_timeout": 1290},
             )
-        assert timeout == 3 * (3600 + 600 + 600) + 3 * 90 + 30
+        assert timeout == 3 * (3600 + 600 + 600) + 3 * (1800 + 90) + 30
+
+    def test_coverage_trace_budget_adds_conversion_per_unit(self):
+        def coverage_timeout(trace: bool) -> int:
+            with patch(
+                "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+                return_value=2,
+            ):
+                return self._mcp_tool_timeout_seconds(
+                    "sim",
+                    {"target": "a", "timeout_ms": 10_000, "coverage": True, "trace": trace},
+                    {"default_timeout": 1},
+                )
+
+        assert coverage_timeout(True) - coverage_timeout(False) == 2 * 1800
 
     def test_elab_only_standalone_budget_counts_targets_and_one_sweep(self):
         from booley.flows.sim.mode import SimulationMode

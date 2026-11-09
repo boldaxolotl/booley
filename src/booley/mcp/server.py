@@ -1567,7 +1567,10 @@ def _sim_mcp_tool_timeout_seconds(
 ) -> int:
     """Whole-invocation Simulation watchdog with mode-aware stage budgets."""
     from booley.flows.invocation import requested_timeout_ms, resolve_timeout_ms
-    from booley.flows.sim.config import resolve_sim_build_timeout_ms
+    from booley.flows.sim.config import (
+        resolve_sim_build_timeout_ms,
+        resolve_sim_trace_convert_timeout_ms,
+    )
     from booley.flows.sim.flow import _resolve_sim_campaign_work_units, _resolve_sim_timeout_ms
     from booley.flows.sim.mode import SimulationMode, normalize_simulation_mode
 
@@ -1580,6 +1583,7 @@ def _sim_mcp_tool_timeout_seconds(
     build_timeout_ms = resolve_sim_build_timeout_ms(work_dir)
     run_s = max(1, timeout_ms // 1000)
     build_s = max(1, build_timeout_ms // 1000)
+    convert_s = max(1, resolve_sim_trace_convert_timeout_ms(work_dir) // 1000)
     raw_target = str(arguments.get("target") or "").strip()
     target_count = _target_count(arguments)
     mode = normalize_simulation_mode(str(arguments.get("mode") or SimulationMode.SIMULATE.value))
@@ -1605,6 +1609,7 @@ def _sim_mcp_tool_timeout_seconds(
         work_units=work_units,
         run_s=run_s,
         build_s=build_s,
+        convert_s=convert_s,
         state_path=context.state_path,
     )
     return max(default, planned_s)
@@ -1618,6 +1623,7 @@ def _sim_planned_timeout_seconds(
     work_units: int,
     run_s: int,
     build_s: int,
+    convert_s: int,
     state_path: Path | None,
 ) -> int:
     """Sum child stage limits plus finalization slack for one Simulation call."""
@@ -1629,7 +1635,8 @@ def _sim_planned_timeout_seconds(
         sweep_s = run_s if mode is SimulationMode.ELAB_ONLY_STANDALONE else 0
         return target_count * build_s + sweep_s + 30
     if arguments.get("coverage"):
-        runs_s = work_units * (run_s + DEFAULT_TIMEOUT_S + TRACE_CLEANUP_MARGIN_S)
+        trace_s = convert_s if arguments.get("trace") else 0
+        runs_s = work_units * (run_s + DEFAULT_TIMEOUT_S + TRACE_CLEANUP_MARGIN_S + trace_s)
         targets_s = target_count * (build_s + 30 + DEFAULT_TIMEOUT_S)
         return runs_s + targets_s + 30
     baseline_scale = 2 if _baseline_required("cycle_count_", state_path) else 1
@@ -1637,7 +1644,7 @@ def _sim_planned_timeout_seconds(
     build_units = target_count * baseline_scale
     planned_s = build_units * build_s + run_units * (DEFAULT_TIMEOUT_S + run_s)
     if arguments.get("trace"):
-        planned_s += TRACE_CLEANUP_MARGIN_S * run_units
+        planned_s += (convert_s + TRACE_CLEANUP_MARGIN_S) * run_units
     return planned_s + 30
 
 

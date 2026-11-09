@@ -321,6 +321,14 @@ def test_sim_build_timeout_must_be_a_positive_integer(value: object) -> None:
     assert "build_timeout_ms must be a positive integer" in audit.findings[0].message
 
 
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "1800000"])
+def test_sim_trace_convert_timeout_must_be_a_positive_integer(value: object) -> None:
+    audit = flow_schema.audit_flow_table("sim", {"trace_convert_timeout_ms": value})
+
+    assert not audit.is_valid
+    assert "trace_convert_timeout_ms must be a positive integer" in audit.findings[0].message
+
+
 def test_sim_build_timeout_is_valid_and_other_flows_warn() -> None:
     sim = flow_schema.audit_flow_table("sim", {"build_timeout_ms": 3_600_000})
     lint = flow_schema.audit_flow_table("lint", {"build_timeout_ms": 3_600_000})

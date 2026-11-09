@@ -15,6 +15,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -30,6 +31,7 @@ _FST_VCDATA_BLOCKS = frozenset({1, 5, 8})
 _FST_MAX_BLOCK_SCAN = 4096
 _DIAGNOSTIC_LIMIT = 4000
 _BWAVE_BUILD_TIMEOUT_SECONDS = 900
+_BUDGET_EXHAUSTED = "conversion budget exhausted"
 _BWAVE_EXIT_TIMEOUT_SECONDS = 15
 _BWAVE_KILL_TIMEOUT_SECONDS = 5
 
@@ -196,15 +198,18 @@ def convert_vcd(
     scope: str | None = None,
     allow_unscoped_fallback: bool = False,
     existing_store: ExistingStorePolicy = ExistingStorePolicy.REPLACE,
+    deadline: float | None = None,
 ) -> ConversionResult:
-    """Convert VCD to FST and return ordered attempts and bounded diagnostics."""
-    if not vcd_path.is_file():
-        return ConversionResult(
-            store_path, failure_kind="missing_input", detail=f"VCD not found: {vcd_path}"
-        )
-    existing = inspect_store(store_path, probe_reader=False)
-    if result := _apply_existing_store_policy(store_path, existing, existing_store):
-        return result
+    """Convert VCD to FST and return ordered attempts and bounded diagnostics.
+
+    *deadline* is a ``time.monotonic()`` instant shared by every attempt of the
+    caller's conversion budget: each build gets only the time left, and no
+    attempt starts once it has passed. Without one, each build gets its own
+    fixed limit.
+    """
+    refusal = _conversion_refusal(vcd_path, store_path, existing_store)
+    if refusal is not None:
+        return refusal
     binary = native_bwave_binary()
     if not binary:
         return ConversionResult(
@@ -213,14 +218,17 @@ def convert_vcd(
             detail="native B-Wave binary is unavailable",
         )
     store_path.parent.mkdir(parents=True, exist_ok=True)
-    scopes = _conversion_scopes(scope, allow_unscoped_fallback)
     attempts: list[ConversionAttempt] = []
     events = ["post-processing VCD -> .fst"]
-    for attempt_scope in scopes:
+    for attempt_scope in _conversion_scopes(scope, allow_unscoped_fallback):
+        build_timeout_s = _build_timeout_s(deadline)
+        if build_timeout_s <= 0:
+            events.append(_BUDGET_EXHAUSTED)
+            break
         _prepare_conversion_destination(store_path, existing_store)
         if attempt_scope is None and scope is not None:
             events.append("scoped post-process produced no queryable store; retrying whole trace")
-        completed = _run_build(binary, vcd_path, store_path, attempt_scope)
+        completed = _run_build(binary, vcd_path, store_path, attempt_scope, build_timeout_s)
         stderr = _bounded(_decode_output(completed.stderr))
         attempts.append(ConversionAttempt(attempt_scope, completed.returncode, stderr))
         inspection = inspect_store(store_path, probe_reader=False)
@@ -228,9 +236,30 @@ def convert_vcd(
             size_mb = store_path.stat().st_size / (1024 * 1024)
             events.append(f"wrote {store_path.name} ({size_mb:.1f} MB)")
             return ConversionResult(store_path, tuple(attempts), inspection, events=tuple(events))
-    inspection = inspect_store(store_path, probe_reader=False)
     detail = _conversion_detail(vcd_path, store_path, scope, attempts)
+    if _BUDGET_EXHAUSTED in events:
+        detail = f"{_BUDGET_EXHAUSTED}\n{detail}"
+    inspection = inspect_store(store_path, probe_reader=False)
     return _conversion_failure(store_path, attempts, inspection, detail, events)
+
+
+def _conversion_refusal(
+    vcd_path: Path, store_path: Path, existing_store: ExistingStorePolicy
+) -> ConversionResult | None:
+    """Return the result that ends a conversion before any build, if one applies."""
+    if not vcd_path.is_file():
+        return ConversionResult(
+            store_path, failure_kind="missing_input", detail=f"VCD not found: {vcd_path}"
+        )
+    existing = inspect_store(store_path, probe_reader=False)
+    return _apply_existing_store_policy(store_path, existing, existing_store)
+
+
+def _build_timeout_s(deadline: float | None) -> float:
+    """Seconds the next build may run: what is left of the budget, else the fixed limit."""
+    if deadline is None:
+        return _BWAVE_BUILD_TIMEOUT_SECONDS
+    return deadline - time.monotonic()
 
 
 def _conversion_scopes(scope: str | None, allow_fallback: bool) -> list[str | None]:
@@ -301,6 +330,7 @@ def discover_waveform(
     cache_dir: Path,
     convert_raw_vcd: bool = True,
     store_name: str | None = None,
+    deadline: float | None = None,
 ) -> DiscoveryResult:
     """Discover a store or raw VCD without publishing into the work directory.
 
@@ -331,6 +361,7 @@ def discover_waveform(
         vcd,
         destination,
         existing_store=ExistingStorePolicy.REUSE_STRUCTURALLY_VALID,
+        deadline=deadline,
     )
     if not conversion.success:
         return DiscoveryResult(vcd, skipped, conversion=conversion)
@@ -615,6 +646,7 @@ def _run_build(
     vcd_path: Path,
     store_path: Path,
     scope: str | None,
+    timeout_s: float = _BWAVE_BUILD_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[bytes]:
     command = [binary, "build", "-o", str(store_path)]
     if scope:
@@ -626,11 +658,11 @@ def _run_build(
                 stdin=stream,
                 capture_output=True,
                 check=False,
-                timeout=_BWAVE_BUILD_TIMEOUT_SECONDS,
+                timeout=timeout_s,
             )
         except subprocess.TimeoutExpired as exc:
             stderr = _decode_output(exc.stderr)
-            timeout_note = f"bwave build timed out after {_BWAVE_BUILD_TIMEOUT_SECONDS}s"
+            timeout_note = f"bwave build timed out after {timeout_s:.0f}s"
             return subprocess.CompletedProcess(
                 command,
                 124,

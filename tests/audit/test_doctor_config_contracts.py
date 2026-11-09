@@ -125,6 +125,7 @@ def test_validate_one_flow_table_accepts_lint_timeout_ms():
     [
         ("sim_time_grace_s", "sim", "lint", 180),
         ("build_timeout_ms", "sim", "lint", 3_600_000),
+        ("trace_convert_timeout_ms", "sim", "lint", 1_800_000),
         ("fail_on_timing_violation", "synth", "lint", True),
         ("timing_report_paths", "synth", "lint", 10),
         ("warnings_as_errors", "lint", "sim", False),

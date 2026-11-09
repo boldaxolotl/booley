@@ -1878,10 +1878,6 @@ class TestTimeout:
         flow = _make_flow(tmp_path, extra_args=["--timeout-ms", "120000"])
         assert flow._get_timeout() == 120
 
-    def test_trace_timeout_has_cleanup_margin(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, extra_args=["--trace"])
-        assert flow._get_timeout() == 690
-
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     def test_timeout_results_in_fail(self, _mock_backend, _mock_tests, tmp_path: Path):

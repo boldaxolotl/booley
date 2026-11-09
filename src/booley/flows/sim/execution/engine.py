@@ -70,6 +70,7 @@ from booley.flows.sim.config import (
     resolve_sim_sentinels,
     resolve_sim_time_grace_s,
     resolve_sim_timeout_ms,
+    resolve_sim_trace_convert_timeout_ms,
     resolve_trace_args,
     resolve_trace_files,
 )
@@ -134,7 +135,8 @@ from .telemetry import parse_build_seconds, parse_run_seconds, process_resources
 
 _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
 _CYCLE_COUNT_RE = re.compile(r"[0-9]+")
-# Seconds added to the wrapper timeout under --trace for trace cleanup.
+# Fixed seconds added under --trace after the simulation timeout and the
+# conversion budget: FIFO closure, publishing the converted store, and reports.
 TRACE_CLEANUP_MARGIN_S = 90
 _NO_SENTINEL = "no pass/fail sentinel detected, simulation exited cleanly"
 _NO_WAVEFORM = "the simulation passed, but --trace produced no queryable waveform"
@@ -1318,7 +1320,9 @@ class SimulationExecution:
             trace_requested=self._options.trace,
             work=work,
             wrapper_timeout_s=work.timeout_s
-            + (TRACE_CLEANUP_MARGIN_S if self._options.trace else 0),
+            + (
+                work.trace_convert_timeout_s + TRACE_CLEANUP_MARGIN_S if self._options.trace else 0
+            ),
             pre_sim_commands=tuple(resolve_pre_sim_commands(handle.project_root)),
             simulator_environment=tuple(simulation_target_environment(handle).items()),
             cycle_sentinels=tuple(resolve_cycle_sentinels(handle.project_root)),
@@ -1766,6 +1770,7 @@ def _project_run_fields(root: Path) -> dict[str, Any]:
         "pass_sentinels": tuple(passes),
         "fail_sentinels": tuple(fails),
         "sim_time_grace_s": resolve_sim_time_grace_s(root),
+        "trace_convert_timeout_s": max(1, resolve_sim_trace_convert_timeout_ms(root) // 1000),
     }
 
 
