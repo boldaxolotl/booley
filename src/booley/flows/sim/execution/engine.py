@@ -2287,7 +2287,7 @@ def _test_outcomes(
             item.verdict
             if item
             else "timeout"
-            if process.timed_out
+            if process.timed_out or (adapter is not None and adapter.termination == "timeout")
             else "crash"
             if process.returncode < 0
             else _adapter_verdict(adapter)
