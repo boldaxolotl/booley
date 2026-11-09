@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -73,6 +74,9 @@ class McpRequestContext:
     attribution: Attribution | None = None
     other_session_keys: tuple[str, ...] = ()
     presentation_warning: str = ""
+    # Checkout of the calling agent's own process, resolved at the SDK boundary (see
+    # peer_checkout); never read from arguments. ``None`` means the server cwd.
+    checkout: Path | None = None
 
     def session_key(self, fallback: Callable[[], str | None] | None = None) -> str | None:
         """Advisory caller key; invoke a legacy worktree fallback only when needed."""
@@ -174,6 +178,10 @@ class McpApplication:
                 content=(McpTextBlock(_format_validation_error(error)),),
                 is_error=True,
             )
+        if request_context is not None and request_context.checkout is not None:
+            arguments = _with_routed_work_dir(
+                arguments, definition.input_schema, request_context.checkout
+            )
         if self._request_dispatch is not None and request_context is not None:
             result = await self._request_dispatch(
                 canonical_name, arguments, generation.sources[canonical_name], request_context
@@ -229,6 +237,20 @@ class McpApplication:
         )
         self._generation.sources[canonical_name] = source
         self._generation.validators[canonical_name] = validator_type(schema)
+
+
+def _with_routed_work_dir(
+    arguments: dict[str, Any], schema: Mapping[str, Any], checkout: Path
+) -> dict[str, Any]:
+    """Fill an absent or empty ``work_dir`` with the caller's checkout.
+
+    Only tools whose schema declares ``work_dir`` receive it, and only after schema
+    validation, so a required ``work_dir`` stays required. From here the call is
+    indistinguishable from one that passed that ``work_dir``.
+    """
+    if arguments.get("work_dir") or "work_dir" not in schema.get("properties", {}):
+        return arguments
+    return {**arguments, "work_dir": str(checkout)}
 
 
 def _format_validation_error(error: ValidationError) -> str:
