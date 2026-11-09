@@ -100,11 +100,17 @@ def test_coverage_report_keeps_nonpassing_status_without_optional_detail(
 
 
 def _facts(
-    root: Path, *, cocotb: bool, preview_names: tuple[str, ...] = ("count", "reset")
+    root: Path,
+    *,
+    cocotb: bool,
+    preview_names: tuple[str, ...] = ("count", "reset"),
+    access: str = "immutable",
 ) -> tuple[TargetHandle, TargetInspection, SimulationPreview]:
     project = root / ".booley"
     project.mkdir()
-    (project / "booley.toml").write_text("[flows.sim]\nrun_cwd = '.'\n", encoding="utf-8")
+    (project / "booley.toml").write_text(
+        f"[flows.sim]\nrun_cwd = '.'\npre_sim_build_access = '{access}'\n", encoding="utf-8"
+    )
     (project / "tests.toml").write_text('[sim]\ntests = ["reset", "count"]\n', encoding="utf-8")
     source = root / ("test_counter.py" if cocotb else "tb.sv")
     source.write_text("# cocotb\n" if cocotb else "module tb; endmodule\n", encoding="utf-8")
@@ -192,8 +198,9 @@ def _plan(
     names: tuple[str, ...] = ("count", "reset"),
     cocotb: bool,
     no_waivers: bool = False,
+    access: str = "immutable",
 ):
-    handle, inspection, preview = _facts(root, cocotb=cocotb, preview_names=names)
+    handle, inspection, preview = _facts(root, cocotb=cocotb, preview_names=names, access=access)
     return plan_coarse_simulation_campaign(
         handle=handle,
         inspection=inspection,
@@ -521,10 +528,29 @@ def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
     tmp_path: Path,
 ) -> None:
     native = _ImageCheckingExecution()
-    outcome, _store = _run_coverage_campaign(tmp_path, native)
+    outcome, store = _run_coverage_campaign(tmp_path, native)
 
     assert outcome.complete is True
     assert native.executed_original is False
+    _assert_native_build_scope(store)
+
+
+def _assert_native_build_scope(store: CampaignStore) -> None:
+    """Native coverage builds stay private to their work item, with no compiler record."""
+    (build_result,) = store.root.rglob("private-build/build-result.json")
+    directory = build_result.parent
+    attempt = json.loads((directory / "build-attempt.json").read_text())
+    bundle = json.loads((directory / "evidence" / "bundle.json").read_text())
+    result = json.loads(build_result.read_text())
+    simulation_attempt_id = directory.parent.name.split("-", 1)[1]
+    assert attempt["sharing"] == bundle["sharing"] == "private_work_item"
+    assert result["bundle"]["sharing"] == "private_work_item"
+    assert attempt["owner"] == bundle["owner"]
+    assert attempt["owner"]["simulation_attempt_id"] == simulation_attempt_id
+    assert attempt["build_attempt_id"] == simulation_attempt_id
+    assert attempt["build_attempt_ordinal"] == 1
+    assert result["build_attempt"]["build_attempt_id"] == simulation_attempt_id
+    assert result["evidence"] == []
 
 
 def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None:
