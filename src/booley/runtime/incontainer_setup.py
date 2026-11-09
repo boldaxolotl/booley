@@ -39,15 +39,14 @@ import sys
 import tempfile
 import time
 from collections.abc import Sequence
-from functools import lru_cache
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import Literal
 
 from booley.runtime import auth_token
 from booley.runtime.mcp_config import (
     GATEWAY_PROVIDER_ID,
     HTTP_ENDPOINT_PATH,
-    _codex_toml_parser,
+    _codex_editor,
     gateway_provider_toml,
     http_port,
 )
@@ -326,8 +325,11 @@ def codex_section() -> str:
     )
 
 
+_INVALID_CODEX = "Invalid Codex config {}: {}; repair this file and retry"
+
+
 def _validate_codex_shape(parsed):
-    for table in ("features", "notice"):
+    for table in ("features", "notice", "mcp_servers"):
         if table in parsed and not isinstance(parsed[table], dict):
             raise ValueError(f"{table} must be a table")
     _require_project_tables(parsed)
@@ -337,19 +339,17 @@ def _validate_codex_shape(parsed):
         raise ValueError("suppress_unstable_features_warning must be a boolean")
 
 
-def _codex_data(existing: str, *, path: Path | None = None) -> dict:
-    """Validate interactive config before any registration mutation."""
-    parser = _codex_toml_parser()
+def _parse_codex_config(path: Path, text: str | None = None):
+    """The shared document step: parse once, check shape; returns ``(text, document)``."""
+    editor = _codex_editor()
+    if text is None:
+        text = _read_codex_config(path)
     try:
-        parsed = parser.loads(existing)
-        _validate_codex_shape(parsed)
-    except ValueError as exc:
-        if path is None:
-            raise
-        raise ValueError(
-            f"Invalid Codex config {path}: {exc}; repair this file and retry"
-        ) from exc
-    return parsed
+        document = editor.parse(text)
+        _validate_codex_shape(document.unwrap())
+    except (ValueError, editor.exceptions.TOMLKitError) as exc:
+        raise ValueError(_INVALID_CODEX.format(path, exc)) from exc
+    return text, document
 
 
 def _require_project_tables(parsed: dict) -> None:
@@ -376,7 +376,7 @@ def _publish_codex_config(path: Path, content: str, *, validated: bool = False) 
     Validates *content* first unless the caller already did (``validated``).
     """
     if not validated:
-        _codex_data(content, path=path)
+        _parse_codex_config(path, content)
     path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
@@ -393,280 +393,17 @@ def _publish_codex_config(path: Path, content: str, *, validated: bool = False) 
         temporary.unlink(missing_ok=True)
 
 
-def _codex_entry_is_current(existing: str, *, path: Path | None = None) -> bool:
-    parsed = _codex_data(existing, path=path)
-    servers = parsed.get("mcp_servers", {})
-    entry = servers.get(MCP_SERVER_NAME) if isinstance(servers, dict) else None
-    features = parsed.get("features", {})
-    return (
-        "suppress_unstable_features_warning" in parsed
-        and entry == {"url": http_url(), "tool_timeout_sec": _TOOL_TIMEOUT_SEC}
-        and isinstance(features, dict)
-        and features.get("mcp_2026_07_28") is True
-    )
-
-
-def _toml_statements(existing: str) -> list[str]:
-    """Use the TOML parser to find complete statements, including multiline values.
-
-    Input is validated first. A partial multiline value cannot parse on its own,
-    so headers/comments inside it never become independent editable statements.
-    """
-    parser = _codex_toml_parser()
-    parser.loads(existing)
-    statements: list[str] = []
-    pending = ""
-    lines = existing.split("\n")
-    for index, line in enumerate(lines):
-        pending += line + ("\n" if index < len(lines) - 1 else "")
-        try:
-            parser.loads(pending)
-        except parser.TOMLDecodeError:
-            continue
-        statements.append(pending)
-        pending = ""
-    if pending:
-        raise ValueError("Incomplete validated TOML statement")
-    return statements
-
-
-def _toml_assignment(statement: str) -> tuple[str, str]:
-    """Find the syntactic key boundary, including equals signs in quoted keys."""
-    parser = _codex_toml_parser()
-    for index, character in enumerate(statement):
-        if character != "=":
-            continue
-        try:
-            key = parser.loads(statement[:index] + "=0")
-        except parser.TOMLDecodeError:
-            continue
-        if key:
-            return statement[:index], statement[index + 1 :]
-    raise ValueError("Expected a validated TOML assignment")
-
-
-def _toml_path(statement: str) -> tuple[str, ...]:
-    """Decode syntactic keys without descending into inline-table values."""
-    parser = _codex_toml_parser()
-    data = parser.loads(statement)
-    if data and not statement.lstrip().startswith("["):
-        spelling, _value = _toml_assignment(statement)
-        data = parser.loads(spelling + "=0")
-    path: list[str] = []
-    while isinstance(data, dict) and len(data) == 1:
-        key, data = next(iter(data.items()))
-        path.append(key)
-    return tuple(path)
-
-
-class _TomlEntry(NamedTuple):
-    text: str
-    path: tuple[str, ...]
-    header: bool
-
-
-def _replace_toml_assignment(statement: str, value: str) -> str:
-    """Replace only an assignment's value, retaining its spelling and comment."""
-    parser = _codex_toml_parser()
-    spelling, old = _toml_assignment(statement)
-    for index in range(1, len(old) + 1):
-        tail = old[index:]
-        if tail.strip() and not tail.lstrip().startswith("#"):
-            continue
-        try:
-            parser.loads("value=" + old[:index])
-        except parser.TOMLDecodeError:
-            continue
-        leading = old[: len(old) - len(old.lstrip())]
-        return spelling + "=" + leading + value + tail
-    raise ValueError("Expected a complete validated TOML value")
-
-
-def _inline_table_members(body: str) -> list[str]:
-    """Find member boundaries with the parser, not commas inside nested values."""
-    parser = _codex_toml_parser()
-    members = []
-    start = 0
-    for index, character in enumerate(body):
-        if character != ",":
-            continue
-        try:
-            parser.loads("value={" + body[start:index] + "}")
-        except parser.TOMLDecodeError:
-            continue
-        members.append(body[start:index])
-        start = index + 1
-    members.append(body[start:])
-    return members
-
-
-def _upsert_inline_table_setting(statement: str, key: str, value: str) -> str:
-    """Edit one member of an inline table while preserving all other bytes."""
-    parser = _codex_toml_parser()
-    spelling, raw = _toml_assignment(statement)
-    opening = raw.index("{")
-    for closing in range(opening + 1, len(raw)):
-        if raw[closing] != "}":
-            continue
-        try:
-            parser.loads("value=" + raw[: closing + 1])
-        except parser.TOMLDecodeError:
-            continue
-        break
-    else:
-        raise ValueError("Expected a complete validated inline table")
-    body = raw[opening + 1 : closing]
-    members = _inline_table_members(body)
-    for index, member in enumerate(members):
-        if member.strip() and _toml_path(member) == (key,):
-            members[index] = _replace_toml_assignment(member, value)
-            break
-    else:
-        has_members = bool(parser.loads("value={" + body + "\n}")["value"])
-        separator = "," if has_members else ""
-        updated = f" {key} = {value}" + separator + body
-        return spelling + "=" + raw[: opening + 1] + updated + raw[closing:]
-    return spelling + "=" + raw[: opening + 1] + ",".join(members) + raw[closing:]
-
-
-def _toml_entries(existing: str) -> list[_TomlEntry]:
-    entries = []
-    table: tuple[str, ...] = ()
-    for statement in _toml_statements(existing):
-        header = statement.lstrip().startswith("[")
-        path = _toml_path(statement)
-        if header:
-            table = path
-        entries.append(_TomlEntry(statement, path if header else table + path, header))
-    return entries
-
-
-def _strip_owned_codex_table(existing: str, owned: tuple[str, ...]) -> str:
-    """Remove statements under the *owned* table path, keeping every other byte."""
-    return "".join(
-        statement
-        for statement, path, _header in _toml_entries(existing)
-        if path[: len(owned)] != owned
-    )
-
-
-def _upsert_existing_codex_table_setting(
-    existing: str, *, table: tuple[str, ...], key: str, value: str
-) -> str | None:
-    """Update a scalar assignment or insert into its actual table boundary."""
-    parser = _codex_toml_parser()
-    entries = _toml_entries(existing)
-    target = (*table, key)
-    for index, (statement, path, header) in enumerate(entries):
-        if path == target and not header:
-            entries[index] = _TomlEntry(_replace_toml_assignment(statement, value), path, header)
-            return "".join(item[0] for item in entries)
-    for index, (statement, path, header) in enumerate(entries):
-        if path == table and not header and parser.loads(statement):
-            updated = _upsert_inline_table_setting(statement, key, value)
-            entries[index] = _TomlEntry(updated, path, header)
-            return "".join(item.text for item in entries)
-    for index, (_statement, path, header) in enumerate(entries):
-        if path == table and header:
-            if not _statement.endswith("\n"):
-                entries[index] = _TomlEntry(_statement + "\n", path, header)
-            entries.insert(index + 1, _TomlEntry(f"{key} = {value}\n", target, False))
-            return "".join(item[0] for item in entries)
-    return None
-
-
-def _upsert_codex_modern_mcp_feature(existing: str) -> str:
-    """Keep deliberate MCP enablement, including root dotted feature syntax."""
-    parser = _codex_toml_parser()
-    parsed = parser.loads(existing)
-    if parsed.get("features", {}).get("mcp_2026_07_28") is True:
-        return existing
-    updated = _upsert_existing_codex_table_setting(
-        existing, table=("features",), key="mcp_2026_07_28", value="true"
-    )
-    return updated if updated is not None else "features.mcp_2026_07_28 = true\n" + existing
-
-
-def _prepare_codex_mcp(existing: str, path: Path) -> str:
-    """Prepare the legacy MCP migration before publishing or applying credentials."""
-    parsed = _codex_data(existing, path=path)
-    if _codex_entry_is_current(existing):
-        return existing
-    updated = existing
-    if "suppress_unstable_features_warning" not in parsed:
-        updated = "suppress_unstable_features_warning = true\n" + updated
-    updated = _upsert_codex_modern_mcp_feature(updated)
-    servers = parsed.get("mcp_servers", {})
-    desired = {"url": http_url(), "tool_timeout_sec": _TOOL_TIMEOUT_SEC}
-    if not isinstance(servers, dict) or servers.get(MCP_SERVER_NAME) != desired:
-        updated = _strip_owned_codex_table(updated, ("mcp_servers", MCP_SERVER_NAME))
-        sep = "" if not updated or updated.endswith("\n") else "\n"
-        updated += sep + codex_section()
-    if not _codex_entry_is_current(updated, path=path):
-        raise ValueError(f"Codex migration did not produce current settings: {path}")
-    return updated
-
-
-def upsert_codex(path: Path) -> bool:
-    """Migrate owned MCP settings and default warning preference without redumping."""
-    existing = _read_codex_config(path)
-    updated = _prepare_codex_mcp(existing, path)
+def _publish_if_changed(path: Path, existing: str, updated: str, *, validated: bool) -> bool:
+    """Publish *updated* unless it equals *existing*; say whether it wrote."""
     if updated == existing:
         return False
-    _publish_codex_config(path, updated)
+    _publish_codex_config(path, updated, validated=validated)
     return True
 
 
-def _upsert_codex_root_setting(existing: str, key: str, value: str) -> str:
-    """Replace a root assignment or prepend safely before every TOML table."""
-    target = tuple(key.split("."))
-    entries = _toml_entries(existing)
-    for index, (statement, path, header) in enumerate(entries):
-        if path == target and not header:
-            entries[index] = _TomlEntry(_replace_toml_assignment(statement, value), path, header)
-            return "".join(item[0] for item in entries)
-    return f"{key} = {value}\n" + existing
-
-
-@lru_cache(maxsize=1)
-def _codex_editor():
-    """Resolve the editor's TOML1.1 parsing and mutation capability."""
-    try:
-        import tomlkit
-
-        probe = tomlkit.parse("probe={\n # retained\n enabled=false,\n}\n")
-        probe["probe"]["enabled"] = True
-        if probe.unwrap() != {"probe": {"enabled": True}} or "# retained" not in probe.as_string():
-            raise ValueError("Codex editor capability probe returned an unexpected value")
-    except Exception as exc:  # Installation failures only; user input is parsed below.
-        raise RuntimeError(
-            "Incompatible Booley installation: Codex config requires tomlkit>=0.15.2 with "
-            "TOML1.1; reinstall dependencies or rebuild the compatible base"
-        ) from exc
-    return tomlkit
-
-
-def _codex_document(path: Path):
-    """Read and validate the permission document once, before registration effects."""
-    _codex_toml_parser()  # Preserve the existing dependency diagnostic's precedence.
-    editor = _codex_editor()
-    existing = _read_codex_config(path)
-    try:
-        document = editor.parse(existing)
-        _validate_codex_shape(document.unwrap())
-    except (ValueError, editor.exceptions.TOMLKitError) as exc:
-        raise ValueError(
-            f"Invalid Codex config {path}: {exc}; repair this file and retry"
-        ) from exc
-    return existing, document
-
-
 def _set_codex_root_keys(document, values: dict) -> None:
-    """Update root keys in place; insert missing ones first, in order.
-
-    Appending would land a new key after a trailing comment that introduces
-    the next table, detaching that comment from its table.
-    """
+    """Update root keys in place; insert missing ones first, so a trailing comment that
+    introduces the next table stays attached to it."""
     position = 0
     prepend = bool(document.body)  # an empty document has nothing to insert before
     for key, value in values.items():
@@ -677,62 +414,80 @@ def _set_codex_root_keys(document, values: dict) -> None:
             position += 1
 
 
-def _prepare_codex_permissions(existing, document):
-    """Edit owned permissions with the document library; preserve unrelated trivia."""
+def _set_codex_table_key(parent, table: str, key: str, value) -> None:
+    """Set *key* in *parent*'s *table* in its own form: section, dotted or inline.
+
+    A new key in a section goes first, so it never lands after a comment that
+    introduces the next table.
+    """
     editor = _codex_editor()
+    if table not in parent:
+        parent[table] = editor.table()
+    container = parent[table]
+    flat = isinstance(container, (editor.items.InlineTable, editor.container.OutOfOrderTableProxy))
+    if key in container or flat or not container.value.body:
+        container[key] = value
+    else:
+        container.value._insert_at(0, editor.key(key), editor.item(value))
+
+
+def _append_codex_tables(document, text: str) -> None:
+    """Append Booley's own *text* tables after every user table and comment."""
+    for key, value in _codex_editor().parse(text).body:
+        if key is not None:
+            document.append(key, value)
+
+
+def _prepare_codex_mcp(document) -> None:
+    """Default the warning preference, enable MCP and replace a stale owned server."""
+    data = document.unwrap()
+    if "suppress_unstable_features_warning" not in data:
+        _set_codex_root_keys(document, {"suppress_unstable_features_warning": True})
+    if data.get("features", {}).get("mcp_2026_07_28") is not True:
+        _set_codex_table_key(document, "features", "mcp_2026_07_28", True)
+    if data.get("mcp_servers", {}).get(MCP_SERVER_NAME) == {
+        "url": http_url(),
+        "tool_timeout_sec": _TOOL_TIMEOUT_SEC,
+    }:
+        return
+    servers = document.get("mcp_servers", {})
+    if isinstance(servers, _codex_editor().items.InlineTable):
+        raise ValueError("an inline mcp_servers table cannot take the Booley server")
+    servers.pop(MCP_SERVER_NAME, None)
+    _append_codex_tables(document, codex_section())
+
+
+def _prepare_codex_permissions(document) -> None:
+    """Pin the no-prompt permission settings in the document; keep unrelated trivia."""
     desired = {
         "approval_policy": "never",
         "sandbox_mode": "danger-full-access",
         "web_search": "disabled",
     }
-    if (
-        all(document.get(key) == value for key, value in desired.items())
-        and document.get("notice", {}).get("hide_full_access_warning") is True
-    ):
-        return existing
-    _set_codex_root_keys(document, desired)
-    if "notice" not in document:
-        document["notice"] = editor.table()
-    notice = document["notice"]
-    key = "hide_full_access_warning"
-    if key in notice:
-        notice[key] = True
-    else:
-        value = editor.item(True)
-        if isinstance(notice, editor.items.InlineTable):
-            value.trivia.indent = " "
-            value.trivia.trail = ""
-            body = type(notice.value)(True)
-            body.append(editor.key(key), value)
-            if notice:
-                body.append(None, editor.ws(","))
-            for old_key, old_value in notice.value.body:
-                body.append(old_key, old_value)
-            document["notice"] = editor.items.InlineTable(body, notice.trivia)
-        elif isinstance(notice, editor.container.OutOfOrderTableProxy):
-            notice[key] = True
-        elif notice.value.body:
-            notice.value._insert_at(0, editor.key(key), value)
-        else:
-            notice[key] = value
-    return document.as_string()
+    data = document.unwrap()
+    _set_codex_root_keys(document, {k: v for k, v in desired.items() if data.get(k) != v})
+    if data.get("notice", {}).get("hide_full_access_warning") is not True:
+        _set_codex_table_key(document, "notice", "hide_full_access_warning", True)
 
 
-def _apply_codex_permission_mode(
-    home: Path | None = None, *, prepared: tuple[str, str] | None = None
-) -> str:
-    """Publish standalone permissions or the registration preflight's prepared output."""
-    path = codex_config_path(home)
-    if prepared is None:
-        existing, document = _codex_document(path)
-        updated = _prepare_codex_permissions(existing, document)
-    else:
-        existing, updated = prepared
-    if updated == existing:
-        return "current"
-    # Prepared from a validated document; registration's text also passed _codex_data.
-    _publish_codex_config(path, updated, validated=True)
-    return "written"
+def _prepare_codex_registration(path: Path) -> tuple[str, str, str]:
+    """The config before, after the MCP edit, and after permissions; all checked up front."""
+    existing, document = _parse_codex_config(path)
+    try:
+        _prepare_codex_mcp(document)
+        mcp_only = document.as_string()
+        _prepare_codex_permissions(document)
+        combined = document.as_string()
+    except (ValueError, _codex_editor().exceptions.TOMLKitError) as exc:
+        raise ValueError(_INVALID_CODEX.format(path, exc)) from exc
+    parsed = {
+        text: _parse_codex_config(path, text)[1] for text in {mcp_only, combined} - {existing}
+    }
+    if mcp_only in parsed:
+        entry = parsed[mcp_only].unwrap().get("mcp_servers", {}).get(MCP_SERVER_NAME)
+        if entry != {"url": http_url(), "tool_timeout_sec": _TOOL_TIMEOUT_SEC}:
+            raise ValueError(f"Codex migration did not produce current settings: {path}")
+    return existing, mcp_only, combined
 
 
 # ---------------------------------------------------------------------------
@@ -1099,64 +854,48 @@ def _apply_claude_first_run(home: Path | None, trust: Sequence[str], *, onboard:
     return status
 
 
-def _with_codex_trust(text: str, key: str) -> str | None:
-    """*text* with ``trust_level = "trusted"`` for *key*, or None when no layout fits.
-
-    Tries the existing entry, a new ``[projects."key"]`` table, then a root
-    dotted key. Each candidate must parse and carry the trust, so an inline
-    ``projects = {...}`` or a dotted-defined entry never turns valid user TOML
-    into invalid TOML.
-    """
-    parser = _codex_toml_parser()
-    edited = _upsert_existing_codex_table_setting(
-        text, table=("projects", key), key="trust_level", value='"trusted"'
-    )
-    spelled = json.dumps(key, ensure_ascii=False)
-    separator = "" if not text or text.endswith("\n") else "\n"
-    candidates = (
-        [edited]
-        if edited is not None
-        else [
-            f'{text}{separator}[projects.{spelled}]\ntrust_level = "trusted"\n',
-            f'projects.{spelled}.trust_level = "trusted"\n{text}',
-        ]
-    )
-    for candidate in candidates:
-        try:
-            trusted = parser.loads(candidate).get("projects", {}).get(key, {})
-        except parser.TOMLDecodeError:
-            continue
-        if isinstance(trusted, dict) and trusted.get("trust_level") == "trusted":
-            return candidate
-    return None
+def _trust_codex_project(document, key: str) -> None:
+    """Edit *document* to trust *key*: in its existing entry, else in a new table."""
+    projects = document.get("projects", {})
+    if isinstance(projects, _codex_editor().items.InlineTable):
+        raise ValueError("an inline projects table cannot take a new entry")
+    if projects.get(key) is None:
+        spelled = json.dumps(key, ensure_ascii=False)
+        _append_codex_tables(document, f'[projects.{spelled}]\ntrust_level = "trusted"\n')
+    else:
+        _set_codex_table_key(projects, key, "trust_level", "trusted")
 
 
 def _apply_codex_trust(home: Path | None, trust: Sequence[str]) -> str:
     """Add ``trust_level = "trusted"`` for each *trust* path without a ``trust_level``.
 
-    Edits the TOML in place, keeping comments and every other byte, and
-    publishes once atomically. Returns ``"written"`` or ``"current"``.
+    Edits the parsed TOML in place, keeping comments and every other byte, and
+    publishes once atomically. Each path's edit must parse and carry the trust;
+    otherwise that path rolls back to the last good text and is skipped with a
+    warning. Returns ``"written"`` or ``"current"``.
     """
     path = codex_config_path(home)
-    existing = _read_codex_config(path)
-    projects = _codex_data(existing, path=path).get("projects", {})
-    updated = existing
+    existing, document = _parse_codex_config(path)
+    good = existing
     for key in trust:
-        if "trust_level" in projects.get(key, {}):
+        if "trust_level" in document.get("projects", {}).get(key, {}):
             continue
-        edited = _with_codex_trust(updated, key)
-        if edited is None:
-            print(
-                f"warning: Codex trust for {key} skipped: the projects layout in {path} "
-                'cannot take a new entry; add trust_level = "trusted" there by hand',
-                file=sys.stderr,
-            )
+        try:
+            _trust_codex_project(document, key)
+            checked = _parse_codex_config(path, document.as_string())[1].unwrap()
+            trusted = checked.get("projects", {}).get(key, {}).get("trust_level") == "trusted"
+        except (ValueError, _codex_editor().exceptions.TOMLKitError):
+            trusted = False
+        if trusted:
+            good = document.as_string()
             continue
-        updated = edited
-    if updated == existing:
-        return "current"
-    _publish_codex_config(path, updated)
-    return "written"
+        document = _parse_codex_config(path, good)[1]
+        print(
+            f"warning: Codex trust for {key} skipped: the projects layout in {path} "
+            'cannot take a new entry; add trust_level = "trusted" there by hand',
+            file=sys.stderr,
+        )
+    return "written" if _publish_if_changed(path, existing, good, validated=True) else "current"
 
 
 # ---------------------------------------------------------------------------
@@ -1170,63 +909,32 @@ _AUTH_HELPER_MARGIN_S = 15
 
 def _desired_provider(provider_toml: str) -> dict:
     """The parsed ``booley_gateway`` table a registration should leave in the config."""
-    return _codex_toml_parser().loads(provider_toml)["model_providers"][GATEWAY_PROVIDER_ID]
+    return _codex_editor().parse(provider_toml).unwrap()["model_providers"][GATEWAY_PROVIDER_ID]
 
 
-def _gateway_exclude_list(existing: str, current: object) -> str | None:
-    """Add the static token to ``shell_environment_policy.exclude``; ``None`` if unchanged."""
+def _with_gateway_settings(document, provider_toml: str, model_pin: str | None) -> None:
+    """Add the owned provider table and the set-if-absent keys to *document*."""
     from booley.config.gateway import GATEWAY_TOKEN_ENV
 
-    if current is not None and not isinstance(current, list):
-        return None  # the user's own non-list value wins; the caller reports the skip
-    if current is not None and GATEWAY_TOKEN_ENV in current:
-        return None
-    names = [*(current or []), GATEWAY_TOKEN_ENV]
-    value = json.dumps(names)
-    table = ("shell_environment_policy",)
-    updated = _upsert_existing_codex_table_setting(
-        existing, table=table, key="exclude", value=value
-    )
-    if updated is not None:
-        return updated
-    return _upsert_codex_root_setting(existing, "shell_environment_policy.exclude", value)
-
-
-def _with_gateway_settings(
-    existing: str, data: dict, provider_toml: str, model_pin: str | None
-) -> str:
-    """Add the owned provider table and the set-if-absent root keys to *existing* TOML."""
-    updated = existing
+    data = document.unwrap()
+    for name in ("model_providers", "shell_environment_policy"):
+        if not isinstance(data.get(name, {}), dict):
+            raise ValueError(f"{name} must be a table")
     providers = data.get("model_providers", {})
-    if not isinstance(providers, dict) or providers.get(GATEWAY_PROVIDER_ID) != _desired_provider(
-        provider_toml
-    ):
-        updated = _strip_owned_codex_table(updated, ("model_providers", GATEWAY_PROVIDER_ID))
-        if updated and not updated.endswith("\n"):
-            updated += "\n"
-        updated += ("\n" if updated else "") + provider_toml
-    if "model_provider" not in data:
-        updated = _upsert_codex_root_setting(
-            updated, "model_provider", json.dumps(GATEWAY_PROVIDER_ID)
-        )
-    if model_pin and "model" not in data:
-        updated = _upsert_codex_root_setting(updated, "model", json.dumps(model_pin))
-    features = data.get("features", {})
-    if isinstance(features, dict) and "fast_mode" not in features:
+    if providers.get(GATEWAY_PROVIDER_ID) != _desired_provider(provider_toml):
+        document.get("model_providers", {}).pop(GATEWAY_PROVIDER_ID, None)
+        _append_codex_tables(document, provider_toml)
+    root = {"model_provider": GATEWAY_PROVIDER_ID, "model": model_pin}
+    _set_codex_root_keys(document, {k: v for k, v in root.items() if v and k not in data})
+    if "fast_mode" not in data.get("features", {}):
         # The gateway rejects Codex's default priority tier (spike #2264).
-        edited = _upsert_existing_codex_table_setting(
-            updated, table=("features",), key="fast_mode", value="false"
-        )
-        updated = (
-            edited
-            if edited is not None
-            else _upsert_codex_root_setting(updated, "features.fast_mode", "false")
-        )
-    policy = data.get("shell_environment_policy", {})
-    excluded = _gateway_exclude_list(
-        updated, policy.get("exclude") if isinstance(policy, dict) else None
-    )
-    return updated if excluded is None else excluded
+        _set_codex_table_key(document, "features", "fast_mode", False)
+    exclude = data.get("shell_environment_policy", {}).get("exclude")
+    if exclude is None:
+        _set_codex_table_key(document, "shell_environment_policy", "exclude", [GATEWAY_TOKEN_ENV])
+    elif isinstance(exclude, list) and GATEWAY_TOKEN_ENV not in exclude:
+        document["shell_environment_policy"]["exclude"].append(GATEWAY_TOKEN_ENV)
+    # A non-list exclude is the user's own value: left alone, reported as skipped.
 
 
 def _warn_gateway_overrides(data: dict) -> None:
@@ -1292,12 +1000,12 @@ def _apply_codex_gateway(home: Path | None = None) -> str:
     if inputs is None:
         return "invalid"
     provider_toml, model_pin = inputs
-    existing = _read_codex_config(path)
-    data = _codex_data(existing, path=path)
+    existing, document = _parse_codex_config(path)
     try:
-        updated = _with_gateway_settings(existing, data, provider_toml, model_pin)
-        data = _codex_data(updated, path=path)
-    except ValueError:  # an edit left TOML the parser rejects: a layout we cannot extend
+        _with_gateway_settings(document, provider_toml, model_pin)
+        updated = document.as_string()
+        data = _parse_codex_config(path, updated)[1].unwrap()
+    except (ValueError, _codex_editor().exceptions.TOMLKitError):  # a layout we cannot extend
         data = None
     if data is None or not _gateway_entries_present(data, provider_toml):
         print(
@@ -1307,19 +1015,7 @@ def _apply_codex_gateway(home: Path | None = None) -> str:
         )
         return "skipped"
     _warn_gateway_overrides(data)
-    if updated == existing:
-        return "current"
-    _publish_codex_config(path, updated)
-    return "written"
-
-
-def _strip_codex_root_key(existing: str, key: str) -> str:
-    """Remove the root assignment of *key*, keeping every other byte."""
-    return "".join(
-        statement
-        for statement, path, header in _toml_entries(existing)
-        if header or path != (key,)
-    )
+    return "written" if _publish_if_changed(path, existing, updated, validated=True) else "current"
 
 
 def _drop_codex_gateway(home: Path | None) -> str:
@@ -1336,21 +1032,21 @@ def _drop_codex_gateway(home: Path | None) -> str:
     from booley.config.gateway import GatewayConfigError, gateway_model_pin_from_env
 
     path = codex_config_path(home)
-    existing = _read_codex_config(path)
-    data = _codex_data(existing, path=path)
-    updated = _strip_owned_codex_table(existing, ("model_providers", GATEWAY_PROVIDER_ID))
+    existing, document = _parse_codex_config(path)
+    data = document.unwrap()
+    providers = document.get("model_providers", {})
+    if isinstance(providers, dict):
+        providers.pop(GATEWAY_PROVIDER_ID, None)
     if data.get("model_provider") == GATEWAY_PROVIDER_ID:
-        updated = _strip_codex_root_key(updated, "model_provider")
+        del document["model_provider"]
         try:
             pin = gateway_model_pin_from_env().model
         except GatewayConfigError:
             pin = None
         if pin and data.get("model") == pin:
-            updated = _strip_codex_root_key(updated, "model")
-    if updated == existing:
-        return "off"
-    _publish_codex_config(path, updated)
-    return "removed"
+            del document["model"]
+    changed = _publish_if_changed(path, existing, document.as_string(), validated=False)
+    return "removed" if changed else "off"
 
 
 def _gateway_entries_present(data: dict, provider_toml: str) -> bool:
@@ -1398,17 +1094,16 @@ def register(app: str, *, home: Path | None = None, trust_paths: Sequence[str] =
         )
     if app == "codex":
         path = codex_config_path(home)
-        existing, document = _codex_document(path)
-        permissions = _prepare_codex_permissions(existing, document)
-        mcp_only = _prepare_codex_mcp(existing, path)
-        combined = _prepare_codex_mcp(permissions, path)
-        changed = mcp_only != existing
-        if changed:
-            _publish_codex_config(path, mcp_only, validated=True)
+        existing, mcp_only, combined = _prepare_codex_registration(path)
+        changed = _publish_if_changed(path, existing, mcp_only, validated=True)
         linked = deploy_skills(app, home)
         host_linked = deploy_host_skills(app, home)
         cred = apply_stored_credential(app, home)
-        perm = _apply_codex_permission_mode(home, prepared=(mcp_only, combined))
+        perm = (
+            "written"
+            if _publish_if_changed(path, mcp_only, combined, validated=True)
+            else "current"
+        )
         first = _apply_codex_trust(home, trust_paths)
         gateway = _apply_codex_gateway(home)
         mcp = "written" if changed else "current"
