@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,7 +15,7 @@ from booley.flows.base import SubprocessResult
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
-    AdapterTransportIdentity,
+    work_transport_identity,
     write_adapter_result,
 )
 from booley.flows.sim.build import PreparedSimulationBuild
@@ -38,6 +37,7 @@ from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.domain import TargetHandle
 from tests.flows.report_headline import final_report_omits_headline
+from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.leased_session import canned_build_session
 from tests.flows.sim.test_campaign_phase5_adversarial import _plan, _unmanaged
 from tests.flows.sim.test_flow import SimulateFlow, _make_flow
@@ -482,17 +482,9 @@ class _AdapterAbortExecution(_SessionBoundaryExecution):
                 returncode=0,
                 stdout=f"BOOLEY_BUILD_STAGE token={identity.attempt_token} rc=0\n",
             )
-        tokens = shlex.split(command[-1])
-        selected = tuple(
-            token.split("=", 1)[1] for token in tokens if token.startswith("--selected-test=")
-        )
-        identity = AdapterTransportIdentity(
-            "cocotb",
-            tokens[tokens.index("--attempt-token") + 1],
-            tokens[tokens.index("--target-identity") + 1],
-            selected,
-            Path(tokens[tokens.index("--adapter-result") + 1]),
-        )
+        identity = work_transport_identity(launched_work(command))
+        assert identity is not None
+        selected = identity.selected_tests
         detail = "$readmemh: Cannot open memory.hex"
         self.cocotb_path = identity.result_path.parent / "cocotb_results.json"
         self.cocotb_path.write_text(
