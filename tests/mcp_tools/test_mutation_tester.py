@@ -21,8 +21,9 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.flows.endpoint_events import _display_safe_event, _endpoint_end_event
-from booley.flows.sim.backends.cocotb import _parse_args as parse_cocotb_run_args
+from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
+from booley.flows.sim.execution.composition import prepare_adapter_invocation
 from booley.flows.target_test_suite import NoRunnableTestsError
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
@@ -43,11 +44,13 @@ from booley.specialists.mutation_tester import (
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
 from tests.conftest import require_symlinks, symlink_or_skip
+from tests.flows.sim.launched_work import launched_work
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 from tests.target_test_support import write_two_core_sim_project
 
 # The parameters the fake ``.core`` Target declares; a test may add plusargs.
 _TARGET_PARAMETERS: dict[str, Any] = {}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -970,11 +973,12 @@ def test_elab_and_sim_run_verilator_binary(tmp_path: Path, monkeypatch):
     assert elab_cmd[:2] == ["make", "-C"]
     # _run_elab records the bin dir marker for the run-many loop to reuse.
     assert (build_dir / ".booley_edalize_bindir").exists()
-    # Run half: the active Python drives verilator_run with no mutation selector.
+    # Run half: the active Python drives the Verilator adapter with no mutation selector.
     assert sim_cmd[:3] == [sys.executable, "-m", "booley.flows.sim.backends.verilator"]
     assert not any("MUT_ID" in arg for arg in sim_cmd)
-    assert "--top" in sim_cmd and "tb" in sim_cmd
-    assert "--trace" not in sim_cmd
+    work = launched_work(sim_cmd)
+    assert work.top == "tb"
+    assert not work.trace
 
 
 def test_elab_uses_shared_preparer_and_its_exact_command(tmp_path: Path, monkeypatch) -> None:
@@ -1139,8 +1143,8 @@ def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch):
 
     sim_cmds = captured[1:]
     assert [run.test_name for run in runs] == ["coremark.elf", "smoke.elf"]
-    assert "--plusarg=--meminit=ram,coremark.elf" in sim_cmds[0]
-    assert "--plusarg=--meminit=ram,smoke.elf" in sim_cmds[1]
+    assert "--meminit=ram,coremark.elf" in launched_work(sim_cmds[0]).plusargs
+    assert "--meminit=ram,smoke.elf" in launched_work(sim_cmds[1]).plusargs
 
 
 def _mutation_sim_runs(tmp_path: Path, monkeypatch, tests_toml: str, eda_tool: str | None = None):
@@ -1182,10 +1186,10 @@ def test_sim_runs_the_default_variant_at_the_default_seed(tmp_path: Path, monkey
     monkeypatch.delenv("STRESS_MODE", raising=False)
     runs = _mutation_sim_runs(tmp_path, monkeypatch, _MUTATION_VARIANTS, "verilator")
 
-    plusargs = [[word for word in cmd if word.startswith("--plusarg=")] for cmd, _env in runs]
+    plusargs = [launched_work(cmd).plusargs for cmd, _env in runs]
     assert plusargs == [
-        ["--plusarg=test=reset", "--plusarg=verilator+seed+7"],
-        ["--plusarg=test=stress", "--plusarg=iters=1000", "--plusarg=verilator+seed+7"],
+        ("test=reset", "verilator+seed+7"),
+        ("test=stress", "iters=1000", "verilator+seed+7"),
     ]
     assert [env.get("STRESS_MODE") for _cmd, env in runs] == [None, "short"]
 
@@ -1196,15 +1200,10 @@ def test_sim_passes_the_target_plusargs_like_the_simulation_flow(tmp_path: Path,
     monkeypatch.setitem(_TARGET_PARAMETERS, "test", {"paramtype": "plusarg", "default": "none"})
     runs = _mutation_sim_runs(tmp_path, monkeypatch, _MUTATION_VARIANTS, "verilator")
 
-    plusargs = [[word for word in cmd if word.startswith("--plusarg=")] for cmd, _env in runs]
+    plusargs = [launched_work(cmd).plusargs for cmd, _env in runs]
     assert plusargs == [
-        ["--plusarg=depth=4", "--plusarg=test=reset", "--plusarg=verilator+seed+7"],
-        [
-            "--plusarg=depth=4",
-            "--plusarg=test=stress",
-            "--plusarg=iters=1000",
-            "--plusarg=verilator+seed+7",
-        ],
+        ("depth=4", "test=reset", "verilator+seed+7"),
+        ("depth=4", "test=stress", "iters=1000", "verilator+seed+7"),
     ]
 
 
@@ -1263,9 +1262,7 @@ def test_sim_on_an_unseeded_target_passes_no_seed(tmp_path: Path, monkeypatch):
     runs = _mutation_sim_runs(
         tmp_path, monkeypatch, '[default]\ntests = ["reset"]\nselect = "+test={name}"\n', "icarus"
     )
-    assert [word for word in runs[0][0] if word.startswith("--plusarg=")] == [
-        "--plusarg=test=reset"
-    ]
+    assert launched_work(runs[0][0]).plusargs == ("test=reset",)
 
 
 def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch):
@@ -1299,8 +1296,8 @@ def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch
     endpoint._run_target_test_suite("lib:ip:core#default", tmp_path, build_dir, "tb")
 
     sim_cmds = captured[1:]
-    assert "--plusarg=--meminit=ram,coremark.elf" in sim_cmds[0]
-    assert "--plusarg=--meminit=ram,smoke.elf" in sim_cmds[1]
+    assert "--meminit=ram,coremark.elf" in launched_work(sim_cmds[0]).plusargs
+    assert "--meminit=ram,smoke.elf" in launched_work(sim_cmds[1]).plusargs
 
 
 def test_target_suite_accepts_vlnv_qualified_target(tmp_path: Path, monkeypatch):
@@ -1339,9 +1336,71 @@ def test_sim_forwards_project_verdict_sentinels(tmp_path: Path, monkeypatch):
     endpoint._run_elab("default", tmp_path, build_dir)
     endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
 
-    sim_cmd = captured[-1]
-    assert "--pass-sentinel=Correct operation validated." in sim_cmd
-    assert "--fail-sentinel=ERROR!" in sim_cmd
+    work = launched_work(captured[-1])
+    assert work.pass_sentinels == ("Correct operation validated.",)
+    assert work.fail_sentinels == ("ERROR!",)
+
+
+def test_mutant_launch_grades_from_the_document(tmp_path: Path, monkeypatch, capsys) -> None:
+    for adapter in ("hdl", "cocotb"):
+        for outcome in ("detected", "survived", "inconclusive"):
+            _grade_mutant_launch(
+                tmp_path / f"{adapter}-{outcome}", monkeypatch, capsys, adapter, outcome
+            )
+
+
+def _grade_mutant_launch(tmp_path: Path, monkeypatch, capsys, adapter: str, outcome: str) -> None:
+    """A mutant is graded from its adapter's output; the fake decodes the launch document first."""
+    from booley.flows.sim.adapter_contract import run_adapter_entry
+    from booley.flows.sim.backends import cocotb_results as cr
+
+    tmp_path.mkdir()
+    cocotb = adapter == "cocotb"
+    # The real rejected-document answer of an adapter that cannot decode its argument.
+    assert run_adapter_entry(["not a document"], lambda _work: 0) == 2
+    rejected = capsys.readouterr().out
+
+    def cocotb_line(status: str) -> str:
+        results = cr.CocotbResults(
+            state=cr.STATE_OK, tests=(cr.CocotbTest("test_a", "tb", status),)
+        )
+        return cr.format_results_line(cr.results_payload(results))
+
+    answers = {
+        ("hdl", "detected"): _fake_proc(rc=1, stdout="[FAIL]"),
+        ("hdl", "survived"): _fake_proc(rc=0, stdout="[PASS]"),
+        ("hdl", "inconclusive"): _fake_proc(rc=2, stdout=rejected),
+        ("cocotb", "detected"): _fake_proc(rc=1, stdout=cocotb_line(cr.VERDICT_FAIL)),
+        ("cocotb", "survived"): _fake_proc(rc=0, stdout=cocotb_line(cr.VERDICT_PASS)),
+        ("cocotb", "inconclusive"): _fake_proc(rc=0, stdout="no results line"),
+    }
+    launched: list[PreparedSimulationWork] = []
+
+    def _fake_run(cmd, *args, **kwargs):
+        if cmd[0] == "make":
+            return _fake_proc(rc=0)
+        launched.append(launched_work(cmd))
+        return answers[(adapter, outcome)]
+
+    _patch_resolve_target(monkeypatch)
+    _patch_cocotb_target(monkeypatch, module="tb.test_x" if cocotb else None)
+    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
+    _write_tests_toml(tmp_path, '[default]\ntests = ["test_a"]\n')
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    endpoint._run_elab("default", tmp_path, build_dir)
+
+    runs = endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
+    verdict = MutationTesterSpecialist._classify_variant_suite(runs)
+
+    [work] = launched
+    assert work.adapter == ("cocotb" if cocotb else "verilator")
+    assert work.tests == (("test_a",) if cocotb else ())
+    assert verdict.detected is (outcome == "detected")
+    assert bool(verdict.inconclusive_reason) is (outcome == "inconclusive")
+    if adapter == "hdl" and outcome == "inconclusive":
+        assert "work document rejected" in verdict.inconclusive_reason
 
 
 def _prepare_scope_files(tmp_path: Path, scope: list[str]) -> None:
@@ -1642,7 +1701,7 @@ class TestResidueWarning:
             if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
                 return _fake_proc(rc=0)
             if "booley.flows.sim.backends.verilator" in joined:
-                if switch["edit_scope"] and "mutant_2" in joined:
+                if switch["edit_scope"] and "mutant_2" in repr(launched_work(cmd)):
                     with (tmp_path / self.SCOPE).open("a", encoding="utf-8") as handle:
                         handle.write("// edit left by the run\n")
                 return _fake_proc(rc=0)
@@ -2116,14 +2175,17 @@ class TestCocotbSimDispatch:
         endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
 
         sim_cmd = captured[-1]
-        assert sim_cmd[:3] == [sys.executable, "-m", "booley.flows.sim.backends.cocotb"]
-        parsed = parse_cocotb_run_args(sim_cmd[3:])
-        assert "--cocotb-module" in sim_cmd and "tb.test_ravenoc" in sim_cmd
-        assert parsed.eda_tool == "verilator"
+        work = launched_work(sim_cmd)
+        assert sim_cmd == prepare_adapter_invocation(work, python=sys.executable)
+        assert work.adapter == "cocotb"
+        assert work.cocotb_module == "tb.test_ravenoc"
+        assert work.eda_tool == "verilator"
+        assert work.build_dir == "build"
+        assert work.cocotb_seed == 1  # the Target declares no seed: the Flow default
         assert not any("MUT_ID" in arg for arg in sim_cmd)
-        # Sentinels do not apply to Cocotb Targets (ADR 0034 decision 6).
-        assert not any(c.startswith("--pass-sentinel") for c in sim_cmd)
-        assert "--top" not in sim_cmd
+        # Sentinels and a top do not apply to Cocotb Targets (ADR 0034 decision 6).
+        assert not work.pass_sentinels and not work.fail_sentinels
+        assert work.top == ""
 
     def test_cocotb_run_batches_whole_target_suite(self, tmp_path: Path, monkeypatch):
         captured: list[list[str]] = []
@@ -2141,8 +2203,7 @@ class TestCocotbSimDispatch:
         endpoint._run_elab("default", tmp_path, build_dir)
         endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
 
-        assert "--test=test_a" in captured[-1]
-        assert "--test=test_b" in captured[-1]
+        assert launched_work(captured[-1]).tests == ("test_a", "test_b")
 
     def test_cocotb_suite_whose_default_variants_differ_in_env_runs_in_batches(
         self, tmp_path: Path, monkeypatch
@@ -2177,17 +2238,13 @@ class TestCocotbSimDispatch:
 
         runs = endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
 
-        launched = [
-            ([word for word in cmd if word.startswith("--test=")], env.get("MODE"))
-            for cmd, env in captured[-3:]
+        launched = [(launched_work(cmd), env.get("MODE")) for cmd, env in captured[-3:]]
+        assert [(work.tests, mode) for work, mode in launched] == [
+            (("test_a",), "A"),
+            (("test_b",), "B"),
+            (("test_c",), None),
         ]
-        assert launched == [
-            (["--test=test_a"], "A"),
-            (["--test=test_b"], "B"),
-            (["--test=test_c"], None),
-        ]
-        for cmd, _env in captured[-3:]:
-            assert cmd[cmd.index("--seed") + 1] == "9"
+        assert [work.cocotb_seed for work, _mode in launched] == [9, 9, 9]
         assert [run.test_name for run in runs] == [
             "<cocotb-suite 1/3>",
             "<cocotb-suite 2/3>",
@@ -2213,7 +2270,12 @@ class TestCocotbSimDispatch:
         endpoint._run_elab("default", tmp_path, build_dir)
         endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
 
-        assert captured[-1][:3] == [sys.executable, "-m", "booley.flows.sim.backends.verilator"]
+        sim_cmd = captured[-1]
+        work = launched_work(sim_cmd)
+        assert sim_cmd == prepare_adapter_invocation(work, python=sys.executable)
+        assert work.top == "tb"
+        assert work.plusargs == ("verilator+seed+1",)
+        assert not work.trace
 
     def test_classic_icarus_target_uses_iverilog_run(self, tmp_path: Path, monkeypatch):
         """F-6: a classic Icarus build must be executed as a vvp image."""
@@ -2233,11 +2295,10 @@ class TestCocotbSimDispatch:
         endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
 
         sim_cmd = captured[-1]
-        assert sim_cmd[:2] == [sys.executable, "-m"]
-        assert sim_cmd[2] == "booley.flows.sim.backends.icarus"
-        assert sim_cmd[sim_cmd.index("--build-dir") + 1] == "build"
+        work = launched_work(sim_cmd)
+        assert sim_cmd == prepare_adapter_invocation(work, python=sys.executable)
+        assert work.build_dir == "build"
         assert not any("MUT_ID" in arg for arg in sim_cmd)
-        assert "--top" not in sim_cmd
 
     def test_commercial_cocotb_target_fails_fast_with_reason(
         self,
