@@ -122,7 +122,7 @@ def test_details_never_dump_structures(monkeypatch):
         ),
         _evidence_detail(goal),
         app._selected_proposal_detail(),
-        app._session_activity(selected)[0][1],
+        app._session_activity(selected, app._session_row()[0])[0][1],
     ]
     for text in texts:
         assert "{'" not in text and '{"' not in text and "json.dumps" not in text, (
@@ -517,7 +517,7 @@ def test_goal_proposal_facts_preserved(monkeypatch):
     ):
         assert part in text
     assert "hidden" not in text
-    inline = app._session_activity(selected)[0][1]
+    inline = app._session_activity(selected, app._session_row()[0])[0][1]
     assert (
         "Old Goal" in inline
         and "New Goal" in inline

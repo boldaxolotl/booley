@@ -15,7 +15,7 @@ from booley.criteria.presentation import CriterionPresentation
 from booley.goals.model import GoalFamily, GoalSpec
 from booley.harness import upgrade_review
 from booley.harness.dashboard import app as dashboard_app
-from booley.harness.dashboard import model
+from booley.harness.dashboard import footer, model
 from booley.harness.dashboard.app import DashboardApp, Navigation
 from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.harness.dashboard.topbar import TopBar
@@ -213,6 +213,73 @@ def test_disconnected_session_without_cached_row_still_has_its_handle():
     orientation, goal = app._session()
     assert "S17" in orientation and "disconnected" in orientation
     assert goal is None
+
+
+def test_disconnected_session_detail_keeps_its_last_seen_calls():
+    """#2880: the header and the Booley activity list read the same remembered row."""
+    calls = (RecentCall(STAMP, "sim", "completed"), RecentCall(STAMP, "lint", "failed"))
+    connected = snapshot(1)
+    connected = replace(
+        connected,
+        sessions=(replace(connected.sessions[0], calls=calls),),
+        jobs=JobSnapshot(()),
+    )
+    app = DashboardApp(lambda: connected)
+    app.snapshot = connected
+    app._remember_sessions()
+    app.navigation = Navigation("session", "codex:00")
+    app.snapshot = replace(connected, sessions=())  # The session drops off; the detail stays.
+    orientation, keys, cells = app._session_content()
+    assert "disconnected" in orientation.plain
+    assert "Last Booley call: lint" in orientation.plain
+    assert keys == ["call:0", "call:1"]
+    assert "sim · completed" in str(cells[0][0])
+    assert "lint · failed" in str(cells[1][0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("with_goal_view", "expected_keys"),
+    [
+        (False, ["group:no-booley-activity"]),
+        (True, ["group:spacer", "group:booley-activity", "group:no-booley-activity"]),
+    ],
+    ids=["interactive", "goal-without-goals"],
+)
+async def test_session_without_activity_shows_empty_state(with_goal_view, expected_keys):
+    """#2880: no activity rows still say so, and Enter on that line opens nothing."""
+    current = snapshot(1)
+    current = replace(
+        current,
+        sessions=(replace(current.sessions[0], calls=()),),
+        jobs=JobSnapshot(()),
+    )
+    if with_goal_view:
+        goal = model.GoalView(
+            "fixture",
+            record=SimpleNamespace(
+                worktree=SimpleNamespace(key="wt0"),
+                state=SimpleNamespace(value="active"),
+                branch="goal/fixture",
+            ),
+        )
+        current = replace(current, goals=(goal,))
+    app = DashboardApp(lambda: current)
+    app.snapshot = current
+    app.navigation = Navigation("session", "codex:00")
+    async with app.run_test(size=(90, 30)) as pilot:
+        app.render_snapshot()
+        await pilot.pause()
+        assert app.row_keys == expected_keys
+        table = app.query_one(DataTable)
+        assert "No Booley activity yet" in str(table.get_row_at(len(expected_keys) - 1)[0])
+        assert footer.OPEN not in str(app.query_one("#footer", Static).render())
+        windows = len(app.windows["sessions"])
+        table.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.navigation.view == "session"
+        assert len(app.windows["sessions"]) == windows
 
 
 @pytest.mark.asyncio
@@ -789,6 +856,47 @@ def test_session_without_work_dir_shows_its_default_checkout_and_branch():
     assert (detached.work_dir, detached.branch) == ("/work (default)", "")
 
 
+#: A Linux process key as stored (doubled ``pid:``) and the readable form the Dashboard shows.
+PROCESS_KEY = "pid:pid:[4026532225]:4865:81331"
+PROCESS_KEY_LABEL = "PID 4865 · ns 4026532225"
+
+
+def test_process_keyed_session_detail_shows_readable_identity():
+    """Session detail names a process-keyed client by PID; the stored key still drives lookups."""
+    from booley.runtime.session_activity import WAITING_USER, Activity
+
+    row = SessionRow(Attribution(PROCESS_KEY, "process", "/w", "wt"), STAMP, STAMP)
+    app = DashboardApp(lambda: None)
+    app.snapshot = model.DashboardSnapshot(
+        sessions=(row,),
+        session_handles={PROCESS_KEY: "S1"},
+        activity={PROCESS_KEY: Activity(WAITING_USER, STAMP)},
+        observed_at=1791454200,
+    )
+    app.navigation = Navigation("session", PROCESS_KEY)
+    orientation, _ = app._session()
+    assert f"Session key: {PROCESS_KEY_LABEL}" in orientation
+    assert "pid:pid:" not in orientation
+    # The raw key, not the label, still selects the reported activity.
+    assert "\nWaiting for user input · 10m 00s" in orientation
+
+
+def test_process_keyed_job_detail_shows_readable_identity():
+    """An expired Job whose owner has no handle shows the owner's process key readably."""
+    record = JobRecord(
+        "one", "sim", STAMP, 60, session_key=PROCESS_KEY, status="done", ended_at=STAMP
+    )
+    job = JobView(Path("/jobs"), record, "completed", owner_handle=PROCESS_KEY)
+    app = DashboardApp(lambda: None)
+    app.snapshot = model.DashboardSnapshot(jobs=JobSnapshot((job,)), observed_at=1791454200)
+    detail = app._job_detail(job).plain
+    assert f"Owner: {PROCESS_KEY_LABEL} (disconnected)" in detail
+    assert f"Session key: {PROCESS_KEY_LABEL}" in detail
+    assert "pid:pid:" not in detail
+    cells = dashboard_app._job_cells(job, app.snapshot.observed_at, {})
+    assert cells[2].plain == PROCESS_KEY_LABEL
+
+
 @pytest.mark.asyncio
 async def test_slow_refresh_eventually_renders_completed_read_without_restarting(monkeypatch):
     import asyncio
@@ -961,7 +1069,7 @@ async def test_time_display_pilot_snapshots(monkeypatch):
     assert "Started 10m ago" in orientation
     assert "· 10m ago" in orientation
     assert "working · 10m 00s" in orientation.lower()
-    assert "14:00:00" in str(app._session_activity(None))
+    assert "14:00:00" in str(app._session_activity(None, app._session_row()[0]))
     for size in ((140, 40), (80, 25)):
         await _capture_time_pilot(monkeypatch, current, completed, orientation, size)
 
@@ -975,7 +1083,11 @@ def test_session_activity_shows_one_row_per_call_with_outcome_time(monkeypatch):
     app = DashboardApp(lambda: current)
     app.snapshot = current
     app.navigation = Navigation("session", "codex:00")
-    rows = [str(row) for key, row in app._session_activity(None) if key.startswith("call:")]
+    rows = [
+        str(row)
+        for key, row in app._session_activity(None, app._session_row()[0])
+        if key.startswith("call:")
+    ]
     assert len(rows) == 2
     assert "sim · completed · 14:05:00" in rows[0]
     assert "lint · started · 14:06:00" in rows[1]

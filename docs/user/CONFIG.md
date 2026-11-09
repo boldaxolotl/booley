@@ -267,8 +267,9 @@ quiet_after = 7200   # seconds, 60 to 604800
 ```
 
 With `dashboard = false` the [Dashboard](USAGE.md#the-dashboard) does not
-open on its own; `booley dashboard` in a container terminal still opens it. If
-it doesn't open when it should, see [Dashboard
+open on its own; `booley dashboard` in a container terminal still opens it, and
+so does **Booley: Open Dashboard** (it needs a trusted Sandbox window with one
+Git folder). If it doesn't open when it should, see [Dashboard
 troubleshooting](TROUBLESHOOTING.md#the-dashboard-does-not-open-on-sandbox-attach).
 
 A Goal session that makes no Booley call for `quiet_after` seconds (default two

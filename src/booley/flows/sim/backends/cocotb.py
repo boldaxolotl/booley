@@ -53,20 +53,12 @@ import re
 import shutil
 import subprocess
 import sys
-import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from booley.core.boundary import BoundaryError
-from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
-
-if TYPE_CHECKING:
-    from booley.flows.sim.run_guard import DiskBudgetGuard, SimTimeStallGuard
-
 from booley.flows.run_log import write_run_log
 from booley.flows.sim.adapter_contract import PreparedSimulationWork, run_adapter_entry
 from booley.flows.sim.adapter_transport import (
@@ -95,12 +87,11 @@ from booley.flows.sim.backends.cocotb_results import (
 from booley.flows.sim.backends.shared import (
     BOOLEY_DUMP_VCD_NAME,
     CurrentRunTraces,
-    RunLogProgress,
     RunTermination,
-    append_child_cpu_marker,
-    child_cpu_snapshot,
     find_icarus_image,
 )
+from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
+from booley.flows.sim.backends.trace_finalization import finalize_trace
 from booley.flows.sim.result import (
     count_sva_errors,
     describe_error_message_count,
@@ -110,6 +101,7 @@ from booley.flows.sim.result import (
 )
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, find_sim_time_stall
 from booley.flows.sim.trace_session import TraceSession
+from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 
 
 def _publish_adapter_result(
@@ -573,164 +565,6 @@ def _build_run_cmd(
     return cmd
 
 
-def _stream_output(
-    cmd: list[str],
-    run_cwd: Path,
-    env: dict[str, str],
-    timeout: int,
-    *,
-    max_rundir_bytes: int = 0,
-    sim_time_grace_s: float = 0.0,
-    on_line: Callable[[str], None] | None = None,
-    work_dir: Path | None = None,
-    runtime_inputs: tuple[str, ...] = (),
-) -> tuple[deque[str], subprocess.Popen, RunTermination]:
-    """Run the sim, stream stdout live, enforce *timeout* (seconds).
-
-    The iverilog_run watchdog pattern (timer + disk guard + $readmemh trap),
-    parameterized by *env* — the cocotb glue rides the environment — plus the
-    cocotb-specific frozen-clock guard (F-25). Returns
-    ``(lines, proc, timed_out)``.
-    """
-    from booley.flows.sim.run_guard import (
-        DiskBudgetGuard,
-        SimTimeStallGuard,
-        child_death_kwargs,
-        classify_readmemh_termination,
-        parse_readmemh_fatal,
-        snapshot_dir_baseline,
-        supervise_child,
-    )
-    from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
-
-    lines: deque[str] = deque(maxlen=5_000)
-    cpu_started = child_cpu_snapshot()
-    # The pre-spawn baseline prevents simulator output from escaping the budget while walking.
-    disk_baseline = snapshot_dir_baseline(run_cwd, max_rundir_bytes)
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(run_cwd),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        **popen_new_group_kwargs(),
-        **child_death_kwargs(),
-    )
-    supervise_child(proc)
-    timer, timed_out = _start_timeout(proc, timeout)
-    guard = DiskBudgetGuard(run_cwd, max_rundir_bytes, proc, baseline=disk_baseline)
-    guard.start()
-    stall_guard = SimTimeStallGuard(proc, sim_time_grace_s)
-    stall_guard.start()
-    progress = RunLogProgress(work_dir, time.monotonic())
-    fatal_termination: RunTermination | None = None
-    stdout = proc.stdout
-    try:
-        assert stdout is not None
-        for line in stdout:
-            print(line, end="", flush=True)
-            lines.append(line)
-            progress.observe(lines)
-            if on_line is not None:
-                on_line(line)
-            # F-25: track the simulator's own clock, so a cocotb/simulator
-            # run-loop mismatch (time frozen at 0.00 ns) aborts with a
-            # diagnosis instead of burning the whole wall-clock budget.
-            stall_guard.observe(line)
-            # SETUP-23: a missing $readmemh init file warns once then the sim
-            # spins forever on uninitialised RAM — treat the warning as fatal.
-            missing = parse_readmemh_fatal(line)
-            if missing and proc.poll() is None:
-                fatal_termination = classify_readmemh_termination(missing, run_cwd, runtime_inputs)
-                kill_process_tree(proc)
-                break
-        proc.wait()
-    finally:
-        _stop_stream_guards(stdout, timer, guard, stall_guard, lines, cpu_started)
-        progress.final_flush(lines)
-
-    if fatal_termination is None and not timed_out["hit"] and not stall_guard.tripped:
-        guard.finish()
-
-    termination = _append_abort_reason(
-        lines,
-        fatal_termination=fatal_termination,
-        guard=guard,
-        stall_guard=stall_guard,
-        timed_out=timed_out["hit"],
-        timeout=timeout,
-    )
-    return lines, proc, termination
-
-
-def _start_timeout(proc: subprocess.Popen, timeout: int):
-    """Start the timer and retain its mutable ownership through reap."""
-    import threading
-
-    from booley.runtime.platform_paths import kill_process_tree
-
-    timed_out = {"hit": False}
-
-    def kill_on_timeout() -> None:
-        if proc.poll() is None:
-            timed_out["hit"] = True
-            kill_process_tree(proc)
-
-    timer = threading.Timer(timeout, kill_on_timeout)
-    timer.daemon = True
-    timer.start()
-    return timer, timed_out
-
-
-def _stop_stream_guards(stdout, timer, guard, stall_guard, lines, cpu_started) -> None:
-    if stdout is not None:
-        stdout.close()
-    timer.cancel()
-    guard.stop()
-    stall_guard.stop()
-    append_child_cpu_marker(lines, cpu_started)
-
-
-def _append_abort_reason(
-    lines: deque[str],
-    *,
-    fatal_termination: RunTermination | None,
-    guard: DiskBudgetGuard,
-    stall_guard: SimTimeStallGuard,
-    timed_out: bool,
-    timeout: int,
-) -> RunTermination:
-    """Echo + record why a streamed sim was cut short (if it was).
-
-    Ordered by specificity: a guard that fired names a concrete cause, so it
-    outranks the bare timeout (which the stall kill also trips, the timer
-    having no way to know the run was already doomed).
-    """
-    if fatal_termination is not None:
-        msg = f"ERROR: {fatal_termination.detail}"
-        print(msg)
-        lines.append(msg + "\n")
-        return fatal_termination
-    if guard.tripped:
-        print(guard.message)
-        lines.append(guard.message + "\n")
-        return RunTermination("disk_budget", guard.message, "infrastructure")
-    if stall_guard.tripped:
-        msg = f"ERROR: {stall_guard.message}"
-        print(msg)
-        lines.append(msg + "\n")
-        return RunTermination("sim_time_stall", stall_guard.message, "infrastructure")
-    if timed_out:
-        msg = f"ERROR: cocotb simulation timed out ({timeout}s)"
-        print(msg)
-        lines.append(msg + "\n")
-        return RunTermination("timeout", msg, "timeout")
-    return RunTermination()
-
-
 def _recover_partial_timeout_results(results, output: str, timed_out: bool, tests: list[str]):
     """Use durable cocotb progress when timeout prevented results.xml."""
     if timed_out:
@@ -748,15 +582,6 @@ class _VerdictAssessment:
     passed: bool
     inconclusive: bool
     infrastructure_error: str
-
-
-@dataclass(frozen=True)
-class _TraceFinalization:
-    """Trace markers plus any infrastructure failure they establish."""
-
-    output: str = ""
-    failure_reason: str = ""
-    evidence: AdapterTraceResult | None = None
 
 
 @dataclass(frozen=True)
@@ -1130,27 +955,20 @@ def _execute_cocotb_run(
     transport: AdapterTransportIdentity | None,
     runtime_inputs: tuple[str, ...],
 ):
-    from booley.harness.colors import dim
-    from booley.presentation.heartbeat import render_heartbeat
-    from booley.runtime.heartbeat import Heartbeat
-
-    heartbeat = Heartbeat("cocotb sim", render=partial(render_heartbeat, style=dim), interval=60)
-    heartbeat.start()
-    try:
-        publish = _partial_result_publisher(transport, run.tests, run.results_file)
-        return _stream_output(
-            run.command,
-            run.run_cwd,
-            run.env,
-            timeout,
-            max_rundir_bytes=max_rundir_bytes,
-            sim_time_grace_s=sim_time_grace_s,
-            on_line=publish,
+    return run_supervised(
+        SimulatorLaunch(
+            label="cocotb",
+            command=run.command,
+            run_cwd=run.run_cwd,
+            env=run.env,
+            timeout_s=timeout,
             work_dir=run.work_dir,
+            max_rundir_bytes=max_rundir_bytes,
             runtime_inputs=runtime_inputs,
+            sim_time_grace_s=sim_time_grace_s,
+            on_line=_partial_result_publisher(transport, run.tests, run.results_file),
         )
-    finally:
-        heartbeat.stop()
+    )
 
 
 def _complete_cocotb_run(
@@ -1162,14 +980,15 @@ def _complete_cocotb_run(
     transport: AdapterTransportIdentity | None,
 ) -> int:
     output = "".join(lines)
-    trace_result = (
-        _finalize_cocotb_trace(run.current, run.run_cwd, proc)
-        if run.current is not None
-        else _TraceFinalization()
+    trace_result = None
+    if run.current is not None:
+        trace_output, trace_result = finalize_trace(
+            run.current, proc, raw_vcd=run.run_cwd / _DEFAULT_VCD_NAME
+        )
+        output += trace_output
+    trace_failure = (
+        trace_result.detail if trace_result and trace_result.status == "incident" else ""
     )
-    if trace_result.output:
-        print(trace_result.output)
-        output = f"{output}\n{trace_result.output}"
     output, passed, transported = _evaluate_verdict(
         output,
         proc.returncode,
@@ -1178,7 +997,7 @@ def _complete_cocotb_run(
         run.results_file,
         run.tests,
         result_verbosity,
-        trace_result.failure_reason,
+        trace_failure,
         termination=termination,
     )
     failure_kind = (
@@ -1194,7 +1013,7 @@ def _complete_cocotb_run(
         passed,
         results=transported,
         failure_kind=failure_kind,
-        trace=trace_result.evidence,
+        trace=trace_result,
         termination=termination,
         simulator_returncode=proc.returncode,
     )
@@ -1249,39 +1068,6 @@ def run_cocotb_sim(
         runtime_inputs,
     )
     return _complete_cocotb_run(run, lines, proc, termination, result_verbosity, transport)
-
-
-def _finalize_cocotb_trace(
-    current: CurrentRunTraces,
-    run_cwd: Path,
-    proc,
-) -> _TraceFinalization:
-    """Postprocess and validate one Cocotb waveform before any verdict."""
-    trace = current.session
-    trace.postprocess(run_cwd / _DEFAULT_VCD_NAME)
-    inspection = trace.inspect(current.select().path)
-    if not inspection.usable:
-        reason = (
-            f"trace requested but no queryable waveform was produced: {inspection.failure_reason}"
-        )
-        incident = trace.write_incident(reason, sim_proc=proc)
-        return _TraceFinalization(
-            output=f"ERROR: {reason}\nTRACE_INCIDENT: {incident}",
-            failure_reason=reason,
-            evidence=AdapterTraceResult("incident", path=str(incident), detail=reason),
-        )
-    artifact = inspection.artifact
-    assert artifact is not None
-    return _TraceFinalization(
-        output=f"TRACE_OK: {artifact.path}\n{artifact.metadata_line()}",
-        evidence=AdapterTraceResult(
-            "ok",
-            path=str(artifact.path),
-            top_scope=artifact.top_scope,
-            signal_count=artifact.signal_count,
-            total_ticks=artifact.total_ticks,
-        ),
-    )
 
 
 def _run_work(work: PreparedSimulationWork) -> int:
