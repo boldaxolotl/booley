@@ -30,6 +30,7 @@ from pathlib import Path
 from booley.core.booley_dir import resolve_common_booley_dir
 from booley.flows.execution import FlowConfigError, flow_enabled
 from booley.runtime.booley_dir import BooleyDirOutsideCheckoutError, own_booley_dir
+from booley.runtime.docs_links import docs_url
 from booley.runtime.paths import worktree_create_script
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_prepare import find_post_setup_hook, prepare_project
@@ -370,7 +371,9 @@ def _ready_notice(name: str, *, paired: bool) -> str:
     """One calm line for a successful creation; full removal steps print only on failure."""
     kind = "Paired Checkout" if paired else "Snapshot"
     return (
-        f"Created worktree {name!r} with a {kind}. Remove it later with: booley worktree rm {name}"
+        f"Created worktree {name!r} with a {kind}. "
+        f"Remove it later with: booley worktree rm {name} "
+        f"(see {docs_url('CLI-REFERENCE.md', 'worktrees')})"
     )
 
 

@@ -177,7 +177,8 @@ def test_creates_a_worktree_on_its_own_branch_and_prints_its_path(
     assert output.err == (
         "Filling git submodules from the main checkout...\n"
         "Created worktree 'goal-entry' with a Snapshot. "
-        "Remove it later with: booley worktree rm goal-entry\n"
+        "Remove it later with: booley worktree rm goal-entry "
+        "(see https://booley.dev/docs/cli-reference/#worktrees)\n"
     )
     # The Snapshot steps still exist for failures; their commands must work.
     steps = worktree_cmd.worktree_removal_instructions(
