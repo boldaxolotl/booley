@@ -62,7 +62,12 @@ from booley.flows.sim.backends.shared import (
     find_icarus_image,
 )
 from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
-from booley.flows.sim.backends.trace_finalization import finalize_trace
+from booley.flows.sim.backends.trace_finalization import (
+    add_trace_convert_timeout_argument,
+    finalize_trace,
+    native_pending_publisher,
+)
+from booley.flows.sim.config import DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S
 from booley.flows.sim.result import parse_sim_verdict
 from booley.flows.sim.trace_session import TraceSession
 
@@ -107,7 +112,7 @@ def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
     if work.work_dir:
         cmd += ["--work-dir", work.work_dir]
     if work.trace:
-        cmd.append("--trace")
+        cmd += ["--trace", "--trace-convert-timeout", str(work.trace_convert_timeout_s)]
     cmd += [f"--plusarg={value}" for value in work.plusargs]
     cmd += [f"--pass-sentinel={value}" for value in work.pass_sentinels]
     cmd += [f"--fail-sentinel={value}" for value in work.fail_sentinels]
@@ -241,6 +246,7 @@ def run_icarus_image(
     max_rundir_bytes: int = 0,
     runtime_inputs: tuple[str, ...] = (),
     transport: AdapterTransportIdentity | None = None,
+    trace_convert_timeout: int = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S,
 ) -> str:
     """Run an edalize-built vvp image once and return its captured output."""
     run = _prepare_icarus_run(
@@ -268,7 +274,18 @@ def run_icarus_image(
     trace_result = None
     if run.current is not None:
         trace_output, trace_result = finalize_trace(
-            run.current, proc, raw_vcd=run.run_cwd / _DEFAULT_VCD_NAME, vcd_fallback=True
+            run.current,
+            proc,
+            convert_timeout_s=trace_convert_timeout,
+            publish_pending=native_pending_publisher(
+                transport,
+                output,
+                proc.returncode,
+                pass_sentinels=pass_sentinels,
+                fail_sentinels=fail_sentinels,
+                termination=termination,
+            ),
+            raw_vcd=run.run_cwd / _DEFAULT_VCD_NAME,
         )
         output += trace_output
     _publish_adapter_result(
@@ -304,6 +321,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--trace", action="store_true", help="postprocess a B-Wave trace from dump.vcd")
     p.add_argument("--trace-scope", default=None, help="scope the trace to a hierarchy")
+    add_trace_convert_timeout_argument(p)
     p.add_argument(
         "--trace-file",
         action="append",
@@ -362,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         max_rundir_bytes=args.max_rundir_bytes,
         runtime_inputs=tuple(args.runtime_input),
         transport=transport,
+        trace_convert_timeout=args.trace_convert_timeout,
     )
     # Non-zero exit on a parsed FAIL so a shipped `&&` chain reflects the verdict.
     verdict = parse_sim_verdict(

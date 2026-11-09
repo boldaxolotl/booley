@@ -24,6 +24,9 @@ from booley.targets.flow_names import config_section
 DEFAULT_MAX_RUNDIR_BYTES = 5 * 1024**3
 DEFAULT_SIM_TIMEOUT_MS: Final[int] = default_timeout_ms("sim")
 DEFAULT_SIM_BUILD_TIMEOUT_MS: Final[int] = 3_600_000
+# One attempt's budget for every post-run VCD-to-FST conversion (30 minutes).
+DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_MS: Final[int] = 1_800_000
+DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S: Final[int] = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_MS // 1000
 _RUN_CWD_FIELDS = frozenset({"campaign", "target", "test", "attempt"})
 
 
@@ -178,6 +181,18 @@ def resolve_sim_build_timeout_ms(work_dir: Path | str | None = None) -> int:
     configured = _sim_config(work_dir).get("build_timeout_ms")
     if configured is None:
         return DEFAULT_SIM_BUILD_TIMEOUT_MS
+    timeout_ms = require_int(configured, field=field)
+    if timeout_ms <= 0:
+        raise BoundaryError(f"{field} must be a positive integer, got {timeout_ms!r}")
+    return timeout_ms
+
+
+def resolve_sim_trace_convert_timeout_ms(work_dir: Path | str | None = None) -> int:
+    """Return the Project-owned post-run trace conversion budget in milliseconds."""
+    field = "[flows.sim].trace_convert_timeout_ms"
+    configured = _sim_config(work_dir).get("trace_convert_timeout_ms")
+    if configured is None:
+        return DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_MS
     timeout_ms = require_int(configured, field=field)
     if timeout_ms <= 0:
         raise BoundaryError(f"{field} must be a positive integer, got {timeout_ms!r}")
