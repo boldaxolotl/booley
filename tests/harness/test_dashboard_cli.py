@@ -582,5 +582,7 @@ def test_dashboard_does_not_label_refusals_or_policy_probes(tmp_path, monkeypatc
     assert command.run_dashboard(tmp_path, on_attach=True) == command.ALREADY_OPEN
     monkeypatch.setattr(command, "attach_blocker", lambda *_: "disabled by configuration")
     assert command.run_attach(tmp_path) == command.ATTACH_DISABLED
+    # The policy probe reads /proc/net/unix, which Windows lacks; it is not under test here.
+    monkeypatch.setattr(command, "_dashboard_is_open", lambda: False)
     assert command.run_attach(tmp_path, policy_only=True) == 0
     assert "disabled by configuration" in capsys.readouterr().out
