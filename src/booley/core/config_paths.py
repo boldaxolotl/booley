@@ -34,3 +34,29 @@ def resolve_booley_toml(project_root: Path) -> Path:
 
     require_current_layout(project_root)
     return resolve_toml(own_booley_dir(project_root))
+
+
+def main_repository_root(work_dir: Path) -> Path | None:
+    """Follow a linked worktree's ``.git`` file to its main repository root.
+
+    In a linked worktree ``.git`` is a *file* holding ``gitdir: <path>`` that
+    points into the main repository's ``.git/worktrees/`` directory. Returns the
+    main repository root, or ``None`` when *work_dir* is the main repository
+    itself or has no recognisable ``.git`` file.
+    """
+    marker = work_dir / ".git"
+    if not marker.is_file():
+        return None
+    try:
+        content = marker.read_text(encoding="utf-8").strip()
+        if not content.startswith("gitdir:"):
+            return None
+        git_dir = Path(content.split(":", 1)[1].strip())
+        if not git_dir.is_absolute():
+            git_dir = (work_dir / git_dir).resolve()
+        for parent in git_dir.parents:
+            if parent.name == ".git":
+                return parent.parent
+    except (OSError, ValueError):
+        pass
+    return None

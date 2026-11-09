@@ -284,6 +284,22 @@ A stopped Sandbox refuses to start after the switch; run
 on purpose, waive `host.sandbox-egress-mismatch` with `subject` set to its
 Project root; see [Doctor waivers](https://booley.dev/docs/doctor/#doctor-waivers-doctor-waiverstoml).
 
+### Doctor reports that devcontainer.json differs
+
+Doctor rebuilds the `.devcontainer/devcontainer.json` that `booley init` would
+write now and diffs it against the file on disk. The warning
+(`interactive.devcontainer-drift`) lists each changed key path (the first 20),
+`-` for what is on disk and `+` for what init would write, so you see what a
+reseed changes. Follow the remedy the warning prints; for a VS Code Sandbox
+that is usually `booley init --seed --project <root>`, then **Dev Containers:
+Rebuild Container** in that Project's window.
+
+Inside the Sandbox, Doctor compares only what it can see (VS Code settings and
+extensions, the attach hook, and the agent state volumes) and says host
+`booley doctor` checks the rest. `interactive.devcontainer-unverified` means
+the expected file could not be built (the warning names the error); fix that
+error and rerun `booley doctor`.
+
 ### Docker disk still used after removing a Project
 
 Deleting a Project's folder leaves its Sandbox Images and agent state volumes in

@@ -20,6 +20,7 @@ from .codec import (
     canonical_json_bytes,
     decode_executable_snapshot,
     encode_executable_snapshot,
+    validate_relative_path,
 )
 from .model import ExecutableSnapshot, SimulatorBundle
 
@@ -35,8 +36,29 @@ class SnapshotAttemptIdentity:
     attempt_id: str
 
 
+_BUNDLE_ARTIFACT_KINDS = frozenset(
+    {"simulator_executable", "shared_library", "runtime_data", "runtime_input"}
+)
+
+
+def require_bundle_inventory(bundle: SimulatorBundle) -> None:
+    """Refuse an inventory with an unknown kind, a repeated path or no executable.
+
+    The decoder checks no nested member (#1743); snapshot copying relies on these.
+    """
+    artifacts = cast(tuple[Mapping[str, object], ...], bundle.document["artifacts"])
+    paths = [artifact["path"] for artifact in artifacts]
+    if len(set(paths)) != len(paths):
+        raise SimulationCampaignIntegrityError("bundle artifact paths must be unique")
+    if any(artifact["kind"] not in _BUNDLE_ARTIFACT_KINDS for artifact in artifacts):
+        raise SimulationCampaignIntegrityError("bundle artifact kind is invalid")
+    if not any(artifact["kind"] == "simulator_executable" for artifact in artifacts):
+        raise SimulationCampaignIntegrityError("ready bundle requires a simulator executable")
+
+
 def authenticate_bundle_artifacts(bundle: SimulatorBundle, root: Path) -> None:
     """Verify every declared artifact by type, byte count, and digest."""
+    require_bundle_inventory(bundle)
     artifacts = cast(tuple[Mapping[str, object], ...], bundle.document["artifacts"])
     for artifact in artifacts:
         path = _regular_child(root, cast(str, artifact["path"]))
@@ -129,7 +151,7 @@ def authenticate_executable_snapshot(snapshot: ExecutableSnapshot, snapshot_root
 
 
 def _regular_child(root: Path, relative: str) -> Path:
-    path = root / relative
+    path = root / validate_relative_path(relative)
     try:
         path.absolute().relative_to(root.absolute())
     except ValueError as exc:
@@ -157,4 +179,5 @@ __all__ = [
     "authenticate_bundle_artifacts",
     "authenticate_executable_snapshot",
     "create_executable_snapshot",
+    "require_bundle_inventory",
 ]
