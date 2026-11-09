@@ -1724,6 +1724,7 @@ jobs:
       # the image contract's `docker save` hard-link audit reads zstd layer
       # tars only on Python >= 3.14.
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: setup-python
         with:
           python-version: "3.14"
           cache: pip
@@ -1731,6 +1732,12 @@ jobs:
             pyproject.toml
             .github/ci/constraints.txt
             .github/ci/requirements-runners.txt
+
+      # A prefix-restored pip cache never shrinks; see .github/ci/README.md#pip-cache.
+      - name: Drop pip cache restored from an older dependency set
+        if: steps.setup-python.outputs.cache-hit != 'true'
+        timeout-minutes: 3
+        run: python -m pip cache purge
 
       # ADR 0070: reuse the published RISC-V tooling stage when the main-only
       # publisher has a label-verified image for this exact stage text. A
