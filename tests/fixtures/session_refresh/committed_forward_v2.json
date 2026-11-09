@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "transaction_id": "txn-1",
   "project_root": "${PROJECT_ROOT}",
   "phase": "verified",
@@ -41,6 +41,8 @@
   },
   "target_image_id": "sha256:fresh",
   "target_payload_fingerprint": "payload-fresh",
+  "target_wheel_sha256": null,
+  "prepared_images": [],
   "replacement_issuance": {
     "version": 4,
     "project_root": "${PROJECT_ROOT}",
