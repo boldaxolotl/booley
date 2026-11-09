@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -14,6 +13,7 @@ from booley.flows.artifact_durability import (
     durable_create,
     durable_directory,
 )
+from booley.flows.sim.campaign_files import document_digest, stream_digest
 
 from .codec import (
     SimulationCampaignIntegrityError,
@@ -62,7 +62,7 @@ def authenticate_bundle_artifacts(bundle: SimulatorBundle, root: Path) -> None:
     artifacts = cast(tuple[Mapping[str, object], ...], bundle.document["artifacts"])
     for artifact in artifacts:
         path = _regular_child(root, cast(str, artifact["path"]))
-        size, digest = _file_identity(path)
+        size, digest = stream_digest(path)
         if size != artifact["bytes"] or digest != artifact["sha256"]:
             raise SimulationCampaignIntegrityError(f"bundle artifact changed: {path}")
 
@@ -110,7 +110,7 @@ def _copy_snapshot_artifacts(
             == destination.stat(follow_symlinks=False).st_ino
         ):
             raise SimulationCampaignIntegrityError("snapshot artifact must not be a hardlink")
-        size, digest = _file_identity(destination)
+        size, digest = stream_digest(destination)
         if size != artifact["bytes"] or digest != artifact["sha256"]:
             raise SimulationCampaignIntegrityError("snapshot copy authentication failed")
         copied.append(dict(artifact))
@@ -135,7 +135,7 @@ def _snapshot_document(
         "build_result": dict(build_result),
         "created_at": created_at,
         "artifacts": artifacts,
-        "inventory_sha256": _digest(artifacts),
+        "inventory_sha256": document_digest(artifacts),
     }
 
 
@@ -144,7 +144,7 @@ def authenticate_executable_snapshot(snapshot: ExecutableSnapshot, snapshot_root
     artifacts = cast(tuple[Mapping[str, object], ...], snapshot.document["artifacts"])
     for artifact in artifacts:
         path = _regular_child(snapshot_root, cast(str, artifact["path"]))
-        size, digest = _file_identity(path)
+        size, digest = stream_digest(path)
         if size != artifact["bytes"] or digest != artifact["sha256"]:
             raise SimulationCampaignIntegrityError(f"executable snapshot changed: {path}")
     return cast(str, snapshot.document["inventory_sha256"])
@@ -168,20 +168,6 @@ def _regular_child(root: Path, relative: str) -> Path:
         if current.is_symlink():
             raise SimulationCampaignIntegrityError(f"bundle path contains a link: {current}")
     return path
-
-
-def _file_identity(path: Path) -> tuple[int, str]:
-    digest = hashlib.sha256()
-    size = 0
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(64 * 1024), b""):
-            size += len(chunk)
-            digest.update(chunk)
-    return size, "sha256:" + digest.hexdigest()
-
-
-def _digest(value: object) -> str:
-    return "sha256:" + hashlib.sha256(canonical_json_bytes(value).rstrip(b"\n")).hexdigest()
 
 
 def _create_file(path: Path, raw: bytes) -> None:
