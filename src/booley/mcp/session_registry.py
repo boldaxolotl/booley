@@ -1,4 +1,4 @@
-"""Advisory session presence. No reader here selects or changes Goal work."""
+"""Advisory session presence and the attribution facts routing shares; no reader selects Goal work."""
 
 from __future__ import annotations
 
@@ -40,7 +40,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Attribution:
-    """One request's advisory identity, independent of routing and approval."""
+    """One request's advisory identity, never consulted for routing or approval.
+
+    Its ``work_dir`` reports the checkout the call was routed to, or the session's
+    previous checkout under the 2026-10-15 migration rule.
+    """
 
     key: str
     kind: Literal["thread", "process", "worktree"]
@@ -49,7 +53,8 @@ class Attribution:
     branch: str = ""
     process: ProcessIdentity | None = None
     namespace: str = ""
-    # Server cwd that calls omitting work_dir run in; presentation only, never identity.
+    # Server cwd that calls omitting work_dir run in when the caller's checkout is not
+    # routable (see peer_checkout); presentation only, never identity.
     default_work_dir: str = ""
 
 
@@ -512,7 +517,12 @@ def _git_fact(path: Path) -> str:
     return value.strip()
 
 
-def _git_metadata(root: Path) -> tuple[Path, Path, Path] | None:
+def git_checkout_metadata(root: Path) -> tuple[Path, Path, Path] | None:
+    """Nearest enclosing checkout of *root* as ``(checkout root, git dir, common dir)``.
+
+    ``None`` when no ``.git`` is found. A main checkout has ``git == common``; a linked
+    worktree's ``git`` is a subdirectory of its ``common``.
+    """
     # Observational filesystem facts avoid invoking Git on the MCP response path.
     for candidate in islice((root, *root.parents), 128):
         marker = candidate / ".git"
@@ -534,7 +544,7 @@ def _worktree_facts(work_dir: Path) -> tuple[Path, str, str]:
     root = work_dir.resolve()
     key, branch = "path:" + str(root), ""
     try:
-        metadata = _git_metadata(root)
+        metadata = git_checkout_metadata(root)
         if metadata is None:
             return root, key, branch
         root, git, common = metadata
@@ -585,6 +595,21 @@ def _process_cwd() -> str:
         return ""
 
 
+def codex_client(client_name: str, metadata: Mapping[str, Any]) -> bool:
+    """Whether a call comes from Codex, which is identified by thread rather than process."""
+    return "codex" in client_name.lower() or metadata.get("threadId") is not None
+
+
+def process_client(client_name: str, peer: ProcessIdentity) -> bool:
+    """Whether a non-Codex client's loopback *peer* is its own session process."""
+    return (
+        bool(client_name)
+        and len(client_name) <= 128
+        and client_name.isprintable()
+        and peer.pid != os.getpid()
+    )
+
+
 def resolve_attribution(
     work_dir: Path | None,
     *,
@@ -597,10 +622,11 @@ def resolve_attribution(
     root, worktree_key, branch = (
         _worktree_facts(work_dir) if work_dir is not None else (None, "", "")
     )
-    # Calls without work_dir run in this process's cwd (call_context.resolve_work_dir).
+    # A call without work_dir that was not routed to its caller's checkout runs in this
+    # process's cwd (call_context.resolve_work_dir).
     default_work_dir = "" if work_dir is not None else _process_cwd()
     thread = metadata.get("threadId")
-    codex = "codex" in client_name.lower() or thread is not None
+    codex = codex_client(client_name, metadata)
     scope = namespace(proc_root)
     if codex and valid_thread_id(thread):
         return Attribution(
@@ -613,14 +639,7 @@ def resolve_attribution(
             namespace=scope,
             default_work_dir=default_work_dir,
         )
-    if (
-        not codex
-        and client_name
-        and len(client_name) <= 128
-        and client_name.isprintable()
-        and peer is not None
-        and peer.pid != os.getpid()
-    ):
+    if not codex and peer is not None and process_client(client_name, peer):
         return Attribution(
             process_session_key(peer),
             "process",
