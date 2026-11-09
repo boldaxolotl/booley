@@ -30,7 +30,7 @@ from booley.targets.parameter_integrity import (
 
 from .. import edam as edam_layer
 from ..base import SubprocessResult
-from . import edam as sim_edam
+from ..simulator_family import matching_eda_tool
 from .build_parallelism import LaneKind, verilator_backend_arguments
 from .build_reuse import capture_core_closure
 from .compiler_cache import (
@@ -61,7 +61,7 @@ def _validated_simulator(
         "declare either `flow: sim` with `flow_options.tool`, or legacy `default_tool`"
     )
     try:
-        eda_tool = sim_edam.matching_eda_tool(
+        eda_tool = matching_eda_tool(
             handle.eda_tool,
             resolved.configured_eda_tool,
             target=handle.selector,
@@ -337,7 +337,6 @@ def build_stage_script(
         f'echo "BOOLEY_BUILD_STAGE token={token} rc=$_booley_build_rc '
         'duration_ms=$_booley_build_ms"\n'
         'echo "BOOLEY_BUILD_MILLISECONDS: $_booley_build_ms"\n'
-        'echo "BOOLEY_BUILD_SECONDS: $((_booley_build_ms / 1000))"\n'
         'if [ "$_booley_build_rc" -ne 0 ]; then exit "$_booley_build_rc"; fi\n'
     )
     if not run_line:

@@ -10,8 +10,7 @@ resulting reports in Booley:
     (:func:`fpga_run_command` — ``make -C <work_root>``).
   * **Booley parses the reports** through the thin post-processor
     :func:`parse_fpga_reports`, following the same
-    "invocation delegated, interpretation stays in Booley" principle the sim
-    family uses (:func:`sim_edam.reemit_sim_summary`).
+    "invocation delegated, interpretation stays in Booley" principle.
 
 The post-processor is fully verifiable without a Vivado installation: it
 runs against captured Vivado log/report fixtures. The EDAM build and the
@@ -73,9 +72,9 @@ def build_fpga_edam(
 ) -> dict[str, Any]:
     """Build the flow-API EDAM for one target's Vivado implementation run.
 
-    Mirrors ``sim_edam.build_sim_edam``: resolved Booley inputs in, a flow-API
-    EDAM out, with file names relative to *work_root* so the materialized
-    Vivado build directory is relocatable within the Sandbox workspace.
+    Resolved Booley inputs in, a flow-API EDAM out, with file names relative to
+    *work_root* so the materialized Vivado build directory is relocatable within
+    the Sandbox workspace.
 
     ``part`` is the only edalize ``vivado`` flow option Booley forwards by
     default (it is in the :mod:`edam` whitelist and unambiguously safe). The XDC

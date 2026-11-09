@@ -54,7 +54,6 @@ from booley.flows import artifacts as _artifacts
 from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.execution_persistence import execution_goal_name
 from booley.flows.flow_config import tb_top_for_target
-from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.backends.cocotb import seed_arguments
 from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
@@ -71,6 +70,7 @@ from booley.flows.sim.build import (
 from booley.flows.sim.config import (
     literal_run_cwd_problem,
     resolve_run_cwd,
+    resolve_sim_sentinels,
 )
 from booley.flows.sim.execution.engine import (
     launch_environment,
@@ -79,12 +79,12 @@ from booley.flows.sim.execution.engine import (
 )
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX, has_infra_error
 from booley.flows.sim.run_guard import unstaged_runtime_input_diagnostic
-from booley.flows.sim.runner import SIM_RUN_HALVES, resolve_sim_sentinels
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputError,
     declared_runtime_inputs,
     materialize_runtime_inputs,
 )
+from booley.flows.simulator_family import matching_eda_tool, normalize_eda_tool
 from booley.flows.target_campaign import (
     CampaignUnit,
     TargetCampaign,
@@ -110,16 +110,12 @@ from booley.targets.selection import TargetSectionConflictError, selector_target
 
 from .specialist import Specialist
 
-_SIM_RUN_HALVES = SIM_RUN_HALVES
-
 
 def _target_environment(work_dir: Path, identity: str) -> dict[str, str]:
     """The ``tests.toml`` env table of Target *identity* in the checkout at *work_dir*."""
     sections = load_test_configuration_field(work_dir, "env")
     return dict(lookup_target_section(sections, identity) or {})
 
-
-_resolve_sim_sentinels = resolve_sim_sentinels
 
 logger = logging.getLogger(__name__)
 
@@ -1925,7 +1921,7 @@ replacement must differ, and every proposal must remain a single source edit.
     ) -> str:
         """Authenticate configured simulator metadata against the Target declaration."""
         try:
-            family = sim_edam.matching_eda_tool(declared, configured, target=target)
+            family = matching_eda_tool(declared, configured, target=target)
         except ValueError as exc:
             raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
         return cls._supported_sim_tool(family, target)
@@ -1934,7 +1930,7 @@ replacement must differ, and every proposal must remain a single source edit.
     def _supported_sim_tool(eda_tool: str | None, target: str) -> str:
         """Normalize one mutation-capable simulator without choosing a default."""
         try:
-            family = sim_edam.normalize_eda_tool(eda_tool)
+            family = normalize_eda_tool(eda_tool)
         except ValueError as exc:
             raise UnsupportedSimTargetError(
                 f"mutation_tester: Target {target!r} has unsupported simulator "
@@ -2096,7 +2092,7 @@ replacement must differ, and every proposal must remain a single source edit.
             str(max(1, timeout - 5)),
         ]
         cmd.extend(f"--plusarg={value}" for value in plusargs)
-        pass_sentinels, fail_sentinels = _resolve_sim_sentinels(work_dir)
+        pass_sentinels, fail_sentinels = resolve_sim_sentinels(work_dir)
         cmd.extend(f"--pass-sentinel={sentinel}" for sentinel in pass_sentinels)
         cmd.extend(f"--fail-sentinel={sentinel}" for sentinel in fail_sentinels)
         run_cwd = resolve_run_cwd(work_dir)
@@ -2117,14 +2113,14 @@ replacement must differ, and every proposal must remain a single source edit.
         cmd = [
             sys.executable,
             "-m",
-            _SIM_RUN_HALVES["icarus"],
+            "booley.flows.sim.backends.icarus",
             "--build-dir",
             rel,
             "--timeout",
             str(max(1, timeout - 5)),
         ]
         cmd.extend(f"--plusarg={value}" for value in plusargs)
-        pass_sentinels, fail_sentinels = _resolve_sim_sentinels(work_dir)
+        pass_sentinels, fail_sentinels = resolve_sim_sentinels(work_dir)
         cmd.extend(f"--pass-sentinel={sentinel}" for sentinel in pass_sentinels)
         cmd.extend(f"--fail-sentinel={sentinel}" for sentinel in fail_sentinels)
         run_cwd = resolve_run_cwd(work_dir)

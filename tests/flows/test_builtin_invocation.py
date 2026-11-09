@@ -13,6 +13,7 @@ import pytest
 from booley.core.boundary import BoundaryError
 from booley.criteria.state import DevelopmentState
 from booley.flows.base import BooleyFlow, BuiltinFlow, SubprocessResult
+from booley.flows.builtin_cli import parse_request
 from booley.flows.endpoint_cli import normalize_target_arg
 from booley.flows.endpoint_state import EndpointState
 from booley.flows.fpga.flow import FpgaImplFlow
@@ -22,6 +23,7 @@ from booley.flows.plan import FlowPlan, WorkUnitPlan
 from booley.flows.request import FlowRequest
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
+from booley.flows.synth.request import SynthRequest
 from booley.mcp.base import EXIT_ERROR
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import TargetCatalog
@@ -46,6 +48,23 @@ def test_builtin_target_repetition_normalizes_to_ordered_scalar(
 
     assert repeated.target == "a,b,c"
     assert repeated == comma_list
+
+
+def test_request_value_error_is_a_cli_usage_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class RefusingRequest(SynthRequest):
+        def __post_init__(self) -> None:
+            raise ValueError("refused by the request")
+
+    flow = AsicSynthesizeFlow()
+    monkeypatch.setattr(flow, "request_type", RefusingRequest)
+
+    with pytest.raises(SystemExit) as exit_info:
+        parse_request(flow, ["--target", "t"])
+
+    assert exit_info.value.code == 2
+    assert "refused by the request" in capsys.readouterr().err
 
 
 def test_optional_builtin_target_absence_and_authored_punctuation_stay_scalar() -> None:
@@ -616,7 +635,6 @@ def test_failed_builtin_dry_run_keeps_json_stdout_and_reason_stderr(
 
 
 def test_sim_verbose_cli_and_typed_request_construct_identical_output_request(tmp_path):
-    from booley.flows.builtin_cli import parse_request
     from booley.flows.sim.request import SimRequest
 
     manifest = tmp_path / "manifest.json"

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -7,6 +9,7 @@ from jsonschema import Draft202012Validator
 
 from booley.flows.builtin_cli import build_parser, parse_request
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.request import SimRequest
 from booley.mcp.flow_adapter import flow_schema
 
@@ -80,29 +83,82 @@ def test_typed_resume_rejects_no_waivers(tmp_path) -> None:
         SimRequest(resume_from=tmp_path / "manifest.json", no_waivers=True)
 
 
-def test_no_waivers_requires_coverage_and_is_recorded_on_request(capsys) -> None:
+def test_no_waivers_requires_coverage_and_is_recorded_on_request() -> None:
     request = parse_request(SimulateFlow(), ["--target", "sim", "--coverage", "--no-waivers"])
     assert request.no_waivers is True
     assert parse_request(SimulateFlow(), ["--target", "sim", "--coverage"]).no_waivers is False
-    with pytest.raises(SystemExit):
-        parse_request(SimulateFlow(), ["--target", "sim", "--no-waivers"])
-    assert "--no-waivers requires --coverage" in capsys.readouterr().err
     with pytest.raises(ValueError, match="no_waivers requires coverage"):
         SimRequest(target="sim", no_waivers=True)
     with pytest.raises(ValueError, match="no_waivers must be boolean"):
         SimRequest(target="sim", coverage=True, no_waivers="yes")
 
 
+def test_cli_skip_is_not_an_option() -> None:
+    with pytest.raises(SystemExit):
+        parse_request(SimulateFlow(), ["--target", "sim", "--skip", "a"])
+
+
+def test_duplicate_test_names_share_one_message(tmp_path, capsys) -> None:
+    """One rule, one text: whether the names came from ``test`` or a tests file."""
+    listed = tmp_path / "listed.txt"
+    listed.write_text("a\n# note\nb\na\n", encoding="utf-8")
+    message = "duplicate exact test name(s): a"
+
+    for argv in (["--test", "a", "--test", "a"], ["--tests-file", str(listed)]):
+        with pytest.raises(SystemExit):
+            parse_request(SimulateFlow(), argv)
+        assert message in capsys.readouterr().err
+    with pytest.raises(ValueError, match=re.escape(message)):
+        SimRequest(test=("a", "a"))
+    with pytest.raises(ValueError, match=re.escape(message)):
+        SimRequest(tests_file=listed)
+
+
+def _tests_file(tmp_path: Path, text: str) -> list[str]:
+    path = tmp_path / "selected.txt"
+    path.write_text(text, encoding="utf-8")
+    return ["--tests-file", str(path)]
+
+
 @pytest.mark.parametrize(
-    "argv",
+    ("argv", "message"),
     [
-        ["--target", "sim", "--test", "a", "--test", "a"],
-        ["--target", "sim", "--skip", "a"],
+        (["--test", "a", "--tests-file", "f.txt"], "--test and --tests-file are mutually"),
+        (["--resume-from", "m.json", "--mode", "elab-only"], "--resume-from cannot be combined"),
+        (
+            ["--resume-from", "m.json", "--elab-only"],
+            "--resume-from cannot be combined with --mode",
+        ),
+        (["--no-waivers"], "--no-waivers requires --coverage"),
+        (
+            ["--resume-from", "m.json", "--seed", "3", "--mode", "elab-only"],
+            "--seed applies to simulation",
+        ),
+        (["--tests-file", "missing.txt"], "cannot read --tests-file"),
     ],
 )
-def test_invalid_selection_fails_in_cli_normalization(argv: list[str]) -> None:
-    with pytest.raises(SystemExit):
+def test_cli_rule_errors_name_flags(argv, message, capsys, tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)  # the relative file names above never exist
+    with pytest.raises(SystemExit) as exit_info:
         parse_request(SimulateFlow(), argv)
+    assert exit_info.value.code == 2
+    assert message in capsys.readouterr().err
+
+
+def test_cli_empty_tests_file_names_the_flag(tmp_path, capsys) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        parse_request(SimulateFlow(), _tests_file(tmp_path, "# only\n\n"))
+    assert exit_info.value.code == 2
+    assert "--tests-file contains no test names" in capsys.readouterr().err
+
+
+def test_typed_rule_errors_name_fields(tmp_path) -> None:
+    with pytest.raises(ValueError, match="test and tests_file are mutually exclusive"):
+        SimRequest(target="sim", test=("a",), tests_file=tmp_path / "f.txt")
+    with pytest.raises(ValueError, match="seed applies to simulation"):
+        SimRequest(target="sim", seed=3, mode=SimulationMode.ELAB_ONLY)
+    with pytest.raises(ValueError, match="resume_from cannot be combined with mode"):
+        SimRequest(resume_from=tmp_path / "m.json", mode=SimulationMode.ELAB_ONLY)
 
 
 def test_mcp_schema_accepts_only_array_test_shape() -> None:

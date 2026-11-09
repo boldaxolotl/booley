@@ -90,7 +90,7 @@ from booley.flows.sim.config import (
     resolve_run_cwd,
     resolve_trace_files,
 )
-from booley.flows.sim.edam import normalize_eda_tool
+from booley.flows.simulator_family import normalize_eda_tool
 from booley.flows.target_test_plan import TargetTestPlan, build_target_test_plan
 from booley.flows.test_runs import parse_test_selector
 from booley.fusesoc import (
