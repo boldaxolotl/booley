@@ -503,26 +503,20 @@ class TestDeclaredTraceFiles:
         assert current.select().path == tmp_path / "dump_003.fst"
         assert trace.postprocessed == []  # already a store; no conversion
 
-    def test_huge_vcd_is_adopted_raw_instead_of_converted(self, tmp_path: Path, monkeypatch):
-        """The conversion is bounded — it runs inside the CALLER's budget.
-
-        ``TraceSession.postprocess`` shells out to an unbounded ``bwave build``
-        at finalize time, after the sim's own ``--timeout`` was honoured but
-        still inside the Flow-level ``timeout_ms``. On the 4.66 GB dump this
-        feature was written for that turns a passing simulation into a timeout
-        kill, so past the cap the raw VCD is adopted as-is — the run is still
-        reported as having produced a waveform, which was F-22's real complaint.
-        """
-        monkeypatch.setattr(backend_shared, "MAX_ADOPTED_VCD_BYTES", 16)
+    @pytest.mark.skipif(sys.platform == "win32", reason="NTFS would allocate the sparse 2 GiB")
+    def test_vcd_over_2gib_is_converted(self, tmp_path: Path):
+        """No size cap: a declared VCD past 2 GiB is converted and its store selected."""
+        store = tmp_path / "trace.fst"
+        store.write_bytes(b"fst")
         big = tmp_path / "fpu.vcd"
-        big.write_bytes(b"0" * 64)
-        trace = self._FakeTrace(tmp_path / "trace.fst")
+        with big.open("wb") as stream:
+            stream.truncate(2 * 1024**3 + 1)  # sparse: no real 2 GiB write
+        trace = self._FakeTrace(store)
 
         selection = self._current(trace, ["fpu.vcd"], [tmp_path]).select()
 
-        assert selection.path == big  # the dump itself, not a store
-        assert selection.oversize
-        assert trace.postprocessed == []  # no unbounded conversion was attempted
+        assert selection.path == store  # the converted store, what finalize turns into TRACE_OK
+        assert trace.postprocessed == [big]
 
     def test_empty_and_missing_candidates_are_ignored(self, tmp_path: Path):
         (tmp_path / "empty.vcd").write_text("")
