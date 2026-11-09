@@ -51,6 +51,11 @@ class TestCriterionEntry:
         e2 = CriterionEntry.from_dict(d)
         assert e2.ever_met is True
 
+    def test_ever_met_absent_in_old_data(self):
+        """Backward compat: old state files without ever_met default to False."""
+        e = CriterionEntry.from_dict({"met": True, "mandatory": True})
+        assert e.ever_met is False
+
     def test_ever_met_not_serialized_when_false(self):
         e = CriterionEntry(met=False, mandatory=True, ever_met=False)
         d = e.to_dict()

@@ -1387,6 +1387,16 @@ def test_goal_statuses_use_shared_semantic_styles():
         assert _style_at(text) == Style.parse(expected["checking"])
         assert _style_at(text, len("checking · ")) == Style.parse(style)
         assert _style_at(text, text.plain.index("Label")) == Style.parse(expected["checking"])
+    # Job and Goal state words that mean the same thing must share one style.
+    styles = app_module.SEMANTIC_STYLE
+    for aliases in (
+        ("pass", "met", "passing"),
+        ("fail", "failing"),
+        ("running", "checking"),
+        ("attention", "needs recheck"),
+        ("unknown", "not run", "not yet run", "unavailable", "ok"),
+    ):
+        assert len({styles[alias] for alias in aliases}) == 1, aliases
 
 
 def test_dashboard_palette_imports_have_no_copied_codes():

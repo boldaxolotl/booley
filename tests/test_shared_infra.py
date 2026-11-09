@@ -174,7 +174,7 @@ class TestCheckPaths:
 
 
 # ---------------------------------------------------------------------------
-# Test config-leakage guard: project_root scoping
+# project_root scoping
 # ---------------------------------------------------------------------------
 
 

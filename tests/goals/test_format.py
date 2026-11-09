@@ -229,6 +229,14 @@ def test_project_wide_status_only_adds_the_prefix(goal_mode, short, count):
     assert render_status(views, short=short, project_wide=True) == prefix + plain
 
 
+def test_long_status_names_the_worktree_and_branch(goal_mode):
+    """Agents read the long form's Worktree and Branch lines to locate the checkout."""
+    record = replace(goal_mode.record, worktree_path="/work/goal-tree", branch="goal/lint-fix")
+    lines = render_status((GoalStatusView(record, (), "", 0),), short=False).splitlines()
+    assert "Worktree: /work/goal-tree" in lines
+    assert "Branch: goal/lint-fix" in lines
+
+
 def test_long_status_proposal_lines_are_frozen(goal_mode):
     """The agent-facing (MCP) text keeps its proposal, conflict, decision and apply lines."""
     from booley.goals.changes import Approval, ChangeKind
