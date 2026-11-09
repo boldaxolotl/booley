@@ -291,9 +291,9 @@ def test_build_test_run_normalizes_env_and_keeps_args_order() -> None:
     ],
 )
 def test_build_test_run_refusals(kwargs: dict, reason: str) -> None:
-    test = kwargs.pop("test")
+    # Never mutate the parametrized dict: repeated runs (flake-stress) reuse it.
     with pytest.raises(TestRunNameError) as excinfo:
-        build_test_run(test, **kwargs)
+        build_test_run(**kwargs)
     assert reason in str(excinfo.value)
 
 
