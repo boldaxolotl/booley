@@ -86,7 +86,7 @@ Every agent-facing call follows the same shape:
    update instead follows the invocation error path; see the failure distinctions
    in [Built-in Flow execution](FLOW-EXECUTION.md).
 
-Interactive Mode outside Goal Mode uses the same registry and implementations without persistent Goal state. An occupying Goal Record adds evidence binding and freshness checks to calls into its worktree; it does not launch another agent. While any Goal Record occupies the Project, endpoint dispatch, report fetches and Goal tools refuse calls without explicit `work_dir`, including calls intended to run outside that worktree; status, poll, cancel, Target listing and B-Wave tools are not affected.
+Interactive Mode outside Goal Mode uses the same registry and implementations without persistent Goal state. An occupying Goal Record adds evidence binding and freshness checks to calls into its worktree; it does not launch another agent. While any Goal Record occupies the Project, endpoint dispatch, report fetches and Goal tools refuse a call that names no checkout (no `work_dir` and no caller in a linked worktree), including calls intended to run outside that worktree; status, poll, cancel, Target listing and B-Wave tools are not affected.
 
 ### How Host-Provisioned EDA Fits
 
@@ -174,9 +174,24 @@ Built-in MCP worktree routing:
 `coverage_evidence` only in the Coverage Analyst's nested server.
 
 While any Goal Record occupies the Project, Booley Flows, Specialists, Goal
-tools, and `booley_report` refuse a call without `work_dir`, even a diagnostic
-call outside that worktree; `booley_targets` may omit it. Project-defined
-endpoints must declare `work_dir` to run.
+tools, and `booley_report` refuse a call that names no checkout (no
+`work_dir` and no caller in a linked worktree), even a diagnostic call outside
+that worktree; `booley_targets` may omit it. Project-defined endpoints must
+declare `work_dir` to run.
+
+Default checkout: a call that omits `work_dir` (or passes an empty one)
+targets the checkout of the calling agent's session process when that
+process's cwd is the root of a linked worktree of the server's repository
+other than the server cwd. The session process is the Claude Code peer or the
+owner of a marked `booley chat --no-daemon` Codex launch; ordinary and
+hand-started Codex never route. Otherwise the call targets the server cwd (the
+main checkout in the Sandbox). The checkout is filled in after schema
+validation, only for tools that accept `work_dir`, and an explicit `work_dir`
+always wins. A routed call counts as explicit for Goal binding; a caller in
+the main checkout is not routed and keeps the Goal refusal. A routed caller's
+call to a Project-defined endpoint that declares no `work_dir` is refused.
+Agent-facing guidance deliberately keeps the stricter advice to always pass
+`work_dir`. See ADR 0068 Amendments (2026-11-08).
 
 ### Configuration Boundary
 
@@ -616,7 +631,7 @@ Interactive Mode is the normal way to try a Custom Flow or Specialist. Once the 
 - *"Run `drc_check` on the `variant_a` Target with the signoff rule set."*
 - *"Ask `protocol_reviewer` to check `rtl/axi_slave.sv`."*
 
-The agent selects the arguments and invokes the custom MCP tool. Goal Mode uses the same implementation and registry with an immutable Run Binding; evidence may update the declared Goals when its keys and subject match them. Outside Goal Mode, the verdict is returned to the session without persistent Goal state. While any Goal Record occupies the Project, every endpoint, `booley_report`, and Goal tool call must pass explicit `work_dir`, including diagnostic calls outside the Goal worktree, so a custom endpoint must declare `work_dir` to run. `booley_targets` may omit it; the [built-in routing inventory](#work_dir-routing) lists the tools that accept none.
+The agent selects the arguments and invokes the custom MCP tool. Goal Mode uses the same implementation and registry with an immutable Run Binding; evidence may update the declared Goals when its keys and subject match them. Outside Goal Mode, the verdict is returned to the session without persistent Goal state. While any Goal Record occupies the Project, every endpoint, `booley_report`, and Goal tool call must name a checkout (`work_dir`, or a caller in a linked worktree), including diagnostic calls outside the Goal worktree, so a custom endpoint must declare `work_dir` to run. `booley_targets` may omit it; the [built-in routing inventory](#work_dir-routing) lists the tools that accept none.
 
 #### Diagnose a Flow Through the Direct CLI
 
@@ -763,7 +778,7 @@ category    = "rtl"
 - Project criteria **cannot** override base criteria (hard error in shared endpoint validation, reported by Doctor)
 - An MCP tool with empty `satisfies` gets a warning (probably misconfigured)
 - Each Criterion family has one catalog endpoint binding. Conflicting claims raise `CriterionEndpointCatalogError`; repeated identical bindings are accepted rather than resolved by discovery order.
-- While any Goal Record occupies the Project (or one is unreadable), endpoint dispatch, report fetches and Goal tools refuse calls without explicit `work_dir`, even if a call is intended as a diagnostic outside the Goal worktree.
+- While any Goal Record occupies the Project (or one is unreadable), endpoint dispatch, report fetches and Goal tools refuse a call that names no checkout (no `work_dir` and no caller in a linked worktree), even if a call is intended as a diagnostic outside the Goal worktree.
 - A Flow's Criterion contract is independent of whether a supported EDA installation is image- or host-provisioned
 
 ### Extending the Diagnostic Criterion Catalog
