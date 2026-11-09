@@ -2570,36 +2570,35 @@ def test_preview_resolves_configuration_from_each_handle_root(tmp_path: Path) ->
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh -n syntax check")
-@pytest.mark.parametrize(
-    ("adapter", "run_name"),
-    [("verilator", "smoke@1"), ("icarus", "smoke")],  # only Verilator seeds
-)
-def test_preview_is_a_runnable_chain(tmp_path: Path, adapter: str, run_name: str) -> None:
-    project = tmp_path / ".booley"
-    project.mkdir(parents=True)
-    (project / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n', encoding="utf-8")
-    inspection = _inspection(cocotb=False)
-    inspection.eda_tool = adapter
-    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
-    with (
-        patch(
-            "booley.flows.sim.execution.engine.TargetCatalog.build",
-            return_value=inspection,
-        ),
-        patch(
-            "booley.flows.sim.execution.engine.fusesoc_registry.setup_command_for_handle",
-            return_value=["setup"],
-        ),
-    ):
-        preview = execution.preview(_handle(tmp_path), NamedTests(("smoke",)))
+def test_preview_is_a_runnable_chain(tmp_path: Path) -> None:
+    for adapter, run_name in (
+        ("verilator", "smoke@1"),
+        ("icarus", "smoke"),
+    ):  # only Verilator seeds
+        root = tmp_path / adapter
+        (root / ".booley").mkdir(parents=True)
+        (root / ".booley/tests.toml").write_text('[sim]\ntests = ["smoke"]\n', encoding="utf-8")
+        inspection = _inspection(cocotb=False)
+        inspection.eda_tool = adapter
+        execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
+        with (
+            patch(
+                "booley.flows.sim.execution.engine.TargetCatalog.build", return_value=inspection
+            ),
+            patch(
+                "booley.flows.sim.execution.engine.fusesoc_registry.setup_command_for_handle",
+                return_value=["setup"],
+            ),
+        ):
+            preview = execution.preview(_handle(root), NamedTests(("smoke",)))
 
-    shell, flag, script = preview.commands[0]
-    assert (shell, flag) == ("sh", "-c")
-    subprocess.run(["sh", "-n", "-c", script], check=True)
-    work = launched_work(script)
-    assert (work.adapter, work.eda_tool, work.top) == (adapter, adapter, "tb_demo")
-    assert work.tests == ("smoke",)
-    assert [run.name for run in work.test_runs] == [run_name]
+        shell, flag, script = preview.commands[0]
+        assert (shell, flag) == ("sh", "-c")
+        subprocess.run(["sh", "-n", "-c", script], check=True)
+        work = launched_work(script)
+        assert (work.adapter, work.eda_tool, work.top) == (adapter, adapter, "tb_demo")
+        assert work.tests == ("smoke",)
+        assert [run.name for run in work.test_runs] == [run_name]
 
 
 @pytest.mark.parametrize("fresh, expected", [(True, "pass"), (False, "inconclusive")])
