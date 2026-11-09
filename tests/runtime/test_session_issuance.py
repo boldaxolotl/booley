@@ -993,7 +993,7 @@ def test_recovery_snapshot_rejects_different_keeper(issued, monkeypatch) -> None
         lambda _path: replace(stamp, keeper_image="foreign:session"),
     )
 
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="image keeper differs"):
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="keeper differs from this Project"):
         runtime_spec.load_issued_snapshot(project)
 
 

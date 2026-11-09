@@ -18,7 +18,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Predefined configurations (single source of truth)
 # ---------------------------------------------------------------------------
-from booley.core.config_paths import resolve_toml
+from booley.core.config_paths import main_repository_root, resolve_toml
 from booley.runtime.booley_dir import resolve_booley_dir
 
 logger = logging.getLogger(__name__)
@@ -45,31 +45,6 @@ def resolve_project_root(fallback_dir: Path | None = None) -> Path:
 # project_root-scoped reads bypass this cache so that one project's CWD-
 # cached toml can't leak into another project's work_dir context.
 _TOML_CACHE: dict | None = None
-
-
-def _resolve_main_repo_root(work_dir: Path) -> Path | None:
-    """Follow a worktree's ``.git`` file to its main repository root.
-
-    Mirrors ``dev_support.workspace_isolation._resolve_main_repo_root`` so that
-    worktrees without their own ``.booley/`` can still find the
-    project config in the main repo.
-    """
-    git_path = work_dir / ".git"
-    if not git_path.is_file():
-        return None
-    try:
-        content = git_path.read_text(encoding="utf-8").strip()
-        if not content.startswith("gitdir:"):
-            return None
-        gitdir = Path(content.split(":", 1)[1].strip())
-        if not gitdir.is_absolute():
-            gitdir = (work_dir / gitdir).resolve()
-        for parent in gitdir.parents:
-            if parent.name == ".git":
-                return parent.parent
-    except (OSError, ValueError):
-        pass
-    return None
 
 
 def _load_toml_from_root(root: Path) -> dict | None:
@@ -115,7 +90,7 @@ def _load_rtl_config(project_root: Path | None = None) -> dict | None:
         cfg = _load_toml_from_root(project_root)
         if cfg is not None:
             return cfg
-        main_root = _resolve_main_repo_root(project_root)
+        main_root = main_repository_root(project_root)
         if main_root is not None:
             return _load_toml_from_root(main_root)
         return None
