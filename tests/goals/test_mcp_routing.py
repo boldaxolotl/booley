@@ -26,6 +26,7 @@ from booley.mcp.call_context import binding_from_environment, resolve_call_conte
 from booley.mcp.goal_tools import dispatch_goal_tool
 from booley.runtime import job_records
 from booley.runtime.timefmt import utc_now_rfc3339
+from tests.conftest import symlink_or_skip
 from tests.goals.conftest import git, update_record
 
 
@@ -1200,7 +1201,7 @@ def test_main_checkout_caller_is_still_refused_while_goal_active(
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     proc = tmp_path / "proc"
     (proc / "300").mkdir(parents=True)
-    (proc / "300" / "cwd").symlink_to(goal_mode.main)
+    symlink_or_skip(proc / "300" / "cwd", goal_mode.main)
     checkout = peer_checkout.process_checkout(
         ProcessIdentity(300, "pid:[17]", 7), server_cwd=goal_mode.main, proc_root=proc
     )

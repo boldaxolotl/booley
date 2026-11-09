@@ -17,7 +17,7 @@ from mcp.types import TextContent
 
 from booley.harness.dashboard import model
 from booley.harness.dashboard.app import DashboardApp
-from booley.mcp import server, session_observer, session_peer, session_registry
+from booley.mcp import peer_checkout, server, session_observer, session_peer, session_registry
 from booley.mcp.application import McpApplication, McpDispatchResult, McpRequestContext
 from booley.mcp.session_observer import SessionObserver
 from booley.mcp.session_registry import SessionRegistry
@@ -84,8 +84,6 @@ def fake_proc(root: Path, peers: dict[int, tuple[int, Path | None]]) -> Path:
 def test_non_routable_caller_cwd_keeps_the_server_default(
     tmp_path: Path, repos: SimpleNamespace
 ) -> None:
-    from booley.mcp import peer_checkout
-
     cwds = {
         "linked-worktree": repos.main_wt,
         "main-checkout": repos.main,
@@ -109,8 +107,6 @@ def test_non_routable_caller_cwd_keeps_the_server_default(
 def test_server_inside_a_linked_worktree_routes_only_to_other_worktrees(
     tmp_path: Path, repos: SimpleNamespace
 ) -> None:
-    from booley.mcp import peer_checkout
-
     sibling = tmp_path / "sibling"
     git(repos.main, "worktree", "add", "-q", "-b", "sibling-work", str(sibling))
     proc = tmp_path / "proc"
@@ -121,8 +117,6 @@ def test_server_inside_a_linked_worktree_routes_only_to_other_worktrees(
 
 
 def test_server_outside_git_never_routes(tmp_path: Path, repos: SimpleNamespace) -> None:
-    from booley.mcp import peer_checkout
-
     proc = tmp_path / "proc"
     caller = link_cwd(proc, 100, repos.main_wt)
     assert (
@@ -131,8 +125,6 @@ def test_server_outside_git_never_routes(tmp_path: Path, repos: SimpleNamespace)
 
 
 def test_claude_code_process_routes_by_its_own_cwd(tmp_path: Path, repos: SimpleNamespace) -> None:
-    from booley.mcp import peer_checkout
-
     proc = fake_proc(tmp_path / "proc", {50001: (200, repos.main_wt)})
     request = http_request(50001)
     routed = peer_checkout.caller_checkout(
@@ -166,8 +158,6 @@ def http_request(port: int) -> Any:
 def test_booley_chat_codex_launch_routes_by_owner_cwd_and_unmarked_codex_never_routes(
     tmp_path: Path, repos: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.mcp import peer_checkout
-
     booley = tmp_path / "booley"
     booley.mkdir()
     monkeypatch.setattr(peer_checkout, "resolve_common_booley_dir", lambda: booley)
@@ -194,8 +184,6 @@ def test_booley_chat_codex_launch_routes_by_owner_cwd_and_unmarked_codex_never_r
 def test_caller_checkout_falls_back_to_the_server_cwd_on_unreadable_state(
     tmp_path: Path, repos: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.mcp import peer_checkout
-
     proc = fake_proc(tmp_path / "proc", {50001: (200, repos.main_wt)})
     request = http_request(50001)
     none = peer_checkout.CallerCheckout(None, None)
@@ -206,7 +194,7 @@ def test_caller_checkout_falls_back_to_the_server_cwd_on_unreadable_state(
         request, client_name="claude-code", metadata={}, proc_root=proc
     )
     assert result.checkout is None and result.peer is not None
-    # Codex without a readable handle map keeps the server cwd.
+    # Codex with no handle map at all keeps the server cwd.
     monkeypatch.setattr(peer_checkout, "resolve_common_booley_dir", lambda: tmp_path / "missing")
     codex = peer_checkout.caller_checkout(
         request, client_name="codex", metadata={"threadId": THREAD_ID}, proc_root=proc
@@ -304,8 +292,6 @@ async def sdk_calls(
     monkeypatch: pytest.MonkeyPatch,
     client_name: str = "claude-code",
 ) -> AsyncIterator[Callable[..., Awaitable[httpx.Response]]]:
-    from booley.mcp import peer_checkout
-
     """Real stateful SDK HTTP transport; ``call(port, tool, arguments)`` posts as that peer."""
     lookup = session_peer.peer_identity
     monkeypatch.setattr(
@@ -425,8 +411,8 @@ async def test_dashboard_lists_the_session_under_its_worktree(
     booley = tmp_path / "booley"
     booley.mkdir()
     observer = SessionObserver(budget=1)
-    monkeypatch.setattr(observer, "_registry", lambda: SessionRegistry(booley, proc_root=proc))
     proc = fake_proc(tmp_path / "proc", {50001: (200, repos.main_wt)})
+    monkeypatch.setattr(observer, "_registry", lambda: SessionRegistry(booley, proc_root=proc))
     async with sdk_calls(application, observer, proc, monkeypatch) as call:
         response = await call(50001, "tool0", {})
     assert response.status_code == 200, response.text
@@ -462,8 +448,8 @@ async def test_two_callers_in_one_worktree_see_each_other_as_sharing(
     booley = tmp_path / "booley"
     booley.mkdir()
     observer = SessionObserver(budget=1)
-    monkeypatch.setattr(observer, "_registry", lambda: SessionRegistry(booley, proc_root=proc))
     proc = fake_proc(tmp_path / "proc", {50001: (200, repos.main_wt), 50002: (201, repos.main_wt)})
+    monkeypatch.setattr(observer, "_registry", lambda: SessionRegistry(booley, proc_root=proc))
     async with sdk_calls(application, observer, proc, monkeypatch) as call:
         await call(50001, "probe", {})
         await call(50002, "probe", {})
@@ -478,8 +464,6 @@ async def test_two_callers_in_one_worktree_see_each_other_as_sharing(
 async def test_boundary_lookup_failure_degrades_to_the_server_cwd(
     tmp_path: Path, repos: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.mcp import peer_checkout
-
     application, seen = capturing_application(LINT_DEFINITION["schema"])
     proc = fake_proc(tmp_path / "proc", {50001: (200, repos.main_wt)})
 

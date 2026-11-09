@@ -220,7 +220,7 @@ class SessionObserver:
                     else {},
                     client_name=observation.client_name,
                     peer=observation.caller.peer
-                    if observation.caller is not None
+                    if observation.caller is not None and observation.caller.peer is not None
                     else observed_peer(observation.request),
                 )
             ),

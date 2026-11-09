@@ -107,7 +107,7 @@ The structured result Finish produces for a Goal Mode: diff summary against the 
 _Avoid_: triage package, run report, acceptance report
 
 **Session**:
-In the Session Registry, one agent client thread or process that calls Booley from a worktree, falling back to the worktree itself when the client cannot be told apart. It feeds the Dashboard and the shared-worktree warning, and its process's checkout is the default checkout of its calls that omit `work_dir`. It never selects a Goal Record.
+In the Session Registry, one agent client thread or process that calls Booley from a worktree, falling back to the worktree itself when the client cannot be told apart. It feeds the Dashboard and the shared-worktree warning, and its process's checkout, when that is a linked worktree of the server's repository, is the default checkout of its calls that omit `work_dir`. It never selects a Goal Record.
 _Avoid_: connection, tab, MCP session, Sandbox session
 
 **Sandbox Attachment**:
@@ -353,7 +353,7 @@ You will not need these unless you are reading older work records, code, or docs
 - **"stage"**: Legacy framing for a mandatory pipeline. The Developer Agent chooses Booley Flows and Specialists as needed; use **Workflow Region** only for advisory capability groupings.
 - **"engine" / "core"**: Legacy names for retired orchestration infrastructure. No replacement umbrella term; name the capability or source module.
 - **"Design Configuration"**: Retired. The Booley-side bundle of EDA params no longer exists; design-description lives in a FuseSoC **Target**, and Booley only references it by name. Use **Target**.
-- **"Session ID"** as a Sandbox identity: Never implemented. Use **Session** for the presentational agent-client identity, **Worktree Identity** for the checkout, or **Goal Record** for the work being tracked; none is a per-Sandbox Session ID.
+- **"Session ID"** as a Sandbox identity: Never implemented. Use **Session** for the agent-client identity (not a Goal selector), **Worktree Identity** for the checkout, or **Goal Record** for the work being tracked; none is a per-Sandbox Session ID.
 - **"parameter override"** / **`-d`** / **`--define`**: Retired. There is no per-call build-time injection into a **Target**; declare the value in the Target, or use a different Target.
 - **"plusarg override"** / **`--plusarg`**: Never offered. A run-time argument that a run needs is declared as a **Test Variant**, so every Test Run is a declared configuration.
 - **"colon-free target names"**: Retired absolute. VLNV grammar (the FuseSoC Vendor:Library:Name:Version identifier) is permitted on Booley's surface: bare names when unambiguous, `vlnv#name` on collision.

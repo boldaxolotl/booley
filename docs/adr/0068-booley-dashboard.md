@@ -427,5 +427,5 @@ A call that omitted `work_dir` always ran on the server's cwd, so an agent worki
 
 Consequences:
 
-- A non-routed call from a session that was routed before, for example after its worktree was deleted, keeps the row's previous checkout under the 2026-10-15 rule "Migration retains the predecessor's worktree when a call omits `work_dir`", until registry maintenance prunes the row.
+- A non-routed call from a session that was routed before, for example after its worktree was deleted or when the peer lookup fails for one call, keeps the row's previous checkout under the 2026-10-15 rule "Migration retains the predecessor's worktree when a call omits `work_dir`", until registry maintenance prunes the row.
 - The peer lookup moves onto the request path of every call without `work_dir`, including poll and status loops. For Codex the owner walk runs twice per call (routing, then attribution). There is no cache.

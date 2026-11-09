@@ -1,4 +1,4 @@
-"""Advisory session presence. No reader here selects or changes Goal work."""
+"""Advisory session presence and the attribution facts routing shares; no reader selects Goal work."""
 
 from __future__ import annotations
 
@@ -42,7 +42,8 @@ logger = logging.getLogger(__name__)
 class Attribution:
     """One request's advisory identity, never consulted for routing or approval.
 
-    Its ``work_dir`` reports the checkout the call was routed to.
+    Its ``work_dir`` reports the checkout the call was routed to, or the session's
+    previous checkout under the 2026-10-15 migration rule.
     """
 
     key: str

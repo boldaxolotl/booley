@@ -7,10 +7,10 @@ use. :func:`resolve_call_context` is now the one place that decides them, so a
 later resolver can retarget a whole call (jobs, state, logs, and the endpoint
 subprocess environment) without touching every reader.
 
-Ordinary calls use the explicit
-``work_dir`` or the server's cwd (an omitted ``work_dir`` may already have been
-filled at the SDK boundary from the calling agent's linked worktree), the container-wide jobs root, and the server
-process's own ``BOOLEY_*`` variables. ``subprocess_env_overrides`` is empty.
+Ordinary calls use the explicit ``work_dir`` or the server's cwd, the
+container-wide jobs root, and the server process's own ``BOOLEY_*`` variables.
+An omitted ``work_dir`` may already have been filled at the SDK boundary from
+the calling agent's linked worktree. ``subprocess_env_overrides`` is empty.
 An explicit worktree selects its active Goal Record and
 freezes one Run Binding. All evidence paths and subprocess overrides follow that
 record; an omitted worktree is refused while any occupying record exists.
