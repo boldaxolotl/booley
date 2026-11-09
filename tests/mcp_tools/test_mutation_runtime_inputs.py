@@ -179,7 +179,9 @@ def test_pinned_runs_stage_inputs_for_every_adapter(
 
     project.endpoint._run_sim_pinned("default", tmp_path, project.build, "tb")
 
-    assert "--runtime-input=vectors.hex" in seen["cmd"]  # type: ignore[operator]
+    from tests.flows.sim.launched_work import launched_work
+
+    assert launched_work(seen["cmd"]).runtime_inputs == ("vectors.hex",)  # type: ignore[arg-type]
     assert seen["bytes"] == _PAYLOAD
     assert list(project.run_dir.iterdir()) == []
     assert project.leftovers() == []

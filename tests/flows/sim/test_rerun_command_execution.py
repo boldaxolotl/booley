@@ -19,6 +19,7 @@ from booley.config.project_config import normalize_tests_toml
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.flow import SimulateFlow
 from booley.runtime.endpoint_execution import EXIT_FAILURE
+from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.test_flow import (
     _FLOW_ENABLED,
     _canned_build_session,  # noqa: F401 -- autouse fixture
@@ -54,10 +55,8 @@ def _invoke(root: Path, target: str, argv: list[str], section: dict | None, tool
 
     def execute(command):
         script = command[-1]
-        words = script.rsplit(" && ", maxsplit=1)[-1].split()
-        plusargs = [word.removeprefix("--plusarg=") for word in words if "--plusarg=" in word]
         mode = "soak" if "export MODE=soak" in script else None
-        launches.append((plusargs, mode))
+        launches.append((list(launched_work(script).plusargs), mode))
         return SubprocessResult(returncode=1, stdout="[SIM_RESULT] FAILED\n", duration_s=0.1)
 
     sections = normalize_tests_toml({"lite": section}) if section is not None else {}
