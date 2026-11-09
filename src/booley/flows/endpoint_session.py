@@ -217,7 +217,7 @@ def invoke_endpoint(
     admission: object | None,
     started: float,
 ) -> EndpointOutcome:
-    """Run the legacy implementation hook under the neutral coordinator."""
+    """Run the prepared invocation under the neutral coordinator."""
     endpoint._start_time = started
     result = EndpointOutcome(exit_code=EXIT_ERROR)
     witness = _StdoutWitness(sys.stdout)

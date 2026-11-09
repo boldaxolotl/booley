@@ -300,8 +300,11 @@ def test_endpoint_reauthentication_never_renders_corrupt_hook_as_authoritative(
     assert result.detail["pre_sim_unauthenticated_references"]
 
 
-def _recording_invocation(*, borrows: bool):
-    """Build an invocation recording the admission ``invoke_endpoint`` hands it."""
+def _recording_invocation(*, borrows: bool, events: list[str]):
+    """Build an invocation recording the admission ``invoke_endpoint`` hands it.
+
+    Its run also appends ``"invoke"`` to *events*, so the lifecycle order stays pinned.
+    """
     from booley.flows.endpoint_report_criteria import ReportScope
     from booley.flows.prepared_invocation import PreparedInvocation
 
@@ -315,6 +318,7 @@ def _recording_invocation(*, borrows: bool):
             raise AssertionError("the execution sequence under test never plans a report scope")
 
         def run(self, admission: object | None) -> EndpointOutcome:
+            events.append("invoke")
             self.received.append(admission)
             return EndpointOutcome(report_text="ok")
 
@@ -370,7 +374,7 @@ class _Endpoint:
 @pytest.mark.parametrize("borrows", [True, False])
 def test_prepared_campaign_and_borrowed_admission_are_explicit_values(borrows: bool) -> None:
     endpoint = _Endpoint()
-    invocation = _recording_invocation(borrows=borrows)
+    invocation = _recording_invocation(borrows=borrows, events=endpoint.events)
     prepared = PreparedExecution(None, None, False, False, invocation)
 
     result = execute_endpoint(endpoint, prepared)
@@ -380,6 +384,7 @@ def test_prepared_campaign_and_borrowed_admission_are_explicit_values(borrows: b
     assert invocation.received == [endpoint.admission_object if borrows else None]
     assert endpoint.events == [
         "admit",
+        "invoke",
         "finalize",
         "acceptance",
         "finish",

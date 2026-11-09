@@ -49,7 +49,11 @@ def _compares_with_sim(node: ast.AST) -> list[int]:
         if isinstance(child, ast.Compare)
         and any(
             isinstance(part, ast.Constant) and part.value == "sim"
-            for part in (child.left, *child.comparators)
+            for operand in (child.left, *child.comparators)
+            # A literal tuple/list/set operand (``name in ("sim", ...)``) is searched too.
+            for part in (
+                operand.elts if isinstance(operand, ast.Tuple | ast.List | ast.Set) else (operand,)
+            )
         )
     ]
 
@@ -150,6 +154,7 @@ SHARED_PREPARATION_MODULES = (
     "endpoint_admission.py",
     "endpoint_report_criteria.py",
     "prepared_invocation.py",
+    "endpoint_state.py",
 )
 
 # BuiltinFlow methods that prepare an endpoint for every built-in Flow.
