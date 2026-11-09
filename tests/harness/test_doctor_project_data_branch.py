@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.harness import doctor
+from booley.runtime.worktree_evidence import tracked_booley_paths
 from tests.harness.git_support import git_stdout as _git
 
 
@@ -368,8 +370,8 @@ def test_common_state_check_skips_a_worktree_removed_while_scanning(
 
 
 def test_tracked_paths_lookup_raises_with_git_stderr_on_failure(tmp_path: Path) -> None:
-    with pytest.raises(doctor.subprocess.CalledProcessError) as raised:
-        doctor._tracked_booley_paths(tmp_path, tmp_path / ".booley")
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        tracked_booley_paths(tmp_path, tmp_path / ".booley")
 
     assert raised.value.stderr
 

@@ -105,7 +105,7 @@ def _text(raw: bytes) -> str:
     return raw.decode("utf-8", "surrogateescape")
 
 
-def _merge_target(repo: Path) -> str:
+def merge_target(repo: Path) -> str:
     """The branch ref ``repo`` has checked out, else its HEAD commit."""
     result = _run(repo, "symbolic-ref", "--quiet", "HEAD")
     if result.returncode == 0:
@@ -118,7 +118,7 @@ def _merge_target(repo: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _count_uncommitted(repo: Path, excluded_untracked: str | None) -> int:
+def count_uncommitted(repo: Path, excluded_untracked: str | None) -> int:
     """Count ``git status`` entries, skipping untracked ones under *excluded_untracked*."""
     changes = parse_porcelain_z(_text(_git(repo, "status", "--porcelain=v1", "-z")))
     count = 0
@@ -172,7 +172,7 @@ def _squashed_commits(repo: Path, upstream: str, base: str) -> set[str]:
     return squashed
 
 
-def _count_unmerged(repo: Path, upstream: str) -> int:
+def count_unmerged(repo: Path, upstream: str) -> int:
     """Count commits on HEAD that are not on *upstream*, squash merges included.
 
     ``git cherry`` drops commits patch-equivalent to an upstream commit. A branch
@@ -206,22 +206,39 @@ class _Context:
     goals: GoalStore
 
 
-def _registered_worktrees(main: Path) -> list[tuple[Path, str | None]]:
-    """Registered worktrees after the main checkout as ``(path, branch ref or None)``."""
-    raw = _git(main, "worktree", "list", "--porcelain", "-z")
+@dataclass(frozen=True)
+class Registration:
+    """One registered worktree of a repository."""
+
+    path: Path
+    head: str  # HEAD commit
+    branch: str | None  # Branch ref; ``None``: detached HEAD
+    locked: str | None  # ``git worktree lock`` reason ("" without one); ``None``: not locked
+
+
+def registered_worktrees(repository: Path) -> list[Registration]:
+    """Worktrees registered in *repository*, not counting its own checkout."""
+    raw = _git(repository, "worktree", "list", "--porcelain", "-z")
     records: list[list[str]] = [[]]
     for field in _text(raw).split("\0"):
         if field:
             records[-1].append(field)
         elif records[-1]:
             records.append([])
-    entries: list[tuple[Path, str | None]] = []
+    entries: list[Registration] = []
     for record in records[1:]:
         if not record or not record[0].startswith("worktree "):
             continue
         branch = next((f[7:] for f in record if f.startswith("branch ")), None)
+        head = next((f[5:] for f in record if f.startswith("HEAD ")), "")
+        lock = next((f for f in record if f == "locked" or f.startswith("locked ")), None)
         entries.append(
-            (Path(os.fsdecode(record[0][9:].encode("utf-8", "surrogateescape"))), branch)
+            Registration(
+                Path(os.fsdecode(record[0][9:].encode("utf-8", "surrogateescape"))),
+                head,
+                branch,
+                None if lock is None else lock[7:],
+            )
         )
     return entries
 
@@ -260,16 +277,16 @@ def _describe(
     paired = (nested / ".git").is_file()
     paired_uncommitted = paired_unmerged = None
     if paired:
-        paired_uncommitted = _count_uncommitted(nested, None)
-        paired_unmerged = _count_unmerged(nested, _merge_target(context.common))
+        paired_uncommitted = count_uncommitted(nested, None)
+        paired_unmerged = count_unmerged(nested, merge_target(context.common))
     return WorktreeState(
         name=path.name,
         path=path,
         branch=None if branch_ref is None else branch_ref.removeprefix("refs/heads/"),
         kind=PAIRED if paired else SNAPSHOT,
-        uncommitted=_count_uncommitted(path, booley_dir.as_posix()),
+        uncommitted=count_uncommitted(path, booley_dir.as_posix()),
         paired_uncommitted=paired_uncommitted,
-        unmerged=_count_unmerged(path, context.target),
+        unmerged=count_unmerged(path, context.target),
         paired_unmerged=paired_unmerged,
         sessions=tuple(sorted(context.sessions.get(path.resolve(), []))),
         goal=_active_goal(context, path, diagnostics),
@@ -288,19 +305,20 @@ def collect_worktrees(project_root: Path, *, now: float) -> tuple[list[WorktreeS
     diagnostics: list[str] = []
     context = _Context(
         common=common,
-        target=_merge_target(main),
+        target=merge_target(main),
         sessions=_session_labels(common, now, diagnostics),
         goals=GoalStore(common, lock_timeout_s=0),
     )
     container = (common / "worktrees").resolve()
     states: list[WorktreeState] = []
-    for path, branch_ref in _registered_worktrees(main):
+    for registration in registered_worktrees(main):
+        path = registration.path
         if path.parent.resolve() != container or not WORKTREE_NAME.fullmatch(path.name):
             continue
         if not path.exists():
             diagnostics.append(f"worktree {path.name} is registered but its directory is missing")
             continue
-        states.append(_describe(context, path, branch_ref, diagnostics))
+        states.append(_describe(context, path, registration.branch, diagnostics))
     return sorted(states, key=lambda state: state.name), diagnostics
 
 

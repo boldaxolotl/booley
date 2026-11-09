@@ -57,6 +57,7 @@ booley chat -- --help             # the agent CLI's help (Booley's is booley cha
 booley dashboard                  # sessions and Jobs; see Usage
 booley worktree new <name>        # a linked worktree for parallel work; see below
 booley worktree list              # each worktree's branch, changes, and use
+booley worktree rm <name>         # remove a worktree, keeping its evidence and branches
 ```
 
 The Dashboard opens by itself when you attach to the container; see
@@ -180,41 +181,56 @@ under `.booley/worktrees/`, from the main checkout or from any worktree:
 
 A worktree whose directory is gone is not listed; a warning names it.
 
-**Removing a worktree** deletes everything in it, ignored files included, and
-Booley has no command for it. First save what you need:
+**Removing a worktree** takes one command, run in the Sandbox from the main
+checkout or another worktree (never from inside the one you remove):
 
-1. Put the commits you want on a branch you keep. Commits made in the worktree
-   are on `booley/<name>`; an older worktree, or one named
-   `<branch>--<description>`, may be on a detached HEAD, so its commits may be
-   on no branch at all. For a Paired Checkout, the same goes for its
-   `booley-worktree/<name>` branch.
-2. Copy needed untracked and ignored files into a new folder outside the
-   worktree, overwriting nothing. Look through the whole worktree, including
-   its `.booley/`: `reviewer-evidence/`, `handoffs/`, the Findings Log
-   (`findings.jsonl`), reports, and logs. A finding can attach files that live
-   elsewhere; copy those as well. Keep this archive separate from the
-   Project's own Findings Log; don't merge the two.
+```text
+booley worktree rm <name> [--force]
+```
 
-Then, in the same Sandbox and from outside the worktree:
+It moves the worktree's evidence aside, removes the Paired Checkout first and
+then the outer worktree, and keeps the branches (`booley/<name>`, or the Goal
+Branch, and `booley-worktree/<name>`), so commits made in the worktree stay
+reachable. A worktree on a detached HEAD, which has no branch, is reported as
+`detached HEAD was <commit>`; save that commit on a branch if you need it.
 
-1. Clean dirty and untracked files, including a Snapshot's copied files when
-   Git lists them as untracked.
-2. Paired Checkout only: remove the inner checkout with
-   `git -C <absolute-booley-directory> worktree remove <absolute-worktree>/.booley`.
-3. Remove the worktree with
-   `git -C <absolute-project-root> worktree remove <absolute-worktree>`.
-4. Optional: to reuse the name, delete its branch with
-   `git -C <absolute-project-root> branch -D booley/<name>`, and for a Paired
-   Checkout also
-   `git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
+Without `--force` it refuses, listing every reason, while the worktree has:
 
-Git refuses to remove a worktree that holds populated submodules; once your
-files are saved, add `--force` to each `git worktree remove`. Check for locks
-before you unlock a worktree or force a removal.
+- a live Session or an active Goal Mode (an unreadable Session Registry or Goal
+  Record also refuses);
+- uncommitted changes, in the worktree or in its Paired Checkout;
+- commits not yet in the main checkout's branch (a branch merged by squash
+  counts as merged);
+- a populated submodule at a commit the main checkout's submodule lacks;
+- a Git lock (`git worktree lock`);
+- a damaged checkout: registered but its directory is gone, or no working
+  `.git`.
 
-Use Sandbox paths in these commands, not host paths: the host may see the
-worktree somewhere else. If `booley worktree new` fails and leaves a checkout
-behind, it prints these steps with the real paths.
+`--force` removes it anyway; the evidence is still kept. Another worktree
+registered inside the one you remove (a `.baseline-wt-*` checkout, a Snapshot's
+own `worktrees/`) is refused even with `--force`: remove it first with
+`booley worktree rm` or `git worktree remove`.
+
+Evidence is the worktree's `.booley/` content that Git does not keep: Common
+Booley State such as `reviewer-evidence/`, `handoffs/`, the Findings Log
+(`findings.jsonl`), `setup-evidence/`, reports, and logs, plus Flow reports with
+their Trace Artifacts. It moves to
+`.booley/worktrees/.evidence/<name>-<time>/` in the Main Booley Directory, at
+the same relative paths; each attempt gets its own new directory and nothing is
+overwritten. Copy out what you need from there, and keep that archive separate
+from the Project's own Findings Log; don't merge the two. If the move fails, for
+example across file systems, nothing is removed.
+
+If the command is interrupted, run it again: it finishes the removal, and checks
+a worktree that is still intact again, so work added since is never removed
+without the refusal. It never prunes other worktrees' registrations. To reuse
+the name, delete the kept branches first with
+`git -C <absolute-project-root> branch -D booley/<name>` and, for a Paired
+Checkout,
+`git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
+
+If `booley worktree new` fails and leaves a checkout behind, it prints the
+manual Git steps with the real Sandbox paths; use those, not host paths.
 
 ### Commands for skills
 

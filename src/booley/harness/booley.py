@@ -4,7 +4,7 @@
 Subcommands:
     goal      Work with Goal Records and evidence
     chat      Open the Project's default (or --cli chosen) Agent CLI
-    worktree  Create a linked worktree with paired or snapshot Project inputs
+    worktree  Create, list, or remove linked worktrees (paired or snapshot Project inputs)
     cheat     Print quick-reference cheatsheet
     doctor    Run environment health checks
     bootstrap Prepare Project-independent host resources

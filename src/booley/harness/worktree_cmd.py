@@ -8,7 +8,7 @@ it inside the checkout), on a new branch
 ``booley/<name>`` at the workspace's current commit (an existing branch of that
 name is refused), unless the name uses the ``<branch>--<description>`` convention
 to check out an existing branch instead. ``booley worktree list`` reports each
-worktree's state.
+worktree's state and ``booley worktree rm`` removes one, keeping its evidence.
 A Versioned Booley Directory gets a Paired Checkout on ``booley-worktree/<name>``
 at its last commit (uncommitted files are named in a warning and left out); a
 non-versioned Booley Directory gets a Snapshot.
@@ -30,7 +30,6 @@ from pathlib import Path
 from booley.core.booley_dir import resolve_common_booley_dir
 from booley.flows.execution import FlowConfigError, flow_enabled
 from booley.runtime.booley_dir import BooleyDirOutsideCheckoutError, own_booley_dir
-from booley.runtime.docs_links import docs_url
 from booley.runtime.paths import worktree_create_script
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_prepare import find_post_setup_hook, prepare_project
@@ -72,13 +71,15 @@ def worktree_name(value: str) -> str:
 
 
 def add_subparser(subparsers: argparse._SubParsersAction) -> None:
-    """Register ``booley worktree`` with its ``new`` and ``list`` commands."""
+    """Register ``booley worktree`` with its ``new``, ``list`` and ``rm`` commands."""
     parser = subparsers.add_parser(
         "worktree",
-        help="Create or list linked worktrees",
-        description="Create or list linked Git worktrees for this Project.",
+        help="Create, list, or remove linked worktrees",
+        description="Create, list, or remove linked Git worktrees for this Project.",
     )
-    commands = parser.add_subparsers(dest="worktree_command", metavar="{new,list}", required=True)
+    commands = parser.add_subparsers(
+        dest="worktree_command", metavar="{new,list,rm}", required=True
+    )
     new = commands.add_parser(
         "new",
         help="Create .booley/worktrees/<name> and print its path",
@@ -113,6 +114,29 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
             "List the worktrees under .booley/worktrees with their branch (or "
             "detached), uncommitted and unmerged work, live Sessions, active Goal "
             "Mode, and last use. Read-only."
+        ),
+    )
+    remove = commands.add_parser(
+        "rm",
+        help="Remove .booley/worktrees/<name>, keeping its evidence and branches",
+        description=(
+            "Remove the linked worktree at .booley/worktrees/<name>: its Paired "
+            "Checkout first, then the outer worktree. Common Booley State and Flow "
+            "reports in the worktree move to .booley/worktrees/.evidence/<name>-<time>/ "
+            "first, and the branches stay. Refuses, naming every reason, while the "
+            "worktree has a live Session, an active Goal Mode, uncommitted or unmerged "
+            "work, a populated submodule commit that main lacks, a Git lock, or a "
+            "damaged checkout; another worktree registered inside it is always "
+            "refused. Re-run after an interruption to finish."
+        ),
+    )
+    remove.add_argument("name", type=worktree_name, metavar="NAME", help="Worktree directory name")
+    remove.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "remove even with a live Session, active Goal Mode, uncommitted or "
+            "unmerged work, or a Git lock; evidence is still kept"
         ),
     )
 
@@ -211,13 +235,17 @@ class _Created:
 
 
 def run(args: argparse.Namespace, project_root: Path) -> int:
-    """Dispatch ``new`` or ``list``; ``new`` keeps registration atomic with directory migration."""
+    """Dispatch ``new``, ``list`` or ``rm``; ``new`` keeps registration atomic with directory migration."""
     from booley.core.layout_lock import layout_gate
 
     if args.worktree_command == "list":
         from booley.harness import worktree_list
 
         return worktree_list.run(project_root)
+    if args.worktree_command == "rm":
+        from booley.harness import worktree_rm
+
+        return worktree_rm.run(args, project_root)
 
     try:
         worktree_booley_dir(project_root)
@@ -342,8 +370,7 @@ def _ready_notice(name: str, *, paired: bool) -> str:
     """One calm line for a successful creation; full removal steps print only on failure."""
     kind = "Paired Checkout" if paired else "Snapshot"
     return (
-        f"Created worktree {name!r} with a {kind}. "
-        f"To remove it later, see {docs_url('CLI-REFERENCE.md', 'worktrees')}"
+        f"Created worktree {name!r} with a {kind}. Remove it later with: booley worktree rm {name}"
     )
 
 

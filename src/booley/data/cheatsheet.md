@@ -17,7 +17,7 @@ the default Agent CLI (`booley chat --cli <name>` picks another allowed one).
 | `booley dashboard` | Show sessions, Goals, and Jobs |
 | `booley flow` | List or directly run deterministic Booley Flows |
 | `booley specialist` | List or directly run visible Specialists |
-| `booley worktree` | Create or list linked worktrees (Paired Checkout or Snapshot) |
+| `booley worktree` | Create, list, or remove linked worktrees (Paired Checkout or Snapshot) |
 
 #### Either-location commands
 

@@ -153,7 +153,12 @@ def _configure_checkout(source: Path, nested: Path) -> None:
     apply_git_identity(nested, load_git_identity(source))
 
 
-def _remove_registration(repository: Path, worktree: Path) -> None:
+def remove_worktree_registration(repository: Path, worktree: Path) -> None:
+    """Remove *worktree* from *repository*: its files and its own administrative entry.
+
+    Idempotent: a worktree that is already gone is a no-op, and one whose
+    directory is gone loses only its entry. Locks do not stop it.
+    """
     result = run_git(repository, "worktree", "remove", "--force", "--force", str(worktree))
     if not result.returncode:
         return
@@ -185,7 +190,7 @@ def _rollback_pair(source: Path, nested: Path, branch: str, base: str) -> None:
     interrupted add can leave it behind. The locked pre-check proved the branch
     absent, so a branch still at *base* is this run's; a moved one is kept.
     """
-    _remove_registration(source, nested)
+    remove_worktree_registration(source, nested)
     tip = run_git(source, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
     if tip.returncode == 0 and tip.stdout.strip() == base:
         _require_git(source, "branch", "-D", branch)
@@ -253,9 +258,15 @@ def rollback_project_pairing(source: Path, worktree: Path, name: str) -> None:
         run_git(source, "config", "--unset", key)
 
 
+def remove_paired_checkout(source: Path, worktree: Path) -> None:
+    """Remove *worktree*'s Paired Checkout from *source*; its branch stays."""
+    with _project_lock(source):
+        remove_worktree_registration(source, own_booley_dir(worktree))
+
+
 def rollback_outer_worktree(project_root: Path, worktree: Path) -> None:
     """Remove the newly created outer checkout after paired rollback completes."""
-    _remove_registration(project_root, worktree)
+    remove_worktree_registration(project_root, worktree)
 
 
 def validate_project_pairing(source: Path | None, name: str) -> None:
