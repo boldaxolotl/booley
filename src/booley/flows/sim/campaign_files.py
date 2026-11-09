@@ -13,51 +13,31 @@ import hashlib
 import json
 import os
 import stat
-from collections.abc import Mapping
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError, require_dict
 from booley.flows.sim.campaign_reports import is_report_link
+from booley.flows.sim.coverage_json import REFERENCE_JSON, SHA256_PREFIX, content_digest
 from booley.runtime.regular_file import open_regular_nofollow
 
 _CHUNK_BYTES = 64 * 1024
 
 
 def canonical_json(value: object) -> bytes:
-    """Encode finite JSON as sorted compact UTF-8 with one trailing newline.
+    """Encode finite JSON as the canonical record form (sorted, compact, trailing newline).
 
     Mappings and tuples are thawed to plain objects first.  Raises ``ValueError`` for a
     value that is not JSON (a YAML date, say) or is a non-finite number.
     """
     try:
-        text = json.dumps(
-            _thaw(value),
-            ensure_ascii=False,
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        return REFERENCE_JSON.encode(value)
     except TypeError as exc:
         raise ValueError(str(exc)) from exc
-    return text.encode("utf-8") + b"\n"
-
-
-def _thaw(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {key: _thaw(item) for key, item in value.items()}
-    if isinstance(value, tuple | list):
-        return [_thaw(item) for item in value]
-    return value
 
 
 def document_digest(value: object) -> str:
     """Digest a JSON document as its canonical bytes without the trailing newline."""
-    return evidence_digest(canonical_json(value)[:-1])
-
-
-def evidence_digest(raw: bytes) -> str:
-    """Digest raw evidence bytes exactly as stored."""
-    return "sha256:" + hashlib.sha256(raw).hexdigest()
+    return content_digest(canonical_json(value)[:-1])
 
 
 def stream_digest(path: Path) -> tuple[int, str]:
@@ -71,7 +51,7 @@ def stream_digest(path: Path) -> tuple[int, str]:
         for chunk in iter(lambda: stream.read(_CHUNK_BYTES), b""):
             size += len(chunk)
             digest.update(chunk)
-    return size, "sha256:" + digest.hexdigest()
+    return size, SHA256_PREFIX + digest.hexdigest()
 
 
 def _identity(

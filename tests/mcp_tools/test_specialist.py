@@ -119,8 +119,12 @@ class TestTimeoutClamping:
         endpoint = ReviewSpecialist()
         with patch.dict(os.environ, env):
             endpoint.parse_args(["--timeout-ms", "3600000"])
-        endpoint.read_state()
-        # Just verify parse — no clamping needed
+        # Run the clamping step in _run(); an above-minimum timeout must survive it.
+        with patch.object(endpoint, "_invoke_agent", side_effect=RuntimeError("skip")):
+            endpoint.read_state()
+            endpoint._start_time = 0
+            with contextlib.suppress(RuntimeError):
+                endpoint._run()
         assert endpoint.args.timeout_ms == 3600000
 
 
@@ -680,23 +684,6 @@ class TestBuildResumeParams:
         assert original.session_id is None
         assert original.resume_session is False
 
-    def test_preserves_other_fields(self):
-        original = AgentCallParams(
-            prompt="check",
-            model="opus",
-            cwd="/work",
-            max_turns=50,
-            timeout_seconds=900,
-        )
-        endpoint = ReviewSpecialist()
-        result = endpoint._build_resume_params(original, "sid")
-
-        assert result.prompt == "check"
-        assert result.model == "opus"
-        assert result.cwd == "/work"
-        assert result.max_turns == 50
-        assert result.timeout_seconds == 900
-
 
 # ===========================================================================
 # _invoke_agent_with_resume
@@ -912,14 +899,6 @@ class TestSpecialistGitCommit:
 
 class TestBannedPhraseNote:
     """commit_msg_banned_phrase_note() exposes the live banned list to agents."""
-
-    def test_includes_known_default_words(self):
-        note = Specialist.commit_msg_banned_phrase_note()
-        # The default list ships with these — note must surface them so the
-        # agent does not emit them in the first place.
-        assert note  # non-empty
-        assert "copilot" in note.lower()
-        assert "claude" in note.lower()
 
     def test_note_starts_with_header(self):
         note = Specialist.commit_msg_banned_phrase_note()

@@ -282,7 +282,8 @@ class TestStealthCores:
     a second discovery root and handed to FuseSoC as a second --cores-root."""
 
     def test_default_stealth_root_is_structural(self, tmp_path: Path):
-        assert core_projection.stealth_core_root(tmp_path) == _stealth_root(tmp_path)
+        # ADR 0036: <Booley Directory>/cores, with no [project].dir override.
+        assert core_projection.stealth_core_root(tmp_path) == tmp_path / ".booley" / "cores"
 
     def test_stealth_cores_discovered_worktrees_still_skipped(self, tmp_path: Path):
         _write_core(tmp_path / "ip")

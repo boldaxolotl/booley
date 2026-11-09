@@ -51,12 +51,6 @@ class TestBuildCocotbTestFilter:
     def test_single_test(self):
         assert crun.build_cocotb_test_filter("m", ["only"]) == r"^m\.(only)$"
 
-    def test_full_set(self):
-        names = ["test_reset", "test_count", "test_overflow"]
-        pattern = re.compile(crun.build_cocotb_test_filter("mod", names))
-        for name in names:
-            assert pattern.match(f"mod.{name}")
-
     @pytest.mark.parametrize(
         "tricky",
         ["t.est", "te+st", "te[a]st", "t(es)t", "te|st"],

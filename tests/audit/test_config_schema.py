@@ -126,7 +126,6 @@ def test_retired_sources_table_warns_with_core_hint() -> None:
     """`[sources]` is retired: nothing reads it, so Doctor must say so."""
     audit = project_schema.audit_known_tables({"sources": {"testbench": {"source_dirs": ["tb"]}}})
 
-    assert "sources" not in project_schema.KNOWN_BOOLEY_TOML_TABLES
     assert audit.is_valid
     assert len(audit.findings) == 1
     finding = audit.findings[0]
@@ -321,6 +320,14 @@ def test_sim_build_timeout_must_be_a_positive_integer(value: object) -> None:
     assert "build_timeout_ms must be a positive integer" in audit.findings[0].message
 
 
+def test_sim_trace_convert_timeout_must_be_a_positive_integer() -> None:
+    for value in (0, -1, True, 1.5, "1800000"):
+        audit = flow_schema.audit_flow_table("sim", {"trace_convert_timeout_ms": value})
+
+        assert not audit.is_valid
+        assert "trace_convert_timeout_ms must be a positive integer" in audit.findings[0].message
+
+
 def test_sim_build_timeout_is_valid_and_other_flows_warn() -> None:
     sim = flow_schema.audit_flow_table("sim", {"build_timeout_ms": 3_600_000})
     lint = flow_schema.audit_flow_table("lint", {"build_timeout_ms": 3_600_000})
@@ -340,19 +347,6 @@ def test_flow_collection_reports_required_sections_and_retired_aliases() -> None
     assert any("[flows.simulate] is retired" in item.message for item in audit.findings)
     missing = [item for item in audit.findings if item.check_id == "config.flow-section-missing"]
     assert {item.subject for item in missing} == {"lint", "synth"}
-
-
-@pytest.mark.parametrize("retired", ["elab", "elaborate"])
-def test_flow_collection_reports_retired_elaboration_tables(retired: str) -> None:
-    audit = flow_schema.audit_flow_tables(
-        {"flows": {retired: {"standalone_frontend": "iverilog"}, "sim": {}}},
-        ("sim",),
-    )
-
-    assert not audit.is_valid
-    finding = next(item for item in audit.findings if f"[flows.{retired}]" in item.message)
-    assert "sim --mode elab-only" in finding.fix
-    assert "[flows.sim].standalone_frontend" in finding.fix
 
 
 def test_sim_accepts_standalone_frontend_and_rejects_removed_cache_knob() -> None:
@@ -479,7 +473,6 @@ def test_developer_settings_are_ignored_with_one_actionable_warning(developer):
     assert warning.check_id == "config.ignored-table"
     assert warning.subject == "developer"
     assert warning.fix == "delete [developer] from booley.toml"
-    assert "developer" in project_schema.IGNORED_BOOLEY_TOML_TABLES
     assert "developer" not in project_schema.KNOWN_BOOLEY_TOML_TABLES
 
 

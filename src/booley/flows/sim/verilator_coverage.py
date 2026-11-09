@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
 import re
 from collections.abc import Mapping
@@ -25,9 +23,10 @@ from .coverage_campaign import (
     CoveragePointIdentity,
     CoverageRun,
     CoverageRunCollectionState,
-    FrozenJson,
     SimulationVerdict,
+    encode_coverage_point_id,
 )
+from .coverage_json import FrozenJson, content_digest
 from .execution.artifacts import artifact_path_component
 from .execution.contract import PreSimEvidence, pre_sim_failure_message
 from .execution.freshness import (
@@ -446,7 +445,7 @@ def _artifact(
         id=artifact_id,
         kind=kind,
         path=path.relative_to(root).as_posix(),
-        sha256=f"sha256:{hashlib.sha256(content).hexdigest()}",
+        sha256=content_digest(content),
         bytes=len(content),
         state=state,
         owner_run=run_id,
@@ -942,15 +941,6 @@ def _require_hook(events: list[dict[str, object]], code_stem: str) -> int:
     return sequence
 
 
-def _canonical_json(value: object) -> bytes:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
-
-
-def _point_id(identity: Mapping[str, object]) -> str:
-    payload = base64.urlsafe_b64encode(_canonical_json(identity)).decode().rstrip("=")
-    return f"cp1:{payload}"
-
-
 def _subject(metric: str, attributes: Mapping[str, str]) -> Mapping[str, str]:
     labels = {
         "line": "basic_block",
@@ -988,7 +978,7 @@ def _point_for_record(
         "collector": collector,
     }
     return CoveragePoint(
-        id=_point_id(identity_document),
+        id=encode_coverage_point_id(identity_document),
         identity=CoveragePointIdentity(
             metric=metric,
             location=MappingProxyType(location),

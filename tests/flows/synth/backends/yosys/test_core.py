@@ -1332,5 +1332,5 @@ def test_declared_string_receiver_and_numeric_arguments_stay_distinct(tmp_path):
         slang_options=[],
     )
     assert "-set N 12 -set B 1 -set R 1.25" in commands[1]
-    raw = parameters["NAME"].value.encode()
-    assert f"-set NAME {8 * len(raw)}'h{raw.hex()}" in commands[1]
+    # The string travels as its UTF-8 bytes in one sized hex literal.
+    assert "-set NAME 72'h612220625c633b2064" in commands[1]

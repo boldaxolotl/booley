@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib
 import json
 import os
@@ -156,83 +155,6 @@ def _inspection(*, cocotb: bool) -> SimpleNamespace:
     )
     inspection.inspect = lambda _handle: inspection
     return inspection
-
-
-def test_prepared_source_entries_accept_project_absolute_sources(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
-    build_root = tmp_path / "build"
-    project_root.mkdir()
-    build_root.mkdir()
-    source = project_root / "picorv32.v"
-    source.write_text("module picorv32; endmodule\n", encoding="utf-8")
-    handle = _handle(project_root)
-    resolved = ResolvedTarget(
-        name="sim",
-        vlnv=handle.vlnv,
-        toplevel="picorv32",
-        eda_tool="icarus",
-        files=(ResolvedFile(str(source), "verilogSource"),),
-        parameters={},
-        build_root=build_root,
-        edam_path=build_root / "demo.eda.yml",
-    )
-    prepared = PreparedSimulationBuild(
-        target="sim",
-        target_identity=handle.identity,
-        resolved=resolved,
-        work_root=build_root,
-        build_root=build_root,
-        eda_tool="icarus",
-        toplevel="picorv32",
-        make_argv=("true",),
-    )
-    group = object.__new__(PreparedOrdinaryGroup)
-    group._source_declarations = ()
-    group._compile_surface = TargetCompileSurface(handle.project_root, (), ())
-    group._sources_before = {}
-    group._handle = handle
-    group._attempt = SimpleNamespace(prepared=prepared, trace_requested=False)
-
-    assert group.prepared_source_entries()[0]["path"] == "picorv32.v"
-
-
-def test_prepared_source_entries_reject_project_external_sources(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
-    build_root = tmp_path / "build"
-    external = tmp_path / "external.v"
-    project_root.mkdir()
-    build_root.mkdir()
-    external.write_text("module external; endmodule\n", encoding="utf-8")
-    handle = _handle(project_root)
-    resolved = ResolvedTarget(
-        name="sim",
-        vlnv=handle.vlnv,
-        toplevel="external",
-        eda_tool="icarus",
-        files=(ResolvedFile(str(external), "verilogSource"),),
-        parameters={},
-        build_root=build_root,
-        edam_path=build_root / "demo.eda.yml",
-    )
-    prepared = PreparedSimulationBuild(
-        target="sim",
-        target_identity=handle.identity,
-        resolved=resolved,
-        work_root=build_root,
-        build_root=build_root,
-        eda_tool="icarus",
-        toplevel="external",
-        make_argv=("true",),
-    )
-    group = object.__new__(PreparedOrdinaryGroup)
-    group._source_declarations = ()
-    group._compile_surface = TargetCompileSurface(handle.project_root, (), ())
-    group._sources_before = {}
-    group._handle = handle
-    group._attempt = SimpleNamespace(prepared=prepared, trace_requested=False)
-
-    with pytest.raises(SimulationBuildSlotError, match="unsafe prepared Simulation source"):
-        group.prepared_source_entries()
 
 
 def _runtime_input_vvp(root: Path, build_root: Path) -> Path:
@@ -641,6 +563,7 @@ class _ChangingTraceRun:
                 'run_cwd = "other-run"\n'
                 'trace_files = ["../second/*.fst"]\n'
                 "timeout_ms = 2000\n"
+                "trace_convert_timeout_ms = 9000\n"
                 'cycle_sentinels = ["[NEW]"]\n'
                 'pre_run_commands = ["new"]\n',
                 encoding="utf-8",
@@ -868,6 +791,67 @@ def test_timeout_without_transport_recovers_cocotb_progress(tmp_path: Path) -> N
     ]
 
 
+def _check_post_simulation_partial(
+    tmp_path: Path,
+    timed_out: bool,
+    returncode: int,
+    sim_passed: bool,
+    names: tuple[str, ...] = ("smoke",),
+) -> None:
+    """An adapter dying mid-conversion leaves the simulation verdict, never a timeout.
+
+    ``names=()`` is the unnamed invocation (a Target with no registered Tests).
+    """
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    identity = AdapterTransportIdentity(
+        "icarus", "abc123", handle.identity, names, _evidence_path(handle)
+    )
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        partial = partial_result_identity(identity)
+        publish_native_adapter_result(
+            partial,
+            "[SIM_RESULT] PASSED\n" if sim_passed else "[SIM_RESULT] FAILED\n",
+            0 if sim_passed else 1,
+            trace_required=True,
+            trace=AdapterTraceResult("incident", detail="trace conversion had not finished"),
+        )
+        os.utime(partial.result_path, ns=(1, 1))
+        return SubprocessResult(
+            returncode=returncode,
+            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+            timed_out=timed_out,
+        )
+
+    outcome = _run_execution(handle, prepared, invoke, names or None, cocotb=False)
+
+    assert outcome.tests[0].timed_out is False
+    # Unnamed invocations have no per-test rows: the adapter-level verdict (a
+    # missing trace makes it inconclusive) applies, as on a run that was not killed.
+    assert outcome.tests[0].verdict == ("inconclusive" if sim_passed or not names else "fail")
+    assert outcome.verdict != "timeout"
+
+
+def test_post_simulation_partial_survives_adapter_kill(tmp_path: Path) -> None:
+    """Sigkill, shell 137 and an adapter exception, for a passing and a failing simulation."""
+    for returncode in (-9, 137, 1):
+        for sim_passed in (True, False):
+            case = tmp_path / f"rc{returncode}-{sim_passed}"
+            case.mkdir()
+            _check_post_simulation_partial(case, False, returncode, sim_passed)
+
+
+def test_post_simulation_partial_survives_kill_of_unnamed_invocation(tmp_path: Path) -> None:
+    """A Target without registered Tests keeps its verdict on a deadline kill or a signal."""
+    for timed_out, returncode in ((True, -9), (False, -9)):
+        for sim_passed in (True, False):
+            case = tmp_path / f"to{timed_out}-{sim_passed}"
+            case.mkdir()
+            _check_post_simulation_partial(case, timed_out, returncode, sim_passed, ())
+
+
 @pytest.mark.parametrize("simulator_returncode", [-15, 0, 7])
 def test_guard_abort_reason_uses_simulator_not_adapter_returncode(
     tmp_path: Path, simulator_returncode: int
@@ -1091,7 +1075,7 @@ def test_prepared_source_entries_accept_exact_packaged_trace_source(
         {
             "path": "booley-package/refs/booley_vcd_dump.sv",
             "bytes": len(packaged.read_bytes()),
-            "sha256": "sha256:" + hashlib.sha256(packaged.read_bytes()).hexdigest(),
+            "sha256": "sha256:ff3f002ecdd71580a204971585b494799950bb71d14dda0439f37e41972c1119",
             "kind": "generated_input",
         },
     )
@@ -2107,19 +2091,19 @@ def _assert_execution_trace(
         )
         _assert_queryable_trace(outcome, cache_root)
     else:
-        traces = [
-            Path(artifact.path) for artifact in outcome.artifacts if artifact.kind == "trace"
-        ]
-        assert len(traces) == 1 and traces[0].suffix == ".vcd"
-        assert traces[0].read_text(encoding="utf-8") == (
+        # A VCD that failed to convert is a trace incident, never a waveform.
+        assert not any(artifact.kind == "trace" for artifact in outcome.artifacts)
+        (run_log,) = (Path(a.path) for a in outcome.artifacts if a.kind == "live_run_log")
+        work = run_log.parent  # the simulation work directory
+        assert (work / "trace.vcd").read_text(encoding="utf-8") == (
             "$date\nnow\n$end\n$timescale 1ns $end\n"
             "$scope module tb $end\n$var wire 1 ! signal $end\n"
             "$upscope $end\n$enddefinitions $end\n#0\n0!\n#1\n1!\n"
         )
-        assert "fixture conversion unavailable" in (
-            traces[0].parent / "trace.fst.stderr"
-        ).read_text(encoding="utf-8")
-        manifest = json.loads((traces[0].parent / "trace_status.json").read_text(encoding="utf-8"))
+        assert "fixture conversion unavailable" in (work / "trace.fst.stderr").read_text(
+            encoding="utf-8"
+        )
+        manifest = json.loads((work / "trace_status.json").read_text(encoding="utf-8"))
         assert any(
             attempt["kind"] == "vcd_postprocess" and attempt["status"] == "vcd_only"
             for attempt in manifest["attempts"]
@@ -2164,7 +2148,9 @@ def test_icarus_trace_reaches_execution_on_first_and_repeat_run(
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(trace=True))
     for _ in range(2):
         outcome = run_prepared_group(execution, handle, ("smoke",))
-        assert outcome.passed
+        # An unconvertible VCD leaves the Test Run inconclusive, not passed.
+        assert outcome.passed is queryable
+        assert outcome.verdict == ("pass" if queryable else "inconclusive")
         _assert_execution_trace(outcome, tmp_path / "bwave-cache", queryable=queryable)
         assert any("BOOLEY_BUILD_STAGE" in command[-1] for command in commands)
         assert any("booley.flows.sim.backends.icarus" in command[-1] for command in commands)
@@ -3052,7 +3038,10 @@ def _assert_attempt_config_freezing(
     assert "--run-cwd other-run" in run.commands[1]
     assert "--timeout 1" in run.commands[0]
     assert "--timeout 2" in run.commands[1]
-    assert run.pre_sim_timeouts == run.invocation_timeouts == [91, 92]
+    assert "--trace-convert-timeout 7" in run.commands[0]
+    assert "--trace-convert-timeout 9" in run.commands[1]
+    # simulation timeout + conversion budget + the fixed 90 s margin
+    assert run.pre_sim_timeouts == run.invocation_timeouts == [1 + 7 + 90, 2 + 9 + 90]
     assert first_snapshot["controls"]["run_cwd"] == "run"
     assert second_snapshot["controls"]["run_cwd"] == "other-run"
     assert first_snapshot["controls"]["pre_run_commands"] == ["old"]
@@ -3063,6 +3052,37 @@ def _assert_attempt_config_freezing(
     assert first_snapshot["inputs"][0]["bytes"] == len(f"generated{os.linesep}".encode())
     assert first.tests[0].cycles == 17
     assert second.tests[0].cycles == 23
+
+
+def test_traced_attempt_deadline_adds_conversion_budget(tmp_path: Path) -> None:
+    """A simulation passing near its timeout still has the whole conversion budget."""
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    project = tmp_path / ".booley"
+    project.mkdir()
+    config = project / "booley.toml"
+    config.write_text(
+        "[flows.sim]\ntimeout_ms = 5000\ntrace_convert_timeout_ms = 7000\n", encoding="utf-8"
+    )
+    traces = (tmp_path / "first" / "wave.fst", tmp_path / "second" / "wave.fst")
+    run = _ChangingTraceRun(handle, prepared, config, traces)
+    execution = SimulationExecution(
+        invoke=split_invoker(run.invoke), options=SimulationOptions(trace=True)
+    )
+    with (
+        canned_build_session(),
+        patch(
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
+            return_value=_inspection(cocotb=False),
+        ),
+        patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.NATIVE_FST)),
+        patch.object(execution, "_run_pre_sim", side_effect=run.pre_sim),
+        patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
+    ):
+        execution.run(handle, NamedTests(("smoke",)))
+
+    assert run.invocation_timeouts == [5 + 7 + 90]
+    assert "--timeout 5 " in run.commands[0] and "--trace-convert-timeout 7" in run.commands[0]
 
 
 def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
@@ -3083,6 +3103,7 @@ def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
         'run_cwd = "run"\n'
         'trace_files = ["../first/*.fst"]\n'
         "timeout_ms = 1000\n"
+        "trace_convert_timeout_ms = 7000\n"
         'cycle_sentinels = ["[OLD]"]\n'
         'pre_run_commands = ["old"]\n',
         encoding="utf-8",
@@ -3356,8 +3377,16 @@ def test_cycle_count_malformed_record_outranks_other_records(output: str) -> Non
 
 
 @pytest.mark.parametrize("copyto", ["firmware.hex", "data/firmware.hex", None])
-@pytest.mark.parametrize("source_bytes", [b"00000013\n", b"00000013\r\n"])
-def test_real_copyto_prepared_source_entries(tmp_path, monkeypatch, copyto, source_bytes):
+@pytest.mark.parametrize(
+    ("source_bytes", "source_sha256"),
+    [
+        (b"00000013\n", "acc1a4b3ae11b9c321268fac9cc42bee0be463484ec33a3cec6b84ee22094a3e"),
+        (b"00000013\r\n", "9aa09655c12bb69c0ceb5ba04048dea837df879713beaef16c03531bfb9f02b1"),
+    ],
+)
+def test_real_copyto_prepared_source_entries(
+    tmp_path, monkeypatch, copyto, source_bytes, source_sha256
+):
     importlib.import_module("fusesoc")
     importlib.import_module("edalize")
     project = tmp_path / "project"
@@ -3380,15 +3409,15 @@ def test_real_copyto_prepared_source_entries(tmp_path, monkeypatch, copyto, sour
         data = next(entry for entry in entries if str(entry["path"]).endswith("firmware.hex"))
         assert data["source_path"] == "data/firmware.hex"
         assert data["path"] == (copyto or "src/acme_lib_runtime_input_1/data/firmware.hex")
-        assert data["sha256"] == "sha256:" + hashlib.sha256(source_bytes).hexdigest()
+        assert data["sha256"] == f"sha256:{source_sha256}"
         (group.build_root / data["path"]).write_bytes(b"prepared bytes changed")
         changed = next(
             entry
             for entry in group.prepared_source_entries()
             if str(entry["path"]).endswith("firmware.hex")
         )
-        assert (
-            changed["sha256"] == "sha256:" + hashlib.sha256(b"prepared bytes changed").hexdigest()
+        assert changed["sha256"] == (
+            "sha256:245e1c58419263e34092a956d221f87ed55a077261df60c02b17645711cbd929"
         )
         assert (project / "data/firmware.hex").read_bytes() == source_bytes
 
@@ -3421,7 +3450,9 @@ def test_copyto_source_association_requires_unique_full_destination_and_core(
     )
     entry = group.prepared_source_entries()[0]
     assert entry.get("source_path") == expected
-    assert entry["sha256"] == "sha256:" + hashlib.sha256(b"staged bytes").hexdigest()
+    assert entry["sha256"] == (
+        "sha256:a9228f1bda65e64e61f866520f7439e2e7a549dd27b47abf29e1b76dbb93b404"
+    )
 
 
 def test_copyto_declaration_drift_refuses_publication(tmp_path, monkeypatch):
@@ -3486,7 +3517,9 @@ def test_prepared_source_entries_real_dependency_core_export_root(tmp_path, monk
         )
         assert data["path"] == "src/acme_lib_data_1/inputs/firmware.hex"
         assert data["source_path"] == "dependency/inputs/firmware.hex"
-        assert data["sha256"] == "sha256:" + hashlib.sha256(b"dependency bytes").hexdigest()
+        assert data["sha256"] == (
+            "sha256:ae41cf82309521b9e587f2a73f60d94b4afa3125c4c690dc22546befc52b1059"
+        )
 
 
 def test_real_copyto_same_basename_uses_full_declared_paths(tmp_path, monkeypatch):

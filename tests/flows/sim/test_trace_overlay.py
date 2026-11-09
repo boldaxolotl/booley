@@ -148,15 +148,14 @@ class TestWriteTraceOverlay:
 
     def test_writes_colocated_overlay_with_trace_options(self, tmp_path: Path):
         base = _write_core(tmp_path / "ip")  # sim target: verilator, flow sim
-        base_vlnv = read_core(base)["name"]
-        expected_vlnv = trace_overlay_vlnv(base_vlnv)
+        expected_vlnv = "::demo_core-booleytrace:0"
         overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             # Co-located with the base .core so relative fileset paths still resolve.
             assert overlay.core_file.parent == base.parent
             assert TRACE_OVERLAY_MARKER in overlay.core_file.name
+            # Distinct from the base ``::demo_core:0`` → its own build root.
             assert overlay.vlnv == expected_vlnv
-            assert overlay.vlnv != base_vlnv  # distinct → its own build root
 
             doc = read_core(overlay.core_file)
             assert doc["name"] == expected_vlnv

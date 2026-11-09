@@ -33,13 +33,13 @@ from booley.flows.artifact_durability import (
 )
 from booley.flows.sim.build_session import CacheDecision
 from booley.flows.sim.campaign_files import (
-    evidence_digest,
     parse_json_object,
     read_bounded,
     read_json_object,
     stream_digest,
 )
 from booley.flows.sim.campaign_reports import is_report_link
+from booley.flows.sim.coverage_json import content_digest
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.file_lock import nonblocking_file_lock
 
@@ -411,7 +411,7 @@ class CampaignStore:
         raw = self._read(path, limit=RECORD_MAX_BYTES)
         if (
             len(raw) != binding["manifest_bytes"]
-            or evidence_digest(raw) != binding["manifest_sha256"]
+            or content_digest(raw) != binding["manifest_sha256"]
         ):
             raise SimulationCampaignIntegrityError("shared Build Result bundle digest disagrees")
         bundle = decode_simulator_bundle(raw)

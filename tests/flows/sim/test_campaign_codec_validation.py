@@ -308,7 +308,6 @@ def test_runtime_inputs_reject_blocked_invalid_mismatched_and_duplicate_bindings
 def test_observations_reject_state_grade_cycle_and_diagnostic_disagreements() -> None:
     completed = json.loads(_simulation_result("completed"))["observations"][0]
     blocked = json.loads(_simulation_result("blocked_by_build"))["observations"][0]
-    setup = json.loads(_simulation_result("setup_error"))["observations"][0]
     with pytest.raises(SimulationCampaignIntegrityError, match="blocked observations"):
         codec._validate_observations([completed], "blocked_by_build")
     with pytest.raises(SimulationCampaignIntegrityError, match="setup observations"):
@@ -325,7 +324,6 @@ def test_observations_reject_state_grade_cycle_and_diagnostic_disagreements() ->
     codec._validate_diagnostics(
         [{"severity": "warning", "code": "warn", "pointer": "", "message": "message"}]
     )
-    assert setup["execution"] == "setup_error"
 
 
 def test_simulation_attempt_rejects_access_and_directory_kinds() -> None:

@@ -7,14 +7,12 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
 from booley.core.boundary import BoundaryError, require_int, require_str_value
 from booley.flows.artifact_durability import durable_create
 from booley.flows.sim.campaign_files import (
     canonical_json,
-    evidence_digest,
     parse_json_object,
     read_bounded,
 )
@@ -24,6 +22,7 @@ from booley.flows.sim.coverage_campaign_store import (
     LoadedCoverageCampaign,
     load_coverage_campaign_bytes,
 )
+from booley.flows.sim.coverage_json import content_digest, freeze_coverage_mapping
 from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
@@ -77,7 +76,7 @@ def decode_coverage_campaign_reference(raw: bytes) -> CoverageCampaignReference:
     value = parse_json_object(raw, error=CoverageCampaignReferenceError, canonical=True)
     _validate_reference(value)
     instance = object.__new__(CoverageCampaignReference)
-    object.__setattr__(instance, "document", _freeze(value))
+    object.__setattr__(instance, "document", freeze_coverage_mapping(value))
     return instance
 
 
@@ -134,7 +133,7 @@ def _resolve_coverage_campaign_reference_bytes(
         error=CoverageCampaignReferenceError,
         booley_dir=crossed_booley_dir_entry(campaign_path),
     )
-    if len(campaign_raw) != nested["bytes"] or evidence_digest(campaign_raw) != nested["sha256"]:
+    if len(campaign_raw) != nested["bytes"] or content_digest(campaign_raw) != nested["sha256"]:
         raise CoverageCampaignReferenceError(
             "nested Coverage Campaign bytes disagree with reference"
         )
@@ -210,7 +209,7 @@ def resolve_persisted_coverage_campaign_reference(
         error=CoverageCampaignReferenceError,
         booley_dir=crossed_booley_dir_entry(public_path),
     )
-    if len(raw) != expected_bytes or evidence_digest(raw) != persisted["sha256"]:
+    if len(raw) != expected_bytes or content_digest(raw) != persisted["sha256"]:
         raise CoverageCampaignReferenceError(
             "persisted Coverage Campaign reference bytes disagree with acceptance state"
         )
@@ -259,7 +258,7 @@ def build_coverage_campaign_reference(
                 "path_base": "origin_target",
                 "path": relative,
                 "bytes": len(raw),
-                "sha256": evidence_digest(raw),
+                "sha256": content_digest(raw),
                 "campaign_id": loaded.campaign.campaign_id,
                 "schema": loaded.summary.source_schema,
             },
@@ -447,14 +446,6 @@ def _contained_relative(root: Path, relative: str) -> Path:
                 "Coverage Campaign reference path contains a link"
             )
     return path
-
-
-def _freeze(value: object) -> object:
-    if isinstance(value, dict):
-        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
-    if isinstance(value, list):
-        return tuple(_freeze(item) for item in value)
-    return value
 
 
 __all__ = [

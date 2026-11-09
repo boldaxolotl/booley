@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import gzip
 import json
 import os
@@ -19,7 +18,7 @@ from booley.flows.sim.coverage_campaign import (
     decode_coverage_campaign,
     derive_coverage_rollups,
     encode_coverage_point,
-    freeze_coverage_mapping,
+    encode_coverage_point_id,
 )
 from booley.flows.sim.coverage_campaign_store import (
     CAMPAIGN_SCHEMA_V5,
@@ -28,6 +27,7 @@ from booley.flows.sim.coverage_campaign_store import (
     load_coverage_campaign_bytes,
     publish_coverage_campaign,
 )
+from booley.flows.sim.coverage_json import freeze_coverage_mapping
 from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_v4
 from tests.flows.sim.test_coverage_campaign import _valid_document
 from tests.runtime.test_sandbox_layout import project_alias
@@ -106,11 +106,6 @@ def _invalid_campaign():
     )
 
 
-def _point_id(identity: dict[str, object]) -> str:
-    data = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
-    return f"cp1:{base64.urlsafe_b64encode(data).decode().rstrip('=')}"
-
-
 def _large_campaign(point_count: int):
     base = _campaign()
     points = []
@@ -138,7 +133,7 @@ def _large_campaign(point_count: int):
         )
         encoded_identity = encode_coverage_point(point)["identity"]
         assert isinstance(encoded_identity, dict)
-        points.append(replace(point, id=_point_id(encoded_identity)))
+        points.append(replace(point, id=encode_coverage_point_id(encoded_identity)))
     frozen = tuple(points)
     return replace(base, points=frozen, rollups=derive_coverage_rollups(frozen))
 
@@ -169,7 +164,7 @@ def _point(
     )
     encoded_identity = encode_coverage_point(point)["identity"]
     assert isinstance(encoded_identity, dict)
-    return replace(point, id=_point_id(encoded_identity))
+    return replace(point, id=encode_coverage_point_id(encoded_identity))
 
 
 def _source_campaign():

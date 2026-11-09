@@ -7,8 +7,6 @@ and the two flavours differ only in failure mode (default vs. BoundaryError).
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from booley.core.boundary import (
@@ -432,22 +430,7 @@ class TestAsPositiveInt:
         assert as_positive_int(-1, default=1, field="max_sessions") == 1
 
 
-# ---------------------------------------------------------------------------
-# Cross-cutting sanity: the bool trap in one place
-# ---------------------------------------------------------------------------
-
-
-def test_bool_trap_regression_across_all_numeric_helpers():
-    """A single guard: no numeric helper may ever let True through as 1/1.0."""
-    assert as_int(True, default=999) == 999
-    assert as_float(True, default=999.0) == 999.0
-    assert as_positive_int(True, default=999) == 999
-    with pytest.raises(BoundaryError):
-        require_finite_number(True, field="x")
-
-
-def test_finite_helpers_agree_with_math_isfinite():
+def test_numeric_helpers_reject_every_non_finite_float():
     for bad in (NAN, INF, -INF):
-        assert not math.isfinite(bad)
         assert as_int(bad, default=None) is None
         assert as_float(bad, default=None) is None

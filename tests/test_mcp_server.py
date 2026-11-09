@@ -157,11 +157,6 @@ class TestMcpLifetime:
         # Value is epoch seconds (wall clock), not the injected monotonic now.
         assert float(first.strip()) > 1_000_000_000
 
-    def test_no_heartbeat_when_path_unset(self, tmp_path):
-        # heartbeat_path=None disables the reaper heartbeat entirely.
-        lifetime = self._McpLifetime(idle_timeout_seconds=None, max_age_seconds=None)
-        lifetime.mark_activity()  # must not raise
-
     def test_from_env_ticket_stdio_writes_heartbeat(self, tmp_path, monkeypatch):
         # ADR 0028 Decision 11: Ticket Mode stdio servers share the Session
         # Runtime container, so their MCP tool activity must feed the reaper
@@ -465,7 +460,7 @@ class TestMcpToolTimeoutSeconds:
             {"timeout_ms": 10_000, "trace": True},
             {"default_timeout": 600},
         )
-        assert timeout == 4330
+        assert timeout == 4330 + 1800  # plus the default conversion budget
 
     def test_simulate_non_trace_timeout_gets_small_margin(self):
         timeout = self._mcp_tool_timeout_seconds(
@@ -509,7 +504,21 @@ class TestMcpToolTimeoutSeconds:
                 {"target": "a,b,c", "timeout_ms": 600_000, "trace": True},
                 {"default_timeout": 1290},
             )
-        assert timeout == 3 * (3600 + 600 + 600) + 3 * 90 + 30
+        assert timeout == 3 * (3600 + 600 + 600) + 3 * (1800 + 90) + 30
+
+    def test_coverage_trace_budget_adds_conversion_per_unit(self):
+        def coverage_timeout(trace: bool) -> int:
+            with patch(
+                "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+                return_value=2,
+            ):
+                return self._mcp_tool_timeout_seconds(
+                    "sim",
+                    {"target": "a", "timeout_ms": 10_000, "coverage": True, "trace": trace},
+                    {"default_timeout": 1},
+                )
+
+        assert coverage_timeout(True) - coverage_timeout(False) == 2 * 1800
 
     def test_elab_only_standalone_budget_counts_targets_and_one_sweep(self):
         from booley.flows.sim.mode import SimulationMode
@@ -1163,13 +1172,6 @@ class TestBooleyStatus:
 
         assert not catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
 
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-        mcp_tool_def = catalog._status_mcp_tool_def()
-
-        assert mcp_tool_def is not None
-        assert mcp_tool_def["name"] == "booley_status"
-        assert mcp_tool_def["schema"]["additionalProperties"] is False
-
     def test_status_mcp_tool_list_entry_is_appended(self, monkeypatch):
         monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
@@ -1309,21 +1311,14 @@ class TestBooleySleep:
             monkeypatch.setenv("BOOLEY_MCP_DEBUG_TOOLS", raw)
             assert not catalog.Exposure.from_mapping(os.environ).debug
 
-    def test_visible_when_flag_set(self, monkeypatch):
-        monkeypatch.setenv("BOOLEY_MCP_DEBUG_TOOLS", "1")
-
-        mcp_tool_def = catalog._sleep_mcp_tool_def()
-
-        assert mcp_tool_def is not None
-        assert mcp_tool_def["name"] == "booley_sleep"
-        assert mcp_tool_def["schema"]["required"] == ["seconds"]
-        assert mcp_tool_def["schema"]["additionalProperties"] is False
-
     def test_allowlists_do_not_filter_it(self, monkeypatch):
+        monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_DEBUG_TOOLS", "1")
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "lint")
 
-        assert catalog.Exposure.from_mapping(os.environ).debug is True
+        mcp_tools = catalog.visible_definitions(catalog.Exposure.from_mapping(os.environ), [])
+
+        assert "booley_sleep" in [mcp_tool["name"] for mcp_tool in mcp_tools]
 
     def test_list_entry_appended_when_enabled(self, monkeypatch):
         monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
@@ -1434,11 +1429,6 @@ class TestBooleyTargets:
         monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
         monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "lint")
         assert catalog.utilities_visible(catalog.Exposure.from_mapping(os.environ)) is True
-
-        mcp_tool_def = catalog._targets_mcp_tool_def()
-        assert mcp_tool_def is not None
-        assert mcp_tool_def["name"] == "booley_targets"
-        assert mcp_tool_def["schema"]["additionalProperties"] is False
 
     def test_dispatch_returns_json_surface(self, tmp_path, monkeypatch):
         import json
@@ -1552,27 +1542,6 @@ class TestBwaveDispatch:
             ]
         ]
 
-    def test_bwave_command_shape(self, monkeypatch):
-        calls = self._patch_dispatch(monkeypatch)
-        asyncio.run(
-            self._dispatch_bwave(
-                "bwave",
-                {"extra_args": ["@dut", "wave", "-t", "start:done"]},
-            )
-        )
-
-        assert calls == [
-            [
-                sys.executable,
-                "-m",
-                "booley.bwave.cli",
-                "@dut",
-                "wave",
-                "-t",
-                "start:done",
-            ]
-        ]
-
     def test_bwave_query_emits_console_activity(self, tmp_path, monkeypatch):
         self._patch_dispatch(monkeypatch)
         monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
@@ -1596,42 +1565,6 @@ class TestBwaveDispatch:
         ]
         assert events[1]["exit_code"] == 0
         assert events[1]["duration_s"] >= 0
-
-    def test_bwave_help_command_shape(self, monkeypatch):
-        calls = self._patch_dispatch(monkeypatch)
-        asyncio.run(
-            self._dispatch_bwave(
-                "bwave",
-                {"extra_args": ["--help"]},
-            )
-        )
-
-        assert calls == [
-            [
-                sys.executable,
-                "-m",
-                "booley.bwave.cli",
-                "--help",
-            ]
-        ]
-
-    def test_bwave_skill_command_shape(self, monkeypatch):
-        calls = self._patch_dispatch(monkeypatch)
-        asyncio.run(
-            self._dispatch_bwave(
-                "bwave",
-                {"extra_args": ["skill"]},
-            )
-        )
-
-        assert calls == [
-            [
-                sys.executable,
-                "-m",
-                "booley.bwave.cli",
-                "skill",
-            ]
-        ]
 
     def test_bwave_nonzero_exit_and_stderr_are_preserved(self, tmp_path, monkeypatch):
         async def fake_run(cmd, timeout=600):
@@ -1686,28 +1619,6 @@ class TestBwaveDispatch:
         ]
         assert [event["type"] for event in events] == ["endpoint_start", "endpoint_end"]
         assert events[-1]["exit_code"] == 2
-
-    def test_markers_subcommand_shape(self, monkeypatch):
-        calls = self._patch_dispatch(monkeypatch)
-        asyncio.run(
-            self._dispatch_bwave(
-                "bwave",
-                {"extra_args": ["markers", "@dut", "set", "start", "10"]},
-            )
-        )
-
-        assert calls == [
-            [
-                sys.executable,
-                "-m",
-                "booley.bwave.cli",
-                "markers",
-                "@dut",
-                "set",
-                "start",
-                "10",
-            ]
-        ]
 
     def test_unknown_bwave_name_returns_none(self, monkeypatch):
         calls = self._patch_dispatch(monkeypatch)

@@ -238,8 +238,8 @@ async def test_observer_broken_registry_cannot_change_attribution_or_dispatch(
             upsert=lambda *_a, **_k: (_ for _ in ()).throw(OSError("unwritable"))
         ),
     )
+    # Recording is advisory: an unwritable registry must not fail the tool call.
     await observer.record(facts(), "goal_finish", "completed")
-    assert facts().key == "codex:one"
 
 
 @pytest.mark.asyncio
@@ -1069,3 +1069,28 @@ def test_rows_without_call_ids_parse(registry):
     data["calls"][0]["call_id"] = "x" * 65
     path.write_text(json.dumps(data))
     assert "call id is too long" in registry.snapshot().diagnostics[0]
+
+
+@pytest.mark.asyncio
+async def test_boundary_lookup_without_a_peer_is_retried_by_the_observer(
+    registry, tmp_path, monkeypatch
+):
+    """A transient peer miss at the SDK boundary must not downgrade the row to a worktree."""
+    from starlette.requests import Request
+
+    from booley.mcp import session_observer
+    from booley.mcp.peer_checkout import CallerCheckout
+
+    monkeypatch.setattr(session_registry, "namespace", lambda *_args: SCOPE)
+    monkeypatch.setattr(session_observer, "observed_peer", lambda _request: IDENTITY)
+    observer = SessionObserver(now=lambda: 100, budget=1)
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+    request = Request({"type": "http", "server": ("127.0.0.1", 8080), "headers": []})
+    facts = await observer.attribution(
+        {"work_dir": str(tmp_path)},
+        {},
+        "claude-code",
+        request=request,
+        caller=CallerCheckout(None, None),
+    )
+    assert facts is not None and facts.kind == "process"

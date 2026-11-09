@@ -136,9 +136,7 @@ def test_unkeyable_stage_fails_closed(tmp_path: Path, contents: str, message: st
 
 def test_key_binds_schema_and_platform(tmp_path: Path) -> None:
     path = _dockerfile(tmp_path, _TOOLING + _FINAL)
-    unversioned = hashlib.sha256(_TOOLING.encode("utf-8")).hexdigest()
 
-    assert tooling_key(path) != unversioned
     assert (
         tooling_key(path)
         == hashlib.sha256(

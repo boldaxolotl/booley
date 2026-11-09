@@ -1249,7 +1249,7 @@ def _assert_codex_permission_parse_count(tmp_path, monkeypatch, operation):
     source = 'model="existing"\nnotice.other=true\nother={time=12:34, escaped="\\e\\x41"}\n'
     path.write_text(source)
     reg._codex_toml_parser()
-    editor = reg._codex_editor() if hasattr(reg, "_codex_editor") else None
+    editor = reg._codex_editor()
     calls = []
 
     def counted(function, legacy=False):
@@ -1266,18 +1266,16 @@ def _assert_codex_permission_parse_count(tmp_path, monkeypatch, operation):
 
     with monkeypatch.context() as counting:
         counting.setattr(tomli, "loads", counted(tomli.loads))
-        if editor is not None:
-            counting.setattr(editor, "parse", counted(editor.parse))
-            prepare = Mock(wraps=reg._prepare_codex_permissions)
-            counting.setattr(reg, "_prepare_codex_permissions", prepare)
+        counting.setattr(editor, "parse", counted(editor.parse))
+        prepare = Mock(wraps=reg._prepare_codex_permissions)
+        counting.setattr(reg, "_prepare_codex_permissions", prepare)
         for name in (
             "upsert_codex",
             "_prepare_codex_mcp",
             "_apply_codex_trust",
             "_apply_codex_gateway",
         ):
-            if hasattr(reg, name):
-                counting.setattr(reg, name, counted(getattr(reg, name), legacy=True))
+            counting.setattr(reg, name, counted(getattr(reg, name), legacy=True))
         for name in ("deploy_skills", "deploy_host_skills"):
             counting.setattr(reg, name, lambda *args: 0)
         counting.setattr(reg, "apply_stored_credential", lambda *args: "none")
@@ -1286,8 +1284,7 @@ def _assert_codex_permission_parse_count(tmp_path, monkeypatch, operation):
         else:
             reg._apply_codex_permission_mode(tmp_path)
     assert len(calls) == 1, f"permission document parsed {len(calls)} times"
-    if editor is not None:
-        prepare.assert_called_once()
+    prepare.assert_called_once()
     result = tomli.loads(path.read_text())
     assert result["notice"]["hide_full_access_warning"] is True
     assert result["other"] == tomli.loads(source)["other"]

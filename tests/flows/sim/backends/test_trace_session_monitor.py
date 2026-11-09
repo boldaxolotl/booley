@@ -285,6 +285,57 @@ class TestTraceStatusManifest:
         assert "--scope" not in calls[1]
         assert bwave.read_bytes() == MINIMAL_FST_BYTES
 
+    @staticmethod
+    def _budgeted_session(tmp_path, monkeypatch, *, start_s: float):
+        """A session whose bwave builds always fail, on a fake clock at *start_s*."""
+        from booley.bwave import waveform_store
+        from booley.flows.sim import trace_session
+
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        monkeypatch.setattr(trace_session, "waveform_cache_dir", lambda *_a, **_k: cache)
+        monkeypatch.setattr(waveform_store, "native_bwave_binary", lambda: "bwave")
+        clock = {"now": start_s}
+        monkeypatch.setattr(waveform_store.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(trace_session.time, "monotonic", lambda: clock["now"])
+        builds: list[float] = []
+
+        def fake_run(cmd, **kwargs):
+            builds.append(kwargs["timeout"])
+            clock["now"] += kwargs["timeout"]  # a failing build that uses all it was given
+            return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"boom")
+
+        monkeypatch.setattr(waveform_store.subprocess, "run", fake_run)
+        return TraceSession(work_dir=tmp_path / "work", trace_scope="tb"), builds
+
+    def test_one_budget_covers_postprocess_and_find(self, tmp_path, monkeypatch):
+        session, builds = self._budgeted_session(tmp_path, monkeypatch, start_s=0.0)
+        vcd = tmp_path / "work" / "dump.vcd"
+        vcd.parent.mkdir()
+        vcd.write_text("$date now $end\n$scope module tb $end\n", encoding="utf-8")
+        session.start_conversion_budget(60)
+
+        session.postprocess(vcd)  # scoped build consumes the whole 60 s; retry skipped
+        found = session.find()  # the retained VCD is not converted a second time
+
+        assert builds == [60]
+        assert found == tmp_path / "work" / "trace.vcd"
+
+    def test_exhausted_budget_is_trace_incident(self, tmp_path, monkeypatch, capsys):
+        session, builds = self._budgeted_session(tmp_path, monkeypatch, start_s=0.0)
+        vcd = tmp_path / "work" / "dump.vcd"
+        vcd.parent.mkdir()
+        vcd.write_text("$date now $end\n$scope module tb $end\n", encoding="utf-8")
+        session.start_conversion_budget(0)  # already spent
+
+        session.postprocess(vcd)
+
+        assert builds == []  # no bwave build ran
+        assert "trace_convert_timeout_ms" in capsys.readouterr().out
+        status = json.loads(session.manifest_path.read_text(encoding="utf-8"))
+        assert status["attempts"][-1]["status"] == "vcd_only"
+        assert session.find() == tmp_path / "work" / "trace.vcd"  # raw VCD, never a waveform
+
     def test_cleanup_fifo_publishes_bwave_to_work_dir(self, tmp_path, monkeypatch):
         ts = TraceSession(work_dir=tmp_path)
 
@@ -381,9 +432,6 @@ class TestTraceStatusManifest:
                     p.wait(timeout=2)
 
     def test_no_kill_when_bwave_grows(self, tmp_path):
-        # Pre-create the .bwave file so we can append to it.
-        bwave_dir = tmp_path / "cache"
-        bwave_dir.mkdir()
         ts = TraceSession(work_dir=tmp_path)
         # Force the monitor to look at our growing file by writing to the
         # session's bwave_path target.

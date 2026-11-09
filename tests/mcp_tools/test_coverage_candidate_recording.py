@@ -224,13 +224,14 @@ def test_goal_record_directory_parameter_keeps_candidates_out_of_ticket_store(
     record_context, tmp_path
 ):
     context, loaded, campaign, path, sha = record_context
+    ticket_store = context.record_dir
     goal_dir = tmp_path / "goals" / "evidence-20261007T100000Z"
     context = replace(context, record_dir=goal_dir)
     section = _record_candidates(context, loaded, campaign, path, sha, invocation_id="1")
     assert section["status"] == "recorded"
     assert (goal_dir / "waiver-candidates.json").is_file()
-    assert not (context.record_dir / "waiver-candidates").exists()
     assert not store.load(goal_dir).is_empty
+    assert not (ticket_store / "waiver-candidates.json").exists()
 
 
 def test_image_alias_reports_root_records_canonical_campaign(

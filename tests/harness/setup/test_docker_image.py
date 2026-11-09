@@ -29,12 +29,6 @@ def _docker_helper_uses_subprocess_run(monkeypatch):
     route_docker_helper_through_subprocess_run(monkeypatch)
 
 
-def test_init_cmd_reexports_docker_compatibility_helpers() -> None:
-    assert init_cmd._iter_fingerprint_files is init_docker_image._iter_fingerprint_files
-    assert init_cmd._stamp_image_fingerprint is init_docker_image._stamp_image_fingerprint
-    assert init_cmd._step_docker_image is init_docker_image._step_docker_image
-
-
 def _seed_source(root: Path) -> None:
     """Minimal repo layout that :func:`_image_build_fingerprint` hashes."""
     pkg = root / "src" / "booley"

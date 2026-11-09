@@ -7,8 +7,9 @@ from collections.abc import Mapping, Set
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from booley.flows.sim.campaign_files import evidence_digest, read_bounded
+from booley.flows.sim.campaign_files import read_bounded
 from booley.flows.sim.campaign_reports import is_report_link
+from booley.flows.sim.coverage_json import content_digest
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FIELDS = {"path_base", "path", "bytes", "sha256", "kind", "owner"}
@@ -63,7 +64,7 @@ def build_artifact_reference(
         path_base=base_name,
         path=relative,
         bytes_=len(raw),
-        sha256=evidence_digest(raw),
+        sha256=content_digest(raw),
         kind=kind,
         owner=owner,
     )
@@ -101,7 +102,7 @@ def resolve_artifact_reference(
         raise ArtifactReferenceError("artifact base is unavailable") from exc
     path = _contained_path(base, reference.path)
     raw = read_bounded(path, limit=maximum, error=ArtifactReferenceError, booley_dir=booley_dir)
-    if len(raw) != reference.bytes or evidence_digest(raw) != reference.sha256:
+    if len(raw) != reference.bytes or content_digest(raw) != reference.sha256:
         raise ArtifactReferenceError("artifact bytes disagree with reference")
     return ResolvedArtifact(path, raw)
 

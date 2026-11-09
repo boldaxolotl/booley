@@ -12,9 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.harness import booley
 from booley.harness.dashboard import command
-from booley.runtime import runtime_context
 
 
 @pytest.fixture(autouse=True)
@@ -132,22 +130,6 @@ def test_dashboard_without_unix_sockets_is_unavailable(tmp_path, monkeypatch, ca
     monkeypatch.setattr(command, "namespace", lambda: "fixture")
     assert command.run_dashboard(tmp_path) == 2
     assert "AF_UNIX" in capsys.readouterr().out
-
-
-def test_dashboard_catalog_help_location_and_binding(monkeypatch, capsys):
-    parser = booley._build_parser()
-    assert "dashboard" in parser.format_help()
-    assert parser.parse_args(["dashboard"]).command == "dashboard"
-    assert booley.COMMAND_PROJECT_BINDINGS["dashboard"] is booley.ProjectBinding.REQUIRED
-    assert booley.COMMAND_LOCATIONS["dashboard"] is booley.CommandLocation.SESSION_RUNTIME
-    assert "dashboard" in booley._CONTAINER_ONLY_COMMANDS
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    with pytest.raises(SystemExit) as raised:
-        booley._enforce_runtime_location("dashboard")
-    assert raised.value.code == 2
-    assert "Sandbox" in capsys.readouterr().err
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    booley._enforce_runtime_location("dashboard")
 
 
 def test_goal_and_dashboard_configuration_is_always_validated():

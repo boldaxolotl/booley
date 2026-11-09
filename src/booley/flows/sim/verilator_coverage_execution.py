@@ -424,7 +424,9 @@ class VerilatorCoverageExecution:
                 self._invoke,
                 AdapterAttemptRequest(
                     ("sh", "-c", script),
-                    work.timeout_s + _ADAPTER_CLEANUP_MARGIN_S,
+                    work.timeout_s
+                    + (work.trace_convert_timeout_s if work.trace else 0)
+                    + _ADAPTER_CLEANUP_MARGIN_S,
                     transport,
                     prepared.build_root,
                 ),

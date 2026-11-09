@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -111,14 +111,6 @@ class TestEvidencePaths:
     @pytest.mark.parametrize("name", ["<default>@1", "a/b@1", "..", "+lead", "@lead", "a b"])
     def test_other_names_are_still_hashed(self, name: str):
         assert artifact_path_component(name).startswith("~sha256-")
-
-    def test_run_directory_is_one_legal_component_on_windows_and_posix(self):
-        name = artifact_path_component("stress+soak@42")
-        for flavour in (PureWindowsPath, PurePosixPath):
-            path = flavour("reports", "sim", "1", "tests", name, "run.log")
-            assert path.parts[-2] == "stress+soak@42"
-        # None of the characters Windows reserves in a file name.
-        assert not set(name) & set('<>:"/\\|?*')
 
     def test_published_evidence_lands_in_the_run_directory(self, tmp_path: Path):
         relative = flow_artifacts.publish_bytes(

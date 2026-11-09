@@ -16,12 +16,11 @@ from .coverage_campaign import (
     CoverageCollector,
     CoverageRun,
     CoverageTarget,
-    FrozenJson,
     derive_coverage_rollups,
-    freeze_coverage_mapping,
 )
 from .coverage_campaign_store import POINT_STORE_NAME, publish_coverage_campaign
 from .coverage_invocation import CoverageTargetPlan
+from .coverage_json import FrozenJson, freeze_coverage_mapping
 from .coverage_policy import evaluate_coverage_campaign, threshold_number
 from .coverage_provenance import coverage_digest, validate_coverage_sources
 from .coverage_report import coverage_metrics

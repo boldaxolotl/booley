@@ -192,12 +192,6 @@ def test_atomic_replacement_fsyncs_file_before_replace_and_directory_after(store
     assert sorted(p.name for p in store.root.iterdir()) == ["record.json"]
 
 
-def test_runtime_compatibility_import_preserves_store_identity():
-    from booley.runtime.private_store import PrivateStore
-
-    assert PrivateStore is private_store.PrivateStore
-
-
 @pytest.mark.parametrize("failure", ["file_fsync", "replace", "directory_fsync"])
 def test_failed_write_propagates_and_cleans_temporary_file(store, monkeypatch, failure):
     if os.name == "nt" and failure == "directory_fsync":

@@ -10,6 +10,7 @@ from types import MappingProxyType
 import pytest
 
 from booley.flows.sim import campaign_files
+from booley.flows.sim.coverage_json import content_digest
 
 
 class _DomainError(Exception):
@@ -21,7 +22,7 @@ def test_read_bounded_returns_the_bytes_of_a_regular_file(tmp_path: Path) -> Non
     path.write_bytes(b"abc")
 
     assert campaign_files.read_bounded(path, limit=3, error=_DomainError) == b"abc"
-    assert campaign_files.stream_digest(path) == (3, campaign_files.evidence_digest(b"abc"))
+    assert campaign_files.stream_digest(path) == (3, content_digest(b"abc"))
 
 
 def test_read_bounded_refuses_a_file_over_the_limit(tmp_path: Path) -> None:

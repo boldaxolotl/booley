@@ -34,7 +34,8 @@ from booley.flows.sim.campaign.bundle import (
     authenticate_executable_snapshot,
     create_executable_snapshot,
 )
-from booley.flows.sim.campaign_files import document_digest, evidence_digest
+from booley.flows.sim.campaign_files import document_digest
+from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.execution.contract import (
     PreSimEvidence,
     PreSimScopeStoppedError,
@@ -1132,7 +1133,7 @@ def _shared_ready_result_document(
             "bundle_id": bundle_id,
             "manifest_path": bundle_path.relative_to(directory).as_posix(),
             "manifest_bytes": len(bundle_raw),
-            "manifest_sha256": evidence_digest(bundle_raw),
+            "manifest_sha256": content_digest(bundle_raw),
             "sharing": "shared_variant",
             "artifacts": artifacts,
         },
@@ -1242,7 +1243,7 @@ def _ready_build_result(
             "bundle_id": bundle.document["bundle_id"],
             "manifest_path": bundle_path.relative_to(build_directory).as_posix(),
             "manifest_bytes": len(bundle_raw),
-            "manifest_sha256": evidence_digest(bundle_raw),
+            "manifest_sha256": content_digest(bundle_raw),
             "sharing": "private_work_item",
             "artifacts": [dict(item) for item in bundle.document["artifacts"]],
         },
@@ -1859,7 +1860,7 @@ def _capture_private_image(
             {
                 "path": target.relative_to(destination).as_posix(),
                 "bytes": len(raw),
-                "sha256": evidence_digest(raw),
+                "sha256": content_digest(raw),
                 "kind": kind,
             }
         )
@@ -1887,7 +1888,7 @@ def _capture_outcome_evidence(
                 {
                     "$schema": "booley.cocotb-campaign-transport/v1",
                     "source_bytes": len(source_raw),
-                    "source_sha256": evidence_digest(source_raw),
+                    "source_sha256": content_digest(source_raw),
                     "source_observations": source_observations,
                     "observations": (
                         _infrastructure_observations(request, outcome)
@@ -1990,7 +1991,7 @@ def _record_ref(path: Path, root: Path, raw: bytes, kind: str, owner: str) -> di
     return {
         "path": path.relative_to(root).as_posix(),
         "bytes": len(raw),
-        "sha256": evidence_digest(raw),
+        "sha256": content_digest(raw),
         "kind": kind,
         "owner": owner,
     }

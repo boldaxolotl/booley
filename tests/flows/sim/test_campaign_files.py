@@ -9,6 +9,8 @@ from types import ModuleType
 
 import pytest
 
+from booley.flows.sim.coverage_json import content_digest
+
 
 class _DomainError(Exception):
     """Stands in for a caller's own domain error type."""
@@ -25,7 +27,7 @@ def test_document_and_evidence_digests_keep_their_newline_rules() -> None:
     assert campaign_files.document_digest({"a": 1}) == (
         "sha256:015abd7f5cc57a2dd94b7590f04ad8084273905ee33ec5cebeae62276a97f862"
     )
-    assert campaign_files.evidence_digest(b'{"a":1}\n') == (
+    assert content_digest(b'{"a":1}\n') == (
         "sha256:e346432021b04179518d9614f3560ccd71354a4ee101ddcb893d6959a9d6301c"
     )
 

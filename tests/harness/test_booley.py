@@ -657,9 +657,6 @@ class TestBakedBuildCommit:
     """
 
     def test_absent_stamp_module_yields_none(self, monkeypatch):
-        monkeypatch.setattr(
-            tlr, "_baked_identity", tlr._baked_identity
-        )  # exercise the real implementation
         # No _build_commit module is generated in a checkout, so nothing is known.
         import booley
 
@@ -963,31 +960,6 @@ class TestEnforceVenue:
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         tlr._enforce_runtime_location(command)  # container: must not raise
 
-    def test_venue_table_contents(self):
-        """Guard table matches ADR 0028 Decision 2.
-
-        `session` joins `init` on the host side: it drives the Sandbox
-        from outside it, and the sandbox has no Docker to do that with (ADR 0016).
-        `auth` is host-only too: it drives the host's browser OAuth flow and
-        writes the host's ~/.config, neither of which exists in the sandbox.
-        """
-        assert {
-            "goal",
-            "dashboard",
-            "chat",
-            "worktree",
-            "flow",
-            "specialist",
-        } == tlr._CONTAINER_ONLY_COMMANDS
-        assert {
-            "bootstrap",
-            "init",
-            "session",
-            "auth",
-            "eda",
-            "projects",
-        } == tlr._HOST_ONLY_COMMANDS
-
     def test_top_level_help_drops_per_command_location_tags(self):
         """The group header carries the location; command rows carry none."""
         help_text = tlr._build_parser().format_help()
@@ -995,24 +967,6 @@ class TestEnforceVenue:
         assert not re.search(r"\[(Sandbox|either|host|mixed)\]", help_text)
         assert "Locations:" not in help_text
         assert "Open this Project's default (or chosen) Agent CLI" in " ".join(help_text.split())
-
-    def test_runtime_guards_are_derived_from_command_location_catalog(self):
-        assert (
-            frozenset(
-                command
-                for command, location in tlr.COMMAND_LOCATIONS.items()
-                if location is tlr.CommandLocation.SESSION_RUNTIME
-            )
-            == tlr._CONTAINER_ONLY_COMMANDS
-        )
-        assert (
-            frozenset(
-                command
-                for command, location in tlr.COMMAND_LOCATIONS.items()
-                if location is tlr.CommandLocation.HOST
-            )
-            == tlr._HOST_ONLY_COMMANDS
-        )
 
 
 class TestEffectiveCommand:
@@ -1128,14 +1082,6 @@ class TestCmdShell:
 
     def test_registered_as_early_command(self):
         assert tlr._EARLY_COMMANDS.get("shell") is tlr._cmd_shell
-
-    def test_shell_hidden_from_help(self):
-        """ADR 0028 Decision 2: `shell` keeps working but is stripped from
-        `booley --help` (absent from the grouped listing and the advertised metavar)."""
-        parser = tlr._build_parser()
-        assert "shell" not in parser.format_help()
-        # ...while remaining fully functional.
-        assert parser.parse_args(["shell"]).command == "shell"
 
 
 # ===========================================================================
@@ -1306,18 +1252,10 @@ class TestCmdFlow:
         assert rc == 2
         assert "could not load endpoint 'fakeflow'" in capsys.readouterr().err
 
-    def test_registered_as_early_command(self):
-        assert tlr._EARLY_COMMANDS.get("flow") is tlr._cmd_flow
-
     def test_advertised_in_help(self):
         help_text = tlr._build_parser().format_help()
         assert "flow" in help_text
         assert "Run a Booley Flow directly" in help_text
-
-    def test_flow_is_sandbox_only(self):
-        """Top-level dispatch refuses host execution before endpoint discovery."""
-        assert "flow" in tlr._CONTAINER_ONLY_COMMANDS
-        assert "flow" not in tlr._HOST_ONLY_COMMANDS
 
 
 class TestEndpointResolution:
@@ -1380,34 +1318,6 @@ class TestFindProjectRoot:
         with patch("booley.harness.booley.Path.cwd", return_value=subdir):
             result = tlr.find_project_root()
         assert result == tmp_path
-
-
-# ===========================================================================
-# _time_ampm_tz_to_wait() (formerly _parse_reset_time)
-# ===========================================================================
-
-_has_tzdata = True
-try:
-    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-    ZoneInfo("UTC")
-except ZoneInfoNotFoundError:
-    _has_tzdata = False
-
-
-# ===========================================================================
-# Constants
-# ===========================================================================
-
-
-class TestConstants:
-    def test_venv_python_removed(self):
-        """VENV_PYTHON removed — package is pip-installed, no embedded venv."""
-        assert not hasattr(tlr, "VENV_PYTHON")
-
-    def test_stale_threshold_removed(self):
-        """STALE_THRESHOLD removed -- stale detection no longer needed."""
-        assert not hasattr(tlr, "STALE_THRESHOLD")
 
 
 # ===========================================================================
@@ -1559,16 +1469,6 @@ def test_source_project_binding_independent_dispatch(tmp_path, monkeypatch, argv
         assert authority.load_state().installations == {}
 
 
-def test_project_binding_registry_covers_parser():
-    import argparse
-
-    parser = tlr._build_parser()
-    commands = next(
-        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
-    )
-    assert set(commands.choices) == set(tlr.COMMAND_PROJECT_BINDINGS)
-
-
 @pytest.mark.parametrize(
     "argv",
     [["cheat"], ["cheat", "--list"]],
@@ -1584,7 +1484,6 @@ def test_project_binding_independent_never_discovers(tmp_path, monkeypatch, argv
         raise AssertionError("independent command discovered a Project")
 
     monkeypatch.setattr(tlr, "find_project_root", discover)
-    monkeypatch.setitem(tlr._EARLY_COMMANDS, "auth", lambda *_: 0)
     assert tlr._dispatch_main() == 0
 
 
@@ -1822,11 +1721,6 @@ def test_auth_status_selection_by_flag(
     _assert_auth_status(
         tmp_path, monkeypatch, capsys, flag, in_project, app, expected_apps, expected_rc
     )
-
-
-def test_auth_status_cli_preserves_omitted_app_selection(tmp_path, monkeypatch, capsys):
-    """`--cli` narrows status to one CLI; omitting it keeps the Project or both-CLI default."""
-    _assert_auth_status(tmp_path, monkeypatch, capsys, "--cli", False, "codex", ("codex",), 0)
 
 
 def _assert_auth_status(

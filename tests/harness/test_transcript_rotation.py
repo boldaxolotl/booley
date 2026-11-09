@@ -10,7 +10,6 @@ happened. The label transform now preserves the run tag
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from booley.runtime._retry import transcript_path_for_attempt, transcript_path_for_label
@@ -59,20 +58,3 @@ class TestTranscriptPathForLabel:
         assert transcript_path_for_label(base, "developer") == Path("/x/developer.jsonl")
         base = Path("/x/rerun_001.jsonl")
         assert transcript_path_for_label(base, "developer") == Path("/x/developer.jsonl")
-
-
-# ---------------------------------------------------------------------------
-# _detect_crash_recovery
-# ---------------------------------------------------------------------------
-
-
-def _transcript_dir(logs_dir: Path) -> Path:
-    d = logs_dir / ".runtime" / "developer"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _touch(path: Path, mtime: float) -> Path:
-    path.write_text("{}\n", encoding="utf-8")
-    os.utime(path, (mtime, mtime))
-    return path

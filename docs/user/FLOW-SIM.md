@@ -275,9 +275,12 @@ trace_files = ["fpu.vcd"]   # .fst also works; globs are allowed
 Booley looks for each entry in the [run directory](#sim-working-directory-flowssimrun_cwd),
 then the trace directory, then the build directory, and only when its own
 waveform file is missing. The file must be written by the current run. An FST
-file is used as it is. A VCD file is converted after the run, and only up to
-2 GiB: a larger one is kept for diagnosis but doesn't count as a waveform.
-Narrow the dump, dump FST instead, or convert it yourself with `bwave build`.
+file is used as it is. A VCD file of any size is converted after the run,
+within the `trace_convert_timeout_ms` budget. If the conversion fails or runs
+out of time, the run reports a trace incident and keeps the VCD for diagnosis.
+A failing simulation stays failed and a passing one is reported inconclusive
+(no waveform to query); neither becomes a timeout. Dump FST instead, or raise
+`trace_convert_timeout_ms`, when conversion is too slow.
 
 ### Tracing a Cocotb Target
 
@@ -477,6 +480,7 @@ shown are the defaults. Coverage settings are on the
 # enabled = true                     # see CONFIG.md
 # timeout_ms = 600000                # time limit per simulation (10 minutes)
 # build_timeout_ms = 3600000         # time limit per simulator build (1 hour)
+# trace_convert_timeout_ms = 1800000 # time limit for converting a run's VCD to FST (30 minutes)
 # pass_sentinels = ["[SIM_RESULT] PASSED"]    # see Pass/fail sentinels
 # fail_sentinels = ["[SIM_RESULT] FAILED"]
 # cycle_sentinels = ["[SIM_CYCLES]"]
@@ -500,7 +504,10 @@ shown are the defaults. Coverage settings are on the
 `elab-only-standalone` mode the module sweep. A simulation that runs out of
 time is a test failure (exit `1`); a sweep that runs out of time exits `2`. `build_timeout_ms` limits each simulator build, for normal runs,
 coverage and elaboration checks alike; it defaults to `3600000` (one hour), and
-running out of time is an error (exit `2`). Pre-Sim Commands have an
+running out of time is an error (exit `2`). `timeout_ms` limits only the
+simulation: under `--trace`, converting the VCD to FST has its own
+`trace_convert_timeout_ms` budget (default `1800000`, 30 minutes) for the whole
+attempt, and running out of it is a trace incident, not a timeout. Pre-Sim Commands have an
 independent fixed 600-second budget that neither setting changes.
 
 **Two safety limits.** `max_rundir_bytes` stops a run whose directory grows

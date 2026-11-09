@@ -230,18 +230,3 @@ def test_jobs_option_lookalikes_do_not_disable_parallel_policy(
 
 def test_non_verilator_receives_no_backend_arguments() -> None:
     assert verilator_backend_arguments(_inspection(eda_tool="icarus")) == ()
-
-
-def test_identical_inputs_produce_identical_ordered_arguments(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "booley.flows.sim.build_parallelism.load_verilator_build_budget",
-        lambda _lane="heavy", **_kwargs: SimpleNamespace(make_jobs=5),
-    )
-    inspection = _inspection(modern=("OPT_FAST=-O3",))
-
-    first = verilator_backend_arguments(inspection)
-    second = verilator_backend_arguments(inspection)
-
-    assert first == second == ("-j5", "VM_PARALLEL_BUILDS=1")

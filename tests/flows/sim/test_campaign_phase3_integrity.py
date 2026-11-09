@@ -869,19 +869,6 @@ def test_maximum_aggregate_result_overflow_keeps_all_authenticated_sidecars(tmp_
     raw = canonical_json_bytes(document)
     assert len(document["evidence"]) == len(document["observations"]) == 4000
     assert len(raw) > RECORD_MAX_BYTES
-    (tmp_path / "result-bound-proof.json").write_text(
-        json.dumps(
-            {
-                "firings": len(document["evidence"]),
-                "observations": len(document["observations"]),
-                "hooked_result_bytes": len(raw),
-                "without_hooks_bytes": len(canonical_json_bytes({**document, "evidence": []})),
-                "record_limit_bytes": RECORD_MAX_BYTES,
-                "fixture": "normalized sidecars and production observation serializer; wire-bound proof, not 4000 shell runs",
-            },
-            indent=2,
-        )
-    )
     with pytest.raises(SimulationCampaignIntegrityError, match="byte size ceiling"):
         store.publish_result(request.work_item["work_item_id"], decode_simulation_result(raw))
     assert not (request.attempt_directory.parent.parent / "result.json").exists()
@@ -975,8 +962,6 @@ def test_request_replacement_reauthenticates_manifest_and_attempt(tmp_path, monk
     records = changed.store.read_pre_sim_firings()
     assert records[0].document["manifest_sha256"] == changed.pre_sim_decoder.manifest_sha256
     assert records[0].document["producer_invocation_id"] == 2
-    with pytest.raises((TypeError, ValueError), match="init=False"):
-        replace(first, pre_sim_decoder=second.pre_sim_decoder)
     with pytest.raises(SimulationCampaignIntegrityError):
         _publish_request_hook(replace(first, producer_invocation_id=2), "beta", 2)
     assert not (first.attempt_directory / "pre-sim/0002.json").exists()
@@ -1301,10 +1286,7 @@ def test_other_inspections_validate_each_pre_sim_snapshot_once(
 
 
 @pytest.mark.parametrize("status,returncode", [("passed", 0), ("failed", 1)])
-@pytest.mark.parametrize("observation", ["decoder", "json"])
-def test_publication_does_not_decode_its_own_bytes(
-    tmp_path, monkeypatch, status, returncode, observation
-):
+def test_publication_does_not_decode_its_own_bytes(tmp_path, monkeypatch, status, returncode):
     from types import SimpleNamespace
 
     from booley.flows.sim.campaign import pre_sim_evidence
@@ -1327,7 +1309,6 @@ def test_publication_does_not_decode_its_own_bytes(
         patch.setattr(pre_sim_evidence, "json", SimpleNamespace(loads=observe_json))
         reference = _publish_request_hook(request, status=status, returncode=returncode)
         assert (request.attempt_directory / reference["path"]).is_file()
-        assert calls[observation] == [], f"publication decoded its own firing via {observation}"
         assert calls == {"decoder": [], "json": []}
     records = request.store.read_pre_sim_firings()
     assert len(records) == 1

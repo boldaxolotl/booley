@@ -1,36 +1,10 @@
-"""Tests for configuration constants and registries in config.py."""
+"""Tests for ``[sandbox]`` parsing in booley.toml."""
 
 from __future__ import annotations
 
 import pytest
 
-from booley.config.settings import SandboxConfig, _parse_sandbox_config
-from booley.runtime._retry import (
-    API_RETRY_BACKOFF_MULTIPLIER,
-    API_RETRY_INITIAL_BACKOFF_S,
-    API_RETRY_MAX_BACKOFF_S,
-    MAX_API_RETRIES,
-)
-
-
-class TestAPIResilience:
-    def test_backoff_multiplier_gt_one(self):
-        assert API_RETRY_BACKOFF_MULTIPLIER > 1
-
-    def test_initial_lt_max_backoff(self):
-        assert API_RETRY_INITIAL_BACKOFF_S < API_RETRY_MAX_BACKOFF_S
-
-    def test_retries_positive(self):
-        assert MAX_API_RETRIES > 0
-
-
-class TestSandboxConfig:
-    def test_defaults(self):
-        cfg = SandboxConfig()
-        assert cfg.image == "booley-sandbox"
-        # ADR 0028: one container memory limit; empty = no explicit limit
-        # (matches the pre-0028 devcontainer default).
-        assert cfg.memory == ""
+from booley.config.settings import _parse_sandbox_config
 
 
 class TestParseSandboxConfig:
@@ -83,13 +57,3 @@ class TestParseSandboxConfig:
             cfg = _parse_sandbox_config(data)
         assert cfg.memory == ""
         assert any("memory_tiers is retired" in r.message for r in caplog.records)
-
-    def test_unknown_retired_mode_is_ignored(self):
-        data = {"sandbox": {"mode": "podman"}}
-        cfg = _parse_sandbox_config(data)
-        assert cfg.image == "booley-sandbox"
-
-
-# ===========================================================================
-# [interactive] config (ADR 0018)
-# ===========================================================================

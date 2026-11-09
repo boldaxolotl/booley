@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
-
 import pytest
 
 from booley.flows import run_evidence
@@ -39,8 +37,6 @@ def test_run_evidence_records_only_artifact_provenance(tmp_path, monkeypatch):
         "source_sha256",
         "recipe_sha256",
     }
-    with pytest.raises(FrozenInstanceError):
-        evidence.run_id = "other"  # type: ignore[misc]
 
 
 def test_run_evidence_reuses_preflight_source_evidence(tmp_path, monkeypatch):

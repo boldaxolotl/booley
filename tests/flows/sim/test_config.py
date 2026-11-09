@@ -39,6 +39,21 @@ def test_build_timeout_rejects_non_positive_integer(
         config.resolve_sim_build_timeout_ms()
 
 
+def test_trace_convert_timeout_defaults_and_validates(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "_sim_config", lambda _work_dir: {})
+    assert config.resolve_sim_trace_convert_timeout_ms() == 1_800_000
+
+    monkeypatch.setattr(config, "_sim_config", lambda _w: {"trace_convert_timeout_ms": 5000})
+    assert config.resolve_sim_trace_convert_timeout_ms() == 5000
+
+    for bad in ("1000", 0):  # wrong type, non-positive
+        monkeypatch.setattr(
+            config, "_sim_config", lambda _w, bad=bad: {"trace_convert_timeout_ms": bad}
+        )
+        with pytest.raises(BoundaryError, match=r"\[flows\.sim\]\.trace_convert_timeout_ms"):
+            config.resolve_sim_trace_convert_timeout_ms()
+
+
 def test_sim_sentinels_come_from_project_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         config,

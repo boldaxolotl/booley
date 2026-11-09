@@ -143,8 +143,8 @@ def _successful_claude_query(options_seen):
 def persist_large_current_campaign(root: Path, point_count: int = 2_000) -> Path:
     from booley.flows.sim.coverage_campaign import (
         DurableTargetIdentity,
-        _point_id,
         decode_coverage_campaign,
+        encode_coverage_point_id,
     )
     from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
 
@@ -158,7 +158,7 @@ def persist_large_current_campaign(root: Path, point_count: int = 2_000) -> Path
         point["identity"]["location"]["end"]["line"] = line
         point["identity"]["subject"]["basic_block"] = index
         point["identity"]["collector"]["native_key"] = f"{line}:basic-block-{index}"
-        point["id"] = _point_id(point["identity"])
+        point["id"] = encode_coverage_point_id(point["identity"])
         points.append(point)
     document["points"] = points
     document["rollups"][0].update(
@@ -438,7 +438,8 @@ def test_wrapper_rejects_noncanonical_or_unfinished_report_before_model(tmp_path
 
 
 def source_project(root):
-    from booley.flows.sim.coverage_provenance import content_digest, coverage_digest
+    from booley.flows.sim.coverage_json import content_digest
+    from booley.flows.sim.coverage_provenance import coverage_digest
 
     path = persist_campaign(root)
     (root / "rtl").mkdir()
@@ -802,9 +803,6 @@ def test_persisted_collection_remains_analyzable_after_native_pruning(tmp_path):
 def test_relative_campaign_resolves_against_selected_work_dir(tmp_path):
     path = persist_campaign(tmp_path)
     analyst = CoverageAnalystSpecialist(model=Model())
-    analyst.parse_args(
-        ["--work-dir", str(tmp_path), "--campaign", str(path.relative_to(tmp_path))]
-    )
     result = analyst.execute_cli(
         ["--work-dir", str(tmp_path), "--campaign", str(path.relative_to(tmp_path))]
     )
@@ -888,14 +886,12 @@ def test_image_alias_analyst_binds_canonical_campaign(project_alias, monkeypatch
     specialist = CoverageAnalystSpecialist(model=Model())
     specialist._args = specialist.parse_args(["--work-dir", str(root), "--campaign", str(path)])
     seen = []
-    sentinel = object()
     monkeypatch.setattr(
         specialist,
         "_analyze_bound",
-        lambda _campaign, _sources, _instruction, bound, **_kwargs: seen.append(bound) or sentinel,
+        lambda _campaign, _sources, _instruction, bound, **_kwargs: seen.append(bound),
     )
-    report, loaded, bound = specialist._analyze_path(alias / path.relative_to(root), "explain")
-    assert report is sentinel
+    _report, loaded, bound = specialist._analyze_path(alias / path.relative_to(root), "explain")
     assert bound == path and seen == [path]
     assert loaded.campaign.target.selector == "sim_counter"
     (root / "linked").symlink_to(root, target_is_directory=True)
@@ -987,7 +983,8 @@ def test_source_inspection_accepts_inputs_under_a_linked_entry(tmp_path, monkeyp
 
 def _rebind_source_digests(path: Path, root: Path) -> None:
     """Rewrite the Campaign closure for a testbench moved under ``.booley``."""
-    from booley.flows.sim.coverage_provenance import content_digest, coverage_digest
+    from booley.flows.sim.coverage_json import content_digest
+    from booley.flows.sim.coverage_provenance import coverage_digest
 
     document = json.loads(path.read_text())
     document["source_closure"]["testbench"] = [

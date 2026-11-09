@@ -9,7 +9,7 @@ from typing import cast
 
 from booley.core.booley_dir import BooleyDirOutsideCheckoutError, own_booley_dir_relative
 from booley.core.booley_dir_links import lexical_booley_path
-from booley.flows.sim.campaign_files import document_digest, evidence_digest
+from booley.flows.sim.campaign_files import document_digest
 from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.flows.sim.config import (
     parse_run_cwd_template,
@@ -17,6 +17,7 @@ from booley.flows.sim.config import (
     resolve_pre_sim_commands,
     resolve_run_cwd,
 )
+from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.execution.contract import SimulationPreview
 from booley.flows.test_runs import TestRun, TestRunLimitError, test_run_document
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -383,7 +384,7 @@ def _source_entries(root: Path, inputs: Sequence[TargetInput]) -> list[dict[str,
             {
                 "path": relative,
                 "bytes": len(raw),
-                "sha256": evidence_digest(raw),
+                "sha256": content_digest(raw),
                 "kind": kind,
             }
         )
@@ -401,7 +402,7 @@ def _eda_identity(kind: str | None) -> str:
         raw = path.read_bytes()
     except OSError:
         return "unavailable"
-    return evidence_digest(raw)
+    return content_digest(raw)
 
 
 def _required_suite(
@@ -429,7 +430,7 @@ def _required_suite(
         "default_invocation": not backed,
         "source_path": relative,
         "source_bytes": len(raw),
-        "source_sha256": evidence_digest(raw),
+        "source_sha256": content_digest(raw),
     }
 
 
