@@ -193,17 +193,17 @@ _EGRESS_BEFORE = (
 )
 
 
-@pytest.mark.parametrize("newline", [pytest.param("\n", id="lf"), pytest.param("\r\n", id="crlf")])
-def test_egress_edit_changes_only_the_egress_value(tmp_path: Path, newline: str) -> None:
-    path = tmp_path / "config.toml"
-    original = _EGRESS_BEFORE.replace("\n", newline).encode()
-    path.write_bytes(original)
+def test_egress_edit_changes_only_the_egress_value(tmp_path: Path) -> None:
+    for newline in ("\n", "\r\n"):
+        path = tmp_path / f"config{len(newline)}.toml"
+        original = _EGRESS_BEFORE.replace("\n", newline).encode()
+        path.write_bytes(original)
 
-    change = host_config.plan_host_egress("proxy", path)
+        change = host_config.plan_host_egress("proxy", path)
 
-    assert change.content == original.replace(b'"unproxied"', b'"proxy"')
-    assert change.previous == "unproxied"
-    assert path.read_bytes() == original
+        assert change.content == original.replace(b'"unproxied"', b'"proxy"')
+        assert change.previous == "unproxied"
+        assert path.read_bytes() == original
 
 
 def test_egress_edit_adds_key_to_existing_sandbox_table(tmp_path: Path) -> None:

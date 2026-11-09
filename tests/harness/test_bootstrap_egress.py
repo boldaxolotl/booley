@@ -126,11 +126,8 @@ def test_legacy_interactive_config_is_refused_with_migration_guidance(
     assert "rename it to [sandbox] first" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize(
-    "check_only", [pytest.param(True, id="check-only"), pytest.param(False, id="run")]
-)
 def test_symlinked_config_is_refused_before_any_mutation(
-    host: _Host, tmp_path: Path, capsys: pytest.CaptureFixture[str], check_only: bool
+    host: _Host, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     require_symlinks(tmp_path)
     target = tmp_path / "real.toml"
@@ -138,13 +135,14 @@ def test_symlinked_config_is_refused_before_any_mutation(
     host.config.parent.mkdir(parents=True)
     host.config.symlink_to(target)
 
-    assert host.run(egress="unproxied", check_only=check_only) == 2
+    for check_only in (True, False):
+        assert host.run(egress="unproxied", check_only=check_only) == 2
 
-    assert target.read_bytes() == b"[sandbox]\nmax_sessions = 2\n"
-    assert host.config.is_symlink()
-    host.registered.assert_not_called()
-    assert host.reconciled_egress == []
-    assert "symlinked host config" in capsys.readouterr().out
+        assert target.read_bytes() == b"[sandbox]\nmax_sessions = 2\n"
+        assert host.config.is_symlink()
+        host.registered.assert_not_called()
+        assert host.reconciled_egress == []
+        assert "symlinked host config" in capsys.readouterr().out
 
 
 def test_failed_egress_write_skips_bootstrap(
@@ -181,30 +179,24 @@ def test_qa_enable_failure_leaves_config_unchanged(
     assert host.config.read_bytes() == _UNPROXIED
 
 
-@pytest.mark.parametrize(
-    "existing",
-    [
-        pytest.param(None, id="no-file"),
-        pytest.param(b"# mine\n[sandbox]\nmax_sessions = 2\n", id="file"),
-    ],
-)
 def test_check_only_egress_reports_pending_change_without_writing(
-    host: _Host, capsys: pytest.CaptureFixture[str], existing: bytes | None
+    host: _Host, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    if existing is not None:
-        host.config.parent.mkdir(parents=True)
-        host.config.write_bytes(existing)
+    existing = b"# mine\n[sandbox]\nmax_sessions = 2\n"
+    for content in (None, existing):  # missing file, then an existing one
+        if content is not None:
+            host.config.parent.mkdir(parents=True)
+            host.config.write_bytes(content)
 
-    assert host.run(egress="unproxied", check_only=True) == 1
+        assert host.run(egress="unproxied", check_only=True) == 1
 
-    out = capsys.readouterr().out
-    assert 'would set [sandbox] egress = "unproxied"' in out
-    assert "booley bootstrap --egress unproxied" in out
-    if existing is None:
-        assert not host.config.exists()
-    else:
-        assert host.config.read_bytes() == existing
-    host.registered.assert_not_called()
+        out = capsys.readouterr().out
+        assert 'would set [sandbox] egress = "unproxied"' in out
+        assert "booley bootstrap --egress unproxied" in out
+        assert host.config.exists() == (content is not None)
+        if content is not None:
+            assert host.config.read_bytes() == content
+        host.registered.assert_not_called()
 
 
 def test_check_only_egress_already_recorded_is_current(
