@@ -23,15 +23,17 @@ from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     CoveragePoint,
     DurableTargetIdentity,
+)
+from booley.flows.sim.coverage_json import (
     FrozenJson,
-    _freeze_mapping,
+    coverage_mapping_document,
+    freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_policy import (
     _METRIC_ORDER,
     CoverageCriterion,
     CoverageThreshold,
     _derive_rollup,
-    _json_value,
     _metric_result,
 )
 
@@ -154,7 +156,7 @@ def _apply_candidates(
     points = tuple(
         replace(
             point,
-            disposition=_freeze_mapping(
+            disposition=freeze_coverage_mapping(
                 {
                     "kind": "waived",
                     "reason": usable[point.id].reason,
@@ -177,7 +179,7 @@ def _provisional_evaluation(
     usable: Mapping[str, ProvisionalCandidate],
 ) -> dict[str, object]:
     """Score the strict evaluation's thresholds with the usable candidates waived."""
-    strict = cast(dict[str, object], _json_value(campaign.evaluation))
+    strict = coverage_mapping_document(campaign.evaluation)
     waived = _apply_candidates(campaign, usable)
     by_metric = {rollup.metric: rollup for rollup in waived.rollups}
     diagnostics: list[dict[str, str]] = []
@@ -296,7 +298,7 @@ def evaluate_provisional_coverage(
         )
         for item in usable.values()
     )
-    return ProvisionalVerdict(strict_status, _freeze_mapping(evaluation), _sorted(screens))
+    return ProvisionalVerdict(strict_status, freeze_coverage_mapping(evaluation), _sorted(screens))
 
 
 def criterion_from_evaluation(campaign: CoverageCampaign) -> CoverageCriterion:
