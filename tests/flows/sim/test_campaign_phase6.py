@@ -429,6 +429,10 @@ def test_public_work_item_authentication_rejects_file_changed_during_read(
         raw = original_read(descriptor, count)
         if not swapped:
             swapped = True
+            if os.name == "nt":  # Windows refuses to rename an open file: extend it instead.
+                with manifest.open("ab") as stream:
+                    stream.write(b"\n")
+                return raw
             replacement = manifest.with_name("original-manifest.json")
             manifest.rename(replacement)
             manifest.write_bytes(replacement.read_bytes())
