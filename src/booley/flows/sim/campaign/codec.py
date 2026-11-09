@@ -1,7 +1,10 @@
 """Strict canonical JSON codecs for immutable Simulation Campaign values.
 
-This module is deliberately infrastructure-free. It validates untrusted
+This module is deliberately infrastructure-free. It decodes untrusted
 documents into immutable values that later store/execution modules can trust.
+Manifests are checked for shape only: planning proved their content and
+published them atomically, so each manifest reader below reads just the members
+its callers use (#2136).
 """
 
 from __future__ import annotations
@@ -24,7 +27,6 @@ from booley.core.boundary import (
     require_str_value,
     require_uuid4,
 )
-from booley.flows.test_runs import test_run_from_document
 from booley.runtime.timefmt import parse_timestamp
 
 from .model import (
@@ -274,18 +276,6 @@ _SNAPSHOT_FIELDS = frozenset(
     }
 )
 
-_FINGERPRINT_FIELDS = frozenset(
-    {
-        "workload_sha256",
-        "target_recipe_sha256",
-        "source_closures_sha256",
-        "required_suite_sha256",
-        "planning_disclosures_sha256",
-        "prerequisites_sha256",
-        "work_items_sha256",
-    }
-)
-
 T = TypeVar("T", bound=SimulationCampaignDocument)
 
 
@@ -432,16 +422,12 @@ def _bounded_string_list(
     *,
     count_limit: int,
     byte_limit: int,
-    unique: bool = False,
 ) -> list[str]:
     items = _exact_list(value, field, count_limit)
-    decoded = [
+    return [
         _bounded_string(item, f"{field}[{index}]", limit=byte_limit)
         for index, item in enumerate(items)
     ]
-    if unique and len(set(decoded)) != len(decoded):
-        raise SimulationCampaignIntegrityError(f"{field} must contain unique strings")
-    return decoded
 
 
 def _validate_common(value: Mapping[str, object]) -> None:
@@ -1029,24 +1015,53 @@ def _validate_diagnostics(value: object) -> None:
         _bounded_string(diagnostic["message"], f"diagnostics[{index}].message")
 
 
-def _validate_manifest(value: Mapping[str, object]) -> None:
-    origin = _exact_object(value["origin"], {"execution_id", "invocation_id"}, "origin")
-    execution_id = origin["execution_id"]
-    parsed_execution_id = _bounded_string(execution_id, "origin.execution_id", allow_empty=True)
-    if parsed_execution_id and not _EXECUTION_ID_RE.fullmatch(parsed_execution_id):
-        raise SimulationCampaignIntegrityError(
-            "origin.execution_id must be empty or 32 lowercase hex"
-        )
-    _require_positive_int(origin["invocation_id"], "origin.invocation_id")
-    _validate_target(value["target"], "target")
+def _read_manifest(value: Mapping[str, object]) -> None:
+    """Read the members manifest readers use; planning proved the rest."""
+    origin = require_dict(value["origin"], field="origin")
+    require_int(origin.get("invocation_id"), field="origin.invocation_id")
+    _read_strings(value["target"], "target", ("vlnv", "name", "selector", "revision", "role"))
     _read_workload(value["workload"])
     _read_required_suite(value["required_suite"])
     _read_build_variant_ids(value["build_variants"])
-    _validate_prerequisites(value["prerequisites"])
-    _validate_work_items(value["work_items"])
-    fingerprints = _exact_object(value["fingerprints"], set(_FINGERPRINT_FIELDS), "fingerprints")
-    for key, digest in fingerprints.items():
-        _require_digest(digest, f"fingerprints.{key}")
+    for index, item in enumerate(require_list(value["prerequisites"], field="prerequisites")):
+        _read_prerequisite(item, f"prerequisites[{index}]")
+    for index, item in enumerate(require_list(value["work_items"], field="work_items")):
+        _read_work_item(item, f"work_items[{index}]")
+    fingerprints = require_dict(value["fingerprints"], field="fingerprints")
+    require_str_value(fingerprints.get("workload_sha256"), field="fingerprints.workload_sha256")
+
+
+def _read_strings(value: object, field: str, keys: tuple[str, ...]) -> dict[str, object]:
+    """Read *value* as an object whose *keys* are nonempty strings."""
+    mapping = require_dict(value, field=field)
+    for key in keys:
+        require_str_value(mapping.get(key), field=f"{field}.{key}")
+    return mapping
+
+
+def _read_prerequisite(value: object, field: str) -> None:
+    """Read the prerequisite members resume, the Pre-Sim walk and acceptance use."""
+    entry = _read_strings(value, field, ("campaign_id", "work_item_id"))
+    require_dict(entry.get("target"), field=f"{field}.target")
+    reference = _read_strings(entry.get("manifest"), f"{field}.manifest", ("path", "sha256"))
+    require_int(reference.get("bytes"), field=f"{field}.manifest.bytes")
+
+
+def _read_work_item(value: object, field: str) -> None:
+    """Read the work-item members the store, scheduler and reports use."""
+    item = _read_strings(
+        value, field, ("work_item_id", "kind", "role", "revision", "build_variant_id")
+    )
+    require_int(item.get("ordinal"), field=f"{field}.ordinal")
+    require_dict(item.get("target"), field=f"{field}.target")
+    selection = _read_strings(item.get("selection"), f"{field}.selection", ("kind",))
+    for name in require_list(selection.get("names"), field=f"{field}.selection.names"):
+        require_str_value(name, field=f"{field}.selection.names[]")
+    for index, run in enumerate(require_list(item.get("test_runs"), field=f"{field}.test_runs")):
+        # Full Test Run parsing stays at its uses; name, fingerprint and test are read raw.
+        entry = _read_strings(run, f"{field}.test_runs[{index}]", ("name", "fingerprint"))
+        if entry.get("test") is not None:
+            require_str_value(entry["test"], field=f"{field}.test_runs[{index}].test")
 
 
 def _read_workload(value: object) -> None:
@@ -1082,192 +1097,6 @@ def _read_build_variant_ids(value: object) -> None:
     for index, item in enumerate(_exact_list(value, "build_variants", MAX_WORK_ITEMS)):
         variant = require_dict(item, field=f"build_variants[{index}]")
         _require_variant_id(variant.get("build_variant_id"))
-
-
-def _validate_target(value: object, field: str) -> Mapping[str, object]:
-    target = _exact_object(
-        value,
-        {"vlnv", "name", "selector", "project_identity", "revision", "role", "display_name"},
-        field,
-    )
-    for key in ("vlnv", "name", "selector", "project_identity", "revision"):
-        _bounded_string(target[key], f"{field}.{key}")
-    _bounded_string(target["display_name"], f"{field}.display_name", allow_empty=True)
-    if target["role"] not in {"candidate", "cycle_count_baseline"}:
-        raise SimulationCampaignIntegrityError(f"{field}.role is invalid")
-    return target
-
-
-def _validate_prerequisites(value: object) -> None:
-    """Validate prerequisite links: unique by work item, consistent per campaign.
-
-    Several relative Cycle Count Goals of one Target link several work items
-    of the same baseline campaign, so a campaign may appear more than once.
-    """
-    prerequisites = _exact_list(value, "prerequisites", MAX_WORK_ITEMS)
-    identities: list[tuple[object, object]] = []
-    campaigns: dict[object, tuple[object, object]] = {}
-    for index, item in enumerate(prerequisites):
-        prerequisite = _exact_object(
-            item,
-            {"role", "manifest", "campaign_id", "target", "required_observation", "work_item_id"},
-            f"prerequisites[{index}]",
-        )
-        if (
-            prerequisite["role"] != "cycle_count_baseline"
-            or prerequisite["required_observation"] != "cycle_count"
-        ):
-            raise SimulationCampaignIntegrityError("prerequisite role/observation is invalid")
-        _require_uuid(prerequisite["campaign_id"], "prerequisite campaign_id")
-        target = _validate_target(prerequisite["target"], "prerequisite.target")
-        if target["role"] != "cycle_count_baseline":
-            raise SimulationCampaignIntegrityError("prerequisite target must have baseline role")
-        _require_work_item_id(prerequisite["work_item_id"])
-        manifest = _exact_object(
-            prerequisite["manifest"],
-            {"path_base", "path", "bytes", "sha256", "kind", "owner"},
-            "prerequisite.manifest",
-        )
-        if (
-            manifest["path_base"] != "origin_invocation"
-            or manifest["kind"] != "simulation_campaign_manifest"
-        ):
-            raise SimulationCampaignIntegrityError("prerequisite manifest reference is invalid")
-        _validate_evidence_members(manifest, "prerequisite.manifest")
-        if not cast(str, manifest["path"]).startswith("targets/"):
-            raise SimulationCampaignIntegrityError(
-                "prerequisite manifest must start beneath targets/"
-            )
-        if manifest["owner"] != prerequisite["campaign_id"]:
-            raise SimulationCampaignIntegrityError("prerequisite manifest owner disagrees")
-        campaign = (manifest, target)
-        if campaigns.setdefault(prerequisite["campaign_id"], campaign) != campaign:
-            raise SimulationCampaignIntegrityError(
-                "prerequisites of the same campaign must name the same manifest and Target"
-            )
-        identities.append((prerequisite["campaign_id"], prerequisite["work_item_id"]))
-    if len(set(identities)) != len(identities):
-        raise SimulationCampaignIntegrityError("prerequisite identities must be unique")
-
-
-def _validate_work_items(value: object) -> None:
-    items = _exact_list(value, "work_items", MAX_WORK_ITEMS)
-    decoded_items: list[Mapping[str, object]] = []
-    for ordinal, item in enumerate(items):
-        decoded = _decode_work_item(item, ordinal)
-        _require_work_item_id(decoded["work_item_id"])
-        _require_digest(decoded["fingerprint_sha256"], "work item fingerprint_sha256")
-        _require_variant_id(decoded["build_variant_id"])
-        decoded_items.append(decoded)
-    observation_count = sum(_planned_observation_count(item) for item in decoded_items)
-    if observation_count > MAX_OBSERVATIONS:
-        raise SimulationCampaignIntegrityError("planned observations exceed campaign ceiling")
-
-
-def _planned_observation_count(item: Mapping[str, object]) -> int:
-    """How many observations a work item is planned to produce: one per Test Run."""
-    return len(cast(tuple[object, ...], item["test_runs"]))
-
-
-def _validate_work_item_test_runs(item: Mapping[str, object]) -> None:
-    """Check a work item's Test Runs are well formed, named uniquely and fit its kind."""
-    entries = _exact_list(item["test_runs"], "test_runs", MAX_OBSERVATIONS)
-    try:
-        runs = [test_run_from_document(entry, trust_fingerprint=True) for entry in entries]
-    except ValueError as exc:
-        raise SimulationCampaignIntegrityError(f"work item test_runs: {exc}") from exc
-    names = [run.name for run in runs]
-    if not runs or len(set(names)) != len(names):
-        raise SimulationCampaignIntegrityError(
-            "work item test_runs must be nonempty and uniquely named"
-        )
-    selection = cast(Mapping[str, object], item["selection"])
-    selected = cast(tuple[str, ...], selection["names"])
-    kind = item["kind"]
-    if kind == "ordinary_hdl" and len(runs) != 1:
-        raise SimulationCampaignIntegrityError("ordinary work item requires one Test Run")
-    if kind == "cocotb_batch" and (
-        len({(run.seed, run.env) for run in runs}) != 1
-        or (selected and len(selected) != len(runs))
-    ):
-        raise SimulationCampaignIntegrityError(
-            "Cocotb batch Test Runs must share seed and environment, one per Test"
-        )
-
-
-def _decode_work_item(value: object, ordinal: int) -> Mapping[str, object]:
-    item = _exact_object(
-        value,
-        {
-            "test_runs",
-            "work_item_id",
-            "ordinal",
-            "kind",
-            "role",
-            "revision",
-            "target",
-            "selection",
-            "arguments",
-            "build_variant_id",
-            "run_directory",
-            "fingerprint_sha256",
-        },
-        f"work_items[{ordinal}]",
-    )
-    if require_int(item["ordinal"], field="work item ordinal") != ordinal:
-        raise SimulationCampaignIntegrityError("work item ordinal disagrees with order")
-    if item["kind"] not in {"ordinary_hdl", "cocotb_batch", "coverage_aggregate"}:
-        raise SimulationCampaignIntegrityError("work item kind is invalid")
-    if item["role"] not in {"candidate", "cycle_count_baseline"}:
-        raise SimulationCampaignIntegrityError("work item role is invalid")
-    _bounded_string(item["revision"], "work item revision")
-    _validate_work_item_selection(item["selection"], cast(str, item["kind"]))
-    _validate_work_item_run_directory(item["run_directory"])
-    _bounded_string_list(
-        item["arguments"], "arguments", count_limit=10_000, byte_limit=MAX_COMMAND_BYTES
-    )
-    _validate_work_item_test_runs(item)
-    return item
-
-
-def _validate_work_item_selection(value: object, work_item_kind: str) -> None:
-    selection = _exact_object(value, {"kind", "names"}, "selection")
-    names = _bounded_string_list(
-        selection["names"],
-        "selection.names",
-        count_limit=MAX_OBSERVATIONS,
-        byte_limit=MAX_OBSERVATION_TEST_BYTES,
-        unique=True,
-    )
-    if selection["kind"] == "named" and not names:
-        raise SimulationCampaignIntegrityError("named selection must be nonempty")
-    if selection["kind"] in {"default", "unfiltered"} and names:
-        raise SimulationCampaignIntegrityError("unnamed selection must have no names")
-    if selection["kind"] not in {"named", "default", "unfiltered"}:
-        raise SimulationCampaignIntegrityError("selection kind is invalid")
-    if work_item_kind == "ordinary_hdl" and selection["kind"] == "named" and len(names) != 1:
-        raise SimulationCampaignIntegrityError("named ordinary work item requires one test")
-    if work_item_kind == "ordinary_hdl" and selection["kind"] == "unfiltered":
-        raise SimulationCampaignIntegrityError("ordinary work item cannot be unfiltered")
-    if work_item_kind == "cocotb_batch" and selection["kind"] == "default":
-        raise SimulationCampaignIntegrityError("Cocotb work item cannot use default selection")
-    if work_item_kind == "coverage_aggregate" and selection["kind"] != "named":
-        raise SimulationCampaignIntegrityError("coverage work item requires named selection")
-
-
-def _validate_work_item_run_directory(value: object) -> None:
-    run_directory = _exact_object(
-        value, {"configured", "kind", "collision_template"}, "run_directory"
-    )
-    if run_directory["kind"] not in {"literal", "templated"}:
-        raise SimulationCampaignIntegrityError("work item run-directory kind is invalid")
-    _bounded_string(
-        run_directory["configured"], "work item run_directory.configured", allow_empty=True
-    )
-    _validate_run_directory_path(
-        run_directory["collision_template"],
-        "work item run_directory.collision_template",
-    )
 
 
 def _validate_run_directory_path(value: object, field: str) -> str:
@@ -1312,7 +1141,7 @@ _DOCUMENT_SPECS: dict[
         MANIFEST_SCHEMA,
         _MANIFEST_FIELDS,
         MANIFEST_MAX_BYTES,
-        _validate_manifest,
+        _read_manifest,
     ),
     SimulationAttempt: (
         "booley.simulation-attempt/v1",
@@ -1451,3 +1280,21 @@ def validate_relative_path(path: object) -> str:
     if any(part in {"", ".", ".."} for part in parts):
         raise SimulationCampaignIntegrityError("path must be contained and normalized")
     return parsed
+
+
+def linked_manifest_path(invocation: Path, reference: Mapping[str, object]) -> Path:
+    """The prerequisite manifest *reference* names, inside its *invocation*.
+
+    Decode does not check the path, so every walk checks it before opening it:
+    exactly ``targets/<Target>/campaign/manifest.json``, relative and contained,
+    which is what planning writes. That also keeps the invocation the same at
+    every hop of a prerequisite walk.
+    """
+    path = reference["path"]
+    parts = path.split("/") if isinstance(path, str) else []
+    if len(parts) != 4 or parts[0] != "targets" or parts[2:] != ["campaign", "manifest.json"]:
+        raise SimulationCampaignIntegrityError(
+            f"prerequisite manifest path {path!r} is not "
+            "targets/<Target>/campaign/manifest.json inside its invocation"
+        )
+    return invocation / validate_relative_path(path)

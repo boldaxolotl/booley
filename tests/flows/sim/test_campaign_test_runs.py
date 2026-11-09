@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from booley.flows.sim.campaign.codec import (
+    MAX_OBSERVATIONS,
+    MAX_WORK_ITEMS,
     SimulationCampaignIntegrityError,
     decode_simulation_campaign_manifest,
     encode_simulation_campaign_manifest,
@@ -18,11 +20,16 @@ from booley.flows.sim.campaign.flow_planning import (
     plan_coarse_simulation_campaign,
     plan_ordinary_hdl_campaign,
 )
-from booley.flows.sim.campaign.planning import compare_manifests, finalize_manifest
+from booley.flows.sim.campaign.planning import compare_manifests
 from booley.flows.sim.campaign.serial_execution import _work_item_test_runs
 from booley.flows.sim.flow import SimulateFlow, _manifest_run_groups
 from booley.flows.sim.request import SimRequest
-from booley.flows.test_runs import TestRun, build_test_run, test_run_document
+from booley.flows.test_runs import (
+    TestRun,
+    TestRunLimitError,
+    build_test_run,
+    test_run_document,
+)
 from tests.flows.sim import test_campaign_resume_diagnostics as resume_support
 from tests.flows.sim.test_campaign_flow_planning import _planning_fixture
 
@@ -135,6 +142,23 @@ def test_unnamed_invocation_records_its_seed(tmp_path: Path):
     assert [run["name"] for run in item["test_runs"]] == ["<default>@7"]
 
 
+@pytest.mark.parametrize("limit", ["work-items", "test-runs"])
+def test_planning_refuses_more_test_runs_than_a_campaign_holds(tmp_path: Path, limit: str):
+    """The ceilings are planning's: every planner path reaches ``_work_items`` (#2136)."""
+    if limit == "work-items":
+        runs = tuple(build_test_run(f"t{index}", seed=1) for index in range(MAX_WORK_ITEMS + 1))
+        with pytest.raises(
+            TestRunLimitError, match=rf"plans 1001 work items.*at most {MAX_WORK_ITEMS} work items"
+        ):
+            _hdl_plan(tmp_path, tuple((run,) for run in runs))
+    else:
+        runs = tuple(build_test_run(f"t{index}", seed=1) for index in range(MAX_OBSERVATIONS + 1))
+        with pytest.raises(
+            TestRunLimitError, match=rf"and 4001 Test Runs.*{MAX_OBSERVATIONS} Test Runs.*fewer"
+        ):
+            _cocotb_plan(tmp_path, (runs,))
+
+
 def test_hdl_work_item_refuses_more_than_one_test_run(tmp_path: Path):
     with pytest.raises(SimulationCampaignIntegrityError, match="planned groups and Test Runs"):
         _hdl_plan(tmp_path, ((_SOAK, _OTHER_SEED),))
@@ -162,50 +186,6 @@ def test_cocotb_batches_split_by_environment_and_seed(tmp_path: Path):
         ["reset@5"],
     ]
     assert len({item["build_variant_id"] for item in items}) == 1
-
-
-def _v4_document(tmp_path: Path) -> dict:
-    plan = _hdl_plan(tmp_path, ((_SOAK,),))
-    return json.loads(encode_simulation_campaign_manifest(plan.manifest))
-
-
-def _refinalized(document: dict):
-    """Finalize *document* again so only the altered field can be refused."""
-    document.pop("fingerprints")
-    return finalize_manifest(document)
-
-
-@pytest.mark.parametrize(
-    ("alter", "message"),
-    [
-        (lambda item: item.pop("test_runs"), "exact fields"),
-        (lambda item: item["test_runs"].clear(), "nonempty and uniquely named"),
-        (lambda item: item["test_runs"].append(copy.deepcopy(item["test_runs"][0])), "uniquely"),
-        (lambda item: item["test_runs"][0].update(name="count+soak@43"), "disagrees with its own"),
-        (lambda item: item["test_runs"][0].update(seed=0), "out of range"),
-        (lambda item: item["test_runs"][0].update(extra=1), "must hold exactly"),
-        (lambda item: item["test_runs"][0].pop("env"), "must hold exactly"),
-        (
-            lambda item: item["test_runs"].append(test_run_document(_OTHER_SEED)),
-            "ordinary work item requires one Test Run",
-        ),
-    ],
-)
-def test_v4_refuses_a_work_item_whose_test_runs_are_wrong(tmp_path: Path, alter, message):
-    document = _v4_document(tmp_path)
-    alter(document["work_items"][0])
-    with pytest.raises(SimulationCampaignIntegrityError, match=message):
-        _refinalized(document)
-
-
-def test_cocotb_batch_refuses_test_runs_that_differ_in_seed(tmp_path: Path):
-    runs = (build_test_run("reset", seed=1), build_test_run("count", seed=1))
-    document = json.loads(
-        encode_simulation_campaign_manifest(_cocotb_plan(tmp_path, (runs,)).manifest)
-    )
-    document["work_items"][0]["test_runs"][1] = test_run_document(build_test_run("count", seed=2))
-    with pytest.raises(SimulationCampaignIntegrityError, match="share seed and environment"):
-        _refinalized(document)
 
 
 @pytest.mark.parametrize(
