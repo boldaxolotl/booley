@@ -9493,8 +9493,13 @@ def _seed_mount_policy_project(tmp_path, monkeypatch, app, policy):
     return data
 
 
-@pytest.mark.parametrize("damage", ["invalid-policy", "ambiguous-seed", "directory-conflict"])
-def test_seed_mount_policy_unavailable_fails_without_comparing(tmp_path, monkeypatch, damage):
+def test_seed_mount_policy_unavailable_fails_without_comparing(tmp_path, monkeypatch):
+    for damage in ("invalid-policy", "ambiguous-seed", "directory-conflict"):
+        (tmp_path / damage).mkdir()
+        _assert_unavailable_policy_fails_without_comparing(tmp_path / damage, monkeypatch, damage)
+
+
+def _assert_unavailable_policy_fails_without_comparing(tmp_path, monkeypatch, damage):
     from booley.runtime import inspection
 
     data = _seed_mount_policy_project(tmp_path, monkeypatch, "claude", "subscription")

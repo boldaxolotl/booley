@@ -170,9 +170,14 @@ def _vscode(spec: dict) -> dict:
     return spec["customizations"]["vscode"]
 
 
-@pytest.mark.parametrize("egress", ["proxy", "unproxied"])
-@pytest.mark.parametrize("app", [dc.APP_CLAUDE, dc.APP_CODEX, dc.APP_NONE])
-def test_freshly_seeded_spec_has_no_drift(
+def test_freshly_seeded_spec_has_no_drift(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every supported agent app under both egress modes, each reseeded over the last."""
+    for egress in ("proxy", "unproxied"):
+        for app in (dc.APP_CLAUDE, dc.APP_CODEX, dc.APP_NONE):
+            _assert_fresh_spec_has_no_drift(project, monkeypatch, app, egress)
+
+
+def _assert_fresh_spec_has_no_drift(
     project: Path, monkeypatch: pytest.MonkeyPatch, app: str, egress: str
 ) -> None:
     seeded = _seed(project, app, egress=egress)
@@ -320,8 +325,15 @@ _DRIFT_CASES = {
 }
 
 
-@pytest.mark.parametrize("case", list(_DRIFT_CASES))
 def test_drift_finding_diff_names_the_changed_key(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each case reseeds a fresh spec, damages it, and expects its own drift finding."""
+    for case in _DRIFT_CASES:
+        _assert_drift_diff_names_key(project, monkeypatch, case)
+
+
+def _assert_drift_diff_names_key(
     project: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     # A stored `booley auth` token makes init mount the token seed (one case damages it).
@@ -417,8 +429,14 @@ def test_hand_written_auto_spec_is_not_compared(
     assert [(f.severity.value, "hand-written" in f.message) for f in findings] == [("note", True)]
 
 
-@pytest.mark.parametrize("case", ["extension", "volume", "token-seed"])
 def test_inside_sandbox_compares_visible_parts(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for case in ("extension", "volume", "token-seed"):
+        _assert_sandbox_compares_visible_part(project, monkeypatch, case)
+
+
+def _assert_sandbox_compares_visible_part(
     project: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     auth_token.store_token("SYNTHETIC_STORED_TOKEN", dc.APP_CLAUDE)
