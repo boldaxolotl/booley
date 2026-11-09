@@ -118,10 +118,28 @@ def test_dockerfile_parser_rejects_unresolved_from_arg() -> None:
             "${{ steps.substrate.outputs.digest }}",
         ),
         (
+            "published-base test candidate",
+            "test_workflow",
+            "test.yml",
+            "riscv-image",
+            "Build candidate from published stable base",
+            None,
+            "booley-runtime-base=docker-image://${{ steps.runtime-base.outputs.image }}",
+        ),
+        (
+            "local-base candidate",
+            "test_workflow",
+            "test.yml",
+            "riscv-image",
+            "Build candidate from changed stable base",
+            None,
+            "booley-runtime-base=docker-image://booley-runtime-base:ci",
+        ),
+        (
             "local RISC-V candidate",
             "test_workflow",
             "test.yml",
-            "bwave-smoke",
+            "riscv-image",
             "Run RISC-V candidate image contract",
             None,
             "booley-standard-substrate=docker-image://booley-standard-substrate:ci",
@@ -255,9 +273,10 @@ def test_local_stable_base_must_precede_its_candidate() -> None:
     assert "must precede" in _errors(sources, "test candidate alternatives")
 
 
-def test_published_base_resolver_must_precede_its_candidate() -> None:
+@pytest.mark.parametrize("job", ["bwave-smoke", "riscv-image"])
+def test_published_base_resolver_must_precede_its_candidate(job: str) -> None:
     sources = _sources()
-    steps = sources.test_workflow["jobs"]["bwave-smoke"]["steps"]
+    steps = sources.test_workflow["jobs"][job]["steps"]
     resolver = next(
         step for step in steps if step.get("name") == "Select compatible stable runtime base"
     )
@@ -728,3 +747,27 @@ def test_release_riscv_substrate_must_be_pulled_before_inspection() -> None:
     step["run"] = step["run"].replace('docker pull "${STANDARD_SUBSTRATE}"\n', "")
 
     assert "docker pull" in _errors(sources, "riscv layer contract")
+
+
+@pytest.mark.parametrize(
+    ("output", "problem"),
+    [
+        ("type=image,name=booley-riscv-substrate:ci,push=true", "must load its image"),
+        ("type=image,name=booley-other:ci", "tags"),
+        ("type=registry,name=booley-riscv-substrate:ci", "must load its image"),
+    ],
+    ids=["pushed", "renamed", "registry"],
+)
+def test_riscv_candidate_must_stay_in_the_local_image_store(output: str, problem: str) -> None:
+    """The zstd export is the RISC-V candidate only while it lands under its tag locally."""
+    sources = _sources()
+    step = _step(
+        sources, "test_workflow", "test.yml", "riscv-image", "Run RISC-V candidate image contract"
+    )
+    step["run"] = _sub_once(
+        r"--output \S+",
+        f"--output {output}",
+        str(step["run"]),
+    )
+
+    assert problem in _errors(sources, "local RISC-V candidate")

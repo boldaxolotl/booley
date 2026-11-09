@@ -222,5 +222,5 @@ CI keeps these artifacts:
 | `docker-base-publish.yml` | `base-package-inventory-<run>-<attempt>` |
 | `test.yml` (local base) | `docker-build-evidence` |
 | `test.yml` (published base) | `docker-build-evidence` |
-| `test.yml` (RISC-V lane) | `riscv-image-evidence-*` |
+| `test.yml` (`riscv-image` job) | `riscv-image-evidence-*` |
 | `docker-publish.yml` | `release-standard-image-*`, `release-riscv-image-*` |
