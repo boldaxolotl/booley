@@ -9,6 +9,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley bootstrap --egress proxy|unproxied` records `[sandbox] egress` in the
+  host config, creating the file if needed and changing nothing else in it, then
+  bootstraps under that mode. `--check-only` reports the pending change without
+  writing it, and running Sandboxes still on the old mode are named with their
+  recreate steps.
 - `sim --trace` converts a declared `trace_files` VCD of any size; the 2 GiB
   limit is gone. Post-run VCD-to-FST conversion now has its own
   `[flows.sim].trace_convert_timeout_ms` budget (default `1800000`, 30 minutes)

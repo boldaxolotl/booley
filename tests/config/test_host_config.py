@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.config import host_config
 from booley.config.host_config import (
     HostConfigError,
     SandboxHostPolicy,
@@ -168,3 +169,107 @@ def test_invalid_sandbox_does_not_fall_back_to_legacy(tmp_path: Path) -> None:
     with pytest.raises(HostConfigError) as raised:
         load_host_policy(path)
     assert raised.value.field == "sandbox.max_sessions"
+
+
+def test_egress_edit_creates_missing_config_with_only_egress(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+
+    change = host_config.plan_host_egress("unproxied", path)
+
+    assert change.content == b'[sandbox]\negress = "unproxied"\n'
+    assert (change.path, change.previous, change.requested) == (path, "proxy", "unproxied")
+    assert not path.exists()  # planning never writes
+
+
+_EGRESS_BEFORE = (
+    "# leading comment\n"
+    "[sandbox]\n"
+    "idle_timeout_seconds   =  600 # keep short\n"
+    "max_sessions = 2\n"
+    "egress_allowlist = []\n"
+    'egress   =   "unproxied"  # mode\n'
+    "\n"
+    "# trailing comment\n"
+)
+
+
+@pytest.mark.parametrize("newline", [pytest.param("\n", id="lf"), pytest.param("\r\n", id="crlf")])
+def test_egress_edit_changes_only_the_egress_value(tmp_path: Path, newline: str) -> None:
+    path = tmp_path / "config.toml"
+    original = _EGRESS_BEFORE.replace("\n", newline).encode()
+    path.write_bytes(original)
+
+    change = host_config.plan_host_egress("proxy", path)
+
+    assert change.content == original.replace(b'"unproxied"', b'"proxy"')
+    assert change.previous == "unproxied"
+    assert path.read_bytes() == original
+
+
+def test_egress_edit_adds_key_to_existing_sandbox_table(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_bytes(b"# keep\n[sandbox]\nmax_sessions = 2  # cap\n")
+
+    change = host_config.plan_host_egress("unproxied", path)
+
+    assert change.content == b'# keep\n[sandbox]\nmax_sessions = 2  # cap\negress = "unproxied"\n'
+
+
+def test_egress_edit_makes_no_edit_when_mode_already_recorded(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[sandbox]\nmax_sessions = 2\n", encoding="utf-8")
+
+    assert host_config.plan_host_egress("proxy", path).content is None  # absent key means proxy
+    assert host_config.plan_host_egress("proxy", tmp_path / "missing.toml").content is None
+
+
+def test_egress_edit_refuses_invalid_merged_policy(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[sandbox]\negress_allowlist = ["example.com"]\n', encoding="utf-8")
+
+    with pytest.raises(HostConfigError, match="unproxied cannot be combined"):
+        host_config.plan_host_egress("unproxied", path)
+
+
+def test_egress_edit_repairs_invalid_existing_egress(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[sandbox]\negress = "unproxyed"\n', encoding="utf-8")
+
+    change = host_config.plan_host_egress("proxy", path)
+
+    assert change.content == b'[sandbox]\negress = "proxy"\n'
+    assert change.previous == "unproxyed"
+
+
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        (b"[sandbox\n", "malformed TOML"),
+        (b"\xff\xfe", "cannot read file"),
+        (b"sandbox = 1\n", "must be a TOML table"),
+        (b"[sandbox]\nmax_sessions = 0\n", "must be positive"),
+    ],
+)
+def test_egress_edit_refuses_unreadable_or_invalid_file(
+    tmp_path: Path, body: bytes, match: str
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_bytes(body)
+
+    with pytest.raises(HostConfigError, match=match):
+        host_config.plan_host_egress("unproxied", path)
+
+
+def test_egress_edit_refuses_legacy_interactive_table(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[interactive]\nmax_sessions = -1\n", encoding="utf-8")
+
+    with pytest.raises(HostConfigError, match="legacy \\[interactive\\]") as raised:
+        host_config.plan_host_egress("unproxied", path)
+
+    assert "rename it to [sandbox] first" in str(raised.value)
+
+
+def test_egress_edit_refuses_unreadable_path(tmp_path: Path) -> None:
+    with pytest.raises(HostConfigError, match="cannot read file"):
+        host_config.plan_host_egress("unproxied", tmp_path)  # a directory
