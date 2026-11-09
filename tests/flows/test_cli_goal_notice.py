@@ -11,6 +11,7 @@ from booley.goals.model import GoalState
 from booley.goals.store import GoalStore
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.specialists.reviewer import ReviewerSpecialist
+from tests.flows.invocation_doubles import replace_run
 from tests.flows.report_headline import assert_paired_headline
 from tests.goals import conftest as goal_fixtures
 
@@ -38,7 +39,7 @@ def test_active_cli_warns_without_writing_goal(
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     if endpoint_kind == "builtin":
         endpoint = LintFlow()
-        monkeypatch.setattr(endpoint, "_run", EndpointOutcome)
+        replace_run(monkeypatch, endpoint, EndpointOutcome)
         argv = ["-C", str(goal_mode.worktree), "--target", "top", "--quiet"]
     elif endpoint_kind == "custom":
         endpoint = EchoFlow()
@@ -77,9 +78,9 @@ def test_unbound_cli_report_omits_goal_headline(goal_mode, monkeypatch):
     events = []
     monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
     flow = LintFlow()
-    monkeypatch.setattr(
+    replace_run(
+        monkeypatch,
         flow,
-        "_run",
         lambda: EndpointOutcome(
             criterion_key="lint_clean_top", criterion_met=True, detail={"warnings": 2}
         ),
@@ -98,7 +99,7 @@ def test_sibling_and_finished_goal_do_not_warn(goal_mode, monkeypatch, capsys):
 
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     flow = LintFlow()
-    monkeypatch.setattr(flow, "_run", EndpointOutcome)
+    replace_run(monkeypatch, flow, EndpointOutcome)
     flow.execute_cli(["-C", str(goal_mode.main), "--target", "top", "--quiet"])
     assert "not recorded for active Goal" not in capsys.readouterr().err
     store = GoalStore(goal_mode.control)
@@ -217,7 +218,7 @@ def test_bound_mcp_flow_keeps_goal_evidence(goal_mode, monkeypatch):
         flow.set_criterion("lint_clean_top", True)
         return EndpointOutcome(detail={"warnings": 0})
 
-    monkeypatch.setattr(flow, "_run", run)
+    replace_run(monkeypatch, flow, run)
     result = flow.execute(
         flow.request_type(target="top", work_dir=goal_mode.worktree),
         adapter=GoalFlowExecution(bind(goal_mode)),
@@ -231,6 +232,7 @@ def test_bound_mcp_flow_keeps_goal_evidence(goal_mode, monkeypatch):
 @pytest.mark.timeout(120)
 def test_bound_done_reviewer_preserves_completion_policy_and_receipt(layout, monkeypatch):
     from booley.flows.endpoint_report_criteria import freeze
+    from booley.flows.prepared_invocation import OrdinaryRunInvocation
     from tests.goals.conftest import enter_goals
     from tests.goals.test_mcp_routing import _goal_reviewer_endpoint
     from tests.goals.test_reviewer_proposals import review_issues
@@ -241,7 +243,7 @@ def test_bound_done_reviewer_preserves_completion_policy_and_receipt(layout, mon
     for replay in (False, True):
         endpoint, provider = _goal_reviewer_endpoint(layout, monkeypatch)
         provider.return_value.output = json.dumps({"issues": review_issues(True)})
-        freeze(endpoint)
+        freeze(endpoint, OrdinaryRunInvocation(endpoint._run))
         result = endpoint._run()
         assert result.exit_code == 0, result.report_text
         assert "explicit human approval" not in result.report_text

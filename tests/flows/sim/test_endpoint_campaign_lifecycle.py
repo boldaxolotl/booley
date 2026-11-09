@@ -300,25 +300,42 @@ def test_endpoint_reauthentication_never_renders_corrupt_hook_as_authoritative(
     assert result.detail["pre_sim_unauthenticated_references"]
 
 
+def _recording_invocation(*, borrows: bool, events: list[str]):
+    """Build an invocation recording the admission ``invoke_endpoint`` hands it.
+
+    Its run also appends ``"invoke"`` to *events*, so the lifecycle order stays pinned.
+    """
+    from booley.flows.endpoint_report_criteria import ReportScope
+    from booley.flows.prepared_invocation import PreparedInvocation
+
+    class RecordingInvocation(PreparedInvocation):
+        borrows_admission = borrows
+
+        def __init__(self) -> None:
+            self.received: list[object | None] = []
+
+        def report_scope(self, endpoint: object) -> ReportScope:
+            raise AssertionError("the execution sequence under test never plans a report scope")
+
+        def run(self, admission: object | None) -> EndpointOutcome:
+            events.append("invoke")
+            self.received.append(admission)
+            return EndpointOutcome(report_text="ok")
+
+    return RecordingInvocation()
+
+
 class _Endpoint:
     def __init__(self) -> None:
         self.events: list[str] = []
         self.name = "sim"
-
-    def run_prepared_simulation(
-        self, prepared: object, admission: object | None
-    ) -> EndpointOutcome:
-        self.events.append("invoke")
-        assert prepared == ("target",)
-        assert admission == "borrowed-admission"
-        return EndpointOutcome(report_text="ok")
+        self.admission_object = object()
 
     @contextmanager
     def admission(self, prepared: PreparedExecution) -> Iterator[object]:
-        assert prepared.simulation == ("target",)
         self.events.append("admit")
         try:
-            yield "borrowed-admission"
+            yield self.admission_object
         finally:
             self.events.append("release")
 
@@ -354,13 +371,17 @@ class _Endpoint:
         return ExecutionResult(outcome.exit_code, outcome)
 
 
-def test_prepared_campaign_and_borrowed_admission_are_explicit_values() -> None:
+@pytest.mark.parametrize("borrows", [True, False])
+def test_prepared_campaign_and_borrowed_admission_are_explicit_values(borrows: bool) -> None:
     endpoint = _Endpoint()
-    prepared = PreparedExecution(None, None, False, False, simulation=("target",))
+    invocation = _recording_invocation(borrows=borrows, events=endpoint.events)
+    prepared = PreparedExecution(None, None, False, False, invocation)
 
     result = execute_endpoint(endpoint, prepared)
 
     assert result.outcome.report_text == "ok"
+    # The borrower receives the admission object; any other invocation receives None.
+    assert invocation.received == [endpoint.admission_object if borrows else None]
     assert endpoint.events == [
         "admit",
         "invoke",
@@ -1128,8 +1149,12 @@ def _public_cycle_flow(campaign, monkeypatch):
     flow = SimulateFlow()
     monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
     monkeypatch.setattr(EndpointState, "_criterion_binding_gate", lambda _self: None)
-    monkeypatch.setattr(flow, "prepare_target_endpoint", lambda: None)
-    monkeypatch.setattr(flow, "prepare_simulation_endpoint", object)
+    from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
+    from booley.flows.sim.flow import PreparedSimulationEndpoint
+    from tests.flows.invocation_doubles import prepare_as
+
+    prepared = PreparedSimulationEndpoint((), None, (), {})
+    prepare_as(monkeypatch, flow, SimulationCampaignInvocation(flow, prepared))
     monkeypatch.setattr(flow, "_resolve_display_label", lambda: None)
     monkeypatch.setattr(EndpointState, "admission", lambda *_args: nullcontext(None))
     monkeypatch.setattr(
@@ -1320,7 +1345,13 @@ def _assert_partial_acceptance_policy(flow, result, tmp_path, campaign):
     context._pending_criteria_set = ("preexisting",)
     before = path.read_bytes()
     projections = {p: p.read_bytes() for p in tmp_path.rglob("simulation.json")}
-    record_acceptance(context, PreparedExecution(None, None, False, False), result)
+    from booley.flows.prepared_invocation import OrdinaryRunInvocation
+
+    record_acceptance(
+        context,
+        PreparedExecution(None, None, False, False, OrdinaryRunInvocation(EndpointOutcome)),
+        result,
+    )
     assert path.read_bytes() == before
     assert context.state.criteria
     assert context._pending_criteria_set == ()
