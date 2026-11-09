@@ -265,11 +265,13 @@ def test_host_capacity_requests_reports_inspect_failure_as_lifecycle_error(
         lambda _root: SimpleNamespace(runtime_base="contract"),
     )
 
-    def unreachable_docker(_image: str) -> str | None:
-        raise docker_image.idk.ImageInspectError("cannot inspect Docker image: daemon down")
+    def docker_missing(*_args: object, **_kwargs: object) -> object:
+        raise FileNotFoundError("docker")
 
-    # Fail the image-ID seam directly: an empty PATH does not hide `docker` on Windows.
-    monkeypatch.setattr(docker_image.idk, "image_id", unreachable_docker)
+    # Fail every Docker seam (the shared helper and raw subprocess); an empty PATH
+    # does not hide `docker` on Windows.
+    monkeypatch.setattr(docker_image.subprocess, "run", docker_missing)
+    monkeypatch.setattr(docker_image.idk, "_run_docker", docker_missing)
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="cannot inspect Docker image"):
         harness_lifecycle.host_capacity_requests(lifecycle.Intent.ENSURE)
