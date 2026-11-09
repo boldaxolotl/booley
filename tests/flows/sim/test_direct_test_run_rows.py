@@ -11,6 +11,7 @@ from booley.flows.base import SubprocessResult
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.test_runs import DEFAULT_SEED, build_test_run, test_run_document
 from booley.runtime.endpoint_execution import EXIT_FAILURE, EXIT_SUCCESS
+from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.test_flow import (
     _FLOW_ENABLED,
     _canned_build_session,  # noqa: F401 -- autouse fixture
@@ -39,13 +40,13 @@ _SMOKE = build_test_run("smoke", seed=1)
 
 
 def _run(tmp_path: Path, *argv: str, failing: str = ""):
-    """Run the direct path with a fake simulator that fails commands naming *failing*."""
+    """Run the direct path with a fake simulator that fails launches whose document names *failing*."""
     flow = _make_flow(tmp_path, config="lite", extra_args=list(argv))
     commands: list[str] = []
 
     def execute(command):
         commands.append(command[-1])
-        failed = bool(failing) and failing in command[-1]
+        failed = bool(failing) and failing in repr(launched_work(command))
         verdict = "FAILED" if failed else "PASSED"
         return SubprocessResult(
             returncode=int(failed), stdout=f"[SIM_RESULT] {verdict}\n", duration_s=0.1
