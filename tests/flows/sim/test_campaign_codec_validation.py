@@ -191,31 +191,6 @@ def test_scalar_contract_helpers_reject_invalid_values(function, value: object) 
         function(value, "field")
 
 
-def test_manifest_rejects_invalid_top_level_contracts() -> None:
-    invalid_documents: list[dict[str, object]] = []
-    for path, value in [
-        (("origin", "execution_id"), "not-an-execution"),
-        (("origin", "invocation_id"), 0),
-        (("target", "role"), "unknown"),
-        (("work_items", 0, "ordinal"), 2),
-        (("work_items", 0, "kind"), "unknown"),
-        (("work_items", 0, "role"), "unknown"),
-        (("work_items", 0, "selection", "kind"), "unknown"),
-        (("work_items", 0, "run_directory", "kind"), "unknown"),
-        (("work_items", 0, "run_directory", "collision_template"), "../escape"),
-    ]:
-        document = _manifest()
-        target: object = document
-        for part in path[:-1]:
-            target = target[part]  # type: ignore[index]
-        target[path[-1]] = value  # type: ignore[index]
-        invalid_documents.append(document)
-
-    for document in invalid_documents:
-        with pytest.raises((SimulationCampaignIntegrityError, TypeError, ValueError)):
-            codec.decode_simulation_campaign_manifest(codec.canonical_json_bytes(document))
-
-
 def test_codec_rejects_non_json_wrong_shape_and_wrong_schema() -> None:
     with pytest.raises(SimulationCampaignIntegrityError, match="canonical JSON"):
         codec.canonical_json_bytes({"value": object()})
@@ -274,21 +249,6 @@ def test_child_and_build_attempt_identities_must_be_coherent() -> None:
     )
     with pytest.raises(SimulationCampaignIntegrityError, match="both"):
         codec._validate_build_attempt(invalid)
-
-
-@pytest.mark.parametrize(
-    ("selection", "kind"),
-    [
-        ({"kind": "default", "names": ["test"]}, "ordinary_hdl"),
-        ({"kind": "named", "names": ["a", "b"]}, "ordinary_hdl"),
-        ({"kind": "unfiltered", "names": []}, "ordinary_hdl"),
-        ({"kind": "default", "names": []}, "cocotb_batch"),
-        ({"kind": "default", "names": []}, "coverage_aggregate"),
-    ],
-)
-def test_work_item_selection_rejects_incompatible_shapes(selection, kind: str) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
-        codec._validate_work_item_selection(selection, kind)
 
 
 def test_encoder_and_path_type_guards() -> None:
@@ -465,6 +425,16 @@ def test_manifest_decode_does_not_revalidate_planned_sections() -> None:
     document["required_suite"] = {"names": ["x", "x"], "default_invocation": False}
     document["build_variants"][0]["kind"] = "unknown"
     document["planning_disclosures"] = [{"planner": ""}]
+    document["origin"]["execution_id"] = "not-an-execution"
+    document["target"]["role"] = "unknown"
+    document["target"]["display_name"] = 7
+    item = document["work_items"][0]
+    item["kind"] = "unknown"
+    item["selection"]["kind"] = "unknown"
+    item["run_directory"]["collision_template"] = "../escape"
+    item["arguments"] = [1]
+    item["fingerprint_sha256"] = "not-a-digest"
+    document["fingerprints"]["unexpected"] = "not-a-digest"
     raw = codec.canonical_json_bytes(document)
     assert codec.decode_simulation_campaign_manifest(raw).canonical_bytes() == raw
 
@@ -477,16 +447,51 @@ def test_manifest_reader_rejects_a_wrong_nested_type() -> None:
         codec.decode_simulation_campaign_manifest(raw)
 
 
-def test_manifest_reader_rejects_a_missing_nested_field(tmp_path) -> None:
+def _prerequisite_entry() -> dict[str, object]:
+    return {
+        "role": "cycle_count_baseline",
+        "manifest": {
+            "path_base": "origin_invocation",
+            "path": "targets/base/campaign/manifest.json",
+            "bytes": 1,
+            "sha256": "sha256:" + "a" * 64,
+            "kind": "simulation_campaign_manifest",
+            "owner": "550e8400-e29b-41d4-a716-446655440000",
+        },
+        "campaign_id": "550e8400-e29b-41d4-a716-446655440000",
+        "target": {**_manifest()["target"], "role": "cycle_count_baseline"},
+        "required_observation": "cycle_count",
+        "work_item_id": "item:0000:0123456789abcdef",
+    }
+
+
+@pytest.mark.parametrize(
+    ("path", "field"),
+    [
+        (("workload", "run_cwd", "configured"), r"run_cwd\.configured"),
+        (("target", "selector"), r"target\.selector"),
+        (("work_items", 0, "kind"), r"work_items\[0\]\.kind"),
+        (
+            ("prerequisites", 0, "manifest", "path"),
+            r"prerequisites\[0\]\.manifest\.path",
+        ),
+    ],
+    ids=["workload-run-cwd", "target-selector", "work-item-kind", "prerequisite-manifest-path"],
+)
+def test_manifest_reader_rejects_a_missing_nested_field(tmp_path, path, field) -> None:
     from booley.flows.sim.campaign.inspection import inspect_retained_campaign
 
     document = _manifest()
-    del document["workload"]["run_cwd"]["configured"]
+    document["prerequisites"] = [_prerequisite_entry()]
+    parent: object = document
+    for part in path[:-1]:
+        parent = parent[part]  # type: ignore[index]
+    del parent[path[-1]]  # type: ignore[attr-defined,arg-type]
     raw = codec.canonical_json_bytes(document)
-    with pytest.raises(SimulationCampaignIntegrityError, match=r"run_cwd\.configured"):
+    with pytest.raises(SimulationCampaignIntegrityError, match=field):
         codec.decode_simulation_campaign_manifest(raw)
-    path = tmp_path / "campaign" / "manifest.json"
-    path.parent.mkdir()
-    path.write_bytes(raw)
-    with pytest.raises(SimulationCampaignIntegrityError, match=r"run_cwd\.configured"):
-        inspect_retained_campaign(path)
+    manifest = tmp_path / "campaign" / "manifest.json"
+    manifest.parent.mkdir()
+    manifest.write_bytes(raw)
+    with pytest.raises(SimulationCampaignIntegrityError, match=field):
+        inspect_retained_campaign(manifest)

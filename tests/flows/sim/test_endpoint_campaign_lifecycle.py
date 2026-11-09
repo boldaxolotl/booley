@@ -2004,3 +2004,99 @@ def test_pre_sim_read_rejects_result_reference_without_published_firing(tmp_path
 
     with pytest.raises(SimulationCampaignIntegrityError, match="result references disagree"):
         store.read_pre_sim_firings()
+
+
+def _strict_sim_a_ticket(tmp_path, monkeypatch):
+    """A strict Ticket with one bound Simulation Criterion for the ``sim_a`` Target."""
+    from booley.criteria.state import DevelopmentState
+
+    state_path = tmp_path / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.slug, state.ticket_type = "ticket", "implementation"
+    key = "sim_pass_sim_a"
+    params = {
+        "target": "acme:lib:multi:1#sim_a",
+        "_target_selector": "sim_a",
+        "test_selector": "a",
+        "required_tests": ["a", "b"],
+        "minimum_total": 2,
+    }
+    state.init_criteria({key: True}, criterion_params={key: params}, strict=True)
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    return state_path
+
+
+def _spy_simulation_lifecycle(monkeypatch, events, terminal_phases, *, terminal_write_fails):
+    """Append lifecycle step names to *events*, optionally failing the terminal progress write."""
+    from booley.flows.endpoint_state import EndpointState
+
+    write_progress = SimulateFlow._write_campaign_progress
+    hook = SimulateFlow.record_flow_owned_acceptance
+    post_run = EndpointState._post_run
+    refresh = SimulateFlow.refresh_report_detail
+
+    def progress(self, targets, outcomes, *, phase, complete):
+        if complete or phase == "aborted":
+            terminal_phases.append(phase)
+            events.append("terminal")
+            if terminal_write_fails:
+                raise OSError("injected terminal progress failure")
+        return write_progress(self, targets, outcomes, phase=phase, complete=complete)
+
+    def record(self, outcome):
+        handled = hook(self, outcome)
+        events.append(f"acceptance:{handled}")
+        return handled
+
+    def persist(self, *args):
+        events.append("mutable")
+        return post_run(self, *args)
+
+    def refresh_detail(self, result):
+        events.append("refresh")
+        return refresh(self, result)
+
+    monkeypatch.setattr(SimulateFlow, "_write_campaign_progress", progress)
+    monkeypatch.setattr(SimulateFlow, "record_flow_owned_acceptance", record)
+    monkeypatch.setattr(EndpointState, "_post_run", persist)
+    monkeypatch.setattr(SimulateFlow, "refresh_report_detail", refresh_detail)
+
+
+@pytest.mark.parametrize(
+    "terminal_write_fails", [False, True], ids=["complete", "terminal_write_fails"]
+)
+def test_simulation_final_acceptance_lifecycle_order(tmp_path, monkeypatch, terminal_write_fails):
+    """Acceptance follows the terminal result and precedes mutable persistence and refresh."""
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.sim.request import SimRequest
+    from tests.flows.sim.test_coverage_flow import _AcceptanceAdapter
+
+    project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
+    state_path = _strict_sim_a_ticket(tmp_path, monkeypatch)
+    events: list[str] = []
+    terminal_phases: list[str] = []
+    _spy_simulation_lifecycle(
+        monkeypatch, events, terminal_phases, terminal_write_fails=terminal_write_fails
+    )
+    recorder = _AcceptanceAdapter(
+        log_dir=tmp_path / "logs",
+        identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+    )
+
+    result = flow.execute(
+        SimRequest(target="sim_a", work_dir=project, report_dir=tmp_path / "reports"),
+        adapter=recorder,
+    )
+
+    first = {name: events.index(name) for name in dict.fromkeys(events)}
+    assert first["terminal"] < first["acceptance:True"] < first["refresh"]
+    assert len(DevelopmentState.load(state_path).acceptance_transactions) == 1
+    if terminal_write_fails:
+        assert result.exit_code == 2
+        operation = result.outcome.detail["completion_error"]["operation"]
+        assert operation == "publish simulation progress"
+        assert terminal_phases[:2] == ["complete", "aborted"]
+    else:
+        assert result.exit_code == 0, result.outcome.report_text
+        assert first["acceptance:True"] < first["mutable"] < first["refresh"]

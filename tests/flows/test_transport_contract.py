@@ -181,6 +181,25 @@ def test_uninitialized_flow_fails_before_state_or_execution(runtime, monkeypatch
     assert not (uninitialized / "flow-reports").exists()
 
 
+def _spy_final_acceptance_and_post_run(monkeypatch, flow_type):
+    """Return a list that gains ``final`` and ``post_run`` as those lifecycle steps begin."""
+    events = []
+    final_acceptance = flow_type.record_flow_owned_acceptance
+    post_run = EndpointState._post_run
+
+    def record_final(self, outcome):
+        events.append("final")
+        return final_acceptance(self, outcome)
+
+    def persist(self, *args):
+        events.append("post_run")
+        return post_run(self, *args)
+
+    monkeypatch.setattr(flow_type, "record_flow_owned_acceptance", record_final)
+    monkeypatch.setattr(EndpointState, "_post_run", persist)
+    return events
+
+
 @pytest.mark.parametrize("flow_type", FLOWS)
 def test_structured_and_cli_paths_preserve_acceptance_before_save(flow_type, runtime, monkeypatch):
     from booley.criteria.state import DevelopmentState
@@ -195,9 +214,7 @@ def test_structured_and_cli_paths_preserve_acceptance_before_save(flow_type, run
     state.save()
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(runtime / "logs"))
-    events = []
-    record = acceptance_ledger.record_changes
-    save = DevelopmentState.save
+    record, save = acceptance_ledger.record_changes, DevelopmentState.save
 
     def record_changes(*args, **kwargs):
         result = record(*args, **kwargs)
@@ -210,6 +227,7 @@ def test_structured_and_cli_paths_preserve_acceptance_before_save(flow_type, run
 
     monkeypatch.setattr(acceptance_ledger, "record_changes", record_changes)
     monkeypatch.setattr(DevelopmentState, "save", save_state)
+    events = _spy_final_acceptance_and_post_run(monkeypatch, flow_type)
     outcomes = []
     recorder = FixtureRecorder(log_dir=runtime / "logs")
 
@@ -238,6 +256,8 @@ def test_structured_and_cli_paths_preserve_acceptance_before_save(flow_type, run
                 adapter=RecordingExecution(recorder),
             )
         assert events[0:2] == ["immutable", "mutable"]
+        # Final acceptance is recorded before the Flow's mutable persistence.
+        assert events.index("final") < events.index("post_run")
         assert result.exit_code == 0
         assert DevelopmentState.load(state_path).criteria[key].met
         outcomes.append(result.outcome)
@@ -259,8 +279,47 @@ def test_unbound_typed_request_never_acquires_a_job(flow_type, runtime, monkeypa
         EndpointState, "_acquire_job_slot", lambda self: pytest.fail("admitted unbound request")
     )
     result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
+    assert flow.generic_binding_gate_applies() is True
     assert result.exit_code == 2
-    assert result.outcome.detail["acceptance_effect"] == "rejected_unbound"
+    assert result.outcome.detail == {
+        "acceptance_effect": "rejected_unbound",
+        "unbound_targets": ["demo"],
+    }
+    pending = {
+        "lint": "lint_clean_other -> lint --target other",
+        "sim": "elab_pass_other -> sim --mode elab-only --target other",
+        "synth": "synthesis_ok_other -> synth --target other",
+        "fpga": "fpga_impl_ok_other -> fpga --target other",
+    }[flow.name]
+    assert result.outcome.report_text == (
+        f"{flow.name}: Target(s) demo do not bind an Acceptance Basis criterion.\n"
+        f"Pending compatible criteria:\n  {pending}\n"
+        "Use --diagnostic only when this is intentionally a non-acceptance run."
+    )
+
+
+def test_simulation_coverage_run_is_not_binding_gated(runtime, monkeypatch):
+    """Coverage preparation authorizes its own selection, so the generic gate is skipped."""
+    from booley.criteria.state import DevelopmentState
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    path = runtime / "state.json"
+    state = DevelopmentState.load(path)
+    state.init_criteria({"sim_pass_other": True}, strict=True)
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    flow = SimulateFlow()
+    sentinel = EndpointOutcome(exit_code=2, report_text="coverage preparation refusal")
+    monkeypatch.setattr(flow, "prepare_simulation_endpoint", lambda: sentinel)
+    monkeypatch.setattr(
+        EndpointState, "_acquire_job_slot", lambda self: pytest.fail("admitted before preparation")
+    )
+
+    result = flow.execute(flow.request_type(target="demo", work_dir=runtime, coverage=True))
+
+    assert flow.generic_binding_gate_applies() is False
+    assert result.outcome.report_text == "coverage preparation refusal"
+    assert "acceptance_effect" not in result.outcome.detail
 
 
 def test_unbound_project_criterion_uses_active_endpoint_catalog(runtime, monkeypatch):

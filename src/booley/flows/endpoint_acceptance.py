@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -393,9 +392,7 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
 
 
 def _missing_criterion_bindings(endpoint: EndpointState) -> list[str]:
-    # Explicit native collection also supports ungated Targets (#213). Coverage
-    # preflight has already validated the complete selection before admission.
-    if endpoint.name == "sim" and getattr(endpoint.args, "coverage", False):
+    if not endpoint.generic_binding_gate_applies():
         return []
     if (
         not endpoint.state.strict_criteria
@@ -446,18 +443,7 @@ def record_acceptance(
 
 
 def _record_final_acceptance(endpoint: EndpointState, outcome: EndpointOutcome) -> None:
-    campaign_outcomes = getattr(endpoint, "_simulation_campaign_outcomes", ())
-    if campaign_outcomes:
-        handler = getattr(endpoint, "record_campaign_acceptance", None)
-        if not callable(handler):
-            raise RuntimeError("campaign outcomes have no Flow-owned acceptance handler")
-        try:
-            handler(campaign_outcomes)
-        except EvidenceDiscarded:
-            raise
-        except Exception:
-            _retain_partial_campaign_acceptance(endpoint, outcome, campaign_outcomes)
-            raise
+    if endpoint.record_flow_owned_acceptance(outcome):
         return
     if endpoint._state is not None and endpoint._state._file_path is not None:
         endpoint.state.work_dir = str(Path(endpoint.args.work_dir).resolve())
@@ -481,27 +467,3 @@ def _record_final_acceptance(endpoint: EndpointState, outcome: EndpointOutcome) 
     criteria_set = [outcome.criterion_key] if outcome.criterion_key else []
     criteria_set.extend(f"~{key}" for key in reset_keys)
     endpoint._pending_criteria_set = tuple(criteria_set)
-
-
-def _retain_partial_campaign_acceptance(
-    endpoint: EndpointState,
-    outcome: EndpointOutcome,
-    campaign_outcomes: tuple[object, ...],
-) -> None:
-    """Expose durable per-Target acceptance completed before projection failed."""
-    accepted = tuple(getattr(endpoint, "_simulation_acceptance_outcomes", ()))
-    entries: list[dict[str, object]] = []
-    for campaign, disposition in zip(campaign_outcomes, accepted, strict=False):
-        target = getattr(campaign, "target", {})
-        selector = target.get("selector", "") if isinstance(target, Mapping) else ""
-        entries.append(
-            {
-                "target": str(selector),
-                "committed": bool(getattr(disposition, "committed", False)),
-                "transaction_id": getattr(disposition, "transaction_id", None),
-                "reason": str(getattr(disposition, "reason", "unknown")),
-            }
-        )
-    if entries:
-        outcome.detail = dict(outcome.detail)
-        outcome.detail["acceptance"] = {"status": "partial", "targets": entries}

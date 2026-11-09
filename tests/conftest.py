@@ -273,6 +273,7 @@ def pytest_configure(config: pytest.Config) -> None:
     hide_mutmut_stats_mode_from_children()
     _configure_test_profile(config)
     _begin_coverage_stamp(config)
+    prune_orphan_basetemps(config)
     # Imported here: pytest_plugins must load it first for assertion rewriting.
     from tests.timeout_headroom import timeout_plugin_loaded
 
@@ -282,6 +283,19 @@ def pytest_configure(config: pytest.Config) -> None:
 
         if get_env_settings(config).timeout is None:
             config.option.timeout = _DEFAULT_TEST_TIMEOUT_S
+
+
+def prune_orphan_basetemps(config: pytest.Config) -> None:
+    """Record this checkout's tools-cache basetemp and prune those of removed checkouts.
+
+    Controller only: xdist workers share the controller's basetemp, and one
+    prune per session is enough. See ``booley.dev_support.pytest_basetemp``.
+    """
+    if hasattr(config, "workerinput"):
+        return
+    from booley.dev_support.pytest_basetemp import record_and_prune
+
+    record_and_prune(config.option.basetemp, _SOURCE_ROOT)
 
 
 # (report, fingerprint) of a controller run that writes Cobertura XML; see

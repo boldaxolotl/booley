@@ -811,7 +811,8 @@ def pytest_basetemp(root: Path) -> Path:
     pytest deletes ``--basetemp`` at the start of every run. It sits directly
     in the tools root because pytest does not create missing parents and this
     read-only check must not create them; the shared environment's install
-    already did.
+    already did. The test session records the owning checkout beside it and
+    prunes folders of removed checkouts (``booley.dev_support.pytest_basetemp``).
     """
     checkout_key = hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]
     return agent_tools_root() / f"pytest-basetemp-{checkout_key}"

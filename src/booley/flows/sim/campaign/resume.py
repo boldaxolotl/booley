@@ -23,6 +23,7 @@ from .codec import (
     UnsupportedSimulationCampaignFormatError,
     decode_simulation_campaign_manifest,
     encode_simulation_campaign_manifest,
+    linked_manifest_path,
 )
 from .model import SimulationCampaignManifest
 from .planning import manifest_digest
@@ -166,13 +167,7 @@ def _walk_prerequisites(
     entries = cast(tuple[Mapping[str, object], ...], node.manifest.document["prerequisites"])
     for entry in entries:
         reference = cast(Mapping[str, object], entry["manifest"])
-        linked = (invocation / cast(str, reference["path"])).absolute()
-        try:
-            linked.relative_to(invocation)
-        except ValueError as exc:
-            raise SimulationCampaignIntegrityError(
-                "prerequisite manifest escapes invocation"
-            ) from exc
+        linked = linked_manifest_path(invocation, reference).absolute()
         if linked in ancestors:
             raise SimulationCampaignIntegrityError("cyclic prerequisite manifest")
         walked = next((item for item in result if item.path == linked), None)
