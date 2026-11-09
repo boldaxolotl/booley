@@ -26,19 +26,20 @@ _CHUNK_BYTES = 64 * 1024
 def canonical_json(value: object) -> bytes:
     """Encode finite JSON as sorted compact UTF-8 with one trailing newline.
 
-    Mappings and tuples are thawed to plain objects first.  Raises ``TypeError`` for
-    a value that is not JSON and ``ValueError`` for a non-finite number.
+    Mappings and tuples are thawed to plain objects first.  Raises ``ValueError`` for a
+    value that is not JSON (a YAML date, say) or is a non-finite number.
     """
-    return (
-        json.dumps(
+    try:
+        text = json.dumps(
             _thaw(value),
             ensure_ascii=False,
             allow_nan=False,
             sort_keys=True,
             separators=(",", ":"),
-        ).encode("utf-8")
-        + b"\n"
-    )
+        )
+    except TypeError as exc:
+        raise ValueError(str(exc)) from exc
+    return text.encode("utf-8") + b"\n"
 
 
 def _thaw(value: object) -> object:
@@ -136,7 +137,7 @@ def parse_json_object(
 ) -> dict[str, object]:
     """Parse UTF-8 JSON that must be an object, canonical bytes when *canonical*."""
     try:
-        document = require_dict(json.loads(raw))
+        document = require_dict(json.loads(raw.decode("utf-8")))
     except (UnicodeDecodeError, json.JSONDecodeError, BoundaryError) as exc:
         raise error(f"not a JSON object: {exc}") from exc
     if canonical:

@@ -436,10 +436,7 @@ def test_public_work_item_authentication_rejects_file_changed_during_read(
 
     monkeypatch.setattr(os, "read", swap_after_read)
 
-    with pytest.raises(
-        SimulationCampaignIntegrityError,
-        match=r"changed during read|cannot read authoritative file",
-    ):
+    with pytest.raises(SimulationCampaignIntegrityError, match="changed during read"):
         authenticate_work_item(manifest, completed.item_id)
 
 

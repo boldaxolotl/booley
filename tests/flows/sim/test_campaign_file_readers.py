@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import os
 from pathlib import Path
 from types import MappingProxyType
@@ -62,6 +63,11 @@ def test_read_bounded_checks_single_link_only_when_asked(tmp_path: Path) -> None
         campaign_files.read_bounded(path, limit=3, error=_DomainError, single_link=True)
 
 
+def test_canonical_json_refuses_a_value_that_is_not_json() -> None:
+    with pytest.raises(ValueError, match="not JSON serializable"):
+        campaign_files.canonical_json({"day": datetime.date(2026, 1, 1)})
+
+
 def test_canonical_json_thaws_frozen_documents() -> None:
     frozen = MappingProxyType({"b": (1, 2), "a": MappingProxyType({"c": None})})
 
@@ -72,6 +78,7 @@ def test_canonical_json_thaws_frozen_documents() -> None:
     ("raw", "message"),
     [
         (b"\xff", "not a JSON object"),
+        (b'\xef\xbb\xbf{"a":1}\n', "not a JSON object"),
         (b"[]", "not a JSON object"),
         (b'{"b": 1}\n', "not canonical JSON"),
         (b'{"a":NaN}\n', "not canonical JSON"),
