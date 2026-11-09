@@ -2011,9 +2011,10 @@ def _resolve_image_id(image: str) -> str:
 def _keeper_image_id(keeper: str) -> str | None:
     """Return the keeper tag's image ID, ``None`` when the keeper is absent.
 
-    Unlike :func:`_resolve_image_id`, a Docker failure is never read as "absent":
-    it raises ``RuntimeSpecError`` naming the keeper, so callers cannot report a
-    missing keeper or retag one because Docker was unreachable.
+    Unlike :func:`_resolve_image_id`, absence returns ``None`` instead of raising.
+    A Docker failure is never read as "absent": it raises ``RuntimeSpecError``
+    naming the keeper, so callers cannot report a missing keeper or retag one
+    because Docker was unreachable.
     """
     from booley.runtime import interactive_docker as docker
 
