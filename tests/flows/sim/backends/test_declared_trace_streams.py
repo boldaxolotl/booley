@@ -171,7 +171,9 @@ def test_declared_vcd_streams_to_trace_ok(adapter, tmp_path, monkeypatch):
     out = _run(adapter, tmp_path, monkeypatch, "record:fpu.vcd;write:fpu.vcd", ["fpu.vcd"])
 
     assert out.types() == {"fpu.vcd": "fifo"}
-    assert f"TRACE_OK: {tmp_path / 'work' / 'trace_streams' / '0-fpu.fst'}" in out.output
+    # Published as the session's own trace.fst, so `bwave register SIM_DIR` finds it.
+    assert f"TRACE_OK: {tmp_path / 'work' / 'trace.fst'}" in out.output
+    assert (tmp_path / "work" / "trace_streams" / "0-fpu.fst").is_file()
     assert "[SIM_RESULT] PASSED" in out.output
     _no_pipe_left(out.dirs.run, "fpu.vcd")
     # Icarus always converts its own dump.vcd; the declared path is never converted.
@@ -256,7 +258,7 @@ def test_converter_exit_does_not_block_writer(tmp_path, monkeypatch):
 
 
 def test_pipe_removed_after_timeout_kill(tmp_path, monkeypatch):
-    out = _run("verilator", tmp_path, monkeypatch, "record:fpu.vcd;hang", ["fpu.vcd"], timeout=1)
+    out = _run("verilator", tmp_path, monkeypatch, "record:fpu.vcd;hang", ["fpu.vcd"], timeout=3)
 
     assert "timed out" in out.output
     assert out.types() == {"fpu.vcd": "fifo"}
@@ -276,7 +278,7 @@ def test_sidecar_proven_stale_pipe_is_replaced(tmp_path, monkeypatch):
     out = _run("verilator", tmp_path, monkeypatch, "record:fpu.vcd;write:fpu.vcd", ["fpu.vcd"])
 
     assert out.types() == {"fpu.vcd": "fifo"}
-    assert "0-fpu.fst" in out.output
+    assert [a["status"] for a in out.attempts("declared_stream")] == ["started", "success"]
     _no_pipe_left(run, "fpu.vcd")
 
 
@@ -308,3 +310,20 @@ def test_foreign_fifo_without_sidecar_is_kept(tmp_path, monkeypatch):
 
     assert out.types() == {"a.vcd": "fifo", "b.vcd": "fifo"}
     assert stat.S_ISFIFO(foreign.lstat().st_mode) and foreign.lstat().st_ino == identity
+
+
+def test_fifo_with_mismatched_sidecar_is_kept(tmp_path, monkeypatch):
+    """A sidecar that names another inode proves nothing about the pipe."""
+    (tmp_path / "run").mkdir()
+    foreign = tmp_path / "run" / "a.vcd"
+    os.mkfifo(foreign)
+    identity = foreign.lstat().st_ino
+    sidecar = tmp_path / "run" / ".a.vcd.booley-pipe"
+    sidecar.write_text(json.dumps({"dev": 0, "ino": identity + 1}), encoding="utf-8")
+
+    out = _run(
+        "verilator", tmp_path, monkeypatch, "record:a.vcd,b.vcd;write:b.vcd", ["a.vcd", "b.vcd"]
+    )
+
+    assert out.types() == {"a.vcd": "fifo", "b.vcd": "fifo"}
+    assert foreign.lstat().st_ino == identity

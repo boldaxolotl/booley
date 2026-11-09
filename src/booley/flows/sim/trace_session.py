@@ -344,7 +344,7 @@ class TraceSession:
         if result.conversion is not None:
             self._record_conversion("vcd_convert", result.conversion)
             if result.conversion.success:
-                selected = self._publish_bwave(result.selected) if result.selected else None
+                selected = self.publish_bwave(result.selected) if result.selected else None
         return selected or result.selected
 
     def inspect(self, path: Path | None) -> TraceInspection:
@@ -465,7 +465,7 @@ class TraceSession:
                 print(f"[bwave] stderr: {result.detail}")
         status = "success" if result and result.success else "no_artifact"
         if status == "success":
-            self._publish_bwave(self.bwave_path)
+            self.publish_bwave(self.bwave_path)
         return_code = result.attempts[-1].return_code if result and result.attempts else None
         self.record_attempt("fifo_cleanup", status, return_code=return_code)
 
@@ -537,7 +537,7 @@ class TraceSession:
             stall_count += 1
             stalled_for = stall_timeout * stall_count
             self._log_stall_window(
-                self.bwave_path,
+                bwave_proc.store_path,
                 size,
                 stalled_for,
                 stall_count,
@@ -656,7 +656,7 @@ class TraceSession:
                     "raise [flows.sim].trace_convert_timeout_ms"
                 )
             if success:
-                self._publish_bwave(self.bwave_path)
+                self.publish_bwave(self.bwave_path)
             elif result.detail:
                 (vcd_path.parent / "trace.fst.stderr").write_text(
                     result.detail + "\n", encoding="utf-8"
@@ -690,7 +690,7 @@ class TraceSession:
             self.persisted_stderr_path.unlink(missing_ok=True)
             shutil.move(source_stderr, self.persisted_stderr_path)
 
-    def _publish_bwave(self, trace_path: Path) -> Path | None:
+    def publish_bwave(self, trace_path: Path) -> Path | None:
         """Copy a valid cached store beside sim artifacts for later lookup."""
         if (
             trace_path.suffix != ".fst"

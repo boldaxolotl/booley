@@ -299,6 +299,10 @@ class CurrentRunTraces:
             return TraceSelection(None, ambiguous=stores)
         for match in fresh:
             if match.suffix.lower() != ".vcd":
+                if match in streamed:
+                    # Publish as the session's own trace.fst, like a post-run
+                    # conversion, so `bwave register/gui SIM_DIR` finds it.
+                    return TraceSelection(self.session.publish_bwave(match) or match)
                 return TraceSelection(match)
             self.session.postprocess(match)
             # Owned-only lookup: the converted store, or the VCD that
