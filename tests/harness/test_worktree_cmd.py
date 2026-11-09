@@ -251,6 +251,22 @@ def test_failed_worktree_add_drops_only_its_new_branch(project: Path, capsys) ->
 
 
 @_real_script
+def test_a_failed_stamp_is_a_warning_and_the_worktree_is_still_reported(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    def refuse(common: Path, name: str) -> None:
+        raise OSError("read-only folder")
+
+    monkeypatch.setattr(worktree_cmd, "stamp_worktree", refuse)
+
+    assert _new("stampless", project) == 0
+
+    output = capsys.readouterr()
+    assert output.out == f"{project / '.booley' / 'worktrees' / 'stampless'}\n"
+    assert "WARNING: could not record the last-used time of stampless" in output.err
+
+
+@_real_script
 def test_new_resets_the_last_used_stamp(project: Path) -> None:
     from booley.runtime.worktree_usage import last_used, stamp_worktree
 

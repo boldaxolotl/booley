@@ -12,10 +12,10 @@
 #                it (and without new_branch) the worktree starts on a detached
 #                HEAD at the current HEAD.
 #   new_branch   (optional) new local branch name to create for the worktree
-#   start_point  (optional) commit the new branch starts at; required with
-#                new_branch and refused without it. Neither may be combined with
-#                branch_ref or a <branch>--<description> name. An existing
-#                new_branch is refused before anything is created.
+#   start_point  (optional) full commit id the new branch starts at; given with
+#                new_branch, which the caller has already validated as a branch
+#                name not combined with branch_ref. An existing new_branch is
+#                refused before anything is created.
 #   on_existing  (optional) policy when the destination already exists:
 #                  "refuse"  (default) exit 1 without touching anything when
 #                            the destination is an existing path, a registered
@@ -124,27 +124,6 @@ if [ -n "$BRANCH_REF" ]; then
         exit 1
     fi
     EXPLICIT_BRANCH="${BRANCH_REF#refs/heads/}"
-fi
-
-# new_branch and start_point come together, and only for a plain name.
-if [ -n "$NEW_BRANCH" ] || [ -n "$START_POINT" ]; then
-    if [ -z "$NEW_BRANCH" ] || [ -z "$START_POINT" ]; then
-        echo "ERROR: new_branch and start_point must be given together" >&2
-        exit 1
-    fi
-    if [ -n "$BRANCH_REF" ] || [[ "$NAME" == *--* ]]; then
-        echo "ERROR: new_branch cannot be combined with branch_ref or a branch--description name" >&2
-        exit 1
-    fi
-    if ! git -C "$CWD" check-ref-format --branch "$NEW_BRANCH" >/dev/null 2>&1; then
-        echo "ERROR: new_branch is not a valid branch name: $NEW_BRANCH" >&2
-        exit 1
-    fi
-    if ! git -C "$CWD" rev-parse --verify --quiet "${START_POINT}^{commit}" >/dev/null; then
-        echo "ERROR: start_point is not a commit: $START_POINT" >&2
-        exit 1
-    fi
-    START_POINT=$(git -C "$CWD" rev-parse --verify "${START_POINT}^{commit}")
 fi
 
 WORKTREE_DIR="$BOOLEY_DIR_PATH/worktrees/$NAME"

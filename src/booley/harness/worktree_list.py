@@ -23,7 +23,7 @@ from booley.core.booley_dir import (
     resolve_common_booley_dir,
     resolve_main_checkout_root,
 )
-from booley.goals.store import GoalRecordCorruptError, GoalStore, WorktreeIdentityError
+from booley.goals.store import GoalStore, GoalStoreError
 from booley.mcp.session_registry import SessionRegistry, namespace
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.handles import HandleStore
@@ -137,32 +137,48 @@ def _patch_ids(repo: Path, patch: bytes) -> list[str]:
     return [line.split()[0] for line in _text(output).splitlines() if line.split()]
 
 
-def _squashed_prefix_length(repo: Path, upstream: str, base: str, commits: list[str]) -> int:
-    """Number of leading *commits* whose combined diff landed upstream as one commit."""
-    paths = _git(repo, "diff", "--no-ext-diff", "--name-only", "-z", base, commits[-1])
+# Diff flags that make a patch independent of the user's Git configuration: colour
+# codes or rename detection would change the text `git patch-id` hashes.
+_PLAIN_DIFF = ("--no-color", "--no-ext-diff", "--no-renames")
+
+
+def _squashed_commits(repo: Path, upstream: str, base: str) -> set[str]:
+    """Commits on HEAD since *base* whose combined diff landed upstream as one commit.
+
+    A squash commit may have been made from any point of the branch, so every
+    commit since *base* (merges included) is tried as the squashed tip; the one
+    with the most ancestors that match wins. A tip's ancestry, not its position in a
+    date-ordered list, decides what it covers, so a side branch merged in later and
+    a commit before a merge of main are never mistaken for squashed work.
+    """
+    paths = _git(repo, "diff", *_PLAIN_DIFF, "--name-only", "-z", base, "HEAD")
     pathspec = [item for item in _text(paths).split("\0") if item]
     if not pathspec:
-        return 0
+        return set()
     landed = _git(
-        repo, "log", "-p", "--no-ext-diff", "--no-merges", f"{base}..{upstream}", "--", *pathspec
+        repo, "log", "-p", *_PLAIN_DIFF, "--no-merges", f"{base}..{upstream}", "--", *pathspec
     )
     candidates = set(_patch_ids(repo, landed))
     if not candidates:
-        return 0
-    for length in range(len(commits), 0, -1):
-        cumulative = _git(repo, "diff", "--no-ext-diff", base, commits[length - 1])
-        if candidates.intersection(_patch_ids(repo, cumulative)):
-            return length
-    return 0
+        return set()
+    squashed: set[str] = set()
+    for tip in _text(_git(repo, "rev-list", f"{base}..HEAD")).split():
+        cumulative = _git(repo, "diff", *_PLAIN_DIFF, base, tip)
+        if candidates.isdisjoint(_patch_ids(repo, cumulative)):
+            continue
+        covered = set(_text(_git(repo, "rev-list", f"{base}..{tip}")).split())
+        if len(covered) > len(squashed):
+            squashed = covered
+    return squashed
 
 
 def _count_unmerged(repo: Path, upstream: str) -> int:
     """Count commits on HEAD that are not on *upstream*, squash merges included.
 
     ``git cherry`` drops commits patch-equivalent to an upstream commit. A branch
-    squash-merged as one commit is not patch-equivalent per commit, so the longest
-    leading run of branch commits whose combined diff matches an upstream commit is
-    dropped too; only ``+`` commits after it count.
+    squash-merged as one commit is not patch-equivalent per commit, so the commits
+    under the tip whose combined diff matches an upstream commit are dropped too;
+    only ``+`` commits outside that set count.
     """
     cherry = _text(_git(repo, "cherry", upstream, "HEAD")).splitlines()
     unmerged = [line[2:] for line in cherry if line.startswith("+ ")]
@@ -172,10 +188,7 @@ def _count_unmerged(repo: Path, upstream: str) -> int:
     if base_result.returncode != 0:
         return len(unmerged)
     base = _text(base_result.stdout).strip()
-    listed = _git(repo, "rev-list", "--reverse", "--no-merges", f"{base}..HEAD")
-    commits = _text(listed).split()
-    squashed = commits[: _squashed_prefix_length(repo, upstream, base, commits)] if commits else []
-    return len(set(unmerged) - set(squashed))
+    return len(set(unmerged) - _squashed_commits(repo, upstream, base))
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +231,10 @@ def _session_labels(common: Path, now: float, diagnostics: list[str]) -> dict[Pa
     registry = SessionRegistry(common, quiet_after=quiet_after(common))
     snapshot = registry.visible_snapshot(now=now, scope=namespace())
     handles, handle_diagnostics = HandleStore(common).snapshot()
-    diagnostics.extend((*snapshot.diagnostics, *handle_diagnostics))
+    # A project that never ran a Session has no registry directory: not a problem.
+    if registry.root.exists():
+        diagnostics.extend(snapshot.diagnostics)
+    diagnostics.extend(handle_diagnostics)
     labels: dict[Path, list[str]] = {}
     for row in snapshot.rows:
         key = row.attribution.key
@@ -230,7 +246,7 @@ def _session_labels(common: Path, now: float, diagnostics: list[str]) -> dict[Pa
 def _active_goal(context: _Context, worktree: Path, diagnostics: list[str]) -> str | None:
     try:
         record = context.goals.active_for_worktree(worktree)
-    except (WorktreeIdentityError, GoalRecordCorruptError) as exc:
+    except GoalStoreError as exc:
         diagnostics.append(f"Goal Mode of worktree {worktree.name} is unavailable: {exc}")
         return None
     return None if record is None else record.id

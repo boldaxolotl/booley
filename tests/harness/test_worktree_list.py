@@ -18,13 +18,16 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A Project whose main checkout holds one commit and whose `.booley` is ignored."""
+    """A Project whose main checkout holds one commit."""
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     root = tmp_path / "repo"
     root.mkdir()
     git(root, "init", "-q", "-b", "main")
+    # A developer's global ignore file may hide `.booley`; these tests count what Git reports.
+    no_excludes = tmp_path / "no-excludes"
+    no_excludes.write_bytes(b"")
+    git(root, "config", "core.excludesFile", str(no_excludes))
     (root / "base.txt").write_bytes(b"base\n")
-    (root / ".git" / "info" / "exclude").write_bytes(b"/.booley\n")
     git(root, "add", "base.txt")
     git(root, "commit", "-qm", "base")
     return root
@@ -129,6 +132,66 @@ def test_squash_merged_branch_counts_as_merged(repo: Path) -> None:
     _commit(squashed, "s3.txt")
     states, _ = _collect(repo)
     assert states["sq"].unmerged == 1
+
+
+def test_squash_of_a_merged_in_side_branch_leaves_the_branchs_own_commit_unmerged(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A positional prefix of the date-ordered commits would swallow `c1` with the side commit."""
+    own = _add(repo, "own")
+    side = _add(repo, "side")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z")
+    _commit(own, "own.txt")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-01-02T00:00:00Z")
+    _commit(side, "side.txt")
+    git(own, "merge", "--no-ff", "-qm", "merge side", "booley/side")
+
+    git(repo, "merge", "--squash", "booley/side")
+    git(repo, "commit", "-qm", "squash of side")
+    states, _ = _collect(repo)
+
+    assert states["own"].unmerged == 1
+
+
+def test_squash_of_a_branch_that_merged_main_in_counts_as_merged(repo: Path) -> None:
+    merged = _add(repo, "mm")
+    _commit(merged, "a.txt")
+    _commit(merged, "b.txt")
+    _commit(repo, "main-only.txt")
+    git(merged, "merge", "-qm", "merge main", "main")
+    states, _ = _collect(repo)
+    assert states["mm"].unmerged == 2
+
+    git(repo, "merge", "--squash", "booley/mm")
+    git(repo, "commit", "-qm", "squash of mm")
+    states, _ = _collect(repo)
+
+    assert states["mm"].unmerged == 0
+
+
+def test_a_goal_store_failure_is_a_diagnostic_not_a_crash(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.goals.store import GoalStore, GoalStoreError
+
+    def fail(self: GoalStore, worktree: Path) -> None:
+        raise GoalStoreError("two Goal Records claim this worktree")
+
+    monkeypatch.setattr(GoalStore, "active_for_worktree", fail)
+    _add(repo, "w")
+
+    states, diagnostics = _collect(repo)
+
+    assert states["w"].goal is None
+    assert any("Goal Mode of worktree w is unavailable" in line for line in diagnostics)
+
+
+def test_a_project_without_a_session_registry_has_no_registry_diagnostic(repo: Path) -> None:
+    _add(repo, "w")
+
+    _, diagnostics = _collect(repo)
+
+    assert not any("session registry" in line for line in diagnostics)
 
 
 def test_detached_worktree_is_listed_as_detached(repo: Path) -> None:

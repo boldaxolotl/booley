@@ -285,7 +285,11 @@ def _finish_setup(name: str, project_root: Path, created: _Created) -> int:
         if not isinstance(exc, _REPORTED_FAILURES):
             raise
         return _report_failure(project_root, created.worktree, name, exc, created.source)
-    stamp_worktree(resolve_common_booley_dir(project_root), name)
+    # The stamp is bookkeeping: a failure must not hide a worktree that exists.
+    try:
+        stamp_worktree(resolve_common_booley_dir(project_root), name)
+    except OSError as exc:
+        print(f"WARNING: could not record the last-used time of {name}: {exc}", file=sys.stderr)
     print(created.worktree)
     print(_ready_notice(name, paired=created.paired), file=sys.stderr)
     return 0

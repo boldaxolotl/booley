@@ -1862,7 +1862,7 @@ def _stamp_worktree_use(
         return
     try:
         record_worktree_use(checkout, resolve_common_booley_dir())
-    except (FileNotFoundError, SourceCheckoutProjectError, BooleyLayoutError, OSError, ValueError):
+    except (SourceCheckoutProjectError, BooleyLayoutError, OSError, ValueError):
         logger.debug("Could not stamp worktree use for %s", checkout, exc_info=True)
 
 

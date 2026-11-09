@@ -138,7 +138,8 @@ booley worktree new <name>
 
 This creates `.booley/worktrees/<name>`, prints its path, and starts it at the
 current commit on a new branch `booley/<name>`. An existing `booley/<name>`
-branch or destination is refused and left untouched. A name of the form
+branch or destination is refused and left untouched, and so is a name Git
+cannot use in a branch name (such as `x.lock` or `a..b`). A name of the form
 `<branch>--<description>` checks out the existing branch `<branch>` instead and
 creates no branch. Git submodules are filled in from the main
 checkout, without network access. Then the Project's `post-setup` hook
@@ -146,7 +147,8 @@ checkout, without network access. Then the Project's `post-setup` hook
 new worktree. Its output is shown and saved to
 `.booley/worktrees/.logs/<name>.log` in the main Booley Directory. If the
 submodule step or the hook fails, Booley removes the worktree and its
-`booley/<name>` and `booley-worktree/<name>` branches and exits nonzero.
+`booley/<name>` and `booley-worktree/<name>` branches and exits nonzero. A
+branch that already gained commits is kept.
 
 The worktree gets its own Booley Directory (the `.booley/` folder):
 
@@ -170,11 +172,11 @@ under `.booley/worktrees/`, from the main checkout or from any worktree:
 | `NAME` | The worktree name |
 | `BRANCH` | Its branch, or `detached` on a detached HEAD |
 | `BOOLEY DIR` | `Paired Checkout` or `Snapshot` |
-| `UNCOMMITTED` | Changed and untracked files. A Paired Checkout reads `N, paired M`, `M` being the same count in its inner checkout |
+| `UNCOMMITTED` | Changed and untracked entries (an untracked folder counts once), not counting untracked files in the worktree's own `.booley/`. A Paired Checkout reads `N, paired M`, `M` being the same count in its inner checkout |
 | `UNMERGED` | Commits not yet in the main checkout's branch. Commits whose change is already there count as merged, including a branch merged by squash. A Paired Checkout reads `N, paired M` |
 | `SESSION` | Handles of live sessions in the worktree |
 | `GOAL` | Its active Goal, if any |
-| `LAST USED` | When a Booley tool call last ran there; `never` for a worktree that predates the record |
+| `LAST USED` | When the worktree was created or a Booley tool call last ran there; `never` for a worktree that predates the record |
 
 A worktree whose directory is gone is not listed; a warning names it.
 
