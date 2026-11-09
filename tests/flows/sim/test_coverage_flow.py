@@ -3161,3 +3161,94 @@ def test_coverage_analysis_refuses_a_campaign_written_by_booley_0_3_0(tmp_path):
     assert message.startswith(f"Cannot analyze Campaign at {outcome.campaign_path}")
     assert "COV_SCHEMA_VERSION_UNSUPPORTED" in message
     assert str(outcome.campaign_path.parent) in message
+
+
+def _add_second_coverage_target(tmp_path: Path, state_path: Path) -> None:
+    """Add a gated ``sim_second`` coverage Target beside ``sim_custom``."""
+    core = tmp_path / "counter.core"
+    block = core.read_text().split("targets:\n", 1)[1]
+    core.write_text(core.read_text() + block.replace("sim_custom:", "sim_second:"))
+    (tmp_path / ".booley/tests.toml").write_text(
+        '[sim_custom]\ntests = ["gap"]\n[sim_second]\ntests = ["gap"]\n'
+    )
+    projection = _atomic_coverage_projection()
+    required = dict(projection.required)
+    params = dict(projection.params)
+    for key, value in projection.params.items():
+        second_key = key.replace("sim_custom", "sim_second")
+        required[second_key] = projection.required[key]
+        params[second_key] = {
+            **value,
+            "target": "acme:demo:counter:1#sim_second",
+            "_target_selector": "sim_second",
+        }
+    state = DevelopmentState.load(state_path)
+    state.init_criteria(
+        {**required, "_report_submitted": True},
+        flow_key_aliases={
+            **projection.aliases,
+            "coverage_sim_second": [k for k in required if "sim_second" in k],
+        },
+        criterion_params={**params, "_report_submitted": {}},
+        strict=True,
+    )
+    state.save()
+
+
+@pytest.mark.parametrize(
+    ("targets", "handled", "transactions"),
+    [
+        pytest.param("sim_custom", False, 0, id="one_target"),
+        pytest.param("sim_custom,sim_second", True, 1, id="two_targets"),
+    ],
+)
+def test_coverage_summary_failure_acceptance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    targets: str,
+    handled: bool,
+    transactions: int,
+) -> None:
+    """A failed last-Target publication accepts only Targets that completed before it."""
+    state_path, _initial = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
+    if "," in targets:
+        _add_second_coverage_target(tmp_path, state_path)
+    adapter = _AcceptanceAdapter(
+        log_dir=tmp_path / "logs",
+        identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+    )
+    retained: list[object] = []
+
+    def fail_last_retention(_progress, outcome) -> None:
+        retained.append(outcome)
+        if len(retained) == len(targets.split(",")):
+            raise OSError("injected Campaign summary publication failure")
+
+    hook_results: list[bool] = []
+    hook = SimulateFlow.record_flow_owned_acceptance
+
+    def spy(self, outcome) -> bool:
+        hook_results.append(hook(self, outcome))
+        return hook_results[-1]
+
+    monkeypatch.setattr("booley.flows.sim.flow._retain_coverage_campaign", fail_last_retention)
+    monkeypatch.setattr(SimulateFlow, "record_flow_owned_acceptance", spy)
+    result = SimulateFlow(
+        coverage_execution=lambda *_args: _PassingSplitMetricsExecution()
+    ).execute(
+        SimRequest(
+            target=targets, work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
+        ),
+        adapter=adapter,
+    )
+
+    assert result.exit_code == 2
+    assert hook_results == [handled]
+    saved = DevelopmentState.load(state_path)
+    assert len(saved.acceptance_transactions) == transactions
+    accepted = {key for key, entry in saved.criteria.items() if entry.met}
+    assert accepted == (
+        {key for key in saved.criteria if key.startswith("coverage_sim_custom_")}
+        if handled
+        else set()
+    )

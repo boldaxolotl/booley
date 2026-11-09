@@ -176,6 +176,17 @@ class EndpointState(ABC):
         """Refresh derived report detail before it is written; most endpoints have none."""
         return
 
+    def record_flow_owned_acceptance(self, outcome: EndpointOutcome) -> bool:
+        """Record Flow-owned final acceptance for *outcome*; return whether it was handled.
+
+        The default handles nothing, so shared Criterion recording and invalidation apply.
+        """
+        return False
+
+    def generic_binding_gate_applies(self) -> bool:
+        """Whether the shared Criterion binding gate checks this invocation's Targets."""
+        return True
+
     def transcript_path(self) -> Path | None:
         """Path of this invocation's agent transcript, or ``None`` when it keeps none."""
         return None
