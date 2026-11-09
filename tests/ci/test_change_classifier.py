@@ -287,6 +287,7 @@ def test_dispatched_riscv_measurement_builds_riscv_image_without_riscv_changes(
     assert outputs["riscv_image"] == "true"
     assert outputs["stable_base"] == "false"
     assert _jobs(outputs)["bwave-smoke"] is True
+    assert _jobs(outputs)["riscv-image"] is True
 
 
 def test_automatic_riscv_measurement_keeps_path_gating(tmp_path: Path) -> None:
@@ -304,6 +305,9 @@ def test_automatic_riscv_measurement_keeps_path_gating(tmp_path: Path) -> None:
     )
 
     assert outputs["riscv_image"] == "false"
+    # A forced run selects every other conditional job, never the RISC-V lane.
+    assert _jobs(outputs)["riscv-image"] is False
+    assert _jobs(outputs)["bwave-smoke"] is True
 
 
 def test_riscv_measurement_arm_rejects_non_dispatch_events(tmp_path: Path) -> None:
@@ -454,6 +458,7 @@ def test_pure_docker_change_requires_only_image_build_path(tmp_path: Path) -> No
         "release-semantic",
         "package-artifacts",
         "bwave-smoke",
+        "riscv-image",
     }
 
 
@@ -476,6 +481,7 @@ def test_stable_base_input_requests_local_compatibility_build(tmp_path: Path) ->
         "coverage",
         "package-artifacts",
         "bwave-smoke",
+        "riscv-image",
     }
 
 
@@ -617,6 +623,7 @@ _NOT_SELECTED_BY_SOURCE = {
     "bwave-integration",
     "bwave-smoke",
     "renovate-config",
+    "riscv-image",
     "rust-test",
     "scanner-smoke",
     "sidecar-smoke",
@@ -627,11 +634,12 @@ _NOT_SELECTED_BY_SOURCE = {
     ("paths", "unselected"),
     [
         # Characterization: these sets are what was selected before the
-        # documentation job set was narrowed, and must stay unchanged.
+        # documentation job set was narrowed, and must stay unchanged. Only a
+        # RISC-V image input (pyproject.toml is one) selects `riscv-image`.
+        pytest.param(["pyproject.toml"], set(), id="pyproject.toml"),
         *(
-            pytest.param([path], set(), id=path)
+            pytest.param([path], {"riscv-image"}, id=path)
             for path in (
-                "pyproject.toml",
                 "setup.cfg",
                 "setup.py",
                 "VERSION",
@@ -884,7 +892,7 @@ def test_riscv_image_input_requests_extended_image_smoke(tmp_path: Path, path: s
     outputs = _classify(repo, base, head)
 
     assert outputs["riscv_image"] == "true"
-    assert {"package-artifacts", "bwave-smoke"} <= _required(outputs)
+    assert {"package-artifacts", "bwave-smoke", "riscv-image"} <= _required(outputs)
 
 
 @pytest.mark.parametrize(
@@ -930,6 +938,7 @@ def test_release_regression_paths_request_focused_image_smoke(
     assert outputs["release_sensitive"] == "true"
     assert outputs["standard_image"] == "true"
     assert outputs["riscv_image"] == str(riscv).lower()
+    assert _jobs(outputs)["riscv-image"] is riscv
     assert {"package-artifacts", "bwave-smoke"} <= _required(outputs)
 
 
@@ -1065,7 +1074,7 @@ def test_both_changelog_paths_are_release_inputs(tmp_path: Path) -> None:
     outputs = _classify(repo, base, head)
 
     assert outputs["release"] == "true"
-    assert _required(outputs) == set(_jobs(outputs)) - {STRESS_JOB} | {
+    assert _required(outputs) == set(_jobs(outputs)) - {STRESS_JOB, "riscv-image"} | {
         "changes",
         "release-semantic",
     }

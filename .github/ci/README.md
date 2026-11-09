@@ -260,7 +260,7 @@ Runs serialize per key. The publisher never overwrites a key tag, and no other
 workflow writes one. Check a key with
 `python .github/scripts/riscv_tooling.py published`.
 
-`bwave-smoke` consumes the published image. When `riscv_image` is selected,
+The `riscv-image` job consumes the published image. When `riscv_image` is selected,
 `riscv_tooling.py resolve` computes the key, resolves the key's tag to a
 digest, checks its role and key labels, and writes the **tooling source
 record** `riscv-image-evidence/tooling-source.json`:
@@ -284,9 +284,11 @@ stage from source.
 
 The `bwave-smoke` duration budget times the test phase only: its clock starts
 after the standard candidate image and its wheel overlay are built, so runner
-and cache-network build speed cannot fail it. The RISC-V lane builds its image
-inside the validation group, so that build stays on the clock, and the budget
-follows the recorded source. Registry hits and local builds (including
+and cache-network build speed cannot fail it. The RISC-V lane runs as its own
+`riscv-image` job, so it neither delays `bwave-smoke` nor competes with its
+validations for CPU. That job builds its own standard substrate from the
+trusted cache, then starts its clock. The RISC-V image build stays on the
+clock, and the budget follows the recorded source. Registry hits and local builds (including
 fallbacks) each get their own budget, derived from measured runs of that
 source, so a slow hit cannot hide behind the local-build ceiling. A lane that
 stopped before writing its record is judged against the local budget.
