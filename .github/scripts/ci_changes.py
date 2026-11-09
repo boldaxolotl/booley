@@ -419,7 +419,7 @@ def _category_jobs(categories: set[str]) -> set[str]:
 
 
 def _linux_entries(linux_shard_count: int) -> list[dict[str, object]]:
-    """Return the Ubuntu legs: complete-suite jobs, or shards per Python version."""
+    """Return the plain Ubuntu legs: one complete-suite job, or shards, per listed Python."""
     if linux_shard_count == 1:
         return [
             {"name": f"ubuntu-{py}-full", "os": "ubuntu-latest", "python": py, "mode": "full"}

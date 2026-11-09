@@ -35,8 +35,8 @@ catches what the queue cannot: a classifier that skipped a needed job, a
 maintainer's manual incident merge, and drift in runners, toolchains, or
 unpinned dependencies. It also refreshes the `main`-scoped pip and Rust caches
 after a dependency change and produces the complete-run artifacts that timing
-models and cost profiles sample. Manual runs and the release tag's
-`publish.yml` call also select every job. The concurrency group includes the
+models and cost profiles sample. Manual runs (except shard benchmarks) and the
+release tag's `publish.yml` call also select every job. The concurrency group includes the
 event, so a `main` push never cancels the nightly or a manual run.
 
 ## Flake stress
@@ -84,9 +84,11 @@ refresh read only `tests`: setup is dominated by module and session fixtures
 charged to whichever test first triggers them on each xdist worker, so it is not
 a stable per-test weight and would move with scheduling. The Ubuntu
 complete-suite legs publish the file as `pytest-timing-<leg label>` on every
-outcome, including failed test runs. On a sharded manual
-Ubuntu run, the Ubuntu timing files, `test_phases` included, are in the
-`shard-linux-<python>-<index>` artifacts instead.
+outcome, including failed test runs. On a sharded run, the Ubuntu 3.11 timing
+files, `test_phases` included, are in the `shard-linux-3.11-<index>` artifacts
+instead. Ubuntu 3.14 timings are only in the `shard-coverage-<index>` artifacts
+and include coverage overhead, so refresh `linux-test-timings.json` from the
+3.11 files.
 
 ## Windows shard-count experiment
 
@@ -153,8 +155,8 @@ Whenever a pull request runs the `test` job, its Ubuntu 3.11 shards and the
 Ubuntu 3.14 `coverage-shards` jobs each run every Goal recovery and authority
 permutation, and its Windows 3.14 shards together run the same set except
 POSIX-only cases; all of them use the same mark expression. The Windows 3.11
-and 3.13 compatibility legs run a fixed focused subset. The change classifier (`required_jobs` in
-`.github/scripts/ci_changes.py`) selects the `test` job for any path classified
+and 3.13 compatibility legs run a fixed focused subset. The change classifier
+(`required_jobs` in `.github/scripts/ci_changes.py`) selects the `test` job for any path classified
 `python_source`, `python_tests`, `workflow`, `packaging`, `release`, or
 `ci_tooling`, and for unclassified paths. `ci_tooling` is
 `.github/ci/requirements-*.txt`, where CI-only tool pins live instead of inline

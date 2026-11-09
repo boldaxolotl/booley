@@ -305,6 +305,10 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     assert coverage_config["relative_files"] is True
     assert coverage_paths == ["src/booley", "*/src/booley"]
     assert "--cov-fail-under=0" in command
+    # The sysmon core and the Linux timing model are what make one instrumented
+    # 3.14 run cheaper than the plain 3.14 shards plus separate coverage shards.
+    assert workflow["jobs"]["coverage-shards"]["env"]["COVERAGE_CORE"] == "sysmon"
+    assert "--ci-timing-model .github/ci/linux-test-timings.json" in " ".join(command.split())
     rendered_steps = "\n".join(str(step) for step in workflow["jobs"]["coverage"]["steps"])
     assert "coverage combine" in rendered_steps
     assert "coverage xml" in rendered_steps
