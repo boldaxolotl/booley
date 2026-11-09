@@ -16,10 +16,8 @@ adapter result the real adapter would have written.
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
-import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,8 +28,7 @@ from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
     AdapterTraceResult,
-    add_transport_arguments,
-    transport_identity_from_args,
+    work_transport_identity,
     write_adapter_result,
 )
 from booley.flows.sim.backends import cocotb_results
@@ -45,6 +42,7 @@ from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.runtime.endpoint_execution import ExecutionResult
 from booley.targets.catalog import TargetCatalog
+from tests.flows.sim.launched_work import launched_work
 from tests.target_test_support import write_sim_preview_project
 
 # Canned simulator processes shared by the campaign-path tests.
@@ -184,10 +182,7 @@ def _install_fakes(
                 stdout=built.stdout + record,
                 stderr=built.stderr,
             )
-        parser = argparse.ArgumentParser(add_help=False)
-        add_transport_arguments(parser)
-        args, _unknown = parser.parse_known_args(shlex.split(script.splitlines()[-1]))
-        identity = transport_identity_from_args(args, "verilator")
+        identity = work_transport_identity(launched_work(script.splitlines()[-1]))
         assert identity is not None
         target = identity.target_identity.split("#")[-1]
         selected = identity.selected_tests
