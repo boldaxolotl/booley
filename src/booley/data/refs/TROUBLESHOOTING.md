@@ -288,10 +288,11 @@ Project root; see [Doctor waivers](https://booley.dev/docs/doctor/#doctor-waiver
 
 Doctor rebuilds the `.devcontainer/devcontainer.json` that `booley init` would
 write now and diffs it against the file on disk. The warning
-(`interactive.devcontainer-drift`) lists each changed key path, `-` for what is
-on disk and `+` for what init would write, so you see what a reseed changes.
-Run `booley init --seed --project <root>`, then **Dev Containers: Rebuild
-Container** in that Project's window.
+(`interactive.devcontainer-drift`) lists each changed key path (the first 20),
+`-` for what is on disk and `+` for what init would write, so you see what a
+reseed changes. Follow the remedy the warning prints; for a VS Code Sandbox
+that is usually `booley init --seed --project <root>`, then **Dev Containers:
+Rebuild Container** in that Project's window.
 
 Inside the Sandbox, Doctor compares only what it can see (VS Code settings and
 extensions, the attach hook, and the agent state volumes) and says host

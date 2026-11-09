@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 import os
 import subprocess
@@ -511,12 +510,10 @@ class TestDevcontainerSpecStaleness:
         image: str | None = None,
         declared_provider: str | None = None,
         declared_clis: tuple[str, ...] | None = None,
-        expected: dict | None = None,
     ) -> _Rec:
-        """Inspect the spec on disk against *expected* (default: that same spec).
+        """Inspect the spec on disk, with that same spec standing in for what init would write.
 
-        *expected* stands in for the spec ``booley init`` would write; the preconditions
-        tested here (image, provider, CLI set) run before it is ever consulted.
+        The preconditions tested here (image, provider, CLI set) run before it is consulted.
         """
         from booley.runtime import devcontainer as dc
 
@@ -537,11 +534,7 @@ class TestDevcontainerSpecStaleness:
                     None,
                     declared_provider=declared_provider,
                     **({"declared_clis": declared_clis} if declared_clis else {}),
-                    expected_spec=lambda _image: copy.deepcopy(
-                        expected
-                        if expected is not None
-                        else json.loads(on_disk.read_text(encoding="utf-8"))
-                    ),
+                    expected_spec=lambda _image: json.loads(on_disk.read_text(encoding="utf-8")),
                 )
             ).configuration,
             passed=rec.p,

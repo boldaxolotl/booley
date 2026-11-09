@@ -266,6 +266,7 @@ def _credential_policy_inspectable(
         found = project_credential_policies(
             request.project_root, booley_dir=request.booley_dir, selected=app
         )
+        # Called only for its errors: a policy that cannot be planned cannot be seeded.
         auth_token.credential_plan(app, found.policies.get(app, found.policies[found.default]))
     except (
         BackendConfigError,
@@ -334,6 +335,17 @@ def _compare_with_expected_spec(
     if not differences:
         report.pass_(f"devcontainer.json {scope}")
         return
+    _report_drift(request, report, rebuilt, spec, differences)
+
+
+def _report_drift(
+    request: RuntimeInspectionRequest,
+    report: Findings,
+    rebuilt: dict,
+    spec: dict,
+    differences: list[str],
+) -> None:
+    """Warn with the capped diff, naming the lost agent home-state volume when it is missing."""
     header = (
         "devcontainer.json differs from the spec `booley init` would write (- on disk, + expected)"
     )

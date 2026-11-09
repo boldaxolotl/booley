@@ -105,9 +105,11 @@ def _seed(
     egress: str = "proxy",
     image_id: str = _IMAGE_A,
     nangate: Path | None = None,
+    auth: str | None = None,
 ) -> dict:
     """Seed the spec the way full init and ``--seed`` do; return it as written."""
-    toml = "" if app == dc.APP_NONE else f'[agent]\nprovider = "{app}"\n'
+    auth_line = "" if auth is None else f'auth = "{auth}"\n'
+    toml = "" if app == dc.APP_NONE else f'[agent]\nprovider = "{app}"\n{auth_line}'
     (root / ".booley" / "booley.toml").write_text(toml, encoding="utf-8")
     _set_host_egress(egress)
     init_cmd._step_interactive(
@@ -182,6 +184,8 @@ def _assert_fresh_spec_has_no_drift(
 ) -> None:
     seeded = _seed(project, app, egress=egress)
     assert seeded["remoteEnv"]["BOOLEY_AGENT_APP"] == app
+    # The host egress mode really reached the spec, so both modes are exercised.
+    assert (seeded["containerEnv"].get("BOOLEY_EGRESS") == "unproxied") == (egress == "unproxied")
     rebuilds: list[str | None] = []
     rebuild = _host(project)
 
@@ -195,6 +199,22 @@ def _assert_fresh_spec_has_no_drift(
     assert [(f.severity.value, f.message) for f in findings] == [
         ("pass", "devcontainer.json matches the spec `booley init` would write")
     ]
+
+
+@pytest.mark.parametrize(
+    ("app", "policy"), [(dc.APP_CLAUDE, "api_key"), (dc.APP_CODEX, "subscription")]
+)
+def test_freshly_seeded_spec_with_non_default_credential_policy_has_no_drift(
+    project: Path, monkeypatch: pytest.MonkeyPatch, app: str, policy: str
+) -> None:
+    """A policy that deliberately omits the stored token's seed mount is not drift."""
+    auth_token.store_token("SYNTHETIC", app)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_KEY")
+    _seed(project, app, auth=policy)
+
+    findings = _inspect(project, monkeypatch, expected_spec=_host(project))
+
+    assert [f.severity.value for f in findings] == ["pass"]
 
 
 def test_spec_differing_only_in_image_pin_has_no_drift(

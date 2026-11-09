@@ -1327,8 +1327,9 @@ def _current_interactive_spec_sources(
 def current_interactive_spec(project_root: Path, image_id: str | None) -> dict:
     """The sealed spec ``booley init`` would write now, pinned to *image_id*.
 
-    Side-effect free: it builds through the same sources and ``preview`` as init and
-    refresh. Every failure to build it is reported as ``RuntimeSpecError``.
+    It writes nothing: it builds through the same sources and ``preview`` as init and
+    refresh, so it may probe the image with a short-lived container. Every failure to
+    build it is reported as ``RuntimeSpecError``.
     """
     from booley.runtime import session_issuance
 
