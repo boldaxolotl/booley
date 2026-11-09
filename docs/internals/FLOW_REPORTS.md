@@ -189,8 +189,8 @@ unavailable` instead; the verdict and Criteria are unaffected.
 | `passed`, `inconclusive`, `complete` | Target verdict, whether it was inconclusive, and whether the run finished writing its results. `complete: false` means the run was interrupted while publishing and can be resumed. |
 | `tests[]` | One entry per test (see below). |
 | `test_runs[]` | One row per Test Run: `name`, `test`, `variant`, `seed`, `args`, `env`, `fingerprint`, and `grade` (`pass`, `fail`, `error`, or `inconclusive`). `test` is null for the unnamed invocation; `variant` and `seed` are null when the run has none. |
-| `campaign_id`, `campaign_manifest` | The Simulation Campaign and a reference to its `manifest.json`. Per-Test-Run logs and waveforms live in the Campaign's work items, not in this file. |
-| `coverage_campaign`, `collection`, `evaluation` | Coverage runs only: a reference to the Target's `coverage.json` and the collection and evaluation statuses. |
+| `campaign_id`, `campaign_manifest` | The Simulation Campaign and a reference to its `manifest.json`, shaped `path_base`, `path`, `bytes`, `sha256`, `kind`, and `owner` (the Campaign ID). Per-Test-Run logs and waveforms live in the Campaign's work items, not in this file. |
+| `coverage_campaign`, `collection`, `evaluation` | Coverage runs only: a reference (same shape as `campaign_manifest`) to the Target's `coverage.json` and the collection and evaluation statuses. |
 
 Reports from the older single-pass writer (`SimulateFlow._write_target_report`;
 normal CLI and MCP runs go through the Simulation Campaign instead) carry these

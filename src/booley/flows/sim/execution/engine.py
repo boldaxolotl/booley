@@ -30,7 +30,6 @@ from booley.flows import edam as edam_layer
 from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
 from booley.flows.run_log import RunLogIdentity, write_run_log
-from booley.flows.sim import edam as sim_edam
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
@@ -68,13 +67,13 @@ from booley.flows.sim.config import (
     resolve_max_rundir_bytes,
     resolve_pre_sim_commands,
     resolve_run_cwd,
+    resolve_sim_sentinels,
     resolve_sim_time_grace_s,
     resolve_sim_timeout_ms,
     resolve_trace_args,
     resolve_trace_files,
 )
 from booley.flows.sim.live_progress import attempt_scope, observe_stage, prepare_attempt_log
-from booley.flows.sim.runner import resolve_sim_sentinels
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputError,
     declared_runtime_inputs,
@@ -83,6 +82,7 @@ from booley.flows.sim.runtime_inputs import (
 )
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.workload import build_workload_snapshot, capture_workload_inputs
+from booley.flows.simulator_family import normalize_eda_tool
 from booley.flows.target_test_plan import (
     TargetTestPlan,
     TestRunLaunch,
@@ -1832,7 +1832,7 @@ def _preview_work(
 ) -> PreparedSimulationWork:
     root = handle.project_root
     try:
-        eda_tool = sim_edam.normalize_eda_tool(inspection.eda_tool)
+        eda_tool = normalize_eda_tool(inspection.eda_tool)
     except ValueError as exc:
         raise ValueError(
             f"Simulation Target {handle.selector!r} has no supported declared simulator; "

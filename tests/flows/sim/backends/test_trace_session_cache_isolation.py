@@ -12,7 +12,6 @@ ticket wrote there last answered for everyone, silently.
 
 from __future__ import annotations
 
-import hashlib
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -23,22 +22,8 @@ from booley.flows.sim.trace_session import TraceSession
 
 
 def _cache_patch(cache_root: Path):
-    def cache_dir(work_dir: Path, cache_key: str | None = None) -> Path:
-        resolved = str(work_dir.resolve())
-        digest = hashlib.sha256(resolved.encode("utf-8", "replace")).hexdigest()[:12]
-        path = cache_root / (cache_key or f"{work_dir.name}-{digest}")
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    return patch("booley.flows.sim.trace_session.waveform_cache_dir", side_effect=cache_dir)
-
-
-def _session(work_dir: Path, cache_root: Path) -> TraceSession:
-    with _cache_patch(cache_root):
-        session = TraceSession(work_dir)
-        # Touch cache_dir inside the patch so the bucket is created there.
-        _ = session.cache_dir
-        return session
+    """Redirect the real ``waveform_cache_dir`` bucket root into *cache_root*."""
+    return patch("booley.bwave.waveform_store.tempfile.gettempdir", return_value=str(cache_root))
 
 
 def test_same_named_work_dirs_get_distinct_cache_buckets(tmp_path):
@@ -70,15 +55,6 @@ def test_other_tickets_trace_is_not_served(tmp_path):
         (TraceSession(b).cache_dir / "trace.fst").write_bytes(MINIMAL_FST_BYTES)
         # Ticket A has produced nothing at all.
         assert TraceSession(a).find() is None
-
-
-def test_explicit_cache_key_still_wins(tmp_path):
-    """Content-addressed keys are untouched by the path-digest fallback."""
-    cache_root = tmp_path / "bwave"
-    work = tmp_path / "sim"
-    work.mkdir()
-    with _cache_patch(cache_root):
-        assert TraceSession(work, cache_key="deadbeef").cache_dir.name == "deadbeef"
 
 
 def test_start_fifo_streams_into_the_session_store_path(tmp_path):

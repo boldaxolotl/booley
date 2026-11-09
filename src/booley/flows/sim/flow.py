@@ -74,7 +74,6 @@ from booley.flows.sim.campaign.test_run_report import (
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import (
-    resolve_pre_sim_build_access,
     resolve_pre_sim_commands,
     resolve_run_cwd,
     resolve_sim_build_timeout_ms,
@@ -82,12 +81,11 @@ from booley.flows.sim.config import (
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     FrozenJson,
-    coverage_mapping_document,
 )
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
 from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_report import coverage_metrics
-from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
+from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
 from booley.flows.sim.live_progress import (
     LiveProgressSink,
     attempt_scope,
@@ -99,13 +97,17 @@ from booley.flows.sim.live_progress import (
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.result import describe_error_message_count, parse_summary_line
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
-from booley.flows.sim.unpublished_results import started_coverage_campaign
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
 from booley.flows.target_test_plan import (
     TargetTestPlan,
     batch_test_runs,
 )
 from booley.flows.target_test_plan_loading import load_target_test_plan
+from booley.flows.target_test_suite import (
+    NoRunnableTestsError,
+    require_runnable_target_test_suite,
+    resolve_target_test_suite,
+)
 from booley.flows.terminal_progress import ProgressText
 from booley.flows.test_runs import (
     DEFAULT_SEED,
@@ -237,11 +239,6 @@ from .execution.artifacts import artifact_path_component as _artifact_path_compo
 from .execution.engine import TRACE_CLEANUP_MARGIN_S, simulation_adapter_kind, target_test_plan
 from .mode import SimulationMode, normalize_simulation_mode
 from .standalone import StandaloneMixin, _StandaloneOutcome, _StandalonePlanRecipe
-from .target_tests import (
-    NoRunnableTestsError,
-    require_runnable_target_test_suite,
-    resolve_target_test_suite,
-)
 from .test_run_invocation import (
     BaselineLink,
     BaselineRefusal,
@@ -727,16 +724,6 @@ def _effective_default_seed(
     return (default_seeds or {}).get(selector, DEFAULT_SEED)
 
 
-def _coverage_test_run_lines(
-    selector: str, rows: object, default_seed: int | None = DEFAULT_SEED
-) -> list[str]:
-    """The Test Run rows of a directly collected Target, with rerun commands."""
-    if not isinstance(rows, list):
-        return []
-    typed = [row for row in cast("list[object]", rows) if isinstance(row, Mapping)]
-    return informative_test_run_lines(selector, typed, default_seed=default_seed)
-
-
 def _append_missing_report_lines(result: EndpointOutcome, lines: list[str]) -> EndpointOutcome:
     present = Counter(result.report_text.splitlines())
     missing = []
@@ -893,15 +880,6 @@ def _pre_sim_preview_record(firing, invocation: Path | None) -> dict[str, object
         ),
     )
     return record
-
-
-def _pre_sim_report_line(selector: str, test_name: object, evidence: Mapping[str, object]) -> str:
-    from .execution.pre_sim_reporting import pre_sim_report_line
-
-    normalized = dict(evidence)
-    normalized.setdefault("command_count", len(cast(Sequence[str], evidence.get("commands", ()))))
-    normalized.setdefault("test_names", (str(test_name),))
-    return pre_sim_report_line(selector, normalized)
 
 
 def _manifest_no_waivers(manifest: SimulationCampaignManifest) -> bool:
@@ -1227,24 +1205,6 @@ def _group_disclosures(
         execution.plan_campaign_group(handle, group, runs)
         for group, runs in zip(groups, run_groups, strict=True)
     )
-
-
-def _direct_coverage_pre_sim_lines(target: str, tests: object) -> list[str]:
-    """The Pre-Sim Commands line of each directly collected run that has one.
-
-    Several Test Runs of one Test are told apart by their Test Run names.
-    """
-    items = cast("list[object]", tests) if isinstance(tests, list) else []
-    rows = [cast("Mapping[str, object]", test) for test in items if isinstance(test, Mapping)]
-    lines: list[str] = []
-    for test in rows:
-        pre_sim = test.get("pre_sim")
-        if not isinstance(pre_sim, Mapping):
-            continue
-        several = sum(other.get("name") == test.get("name") for other in rows) > 1
-        name = (several and test.get("test_run")) or test.get("name")
-        lines.append(_pre_sim_report_line(target, name, cast("Mapping[str, object]", pre_sim)))
-    return lines
 
 
 def _manifest_run_groups(
@@ -3503,8 +3463,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _run(self) -> EndpointOutcome:
         """Run the selected shape and stamp its canonical mode on every result."""
+        # prepare_simulation_endpoint sends every simulate-mode coverage run to
+        # run_prepared_simulation; only elaboration-only modes reach this path.
         result = (
-            self._run_coverage()
+            EndpointOutcome(exit_code=2, report_text="Coverage requires simulation mode")
             if getattr(self.args, "coverage", False)
             else self._run_selected_mode()
         )
@@ -4019,8 +3981,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             prepare_coverage_invocation,
         )
 
-        if self._mode.elaborates_only:
-            return EndpointOutcome(exit_code=2, report_text="Coverage requires simulation mode")
         if not self._flow_enabled():
             return EndpointOutcome(exit_code=2, report_text="sim is disabled")
         try:
@@ -4073,23 +4033,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if all(run.test is not None for run in runs):
                 resolved[handle.selector] = runs
         return resolved
-
-    def _run_coverage(self) -> EndpointOutcome:
-        error = self._prepare_coverage()
-        if error is not None:
-            return error
-        prepared = self._coverage_prepared
-        if self.args.dry_run:
-            return EndpointOutcome(
-                detail={
-                    "coverage": True,
-                    "targets": [item.handle.selector for item in prepared.targets],
-                }
-            )
-        assert self.args.report_dir is not None, "prepared Flow requires a report root"
-        invocation = self.reserve_invocation_dir()
-        assert invocation is not None
-        return self._run_coverage_invocation(invocation, prepared)
 
     def _run_coverage_campaigns(self, admission: object | None) -> EndpointOutcome:
         return self._with_live_progress(lambda: self._execute_coverage_campaigns(admission))
@@ -4324,132 +4267,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             kind="coverage_aggregate",
             required_suite_catalog_backed=True,
             no_waivers=self.args.no_waivers,
-        )
-
-    def _run_coverage_invocation(self, invocation, prepared) -> EndpointOutcome:
-        return self._with_live_progress(
-            lambda: self._execute_coverage_invocation(invocation, prepared)
-        )
-
-    def _execute_coverage_invocation(self, invocation, prepared) -> EndpointOutcome:
-        progress = CoverageProgress(
-            invocation, tuple(item.handle.selector for item in prepared.targets)
-        )
-        started_at = utc_now_rfc3339()
-        outcomes = []
-        lifecycle = ProgressLifecycle(
-            lambda phase: progress.checkpoint(complete=True, phase=phase)
-        )
-        try:
-            with lifecycle:
-                progress.checkpoint()
-                for target in prepared.targets:
-                    with attempt_scope(target.handle.selector, identity=target.handle.identity):
-                        outcome = self._execute_coverage_target(target, progress, started_at)
-                    outcomes.append(outcome)
-                    if outcome.abort_remaining:
-                        break
-                result = self._coverage_result(outcomes)
-                completed = {item.target for item in outcomes}
-                result.detail["pending_targets"] = [
-                    target for target in progress.targets if target not in completed
-                ]
-                if len(outcomes) == len(prepared.targets):
-                    lifecycle.complete()
-                return result
-        except ProgressPublicationError as exc:
-            result = self._coverage_result(outcomes)
-            result.exit_code = EXIT_ERROR
-            result.detail["progress_error"] = str(exc)
-            return result
-
-    def _register_coverage_campaign(self, target: CoverageTargetPlan, invocation: Path) -> None:
-        """Tell the run's Goals of a Coverage Campaign collected on its own, before it runs.
-
-        Like a Simulation Campaign (:meth:`_manifest_publisher`): if the
-        campaign is published but its acceptance never is, its Test Run
-        outcomes can still be accounted for.
-        """
-        adapter = self.execution_adapter
-        if not wants_campaigns(adapter) or self.args.diagnostic:
-            return
-        root = target_report_directory(invocation, target.handle.selector)
-        names = (target.handle.selector, target.handle.identity)
-        register_campaign_for(adapter, started_coverage_campaign(root, names))
-
-    def _execute_coverage_target(
-        self, target: CoverageTargetPlan, progress: CoverageProgress, started_at: str
-    ) -> CoverageTargetOutcome:
-        from booley.flows.sim.coverage_flow_context import coverage_acceptance
-
-        self._register_coverage_campaign(target, progress.invocation_dir)
-        plan = replace(
-            target,
-            invocation_dir=progress.invocation_dir,
-            started_at=started_at,
-            acceptance=coverage_acceptance(
-                self.state,
-                self._acceptance_recorder,
-                diagnostic=self.args.diagnostic,
-                observer=self.record_report_criteria,
-                on_discard=self.discard_evidence,
-            ),
-        )
-        options = SimulationOptions(
-            trace=self.args.trace,
-            timeout_ms=self._effective_timeout_ms(),
-            build_timeout_ms=self._effective_build_timeout_ms(),
-            result_verbosity=self.args.result_verbosity,
-        )
-        execution = self._coverage_campaign_execution(
-            plan,
-            options,
-            tuple(resolve_pre_sim_commands(self.args.work_dir)),
-            resolve_pre_sim_build_access(self.args.work_dir),
-        )
-        return run_coverage_target(plan, execution, progress)
-
-    def _coverage_result(self, outcomes: list[CoverageTargetOutcome]) -> EndpointOutcome:
-        targets = {}
-        lines = []
-        default_seeds = self._test_runs.default_seeds
-        for outcome in outcomes:
-            detail = coverage_mapping_document(outcome.detail)
-            detail["exit_code"] = outcome.exit_code
-            if outcome.campaign_path.is_file():
-                detail["coverage_campaign"] = posix_relpath(
-                    outcome.campaign_path, self.args.work_dir
-                )
-            if outcome.simulation_path.is_file():
-                detail["simulation_report"] = posix_relpath(
-                    outcome.simulation_path, self.args.work_dir
-                )
-            targets[outcome.target] = detail
-            lines.append(
-                f"{outcome.target}: simulation={detail.get('simulation', 'inconclusive')}, collection={detail.get('collection')}, coverage={detail.get('evaluation')}"
-            )
-            if outcome.campaign_path.is_file():
-                campaign = load_coverage_campaign(outcome.campaign_path).campaign
-                lines.extend(_waiver_block_hint_lines(campaign))
-                lines.extend(source_gap_report_lines(campaign))
-            lines.extend(
-                _coverage_test_run_lines(
-                    outcome.target,
-                    detail.get("test_runs"),
-                    _effective_default_seed(default_seeds, outcome.target),
-                )
-            )
-            lines.extend(_direct_coverage_pre_sim_lines(outcome.target, detail.get("tests")))
-        return EndpointOutcome(
-            exit_code=max((item.exit_code for item in outcomes), default=2),
-            detail={
-                "coverage": True,
-                "targets": targets,
-                "pre_sim_lines": [line for line in lines if line.startswith("pre_run_commands ")],
-            },
-            report_text=self._with_campaign_paths(
-                EndpointOutcome(report_text="\n".join(lines))
-            ).report_text,
         )
 
     def _run_selected_mode(

@@ -37,3 +37,15 @@ def test_build_timeout_rejects_non_positive_integer(
 
     with pytest.raises(BoundaryError, match=r"\[flows\.sim\]\.build_timeout_ms"):
         config.resolve_sim_build_timeout_ms()
+
+
+def test_sim_sentinels_come_from_project_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        config,
+        "_sim_config",
+        lambda _work_dir: {"pass_sentinels": ["PASS", 7], "fail_sentinels": ["FAIL"]},
+    )
+    assert config.resolve_sim_sentinels() == (["PASS", "7"], ["FAIL"])
+
+    monkeypatch.setattr(config, "_sim_config", lambda _work_dir: {})
+    assert config.resolve_sim_sentinels() == ([], [])

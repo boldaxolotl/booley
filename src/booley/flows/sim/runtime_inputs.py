@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING
 
-from booley.flows.sim.campaign_durability import durable_copy, durable_directory
+from booley.flows.artifact_durability import durable_copy, durable_directory
 from booley.fusesoc.fusesoc_registry import mirrored_source_path
 
 if TYPE_CHECKING:
