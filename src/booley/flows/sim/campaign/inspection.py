@@ -15,7 +15,7 @@ from booley.flows.campaign_results import (
     StartedCampaign,
 )
 
-from .codec import SimulationCampaignIntegrityError
+from .codec import SimulationCampaignIntegrityError, reads_campaign_records
 from .coordinator import collected_result_facts
 from .model import SimulationCampaignManifest, SimulationResult
 from .planning import manifest_digest
@@ -264,6 +264,7 @@ def recover_retained_campaign_resources(
     recover_interrupted_attempts(status.manifest, interrupted, project_data, booley_dir=booley_dir)
 
 
+@reads_campaign_records
 def _has_resources_to_recover(attempt: Mapping[str, object]) -> bool:
     """Whether an interrupted attempt ran on a lane or still has an owned run directory."""
     run = cast(Mapping[str, object], attempt["run_directory"])

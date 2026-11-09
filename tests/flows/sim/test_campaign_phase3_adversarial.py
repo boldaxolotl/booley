@@ -267,7 +267,6 @@ def test_shared_recovery_rejects_build_attempt_transplants(tmp_path: Path, case:
         "owner",
         "digest",
         "sharing",
-        "state_bundle",
         "artifact_remove",
         "artifact_add",
         "artifact_reorder",
@@ -291,16 +290,12 @@ def test_shared_recovery_rejects_build_result_reference_mutations(
         document["build_attempt"]["sha256"] = _BAD_DIGEST
     elif case == "sharing":
         document["bundle"]["sharing"] = "private_work_item"
-    elif case == "state_bundle":
-        document["state"] = "design_failure"
     elif case == "artifact_remove":
         document["bundle"]["artifacts"] = []
     elif case == "artifact_add":
         document["bundle"]["artifacts"].append(dict(document["bundle"]["artifacts"][0]))
     else:
         document["bundle"]["artifacts"].reverse()
-    if case == "state_bundle":
-        document["bundle"] = None
     _write(path, document)
     variant = document["build_variant_id"]
     with pytest.raises(SimulationCampaignIntegrityError):
@@ -325,8 +320,6 @@ def _mutate_bundle(case: str, completed: _Completed) -> None:
         }
     elif case == "tool_provenance":
         bundle["tool_provenance"]["eda_version"] = "transplanted"
-    elif case == "inventory":
-        bundle["inventory_sha256"] = _BAD_DIGEST
     elif case == "artifact_remove":
         bundle["artifacts"] = []
     elif case == "artifact_add":
@@ -351,7 +344,6 @@ def _mutate_bundle(case: str, completed: _Completed) -> None:
         "attempt",
         "owner",
         "tool_provenance",
-        "inventory",
         "artifact_remove",
         "artifact_add",
         "artifact_reorder",

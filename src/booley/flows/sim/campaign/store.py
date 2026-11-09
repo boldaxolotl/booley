@@ -41,6 +41,7 @@ from booley.runtime.file_lock import nonblocking_file_lock
 from booley.runtime.filesystem_utils import replace_file
 from booley.runtime.regular_file import open_regular_nofollow
 
+from .bundle import require_bundle_inventory
 from .codec import (
     MANIFEST_MAX_BYTES,
     RECORD_MAX_BYTES,
@@ -60,6 +61,7 @@ from .codec import (
     encode_simulation_campaign_manifest,
     encode_simulation_result,
     linked_manifest_path,
+    reads_campaign_records,
     validate_relative_path,
 )
 from .model import (
@@ -392,6 +394,7 @@ class CampaignStore:
     def publish_build_result(self, directory: Path, result: BundleBuildResult) -> Path:
         return self._publish(directory / "build-result.json", result, encode_bundle_build_result)
 
+    @reads_campaign_records
     def recover_shared_build(
         self, build_variant_id: str, producer_invocation_id: int
     ) -> SharedBuildRecovery | None:
@@ -456,6 +459,8 @@ class CampaignStore:
         document = result.document
         if any(document[field] != expected[field] for field in _COMMON_BUILD_FIELDS):
             raise SimulationCampaignIntegrityError("shared Build Result identity disagrees")
+        if document["state"] not in {"ready", "design_failure", "infrastructure_error"}:
+            raise SimulationCampaignIntegrityError("shared Build Result state is invalid")
         reference = cast(Mapping[str, object], document["build_attempt"])
         attempt_id = attempt.document["build_attempt_id"]
         if (
@@ -483,12 +488,13 @@ class CampaignStore:
 
     def _load_shared_bundle(self, directory, attempt, result, expected) -> SimulatorBundle:
         binding = cast(Mapping[str, object], result.document["bundle"])
-        path = directory / cast(str, binding["manifest_path"])
+        path = directory / validate_relative_path(binding["manifest_path"])
         raw = self._read(path, limit=RECORD_MAX_BYTES)
         if len(raw) != binding["manifest_bytes"] or _raw_digest(raw) != binding["manifest_sha256"]:
             raise SimulationCampaignIntegrityError("shared Build Result bundle digest disagrees")
         bundle = decode_simulator_bundle(raw)
         _validate_shared_bundle(bundle, binding, attempt, expected)
+        require_bundle_inventory(bundle)
         for artifact in cast(tuple[Mapping[str, object], ...], bundle.document["artifacts"]):
             self._authenticate_reference(directory, artifact)
         return bundle
@@ -635,6 +641,7 @@ class CampaignStore:
                     snapshots[directory] = snapshot
         return snapshots
 
+    @reads_campaign_records
     def _read_attempt_pre_sim_snapshot(self, manifest, item, directory, terminal):
         if not (directory / "attempt.json").exists():
             return None
@@ -666,7 +673,7 @@ class CampaignStore:
         return snapshot
 
     def _authenticate_reference(self, root: Path, reference: Mapping[str, object]) -> None:
-        path = root / cast(str, reference["path"])
+        path = root / validate_relative_path(reference["path"])
         _require_safe_parents(path, root, self.booley_dir)
         size, digest = self._identity(path)
         if size != reference["bytes"] or digest != reference["sha256"]:
