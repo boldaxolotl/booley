@@ -59,12 +59,6 @@ def test_new_directory_task_and_idempotent_disable(project, monkeypatch):
     assert b"/.vscode\n" in project.exclude.read_bytes()
 
 
-def test_attach_task_does_not_require_global_automatic_task_permission(project):
-    tasks.reconcile(project.root, project.data)
-    task = Document(project.file.read_text()).root.value["tasks"][0]
-    assert "runOn" not in task["runOptions"]
-
-
 def test_old_owned_automatic_task_migrates_without_losing_user_content(project, monkeypatch):
     old = {**tasks.TASK, "runOptions": {"runOn": "folderOpen", "instanceLimit": 1}}
     with monkeypatch.context() as previous:

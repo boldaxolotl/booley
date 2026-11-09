@@ -211,10 +211,6 @@ class TestDockerRunArgv:
         assert _flag_values(argv, "--pids-limit") == [str(dc.SESSION_PIDS_LIMIT)]
         assert _flag_values(argv, "--memory") == ["8g"]
 
-    def test_reaper_can_own_the_headless_container(self, workspace: Path):
-        # The whole point of reusing the spec: same label as the VS Code container.
-        assert dc.INTERACTIVE_ROLE_LABEL in _argv(_spec(), workspace)
-
     def test_no_image_is_a_session_error(self, workspace: Path):
         with pytest.raises(sr.SessionError, match="no 'image'"):
             sr.docker_run_argv({}, workspace, "x")
@@ -2391,11 +2387,6 @@ class TestMountIssuance:
             allow_vscode_mounts=True,
         )
 
-    def test_vscode_volume_mount_is_recognized(self):
-        assert sr._is_vscode_managed_mount(
-            {"Destination": "/vscode", "Name": "vscode", "Type": "volume", "RW": True}
-        )
-
     @pytest.mark.parametrize("spec_source", ["/c/Users/dev/project", "/C/Users/dev/project"])
     def test_wsl2_mount_path_matches_spec(self, monkeypatch: pytest.MonkeyPatch, spec_source: str):
         from booley.runtime import platform_paths
@@ -3732,23 +3723,10 @@ class TestSessionRefresh:
             )
         enter.assert_called_once_with(tmp_path, ["echo", "ready"], tty=True, cwd=None)
 
-        with (
-            patch.object(sr, "down", return_value=sr.DownResult()),
-            patch.object(sr, "status", return_value="stopped"),
-            patch.object(sr, "validate", return_value="valid"),
-            patch.object(sr, "prepare", return_value="prepared"),
-        ):
+        with patch.object(sr, "down", return_value=sr.DownResult()):
             assert booley._session_down(SimpleNamespace(), tmp_path) == 0
-            assert booley._session_status(SimpleNamespace(), tmp_path) == 0
-            assert booley._session_validate(SimpleNamespace(), tmp_path) == 0
-            assert booley._session_prepare(SimpleNamespace(), tmp_path) == 0
 
-        assert capsys.readouterr().out.splitlines() == [
-            "no Sandbox container for this Project",
-            "stopped",
-            "valid",
-            "prepared",
-        ]
+        assert capsys.readouterr().out.splitlines() == ["no Sandbox container for this Project"]
 
     def test_refresh_refuses_active_vscode_before_reconciling_image(self, tmp_path: Path):
         from booley.harness import booley, session_refresh

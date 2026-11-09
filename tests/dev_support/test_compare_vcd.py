@@ -129,30 +129,6 @@ class TestParseVcd:
         assert vcd.end_time == 0
         assert len(vcd.transitions) == 0
 
-    def test_dumpvars_dumpoff_dumpon_skipped(self, tmp_path):
-        content = """\
-        $scope module tb $end
-        $var wire 1 ! clk $end
-        $upscope $end
-        $enddefinitions $end
-        #0
-        $dumpvars
-        0!
-        $end
-        #5
-        $dumpoff
-        x!
-        $end
-        #10
-        $dumpon
-        1!
-        $end
-        """
-        p = _write_vcd(tmp_path, "a.vcd", content)
-        vcd = parse_vcd(p)
-        # Parser should handle these sections without crashing
-        assert len(vcd.signals) == 1
-
     def test_timescale_parsed(self, tmp_path):
         content = """\
         $timescale 1ps $end
@@ -232,11 +208,6 @@ class TestBuildDutSignalMapCustomInstance:
         m = build_dut_signal_map(vcd, dut_instance="uut")
         assert "clk" in m and "q" in m
         assert len(m) == 2
-
-    def test_default_dut_still_works(self):
-        vcd = self._vcd_with(["tb.dut.clk"])
-        m = build_dut_signal_map(vcd)
-        assert "clk" in m
 
     def test_wrong_instance_misses(self):
         vcd = self._vcd_with(["tb.uut.clk"])

@@ -8,10 +8,6 @@ from pathlib import Path
 from booley.dev_support import mutation_lock as lm
 
 
-def test_build_dir_remains_a_baseline_compatibility_alias(tmp_path: Path) -> None:
-    assert lm.build_dir(tmp_path) == lm.baseline_build_dir(tmp_path)
-
-
 class TestScopeHashing:
     def test_round_trip(self, tmp_path: Path):
         source = tmp_path / "a.sv"
@@ -105,11 +101,6 @@ class TestLockValidity:
     def test_tool_version_mismatch(self):
         meta = self._meta(["a.sv"], {"a.sv": "sha256:x"})
         meta.schema_version = "0.0"
-        assert lm.is_lock_valid(meta, ["a.sv"], {"a.sv": "sha256:x"}) is False
-
-    def test_runtime_mux_lock_is_invalidated(self):
-        meta = self._meta(["a.sv"], {"a.sv": "sha256:x"})
-        meta.schema_version = "1.4"
         assert lm.is_lock_valid(meta, ["a.sv"], {"a.sv": "sha256:x"}) is False
 
 

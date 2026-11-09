@@ -381,9 +381,6 @@ class TestTraceStatusManifest:
                     p.wait(timeout=2)
 
     def test_no_kill_when_bwave_grows(self, tmp_path):
-        # Pre-create the .bwave file so we can append to it.
-        bwave_dir = tmp_path / "cache"
-        bwave_dir.mkdir()
         ts = TraceSession(work_dir=tmp_path)
         # Force the monitor to look at our growing file by writing to the
         # session's bwave_path target.

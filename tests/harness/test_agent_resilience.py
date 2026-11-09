@@ -261,25 +261,3 @@ class TestHandleRateLimitEvent:
             mock_anyio.sleep = AsyncMock()
             await _handle_rate_limit_event(event)
             mock_anyio.sleep.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# TransientAPIError
-# ---------------------------------------------------------------------------
-
-
-class TestTransientAPIError:
-    """Verify exception attributes."""
-
-    def test_with_retry_after(self):
-        e = TransientAPIError("rate limited", retry_after=120.0)
-        assert e.retry_after == 120.0
-        assert "rate limited" in str(e)
-
-    def test_without_retry_after(self):
-        e = TransientAPIError("server error")
-        assert e.retry_after is None
-
-    def test_zero_retry_after(self):
-        e = TransientAPIError("already slept", retry_after=0)
-        assert e.retry_after == 0

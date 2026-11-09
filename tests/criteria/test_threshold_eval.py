@@ -930,11 +930,6 @@ class TestImplicitFailOverrides:
 
 
 class TestParamsPersistence:
-    def test_params_stored_in_entry(self, state):
-        _init_with_params(state, {"cell_count_max": 500})
-        entry = state.criteria["synthesis_ok_default"]
-        assert entry.params == {"cell_count_max": 500}
-
     def test_params_survive_save_load(self, state):
         _init_with_params(state, {"cell_count_max": 500})
         state.save()

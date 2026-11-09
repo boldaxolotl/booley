@@ -97,12 +97,8 @@ class TestSectionsMatchCheatsheet:
         text = cheatsheet_path().read_text(encoding="utf-8")
         return [ln[len("### ") :].strip() for ln in text.splitlines() if ln.startswith("### ")]
 
-    def test_every_heading_is_flag_addressable(self):
-        """A `### ` heading with no Section entry is unreachable by flag."""
-        declared = {s.heading for s in cheatsheet.SECTIONS}
-        assert set(self._headings()) == declared
-
     def test_declared_order_matches_file_order(self):
+        """Every `### ` heading has a Section entry (else unreachable by flag), in file order."""
         assert [section.heading for section in cheatsheet.SECTIONS] == self._headings()
 
     def test_architecture_is_not_a_section(self):

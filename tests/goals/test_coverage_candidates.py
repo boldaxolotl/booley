@@ -31,11 +31,15 @@ def environment(goal_mode):
     }, paths
 
 
-def test_goal_context_ignores_ticket_slug_and_environment_roots(goal_mode):
-    _env, paths = environment(goal_mode)
+def test_goal_context_ignores_ticket_slug_and_environment_roots(goal_mode, monkeypatch):
+    env, paths = environment(goal_mode)
+    # Hostile environment: a ticket slug and roots that point away from the bound record.
+    env["BOOLEY_TICKET_SLUG"] = "wrong-ticket"
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
     context = GoalCandidateContext.from_recorder(GoalFlowExecution(bind(goal_mode)))
     assert context.record_dir == paths.root
-    assert context.flow_reports_root == paths.runtime_dir / "flow-reports"
+    assert context.flow_reports_root == paths.root / ".runtime" / "flow-reports"
 
 
 def test_goal_candidate_record_retains_campaign_target_under_bound_record(goal_mode, tmp_path):

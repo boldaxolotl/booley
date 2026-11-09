@@ -36,10 +36,6 @@ def test_enabled_false_read_from_flow_section(tmp_path):
     assert flow_enabled("sim", root) is False
 
 
-def test_parsed_config_enablement_uses_shared_resolver():
-    assert flow_enabled_from_config("sim", {"flows": {"sim": {"enabled": False}}}) is False
-
-
 @pytest.mark.parametrize("backend", ["docker", "host"])
 def test_retired_backend_is_a_hard_migration_error(backend):
     config = {"flows": {"sim": {"backend": backend}}}

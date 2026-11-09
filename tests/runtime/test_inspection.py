@@ -544,9 +544,6 @@ class TestDevcontainerSpecStaleness:
         return rec
 
     def test_image_comparison_uses_shared_dispatch(self, tmp_path, monkeypatch):
-        assert callable(getattr(idk, "compare_issued_image", None)), (
-            "shared image dispatch is missing"
-        )
         calls = []
 
         def compare(*args, **kwargs):

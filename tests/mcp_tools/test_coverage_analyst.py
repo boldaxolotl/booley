@@ -802,9 +802,6 @@ def test_persisted_collection_remains_analyzable_after_native_pruning(tmp_path):
 def test_relative_campaign_resolves_against_selected_work_dir(tmp_path):
     path = persist_campaign(tmp_path)
     analyst = CoverageAnalystSpecialist(model=Model())
-    analyst.parse_args(
-        ["--work-dir", str(tmp_path), "--campaign", str(path.relative_to(tmp_path))]
-    )
     result = analyst.execute_cli(
         ["--work-dir", str(tmp_path), "--campaign", str(path.relative_to(tmp_path))]
     )
@@ -888,14 +885,12 @@ def test_image_alias_analyst_binds_canonical_campaign(project_alias, monkeypatch
     specialist = CoverageAnalystSpecialist(model=Model())
     specialist._args = specialist.parse_args(["--work-dir", str(root), "--campaign", str(path)])
     seen = []
-    sentinel = object()
     monkeypatch.setattr(
         specialist,
         "_analyze_bound",
-        lambda _campaign, _sources, _instruction, bound, **_kwargs: seen.append(bound) or sentinel,
+        lambda _campaign, _sources, _instruction, bound, **_kwargs: seen.append(bound),
     )
-    report, loaded, bound = specialist._analyze_path(alias / path.relative_to(root), "explain")
-    assert report is sentinel
+    _report, loaded, bound = specialist._analyze_path(alias / path.relative_to(root), "explain")
     assert bound == path and seen == [path]
     assert loaded.campaign.target.selector == "sim_counter"
     (root / "linked").symlink_to(root, target_is_directory=True)

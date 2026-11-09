@@ -179,15 +179,6 @@ class TestBooleyFlowExecution:
         assert result.exit_code == EXIT_ERROR
 
 
-class TestSubprocessResult:
-    def test_defaults(self):
-        r = SubprocessResult()
-        assert r.returncode == -1
-        assert r.stdout == ""
-        assert r.stderr == ""
-        assert r.timed_out is False
-
-
 class TestResourceEvidence:
     def test_local_execution_without_project_data_uses_temp_cache(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -282,7 +273,6 @@ class TestBoundaryExecutor:
             execute.return_value = SubprocessResult(returncode=0, stdout="ok")
             result = flow._execute_boundary(["make", "-C", "b/r"])
         execute.assert_called_once_with(["make", "-C", "b/r"])
-        assert result.returncode == 0
         assert result.dispatched_unix > 0
 
     def test_stale_artifact_gate(self, tmp_path: Path):

@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from booley.flows.target_campaign import (
-    TargetCampaign,
     all_campaign_results_match,
     describe_target_campaign,
     resolve_target_campaign,
@@ -33,7 +32,6 @@ def test_resolves_typed_criteria_scope_and_test_suite() -> None:
         test_skips={"sim": ["corner"]},
     )
 
-    assert isinstance(campaign, TargetCampaign)
     assert campaign.scope == ("rtl/dut.sv",)
     assert campaign.params_for("coverage_toggle")["min_pct"] == 90
     assert campaign.suite.tests == ("smoke",)

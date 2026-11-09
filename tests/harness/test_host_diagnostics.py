@@ -152,7 +152,6 @@ def test_host_diagnosis_reports_canonical_installation(monkeypatch):
     finding = report.report().findings[0]
     assert "v1.2.3 revision=abc123 fingerprint=abcdef012345" in finding.message
     assert "/opt/booley" in finding.message
-    assert "revision=abc123" in finding.message
     assert "executable=/usr/local/bin/booley" in finding.message
 
 

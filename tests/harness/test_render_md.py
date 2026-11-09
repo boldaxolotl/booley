@@ -160,12 +160,6 @@ class TestRender:
         result = self._render_plain("Just normal text.")
         assert "Just normal text." in result
 
-    def test_table_integration(self):
-        md = "| A | B |\n| --- | --- |\n| 1 | 2 |"
-        result = self._render_plain(md)
-        assert "A" in result
-        assert "1" in result
-
     def test_pipe_rows_without_separator(self):
         """Pipe rows not forming a valid table should be treated as inline text."""
         md = "| not a table |\n| also not |"

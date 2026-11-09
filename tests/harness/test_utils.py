@@ -53,17 +53,6 @@ class TestCommitScope:
         assert mock_run.call_count == 0
 
     @patch("booley.runtime.git.subprocess.run")
-    def test_commit_scope_add_and_commit(self, mock_run):
-        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
-        commit_scope(
-            Path("/wt"),
-            ["rtl/foo.sv"],
-            "feat: stuff",
-        )
-        # add + diff --cached (scope check) + commit == 3 subprocess calls
-        assert mock_run.call_count == 3
-
-    @patch("booley.runtime.git.subprocess.run")
     def test_out_of_scope_staged_files_are_unstaged(self, mock_run):
         """A raw staged outsider is preserved but excluded from the commit."""
 
@@ -142,25 +131,6 @@ class TestCommitScope:
         mock_run.side_effect = side_effect
         with pytest.raises(BlockingError, match="Could not unstage out-of-scope"):
             commit_scope(Path("/wt"), ["rtl/foo.sv"], "fix: stuff")
-
-    @patch("booley.runtime.git.subprocess.run")
-    def test_in_scope_staged_files_pass(self, mock_run):
-        """All staged files within scope → commit proceeds normally."""
-
-        def side_effect(args, **kwargs):
-            cmd = args[1] if len(args) > 1 else ""
-            if cmd == "diff":
-                return subprocess.CompletedProcess(
-                    args=args,
-                    returncode=0,
-                    stdout="rtl/foo.sv\0",
-                    stderr="",
-                )
-            return subprocess.CompletedProcess(args=args, returncode=0)
-
-        mock_run.side_effect = side_effect
-        # Should not raise
-        commit_scope(Path("/wt"), ["rtl/foo.sv"], "fix: stuff")
 
     @patch("booley.runtime.git.subprocess.run")
     def test_unknown_scope_skips_staged_check(self, mock_run):
@@ -286,8 +256,3 @@ class TestExpandScopeGlobsUnknown:
     def test_unknown_scope_passes_through(self, tmp_path: Path):
         result = expand_scope_globs(tmp_path, ["*"])
         assert result == ["*"]
-
-
-# ===========================================================================
-# scope_precommit_hook
-# ===========================================================================

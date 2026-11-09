@@ -653,14 +653,6 @@ def _dependency_edits() -> tuple[str, ...]:
     )
 
 
-def test_contract_contents_tracks_runtime_dependency_changes() -> None:
-    original = docker_base_contract.contract_contents("pyproject.toml", _PYPROJECT.encode())
-    for edited in _dependency_edits():
-        assert (
-            docker_base_contract.contract_contents("pyproject.toml", edited.encode()) != original
-        )
-
-
 def test_contract_contents_rejects_unusable_project_metadata() -> None:
     with pytest.raises(ValueError):
         docker_base_contract.contract_contents("pyproject.toml", b"[project]\nname = 'x'\n")

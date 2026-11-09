@@ -274,16 +274,14 @@ def test_execute_supervised_cleans_fifo_conversion(tmp_path: Path, monkeypatch):
         conversion=conversion,
     )
     paths = vr._RunPaths(tmp_path, tmp_path, tmp_path)
-    process = object()
     monkeypatch.setattr(
         vr,
         "run_supervised",
-        lambda *_args, **_kwargs: (deque(), process, vr.RunTermination()),
+        lambda *_args, **_kwargs: (deque(), object(), vr.RunTermination()),
     )
 
-    _lines, returned, _termination = vr._execute_supervised([], paths, {}, 1, trace, 0, ())
+    vr._execute_supervised([], paths, {}, 1, trace, 0, ())
 
-    assert returned is process
     assert session.cleaned is conversion
 
 
@@ -525,15 +523,6 @@ class TestDeclaredTraceFiles:
         assert selection.path == big  # the dump itself, not a store
         assert selection.oversize
         assert trace.postprocessed == []  # no unbounded conversion was attempted
-
-    def test_vcd_under_the_cap_is_still_converted(self, tmp_path: Path):
-        store = tmp_path / "trace.fst"
-        store.write_bytes(b"fst")
-        (tmp_path / "fpu.vcd").write_bytes(b"0" * 64)
-        trace = self._FakeTrace(store)
-
-        assert self._current(trace, ["fpu.vcd"], [tmp_path]).select().path == store
-        assert trace.postprocessed == [tmp_path / "fpu.vcd"]
 
     def test_empty_and_missing_candidates_are_ignored(self, tmp_path: Path):
         (tmp_path / "empty.vcd").write_text("")

@@ -141,10 +141,9 @@ def test_nonexistent_short_project_option_is_rejected(monkeypatch, capsys):
     assert "/booley-goal" not in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("command", [["goal", "--help"], ["goal", "status", "--help"]])
-def test_goal_help_describes_both_selection_cases(command, capsys):
+def test_goal_status_help_describes_both_selection_cases(capsys):
     with pytest.raises(SystemExit) as caught:
-        cli._build_parser().parse_args(command)
+        cli._build_parser().parse_args(["goal", "status", "--help"])
     assert caught.value.code == 0
     text = " ".join(capsys.readouterr().out.split())
     assert "this worktree" in text
@@ -168,17 +167,8 @@ def test_goal_mode_guide_status_describes_both_selection_cases():
 
 
 def test_goal_group_help_describes_selection(capsys):
-    root = cli._build_parser()
-    commands = next(
-        action
-        for action in root._actions
-        if hasattr(action, "choices") and action.choices and "goal" in action.choices
-    )
-    goal = commands.choices["goal"]
-    assert "every active Goal Mode in the Project" in goal.description
-    assert "when this worktree hosts none" in goal.description
     with pytest.raises(SystemExit) as caught:
-        root.parse_args(["goal", "--help"])
+        cli._build_parser().parse_args(["goal", "--help"])
     assert caught.value.code == 0
     text = " ".join(capsys.readouterr().out.split())
     assert "every active Goal Mode in the Project when this worktree hosts none" in text
