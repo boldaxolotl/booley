@@ -21,13 +21,15 @@ from booley.flows.invocation import BudgetPlan, resolve_timeout_ms
 from booley.flows.lint.flow import LintFlow
 from booley.flows.plan import FlowPlan, WorkUnitPlan
 from booley.flows.request import FlowRequest
-from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
+from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.synth.request import SynthRequest
 from booley.mcp.base import EXIT_ERROR
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import DuplicateTargetError
+from tests.flows.invocation_doubles import prepare_as, replace_run
 
 BUILTINS = (
     (SimulateFlow, "sim", 600_000),
@@ -285,9 +287,9 @@ def test_cli_report_preserves_authored_repeated_target_argv(
         str(report_dir),
     ]
     monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
-    monkeypatch.setattr(
+    replace_run(
+        monkeypatch,
         flow,
-        "_run",
         lambda: EndpointOutcome(detail={"targets": flow.args.target.split(",")}),
     )
 
@@ -470,9 +472,9 @@ def test_state_backed_simulation_coverage_verdict_reaches_stdout(
     DevelopmentState.load(state_file).save()
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     flow = SimulateFlow()
-    prepared_campaign = object()
+    prepared_campaign = PreparedSimulationEndpoint((), None, (), {})
     monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
-    monkeypatch.setattr(flow, "prepare_simulation_endpoint", lambda: prepared_campaign)
+    prepare_as(monkeypatch, flow, SimulationCampaignInvocation(flow, prepared_campaign))
     monkeypatch.setattr(
         flow,
         "run_prepared_simulation",

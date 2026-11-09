@@ -15,6 +15,7 @@ from booley.flows import endpoint_session
 from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.sim.test_run_invocation import TestRunInvocation
 from booley.runtime.endpoint_execution import EndpointOutcome
+from tests.flows.invocation_doubles import replace_run
 from tests.flows.sim.test_flow_test_run_resolution import _MAP, _flow
 
 
@@ -93,7 +94,7 @@ def test_executing_one_flow_object_twice_uses_each_requests_own_test_runs(tmp_pa
         seen.append(_names(flow))
         return EndpointOutcome(report_text="sim: ran")
 
-    monkeypatch.setattr(flow, "_run", run)
+    replace_run(monkeypatch, flow, run)
     # The host/Sandbox location gate is not what this test is about.
     monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
     base = replace(flow.args, report_dir=tmp_path / "reports", diagnostic=True)

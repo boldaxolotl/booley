@@ -57,6 +57,7 @@ from booley.flows.plan import (
     plan_value_fingerprint,
     stable_unit_id,
 )
+from booley.flows.prepared_invocation import PreparedInvocation
 from booley.flows.progress_lifecycle import (
     ProgressLifecycle,
     ProgressPublicationError,
@@ -73,6 +74,7 @@ from booley.flows.sim.campaign.test_run_report import (
     test_run_row,
 )
 from booley.flows.sim.campaign_files import document_digest
+from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import (
@@ -2706,15 +2708,45 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         return CandidateWorkload(handle, frozenset(selected), frozenset(eligible))
 
+    def prepare_endpoint_invocation(self) -> PreparedInvocation | EndpointOutcome:
+        """Prepare a Campaign; elaboration-only modes keep the Target-selection invocation."""
+        if self._mode.elaborates_only:
+            return super().prepare_endpoint_invocation()
+        prepared = self.prepare_simulation_endpoint()
+        if isinstance(prepared, EndpointOutcome):
+            return prepared
+        return SimulationCampaignInvocation(self, prepared)
+
+    def manifest_names_targets(self) -> bool:
+        """An explicit resume reads its Targets from the manifest."""
+        return self.args.resume_from is not None
+
+    def report_families(self) -> set[str]:
+        """Criterion families the selected mode can judge."""
+        mode = self._mode
+        if mode is SimulationMode.ELAB_ONLY_STANDALONE:
+            return {"elab_pass", "elaborate_standalone"}
+        if mode is SimulationMode.ELAB_ONLY:
+            return {"elab_pass"}
+        families = {"sim_pass", "cycle_count"}
+        if getattr(self.args, "coverage", False):
+            families.add("coverage")
+        if self.state._file_path is not None:
+            families.add("elab_pass")
+        return families
+
+    def conventional_report_families(self) -> set[str]:
+        """Families a non-strict Project may judge under their conventional names."""
+        if self._mode.elaborates_only:
+            return {"elab_pass"}
+        if self.state._file_path is None:
+            return {"sim_pass"}
+        return {"sim_pass", "elab_pass"}
+
     def prepare_simulation_endpoint(  # noqa: PLR0911 -- ordered pre-admission rejections
         self,
-    ) -> PreparedSimulationEndpoint | EndpointOutcome | None:
+    ) -> PreparedSimulationEndpoint | EndpointOutcome:
         """Resolve and authorize every Target before reservation or admission."""
-        # Contract tests and embedding adapters may replace the complete Flow
-        # implementation at the instance boundary.  Such an endpoint has no
-        # campaign execution to prepare and keeps the generic lifecycle.
-        if "_run" in self.__dict__ or self._mode.elaborates_only:
-            return None
         from booley.flows.endpoint_admission import authorize_targets
 
         try:
@@ -3498,7 +3530,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _run(self) -> EndpointOutcome:
         """Run the selected shape and stamp its canonical mode on every result."""
-        # prepare_simulation_endpoint sends every simulate-mode coverage run to
+        # prepare_endpoint_invocation sends every simulate-mode coverage run to
         # run_prepared_simulation; only elaboration-only modes reach this path.
         result = (
             EndpointOutcome(exit_code=2, report_text="Coverage requires simulation mode")

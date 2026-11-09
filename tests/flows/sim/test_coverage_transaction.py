@@ -975,8 +975,9 @@ def test_coverage_ledger_failure_retains_evaluated_final_report(tmp_path):
     outcome = run_coverage_target(plan, NativeExecution(), Progress())
     assert outcome.exit_code == 2
     from booley.flows.endpoint_report_criteria import freeze
+    from booley.flows.prepared_invocation import OrdinaryRunInvocation
 
-    freeze(tool)
+    freeze(tool, OrdinaryRunInvocation(tool._run))
     report = json.loads(tool.write_report(EndpointOutcome(exit_code=2)).read_text())
     assert (report["criterion_key"], report["criterion_met"]) == ("coverage_sim_0", True)
     assert report["passed"] is False
