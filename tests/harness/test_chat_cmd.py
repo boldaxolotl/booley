@@ -22,6 +22,12 @@ class _ExecCalledError(Exception):
 
 
 @pytest.fixture(autouse=True)
+def inline_launch(monkeypatch):
+    """Run the launch in-process: these tests mock the exec and must not fork pytest."""
+    monkeypatch.setattr(chat_cmd, "run_foreground_child", lambda launch: launch())
+
+
+@pytest.fixture(autouse=True)
 def plain_codex_launch(monkeypatch):
     monkeypatch.setattr(chat_cmd, "resolve_common_booley_dir", lambda root: root)
     monkeypatch.setattr(chat_cmd.codex_chat, "command", lambda _directory: ("codex", ["codex"]))
