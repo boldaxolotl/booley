@@ -283,9 +283,12 @@ def test_local_candidate_rejects_runtime_base_retag_during_build(tmp_path, monke
 
 def test_local_candidate_reports_runtime_base_inspect_failure(tmp_path, monkeypatch) -> None:
     """A Docker failure is reported as such, never as a changed runtime-base identity."""
-    empty = tmp_path / "empty-path"
-    empty.mkdir()
-    monkeypatch.setenv("PATH", str(empty))  # no `docker`: every inspect seam fails
+
+    def unreachable_docker(_image: str) -> str | None:
+        raise init_docker_image.idk.ImageInspectError("cannot inspect Docker image: daemon down")
+
+    # Fail the image-ID seam directly: an empty PATH does not hide `docker` on Windows.
+    monkeypatch.setattr(init_docker_image.idk, "image_id", unreachable_docker)
     monkeypatch.setattr(
         init_docker_image,
         "_docker_build_image",

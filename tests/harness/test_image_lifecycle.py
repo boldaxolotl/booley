@@ -264,10 +264,12 @@ def test_host_capacity_requests_reports_inspect_failure_as_lifecycle_error(
         "source_image_build_contracts",
         lambda _root: SimpleNamespace(runtime_base="contract"),
     )
-    # No `docker` on PATH: every Docker seam reports a missing executable.
-    empty = tmp_path / "empty-path"
-    empty.mkdir()
-    monkeypatch.setenv("PATH", str(empty))
+
+    def unreachable_docker(_image: str) -> str | None:
+        raise docker_image.idk.ImageInspectError("cannot inspect Docker image: daemon down")
+
+    # Fail the image-ID seam directly: an empty PATH does not hide `docker` on Windows.
+    monkeypatch.setattr(docker_image.idk, "image_id", unreachable_docker)
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="cannot inspect Docker image"):
         harness_lifecycle.host_capacity_requests(lifecycle.Intent.ENSURE)
