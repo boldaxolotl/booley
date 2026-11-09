@@ -367,11 +367,11 @@ def _connection_label(row: SessionRow, now: float) -> str:
 
 
 def _owner_handle(job: JobView, handles: Mapping[str, str] | None) -> str | None:
-    """The owning session's handle; None for a standalone Job."""
+    """The owning session's handle, else its readable key; None for a standalone Job."""
     key = job.record.session_key
     if key is None:
         return None
-    return job.owner_handle or (handles or {}).get(key, "S?")
+    return sessions.session_key_label(job.owner_handle or (handles or {}).get(key, "S?"))
 
 
 def _owner_label(
@@ -930,9 +930,14 @@ class DashboardApp(App[None]):
         header, goal = self._session_header()
         return header.plain, goal
 
-    def _session_header(self) -> tuple[Text, GoalView | None]:
-        """The session's orientation header, styled fact by fact, and its Goal."""
-        row = next(
+    def _session_row(self) -> tuple[SessionRow | None, bool]:
+        """The open detail's session row and whether it is connected.
+
+        The live row wins; a session that dropped out of the snapshot falls
+        back to the row remembered when it was last seen. The header and the
+        Booley activity list both read this one row.
+        """
+        live = next(
             (
                 row
                 for row in self.snapshot.sessions
@@ -940,8 +945,13 @@ class DashboardApp(App[None]):
             ),
             None,
         )
-        connected = row is not None
-        row = row or self._known_sessions.get(self.navigation.session or "")
+        if live is not None:
+            return live, True
+        return self._known_sessions.get(self.navigation.session or ""), False
+
+    def _session_header(self) -> tuple[Text, GoalView | None]:
+        """The session's orientation header, styled fact by fact, and its Goal."""
+        row, connected = self._session_row()
         attention = SEMANTIC_STYLE["attention"]
         if row is None:
             handle = self._session_handle(self.navigation.session or "")
@@ -968,7 +978,11 @@ class DashboardApp(App[None]):
         header.append_text(_join(activity, *([(info.warning, "yellow")] if info.warning else [])))
         header.append_text(Text.assemble("\n", ("Last Booley call: ", _CHROME)))
         header.append_text(_join((info.last_call or "—", _ACCENT), info.last_age))
-        header.append_text(Text.assemble("\n", ("Session key: ", _CHROME), (info.key, "dim")))
+        header.append_text(
+            Text.assemble(
+                "\n", ("Session key: ", _CHROME), (sessions.session_key_label(info.key), "dim")
+            )
+        )
         return header, goal
 
     def _orientation(
@@ -1080,6 +1094,10 @@ class DashboardApp(App[None]):
 
     def _owner_filter_label(self, owner: str | Owner | None) -> str:
         """Name an owner filter for the chip, the orientation and empty-state text."""
+        return sessions.session_key_label(self._owner_filter_id(owner))
+
+    def _owner_filter_id(self, owner: str | Owner | None) -> str:
+        """Identify an owner filter: a handle, else its durable key (never the readable form)."""
         if owner is None:
             return ALL_SESSIONS
         if owner is Owner.STANDALONE:
@@ -1114,12 +1132,13 @@ class DashboardApp(App[None]):
     def _next_owner(self) -> str | Owner | None:
         """The owner filter after the current one; an unknown current one wraps to all sessions.
 
-        The current entry is found by label: the key that represents a handle
-        changes when an aliased session connects.
+        The current entry is found by its id (a handle or the stored key, see
+        ``_owner_filter_id``): the key that represents a handle changes when an
+        aliased session connects.
         """
         choices = self._owner_choices()
         labels = [label for _, label in choices]
-        current = self._owner_filter_label(self._jobs_root().session)
+        current = self._owner_filter_id(self._jobs_root().session)
         if current not in labels:
             return None
         return choices[(labels.index(current) + 1) % len(choices)][0]
@@ -1193,15 +1212,16 @@ class DashboardApp(App[None]):
         if goal and goal.terminal_summary:
             orientation.append("\n")
             orientation.append_text(_markdown_lines(goal.terminal_summary))
-        activity = self._session_activity(goal)
+        row, _ = self._session_row()
+        activity = self._session_activity(goal, row)
         if goal is not None:
             # Goals head the list; Booley activity is its own section below a
             # spacer and a titled rule, both unselectable header rows.
             keys += [sessions.HEADER_PREFIX + "spacer", sessions.HEADER_PREFIX + "booley-activity"]
             cells += [Text(""), self._section_rule(BOOLEY_ACTIVITY)]
-            if not activity:
-                keys.append(sessions.HEADER_PREFIX + "no-booley-activity")
-                cells.append(Text("No Booley activity yet", style="dim"))
+        if not activity:
+            keys.append(sessions.HEADER_PREFIX + "no-booley-activity")
+            cells.append(Text("No Booley activity yet", style="dim"))
         for key, content in activity:
             keys.append(key)
             cells.append(content)
@@ -1215,8 +1235,13 @@ class DashboardApp(App[None]):
             rule + "─" * max(0, self._fitted_width - cell_len(rule)), style="bold " + _CHROME
         )
 
-    def _session_activity(self, goal: GoalView | None) -> list[tuple[str, Text]]:
-        """The session's pending proposals, unfinished Jobs and recent Booley calls."""
+    def _session_activity(
+        self, goal: GoalView | None, session: SessionRow | None
+    ) -> list[tuple[str, Text]]:
+        """The session's pending proposals, unfinished Jobs and recent Booley calls.
+
+        ``session`` is the resolved row (live or remembered) whose calls are listed.
+        """
         activities = []
         if goal and goal.status:
             activities.extend(
@@ -1234,14 +1259,6 @@ class DashboardApp(App[None]):
             for job in self.snapshot.jobs.jobs
             if self._owned_by(job, self.navigation.session)
             and job.state not in TERMINAL_JOB_STATES
-        )
-        session = next(
-            (
-                row
-                for row in self.snapshot.sessions
-                if row.attribution.key == self.navigation.session
-            ),
-            None,
         )
         if session:
             now = self.snapshot.observed_at
@@ -1639,7 +1656,9 @@ class DashboardApp(App[None]):
             )
         ]
         if job.record.session_key:
-            owner.append(ResultLine("Session key", job.record.session_key))
+            owner.append(
+                ResultLine("Session key", sessions.session_key_label(job.record.session_key))
+            )
         offset = next(index for index, row in enumerate(rows) if row.label == "Job")
         rows[offset:offset] = owner
         detail = Text()
@@ -1696,8 +1715,8 @@ class DashboardApp(App[None]):
         if self.query_one(DataTable).cursor_row >= len(self.row_keys):
             return None
         key = self._selected_key()
-        if not key:
-            return None
+        if not key or key.startswith(sessions.HEADER_PREFIX):
+            return None  # A header row, such as an empty-state line, opens nothing.
         nav = self.navigation
         target = None
         if nav.view == "overview":

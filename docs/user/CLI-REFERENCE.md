@@ -139,15 +139,22 @@ This creates `.booley/worktrees/<name>`, prints its path, and starts it at the
 current commit on a detached HEAD. A name of the form `<branch>--<description>`
 checks out the existing branch `<branch>` instead. An existing destination is
 refused and left untouched. Git submodules are filled in from the main
-checkout, without network access.
+checkout, without network access. Then the Project's `post-setup` hook
+(`.booley/hooks/post-setup.sh`, `.py`, or no suffix), if it has one, runs in the
+new worktree. Its output is shown and saved to
+`.booley/worktrees/.logs/<name>.log` in the main Booley Directory. If the
+submodule step or the hook fails, Booley removes the worktree and its
+`booley-worktree/<name>` branch and exits nonzero.
 
 The worktree gets its own Booley Directory (the `.booley/` folder):
 
 - **Paired Checkout**, when your Booley Directory is its own Git repository:
-  a checkout of it on branch `booley-worktree/<name>`. Commit everything in
-  that repository first, untracked files included; Booley refuses a repository
-  with no commits or an existing branch of that name. Ignored files stay
-  behind. Booley refuses to create a worktree from inside a Paired Checkout.
+  a checkout of its last commit on branch `booley-worktree/<name>`.
+  Uncommitted and untracked files are left out; one warning names them (the
+  first 10, then a count). Commit them first if the worktree needs them.
+  Booley refuses a repository with no commits or an existing branch of that
+  name. Ignored files stay behind. Booley refuses to create a worktree from
+  inside a Paired Checkout.
 - **Snapshot**, otherwise: a copy of the Booley Directory's configuration
   (settings, `cores/`, hooks, Goal and Ticket history). Build results, reports, logs,
   and evidence stay in the main Booley Directory. A path Booley does not

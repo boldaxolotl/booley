@@ -43,22 +43,15 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-import subprocess
-import time
-from collections import deque
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 
-from booley.flows.run_log import write_run_log
+from booley.core.boundary import parse_positive_int_arg
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
-    AdapterTraceResult,
     AdapterTransportIdentity,
     add_transport_arguments,
-    assess_native_verdict,
-    first_native_failure,
-    native_verdict_message,
+    evaluate_native_verdict,
     publish_native_adapter_result,
     transport_identity_from_args,
     work_transport_arguments,
@@ -66,20 +59,11 @@ from booley.flows.sim.adapter_transport import (
 from booley.flows.sim.backends.shared import (
     BOOLEY_DUMP_VCD_NAME,
     CurrentRunTraces,
-    RunLogProgress,
-    RunTermination,
-    ambiguous_trace_reason,
-    append_child_cpu_marker,
-    child_cpu_snapshot,
     find_icarus_image,
-    format_idle_note,
 )
-from booley.flows.sim.result import (
-    extract_vrfc_warnings,
-    format_summary,
-    parse_sim_verdict,
-    write_result_json,
-)
+from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
+from booley.flows.sim.backends.trace_finalization import finalize_trace
+from booley.flows.sim.result import parse_sim_verdict
 from booley.flows.sim.trace_session import TraceSession
 
 # The dump module's explicit ``$dumpfile`` name — identical to iverilog's
@@ -94,7 +78,6 @@ class _IcarusRun:
     work_dir: Path
     image: Path
     command: list[str]
-    trace: TraceSession | None
     # Freshness filter for this run's waveform; None when tracing is off.
     current: CurrentRunTraces | None
 
@@ -170,172 +153,6 @@ def _build_vvp_cmd(
     return cmd
 
 
-def _new_trace_session(work_dir: Path, trace_scope: str | None) -> TraceSession:
-    """Create an iverilog-backed trace session (tolerates older signatures)."""
-    try:
-        return TraceSession(work_dir, trace_scope, backend="iverilog")
-    except TypeError:  # pragma: no cover - defensive against fakes in tests
-        return TraceSession(work_dir, trace_scope)
-
-
-def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipeline; splitting it would strand shared proc/timer/guard state
-    cmd: list[str],
-    run_cwd: Path,
-    timeout: int,
-    max_rundir_bytes: int = 0,
-    work_dir: Path | None = None,
-    runtime_inputs: tuple[str, ...] = (),
-) -> tuple[deque[str], subprocess.Popen, RunTermination]:
-    """Run vvp from *run_cwd*, stream stdout live, enforce *timeout* (seconds).
-
-    Uses a watchdog timer rather than stdout-activity polling so a silent hung
-    vvp is still killed at the wall-clock budget (matches the legacy runner).
-
-    Two safety guards ride alongside the timeout (see :mod:`booley.flows.sim.run_guard`):
-    a missing-``$readmemh``-file warning is fatal (SETUP-23 — vvp would otherwise
-    spin forever on uninitialised RAM, silent), and *max_rundir_bytes* (>0) caps
-    how large *run_cwd* may grow before a runaway ``$dumpfile``/``$fwrite`` sink
-    is killed (SETUP-25).
-    """
-    import threading
-
-    from booley.flows.sim.run_guard import (
-        DiskBudgetGuard,
-        child_death_kwargs,
-        classify_readmemh_termination,
-        parse_readmemh_fatal,
-        snapshot_dir_baseline,
-        supervise_child,
-    )
-    from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
-
-    lines: deque[str] = deque(maxlen=5_000)
-    cpu_started = child_cpu_snapshot()
-    # BEFORE the spawn: the baseline walk takes seconds on the multi-GB trees
-    # this budget exists for, and anything vvp dumps during that walk would
-    # otherwise land in the baseline free of charge (fpu F-23).
-    disk_baseline = snapshot_dir_baseline(run_cwd, max_rundir_bytes)
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(run_cwd),
-        env=os.environ.copy(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        **popen_new_group_kwargs(),
-        **child_death_kwargs(),
-    )
-    supervise_child(proc)  # F-13: reapable if our parent dies under us
-    timed_out = {"hit": False}
-
-    def _kill_on_timeout() -> None:
-        if proc.poll() is None:
-            timed_out["hit"] = True
-            kill_process_tree(proc)
-
-    timer = threading.Timer(timeout, _kill_on_timeout)
-    timer.daemon = True
-    timer.start()
-    guard = DiskBudgetGuard(run_cwd, max_rundir_bytes, proc, baseline=disk_baseline)
-    guard.start()
-    progress = RunLogProgress(work_dir, time.monotonic())
-    readmemh_error = ""
-    stdout = proc.stdout
-    try:
-        assert stdout is not None
-        for line in stdout:
-            print(line, end="", flush=True)
-            lines.append(line)
-            progress.observe(lines)  # F-18: run.log shows a live tail mid-run
-            # SETUP-23: a missing $readmemh init file warns once then vvp spins
-            # forever on uninitialised RAM — treat that warning as fatal.
-            missing = parse_readmemh_fatal(line)
-            if missing and proc.poll() is None:
-                fatal = classify_readmemh_termination(missing, run_cwd, runtime_inputs)
-                readmemh_error = fatal.detail
-                kill_process_tree(proc)
-                break
-        proc.wait()
-    finally:
-        if stdout is not None:
-            stdout.close()
-        timer.cancel()
-        guard.stop()
-        progress.final_flush(lines)
-        append_child_cpu_marker(lines, cpu_started)
-
-    if not readmemh_error and not timed_out["hit"] and not guard.tripped:
-        guard.finish()
-
-    # Precedence: an explicit fatal (readmemh) over the disk runaway over the
-    # wall-clock timeout — the first is the most specific cause of death.
-    termination = RunTermination()
-    if readmemh_error:
-        msg = f"ERROR: {readmemh_error}"
-        print(msg)
-        lines.append(msg + "\n")
-        termination = fatal
-    elif guard.tripped:
-        print(guard.message)
-        lines.append(guard.message + "\n")
-        termination = RunTermination("disk_budget", guard.message, "infrastructure")
-    elif timed_out["hit"]:
-        # F-21: name the silence, so "slow" and "wedged with no sentinel" read
-        # differently in the verdict tail.
-        msg = f"ERROR: iverilog simulation timed out ({timeout}s)" + format_idle_note(
-            progress.idle_s, len(lines)
-        )
-        print(msg)
-        lines.append(msg + "\n")
-        termination = RunTermination("timeout", msg, "timeout")
-    return lines, proc, termination
-
-
-def _evaluate_verdict(
-    output: str,
-    returncode: int,
-    work_dir: Path,
-    *,
-    pass_sentinels: list[str] | None = None,
-    fail_sentinels: list[str] | None = None,
-    termination: RunTermination | None = None,
-) -> None:
-    """Print the ``[SIM_SUMMARY]`` verdict + write result JSON (legacy parity)."""
-    termination = termination or RunTermination()
-    assessment = assess_native_verdict(
-        output,
-        returncode,
-        pass_sentinels=pass_sentinels,
-        fail_sentinels=fail_sentinels,
-        termination=termination,
-    )
-    vrfc = extract_vrfc_warnings(output)
-    print(
-        format_summary(
-            assessment.passed,
-            assessment.sva_errors,
-            vrfc,
-            inconclusive=assessment.inconclusive,
-        )
-    )
-    print(native_verdict_message("iverilog", assessment, returncode, termination))
-    first_err = first_native_failure(output, termination.detail) if not assessment.passed else ""
-    write_result_json(
-        work_dir,
-        assessment.passed,
-        assessment.sva_errors,
-        first_err,
-        returncode,
-        inconclusive=assessment.inconclusive,
-    )
-    # Persist the raw output next to result.json on pass AND fail:
-    # result.json only carries a 500-char first_error, so run.log is what
-    # survives MCP-level stdout truncation.
-    write_run_log(work_dir, output)
-
-
 def _prepare_icarus_run(
     build_dir: Path,
     run_cwd: Path | None,
@@ -355,7 +172,7 @@ def _prepare_icarus_run(
     if vcd and not any(value.lstrip("+") == "trace" for value in plusargs):
         plusargs.append("+trace")
     command = _build_vvp_cmd(_find_vvp(), build, image, plusargs)
-    trace = _new_trace_session(work, trace_scope) if vcd else None
+    trace = TraceSession(work, trace_scope, backend="iverilog") if vcd else None
     current = (
         CurrentRunTraces.begin(
             trace,
@@ -366,7 +183,7 @@ def _prepare_icarus_run(
         if trace is not None
         else None
     )
-    return _IcarusRun(build, run, work, image, command, trace, current)
+    return _IcarusRun(build, run, work, image, command, current)
 
 
 def _execute_icarus_run(
@@ -375,82 +192,22 @@ def _execute_icarus_run(
     max_rundir_bytes: int,
     runtime_inputs: tuple[str, ...],
 ):
-    from booley.harness.colors import dim
-    from booley.presentation.heartbeat import render_heartbeat
-    from booley.runtime.heartbeat import Heartbeat
-
     print(f"\n{'=' * 60}")
     print(f"[iverilog simulation: {run.image}]")
     print(f"{'=' * 60}")
     print(f"CWD: {run.run_cwd}")
     print(f"CMD: {' '.join(run.command)}\n")
-    heartbeat = Heartbeat("iverilog sim", render=partial(render_heartbeat, style=dim), interval=60)
-    heartbeat.start()
-    try:
-        return _stream_output(
-            run.command,
-            run.run_cwd,
-            timeout,
-            max_rundir_bytes=max_rundir_bytes,
+    return run_supervised(
+        SimulatorLaunch(
+            label="iverilog",
+            command=run.command,
+            run_cwd=run.run_cwd,
+            env=os.environ.copy(),
+            timeout_s=timeout,
             work_dir=run.work_dir,
+            max_rundir_bytes=max_rundir_bytes,
             runtime_inputs=runtime_inputs,
         )
-    finally:
-        heartbeat.stop()
-
-
-def _finalize_icarus_trace(
-    run: _IcarusRun,
-    proc,
-    trace_files: list[str],
-) -> tuple[str, AdapterTraceResult | None]:
-    if run.trace is None or run.current is None:
-        return "", None
-    run.trace.postprocess(run.run_cwd / _DEFAULT_VCD_NAME)
-    selection = run.current.select()
-    if selection.ambiguous:
-        return _icarus_trace_incident(run, proc, ambiguous_trace_reason(selection.ambiguous))
-    found = selection.path
-    if found is not None:
-        inspection = run.trace.inspect(found)
-        if not inspection.usable:
-            if found.suffix.lower() == ".vcd":
-                reason = f"native FST conversion unavailable: {inspection.failure_reason}"
-                print(f"TRACE_FALLBACK: {found}")
-                return (
-                    f"\nTRACE_FALLBACK: {found}",
-                    AdapterTraceResult("ok", path=str(found), detail=reason),
-                )
-            reason = (
-                "trace requested but retained waveform is not queryable: "
-                f"{inspection.failure_reason}"
-            )
-            return _icarus_trace_incident(run, proc, reason)
-        print(f"TRACE_OK: {found}")
-        return f"\nTRACE_OK: {found}", AdapterTraceResult("ok", path=str(found))
-    reason = "trace requested but no queryable .fst store or .vcd was produced"
-    if trace_files:
-        reason += (
-            " (no fresh, nonempty file matching [flows.sim].trace_files "
-            f"{trace_files} was produced by the current run)"
-        )
-    else:
-        reason += (
-            " (a testbench writing its dump under its own name needs "
-            "[flows.sim].trace_files to declare it)"
-        )
-    return _icarus_trace_incident(run, proc, reason)
-
-
-def _icarus_trace_incident(run: _IcarusRun, proc, reason: str) -> tuple[str, AdapterTraceResult]:
-    """Record a trace incident and return its output line and adapter result."""
-    assert run.trace is not None
-    incident = run.trace.write_incident(reason, sim_proc=proc)
-    print(f"ERROR: {reason}")
-    print(f"TRACE_INCIDENT: {incident}")
-    return (
-        f"\nERROR: {reason}\nTRACE_INCIDENT: {incident}",
-        AdapterTraceResult("incident", path=str(incident), detail=reason),
     )
 
 
@@ -486,7 +243,6 @@ def run_icarus_image(
     transport: AdapterTransportIdentity | None = None,
 ) -> str:
     """Run an edalize-built vvp image once and return its captured output."""
-    declared = list(trace_files or [])
     run = _prepare_icarus_run(
         build_dir,
         run_cwd,
@@ -494,13 +250,14 @@ def run_icarus_image(
         list(plusargs or []),
         vcd,
         trace_scope,
-        declared,
+        list(trace_files or []),
     )
     if isinstance(run, str):
         return _icarus_setup_failure(run, transport)
     lines, proc, termination = _execute_icarus_run(run, timeout, max_rundir_bytes, runtime_inputs)
     output = "".join(lines)
-    _evaluate_verdict(
+    evaluate_native_verdict(
+        "iverilog",
         output,
         proc.returncode,
         run.work_dir,
@@ -508,8 +265,12 @@ def run_icarus_image(
         fail_sentinels=fail_sentinels,
         termination=termination,
     )
-    trace_output, trace_result = _finalize_icarus_trace(run, proc, declared)
-    output += trace_output
+    trace_result = None
+    if run.current is not None:
+        trace_output, trace_result = finalize_trace(
+            run.current, proc, raw_vcd=run.run_cwd / _DEFAULT_VCD_NAME, vcd_fallback=True
+        )
+        output += trace_output
     _publish_adapter_result(
         transport,
         output,
@@ -523,18 +284,6 @@ def run_icarus_image(
     return output
 
 
-def _positive_int(value: str) -> int:
-    """argparse type: reject non-positive timeouts at the CLI boundary.
-
-    A negative/zero ``--timeout`` reaches threading.Timer and would kill the
-    simulation instantly, so validate range here rather than misbehave later.
-    """
-    ivalue = int(value)  # raises ValueError -> argparse reports the bad token
-    if ivalue <= 0:
-        raise argparse.ArgumentTypeError(f"must be a positive integer, got {ivalue}")
-    return ivalue
-
-
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run an edalize-built Icarus vvp image")
     p.add_argument(
@@ -543,7 +292,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--runtime-input", action="append", default=[])
     p.add_argument("--run-cwd", default=None, help="cwd to run vvp from (TB vector/firmware base)")
     p.add_argument("--work-dir", default=None, help="trace/result output dir")
-    p.add_argument("--timeout", type=_positive_int, default=600, help="run timeout (seconds)")
+    p.add_argument(
+        "--timeout", type=parse_positive_int_arg, default=600, help="run timeout (seconds)"
+    )
     p.add_argument(
         "--max-rundir-bytes",
         type=int,
