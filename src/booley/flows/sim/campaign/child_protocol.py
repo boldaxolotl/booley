@@ -25,7 +25,11 @@ from booley.runtime.execution_recovery import recover_execution
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.timefmt import utc_now_rfc3339
 
-from .codec import SimulationCampaignIntegrityError, canonical_json_bytes
+from .codec import (
+    SimulationCampaignIntegrityError,
+    canonical_json_bytes,
+    reads_campaign_records,
+)
 from .model import SimulationCampaignManifest
 from .planning import manifest_digest
 from .run_directory import (
@@ -273,6 +277,7 @@ def _read_protocol_bytes(path: Path, label: str, *, booley_dir: Path | None = No
         os.close(descriptor)
 
 
+@reads_campaign_records
 def recover_interrupted_attempts(
     manifest: SimulationCampaignManifest,
     attempts: Mapping[str, Mapping[str, object]],

@@ -189,7 +189,7 @@ def test_linux_group_assigns_tests_absent_from_the_linux_timing_model(tmp_path: 
     groups = _linux_groups()
     _write_linux_download(tmp_path / "download", dict.fromkeys(groups, shards))
 
-    assert groups == ["linux-3.11", "linux-3.14"]
+    assert groups == ["linux-3.11"]
     assert "test::e" not in timings.tests
     assert sum("test::e" in shard for shard in shards) == 1
     for group in groups:
@@ -208,7 +208,7 @@ def test_linux_group_verifier_rejects_omitted_duplicated_and_inconsistent_ids(
         return download
 
     scenarios = (
-        ("omitted", "linux-3.14", 1, {"selected": shards[1][:-1]}, "union mismatch"),
+        ("omitted", "linux-3.11", 1, {"selected": shards[1][:-1]}, "union mismatch"),
         (
             "duplicated",
             "linux-3.11",
@@ -218,7 +218,7 @@ def test_linux_group_verifier_rejects_omitted_duplicated_and_inconsistent_ids(
         ),
         (
             "inconsistent",
-            "linux-3.14",
+            "linux-3.11",
             2,
             {"expected_sha256": nodeid_digest(["test::other", *_LINUX_NODEIDS])},
             "eligible node-ID set",
@@ -226,8 +226,6 @@ def test_linux_group_verifier_rejects_omitted_duplicated_and_inconsistent_ids(
     )
     for name, group, shard_index, fields, message in scenarios:
         download = broken(name, group, shard_index, **fields)
-        healthy_group = "linux-3.11" if group == "linux-3.14" else "linux-3.14"
 
         with pytest.raises(ShardError, match=message):
             _verify_download(download, group)
-        assert _verify_download(download, healthy_group) == len(_LINUX_NODEIDS)

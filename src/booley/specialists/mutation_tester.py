@@ -54,7 +54,7 @@ from booley.flows import artifacts as _artifacts
 from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.execution_persistence import execution_goal_name
 from booley.flows.flow_config import tb_top_for_target
-from booley.flows.sim.backends.cocotb import seed_arguments
+from booley.flows.sim.adapter_contract import AdapterKind, PreparedSimulationWork
 from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
     VERDICT_FAIL,
@@ -72,13 +72,14 @@ from booley.flows.sim.config import (
     resolve_run_cwd,
     resolve_sim_sentinels,
 )
+from booley.flows.sim.execution.composition import prepare_adapter_invocation
 from booley.flows.sim.execution.engine import (
     launch_environment,
     simulation_plusargs,
     target_test_plan,
 )
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX, has_infra_error
-from booley.flows.sim.run_guard import unstaged_runtime_input_diagnostic
+from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, unstaged_runtime_input_diagnostic
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputError,
     declared_runtime_inputs,
@@ -143,8 +144,6 @@ def _infra_failure_reason(proc: subprocess.CompletedProcess) -> str:
     first and treat a non-empty answer as "no observation" (SETUP-F-41).
     """
     combined = (proc.stdout or "") + (proc.stderr or "")
-    if proc.returncode == 2 and "usage:" in combined and ": error:" in combined:
-        return "runner argument parsing failed"
     if not has_infra_error(combined):
         # A declared copyto input the TB could not open is the same "no
         # observation" the Simulation Flow classifies as infrastructure.
@@ -170,6 +169,24 @@ class _PinnedBuild:
 
     rel: str
     runtime_inputs: tuple[str, ...]
+
+
+def _mutant_work(
+    adapter: AdapterKind,
+    pinned: _PinnedBuild,
+    work_dir: Path,
+    timeout: int,
+    plusargs: Sequence[str],
+) -> PreparedSimulationWork:
+    """The fields every mutant launch carries; callers add the adapter's own."""
+    return PreparedSimulationWork(
+        adapter=adapter,
+        build_dir=pinned.rel,
+        run_cwd=resolve_run_cwd(work_dir),
+        timeout_s=max(1, timeout - 5),
+        plusargs=tuple(plusargs),
+        runtime_inputs=pinned.runtime_inputs,
+    )
 
 
 def _record_build_markers(
@@ -2020,114 +2037,6 @@ replacement must differ, and every proposal must remain a single source edit.
             **self._registered_tests(target),
         )
 
-    def _cocotb_sim_cmd(
-        self,
-        *,
-        cocotb: CocotbSimTarget,
-        rel: str,
-        target: str,
-        work_dir: Path,
-        timeout: int,
-        test_names: tuple[str, ...],
-        launch: TestRunLaunch,
-        plusargs: Sequence[str] = (),
-    ) -> list[str]:
-        """Build the :mod:`booley.flows.sim.backends.cocotb` invocation for one mutant.
-
-        A Cocotb Target's binary is driven from Python over VPI, so the run
-        needs cocotb's ``COCOTB_TEST_MODULES``/filter environment — which only
-        the cocotb run-half knows how to assemble.
-
-        One invocation runs one Cocotb batch: Tests that share an environment
-        and a seed (ADR 0072). ``tests.toml`` ``select`` plusarg templates do
-        not apply to Cocotb Targets (ADR 0034 decision 2).
-        """
-        cmd = [
-            sys.executable,
-            "-m",
-            "booley.flows.sim.backends.cocotb",
-            "--build-dir",
-            rel,
-            "--eda-tool",
-            cocotb.eda_tool,
-            "--cocotb-module",
-            cocotb.module,
-            "--timeout",
-            str(max(1, timeout - 5)),
-        ]
-        cmd.extend(f"--test={test_name}" for test_name in test_names)
-        cmd += seed_arguments(launch.seed)
-        cmd.extend(f"--plusarg={value}" for value in plusargs)
-        run_cwd = resolve_run_cwd(work_dir)
-        if run_cwd:
-            cmd += ["--run-cwd", run_cwd]
-        return cmd
-
-    def _verilator_sim_cmd(
-        self,
-        *,
-        rel: str,
-        target: str,
-        work_dir: Path,
-        tb_top: str,
-        timeout: int,
-        plusargs: Sequence[str],
-    ) -> list[str]:
-        """Build the pinned ``V<top>`` invocation for one mutant (classic path).
-
-        Paths stay relative to *work_dir* (the run cwd); verilator_run resolves
-        them absolute before switching to ``--run-cwd``. The binary self-times-out
-        a hair before the hard subprocess kill so a clean TIMEOUT marker lands in
-        the captured output for the sweep's hang detection.
-        """
-        cmd = [
-            sys.executable,
-            "-m",
-            "booley.flows.sim.backends.verilator",
-            "--bin-dir",
-            rel,
-            "--top",
-            tb_top,
-            "--timeout",
-            str(max(1, timeout - 5)),
-        ]
-        cmd.extend(f"--plusarg={value}" for value in plusargs)
-        pass_sentinels, fail_sentinels = resolve_sim_sentinels(work_dir)
-        cmd.extend(f"--pass-sentinel={sentinel}" for sentinel in pass_sentinels)
-        cmd.extend(f"--fail-sentinel={sentinel}" for sentinel in fail_sentinels)
-        run_cwd = resolve_run_cwd(work_dir)
-        if run_cwd:
-            cmd += ["--run-cwd", run_cwd]
-        return cmd
-
-    def _icarus_sim_cmd(
-        self,
-        *,
-        rel: str,
-        target: str,
-        work_dir: Path,
-        timeout: int,
-        plusargs: Sequence[str],
-    ) -> list[str]:
-        """Build the pinned ``vvp`` invocation for one classic Icarus mutant."""
-        cmd = [
-            sys.executable,
-            "-m",
-            "booley.flows.sim.backends.icarus",
-            "--build-dir",
-            rel,
-            "--timeout",
-            str(max(1, timeout - 5)),
-        ]
-        cmd.extend(f"--plusarg={value}" for value in plusargs)
-        pass_sentinels, fail_sentinels = resolve_sim_sentinels(work_dir)
-        cmd.extend(f"--pass-sentinel={sentinel}" for sentinel in pass_sentinels)
-        cmd.extend(f"--fail-sentinel={sentinel}" for sentinel in fail_sentinels)
-        run_cwd = resolve_run_cwd(work_dir)
-        if run_cwd:
-            cmd += ["--run-cwd", run_cwd]
-        return cmd
-
     def _default_test_plan(
         self, target: str, work_dir: Path, adapter: str
     ) -> tuple[TargetTestPlan, Mapping[str, Any]]:
@@ -2202,62 +2111,45 @@ replacement must differ, and every proposal must remain a single source edit.
         test_name: str | None = None,
         cocotb_tests: tuple[str, ...] = (),
     ) -> tuple[list[str], TestRunLaunch]:
-        """The pinned simulator command of one mutant and its launch inputs.
+        """The pinned adapter command of one mutant and its launch inputs.
 
-        Declared ``copyto`` inputs are passed as ``--runtime-input`` so the run
-        half classifies a missing ``$readmemh`` file as the Flow does.
+        The command carries a prepared work document of the fields a mutant
+        launch has always passed. Declared ``copyto`` inputs are part of it, so
+        the adapter classifies a missing ``$readmemh`` file as the Flow
+        does. Paths stay relative to *work_dir* (the run cwd); the adapter
+        resolves them absolute before switching to its run cwd. The adapter
+        times out a hair before the hard subprocess kill so a clean TIMEOUT
+        marker lands in the captured output for the sweep's hang detection.
+        One Cocotb invocation runs one batch: Tests that share an environment
+        and a seed (ADR 0072); ``tests.toml`` ``select`` plusarg templates do
+        not apply to Cocotb Targets (ADR 0034 decision 2).
         """
-        command, launch = self._pinned_adapter_command(
-            target, work_dir, build_path, tb_top, pinned.rel, timeout, test_name, cocotb_tests
-        )
-        command.extend(f"--runtime-input={value}" for value in pinned.runtime_inputs)
-        return command, launch
-
-    def _pinned_adapter_command(
-        self,
-        target: str,
-        work_dir: Path,
-        build_path: Path,
-        tb_top: str,
-        rel: str,
-        timeout: int,
-        test_name: str | None,
-        cocotb_tests: tuple[str, ...],
-    ) -> tuple[list[str], TestRunLaunch]:
-        """The adapter-specific run-half command of one prebuilt simulation."""
         cocotb = self.cocotb_target(target, work_dir)
         if cocotb is not None:
             launch, plusargs = self._default_test_run_launch(
                 target, work_dir, "cocotb", cocotb_tests
             )
-            command = self._cocotb_sim_cmd(
-                cocotb=cocotb,
-                rel=rel,
-                target=target,
-                work_dir=work_dir,
-                timeout=timeout,
-                test_names=cocotb_tests,
-                launch=launch,
-                plusargs=plusargs,
+            work = replace(
+                _mutant_work("cocotb", pinned, work_dir, timeout, plusargs),
+                eda_tool=cocotb.eda_tool,
+                cocotb_module=cocotb.module,
+                tests=cocotb_tests,
+                cocotb_seed=launch.seed,
+                sim_time_grace_s=DEFAULT_SIM_TIME_GRACE_S,
             )
-            return command, launch
+            return prepare_adapter_invocation(work, python=sys.executable), launch
         eda_tool = self._classic_eda_tool(target, work_dir, build_path)
         names = (test_name,) if test_name is not None else ()
         launch, plusargs = self._default_test_run_launch(target, work_dir, eda_tool, names)
-        if eda_tool == "icarus":
-            command = self._icarus_sim_cmd(
-                rel=rel, target=target, work_dir=work_dir, timeout=timeout, plusargs=plusargs
-            )
-        else:
-            command = self._verilator_sim_cmd(
-                rel=rel,
-                target=target,
-                work_dir=work_dir,
-                tb_top=tb_top,
-                timeout=timeout,
-                plusargs=plusargs,
-            )
-        return command, launch
+        pass_sentinels, fail_sentinels = resolve_sim_sentinels(work_dir)
+        adapter: AdapterKind = "icarus" if eda_tool == "icarus" else "verilator"
+        work = replace(
+            _mutant_work(adapter, pinned, work_dir, timeout, plusargs),
+            top=tb_top if eda_tool == "verilator" else "",
+            pass_sentinels=tuple(pass_sentinels),
+            fail_sentinels=tuple(fail_sentinels),
+        )
+        return prepare_adapter_invocation(work, python=sys.executable), launch
 
     def _run_sim_pinned(
         self,
