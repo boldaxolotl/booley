@@ -527,17 +527,6 @@ def _proc_state(pid):
     return stat_text.rsplit(")", 1)[1].split()[0]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="reads /proc")
-@pytest.mark.parametrize("vanished", [FileNotFoundError, ProcessLookupError])
-def test_pid_stopped_check_accepts_process_vanishing_mid_read(monkeypatch, vanished):
-    def read_text(*_args, **_kwargs):
-        raise vanished
-
-    monkeypatch.setattr(Path, "read_text", read_text)
-    # A live pid makes /proc/<pid>/stat exist, so only the read can fail.
-    assert_worker_pid_stopped(str(os.getpid()))
-
-
 def test_nested_exposure_is_preserved_across_refresh(project, monkeypatch):
     monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
     monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "sim")

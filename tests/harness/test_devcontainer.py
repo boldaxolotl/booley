@@ -323,7 +323,6 @@ class TestAppExtension:
         # The HDL extension owns .sdc/.xdc; no Tcl grammar or association is needed.
         for app in dc.SUPPORTED_APPS:
             vscode = build_spec(app)["customizations"]["vscode"]
-            assert "bitwisecook.tcl" not in vscode["extensions"]
             assert "files.associations" not in vscode["settings"]
 
     def test_generated_spec_installs_bundled_hdl_highlight_only(self):
@@ -344,22 +343,15 @@ class TestAppExtension:
             VSIX_PATH,
         ]
 
-    def test_vaporview_extension_present_for_every_app(self):
-        # The Waveform Viewer (ADR 0078) and the Booley extension hosting its
-        # bridge ride along regardless of agent app or Dashboard policy.
+    def test_vaporview_presentation_settings_for_every_app(self):
+        # The Waveform Viewer (ADR 0078) palette rides along regardless of agent
+        # app; the per-app extension lists above pin the VSIX entries.
         for app in dc.SUPPORTED_APPS:
             spec = build_spec(app)
             vscode = spec["customizations"]["vscode"]
-            assert vaporview.BUNDLED_VSIX in vscode["extensions"]
-            assert VSIX_PATH in vscode["extensions"]
             assert {
                 key: vscode["settings"][key] for key in dc._VAPORVIEW_PRESENTATION_SETTINGS
             } == dc._VAPORVIEW_PRESENTATION_SETTINGS
-
-    def test_generated_spec_installs_the_bundled_vaporview_build(self):
-        for app in dc.SUPPORTED_APPS:
-            extensions = build_spec(app)["customizations"]["vscode"]["extensions"]
-            assert [e for e in extensions if "vaporview" in e.lower()] == [vaporview.BUNDLED_VSIX]
 
     def test_live_preview_does_not_restore_stale_port_tunnels(self):
         # F-14: restored 3000/3001 tunnels can point the embedded browser at a

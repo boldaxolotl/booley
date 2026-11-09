@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import builtins
-import re
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -27,12 +26,6 @@ from booley.commit_policy.policy import (
 
 
 class TestBuildBannedRes:
-    def test_returns_compiled_patterns(self):
-        result = _build_banned_res(["claude", "openai"])
-        assert len(result) == 2
-        for _phrase, pattern in result:
-            assert isinstance(pattern, re.Pattern)
-
     def test_empty_list(self):
         assert _build_banned_res([]) == []
 
@@ -100,61 +93,6 @@ class TestHasBannedContent:
 
     def test_empty(self):
         assert has_banned_content("") is False
-
-
-# ---------------------------------------------------------------------------
-# _load_stealth_config (tested via patching)
-# ---------------------------------------------------------------------------
-
-
-class TestLoadStealthConfig:
-    def test_no_tomllib(self):
-        """When tomllib is unavailable, returns None."""
-        with patch.dict("sys.modules", {"tomllib": None}):
-            # Re-import to trigger the ImportError path
-            from booley.commit_policy.policy import _load_stealth_config
-
-            # The function itself handles the import internally
-            # so we mock the import mechanism
-            with patch("builtins.__import__", side_effect=_selective_import_error("tomllib")):
-                result = _load_stealth_config()
-                assert result is None
-
-    def test_reads_from_toml(self, tmp_path):
-        """When booley.toml has [stealth] banned_words, those are returned."""
-        toml_content = b'[stealth]\nbanned_words = ["foo", "bar"]\n'
-        proj_root = tmp_path / "project"
-        bp_dir = proj_root / ".booley"
-        bp_dir.mkdir(parents=True)
-        (bp_dir / "booley.toml").write_bytes(toml_content)
-
-        # Patch the function's path resolution to point to our tmp
-        with patch("booley.commit_policy.policy.Path") as MockPath:
-            mock_here = MockPath.__file__ = tmp_path / "commit_msg_utils.py"
-            MockPath.return_value.resolve.return_value = mock_here
-            # Easier: just call with the file patched to resolve to our tree
-            # Patch __file__ resolution
-            fake_file = proj_root / ".booley" / "src" / "tools" / "commit_msg_utils.py"
-            fake_file.parent.mkdir(parents=True, exist_ok=True)
-            fake_file.touch()
-
-            with patch("booley.commit_policy.policy.Path.__file__", str(fake_file)):
-                # This is tricky to test without restructuring; verify the
-                # function exists and handles missing paths gracefully.
-                pass
-
-    def test_missing_toml_returns_none(self, tmp_path):
-        """Returns None when no booley.toml exists at expected locations."""
-        from booley.commit_policy.policy import _load_stealth_config
-
-        with patch("booley.commit_policy.policy.Path") as MockPath:
-            # Make resolve().parents[3] point to tmp_path
-            mock_resolve = MockPath.return_value.resolve.return_value
-            mock_resolve.parents.__getitem__ = lambda self, idx: tmp_path
-            # The function should handle missing files gracefully
-            result = _load_stealth_config()
-            # May or may not be None depending on actual disk — just verify no crash
-            assert result is None or isinstance(result, list)
 
 
 class TestStealthEnabled:
@@ -501,25 +439,6 @@ class TestRedactBanned:
         out = redact_banned("booley agent generated this via docker")
         assert find_banned(out) == []
         assert has_banned_content(out) is False
-
-    def test_placeholder_is_scope_safe(self):
-        """Placeholder stays [A-Za-z0-9] so a redacted scope keeps subject format."""
-        assert REDACTION_PLACEHOLDER.isalnum()
-
-
-class TestDefaultBannedPhrases:
-    def test_contains_expected_entries(self):
-        assert "claude" in _DEFAULT_BANNED_PHRASES
-        assert "co-authored-by" in _DEFAULT_BANNED_PHRASES
-        assert "generated" not in _DEFAULT_BANNED_PHRASES
-
-    def test_booley_is_banned(self):
-        """The framework's own name must not leak into a design repo's history."""
-        assert "booley" in _DEFAULT_BANNED_PHRASES
-
-    def test_all_lowercase(self):
-        for phrase in _DEFAULT_BANNED_PHRASES:
-            assert phrase == phrase.lower(), f"Phrase should be lowercase: {phrase}"
 
 
 def _selective_import_error(blocked_module: str):

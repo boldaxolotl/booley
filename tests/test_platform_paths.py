@@ -132,7 +132,7 @@ class TestCargoBin:
     def test_windows_msys2_fallback(self, mock_cargo, mock_which):
         mock_cargo.exists.return_value = True
         mock_cargo.__str__ = lambda self: "C:/msys64/mingw64/bin/cargo.exe"
-        assert "cargo" in cargo_bin().lower()
+        assert cargo_bin() == "C:/msys64/mingw64/bin/cargo.exe"
 
 
 # ---------------------------------------------------------------------------

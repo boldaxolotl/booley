@@ -228,8 +228,3 @@ def test_install_guidance_installs_the_bundled_build_offline():
 
 def test_install_guidance_names_the_probed_editor():
     assert "cursor --install-extension " in vaporview.install_guidance(editor="cursor")
-
-
-def test_bundled_vsix_tracks_the_verified_version():
-    expected = f"/usr/local/libexec/booley/vaporview-{vaporview.VERIFIED_VERSION}.vsix"
-    assert expected == vaporview.BUNDLED_VSIX

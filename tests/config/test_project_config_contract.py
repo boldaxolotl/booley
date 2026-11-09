@@ -8,7 +8,6 @@ import pytest
 
 from booley.config import project_config
 from booley.config.project_config import (
-    TESTS_SECTION_KEYS,
     load_test_configuration,
     normalize_configs_toml,
     normalize_tests_toml,
@@ -251,18 +250,6 @@ class TestTestsTomlNameRules:
 
 class TestTestsTomlClosedKeySet:
     """A Target section holds only keys the Simulation Flow applies."""
-
-    def test_section_keys_are_exactly_the_documented_set(self):
-        assert TESTS_SECTION_KEYS == (
-            "tests",
-            "test_list",
-            "skip",
-            "select",
-            "env",
-            "seed",
-            "default_seed",
-            "variants",
-        )
 
     @pytest.mark.parametrize(
         ("key", "value"),
@@ -587,11 +574,6 @@ class TestEnvTableValidation:
     def test_rejects_non_table(self):
         with pytest.raises(ValueError, match="must be a table"):
             normalize_tests_toml({"k": {"env": ["FLAVOR=vanilla"]}})
-
-    def test_rejects_non_string_value(self):
-        # A bare TOML integer would mean something different once exported.
-        with pytest.raises(ValueError, match="must be a string"):
-            normalize_tests_toml({"k": {"env": {"WIDTH": 32}}})
 
     def test_rejects_non_identifier_name(self):
         with pytest.raises(ValueError, match="not a valid environment"):

@@ -665,8 +665,20 @@ class TestTargetInterface:
             inspect_target(other, selected)
 
     def test_handle_has_no_public_dataclass_constructor(self) -> None:
-        with pytest.raises(TypeError):
-            TargetHandle()
+        # Every field supplied: only the missing factory key may reject it.
+        with pytest.raises(TypeError, match=r"created by TargetCatalog\.select\(\)"):
+            TargetHandle(
+                identity="acme:ip:alpha:1.0#sim",
+                selector="sim",
+                name="sim",
+                vlnv="acme:ip:alpha:1.0",
+                core_file=Path("alpha.core"),
+                flow="sim",
+                eda_tool="verilator",
+                drivable_by=("sim",),
+                project_root=Path("/project"),
+                doctor_private=False,
+            )
 
     def test_endpoint_selection_returns_exact_callable_selectors(self, project: Path):
         selected = select_targets(

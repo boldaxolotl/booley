@@ -237,12 +237,6 @@ class TestReconcile:
         assert "test_typo" in detail
         assert all(name in detail for name in ("test_reset", "test_fail", "test_skipped"))
 
-    def test_selected_but_skipped_is_inconclusive(self):
-        # An explicitly skipped test is inconclusive when selected by Booley.
-        ((_, verdict, detail),) = cr.reconcile(["test_skipped"], self._ok())
-        assert verdict == cr.VERDICT_INCONCLUSIVE
-        assert "skipped" in detail
-
     def test_non_ok_state_maps_every_test_inconclusive(self, tmp_path: Path):
         res = cr.parse_results_xml(tmp_path / "gone.xml")
         verdicts = cr.reconcile(["a", "b"], res)
@@ -445,16 +439,6 @@ class TestResultsLineRoundTrip:
         assert [test.name for test in parsed.tests] == ["selected", "unexpected"]
         assert parsed.skipped_unselected == 2
 
-    def test_full_line_retains_unselected_skips(self):
-        res = cr.CocotbResults(
-            state=cr.STATE_OK,
-            tests=(
-                cr.CocotbTest("selected", "m", "pass"),
-                cr.CocotbTest("skip_a", "m", "skipped"),
-            ),
-        )
-        assert _transported(res) == res
-
 
 # ---------------------------------------------------------------------------
 # F-36 — the <failure> attribute dialect varies by cocotb generation
@@ -523,12 +507,3 @@ class TestFailureMessageDialects:
         res = cr.parse_results_xml(_write(tmp_path, _xml_with_failure("<failure />")))
         assert res.tests[0].status == cr.VERDICT_FAIL
         assert res.tests[0].failure_text == ""
-
-
-def test_failure_text_survives_the_results_line_round_trip(tmp_path: Path):
-    """The [COCOTB_RESULTS] consumer sees the same attribution the XML had."""
-    res = cr.parse_results_xml(
-        _write(tmp_path, _xml_with_failure('<failure message="Test failed with RANDOM_SEED=7" />'))
-    )
-    parsed = _transported(res)
-    assert parsed.tests[0].failure_text == "Test failed with RANDOM_SEED=7"

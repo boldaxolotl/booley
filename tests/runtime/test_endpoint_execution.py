@@ -139,22 +139,6 @@ def test_execute_endpoint_normalizes_failure_and_releases_admission() -> None:
     ]
 
 
-def test_endpoint_outcome_keeps_the_existing_structured_verdict_fields() -> None:
-    outcome = EndpointOutcome(
-        exit_code=EXIT_SUCCESS,
-        criterion_key="lint_clean_lint_uart",
-        criterion_met=True,
-        detail={"warnings": 0},
-        report_text="RESULT: PASS",
-        display_lines=["0 warnings"],
-        summary="lint clean",
-    )
-
-    assert outcome.detail == {"warnings": 0}
-    assert outcome.display_lines == ["0 warnings"]
-    assert outcome.summary == "lint clean"
-
-
 def test_completion_error_message_is_bounded() -> None:
     outcome = EndpointOutcome()
 

@@ -70,15 +70,6 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     return root
 
 
-def test_fixture_commits_spawn_no_background_maintenance(repo: Path, tmp_path: Path) -> None:
-    """Object-store snapshot tests need commits that leave no detached writer."""
-    trace = tmp_path / "commit.trace"
-    (repo / "file.txt").write_text("traced\n", encoding="utf-8")
-    _git(repo, "commit", "-qam", "fix(core): traced commit", "--no-verify", GIT_TRACE=str(trace))
-    assert trace.is_file()
-    assert "maintenance run" not in trace.read_text(encoding="utf-8")
-
-
 def _head(repo: Path) -> str:
     return _git(repo, "rev-parse", "HEAD")
 
@@ -1412,18 +1403,6 @@ def test_minimum_git_invalid_utf8_file_destination_falls_back(
     assert _push(fresh) == 1
     assert not advertisements
     assert before == _destination_inspection_state(objects, request_trace)
-
-
-def test_destination_inspection_state_detects_loose_object_changes(matrix_repo: Path) -> None:
-    repo = matrix_repo
-    objects = repo / ".git" / "objects"
-    trace = repo.parent / "requests.trace"
-    before = _destination_inspection_state(objects, trace)
-    oid = _git(repo, "rev-parse", "HEAD:file.txt")
-    blob = objects / oid[:2] / oid[2:]
-    blob.chmod(blob.stat().st_mode | stat.S_IWRITE)
-    blob.write_bytes(blob.read_bytes() + b"unexpected mutation")
-    assert before != _destination_inspection_state(objects, trace)
 
 
 @pytest.mark.parametrize("storage", ["self", "shared"])

@@ -212,4 +212,3 @@ def test_resume_verbose_parser_to_request_is_output_only(tmp_path, dry_run):
     assert request.verbose is True
     assert request.dry_run is dry_run
     assert request.target == ""
-    assert SimRequest(target="sim").verbose is False

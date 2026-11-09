@@ -122,9 +122,6 @@ class TestRemoveShadowPackage:
         remove_shadow_package(tmp_path)
         assert (tmp_path / "booley").is_dir()
 
-    def test_noop_when_no_shadow(self, tmp_path):
-        remove_shadow_package(tmp_path)  # should not raise
-
     def test_handles_permission_error(self, tmp_path):
         shadow = tmp_path / "booley"
         shadow.mkdir()

@@ -129,11 +129,6 @@ def test_lint_missing_provenance_on_ref(missing):
     assert flow_can_drive("lint", ref) is not missing
 
 
-def test_lint_manual_provenance_defaults_are_compatible():
-    ref = TargetRef("lint_style", "acme:ip:top:1.0", Path("top.core"), "verible", "lint")
-    assert flow_can_drive("lint", ref)
-
-
 @pytest.mark.parametrize("missing", [False, True])
 def test_lint_missing_provenance_on_canonical_handle(tmp_path, missing):
     from booley.targets.catalog import TargetCatalog

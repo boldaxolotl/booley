@@ -811,7 +811,7 @@ def test_native_bwave_changes_require_the_owning_integration_job(
 
 
 def test_rename_classifies_both_old_and_new_paths(tmp_path: Path) -> None:
-    repo, base = _repository(tmp_path)
+    repo, _base = _repository(tmp_path)
     _write(repo, "docs/example.py")
     old_head = _commit(repo, "add old path")
     (repo / "src/booley").mkdir(parents=True)
@@ -824,7 +824,6 @@ def test_rename_classifies_both_old_and_new_paths(tmp_path: Path) -> None:
     assert outputs["python_source"] == "true"
     assert {"test", "package-artifacts"} <= _required(outputs)
     assert "bwave-smoke" not in _required(outputs)
-    assert base != head
 
 
 def test_deleted_python_test_still_requires_matrix_but_not_image(tmp_path: Path) -> None:

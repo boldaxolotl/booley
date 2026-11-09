@@ -19,7 +19,6 @@ class TestWriteRunLog:
         # filename must not drift.
         path = run_log.write_run_log(tmp_path, "hello\nworld\n")
         assert path == tmp_path / "run.log"
-        assert run_log.RUN_LOG_NAME == "run.log"
         assert path.read_text(encoding="utf-8") == "hello\nworld\n"
 
     def test_under_cap_written_verbatim(self, tmp_path):

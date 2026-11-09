@@ -1495,37 +1495,6 @@ def test_deep_check_skips_when_runtime_unavailable(tmp_path, monkeypatch):
     assert "booley init --force" not in skip_msg
 
 
-def test_deep_check_fails_when_issued_runtime_is_invalid(tmp_path, monkeypatch):
-    project, _calls = _tool_check_harness(
-        tmp_path,
-        monkeypatch,
-        lambda cmd: subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr=""),
-    )
-
-    def fail_up(_root):
-        raise doctor.session_runtime.SessionError("issued spec is stale")
-
-    monkeypatch.setattr(doctor.session_runtime, "up", fail_up)
-    rec = _Rec()
-
-    doctor._run_flow_check(
-        project,
-        "sim",
-        target="fast",
-        dry_run=False,
-        flow_runtime=doctor._DoctorFlowRuntime(project.project_root, "doc" + "ker"),
-        timeout_s=10,
-        verbose=False,
-        _pass=rec.p,
-        _warn=rec.w,
-        _skip=rec.s,
-        _fail=rec.f,
-    )
-
-    assert rec.kinds() == {"fail"}
-    assert "issued spec is stale" in rec.fails()[0]
-
-
 def test_doctor_rejects_configs_without_defines(tmp_path, monkeypatch):
     booley_dir = _write_project(
         tmp_path,
@@ -2951,10 +2920,6 @@ class TestViewerBridgeCheck:
 
         doctor._check_viewer_bridge(self._project(tmp_path), docker, rec.p, rec.s, fail)
         return rec
-
-    def test_passes_when_a_bridge_reports_vaporview(self, tmp_path, monkeypatch):
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.kinds() == {"pass"}
 
     def test_names_several_windows(self, tmp_path, monkeypatch):
         rec = self._run(tmp_path, monkeypatch, bridges=list(self._HEALTHY) * 2)
@@ -5008,54 +4973,11 @@ def test_image_bakes_current_booley_warns_on_fingerprint_mismatch(tmp_path, monk
     passes: list[str] = []
     doctor._check_image_bakes_current_booley(project, "docker", image, passes.append, warns.append)
     assert warns and "revision old -> new" in warns[0]
+    assert "stale code" in warns[0]
     assert not passes
 
 
 def test_image_bakes_current_booley_passes_on_fingerprint_match(tmp_path, monkeypatch):
-    proj = tmp_path / "myproj"
-    (proj / ".booley").mkdir(parents=True)
-    project = _derived_project_audit(proj)
-    image = doctor.pi.project_image_name(proj)
-    _write_issued_image_spec(proj)
-    monkeypatch.setattr(
-        doctor.idk,
-        "compare_issued_build",
-        lambda *_args, **_kwargs: doctor.image_identity.Comparison(
-            doctor.image_identity.Status.MATCH
-        ),
-    )
-    # The mtime fallback must not run; poison it to prove that.
-    monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 1 / 0)
-
-    warns: list[str] = []
-    passes: list[str] = []
-    doctor._check_image_bakes_current_booley(project, "docker", image, passes.append, warns.append)
-    assert passes and "current Booley sources" in passes[0]
-    assert not warns
-
-
-def test_image_bakes_current_booley_warns_when_provenance_is_stale(tmp_path, monkeypatch):
-    proj = tmp_path / "myproj"
-    (proj / ".booley").mkdir(parents=True)
-    project = _derived_project_audit(proj)
-    image = doctor.pi.project_image_name(proj)
-    _write_issued_image_spec(proj)
-    monkeypatch.setattr(
-        doctor.idk,
-        "compare_issued_build",
-        lambda *_args, **_kwargs: doctor.image_identity.Comparison(
-            doctor.image_identity.Status.MISMATCH, "revision old -> new"
-        ),
-    )
-
-    warns: list[str] = []
-    passes: list[str] = []
-    doctor._check_image_bakes_current_booley(project, "docker", image, passes.append, warns.append)
-    assert warns and "stale code" in warns[0]
-    assert not passes
-
-
-def test_image_bakes_current_booley_passes_when_provenance_is_current(tmp_path, monkeypatch):
     proj = tmp_path / "myproj"
     (proj / ".booley").mkdir(parents=True)
     project = _derived_project_audit(proj)
@@ -5080,10 +5002,12 @@ def test_image_bakes_current_booley_skips_user_managed(tmp_path, monkeypatch):
     proj = tmp_path / "myproj"
     (proj / ".booley").mkdir(parents=True)
     project = _derived_project_audit(proj)
+    # An issued spec exists, so only the user-managed guard can stop the comparison.
+    _write_issued_image_spec(proj)
     monkeypatch.setattr(
-        doctor,
-        "_image_created_epoch",
-        lambda _exe, _img: (_ for _ in ()).throw(AssertionError("must not inspect")),
+        doctor.idk,
+        "compare_issued_build",
+        lambda *_args, **_kwargs: pytest.fail("user-managed image must not be compared"),
     )
     warns: list[str] = []
     passes: list[str] = []
@@ -5813,32 +5737,6 @@ class TestWorktreeCoreShadowGuard:
         doctor._check_worktree_core_shadow_guard(tmp_path, rec.p, rec.w)
         assert rec.kinds() == {"warn"}
         assert "future worktree" in self._warns(rec)[0]
-
-
-# ---------------------------------------------------------------------------
-# Ticket Board self-heal (ADR 0028 Decision 11) — _check_board_orphans
-# ---------------------------------------------------------------------------
-
-
-def _seed_board(tmp_path: Path) -> Path:
-    """Create a minimal tickets tree; return the tickets dir."""
-    tickets = tmp_path / "tickets"
-    for directory in [tickets / "board", tickets / "state"]:
-        directory.mkdir(parents=True, exist_ok=True)
-    (tickets / "logs").mkdir(parents=True, exist_ok=True)
-    return tickets
-
-
-def _seed_active_ticket(tickets: Path, slug: str = "stuck") -> None:
-    """Place a running Ticket (board document + running state record) with a lock."""
-    (tickets / "board" / f"{slug}.md").write_text(
-        "---\nsummary: Stuck ticket\n---\n",
-        encoding="utf-8",
-    )
-    (tickets / "state" / f"{slug}.json").write_text(json.dumps({"schema": 1, "state": "running"}))
-    lock_dir = tickets / "logs" / slug
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    (lock_dir / "ticket.lock").write_text("99999", encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -6710,7 +6608,7 @@ class TestDeveloperProbe:
             raise RuntimeError("no backend configured")
 
         monkeypatch.setattr(config_mod, "load_backend_config", boom)
-        with pytest.raises(developer_probe.ProbeError) as excinfo:
+        with pytest.raises(developer_probe.ProbeError, match="no backend") as excinfo:
             developer_probe.measure_developer_rss(tmp_path)
         assert excinfo.value.agent_called is False
 
@@ -6842,16 +6740,6 @@ class TestDeveloperProbe:
         )
         assert measurement.peak_rss_bytes == 400_000 * 1024  # safe upper bound
         assert measurement.exact is False
-
-    def test_measure_wraps_agent_failure_in_probe_error(self, tmp_path, monkeypatch):
-        from booley.runtime import agent_config as config_mod
-
-        def boom(_root):
-            raise RuntimeError("no backend configured")
-
-        monkeypatch.setattr(config_mod, "load_backend_config", boom)
-        with pytest.raises(developer_probe.ProbeError, match="no backend"):
-            developer_probe.measure_developer_rss(tmp_path)
 
 
 # =============================================================

@@ -184,15 +184,6 @@ def test_gui_unknown_alias_errors(tmp_path, launched):
     assert launched == []
 
 
-def test_gui_bare_uses_session_default(tmp_path, launched):
-    trace = _make_trace(tmp_path)
-    _write_sessions({"_last": _make_entry(str(trace))})
-
-    _gui()
-
-    assert launched == [["code", str(trace.resolve())]]
-
-
 def test_gui_no_session_errors(launched):
     with pytest.raises(SystemExit) as exc:
         _gui()
@@ -292,9 +283,9 @@ def test_gui_legacy_bwave_gate_is_case_insensitive(tmp_path, launched, capsys):
     assert launched == []
 
 
-@pytest.mark.parametrize("suffix", [".fst", ".vcd"])
-def test_gui_fst_and_vcd_pass_through(tmp_path, launched, suffix):
-    trace = _make_trace(tmp_path, f"trace{suffix}")
+def test_gui_vcd_passes_through(tmp_path, launched):
+    # The .fst case is the default trace every bare-open test already uses.
+    trace = _make_trace(tmp_path, "trace.vcd")
     _write_sessions({"_last": _make_entry(str(trace))})
 
     _gui()
@@ -332,19 +323,6 @@ def _seed_default(tmp_path) -> Path:
     trace = _make_trace(tmp_path)
     _write_sessions({"_last": _make_entry(str(trace))})
     return trace
-
-
-def test_probe_uses_code_when_present(tmp_path, monkeypatch):
-    from booley.bwave import cli as bwave
-
-    trace = _seed_default(tmp_path)
-    calls = []
-    _probe_finds(monkeypatch, {"code"})
-    monkeypatch.setattr(bwave, "_launch_viewer", lambda c, t: calls.append([c, t]) or 0)
-
-    _gui()
-
-    assert calls == [["code", str(trace.resolve())]]
 
 
 def test_probe_falls_back_to_cursor(tmp_path, monkeypatch):

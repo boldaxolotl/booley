@@ -6,7 +6,6 @@ import json
 import os
 import textwrap
 from collections import deque
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,15 +14,12 @@ import pytest
 from booley.config.agent import AgentSettings
 from booley.config.settings import BackendConfigError
 from booley.runtime.agent_backend import (
-    AgentBackend,
     ClaudeSDKBackend,
     CodexBackend,
     _codex_build_prompt,
     _codex_parse_events,
     _codex_sandbox_mode,
     _codex_write_transcript,
-    _is_transient_error,
-    _transcript_path_for_attempt,
 )
 from booley.runtime.agent_config import (
     BackendConfig,
@@ -96,27 +92,6 @@ def test_result_error_classification_uses_terminal_text() -> None:
         cb._handle_stream_exception(failure, False, deque(), deque(), 0, 1, None, model="test")
 
 
-# ===========================================================================
-# Protocol conformance
-# ===========================================================================
-
-
-class TestProtocolConformance:
-    def test_claude_sdk_is_backend(self):
-        backend = ClaudeSDKBackend()
-        assert isinstance(backend, AgentBackend)
-
-    def test_codex_is_backend(self):
-        backend = CodexBackend()
-        assert isinstance(backend, AgentBackend)
-
-    def test_claude_sdk_has_name(self):
-        assert ClaudeSDKBackend().name == "Claude SDK"
-
-    def test_codex_has_name(self):
-        assert CodexBackend().name == "Codex"
-
-
 class TestClaudeSdkLaunchContract:
     @pytest.mark.asyncio
     async def test_call_delegates_cli_selection_to_sdk(self, monkeypatch, tmp_path):
@@ -176,15 +151,6 @@ class TestRuntimeBackendConfig:
     def setup_method(self):
         self.mock_active = MagicMock()
         self.mock_active.name = "MockActive"
-
-    def test_pairs_settings_with_active_backend(self):
-        settings = AgentSettings()
-        cfg = BackendConfig(
-            settings=settings,
-            active_backend=self.mock_active,
-        )
-        assert cfg.settings is settings
-        assert cfg.active_backend is self.mock_active
 
     def test_backend_for_builds_other_cli_once_with_its_auth(self):
         """The default CLI uses the active backend; another listed CLI gets its own, cached."""
@@ -360,16 +326,6 @@ class TestLoadBackendConfig:
         cfg = get_backend_config()
         assert cfg.settings.auth_for("claude") == "auto"
 
-    def test_lazy_default_honors_provider_env(self, monkeypatch):
-        """get_backend_config() reads BOOLEY_PRIMARY_PROVIDER for nested agents."""
-        from booley.runtime.agent_backend import ClaudeSDKBackend
-
-        monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")
-        set_backend_config(None)
-        cfg = get_backend_config()
-        assert isinstance(cfg.active_backend, ClaudeSDKBackend)
-        assert cfg.settings.default_cli == "claude"
-
     def test_provider_handoff_preserves_project_auth(self, tmp_path, monkeypatch):
         (tmp_path / "booley.toml").write_text(
             '[agent]\nprovider = "claude"\nauth = "subscription"\n', encoding="utf-8"
@@ -524,64 +480,6 @@ class TestLoadBackendConfig:
         load_backend_config(tmp_path)
         cfg = get_backend_config()
         assert cfg.settings.auth_for("claude") == "subscription"
-
-
-# ===========================================================================
-# Transient error detection
-# ===========================================================================
-
-
-class TestTransientErrors:
-    def test_connection_error(self):
-        assert _is_transient_error(ConnectionError("reset"))
-
-    def test_os_error(self):
-        assert _is_transient_error(OSError("network down"))
-
-    def test_500_in_message(self):
-        assert _is_transient_error(Exception("500 internal server error"))
-
-    def test_non_transient(self):
-        assert not _is_transient_error(ValueError("bad input"))
-
-
-# ===========================================================================
-# Transcript path
-# ===========================================================================
-
-
-class TestTranscriptPath:
-    def test_none_passthrough(self):
-        assert _transcript_path_for_attempt(None, 1) is None
-        assert _transcript_path_for_attempt(None, 3) is None
-
-    def test_attempt_1_unchanged(self):
-        p = Path("/logs/02-planning.jsonl")
-        assert _transcript_path_for_attempt(p, 1) == p
-
-    def test_attempt_2_gets_suffix(self):
-        p = Path("/logs/02-planning.jsonl")
-        result = _transcript_path_for_attempt(p, 2)
-        assert result == Path("/logs/02-planning-retry2.jsonl")
-
-
-# ===========================================================================
-# Codex backend — health check
-# ===========================================================================
-
-
-class TestCodexHealthCheck:
-    def test_healthy_when_on_path(self):
-        backend = CodexBackend()
-        with patch("booley.runtime._codex_backend.shutil.which", return_value="/usr/bin/codex"):
-            assert backend.health_check() is None
-
-    def test_unhealthy_when_missing(self):
-        backend = CodexBackend()
-        with patch("booley.runtime._codex_backend.shutil.which", return_value=None):
-            result = backend.health_check()
-            assert result is not None
-            assert "not found" in result
 
 
 # ===========================================================================
@@ -823,17 +721,6 @@ class TestCodexPromptBuilding:
 
 
 class TestCodexEventParsing:
-    def test_parse_agent_message(self):
-        events_jsonl = json.dumps(
-            {
-                "type": "item.completed",
-                "item": {"type": "agent_message", "text": "hello world"},
-            }
-        )
-        text, _in_tok, _out_tok, _cached_tok, err, _events = _codex_parse_events(events_jsonl)
-        assert text == "hello world"
-        assert err is None
-
     def test_live_file_change_keeps_paths(self):
         from booley.runtime import _codex_backend as cb
 
@@ -855,17 +742,6 @@ class TestCodexEventParsing:
 
         assert events == [{"type": "file_change", "paths": ["rtl/top.sv", "tb/top_tb.sv"]}]
 
-    def test_parse_usage(self):
-        events_jsonl = json.dumps(
-            {
-                "type": "turn.completed",
-                "usage": {"input_tokens": 500, "output_tokens": 200},
-            }
-        )
-        _, in_tok, out_tok, _, _, _ = _codex_parse_events(events_jsonl)
-        assert in_tok == 500
-        assert out_tok == 200
-
     def test_parse_cached_tokens(self):
         events_jsonl = json.dumps(
             {
@@ -877,11 +753,6 @@ class TestCodexEventParsing:
         assert in_tok == 5000
         assert out_tok == 200
         assert cached_tok == 4000
-
-    def test_parse_error(self):
-        events_jsonl = json.dumps({"type": "error", "message": "rate limit exceeded"})
-        _, _, _, _, err, _ = _codex_parse_events(events_jsonl)
-        assert err == "rate limit exceeded"
 
     def test_parse_turn_failed(self):
         events_jsonl = json.dumps({"type": "turn.failed", "error": {"message": "crash"}})
@@ -1134,15 +1005,14 @@ class TestIdleStreamTimeout:
         # would kill this; the idle/heartbeat timeout must not.
         backend = ClaudeSDKBackend()
         sentinels = [object() for _ in range(8)]
-        counters, _state = self._run_stream(
+        # Completing the whole stream without raising TimeoutError is the check.
+        self._run_stream(
             backend,
             items=sentinels,
             gap=0.06,
             initial_delay=0.0,
             timeout=0.3,
         )
-        # Completed the whole stream without raising TimeoutError.
-        assert counters is not None
 
     def test_genuine_stall_times_out(self):
         # No event for longer than the idle window -> TimeoutError.

@@ -41,13 +41,6 @@ class TestHeartbeat:
             assert hb._thread.is_alive()
         assert not hb._thread.is_alive()
 
-    def test_stop_idempotent(self):
-        """Calling stop() twice should not raise."""
-        hb = Heartbeat("test", render=MagicMock(), interval=1)
-        hb.start()
-        hb.stop()
-        hb.stop()  # second call should be fine
-
     def test_heartbeat_fires(self):
         """Heartbeat should call _heartbeat_line after the interval."""
         fired = threading.Event()

@@ -98,12 +98,6 @@ class TestExtraRtlParsing:
         args = _build_parser().parse_args(["configure", "-t", "top"])
         assert args.frontend == "sv2v"
 
-    def test_frontend_slang_parses(self):
-        from booley.flows.synth.backends.configure import _build_parser
-
-        args = _build_parser().parse_args(["configure", "-t", "top", "--frontend", "slang"])
-        assert args.frontend == "slang"
-
     def test_slang_option_joined_form_carries_flag_valued_token(self):
         """`--slang-option=--single-unit` parses and accumulates.
 
@@ -205,13 +199,6 @@ class TestTimingArgs:
         )
         with pytest.raises(SystemExit, match="mutually exclusive"):
             _resolve_ppa_settings(args)
-
-    @pytest.mark.parametrize("mode", ["physical", "logical"])
-    def test_synth_mode_parses(self, mode):
-        from booley.flows.synth.backends.configure import _build_parser
-
-        args = _build_parser().parse_args(["configure", "-t", "top", "--synth-mode", mode])
-        assert args.synth_mode == mode
 
     def test_utilization_and_no_repair_timing(self):
         from booley.flows.synth.backends.configure import _build_parser
