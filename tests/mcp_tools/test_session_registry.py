@@ -1087,10 +1087,10 @@ async def test_boundary_lookup_without_a_peer_is_retried_by_the_observer(
     monkeypatch.setattr(observer, "_registry", lambda: registry)
     request = Request({"type": "http", "server": ("127.0.0.1", 8080), "headers": []})
     facts = await observer.attribution(
-        {},
+        {"work_dir": str(tmp_path)},
         {},
         "claude-code",
         request=request,
-        caller=CallerCheckout(None, tmp_path),
+        caller=CallerCheckout(None, None),
     )
     assert facts is not None and facts.kind == "process"
