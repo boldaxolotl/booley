@@ -605,9 +605,7 @@ def _coverage_changes(
     """Bind nested Coverage Campaign evaluation into the joint transaction."""
     if outcome.coverage_reference is None:
         return []
-    public_path = outcome.manifest_path.parents[1] / "coverage.json"
-    resolved = _resolve_facts_coverage(outcome, public_path)
-    campaign = resolved.loaded.campaign
+    public_path, resolved = _public_coverage(outcome)
     name = str(target["name"])
     identity = f"{target['vlnv']}#{name}"
     selector = str(target["selector"])
@@ -623,9 +621,8 @@ def _coverage_changes(
     ]
     if not keys:
         return []
-    detail = _coverage_detail(outcome, resolved, public_path)
-    detail["test_runs"] = rows.of(outcome.observations)
-    evaluation = campaign.evaluation
+    detail = _coverage_detail(outcome, resolved, public_path, rows)
+    evaluation = resolved.loaded.campaign.evaluation
     changes: list[CriterionChange] = []
     for key in keys:
         met, projected_detail = project_coverage_criterion(
@@ -642,6 +639,12 @@ def _coverage_changes(
             )
         )
     return changes
+
+
+def _public_coverage(outcome: CampaignOutcome) -> tuple[Path, ResolvedCoverageCampaign]:
+    """The campaign's public ``coverage.json`` and its authenticated resolution."""
+    public_path = outcome.manifest_path.parents[1] / "coverage.json"
+    return public_path, _resolve_facts_coverage(outcome, public_path)
 
 
 def _resolve_facts_coverage(
@@ -678,6 +681,7 @@ def _coverage_detail(
     outcome: CampaignOutcome,
     resolved: ResolvedCoverageCampaign,
     public_path: Path,
+    rows: _TestRunRows,
 ) -> dict[str, object]:
     campaign = resolved.loaded.campaign
     raw = encode_coverage_campaign_reference(resolved.reference)
@@ -695,6 +699,7 @@ def _coverage_detail(
         },
         "evaluation": coverage_mapping_document(campaign.evaluation),
         "criterion_fingerprint": campaign.evaluation.get("criterion_fingerprint"),
+        "test_runs": rows.of(outcome.observations),
     }
 
 
@@ -966,7 +971,7 @@ def _goal_changes(
         if goal.kind == "cycle_count" and goal.measured_by(ran):
             measured = _goal_cycle_change(outcome, shadow, goal, matched, cycle, rows)
         elif goal.kind == "coverage" and goal.measured_by(ran) and outcome.complete:
-            measured = _goal_coverage_change(outcome, shadow, target, goal, rows)
+            measured = _goal_coverage_change(outcome, shadow, goal, rows)
         if not measured:
             detail = {**_goal_simulation_detail(outcome, matched), **goal.outcomes_detail(matched)}
             measured = shadow.set_criterion(goal.key, goal.own_verdict(matched), detail=detail)
@@ -1023,23 +1028,29 @@ def _goal_cycle_change(
 def _goal_coverage_change(
     outcome: CampaignOutcome,
     shadow: DevelopmentState,
-    target: Mapping[str, object],
     goal: GoalTestRuns,
     rows: _TestRunRows,
 ) -> list[CriterionChange]:
-    """Judge a coverage Goal from a coverage campaign that ran exactly its frozen Test Runs.
+    """The one projection of a coverage evaluation onto a Goal's Criterion.
 
-    Coverage is merged over the campaign's Test Runs, so only such a campaign
-    measured the Goal's coverage; it is never merged across campaigns.
+    Judge a coverage Goal from a coverage campaign that ran exactly its frozen
+    Test Runs. Coverage is merged over the campaign's Test Runs, so only such a
+    campaign measured the Goal's coverage; it is never merged across campaigns.
     Nothing when the campaign collected no coverage.
+
+    The judged key is the Goal's own, however its Target was written: the Goal
+    is already bound to this Target. It is never projected atomically: in Goal
+    Mode it is its Target's only Coverage Criterion, so the evaluation's status
+    is its verdict for one metric or several. Only this Goal's Criterion changes.
     """
     if outcome.coverage_reference is None:
         return []
-    return [
-        change
-        for change in _coverage_changes(outcome, shadow, target, rows)
-        if change.key == goal.key
-    ]
+    public_path, resolved = _public_coverage(outcome)
+    detail = _coverage_detail(outcome, resolved, public_path, rows)
+    met, projected_detail = project_coverage_criterion(
+        shadow.criteria[goal.key], resolved.loaded.campaign.evaluation, detail, atomic=False
+    )
+    return shadow.set_criterion(goal.key, met, detail=projected_detail)
 
 
 def retain_partial_campaign_acceptance(
