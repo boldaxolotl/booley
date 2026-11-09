@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import json
-import os
 import stat
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from booley.runtime import devcontainer
 from booley.runtime import session_issuance as runtime_spec
-from booley.runtime.filesystem_utils import replace_file, unlink_file
+from booley.runtime.atomic_files import atomic_replace_bytes, durable_unlink
 
 
 @dataclass(frozen=True)
@@ -57,36 +55,10 @@ def capture_session_spec(project_root: Path) -> SessionSpecSnapshot:
 def _restore_snapshot_file(path: Path, content: bytes | None, mode: int) -> None:
     if path.is_symlink() or path.parent.is_symlink():
         raise OSError(f"recovery path must not be a symlink: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
     if content is None:
-        unlink_file(path, missing_ok=True)
-        _fsync_snapshot_directory(path.parent)
+        durable_unlink(path)
         return
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temp_path = Path(temporary)
-    try:
-        if os.name != "nt":
-            os.fchmod(descriptor, mode)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        replace_file(temp_path, path)
-        if os.name == "nt":
-            path.chmod(mode)
-        _fsync_snapshot_directory(path.parent)
-    finally:
-        temp_path.unlink(missing_ok=True)
-
-
-def _fsync_snapshot_directory(path: Path) -> None:
-    if os.name == "nt":
-        return
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    atomic_replace_bytes(path, content, mode=mode)
 
 
 def restore_session_spec(project_root: Path, snapshot: SessionSpecSnapshot) -> None:

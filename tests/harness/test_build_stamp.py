@@ -153,6 +153,40 @@ class TestWriteBuildStamp:
         assert namespace["OFFICIAL_RELEASE"] is False
         assert namespace["DEVELOPMENT_CONTEXT_SHA256"] == ""
 
+    def test_fingerprints_of_fixed_tree_are_pinned(self, tmp_path: Path):
+        """Fingerprints are persisted in image labels and stamps (ADR 0053).
+
+        The literal digests below were computed before the tree digest was
+        shared; changing them invalidates every previously built image.
+        """
+        root = tmp_path / "tree"
+        included = {
+            "src/booley/a.py": b"a = 1\n",
+            "src/booley/sub/b.py": b"b = 2\n",
+            "crates/bwave/src/lib.rs": b"fn f() {}\n",
+            "crates/bwave/Cargo.toml": b"[package]\n",
+            "crates/bwave/Cargo.lock": b"# lock\n",
+            ".dockerignore": b"*\n",
+            "pyproject.toml": b"[project]\n",
+            "VERSION": b"1.2.3\n",
+        }
+        excluded = {
+            "src/booley/_build_commit.py": b"COMMIT = 'x'\n",
+            "src/booley/data/development-build-context.tar.gz": b"context",
+            "src/booley/__pycache__/a.cpython-312.pyc": b"bytecode",
+        }
+        for relative, content in {**included, **excluded}.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+
+        assert resolve_payload_fingerprint(root) == (
+            "f2a226a15bc5592aad050afb92e2a3ac8351088149e76145216bd57794baebb0"
+        )
+        assert resolve_wheel_source_fingerprint(root) == (
+            "3bbed8cb3913688c0d6b735900f7128dc4be9ed927534aa45df11195b76c36b5"
+        )
+
     @staticmethod
     def _commit_at(repo: Path, committed_at: str) -> None:
         """Add a commit whose committer date is pinned to *committed_at*."""
@@ -280,6 +314,28 @@ class TestWriteBuildStamp:
                 archive.writestr("booley/_build_commit.py", body)
         with pytest.raises(ValueError):
             wheel_embedded_source_fingerprint(wheel)
+
+    def test_stamp_constants_reads_literals_and_first_assignment_wins(self):
+        source = "A = 'one'\nA = 'two'\nB, C = 1, 2\nD = 3\nE: int = 4\n"
+
+        assert build_stamp_module.stamp_constants(source, {"A", "B", "D", "MISSING"}) == {
+            "A": "one",
+            "D": 3,
+        }
+
+    @pytest.mark.parametrize("source", ["A = (\n", "A = 'a' * 64\n"])
+    def test_stamp_constants_rejects_unparseable_or_non_literal_source(self, source: str):
+        with pytest.raises(ValueError):
+            build_stamp_module.stamp_constants(source, {"A"})
+
+    @pytest.mark.parametrize("body", ["COMMIT = (\n", "COMMIT = 3\n", "OTHER = 'x'\n"])
+    def test_rejects_invalid_wheel_commit(self, tmp_path: Path, body: str):
+        wheel = tmp_path / "invalid.whl"
+        with zipfile.ZipFile(wheel, "w") as archive:
+            archive.writestr("booley/_build_commit.py", body)
+
+        with pytest.raises(ValueError, match="wheel build"):
+            build_stamp_module.wheel_embedded_commit(wheel)
 
     def test_embedded_wheel_source_fingerprint_fails_closed(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "booley._build_commit", types.ModuleType("stamp"))
@@ -535,6 +591,14 @@ class TestInitStampsItsWheel:
         assert init_docker_image._docker_build_wheel(InitContext(), repo, preserve_stamp=True)
         assert seen == ["COMMIT = 'embedded'\n"]
         assert stamp_path(repo).is_file()
+
+    @pytest.mark.parametrize("body", ["COMMIT = (\n", "COMMIT = 'a' + 'b'\n"])
+    def test_unparseable_verified_stamp_fails_the_wheel_build(self, repo: Path, body: str):
+        stamp_path(repo).write_text(body, encoding="utf-8")
+        ctx = InitContext()
+
+        assert not init_docker_image._docker_build_wheel(ctx, repo, preserve_stamp=True)
+        assert ctx.results[-1].detail == "wheel build failed"
 
     def test_verified_stamp_is_required_for_embedded_context(self, repo: Path):
         ctx = InitContext()
