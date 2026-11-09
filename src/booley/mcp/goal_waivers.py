@@ -7,7 +7,6 @@ Journal enters this immediate, recoverable live-promotion lifecycle.
 
 from __future__ import annotations
 
-import hashlib
 import tempfile
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
@@ -21,6 +20,7 @@ from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.criteria.state import CriterionEntry, DevelopmentState
 from booley.flows.sim import waiver_candidates as candidates
 from booley.flows.sim.coverage_campaign import DurableTargetIdentity, encode_coverage_campaign
+from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.coverage_policy import (
     CoverageThreshold,
 )
@@ -189,7 +189,7 @@ class GoalWaiverService:
                 "candidate was replaced or belongs to another Campaign/point store"
             )
         source = self.root / item.proposal.source
-        source_digest = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+        source_digest = content_digest(source.read_bytes())
         verdict = evaluate_provisional_coverage(
             resolved.loaded.campaign,
             criterion_from_evaluation(resolved.loaded.campaign),
