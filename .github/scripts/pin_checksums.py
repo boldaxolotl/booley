@@ -12,25 +12,25 @@ rules; OpenROAD values are manual by decision.
     python3 .github/scripts/pin_checksums.py [DATA_FILE] [--root CHECKOUT]
 
 ``DATA_FILE`` is the update description Renovate writes for a post-upgrade
-command, ``{"upgrades": [{"depName": "zachjs/sv2v", "packageFile": "src/booley/
-data/docker/Dockerfile.base", "newValue": "v0.0.13"}]}``. Without the argument the
+command, ``{"upgrades": [{"depName": "zachjs/sv2v", "newValue": "v0.0.13",
+"packageFile": "src/booley/data/docker/Dockerfile.base"}]}``. Without the argument the
 path comes from ``RENOVATE_POST_UPGRADE_COMMAND_DATA_FILE``, where Renovate puts
 it (see ``renovate_data_file.py``). Renovate renders no ``upgrades`` array in its
 default ``executionMode: "update"``; ``.github/renovate.json`` uses
 ``executionMode: "branch"`` and a ``dataFileTemplate`` with triple braces (double
 braces HTML-escape).
 
-Pins are known by depName, as the Dockerfile annotations and Renovate's copy
-managers spell it: a GitHub repository (release assets), an Open VSX extension
-(``<namespace>/<name>``, VSIX files) or ``node``. Only the canonical upgrade of
-a pin is acted on, the one whose ``packageFile`` holds the pin's version: its
-literal copies (docs, contract probes, source constants) arrive as further
-upgrades of the same name, possibly with another version spelling, and are
-skipped with the unknown names and the nameless lock-file maintenance. The files
-must already carry the new version (Renovate applied the bump). Exit 0: done, or nothing to do. Exit 1: a download failed, a companion
-value is missing, or upstream metadata disagrees with the artifact; files are
-written only after every upgrade succeeded. Exit 2: unusable data file. A
-digest-only pin renders an empty ``newValue``: that is fine for an unknown pin.
+Pins are known by depName: a GitHub repository (release assets), an Open VSX
+extension (``<namespace>/<name>``, VSIX files) or ``node``. Only the canonical
+upgrade, whose ``packageFile`` holds the pin's version, is acted on: literal
+copies of the pin arrive as further upgrades of the same name and are skipped, as
+are unknown names. The files must already carry the new version (Renovate applied
+the bump).
+
+Exit 0: done, or nothing to do. Exit 1: a download failed, a companion value is
+missing, or upstream metadata disagrees with the artifact; files are written only
+after every upgrade succeeded. Exit 2: unusable data file. A digest-only pin
+renders an empty ``newValue``: that is fine for an unknown pin.
 
 The URL is read from the build's own download line, so the script hashes what
 the build downloads. It fetches only from the hosts each pin already uses plus

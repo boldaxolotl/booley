@@ -53,12 +53,14 @@ def load_upgrades(path: Path) -> list[Upgrade]:
         raise ValueError(f"{path}: no 'upgrades' list (Renovate needs executionMode 'branch')")
     upgrades: list[Upgrade] = []
     for entry in entries:
-        fields = (
-            [entry.get("depName"), entry.get("newValue"), entry.get("packageFile")]
-            if isinstance(entry, dict)
-            else []
-        )
-        if len(fields) != 3 or not all(isinstance(field, str) for field in fields):
+        dep_name = entry.get("depName") if isinstance(entry, dict) else None
+        new_value = entry.get("newValue") if isinstance(entry, dict) else None
+        package_file = entry.get("packageFile") if isinstance(entry, dict) else None
+        if not (
+            isinstance(dep_name, str)
+            and isinstance(new_value, str)
+            and isinstance(package_file, str)
+        ):
             raise ValueError(f"{path}: every upgrade needs a depName, newValue and packageFile")
-        upgrades.append(Upgrade(*fields))
+        upgrades.append(Upgrade(dep_name, new_value, package_file))
     return upgrades

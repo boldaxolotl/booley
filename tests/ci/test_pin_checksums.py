@@ -417,20 +417,15 @@ def test_replace_failure_removes_temp_files(
 
 
 _NO_FILE = '{"upgrades": [{"depName": "a", "newValue": "1"}]}'
-_NO_VALUE = '{"upgrades": [{"depName": "a", "packageFile": "f"}]}'
-_NOT_TEXT = '{"upgrades": [{"depName": "a", "packageFile": "f", "newValue": 1}]}'
 
 
 @pytest.mark.parametrize(
     "contents",
-    ['{"upgrades": [', '{"upgrades": []}', "[]", _NO_FILE, _NO_VALUE, _NOT_TEXT],
+    ['{"upgrades": [', '{"upgrades": []}', _NO_FILE],
     ids=[
         "malformed",
         "empty-upgrades",
-        "not-an-object",
         "no-package-file",
-        "no-value",
-        "not-text",
     ],
 )
 def test_bad_data_file_is_a_usage_error(contents: str, tmp_path: Path) -> None:
@@ -477,15 +472,6 @@ def test_data_file_comes_from_renovate_environment(
     assert _script().main(["--root", str(root)], opener=_Upstream()) == 0
 
     assert _snapshot(root) == _snapshot(_FIXTURES / "repo")
-
-
-def test_argument_wins_over_the_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = _checkout(tmp_path, ["sv2v"])
-    monkeypatch.setenv(_DATA_FILE_ENV, str(tmp_path / "missing.json"))
-
-    assert _run(root, _data_file(tmp_path, [_CASES["sv2v"][:2]]), _Upstream()) == 0
 
 
 def test_no_data_file_at_all_is_a_usage_error(

@@ -3,8 +3,9 @@ name: Renovate
 # Self-hosted Renovate (tracker #2551). It runs from the default branch only:
 # the `renovate` Environment deploys from main, so the GitHub App key never
 # reaches pull-request code. There is deliberately no pull_request trigger:
-# Renovate reads the repository through the API. The one checkout is this
-# default-branch commit, mounted read-only for the post-upgrade scripts (#2999).
+# Renovate clones the repository itself, and its post-upgrade commands run in that
+# clone. The one checkout here is this default-branch commit, mounted read-only for
+# the post-upgrade scripts (#2999).
 on:
   schedule:
     # Every 4 hours. Group schedules in .github/renovate.json are whole days.
