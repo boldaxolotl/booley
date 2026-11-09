@@ -96,6 +96,11 @@ def test_owned_process_group_primitives_stay_in_runtime_module() -> None:
         # A Specialist terminates its own inherited group, not an owned child.
         _SOURCE_ROOT / "specialists" / "specialist.py",
     }
+    # `booley chat` job control (ADR 0082): relays tty job control to the forked
+    # agent's group and its own job, and forwards termination requests to the
+    # agent's group; Booley-initiated termination (request, force, grace) stays
+    # in `process_group.py`. Exempt from the `os.killpg` check only.
+    allowed_job_control_signals = {_SOURCE_ROOT / "runtime" / "foreground_child.py"}
     allowed_detached_spawns = allowed_calls | {
         # One-shot record cleanup outlives its caller; no child group is owned or terminated.
         _SOURCE_ROOT / "goals" / "ended_records.py",
@@ -108,7 +113,9 @@ def test_owned_process_group_primitives_stay_in_runtime_module() -> None:
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 name = _qualified_name(node.func)
-                if path not in allowed_calls and name in {"os.getpgid", "os.killpg"}:
+                if path not in allowed_calls and name == "os.getpgid":
+                    offenders.append(_relative(path, node.lineno))
+                if path not in allowed_calls | allowed_job_control_signals and name == "os.killpg":
                     offenders.append(_relative(path, node.lineno))
                 if path not in allowed_detached_spawns and any(
                     keyword.arg == "start_new_session" for keyword in node.keywords
