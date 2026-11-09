@@ -61,7 +61,9 @@ def process_checkout(
 ) -> Path | None:
     """The process's cwd when it is a routable linked-worktree root, else ``None``."""
     try:
-        cwd = (proc_root / str(process.pid) / "cwd").readlink()
+        # resolve() normalizes the link target (e.g. strips a Windows ``\\?\`` prefix) so
+        # the result compares equal to ordinary paths.
+        cwd = (proc_root / str(process.pid) / "cwd").readlink().resolve()
     except OSError:
         return None  # Exited or unreadable process entry.
     server, caller = git_checkout_metadata(server_cwd), git_checkout_metadata(cwd)

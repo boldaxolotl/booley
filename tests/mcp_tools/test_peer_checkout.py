@@ -201,7 +201,9 @@ def test_caller_checkout_falls_back_to_the_server_cwd_on_unreadable_state(
     none = peer_checkout.CallerCheckout(None, None)
     assert peer_checkout.caller_checkout(None, client_name="x", metadata={}) == none
     # A malformed Git marker is unreadable metadata, not a reason to fail the call.
-    (repos.main_wt / ".git").write_text("not a pointer\n")
+    marker = repos.main_wt / ".git"
+    marker.unlink()  # Git may mark the file hidden on Windows, which forbids truncating it.
+    marker.write_text("not a pointer\n")
     result = peer_checkout.caller_checkout(
         request, client_name="claude-code", metadata={}, proc_root=proc
     )
