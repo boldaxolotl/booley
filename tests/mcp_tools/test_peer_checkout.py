@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -417,6 +418,53 @@ async def test_flow_call_without_work_dir_runs_on_the_callers_worktree(
     # A main-checkout caller is the server cwd: no checkout is named.
     assert "--work-dir" not in commands[1]
     assert commands[2][-2:] == ["--work-dir", str(repos.other_wt)]
+
+
+@pytest.mark.asyncio
+async def test_routed_and_explicit_calls_stamp_the_worktree_last_used(
+    tmp_path: Path, repos: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    common = repos.main / ".booley"
+    interactive = common / "worktrees" / "wt"
+    git(repos.main, "worktree", "add", "-q", "-b", "wt-branch", str(interactive))
+    monkeypatch.setenv("BOOLEY_DIR", str(common))
+    stamp = common / "worktrees" / ".last-used" / "wt"
+    monkeypatch.setattr(server, "_run_inline_endpoint", AsyncMock(return_value=(0, "", "", False)))
+    application = server._build_mcp_application(
+        [LINT_DEFINITION], [], server._McpLifetime(None, None)
+    )
+    proc = fake_proc(
+        tmp_path / "proc",
+        {50001: (200, interactive.resolve()), 50002: (201, repos.main), 50003: (202, repos.other)},
+    )
+
+    def age_stamp() -> None:
+        """Set the stamp's mtime far in the past, creating it if absent."""
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+        os.utime(stamp, (1, 1))
+
+    # Observations are read inside the transport block and asserted outside it, so a
+    # failed assertion is not wrapped in the SDK's TaskGroup exception.
+    async with sdk_calls(application, None, proc, monkeypatch) as call:
+        # A caller outside every interactive worktree stamps nothing.
+        await call(50002, "lint", {})
+        stamped_by_main_caller = stamp.exists()
+        # Routed call without work_dir.
+        await call(50001, "lint", {})
+        stamped_by_routed_call = stamp.is_file()
+        # A routed poll (schema without work_dir) stamps through the caller's checkout.
+        age_stamp()
+        await call(50001, "booley_poll", {"wait_seconds": 0})
+        routed_poll_mtime = stamp.stat().st_mtime
+        # An explicit work_dir stamps the worktree it names, whoever the caller is.
+        age_stamp()
+        await call(50003, "lint", {"work_dir": str(interactive)})
+        explicit_mtime = stamp.stat().st_mtime
+    assert not stamped_by_main_caller
+    assert stamped_by_routed_call
+    assert routed_poll_mtime > 1
+    assert explicit_mtime > 1
 
 
 @pytest.mark.asyncio
