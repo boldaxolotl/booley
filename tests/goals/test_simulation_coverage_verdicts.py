@@ -1,11 +1,13 @@
 """Goal recording keeps simulation truth independent of coverage evaluation."""
 
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from booley.criteria.state import DevelopmentState
+from booley.flows.campaign_results import StartedCampaign
 from booley.flows.frozen_test_runs import OUTCOMES_ONLY_DETAIL_KEY
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
@@ -176,6 +178,18 @@ def test_an_ordinary_run_never_changes_a_measured_coverage_verdict(layout, monke
     assert set(_shown(after).values()) == {"passed"}  # the measuring campaign's outcomes
 
 
+def _registered_coverage_campaign(target_root: Path, names: tuple[str, ...]) -> StartedCampaign:
+    """The registration an earlier run left for a Coverage Campaign collected on its own.
+
+    The campaign is known by where it will be published: its id and digest hash
+    that path. Spelled out here so the reader is checked against the registration
+    contract, not against its own helper.
+    """
+    document = target_root / "coverage.json"
+    digest = hashlib.sha256(document.resolve().as_posix().encode("utf-8")).hexdigest()
+    return StartedCampaign(document, f"coverage-{digest[:32]}", f"sha256:{digest}", names, True)
+
+
 def test_a_published_coverage_campaign_whose_acceptance_never_ran_is_accounted_for(
     layout, monkeypatch
 ):
@@ -187,10 +201,7 @@ def test_a_published_coverage_campaign_whose_acceptance_never_ran_is_accounted_f
         prepare_coverage_invocation,
     )
     from booley.flows.sim.coverage_transaction import run_coverage_target
-    from booley.flows.sim.unpublished_results import (
-        read_unpublished_results,
-        started_coverage_campaign,
-    )
+    from booley.flows.sim.unpublished_results import read_unpublished_results
     from booley.flows.test_runs import build_test_run
     from booley.goals.campaign_accounting import account_for_campaigns
     from booley.goals.recorder import GoalEvidenceRecorder
@@ -217,7 +228,7 @@ def test_a_published_coverage_campaign_whose_acceptance_never_ran_is_accounted_f
     frozen = record.test_run_resolutions["sim_pass_top"].test_runs
     assert [run.name for run in frozen] == ["reset@1", "wrap@1"]
     invocation = root / "reports" / "sim" / "1"
-    started = started_coverage_campaign(invocation / "targets" / "top", ("top",))
+    started = _registered_coverage_campaign(invocation / "targets" / "top", ("top",))
     GoalEvidenceRecorder(bind(layout, "killed")).register_campaign(started)
 
     prepared = prepare_coverage_invocation(CoverageInvocationRequest(("top",)), context)
@@ -242,13 +253,9 @@ def test_a_published_coverage_campaign_whose_acceptance_never_ran_is_accounted_f
 
 
 def test_unpublished_coverage_results_before_publication_and_of_another_campaign(tmp_path):
-    from booley.flows.sim.unpublished_results import (
-        read_unpublished_results,
-        started_coverage_campaign,
-    )
+    from booley.flows.sim.unpublished_results import read_unpublished_results
 
-    started = started_coverage_campaign(tmp_path / "targets" / "top", ("top", "lib#top"))
-    assert started.candidate and started.manifest_path.name == "coverage.json"
+    started = _registered_coverage_campaign(tmp_path / "targets" / "top", ("top", "lib#top"))
     # Collection has not published yet: no result, and more may come.
     nothing = read_unpublished_results(started.manifest_path, started.manifest_sha256)
     assert (nothing.results, nothing.rows, nothing.complete) == ((), (), False)
