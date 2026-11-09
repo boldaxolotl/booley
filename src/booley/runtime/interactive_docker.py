@@ -122,31 +122,37 @@ def image_exists(name: str, *, executable: str = "docker", timeout: int = 15) ->
         return False
 
 
-def image_id(name: str) -> str | None:
-    """Return an image's immutable Docker ID, or ``None`` on inspect failure."""
-    try:
-        result = _run_docker(["image", "inspect", name, "--format", "{{.Id}}"], timeout=15)
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return None
-    value = result.stdout.strip()
-    return value if result.returncode == 0 and value else None
+class ImageInspectError(RuntimeError):
+    """Docker could not say whether an image exists (as opposed to it being absent)."""
 
 
-def image_id_strict(name: str) -> str | None:
-    """Return an exact image ID while distinguishing absence from inspection failure."""
+def image_id(reference: str) -> str | None:
+    """Return an image's immutable Docker ID, or ``None`` when the image does not exist.
+
+    The one image-ID lookup for Booley's runtime and harness. Only Docker's own
+    "no such image" answer means absent; a missing or non-executable CLI, an
+    unreachable daemon, a timeout, any other non-zero exit, and an empty answer
+    raise :class:`ImageInspectError` naming *reference* and the cause.
+    """
     try:
-        result = _run_docker(["image", "inspect", name, "--format", "{{.Id}}"], timeout=15)
-    except (subprocess.SubprocessError, FileNotFoundError) as exc:
-        raise RuntimeError(f"cannot inspect issued Sandbox Image keeper: {exc}") from exc
+        result = _run_docker(
+            ["image", "inspect", reference, "--format", "{{.Id}}"], timeout=_DOCKER_TIMEOUT
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ImageInspectError(f"cannot inspect Docker image {reference!r}: {exc}") from exc
     value = result.stdout.strip()
-    if result.returncode == 0 and value:
-        return value
+    if result.returncode == 0:
+        if value:
+            return value
+        raise ImageInspectError(
+            f"cannot inspect Docker image {reference!r}: Docker returned no image ID"
+        )
     detail = result.stderr.strip() or result.stdout.strip()
     if re.search(r"\bno such (?:image|object)\b", detail, re.IGNORECASE):
         return None
-    raise RuntimeError(
-        "cannot inspect issued Sandbox Image keeper: "
-        + (detail or "docker image inspect returned no image ID")
+    raise ImageInspectError(
+        f"cannot inspect Docker image {reference!r}: "
+        + (detail or f"Docker exited {result.returncode}")
     )
 
 
@@ -277,23 +283,6 @@ def remove_image_tag(target: str) -> None:
     )
 
 
-def issued_image_tags() -> list[str]:
-    """Return Booley issuance-keeper tags visible to the local Docker daemon."""
-    try:
-        result = _run_docker(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"], timeout=30)
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return []
-    if result.returncode != 0:
-        return []
-    return sorted(
-        {
-            line.strip()
-            for line in result.stdout.splitlines()
-            if _ISSUED_IMAGE_RE.fullmatch(line.strip())
-        }
-    )
-
-
 def strict_docker(
     args: list[str],
     *,
@@ -320,7 +309,7 @@ def validated_image_id(value: str) -> str:
     return value
 
 
-def issued_image_tags_strict() -> tuple[str, ...]:
+def issued_image_tags() -> tuple[str, ...]:
     """List exact keeper tags, raising when the daemon observation is incomplete."""
     output = strict_docker(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])
     tags = set()
