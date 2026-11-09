@@ -500,31 +500,6 @@ def test_all_campaigns_survive_terminal_progress_failure(
     assert pending == []
 
 
-def test_legacy_result_survives_terminal_progress_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    flow = SimulateFlow()
-    flow._reserved_invocation_dir = tmp_path
-    monkeypatch.setattr(flow, "_prepare_legacy_run", lambda *_args: (["PASS"], True))
-    monkeypatch.setattr(
-        flow,
-        "_legacy_endpoint_outcome",
-        lambda *_args: EndpointOutcome(detail={"targets": {"first": {"simulation": "pass"}}}),
-    )
-    monkeypatch.setattr(
-        flow,
-        "_write_progress_report",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("progress unavailable")),
-    )
-
-    result = flow._run_legacy_selected_mode(["first"], {}, 0.0, 0.0)
-
-    assert result.exit_code == 2
-    assert result.detail["targets"] == {"first": {"simulation": "pass"}}
-    assert result.detail["completion_error"]["operation"] == "publish simulation progress"
-    assert result.detail["completion_error"]["path"] == str(tmp_path / "progress.json")
-
-
 @pytest.mark.parametrize("termination", ["disk_budget", "sim_time_stall"])
 def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
     tmp_path: Path, termination: str
@@ -1592,44 +1567,6 @@ def test_public_nonrunning_modes_create_no_hook_firings(tmp_path, monkeypatch, m
     assert "pre_run_commands (" not in result.outcome.report_text
 
 
-def test_legacy_abort_progress_failure_preserves_collected_firings(tmp_path, monkeypatch):
-    import time
-
-    from booley.flows.sim.execution.contract import PreSimEvidence
-    from booley.flows.sim.execution.pre_sim_reporting import pre_sim_document
-
-    flow = SimulateFlow()
-
-    def prepare(*_args):
-        flow._legacy_pre_sim_runs = [
-            (
-                "sim",
-                pre_sim_document(
-                    PreSimEvidence(
-                        ("true",),
-                        ("alpha",),
-                        "passed",
-                        0.1,
-                        returncode=0,
-                        stdout_tail="hook-out",
-                    )
-                ),
-            )
-        ]
-        return EndpointOutcome(exit_code=2, report_text="later build failed")
-
-    monkeypatch.setattr(flow, "_prepare_legacy_run", prepare)
-
-    def failed_progress(*_args, **_kwargs):
-        raise OSError("progress unavailable")
-
-    monkeypatch.setattr(flow, "_write_progress_report", failed_progress)
-    result = flow._run_legacy_selected_mode(["sim"], {}, time.monotonic(), 0.0)
-    assert result.exit_code == 2
-    assert result.detail["pre_sim_runs"][0]["stdout_tail"] == "hook-out"
-    assert len(result.detail["pre_sim_lines"]) == result.report_text.count("pre_run_commands") == 1
-
-
 def _cocotb_hook_plan(document):
     import hashlib
 
@@ -2105,6 +2042,10 @@ def test_simulation_final_acceptance_lifecycle_order(tmp_path, monkeypatch, term
         operation = result.outcome.detail["completion_error"]["operation"]
         assert operation == "publish simulation progress"
         assert terminal_phases[:2] == ["complete", "aborted"]
+        # The Pre-Sim firings collected before the failed write still reach the result.
+        lines = result.outcome.detail["pre_sim_lines"]
+        assert len(lines) == 2
+        assert all(result.outcome.report_text.count(line) == 1 for line in lines)
     else:
         assert result.exit_code == 0, result.outcome.report_text
         assert first["acceptance:True"] < first["mutable"] < first["refresh"]
