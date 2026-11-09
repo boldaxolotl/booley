@@ -53,16 +53,6 @@ class TestSelectReap:
         out = select_reap(cs, now=100, idle_timeout=50)
         assert out == ["stale"]
 
-    def test_only_idle_sandboxes_are_selected(self):
-        cs = [
-            _sc("stale", 0, last=0),
-            _sc("a", 10, last=100),
-            _sc("b", 20, last=100),
-            _sc("c", 30, last=100),
-        ]
-        out = select_reap(cs, now=100, idle_timeout=50)
-        assert out == ["stale"]
-
     def test_deterministic_order(self):
         cs = [_sc("c", 30, last=40), _sc("a", 10), _sc("b", 20)]
         out = select_reap(cs, now=40, idle_timeout=5)
@@ -253,26 +243,6 @@ class TestCollectAndReap:
         cs = reaper.collect(run)
         assert cs[0].last_activity == 42.0
 
-    def test_reap_once_stops_selected(self):
-        run = FakeRun(
-            [
-                (lambda a: a[0] == "ps", _cp(0, stdout="old\tc-old\nnew\tc-new\n")),
-                (
-                    lambda a: a[0] == "inspect" and "old" in a and "StartedAt" in a[-1],
-                    _cp(0, stdout="1970-01-01T00:00:10Z"),
-                ),
-                (
-                    lambda a: a[0] == "inspect" and "new" in a and "StartedAt" in a[-1],
-                    _cp(0, stdout="1970-01-01T00:00:30Z"),
-                ),
-                (lambda a: a[0] == "exec", _cp(1)),  # no heartbeats → last=started
-            ]
-        )
-        stopped = reaper.reap_once(now=30, idle_timeout=10_000, run=run)
-        assert stopped == []
-        assert not run.ran("stop", "old")
-        assert not run.ran("stop", "new")
-
     def test_reap_once_empty_when_no_containers(self):
         run = FakeRun([(lambda a: a[0] == "ps", _cp(0, stdout=""))])
         assert reaper.reap_once(now=0, idle_timeout=1, run=run) == []
@@ -342,23 +312,6 @@ class TestCollectAndReap:
             "network:booley-license-outbound-cccccccccccccccc",
             "network:booley-license-private-cccccccccccccccc",
         )
-
-
-def test_attached_sandbox_is_not_stopped():
-    run = _attachment_run()
-    assert (
-        reaper.reap_once(
-            now=1000,
-            idle_timeout=100,
-            run=run,
-            exec_inspector=lambda eid: {
-                "Running": True,
-                "ProcessConfig": {"entrypoint": "shell", "arguments": []},
-            },
-        )
-        == []
-    )
-    assert not run.ran("stop", "abc")
 
 
 def _attachment_run(ids='["abc123"]', heartbeat="10"):

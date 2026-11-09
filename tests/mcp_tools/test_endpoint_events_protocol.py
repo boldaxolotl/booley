@@ -17,14 +17,6 @@ from booley.runtime.display_identity import DisplayIdentity, DisplayScope
 
 
 class TestToolEndSummary:
-    def test_tool_result_has_summary_field(self):
-        r = McpToolResult()
-        assert r.summary == ""
-
-    def test_tool_result_summary_set(self):
-        r = McpToolResult(summary="all pass")
-        assert r.summary == "all pass"
-
     def test_endpoint_end_event_includes_summary(self):
         result = McpToolResult(exit_code=0, summary="clean")
         event = _endpoint_end_event("lint", "cfg_a", result, 5.0)

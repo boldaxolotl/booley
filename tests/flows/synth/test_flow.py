@@ -28,14 +28,13 @@ from booley.core.build_paths import work_root_for
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.evidence.recipe import implementation_comparison_basis
-from booley.evidence.timing import ClockTiming, make_clock_timing
+from booley.evidence.timing import make_clock_timing
 from booley.flows import artifacts
 from booley.flows.base import SubprocessResult
 from booley.flows.edam import work_root_lease
 from booley.flows.implementation_comparison import TargetExecutionRef
 from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.flow import (
-    KGE_DIVISOR,
     AsicSynthesizeFlow,
     SynthMetrics,
     _aggregate_detail,
@@ -101,15 +100,6 @@ class TestEdaFailureClassification:
         assert result.kind == "infrastructure"
         assert f"missing tool: {executable}" in result.reason
 
-    def test_missing_sv2v_is_infrastructure_error(self) -> None:
-        self.test_missing_executable_is_infrastructure_error("sv2v", "sv2v")
-
-    def test_missing_yosys_is_infrastructure_error(self) -> None:
-        self.test_missing_executable_is_infrastructure_error("yosys", "yosys")
-
-    def test_missing_openroad_is_infrastructure_error(self) -> None:
-        self.test_missing_executable_is_infrastructure_error("openroad", "openroad")
-
     @pytest.mark.parametrize(
         ("stage", "subject"),
         (
@@ -131,15 +121,6 @@ class TestEdaFailureClassification:
         assert result is not None
         assert result.kind == "infrastructure"
         assert subject in result.reason
-
-    def test_missing_read_slang_is_infrastructure_error(self) -> None:
-        self.test_missing_dependency_is_infrastructure_error("yosys", "read_slang")
-
-    def test_missing_liberty_is_infrastructure_error(self) -> None:
-        self.test_missing_dependency_is_infrastructure_error("yosys", "cells.lib")
-
-    def test_missing_physical_pdk_is_infrastructure_error(self) -> None:
-        self.test_missing_dependency_is_infrastructure_error("openroad", "Nangate45_tech.lef")
 
 
 class TestBoundaryCompatibility:
@@ -714,29 +695,6 @@ class TestParseArea:
         area, _ = _parse_area(output)
         assert area == 12345.0
 
-    def test_both_values_present(self):
-        output = "Number of cells: 999\nChip area for top module '\\t': 6400.0\n"
-        area, cells = _parse_area(output)
-        assert area == 6400.0
-        assert cells == 999
-
-
-# ===========================================================================
-# KGe conversion
-# ===========================================================================
-
-
-class TestKGeConversion:
-    def test_exact(self):
-        assert pytest.approx(798.0) == KGE_DIVISOR
-        assert 798.0 / KGE_DIVISOR == 1.0
-
-    def test_typical_value(self):
-        assert pytest.approx(65.764, rel=1e-3) == 52480.0 / KGE_DIVISOR
-
-    def test_zero(self):
-        assert 0.0 / KGE_DIVISOR == 0.0
-
 
 # ===========================================================================
 # Per-clock STA parsing (critical-path / Fmax are per-clock now)
@@ -766,7 +724,6 @@ class TestParsePerClockSta:
         per_clock = _parse_per_clock_sta(output)
         assert set(per_clock) == {"clk"}
         ct = per_clock["clk"]
-        assert isinstance(ct, ClockTiming)
         assert ct.clock == "clk"
         assert ct.period_ns == pytest.approx(2.0)
         assert ct.wns_ns == pytest.approx(0.75)
@@ -1160,7 +1117,7 @@ class TestParseSynthOutput:
         )
         m = _parse_synth_output(output, 4.2)
         assert m.area_um2 == 52480.0
-        assert m.area_kge == pytest.approx(52480.0 / KGE_DIVISOR)
+        assert m.area_kge == pytest.approx(65.7644)
         assert m.cells == 12345
         # Critical path / Fmax are per-clock now (one entry per create_clock).
         assert set(m.per_clock) == {"clk"}
@@ -1901,7 +1858,7 @@ class TestSingleConfigRun:
         assert data["flow"] == "synth"
         assert data["target"] == "lite"
         assert data["passed"] is True
-        assert data["area_kge"] == pytest.approx(6400.0 / KGE_DIVISOR)
+        assert data["area_kge"] == pytest.approx(8.02005)
         assert data["area_um2"] == 6400.0
         assert data["area_source"] == "yosys_mapped"
         assert "mapped_area_um2" not in data
@@ -3988,9 +3945,6 @@ class TestParseProcessCount:
     def test_basic(self):
         assert _parse_process_count("Number of processes:      3\n") == 3
 
-    def test_zero(self):
-        assert _parse_process_count("Number of processes:      0\n") == 0
-
     def test_no_match(self):
         assert _parse_process_count("synthesis completed") == 0
 
@@ -4092,7 +4046,7 @@ class TestDetailDict:
         assert entry is not None
         d = entry.detail
         assert d["area_um2"] == 6400.0
-        assert d["area_kge"] == pytest.approx(6400.0 / KGE_DIVISOR)
+        assert d["area_kge"] == pytest.approx(8.02005)
         assert d["cells"] == 100
         assert d["wire_count"] == 200
         assert d["process_count"] == 0

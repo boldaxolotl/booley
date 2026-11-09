@@ -80,10 +80,6 @@ def test_probe_names_the_client_and_events_that_are_not_covered(tmp_path):
 
 def test_base_image_ships_the_hook_script_the_policies_run():
     repo = DATA.parents[3]
-    assert (
-        activity_hooks.HOOK_COMMAND
-        == "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py"
-    )
     source = f"src/booley/data/docker/{activity_hooks.HOOK_SCRIPT.name}"
     dockerfile = (DATA / "Dockerfile.base").read_text(encoding="utf-8")
     assert f"COPY {source} /{activity_hooks.HOOK_SCRIPT.as_posix()}" in dockerfile

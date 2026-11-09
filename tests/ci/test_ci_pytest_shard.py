@@ -56,14 +56,19 @@ def test_timing_output_separates_collection_and_execution(tmp_path: Path, monkey
 
 
 def test_controller_keeps_slowest_worker_collection_time(tmp_path: Path) -> None:
-    shard_plugin.pytest_configure(_Config(tmp_path / "unused.json"))
-    first = SimpleNamespace(workeroutput={"ci_collection_seconds": 1.5})
-    second = SimpleNamespace(workeroutput={"ci_collection_seconds": 2.25})
+    output = tmp_path / "timings.json"
+    config = _Config(output)
+    shard_plugin.pytest_configure(config)
+    # The slower worker reports first so a "last wins" or min() bug would surface.
+    slower = SimpleNamespace(workeroutput={"ci_collection_seconds": 2.25})
+    faster = SimpleNamespace(workeroutput={"ci_collection_seconds": 1.5})
 
-    shard_plugin.pytest_testnodedown(first, None)
-    shard_plugin.pytest_testnodedown(second, None)
+    shard_plugin.pytest_testnodedown(slower, None)
+    shard_plugin.pytest_testnodedown(faster, None)
+    shard_plugin.pytest_sessionfinish(SimpleNamespace(config=config))
 
-    assert max(shard_plugin._COLLECTION_SECONDS) == 2.25
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["phases"]["collection_seconds"] == 2.25
 
 
 def test_controller_tolerates_worker_crash_before_workeroutput(tmp_path: Path) -> None:

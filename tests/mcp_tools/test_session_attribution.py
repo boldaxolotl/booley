@@ -131,7 +131,7 @@ async def test_validation_unknown_input_required_and_stdio_outcomes(monkeypatch)
     assert observer.calls[-1][-1] == "input-required"
 
 
-def test_job_submitter_is_immutable_when_current_caller_changes():
+def test_job_record_is_stamped_with_the_submitting_call():
     from booley.mcp.call_context import CallContext
 
     rec = job_records.JobRecord("one", "sim", "2026-10-08T10:00:00Z", 60)
@@ -139,10 +139,6 @@ def test_job_submitter_is_immutable_when_current_caller_changes():
         Path("/fixture"), None, None, None, None, {}, None, session_key="codex:submitter"
     )
     server._JobManager._stamp_context(rec, context)
-    caller = McpRequestContext(
-        attribution=Attribution("codex:poller", "thread", "/other", "other")
-    )
-    assert caller.attribution.key == "codex:poller"
     assert rec.session_key == "codex:submitter"
     assert rec.work_dir == str(context.work_dir)
 

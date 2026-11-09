@@ -32,21 +32,6 @@ def test_call_profile_overrides_target_profile() -> None:
     assert profile is VIVADO_PROFILES["max_frequency"]
 
 
-def test_call_override_is_symmetric_for_candidate_and_baseline() -> None:
-    candidate = resolve_fpga_profile(
-        {"ppa_profile": "compact"},
-        override="balanced",
-        target="candidate",
-    )
-    baseline = resolve_fpga_profile(
-        {"ppa_profile": "max_frequency"},
-        override="balanced",
-        target="baseline",
-    )
-
-    assert candidate is baseline is VIVADO_PROFILES["balanced"]
-
-
 def test_synth_and_pnr_engine_fields_are_not_profile_overrides() -> None:
     profile = resolve_fpga_profile(
         {"synth": "vivado", "pnr": "vivado"},

@@ -7,12 +7,11 @@ import pytest
 from booley.audit.project_schema import audit_known_tables
 from booley.harness.setup import readiness
 from booley.mcp.endpoint_config import get_endpoint_config
-from booley.mcp.endpoint_config import get_endpoint_config as developer_config
 from booley.mcp.endpoint_validation import _load_endpoint_config as endpoint_config
 from booley.mcp.registry import discover_mcp_tools
 
 
-@pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, endpoint_config])
+@pytest.mark.parametrize("loader", [get_endpoint_config, endpoint_config])
 def test_specialist_visibility_is_shared_across_execution_modes(tmp_path, monkeypatch, loader):
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     project = tmp_path / ".booley"
@@ -32,7 +31,7 @@ def test_specialist_visibility_is_shared_across_execution_modes(tmp_path, monkey
 
 
 @pytest.mark.parametrize("table", ["mcp_tools", "tools"])
-@pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, endpoint_config])
+@pytest.mark.parametrize("loader", [get_endpoint_config, endpoint_config])
 def test_retired_visibility_tables_fail_with_migration_guidance(
     tmp_path, monkeypatch, loader, table
 ):
@@ -42,9 +41,8 @@ def test_retired_visibility_tables_fail_with_migration_guidance(
     config = project / "booley.toml"
     config.write_text(f"[{table}.reviewer]\nenabled = false\n", encoding="utf-8")
 
-    for read in (lambda: loader(tmp_path),):
-        with pytest.raises(ValueError, match=r"\[specialists\.\*\]"):
-            read()
+    with pytest.raises(ValueError, match=r"\[specialists\.\*\]"):
+        loader(tmp_path)
 
 
 def test_project_audit_rejects_retired_mcp_table():
@@ -90,7 +88,7 @@ def test_readiness_does_not_accept_retired_endpoint_configuration(tmp_path, monk
         "[specialists.reveiwer]\nenabled = false\n",
     ],
 )
-@pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, endpoint_config])
+@pytest.mark.parametrize("loader", [get_endpoint_config, endpoint_config])
 def test_invalid_specialist_settings_fail_closed(tmp_path, monkeypatch, config, loader):
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     project = tmp_path / ".booley"
@@ -101,7 +99,7 @@ def test_invalid_specialist_settings_fail_closed(tmp_path, monkeypatch, config, 
         loader(tmp_path)
 
 
-@pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, endpoint_config])
+@pytest.mark.parametrize("loader", [get_endpoint_config, endpoint_config])
 def test_malformed_toml_fails_closed_in_every_endpoint_loader(tmp_path, monkeypatch, loader):
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     project = tmp_path / ".booley"
@@ -109,9 +107,8 @@ def test_malformed_toml_fails_closed_in_every_endpoint_loader(tmp_path, monkeypa
     config = project / "booley.toml"
     config.write_text("[specialists.reviewer\nenabled = false\n")
 
-    for read in (lambda: loader(tmp_path),):
-        with pytest.raises(ValueError, match=r"booley\.toml"):
-            read()
+    with pytest.raises(ValueError, match=r"booley\.toml"):
+        loader(tmp_path)
 
 
 def test_misspelled_specialist_name_is_rejected():

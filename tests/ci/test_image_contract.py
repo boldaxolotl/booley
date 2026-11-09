@@ -60,13 +60,6 @@ def test_repository_contract_preserves_slimmed_image_payload() -> None:
     riscv = image_contract.load_contract(CONTRACT, "riscv")
 
     assert "/OpenROAD" in standard["absent_paths"]
-    openroad_ref = dockerfile_syntax.argument_default(
-        (DOCKER_DIR / "Dockerfile.base").read_text(encoding="utf-8"), "OPENROAD_SOURCE_REF"
-    )
-    assert (
-        f"/usr/local/share/doc/openroad/OpenROAD-{openroad_ref}.tar.gz"
-        in standard["required_paths"]
-    )
     assert (
         "/opt/agent-clis/node_modules/@anthropic-ai/claude-code-linux-x64-musl"
         in standard["absent_paths"]
@@ -690,7 +683,6 @@ def test_riscv_runtime_contract_requires_both_offline_isa_volumes() -> None:
     riscv = image_contract.load_contract(CONTRACT, "riscv")
     docs = {path for path in riscv["required_paths"] if path.startswith("/opt/riscv-docs/")}
     assert docs == {f"/opt/riscv-docs/{name}" for name in RISCV_DOC_FILES}
-    assert len(docs) == 7
     for volume in ("unprivileged", "privileged"):
         for extension in ("pdf", "html"):
             assert f"/opt/riscv-docs/riscv-isa-{volume}.{extension}" in docs

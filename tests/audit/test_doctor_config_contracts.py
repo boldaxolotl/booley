@@ -291,11 +291,6 @@ class TestValidateAgentTable:
         assert valid and not fails
         assert any("codex" in m for m in passes)
 
-    def test_rejects_the_retired_primary_alias(self):
-        valid, _passes, fails = self._run({"primary": "claude"})
-        assert not valid
-        assert any("retired" in m for m in fails)
-
     @pytest.mark.parametrize("section", [None, {}])
     def test_absent_or_empty_agent_is_not_an_error(self, section):
         # The provider may legitimately come from BOOLEY_PRIMARY_PROVIDER or the

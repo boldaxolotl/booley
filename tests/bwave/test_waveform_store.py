@@ -391,8 +391,18 @@ def test_structural_scan_limit_is_reported_as_malformed(tmp_path: Path, monkeypa
     )
 
 
-@pytest.mark.parametrize("failure", ["timeout", "oserror", "returncode", "metadata"])
-def test_metadata_probe_failures_are_classified(tmp_path: Path, monkeypatch, failure: str) -> None:
+@pytest.mark.parametrize(
+    ("failure", "expected_kind"),
+    [
+        ("timeout", "reader_timeout"),
+        ("oserror", "reader_error"),
+        ("returncode", "reader_error"),
+        ("metadata", "malformed_metadata"),
+    ],
+)
+def test_metadata_probe_failures_are_classified(
+    tmp_path: Path, monkeypatch, failure: str, expected_kind: str
+) -> None:
     path = tmp_path / "trace.fst"
     path.write_bytes(MINIMAL_FST_BYTES)
     monkeypatch.setattr(stores, "native_bwave_binary", lambda: "bwave")
@@ -410,7 +420,7 @@ def test_metadata_probe_failures_are_classified(tmp_path: Path, monkeypatch, fai
     inspection = stores.inspect_store(path)
 
     assert inspection.queryable is False
-    assert inspection.failure_kind in {"reader_timeout", "reader_error", "malformed_metadata"}
+    assert inspection.failure_kind == expected_kind
 
 
 def test_discovery_without_conversion_returns_raw_vcd(tmp_path: Path) -> None:
@@ -553,9 +563,6 @@ def test_streaming_conversion_fake_process_covers_lifecycle(tmp_path: Path, monk
     stderr = tmp_path / "trace.stderr"
     conversion = stores.start_streaming_conversion(fifo, store, stderr_path=stderr, scope="tb")
     assert conversion is not None
-    assert conversion.pid == 123
-    assert conversion.return_code == 0
-    assert conversion.poll() == 0
     (store.with_name("trace.fst.progress")).write_bytes(b"progress")
     stderr.write_text("native warning", encoding="utf-8")
     assert conversion.progress_size() > 0

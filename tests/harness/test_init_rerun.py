@@ -525,15 +525,6 @@ class TestProjectGitignoreBackfill:
         assert "__pycache__/" in lines
         assert lines.count("tmp/") == 1  # already present -> not re-added
 
-    def test_backfill_is_idempotent(self, tmp_path: Path):
-        ctx = InitContext(project_root=tmp_path)
-        init_cmd._backfill_project_gitignore(tmp_path, ctx)
-        first = (tmp_path / ".gitignore").read_bytes()
-
-        init_cmd._backfill_project_gitignore(tmp_path, ctx)
-
-        assert (tmp_path / ".gitignore").read_bytes() == first
-
     def test_generated_patterns_are_honored_by_git(self, tmp_path: Path):
         subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
         init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))

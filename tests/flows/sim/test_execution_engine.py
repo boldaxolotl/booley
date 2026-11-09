@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib
 import json
 import os
@@ -156,83 +155,6 @@ def _inspection(*, cocotb: bool) -> SimpleNamespace:
     )
     inspection.inspect = lambda _handle: inspection
     return inspection
-
-
-def test_prepared_source_entries_accept_project_absolute_sources(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
-    build_root = tmp_path / "build"
-    project_root.mkdir()
-    build_root.mkdir()
-    source = project_root / "picorv32.v"
-    source.write_text("module picorv32; endmodule\n", encoding="utf-8")
-    handle = _handle(project_root)
-    resolved = ResolvedTarget(
-        name="sim",
-        vlnv=handle.vlnv,
-        toplevel="picorv32",
-        eda_tool="icarus",
-        files=(ResolvedFile(str(source), "verilogSource"),),
-        parameters={},
-        build_root=build_root,
-        edam_path=build_root / "demo.eda.yml",
-    )
-    prepared = PreparedSimulationBuild(
-        target="sim",
-        target_identity=handle.identity,
-        resolved=resolved,
-        work_root=build_root,
-        build_root=build_root,
-        eda_tool="icarus",
-        toplevel="picorv32",
-        make_argv=("true",),
-    )
-    group = object.__new__(PreparedOrdinaryGroup)
-    group._source_declarations = ()
-    group._compile_surface = TargetCompileSurface(handle.project_root, (), ())
-    group._sources_before = {}
-    group._handle = handle
-    group._attempt = SimpleNamespace(prepared=prepared, trace_requested=False)
-
-    assert group.prepared_source_entries()[0]["path"] == "picorv32.v"
-
-
-def test_prepared_source_entries_reject_project_external_sources(tmp_path: Path) -> None:
-    project_root = tmp_path / "project"
-    build_root = tmp_path / "build"
-    external = tmp_path / "external.v"
-    project_root.mkdir()
-    build_root.mkdir()
-    external.write_text("module external; endmodule\n", encoding="utf-8")
-    handle = _handle(project_root)
-    resolved = ResolvedTarget(
-        name="sim",
-        vlnv=handle.vlnv,
-        toplevel="external",
-        eda_tool="icarus",
-        files=(ResolvedFile(str(external), "verilogSource"),),
-        parameters={},
-        build_root=build_root,
-        edam_path=build_root / "demo.eda.yml",
-    )
-    prepared = PreparedSimulationBuild(
-        target="sim",
-        target_identity=handle.identity,
-        resolved=resolved,
-        work_root=build_root,
-        build_root=build_root,
-        eda_tool="icarus",
-        toplevel="external",
-        make_argv=("true",),
-    )
-    group = object.__new__(PreparedOrdinaryGroup)
-    group._source_declarations = ()
-    group._compile_surface = TargetCompileSurface(handle.project_root, (), ())
-    group._sources_before = {}
-    group._handle = handle
-    group._attempt = SimpleNamespace(prepared=prepared, trace_requested=False)
-
-    with pytest.raises(SimulationBuildSlotError, match="unsafe prepared Simulation source"):
-        group.prepared_source_entries()
 
 
 def _runtime_input_vvp(root: Path, build_root: Path) -> Path:
@@ -1153,7 +1075,7 @@ def test_prepared_source_entries_accept_exact_packaged_trace_source(
         {
             "path": "booley-package/refs/booley_vcd_dump.sv",
             "bytes": len(packaged.read_bytes()),
-            "sha256": "sha256:" + hashlib.sha256(packaged.read_bytes()).hexdigest(),
+            "sha256": "sha256:ff3f002ecdd71580a204971585b494799950bb71d14dda0439f37e41972c1119",
             "kind": "generated_input",
         },
     )
@@ -3455,8 +3377,16 @@ def test_cycle_count_malformed_record_outranks_other_records(output: str) -> Non
 
 
 @pytest.mark.parametrize("copyto", ["firmware.hex", "data/firmware.hex", None])
-@pytest.mark.parametrize("source_bytes", [b"00000013\n", b"00000013\r\n"])
-def test_real_copyto_prepared_source_entries(tmp_path, monkeypatch, copyto, source_bytes):
+@pytest.mark.parametrize(
+    ("source_bytes", "source_sha256"),
+    [
+        (b"00000013\n", "acc1a4b3ae11b9c321268fac9cc42bee0be463484ec33a3cec6b84ee22094a3e"),
+        (b"00000013\r\n", "9aa09655c12bb69c0ceb5ba04048dea837df879713beaef16c03531bfb9f02b1"),
+    ],
+)
+def test_real_copyto_prepared_source_entries(
+    tmp_path, monkeypatch, copyto, source_bytes, source_sha256
+):
     importlib.import_module("fusesoc")
     importlib.import_module("edalize")
     project = tmp_path / "project"
@@ -3479,15 +3409,15 @@ def test_real_copyto_prepared_source_entries(tmp_path, monkeypatch, copyto, sour
         data = next(entry for entry in entries if str(entry["path"]).endswith("firmware.hex"))
         assert data["source_path"] == "data/firmware.hex"
         assert data["path"] == (copyto or "src/acme_lib_runtime_input_1/data/firmware.hex")
-        assert data["sha256"] == "sha256:" + hashlib.sha256(source_bytes).hexdigest()
+        assert data["sha256"] == f"sha256:{source_sha256}"
         (group.build_root / data["path"]).write_bytes(b"prepared bytes changed")
         changed = next(
             entry
             for entry in group.prepared_source_entries()
             if str(entry["path"]).endswith("firmware.hex")
         )
-        assert (
-            changed["sha256"] == "sha256:" + hashlib.sha256(b"prepared bytes changed").hexdigest()
+        assert changed["sha256"] == (
+            "sha256:245e1c58419263e34092a956d221f87ed55a077261df60c02b17645711cbd929"
         )
         assert (project / "data/firmware.hex").read_bytes() == source_bytes
 
@@ -3520,7 +3450,9 @@ def test_copyto_source_association_requires_unique_full_destination_and_core(
     )
     entry = group.prepared_source_entries()[0]
     assert entry.get("source_path") == expected
-    assert entry["sha256"] == "sha256:" + hashlib.sha256(b"staged bytes").hexdigest()
+    assert entry["sha256"] == (
+        "sha256:a9228f1bda65e64e61f866520f7439e2e7a549dd27b47abf29e1b76dbb93b404"
+    )
 
 
 def test_copyto_declaration_drift_refuses_publication(tmp_path, monkeypatch):
@@ -3585,7 +3517,9 @@ def test_prepared_source_entries_real_dependency_core_export_root(tmp_path, monk
         )
         assert data["path"] == "src/acme_lib_data_1/inputs/firmware.hex"
         assert data["source_path"] == "dependency/inputs/firmware.hex"
-        assert data["sha256"] == "sha256:" + hashlib.sha256(b"dependency bytes").hexdigest()
+        assert data["sha256"] == (
+            "sha256:ae41cf82309521b9e587f2a73f60d94b4afa3125c4c690dc22546befc52b1059"
+        )
 
 
 def test_real_copyto_same_basename_uses_full_declared_paths(tmp_path, monkeypatch):

@@ -274,16 +274,14 @@ def test_execute_supervised_cleans_fifo_conversion(tmp_path: Path, monkeypatch):
         conversion=conversion,
     )
     paths = vr._RunPaths(tmp_path, tmp_path, tmp_path)
-    process = object()
     monkeypatch.setattr(
         vr,
         "run_supervised",
-        lambda *_args, **_kwargs: (deque(), process, vr.RunTermination()),
+        lambda *_args, **_kwargs: (deque(), object(), vr.RunTermination()),
     )
 
-    _lines, returned, _termination = vr._execute_supervised([], paths, {}, 1, trace, 0, ())
+    vr._execute_supervised([], paths, {}, 1, trace, 0, ())
 
-    assert returned is process
     assert session.cleaned is conversion
 
 

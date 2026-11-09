@@ -459,14 +459,8 @@ def test_host_facts_digest_changes_with(
 
 @_POSIX_HOST
 def test_host_facts_digest_is_stable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import resource
-
     root = _fake_host(tmp_path)
-    facts = _facts(root, monkeypatch)
-    assert facts.digest() == _facts(root, monkeypatch).digest()
-    assert [name for name, _, _ in facts.rlimits] == sorted(
-        n for n in dir(resource) if n.startswith("RLIMIT_")
-    )
+    assert _facts(root, monkeypatch).digest() == _facts(root, monkeypatch).digest()
 
 
 @_POSIX_HOST

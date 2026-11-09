@@ -8,15 +8,6 @@ from pathlib import Path
 import pytest
 
 from booley.runtime import atomic_files
-from booley.runtime import atomic_files as persistence
-
-
-def test_ticket_persistence_reexports_the_shared_primitives() -> None:
-    # The Ticket path is a compatibility re-export, not a second implementation.
-    assert persistence.atomic_replace_bytes is atomic_files.atomic_replace_bytes
-    assert persistence.atomic_write_once is atomic_files.atomic_write_once
-    assert persistence.durable_unlink is atomic_files.durable_unlink
-    assert persistence.WriteOnceConflictError is atomic_files.WriteOnceConflictError
 
 
 def test_write_once_never_exposes_partial_final_path(

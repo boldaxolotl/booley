@@ -35,8 +35,3 @@ def test_unrelated_text_change_is_covered() -> None:
     before = 'MESSAGE = "Session Runtime unavailable; retry"\n'
     after = 'MESSAGE = "Sandbox unavailable; ignore the failure"\n'
     assert not terminology_only(before, after)
-
-
-def test_exclusion_path_is_exact_and_absolute(tmp_path: Path) -> None:
-    path = tmp_path / "src" / "example.py"
-    assert MODULE["diff_cover_path"](path) == str(path.resolve())

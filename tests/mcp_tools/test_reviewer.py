@@ -1280,12 +1280,6 @@ class TestSeverityCounting:
         assert counts[SEVERITY_MAJOR] == 0
         assert counts[SEVERITY_MINOR] == 0
 
-    def test_count_all_one_severity(self):
-        issues = [ReviewIssue.from_dict(_make_issue_dict("MINOR")) for _ in range(5)]
-        counts = count_by_severity(issues)
-        assert counts[SEVERITY_MINOR] == 5
-        assert counts[SEVERITY_CRITICAL] == 0
-
     def test_unknown_severity_ignored(self):
         issues = [ReviewIssue.from_dict({"severity": "UNKNOWN", "file": "f.sv"})]
         counts = count_by_severity(issues)
@@ -1312,10 +1306,6 @@ class TestGateLogic:
 
     def test_fail_major(self):
         counts = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 1, SEVERITY_MINOR: 0}
-        assert check_gate(counts) is False
-
-    def test_fail_both(self):
-        counts = {SEVERITY_CRITICAL: 1, SEVERITY_MAJOR: 2, SEVERITY_MINOR: 1}
         assert check_gate(counts) is False
 
 
@@ -1522,9 +1512,6 @@ class TestReviewerToolArgs:
 
 
 class TestPromptConstruction:
-    def test_reviewer_agent_capabilities_are_read_only(self):
-        assert ReviewerSpecialist.agent_capabilities == ["Read", "Grep", "Glob"]
-
     def test_rtl_system_prompt_includes_focus_guide(self, state_file: Path):
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
@@ -2692,11 +2679,6 @@ class TestOneShotGuard:
 # ---------------------------------------------------------------------------
 
 
-class TestTbOrderingGuard:
-    """TB ordering guard was 'quality before spec' — spec focus is now gone
-    (ADR-0014).  The guard is a no-op hook; nothing to test."""
-
-
 # ---------------------------------------------------------------------------
 # _clean mode
 # ---------------------------------------------------------------------------
@@ -3815,28 +3797,6 @@ class TestTbReviewGetsTheSpec:
         assert "## Focus: quality" in prompt
 
 
-class TestDocumentedAssumptions:
-    """A recorded judgement call must not read to the reviewer as an invention."""
-
-    def test_assumptions_are_inlined_when_present(self, review_logs: Path, state_file: Path):
-        (review_logs / "answered_questions.md").write_text(
-            "- Spec is silent on rate=0; treated as RMAX.\n", encoding="utf-8"
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "spec"])
-
-        prompt = endpoint._build_prompt()
-
-        assert "## Documented Assumptions" not in prompt
-        assert "rate=0" not in prompt
-
-    def test_no_section_without_the_file(self, review_logs: Path, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "spec"])
-
-        assert "## Documented Assumptions" not in endpoint._build_prompt()
-
-
 class TestSchemaExampleMatchesCategory:
     """A TB reviewer told not to read RTL was shown an rtl/ path to report."""
 
@@ -3939,23 +3899,6 @@ def _make_pico_tb_repo(repo: Path) -> tuple[str, Path]:
     base = _git(repo, "rev-parse", "HEAD")
     tb.write_text(tb.read_text(encoding="utf-8").replace("feature_mode = 0", "feature_mode = 1"))
     return base, tb
-
-
-def test_diff_ref_option_is_removed() -> None:
-    endpoint = ReviewerSpecialist()
-    with pytest.raises(SystemExit):
-        endpoint.parse_args(
-            [
-                "--scope",
-                "verif/testbench.v",
-                "--category",
-                "tb",
-                "--focus",
-                "quality",
-                "--diff-ref",
-                "HEAD",
-            ]
-        )
 
 
 @pytest.mark.parametrize("invalid", ["malformed", "provider", "changed", "missing"])

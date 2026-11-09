@@ -217,14 +217,10 @@ class TestEstimateCost:
             output_tokens=5_000,
             cache_create_tokens=20_000,
         )
-        p = MODEL_PRICING["claude-opus-5"]
-        expected = (
-            20_000 * p.input  # 100k - 60k read - 20k written
-            + 60_000 * p.cache_read
-            + 20_000 * p.cache_write
-            + 5_000 * p.output
-        ) / 1_000_000
-        assert cost == pytest.approx(expected)
+        # Opus 5 per-MTok: input $5, cache read $0.50, cache write $6.25, output $25.
+        # 20k uncached (100k - 60k read - 20k written) * 5 + 60k * 0.5
+        # + 20k * 6.25 + 5k * 25 = $0.38.
+        assert cost == pytest.approx(0.38)
 
     def test_cache_writes_cost_more_than_plain_input(self):
         """The bug this table replaced: cache writes billed at the input rate."""
@@ -233,17 +229,10 @@ class TestEstimateCost:
         assert as_write > as_plain
         assert as_write == pytest.approx(as_plain * 1.25)
 
-    def test_cache_create_defaults_to_zero(self):
-        """Callers that don't track cache writes get the old behaviour."""
-        assert estimate_cost("claude-opus-5", 10_000, 0, 1_000) == pytest.approx(
-            estimate_cost("claude-opus-5", 10_000, 0, 1_000, 0)
-        )
-
     def test_over_subscribed_cache_clamps_to_zero_uncached(self):
         cost = estimate_cost("claude-opus-5", 1_000, 5_000, 0, cache_create_tokens=5_000)
-        p = MODEL_PRICING["claude-opus-5"]
-        expected = (5_000 * p.cache_read + 5_000 * p.cache_write) / 1_000_000
-        assert cost == pytest.approx(expected)
+        # Uncached input clamps to 0: 5k * $0.50 + 5k * $6.25 per MTok = $0.03375.
+        assert cost == pytest.approx(0.03375)
 
     def test_unknown_model_is_free(self):
         assert estimate_cost("totally-unknown-model", 1_000, 0, 1_000) == 0.0

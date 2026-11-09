@@ -239,5 +239,7 @@ def test_missing_persisted_spec_fails_loudly(tmp_path: Path, monkeypatch) -> Non
 def test_pre_v4_receipt_uses_legacy_source_fingerprint_path(tmp_path: Path, monkeypatch) -> None:
     detail = _detail(tmp_path, monkeypatch)
     detail["review_detail_version"] = 3
+    # A v4 receipt would report "scope" drift here; a pre-v4 one must stay current.
+    (tmp_path / "rtl/uart.sv").write_text("module uart; logic x; endmodule\n", encoding="utf-8")
 
     assert review_receipt_drift(detail, tmp_path) == []

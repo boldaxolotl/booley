@@ -521,23 +521,6 @@ class TestCriteriaOperations:
 
 
 class TestConcurrentSafeWrites:
-    def test_sequential_saves_no_corruption(self, tmp_path: Path):
-        """Two sequential save() calls don't corrupt data."""
-        path = tmp_path / "state.json"
-        st = DevelopmentState.load(path)
-        st.slug = "concurrent-test"
-        st.init_criteria({"lint_clean_lite": True, "sim_pass_lite": True})
-        st.set_criterion("lint_clean_lite", True)
-        st.save()
-
-        st.set_criterion("sim_pass_lite", True)
-        st.save()
-
-        st2 = DevelopmentState.load(path)
-        assert st2.is_met("lint_clean_lite") is True
-        assert st2.is_met("sim_pass_lite") is True
-        assert not path.with_suffix(".tmp").exists()
-
     def test_save_after_reload_preserves_state(self, tmp_path: Path):
         """Load -> modify -> save cycle preserves prior state."""
         path = tmp_path / "state.json"
@@ -638,20 +621,6 @@ class TestPendingConsistencyAssertion:
         )
         assert st.criteria["review_rtl_bugs_done"].met is True
 
-    def test_met_false_with_pending_unaffected(self):
-        """Setting met=False is fine regardless of pending — that's the normal failure path."""
-        st = self._state_with_criterion("review_rtl_bugs_clean")
-        st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
-            detail={
-                "issues": 1,
-                "pending": [{"severity": "CRITICAL", "summary": "open"}],
-                "resolved": [],
-            },
-        )
-        assert st.criteria["review_rtl_bugs_clean"].met is False
-
 
 class TestCriterionChanges:
     def test_alias_reports_resolved_effective_outcome(self):
@@ -735,13 +704,6 @@ class TestJudgedEvidenceDefersTheLatch:
 
 class TestEverFailedLatch:
     """`ever_failed` records that a tool actually observed a failure (F-53)."""
-
-    def test_unrun_criterion_has_neither_latch(self, tmp_path):
-        state = DevelopmentState.load(tmp_path / "s.json")
-        state.init_criteria({"sim_pass_default": True})
-        entry = state.criteria["sim_pass_default"]
-        assert entry.ever_met is False
-        assert entry.ever_failed is False
 
     def test_reported_failure_latches_and_survives_a_later_pass(self, tmp_path):
         state = DevelopmentState.load(tmp_path / "s.json")

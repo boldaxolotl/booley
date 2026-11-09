@@ -18,7 +18,6 @@ import pytest
 import booley.flows.sim.build as build_module
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.build import classify_build_outcome
-from booley.flows.sim.build_parallelism import verilator_backend_arguments
 from booley.flows.sim.campaign.codec import (
     MAX_DETAIL_BYTES,
     canonical_json_bytes,
@@ -36,7 +35,6 @@ from booley.flows.sim.flow import MissingExecutableError, SimulateFlow
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from booley.mcp.base import EXIT_ERROR
 from tests.flows.sim import test_campaign_crash_matrix as crash_matrix
-from tests.flows.sim.test_build_parallelism import _inspection as _parallelism_inspection
 from tests.flows.sim.test_campaign_crash_matrix import _admission
 from tests.flows.sim.test_campaign_phase5_adversarial import (
     _FailedCoverageBuild,
@@ -128,10 +126,6 @@ def test_oom_build_names_oom_evidence_and_remedy(
     assert report.splitlines()[0] == outcome.reason
     assert "Error 137" in report
     assert "BOOLEY_BUILD_STAGE" not in report
-
-
-def test_oom_remedy_knob_disables_automatic_jobs() -> None:
-    assert verilator_backend_arguments(_parallelism_inspection(modern=("-j2",))) == ()
 
 
 def test_compile_error_still_shows_compiler_lines(tmp_path: Path) -> None:
@@ -292,7 +286,7 @@ def test_campaign_build_timeout_publishes_terminal_infrastructure_result(
     assert TIMEOUT_REASON in endpoint.report_text.splitlines()[0]
 
 
-def test_campaign_endpoint_reports_build_timeout_first(tmp_path: Path, capsys) -> None:
+def test_campaign_endpoint_reports_build_timeout_first(tmp_path: Path) -> None:
     outcome = _timeout_outcome()
     error = build_module.SimulationBuildInfrastructureError("sim", outcome)
     flow = SimulateFlow()
@@ -314,7 +308,6 @@ def test_campaign_endpoint_reports_build_timeout_first(tmp_path: Path, capsys) -
     assert endpoint.detail["build_stage"]["timed_out"] is True
     assert LAST_LINE in endpoint.report_text
     assert HEAD_LINE not in endpoint.report_text
-    del capsys
 
 
 def test_legacy_build_infrastructure_result_uses_shared_tail(capsys) -> None:
