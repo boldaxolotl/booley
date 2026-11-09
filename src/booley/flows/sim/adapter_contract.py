@@ -119,10 +119,7 @@ def _float(value: object, name: str) -> float:
 
 
 def _test_runs(value: object, name: str) -> tuple[TestRun, ...]:
-    return tuple(
-        test_run_from_document(entry, trust_fingerprint=True)
-        for entry in require_list(value, field=name)
-    )
+    return tuple(test_run_from_document(entry) for entry in require_list(value, field=name))
 
 
 #: Decoder of each work field, keyed by the field's annotation text.

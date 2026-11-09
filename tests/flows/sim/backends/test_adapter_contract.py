@@ -51,7 +51,6 @@ def test_work_document_round_trips_every_field() -> None:
         seed=7,
         args=("+slow",),
         env={"K": "V"},
-        fingerprint="sha256:" + "ab" * 32,
     )
     given: dict[str, Any] = {
         "work_dir": "attempt/evidence",
