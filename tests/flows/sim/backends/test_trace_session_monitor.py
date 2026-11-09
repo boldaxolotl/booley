@@ -71,7 +71,7 @@ class TestStallKill:
 
     def test_kills_after_stall_threshold(self, tmp_path):
         # .bwave file is never created → size stays at 0 forever
-        ts = TraceSession(work_dir=tmp_path, cache_key="stall_test")
+        ts = TraceSession(work_dir=tmp_path)
         sim_proc = _spawn_sleeper()
         bwave_proc = _spawn_sleeper()
         try:
@@ -286,10 +286,7 @@ class TestTraceStatusManifest:
         assert bwave.read_bytes() == MINIMAL_FST_BYTES
 
     def test_cleanup_fifo_publishes_bwave_to_work_dir(self, tmp_path, monkeypatch):
-        ts = TraceSession(
-            work_dir=tmp_path,
-            cache_key=f"cleanup_publish_{tmp_path.name}",
-        )
+        ts = TraceSession(work_dir=tmp_path)
 
         from booley.bwave.waveform_store import ConversionAttempt, ConversionResult, inspect_store
 
@@ -316,7 +313,7 @@ class TestTraceStatusManifest:
         assert data["attempts"][-1]["status"] == "success"
 
     def test_cleanup_fifo_does_not_publish_failed_conversion(self, tmp_path, monkeypatch):
-        ts = TraceSession(work_dir=tmp_path, cache_key="cleanup_failed")
+        ts = TraceSession(work_dir=tmp_path)
 
         from booley.bwave.waveform_store import (
             ConversionAttempt,
@@ -342,7 +339,7 @@ class TestTraceStatusManifest:
         assert data["attempts"][-1]["status"] == "no_artifact"
 
     def test_incident_manifest_records_failure_and_return_codes(self, tmp_path):
-        ts = TraceSession(work_dir=tmp_path, cache_key="manifest_incident")
+        ts = TraceSession(work_dir=tmp_path)
         proc = subprocess.Popen(
             [sys.executable, "-c", "import sys; sys.exit(7)"],
             stdout=subprocess.DEVNULL,
@@ -359,7 +356,7 @@ class TestTraceStatusManifest:
         assert data["events"][-1]["kind"] == "incident"
 
     def test_stall_writes_trace_incident(self, tmp_path):
-        ts = TraceSession(work_dir=tmp_path, cache_key="incident_test")
+        ts = TraceSession(work_dir=tmp_path)
         sim_proc = _spawn_sleeper()
         bwave_proc = _spawn_sleeper()
         try:
@@ -387,7 +384,7 @@ class TestTraceStatusManifest:
         # Pre-create the .bwave file so we can append to it.
         bwave_dir = tmp_path / "cache"
         bwave_dir.mkdir()
-        ts = TraceSession(work_dir=tmp_path, cache_key="grow_test")
+        ts = TraceSession(work_dir=tmp_path)
         # Force the monitor to look at our growing file by writing to the
         # session's bwave_path target.
         target = ts.bwave_path

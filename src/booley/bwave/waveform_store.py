@@ -286,15 +286,11 @@ def _prepare_conversion_destination(store_path: Path, policy: ExistingStorePolic
         store_path.unlink(missing_ok=True)
 
 
-def waveform_cache_dir(work_dir: Path, cache_key: str | None = None) -> Path:
+def waveform_cache_dir(work_dir: Path) -> Path:
     """Return the collision-resistant cache bucket for *work_dir*."""
-    if cache_key:
-        name = cache_key
-    else:
-        resolved = str(work_dir.resolve())
-        digest = hashlib.sha256(resolved.encode("utf-8", "replace")).hexdigest()[:12]
-        name = f"{work_dir.name}-{digest}"
-    path = Path(tempfile.gettempdir()) / "bwave" / name
+    resolved = str(work_dir.resolve())
+    digest = hashlib.sha256(resolved.encode("utf-8", "replace")).hexdigest()[:12]
+    path = Path(tempfile.gettempdir()) / "bwave" / f"{work_dir.name}-{digest}"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from booley.flows.cli_help import SurfaceHelp
 from booley.flows.cli_selection import CliInvocation
 from booley.flows.endpoint_cli import add_common_args, apply_environment, normalize_target_arg
-from booley.flows.request import FlowRequest
+from booley.flows.request import FlowRequest, RequestFieldError
 from booley.runtime.endpoint_execution import ExecutionResult
 
 if TYPE_CHECKING:
@@ -70,6 +70,11 @@ def build_cli_parser(
     return parser
 
 
+def _cli_flag(field: str) -> str:
+    """Spell a request field as its long CLI flag."""
+    return "--" + field.replace("_", "-")
+
+
 def _parse_cli(flow: BuiltinFlow, argv: list[str] | None, invocation: CliInvocation):
     from booley.flows.cli_selection import normalize_endpoint_args
 
@@ -79,7 +84,12 @@ def _parse_cli(flow: BuiltinFlow, argv: list[str] | None, invocation: CliInvocat
     normalize_endpoint_args(args)
     normalize_target_arg(args)
     flow.argument_adapter.normalize(args, parser)
-    request = flow.request_type(**vars(args))
+    try:
+        request = flow.request_type(**vars(args))
+    except RequestFieldError as exc:
+        parser.error(exc.describe(_cli_flag))
+    except ValueError as exc:
+        parser.error(str(exc))
     apply_environment(request, flow.endpoint_kind)
     return request, quiet
 

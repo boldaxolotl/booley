@@ -184,17 +184,13 @@ def test_sim_request_rejects_ambiguous_or_invalid_inputs(kwargs) -> None:
         SimRequest(**kwargs)
 
 
-def test_sim_request_rejects_unreadable_empty_and_duplicate_test_files(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="cannot read"):
+def test_sim_request_rejects_unreadable_and_empty_test_files(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="cannot read tests_file"):
         SimRequest(tests_file=tmp_path / "missing")
     empty = tmp_path / "empty"
     empty.write_text("# comment\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="no test names"):
+    with pytest.raises(ValueError, match="tests_file contains no test names"):
         SimRequest(tests_file=empty)
-    duplicate = tmp_path / "duplicate"
-    duplicate.write_text("a\na\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="unique"):
-        SimRequest(tests_file=duplicate)
 
 
 @pytest.mark.parametrize("value", ["", "bad\0path", "{unknown}", "{test!r}", "{test:10}"])

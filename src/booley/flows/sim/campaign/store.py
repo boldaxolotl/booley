@@ -31,12 +31,12 @@ from booley.core.boundary import (
     require_list,
     require_str_value,
 )
-from booley.flows.sim.build_session import CacheDecision
-from booley.flows.sim.campaign_durability import (
+from booley.flows.artifact_durability import (
     durable_create,
     durable_directory,
     fsync_directory,
 )
+from booley.flows.sim.build_session import CacheDecision
 from booley.runtime.file_lock import nonblocking_file_lock
 from booley.runtime.filesystem_utils import replace_file
 from booley.runtime.regular_file import open_regular_nofollow
