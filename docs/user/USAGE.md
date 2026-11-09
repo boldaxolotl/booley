@@ -228,8 +228,11 @@ shows peak memory and run time per Target. How to read a result:
 
 The Dashboard opens in a VS Code terminal when you attach to the container (or
 run `booley dashboard` in a container terminal); turn the automatic start off
-with `[sandbox].dashboard=false`. The Dashboard has two windows; press `←` or
-`→` to switch:
+with `[sandbox].dashboard=false`. It comes back by itself after a window
+reload (this can take up to about half a minute). If you closed it, **Booley:
+Open Dashboard** in the Command Palette reopens it or reveals the open one.
+`booley dashboard` replaces a Dashboard that no terminal shows any more.
+The Dashboard has two windows; press `←` or `→` to switch:
 
 - **Sessions:** every Developer Agent session and what its agent last
   reported: working, waiting for a tool call, or waiting for your input.

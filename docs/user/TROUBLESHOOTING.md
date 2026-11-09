@@ -134,8 +134,11 @@ It doesn't open when:
   back to `true` and run `booley init` again;
 - the window isn't a Dev Containers or Codespaces window, the folder isn't a
   Git repository, or the window is not trusted yet;
-- you closed it earlier in this window session; reload the window to get it
-  back;
+- you closed it earlier in this window session; run **Booley: Open Dashboard**
+  from the Command Palette to get it back;
+- `booley dashboard` says it is already open: the Dashboard is shown in another
+  window or terminal. One left behind by a window reload is replaced within
+  about 15 seconds;
 - the Booley Sandbox Integration extension is missing or out of date. Doctor
   warns about it. After upgrading Booley, run `booley init` on the host and
   rebuild the container: a running container never picks up a newer image.
