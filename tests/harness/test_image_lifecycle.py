@@ -235,6 +235,44 @@ def test_host_capacity_requests_use_local_build_projection(
     assert observed[0][1]["rebuild_runtime_base"] is True
 
 
+def test_host_capacity_requests_reports_inspect_failure_as_lifecycle_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unanswerable runtime-base lookup is a lifecycle error, not a silent rebuild plan."""
+    from booley.harness.setup import docker_image
+
+    docker_dir = tmp_path / "docker"
+    docker_dir.mkdir()
+    (docker_dir / "Dockerfile.base").write_bytes(b"FROM scratch\n")
+    (docker_dir / "Dockerfile").write_bytes(b"FROM booley-runtime-base\n")
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", object)
+    monkeypatch.setattr(
+        harness_lifecycle,
+        "_artifact_policy",
+        lambda *_args: lifecycle.ArtifactPolicy.LOCAL_ONLY,
+    )
+    monkeypatch.setattr(
+        harness_lifecycle.runtime_lifecycle,
+        "reconcile",
+        lambda *_args, **_kwargs: SimpleNamespace(status=lifecycle.Status.STALE),
+    )
+    monkeypatch.setattr(booley, "version_attribution", SimpleNamespace(source_root=tmp_path))
+    monkeypatch.setattr(harness_lifecycle, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(docker_image, "_image_build_fingerprint", lambda _root: "fingerprint")
+    monkeypatch.setattr(
+        docker_image,
+        "source_image_build_contracts",
+        lambda _root: SimpleNamespace(runtime_base="contract"),
+    )
+    # No `docker` on PATH: every Docker seam reports a missing executable.
+    empty = tmp_path / "empty-path"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="cannot inspect Docker image"):
+        harness_lifecycle.host_capacity_requests(lifecycle.Intent.ENSURE)
+
+
 def test_reconcile_planned_commits_prepared_graph(monkeypatch: pytest.MonkeyPatch) -> None:
     scope = SimpleNamespace(project_root=Path("/chip"))
     planned = SimpleNamespace(nodes=(SimpleNamespace(role=lifecycle.ImageRole.WHEEL_OVERLAY),))
@@ -2276,10 +2314,10 @@ def test_docker_inspect_daemon_failure_is_not_an_absent_image(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        lifecycle.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            [], 125, stdout="", stderr="Cannot connect to the Docker daemon"
+        lifecycle.interactive_docker,
+        "_run_docker",
+        lambda args, **_kwargs: subprocess.CompletedProcess(
+            args, 125, stdout="", stderr="Cannot connect to the Docker daemon"
         ),
     )
 
