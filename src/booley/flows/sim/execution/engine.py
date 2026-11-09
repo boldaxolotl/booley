@@ -2285,6 +2285,8 @@ def _test_outcomes(
         return (_build_failure_test(handle, attempt, process, build, _run_log_for(logs, name)),)
     names = _outcome_names(handle, attempt, adapter)
     by_name = {test.name: test for test in adapter.test_results} if adapter else {}
+    # A native adapter that times out writes no per-test entry; its termination
+    # (not the wrapper exit status) decides the timeout verdict then.
     results = []
     for index, name in enumerate(names):
         item = by_name.get(name)
@@ -2303,7 +2305,7 @@ def _test_outcomes(
             else _adapter_verdict(adapter)
             if sim_finished
             else "timeout"
-            if process.timed_out
+            if process.timed_out or (adapter is not None and adapter.termination == "timeout")
             else "crash"
             if process.returncode < 0
             else _adapter_verdict(adapter)
