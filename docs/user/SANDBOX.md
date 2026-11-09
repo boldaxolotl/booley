@@ -142,13 +142,14 @@ Project's Sandbox, in both Goal Mode and Interactive Mode.
 
 **After editing the file**, run `booley bootstrap` again. To switch `egress` in
 one step, run `booley bootstrap --egress unproxied` (or `proxy`): it records
-the mode, bootstraps under it, and names each running Sandbox still on the old
-mode with the steps to recreate it. It refuses a result the file can't hold
-(for example `unproxied` next to a non-empty `egress_allowlist`) and a file that
-still uses the legacy `[interactive]` table, and changes nothing in either
-case. `booley bootstrap --check-only --egress unproxied` reports the pending
-change without writing it. After switching `egress` by any route, also run `booley init --seed` in each Project and recreate its
-Sandbox (**Dev Containers: Rebuild Container** in VS Code; `session down`,
+the mode, bootstraps under it, and names each running Sandbox still on the
+previous mode with the steps to recreate it. It refuses a result the file can't
+hold (for example `unproxied` next to a non-empty `egress_allowlist`) and a
+file that still uses the retired `[interactive]` table, and changes nothing in
+either case. `booley bootstrap --check-only --egress unproxied` reports the
+pending change without writing it. After switching `egress` by any route, also
+run `booley init --seed` in each Project and recreate its Sandbox (**Dev
+Containers: Rebuild Container** in VS Code; `session down`,
 then `session up` headless). Until then the running Sandbox keeps its previous
 mode, and host-side Doctor warns about it; see
 [TROUBLESHOOTING](TROUBLESHOOTING.md#doctor-reports-a-sandbox-whose-egress-mode-differs-from-the-host).
