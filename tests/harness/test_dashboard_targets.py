@@ -16,7 +16,6 @@ from textual.widgets import DataTable, Static
 
 from booley.harness.dashboard.app import DashboardApp, Navigation
 from booley.harness.dashboard.jobs import JobSnapshot
-from booley.harness.dashboard.targets import TargetsReader
 from booley.harness.dashboard.topbar import TopBar
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
 from booley.targets.domain import CoreCollisionError
@@ -140,6 +139,9 @@ def world(*rows: SessionRow):
 
 
 def make_app(root: Path, current) -> DashboardApp:
+    # Imported here so a Dashboard without the Targets module fails the test body, not collection.
+    from booley.harness.dashboard.targets import TargetsReader
+
     return DashboardApp(lambda: current, targets=TargetsReader(root))
 
 
@@ -550,6 +552,8 @@ async def test_leftover_projections_do_not_block_detail_when_stealth_is_off(tmp_
 
 @pytest.mark.asyncio
 async def test_reader_failures_and_missing_reader_are_explained(repo):
+    from booley.harness.dashboard.targets import TargetsReader
+
     class Exploding(TargetsReader):
         def listing(self, worktree):
             raise RuntimeError("boom")
