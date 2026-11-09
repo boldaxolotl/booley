@@ -12,6 +12,7 @@ from booley.fusesoc.core_projection import PROJECTED_CORE_GLOB
 from booley.harness import init_cmd
 from booley.harness import session_refresh as harness_refresh
 from booley.runtime import session_refresh as runtime_refresh
+from booley.runtime.lifecycle_lock import LifecycleLockError
 from booley.runtime.session_runtime import SessionError
 from tests.harness import test_init_rerun as init_fixtures
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
@@ -146,3 +147,34 @@ def test_refresh_converts_an_escaped_filesystem_error(
 
     with pytest.raises(SessionError, match=r"kept: already current\), .* failed: disk full"):
         _refresh(initialized)
+
+
+def test_refresh_converts_a_lifecycle_lock_timeout(
+    initialized: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def lock_timeout(_root: Path, _facts: init_cmd.ProjectFacts) -> None:
+        raise LifecycleLockError("host Docker lifecycle is busy")
+
+    monkeypatch.setattr(init_cmd, "reinitialize_project", lock_timeout)
+
+    with pytest.raises(SessionError, match=r"kept: already current\), .* failed: host Docker"):
+        _refresh(initialized)
+
+
+def test_refresh_leaves_legacy_hooks_and_a_tracked_bundle_alone(initialized: Path) -> None:
+    root = initialized
+    booley_dir = root / ".booley"
+    hooks = booley_dir / "hooks"
+    hooks.mkdir()
+    legacy = hooks / "commit_msg_hook.py"
+    legacy.write_bytes(b"# diverged legacy hook\n")
+    bundle = booley_dir / ".managed" / "project-git-hooks.pyz"
+    bundle.write_bytes(b"stale tracked bundle")
+    _git(booley_dir, "add", "-f", "hooks", ".managed/project-git-hooks.pyz")
+
+    _refresh(root)
+
+    assert legacy.read_bytes() == b"# diverged legacy hook\n"
+    assert not legacy.with_name("commit_msg_hook.py.pre-booley").exists()
+    assert bundle.read_bytes() == b"stale tracked bundle"
+    assert _git(booley_dir, "status", "--porcelain", "hooks").startswith("A")

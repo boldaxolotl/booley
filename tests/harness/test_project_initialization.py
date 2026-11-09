@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,7 @@ HOST_PRIVATE_ENVIRONMENT = (
 
 
 @pytest.fixture
-def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """A git repo with a Booley guide and a Stealth core, host-private state absent."""
     root = tmp_path / "proj"
     root.mkdir()

@@ -9,7 +9,7 @@ from booley.harness import init_cmd
 from booley.runtime import session_issuance as issuance
 from booley.runtime import session_refresh as runtime_refresh
 from booley.runtime.image_lifecycle import PlanAction, PreparedConvergence
-from booley.runtime.lifecycle_lock import host_lifecycle_lock
+from booley.runtime.lifecycle_lock import LifecycleLockError, host_lifecycle_lock
 from booley.runtime.session_runtime import SessionError
 
 
@@ -151,7 +151,7 @@ def _initialize_refreshed_project(
         facts = init_cmd.ProjectFacts(init_cmd._sandbox_git_version(result.image.selected_id))
         with host_lifecycle_lock("session refresh"):
             outcomes = init_cmd.reinitialize_project(project_root, facts)
-    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+    except (OSError, subprocess.SubprocessError, ValueError, LifecycleLockError) as exc:
         raise SessionError(f"{prefix}: {exc}; run `booley init` on the host") from exc
     failed = [f"{step.name}: {step.detail}" for step in outcomes if step.status == "err"]
     if failed:

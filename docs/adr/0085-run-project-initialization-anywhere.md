@@ -5,7 +5,7 @@ Status: accepted. Amends [ADR 0056](0056-separate-host-bootstrap-from-project-in
 ## Context
 
 ADR 0056 split Host Bootstrap from Project Initialization but left Project
-Initialization holding host-only work: the Sandbox Image and Sandbox issuance.
+Initialization holding host-only work: the Sandbox Image and Sandbox Issuance.
 Project-file setup was spread over init-only steps, so `booley session refresh`
 re-applied only the Dashboard task and a few excludes. Drift in Git hooks, Git
 settings, guidance links and core projections survived a refresh, and nothing
@@ -17,12 +17,12 @@ could run the Project-file steps from inside a Sandbox
 - **Location-neutral.** Project Initialization is one step,
   `init_cmd.initialize_project`, over the Project Root and its Booley
   Directory. It uses no Docker, host credentials, host-wide lock, private store
-  or Sandbox issuance. Facts only the host knows, such as the Sandbox Git
+  or Sandbox Issuance. Facts only the host knows, such as the Sandbox Git
   version behind `worktree.useRelativePaths`, and the Agent CLI choice are
   injected.
 - **Host init is Project Initialization plus host-only steps.** Host
-  `booley init` runs it, then Sandbox issuance, image retirement, inventory and
-  advisories; its output is unchanged. Its Sandbox issuance step keeps owning
+  `booley init` runs it, then Sandbox Issuance, image retirement, inventory and
+  advisories; its output is unchanged. Its Sandbox Issuance step keeps owning
   the Dashboard task and Interactive excludes, with their preconditions and
   rollback, so host init skips the Project-file copy of that step.
 - **Refresh never rewrites tracked content.** After the Sandbox replacement

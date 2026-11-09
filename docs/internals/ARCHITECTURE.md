@@ -23,8 +23,8 @@ The preparation sequence is deliberately one-way:
 1. **Host Bootstrap** validates host policy and applications, then reconciles
    shared skills, the PDK cache, the base Sandbox Image, and global sidecars.
 2. **Project Initialization** reconciles Project files and Git integration. Host
-   `booley init` then prepares the selected or derived Sandbox Image and issues
-   the Sandbox specification.
+   `booley init` prepares the selected or derived Sandbox Image alongside it,
+   then issues the Sandbox specification.
 3. The issued **Sandbox** hosts Interactive Mode and Goal Mode.
 
 Both host and Project image scopes cross the same authoritative image-lifecycle
