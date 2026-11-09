@@ -975,8 +975,8 @@ def _is_issuance_label(value: str) -> bool:
     return value.startswith(_ISSUANCE_LABEL_PREFIXES)
 
 
-def _spec_digest(spec: dict[str, Any]) -> str:
-    """Digest the sealed spec excluding only its self-describing label pairs."""
+def without_issuance_labels(spec: dict[str, Any]) -> dict[str, Any]:
+    """Copy *spec* without the ``--label`` pairs that describe its own issuance."""
     normalized = json.loads(json.dumps(spec))
     raw = normalized.get("runArgs")
     if not isinstance(raw, list):
@@ -995,7 +995,14 @@ def _spec_digest(spec: dict[str, Any]) -> str:
         cleaned.append(raw[index])
         index += 1
     normalized["runArgs"] = cleaned
-    encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
+    return normalized
+
+
+def _spec_digest(spec: dict[str, Any]) -> str:
+    """Digest the sealed spec excluding only its self-describing label pairs."""
+    encoded = json.dumps(
+        without_issuance_labels(spec), sort_keys=True, separators=(",", ":")
+    ).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 

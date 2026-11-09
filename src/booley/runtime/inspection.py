@@ -16,6 +16,7 @@ import os
 import re
 import stat
 import subprocess
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,17 +41,12 @@ from booley.runtime import (
     runtime_context,
     sandbox_layout,
     session_runtime,
-    vaporview,
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.booley_dir import BOOLEY_DIR_NAME
-from booley.runtime.devcontainer import (
-    devcontainer_path,
-    spec_mounts_token_seed,
-    spec_state_is_persisted,
-)
+from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.filesystem_utils import read_file_bytes
 
 
@@ -65,8 +61,10 @@ class RuntimeInspectionRequest:
     declared_clis: tuple[str, ...] | None = None
     eda: dict[str, EdaConfig] | None = None
     fpga_enabled: bool = False
-    expected_cache_mount: str | None = None
     booley_dir: Path | None = None
+    # The spec init would issue now, pinned to the given image ID. Runtime cannot import
+    # the harness, so host Doctor injects it; None means Doctor runs inside the Sandbox.
+    expected_spec: Callable[[str | None], dict] | None = None
 
     @functools.cached_property
     def remedy(self) -> str:
@@ -130,13 +128,14 @@ def _devcontainer_tracked(project_root: Path) -> bool:
 
 
 def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings) -> None:  # noqa: PLR0911 — ordered drift preconditions
-    """ADR 0018: untracked, valid devcontainer.json; never a tracked one.
+    """ADR 0018: untracked, valid devcontainer.json that matches what init would write.
 
     *request.image* is the project-resolved ``[sandbox].image``; the spec's own
     ``image`` must match it, else the Sandbox runs a stale image.
     *request.declared_provider* is the project's *explicit* ``[agent] provider`` and
     *request.declared_clis* its explicit ``[agent] clis`` (``None`` = undeclared); the
-    spec's recorded Agent CLI set must match them.
+    spec's recorded Agent CLI set must match them. Beyond those preconditions the spec
+    is compared against a rebuild of what ``booley init`` would write now.
     """
     if _devcontainer_tracked(request.project_root):
         report.fail(
@@ -157,27 +156,29 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
     except (OSError, ValueError) as exc:
         report.fail(f"{path} does not parse: {exc}", "re-run booley init")
         return
-    if not _provider_persistence_current(request, spec, report):
+    spec_app = dc.spec_agent_app(spec)
+    if not _provider_current(request, spec, spec_app, report):
         return
     if not _image_current(request, spec, report):
         return
-    seed_currency = _seed_mounts_current(request, spec, report)
-    if seed_currency is False:
+    if spec_app in auth_token.CREDENTIALS and not _credential_policy_inspectable(
+        request, spec_app, report
+    ):
         return
-    if not _viewer_extensions_current(request, spec, report):
+    if spec_app == agent_app.AUTO_APP:
+        # `booley init` never writes 'auto', so there is no spec to compare against.
+        report.note(
+            "devcontainer.json is hand-written (BOOLEY_AGENT_APP 'auto'): drift against "
+            "`booley init` is not checked"
+        )
         return
-    if not _preview_terminal_current(request, spec, report):
-        return
-    if not _retired_entries_absent(request, spec, report):
-        return
-    if seed_currency is not None:
-        report.pass_("devcontainer.json present and structurally current")
+    _compare_with_expected_spec(request, spec, report)
 
 
-def _provider_persistence_current(
-    request: RuntimeInspectionRequest, spec: dict, report: Findings
+def _provider_current(
+    request: RuntimeInspectionRequest, spec: dict, spec_app: str | None, report: Findings
 ) -> bool:
-    spec_app = dc.spec_agent_app(spec)
+    """Whether the spec's provider and Agent CLI set agree with ``[agent]``."""
     pinned = request.declared_provider
     if pinned is not None and spec_app == agent_app.AUTO_APP:
         # "auto" resolves per start; a Sandbox without the pinned app's
@@ -190,18 +191,8 @@ def _provider_persistence_current(
             f"registers the other app while Specialists still use '{pinned}'; remove "
             f"[agent] provider or set BOOLEY_AGENT_APP to '{pinned}'",
         )
-    elif not _cli_set_current(request, spec, spec_app, report):
-        return False
-    if spec_state_is_persisted(spec) is False:
-        _spec_warning(
-            request,
-            report,
-            "devcontainer.json is stale: no persistent volume for the agent's "
-            "home-state - in-container transcripts/plans are lost on every "
-            "rebuild",
-        )
-        return False
-    return True
+        return True
+    return _cli_set_current(request, spec, spec_app, report)
 
 
 def _cli_set_current(
@@ -259,41 +250,14 @@ def _image_current(request: RuntimeInspectionRequest, spec: dict, report: Findin
     return True
 
 
-def _seed_mounts_current(
-    request: RuntimeInspectionRequest, spec: dict, report: Findings
-) -> bool | None:
-    if request.expected_cache_mount and not dc.spec_mounts_target(
-        spec, request.expected_cache_mount
-    ):
-        _spec_warning(
-            request,
-            report,
-            "devcontainer.json omits the verified Nangate45 cache mount at "
-            f"{request.expected_cache_mount}: ASIC synthesis will fail before "
-            "elaboration",
-        )
-        return False
-    remote_env = spec.get("remoteEnv")
-    app = remote_env.get("BOOLEY_AGENT_APP") if isinstance(remote_env, dict) else None
-    if app not in auth_token.CREDENTIALS:
-        return True
-    expected_seed = _expected_token_seed(request, app, report)
-    if expected_seed is None:
-        return None
-    if expected_seed and spec_mounts_token_seed(spec) is False:
-        _spec_warning(
-            request,
-            report,
-            "devcontainer.json predates the stored `booley auth` credential: "
-            "VS Code sessions fall back to the refreshing one",
-        )
-        return False
-    return True
-
-
-def _expected_token_seed(
+def _credential_policy_inspectable(
     request: RuntimeInspectionRequest, app: str, report: Findings
-) -> bool | None:
+) -> bool:
+    """Whether the project's credential policy and seed can be read, as init reads them.
+
+    A broken policy is a FAIL here: without it the expected spec cannot be built
+    honestly, so no comparison (and no PASS) follows.
+    """
     from booley.config.agent import BackendConfigError, project_credential_policies
     from booley.core.booley_layout import BooleyLayoutError
     from booley.core.checkout_role import SourceCheckoutProjectError
@@ -302,8 +266,7 @@ def _expected_token_seed(
         found = project_credential_policies(
             request.project_root, booley_dir=request.booley_dir, selected=app
         )
-        policy = found.policies.get(app, found.policies[found.default])
-        return auth_token.credential_plan(app, policy).token_seed is not None
+        auth_token.credential_plan(app, found.policies.get(app, found.policies[found.default]))
     except (
         BackendConfigError,
         BooleyLayoutError,
@@ -315,75 +278,84 @@ def _expected_token_seed(
             "Sandbox credential mount expectation is unavailable: Project credential policy or seed could not be inspected",
             "repair the selected Project credential policy and seed configuration, then refresh the Sandbox",
         )
-        return None
-
-
-def _viewer_extensions_current(
-    request: RuntimeInspectionRequest, spec: dict, report: Findings
-) -> bool:
-    if not dc.spec_installs_vaporview(spec):
-        _spec_warning(
-            request,
-            report,
-            "devcontainer.json predates the current Waveform Viewer (ADR 0078) "
-            "setup: the VaporView extension entry is missing or is not exactly the "
-            f"image-bundled {vaporview.BUNDLED_VSIX}, or the Booley Sandbox Integration extension that hosts the "
-            "Viewer Bridge, the waveform color settings, or the postAttach patch "
-            "are missing, so in-container `bwave gui` finds no usable viewer",
-        )
-        return False
-    if not dc.spec_installs_hdl_highlight(spec):
-        _spec_warning(
-            request,
-            report,
-            "devcontainer.json's Verilog/SystemVerilog highlighting extension "
-            f"entry is missing or is not exactly the image-bundled {dc.HDL_VSIX}: "
-            "RTL renders as plain text in attached VS Code windows",
-        )
         return False
     return True
 
 
-def _retired_entries_absent(
+# Longest diff shown in one finding; the rest is summarized as a count.
+_MAX_DIFF_LINES = 20
+
+
+def _comparable(spec: dict) -> dict:
+    """*spec* without its issuance labels (which restate the digest), when it has runArgs."""
+    try:
+        return runtime_spec.without_issuance_labels(spec)
+    except runtime_spec.RuntimeSpecError:
+        return spec
+
+
+def _compare_with_expected_spec(
     request: RuntimeInspectionRequest, spec: dict, report: Findings
-) -> bool:
-    retired = dc.spec_retired_vscode_entries(spec)
-    if retired:
-        _spec_warning(
-            request,
-            report,
-            "devcontainer.json still lists VS Code entries Booley no longer "
-            f"installs ({', '.join(retired)})",
+) -> None:
+    """Diff *spec* against the spec ``booley init`` would write, and report the result.
+
+    On the host that is init's own sealed rebuild, pinned to the image already on
+    disk so the issued image pin never shows as drift. Inside the Sandbox the host
+    inputs are invisible, so only the host-independent parts are compared.
+    """
+    try:
+        if request.expected_spec is None:
+            rebuilt = dc.sandbox_visible_expectation(spec)
+            expected, actual = dc.sandbox_visible(rebuilt), dc.sandbox_visible(spec)
+            scope = (
+                "matches the Sandbox-visible parts of the spec `booley init` would write; "
+                "host `booley doctor` checks the rest"
+            )
+        else:
+            spec_image = spec.get("image")
+            pin = (
+                spec_image
+                if isinstance(spec_image, str) and spec_image.startswith("sha256:")
+                else None
+            )
+            rebuilt = request.expected_spec(pin)
+            expected, actual = _comparable(rebuilt), _comparable(spec)
+            scope = "matches the spec `booley init` would write"
+    except (runtime_spec.RuntimeSpecError, ValueError) as exc:
+        report.warn(
+            "devcontainer.json drift cannot be checked: the spec `booley init` would write "
+            f"cannot be built: {exc}",
+            "fix the error, then rerun `booley doctor`",
+            check_id="interactive.devcontainer-unverified",
+            subject=str(devcontainer_path(request.project_root)),
         )
-        return False
-    return True
-
-
-def _preview_terminal_current(
-    request: RuntimeInspectionRequest, spec: dict, report: Findings
-) -> bool:
-    if not dc.spec_installs_live_preview(spec):
-        _spec_warning(
-            request,
-            report,
-            "devcontainer.json lacks the collision-safe Live Preview setup (the "
-            f"extension entry must be exactly the image-bundled {dc.LIVE_PREVIEW_VSIX}): "
-            "rendered review HTML may open as a blank preview",
+        return
+    differences = dc.spec_differences(expected, actual)
+    if not differences:
+        report.pass_(f"devcontainer.json {scope}")
+        return
+    header = (
+        "devcontainer.json differs from the spec `booley init` would write (- on disk, + expected)"
+    )
+    if dc.spec_volume_targets(rebuilt) - dc.spec_volume_targets(spec):
+        header += (
+            "; no persistent volume for the agent's home-state - in-container "
+            "transcripts/plans are lost on every rebuild"
         )
-        return False
-    if not dc.spec_disables_python_terminal_activation(spec):
-        report.note(
-            "devcontainer.json predates the Python terminal activation fix: a "
-            "synced Python extension can inject a delayed `source .venv/bin/activate` "
-            "into new terminals; " + request.remedy
-        )
-        return False
-    return True
+    shown = differences[:_MAX_DIFF_LINES]
+    if len(differences) > len(shown):
+        shown.append(f"... {len(differences) - len(shown)} more")
+    _spec_warning(request, report, header, shown)
 
 
-def _spec_warning(request: RuntimeInspectionRequest, report: Findings, message: str) -> None:
+def _spec_warning(
+    request: RuntimeInspectionRequest,
+    report: Findings,
+    message: str,
+    detail_lines: Sequence[str] = (),
+) -> None:
     report.warn(
-        message + "; " + request.remedy,
+        message + "; " + request.remedy + "".join(f"\n  {line}" for line in detail_lines),
         check_id="interactive.devcontainer-drift",
         subject=str(devcontainer_path(request.project_root)),
     )

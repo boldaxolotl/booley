@@ -326,16 +326,11 @@ class TestAppExtension:
             assert "bitwisecook.tcl" not in vscode["extensions"]
             assert "files.associations" not in vscode["settings"]
 
-    def test_generated_spec_has_no_retired_entries(self):
+    def test_generated_spec_installs_bundled_hdl_highlight_only(self):
         for app in dc.SUPPORTED_APPS:
-            assert dc.spec_retired_vscode_entries(build_spec(app)) == []
-
-    def test_spec_installs_hdl_highlight_without_tcl(self):
-        spec = build_spec(dc.APP_CLAUDE)
-        vscode = spec["customizations"]["vscode"]
-        vscode["extensions"] = [e for e in vscode["extensions"] if e != "bitwisecook.tcl"]
-        vscode["settings"].pop("files.associations", None)
-        assert dc.spec_installs_hdl_highlight(spec) is True
+            extensions = build_spec(app)["customizations"]["vscode"]["extensions"]
+            assert dc.HDL_VSIX in extensions
+            assert "mshr-h.veriloghdl" not in extensions
 
     def test_none_installs_no_agent_extension(self):
         # Waveform viewing isn't tied to an agent app, so "none" carries the
@@ -361,152 +356,10 @@ class TestAppExtension:
                 key: vscode["settings"][key] for key in dc._VAPORVIEW_PRESENTATION_SETTINGS
             } == dc._VAPORVIEW_PRESENTATION_SETTINGS
 
-    def test_spec_installs_vaporview_detector(self):
-        # The single detector booley doctor reads to surface a spec seeded
-        # before the current Waveform Viewer setup (ADR 0078) landed.
-        for app in dc.SUPPORTED_APPS:
-            assert dc.spec_installs_vaporview(build_spec(app)) is True
-        # Older shapes: no customizations at all, or an agent extension
-        # without VaporView.
-        assert dc.spec_installs_vaporview({}) is False
-        legacy = build_spec(dc.APP_CLAUDE)
-        legacy["customizations"]["vscode"]["extensions"] = ["Anthropic.claude-code"]
-        assert dc.spec_installs_vaporview(legacy) is False
-
     def test_generated_spec_installs_the_bundled_vaporview_build(self):
         for app in dc.SUPPORTED_APPS:
             extensions = build_spec(app)["customizations"]["vscode"]["extensions"]
             assert [e for e in extensions if "vaporview" in e.lower()] == [vaporview.BUNDLED_VSIX]
-
-    @pytest.mark.parametrize(
-        ("entries", "current"),
-        [
-            pytest.param([vaporview.BUNDLED_VSIX], True, id="bundled"),
-            pytest.param([], False, id="missing"),
-            pytest.param(
-                [f"{vaporview.EXTENSION_ID}@{vaporview.VERIFIED_VERSION}"],
-                False,
-                id="gallery-pinned",
-            ),
-            pytest.param([vaporview.EXTENSION_ID], False, id="gallery-unpinned"),
-            pytest.param(
-                [vaporview.BUNDLED_VSIX, vaporview.EXTENSION_ID],
-                False,
-                id="bundled-plus-gallery",
-            ),
-            pytest.param(
-                [vaporview.BUNDLED_VSIX, f"{vaporview.EXTENSION_ID}@{vaporview.VERIFIED_VERSION}"],
-                False,
-                id="bundled-plus-gallery-pinned",
-            ),
-            pytest.param(
-                [vaporview.BUNDLED_VSIX, vaporview.BUNDLED_VSIX],
-                False,
-                id="bundled-twice",
-            ),
-            pytest.param(
-                ["/usr/local/libexec/booley/vaporview-1.5.4.vsix"],
-                False,
-                id="other-bundled-version",
-            ),
-            pytest.param([vaporview.BUNDLED_VSIX.upper()], False, id="path-wrong-case"),
-            pytest.param(
-                [
-                    vaporview.BUNDLED_VSIX,
-                    f"/x/lramseyer.vaporview-{vaporview.VERIFIED_VERSION}.vsix",
-                ],
-                False,
-                id="marketplace-named-vsix-added",
-            ),
-        ],
-    )
-    def test_spec_installs_vaporview_requires_only_the_bundled_vsix(self, entries, current):
-        spec = build_spec(dc.APP_CLAUDE)
-        extensions = spec["customizations"]["vscode"]["extensions"]
-        spec["customizations"]["vscode"]["extensions"] = [
-            e for e in extensions if not vaporview.is_vaporview_entry(e)
-        ] + entries
-        assert dc.spec_installs_vaporview(spec) is current
-
-    @pytest.mark.parametrize(
-        ("detector", "gallery_id", "bundled"),
-        [
-            pytest.param(
-                dc.spec_installs_hdl_highlight,
-                "mshr-h.veriloghdl",
-                dc.HDL_VSIX,
-                id="hdl",
-            ),
-            pytest.param(
-                dc.spec_installs_live_preview,
-                "ms-vscode.live-server",
-                dc.LIVE_PREVIEW_VSIX,
-                id="live-preview",
-            ),
-        ],
-    )
-    @pytest.mark.parametrize(
-        ("entries", "current"),
-        [
-            pytest.param(["{bundled}"], True, id="bundled"),
-            pytest.param(["{gallery}"], False, id="gallery"),
-            pytest.param(["{gallery}@1.0.0"], False, id="gallery-pinned"),
-            pytest.param(["{bundled}", "{gallery}"], False, id="bundled-plus-gallery"),
-        ],
-    )
-    def test_bundled_extension_detectors_reject_gallery_ids(
-        self, detector, gallery_id, bundled, entries, current
-    ):
-        spec = build_spec(dc.APP_CLAUDE)
-        extensions = spec["customizations"]["vscode"]["extensions"]
-        spec["customizations"]["vscode"]["extensions"] = [
-            e for e in extensions if e not in (gallery_id, bundled)
-        ] + [entry.format(bundled=bundled, gallery=gallery_id) for entry in entries]
-        assert detector(spec) is current
-
-    def test_spec_installs_hdl_highlight_detector(self):
-        # Doctor's detector for a spec that lacks the bundled HDL VSIX
-        # (a spec seeded before the highlighting extension landed).
-        for app in dc.SUPPORTED_APPS:
-            assert dc.spec_installs_hdl_highlight(build_spec(app)) is True
-        assert dc.spec_installs_hdl_highlight({}) is False
-        # A missing HDL grammar extension means a stale spec.
-        legacy = build_spec(dc.APP_CLAUDE)
-        legacy["customizations"]["vscode"]["extensions"] = [
-            "Anthropic.claude-code",
-            "lramseyer.vaporview",
-        ]
-        assert dc.spec_installs_hdl_highlight(legacy) is False
-        spec = build_spec(dc.APP_CLAUDE)
-        spec["customizations"]["vscode"]["extensions"].remove(dc.HDL_VSIX)
-        assert dc.spec_installs_hdl_highlight(spec) is False
-
-    def test_spec_installs_live_preview_detector(self):
-        # Detect specs seeded before rendered HTML reports could be viewed in
-        # the attached container window or before per-attach tunnel isolation
-        # was added (F-14).
-        for app in dc.SUPPORTED_APPS:
-            assert dc.spec_installs_live_preview(build_spec(app)) is True
-        assert dc.spec_installs_live_preview({}) is False
-        legacy = build_spec(dc.APP_CLAUDE)
-        legacy["customizations"]["vscode"]["extensions"].remove(dc.LIVE_PREVIEW_VSIX)
-        assert dc.spec_installs_live_preview(legacy) is False
-        for value in (None, True):
-            stale = build_spec(dc.APP_CLAUDE)
-            settings = stale["customizations"]["vscode"]["settings"]
-            if value is None:
-                del settings["remote.restoreForwardedPorts"]
-            else:
-                settings["remote.restoreForwardedPorts"] = value
-            assert dc.spec_installs_live_preview(stale) is False
-
-        stale = build_spec(dc.APP_CLAUDE)
-        del stale["customizations"]["vscode"]["settings"]["livePreview.portNumber"]
-        assert dc.spec_installs_live_preview(stale) is False
-
-        stale = build_spec(dc.APP_CLAUDE)
-        stale["postAttachCommand"] = dc.vaporview_patch_command()
-        assert dc.spec_installs_live_preview(stale) is False
 
     def test_live_preview_does_not_restore_stale_port_tunnels(self):
         # F-14: restored 3000/3001 tunnels can point the embedded browser at a
@@ -531,50 +384,6 @@ class TestAppExtension:
             settings = spec["customizations"]["vscode"]["settings"]
             assert settings["python-envs.terminal.autoActivationType"] == "off"
             assert settings["python.terminal.activateEnvironment"] is False
-            assert dc.spec_disables_python_terminal_activation(spec) is True
-
-    def test_python_terminal_autoactivation_detector_rejects_stale_specs(self):
-        for key in dc._PYTHON_TERMINAL_SETTINGS:
-            spec = build_spec(dc.APP_CLAUDE)
-            del spec["customizations"]["vscode"]["settings"][key]
-            assert dc.spec_disables_python_terminal_activation(spec) is False
-
-    def test_spec_installs_vaporview_requires_the_bridge_host(self):
-        # Without the image-local Booley extension no window runs the bridge,
-        # so scoped `bwave gui` has nothing to drive.
-        spec = build_spec(dc.APP_CLAUDE)
-        spec["customizations"]["vscode"]["extensions"].remove(VSIX_PATH)
-        assert dc.spec_installs_vaporview(spec) is False
-
-    def test_spec_from_the_previous_viewer_setup_reads_as_drift(self):
-        # The previous generator pinned another VaporView build, enabled its
-        # WCP endpoint, and installed the Booley extension only with the
-        # Dashboard; a refresh must replace that whole shape.
-        spec = build_spec(dc.APP_CLAUDE, dashboard=False)
-        vscode = spec["customizations"]["vscode"]
-        vscode["extensions"] = [
-            f"{vaporview.EXTENSION_ID}@1.5.4" if vaporview.is_vaporview_entry(e) else e
-            for e in vscode["extensions"]
-            if e != VSIX_PATH
-        ]
-        vscode["settings"].update({"vaporview.wcp.enabled": True, "vaporview.wcp.port": 54322})
-        assert dc.spec_installs_vaporview(spec) is False
-
-    def test_spec_installs_vaporview_rejects_presentation_palette_drift(self):
-        for key in dc._VAPORVIEW_PRESENTATION_SETTINGS:
-            spec = build_spec(dc.APP_CLAUDE)
-            del spec["customizations"]["vscode"]["settings"][key]
-            assert dc.spec_installs_vaporview(spec) is False
-
-    def test_spec_installs_vaporview_requires_the_attach_patch(self):
-        # Without the postAttach patch the custom palette ignores the spec's
-        # Machine settings and VaporView errors on the remote theme lookup.
-        spec = build_spec(dc.APP_CLAUDE)
-        assert dc.spec_installs_vaporview(spec) is True
-        del spec["postAttachCommand"]
-        assert dc.spec_installs_vaporview(spec) is False
-        spec["postAttachCommand"] = "echo not-the-patch"
-        assert dc.spec_installs_vaporview(spec) is False
 
     def test_spec_wires_vaporview_autostart_postattach(self):
         # Every app (incl. "none") gets the patch hook on attach — attach is
@@ -704,24 +513,6 @@ class TestTokenSeedMount:
         )
         assert "sk-ant-" not in json.dumps(spec)
 
-    def test_spec_mounts_token_seed_detector(self):
-        # The single detector booley doctor reads to surface a spec seeded
-        # before the credential was stored.
-        with_seed = build_spec(dc.APP_CLAUDE, token_source="/t")
-        assert dc.spec_mounts_token_seed(with_seed) is True
-        without = build_spec(dc.APP_CLAUDE)
-        assert dc.spec_mounts_token_seed(without) is False
-        assert dc.spec_mounts_token_seed(build_spec(dc.APP_NONE)) is None
-
-    def test_spec_mounts_target_detector(self):
-        spec = build_spec(
-            dc.APP_NONE,
-            trusted_eda_mounts=(("/host/pdk", "/opt/pdk"),),
-        )
-
-        assert dc.spec_mounts_target(spec, "/opt/pdk") is True
-        assert dc.spec_mounts_target(spec, "/missing") is False
-
 
 class TestStateVolume:
     def test_claude_persists_claude_home(self):
@@ -816,57 +607,6 @@ class TestSpecAgentApp:
         assert dc.spec_agent_app(spec) is None
 
 
-# ===========================================================================
-# spec_state_is_persisted (stale-spec detector shared with booley doctor)
-# ===========================================================================
-
-
-class TestSpecStateIsPersisted:
-    def test_freshly_built_claude_spec_persists(self):
-        spec = build_spec(dc.APP_CLAUDE)
-        assert dc.spec_state_is_persisted(spec) is True
-
-    def test_freshly_built_codex_spec_persists(self):
-        spec = build_spec(dc.APP_CODEX)
-        assert dc.spec_state_is_persisted(spec) is True
-
-    def test_app_none_is_not_applicable(self):
-        # No home-state dir to persist -> None (nothing to check), not False.
-        spec = build_spec(dc.APP_NONE)
-        assert dc.spec_state_is_persisted(spec) is None
-
-    def test_stale_claude_spec_missing_volume_is_false(self):
-        # Reproduce a pre-fix spec: the claude app, but the state volume dropped.
-        spec = build_spec(dc.APP_CLAUDE)
-        spec["mounts"] = [m for m in spec["mounts"] if "type=volume" not in m]
-        assert dc.spec_state_is_persisted(spec) is False
-
-    def test_volume_at_wrong_target_is_false(self):
-        # A volume mount that does not target the app's state dir does not count.
-        spec = build_spec(dc.APP_CLAUDE)
-        spec["mounts"] = [m for m in spec["mounts"] if "type=volume" not in m] + [
-            "source=other,target=/home/agent/.cache,type=volume"
-        ]
-        assert dc.spec_state_is_persisted(spec) is False
-
-    def test_absent_or_unknown_app_is_not_applicable(self):
-        assert dc.spec_state_is_persisted({"mounts": []}) is None
-        assert (
-            dc.spec_state_is_persisted({"remoteEnv": {"BOOLEY_AGENT_APP": "bogus"}, "mounts": []})
-            is None
-        )
-
-    def test_accepts_object_form_mounts(self):
-        # Dev Containers also permits object-form mounts; detector must handle it.
-        spec = {
-            "remoteEnv": {"BOOLEY_AGENT_APP": dc.APP_CLAUDE},
-            "mounts": [
-                {"source": "v", "target": f"{dc.AGENT_HOME}/.claude", "type": "volume"},
-            ],
-        }
-        assert dc.spec_state_is_persisted(spec) is True
-
-
 class TestConfigSeed:
     _SRC = "/home/u/.claude.json"
     _MCP = "python -m booley.harness.incontainer_register"
@@ -887,14 +627,14 @@ class TestConfigSeed:
 
     def test_state_volume_still_last_with_seed(self):
         # Ordering contract: the persisted state volume stays the final mount so
-        # it nests under the deeper auth bind (and spec_state_is_persisted holds).
+        # it nests under the deeper auth bind.
         spec = build_spec(
             dc.APP_CLAUDE,
             login_source="/home/u/.claude/.credentials.json",
             config_source=self._SRC,
         )
         assert "type=volume" in spec["mounts"][-1]
-        assert dc.spec_state_is_persisted(spec) is True
+        assert f"{dc.AGENT_HOME}/.claude" in dc.spec_volume_targets(spec)
 
     def test_postcreate_seeds_before_registrar(self):
         # cp must precede the registrar so upsert_claude merges into the

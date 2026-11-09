@@ -136,23 +136,6 @@ def _directory_versions(root: Path) -> set[str] | None:
     return versions
 
 
-def is_vaporview_entry(entry: object) -> bool:
-    """Whether a devcontainer ``extensions`` entry requests VaporView in any form.
-
-    Matches a gallery ID at any version (``lramseyer.vaporview``,
-    ``lramseyer.vaporview@<version>``) and a bundled VSIX path for any version, so
-    drift detection can insist that :data:`BUNDLED_VSIX` is the only one.
-    """
-    if not isinstance(entry, str):
-        return False
-    if entry.lower().partition("@")[0] == EXTENSION_ID:
-        return True
-    name = entry.rpartition("/")[2].lower()
-    # Any VSIX file name mentioning VaporView, including Marketplace-style
-    # ``lramseyer.vaporview-<version>.vsix``.
-    return "vaporview" in name and name.endswith(".vsix")
-
-
 def probe_home(home: Path) -> ExtensionState:
     """Inspect every VS Code server root's registry; disagreeing roots are unknown."""
     return aggregate_states(_probe_registry(root) for root in vscode_server.extension_dirs(home))

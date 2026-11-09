@@ -13,6 +13,8 @@ live in the ``booley init`` flow.
 
 from __future__ import annotations
 
+import difflib
+import itertools
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -95,6 +97,9 @@ DEFAULT_BOOLEY_DIR_SOURCE = "${localWorkspaceFolder}/.booley"
 # extension's Viewer Bridge. VaporView has no named red color; `bwave gui`
 # maps its stable red/blue/green interface to the extension's custom palette.
 _VAPORVIEW_PRESENTATION_SETTINGS = PRESENTATION_COLOR_SETTINGS
+
+# VS Code setting through which the spec tells the dashboard extension its attach protocol.
+_DASHBOARD_PROTOCOL_SETTING = "booley.dashboard.attachProtocol"
 # Verilog/SystemVerilog syntax highlighting: without an HDL grammar the
 # attached window renders every .v/.sv file as plain text. mshr-h's extension
 # ships the TextMate grammar (plus ctags-based navigation) and keeps linting
@@ -106,16 +111,6 @@ _VAPORVIEW_PRESENTATION_SETTINGS = PRESENTATION_COLOR_SETTINGS
 # ``Dockerfile.base`` carries the same version (tests enforce the lockstep).
 _HDL_VERSION = "1.29.0"
 HDL_VSIX = f"/usr/local/libexec/booley/veriloghdl-{_HDL_VERSION}.vsix"
-# The Marketplace ID older specs listed; Doctor flags a spec that still does.
-_HDL_GALLERY_ID = "mshr-h.veriloghdl"
-
-# VS Code entries older Booley specs installed and no current spec carries:
-# the Claude Code / Codex agent extensions (the agent CLI is the only agent
-# surface), the Tcl grammar, and the *.sdc/*.xdc -> tcl associations (the HDL
-# extension claims those suffixes itself). Doctor flags a spec still listing them.
-_RETIRED_AGENT_EXTENSIONS = ("Anthropic.claude-code", "openai.chatgpt")
-_RETIRED_EXTENSIONS = ("bitwisecook.tcl", *_RETIRED_AGENT_EXTENSIONS)
-_RETIRED_FILE_ASSOCIATIONS = {"*.sdc": "tcl", "*.xdc": "tcl"}
 
 # Microsoft's Live Preview hosts static HTML and renders it in an embedded
 # VS Code tab. Installed for every app so human-facing reports (including the
@@ -124,7 +119,6 @@ _RETIRED_FILE_ASSOCIATIONS = {"*.sdc": "tcl", "*.xdc": "tcl"}
 # by path, like the HDL extension above.
 _LIVE_PREVIEW_VERSION = "0.4.20"
 LIVE_PREVIEW_VSIX = f"/usr/local/libexec/booley/live-server-{_LIVE_PREVIEW_VERSION}.vsix"
-_LIVE_PREVIEW_GALLERY_ID = "ms-vscode.live-server"
 
 # Live Preview exposes its in-container HTTP/WebSocket servers through VS
 # Code's remote-port tunnel. VS Code's long-lived local process can retain a
@@ -278,12 +272,6 @@ def post_attach_command() -> str:
     return f"{live_preview_port_command()} && {vaporview_patch_command()}"
 
 
-def _post_attach_has(spec: dict, command: str) -> bool:
-    """Whether *command* is one complete step in the generated attach hook."""
-    value = spec.get("postAttachCommand")
-    return isinstance(value, str) and command in (part.strip() for part in value.split("&&"))
-
-
 def _auth_target_for_app(app: str) -> str | None:
     """Return the container-side auth-token path for *app*, or ``None``."""
     return _APP_AUTH_TARGET.get(app)
@@ -362,15 +350,6 @@ def _parse_mount(mount: object) -> dict[str, str]:
     return {}
 
 
-def spec_mounts_target(spec: dict, target: str) -> bool:
-    """Whether a devcontainer *spec* mounts any source at *target*."""
-    mounts = spec.get("mounts")
-    return any(
-        _parse_mount(mount).get("target") == target
-        for mount in (mounts if isinstance(mounts, list) else [])
-    )
-
-
 def spec_agent_app(spec: dict) -> str | None:
     """The agent app *spec* configures, from ``remoteEnv.BOOLEY_AGENT_APP``.
 
@@ -402,219 +381,84 @@ def spec_cli_policies(spec: dict) -> dict[str, str]:
     return {}
 
 
-def spec_state_is_persisted(spec: dict) -> bool | None:
-    """Whether *spec* persists its agent app's home-state across rebuilds.
+def spec_volume_targets(spec: dict) -> frozenset[str]:
+    """Container targets of the named-volume mounts in *spec*.
 
-    A spec generated before the persistence fix mounts no volume at the agent's
-    home-state dir, so the container's writable layer — and with it every session
-    transcript, plan, and todo — is silently discarded on each rebuild. This is
-    the single detector both the spec builder's contract and ``booley doctor``
-    read, so a stale on-disk spec can be surfaced instead of passing unnoticed.
-
-    Returns:
-        ``True``  - the app keeps home-state and a ``type=volume`` mount targets
-                    its state dir (e.g. ``/home/agent/.claude``): survives rebuilds.
-        ``False`` - the app keeps home-state but NO volume mount targets it: a
-                    STALE spec predating the fix; in-container history is lost.
-        ``None``  - the app has no persistent state dir (nothing to persist), or
-                    the app is absent/unknown; there is nothing to check.
-
-    The app is read from ``remoteEnv.BOOLEY_AGENT_APP`` (always set by
-    :func:`build_devcontainer_spec`).
+    Only the per-app home-state volumes are ``type=volume`` mounts, so this is the
+    set of agent state dirs the spec persists across rebuilds.
     """
-    target = _APP_STATE_DIR.get(spec_agent_app(spec))
-    if target is None:
-        return None
     mounts = spec.get("mounts")
-    for mount in mounts if isinstance(mounts, list) else []:
-        parts = _parse_mount(mount)
-        if parts.get("type") == "volume" and parts.get("target") == target:
-            return True
-    return False
+    parsed = (_parse_mount(mount) for mount in (mounts if isinstance(mounts, list) else []))
+    return frozenset(
+        parts["target"] for parts in parsed if parts.get("type") == "volume" and "target" in parts
+    )
 
 
-def spec_mounts_token_seed(spec: dict) -> bool | None:
-    """Whether *spec* mounts the app's ``booley auth`` token-seed sidecar.
+def sandbox_visible_expectation(spec: dict) -> dict:
+    """Rebuild *spec* from its own record, for a Doctor that cannot see host inputs.
 
-    A spec seeded before a credential was stored (or before this mount existed)
-    carries no sidecar, so VS Code sessions silently fall back to the refreshing
-    subscription credential — the exact failure mode ``booley auth`` exists to
-    prevent. ``booley doctor`` reads this to surface the drift.
-
-    Returns ``None`` when the spec's app has no rotation-free credential
-    (nothing to mount), else whether the sidecar mount is present. The app is
-    read from ``remoteEnv.BOOLEY_AGENT_APP``, same as
-    :func:`spec_state_is_persisted`.
+    Inside the Sandbox the host project config, credentials, skills and caches are
+    invisible, so the spec ``booley init`` would write cannot be rebuilt in full. The
+    parts this function fixes do not depend on them: the agent app, the Agent CLI set
+    and the dashboard flag are read from *spec* itself, and no credential or seed
+    sources are supplied. Compare only :func:`sandbox_visible` projections of the result.
+    Raises ``ValueError`` when the spec's Agent CLI record is malformed.
     """
-    target = _APP_TOKEN_SEED_TARGET.get(spec_agent_app(spec))
-    if target is None:
-        return None
-    mounts = spec.get("mounts")
-    for mount in mounts if isinstance(mounts, list) else []:
-        if _parse_mount(mount).get("target") == target:
-            return True
-    return False
-
-
-def spec_installs_vaporview(spec: dict) -> bool:
-    """Whether *spec* installs VaporView and the Booley bridge that drives it.
-
-    The Waveform Viewer (ADR 0078) reaches an attached VS Code window only
-    through the generated spec: the image-bundled VaporView VSIX install,
-    the image-local Booley Sandbox Integration extension that hosts the Viewer Bridge, the
-    semantic waveform-color settings, AND the ``postAttachCommand`` patch
-    that makes those colors effective. A spec seeded before any of these
-    landed leaves scoped ``bwave gui`` without a usable viewer — even after an
-    image rebuild, which never touches the spec. ``booley doctor`` reads this
-    to surface the drift.
-
-    Returns ``True`` only when VaporView is listed exactly once, as the
-    bundled ``vaporview.BUNDLED_VSIX`` path (any gallery ID is drift: an
-    egress-locked Sandbox cannot install it), the Booley Sandbox Integration extension is listed, the
-    presentation palette is intact, AND the patch is wired; any miss means a
-    stale or hand-edited spec that a refresh would fix.
-    """
-    from booley.runtime.dashboard_extension import VSIX_PATH
-
-    customizations = spec.get("customizations")
-    vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
-    if not isinstance(vscode, dict):
-        return False
-    extensions = vscode.get("extensions")
-    if not isinstance(extensions, list) or VSIX_PATH not in extensions:
-        return False
-    # Exactly one VaporView entry, the bundled VSIX: a gallery entry (pinned or
-    # not) never installs in an egress-locked Sandbox, and another VSIX path
-    # names a build Booley has not verified.
-    requested = [entry for entry in extensions if _vaporview.is_vaporview_entry(entry)]
-    if requested != [_vaporview.BUNDLED_VSIX]:
-        return False
-    settings = vscode.get("settings")
-    if not isinstance(settings, dict):
-        return False
-    if not all(
-        settings.get(key) == value for key, value in _VAPORVIEW_PRESENTATION_SETTINGS.items()
-    ):
-        return False
-    return _post_attach_has(spec, vaporview_patch_command())
-
-
-def _installs_only_bundled(extensions: list, gallery_id: str, vsix: str) -> bool:
-    """Whether *extensions* requests an extension exactly once, as the bundled *vsix*.
-
-    Counts the entries that equal *vsix* or name the extension's *gallery_id*
-    (any ``@version``, any case). A gallery ID is drift: an egress-locked
-    Sandbox cannot install it. A stale bundled path left from an earlier image
-    version is drift too, since it leaves the current *vsix* unrequested.
-    """
-    requested = [
-        entry
-        for entry in extensions
-        if isinstance(entry, str)
-        and (entry == vsix or entry.lower().partition("@")[0] == gallery_id)
+    policies = spec_cli_policies(spec)
+    plans = [
+        auth_token.CredentialPlan(cli, policy, None, frozenset(), ())
+        for cli, policy in policies.items()
     ]
-    return requested == [vsix]
-
-
-def spec_installs_hdl_highlight(spec: dict) -> bool:
-    """Whether *spec* installs the Verilog/SystemVerilog highlighting extension.
-
-    The grammar reaches an attached window only through the generated spec's
-    ``customizations``, as the VSIX bundled in the Sandbox Image
-    (:data:`HDL_VSIX`). A spec that lacks it, or that lists the gallery ID
-    instead, renders RTL as plain text until a re-seed.
-    The extension also claims the ``.sdc``/``.xdc`` suffixes (checked against
-    mshr-h.veriloghdl 1.29.0, 2026-10), so nothing else is required.
-    ``booley doctor`` reads this to surface the drift.
-    """
-    customizations = spec.get("customizations")
-    vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
-    if not isinstance(vscode, dict):
-        return False
-    extensions = vscode.get("extensions")
-    return isinstance(extensions, list) and _installs_only_bundled(
-        extensions, _HDL_GALLERY_ID, HDL_VSIX
-    )
-
-
-def spec_retired_vscode_entries(spec: dict) -> list[str]:
-    """Name the retired VS Code entries *spec* still carries, in a stable order.
-
-    Lists each retired extension ID in ``extensions``, each retired
-    ``files.associations`` pattern still routed to Tcl, and each retired agent
-    extension still pinned in ``remote.extensionKind``. A spec
-    with unexpected shapes reports nothing for the malformed part, like the
-    sibling ``spec_*`` detectors. ``booley doctor`` reads this to surface specs
-    written before those entries were dropped.
-    """
-    customizations = spec.get("customizations")
-    vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
-    if not isinstance(vscode, dict):
-        return []
-    found: list[str] = []
-    extensions = vscode.get("extensions")
-    if isinstance(extensions, list):
-        found += [ext for ext in _RETIRED_EXTENSIONS if ext in extensions]
-    settings = vscode.get("settings")
-    if not isinstance(settings, dict):
-        return found
-    associations = settings.get("files.associations")
-    if isinstance(associations, dict):
-        found += [
-            f"files.associations {pattern}"
-            for pattern, lang in _RETIRED_FILE_ASSOCIATIONS.items()
-            if associations.get(pattern) == lang
-        ]
-    pin = settings.get("remote.extensionKind")
-    if isinstance(pin, dict):
-        found += [f"remote.extensionKind {ext}" for ext in _RETIRED_AGENT_EXTENSIONS if ext in pin]
-    return found
-
-
-def spec_installs_live_preview(spec: dict) -> bool:
-    """Whether *spec* installs and safely configures the HTML report viewer.
-
-    Live Preview is the VSIX bundled in the Sandbox Image and installed by
-    path from the devcontainer spec (:data:`LIVE_PREVIEW_VSIX`); a gallery ID
-    is drift, since an egress-locked Sandbox cannot install it. Restored
-    remote-port tunnels can retain Live Preview's default ports without a
-    live server, producing a blank embedded preview.
-    The health check uses this detector to identify projects whose spec either
-    predates rendered HTML reports or still restores stale forwarded ports.
-    """
-    customizations = spec.get("customizations")
-    vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
-    if not isinstance(vscode, dict):
-        return False
-    extensions = vscode.get("extensions")
-    settings = vscode.get("settings")
-    return (
-        isinstance(extensions, list)
-        and _installs_only_bundled(extensions, _LIVE_PREVIEW_GALLERY_ID, LIVE_PREVIEW_VSIX)
-        and isinstance(settings, dict)
-        and all(settings.get(key) == value for key, value in _LIVE_PREVIEW_SETTINGS.items())
-        and _post_attach_has(spec, live_preview_port_command())
-    )
-
-
-def spec_disables_python_terminal_activation(spec: dict) -> bool:
-    """Whether VS Code is told not to activate workspace virtualenvs.
-
-    Python extension installs can follow users into a devcontainer through
-    Settings Sync.  The current Python Environments extension and older Python
-    extension use different controls, so the rendered spec carries both.
-    Doctor reads this detector to prompt existing projects to
-    regenerate their untracked spec and receive the terminal behavior fix.
-    """
+    app = spec_agent_app(spec) or APP_NONE
+    if not plans:
+        plans = [auth_token.CredentialPlan(app, "auto", None, frozenset(), ())]
     customizations = spec.get("customizations")
     vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
     settings = vscode.get("settings") if isinstance(vscode, dict) else None
-    if not isinstance(settings, dict):
-        return False
-    return (
-        settings.get("python-envs.terminal.autoActivationType") == "off"
-        and settings.get("python.terminal.activateEnvironment") is False
+    dashboard = isinstance(settings, dict) and settings.get(_DASHBOARD_PROTOCOL_SETTING) == 1
+    return build_devcontainer_spec(
+        app,
+        cli_seeds=[CliSeeds(plan) for plan in plans],
+        booley_dir_source="",
+        mcp_start_command=mcp_post_start_command(),
+        dashboard=dashboard,
     )
+
+
+def sandbox_visible(spec: dict) -> dict:
+    """The host-independent content of *spec*: VS Code customizations, attach hook, volumes.
+
+    State-volume names carry the host Project ID, so only their container targets count.
+    """
+    return {
+        "customizations": spec.get("customizations"),
+        "postAttachCommand": spec.get("postAttachCommand"),
+        "stateVolumeTargets": sorted(spec_volume_targets(spec)),
+    }
+
+
+def _flatten_spec(value: object, path: str = "") -> list[str]:
+    """Render *value* as ``"<key.path>: <json>"`` lines; dict keys sorted, list order kept."""
+    if isinstance(value, dict) and value:
+        lines: list[str] = []
+        for key in sorted(value, key=str):
+            lines += _flatten_spec(value[key], f"{path}.{key}" if path else str(key))
+        return lines
+    if isinstance(value, list) and value:
+        return [line for item in value for line in _flatten_spec(item, f"{path}[]")]
+    return [f"{path}: {json.dumps(value, sort_keys=True)}"]
+
+
+def spec_differences(expected: dict, actual: dict) -> list[str]:
+    """Line diff of two specs by key path: ``-`` on disk (*actual*), ``+`` expected.
+
+    Each spec is flattened to one ``<key.path>: <json value>`` line per leaf (list items
+    as ``path[]``), so every line names the key it concerns. Dict key order is ignored;
+    list order is kept. Empty when the specs are equal.
+    """
+    diff = difflib.unified_diff(_flatten_spec(actual), _flatten_spec(expected), n=0, lineterm="")
+    # Drop the two file-header lines and the hunk markers; keep only changed lines.
+    return [line for line in itertools.islice(diff, 2, None) if not line.startswith("@@")]
 
 
 def mask_paths_error(value: object) -> str | None:
@@ -1160,7 +1004,7 @@ def build_devcontainer_spec(
     # every Sandbox installs it; the attach protocol alone decides whether it
     # also opens the Dashboard terminal.
     vscode["extensions"].append(VSIX_PATH)
-    vscode["settings"]["booley.dashboard.attachProtocol"] = 1 if dashboard else 0
+    vscode["settings"][_DASHBOARD_PROTOCOL_SETTING] = 1 if dashboard else 0
     spec["customizations"] = {"vscode": vscode}
 
     # The residual VaporView patch (theme lookup, palette scope) edits the

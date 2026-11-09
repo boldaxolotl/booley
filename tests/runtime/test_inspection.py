@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import pytest
 from tests.devcontainer_spec_support import build_spec
@@ -22,15 +23,13 @@ from tests.harness import test_session_runtime as resolution_fixtures
 
 from booley.harness import doctor
 from booley.harness.setup import readiness
+from booley.runtime import devcontainer as dc
 from booley.runtime import (
-    auth_token,
     inspection,
     project_image,
     runtime_context,
     session_runtime,
-    vaporview,
 )
-from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 
 
@@ -512,15 +511,22 @@ class TestDevcontainerSpecStaleness:
         image: str | None = None,
         declared_provider: str | None = None,
         declared_clis: tuple[str, ...] | None = None,
+        expected: dict | None = None,
     ) -> _Rec:
+        """Inspect the spec on disk against *expected* (default: that same spec).
+
+        *expected* stands in for the spec ``booley init`` would write; the preconditions
+        tested here (image, provider, CLI set) run before it is ever consulted.
+        """
         from booley.runtime import devcontainer as dc
 
         # Isolate from git; tracking is exercised by other tests.
         # Real temporary-directory Git inspection reports no tracked spec.
-        # Isolate from the developer machine's own `booley auth` store — the
-        # token-seed drift branch reads it, and a real stored token would flip
-        # the fresh-spec tests below from pass to warn.
+        # Isolate from the developer machine's own `booley auth` store, which the
+        # credential-policy precondition reads.
         monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "xdg-isolated"))
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+        on_disk = dc.devcontainer_path(root)
         monkeypatch.setattr(idk, "image_id", lambda image: image)
         rec = _Rec()
         _record_report(
@@ -531,9 +537,11 @@ class TestDevcontainerSpecStaleness:
                     None,
                     declared_provider=declared_provider,
                     **({"declared_clis": declared_clis} if declared_clis else {}),
-                    expected_cache_mount=doctor.nangate_pdk.CONTAINER_ROOT
-                    if doctor.nangate_pdk.is_ready()
-                    else None,
+                    expected_spec=lambda _image: copy.deepcopy(
+                        expected
+                        if expected is not None
+                        else json.loads(on_disk.read_text(encoding="utf-8"))
+                    ),
                 )
             ).configuration,
             passed=rec.p,
@@ -585,34 +593,6 @@ class TestDevcontainerSpecStaleness:
 
         dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
         rec = self._run(tmp_path, monkeypatch)
-        assert rec.kinds() == {"pass"}
-
-    def test_verified_pdk_without_spec_mount_warns(self, tmp_path, monkeypatch):
-        from booley.runtime import devcontainer as dc
-
-        dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
-        monkeypatch.setattr(doctor.nangate_pdk, "is_ready", lambda: True)
-
-        rec = self._run(tmp_path, monkeypatch)
-
-        assert rec.fails() == []
-        assert any(
-            level == "warn" and "/opt/pdk" in message and "synthesis" in message
-            for level, message in rec.events
-        )
-
-    def test_verified_pdk_with_spec_mount_passes(self, tmp_path, monkeypatch):
-        from booley.runtime import devcontainer as dc
-
-        spec = build_spec(
-            dc.APP_CLAUDE,
-            trusted_eda_mounts=(("/host/pdk", "/opt/pdk"),),
-        )
-        dc.write_devcontainer(tmp_path, spec)
-        monkeypatch.setattr(doctor.nangate_pdk, "is_ready", lambda: True)
-
-        rec = self._run(tmp_path, monkeypatch)
-
         assert rec.kinds() == {"pass"}
 
     def test_image_drift_warns_not_fails(self, tmp_path, monkeypatch):
@@ -668,9 +648,6 @@ class TestDevcontainerSpecStaleness:
                     project_image.project_image_name(tmp_path),
                     None,
                     declared_provider=None,
-                    expected_cache_mount=doctor.nangate_pdk.CONTAINER_ROOT
-                    if doctor.nangate_pdk.is_ready()
-                    else None,
                 )
             ).configuration,
             passed=rec.p,
@@ -773,7 +750,7 @@ class TestDevcontainerSpecStaleness:
         from booley.runtime import devcontainer as dc
 
         spec = build_spec(dc.APP_CLAUDE)
-        assert dc.spec_state_is_persisted(spec) is True  # the misleading "all good"
+        assert dc.spec_volume_targets(spec)  # the misleading "all good"
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch, declared_provider=dc.APP_CODEX)
         assert rec.fails() and all("BOOLEY_AGENT_APP" in m for m in rec.fails())
@@ -787,15 +764,16 @@ class TestDevcontainerSpecStaleness:
         spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = "claude=auto,codex=auto"
         return spec
 
-    def test_spec_for_allowed_cli_set_passes(self, tmp_path, monkeypatch):
-        # Either listed CLI may be the registered one: the Sandbox seeds both.
+    def test_spec_for_allowed_cli_set_raises_no_cli_set_failure(self, tmp_path, monkeypatch):
+        # Either listed CLI may be the registered one: the Sandbox seeds both. (The
+        # rebuild uses the [agent] default, so a non-default app is drift, not a FAIL.)
         from booley.runtime import devcontainer as dc
 
         dc.write_devcontainer(tmp_path, self._two_cli_spec(dc.APP_CODEX))
         rec = self._run(
             tmp_path, monkeypatch, declared_provider="claude", declared_clis=("claude", "codex")
         )
-        assert rec.kinds() == {"pass"}
+        assert rec.fails() == []
 
     def test_spec_for_other_cli_set_fails_naming_both_sets(self, tmp_path, monkeypatch):
         from booley.runtime import devcontainer as dc
@@ -826,266 +804,9 @@ class TestDevcontainerSpecStaleness:
         rec = self._run(tmp_path, monkeypatch, declared_provider="claude")
         assert any("record is malformed" in m for m in rec.fails())
 
-    def test_stale_claude_spec_warns_not_fails(self, tmp_path, monkeypatch):
-        from booley.runtime import devcontainer as dc
-
-        spec = build_spec(dc.APP_CLAUDE)
-        spec["mounts"] = [m for m in spec["mounts"] if "type=volume" not in m]
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(lvl == "warn" and "stale" in m for lvl, m in rec.events)
-
     def test_missing_spec_warns_run_init(self, tmp_path, monkeypatch):
         rec = self._run(tmp_path, monkeypatch)
         assert any("no .devcontainer" in m for _, m in rec.events)
-
-    def test_stored_token_without_seed_mount_warns(self, tmp_path, monkeypatch):
-        # A credential stored AFTER the spec was seeded: VS Code sessions can't
-        # see it (no sidecar mount), so they silently run on the refreshing
-        # credential — surface the drift, don't fail.
-        from booley.runtime import devcontainer as dc
-
-        dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-isolated"))
-        auth_token.store_token("sk-ant-oat01-stored")
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(lvl == "warn" and "booley auth" in m and "--seed" in m for lvl, m in rec.events)
-
-    def test_stored_token_with_seed_mount_passes(self, tmp_path, monkeypatch):
-        from booley.runtime import devcontainer as dc
-
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-        path = auth_token.store_token("sk-ant-oat01-stored")
-        spec = build_spec(dc.APP_CLAUDE, token_source=str(path))
-        dc.write_devcontainer(tmp_path, spec)
-        rec = _Rec()
-        # Real temporary-directory Git inspection reports no tracked spec.
-        monkeypatch.setattr(idk, "image_id", lambda image: image)
-        _record_report(
-            inspection.inspect_runtime(
-                inspection.RuntimeInspectionRequest(
-                    tmp_path,
-                    dc.SANDBOX_IMAGE,
-                    None,
-                    declared_provider=None,
-                    expected_cache_mount=doctor.nangate_pdk.CONTAINER_ROOT
-                    if doctor.nangate_pdk.is_ready()
-                    else None,
-                )
-            ).configuration,
-            passed=rec.p,
-            warned=rec.w,
-            failed=rec.f,
-            noted=rec.p,
-        )
-        assert rec.kinds() == {"pass"}
-
-    def test_spec_without_vaporview_warns(self, tmp_path, monkeypatch):
-        # A spec seeded before the Waveform Viewer landed installs no VaporView;
-        # an image rebuild never fixes that, so the agent's scoped `bwave gui`
-        # fails in every session — surface it. Exact shape hit live on a real
-        # project 2026-07-14.
-        from booley.runtime import devcontainer as dc
-
-        spec = build_spec(dc.APP_CLAUDE)
-        spec["customizations"]["vscode"]["extensions"] = ["Anthropic.claude-code"]
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(lvl == "warn" and "VaporView" in m and "--seed" in m for lvl, m in rec.events)
-
-    @pytest.mark.parametrize(
-        "gallery_entry",
-        ["lramseyer.vaporview", f"lramseyer.vaporview@{vaporview.VERIFIED_VERSION}"],
-        ids=["unpinned", "pinned"],
-    )
-    def test_gallery_vaporview_spec_warns_with_the_bundled_vsix(
-        self, tmp_path, monkeypatch, gallery_entry
-    ):
-        # Older specs request VaporView from a gallery, which an egress-locked
-        # Sandbox cannot install; Doctor must send them to regenerate.
-        from booley.runtime import devcontainer as dc
-        from booley.runtime import vaporview
-
-        spec = build_spec(dc.APP_CLAUDE)
-        extensions = spec["customizations"]["vscode"]["extensions"]
-        extensions[extensions.index(vaporview.BUNDLED_VSIX)] = gallery_entry
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(
-            lvl == "warn" and vaporview.BUNDLED_VSIX in m and "--seed" in m
-            for lvl, m in rec.events
-        )
-
-    @pytest.mark.parametrize(
-        ("bundled", "gallery_entry", "label"),
-        [
-            pytest.param(
-                dc.HDL_VSIX,
-                "mshr-h.veriloghdl",
-                PurePosixPath(dc.HDL_VSIX).name,
-                id="mshr-h.veriloghdl",
-            ),
-            pytest.param(
-                dc.LIVE_PREVIEW_VSIX,
-                "ms-vscode.live-server",
-                PurePosixPath(dc.LIVE_PREVIEW_VSIX).name,
-                id="ms-vscode.live-server",
-            ),
-        ],
-    )
-    def test_gallery_hdl_or_live_preview_spec_warns_as_drift(
-        self, tmp_path, monkeypatch, bundled, gallery_entry, label
-    ):
-        # An egress-locked Sandbox cannot install a gallery ID, so a spec that
-        # lists one is drift Doctor must send to a Sandbox refresh.
-        from booley.runtime import devcontainer as dc
-
-        spec = build_spec(dc.APP_CLAUDE)
-        vscode = spec["customizations"]["vscode"]
-        vscode["extensions"] = [
-            e for e in vscode["extensions"] if e not in (bundled, gallery_entry)
-        ] + [gallery_entry]
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert len(warns) == 1, rec.events
-        assert label in warns[0] and "--seed" in warns[0]
-
-    def test_spec_without_hdl_highlight_warns(self, tmp_path, monkeypatch):
-        # A spec seeded before the SystemVerilog highlighting extension landed
-        # renders RTL as plain text in attached windows; the extension is
-        # installed from the spec, so only a re-seed fixes it.
-        from booley.runtime import devcontainer as dc
-        from booley.runtime import vaporview
-
-        spec = build_spec(dc.APP_CLAUDE)
-        from booley.runtime.dashboard_extension import VSIX_PATH
-
-        spec["customizations"]["vscode"]["extensions"] = [
-            "Anthropic.claude-code",
-            vaporview.BUNDLED_VSIX,
-            VSIX_PATH,
-        ]
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(
-            lvl == "warn" and "highlighting" in m and dc.HDL_VSIX in m and "--seed" in m
-            for lvl, m in rec.events
-        )
-
-    def test_each_retired_vscode_entry_warns(self, tmp_path, monkeypatch):
-        # Specs written by older Booley installed the agent and Tcl extensions
-        # and pinned them; an otherwise current spec still listing any of them
-        # earns one WARN naming each entry and pointing at regeneration.
-        from booley.runtime import devcontainer as dc
-
-        agent_pin = {"Anthropic.claude-code": ["workspace"]}
-        cases = [
-            ({"extensions": ["bitwisecook.tcl"]}, ["bitwisecook.tcl"]),
-            ({"extensions": ["Anthropic.claude-code"]}, ["Anthropic.claude-code"]),
-            ({"extensions": ["openai.chatgpt"]}, ["openai.chatgpt"]),
-            ({"associations": {"*.sdc": "tcl"}}, ["files.associations *.sdc"]),
-            ({"associations": {"*.xdc": "tcl"}}, ["files.associations *.xdc"]),
-            ({"pin": agent_pin}, ["remote.extensionKind Anthropic.claude-code"]),
-            ({"pin": {"openai.chatgpt": ["workspace"]}}, ["remote.extensionKind openai.chatgpt"]),
-            (
-                {
-                    "extensions": ["openai.chatgpt", "bitwisecook.tcl"],
-                    "associations": {"*.sdc": "tcl", "*.xdc": "tcl"},
-                    "pin": {"openai.chatgpt": ["workspace"]},
-                },
-                [
-                    "openai.chatgpt",
-                    "bitwisecook.tcl",
-                    "files.associations *.sdc",
-                    "files.associations *.xdc",
-                    "remote.extensionKind openai.chatgpt",
-                ],
-            ),
-        ]
-        for index, (injected, expected_names) in enumerate(cases):
-            root = tmp_path / f"case{index}"
-            spec = build_spec(dc.APP_CODEX)
-            vscode = spec["customizations"]["vscode"]
-            vscode["extensions"] += injected.get("extensions", [])
-            if "associations" in injected:
-                vscode["settings"]["files.associations"] = injected["associations"]
-            if "pin" in injected:
-                vscode["settings"]["remote.extensionKind"] = injected["pin"]
-            dc.write_devcontainer(root, spec)
-            rec = self._run(root, monkeypatch)
-            assert rec.fails() == [], injected
-            warns = [m for lvl, m in rec.events if lvl == "warn"]
-            assert len(warns) == 1, (injected, warns)
-            assert all(name in warns[0] for name in expected_names), (injected, warns[0])
-            assert "booley init" in warns[0], warns[0]
-
-    def test_spec_without_tcl_highlighting_is_current(self, tmp_path, monkeypatch):
-        from booley.runtime import devcontainer as dc
-
-        spec = build_spec(dc.APP_CLAUDE)
-        vscode = spec["customizations"]["vscode"]
-        vscode["extensions"] = [e for e in vscode["extensions"] if e != "bitwisecook.tcl"]
-        vscode["settings"].pop("files.associations", None)
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert not any("highlighting" in m for _, m in rec.events)
-        assert not any(lvl == "warn" for lvl, _ in rec.events)
-
-    def test_spec_without_live_preview_warns(self, tmp_path, monkeypatch):
-        # Without the bundled Live Preview VSIX in the spec, the attached
-        # container window cannot render review HTML.
-        spec = build_spec(dc.APP_CLAUDE)
-        spec["customizations"]["vscode"]["extensions"].remove(dc.LIVE_PREVIEW_VSIX)
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(lvl == "warn" and "Live Preview" in m for lvl, m in rec.events)
-
-    def test_spec_restoring_live_preview_ports_warns(self, tmp_path, monkeypatch):
-        # F-14: an otherwise current spec can restore dead 3000/3001 tunnels
-        # before Live Preview starts and leave the report preview blank.
-        spec = build_spec(dc.APP_CLAUDE)
-        spec["customizations"]["vscode"]["settings"]["remote.restoreForwardedPorts"] = True
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(
-            lvl == "warn" and "collision-safe Live Preview" in m and "--seed" in m
-            for lvl, m in rec.events
-        )
-
-    def test_spec_without_live_preview_port_randomizer_warns(self, tmp_path, monkeypatch):
-        spec = build_spec(dc.APP_CLAUDE)
-        spec["postAttachCommand"] = dc.vaporview_patch_command()
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(
-            lvl == "warn" and "collision-safe Live Preview" in m and "--seed" in m
-            for lvl, m in rec.events
-        )
-
-    def test_spec_with_python_terminal_autoactivation_is_a_note(self, tmp_path, monkeypatch):
-        # Existing specs should direct users to re-seed so a Settings-Synced
-        # Python extension stops injecting delayed activation commands.
-        spec = build_spec(dc.APP_CLAUDE)
-        for key in dc._PYTHON_TERMINAL_SETTINGS:
-            del spec["customizations"]["vscode"]["settings"][key]
-        dc.write_devcontainer(tmp_path, spec)
-        rec = self._run(tmp_path, monkeypatch)
-        assert rec.fails() == []
-        assert any(
-            lvl == "note" and "Python terminal activation" in m and "--seed" in m
-            for lvl, m in rec.events
-        )
 
 
 @pytest.mark.parametrize("duplicate", [False, True])

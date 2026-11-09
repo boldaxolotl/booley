@@ -233,22 +233,3 @@ def test_install_guidance_names_the_probed_editor():
 def test_bundled_vsix_tracks_the_verified_version():
     expected = f"/usr/local/libexec/booley/vaporview-{vaporview.VERIFIED_VERSION}.vsix"
     assert expected == vaporview.BUNDLED_VSIX
-
-
-@pytest.mark.parametrize(
-    ("entry", "vaporview_entry"),
-    [
-        (vaporview.BUNDLED_VSIX, True),
-        ("/usr/local/libexec/booley/vaporview-1.5.4.vsix", True),
-        ("/opt/VaporView-9.9.9.VSIX", True),
-        (vaporview.EXTENSION_ID, True),
-        ("LRamseyer.VaporView@" + vaporview.VERIFIED_VERSION, True),
-        (f"{vaporview.EXTENSION_ID}@0.0.1", True),
-        ("lramseyer.vaporview-extra", False),
-        ("/usr/local/libexec/booley/dashboard.vsix", False),
-        ("/usr/local/libexec/booley/vaporview-" + vaporview.VERIFIED_VERSION + ".zip", False),
-        (42, False),
-    ],
-)
-def test_extension_entry_classifier(entry, vaporview_entry):
-    assert vaporview.is_vaporview_entry(entry) is vaporview_entry
