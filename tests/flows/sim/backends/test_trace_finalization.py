@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.flows.sim.backends import shared as backend_shared
 from booley.flows.sim.backends.shared import CurrentRunTraces
 from booley.flows.sim.backends.trace_finalization import finalize_trace
 from booley.flows.sim.trace_session import TraceArtifact, TraceInspection
@@ -25,6 +24,9 @@ class _FakeTrace:
         self.store, self.failure, self.owned = store, failure, owned
         self.events: list[str] = []
         self.incidents: list[tuple[str, object, object]] = []
+
+    def start_conversion_budget(self, timeout_s: float) -> None:
+        self.events.append(f"budget:{timeout_s}")
 
     def postprocess(self, _path: Path) -> None:
         self.events.append("postprocess")
@@ -52,7 +54,9 @@ def test_ok_store_reports_metadata(tmp_path: Path):
     store = tmp_path / "trace.fst"
     store.write_bytes(b"fst")
 
-    output, result = finalize_trace(_current(_FakeTrace(store, owned=True)), None)
+    output, result = finalize_trace(
+        _current(_FakeTrace(store, owned=True)), None, convert_timeout_s=60
+    )
 
     metadata = TraceArtifact(store, 3, "tb", 3, 7).metadata_line()
     assert output == f"\nTRACE_OK: {store}\n{metadata}"
@@ -66,7 +70,9 @@ def test_unqueryable_store_is_an_incident(tmp_path: Path):
     trace = _FakeTrace(store, failure="FST has no signals", owned=True)
     sim_proc, conversion = SimpleNamespace(returncode=1), SimpleNamespace(name="bwave")
 
-    output, result = finalize_trace(_current(trace), sim_proc, conversion=conversion)
+    output, result = finalize_trace(
+        _current(trace), sim_proc, convert_timeout_s=60, conversion=conversion
+    )
 
     reason = "trace requested but the retained waveform is not queryable: FST has no signals"
     assert trace.incidents == [(reason, sim_proc, conversion)]
@@ -90,34 +96,42 @@ def test_unqueryable_store_is_an_incident(tmp_path: Path):
 def test_missing_trace_names_what_was_searched_for(
     patterns: tuple[str, ...], roots: tuple[Path, ...], hint: str
 ):
-    _, result = finalize_trace(_current(_FakeTrace(), patterns, roots), None)
+    _, result = finalize_trace(_current(_FakeTrace(), patterns, roots), None, convert_timeout_s=60)
 
     assert result.status == "incident"
     assert result.detail == OPENING + hint
 
 
-@pytest.mark.parametrize(
-    ("vcd_fallback", "oversize", "status"),
-    [(True, False, "ok"), (False, False, "incident"), (True, True, "incident")],
-)
-def test_vcd_fallback_only_when_enabled(
-    tmp_path: Path, monkeypatch, vcd_fallback: bool, oversize: bool, status: str
-):
-    """A raw VCD that cannot be converted stands only if the adapter opted in and it fit the cap."""
-    monkeypatch.setattr(backend_shared, "MAX_ADOPTED_VCD_BYTES", 16)
+def test_raw_vcd_is_always_an_incident(tmp_path: Path):
+    """A VCD that cannot be converted never stands as the retained waveform."""
     raw = tmp_path / "dump.vcd"
-    raw.write_bytes(b"0" * (64 if oversize else 8))
+    raw.write_bytes(b"0" * 8)
     trace = _FakeTrace(raw, failure="retained trace is raw .vcd")
 
     output, result = finalize_trace(
-        _current(trace, ("dump.vcd",), (tmp_path,)), None, vcd_fallback=vcd_fallback
+        _current(trace, ("dump.vcd",), (tmp_path,)), None, convert_timeout_s=60
     )
 
-    assert result.status == status
-    assert "TRACE_OK" not in output
-    if status == "ok":
-        assert output == f"\nTRACE_FALLBACK: {raw}"
-        assert result.path == str(raw)
-        assert "native FST conversion unavailable" in result.detail
-    else:
-        assert "TRACE_INCIDENT" in output and "TRACE_FALLBACK" not in output
+    assert result.status == "incident"
+    assert "TRACE_INCIDENT" in output
+    assert "TRACE_OK" not in output and "TRACE_FALLBACK" not in output
+
+
+def test_budget_starts_and_pending_incident_is_published_before_conversion(tmp_path: Path):
+    """The verdict is fixed first: the pending incident precedes postprocess."""
+    trace = _FakeTrace(failure="no store")
+    seen: list[tuple[str, ...]] = []
+
+    def publish(pending) -> None:
+        seen.append((pending.status, *trace.events))
+
+    finalize_trace(
+        _current(trace),
+        None,
+        convert_timeout_s=42,
+        publish_pending=publish,
+        raw_vcd=tmp_path / "dump.vcd",
+    )
+
+    assert seen == [("incident", "budget:42")]
+    assert trace.events[:2] == ["budget:42", "postprocess"]

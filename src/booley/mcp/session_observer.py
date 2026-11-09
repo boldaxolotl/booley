@@ -16,6 +16,7 @@ from typing import Any
 from starlette.requests import Request
 
 from booley.config.goals import quiet_after
+from booley.mcp.peer_checkout import CallerCheckout
 from booley.mcp.session_peer import observed_peer
 from booley.mcp.session_registry import (
     CALL_STARTED,
@@ -49,6 +50,8 @@ class _Observation:
     client_name: str
     request: Request | None
     done: asyncio.Future[Attribution | None]
+    # The boundary's peer lookup, when it made one; spares a second /proc fd scan.
+    caller: CallerCheckout | None = None
     resolved: Attribution | None = None
 
 
@@ -160,10 +163,17 @@ class SessionObserver:
         *,
         request: Request | None = None,
         tool: str = "request",
+        caller: CallerCheckout | None = None,
     ) -> Attribution | None:
-        """Resolve once; queued observations survive the bounded response deadline."""
+        """Resolve once; queued observations survive the bounded response deadline.
+
+        *caller* is the SDK boundary's peer lookup for a call without ``work_dir``:
+        its routed checkout is the row's checkout, and its peer is reused.
+        """
         work_dir = arguments.get("work_dir")
         root = Path(work_dir) if isinstance(work_dir, str) and work_dir else None
+        if root is None and caller is not None:
+            root = caller.checkout
         if root is not None and not root.is_dir():
             root = None
         fallback = resolve_attribution(root, metadata=metadata, client_name=client_name)
@@ -191,6 +201,7 @@ class SessionObserver:
             client_name,
             peer_request,
             asyncio.get_running_loop().create_future(),
+            caller,
         )
         self._remember(fallback, observation)
         self._enqueue(observation)
@@ -208,7 +219,9 @@ class SessionObserver:
                     if fallback.kind == "thread"
                     else {},
                     client_name=observation.client_name,
-                    peer=observed_peer(observation.request),
+                    peer=observation.caller.peer
+                    if observation.caller is not None and observation.caller.peer is not None
+                    else observed_peer(observation.request),
                 )
             ),
             predecessor_keys=(fallback.key,) if fallback.kind == "thread" else (),

@@ -798,6 +798,24 @@ def test_coverage_build_run_and_identity_keep_distinct_budgets(
     assert timeouts[2][1] == 95
 
 
+def test_traced_coverage_run_deadline_adds_conversion_budget(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    execution, target, raw_path, captured = _execution_fixture(
+        tmp_path,
+        monkeypatch,
+        options=SimulationOptions(timeout_ms=5000, build_timeout_ms=7000),
+    )
+
+    assert _build_coverage(execution, target).success
+    traced = replace(_run_request(target, raw_path), trace=True)
+    execution.run(traced)
+
+    # simulation timeout + default conversion budget (1800 s) + the fixed 90 s margin
+    assert captured["timeouts"][2][1] == 5 + 1800 + 90
+
+
 def _run_request(target: CoverageTarget, raw_path: Path) -> SimulationRunRequest:
     return SimulationRunRequest(
         target=target,

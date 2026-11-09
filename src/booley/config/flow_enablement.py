@@ -8,7 +8,7 @@ from typing import Any
 
 from booley.core.booley_dir import resolve_booley_dir
 from booley.core.boundary import as_dict
-from booley.core.config_paths import resolve_booley_toml, resolve_toml
+from booley.core.config_paths import main_repository_root, resolve_booley_toml, resolve_toml
 from booley.targets.flow_names import config_section
 
 
@@ -82,7 +82,7 @@ def _load_config(work_dir: Path | None) -> dict[str, Any]:
         config = _read_toml(resolve_booley_toml(root))
         if config is not None:
             return config
-        main_root = _resolve_main_repo_root(root)
+        main_root = main_repository_root(root)
         if main_root is not None:
             return _read_toml(resolve_booley_toml(main_root)) or {}
     except (OSError, ValueError):
@@ -97,23 +97,3 @@ def _read_toml(path: Path) -> dict[str, Any] | None:
         return None
     with path.open("rb") as stream:
         return tomllib.load(stream)
-
-
-def _resolve_main_repo_root(work_dir: Path) -> Path | None:
-    """Follow a linked worktree's Git marker to its main repository root."""
-    marker = work_dir / ".git"
-    if not marker.is_file():
-        return None
-    try:
-        content = marker.read_text(encoding="utf-8").strip()
-        if not content.startswith("gitdir:"):
-            return None
-        git_dir = Path(content.split(":", 1)[1].strip())
-        if not git_dir.is_absolute():
-            git_dir = (work_dir / git_dir).resolve()
-        for parent in git_dir.parents:
-            if parent.name == ".git":
-                return parent.parent
-    except (OSError, ValueError):
-        return None
-    return None

@@ -17,6 +17,7 @@ sys.path.insert(0, str(_ROOT / ".github/scripts"))
 from ci_changes import (
     ALL_JOBS,
     DEFAULT_WINDOWS_SHARD_COUNT,
+    MAIN_REF,
     STRESS_JOB,
     build_test_matrix,
     classify,
@@ -95,6 +96,7 @@ def _run_classifier(
     riscv_measurement: str | None = None,
     linux_options: dict[str, str] | None = None,
     head_ref: str | None = None,
+    ref: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     output = repo / "github-output.txt"
     command = [
@@ -123,6 +125,8 @@ def _run_classifier(
         command.extend((f"--linux-{option}", value))
     if head_ref is not None:
         command.extend(("--head-ref", head_ref))
+    if ref is not None:
+        command.extend(("--ref", ref))
     result = subprocess.run(
         command, capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT_S
     )
@@ -141,6 +145,7 @@ def _classify(
     riscv_measurement: str | None = None,
     linux_options: dict[str, str] | None = None,
     head_ref: str | None = None,
+    ref: str | None = None,
 ) -> dict[str, str]:
     result, output = _run_classifier(
         repo,
@@ -153,6 +158,7 @@ def _classify(
         riscv_measurement=riscv_measurement,
         linux_options=linux_options,
         head_ref=head_ref,
+        ref=ref,
     )
     assert result.returncode == 0, result.stderr
     return dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
@@ -178,10 +184,9 @@ def test_windows_shard_experiment_builds_complete_matrix(shard_count: int) -> No
     shards = [entry for entry in entries if entry["mode"] == "shard"]
     compatibility = [entry for entry in entries if entry["mode"] != "shard"]
 
-    assert len(entries) == 4 + shard_count
+    assert len(entries) == 3 + shard_count
     assert compatibility == [
         {"name": "ubuntu-3.11-full", "os": "ubuntu-latest", "python": "3.11", "mode": "full"},
-        {"name": "ubuntu-3.14-full", "os": "ubuntu-latest", "python": "3.14", "mode": "full"},
         {
             "name": "windows-3.11-compatibility",
             "os": "windows-latest",
@@ -1100,6 +1105,44 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
     assert _required(forced) == expected
 
 
+def test_main_push_runs_only_the_cache_writing_tier(tmp_path: Path) -> None:
+    """The queue already validated main's tree; a main push re-runs only the image build."""
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/data/docker/Dockerfile.base", "FROM scratch\n")
+    head = _commit(repo, "stable base change")
+
+    outputs = _classify(repo, base, head, force_all=True, event_name="push", ref=MAIN_REF)
+
+    assert _required(outputs) == {
+        "changes",
+        "release-semantic",
+        "package-artifacts",
+        "bwave-smoke",
+    }
+    assert {job for job, selected in _jobs(outputs).items() if selected} == {
+        "package-artifacts",
+        "bwave-smoke",
+    }
+    # bwave-smoke still learns which images this push must build.
+    assert outputs["build_stable_base"] == "true"
+
+
+@pytest.mark.parametrize(
+    ("event_name", "ref"),
+    [("schedule", MAIN_REF), ("workflow_dispatch", MAIN_REF), ("push", "refs/tags/v1.2.3")],
+)
+def test_nightly_manual_and_release_runs_keep_every_job(
+    tmp_path: Path, event_name: str, ref: str
+) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "docs/guide.md")
+    head = _commit(repo, "docs change")
+
+    outputs = _classify(repo, base, head, force_all=True, event_name=event_name, ref=ref)
+
+    assert _required(outputs) == set(ALL_JOBS) - {STRESS_JOB}
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Win32 rejects newlines in path components")
 def test_rust_fixture_and_nul_unsafe_filename_are_not_lost(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
@@ -1229,7 +1272,7 @@ def test_default_linux_inputs_shard_ubuntu_in_two_and_keep_linux_command(
                     "shard_index": index,
                     "shard_count": 2,
                 }
-                for python in ("3.11", "3.14")
+                for python in ("3.11",)
                 for index in range(2)
             ),
             {
@@ -1285,7 +1328,7 @@ def test_linux_shard_dispatch_emits_matrix_for_each_count_and_scheduler(tmp_path
     repo, base = _repository(tmp_path)
     _write(repo, "src/booley/example.py")
     head = _commit(repo, "source change")
-    non_linux = build_test_matrix(4, linux_shard_count=1)["include"][2:]
+    non_linux = build_test_matrix(4, linux_shard_count=1)["include"][1:]
 
     for count in (1, 2, 3):
         for scheduler in ("loadscope", "worksteal"):
@@ -1305,19 +1348,17 @@ def test_linux_shard_dispatch_emits_matrix_for_each_count_and_scheduler(tmp_path
             )
             assert entries[len(linux) :] == non_linux
             if count == 1:
-                assert linux == build_test_matrix(4, linux_shard_count=1)["include"][:2]
+                assert linux == build_test_matrix(4, linux_shard_count=1)["include"][:1]
                 continue
             assert [entry["name"] for entry in linux] == [
-                f"ubuntu-{python}-shard-{index + 1}-of-{count}"
-                for python in ("3.11", "3.14")
-                for index in range(count)
+                f"ubuntu-3.11-shard-{index + 1}-of-{count}" for index in range(count)
             ]
             assert all(
                 (entry["mode"], entry["group"], entry["shard_count"])
                 == ("shard", f"linux-{entry['python']}", count)
                 for entry in linux
             )
-            assert [entry["shard_index"] for entry in linux] == list(range(count)) * 2
+            assert [entry["shard_index"] for entry in linux] == list(range(count))
 
 
 def test_linux_shard_benchmark_selects_the_ordinary_python_job_set(tmp_path: Path) -> None:

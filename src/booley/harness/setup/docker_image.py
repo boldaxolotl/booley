@@ -12,7 +12,6 @@ it never imports back from ``init_cmd``.
 
 from __future__ import annotations
 
-import ast
 import contextlib
 import os
 import re
@@ -33,6 +32,7 @@ from booley.runtime.build_stamp import (
     resolve_source_updated_at,
     resolve_wheel_source_fingerprint,
     runtime_image_build_stamp,
+    stamp_constants,
     wheel_embedded_commit,
 )
 from booley.runtime.docker_build import DockerBuildResult, run_docker_build
@@ -967,18 +967,11 @@ def _wheel_build_stamp(booley_root: Path, *, preserve_stamp: bool):
     stamp_file = booley_root / "src" / "booley" / "_build_commit.py"
     if not stamp_file.is_file():
         raise OSError("verified development build stamp is missing")
-    tree = ast.parse(stamp_file.read_text(encoding="utf-8"))
-    commit = next(
-        (
-            ast.literal_eval(node.value)
-            for node in tree.body
-            if isinstance(node, ast.Assign)
-            and any(
-                isinstance(target, ast.Name) and target.id == "COMMIT" for target in node.targets
-            )
-        ),
-        "",
-    )
+    try:
+        constants = stamp_constants(stamp_file.read_text(encoding="utf-8"), {"COMMIT"})
+    except ValueError as exc:
+        raise OSError("verified development build stamp is invalid") from exc
+    commit = constants.get("COMMIT", "")
     if not isinstance(commit, str) or not commit:
         raise OSError("verified development build commit is missing")
     return contextlib.nullcontext(commit)

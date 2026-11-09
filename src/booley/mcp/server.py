@@ -78,6 +78,7 @@ from booley.mcp import (
     job_lifecycle,
     job_ownership,
     job_results,
+    peer_checkout,
 )
 from booley.mcp.application import (
     McpApplication,
@@ -108,6 +109,7 @@ from booley.mcp.live_catalog import (
     project_fingerprint,
     selected_directory,
 )
+from booley.mcp.peer_checkout import CallerCheckout
 from booley.mcp.report_encoding import ReportEncoder
 from booley.mcp.session_observer import SessionMaintenanceApp, SessionObserver
 from booley.mcp.session_peer import PeerBoundary
@@ -1481,6 +1483,23 @@ async def _run_inline_endpoint(
     return result
 
 
+def _unroutable_endpoint_error(
+    arguments: Mapping[str, Any], request_context: McpRequestContext | None
+) -> str | None:
+    """Refuse a routed caller's call that still names no ``work_dir`` after routing.
+
+    The endpoint cannot be retargeted at the caller's checkout (it gets one only
+    through ``--work-dir``); running it would silently use the server cwd while the
+    Session shows the worktree.
+    """
+    if request_context is None or request_context.checkout is None or arguments.get("work_dir"):
+        return None
+    return (
+        "ERROR: Project-defined endpoints must declare `work_dir` to run for a caller "
+        "working in a linked worktree."
+    )
+
+
 async def _dispatch_booley_mcp_tool(
     name: str,
     arguments: dict[str, Any],
@@ -1497,7 +1516,9 @@ async def _dispatch_booley_mcp_tool(
     the call open orphans the subprocess and BLOCKs the next call. Everything
     else stays synchronous and returns its full result inline.
     """
-    work_dir_error = _validate_work_dir(arguments.get("work_dir"))
+    work_dir_error = _validate_work_dir(arguments.get("work_dir")) or _unroutable_endpoint_error(
+        arguments, request_context
+    )
     if work_dir_error is not None:
         return _error_result(work_dir_error)
     try:
@@ -1567,7 +1588,10 @@ def _sim_mcp_tool_timeout_seconds(
 ) -> int:
     """Whole-invocation Simulation watchdog with mode-aware stage budgets."""
     from booley.flows.invocation import requested_timeout_ms, resolve_timeout_ms
-    from booley.flows.sim.config import resolve_sim_build_timeout_ms
+    from booley.flows.sim.config import (
+        resolve_sim_build_timeout_ms,
+        resolve_sim_trace_convert_timeout_ms,
+    )
     from booley.flows.sim.flow import _resolve_sim_campaign_work_units, _resolve_sim_timeout_ms
     from booley.flows.sim.mode import SimulationMode, normalize_simulation_mode
 
@@ -1580,6 +1604,7 @@ def _sim_mcp_tool_timeout_seconds(
     build_timeout_ms = resolve_sim_build_timeout_ms(work_dir)
     run_s = max(1, timeout_ms // 1000)
     build_s = max(1, build_timeout_ms // 1000)
+    convert_s = max(1, resolve_sim_trace_convert_timeout_ms(work_dir) // 1000)
     raw_target = str(arguments.get("target") or "").strip()
     target_count = _target_count(arguments)
     mode = normalize_simulation_mode(str(arguments.get("mode") or SimulationMode.SIMULATE.value))
@@ -1605,6 +1630,7 @@ def _sim_mcp_tool_timeout_seconds(
         work_units=work_units,
         run_s=run_s,
         build_s=build_s,
+        convert_s=convert_s,
         state_path=context.state_path,
     )
     return max(default, planned_s)
@@ -1618,6 +1644,7 @@ def _sim_planned_timeout_seconds(
     work_units: int,
     run_s: int,
     build_s: int,
+    convert_s: int,
     state_path: Path | None,
 ) -> int:
     """Sum child stage limits plus finalization slack for one Simulation call."""
@@ -1629,7 +1656,8 @@ def _sim_planned_timeout_seconds(
         sweep_s = run_s if mode is SimulationMode.ELAB_ONLY_STANDALONE else 0
         return target_count * build_s + sweep_s + 30
     if arguments.get("coverage"):
-        runs_s = work_units * (run_s + DEFAULT_TIMEOUT_S + TRACE_CLEANUP_MARGIN_S)
+        trace_s = convert_s if arguments.get("trace") else 0
+        runs_s = work_units * (run_s + DEFAULT_TIMEOUT_S + TRACE_CLEANUP_MARGIN_S + trace_s)
         targets_s = target_count * (build_s + 30 + DEFAULT_TIMEOUT_S)
         return runs_s + targets_s + 30
     baseline_scale = 2 if _baseline_required("cycle_count_", state_path) else 1
@@ -1637,7 +1665,7 @@ def _sim_planned_timeout_seconds(
     build_units = target_count * baseline_scale
     planned_s = build_units * build_s + run_units * (DEFAULT_TIMEOUT_S + run_s)
     if arguments.get("trace"):
-        planned_s += TRACE_CLEANUP_MARGIN_S * run_units
+        planned_s += (convert_s + TRACE_CLEANUP_MARGIN_S) * run_units
     return planned_s + 30
 
 
@@ -2027,7 +2055,8 @@ async def _call_application_tool(
     observer: SessionObserver | None = None,
 ) -> CallToolResult | InputRequiredResult:
     """Translate one application result or failure into MCP SDK types."""
-    request = await _observed_request_context(context, params, observer)
+    caller = await _caller_checkout(context, params)
+    request = await _observed_request_context(context, params, observer, caller)
     try:
         try:
             if context is None and observer is None:
@@ -2111,42 +2140,76 @@ async def _observe_tool_completion(
     return replace(payload, content=(*payload.content, McpTextBlock(warning)))
 
 
+def _client_name_and_meta(
+    context: ServerRequestContext | None, params: CallToolRequestParams
+) -> tuple[str, dict[str, Any]]:
+    """The calling client's reported name and the call's ``_meta``."""
+    client = context.session.client_params if context is not None else None
+    name = client.client_info.name if client is not None else ""
+    return name, dict(params.meta) if params.meta is not None else {}
+
+
+async def _caller_checkout(
+    context: ServerRequestContext | None, params: CallToolRequestParams
+) -> CallerCheckout | None:
+    """Look up the calling agent's checkout for a call that names none.
+
+    ``None`` means no lookup was made: no SDK request (stdio, stateless) or an
+    explicit ``work_dir``. Routing never depends on presentation, so this runs
+    outside the Session observer and its response budget.
+    """
+    if context is None or context.request is None or (params.arguments or {}).get("work_dir"):
+        return None
+    name, meta = _client_name_and_meta(context, params)
+    try:
+        return await asyncio.to_thread(
+            peer_checkout.caller_checkout, context.request, client_name=name, metadata=meta
+        )
+    except Exception:
+        logger.debug("Caller checkout lookup unavailable", exc_info=True)
+        return None
+
+
 async def _observed_request_context(
     context: ServerRequestContext | None,
     params: CallToolRequestParams,
     observer: SessionObserver | None,
+    caller: CallerCheckout | None = None,
 ) -> McpRequestContext:
     """Unexpected advisory failures cannot prevent application dispatch."""
     try:
-        return await _resolve_observed_request_context(context, params, observer)
+        request = await _resolve_observed_request_context(context, params, observer, caller)
     except Exception:
         logger.debug("Session request observation unavailable", exc_info=True)
-        return (
+        request = (
             McpRequestContext()
             if context is None
             else _application_request_context(context, params)
         )
+    if caller is not None and caller.checkout is not None:
+        request = replace(request, checkout=caller.checkout)
+    return request
 
 
 async def _resolve_observed_request_context(
     context: ServerRequestContext | None,
     params: CallToolRequestParams,
     observer: SessionObserver | None,
+    caller: CallerCheckout | None = None,
 ) -> McpRequestContext:
     request = (
         McpRequestContext() if context is None else _application_request_context(context, params)
     )
     if observer is None:
         return request
-    client = context.session.client_params if context is not None else None
-    name = client.client_info.name if client is not None else ""
-    meta = dict(params.meta) if params.meta is not None else {}
+    name, meta = _client_name_and_meta(context, params)
     facts = await observer.attribution(
         params.arguments or {},
         meta,
         name,
         request=context.request if context is not None else None,
         tool=params.name,
+        caller=caller,
     )
     facts = await observer.resolved(facts)
     keys, warning = await observer.shared(facts)

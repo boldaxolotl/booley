@@ -1018,7 +1018,8 @@ class DashboardApp(App[None]):
         """Checkout and branch a session's Booley calls target, for display.
 
         A session that never passed ``work_dir`` runs every call in its MCP
-        server's cwd, so it shows that checkout and branch, marked as the default.
+        server's cwd, so it shows that checkout and branch, marked as the default,
+        unless its process runs in a routable checkout.
         """
         if not facts.work_dir and facts.default_work_dir:
             return f"{facts.default_work_dir} (default)", facts.branch

@@ -14,12 +14,8 @@ from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
 from booley.targets.domain import FuseSocError, TargetHandle, immutable_mapping
 
 from .coverage_acceptance import CoverageAcceptance
-from .coverage_campaign import (
-    CoverageFinding,
-    DurableTargetIdentity,
-    FrozenJson,
-    freeze_coverage_mapping,
-)
+from .coverage_campaign import CoverageFinding, DurableTargetIdentity
+from .coverage_json import FrozenJson, freeze_coverage_mapping
 from .coverage_policy import CoverageCriterion
 from .coverage_provenance import coverage_digest, coverage_source_closure
 from .coverage_source_gaps import rtl_module_candidates

@@ -33,6 +33,11 @@ from booley.flows.endpoint_state import EndpointState
 from booley.flows.execution_persistence import FlowExecutionAdapter, StandaloneFlowExecution
 from booley.flows.invocation import resolve_timeout_ms
 from booley.flows.job_resources import JobResourceMonitor
+from booley.flows.prepared_invocation import (
+    OrdinaryRunInvocation,
+    PreparedInvocation,
+    TargetSelectionInvocation,
+)
 from booley.flows.request import FlowRequest
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
@@ -417,6 +422,9 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
     # The in-process caller's explicit CLI origin and outer Project; None reads the env marker.
     _cli_invocation: CliInvocation | None = None
 
+    # Families a non-strict Project may judge under conventional names (lint_clean, ...).
+    conventional_families: ClassVar[frozenset[str]] = frozenset()
+
     target_required: bool = False
     target_help: str = SurfaceHelp(
         "FuseSoC .core Target name(s) this run applies to. The CLI flag may be "
@@ -469,13 +477,7 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
 
     def prepare_target_endpoint(self) -> EndpointOutcome | None:
         """Resolve the complete Target selection before admission."""
-        if not self.accepts_target or self.name not in TARGET_AWARE_FLOWS:
-            return None
-        if "_run" in self.__dict__:
-            return None
-        if self.name == "sim" and "prepare_simulation_endpoint" in self.__dict__:
-            return None
-        if self.name == "sim" and getattr(self.args, "resume_from", None) is not None:
+        if not self._selects_targets or self.manifest_names_targets():
             return None
         try:
             selection = PreparedTargetSelection.resolve(
@@ -499,6 +501,21 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
                 self.name, selection.target_arg
             )
         return None
+
+    @property
+    def _selects_targets(self) -> bool:
+        """Whether this built-in Flow resolves a Target selection before admission."""
+        return self.accepts_target and self.name in TARGET_AWARE_FLOWS
+
+    def prepare_endpoint_invocation(self) -> PreparedInvocation | EndpointOutcome:
+        """Carry the resolved Target selection, or just the ordinary run when none is selected."""
+        if self._selects_targets:
+            return TargetSelectionInvocation(self, self._prepared_target_selection, self._run)
+        return OrdinaryRunInvocation(self._run)
+
+    def conventional_report_families(self) -> set[str]:
+        """Families a non-strict Project may judge under their conventional Criterion names."""
+        return set(self.conventional_families)
 
     def _selected_target_selection(self) -> PreparedTargetSelection:
         """Return the complete selection prepared for this invocation."""

@@ -256,6 +256,17 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
     _patch_host_environment(monkeypatch, root)
     monkeypatch.setattr(doctor.idk, "image_exists", lambda *_a, **_kw: True)
     monkeypatch.setattr(doctor.idk, "image_id", lambda image: image)
+    # The rebuild of the spec `booley init` would write has its own tests; here the
+    # seeded fixture spec stands in for it.
+    monkeypatch.setattr(
+        doctor,
+        "_expected_interactive_spec",
+        lambda project_root: (
+            lambda _image: json.loads(
+                dc.devcontainer_path(project_root).read_text(encoding="utf-8")
+            )
+        ),
+    )
 
     # Orchestration tests substitute the public issuance interface. Runtime
     # owner tests separately exercise real authority and live-state policy.
@@ -447,7 +458,7 @@ def test_doctor_passes_interactive_checks_when_seeded(tmp_path, monkeypatch, cap
 
     output = capsys.readouterr().out
     assert rc == 0
-    assert "devcontainer.json present and structurally current" in output
+    assert "devcontainer.json matches the spec `booley init` would write" in output
     assert "Booley files excluded from git" in output
 
 
@@ -507,7 +518,7 @@ permanent = true
     assert rc == 0
     output = capsys.readouterr().out
     # A pass row is "  ✓  <message>"; the counts table's "✓ passed" row always prints.
-    pass_row = "  ✓  devcontainer.json present and structurally current"
+    pass_row = "  ✓  devcontainer.json matches the spec `booley init` would write"
     assert (pass_row not in colors.strip_ansi(output)) is concise
     stamp = doctor_stamp.load_stamp(booley_dir)
     assert stamp is not None, output
@@ -9344,58 +9355,6 @@ def test_missing_pinned_credential_fails_even_without_cli(tmp_path, monkeypatch)
     )
 
 
-@pytest.mark.parametrize("app,policy", [("claude", "api_key"), ("codex", "subscription")])
-def test_intentionally_omitted_token_seed_does_not_warn(tmp_path, monkeypatch, app, policy):
-    from booley.runtime import auth_token, inspection
-
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    for key in auth_token.CREDENTIAL_ENV_KEYS:
-        monkeypatch.delenv(key, raising=False)
-    auth_token.store_token("SYNTHETIC", app)
-    data = tmp_path / "project" / ".booley"
-    data.mkdir(parents=True)
-    (data / "booley.toml").write_text(f'[agent]\nprovider="{app}"\nauth="{policy}"\n')
-    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
-    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "unrelated"))
-    if app == "claude":
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_KEY")
-    else:
-        native = auth_token.subscription_creds_path(app)
-        native.parent.mkdir(parents=True)
-        native.write_text('{"tokens":{"access_token":"SYNTHETIC_LOGIN"},"OPENAI_API_KEY":null}')
-    plan = auth_token.credential_plan(app, policy)
-    spec = dc.build_devcontainer_spec(app, cli_seeds=[dc.CliSeeds(plan)])
-    dc.write_devcontainer(data.parent, spec)
-    report = inspection.Findings()
-    monkeypatch.setattr(inspection, "_image_current", lambda *args: True)
-    inspection._check_devcontainer_spec(
-        inspection.RuntimeInspectionRequest(data.parent, "test-image", None), report
-    )
-    assert not any(
-        "predates the stored" in finding.message for finding in report.report().findings
-    )
-
-    assert any(
-        f.severity.value == "pass" and "structurally current" in f.message
-        for f in report.report().findings
-    )
-    monkeypatch.setenv("BOOLEY_DIR", str(data))
-    reporter = doctor._Reporter.create()
-    audit = doctor.ProjectAudit(
-        project_root=data.parent,
-        booley_dir=data,
-        booley_toml={"agent": {"provider": app, "auth": policy}},
-        configs_toml={},
-        first_target="",
-    )
-    doctor._run_mcp_checks(audit, None, "test-image", False, reporter)
-    assert not any("predates the stored" in f.message for f in reporter.findings)
-
-
 def test_seed_mount_policy_uses_same_project_policy_as_credential_report(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
     audit = doctor.ProjectAudit(
@@ -9425,39 +9384,13 @@ def _seed_mount_policy_project(tmp_path, monkeypatch, app, policy):
     return data
 
 
-@pytest.mark.parametrize(
-    "app,policy",
-    [("claude", "auto"), ("codex", "auto"), ("claude", "subscription"), ("codex", "api_key")],
-)
-@pytest.mark.parametrize("mounted", [False, True])
-def test_seed_mount_policy_warns_only_for_missing_permitted_seed(
-    tmp_path, monkeypatch, app, policy, mounted
-):
-    from booley.runtime import auth_token, inspection
-
-    data = _seed_mount_policy_project(tmp_path, monkeypatch, app, policy)
-    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "api_key" if policy != "api_key" else "subscription")
-    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "unrelated"))
-    plan = auth_token.credential_plan(app, policy)
-    spec = dc.build_devcontainer_spec(
-        app,
-        cli_seeds=[dc.CliSeeds(plan, token_source=str(plan.token_seed) if mounted else None)],
-    )
-    request = inspection.RuntimeInspectionRequest(data.parent, "test-image", None)
-    report = inspection.Findings()
-    assert inspection._seed_mounts_current(request, spec, report) is mounted
-    findings = report.report().findings
-    assert bool(findings) is not mounted
-    if findings:
-        assert findings[0].severity.value == "warn"
-        assert findings[0].check_id == "interactive.devcontainer-drift"
-        assert findings[0].subject == str(dc.devcontainer_path(data.parent))
+def test_seed_mount_policy_unavailable_fails_without_comparing(tmp_path, monkeypatch):
+    for damage in ("invalid-policy", "ambiguous-seed", "directory-conflict"):
+        (tmp_path / damage).mkdir()
+        _assert_unavailable_policy_fails_without_comparing(tmp_path / damage, monkeypatch, damage)
 
 
-@pytest.mark.parametrize("damage", ["invalid-policy", "ambiguous-seed", "directory-conflict"])
-def test_seed_mount_policy_unavailable_fails_and_continues_independent_checks(
-    tmp_path, monkeypatch, damage
-):
+def _assert_unavailable_policy_fails_without_comparing(tmp_path, monkeypatch, damage):
     from booley.runtime import inspection
 
     data = _seed_mount_policy_project(tmp_path, monkeypatch, "claude", "subscription")
@@ -9471,23 +9404,23 @@ def test_seed_mount_policy_unavailable_fails_and_continues_independent_checks(
         data.rename(data.with_name("moved"))
         data.write_text("directory conflict")
     report = inspection.Findings()
-    checked = []
+    built = []
     monkeypatch.setattr(inspection, "_image_current", lambda *args: True)
-    monkeypatch.setattr(
-        inspection, "_viewer_extensions_current", lambda *args: checked.append("viewer") or True
-    )
-    monkeypatch.setattr(
-        inspection, "_preview_terminal_current", lambda *args: checked.append("preview") or True
-    )
     inspection._check_devcontainer_spec(
-        inspection.RuntimeInspectionRequest(data.parent, "test-image", None), report
+        inspection.RuntimeInspectionRequest(
+            data.parent,
+            "test-image",
+            None,
+            expected_spec=lambda image: built.append(image) or spec,
+        ),
+        report,
     )
     findings = report.report().findings
     assert any(
         f.severity.value == "fail" and "expectation is unavailable" in f.message for f in findings
     )
-    assert checked == ["viewer", "preview"]
-    assert not any("structurally current" in f.message for f in findings)
+    assert built == []
+    assert not any(f.severity.value == "pass" for f in findings)
     assert "SYNTHETIC_SECRET" not in str(findings)
 
 
@@ -9496,33 +9429,14 @@ def test_seed_mount_policy_no_app_does_not_inspect_invalid_policy(tmp_path, monk
     from booley.runtime import inspection
 
     data = _seed_mount_policy_project(tmp_path, monkeypatch, "claude", "invalid")
-    request = inspection.RuntimeInspectionRequest(data.parent, "test-image", None)
     spec = {"remoteEnv": {"BOOLEY_AGENT_APP": app}}
-    report = inspection.Findings()
-    assert inspection._seed_mounts_current(request, spec, report) is True
-    assert report.report().findings == ()
-
-
-@pytest.mark.parametrize("cache_missing", [False, True])
-def test_seed_mount_policy_preserves_cache_check_and_no_stored_token(
-    tmp_path, monkeypatch, cache_missing
-):
-    from booley.runtime import auth_token, inspection
-
-    data = _seed_mount_policy_project(tmp_path, monkeypatch, "claude", "auto")
-    auth_token.token_path("claude").unlink()
-    spec = build_spec("claude")
+    dc.write_devcontainer(data.parent, spec)
     request = inspection.RuntimeInspectionRequest(
-        data.parent,
-        "test-image",
-        None,
-        expected_cache_mount="/opt/missing-cache" if cache_missing else None,
+        data.parent, "test-image", None, expected_spec=lambda _image: spec
     )
     report = inspection.Findings()
-    assert inspection._seed_mounts_current(request, spec, report) is not cache_missing
-    findings = report.report().findings
-    assert not any("predates the stored" in f.message for f in findings)
-    assert any("Nangate45" in f.message for f in findings) is cache_missing
+    inspection._check_devcontainer_spec(request, report)
+    assert {f.severity.value for f in report.report().findings} == {"pass"}
 
 
 @pytest.mark.parametrize("policy", ["auto", "subscription", "api_key"])

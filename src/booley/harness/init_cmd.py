@@ -1307,6 +1307,44 @@ def _interactive_spec_sources(
     )
 
 
+def _current_interactive_spec_sources(
+    project_root: Path, image_id: str | None
+) -> _InteractiveSpecSources:
+    """The sources ``booley init`` and Sandbox refresh build the spec from today.
+
+    Nangate is mounted exactly when its cache is ready, and the agent app is the
+    ``[agent]`` default (``agent_app=None``), as in both callers.
+    """
+    root = nangate_pdk.cache_root() if nangate_pdk.is_ready() else _NANGATE_PDK_NOT_REQUESTED
+    return _interactive_spec_sources(
+        InitContext(project_root=project_root, force=False, verbose=False),
+        root,
+        None,
+        image_id,
+    )
+
+
+def current_interactive_spec(project_root: Path, image_id: str | None) -> dict:
+    """The sealed spec ``booley init`` would write now, pinned to *image_id*.
+
+    It writes nothing: it builds through the same sources and ``preview`` as init and
+    refresh, so it may probe the image with a short-lived container. Every failure to
+    build it is reported as ``RuntimeSpecError``.
+    """
+    from booley.runtime import session_issuance
+
+    try:
+        sources = _current_interactive_spec_sources(project_root, image_id)
+        prepared = session_issuance.preview(
+            project_root, sources.build, expected_image_id=image_id
+        )
+    except RuntimeSpecError:
+        raise
+    except (RuntimeError, OSError, ValueError) as exc:
+        raise RuntimeSpecError(str(exc)) from exc
+    return prepared.spec
+
+
 def _report_interactive_state(
     ctx: InitContext, plan: interactive_init.InteractiveInitPlan
 ) -> None:
