@@ -36,7 +36,9 @@ def final_report_omits_headline(endpoint, result) -> dict:
 
     Both the persisted report and the MCP projection must omit the headline fields.
     """
-    freeze(endpoint)
+    from booley.flows.prepared_invocation import OrdinaryRunInvocation
+
+    freeze(endpoint, OrdinaryRunInvocation(endpoint._run))
     path = endpoint.write_report(result)
     # write_report returns <report_dir>/<endpoint>/<N>/report.json.
     return assert_paired_headline(path.parents[2], endpoint.name, None)
