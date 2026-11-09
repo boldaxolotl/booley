@@ -325,6 +325,14 @@ def _spy_conversion(monkeypatch: pytest.MonkeyPatch, partial: AdapterTransportId
     return seen
 
 
+def _check_cocotb_verdicts(pending, identity, passed: bool) -> None:
+    """Per-test verdicts are fixed too, and the final publish agrees with them."""
+    verdicts = {test.name: test.verdict for test in pending.test_results}
+    final = read_adapter_result(identity)
+    assert verdicts == {test.name: test.verdict for test in final.test_results}
+    assert verdicts == ({"t_ok": "inconclusive"} if passed else {"t_ok": "fail", "t_bad": "fail"})
+
+
 def _check_pending_partial(adapter, sim_output, tmp_path, monkeypatch) -> None:
     """Killed mid-conversion, the attempt still has the simulation verdict plus an incident."""
     identity = AdapterTransportIdentity(
@@ -355,9 +363,8 @@ def _check_pending_partial(adapter, sim_output, tmp_path, monkeypatch) -> None:
         )
         assert not isinstance(run, str)
         (dirs.run / "dump.vcd").write_text(_VCD_TEXT)
-        monkeypatch.setattr(
-            crun, "_evaluate_verdict", lambda output, *_a, **_kw: (output, passed, None)
-        )
+        failing = "" if passed else '<testcase name="t_bad"><failure message="boom"/></testcase>'
+        run.results_file.write_text(f'<testsuite><testcase name="t_ok"/>{failing}</testsuite>')
         crun._complete_cocotb_run(
             run,
             deque([sim_output]),
@@ -367,20 +374,25 @@ def _check_pending_partial(adapter, sim_output, tmp_path, monkeypatch) -> None:
             identity,
         )
     elif adapter == "icarus":
+        # The real entry point, so dropping its ``publish_pending=`` wiring fails here.
         (dirs.build / "sim_cfg.scr").write_text("")
         monkeypatch.setattr(ir, "_find_vvp", lambda: "vvp")
-        run = ir._prepare_icarus_run(dirs.build, dirs.run, dirs.work, [], True, "tb", ["tb.vcd"])
-        assert not isinstance(run, str)
-        (dirs.run / "tb.vcd").write_text(_VCD_TEXT)
-        publish = ir.native_pending_publisher(
-            identity,
-            sim_output,
-            0 if passed else 1,
-            pass_sentinels=None,
-            fail_sentinels=None,
-            termination=vr.RunTermination(),
+
+        def execute(*_args, **_kwargs):
+            (dirs.run / "tb.vcd").write_text(_VCD_TEXT)
+            proc = SimpleNamespace(returncode=0 if passed else 1, pid=0, poll=lambda: 0)
+            return [sim_output], proc, vr.RunTermination()
+
+        monkeypatch.setattr(ir, "_execute_icarus_run", execute)
+        ir.run_icarus_image(
+            build_dir=dirs.build,
+            run_cwd=dirs.run,
+            work_dir=dirs.work,
+            vcd=True,
+            trace_scope="tb",
+            trace_files=["tb.vcd"],
+            transport=identity,
         )
-        finalize_trace(run.current, _FINISHED, convert_timeout_s=60, publish_pending=publish)
     else:  # the Verilator VCD fallback: a raw trace.vcd converted after the run
         (dirs.work / "trace.vcd").write_text(_VCD_TEXT)
         session = TraceSession(dirs.work, "tb", backend="verilator")
@@ -407,12 +419,14 @@ def _check_pending_partial(adapter, sim_output, tmp_path, monkeypatch) -> None:
     assert pending.termination == "completed"  # a verdict, never a timeout
     assert pending.trace is not None and pending.trace.status == "incident"
     assert pending.passed is False
-    if adapter != "cocotb":
-        # The simulation verdict is already fixed: a pass is degraded by the trace
-        # incident, a failing simulation stays failed, neither is a timeout.
-        assert pending.failure_kind == "artifact"
-        assert pending.test_results[0].verdict == ("inconclusive" if passed else "fail")
-        assert pending.simulator_returncode == (0 if passed else 1)
+    if adapter == "cocotb":
+        _check_cocotb_verdicts(pending, identity, passed)
+        return
+    # The simulation verdict is already fixed: a pass is degraded by the trace
+    # incident, a failing simulation stays failed, neither is a timeout.
+    assert pending.failure_kind == "artifact"
+    assert pending.test_results[0].verdict == ("inconclusive" if passed else "fail")
+    assert pending.simulator_returncode == (0 if passed else 1)
 
 
 def test_pending_partial_holds_verdict_during_conversion(tmp_path, monkeypatch):

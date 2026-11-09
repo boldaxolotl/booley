@@ -1031,7 +1031,7 @@ def _pending_trace_publisher(
     """Publish the simulation's verdict plus a trace incident before conversion starts.
 
     A kill or crash during conversion then still leaves the verdict (never
-    ``timeout``) behind. This replaces the mid-simulation progress partial.
+    ``timeout``) behind. Written in addition to the mid-simulation progress partial.
     """
     if transport is None:
         return None

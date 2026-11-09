@@ -870,13 +870,20 @@ def test_timeout_without_transport_recovers_cocotb_progress(tmp_path: Path) -> N
 
 
 def _check_post_simulation_partial(
-    tmp_path: Path, timed_out: bool, returncode: int, sim_passed: bool
+    tmp_path: Path,
+    timed_out: bool,
+    returncode: int,
+    sim_passed: bool,
+    names: tuple[str, ...] = ("smoke",),
 ) -> None:
-    """An adapter dying mid-conversion leaves the simulation verdict, never a timeout."""
+    """An adapter dying mid-conversion leaves the simulation verdict, never a timeout.
+
+    ``names=()`` is the unnamed invocation (a Target with no registered Tests).
+    """
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
     identity = AdapterTransportIdentity(
-        "icarus", "abc123", handle.identity, ("smoke",), _evidence_path(handle)
+        "icarus", "abc123", handle.identity, names, _evidence_path(handle)
     )
 
     def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
@@ -896,10 +903,12 @@ def _check_post_simulation_partial(
             timed_out=timed_out,
         )
 
-    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+    outcome = _run_execution(handle, prepared, invoke, names or None, cocotb=False)
 
     assert outcome.tests[0].timed_out is False
-    assert outcome.tests[0].verdict == ("inconclusive" if sim_passed else "fail")
+    # Unnamed invocations have no per-test rows: the adapter-level verdict (a
+    # missing trace makes it inconclusive) applies, as on a run that was not killed.
+    assert outcome.tests[0].verdict == ("inconclusive" if sim_passed or not names else "fail")
     assert outcome.verdict != "timeout"
 
 
@@ -910,6 +919,15 @@ def test_post_simulation_partial_survives_adapter_kill(tmp_path: Path) -> None:
             case = tmp_path / f"rc{returncode}-{sim_passed}"
             case.mkdir()
             _check_post_simulation_partial(case, False, returncode, sim_passed)
+
+
+def test_post_simulation_partial_survives_kill_of_unnamed_invocation(tmp_path: Path) -> None:
+    """A Target without registered Tests keeps its verdict on a deadline kill or a signal."""
+    for timed_out, returncode in ((True, -9), (False, -9)):
+        for sim_passed in (True, False):
+            case = tmp_path / f"to{timed_out}-{sim_passed}"
+            case.mkdir()
+            _check_post_simulation_partial(case, timed_out, returncode, sim_passed, ())
 
 
 @pytest.mark.parametrize("simulator_returncode", [-15, 0, 7])

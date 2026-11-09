@@ -277,9 +277,10 @@ then the trace directory, then the build directory, and only when its own
 waveform file is missing. The file must be written by the current run. An FST
 file is used as it is. A VCD file of any size is converted after the run,
 within the `trace_convert_timeout_ms` budget. If the conversion fails or runs
-out of time, the run keeps its simulation verdict, reports a trace incident
-(the trace is inconclusive), and keeps the VCD for diagnosis. Dump FST
-instead, or raise `trace_convert_timeout_ms`, when conversion is too slow.
+out of time, the run reports a trace incident and keeps the VCD for diagnosis.
+A failing simulation stays failed and a passing one is reported inconclusive
+(no waveform to query); neither becomes a timeout. Dump FST instead, or raise
+`trace_convert_timeout_ms`, when conversion is too slow.
 
 ### Tracing a Cocotb Target
 

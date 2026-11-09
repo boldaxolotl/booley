@@ -2288,9 +2288,20 @@ def _test_outcomes(
     results = []
     for index, name in enumerate(names):
         item = by_name.get(name)
+        # A completed result with a trace incident and no per-test row is the
+        # pending partial of an unnamed invocation killed mid-conversion: keep
+        # the simulation verdict, never timeout or crash.
+        sim_finished = (
+            adapter is not None
+            and adapter.termination == "completed"
+            and adapter.trace is not None
+            and adapter.trace.status == "incident"
+        )
         verdict = (
             item.verdict
             if item
+            else _adapter_verdict(adapter)
+            if sim_finished
             else "timeout"
             if process.timed_out
             else "crash"

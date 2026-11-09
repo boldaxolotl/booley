@@ -14,8 +14,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   `[flows.sim].trace_convert_timeout_ms` budget (default `1800000`, 30 minutes)
   on top of `timeout_ms`, so a simulation that passes near its timeout is no
   longer reported as `timeout` while its waveform converts. A failed or
-  timed-out conversion keeps the simulation verdict and reports a trace
-  incident. Icarus no longer reports an unconverted raw VCD as a waveform.
+  timed-out conversion reports a trace incident: a failing simulation stays
+  failed, a passing one is reported inconclusive, and neither is `timeout`.
+  Icarus no longer reports an unconverted raw VCD as a waveform.
 
 ## 0.4.0 - 04 NOV 2026
 
