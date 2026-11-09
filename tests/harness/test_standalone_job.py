@@ -263,8 +263,60 @@ def test_signal_leaves_terminal_record(project, tmp_path, name):
 
     job = StandaloneJob.prepare(project, "flow", "stub", [])
     assert job is not None
-    assert job.run(lambda: 0) == 0  # the next shell run repairs the dead record
+    try:
+        assert job.run(lambda: 0) == 0  # the next shell run repairs the dead record
+    finally:
+        job.discard()
     repaired = job_records.read_record(rec.run_id, project / ".booley" / JOBS_ROOT)
     assert repaired.status == "failed"
     assert repaired.ended_at is None
     assert job_handle_expired(repaired, time.time() + 10 * 365 * 24 * 3600)
+
+
+def test_cleanup_keeps_a_record_that_finished_after_it_was_listed(monkeypatch, project):
+    """A run that ends between the cleanup's listing and its rewrite keeps its own outcome."""
+    from booley.harness import standalone_job
+    from booley.harness.standalone_job import StandaloneJob
+    from booley.runtime.pid import DEAD, ProcessIdentity, ProcessObservation
+
+    root = project / ".booley" / JOBS_ROOT
+    job = StandaloneJob.prepare(project, "flow", "stub", [])
+    assert job is not None
+    job.discard()
+    other = job_records.JobRecord(
+        run_id="stub-other-1",
+        endpoint="stub",
+        started_at="2026-01-01T00:00:00Z",
+        timeout_s=60,
+        argv=["booley", "flow", "stub"],
+        pid=1,
+        process_identity=ProcessIdentity(pid=1, identity_scope="test", start_token=7).to_payload(),
+    )
+    job_records.write_record_strict(other, root)
+
+    def finish_then_die(_identity):
+        other.status, other.exit_code = "done", 0  # the other run writes its end, then exits
+        job_records.write_record(other, root)
+        return ProcessObservation(DEAD)
+
+    monkeypatch.setattr(standalone_job, "observe_process", finish_then_die)
+    assert job.run(lambda: 0) == 0
+    kept = job_records.read_record("stub-other-1", root)
+    assert kept is not None
+    assert (kept.status, kept.exit_code) == ("done", 0)
+
+
+def test_closed_standard_streams_do_not_fail_the_run(monkeypatch, project):
+    """With fd 1 or 2 closed, Python leaves the stream None; print() drops silently as before."""
+    from booley.harness.standalone_job import StandaloneJob
+
+    job = StandaloneJob.prepare(project, "flow", "stub", [])
+    assert job is not None
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    try:
+        assert job.run(lambda: print("dropped") or 0) == 0
+    finally:
+        job.discard()
+    (rec,) = records(project)
+    assert rec.status == "done"

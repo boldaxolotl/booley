@@ -1649,15 +1649,22 @@ def test_human_text_shortens_hashes_but_not_design_data(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(os.name == "nt", reason="needs a POSIX pty or FIFO")
 @pytest.mark.parametrize("terminal", ["pty", "pipe"])
-def test_raw_terminal_lines_reach_job_log_without_frames(tmp_path, terminal):
-    """Raw fd writes bypass a Standalone Job's tee, so permanent lines are copied by hand."""
+def test_raw_terminal_lines_reach_job_log_without_frames(tmp_path, monkeypatch, terminal):
+    """Raw fd writes bypass a Standalone Job's tee: permanent lines are copied, redraws are not."""
     from booley.harness.standalone_job import JobLogStream
 
+    monkeypatch.setenv("TERM", "xterm")
     reader, writer = os.openpty() if terminal == "pty" else os.pipe()
     log_path = tmp_path / "job.log"
     with os.fdopen(writer, "w") as screen, log_path.open("wb", buffering=0) as log:
-        sink = observer(tmp_path, stream=JobLogStream(screen, log))
-        sink.rows = 2  # a live region is on screen: the next line redraws over it
+        sink = observer(
+            tmp_path,
+            stream=JobLogStream(screen, log),
+            clock=lambda: 10.0,
+            dimensions=lambda: os.terminal_size((120, 24)),
+        )
+        sink.tick()  # a pty draws the live status panel; a pipe draws nothing
+        assert (sink.rows > 0) == (terminal == "pty")
         sink._say("permanent \x1b[1mline\x1b[0m")
         sink.close()
     os.close(reader)

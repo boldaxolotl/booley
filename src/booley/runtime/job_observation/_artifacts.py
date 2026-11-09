@@ -53,9 +53,10 @@ class JobArtifactCache:
         root = _absolute(root)
         parent = root.parent if reports_parent is None else _absolute(reports_parent)
         # An explicit parent is its own scan root; the default keeps the records root.
-        key = root if reports_parent is None else parent, endpoint
+        scan_root = root if reports_parent is None else parent
+        key = (scan_root, endpoint)
         if key not in self._indexes:
-            self._indexes[key] = self._index(key[0], endpoint, parent)
+            self._indexes[key] = self._index(scan_root, endpoint, parent)
         index = self._indexes[key]
         if (kind, run_id) not in index and kind == "progress":
             for entry in self._overflow.get(key, ()):

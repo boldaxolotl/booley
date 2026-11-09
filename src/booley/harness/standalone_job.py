@@ -30,7 +30,14 @@ from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 from booley.harness.colors import strip_ansi
 from booley.runtime import job_records
 from booley.runtime.handles import register_job
-from booley.runtime.pid import DEAD, REUSED, ZOMBIE, ProcessIdentity, observe_process
+from booley.runtime.pid import (
+    DEAD,
+    REUSED,
+    ZOMBIE,
+    ProcessIdentity,
+    capture_process_identity,
+    observe_process,
+)
 from booley.runtime.session_paths import logs_runtime_dir, session_jobs_dir
 from booley.runtime.timefmt import compact_utc_now, utc_now_rfc3339
 
@@ -40,6 +47,7 @@ _STANDALONE_DIR = "standalone"
 JOB_LOG_NAME = "job.log"
 RUN_ID_ENV = "BOOLEY_RUN_ID"
 _CTRL_C_EXIT_CODE = 130
+_SignalHandler = signal.Handlers | int | Callable[[int, FrameType | None], object] | None
 
 
 def standalone_log_root(booley_dir: Path) -> Path:
@@ -182,21 +190,26 @@ class StandaloneJob:
 
     def _run_logged(self, run: Callable[[], int], log: BinaryIO) -> int:
         original = sys.stdout, sys.stderr
-        sys.stdout = JobLogStream(original[0], log)
-        sys.stderr = JobLogStream(original[1], log)
+        # A closed fd 1 or 2 leaves the stream None: print() drops it silently, so keep it None.
+        stdout: TextIO | None = original[0]
+        stderr: TextIO | None = original[1]
+        if stdout is not None:
+            sys.stdout = JobLogStream(stdout, log)
+        if stderr is not None:
+            sys.stderr = JobLogStream(stderr, log)
         status, exit_code = job_records.STATUS_FAILED, 1
         try:
             exit_code = run()
-            status = job_records.terminal_status(exit_code, False)
             return exit_code
         except SystemExit as exc:
             exit_code = _exit_code(exc.code)
-            status = job_records.terminal_status(exit_code, False)
             raise
         except KeyboardInterrupt:
             status, exit_code = job_records.STATUS_CANCELLED, _CTRL_C_EXIT_CODE
             raise
         finally:
+            if status == job_records.STATUS_FAILED:  # no Ctrl-C: the exit code decides
+                status = job_records.terminal_status(exit_code, False)
             self._end(status, exit_code)
             sys.stdout, sys.stderr = original
             log.close()
@@ -205,7 +218,6 @@ class StandaloneJob:
         """Write the running record and open ``job.log``; ``None`` leaves the run unrecorded."""
         self._reconcile_dead_records()
         record = self._record
-        from booley.runtime.pid import capture_process_identity
 
         # The Dashboard observes Linux /proc; optional identity must not block on host ps.
         identity = capture_process_identity(os.getpid()) if sys.platform == "linux" else None
@@ -238,9 +250,14 @@ class StandaloneJob:
                 identity = ProcessIdentity.from_payload(old.process_identity)
                 if old.status != job_records.STATUS_RUNNING or identity is None:
                     continue
-                if observe_process(identity).state in {DEAD, REUSED, ZOMBIE}:
-                    old.status = job_records.STATUS_FAILED
-                    job_records.write_record(old, self._root)
+                if observe_process(identity).state not in {DEAD, REUSED, ZOMBIE}:
+                    continue
+                # The process is gone, so its record is final. Re-read it: the run may have
+                # written its terminal state after the listing above, and that must win.
+                current = job_records.read_record(old.run_id, self._root)
+                if current is not None and current.status == job_records.STATUS_RUNNING:
+                    current.status = job_records.STATUS_FAILED
+                    job_records.write_record(current, self._root)
 
     def _end(self, status: str, exit_code: int) -> None:
         self._finished = True
@@ -256,7 +273,7 @@ class StandaloneJob:
         Installed before the first record write so no signal can land between a
         written ``running`` record and its handler.
         """
-        previous: dict[int, signal.Handlers | int | None] = {}
+        previous: dict[int, _SignalHandler] = {}
         for name in ("SIGTERM", "SIGHUP"):
             signum = getattr(signal, name, None)
             if signum is None or signal.getsignal(signum) != signal.SIG_DFL:
