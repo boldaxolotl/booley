@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import tomllib
-from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
 
@@ -12,20 +11,16 @@ from booley.config.project_config import load_test_configuration_field
 from booley.core.boundary import require_dict
 from booley.core.config_paths import resolve_toml
 from booley.criteria.coverage import COVERAGE_MIGRATION_SKELETON, validate_coverage_metrics
-from booley.criteria.state import CriterionChange, DevelopmentState
+from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import find_retired_criteria
 from booley.flows.execution_persistence import (
     AcceptanceRecorder,
-    EvidenceDiscarded,
     GoalPresentationProvider,
-    NoAcceptanceRecorder,
     execution_goal_name,
-    frozen_test_runs_for,
 )
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
 
-from .coverage_acceptance import CoverageAcceptance
 from .coverage_campaign import DurableTargetIdentity
 from .coverage_invocation import CoverageProjectContext
 from .coverage_policy import CoverageCriterion, CoverageThreshold
@@ -75,21 +70,6 @@ def coverage_project_context(
             )
             for key in policies
         },
-    )
-
-
-def coverage_acceptance(
-    state: DevelopmentState,
-    recorder: AcceptanceRecorder,
-    *,
-    diagnostic: bool,
-    observer: Callable[[list[CriterionChange]], None] | None = None,
-    on_discard: Callable[[EvidenceDiscarded], None] | None = None,
-) -> CoverageAcceptance | None:
-    if diagnostic or state._file_path is None or isinstance(recorder, NoAcceptanceRecorder):
-        return None
-    return CoverageAcceptance(
-        state, recorder, observer, on_discard, frozen_test_runs_for(recorder)
     )
 
 
