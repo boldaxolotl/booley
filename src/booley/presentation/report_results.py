@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from booley.core.boundary import as_float, as_int
-from booley.runtime.endpoint_execution import (
+from booley.core.exit_codes import (
     EXIT_CANCELLED,
     EXIT_ERROR,
     EXIT_FAILURE,
