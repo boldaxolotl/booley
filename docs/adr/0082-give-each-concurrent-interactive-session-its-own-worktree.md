@@ -79,6 +79,13 @@ changes the ADR 0068 rule that Session identity is presentational only: the
 peer's cwd now selects the checkout, though the Session still never selects a
 Goal Record.
 
+Implemented by #2606 (2026-11-08): only a linked worktree of the server's
+repository other than the server cwd routes. The main checkout is the server
+cwd, so a main-checkout caller keeps today's behavior, including the Goal
+refusal. The session process is the Claude Code peer or the marked
+`booley chat` Codex owner; ordinary and hand-started Codex never route. See
+ADR 0068 Amendments (2026-11-08).
+
 ### Launching the agent
 
 `booley chat` forks. The child reserves the session handle under its own
