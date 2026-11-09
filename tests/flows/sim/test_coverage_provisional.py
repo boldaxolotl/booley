@@ -180,33 +180,28 @@ def test_criterion_round_trips_through_the_persisted_strict_evaluation(minimum: 
     assert criterion_from_evaluation(evaluated) == criterion
 
 
-@pytest.mark.parametrize(
-    ("covered", "uncovered", "minimum", "verdict"),
-    [
-        (1, 1, Fraction(50), "pass"),
-        (1, 2, Fraction("33.33"), "pass"),
-        (2, 1, Fraction("66.67"), "fail"),
-    ],
-    ids=["exact-hit", "decimal-pass", "decimal-fail"],
-)
-def test_threshold_edges_agree_across_criterion_provisional_and_report(
-    covered: int, uncovered: int, minimum: Fraction, verdict: str
-) -> None:
+def test_threshold_edges_agree_across_criterion_provisional_and_report() -> None:
     """The Criterion, the Provisional Verdict and the Job report share one scorer."""
     from booley.flows.sim.coverage_policy import coverage_metrics
 
-    strict, _ = _evaluated(minimum, covered=covered, uncovered=uncovered)
-    assert strict.evaluation["metrics"][0]["verdict"] == verdict
-    assert coverage_metrics(strict)["line"]["met"] is (verdict == "pass")
+    edges = [
+        (1, 1, Fraction(50), "pass"),  # exact hit
+        (1, 2, Fraction("33.33"), "pass"),  # decimal edge, passes
+        (2, 1, Fraction("66.67"), "fail"),  # decimal edge, fails
+    ]
+    for covered, uncovered, minimum, verdict in edges:
+        strict, _ = _evaluated(minimum, covered=covered, uncovered=uncovered)
+        assert strict.evaluation["metrics"][0]["verdict"] == verdict
+        assert coverage_metrics(strict)["line"]["met"] is (verdict == "pass")
 
-    # One extra uncovered point fails the strict verdict; waiving it restores the edge.
-    extra, criterion = _evaluated(minimum, covered=covered, uncovered=uncovered + 1)
-    assert extra.evaluation["status"] == "fail"
-    provisional = evaluate_provisional_coverage(
-        extra, criterion, [_candidate(f"u{uncovered + 1}")]
-    )
-    assert provisional.evaluation["metrics"][0]["verdict"] == verdict
-    assert provisional.status == verdict
+        # One extra uncovered point fails the strict verdict; waiving it restores the edge.
+        extra, criterion = _evaluated(minimum, covered=covered, uncovered=uncovered + 1)
+        assert extra.evaluation["status"] == "fail"
+        provisional = evaluate_provisional_coverage(
+            extra, criterion, [_candidate(f"u{uncovered + 1}")]
+        )
+        assert provisional.evaluation["metrics"][0]["verdict"] == verdict
+        assert provisional.status == verdict
 
 
 def test_rebuild_reports_a_rejected_stored_threshold_as_provisional_error() -> None:

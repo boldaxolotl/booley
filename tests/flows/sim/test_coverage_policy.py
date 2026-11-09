@@ -198,14 +198,10 @@ def test_non_decimal_threshold_is_rejected_at_criterion_construction() -> None:
         _criterion(Fraction(200, 3))
 
 
-@pytest.mark.parametrize(
-    "minimum",
-    [Fraction(0), Fraction(101), Fraction(-5)],
-    ids=["zero", "above-range", "negative"],
-)
-def test_out_of_range_threshold_is_rejected_at_criterion_construction(minimum: Fraction) -> None:
-    with pytest.raises(ValueError, match=r"finite numbers in \(0, 100\]"):
-        _criterion(minimum)
+def test_out_of_range_threshold_is_rejected_at_criterion_construction() -> None:
+    for minimum in (Fraction(0), Fraction(101), Fraction(-5)):
+        with pytest.raises(ValueError, match=r"finite numbers in \(0, 100\]"):
+            _criterion(minimum)
 
 
 @pytest.mark.parametrize(
