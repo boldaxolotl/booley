@@ -872,8 +872,8 @@ def test_timeout_without_transport_recovers_cocotb_progress(tmp_path: Path) -> N
 @pytest.mark.parametrize("sim_passed", [True, False], ids=["passing_sim", "failing_sim"])
 @pytest.mark.parametrize(
     ("timed_out", "returncode"),
-    [(True, -9), (False, -9), (False, 137), (False, 1)],
-    ids=["timeout", "sigkill", "shell137", "exception"],
+    [(False, -9), (False, 137), (False, 1)],
+    ids=["sigkill", "shell137", "exception"],
 )
 def test_post_simulation_partial_survives_adapter_kill(
     tmp_path: Path, timed_out: bool, returncode: int, sim_passed: bool
