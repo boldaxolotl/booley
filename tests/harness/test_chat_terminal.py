@@ -486,6 +486,7 @@ def test_ctrl_z_suspends_and_fg_resumes_the_agent(scene: _Scene) -> None:
     terminal.wait_exit()
 
     assert scene.read("shell.json") == {"stops": 1, "code": 7, "owner_is_shell": False}
+    assert scene.counts()["CONT"] == 1  # one SIGCONT per resume, not one per relay path
 
 
 def test_ctrl_z_then_bg_leaves_the_terminal_with_the_shell(scene: _Scene) -> None:

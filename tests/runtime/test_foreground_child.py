@@ -142,3 +142,21 @@ def test_forwarding_waits_for_a_child_and_targets_it(monkeypatch: pytest.MonkeyP
     run._forward(signal.SIGHUP, None)
 
     assert sent == [(4321, signal.SIGHUP)]
+
+
+@_needs_fork
+def test_a_closed_stderr_does_not_stop_the_launch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`booley chat 2>&-` leaves sys.stderr None; flushing it must not raise."""
+
+    def exit_child(code: int) -> None:
+        raise _ChildExitError(code)
+
+    monkeypatch.setattr(foreground_child.sys, "stderr", None)
+    monkeypatch.setattr(foreground_child.os, "fork", lambda: 0)
+    monkeypatch.setattr(foreground_child.os, "_exit", exit_child)
+    monkeypatch.setattr(foreground_child.os, "isatty", lambda _fd: False)
+
+    with pytest.raises(_ChildExitError) as raised:
+        foreground_child.run_foreground_child(lambda: 2)
+
+    assert raised.value.code == 2

@@ -37,10 +37,9 @@ _RESTORED_NAMES = (
     "SIGTTOU",
     "SIGTERM",
     "SIGHUP",
-    "SIGCONT",
     "SIGCHLD",
 )
-_TTY_SIGNAL_NAMES = ("SIGINT", "SIGQUIT", "SIGTSTP", "SIGCONT")
+_TTY_SIGNAL_NAMES = ("SIGINT", "SIGQUIT", "SIGTSTP")
 _FORWARDED_NAMES = ("SIGTERM", "SIGHUP")
 _EXEC_FAILED = 2
 
@@ -61,6 +60,18 @@ def _foreground_tty() -> bool:
         return os.tcgetpgrp(0) == os.getpgrp()
     except OSError:
         return False
+
+
+def _flush_std() -> None:
+    """Flush stdout and stderr, tolerating closed (None) or broken streams.
+
+    `booley chat 2>&-` leaves `sys.stderr` as None; a flush must never keep the
+    child from `os._exit` or crash the parent before the fork.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None:
+            with contextlib.suppress(OSError, ValueError):
+                stream.flush()
 
 
 def _propagate(status: int) -> int:
@@ -179,9 +190,10 @@ class _ForegroundRun:
         except BaseException:  # noqa: BLE001 — a child must never unwind into the parent's stack
             traceback.print_exc()
         finally:
-            sys.stdout.flush()
-            sys.stderr.flush()
-            os._exit(code)
+            try:
+                _flush_std()
+            finally:
+                os._exit(code)
 
     # -- parent --------------------------------------------------------------
 
@@ -240,8 +252,7 @@ class _ForegroundRun:
 
     def _supervise(self) -> int | None:
         """Fork the agent and wait for it; return the raw wait status, None if fork failed."""
-        sys.stdout.flush()
-        sys.stderr.flush()
+        _flush_std()
         outer_mask = signal.pthread_sigmask(signal.SIG_BLOCK, _signal_numbers(_FORWARDED_NAMES))
         self._install_before_fork()
         try:
@@ -261,9 +272,8 @@ class _ForegroundRun:
     def _end_signal_handling(self) -> None:
         """Stop relaying as soon as the child is reaped, then return the terminal."""
         if self._terminal:
-            for number in _signal_numbers(_TTY_SIGNAL_NAMES[:-1]):
+            for number in _signal_numbers(_TTY_SIGNAL_NAMES):
                 signal.signal(number, signal.SIG_IGN)
-            signal.signal(signal.SIGCONT, signal.SIG_DFL)
         self._take_back()
         self._child = None
 
