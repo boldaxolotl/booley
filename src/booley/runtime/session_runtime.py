@@ -902,7 +902,7 @@ class _UpRequest:
     relay: Any
 
 
-def _validate_up_request(workspace: Path, image_override: str | None) -> _UpRequest:
+def _validate_up_request(workspace: Path) -> _UpRequest:
     from booley.runtime import session_issuance as runtime_spec
 
     spec = _load_spec(workspace)
@@ -913,10 +913,6 @@ def _validate_up_request(workspace: Path, image_override: str | None) -> _UpRequ
             f"refusing Sandbox startup: {exc}; {_spec_refusal_remedy(workspace, exc, vscode=False)}"
         ) from exc
     _warn_on_image_drift(spec, workspace)
-    if image_override is not None and image_override != spec.get("image"):
-        raise SessionError(
-            "session refresh cannot bypass a host-issued spec; re-run `booley init --seed`"
-        )
     profile = _requested_issued_license(workspace, issuance)
     _preflight(spec, license_required=profile is not None)
     _warn_on_stale_booley_bake(spec, workspace)
@@ -985,7 +981,6 @@ def _run_up_transaction(
     *,
     rebuild: bool,
     expected_image_id: str | None,
-    expected_payload_fingerprint: str | None,
     expected_wheel_source_fingerprint: str | None = None,
     expected_wheel_sha256: str | None = None,
     recovery: bool = False,
@@ -998,7 +993,7 @@ def _run_up_transaction(
         )
     parked = _park_session_for_rebuild(request.name) if replacing else None
     exists = idk.container_exists(request.name)
-    if exists and not _container_matches_issuance(
+    if exists and not container_matches_issuance(
         request.name, request.issuance, spec=request.spec, workspace=workspace
     ):
         raise SessionError(
@@ -1016,7 +1011,7 @@ def _run_up_transaction(
         )
         candidate_ready = True
         if expected_image_id is not None:
-            if not _container_matches_issuance(
+            if not container_matches_issuance(
                 request.name,
                 request.issuance,
                 spec=request.spec,
@@ -1029,7 +1024,6 @@ def _run_up_transaction(
             verify_refreshed_session(
                 workspace,
                 expected_image_id,
-                expected_payload_fingerprint,
                 expected_wheel_source_fingerprint=expected_wheel_source_fingerprint,
                 expected_wheel_sha256=expected_wheel_sha256,
             )
@@ -1056,9 +1050,7 @@ def _up_unlocked(
     workspace: Path,
     *,
     rebuild: bool = False,
-    image_override: str | None = None,
     expected_image_id: str | None = None,
-    expected_payload_fingerprint: str | None = None,
     expected_wheel_source_fingerprint: str | None = None,
     expected_wheel_sha256: str | None = None,
     recovery: bool = False,
@@ -1066,9 +1058,7 @@ def _up_unlocked(
     return _ensure_unlocked(
         workspace,
         rebuild=rebuild,
-        image_override=image_override,
         expected_image_id=expected_image_id,
-        expected_payload_fingerprint=expected_payload_fingerprint,
         expected_wheel_source_fingerprint=expected_wheel_source_fingerprint,
         expected_wheel_sha256=expected_wheel_sha256,
         recovery=recovery,
@@ -1088,15 +1078,13 @@ def _ensure_unlocked(
     workspace: Path,
     *,
     rebuild: bool = False,
-    image_override: str | None = None,
     expected_image_id: str | None = None,
-    expected_payload_fingerprint: str | None = None,
     expected_wheel_source_fingerprint: str | None = None,
     expected_wheel_sha256: str | None = None,
     recovery: bool = False,
 ) -> EnsureResult:
     """Reuse the selected Sandbox, or run the headless startup transaction."""
-    request = _validate_up_request(workspace, image_override)
+    request = _validate_up_request(workspace)
     selected = resolve_running_sandbox(workspace)
     if rebuild:
         _refuse_editor(selected, "rebuild from the CLI")
@@ -1111,7 +1099,6 @@ def _ensure_unlocked(
             verify_refreshed_session(
                 workspace,
                 expected_image_id,
-                expected_payload_fingerprint,
                 expected_wheel_source_fingerprint=expected_wheel_source_fingerprint,
                 expected_wheel_sha256=expected_wheel_sha256,
             )
@@ -1128,7 +1115,6 @@ def _ensure_unlocked(
         request,
         rebuild=rebuild,
         expected_image_id=expected_image_id,
-        expected_payload_fingerprint=expected_payload_fingerprint,
         expected_wheel_source_fingerprint=expected_wheel_source_fingerprint,
         expected_wheel_sha256=expected_wheel_sha256,
         recovery=recovery,
@@ -1173,9 +1159,7 @@ def up(
     workspace: Path,
     *,
     rebuild: bool = False,
-    image_override: str | None = None,
     expected_image_id: str | None = None,
-    expected_payload_fingerprint: str | None = None,
 ) -> str:
     """Create or start one Session while excluding other host mutations."""
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
@@ -1185,9 +1169,7 @@ def up(
         return _up_unlocked(
             workspace,
             rebuild=rebuild,
-            image_override=image_override,
             expected_image_id=expected_image_id,
-            expected_payload_fingerprint=expected_payload_fingerprint,
         )
 
 
@@ -1205,7 +1187,7 @@ def validate(workspace: Path) -> str:
     except runtime_spec.RuntimeSpecError as exc:
         raise SessionError(f"{exc}; {_spec_refusal_remedy(workspace, exc, vscode=False)}") from exc
     selected = resolve_running_sandbox(workspace)
-    if selected is not None and not _container_matches_issuance(
+    if selected is not None and not container_matches_issuance(
         selected.container_id,
         issuance,
         spec=spec,
@@ -1521,11 +1503,6 @@ def _strict_interactive_states(
             raise SessionError(f"cannot inspect Sandbox {name!r}")
         states.append((name, raw))
     return states
-
-
-def strict_conflicting_vscode_session(workspace: Path) -> str | None:
-    """Compatibility entry point for structural editor selection."""
-    return vscode_session_container(workspace)
 
 
 def issued_runtime_drift_fix(
@@ -1849,19 +1826,19 @@ def _writable_bind(raw: object) -> bool:
     )
 
 
-def _container_matches_issuance(  # noqa: PLR0911, PLR0912, PLR0915 - fail-closed inspect ladder
+def container_matches_issuance(  # noqa: PLR0911, PLR0912, PLR0915 - fail-closed inspect ladder
     name: str,
-    issuance: object,
+    issuance: Issuance,
     *,
-    spec: dict | None = None,
-    workspace: Path | None = None,
+    spec: dict,
+    workspace: Path,
     expected_id: str | None = None,
 ) -> bool:
     """True when an existing container exactly matches its trusted issuance.
 
-    Label-only inspection is retained for Doctor's cross-origin inventory. The
-    resume path supplies the spec and workspace and additionally compares the
-    immutable image, user/workdir, mounts, environment, hardening, and networks.
+    Doctor inspection and the resume path both call this. Beyond the issuance
+    labels it compares the immutable image, user/workdir, mounts, environment,
+    hardening, and networks against the spec and workspace.
     """
     import json
 
@@ -1879,8 +1856,6 @@ def _container_matches_issuance(  # noqa: PLR0911, PLR0912, PLR0915 - fail-close
         return False
     if not expected.issubset({f"{key}={value}" for key, value in labels.items()}):
         return False
-    if spec is None or workspace is None:
-        return True
     raw = _docker_stdout(["docker", "inspect", name])
     if raw is None:
         return False
@@ -2310,7 +2285,7 @@ def resolve_running_sandbox(workspace: Path) -> Sandbox | None:
 
 
 def _validate_selected_runtime(workspace: Path, request: _UpRequest, selected: Sandbox) -> None:
-    if not _container_matches_issuance(
+    if not container_matches_issuance(
         selected.container_id,
         request.issuance,
         spec=request.spec,
@@ -2334,7 +2309,7 @@ def _refuse_editor(selected: Sandbox | None, action: str) -> None:
 
 def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, str]]:
     """Select the one current runtime, or create/resume the headless Sandbox."""
-    request = _validate_up_request(workspace, None)
+    request = _validate_up_request(workspace)
     selected = resolve_running_sandbox(workspace)
     remote_env = request.spec["remoteEnv"]
     command_env = {
@@ -2352,7 +2327,6 @@ def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, st
         request,
         rebuild=False,
         expected_image_id=None,
-        expected_payload_fingerprint=None,
     )
     _warn_on_stale_session_containers(request.spec, workspace)
     selected = resolve_running_sandbox(workspace)
@@ -2434,12 +2408,11 @@ def enter(
 def verify_refreshed_session(
     workspace: Path,
     expected_image_id: str,
-    expected_payload_fingerprint: str | None,
     *,
     expected_wheel_source_fingerprint: str | None = None,
     expected_wheel_sha256: str | None = None,
 ) -> None:
-    """Verify image, payload, and installed-wheel identity after recreation."""
+    """Verify image and installed-wheel identity after recreation."""
     name = session_container_name(workspace)
     actual_image_id = _docker_stdout(["docker", "inspect", name, "--format", "{{.Image}}"])
     if actual_image_id != expected_image_id:
@@ -2447,29 +2420,9 @@ def verify_refreshed_session(
             f"refreshed Sandbox uses {actual_image_id or '<unknown>'}, "
             f"expected {expected_image_id}"
         )
-    if expected_payload_fingerprint is None and (
-        expected_wheel_source_fingerprint is None and expected_wheel_sha256 is None
-    ):
-        return
-    if expected_payload_fingerprint is not None:
-        _verify_payload_identity(name, expected_payload_fingerprint)
     if expected_wheel_source_fingerprint is None and expected_wheel_sha256 is None:
         return
     _verify_wheel_identity(name, expected_wheel_source_fingerprint, expected_wheel_sha256)
-
-
-def _verify_payload_identity(name: str, expected: str) -> None:
-    probe = (
-        "from booley.runtime.build_metadata import current_build_metadata; "
-        "print(current_build_metadata().payload_fingerprint)"
-    )
-    result = _run(["docker", "exec", name, "python3", "-I", "-c", probe], capture=True)
-    actual = result.stdout.strip()
-    if result.returncode != 0 or actual != expected:
-        detail = result.stderr.strip() or actual or "probe produced no output"
-        raise SessionError(
-            "refreshed Sandbox payload does not match the reconciled image: " + detail
-        )
 
 
 def _verify_wheel_identity(
@@ -2534,7 +2487,7 @@ class DownResult:
         return self.headless or self.relay or self.claim_cleared
 
 
-def _down_unlocked(workspace: Path, *, remove: bool = True) -> DownResult:
+def _down_unlocked(workspace: Path) -> DownResult:
     """Stop this Project's Sandboxes and clear pending editor capacity."""
     from booley.runtime import session_admission
 
@@ -2555,24 +2508,23 @@ def _down_unlocked(workspace: Path, *, remove: bool = True) -> DownResult:
         if result.returncode:
             detail = result.stderr.strip() or result.stdout.strip() or "docker stop failed"
             raise SessionError(f"cannot stop headless Sandbox {name!r}: {detail}")
-        if remove:
-            result = _run(["docker", "rm", "-f", name])
-            if result.returncode:
-                detail = result.stderr.strip() or result.stdout.strip() or "docker rm failed"
-                raise SessionError(f"cannot remove headless Sandbox {name!r}: {detail}")
-    if remove and relay_exists:
+        result = _run(["docker", "rm", "-f", name])
+        if result.returncode:
+            detail = result.stderr.strip() or result.stdout.strip() or "docker rm failed"
+            raise SessionError(f"cannot remove headless Sandbox {name!r}: {detail}")
+    if relay_exists:
         _remove_license_relay(relay)
     claim_cleared = session_admission.clear_vscode_claim(workspace)
     return DownResult(session_exists, relay_exists, claim_cleared)
 
 
-def down(workspace: Path, *, remove: bool = True) -> DownResult:
+def down(workspace: Path) -> DownResult:
     """Stop one Session while excluding other host mutations."""
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session down"):
         _recover_before_lifecycle(workspace, "booley session down")
-        return _down_unlocked(workspace, remove=remove)
+        return _down_unlocked(workspace)
 
 
 def status(workspace: Path) -> str:
@@ -2644,7 +2596,7 @@ def sandbox_remedy(
     if prior is None:
         return "stop any VS Code Sandbox through its owning app, then on the host run `booley session down`, `booley init --seed`, and `booley session up`"
     try:
-        owner = strict_conflicting_vscode_session(workspace)
+        owner = vscode_session_container(workspace)
     except SessionError:
         return (
             "restore Docker connectivity and inspect Sandbox ownership on the host before repair"

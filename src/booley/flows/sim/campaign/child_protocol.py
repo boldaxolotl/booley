@@ -6,8 +6,10 @@ import os
 import stat
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from booley.flows.artifact_durability import durable_create
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
@@ -26,6 +28,10 @@ from booley.runtime.timefmt import utc_now_rfc3339
 from .codec import SimulationCampaignIntegrityError, canonical_json_bytes
 from .model import SimulationCampaignManifest
 from .planning import manifest_digest
+from .run_directory import (
+    cleanup_interrupted_run_directory,
+    restore_run_directory_from_project_data,
+)
 
 _CONTEXT_SCHEMA = "booley.supervised-child-context/v1"
 _PROTOCOL_RECORD_LIMIT = 1024 * 1024
@@ -267,4 +273,40 @@ def _read_protocol_bytes(path: Path, label: str, *, booley_dir: Path | None = No
         os.close(descriptor)
 
 
-__all__ = ["ChildExecutionRegistry", "PreparedChild"]
+def recover_interrupted_attempts(
+    manifest: SimulationCampaignManifest,
+    attempts: Mapping[str, Mapping[str, object]],
+    project_data: Path,
+    *,
+    booley_dir: Path | None = None,
+) -> None:
+    """Make every interrupted lane terminal, then remove the attempts' owned run directories.
+
+    ``attempts`` maps each interrupted work item to its latest attempt document.
+    Resume and full retention prune share this. Lanes are all recovered before any
+    run directory goes: a lane that cannot be proven terminal raises and leaves every
+    run directory in place, since a live lane may still use one.
+    """
+    registry = ChildExecutionRegistry.from_project_data(
+        manifest, project_data, booley_dir=booley_dir
+    )
+    for document in attempts.values():
+        if document["child_execution_id"] is not None:
+            registry.recover_lane(ExecutionId(cast(str, document["child_execution_id"])))
+    for work_item_id, document in attempts.items():
+        run = restore_run_directory_from_project_data(
+            cast(Mapping[str, object], document["run_directory"]),
+            project_data=project_data,
+            booley_dir=booley_dir,
+        )
+        cleanup_interrupted_run_directory(
+            run,
+            identity={
+                "campaign_id": cast(str, document["campaign_id"]),
+                "work_item_id": work_item_id,
+                "attempt_id": cast(str, document["attempt_id"]),
+            },
+        )
+
+
+__all__ = ["ChildExecutionRegistry", "PreparedChild", "recover_interrupted_attempts"]

@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from tests.devcontainer_spec_support import build_spec
 from tests.sandbox_image_contract import base_python_pins
 from tests.sidecar_image_helpers import (
     DIND_IMAGE,
@@ -609,9 +610,7 @@ def test_every_spec_extension_is_bundled_in_the_base_image() -> None:
 
     bundled = _bundled_vsix_install_targets(_BASE_DOCKERFILE.read_text(encoding="utf-8"))
     for app in devcontainer.SUPPORTED_APPS:
-        extensions = devcontainer.build_devcontainer_spec(app)["customizations"]["vscode"][
-            "extensions"
-        ]
+        extensions = build_spec(app)["customizations"]["vscode"]["extensions"]
         assert [entry for entry in extensions if entry not in bundled | {VSIX_PATH}] == []
 
 

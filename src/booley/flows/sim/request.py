@@ -1,5 +1,6 @@
 """Structured input for the sim Flow."""
 
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -154,6 +155,6 @@ class SimRequest(FlowRequest):
 
 def _require_unique(names: tuple[str, ...]) -> None:
     """Refuse a repeated exact test name, whether it came from ``test`` or a file."""
-    duplicates = sorted({name for name in names if names.count(name) > 1})
+    duplicates = sorted(name for name, count in Counter(names).items() if count > 1)
     if duplicates:
         raise ValueError("duplicate exact test name(s): " + ", ".join(duplicates))

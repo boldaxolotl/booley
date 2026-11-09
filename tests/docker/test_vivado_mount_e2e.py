@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 from tests import eda_grant_support
+from tests.devcontainer_spec_support import build_spec
 
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, wrapper_sha256
@@ -27,6 +28,7 @@ from booley.harness import host_sidecars
 from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime
+from booley.runtime.platform_paths import docker_mount_path
 
 _IMAGE = os.environ.get("BOOLEY_VIVADO_E2E_IMAGE", "booley-sandbox")
 _VIVADO_ENV = "BOOLEY_VIVADO_ROOT"
@@ -85,18 +87,21 @@ def _exec(
 def _issue_runtime(workspace: Path, vivado_root: Path) -> None:
     authority.register_installation("vivado_2025_2", "vivado", vivado_root)
     eda_grant_support.add_grant(workspace, "vivado", installation="vivado_2025_2")
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        image=_IMAGE,
-        booley_dir_source=str((workspace / ".booley").resolve()),
-        mcp_start_command=dc.mcp_post_start_command(),
-        trusted_eda_mounts=((str(vivado_root), CONTAINER_TARGET),),
-        protected_devcontainer_source=str((workspace / ".devcontainer").resolve()),
-    )
-    runtime_spec.pin_image(spec)
-    runtime_spec.seal(workspace, spec)
-    path = dc.write_devcontainer(workspace, spec)
-    runtime_spec.issue(workspace, spec, path)
+
+    def build(inputs: runtime_spec.SessionSpecInputs) -> dict:
+        return build_spec(
+            dc.APP_NONE,
+            image=_IMAGE,
+            booley_dir_source=docker_mount_path(inputs.project_data_source),
+            mcp_start_command=dc.mcp_post_start_command(),
+            trusted_eda_mounts=inputs.trusted_eda_mounts,
+            protected_devcontainer_source=str((workspace / ".devcontainer").resolve()),
+            fixed_container_env=dict(inputs.fixed_container_environment),
+        )
+
+    # The fixture enables the fpga Flow, so preview requests the registered Vivado.
+    prepared = runtime_spec.preview(workspace, build)
+    runtime_spec.issue_prepared(workspace, prepared, reconcile_dashboard=False)
 
 
 def _assert_runtime_boundary(docker: str, container: str) -> None:
@@ -428,7 +433,7 @@ def _assert_headless_lifecycle(docker: str, workspace: Path) -> None:
             )
         assert normalized[0] == normalized[1]
     finally:
-        session_runtime.down(workspace, remove=True)
+        session_runtime.down(workspace)
 
 
 @pytest.mark.slow()

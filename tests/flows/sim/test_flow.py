@@ -48,7 +48,6 @@ from booley.flows.sim.flow import (
     _resolve_sim_campaign_work_units,
     _test_status_line,
     _trace_metadata,
-    parse_cycles,
     parse_sva_errors,
 )
 from booley.flows.sim.flow import (
@@ -818,69 +817,6 @@ def _test_adapter_result(
         diagnostics=diagnostics,
         trace=trace,
     )
-
-
-# ---------------------------------------------------------------------------
-# Cycle count parsing
-# ---------------------------------------------------------------------------
-
-
-class TestCycleParsing:
-    def test_extracts_cycle_count(self):
-        output = "some log\n[SIM_CYCLES] smoke 12345\nmore log"
-        assert parse_cycles(output, "smoke") == 12345
-
-    def test_large_cycle_count(self):
-        output = "[SIM_CYCLES] stress 9999999"
-        assert parse_cycles(output, "stress") == 9999999
-
-    def test_no_cycle_sentinel(self):
-        output = "simulation finished without cycle info"
-        assert parse_cycles(output, "smoke") is None
-
-    def test_empty_output(self):
-        assert parse_cycles("", "smoke") is None
-
-    def test_multiple_cycle_lines_selects_test_name(self):
-        output = "[SIM_CYCLES] smoke 100\n[SIM_CYCLES] stress 200"
-        assert parse_cycles(output, "stress") == 200
-
-    def test_test_name_may_contain_spaces(self):
-        output = "[SIM_CYCLES] pipeline smoke test 314"
-        assert parse_cycles(output, "pipeline smoke test") == 314
-
-    def test_cycle_with_extra_whitespace(self):
-        output = "[SIM_CYCLES]   smoke   42"
-        assert parse_cycles(output, "smoke") == 42
-
-    def test_configured_cycle_sentinel(self):
-        output = "CoreMark completed in: coremark 12345"
-        assert parse_cycles(output, "coremark", ["CoreMark completed in:"]) == 12345
-
-    def test_configured_cycle_sentinel_is_literal(self):
-        output = "cycles.total: smoke 987"
-        assert parse_cycles(output, "smoke", ["cycles.total:"]) == 987
-
-    def test_configured_cycle_sentinel_overrides_default(self):
-        output = "[SIM_CYCLES] smoke 10\nEXECUTED_CYCLES smoke 20"
-        assert parse_cycles(output, "smoke", ["EXECUTED_CYCLES"]) == 20
-
-    def test_overlapping_configured_sentinels_use_the_longest_literal(self):
-        output = "CYCLES TOTAL smoke 20"
-        assert parse_cycles(output, "smoke", ["CYCLES", "CYCLES TOTAL"]) == 20
-
-    def test_single_legacy_cycle_record_remains_compatible(self):
-        assert parse_cycles("[SIM_CYCLES] 42", "smoke") == 42
-
-    def test_multiple_legacy_cycle_records_are_ambiguous(self):
-        output = "[SIM_CYCLES] 10\n[SIM_CYCLES] 20"
-        assert parse_cycles(output, "smoke") is None
-
-    def test_legacy_cycle_record_can_be_disabled_for_a_batch(self):
-        assert parse_cycles("[SIM_CYCLES] 42", "smoke", allow_legacy=False) is None
-
-    def test_named_record_for_another_test_is_not_misattributed(self):
-        assert parse_cycles("[SIM_CYCLES] stress 42", "smoke") is None
 
 
 # ---------------------------------------------------------------------------

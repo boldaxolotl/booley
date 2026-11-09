@@ -14,7 +14,7 @@ from booley.flows.sim.campaign.capacity import HeavyCapacity, HeavyCapacityError
 from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.campaign.scheduler import BoundedCampaignScheduler, CampaignSchedulingError
 from booley.flows.sim.campaign.store import CampaignStore
-from booley.runtime.execution_records import ExecutionId
+from booley.runtime.execution_records import ExecutionId, execution_paths, read_json
 from booley.runtime.job_slots import (
     CLASS_HEAVY,
     QUEUED,
@@ -62,22 +62,20 @@ class _Campaign:
         )
         self.max_heavy = max_heavy
 
-    def scheduler(self, execute, *, timeout_seconds: float, cancellation=lambda: False):
+    def scheduler(
+        self, execute, *, timeout_seconds: float, cancellation=lambda: False, prepare_child=None
+    ):
         admission = replace(
             _managed(self.slots, self.outer, max_heavy=self.max_heavy),
             timeout_seconds=timeout_seconds,
             cancellation=cancellation,
         )
-        self.capacity = HeavyCapacity(
-            admission,
-            terminal_proof=self.registry.is_terminal,
-            recover_child=self.registry.cancel,
-        )
+        self.capacity = HeavyCapacity(admission, self.manifest, self.registry.project_data)
         return BoundedCampaignScheduler(
             self.capacity,
-            self.registry,
             allocate=lambda item: _scheduled_attempt(self.store, item),
             execute=execute,
+            prepare_child=prepare_child,
         )
 
     @property
@@ -127,6 +125,78 @@ def _delete_own_token(slots: SlotStore, child_id: str) -> None:
             with slots._lease_gate(token) as acquired:
                 assert acquired
                 token.path.unlink()
+
+
+@pytest.mark.parametrize(
+    ("failure", "cause"),
+    [
+        pytest.param("completed", "completed", id="completed"),
+        # The lane held its slot, so its release-time tree recovery records the cause.
+        pytest.param("work_failed", "orphan_recovered", id="work_failed"),
+        # The lane never reached a slot: nothing was recovered, so the error is recorded.
+        pytest.param("publish_failed", "campaign_error", id="publish_failed"),
+    ],
+)
+def test_child_lane_terminal_cause(tmp_path: Path, failure: str, cause: str) -> None:
+    """A child lane has its identity before its work starts and a terminal record after."""
+    campaign = _Campaign(tmp_path, ("alpha", "beta"), max_heavy=2)
+    lane_ready = threading.Event()
+    lanes: list[ExecutionId] = []
+
+    def lane_paths(child_id):
+        return execution_paths(ExecutionId(child_id), booley_dir=campaign.registry.project_data)
+
+    def publish(_attempt, child_id) -> None:
+        lanes.append(child_id)
+        assert lane_paths(child_id).context.is_file()
+        if failure == "publish_failed":
+            lane_ready.set()
+            raise RuntimeError("publish boom")
+
+    def execute(_attempt, child_id) -> None:
+        if child_id is None:
+            # The outer lane waits so the child lane takes the second item.
+            assert lane_ready.wait(_PARALLEL_SYNC_TIMEOUT_S)
+            return
+        assert read_json(lane_paths(child_id).record)["state"] == "waiting"
+        lane_ready.set()
+        if failure == "work_failed":
+            raise RuntimeError("work boom")
+
+    scheduler = campaign.scheduler(execute, timeout_seconds=30.0, prepare_child=publish)
+    try:
+        if failure == "completed":
+            scheduler.run(campaign.items)
+        else:
+            with pytest.raises(RuntimeError, match="boom"):
+                scheduler.run(campaign.items)
+    finally:
+        campaign.slots.release(campaign.outer)
+    (lane,) = lanes
+    record = read_json(lane_paths(lane).record)
+    assert (record["state"], record["tree_terminal"]) == ("terminal", True)
+    assert record["terminal_cause"] == cause
+
+
+def test_child_token_left_after_terminal_proof_fails_the_campaign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    campaign = _Campaign(tmp_path, ("alpha", "beta"), max_heavy=2)
+    child_done = threading.Event()
+    # Report every token still present, as if the child's release never landed.
+    monkeypatch.setattr(campaign.slots, "token_absent", lambda _token: False)
+
+    def execute(_attempt, child_id) -> None:
+        if child_id is None:
+            assert child_done.wait(_PARALLEL_SYNC_TIMEOUT_S)
+            return
+        child_done.set()
+
+    try:
+        with pytest.raises(HeavyCapacityError, match="child token remained after terminal proof"):
+            campaign.scheduler(execute, timeout_seconds=30.0).run(campaign.items)
+    finally:
+        campaign.slots.release(campaign.outer)
 
 
 def test_lost_child_lease_interrupts_only_that_lane_item(
@@ -180,13 +250,13 @@ def test_reaping_a_terminal_child_token_is_not_a_lost_lease(
     campaign = _Campaign(tmp_path, ("alpha", "beta"), max_heavy=2)
     child_done = threading.Event()
     reaped: list[str] = []
-    publish_terminal = campaign.registry.mark_terminal
+    publish_terminal = ChildExecutionRegistry.mark_terminal
 
-    def mark_terminal_then_reap(prepared, terminal_cause: str) -> None:
-        publish_terminal(prepared, terminal_cause)
+    def mark_terminal_then_reap(registry, prepared, terminal_cause: str) -> None:
+        publish_terminal(registry, prepared, terminal_cause)
         reaped.extend(campaign.slots.reap(CLASS_HEAVY))
 
-    monkeypatch.setattr(campaign.registry, "mark_terminal", mark_terminal_then_reap)
+    monkeypatch.setattr(ChildExecutionRegistry, "mark_terminal", mark_terminal_then_reap)
 
     def execute(_attempt, child_id) -> None:
         if child_id is None:
@@ -208,16 +278,15 @@ def test_lease_tick_after_terminal_reap_starts_no_recovery(
 ) -> None:
     # After the reap, a renewal tick marks the reaped lease lost. The await loop must
     # not then cancel the already-terminal child (no stray cancel file).
-    from booley.runtime.execution_records import execution_paths
 
     campaign = _Campaign(tmp_path, ("alpha", "beta"), max_heavy=2)
     child_done = threading.Event()
     confirmed: list = []
     cancelled: list[ExecutionId] = []
-    publish_terminal = campaign.registry.mark_terminal
+    publish_terminal = ChildExecutionRegistry.mark_terminal
 
-    def mark_terminal_then_reap_and_tick(prepared, terminal_cause: str) -> None:
-        publish_terminal(prepared, terminal_cause)
+    def mark_terminal_then_reap_and_tick(registry, prepared, terminal_cause: str) -> None:
+        publish_terminal(registry, prepared, terminal_cause)
         assert len(campaign.slots.reap(CLASS_HEAVY)) == 1
         (permit,) = confirmed
         assert not campaign.slots.renew(permit.token)  # the tick sees the lease gone
@@ -229,16 +298,20 @@ def test_lease_tick_after_terminal_reap_starts_no_recovery(
             return
         child_done.set()
 
-    monkeypatch.setattr(campaign.registry, "mark_terminal", mark_terminal_then_reap_and_tick)
-    monkeypatch.setattr(campaign.registry, "cancel", cancelled.append)
+    monkeypatch.setattr(ChildExecutionRegistry, "mark_terminal", mark_terminal_then_reap_and_tick)
+    monkeypatch.setattr(
+        ChildExecutionRegistry,
+        "cancel",
+        lambda _registry, execution_id: cancelled.append(execution_id),
+    )
     scheduler = campaign.scheduler(execute, timeout_seconds=30.0)
-    confirm = campaign.capacity.confirm_child_lease
+    confirm = HeavyCapacity._confirm_lease
 
-    def recording_confirm(permit) -> bool:
+    def recording_confirm(capacity, permit) -> bool:
         confirmed.append(permit)
-        return confirm(permit)
+        return confirm(capacity, permit)
 
-    monkeypatch.setattr(campaign.capacity, "confirm_child_lease", recording_confirm)
+    monkeypatch.setattr(HeavyCapacity, "_confirm_lease", recording_confirm)
     try:
         scheduler.run(campaign.items)
     finally:

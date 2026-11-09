@@ -45,6 +45,7 @@ from booley.runtime import devcontainer as dc
 from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
+from tests.devcontainer_spec_support import build_spec
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
     _Rec,
@@ -199,9 +200,7 @@ def _seed_interactive(root: Path) -> None:
     devcontainer spec and the git info/exclude entries."""
     from booley.runtime import devcontainer as dc
 
-    dc.write_devcontainer(
-        root, dc.build_devcontainer_spec(dc.APP_NONE, image=doctor.pi.project_image_name(root))
-    )
+    dc.write_devcontainer(root, build_spec(dc.APP_NONE, image=doctor.pi.project_image_name(root)))
     info_dir = root / ".git" / "info"
     info_dir.mkdir(parents=True, exist_ok=True)
     (info_dir / "attributes").write_text("* text=auto eol=lf\n", encoding="utf-8")
@@ -582,7 +581,7 @@ def test_doctor_fails_and_does_not_stamp_agent_app_drift(
         toml_path.read_text(encoding="utf-8") + '\n[agent]\nprovider = "codex"\n',
         encoding="utf-8",
     )
-    dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
+    dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
     _patch_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
@@ -603,7 +602,7 @@ def test_mcp_checks_report_spec_issued_for_other_cli_set(tmp_path, monkeypatch, 
         + '\n[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n',
         encoding="utf-8",
     )
-    dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
+    dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
     _patch_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
@@ -9571,7 +9570,7 @@ def test_seed_mount_policy_unavailable_fails_and_continues_independent_checks(
     from booley.runtime import inspection
 
     data = _seed_mount_policy_project(tmp_path, monkeypatch, "claude", "subscription")
-    spec = dc.build_devcontainer_spec("claude")
+    spec = build_spec("claude")
     dc.write_devcontainer(data.parent, spec)
     if damage == "invalid-policy":
         (data / "booley.toml").write_text('[agent]\nauth="invalid"\n')
@@ -9621,7 +9620,7 @@ def test_seed_mount_policy_preserves_cache_check_and_no_stored_token(
 
     data = _seed_mount_policy_project(tmp_path, monkeypatch, "claude", "auto")
     auth_token.token_path("claude").unlink()
-    spec = dc.build_devcontainer_spec("claude")
+    spec = build_spec("claude")
     request = inspection.RuntimeInspectionRequest(
         data.parent,
         "test-image",
