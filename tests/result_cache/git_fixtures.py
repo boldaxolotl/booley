@@ -79,7 +79,8 @@ def all_cases(cases: Iterable[Any]) -> Callable[[Callable[..., None]], Callable[
 def git(cwd: Path, *args: str) -> str:
     """Run Git in *cwd* (file-protocol submodules allowed) and return stripped stdout."""
     result = subprocess.run(
-        ["git", "-c", "protocol.file.allow=always", *args],
+        # No detached auto-maintenance: it holds objects/maintenance.lock while tests rmtree.
+        ["git", "-c", "protocol.file.allow=always", "-c", "maintenance.auto=false", *args],
         cwd=cwd,
         capture_output=True,
         text=True,
