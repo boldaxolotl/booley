@@ -13,8 +13,8 @@ from tests.conftest import MINIMAL_FST_BYTES
 from booley.flows.sim.adapter_transport import AdapterTransportIdentity, read_adapter_result
 from booley.flows.sim.backends import shared as backend_shared
 from booley.flows.sim.backends import verilator as vr
+from booley.flows.sim.backends.supervision import SimulatorLaunch
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX
-from booley.flows.sim.trace_session import TraceArtifact, TraceInspection, TraceSession
 
 
 def test_find_binary_locates_flat_vtop(tmp_path: Path):
@@ -157,31 +157,6 @@ def test_parse_args_round_trips_sentinels():
     assert args.fail_sentinels == ["ERROR!", "TIMEOUT"]
 
 
-def test_evaluate_verdict_honors_custom_sentinels(tmp_path: Path, capsys):
-    vr._evaluate_verdict(
-        "ALL TESTS PASSED.",
-        0,
-        tmp_path,
-        pass_sentinels=["ALL TESTS PASSED."],
-        fail_sentinels=["ERROR!"],
-    )
-    assert "PASSED" in capsys.readouterr().out
-
-
-def test_evaluate_verdict_fail_sentinel_rc0_avoids_confusing_rc0(tmp_path: Path, capsys):
-    # A FAIL sentinel with a clean exit must NOT print the confusing "(rc=0)".
-    vr._evaluate_verdict(
-        "ERROR!",
-        0,
-        tmp_path,
-        pass_sentinels=["ALL TESTS PASSED."],
-        fail_sentinels=["ERROR!"],
-    )
-    out = capsys.readouterr().out
-    assert "FAILED (fail sentinel matched)" in out
-    assert "rc=0" not in out
-
-
 def test_run_verilated_binary_missing_exe_returns_error(tmp_path: Path):
     """A missing binary yields a clear error string (no crash)."""
     out = vr.run_verilated_binary(top_module="tb_top", bin_dir=tmp_path)
@@ -206,29 +181,6 @@ def test_cocotb_vtop_binary_is_named_not_silently_run(tmp_path: Path):
     out = vr.run_verilated_binary(top_module="ravenoc_wrapper", bin_dir=tmp_path)
     assert "Cocotb Target" in out
     assert "booley.flows.sim.backends.cocotb" in out
-
-
-def test_evaluate_verdict_pass_writes_run_log(tmp_path: Path, capsys):
-    """The full raw output lands in run.log next to result.json on a PASS."""
-    output = "V banner\nsome TB chatter\n[SIM_RESULT] PASSED\n"
-    vr._evaluate_verdict(output, 0, tmp_path)
-    assert (tmp_path / "run.log").read_text(encoding="utf-8") == output
-    assert (tmp_path / "result.json").exists()
-
-
-def test_evaluate_verdict_fail_writes_run_log(tmp_path: Path, capsys):
-    """run.log is written on a FAIL too — that's when it matters most."""
-    output = "ERROR: scoreboard mismatch\n[SIM_RESULT] FAILED\n"
-    vr._evaluate_verdict(output, 1, tmp_path)
-    assert (tmp_path / "run.log").read_text(encoding="utf-8") == output
-
-
-def test_evaluate_verdict_captures_uppercase_error_bang(tmp_path: Path, capsys):
-    """Project fail sentinels commonly use uppercase ``ERROR!`` wording."""
-    output = "[0]ERROR! list crc 0x1234 - should be 0x5678\n"
-    vr._evaluate_verdict(output, 0, tmp_path, fail_sentinels=["ERROR!"])
-    result = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
-    assert result["first_error"] == output.strip()
 
 
 @pytest.mark.skipif(
@@ -265,33 +217,6 @@ def test_run_verilated_binary_creates_missing_work_dir(tmp_path: Path):
     assert work_dir.is_dir()
 
 
-def test_kill_reason_does_not_claim_a_process_that_exits_during_incident_io(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    class Proc:
-        exited = False
-
-        def poll(self):
-            return 0 if self.exited else None
-
-    proc = Proc()
-
-    class Trace:
-        def write_incident(self, *_args, **_kwargs):
-            proc.exited = True
-            return tmp_path / "incident.json"
-
-    killed = []
-    monkeypatch.setattr("booley.runtime.platform_paths.kill_process_tree", killed.append)
-    lines = deque[str]()
-
-    owned = vr._kill_with_reason(proc, Trace(), None, lines, "timeout")  # type: ignore[arg-type]
-
-    assert owned is False
-    assert killed == []
-    assert lines == deque()
-
-
 @pytest.mark.parametrize(
     ("kind", "failure_kind", "missing_path"),
     [
@@ -309,13 +234,13 @@ def test_guard_termination_is_published_to_adapter_transport(
     process = type("Process", (), {"returncode": 9})()
     monkeypatch.setattr(
         vr,
-        "_execute_with_heartbeat",
+        "_execute_supervised",
         lambda *_args: (deque(["guard fired\n"]), process, termination),
     )
     monkeypatch.setattr(
         vr,
         "_finalize_verilated_run",
-        lambda *_args: ("guard fired\n", None, termination),
+        lambda *_args: ("guard fired\n", None),
     )
     identity = AdapterTransportIdentity(
         "verilator", "attempt", "acme:lib:dut:1#sim", ("smoke",), tmp_path / "adapter.json"
@@ -323,9 +248,7 @@ def test_guard_termination_is_published_to_adapter_transport(
     paths = vr._RunPaths(tmp_path, tmp_path, tmp_path)
     trace = vr._TraceRuntime(None, None, vr.TraceMode.VCD_FIFO, None)
 
-    vr._execute_verilated_and_publish(
-        [], paths, {}, 30, trace, 0, (), None, None, None, False, identity
-    )
+    vr._execute_verilated_and_publish([], paths, {}, 30, trace, 0, (), None, None, False, identity)
 
     result = read_adapter_result(identity)
     assert result.simulator_returncode == 9
@@ -334,7 +257,7 @@ def test_guard_termination_is_published_to_adapter_transport(
     assert result.missing_input_path == missing_path
 
 
-def test_execute_with_heartbeat_cleans_fifo_conversion(tmp_path: Path, monkeypatch):
+def test_execute_supervised_cleans_fifo_conversion(tmp_path: Path, monkeypatch):
     class FakeSession:
         def __init__(self):
             self.cleaned = None
@@ -354,14 +277,57 @@ def test_execute_with_heartbeat_cleans_fifo_conversion(tmp_path: Path, monkeypat
     process = object()
     monkeypatch.setattr(
         vr,
-        "_stream_output",
+        "run_supervised",
         lambda *_args, **_kwargs: (deque(), process, vr.RunTermination()),
     )
 
-    _lines, returned, _termination = vr._execute_with_heartbeat([], paths, {}, 1, trace, 0, ())
+    _lines, returned, _termination = vr._execute_supervised([], paths, {}, 1, trace, 0, ())
 
     assert returned is process
     assert session.cleaned is conversion
+
+
+def test_execute_passes_guard_inputs_to_the_runner(tmp_path: Path, monkeypatch):
+    """AC3 wiring: every guard input reaches the shared runner's launch spec."""
+    launches: list[SimulatorLaunch] = []
+
+    class FakeSession:
+        def cleanup_fifo(self, conversion):
+            pass
+
+    session = FakeSession()
+    conversion = object()
+    trace = vr._TraceRuntime(
+        session=session,
+        current=None,
+        mode=vr.TraceMode.VCD_FIFO,
+        conversion=conversion,
+    )
+    run_cwd = tmp_path / "cwd"
+    work_dir = tmp_path / "work"
+    paths = vr._RunPaths(tmp_path, run_cwd, work_dir)
+
+    def record(launch):
+        launches.append(launch)
+        return deque(), object(), vr.RunTermination()
+
+    monkeypatch.setattr(vr, "run_supervised", record)
+
+    vr._execute_supervised(["Vtb_top", "+x"], paths, {"K": "V"}, 42, trace, 1234, ("memory.hex",))
+
+    (launch,) = launches
+    assert launch == SimulatorLaunch(
+        "Verilator",
+        ["Vtb_top", "+x"],
+        run_cwd,
+        {"K": "V"},
+        42,
+        work_dir,
+        1234,
+        ("memory.hex",),
+        trace=session,
+        conversion=conversion,
+    )
 
 
 class _FinishedProcess:
@@ -386,7 +352,7 @@ def _stub_verilated_execution(
             trace_path.write_bytes(MINIMAL_FST_BYTES)
         return deque(["[SIM_RESULT] PASSED\n"]), _FinishedProcess(), vr.RunTermination()
 
-    monkeypatch.setattr(vr, "_execute_with_heartbeat", execute)
+    monkeypatch.setattr(vr, "_execute_supervised", execute)
 
 
 def test_native_fst_run_writes_regular_file_without_fifo(tmp_path: Path, monkeypatch):
@@ -496,179 +462,6 @@ def test_parse_args_round_trips_max_rundir_bytes():
     assert vr._parse_args(["--bin-dir", "b", "--top", "t"]).max_rundir_bytes == 0
 
 
-def test_stream_output_kills_on_missing_readmemh(tmp_path: Path):
-    """SETUP-23: the missing-$readmemh warning kills the run fast, not at the
-    wall-clock timeout (no trace session — plain pass/fail run)."""
-    import os
-    import sys
-    import time
-
-    run = tmp_path / "run"
-    run.mkdir()
-    script = (
-        "import sys, time; "
-        'print("%Warning: tb.sv:9: $readmemh: cannot open file \\"boot.hex\\""); '
-        "sys.stdout.flush(); time.sleep(60)"
-    )
-    start = time.monotonic()
-    lines, proc, _termination = vr._stream_output(
-        [sys.executable, "-c", script],
-        run,
-        os.environ.copy(),
-        30,
-        None,
-        None,
-    )
-    elapsed = time.monotonic() - start
-    out = "".join(lines)
-    assert "missing $readmemh" in out
-    assert elapsed < 15
-    assert proc.poll() is not None
-
-
-def test_disk_baseline_is_taken_before_the_spawn(tmp_path: Path, monkeypatch):
-    """A3: the pre-existing-bytes snapshot must predate the simulator.
-
-    ``dir_size_bytes`` is a recursive scandir walk — seconds on the 3.3 GB tree
-    that motivated the growth budget — so a baseline taken after the Popen
-    absorbs everything the sim dumped during the walk (free bytes, a silently
-    raised budget) and puts a full tree walk on the sim-start critical path.
-    """
-    import os
-    import subprocess
-    import sys
-
-    import booley.flows.sim.run_guard as rg
-
-    order: list[str] = []
-    real_snapshot = rg.snapshot_dir_baseline
-    real_popen = subprocess.Popen
-
-    def _snapshot(rundir, budget):
-        order.append("baseline")
-        return real_snapshot(rundir, budget)
-
-    def _popen(*args, **kwargs):
-        order.append("spawn")
-        return real_popen(*args, **kwargs)
-
-    monkeypatch.setattr(rg, "snapshot_dir_baseline", _snapshot)
-    monkeypatch.setattr(subprocess, "Popen", _popen)
-
-    run = tmp_path / "run"
-    run.mkdir()
-    vr._stream_output(
-        [sys.executable, "-c", "pass"],
-        run,
-        os.environ.copy(),
-        30,
-        None,
-        None,
-        max_rundir_bytes=1 << 20,
-    )
-    assert order == ["baseline", "spawn"]
-
-
-def test_stream_output_kills_on_disk_runaway(tmp_path: Path, monkeypatch):
-    """SETUP-25: a run dir over budget is killed even with no stdout (silent
-    runaway) — the watchdog polls while the stdout loop is blocked."""
-    import functools
-    import os
-    import sys
-    import time
-
-    import booley.flows.sim.run_guard as rg
-
-    monkeypatch.setattr(
-        rg,
-        "DiskBudgetGuard",
-        functools.partial(rg.DiskBudgetGuard, interval=0.02),
-    )
-    run = tmp_path / "run"
-    run.mkdir()
-    script = (
-        f'open({str(run / "big.bin")!r}, "wb").write(b"0" * 200_000); import time; time.sleep(60)'
-    )
-    start = time.monotonic()
-    lines, proc, _termination = vr._stream_output(
-        [sys.executable, "-c", script],
-        run,
-        os.environ.copy(),
-        30,
-        None,
-        None,
-        max_rundir_bytes=1024,
-    )
-    elapsed = time.monotonic() - start
-    out = "".join(lines)
-    assert "run directory" in out and "budget" in out
-    assert "max_rundir_bytes" in out
-    assert elapsed < 15
-    assert proc.poll() is not None
-
-
-def test_stream_output_kills_a_silent_sim_at_the_deadline(tmp_path: Path):
-    """F-13/F-21: a sim that prints NOTHING is still killed by the run-half.
-
-    The in-loop deadline check only fires when a line arrives, so a silent
-    testbench used to block here past its whole budget and be reaped by
-    simulate's wrapper timeout instead — which kills only the `sh -c` and
-    orphans this supervisor plus its simulator.
-    """
-    import os
-    import sys
-    import time
-
-    run = tmp_path / "run"
-    run.mkdir()
-    start = time.monotonic()
-    lines, proc, _termination = vr._stream_output(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
-        run,
-        os.environ.copy(),
-        1,  # 1-second budget
-        None,
-        None,
-    )
-    elapsed = time.monotonic() - start
-    out = "".join(lines)
-    assert "timed out" in out
-    # F-21: the message attributes the silence rather than just saying "slow".
-    assert "printed NO output at all" in out
-    assert elapsed < 20
-    assert proc.poll() is not None
-
-
-def test_stream_output_refreshes_run_log_while_running(tmp_path: Path, monkeypatch):
-    """F-18: run.log carries a live tail mid-run, not just a placeholder."""
-    import os
-    import sys
-
-    from booley.flows.run_log import begin_run_log, run_log_is_current
-
-    monkeypatch.setattr(backend_shared, "RUN_LOG_PROGRESS_INTERVAL_S", 0.0)
-    run = tmp_path / "run"
-    run.mkdir()
-    work = tmp_path / "work"
-    work.mkdir()
-    begin_run_log(work, flow="sim", target="sim_x", run="run-live")
-    script = 'print("cycle 1"); print("cycle 2")'
-    vr._stream_output(
-        [sys.executable, "-c", script],
-        run,
-        os.environ.copy(),
-        30,
-        None,
-        None,
-        work_dir=work,
-    )
-    content = (work / "run.log").read_text(encoding="utf-8")
-    assert "cycle 2" in content
-    assert "output line(s)" in content
-    # Still "in progress": _evaluate_verdict has not landed the real log yet.
-    assert run_log_is_current(work, "run-live") is False
-
-
 class TestDeclaredTraceFiles:
     """F-22: a custom main()'s dump can be declared instead of guessed."""
 
@@ -689,17 +482,6 @@ class TestDeclaredTraceFiles:
 
         def write_incident(self, reason, **_kw):
             return Path("trace_incident.txt")
-
-        def inspect(self, path: Path) -> TraceInspection:
-            return TraceInspection(
-                TraceArtifact(
-                    path=path,
-                    size_bytes=path.stat().st_size,
-                    top_scope="tb",
-                    signal_count=1,
-                    total_ticks=1,
-                )
-            )
 
     @staticmethod
     def _current(trace, patterns: list[str], roots: list[Path]):
@@ -738,26 +520,11 @@ class TestDeclaredTraceFiles:
         big.write_bytes(b"0" * 64)
         trace = self._FakeTrace(tmp_path / "trace.fst")
 
-        found = self._current(trace, ["fpu.vcd"], [tmp_path]).select().path
+        selection = self._current(trace, ["fpu.vcd"], [tmp_path]).select()
 
-        assert found == big  # the dump itself, not a store
+        assert selection.path == big  # the dump itself, not a store
+        assert selection.oversize
         assert trace.postprocessed == []  # no unbounded conversion was attempted
-
-    def test_huge_raw_vcd_cannot_earn_trace_ok(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(backend_shared, "MAX_ADOPTED_VCD_BYTES", 16)
-        (tmp_path / "huge.vcd").write_bytes(b"0" * 64)
-        current = backend_shared.CurrentRunTraces.begin(
-            TraceSession(tmp_path), patterns=("huge.vcd",), roots=(tmp_path,)
-        )
-        # The run rewrites the dump, so it is fresh.
-        (tmp_path / "huge.vcd").write_bytes(b"0" * 65)
-
-        suffix, evidence = vr._finalize_trace(current, None, None, trace_files=["huge.vcd"])
-
-        assert "TRACE_OK:" not in suffix
-        assert "TRACE_INCIDENT:" in suffix
-        assert evidence.status == "incident"
-        assert "not a queryable FST" in suffix
 
     def test_vcd_under_the_cap_is_still_converted(self, tmp_path: Path):
         store = tmp_path / "trace.fst"
@@ -774,175 +541,8 @@ class TestDeclaredTraceFiles:
         for patterns in (["empty.vcd"], ["nope.vcd"], []):
             assert self._current(trace, patterns, [tmp_path]).select().path is None
 
-    def test_finalize_trace_adopts_the_declared_file(self, tmp_path: Path, capsys):
-        (tmp_path / "fpu.vcd").write_text("$var wire 1 ! clk $end\n")
-        store = tmp_path / "trace.fst"
-        store.write_bytes(b"fst")
-        current = self._current(self._FakeTrace(store), ["fpu.vcd"], [tmp_path])
-
-        suffix, evidence = vr._finalize_trace(current, None, None, trace_files=["fpu.vcd"])
-
-        assert f"TRACE_OK: {store}" in suffix
-        assert evidence.path == str(store)
-
-    def test_incident_names_the_knob_when_nothing_is_declared(self, tmp_path: Path):
-        current = self._current(self._FakeTrace(tmp_path / "x"), [], [tmp_path])
-        suffix, evidence = vr._finalize_trace(current, None, None)
-        assert "trace_files" in suffix
-        assert evidence.status == "incident"
-
-    def test_incident_names_the_knob_when_declared_patterns_matched_nothing(self, tmp_path: Path):
-        current = self._current(self._FakeTrace(tmp_path / "x"), ["missing.vcd"], [tmp_path])
-        suffix, evidence = vr._finalize_trace(current, None, None, trace_files=["missing.vcd"])
-        assert "[flows.sim].trace_files ['missing.vcd']" in suffix
-        assert evidence.status == "incident"
-
 
 def test_trace_file_round_trips_through_the_cli():
     args = vr._parse_args(["--bin-dir", "b", "--top", "t", "--trace", "--trace-file=fpu.vcd"])
     assert args.trace_files == ["fpu.vcd"]
     assert vr._parse_args(["--bin-dir", "b", "--top", "t"]).trace_files == []
-
-
-@pytest.mark.parametrize("returncode", [0, 1])
-def test_final_disk_budget_after_natural_exit(tmp_path, monkeypatch, returncode):
-    import io
-    from types import SimpleNamespace
-
-    import booley.flows.sim.run_guard as guard_module
-    import booley.runtime.platform_paths as platform
-
-    def spawn(*args, **kwargs):
-        (tmp_path / "output.bin").write_bytes(b"x" * 9)
-        return SimpleNamespace(
-            stdout=io.StringIO("PASS\n"),
-            returncode=returncode,
-            pid=4321,
-            poll=lambda: returncode,
-            wait=lambda **kwargs: returncode,
-        )
-
-    monkeypatch.setattr(vr.subprocess, "Popen", spawn)
-    monkeypatch.setattr(guard_module, "supervise_child", lambda proc: None)
-    monkeypatch.setattr(vr, "_supervise", lambda proc: None)
-
-    def unexpected_kill(proc):
-        pytest.fail("already exited child must not be killed")
-
-    monkeypatch.setattr(platform, "kill_process_tree", unexpected_kill)
-    lines, proc, termination = vr._stream_output(
-        ["fake"], tmp_path, {}, 30, None, None, max_rundir_bytes=8
-    )
-    assert termination.kind == "disk_budget"
-    assert termination.failure_kind == "infrastructure"
-    assert proc.returncode == returncode
-    assert "simulation aborted:" in "".join(lines)
-    work = tmp_path / "work"
-    work.mkdir()
-    vr._evaluate_verdict(
-        "".join(lines), returncode, work, pass_sentinels=["PASS"], termination=termination
-    )
-    result = json.loads((work / "result.json").read_text())
-    assert result["passed"] is False
-    assert not result.get("inconclusive", False)
-
-
-@pytest.mark.parametrize("prior", ["timeout", "trace_stall", "disk_and_timeout"])
-def test_final_disk_retains_abort_during_reap(tmp_path, monkeypatch, prior):
-    from types import SimpleNamespace
-
-    from booley.flows.sim.run_guard import DiskBudgetGuard
-
-    state = {"hit": False}
-    trace = SimpleNamespace(stall_killed=False, stall_message="trace pipeline stalled")
-
-    def wait(**kwargs):
-        state["hit"] = prior in {"timeout", "disk_and_timeout"}
-        if prior == "disk_and_timeout":
-            guard.tripped = True
-            guard._evidence.set()
-        trace.stall_killed = prior == "trace_stall"
-        return 0
-
-    proc = SimpleNamespace(wait=wait, poll=lambda: 0, returncode=0)
-    guard = DiskBudgetGuard(tmp_path, 8, proc, baseline=(0, 0))
-    monkeypatch.setattr(guard, "finish", lambda: pytest.fail("prior abort must skip final scan"))
-    _, _, termination = vr._finish_stream(
-        proc, trace, None, guard, state, vr.time.monotonic() + 30, lambda: "timeout", deque()
-    )
-    expected = {
-        "timeout": "timeout",
-        "trace_stall": "completed",
-        "disk_and_timeout": "disk_budget",
-    }
-    assert termination.kind == expected[prior]
-    if prior == "trace_stall":
-        monkeypatch.setattr(vr, "_finalize_trace", lambda *args, **kwargs: ("", None))
-        runtime = vr._TraceRuntime(trace, object(), vr.TraceMode.NATIVE_FST, None)
-        _, _, termination = vr._finalize_verilated_run(
-            deque(["PASS\n"]),
-            proc,
-            vr._RunPaths(tmp_path, tmp_path, tmp_path),
-            runtime,
-            None,
-            ["PASS"],
-            None,
-            termination,
-        )
-        assert termination.kind == "trace_stall"
-        assert termination.failure_kind == "infrastructure"
-        assert json.loads((tmp_path / "result.json").read_text())["passed"] is False
-
-
-@pytest.mark.parametrize("prior", ["fatal_init", "timeout"])
-def test_final_disk_preserves_prior_abort(tmp_path, monkeypatch, prior):
-    import io
-    import threading
-    from types import SimpleNamespace
-
-    import booley.flows.sim.run_guard as guard_module
-    import booley.runtime.platform_paths as platform
-
-    timers = []
-    alive = [True]
-
-    class Timer:
-        def __init__(self, delay, callback):
-            timers.append(callback)
-
-        def start(self):
-            pass
-
-        def cancel(self):
-            pass
-
-    def wait(**kwargs):
-        if prior == "timeout" and alive[0]:
-            timers[0]()
-        alive[0] = False
-        return 0
-
-    def spawn(*args, **kwargs):
-        (tmp_path / "output.bin").write_bytes(b"x" * 9)
-        line = "$readmemh: Cannot open memory.hex\n" if prior == "fatal_init" else "PASS\n"
-        return SimpleNamespace(
-            stdout=io.StringIO(line),
-            returncode=0,
-            pid=4321,
-            poll=lambda: None if alive[0] else 0,
-            wait=wait,
-        )
-
-    monkeypatch.setattr(threading, "Timer", Timer)
-    monkeypatch.setattr(vr.subprocess, "Popen", spawn)
-    monkeypatch.setattr(vr, "_supervise", lambda proc: None)
-    monkeypatch.setattr(platform, "kill_process_tree", lambda proc: alive.__setitem__(0, False))
-    monkeypatch.setattr(
-        guard_module.DiskBudgetGuard,
-        "finish",
-        lambda guard: pytest.fail("prior abort must skip final scan"),
-    )
-    _, _, termination = vr._stream_output(
-        ["fake"], tmp_path, {}, 30, None, None, max_rundir_bytes=8
-    )
-    assert termination.kind == prior

@@ -24,6 +24,7 @@ from booley.flows.sim import trace_session
 from booley.flows.sim.backends import cocotb as crun
 from booley.flows.sim.backends import icarus as ir
 from booley.flows.sim.backends import verilator as vr
+from booley.flows.sim.backends.trace_finalization import finalize_trace
 from booley.flows.sim.trace_session import TraceArtifact, TraceInspection, TraceSession
 
 _VCD_TEXT = "$date today $end\n$scope module tb $end\n$upscope $end\n$enddefinitions $end\n"
@@ -121,7 +122,9 @@ def _run(
         run = ir._prepare_icarus_run(dirs.build, dirs.run, dirs.work, [], True, "tb", declared)
         assert not isinstance(run, str)
         produce(dirs)
-        output, _ = ir._finalize_icarus_trace(run, _FINISHED, declared)
+        output, _ = finalize_trace(
+            run.current, _FINISHED, raw_vcd=run.run_cwd / "dump.vcd", vcd_fallback=True
+        )
     elif adapter == "verilator":
         (dirs.build / "Vtb_top").touch()
 
@@ -133,7 +136,7 @@ def _run(
                 vr.RunTermination(),
             )
 
-        monkeypatch.setattr(vr, "_execute_with_heartbeat", execute)
+        monkeypatch.setattr(vr, "_execute_supervised", execute)
         output = vr.run_verilated_binary(
             top_module="tb_top",
             bin_dir=dirs.build,

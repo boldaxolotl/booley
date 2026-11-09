@@ -17,6 +17,7 @@ from booley.core.boundary import (
     require_int,
     require_list,
 )
+from booley.flows.run_log import write_run_log
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.backends.shared import (
     RunTermination,
@@ -27,7 +28,10 @@ from booley.flows.sim.backends.shared import (
 from booley.flows.sim.result import (
     count_sva_errors,
     describe_error_message_count,
+    extract_vrfc_warnings,
+    format_summary,
     parse_sim_verdict,
+    write_result_json,
 )
 
 ADAPTER_RESULT_SCHEMA = 1
@@ -701,6 +705,7 @@ __all__ = [
     "NativeVerdictAssessment",
     "add_transport_arguments",
     "assess_native_verdict",
+    "evaluate_native_verdict",
     "first_native_failure",
     "native_verdict_message",
     "partial_result_identity",
@@ -711,3 +716,46 @@ __all__ = [
     "work_transport_arguments",
     "write_adapter_result",
 ]
+
+
+def evaluate_native_verdict(
+    tool: str,
+    output: str,
+    returncode: int,
+    work_dir: Path,
+    *,
+    pass_sentinels: list[str] | None = None,
+    fail_sentinels: list[str] | None = None,
+    termination: RunTermination | None = None,
+) -> None:
+    """Print the ``[SIM_SUMMARY]`` verdict and persist ``result.json`` and ``run.log``."""
+    termination = termination or RunTermination()
+    assessment = assess_native_verdict(
+        output,
+        returncode,
+        pass_sentinels=pass_sentinels,
+        fail_sentinels=fail_sentinels,
+        termination=termination,
+    )
+    vrfc = extract_vrfc_warnings(output)
+    print(
+        format_summary(
+            assessment.passed,
+            assessment.sva_errors,
+            vrfc,
+            inconclusive=assessment.inconclusive,
+        )
+    )
+    print(native_verdict_message(tool, assessment, returncode, termination))
+    first_err = first_native_failure(output, termination.detail) if not assessment.passed else ""
+    write_result_json(
+        work_dir,
+        assessment.passed,
+        assessment.sva_errors,
+        first_err,
+        returncode,
+        inconclusive=assessment.inconclusive,
+    )
+    # run.log survives MCP-level stdout truncation that result.json's
+    # 500-char first_error does not, so persist it on pass AND fail.
+    write_run_log(work_dir, output)
