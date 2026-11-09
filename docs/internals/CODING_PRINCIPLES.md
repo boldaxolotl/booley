@@ -150,6 +150,39 @@ behavior is tested at the closest stable boundary, including meaningful error
 cases and edge cases. Prefer tests of observable contracts over tests coupled
 to implementation details.
 
+A test earns its place only if a plausible bug in production code makes it
+fail. Before adding one, name the bug it catches. These catch none; do not
+write them:
+
+- **Copied logic.** Test-file helpers that reimplement production logic, or
+  expected values computed the way the code computes them (the same `max()`,
+  f-string, or path helper). Call the production code and assert a literal
+  expected value.
+- **Mock echo.** A stub returns a sentinel and the test asserts the sentinel
+  came back. Assert what the code does with collaborator output or what it
+  passes in, or use a real collaborator (a temporary Git repository, a real
+  store).
+- **Language checks.** Dataclass field storage or defaults, `frozen=True`
+  raising, `__init__` storing its arguments, `isinstance(X(), X)`, a
+  constant's type. Python already guarantees these.
+- **Constant mirrors.** `assert CONST == <literal copied from source>`. Test
+  the behavior the constant drives instead: a bound rejected, a path used. Pin
+  a value only when an external contract (persisted format, public CLI, ADR)
+  fixes it, and name that contract in the test.
+- **Unfailable tests.** No assertion, or mocks that make every outcome
+  succeed. A "does not raise" test is valid only when raising is the plausible
+  bug.
+- **Dead setup.** Setup the code under test never sees, such as an
+  environment built and then discarded. If the test name promises a behavior,
+  the test exercises it.
+- **Duplicates.** A test that can only fail when another test also fails,
+  including wrappers that re-call a parametrized test with its own parameters.
+- **Tests that keep dead code alive.** If only a test calls a function,
+  delete both.
+
+To check a new test, break the code it covers: flip a condition, swap `min`
+for `max`, drop a call. If the test still passes, it catches nothing.
+
 ### 15. A green check must prove it ran
 
 Required CI checks pass before merge. CI and test-infrastructure changes must
