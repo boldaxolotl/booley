@@ -1474,9 +1474,7 @@ def _snapshot_result(
         if outcome.infrastructure_failure is not None
         else [_observation(test) for test in outcome.tests]
     )
-    state = (
-        "aborted" if outcome.infrastructure_failure is not None else _result_state(outcome.tests)
-    )
+    state = _settled_state(observations)
     publication_checkpoint("before:execution_evidence")
     evidence = _capture_outcome_evidence(request, outcome)
     publication_checkpoint("after:execution_evidence")
@@ -1806,12 +1804,31 @@ def _infrastructure_observations(
     ]
 
 
-def _result_state(tests: tuple[SimulationTestOutcome, ...]) -> str:
-    if any(test.termination != "completed" for test in tests):
+def _settled_state(observations: list[dict[str, object]]) -> str:
+    """Return the result state implied by ``observations``, settling them to match.
+
+    The campaign codec accepts only one pairing of result state and observations:
+    an ``aborted`` result carries no ``timeout`` or ``crash`` observation. So an
+    abort dominates: when any observation is ``aborted``, every ``timeout`` or
+    ``crash`` observation is rewritten in place to the aborted design matrix
+    (functional ``fail``, assertions ``not_observed``, no cycle count, detail
+    kept) and the state is ``aborted``. Otherwise the state is ``crash``, then
+    ``timeout``, then ``completed`` (``not_run`` counts as completed).
+    """
+    executions = {str(item["execution"]) for item in observations}
+    if "aborted" in executions:
+        for item in observations:
+            if item["execution"] in {"timeout", "crash"}:
+                item.update(
+                    execution="aborted",
+                    functional="fail",
+                    assertions="not_observed",
+                    cycle_count=None,
+                )
         return "aborted"
-    if any(test.crashed for test in tests):
+    if "crash" in executions:
         return "crash"
-    if any(test.timed_out for test in tests):
+    if "timeout" in executions:
         return "timeout"
     return "completed"
 
