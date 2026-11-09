@@ -30,11 +30,11 @@ from tests.flows.sim.test_campaign_characterization import _AdapterAbortExecutio
 
 
 def _refresh_hook_workload_identity(document):
-    from booley.flows.sim.campaign.planning import canonical_sha256
+    from booley.flows.sim.campaign_files import document_digest
 
     workload = document["workload"]
     variant = document["build_variants"][0]
-    digest = canonical_sha256(
+    digest = document_digest(
         {
             "kind": variant["kind"],
             "source_closure": variant["source_closure"],
@@ -51,7 +51,7 @@ def _refresh_hook_workload_identity(document):
     item["role"] = document["target"]["role"]
     item["revision"] = document["target"]["revision"]
     item["build_variant_id"] = variant["build_variant_id"]
-    digest = canonical_sha256(
+    digest = document_digest(
         {
             key: value
             for key, value in item.items()

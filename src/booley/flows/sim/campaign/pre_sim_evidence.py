@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from booley.core.boundary import require_finite_number, require_int, require_str_value
+from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.execution.contract import PreSimEvidence, PreSimScopeStoppedError
 from booley.flows.sim.execution.pre_sim import TAIL_MAX_BYTES
 from booley.flows.sim.execution.pre_sim_reporting import pre_sim_document
@@ -89,7 +89,7 @@ def _reference(path: Path, raw: bytes, owner: str) -> dict[str, object]:
         "kind": "pre_sim_commands",
         "path": f"pre-sim/{path.name}",
         "bytes": len(raw),
-        "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "sha256": content_digest(raw),
         "owner": owner,
     }
 
