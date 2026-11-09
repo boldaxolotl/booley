@@ -10,7 +10,6 @@ from booley.flows.sim.campaign_retention import _coverage_owned_files
 from booley.flows.sim.coverage_campaign import (
     NO_DECLARED_INPUTS_FINGERPRINT,
     DurableTargetIdentity,
-    freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_campaign_store import (
     load_coverage_campaign,
@@ -19,6 +18,7 @@ from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     prepare_coverage_invocation,
 )
+from booley.flows.sim.coverage_json import freeze_coverage_mapping
 from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
 from booley.flows.sim.execution.contract import PreSimEvidence

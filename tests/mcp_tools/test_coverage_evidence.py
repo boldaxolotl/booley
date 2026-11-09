@@ -7,16 +7,13 @@ import pytest
 
 from booley.core.boundary import BoundaryError
 from booley.flows.sim.coverage_analysis_input import CoverageSourceClosure
-from booley.flows.sim.coverage_campaign import (
-    DurableTargetIdentity,
-    decode_coverage_campaign,
-    freeze_coverage_mapping,
-)
+from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
 from booley.flows.sim.coverage_evidence import (
     MAX_RESPONSE_BYTES,
     CoverageEvidenceSession,
     decode_coverage_evidence_audit,
 )
+from booley.flows.sim.coverage_json import freeze_coverage_mapping
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
 

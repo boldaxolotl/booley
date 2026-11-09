@@ -8,12 +8,12 @@ from booley.flows.sim.coverage_campaign import (
     CoveragePoint,
     CoveragePointIdentity,
     DurableTargetIdentity,
-    _point_id,
     decode_coverage_campaign,
     derive_coverage_rollups,
     encode_coverage_point,
-    freeze_coverage_mapping,
+    encode_coverage_point_id,
 )
+from booley.flows.sim.coverage_json import freeze_coverage_mapping
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
 
@@ -79,4 +79,4 @@ def _scale_point(index: int) -> CoveragePoint:
         freeze_coverage_mapping(disposition),
     )
     encoded_identity = encode_coverage_point(point)["identity"]
-    return replace(point, id=_point_id(encoded_identity))
+    return replace(point, id=encode_coverage_point_id(encoded_identity))

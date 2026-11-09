@@ -14,6 +14,7 @@ from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign_reports import simulation_booley_dir, target_report_directory
 from booley.flows.sim.coverage_campaign import CoverageCampaignValidationError
 from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
+from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.coverage_reference import (
     CoverageCampaignReference,
     build_coverage_campaign_reference,
@@ -968,7 +969,7 @@ def _coverage_acceptance_reference(
             "path_base": "origin_invocation",
             "path": path.relative_to(invocation).as_posix(),
             "bytes": len(raw),
-            "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "sha256": content_digest(raw),
             "kind": "coverage_campaign_reference",
             "owner": manifest.document["campaign_id"],
         },

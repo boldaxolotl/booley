@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -10,7 +9,6 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
 from booley.core.boundary import BoundaryError, require_dict, require_int, require_str_value
@@ -21,6 +19,7 @@ from booley.flows.sim.coverage_campaign_store import (
     LoadedCoverageCampaign,
     load_coverage_campaign_bytes,
 )
+from booley.flows.sim.coverage_json import REFERENCE_JSON, content_digest, freeze_coverage_mapping
 from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.sandbox_layout import canonical_project_alias_path
@@ -34,19 +33,6 @@ _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _WORK_ITEM_RE = re.compile(r"^item:[0-9]{4}:[0-9a-f]{16}$")
 
 
-def _canonical_json_bytes(value: object) -> bytes:
-    return (
-        json.dumps(
-            _plain(value),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        + b"\n"
-    )
-
-
 class CoverageCampaignReferenceError(ValueError):
     """A Coverage Campaign reference is malformed or cannot be authenticated."""
 
@@ -58,7 +44,7 @@ class CoverageCampaignReference:
     document: Mapping[str, object]
 
     def __post_init__(self) -> None:
-        decoded = decode_coverage_campaign_reference(_canonical_json_bytes(self.document))
+        decoded = decode_coverage_campaign_reference(REFERENCE_JSON.encode(self.document))
         object.__setattr__(self, "document", decoded.document)
 
 
@@ -76,7 +62,7 @@ def encode_coverage_campaign_reference(value: CoverageCampaignReference) -> byte
     """Encode one exact canonical reference."""
     if type(value) is not CoverageCampaignReference:
         raise CoverageCampaignReferenceError("expected CoverageCampaignReference")
-    raw = _canonical_json_bytes(value.document)
+    raw = REFERENCE_JSON.encode(value.document)
     decode_coverage_campaign_reference(raw)
     return raw
 
@@ -91,11 +77,11 @@ def decode_coverage_campaign_reference(raw: bytes) -> CoverageCampaignReference:
         raise CoverageCampaignReferenceError(
             "Coverage Campaign reference is not valid JSON"
         ) from exc
-    if _canonical_json_bytes(value) != raw:
+    if REFERENCE_JSON.encode(value) != raw:
         raise CoverageCampaignReferenceError("Coverage Campaign reference is not canonical JSON")
     _validate_reference(value)
     instance = object.__new__(CoverageCampaignReference)
-    object.__setattr__(instance, "document", _freeze(value))
+    object.__setattr__(instance, "document", freeze_coverage_mapping(value))
     return instance
 
 
@@ -139,7 +125,7 @@ def _resolve_coverage_campaign_reference_bytes(
     target_root = absolute.parent
     campaign_path = _contained_relative(target_root, cast(str, nested["path"]))
     campaign_raw = _read_regular(campaign_path, "nested Coverage Campaign", MAX_MANIFEST_BYTES)
-    if len(campaign_raw) != nested["bytes"] or _digest_bytes(campaign_raw) != nested["sha256"]:
+    if len(campaign_raw) != nested["bytes"] or content_digest(campaign_raw) != nested["sha256"]:
         raise CoverageCampaignReferenceError(
             "nested Coverage Campaign bytes disagree with reference"
         )
@@ -210,7 +196,7 @@ def resolve_persisted_coverage_campaign_reference(
     )
     public_path = _contained_relative(reports_root.absolute(), relative)
     raw = _read_regular(public_path, "Coverage Campaign reference", MAX_REFERENCE_BYTES)
-    if len(raw) != expected_bytes or _digest_bytes(raw) != persisted["sha256"]:
+    if len(raw) != expected_bytes or content_digest(raw) != persisted["sha256"]:
         raise CoverageCampaignReferenceError(
             "persisted Coverage Campaign reference bytes disagree with acceptance state"
         )
@@ -254,7 +240,7 @@ def build_coverage_campaign_reference(
                 "path_base": "origin_target",
                 "path": relative,
                 "bytes": len(raw),
-                "sha256": _digest_bytes(raw),
+                "sha256": content_digest(raw),
                 "campaign_id": loaded.campaign.campaign_id,
                 "schema": loaded.summary.source_schema,
             },
@@ -454,26 +440,6 @@ def _read_regular(path: Path, label: str, maximum: int) -> bytes:
     if len(raw) > maximum:
         raise CoverageCampaignReferenceError(f"{label} exceeds size limit")
     return raw
-
-
-def _digest_bytes(raw: bytes) -> str:
-    return "sha256:" + hashlib.sha256(raw).hexdigest()
-
-
-def _freeze(value: object) -> object:
-    if isinstance(value, dict):
-        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
-    if isinstance(value, list):
-        return tuple(_freeze(item) for item in value)
-    return value
-
-
-def _plain(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {key: _plain(item) for key, item in value.items()}
-    if isinstance(value, tuple | list):
-        return [_plain(item) for item in value]
-    return value
 
 
 __all__ = [
