@@ -445,8 +445,15 @@ def test_gather_rejects_unsupported_commercial_simulators(
     assert "future roadmap" in capsys.readouterr().out
 
 
-def test_gather_non_interactive_defaults(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_gather_reports_defaults_without_prompting(tmp_path: Path, monkeypatch, capsys) -> None:
+    """Init asks no design question, even on a TTY: each default is reported instead."""
     ctx = _ctx(tmp_path, monkeypatch)
+    ctx.interactive = True
+
+    def no_prompt(*_args, **_kwargs):
+        raise AssertionError("scaffold prompted for a design choice")
+
+    monkeypatch.setattr("builtins.input", no_prompt)
     choices = gather_scaffold_choices(_args(), ctx)
     assert choices == ScaffoldChoices(
         name="my_ip",
@@ -456,7 +463,17 @@ def test_gather_non_interactive_defaults(tmp_path: Path, monkeypatch, capsys) ->
         asic=True,
         fpga_part=None,
     )
-    capsys.readouterr()
+    out = capsys.readouterr().out
+    for line in (
+        "Simulator: verilator (default; set --sim-eda-tool)",
+        "Testbench style: sv (default; set --tb-style)",
+        "Lint EDA tool: verilator (default; set --lint-eda-tool)",
+        "ASIC synthesis: enabled (default; set --no-asic to skip)",
+        "Synthesis mode: physical (default; set --synth-mode)",
+        "FPGA implementation: skipped (default; set --fpga-part to enable)",
+        "Stealth: off (default; set --stealth)",
+    ):
+        assert line in out
 
 
 def test_gather_flags_win_over_defaults(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -503,13 +520,45 @@ def test_step_refuses_on_existing_design(tmp_path: Path, monkeypatch, capsys) ->
     capsys.readouterr()
 
 
-def test_step_refuses_on_populated_config(tmp_path: Path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize(
+    "content",
+    [
+        '[project]\nname = "existing"\n',
+        '[project]\nname = "existing"\n\n[agent]\nprovider = "claude"\n',
+    ],
+    ids=["project", "project-and-agent"],
+)
+def test_step_refuses_on_populated_config(
+    tmp_path: Path, monkeypatch, capsys, content: str
+) -> None:
     pd = tmp_path / ".booley"
     pd.mkdir()
-    (pd / "booley.toml").write_text('[project]\nname = "existing"\n')
+    (pd / "booley.toml").write_text(content)
     ctx = _ctx(tmp_path, monkeypatch)
     assert step_scaffold(ctx, _args()) is False
     assert ctx.results[-1].status == "err"
+    assert (pd / "booley.toml").read_text() == content
+    capsys.readouterr()
+
+
+def test_step_keeps_agent_table_from_plain_init(tmp_path: Path, monkeypatch, capsys) -> None:
+    """The `[agent]` table plain init wrote is not authored config: the scaffold keeps it."""
+    pd = tmp_path / ".booley"
+    pd.mkdir()
+    (pd / "booley.toml").write_text(
+        "# booley-init-origin: port\n"
+        + BOOLEY_TOML_SKELETON
+        + '\n[agent]\nprovider = "codex"\nauth = "api_key"\n',
+        encoding="utf-8",
+    )
+    ctx = _ctx(tmp_path, monkeypatch)
+    assert step_scaffold(ctx, _args()) is True
+    text = (pd / "booley.toml").read_text(encoding="utf-8")
+    cfg = tomllib.loads(text)
+    assert cfg["agent"] == {"provider": "codex", "auth": "api_key"}
+    assert cfg["project"]["name"] == "my_ip"
+    assert "# booley-init-origin: scaffold" in text
+    assert "# booley-init-origin: port" not in text
     capsys.readouterr()
 
 
@@ -821,12 +870,9 @@ def test_scaffold_physical_default_and_disabled_synthesis(tmp_path, monkeypatch)
 
 
 def test_scaffold_rejects_explicit_mode_with_no_asic(tmp_path, monkeypatch, capsys):
-    from booley.harness.setup import scaffold
-
     ctx = _ctx(tmp_path, monkeypatch)
     before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     for mode in ("logical", "physical"):
-        ctx.interactive = False
         args = _args(asic=False, synth_mode=mode)
         assert gather_scaffold_choices(args, ctx) is None, (
             "explicit synthesis mode with no ASIC was accepted"
@@ -836,21 +882,6 @@ def test_scaffold_rejects_explicit_mode_with_no_asic(tmp_path, monkeypatch, caps
         assert {
             p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()
         } == before
-        ctx.interactive = True
-        monkeypatch.setattr(scaffold, "_ask_yes_no", lambda *a, **k: False)
-        assert (
-            gather_scaffold_choices(
-                _args(
-                    asic=None,
-                    synth_mode=mode,
-                    sim_eda_tool="verilator",
-                    tb_style="sv",
-                    lint_eda_tool="verilator",
-                ),
-                ctx,
-            )
-            is None
-        )
     output = capsys.readouterr()
     assert "--synth-mode" in output.err + output.out
     assert "--no-asic" in output.err + output.out
@@ -914,30 +945,6 @@ def test_scaffold_logical_request_reaches_synthesis_report(tmp_path, monkeypatch
     assert report["eda_tool"] == "yosys"
     assert report["detail"]["synth"]["area_source"] == "yosys_mapped"
     assert commands[0][commands[0].index("--synth-mode") + 1] == "logical"
-
-
-def test_scaffold_interactive_synthesis_mode(tmp_path, monkeypatch):
-    from booley.harness.setup import scaffold
-
-    ctx = _ctx(tmp_path, monkeypatch)
-    ctx.interactive = True
-    questions = []
-
-    def choice(question, options, default):
-        questions.append(question)
-        return "logical" if "synthesis mode" in question else default
-
-    monkeypatch.setattr(scaffold, "_ask_choice", choice)
-    args = _args(asic=True, fpga_part="xc7a200tfbg484-1")
-    assert gather_scaffold_choices(args, ctx).synth_mode == "logical"
-    assert any("synthesis mode" in q for q in questions)
-    questions.clear()
-    args.synth_mode = "physical"
-    assert gather_scaffold_choices(args, ctx).synth_mode == "physical"
-    assert not any("synthesis mode" in q for q in questions)
-    args.asic, args.synth_mode = False, None
-    assert gather_scaffold_choices(args, ctx).asic is False
-    assert not any("synthesis mode" in q for q in questions)
 
 
 # ---------------------------------------------------------------------------

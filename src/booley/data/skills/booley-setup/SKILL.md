@@ -84,7 +84,10 @@ where setup stands:
   - **`complete`** → nothing to do; tell the user and offer the step selector
     for re-runs.
 - **`new`** (or `greenfield`) → **greenfield mode** for a from-scratch
-  (`init --scaffold`) project — read `steps/new-greenfield.md` and follow it.
+  project — read `steps/new-greenfield.md` and follow it. It starts on the
+  **host** after plain `booley init`: the skill asks the design choices and
+  runs `booley init --scaffold` itself, then hands into the container for the
+  shared steps.
 - **A step selector** (a number `0`–`7`, or a name like `plan`, `doctor`,
   `project-config`, `agents-md`, `parity`, `findings`, `cleanup`) → run **only that step**,
   then stop. Use this
@@ -95,7 +98,8 @@ where setup stands:
 ## Host or container?
 
 Steps 0–1 run on the **host** — the plan is written before the devcontainer
-exists. Steps 2–4 run **inside the Sandbox**: the per-folder
+exists. Greenfield mode's grill and `booley init --scaffold` are host steps
+too. Steps 2–4 run **inside the Sandbox**: the per-folder
 devcontainer entered via **Reopen in Container** in VS Code, or
 `booley session up` headlessly. There, each step edits files in the
 worktree and runs the `booley` CLI in a container terminal; the sandbox

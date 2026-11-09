@@ -1,7 +1,7 @@
 # UART clean-room greenfield
 
 Build a standalone UART from frozen OpenTitan docs only, driving Booley from host bootstrap
-through `init --scaffold`, `/booley-setup new`, an Interactive MMIO baseline, a feature Goal
+through `init`, `/booley-setup new` (which runs `init --scaffold`), an Interactive MMIO baseline, a feature Goal
 and up to two repair Goals. Then grade the accepted RTL with an independent evaluator the
 Goal child never sees. Booley can accept wrong RTL, and this gap exposes it. The fresh Project
 also exercises the host, auth, runtime, policy, Doctor and feedback surfaces.
@@ -78,9 +78,11 @@ Look for: a stale `booley` on PATH, version/commit mismatch, docs that don't mat
 ### 2. bootstrap-init — Bootstrap, scaffold and init variants (~30 min)
 Intent: onboard a greenfield Project on an empty origin; bootstrap runs implicitly.
 Try:
-- Bootstrap check-only reports `pending`. Then run `booley init --scaffold qa_uart` without an explicit
-  bootstrap: choose the provider, Verilator for sim and lint, a SystemVerilog TB and ASIC
-  support. It should reconcile the host automatically, after which check-only reports clean.
+- Bootstrap check-only reports `pending`. Then run plain `booley init` without an explicit
+  bootstrap and choose the provider. Run `booley init --scaffold qa_uart` with flags for
+  Verilator for sim and lint, a SystemVerilog TB and ASIC support: it asks nothing, keeps
+  `[agent]`, and reports its defaults. Initialization should
+  reconcile the host automatically, after which check-only reports clean.
 - Repeat `init` and bootstrap: source, config, generated state, images and skills must not
   drift. A repeated scaffold must keep authored files and Target names. Inspect the core,
   counter, skills, image and Stealth state, then set `[stealth] enabled = false`.
@@ -96,7 +98,8 @@ Look for: check-only runs that change state, init overwriting user files, vague 
 ### 3. setup-interactive — Setup and Interactive MMIO baseline (~45 min)
 Intent: packaged Setup plus an Interactive session give a green, committed baseline.
 Try:
-- In the Sandbox, run `/booley-setup new` with `prompts/setup.md` supplied up front. Plain,
+- On the host, run `/booley-setup new` with `prompts/setup.md` supplied up front, then
+  continue in the Sandbox. Plain,
   deep (verifies the counter) and plain Doctor again are all clean.
 - Copy `spec/` (never `evaluator/`) into the Project and give an Interactive
   child `prompts/interactive.md`: `qa_uart` interface plus minimal CTRL

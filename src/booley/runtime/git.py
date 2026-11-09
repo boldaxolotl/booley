@@ -292,6 +292,39 @@ def add_git_excludes(
     return True
 
 
+def git_exclude_entries(wt: Path, names: Iterable[str]) -> tuple[str, ...]:
+    """Return the ``/<name>`` lines of *names* present in the honored ``info/exclude``."""
+    common = _git_common_dir(wt)
+    if common is None:
+        return ()
+    exclude = common / "info" / "exclude"
+    if not exclude.is_file():
+        return ()
+    present = set(exclude.read_text(encoding="utf-8").splitlines())
+    return tuple(f"/{name}" for name in names if f"/{name}" in present)
+
+
+def remove_git_excludes(wt: Path, entries: Iterable[str]) -> None:
+    """Drop exactly the *entries* lines from the honored ``info/exclude``.
+
+    Unlike the best-effort :func:`add_git_excludes`, a symlinked exclude file
+    raises :class:`SymlinkTargetError` (an ``OSError``): a silent no-op would
+    leave the caller's promise (the path is no longer excluded) unmet. The
+    header and every other entry stay untouched.
+    """
+    common = _git_common_dir(wt)
+    if common is None:
+        return
+    exclude = common / "info" / "exclude"
+    if not exclude.is_file():
+        return
+    doomed = set(entries)
+    lines = exclude.read_text(encoding="utf-8").splitlines()
+    kept = [line for line in lines if line not in doomed]
+    if kept != lines:
+        replace_regular_file(exclude, ("\n".join(kept) + "\n").encode("utf-8"))
+
+
 def _remove_stale_index_lock(wt: Path) -> bool:
     """Remove a stale index.lock after confirming no live Git owns this worktree."""
     git_dir = _git_dir_for_worktree(wt)

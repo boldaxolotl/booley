@@ -14,12 +14,14 @@ Setup has two parts:
    and this guide hands off to it (see
    [The `booley-setup` skill](#the-booley-setup-skill) below).
 
-Two paths, sharing everything up to that handoff:
+Two paths, one sequence: Install, `booley init`, then `/booley-setup` on the
+host (`/booley-setup new` for a new IP). They differ only in the skill mode:
 
 - **A new IP, from scratch.** The easy path. Every flow is green by
   construction with the built-in Booley Flows, so you skip the feasibility triage
-  entirely: `booley init --scaffold` writes a working,
-  wired-together starter project, and the skill drives it to a green
+  entirely: `/booley-setup new` asks the design choices, runs
+  `booley init --scaffold` with your answers to write a working,
+  wired-together starter project, and drives it to a green
   `booley doctor` (Booley's built-in health check, explained at
   [Step 4](#porting-an-existing-project-plan-then-execute)).
 - **An existing RTL project (a port).** The harder path: a per-flow feasibility
@@ -73,17 +75,15 @@ adapt it.
 is best). If the checkout has Windows (CRLF) line endings, which is common on
 Windows, init converts them to LF, and it refuses to do that on a dirty tree.
 
-The command depends on your path:
+The command is the same for both paths:
 
 ```bash
-cd your-rtl-project            # porting an existing project
+cd your-rtl-project            # an existing project, or an empty repo for a new IP
 booley init
 ```
 
-```bash
-mkdir my_ip && cd my_ip && git init      # a new IP, from scratch
-booley init --scaffold my_ip
-```
+For a new IP, start from an empty repo (`mkdir my_ip && cd my_ip && git init`).
+When init finds no RTL, its closing advice points you at `/booley-setup new`.
 
 Init asks which agent provider (`claude` or `codex`) and auth policy
 (`subscription`, `api-key`, or `auto`) this project uses; see
@@ -169,21 +169,23 @@ The saved login lives in `~/.config/booley/`, outside every project, so it can't
 be committed by accident. Booley passes it to every container on its own,
 including VS Code's; rebuild an existing container once to pick it up.
 
-### What `--scaffold` adds
+### What `/booley-setup new` runs: `booley init --scaffold`
 
 > **New IP from scratch only.** Porting an existing project? Skip to
 > [The `booley-setup` skill](#the-booley-setup-skill).
 
-On top of everything above, `--scaffold` writes a starter project. On a terminal
-it asks the choices below (synthesis mode only when ASIC is enabled); each
-answer is also a flag, for non-interactive runs that otherwise take the defaults:
+You don't normally type this command: `/booley-setup new` asks the design
+choices below, explains the trade-offs, and runs `booley init --scaffold <name>`
+on the host with your answers as flags. `booley init --scaffold` asks no
+design questions itself; a flag you leave out takes the default, and init
+prints which defaults it used:
 
 | Choice | Options | Flag |
 | --- | --- | --- |
-| Simulator EDA tool | Verilator / Icarus | `--sim-eda-tool` |
-| Testbench style | SystemVerilog / cocotb | `--tb-style` |
-| Lint EDA tool | Verilator / Verible | `--lint-eda-tool` |
-| Flows to enable | ASIC synthesis, FPGA (and the part) | `--asic` / `--no-asic`, `--fpga-part` |
+| Simulator EDA tool | Verilator (default) / Icarus | `--sim-eda-tool` |
+| Testbench style | SystemVerilog (default) / cocotb | `--tb-style` |
+| Lint EDA tool | Verilator (default) / Verible | `--lint-eda-tool` |
+| Flows to enable | ASIC synthesis (default on), FPGA (default off, give the part) | `--asic` / `--no-asic`, `--fpga-part` |
 | ASIC synthesis mode | `physical` (default) / `logical` | `--synth-mode` |
 | Keep Booley out of git history | off (default) / on | `--stealth` |
 
@@ -207,9 +209,19 @@ What lands, wired together and ready to run:
   writes `[stealth] enabled = true` instead and puts the design and Doctor
   selftest cores under `.booley/cores/`
 
+The scaffold follows a completed plain `booley init`. It keeps the `[agent]`
+table init wrote and doesn't ask for the provider or auth again. Without
+`--stealth` it also removes the empty inner `.booley` git repository and the
+`/.booley` git exclusion that plain init set up (see
+[Stealth](STEALTH.md#turning-it-on)), so you can commit `.booley/`
+normally. If that inner repository already has commits, the scaffold refuses
+and changes nothing; rerun with `--stealth` to keep the hidden layout, or move
+the inner repository's history away first.
+
 The scaffold refuses to run in a repo that already contains `.core` or RTL
-files. That's a porting job, so use a plain `booley init` there. Once the
-scaffold is written, the `booley-setup` skill takes it from here — see
+files, or any configuration beyond what plain init wrote. That's a porting
+job, so use `/booley-setup` there. Once the scaffold is written,
+`/booley-setup new` takes it from here — see
 [greenfield mode](#a-new-ip-greenfield-mode).
 
 When initialization finishes, use the **`booley-setup`** skill.
@@ -284,16 +296,18 @@ with `/booley-goal start`, or start an
 
 ### A new IP: greenfield mode
 
-You already ran the scaffold on the host: `booley init --scaffold my_ip` (in
-Project Initialization above) asked the scaffold choices and wrote a working,
-green-by-construction project. So there's no feasibility triage and no config to
-author — the skill only has to finish the job.
+After `booley init`, run `/booley-setup new` on the host, in your Claude Code or
+Codex chat at the Project Root. It asks the design choices in one batched round
+(IP name, simulator, testbench style, lint tool, flows, synthesis mode, and
+whether to keep Booley out of git history, each with a recommended answer),
+then runs `booley init --scaffold` with your answers to write a working,
+green-by-construction project. So there's no feasibility triage and no config
+to author.
 
-**Reopen in Container**, then run `/booley-setup new` from the Project Root. It
-detects the scaffolded repo, reads the choices the scaffold recorded into the
-config, and confirms them in one message rather than re-asking. Because the
-scaffold already wrote the config (Step 2) and the project adopts the built-in
-Booley Flows, it skips config authoring and runs:
+When the scaffold is written, the skill tells you to **Reopen in Container**
+and to run `/booley-setup new` again there. It finds its recorded answers and
+does not re-ask. Because the scaffold already wrote the config (Step 2) and the
+project adopts the built-in Booley Flows, it skips config authoring and runs:
 
 - **The Doctor check (Step 4).** Run `booley doctor`, then `booley doctor
   --deep`, and fix until both are clean with no warnings. Record a deliberate
