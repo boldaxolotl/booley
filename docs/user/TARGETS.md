@@ -133,9 +133,11 @@ runs them:
 
 The prefix matters for synth and fpga: both use FuseSoC's `generic` flow, so
 the `synth_`/`fpga_` prefix decides which Flow runs the Target. Without a
-prefix, a Target whose tool is `vivado` counts as fpga. A bare `lint` is fine when
-there is only one lint Target. Doctor notes names that break the rule. Vendored
-upstream cores keep their own names.
+prefix, a Target whose tool is `vivado` counts as fpga. Every Target needs a
+subject after the axis, even when it is the only one: a bare `lint` is not a
+name. Doctor notes names that break the rule, including a bare axis, and suggests
+`<axis>_<core name>` (`lint_soc` for a core named `soc`). Vendored upstream cores
+keep their own names.
 
 Add a `default:` Target only when another core depends on this one. Booley
 doesn't list it as a Target you can run.

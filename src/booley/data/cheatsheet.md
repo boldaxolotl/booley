@@ -203,7 +203,7 @@ Goal argument examples:
 `CYCLE_COUNT:{target}` Goals name the Target with `target` and one Test Run with `test` (`test`, `test+variant`, or either with `@seed`); put bounds in `thresholds`. All thresholds for that Test Run must pass. Relative forms compare the same Test Run of the same Target at the Goal base commit.
 
 ```json
-{"family": "CYCLE_COUNT", "target": "sim", "test": "smoke",
+{"family": "CYCLE_COUNT", "target": "sim_smoke", "test": "smoke",
  "thresholds": {"cycle_count_max": 1000, "cycle_count_reduce_at_least": "8%"}}
 ```
 

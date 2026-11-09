@@ -181,6 +181,7 @@ from booley.targets.selection import (
     TargetSectionConflictError,
     section_key_names,
     target_section_key,
+    vlnv_key,
 )
 
 if TYPE_CHECKING:
@@ -5737,7 +5738,7 @@ def _check_target_naming(
     reads in ``--target``, ``sim_pass_<target>``, and ``tests.toml`` keys. See
     :mod:`booley.targets.target_naming` for the rule.
 
-    WARN, never FAIL, and only for owned cores (:func:`_owned_core_files`): a
+    A note, never a failure, and only for owned cores (:func:`_owned_core_files`): a
     non-conforming name still runs, and renaming a vendored upstream Target is
     unfollowable advice for a repo that must stay byte-identical (ADR 0036).
     """
@@ -5761,7 +5762,9 @@ def _check_target_naming(
         _pass("Target names follow the <axis>_<subject> convention")
         return
     for name, ref in offenders:
-        suggestion = target_naming.suggest_name(name, doctor_axes.get(name))
+        # The core name backs a bare axis (``sim`` -> ``sim_<core name>``).
+        core_name = vlnv_key(ref.vlnv).rsplit(":", 1)[-1]
+        suggestion = target_naming.suggest_name(name, doctor_axes.get(name), subject=core_name)
         fix = (
             f"rename it '{suggestion}'"
             if suggestion
