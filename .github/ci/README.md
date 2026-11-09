@@ -5,16 +5,39 @@ horizontally:
 
 - Python 3.14 runs the complete suite on Windows in ten duration-balanced
   shards.
-- Python 3.13 runs complete branch coverage on Ubuntu in three shards.
-- Python 3.11 and 3.14 run the complete suite on Ubuntu, each in two
-  duration-balanced shards.
+- Python 3.14 runs the complete suite on Ubuntu under branch coverage, in the
+  three `coverage-shards` jobs. They use coverage.py's `sysmon` core
+  (`COVERAGE_CORE=sysmon`, PEP 669), which keeps tracing cheap enough that one
+  instrumented run replaces a plain 3.14 run plus a separate coverage run.
+- Python 3.11 runs the complete suite on Ubuntu in two duration-balanced
+  shards.
 - Python 3.11 and 3.13 run focused installation, import, path, subprocess, and
-  API compatibility checks on Windows.
+  API compatibility checks on Windows. The complete Python 3.13 suite runs only
+  in the weekly full matrix.
 
 The scheduled and manually dispatchable `Full Python compatibility matrix`
 workflow remains the complete OS-by-Python backstop. This is deliberately a
 pairwise PR policy, not equivalent to running the complete suite on every
 combination before merge.
+
+## Main pushes and the nightly run
+
+A push to `main` runs a narrow tier: `changes`, `release-semantic`,
+`package-artifacts`, `bwave-smoke`, then `ci-required` and `ci-metrics`
+(`MAIN_PUSH_JOBS` in `.github/scripts/ci_changes.py`). Mergify merges the exact
+tree its queue candidate already passed, so the suite would only repeat that
+result. `bwave-smoke` stays because only a `main` push may write the shared
+`sandbox-substrate` build cache, and it installs the wheel `package-artifacts`
+builds.
+
+A scheduled run on `main` every night at 01:47 UTC selects every job. It
+catches what the queue cannot: a classifier that skipped a needed job, a
+maintainer's manual incident merge, and drift in runners, toolchains, or
+unpinned dependencies. It also refreshes the `main`-scoped pip and Rust caches
+after a dependency change and produces the complete-run artifacts that timing
+models and cost profiles sample. Manual runs and the release tag's
+`publish.yml` call also select every job. The concurrency group includes the
+event, so a `main` push never cancels the nightly or a manual run.
 
 ## Flake stress
 
@@ -34,8 +57,9 @@ to reproduce a failure locally.
 runner. Historical timings influence balance only: a new or unknown test is
 always assigned to a shard. The `test` job owns compatibility execution, with
 `test-verify` checking the exact node-ID sets from its ten Windows shards and
-from each sharded Linux group. The
-independent `coverage-shards` job owns coverage execution; `coverage` verifies
+from the sharded Ubuntu 3.11 group. The
+independent `coverage-shards` job owns coverage execution and the Ubuntu 3.14
+suite, balanced by `linux-test-timings.json`; `coverage` verifies
 its three exact shard selections before combining their raw data and enforcing
 the global and changed-line thresholds. `ci-required` waits for and validates
 both branches. Each verifier fails if a test is omitted, duplicated, or
@@ -100,8 +124,8 @@ optimization candidates with the integration coverage each must keep.
 Manual `Tests` workflow runs accept three dispatch inputs for the Ubuntu legs:
 
 - `linux_shard_count` (1, 2, or 3; default 2). One keeps a complete-suite job
-  per Python version. Two or three shard each of Python 3.11 and 3.14 into group
-  `linux-<python>`, balanced by `linux-test-timings.json`, a model of measured
+  for Python 3.11. Two or three shard it into group `linux-3.11`, balanced by
+  `linux-test-timings.json`, a model of measured
   call-time medians for tests above one second; any other test weighs its
   `default_seconds`. The measurement behind the model and the shard and
   scheduler comparison are in [linux-shard-experiment.md](linux-shard-experiment.md).
@@ -113,11 +137,11 @@ Manual `Tests` workflow runs accept three dispatch inputs for the Ubuntu legs:
 
 A non-default count or scheduler is rejected outside `workflow_dispatch`, so
 pull requests, pushes, and reusable-workflow calls run two Ubuntu shards per
-Python version with `loadscope`. The maintainer adopted that default from the
+Python 3.11 with `loadscope`. The maintainer adopted that default from the
 experiment's recommendation (arm C). Its sustained behavior over ordinary
 validations, kept apart from the controlled samples, is in the record's
 [Sustained cohort](linux-shard-experiment.md#sustained-cohort) section. When Ubuntu is
-sharded, `test-verify` also verifies each Linux group with the selected count,
+sharded, `test-verify` also verifies the Linux group with the selected count,
 using the same exact-union check as the Windows shards.
 
 ## Exhaustive recovery policy
@@ -125,11 +149,11 @@ using the same exact-union check as the Windows shards.
 No pytest marker or change-classifier category selects recovery tests.
 `pyproject.toml` registers only the `string_parameter_eda`, `native_bwave`, and
 `slow` markers, and every complete-suite run uses `-m "not native_bwave"`.
-Whenever a pull request runs the `test` job, its Ubuntu 3.11 and 3.14 shards
-together run every Goal recovery and authority permutation, and its Windows 3.14
-shards together run the same set except POSIX-only cases; the `coverage-shards`
-jobs use the same mark expression. The Windows 3.11 and 3.13 compatibility legs
-run a fixed focused subset. The change classifier (`required_jobs` in
+Whenever a pull request runs the `test` job, its Ubuntu 3.11 shards and the
+Ubuntu 3.14 `coverage-shards` jobs each run every Goal recovery and authority
+permutation, and its Windows 3.14 shards together run the same set except
+POSIX-only cases; all of them use the same mark expression. The Windows 3.11
+and 3.13 compatibility legs run a fixed focused subset. The change classifier (`required_jobs` in
 `.github/scripts/ci_changes.py`) selects the `test` job for any path classified
 `python_source`, `python_tests`, `workflow`, `packaging`, `release`, or
 `ci_tooling`, and for unclassified paths. `ci_tooling` is
@@ -139,9 +163,9 @@ keeps them in step with `pyproject.toml`, but not `full`. README, website and
 documentation-only changes run `docs-check` instead: `git diff --check` plus the
 content tests that `.github/scripts/ci_docs_tests.py` derives from the files that read
 documentation. They add `package-artifacts` when `README.md` changed, and
-`site-build` and `lint` for `website/` and `docs/user/`. `main` pushes select
-every job, and the weekly `full-python-matrix.yml` workflow runs the same mark
-expression.
+`site-build` and `lint` for `website/` and `docs/user/`. The nightly run on
+`main` selects every job (a `main` push runs only its narrow tier), and the
+weekly `full-python-matrix.yml` workflow runs the same mark expression.
 
 Goal and review code select standard and RISC-V image validation. Goal tests
 (`tests/goals/`) select standard image validation only. The RISC-V prefixes are

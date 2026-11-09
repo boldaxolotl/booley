@@ -64,6 +64,13 @@ CONDITIONAL_JOBS = (
 # never by path categories, so a workflow or full-CI change does not force it.
 STRESS_JOB = "flake-stress"
 ALWAYS_JOBS = ("changes", "release-semantic")
+# A push to main runs only these jobs. Mergify merges the exact tree its queue
+# candidate validated, so re-running the suite there repeats a passed check.
+# `bwave-smoke` stays because only a main push may write the shared substrate
+# build cache, and it installs the wheel from `package-artifacts`. The nightly
+# scheduled run and manual runs still select every job.
+MAIN_PUSH_JOBS = (*ALWAYS_JOBS, "package-artifacts", "bwave-smoke")
+MAIN_REF = "refs/heads/main"
 CI_TOOLING_JOBS = (
     "package-artifacts",
     "sidecar-smoke",
@@ -87,14 +94,15 @@ WINDOWS_SHARD_COUNTS = (4, 6, 8, 10)
 # the RISC-V image even when the dispatched commit does not touch its inputs.
 RISCV_MEASUREMENT_ARMS = ("automatic", "cold")
 DEFAULT_WINDOWS_SHARD_COUNT = 10
-# Ubuntu legs: two duration-balanced shards per Python version, adopted from the
+# Ubuntu Python 3.11 legs: two duration-balanced shards, adopted from the
 # controlled comparison in .github/ci/linux-shard-experiment.md. A manual run may
-# still pick 1 (one complete-suite job per version) or 3.
+# still pick 1 (one complete-suite job) or 3. Ubuntu Python 3.14 runs the suite
+# under coverage in the fixed three-shard `coverage-shards` job instead.
 LINUX_SHARD_COUNTS = (1, 2, 3)
 DEFAULT_LINUX_SHARD_COUNT = 2
 LINUX_SCHEDULERS = ("loadscope", "worksteal")
 DEFAULT_LINUX_SCHEDULER = "loadscope"
-_LINUX_PYTHONS = ("3.11", "3.14")
+_LINUX_PYTHONS = ("3.11",)
 _STABLE_BASE_FILES = set(stable_base_inputs(Path(__file__).parents[2]))
 _STABLE_BASE_ORCHESTRATION_FILES = {
     "src/booley/data/docker/stable-base-inputs.txt",
@@ -103,7 +111,7 @@ _STABLE_BASE_ORCHESTRATION_FILES = {
 # default branch on a schedule, builds no image and feeds no other job, so a
 # change here needs the narrow `renovate-config` lane, not the full CI. That lane
 # runs the pin audit of every workflow file; the remaining workflow-wide audits
-# run on the next default-branch push, which selects every job.
+# run in the nightly scheduled run on main, which selects every job.
 _RENOVATE_FILES = {".github/renovate.json", ".github/workflows/renovate.yml"}
 _PACKAGING_FILES = {
     "LICENSE",
@@ -342,7 +350,8 @@ def classify(
     if not categories:
         categories.add("full")
     if force_all:
-        # Main/manual runs execute every conditional job, but only rebuild the
+        # Scheduled, manual and release runs execute every conditional job (a
+        # push to main narrows that in `required_jobs`), but only rebuild the
         # 57-minute runtime base or its 9-minute RISC-V extension when their
         # actual compatibility inputs changed.
         categories.update(set(CATEGORIES) - {"stable_base", "riscv_image"})
@@ -351,10 +360,19 @@ def classify(
     return categories
 
 
-def required_jobs(categories: set[str], *, stress: bool = False) -> set[str]:
-    """Return the jobs a change needs; ``stress`` adds the flake-stress job."""
+def required_jobs(
+    categories: set[str], *, stress: bool = False, main_push: bool = False
+) -> set[str]:
+    """Return the jobs a run needs; ``stress`` adds flake-stress, ``main_push`` narrows to its tier."""
+    if main_push:
+        return set(MAIN_PUSH_JOBS)
     jobs = _category_jobs(categories)
     return jobs | {STRESS_JOB} if stress else jobs
+
+
+def is_main_push(event_name: str, ref: str) -> bool:
+    """Return whether this run is a push to main (not a tag push calling the workflow)."""
+    return event_name == "push" and ref == MAIN_REF
 
 
 def _documentation_jobs(categories: set[str]) -> set[str]:
@@ -556,8 +574,9 @@ def _write_outputs(
     windows_shard_count: int,
     linux_shard_count: int,
     linux_scheduler: str,
+    main_push: bool,
 ) -> None:
-    jobs = required_jobs(categories, stress=bool(stress.modules))
+    jobs = required_jobs(categories, stress=bool(stress.modules), main_push=main_push)
     with destination.open("a", encoding="utf-8") as stream:
         for category in CATEGORIES:
             print(f"{category}={'true' if category in categories else 'false'}", file=stream)
@@ -628,11 +647,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--linux-shard-benchmark", type=_boolean, default=False)
     parser.add_argument(
         "--event-name",
-        choices=("", "pull_request", "push", "workflow_call", "workflow_dispatch"),
+        choices=("", "pull_request", "push", "schedule", "workflow_call", "workflow_dispatch"),
         default="",
     )
     parser.add_argument("--riscv-measurement", choices=RISCV_MEASUREMENT_ARMS, default="automatic")
     parser.add_argument("--head-ref", default="", help="pull request head branch")
+    parser.add_argument("--ref", default="", help="the run's github.ref")
     return parser.parse_args()
 
 
@@ -662,6 +682,7 @@ def main() -> int:
         entries = _diff_entries(_git_diff(args.repo, base, args.head))
         paths = [path for _status, entry_paths in entries for path in entry_paths]
         stress = _stress_plan(args.repo, entries, args.event_name, args.head_ref)
+        main_push = is_main_push(args.event_name, args.ref)
         if args.windows_shard_benchmark or args.linux_shard_benchmark:
             categories = {"python_source"}
         else:
@@ -679,11 +700,14 @@ def main() -> int:
             args.windows_shard_count,
             args.linux_shard_count,
             args.linux_scheduler,
+            main_push,
         )
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     print(f"CI categories: {','.join(sorted(categories))}")
+    if main_push:
+        print(f"main push: running only {','.join(MAIN_PUSH_JOBS)}")
     print(f"flake-stress: {stress.count}x {' '.join(stress.modules) or '(none)'}")
     return 0
 
