@@ -77,13 +77,14 @@ of the brief:
 - `rounds`: `1` (default) or `uncapped`. With `uncapped`, every fix starts
   another review of the whole change, until one round has no open finding
   rated `medium` or higher on the pipeline's shared severity scale. `low` and
-  `nit` findings are fixed or declined without another round. A finding
-  closes only through a fix, or through a written rebuttal that the next
-  round's reviewer accepts. A proposed split still gets one review round and
+  `nit` findings are fixed or declined without another round. A `medium`
+  or higher finding closes only through a fix, or through a written rebuttal
+  that the next round's reviewer accepts. A proposed split still gets one review round and
   is filed without asking.
 - `park-after`: an integer of at least 2, allowed only with `rounds=uncapped`.
-  It is how many rounds may run without a clean one before the pipeline stops
-  and asks the maintainer. Default 5. The count covers rounds under the current
+  It is how many rounds may run without one that has no open `medium` or higher
+  finding before the pipeline stops and asks the maintainer. The maintainer's
+  answer can accept the parked head with its findings still open. Default 5. The count covers rounds under the current
   brief; a new brief starts it again.
 - `focus`: one quoted line that tells the reviewer what to look for first.
 
@@ -92,7 +93,8 @@ to the default review. Malformed means an unknown key or model, a repeated key,
 a missing `model` or `effort`, an unsupported `rounds` value, `park-after`
 without `rounds=uncapped`, a value spread over several lines, or unbalanced
 quotes. With `rounds=uncapped`, the pipeline queues the pull request only after
-a round with no open `medium` or higher finding on its current head.
+a round with no open `medium` or higher finding on its current head, or after
+the maintainer's answer to a park accepts that exact head.
 
 ## GUI
 
