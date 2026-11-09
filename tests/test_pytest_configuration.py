@@ -305,6 +305,10 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     assert coverage_config["relative_files"] is True
     assert coverage_paths == ["src/booley", "*/src/booley"]
     assert "--cov-fail-under=0" in command
+    # The sysmon core and the Linux timing model are what make one instrumented
+    # 3.14 run cheaper than the plain 3.14 shards plus separate coverage shards.
+    assert workflow["jobs"]["coverage-shards"]["env"]["COVERAGE_CORE"] == "sysmon"
+    assert "--ci-timing-model .github/ci/linux-test-timings.json" in " ".join(command.split())
     rendered_steps = "\n".join(str(step) for step in workflow["jobs"]["coverage"]["steps"])
     assert "coverage combine" in rendered_steps
     assert "coverage xml" in rendered_steps
@@ -618,6 +622,24 @@ def test_pr_compatibility_matrix_is_pairwise() -> None:
     assert "--windows-shard-benchmark" in classify_step["run"]
 
 
+def test_main_push_tier_keeps_a_nightly_full_run_on_main() -> None:
+    """Main pushes run a narrow tier; the nightly full run must exist and outlive them."""
+    workflow = _test_workflow()
+    classify = _named_step(workflow["jobs"]["changes"], "Classify changed paths")
+    group = workflow["concurrency"]["group"]
+
+    def rendered(event: str) -> str:
+        return group.replace("${{ github.event_name }}", event).replace(
+            "${{ github.ref }}", "refs/heads/main"
+        )
+
+    assert workflow[True]["schedule"]
+    assert "${{" not in rendered("push")
+    assert rendered("push") != rendered("schedule")
+    assert classify["env"]["REF"] == "${{ github.ref }}"
+    assert '--ref "${REF}"' in classify["run"]
+
+
 def test_windows_shards_are_exactly_verified() -> None:
     jobs = _test_workflow()["jobs"]
     test_verify_steps = jobs["test-verify"]["steps"]
@@ -646,8 +668,8 @@ def test_coverage_shards_have_dedicated_matrix() -> None:
 
     assert coverage_entries == [
         {
-            "name": f"ubuntu-3.13-coverage-{index + 1}-of-3",
-            "python": "3.13",
+            "name": f"ubuntu-3.14-coverage-{index + 1}-of-3",
+            "python": "3.14",
             "group": "coverage",
             "shard_index": index,
             "shard_count": 3,
@@ -657,6 +679,12 @@ def test_coverage_shards_have_dedicated_matrix() -> None:
     assert coverage_shards["needs"] == "changes"
     assert coverage_shards["runs-on"] == "ubuntu-latest"
     assert coverage_shards["strategy"]["fail-fast"] is False
+    # The coverage shards are the only Ubuntu 3.14 suite, so they must not
+    # also run in the plain `test` matrix.
+    assert not any(
+        entry["os"] == "ubuntu-latest" and entry["python"] == "3.14"
+        for entry in build_test_matrix(10)["include"]
+    )
 
 
 def test_coverage_shards_bound_setup_and_pytest_steps() -> None:
@@ -1600,7 +1628,7 @@ def test_test_verify_proves_each_linux_group_when_sharded() -> None:
             if entry["os"] == "ubuntu-latest"
         }
     )
-    command = " ".join(prove["run"].replace("\\\n", " ").split())
+    command = " ".join(prove["run"].split())
 
     assert verify["needs"] == ["changes", "test"]
     assert names.index(download["name"]) < names.index(prove["name"])
@@ -1608,12 +1636,9 @@ def test_test_verify_proves_each_linux_group_when_sharded() -> None:
     assert download["with"]["pattern"] == "shard-linux-*"
     assert download["with"]["path"] == "${{ runner.temp }}/linux-shards"
     assert prove["env"]["LINUX_SHARD_COUNT"] == "${{ needs.changes.outputs.linux_shard_count }}"
-    assert f"for group in {' '.join(groups)}; do" in command
-    assert '--root "${RUNNER_TEMP}/linux-shards" --group "${group}"' in command
+    assert groups == ["linux-3.11"]
+    assert f'--root "${{RUNNER_TEMP}}/linux-shards" --group {groups[0]}' in command
     assert '--shard-count "${LINUX_SHARD_COUNT}"' in command
-    # Both groups are checked even when the first fails.
-    assert "|| status=1" in command
-    assert command.endswith('exit "${status}"')
     for artifact in ("shard-coverage-0", "coverage-shard-0", "pytest-timing-ubuntu-3.11-full"):
         assert not any(
             fnmatch.fnmatch(artifact, step.get("with", {}).get("pattern", "")) for step in steps
