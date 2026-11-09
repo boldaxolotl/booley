@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import tomllib
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
@@ -25,8 +23,12 @@ from booley.core.boundary import BoundaryError, as_str, require_dict, require_li
 from booley.flows.sim.coverage_campaign import (
     CoverageFinding,
     DurableTargetIdentity,
-    FrozenJson,
     decode_coverage_point_id,
+)
+from booley.flows.sim.coverage_json import (
+    WAIVER_SET_JSON,
+    content_digest,
+    freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_waiver_files import (
     SecureFile,
@@ -55,17 +57,6 @@ class CoverageWaiverValidationError(ValueError):
     def __init__(self, findings: tuple[CoverageFinding, ...]) -> None:
         self.findings = findings
         super().__init__(f"approved waiver set is invalid ({len(findings)} findings)")
-
-
-def _digest(document: object) -> str:
-    encoded = json.dumps(
-        document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode()
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
-
-
-def _fingerprint(raw: bytes) -> str:
-    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
 
 
 def _error(code: str, pointer: str, message: str) -> CoverageFinding:
@@ -107,22 +98,6 @@ def _configured_directory_finding(error: SecurePathError) -> CoverageFinding:
         "unreadable": "Configured approved-waiver directory is not readable.",
     }
     return _error(codes[error.kind], "/directory", messages[error.kind])
-
-
-def _freeze(value: object) -> FrozenJson:
-    if isinstance(value, Mapping):
-        return MappingProxyType({str(key): _freeze(item) for key, item in sorted(value.items())})
-    if isinstance(value, list | tuple):
-        return tuple(_freeze(item) for item in value)
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
-    raise TypeError(f"waiver provenance contains non-JSON value {type(value).__name__}")
-
-
-def _freeze_mapping(value: Mapping[str, object]) -> Mapping[str, FrozenJson]:
-    frozen = _freeze(value)
-    assert isinstance(frozen, Mapping)
-    return frozen
 
 
 def _read_evidence(
@@ -212,7 +187,7 @@ def _proof_evidence_finding(
     if finding is not None:
         return finding
     assert raw is not None
-    if document["sha256"] != _fingerprint(raw):
+    if document["sha256"] != content_digest(raw):
         return _error("COV_WAIVER_PROOF_STALE", f"{pointer}/sha256", "Proof bytes changed.")
     return None
 
@@ -337,7 +312,7 @@ def _approval_from_document(
         waiver_id=str(document["id"]),
         waiver_file=waiver_file,
         waiver_fingerprint=waiver_fingerprint,
-        provenance=_freeze_mapping(provenance),
+        provenance=freeze_coverage_mapping(provenance),
         source=source,
     )
 
@@ -397,7 +372,7 @@ def _load_approval_file(
 ) -> tuple[dict[str, object], list[ApprovedWaiver]]:
     source = require_str(document, "source")
     source_fingerprint = require_str(document, "source_sha256")
-    file_fingerprint = _fingerprint(raw)
+    file_fingerprint = content_digest(raw)
     raw_approvals = require_list(document.get("approval"), field="approval")
     approvals_as_mappings = [require_dict(item, field="approval") for item in raw_approvals]
     approval_documents = sorted(
@@ -467,7 +442,7 @@ def _source_file_findings(
     )
     if source_finding is not None:
         findings.append(source_finding)
-    elif source_raw is not None and document.get("source_sha256") != _fingerprint(source_raw):
+    elif source_raw is not None and document.get("source_sha256") != content_digest(source_raw):
         findings.append(
             _error(
                 "COV_WAIVER_SOURCE_STALE",
@@ -680,8 +655,8 @@ def _approved_waiver_set(
         "files": [item[0] for item in loaded],
     }
     return ApprovedWaiverSet(
-        configuration=_freeze_mapping(configuration),
-        digest=_digest(projection),
+        configuration=freeze_coverage_mapping(configuration),
+        digest=content_digest(WAIVER_SET_JSON.encode(projection)),
         waivers=waivers,
     )
 
@@ -755,7 +730,7 @@ def load_approved_waiver_set(
         }
         return ApprovedWaiverSet(
             configuration=MappingProxyType({"enabled": False}),
-            digest=_digest(projection),
+            digest=content_digest(WAIVER_SET_JSON.encode(projection)),
             waivers=(),
         )
     findings = _config_findings(config)

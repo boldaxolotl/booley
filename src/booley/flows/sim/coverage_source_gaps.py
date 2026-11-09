@@ -14,7 +14,8 @@ from pathlib import Path
 from booley.core.hdl import declares_module
 from booley.targets.domain import TargetInspection
 
-from .coverage_campaign import CoverageCampaign, CoverageFinding, FrozenJson
+from .coverage_campaign import CoverageCampaign, CoverageFinding
+from .coverage_json import FrozenJson
 
 GAP_CODE = "COV_RTL_SOURCE_WITHOUT_POINTS"
 _POINTER = re.compile(r"^/source_closure/rtl/(0|[1-9][0-9]*)/path$")
