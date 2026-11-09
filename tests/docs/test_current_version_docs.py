@@ -66,12 +66,18 @@ ALLOWLIST = (
 # These are current diagnostic/schema literals, not historical narrative.
 ALLOWLIST += tuple(
     ExceptionRule(path, "`workspace.legacy-source-stash`", "Current Doctor warning ID.", 1)
-    for path in ("docs/user/TROUBLESHOOTING.md", "src/booley/data/refs/TROUBLESHOOTING.md")
+    for path in ("docs/user/TROUBLESHOOTING.md",)
 )
 ALLOWLIST += tuple(
     ExceptionRule(path, "including `.retired` records", "Supported recovery-record suffix.", 1)
-    for path in ("docs/user/TROUBLESHOOTING.md", "src/booley/data/refs/TROUBLESHOOTING.md")
+    for path in ("docs/user/TROUBLESHOOTING.md",)
 )
+
+
+def is_scanned_user_doc_copy(root: Path, path: Path) -> bool:
+    """Return whether ``path`` is a generated copy of a ``docs/user`` page scanned at its source."""
+    packaged = root / "src/booley/data/docs"
+    return path.parent == packaged and (root / "docs/user" / path.name).is_file()
 
 
 def document_paths(root: Path) -> list[Path]:
@@ -86,6 +92,8 @@ def document_paths(root: Path) -> list[Path]:
         if not path.is_file():
             continue
         relative = path.relative_to(data)
+        if is_scanned_user_doc_copy(root, path):
+            continue
         if relative.parts[0] in PACKAGE_IMPLEMENTATION_DIRS or relative.as_posix() in {
             "__init__.py",
             "refs/CHANGELOG.md",

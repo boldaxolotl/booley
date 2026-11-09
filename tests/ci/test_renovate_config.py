@@ -53,7 +53,8 @@ _VENDORED_MANIFEST = "crates/bwave/vendor/fst-writer/Cargo.toml"
 _EDA_DOC = "docs/user/SUPPORTED-EDA-TOOLS.md"
 _SESSION_CONTRACT = ".github/contracts/session-runtime.toml"
 _TROUBLESHOOTING = "docs/user/TROUBLESHOOTING.md"
-_TROUBLESHOOTING_PACKAGED = "src/booley/data/refs/TROUBLESHOOTING.md"
+_TROUBLESHOOTING_PACKAGED = "src/booley/data/docs/TROUBLESHOOTING.md"
+_EDA_DOC_PACKAGED = "src/booley/data/docs/SUPPORTED-EDA-TOOLS.md"
 _VERILATOR_IDENTITY = "src/booley/flows/sim/verilator_identity.py"
 _DEVCONTAINER = "src/booley/runtime/devcontainer.py"
 _VAPORVIEW_MODULE = "src/booley/runtime/vaporview.py"
@@ -77,7 +78,7 @@ _ACTIONLINT = "rhysd/actionlint"
 # Every literal copy of a canonical pin that Renovate must rewrite with it: (file,
 # dependency, number of places). A reworded line or a new copy fails the extraction test
 # below until this table and renovate.json agree.
-_COPIES: tuple[tuple[str, str, int], ...] = (
+_AUTHORED_COPIES: tuple[tuple[str, str, int], ...] = (
     (_SESSION_CONTRACT, _VERILATOR, 1),
     (_EDA_DOC, _VERILATOR, 1),
     (_VERILATOR_IDENTITY, _VERILATOR, 1),
@@ -110,6 +111,10 @@ _COPIES: tuple[tuple[str, str, int], ...] = (
     (_DOCKERFILE_BASE, _UBUNTU, 1),
     (_DOCKERFILE_BASE, _OPENROAD_BUILDER, 1),
     (_DOCKERFILE_BASE, _OPENROAD_EDA_BUILDER, 1),
+)
+# The generated packaged copy of the supported-tools doc carries every pin its source does.
+_COPIES: tuple[tuple[str, str, int], ...] = _AUTHORED_COPIES + tuple(
+    (_EDA_DOC_PACKAGED, dep, count) for file, dep, count in _AUTHORED_COPIES if file == _EDA_DOC
 )
 
 # Directories that hold the pins Renovate tracks outside Python and Rust manifests.

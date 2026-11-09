@@ -113,14 +113,10 @@ Use evidence in this order:
 
 1. **Doctor's `→` fix hint.** Treat it as the primary repair instruction, then
    verify rather than assuming it worked.
-2. **The packaged troubleshooting guide.** Resolve it with:
-
-   ```console
-   python3 -c "from booley.runtime.paths import troubleshooting_path; print(troubleshooting_path())"
-   ```
-
-   Search that `TROUBLESHOOTING.md` using exact error fragments and concrete nouns from the
-   finding. Read the whole matching section, including its commands and Sandbox-location
+2. **The packaged troubleshooting guide.** In the Sandbox it is
+   `/booley-docs/TROUBLESHOOTING.md`; on the host, read the same page at
+   https://booley.dev/docs/troubleshooting/. Search it using exact error
+   fragments and concrete nouns from the finding. Read the whole matching section, including its commands and Sandbox-location
    qualifications. The guide documents common residue and pitfalls Doctor cannot
    fully infer; do not force an unrelated recipe onto a finding just because a
    keyword matched.

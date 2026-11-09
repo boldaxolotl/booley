@@ -179,7 +179,7 @@ def test_creates_a_detached_worktree_and_prints_its_path(project: Path, capsys, 
     assert command in steps, "Snapshot removal instructions missing"
     assert "Snapshot" in steps and "same Sandbox" in steps and "Sandbox paths" in steps
     assert "WARNING" not in steps
-    assert "preserve" in steps and "docs/user/CLI-REFERENCE.md" in steps
+    assert "preserve" in steps and "CLI-REFERENCE.md (host doc, not shipped)" in steps
     assert steps.count("git -C") == 1 and "branch -D" not in steps
     assert "populated submodules" in steps and "--force" in steps
     assert (worktree / ".git").is_file()
