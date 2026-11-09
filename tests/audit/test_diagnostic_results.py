@@ -11,22 +11,9 @@ def test_warning_cannot_be_constructed_without_stable_identity(check_id):
         DiagnosticFinding(Severity.WARN, "Actionable", check_id=check_id)
 
 
-def test_warning_preserves_subject_deduplication_and_remediation():
-    finding = DiagnosticFinding(
-        Severity.WARN, "Stale", "repair", "host.bootstrap-pending", "docker", "once"
-    )
-    assert (finding.check_id, finding.subject, finding.dedupe, finding.fix) == (
-        "host.bootstrap-pending",
-        "docker",
-        "once",
-        "repair",
-    )
-
-
-@pytest.mark.parametrize("severity", [Severity.WARN, Severity.WAIVED])
-def test_active_and_waived_warnings_require_a_stable_identity(severity):
+def test_waived_warning_requires_a_stable_identity():
     with pytest.raises(ValueError, match="stable check ID"):
-        DiagnosticFinding(severity, "Missing identity")
+        DiagnosticFinding(Severity.WAIVED, "Missing identity")
 
 
 def test_only_fail_and_warn_findings_are_active():

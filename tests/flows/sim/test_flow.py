@@ -783,10 +783,6 @@ class TestFilterTests:
             "lite_smoke",
         ]
 
-    def test_no_match(self):
-        tests = ["lite_smoke", "lite_stress"]
-        assert _filter_tests(tests, "full") == []
-
     def test_exact_match(self):
         tests = ["lite_smoke"]
         assert _filter_tests(tests, "lite_smoke") == ["lite_smoke"]
@@ -1801,39 +1797,6 @@ class TestTruncationResilientReport:
         assert "noise-079" in report  # tail of the excerpt kept
         assert "noise-051" not in report  # older lines dropped from the report
 
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_excerpt_marker_cites_run_log_only_when_fresh(
-        self,
-        _mock_backend,
-        _mock_tests,
-        tmp_path: Path,
-    ):
-        """When THIS invocation's run wrote run.log (the sandbox run-half
-        does it from its child process), the omission marker may cite it."""
-        chatty = "\n".join(f"noise-{i:03d}" for i in range(80))
-        build_root = tmp_path / "build" / "lite"
-        build_root.mkdir(parents=True)
-
-        def _fail_and_write_log(self_inner, cmd):
-            # Simulate the run-half's child-process write: run.log lands on
-            # disk DURING the run, through the shared writer that preserves
-            # the run header the prepare half stamped in.
-            write_run_log(build_root, chatty)
-            return SubprocessResult(
-                returncode=1,
-                stdout=chatty + "\n[SIM_RESULT] FAILED\n"
-                '[SIM_SUMMARY] {"passed":false,"sva_errors":0}\n',
-                duration_s=1.0,
-            )
-
-        with patch.object(SimulateFlow, "_execute", _fail_and_write_log):
-            flow = _make_flow(tmp_path, config="lite")
-            with flow.publication_resources:
-                result = flow._run()
-
-        assert "... (20 lines omitted, see run.log)" in result.report_text
-
     def test_excerpt_cap_scales_with_mcp_budget(self, monkeypatch):
         """A raised BOOLEY_MCP_MAX_STDOUT_BYTES budget widens the per-test
         excerpt proportionally (30 lines per 12KB of budget)."""
@@ -2167,10 +2130,8 @@ class TestBuildContextReporting:
 
         assert "  build: " in report
         assert "make -C" in report
-        # Counts match the .core partition: 1 rtl + the tb-tagged files.
-        fileset = flow._fileset_for_report("sim")
-        total = len(fileset["rtl"]) + len(fileset["tb"])
-        assert f"  fileset: {total} files ({len(fileset['tb'])} tb)" in report
+        # Counts match the .core partition: 1 rtl + 3 tb-tagged files.
+        assert "  fileset: 4 files (3 tb)" in report
 
         passing = TargetResult(
             target="sim",

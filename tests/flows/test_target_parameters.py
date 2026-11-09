@@ -19,12 +19,20 @@ def test_declared_types_and_raw_values():
     assert values["TEXT_BOOL"].value == "True"
 
 
-@pytest.mark.parametrize("value", ["", "MAC", 'a" b', "a\\b", "a; b", '"MAC"', "\n\t\r", "é漢"])
-def test_receiver_literals(value):
-    literal = parameters.sv_string_literal(value)
-    assert literal.startswith('"') and literal.endswith('"')
-    packed = parameters.packed_string_constant(value)
-    assert packed == (f"{len(value.encode()) * 8}'h{value.encode().hex()}" if value else '""')
+@pytest.mark.parametrize(
+    ("value", "literal", "packed"),
+    [
+        ("", '""', '""'),
+        ("MAC", '"MAC"', "24'h4d4143"),
+        ('a" b', '"a\\" b"', "32'h61222062"),
+        ("a\\b", '"a\\\\b"', "24'h615c62"),
+        ("\n\t\r", '"\\n\\t\\r"', "24'h0a090d"),
+        ("é漢", '"é漢"', "40'hc3a9e6bca2"),
+    ],
+)
+def test_receiver_literals(value, literal, packed):
+    assert parameters.sv_string_literal(value) == literal
+    assert parameters.packed_string_constant(value) == packed
 
 
 @pytest.mark.parametrize("value", ["a\x00b", "\ud800"])

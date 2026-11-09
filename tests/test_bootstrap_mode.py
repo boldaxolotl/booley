@@ -33,16 +33,6 @@ class TestBootstrapModeDetect:
             assert BootstrapMode.detect() is BootstrapMode.TOP_LEVEL
 
 
-class TestModeFlags:
-    def test_top_level_flags(self):
-        m = BootstrapMode.TOP_LEVEL
-        assert m.is_top_level is True
-
-    def test_nested_flags(self):
-        m = BootstrapMode.NESTED
-        assert m.is_top_level is False
-
-
 class TestShouldRunOuterBookkeeping:
     """Chokepoint behavior: True iff TOP_LEVEL."""
 

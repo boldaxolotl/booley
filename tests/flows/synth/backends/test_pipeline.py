@@ -16,7 +16,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -31,9 +30,6 @@ from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.backends.yosys import core as syn_core
 from booley.flows.synth.timing import StaTimingConfig
 from tests.conftest import symlink_or_skip
-
-# Boundary Command Contract parameter regex (ADR 0037 §5).
-_BOUNDARY_COMMAND_RE = re.compile(r"^make [^;&|<>$()\n\r\t\f\v\\\x60]*$")
 
 
 def _spec(
@@ -230,13 +226,6 @@ class TestConfigureSynthesis:
         plain = tmp_path / "plain" / "build"
         plain.mkdir(parents=True)
         assert syn_make._rel(source, plain) == os.path.relpath(source, plain).replace("\\", "/")
-
-    def test_boundary_command_passes_contract_regex(self, tmp_path: Path):
-        import os
-
-        plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
-        rel = os.path.relpath(plan.build_dir, tmp_path).replace("\\", "/")
-        assert _BOUNDARY_COMMAND_RE.fullmatch(f"make -C {rel}")
 
     def test_logical_mode_skips_physical_timing_stage(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path, mode="logical"), _build_dir(tmp_path))

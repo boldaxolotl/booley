@@ -828,8 +828,16 @@ def test_generated_makefile_reading_unkeyed_environment_downgrades(
         assert not (session.slot / "current.json").exists()
 
 
-@pytest.mark.parametrize("value", ["MAC", "", 'a" b\\c; d', '"MAC"'])
-def test_normalized_string_response_preserves_stock_recipe_gate(tmp_path, value):
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("MAC", "-GNAME=24'h4d4143"),
+        ("", '-GNAME=""'),
+        ('a" b\\c; d', "-GNAME=72'h612220625c633b2064"),
+        ('"MAC"', "-GNAME=40'h224d414322"),
+    ],
+)
+def test_normalized_string_response_preserves_stock_recipe_gate(tmp_path, value, expected):
     import shlex
 
     from booley.flows.parameter_transport import normalize_parameter_records
@@ -846,9 +854,6 @@ def test_normalized_string_response_preserves_stock_recipe_gate(tmp_path, value)
     normalize_parameter_records(resolved)
     assert stock_verilator_recipe(build) is not None
     tokens = shlex.split((build / "demo.vc").read_text())
-    expected = (
-        f"-GNAME={len(value.encode()) * 8}'h{value.encode().hex()}" if value else '-GNAME=""'
-    )
     assert expected in tokens
     before = (build / "demo.vc").read_bytes()
     normalize_parameter_records(resolved)

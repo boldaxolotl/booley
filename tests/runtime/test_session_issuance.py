@@ -2827,8 +2827,6 @@ def test_previously_issued_legacy_prepare_survives_full_validation(
 
 
 def test_project_label_preserves_exact_full_digest_for_deleted_root():
-    import hashlib
-
     stamp = runtime_spec.Issuance(
         version=1,
         project_root="/deleted/Project",
@@ -2844,7 +2842,11 @@ def test_project_label_preserves_exact_full_digest_for_deleted_root():
         validator_sha256="c" * 64,
     )
     labels = dict(label.split("=", 1) for label in runtime_spec.labels(stamp))
-    assert labels["booley.project-id"] == hashlib.sha256(b"/deleted/Project").hexdigest()
+    # SHA-256 of the exact root spelling "/deleted/Project" (case preserved).
+    assert (
+        labels["booley.project-id"]
+        == "40a9a00ad95eff5ad063a2c00dddc31669d637d22842c9716636e3b378dc09d4"
+    )
     assert labels["booley.spec-digest"] == "a" * 64
 
 

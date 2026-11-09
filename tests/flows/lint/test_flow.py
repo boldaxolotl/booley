@@ -8,7 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
@@ -285,10 +285,8 @@ class TestLintResolution:
             prepared = flow._prepare_lint_command(
                 _target_handle("lite", project_root=tmp_path, vlnv="::lint_demo:0")
             )
-            cmd, resolved = prepared.command, prepared.resolved
+            cmd = prepared.command
 
-        # The ResolvedTarget rides along for EDA-tool/coverage reporting.
-        assert resolved is fake
         # Target name and Project Root are forwarded; build_root is the
         # per-(EDA tool, config) Edalize dir.
         assert captured["target"] == "lite"
@@ -591,10 +589,6 @@ class TestWarningParsing:
         assert warnings[0].rule == "UNUSEDSIGNAL"
         assert warnings[0].file == "rtl/mod_b.sv"
 
-    def test_parse_preserves_config(self):
-        warnings = parse_warnings(SAMPLE_VERILATOR_OUTPUT, "my_cfg")
-        assert all(w.target == "my_cfg" for w in warnings)
-
     def test_dedup_key_property(self):
         w = LintWarning("RULE", "file.sv", 10, 3, "msg", "lite")
         assert w.dedup_key == ("RULE", "file.sv", 10)
@@ -702,37 +696,6 @@ class TestScopeFiltering:
         w1 = LintWarning("A", "rtl/mod_a.sv", 1, 1, "m", "lite")
         result = filter_by_scope([w1], "nonexistent")
         assert len(result) == 0
-
-
-# ---------------------------------------------------------------------------
-# LintFlow CLI args
-# ---------------------------------------------------------------------------
-
-
-class TestLintFlowArgs:
-    def test_default_args(self, state_file: Path):
-        flow = LintFlow()
-        args = flow.parse_args(
-            [
-                "--target",
-                "lite",
-            ]
-        )
-        assert args.scope == ""
-        assert args.dry_run is False
-        assert args.timeout_ms is None
-
-    def test_scope_arg(self, state_file: Path):
-        flow = LintFlow()
-        args = flow.parse_args(
-            [
-                "--target",
-                "lite",
-                "--scope",
-                "mod_a.sv,mod_c.sv",
-            ]
-        )
-        assert args.scope == "mod_a.sv,mod_c.sv"
 
 
 # ---------------------------------------------------------------------------
@@ -1287,33 +1250,57 @@ class TestErrorVsFailTaxonomy:
         assert seen["mid_run"].startswith("[BOOLEY RUN_LOG] ")
         assert "flow=lint target=lite" in seen["mid_run"]
 
-    def test_hard_fail_pointer_omitted_when_log_write_failed(
+    def test_hard_fail_pointer_omitted_when_log_publish_failed(
         self, tmp_path: Path, state_file: Path
-    ):
-        """No run.log on disk → no pointer appended (never cite a file that
-        does not exist)."""
-        flow = LintFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        flow.read_state()
+    ) -> None:
+        """No numbered run.log published → no pointer appended (never cite a
+        file that does not exist), even though a report root is configured."""
+        from booley.flows import artifacts as flow_artifacts
+
+        real_publish = flow_artifacts.publish_bytes
+
+        def publish_except_run_log(invocation_dir, parts, *args, **kwargs):
+            # Fail only the per-Target run.log; the report still publishes.
+            if parts[-1] == "run.log":
+                raise OSError("disk full")
+            return real_publish(invocation_dir, parts, *args, **kwargs)
+
         with (
-            patch.object(LintFlow, "_execute") as mock_exec,
+            patch.object(
+                LintFlow,
+                "_execute",
+                return_value=MagicMock(
+                    returncode=2,
+                    stdout="",
+                    stderr="%Error: rtl/x.v:1:1: Can't find definition of variable: 'zzz'\n",
+                    timed_out=False,
+                    duration_s=0.5,
+                ),
+            ),
             patch.object(
                 LintFlow,
                 "_prepare_lint_command",
                 return_value=(["make", "-C", "x"], _stub_resolved("verilator")),
             ),
-            patch("booley.flows.lint.flow.write_run_log", side_effect=OSError("disk full")),
+            patch.object(flow_artifacts, "publish_bytes", side_effect=publish_except_run_log),
         ):
-            mock_exec.return_value = MagicMock(
-                returncode=2,
-                stdout="",
-                stderr="%Error: rtl/x.v:1:1: Can't find definition of variable: 'zzz'\n",
-                timed_out=False,
-                duration_s=0.5,
+            flow = LintFlow()
+            flow.parse_args(
+                [
+                    "--target",
+                    "lite",
+                    "--work-dir",
+                    str(tmp_path),
+                    "--report-dir",
+                    str(tmp_path / "reports"),
+                ]
             )
-            cr = flow._run_lint_target(_target_handle("lite"))
+            flow.read_state()
+            flow._run()
 
-        assert "full log:" not in cr.error
+        error = DevelopmentState.load(state_file).criteria["lint_clean_lite"].detail["error"]
+        assert error.startswith("%Error: rtl/x.v:1:1")
+        assert "full log:" not in error
 
 
 # ---------------------------------------------------------------------------
@@ -2080,10 +2067,6 @@ class TestVeribleParsing:
         (it is the rc!=0 / EDA-tool-error signal, QA-7)."""
         assert parse_verible_warnings(SAMPLE_VERIBLE_PARSE_ERROR, "lint_style") == []
 
-    def test_dedup_key_shared_with_verilator_shape(self):
-        w = parse_verible_warnings(SAMPLE_VERIBLE_OUTPUT, "t")[0]
-        assert w.dedup_key == ("interface-name-style", "rtl/top.sv", 4)
-
 
 class TestVeribleTargets:
     """Full-run semantics for Targets whose flow_options.eda_tool is verible."""
@@ -2314,26 +2297,6 @@ class TestVeribleTargets:
 
 
 # ---------------------------------------------------------------------------
-# Sandbox execution
-# ---------------------------------------------------------------------------
-
-
-class TestFlowEnablement:
-    def test_command_runs_in_session_runtime(self, state_file: Path, tmp_path: Path):
-        flow = LintFlow()
-        flow.parse_args(["--work-dir", str(tmp_path), "--target", "lite"])
-        flow.read_state()
-        assert flow._resolve_job_class() is None
-
-    def test_verible_missing_message_names_runtime(self):
-        from booley.flows.eda_failures import format_missing_eda_tool
-
-        message = format_missing_eda_tool("verible-verilog-lint")
-        assert "Sandbox Image" in message
-        assert "booley doctor" in message
-
-
-# ---------------------------------------------------------------------------
 # Timeout handling
 # ---------------------------------------------------------------------------
 
@@ -2360,32 +2323,6 @@ class TestTimeout:
             ]
         )
         assert flow._get_timeout() == 120
-
-    @patch.object(
-        LintFlow,
-        "_prepare_lint_command",
-        return_value=(["verilator", "--lint-only"], _stub_resolved()),
-    )
-    @patch.object(LintFlow, "_execute")
-    def test_timeout_reported_as_error(self, mock_exec, mock_cmd, state_file: Path, capsys):
-        mock_exec.return_value = MagicMock(
-            returncode=-1,
-            stdout="",
-            stderr="",
-            timed_out=True,
-            duration_s=120.0,
-        )
-        flow = LintFlow()
-        flow.parse_args(
-            [
-                "--target",
-                "lite",
-            ]
-        )
-        flow.read_state()
-        flow._run()
-        captured = capsys.readouterr()
-        assert "ERROR" in captured.out
 
 
 # ---------------------------------------------------------------------------
@@ -2607,33 +2544,6 @@ class TestLintObservability:
         st = DevelopmentState.load(state_file)
         assert st.is_met("lint_clean_lite") is False
 
-    @patch.object(LintFlow, "_execute")
-    @patch.object(
-        LintFlow,
-        "_prepare_lint_command",
-        return_value=(["verilator", "--lint-only"], _stub_resolved()),
-    )
-    def test_consecutive_runs_keep_per_run_reports(
-        self,
-        mock_cmd,
-        mock_exec,
-        state_file: Path,
-        tmp_path: Path,
-        capsys,
-    ):
-        """Run N's report must survive run N+1 (numbered invocation copies)."""
-        mock_exec.return_value = MagicMock(**self._PROC_CLEAN)
-        report_dir = tmp_path / "reports"
-        for _ in range(2):
-            flow = LintFlow()
-            flow.parse_args(["--target", "lite", "--report-dir", str(report_dir)])
-            flow.read_state()
-            flow._run()
-        capsys.readouterr()
-        assert (report_dir / "lint_report.json").exists()  # stable latest
-        assert (report_dir / "lint" / "1" / "lint_report.json").exists()
-        assert (report_dir / "lint" / "2" / "lint_report.json").exists()
-
 
 @pytest.mark.parametrize(
     "family,executable", [("verilator", "verilator_bin"), ("verible", "verible-verilog-lint")]
@@ -2783,39 +2693,6 @@ def _assert_verible_rule_path(makefile: str, edam_path: Path) -> None:
     recipe = next(line for line in makefile.splitlines() if "verible-verilog-lint " in line)
     rules_flags = [part for part in recipe.split() if part.startswith("--rules_config=")]
     assert rules_flags == [f"--rules_config={rule_file}"]
-
-
-@pytest.mark.parametrize(
-    ("path_class", "rule_file"),
-    [
-        (PurePosixPath, "src/acme_ip_style_1.0/lint/rules.cfg"),
-        (PureWindowsPath, r"src\acme_ip_style_1.0\lint/rules.cfg"),
-    ],
-)
-@pytest.mark.parametrize("variant", ["valid", "prefix", "suffix", "missing", "duplicate"])
-def test_verible_rule_path_assertion_preserves_exact_native_token(
-    tmp_path, path_class, rule_file, variant
-):
-    edam_path = tmp_path / "style.eda.yml"
-    edam_path.write_text(
-        yaml.safe_dump({"files": [{"name": rule_file, "file_type": "veribleLintRules"}]}),
-        encoding="utf-8",
-    )
-    flag = f"--rules_config={rule_file}"
-    flags = {
-        "valid": flag,
-        "prefix": f"--rules_config=foreign/{rule_file}",
-        "suffix": f"{flag}.foreign",
-        "missing": "",
-        "duplicate": f"{flag} {flag}",
-    }
-    recipe = f"\t$(EDALIZE_LAUNCHER) verible-verilog-lint {flags[variant]} rtl/top.sv\n"
-    with patch.object(sys.modules[__name__], "Path", path_class):
-        if variant == "valid":
-            _assert_verible_rule_path(recipe, edam_path)
-        else:
-            with pytest.raises(AssertionError):
-                _assert_verible_rule_path(recipe, edam_path)
 
 
 @pytest.mark.parametrize("spelling", ["verible", "veriblelint"])

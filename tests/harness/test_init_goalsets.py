@@ -191,10 +191,8 @@ def _backfill(booley_dir: Path, *, check_only: bool) -> None:
 
 def test_init_seeds_the_goalsets(
     booley_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-
     _backfill(booley_dir, check_only=False)
 
     assert {path.name for path in (booley_dir / GOALSETS_DIR).iterdir()} == EXPECTED_FILES
@@ -207,10 +205,8 @@ def test_init_seeds_the_goalsets(
 
 def test_init_check_only_writes_nothing(
     booley_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-
     _backfill(booley_dir, check_only=True)
 
     assert list(booley_dir.iterdir()) == []

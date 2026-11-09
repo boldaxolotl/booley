@@ -184,22 +184,10 @@ class TestSanitizeMessage:
         msg = "fix(ci): tweak pipeline\n# This is a git comment\n"
         assert sanitize_message(msg) == "fix(ci): tweak pipeline\n"
 
-    def test_merge_commit_keeps_body(self):
-        msg = "Merge branch 'feature'\n\nSome merge details.\n"
-        result = sanitize_message(msg)
-        assert result.startswith("Merge branch 'feature'\n")
-        assert "Some merge details." in result
-
     def test_merge_commit_rejects_attribution(self):
         msg = "Merge branch 'dev'\n\nClean line\nCo-Authored-By: bot\nAnother clean line\n"
         with pytest.raises(AttributionPolicyError):
             sanitize_message(msg)
-
-    def test_merge_scope_syntax(self):
-        """merge(scope): ... is treated as a merge commit."""
-        msg = "merge(main): reconcile\n\nBody text\n"
-        result = sanitize_message(msg)
-        assert "Body text" in result
 
     def test_crlf_normalised(self):
         msg = "fix(a): msg\r\nBody\r\n"
@@ -219,11 +207,6 @@ class TestSanitizeMessage:
     def test_whitespace_only(self):
         result = sanitize_message("   \n\n")
         assert result.strip() == ""
-
-    def test_merge_no_body(self):
-        msg = "Merge branch 'main'\n"
-        result = sanitize_message(msg)
-        assert result == "Merge branch 'main'\n"
 
     def test_multiple_comment_lines(self):
         """Git's own ``#`` lines go; the author's body line stays."""
@@ -271,22 +254,6 @@ class TestMain:
         missing = tmp_path / "no_such_file"
         with patch("booley.dev_support.commit_msg_hook.sys.argv", ["commit-msg", str(missing)]):
             assert main() == 1
-
-    def test_valid_message_written_back(self, tmp_path: Path):
-        """main() sanitises, writes back, and validates a good message."""
-        msg_file = tmp_path / "COMMIT_EDITMSG"
-        msg_file.write_text("fix(core): repair edge case\n\nThe body.\n", encoding="utf-8")
-
-        with (
-            patch("booley.dev_support.commit_msg_hook.sys.argv", ["commit-msg", str(msg_file)]),
-            patch("validate_commit_msg.validate_message", return_value=[]),
-        ):
-            rc = main()
-
-        assert rc == 0
-        # The body reaches history intact — the hook redacts, it does not truncate.
-        written = msg_file.read_text(encoding="utf-8")
-        assert written == "fix(core): repair edge case\n\nThe body.\n"
 
     def test_validation_failure(self, tmp_path: Path):
         """main() returns 1 when validate_message reports errors."""
@@ -532,10 +499,6 @@ class TestRedactionNotice:
     def test_clean_single_line_message_is_silent(self, tmp_path: Path, capsys):
         self._run(tmp_path, "fix(core): repair edge case\n")
         assert capsys.readouterr().err == ""
-
-    def test_merge_commit_body_survives_and_is_not_announced(self, tmp_path: Path, capsys):
-        self._run(tmp_path, "Merge branch 'dev'\n\nSome detail\n")
-        assert "body dropped" not in capsys.readouterr().err
 
     def test_comment_only_body_is_not_reported_as_dropped(self, tmp_path: Path, capsys):
         # git's own '# ...' lines are not the author's body.

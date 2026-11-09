@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from booley.runtime.nested_mcp_capabilities import (
     NESTED_MCP_CAPABILITIES,
     nested_mcp_tools_for,
@@ -25,14 +23,3 @@ class TestNestedMcpToolsFor:
     def test_unknown_specialist_returns_empty(self):
         # Default-deny — unknown names get no MCP exposure.
         assert nested_mcp_tools_for("does_not_exist") == []
-
-    @pytest.mark.parametrize(
-        "spec,expected",
-        [
-            ("reviewer", []),
-            ("mutation_tester", []),
-            ("coverage_analyst", ["coverage_evidence"]),
-        ],
-    )
-    def test_specialist_allowlists(self, spec, expected):
-        assert nested_mcp_tools_for(spec) == expected

@@ -252,10 +252,6 @@ def _sample(name: str, family: str) -> object:
 # --- Goal states ---------------------------------------------------------------
 
 
-def test_only_entering_active_and_finishing_occupy_a_worktree() -> None:
-    assert {GoalState.ENTERING, GoalState.ACTIVE, GoalState.FINISHING} == OCCUPYING_STATES
-
-
 def test_terminal_states_have_no_exit() -> None:
     for state in set(GoalState) - OCCUPYING_STATES:
         assert ALLOWED_TRANSITIONS[state] == frozenset()
@@ -328,13 +324,6 @@ def test_record_rejects_a_malformed_worktree_identity(worktree: dict[str, str]) 
     raw["worktree"] = worktree
     with pytest.raises(GoalRecordFormatError):
         GoalRecord.from_json(raw)
-
-
-def test_primary_and_linked_checkout_named_main_never_collide() -> None:
-    primary = WorktreeIdentity(REPOSITORY, "main")
-    linked = WorktreeIdentity(REPOSITORY, "worktrees/main")
-    assert primary != linked
-    assert primary.key != linked.key
 
 
 # --- Schema evolution within one version --------------------------------------

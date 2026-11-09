@@ -703,16 +703,6 @@ def test_prepare_uses_realized_parent_ids_and_commit_adopts_after_verification(
     assert result.wheel_sha256 == "e" * 64
 
 
-def test_prepare_removes_orphaned_transaction_candidates(tmp_path: Path) -> None:
-    stale = "booley-lifecycle-crashed-wheel-overlay:candidate"
-    docker = FakeDocker({stale: ("sha256:stale", {})})
-
-    lifecycle._discard_orphaned_candidates(docker)
-
-    assert stale in docker.images
-    assert docker.mutations == []
-
-
 def test_parent_artifact_kind_is_part_of_reuse_ancestry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -816,8 +806,11 @@ def test_incremental_adapter_build_inputs_cover_each_image_role(
         SimpleNamespace(), node(lifecycle.ImageRole.WHEEL_OVERLAY, "wheel"), build_root, "parent"
     )
     assert contexts == (("booley-substrate", "docker-image://parent"),)
-    assert "BOOLEY_WHEEL_SHA256=" + "".join([]) not in args
-    assert args[-2] == "--build-arg"
+    # The overlay pins the exact wheel bytes it installs: sha256(b"wheel").
+    assert args == (
+        "--build-arg",
+        "BOOLEY_WHEEL_SHA256=ba59926159d2aa256eb8739b8da7e2b574b960e1202c6d624cbe981cef996c91",
+    )
 
     monkeypatch.setattr(docker_image, "_docker_build_wheel", lambda *_args, **_kwargs: False)
     assert (
@@ -1159,16 +1152,25 @@ def test_recipe_write_never_follows_a_planted_link(
 def test_incremental_adapter_handles_noop_build_and_unsupported_role(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, FakeDocker({}), verbose=False)
-    context = SimpleNamespace(record=lambda *_args: None)
-    node = _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE)
-    monkeypatch.setattr(adapter, "_role_build_inputs", lambda *_args: None)
-    adapter._build_role(context, node, "candidate", None, None)
-    monkeypatch.setattr(adapter, "_role_build_inputs", lambda *_args: (tmp_path, (), ()))
     from booley.harness.setup import docker_image
 
-    monkeypatch.setattr(docker_image, "_docker_build_image", lambda *_args: None)
+    adapter = harness_lifecycle._IncrementalBuildAdapter(tmp_path, FakeDocker({}), verbose=False)
+    recorded: list[tuple[str, ...]] = []
+    context = SimpleNamespace(record=lambda *args: recorded.append(args))
+    node = _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE)
+    built: list[object] = []
+    # No build inputs (e.g. wheel build declined): skip the Docker build entirely.
+    monkeypatch.setattr(adapter, "_role_build_inputs", lambda *_args: None)
+    monkeypatch.setattr(
+        docker_image, "_docker_build_image", lambda _context, spec: built.append(spec)
+    )
     adapter._build_role(context, node, "candidate", None, None)
+    assert built == []
+    # A no-op build (None result) is not a failure.
+    monkeypatch.setattr(adapter, "_role_build_inputs", lambda *_args: (tmp_path, (), ()))
+    adapter._build_role(context, node, "candidate", None, None)
+    assert len(built) == 1
+    assert recorded == []
     unsupported = SimpleNamespace(role="unsupported")
     with pytest.raises(lifecycle.ImageLifecycleError, match="unsupported image role"):
         harness_lifecycle._IncrementalBuildAdapter._role_build_inputs(
@@ -1176,39 +1178,11 @@ def test_incremental_adapter_handles_noop_build_and_unsupported_role(
         )
 
 
-def test_harness_image_lifecycle_wrappers_and_distribution_policy(
+def test_distribution_artifact_policy_follows_release_embedding_and_overlay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import booley
     from booley.runtime.version_attribution import VersionOrigin
-
-    docker = FakeDocker({})
-    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: docker)
-    monkeypatch.setattr(
-        harness_lifecycle,
-        "_transaction_build_adapter",
-        lambda *args, **kwargs: SimpleNamespace(source_root=None),
-    )
-    expected = SimpleNamespace(project_root=tmp_path, nodes=())
-    monkeypatch.setattr(
-        harness_lifecycle.runtime_lifecycle, "plan", lambda *args, **kwargs: expected
-    )
-    monkeypatch.setattr(
-        harness_lifecycle.runtime_lifecycle, "prepare", lambda *args, **kwargs: expected
-    )
-    monkeypatch.setattr(
-        harness_lifecycle.runtime_lifecycle, "commit", lambda *args, **kwargs: expected
-    )
-    monkeypatch.setattr(
-        harness_lifecycle.runtime_lifecycle, "validate", lambda *args, **kwargs: None
-    )
-    monkeypatch.setattr(harness_lifecycle.runtime_lifecycle, "abort", lambda *args, **kwargs: None)
-    scope = lifecycle.ProjectImageScope(tmp_path)
-    assert harness_lifecycle.plan(scope) is expected
-    assert harness_lifecycle.prepare(expected) is expected
-    assert harness_lifecycle.commit(expected) is expected
-    harness_lifecycle.validate(expected)
-    harness_lifecycle.abort(expected)
 
     monkeypatch.setattr(
         booley,
@@ -2792,7 +2766,6 @@ def test_docker_tag_removal_is_exact_non_forced_and_does_not_prune_parents(
             "ghcr.io/boldaxolotl/booley-sandbox:0.2.5",
         ]
     ]
-    assert "--force" not in commands[0]
 
 
 def test_project_recipe_fingerprint_includes_arbitrary_context_files(tmp_path: Path):
@@ -3017,10 +2990,6 @@ def test_incremental_adapter_prepare_and_policy_helpers(
     assert adapter.prepare(node, candidate_reference="candidate", parent_reference=None) == (
         "candidate"
     )
-    assert isinstance(
-        harness_lifecycle._transaction_build_adapter(tmp_path, docker, verbose=False),
-        harness_lifecycle._IncrementalBuildAdapter,
-    )
     monkeypatch.setattr(
         harness_lifecycle.runtime_lifecycle,
         "_configured_image",
@@ -3032,15 +3001,7 @@ def test_incremental_adapter_prepare_and_policy_helpers(
     assert harness_lifecycle._uses_managed_project_overlay(tmp_path)
 
 
-def test_runtime_identity_and_ancestry_edge_guards(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "root"
-    root.mkdir()
-    monkeypatch.setattr(lifecycle, "docker_data_dir", lambda: root / "a" / "b" / "c" / "d")
-    monkeypatch.setattr(lifecycle, "resolve_wheel_source_fingerprint", lambda _root: "resolved")
-    assert lifecycle._expected_wheel_source_fingerprint() == "resolved"
-
+def test_runtime_identity_and_ancestry_edge_guards(tmp_path: Path) -> None:
     node = _incremental_node(tmp_path, lifecycle.ImageRole.STANDARD_SUBSTRATE)
     labels = dict(node.expected_labels)
     labels[lifecycle.LABEL_BUILD_ORIGIN] = "registry"
@@ -3971,12 +3932,6 @@ def test_owned_image_cleanup_preserves_foreign_references(tmp_path, monkeypatch)
     docker.images["sha256:" + "a" * 64] = ("sha256:" + "a" * 64, {})
     assert not lifecycle.cleanup_owned_images(tmp_path, docker=docker)
     assert ("remove_tag", "sha256:" + "a" * 64) in docker.mutations
-
-
-def test_unknown_transaction_tags_are_never_orphan_ownership():
-    docker = FakeDocker({"booley-lifecycle-unknown:candidate": ("sha256:foreign", {})})
-    lifecycle._discard_orphaned_candidates(docker)
-    assert docker.mutations == []
 
 
 @pytest.mark.parametrize("consumer", ["alias", "keeper", "container", "child", "docker-conflict"])

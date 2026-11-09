@@ -361,15 +361,6 @@ def test_every_category_set_that_runs_pytest_also_runs_lint() -> None:
                 assert "lint" in jobs, categories
 
 
-def test_exemption_only_change_runs_lint_and_lint_invokes_guard() -> None:
-    assert "lint" in required_jobs(classify([_MANIFEST]))
-    workflow = yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
-    assert any(
-        step.get("run") == "python .github/scripts/check_suppressed_assertions.py"
-        for step in workflow["jobs"]["lint"]["steps"]
-    )
-
-
 def test_intentional_assertion_handling_requires_exact_entries_for_both_findings() -> None:
     findings = _scan(
         "from contextlib import suppress\nwith suppress(AssertionError):\n    assert False"

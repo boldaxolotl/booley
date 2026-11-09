@@ -126,20 +126,6 @@ class TestParamsToArgv:
         argv = _params_to_argv({"tb_top": "tb"})
         assert argv == ["--tb-top", "tb"]
 
-    def test_mixed_params(self):
-        argv = _params_to_argv(
-            {
-                "target": "sim",
-                "trace": True,
-                "verbose": False,
-                "count": 5,
-            }
-        )
-        assert "--target" in argv
-        assert "--trace" in argv
-        assert "--verbose" not in argv
-        assert "--count" in argv
-
     def test_empty_params(self):
         assert _params_to_argv({}) == []
 
@@ -549,13 +535,11 @@ class TestReportFetch:
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
         assert catalog.report_visible(catalog.Exposure.from_mapping(os.environ)) is True
-        assert catalog.report_visible(catalog.Exposure.from_mapping(os.environ))
 
     def test_report_mcp_tool_def_hidden_when_not_visible(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "sim")  # explicit allowlist
         assert catalog.report_visible(catalog.Exposure.from_mapping(os.environ)) is False
-        assert not catalog.report_visible(catalog.Exposure.from_mapping(os.environ))
 
 
 def _oversized_warning_summary(total_warnings: int = 40) -> dict[str, object]:
@@ -1676,7 +1660,6 @@ class TestAsyncJobDispatch:
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "sim")  # explicit allowlist
         assert catalog.utilities_visible(catalog.Exposure.from_mapping(os.environ)) is True
-        assert catalog.utilities_visible(catalog.Exposure.from_mapping(os.environ))
 
 
 class TestAttachSurvivesRestart:
