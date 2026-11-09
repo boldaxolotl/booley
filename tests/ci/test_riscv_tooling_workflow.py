@@ -440,8 +440,12 @@ def test_prefetch_pulls_the_published_digest_in_the_background(tmp_path: Path) -
     assert calls == [f"docker pull --quiet {_CONTEXT.removeprefix('docker-image://')}"]
 
 
-def _wait(tmp_path: Path, pid: int) -> subprocess.CompletedProcess[str]:
-    """Run the wait step with a one-second bound (fake ``seq``, no-op ``sleep``)."""
+def _run_prefetch_wait_step(tmp_path: Path, pid: int | None) -> subprocess.CompletedProcess[str]:
+    """Run the wait step with a one-second bound (fake ``seq``, no-op ``sleep``).
+
+    ``pid`` is the prefetch process to wait on; ``None`` means the prefetch
+    never wrote its pid file.
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     for name, body in (("seq", "#!/usr/bin/env bash\necho 1\n"), ("sleep", "#!/bin/sh\n")):
@@ -450,8 +454,10 @@ def _wait(tmp_path: Path, pid: int) -> subprocess.CompletedProcess[str]:
     evidence = tmp_path / "runner/riscv-image-evidence"
     evidence.mkdir(parents=True, exist_ok=True)
     (evidence / "tooling-prefetch.log").write_text("pulled\n", encoding="utf-8")
-    (tmp_path / "runner/riscv-tooling-prefetch.pid").write_text(f"{pid}\n", encoding="utf-8")
-    result, _ = _run(tmp_path, _step("Wait for RISC-V tooling prefetch"), {})
+    if pid is not None:
+        (tmp_path / "runner/riscv-tooling-prefetch.pid").write_text(f"{pid}\n", encoding="utf-8")
+    step = _step("Wait for RISC-V tooling prefetch")
+    result, _ = _run(tmp_path, step, {name: str(value) for name, value in step["env"].items()})
     return result
 
 
@@ -459,7 +465,7 @@ def test_wait_returns_once_the_prefetch_has_exited(tmp_path: Path) -> None:
     done = subprocess.Popen(["true"])
     done.wait(timeout=10)
 
-    result = _wait(tmp_path, done.pid)
+    result = _run_prefetch_wait_step(tmp_path, done.pid)
 
     assert result.returncode == 0, result.stderr
     assert "pulled" in result.stdout
@@ -470,13 +476,20 @@ def test_wait_gives_up_on_a_stuck_prefetch_without_failing(tmp_path: Path) -> No
     """The prefetch is an optimization; a stuck pull must never fail the lane."""
     stuck = subprocess.Popen(["sleep", "30"])
     try:
-        result = _wait(tmp_path, stuck.pid)
+        result = _run_prefetch_wait_step(tmp_path, stuck.pid)
     finally:
         stuck.kill()
         stuck.wait(timeout=10)
 
     assert result.returncode == 0, result.stderr
     assert "::warning::RISC-V tooling prefetch still running" in result.stdout
+
+
+def test_wait_without_a_started_prefetch_does_not_fail(tmp_path: Path) -> None:
+    result = _run_prefetch_wait_step(tmp_path, None)
+
+    assert result.returncode == 0, result.stderr
+    assert "::warning::" not in result.stdout
 
 
 def test_wait_runs_on_the_lane_clock_before_the_build() -> None:

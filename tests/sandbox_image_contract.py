@@ -409,6 +409,7 @@ def _test_candidate_errors(workflow: dict[str, Any], job: str) -> list[str]:
 
 
 def _test_riscv_errors(workflow: dict[str, Any]) -> list[str]:
+    """The riscv-image job derives its candidate from its own standard substrate."""
     try:
         riscv = parse_build(
             find_step(

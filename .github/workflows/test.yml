@@ -1792,20 +1792,27 @@ jobs:
         shell: bash
         run: echo "started_at_epoch=$(date +%s)" >> "${GITHUB_OUTPUT}"
 
-      # Bounded: after five minutes the build pulls whatever is still missing.
+      # Bounded: once the wait expires, the build pulls whatever is still
+      # missing. A prefetch that never started leaves nothing to wait for.
       - name: Wait for RISC-V tooling prefetch
         if: steps.riscv-tooling.outputs.source == 'registry'
         shell: bash
+        env:
+          PREFETCH_WAIT_SECONDS: 300
         run: |
-          pid="$(cat "${RUNNER_TEMP}/riscv-tooling-prefetch.pid")"
-          for _ in $(seq 300); do
+          pid="$(cat "${RUNNER_TEMP}/riscv-tooling-prefetch.pid" 2>/dev/null)" || exit 0
+          for _ in $(seq "${PREFETCH_WAIT_SECONDS}"); do
             if ! kill -0 "${pid}" 2>/dev/null; then
-              cat "${RUNNER_TEMP}/riscv-image-evidence/tooling-prefetch.log"
+              cat "${RUNNER_TEMP}/riscv-image-evidence/tooling-prefetch.log" || true
               exit 0
             fi
             sleep 1
           done
-          echo '::warning::RISC-V tooling prefetch still running after 300 s; the build pulls the rest.'
+          echo "::warning::RISC-V tooling prefetch still running after ${PREFETCH_WAIT_SECONDS} s; the build pulls the rest."
+
+      - name: Log free disk before the RISC-V lane
+        shell: bash
+        run: df -h /
 
       # Release CI remains the publication gate, not the first place RISC-V
       # behavior is exercised. The substrate exports as zstd level 1: BuildKit
@@ -1942,6 +1949,19 @@ jobs:
           path: ${{ runner.temp }}/riscv-image-evidence/goal-readiness/goal-readiness.json
           if-no-files-found: error
           retention-days: 14
+
+      # Same out-of-disk attribution as bwave-smoke (#2681); never fails the job.
+      - name: Log disk use after the RISC-V lane
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          df -h /
+          if [[ -d "${RUNNER_TEMP}/riscv-image-evidence" ]]; then
+            sudo timeout 10 du -sh -- "${RUNNER_TEMP}/riscv-image-evidence"
+          fi
+          timeout 10 docker system df
+          exit 0
 
       # The budget follows the recorded tooling source (ADR 0070), so a slow
       # registry hit cannot hide behind the local-build ceiling. Both pairs
