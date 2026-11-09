@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -67,47 +66,19 @@ def _utc_now() -> str:
     return utc_now_rfc3339()
 
 
-def trace_cache_key(
-    source_files: list[Path],
-    scope: str | None = None,
-    simulator: str = "",
-) -> str:
-    """Content-addressed cache key for trace files.
-
-    Hash file contents directly — correctness over speed.
-    Cache hit = trace is valid by construction; no mtime races.
-    """
-    h = hashlib.sha256()
-    for f in sorted(source_files):
-        h.update(f.name.encode())
-        h.update(f.read_bytes())
-    if scope:
-        h.update(scope.encode())
-    if simulator:
-        h.update(simulator.encode())
-    return h.hexdigest()[:16]
-
-
 class TraceSession:
-    """Own Simulation trace freshness, attempt evidence, and publication.
-
-    When `cache_key` is provided, the cache directory uses content-addressed
-    hashing instead of `work_dir.name` — a key change means the old cache
-    is a miss by construction, eliminating manual invalidation.
-    """
+    """Own Simulation trace freshness, attempt evidence, and publication."""
 
     def __init__(
         self,
         work_dir: Path,
         trace_scope: str | None = None,
-        cache_key: str | None = None,
         backend: str = "",
         target: str = "",
         test: str = "",
     ) -> None:
         self._work_dir = work_dir
         self._trace_scope = trace_scope
-        self._cache_key = cache_key
         self._raw_trace_paths: tuple[Path, ...] = ()
         # Stall-kill state — set by start_monitor when it escalates to a kill.
         self._stall_killed = False
@@ -142,7 +113,7 @@ class TraceSession:
     @property
     def cache_dir(self) -> Path:
         """B-Wave-owned collision-resistant cache location."""
-        return waveform_cache_dir(self._work_dir, self._cache_key)
+        return waveform_cache_dir(self._work_dir)
 
     @property
     def bwave_path(self) -> Path:

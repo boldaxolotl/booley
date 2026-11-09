@@ -97,7 +97,7 @@ _STANDALONE_FRONTENDS = (_FRONTEND_AUTO, _FRONTEND_IVERILOG, _FRONTEND_VERILATOR
 # Only the two the probe can drive need an entry; every other eda_tool a Target
 # may resolve to is by construction a
 # different compiler from the probe. Edalize spells Icarus `icarus`; older
-# Booley configs said `iverilog` (see sim_edam._normalize).
+# Booley configs said `iverilog` (see normalize_eda_tool).
 _EDA_TOOL_AS_FRONTEND = {
     "verilator": _FRONTEND_VERILATOR,
     "icarus": _FRONTEND_IVERILOG,

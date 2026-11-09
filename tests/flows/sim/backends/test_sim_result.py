@@ -243,7 +243,6 @@ class TestHarnessInfraLines:
         [
             "ERROR: Verilator elaboration failed (rc=2)",
             "ERROR: iverilog compilation failed (rc=1)",
-            "ERROR: vcs elaboration failed (rc=2)",
             "ERROR: Verilator executable Vfpu not found in build/",
             "ERROR: Verilator simulation timed out (900s)",
             "ERROR: missing $readmemh memory-init file — foo",
@@ -255,8 +254,6 @@ class TestHarnessInfraLines:
     def test_infra_markers_are_not_counted(self, line):
         assert sr.is_harness_infra_line(line) is True
         assert sr.count_sva_errors(line + "\n") == 0
-        assert sr.count_sva_errors_xcelium(line + "\n") == 0
-        assert sr.count_sva_errors_vcs(line + "\n") == 0
 
     def test_missing_eda_toolchain_run_reports_zero_sva_errors(self):
         # The exact fpu F-30 shape: no verilator on PATH, so no simulator ever
@@ -290,10 +287,9 @@ class TestHarnessInfraLines:
         "line",
         [
             # ...while every spelling the harness itself emits still is infra
-            # (sim_edam._ELAB_FAIL_MARKERS + the run-halves' own messages).
+            # (the harness's elaboration-failure markers + the run-halves' own messages).
             "ERROR: Verilator elaboration timed out (600s)",
             "ERROR: iverilog compilation timed out (600s)",
-            "ERROR: xcelium elaboration failed (rc=1)",
             "ERROR: cocotb simulation timed out (600s)",
             "ERROR: iverilog simulation timed out (900s) — last output 12s ago",
         ],
@@ -314,8 +310,6 @@ class TestHarnessInfraLines:
     def test_supported_raw_readmem_open_failures_are_not_sva(self, line):
         assert sr.is_harness_infra_line(line) is True
         assert sr.count_sva_errors(line + "\n") == 0
-        assert sr.count_sva_errors_xcelium(line + "\n") == 0
-        assert sr.count_sva_errors_vcs(line + "\n") == 0
 
     @pytest.mark.parametrize(
         "line",
@@ -327,114 +321,3 @@ class TestHarnessInfraLines:
     def test_unrelated_dut_open_errors_remain_sva(self, line):
         assert sr.is_harness_infra_line(line) is False
         assert sr.count_sva_errors(line + "\n") == 1
-
-
-# ---------------------------------------------------------------------------
-# count_sva_errors_xcelium
-# ---------------------------------------------------------------------------
-
-
-class TestCountSvaErrorsXcelium:
-    """Patterns frozen against real xrun 21.03-s001 logs (Phase B, ADR 0025)."""
-
-    def test_no_errors(self):
-        assert sr.count_sva_errors_xcelium("xcelium> run\n[SIM_RESULT] PASSED\n") == 0
-
-    def test_front_end_eda_tool_errors(self):
-        # Real compile/elab wording: per-EDA-tool *E lines plus xrun's roll-up.
-        out = (
-            "xmvlog: *E,SVILTY (src/lite_0/rtl/lite_add.sv,383|8): Referring to"
-            " a datatype as super.<type_name> is not legal SystemVerilog..\n"
-            "xmelab: *E,NOUNIT: Unable to find a unit named 'tb_liteX' in the"
-            " libraries.\n"
-            "xrun: *E,ELBERR: Error during elaboration (status 1), exiting.\n"
-        )
-        assert sr.count_sva_errors_xcelium(out) == 3
-
-    def test_fatal_lines_count(self):
-        # Real $fatal wording — message text arrives on the following line.
-        out = "xmsim: *F,FATSEV (./src/lite_0/tb/tb_lite.sv,607): (time 120 US).\n"
-        assert sr.count_sva_errors_xcelium(out) == 1
-
-    def test_assertion_failure_counts_once(self):
-        # Real SVA wording: the *E,ASRTST line carries the generic
-        # "Assertion … has failed" marker too — no double counting.
-        out = (
-            "xmsim: *E,ASRTST (./src/lite_0/tb/tb_lite.sv,614): "
-            "(time 100005 NS) Assertion tb_lite.chk_sva has failed\n"
-        )
-        assert sr.count_sva_errors_xcelium(out) == 1
-
-    def test_tb_emitted_generic_markers_still_count(self):
-        # A simulator-agnostic TB's own failure wording keeps its weight.
-        out = "ERROR: scoreboard mismatch at vector 3\n"
-        assert sr.count_sva_errors_xcelium(out) == 1
-
-    def test_warnings_do_not_count(self):
-        # Includes the real SIGTERM-kill line: warning-level, exit code (124)
-        # carries the verdict instead.
-        out = (
-            "xmvlog: *W,UEXPSC (src/lite_0/rtl/lite_rom.sv,67|71): Ignored"
-            " unexpected semicolon following SystemVerilog description"
-            " keyword.\n"
-            "xmsim: *W,NCTERM: Simulation received SIGTERM signal from"
-            " process 1785010, user id 11427 (timeout).\n"
-        )
-        assert sr.count_sva_errors_xcelium(out) == 0
-
-
-# ---------------------------------------------------------------------------
-# count_sva_errors_vcs
-# ---------------------------------------------------------------------------
-
-
-class TestCountSvaErrorsVcs:
-    """The VCS mirror of the xcelium tests. Build-half patterns
-    (Error-/Warning-[TAG]) frozen against real vcs X-2025.06-1 logs (Phase D,
-    ADR 0025); runtime Error:/Fatal: patterns PROVISIONAL — the EDA host had
-    no reachable Synopsys license, so simv never ran."""
-
-    def test_no_errors(self):
-        assert (
-            sr.count_sva_errors_vcs(
-                "Chronologic VCS simulator\n[SIM_RESULT] PASSED\n"
-                "$finish at simulation time 100 ns\n"
-            )
-            == 0
-        )
-
-    def test_front_end_eda_tool_error_headers(self):
-        # vlogan/vcs diagnostics arrive as Error-[TAG] block headers; the
-        # indented block body lines are not double-counted.
-        out = (
-            "Error-[SE] Syntax error\n"
-            "  Following verilog source has syntax error :\n"
-            "  \"src/lite_0/rtl/lite_add.sv\", 383: token is ';'\n"
-            "Error-[URMI] Unresolved modules\n"
-            "  Unresolved module tb_liteX in the design.\n"
-        )
-        assert sr.count_sva_errors_vcs(out) == 2
-
-    def test_runtime_severity_lines_count(self):
-        # simv severity tasks ($error/$fatal, default SVA action) prefix
-        # Error:/Fatal: — the "failed at" wording is not double-counted.
-        out = (
-            'Error: "src/lite_0/tb/tb_lite.sv", 614: tb_lite.chk_sva: '
-            "started at 100005ns failed at 100005ns\n"
-            'Fatal: "src/lite_0/tb/tb_lite.sv", 607: tb_lite: at time 120000 ns\n'
-        )
-        assert sr.count_sva_errors_vcs(out) == 2
-
-    def test_tb_emitted_generic_markers_still_count(self):
-        # A simulator-agnostic TB's own failure wording keeps its weight.
-        out = "ERROR: scoreboard mismatch at vector 3\n"
-        assert sr.count_sva_errors_vcs(out) == 1
-
-    def test_warnings_and_lint_do_not_count(self):
-        # Warning-[RVOSFD] is real frozen vlogan X-2025.06-1 wording.
-        out = (
-            "Warning-[RVOSFD] Return value discarded\n"
-            "Lint-[TFIPC] Too few instance port connections\n"
-            "CPU time: .057 seconds to compile\n"
-        )
-        assert sr.count_sva_errors_vcs(out) == 0
