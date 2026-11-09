@@ -130,44 +130,45 @@ def _know_targets_by_identity(monkeypatch):
     )
 
 
-@pytest.mark.parametrize(
-    ("metrics", "execution", "tests_toml", "met", "status"),
-    [
-        pytest.param(
-            {"line": 100}, NativeExecution(hits=1), None, True, "pass", id="single_metric"
-        ),
-        pytest.param(
-            {"line": 100, "branch": 100},
-            _MissedBranchExecution(),
-            None,
-            False,
-            "fail",
-            id="multi_metric",
-        ),
-        pytest.param(
-            {"branch": 100}, NativeExecution(hits=1), None, False, "blocked", id="blocked"
-        ),
-        pytest.param(
-            {"line": 100},
-            NativeExecution(hits=1),
-            '[top]\ntests = ["reset", "wrap"]\nskip = ["wrap"]\n',
-            False,
-            "blocked",
-            id="suite_mismatch",
-        ),
-    ],
-)
-def test_a_coverage_goal_is_judged_by_its_whole_evaluation_however_its_target_is_written(
-    layout, monkeypatch, metrics, execution, tests_toml, met, status
-):
-    """The Goal's verdict is its evaluation's, whether it names ``top`` or its identity.
+# One row per case: the Goal's metrics, a factory of what the campaign measured (each run
+# needs a fresh one), the Tests it ran, and the Goal's verdict, evaluation status and
+# suite status.
+def _hit_once():
+    return NativeExecution(hits=1)
 
-    Written by identity the Goal's key is not ``coverage_top``; it is still the one
-    Coverage Criterion of its Target, never an atomic metric projection, and judging
-    it leaves a coverage Goal of another Target untouched.
+
+_COVERAGE_CASES = [
+    pytest.param({"line": 100}, _hit_once, None, True, "pass", "match", id="single_metric"),
+    pytest.param(
+        {"line": 100, "branch": 100},
+        _MissedBranchExecution,
+        None,
+        False,
+        "fail",
+        "match",
+        id="multi_metric",
+    ),
+    pytest.param({"branch": 100}, _hit_once, None, False, "blocked", "match", id="blocked"),
+    pytest.param(
+        {"line": 100},
+        _hit_once,
+        '[top]\ntests = ["reset", "wrap"]\nskip = ["wrap"]\n',
+        False,
+        "blocked",
+        "mismatch",
+        id="suite_mismatch",
+    ),
+]
+
+
+def _judge_coverage_goal(layout, monkeypatch, target, case):
+    """Run one coverage Goal on *target* through the bound flow; return its saved entry.
+
+    Also checks that judging it leaves a coverage Goal of another Target untouched.
     """
+    metrics, execution, tests_toml = case
     goals = [
-        {"family": "COVERAGE", "target": f"{_CORE}top", "tests": "all", "metrics": metrics},
+        {"family": "COVERAGE", "target": target, "tests": "all", "metrics": metrics},
         _BYSTANDER,
     ]
     _know_targets_by_identity(monkeypatch)
@@ -180,17 +181,50 @@ def test_a_coverage_goal_is_judged_by_its_whole_evaluation_however_its_target_is
     before = load_goal_state(store, record).criteria[bystander].to_dict()
 
     adapter = GoalFlowExecution(bind(layout))
-    SimulateFlow(coverage_execution=lambda *_args: execution).execute(
+    SimulateFlow(coverage_execution=lambda *_args: execution()).execute(
         SimRequest(target="top", work_dir=root, coverage=True, report_dir=root / "reports"),
         adapter=adapter,
     )
     saved = DevelopmentState.load(adapter.state_file)
-    entry = saved.criteria[key]
-    assert entry.met is met
-    assert entry.detail["evaluation"]["status"] == status
-    assert "criterion_metric" not in entry.detail
     assert len(saved.acceptance_transactions) == 1
     assert load_goal_state(store, record).criteria[bystander].to_dict() == before
+    return key, saved.criteria[key]
+
+
+@pytest.mark.parametrize(
+    ("metrics", "execution", "tests_toml", "met", "status", "suite"), _COVERAGE_CASES
+)
+def test_a_coverage_goal_is_judged_by_its_whole_evaluation_however_its_target_is_written(
+    layout, monkeypatch, metrics, execution, tests_toml, met, status, suite
+):
+    """The Goal's verdict is its evaluation's, whether it names ``top`` or its identity.
+
+    Written by identity the Goal's key is not ``coverage_top``; it is still the one
+    Coverage Criterion of its Target, never an atomic metric projection.
+    """
+    key, entry = _judge_coverage_goal(
+        layout, monkeypatch, f"{_CORE}top", (metrics, execution, tests_toml)
+    )
+    assert key != "coverage_top"
+    assert entry.met is met
+    assert entry.detail["evaluation"]["status"] == status
+    assert entry.detail["evaluation"]["suite"]["status"] == suite
+    assert "criterion_metric" not in entry.detail
+
+
+@pytest.mark.parametrize(
+    ("metrics", "execution", "tests_toml", "met", "status", "suite"), _COVERAGE_CASES
+)
+def test_a_coverage_goal_written_by_name_has_the_same_verdict_and_detail(
+    layout, monkeypatch, metrics, execution, tests_toml, met, status, suite
+):
+    """The plain spelling ``top`` gives the verdict and evaluation of the identity spelling."""
+    key, entry = _judge_coverage_goal(layout, monkeypatch, "top", (metrics, execution, tests_toml))
+    assert key == "coverage_top"
+    assert entry.met is met
+    assert entry.detail["evaluation"]["status"] == status
+    assert entry.detail["evaluation"]["suite"]["status"] == suite
+    assert "criterion_metric" not in entry.detail
 
 
 def _coverage_run(layout, root, run_id, *tests):
