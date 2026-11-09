@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import subprocess
@@ -688,3 +689,149 @@ def test_reconcile_leaves_job_running_on_lasting_report_sharing_error(context, m
     JobLifecycle().reconcile_orphaned()
     assert job_records.read_record(rec.run_id, context.jobs_root).status == "running"
     assert attempts[report] > 1
+
+
+# --- job.log: every supervised MCP Job tees its combined output to disk ---------------
+
+
+def job_log_files(context):
+    """Every ``<jobs root>/<run_id>/job.log`` present now."""
+    return sorted(context.jobs_root.glob("*/job.log"))
+
+
+def log_bytes(context, run_id):
+    """Bytes of the Job's ``job.log``, or ``b""`` while it does not exist."""
+    path = context.jobs_root / run_id / "job.log"
+    return path.read_bytes() if path.is_file() else b""
+
+
+def log_gate_command(context):
+    """Child that prints ``started``, waits for a release file, then prints ``finished``."""
+    return command(f"""
+        from pathlib import Path
+        import time
+        release = Path({str(context.work_dir / "release")!r})
+        print('started', flush=True)
+        deadline = time.monotonic() + 60
+        while not release.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        print('finished', flush=True)
+    """)
+
+
+@pytest.mark.asyncio
+async def test_submitted_job_logs_full_combined_output(context, monkeypatch):
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "64")  # tail cap: 4 x 64 = 256 bytes
+    script = """
+        import sys
+        sys.stderr.write('err-marker\\n')
+        sys.stderr.flush()
+        for number in range(200):
+            print(f'out-{number:03d}')
+    """
+    expected_stdout = "".join(f"out-{number:03d}\n" for number in range(200)).encode()
+    submission = await JobLifecycle().submit_and_wait(
+        "lint", command(script), JOB_TIMEOUT, context=context, wait_seconds=WAIT_TIMEOUT
+    )
+    log = log_bytes(context, submission.poll.run_id)
+    assert log.count(b"err-marker\n") == 1
+    assert log.replace(b"err-marker\n", b"") == expected_stdout
+    # The agent-facing tail stays bounded: only the end of stdout survives.
+    result = submission.poll.result
+    assert "out-000" not in result.stdout
+    assert result.stdout.endswith("out-199\n")
+
+
+@pytest.mark.asyncio
+async def test_job_log_is_written_while_the_job_runs(context):
+    jobs = JobLifecycle()
+    run_id = jobs.submit("lint", log_gate_command(context), JOB_TIMEOUT, context=context)
+    try:
+        await wait_until(lambda: log_bytes(context, run_id) == b"started\n")
+    finally:
+        (context.work_dir / "release").write_text("go")
+    poll = await jobs.poll(run_id, WAIT_TIMEOUT)
+    assert poll.status == "finished"
+    assert log_bytes(context, run_id) == b"started\nfinished\n"
+
+
+@pytest.mark.asyncio
+async def test_inline_job_logs_while_running_and_forgets_log_with_record(context):
+    jobs = JobLifecycle()
+    run = asyncio.create_task(
+        jobs.run_synchronous("lint", log_gate_command(context), JOB_TIMEOUT, context=context)
+    )
+    try:
+        await wait_until(
+            lambda: [path.read_bytes() for path in job_log_files(context)] == [b"started\n"]
+        )
+        run_directory = job_log_files(context)[0].parent
+    finally:
+        (context.work_dir / "release").write_text("go")
+    exit_code, stdout, _stderr, _timed_out = await asyncio.wait_for(run, WAIT_TIMEOUT)
+    assert exit_code == 0 and stdout == "started\nfinished\n"
+    assert job_records.list_records(context.jobs_root) == []
+    assert not run_directory.exists()
+
+
+@pytest.mark.asyncio
+async def test_unwritable_job_log_does_not_fail_the_job(context):
+    jobs = JobLifecycle()
+    jobs._next_run_id = lambda endpoint: "lint-blocked"
+    # A regular file where the run directory belongs: creating it fails on every OS.
+    context.jobs_root.mkdir(parents=True, exist_ok=True)
+    (context.jobs_root / "lint-blocked").write_text("not a directory")
+    submission = await jobs.submit_and_wait(
+        "lint",
+        command("print('completed')"),
+        JOB_TIMEOUT,
+        context=context,
+        wait_seconds=WAIT_TIMEOUT,
+    )
+    result = submission.poll.result
+    assert result.exit_code == 0 and result.stdout == "completed\n"
+    assert submission.poll.record.status == "done"
+    assert result.stderr.count("job.log unavailable") == 1
+
+
+class _FailingSecondWrite:
+    """Raw log file whose second write fails the way a full disk does."""
+
+    def __init__(self, raw):
+        self._raw = raw
+        self._writes = 0
+
+    def write(self, data):
+        self._writes += 1
+        if self._writes == 2:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return self._raw.write(data)
+
+    def close(self):
+        self._raw.close()
+
+
+@pytest.mark.asyncio
+async def test_job_log_write_failure_mid_run_keeps_job_and_reports_once(context, monkeypatch):
+    real_open = Path.open
+
+    def open_job_log(path, *args, **kwargs):
+        opened = real_open(path, *args, **kwargs)
+        # Only the supervisor's write handle fails; readers of job.log are untouched.
+        writing = path.name == "job.log" and args[:1] == ("wb",)
+        return _FailingSecondWrite(opened) if writing else opened
+
+    monkeypatch.setattr(Path, "open", open_job_log)
+    script = """
+        import sys, time
+        for word in ('first', 'second', 'third'):
+            print(word, flush=True)
+            time.sleep(0.3)
+    """
+    submission = await JobLifecycle().submit_and_wait(
+        "lint", command(script), JOB_TIMEOUT, context=context, wait_seconds=WAIT_TIMEOUT
+    )
+    result = submission.poll.result
+    assert result.exit_code == 0 and result.stdout == "first\nsecond\nthird\n"
+    assert result.stderr.count("job.log unavailable") == 1
+    assert log_bytes(context, submission.poll.run_id) == b"first\n"
