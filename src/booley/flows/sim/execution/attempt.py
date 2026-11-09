@@ -88,7 +88,9 @@ def _authenticate_attempt(
     identity = request.identity
     before = terminal_before
     partial = partial_result_identity(identity)
-    fallback = not identity.result_path.exists() and process.timed_out
+    # A missing terminal result falls back to the partial: always after a wrapper
+    # timeout, and after any exit when the partial is a post-simulation one.
+    fallback = not identity.result_path.exists()
     if fallback:
         identity = partial
         before = partial_before
@@ -98,9 +100,15 @@ def _authenticate_attempt(
         validate_fresh_artifact(identity.result_path, roots=(request.result_root,), before=before)
         result = read_adapter_result(identity)
     except (AdapterTransportError, ArtifactValidationError) as exc:
-        return AdapterAttemptOutcome(process, None, str(exc), "authentication")
+        # An unreadable partial after a plain exit is just "no terminal result".
+        quiet = fallback and not process.timed_out
+        return AdapterAttemptOutcome(
+            process, None, None if quiet else str(exc), "runtime" if quiet else "authentication"
+        )
     except OSError as exc:
         return AdapterAttemptOutcome(process, None, str(exc), "runtime")
+    if fallback and not (process.timed_out or result.termination == "completed"):
+        return AdapterAttemptOutcome(process, None, None, "runtime")
     if fallback:
         try:
             partial.result_path.replace(request.identity.result_path)
