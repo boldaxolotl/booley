@@ -20,6 +20,7 @@ from booley.criteria.templates import CriteriaTemplate
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.flow import SimulateFlow
 from booley.runtime.endpoint_execution import EXIT_SUCCESS
+from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.test_flow import (
     _FLOW_ENABLED,
     _canned_build_session,  # noqa: F401 -- autouse fixture
@@ -123,9 +124,7 @@ def _run(
 
 def _launch(script: str) -> tuple[list[str], bool]:
     """The plusargs of one simulator launch, and whether it exported MODE=soak."""
-    words = script.rsplit(" && ", maxsplit=1)[-1].split()
-    plusargs = [word.removeprefix("--plusarg=") for word in words if "--plusarg=" in word]
-    return plusargs, "export MODE=soak" in script
+    return list(launched_work(script).plusargs), "export MODE=soak" in script
 
 
 def test_both_revisions_run_the_candidates_test_run(tmp_path: Path):
