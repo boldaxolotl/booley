@@ -312,7 +312,7 @@ def _assert_projection_tamper_rejected(campaign_path: Path) -> None:
     projection = json.loads(projection_raw)
     projection["campaign_manifest"]["path"] = "other/manifest.json"
     projection_path.write_text(json.dumps(projection))
-    with pytest.raises(ValueError, match="artifact"):
+    with pytest.raises(ValueError, match="not a regular file"):
         read_coverage_campaign(campaign_path)
     projection_path.write_bytes(projection_raw)
 
