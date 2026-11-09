@@ -1042,7 +1042,11 @@ def test_session_activity_shows_one_row_per_call_with_outcome_time(monkeypatch):
     app = DashboardApp(lambda: current)
     app.snapshot = current
     app.navigation = Navigation("session", "codex:00")
-    rows = [str(row) for key, row in app._session_activity(None) if key.startswith("call:")]
+    rows = [
+        str(row)
+        for key, row in app._session_activity(None, app._session_row()[0])
+        if key.startswith("call:")
+    ]
     assert len(rows) == 2
     assert "sim · completed · 14:05:00" in rows[0]
     assert "lint · started · 14:06:00" in rows[1]
