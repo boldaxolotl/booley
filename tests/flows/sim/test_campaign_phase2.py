@@ -12,6 +12,7 @@ from booley.criteria.templates import BASELINE_TARGET_PARAM, cycle_count_criteri
 from booley.flows.endpoint_acceptance import record_acceptance
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.execution_persistence import EvidenceDiscarded
+from booley.flows.prepared_invocation import OrdinaryRunInvocation
 from booley.flows.sim.acceptance import AcceptanceContext, SimulationAcceptanceCoordinator
 from booley.flows.sim.campaign.bundle import (
     SnapshotAttemptIdentity,
@@ -877,7 +878,11 @@ def _spy_hook(monkeypatch, flow: SimulateFlow) -> list[str]:
 
 
 def _record_final(flow: SimulateFlow, outcome: EndpointOutcome) -> None:
-    record_acceptance(flow, PreparedExecution(None, None, False, False), outcome)
+    record_acceptance(
+        flow,
+        PreparedExecution(None, None, False, False, OrdinaryRunInvocation(EndpointOutcome)),
+        outcome,
+    )
 
 
 def test_simulation_hook_keeps_partial_acceptance_when_recording_fails(monkeypatch) -> None:

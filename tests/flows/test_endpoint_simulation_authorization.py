@@ -17,6 +17,7 @@ from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow, Simu
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.flows.invocation_doubles import prepare_as
 
 
 def _handle(selector: str, identity: str, root: Path) -> TargetHandle:
@@ -197,10 +198,10 @@ def test_state_backed_simulation_preflight_rejection_reaches_stderr(
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     flow = SimulateFlow()
     monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
-    monkeypatch.setattr(
+    prepare_as(
+        monkeypatch,
         flow,
-        "prepare_simulation_endpoint",
-        lambda: EndpointOutcome(exit_code=2, report_text="Simulation preflight rejected"),
+        EndpointOutcome(exit_code=2, report_text="Simulation preflight rejected"),
     )
 
     execution = flow.execute_cli(
