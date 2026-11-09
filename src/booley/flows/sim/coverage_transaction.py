@@ -21,9 +21,8 @@ from .coverage_campaign import (
 from .coverage_campaign_store import POINT_STORE_NAME, publish_coverage_campaign
 from .coverage_invocation import CoverageTargetPlan
 from .coverage_json import FrozenJson, freeze_coverage_mapping
-from .coverage_policy import evaluate_coverage_campaign, threshold_number
+from .coverage_policy import coverage_metrics, evaluate_coverage_campaign, threshold_number
 from .coverage_provenance import coverage_digest, validate_coverage_sources
-from .coverage_report import coverage_metrics
 from .coverage_source_gaps import source_gap_findings
 from .coverage_waivers import CoverageWaiverValidationError, load_approved_waiver_set
 from .execution.contract import PreSimStatus, pre_sim_failure_message
