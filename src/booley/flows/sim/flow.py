@@ -37,6 +37,7 @@ from booley.flows.display import format_flow_display_label
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.execution_persistence import (
+    EvidenceDiscarded,
     FlowExecutionAdapter,
     execution_goal_name,
     frozen_test_runs_for,
@@ -2592,6 +2593,32 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 self.publication_resources.push(attempt.pop_all())
                 return invocation
         raise RuntimeError("Simulation invocation reservation ceiling exceeded")
+
+    def record_flow_owned_acceptance(self, outcome: EndpointOutcome) -> bool:
+        """Record Simulation Campaign acceptance; no Campaign outcomes means not handled."""
+        from .acceptance import retain_partial_campaign_acceptance
+
+        outcomes = self._simulation_campaign_outcomes
+        if not outcomes:
+            return False
+        try:
+            self.record_campaign_acceptance(outcomes)
+        except EvidenceDiscarded:
+            raise
+        except Exception:
+            retain_partial_campaign_acceptance(
+                outcome, outcomes, self._simulation_acceptance_outcomes
+            )
+            raise
+        return True
+
+    def generic_binding_gate_applies(self) -> bool:
+        """A coverage run is authorized by its own preparation, not the generic gate.
+
+        Explicit native collection also supports ungated Targets (#213); in
+        simulate mode coverage preparation authorizes the complete selection.
+        """
+        return not self.args.coverage
 
     def record_campaign_acceptance(self, outcomes: tuple[object, ...]) -> None:
         """Own campaign-specific reconciliation behind the generic endpoint hook."""

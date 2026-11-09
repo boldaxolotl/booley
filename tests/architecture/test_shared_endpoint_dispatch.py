@@ -22,6 +22,8 @@ DECLARED_NAMES = frozenset(
         "_eda_tools",
         "prepare_target_endpoint",
         "_skip_report_detail_refresh",
+        "record_flow_owned_acceptance",
+        "generic_binding_gate_applies",
     }
 )
 
@@ -92,3 +94,34 @@ def test_shared_endpoint_code_calls_declared_hooks():
         and node.args[1].value in DECLARED_NAMES
     )
     assert lookups == [], f"declared hooks looked up by name: {lookups}"
+
+
+# Simulation Campaign state the shared acceptance code must reach only through
+# the declared hooks, never by attribute name.
+SIMULATION_ACCEPTANCE_NAMES = frozenset(
+    {
+        "_simulation_campaign_outcomes",
+        "_simulation_acceptance_outcomes",
+        "record_campaign_acceptance",
+        "committed",
+        "transaction_id",
+    }
+)
+
+
+def test_shared_acceptance_code_has_no_simulation_branches():
+    comparisons = _compares_with_sim(_parse(FLOWS / "endpoint_acceptance.py"))
+    assert comparisons == [], f"endpoint_acceptance.py compares a name with 'sim': {comparisons}"
+
+    lookups = sorted(
+        f"{path.name}:{node.lineno} {node.func.id}({node.args[1].value!r})"
+        for path in FLOWS.glob("endpoint_*.py")
+        for node in ast.walk(_parse(path))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"getattr", "hasattr"}
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value in SIMULATION_ACCEPTANCE_NAMES
+    )
+    assert lookups == [], f"Simulation acceptance state looked up by name: {lookups}"
