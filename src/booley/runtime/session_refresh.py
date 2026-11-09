@@ -31,14 +31,6 @@ _JOURNAL_VERSION = 2
 _JOURNAL_DIR = Path("eda") / "session-refresh"
 
 
-class _RefreshPhase(StrEnum):
-    PREPARED = "prepared"
-    PARKED = "parked"
-    IMAGE_SELECTED = "image_selected"
-    ISSUED = "issued"
-    VERIFIED = "verified"
-
-
 class _RecoveryDirection(StrEnum):
     RESTORE_ELIGIBLE = "restore_eligible"
     COMMITTED_FORWARD = "committed_forward"
@@ -135,7 +127,6 @@ class RuntimeImageOperations(Protocol):
 class _RefreshJournal:
     project_root: Path
     transaction_id: str
-    phase: _RefreshPhase
     direction: _RecoveryDirection
     snapshot: SessionSpecSnapshot
     prior_issuance: runtime_spec.Issuance
@@ -192,24 +183,27 @@ def _journal_from(
     *,
     transaction_id: str,
     project_root: str,
-    phase: str,
     direction: str,
     snapshot: dict[str, Any],
     prior_issuance: object,
     prior_runtime: dict[str, Any] | None,
     target_image_id: str | None,
     target_payload_fingerprint: str | None,
+    target_wheel_sha256: str | None,
+    prepared_images: Sequence[dict[str, Any]],
     replacement_issuance: object,
-    target_wheel_sha256: str | None = None,
-    prepared_images: Sequence[dict[str, Any]] = (),
+    phase: str | None = None,
 ) -> _RefreshJournal:
-    """Build a journal directly from its stored fields (version 1 omits the last two)."""
+    """Build a journal directly from its stored fields.
+
+    ``phase`` is accepted and ignored: earlier version 2 journals recorded it,
+    but no recovery decision ever read it.
+    """
     if project_root != str(expected_root):
         raise ValueError("journal belongs to another Project")
     return _RefreshJournal(
         expected_root,
         transaction_id,
-        _RefreshPhase(phase),
         _RecoveryDirection(direction),
         _decode_snapshot(expected_root, **snapshot),
         _decode_issuance(prior_issuance, "prior issuance"),
@@ -232,7 +226,7 @@ def _decode_journal(raw: object, expected_root: Path, path: Path) -> _RefreshJou
         if not isinstance(raw, dict):
             raise TypeError("document must be an object")
         version = raw.pop("version", None)
-        if version not in {1, _JOURNAL_VERSION}:
+        if version != _JOURNAL_VERSION:
             raise ValueError(f"unsupported version {version!r}")
         return _journal_from(expected_root, **raw)
     except (TypeError, ValueError) as exc:
@@ -276,7 +270,6 @@ def _journal_document(journal: _RefreshJournal) -> dict[str, object]:
         "version": _JOURNAL_VERSION,
         "transaction_id": journal.transaction_id,
         "project_root": str(journal.project_root),
-        "phase": journal.phase,
         "direction": journal.direction,
         "snapshot": {
             "spec_present": snapshot.spec_content is not None,
@@ -321,7 +314,6 @@ def _new_journal(
     return _RefreshJournal(
         project_root,
         uuid4().hex,
-        _RefreshPhase.PREPARED,
         _RecoveryDirection.RESTORE_ELIGIBLE,
         snapshot,
         issuance,
@@ -424,7 +416,6 @@ def _resume_journal(journal: _RefreshJournal) -> RecoveryResult:
     if journal.direction is not _RecoveryDirection.COMMITTED_FORWARD:
         journal = replace(
             journal,
-            phase=_RefreshPhase.VERIFIED,
             direction=_RecoveryDirection.COMMITTED_FORWARD,
         )
         _write_journal(journal)
@@ -588,8 +579,6 @@ def _reconcile_refresh_image(
 ) -> tuple[RefreshImage, _RefreshJournal]:
     if journal.prior_runtime is not None:
         sr.park_planned_session(journal.prior_runtime)
-    journal = replace(journal, phase=_RefreshPhase.PARKED)
-    _write_journal(journal)
     result = images.commit()
     if not result.selected_id:
         raise sr.SessionError("refresh did not produce an immutable Sandbox Image ID")
@@ -600,7 +589,6 @@ def _reconcile_refresh_image(
         )
     journal = replace(
         journal,
-        phase=_RefreshPhase.IMAGE_SELECTED,
         target_image_id=result.selected_id,
         target_payload_fingerprint=result.payload_fingerprint,
         target_wheel_sha256=result.wheel_sha256,
@@ -621,7 +609,6 @@ def _issue_and_verify_replacement(
     issuance = runtime_spec.load_issued_snapshot(project)
     journal = replace(
         journal,
-        phase=_RefreshPhase.ISSUED,
         replacement_issuance=issuance,
     )
     _write_journal(journal)
@@ -637,7 +624,6 @@ def _issue_and_verify_replacement(
     _reject_vscode_started(project, "the new headless Session is being rolled back")
     journal = replace(
         journal,
-        phase=_RefreshPhase.VERIFIED,
         direction=_RecoveryDirection.COMMITTED_FORWARD,
     )
     _write_journal(journal)

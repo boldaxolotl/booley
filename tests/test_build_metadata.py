@@ -66,7 +66,9 @@ def test_updated_package_does_not_claim_old_image_source_metadata(monkeypatch):
 
 
 def test_payload_fingerprint_describes_imported_wheel_not_old_image(monkeypatch):
-    monkeypatch.setattr(build_metadata, "_embedded_payload_fingerprint", lambda: "wheel-payload")
+    monkeypatch.setattr(
+        build_metadata.build_stamp, "embedded_payload_fingerprint", lambda: "wheel-payload"
+    )
     monkeypatch.setenv("BOOLEY_VERSION", "different-version")
     monkeypatch.setenv("BOOLEY_PAYLOAD_FINGERPRINT", "old-image-payload")
 

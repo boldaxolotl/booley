@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import ast
-import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
 from booley.runtime import docker_base_contract
+from booley.runtime.build_stamp import files_fingerprint, stamp_constants
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 
 # The B-Wave crate entries stay here even though the binary is now built in the
@@ -71,13 +70,7 @@ def _standard_input_files(root: Path) -> tuple[Path, ...]:
 
 def standard_substrate_contract(root: Path) -> str:
     """Return the exact source identity of the standard tool substrate."""
-    digest = hashlib.sha256()
-    for path in _standard_input_files(root):
-        digest.update(path.relative_to(root).as_posix().encode())
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
+    return files_fingerprint(root, _standard_input_files(root))
 
 
 def source_image_build_contracts(root: Path) -> ImageBuildContracts:
@@ -104,27 +97,16 @@ def embedded_image_build_contracts() -> ImageBuildContracts:
     """Read and validate contracts stamped into an installed distribution."""
     try:
         source = _embedded_stamp_path().read_text(encoding="utf-8")
-        module = ast.parse(source)
-    except (OSError, SyntaxError) as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise ImageBuildContractMetadataError(
             "installed Booley distribution lacks Sandbox Image compatibility metadata"
         ) from exc
-    values: dict[str, object] = {}
-    for statement in module.body:
-        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
-            continue
-        target = statement.targets[0]
-        if not isinstance(target, ast.Name) or target.id not in {
-            "RUNTIME_BASE_CONTRACT",
-            "STANDARD_SUBSTRATE_CONTRACT",
-        }:
-            continue
-        try:
-            values[target.id] = ast.literal_eval(statement.value)
-        except (ValueError, TypeError, SyntaxError) as exc:
-            raise ImageBuildContractMetadataError(
-                f"installed Booley distribution has invalid {target.id.lower()} metadata"
-            ) from exc
+    try:
+        values = stamp_constants(source, {"RUNTIME_BASE_CONTRACT", "STANDARD_SUBSTRATE_CONTRACT"})
+    except ValueError as exc:
+        raise ImageBuildContractMetadataError(
+            f"installed Booley distribution has invalid Sandbox Image compatibility metadata: {exc}"
+        ) from exc
     return ImageBuildContracts(
         runtime_base=_canonical_sha256(values.get("RUNTIME_BASE_CONTRACT"), "runtime-base"),
         standard_substrate=_canonical_sha256(

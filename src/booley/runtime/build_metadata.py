@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from booley.runtime import build_stamp
 from booley.runtime.timefmt import format_human_datetime
 
 
@@ -56,7 +57,7 @@ def current_build_metadata() -> BuildMetadata:
         ),
         image_built_at=os.environ.get("BOOLEY_IMAGE_BUILT_AT", ""),
         payload_fingerprint=(
-            (_embedded_payload_fingerprint() if is_distribution else "")
+            (build_stamp.embedded_payload_fingerprint() if is_distribution else "")
             or (
                 os.environ.get("BOOLEY_PAYLOAD_FINGERPRINT", "")
                 if is_distribution and package_matches_image
@@ -64,14 +65,6 @@ def current_build_metadata() -> BuildMetadata:
             )
         ),
     )
-
-
-def _embedded_payload_fingerprint() -> str:
-    try:
-        from booley._build_commit import PAYLOAD_FINGERPRINT
-    except (ImportError, AttributeError):
-        return ""
-    return PAYLOAD_FINGERPRINT
 
 
 def _format_timestamp(value: str) -> str:
