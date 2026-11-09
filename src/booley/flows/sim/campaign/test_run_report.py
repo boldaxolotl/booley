@@ -109,7 +109,7 @@ def _recorded_test_runs(manifest_path: Path) -> dict[tuple[object, str], TestRun
     try:
         return _manifest_test_runs(manifest)
     except TestRunNameError:
-        # Decode trusts stored fingerprints; a hand-edited one surfaces here.
+        # Decode reads Test Runs raw; a hand-edited record surfaces here.
         return {}
 
 
@@ -118,7 +118,7 @@ def _manifest_test_runs(manifest: SimulationCampaignManifest) -> dict[tuple[obje
     recorded: dict[tuple[object, str], TestRun] = {}
     items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
     for item in items:
-        for document in cast(tuple[object, ...], item.get("test_runs", ())):
+        for document in cast(tuple[object, ...], item["test_runs"]):
             run = test_run_from_document(document)
             recorded[(item["work_item_id"], run.name)] = run
             if run.test is None:
