@@ -10,14 +10,21 @@ Stealth core projections or the private FuseSoC registry.
 from __future__ import annotations
 
 import subprocess
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 
+from booley.flows.sim.workload import CONSTRAINT_FILE_TYPES
 from booley.flows.target_test_plan_loading import load_checkout_target_test_plan
 from booley.fusesoc import fusesoc_registry
-from booley.fusesoc.core_projection import CoreProjectionError, projection_issues, registry_issues
+from booley.fusesoc.core_projection import (
+    CoreProjectionError,
+    projection_enabled,
+    projection_issues,
+    registry_issues,
+)
 from booley.runtime.worktrees import WorktreeEntry, list_worktrees
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError, TargetHandle
@@ -27,10 +34,9 @@ _T = TypeVar("_T")
 # What a read of a checkout can fail with: FuseSoC and Target errors, unreadable
 # files, and a malformed tests.toml.
 _READ_ERRORS = (FuseSocError, OSError, ValueError)
-# Constraint file types, as the Simulation Flow's workload classifier reads them.
-_CONSTRAINT_TYPES = frozenset({"sdc", "xdc"})
 # Flow whose Targets can have Tests.
 _SIM_FLOW = "sim"
+_NO_TESTS: tuple[str, ...] = ("only Simulation Targets have tests",)
 
 
 def first_line(error: BaseException) -> str:
@@ -63,10 +69,10 @@ class TargetListing:
 class TargetDetail:
     """What one Target declares, before any setup.
 
-    ``worktree`` and ``selector`` name the request it answers. ``tests`` and ``constraints`` are ``None`` when that part could not be
-    read (shown as unavailable, not as none); ``problems`` names each part
-    that could not be resolved. ``row`` is ``None`` when the Target itself
-    could not be found.
+    ``worktree`` and ``selector`` name the request it answers. ``tests`` and
+    ``constraints`` are ``None`` when that part could not be read (shown as
+    unavailable, not as none); ``problems`` names each part that could not be
+    resolved. ``row`` is ``None`` when the Target itself could not be found.
     """
 
     worktree: Path
@@ -132,10 +138,12 @@ def inspection_blocker(worktree: Path) -> str:
     """Why inspecting a Target of *worktree* would write; empty when it would write nothing.
 
     Preparing FuseSoC's library view writes the Stealth core projections and
-    the private registry when they are missing or stale.
+    the private registry when they are missing or stale. With Stealth off it
+    writes no projection, so leftover projection files do not block.
     """
     try:
-        issues = (*projection_issues(worktree), *registry_issues(worktree))
+        projections = projection_issues(worktree) if projection_enabled(worktree) else ()
+        issues = (*projections, *registry_issues(worktree))
     except (CoreProjectionError, OSError) as exc:
         return f"core projections cannot be checked: {first_line(exc)}"
     if not issues:
@@ -155,6 +163,9 @@ class TargetsReader:
 
     def __init__(self, root: Path) -> None:
         self.root = root
+        # Detail reads share FuseSoC's cached setup, which is not thread-safe, and
+        # a cancelled worker's thread keeps running: one detail read at a time.
+        self._detail_lock = threading.Lock()
 
     def worktrees(self) -> WorktreeList:
         """Git's registered worktrees; a Git failure becomes the problem text."""
@@ -177,6 +188,10 @@ class TargetsReader:
         Each part that cannot be resolved is named in ``problems`` while the
         others still show.
         """
+        with self._detail_lock:
+            return self._detail(worktree, selector)
+
+    def _detail(self, worktree: Path, selector: str) -> TargetDetail:
         try:
             catalog = TargetCatalog.build(worktree)
             handle = catalog.select(selector)
@@ -195,7 +210,11 @@ class TargetsReader:
         blocker = inspection_blocker(worktree)
         constraints, tests = None, None
         if blocker:
-            problems += [f"Inputs unavailable: {blocker}", f"Tests unavailable: {blocker}"]
+            problems.append(f"Inputs unavailable: {blocker}")
+            if _SIM_FLOW in row.flows:  # Other Targets have no Tests to be unavailable.
+                problems.append(f"Tests unavailable: {blocker}")
+            else:
+                tests = _NO_TESTS
         else:
             constraints = _guarded(problems, "Inputs", lambda: _constraints(catalog, handle))
             tests = _guarded(problems, "Tests", lambda: _tests(worktree, row))
@@ -237,14 +256,14 @@ def _constraints(catalog: TargetCatalog, handle: TargetHandle) -> tuple[str, ...
     return tuple(
         item.path
         for item in catalog.inspect(handle).inputs
-        if item.file_type.lower() in _CONSTRAINT_TYPES
+        if item.file_type.lower() in CONSTRAINT_FILE_TYPES
     )
 
 
 def _tests(worktree: Path, row: TargetListRow) -> tuple[str, ...]:
     """One line per Test, with its Test Variants (the default marked) and a default-skip note."""
     if _SIM_FLOW not in row.flows:
-        return ("only Simulation Targets have tests",)
+        return _NO_TESTS
     plan = load_checkout_target_test_plan(worktree, row.selector)
     lines: list[str] = []
     for test in plan.tests:

@@ -319,7 +319,9 @@ def test_registry_issues_describe_what_reconcile_would_write_without_writing(
 
     core.write_text(_CORE.replace("demo:0", "demo:1"), encoding="utf-8")
     owned = next(registry.glob("*.core"))
-    (registry / "booley-isolated-old.core").write_text(owned.read_text(encoding="utf-8"))
+    (registry / "booley-isolated-old.core").write_text(
+        owned.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     (registry / "foreign.core").write_text("user data\n", encoding="utf-8")
     (registry / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
     assert registry_issues(root) == (

@@ -14,10 +14,12 @@ from pathlib import Path
 import pytest
 from textual.widgets import DataTable, Static
 
-from booley.harness.dashboard.app import DashboardApp
+from booley.harness.dashboard.app import DashboardApp, Navigation
 from booley.harness.dashboard.jobs import JobSnapshot
+from booley.harness.dashboard.targets import TargetsReader
 from booley.harness.dashboard.topbar import TopBar
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
+from booley.targets.domain import CoreCollisionError
 from tests.harness.test_dashboard import STAMP, open_session, snapshot
 from tests.harness.test_dashboard_keys import assert_retired_keys_change_nothing
 
@@ -138,8 +140,6 @@ def world(*rows: SessionRow):
 
 
 def make_app(root: Path, current) -> DashboardApp:
-    from booley.harness.dashboard.targets import TargetsReader
-
     return DashboardApp(lambda: current, targets=TargetsReader(root))
 
 
@@ -368,6 +368,29 @@ async def test_preselection_change_resets_open_detail(repo):
         assert len(app.windows["targets"]) == 1
 
 
+@pytest.mark.asyncio
+async def test_opening_the_worktree_list_does_not_preselect_again(repo):
+    tmp = repo.parent
+    app = make_app(repo, three_sessions(tmp, repo))
+    async with app.run_test(size=(130, 30)) as pilot:
+        app.query_one(DataTable).move_cursor(row=app.row_keys.index("codex:03"), animate=False)
+        await pilot.pause()
+        await open_targets(app, pilot)
+        assert selectors(app) == ["beta_lint"]
+        # The highlighted session changes while the human is in the Targets window.
+        app.windows["sessions"] = [Navigation("sessions", selected="codex:02")]
+        await pilot.press("up", "right", "enter")
+        await settle(app, pilot)
+        assert app.navigation.view == "worktrees"
+        assert "Worktree: wt-b" in bar_labels(app)
+        await pilot.press("escape")
+        assert selectors(app) == ["beta_lint"]
+        # Entering the window again preselects from the new highlight.
+        await pilot.press("left", "left", "right", "right")
+        await settle(app, pilot)
+        assert selectors(app) == ["alpha_lint"]
+
+
 # --- AC5 ---------------------------------------------------------------------
 
 
@@ -405,7 +428,11 @@ UNRESOLVABLE_CASES = {
     ),
     "projection-missing": (
         None,
-        ["Constraints: unavailable", "Inputs unavailable: core projections need a refresh"],
+        [
+            "Constraints: unavailable",
+            "Inputs unavailable: core projections need a refresh",
+            "only Simulation Targets have tests",  # A lint Target has no Tests to lose.
+        ],
     ),
 }
 
@@ -437,6 +464,8 @@ async def check_unresolvable(base, case):
         text = detail_text(app)
         for fragment in expected:
             assert fragment in text, (case, text)
+        if case == "projection-missing":
+            assert "Tests unavailable" not in text
     assert sorted(path for path in root.rglob("*") if ".git" not in path.parts) == before
 
 
@@ -451,7 +480,9 @@ async def test_empty_worktree_names_it(repo):
 
 
 @pytest.mark.asyncio
-async def test_failed_listing_and_failed_git_are_explained(tmp_path, monkeypatch):
+async def test_failed_git_is_explained_and_the_window_falls_back_to_the_root(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", 30.0)
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     root = tmp_path / "plain"  # Not a Git repository: the worktree list fails.
@@ -469,9 +500,56 @@ async def test_failed_listing_and_failed_git_are_explained(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_reader_failures_and_missing_reader_are_explained(repo):
-    from booley.harness.dashboard.targets import TargetsReader
+async def test_failed_listing_is_explained(tmp_path, monkeypatch):
+    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", 30.0)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    root = tmp_path / "project"
+    init_repository(root)
+    write_files(root, {"top.v": "module top; endmodule\n"})
 
+    def collide(_root):
+        raise CoreCollisionError("two cores declare acme:ip:dup:1.0")
+
+    monkeypatch.setattr("booley.harness.dashboard.targets.collect_surface", collide)
+    app = make_app(root, world())
+    async with app.run_test(size=(130, 30)) as pilot:
+        await open_targets(app, pilot)
+        assert selectors(app) == []
+        assert (
+            empty_text(app) == "Targets unavailable in project: two cores declare acme:ip:dup:1.0"
+        )
+
+
+@pytest.mark.asyncio
+async def test_leftover_projections_do_not_block_detail_when_stealth_is_off(tmp_path, monkeypatch):
+    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", 30.0)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    root = tmp_path / "project"
+    init_repository(root)
+    write_files(
+        root,
+        {
+            "fifo.core": FIFO_CORE,
+            "fifo.v": "module fifo; endmodule\n",
+            "tb.sv": "module tb; endmodule\n",
+            "fifo.sdc": "# constraints\n",
+            # An old projection a Flow run never removes while Stealth is off.
+            ".booley-projected-old.core": "CAPI=2:\n# Booley stealth core projection: old\n",
+        },
+    )
+    app = make_app(root, world())
+    async with app.run_test(size=(130, 30)) as pilot:
+        await open_targets(app, pilot)
+        app.query_one(DataTable).move_cursor(row=app.row_keys.index("synth_fifo"), animate=False)
+        await pilot.press("enter")
+        await settle(app, pilot)
+        text = detail_text(app)
+        assert "Constraints: fifo.sdc" in text
+        assert "unavailable" not in text
+
+
+@pytest.mark.asyncio
+async def test_reader_failures_and_missing_reader_are_explained(repo):
     class Exploding(TargetsReader):
         def listing(self, worktree):
             raise RuntimeError("boom")

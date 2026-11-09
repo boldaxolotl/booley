@@ -32,7 +32,8 @@ def footer_hints(
 
     ``top_bar``: the top bar holds the keyboard. ``enter_opens``: Enter on the
     selected row opens something. ``jobs_list``: the Jobs window's list is
-    shown. ``targets_list``: the Targets window's list is shown. ``nested``: the window is inside a detail, so Esc goes back.
+    shown. ``targets_list``: the Targets window's list is shown. ``nested``: the window is
+    inside a detail, so Esc goes back.
     ``scrolling``: the side panel holds the keyboard, so arrows scroll it and
     Enter does nothing. ``back_to``: what Down returns to from the top bar
     ("list", "detail" or "Help").

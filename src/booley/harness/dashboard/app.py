@@ -722,6 +722,8 @@ class DashboardApp(App[None]):
         # picks one in the worktree list, entering the window preselects it.
         self._worktree: Path | None = None
         self._worktree_chosen = False
+        # Set by entering the window: the next worktree list that arrives may preselect.
+        self._preselect_pending = False
         self._worktree_list: WorktreeList | None = None
         self._listing: TargetListing | None = None
         self._detail: TargetDetail | None = None
@@ -1873,7 +1875,10 @@ class DashboardApp(App[None]):
             add("Flows", ", ".join(detail.row.flows) or "none")
             add("Filesets", ", ".join(detail.filesets) or "none")
             add("Constraints", *part(detail.constraints))
-            add("Tests", *(("", "") if detail.tests else part(detail.tests)))
+            if detail.tests:  # The lines follow below.
+                add("Tests", "", "")
+            else:
+                add("Tests", *part(detail.tests))
             for line in detail.tests or ():
                 text.append("\n  " + line)
         for problem in detail.problems:
@@ -1911,6 +1916,7 @@ class DashboardApp(App[None]):
 
     def _enter_targets(self) -> None:
         """Entering the window refreshes its reads and, until a choice, preselects the worktree."""
+        self._preselect_pending = not self._worktree_chosen
         self._load_worktrees()
         if not self._apply_preselection():
             self._load_listing()
@@ -2006,7 +2012,7 @@ class DashboardApp(App[None]):
         )
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
-        """Apply a finished Targets read, unless it answers a worktree or Target no longer shown."""
+        """Apply a finished Targets read, unless it answers a worktree or Target not shown now."""
         if event.state is not WorkerState.SUCCESS or not event.worker.group.startswith(
             TARGETS_GROUP_PREFIX
         ):
@@ -2015,7 +2021,15 @@ class DashboardApp(App[None]):
         reset = False
         if isinstance(result, WorktreeList):
             self._worktree_list = result
-            reset = self.window == "targets" and self._apply_preselection()
+            # Only the read started by entering the window preselects: a list opened later
+            # by the human must not swap the worktree under them.
+            reset = (
+                self.window == "targets"
+                and self._preselect_pending
+                and self.navigation.view != "worktrees"
+                and self._apply_preselection()
+            )
+            self._preselect_pending = False
         elif isinstance(result, TargetListing) and result.worktree == self._worktree:
             self._listing = result
         elif isinstance(result, TargetDetail) and result.worktree == self._worktree:
