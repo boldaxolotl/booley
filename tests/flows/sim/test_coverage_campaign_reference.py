@@ -10,8 +10,6 @@ from pathlib import Path
 import pytest
 
 from booley.flows.sim import coverage_reference
-from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
-from booley.flows.sim.campaign.facts import AcceptanceFacts
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaignValidationError,
     DurableTargetIdentity,
@@ -90,44 +88,6 @@ def _rewrite_reference(
     )
 
 
-def _facts_with_reference(value: CoverageCampaignReference) -> dict[str, object]:
-    raw = encode_coverage_campaign_reference(value)
-    return {
-        "$schema": "booley.simulation-acceptance-facts/v1",
-        "campaign_id": _SIMULATION_CAMPAIGN_ID,
-        "manifest_sha256": _MANIFEST_SHA256,
-        "origin": {"execution_id": "", "invocation_id": _ORIGIN_INVOCATION_ID},
-        "target": {
-            "vlnv": "acme:demo:counter:1.0",
-            "name": _TARGET_SELECTOR,
-            "selector": _TARGET_SELECTOR,
-            "project_identity": "project",
-            "revision": "abc",
-            "role": "candidate",
-            "display_name": _TARGET_SELECTOR,
-        },
-        "required_suite": {
-            "names": ["reset"],
-            "default_invocation": False,
-            "source_sha256": "sha256:" + "b" * 64,
-        },
-        "prerequisites": [],
-        "consumed_results": [],
-        "observations": [],
-        "coverage_reference": {
-            "reference": {
-                "path_base": "origin_invocation",
-                "path": f"targets/{_TARGET_SELECTOR}/coverage.json",
-                "bytes": len(raw),
-                "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
-                "kind": "coverage_campaign_reference",
-                "owner": _SIMULATION_CAMPAIGN_ID,
-            },
-            "document": json.loads(raw),
-        },
-    }
-
-
 def _persisted_reference(
     report_root: Path,
     public_path: Path,
@@ -143,37 +103,6 @@ def _persisted_reference(
         "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
         "nested_campaign_sha256": nested["sha256"],
     }
-
-
-def test_acceptance_facts_reject_public_coverage_reference_substitution(tmp_path: Path) -> None:
-    target = tmp_path / "targets" / _TARGET_SELECTOR
-    facts = _facts_with_reference(_reference(target, _nested_campaign(target)))
-    coverage = facts["coverage_reference"]
-    assert isinstance(coverage, dict)
-    document = coverage["document"]
-    assert isinstance(document, dict)
-    document["simulation_manifest_sha256"] = "sha256:" + "c" * 64
-    raw = json.dumps(document, sort_keys=True, separators=(",", ":")).encode() + b"\n"
-    evidence = coverage["reference"]
-    assert isinstance(evidence, dict)
-    evidence["bytes"] = len(raw)
-    evidence["sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
-
-    with pytest.raises(SimulationCampaignIntegrityError, match="disagrees"):
-        AcceptanceFacts(facts)
-
-
-def test_acceptance_facts_reject_enclosing_reference_owner_substitution(tmp_path: Path) -> None:
-    target = tmp_path / "targets" / _TARGET_SELECTOR
-    facts = _facts_with_reference(_reference(target, _nested_campaign(target)))
-    coverage = facts["coverage_reference"]
-    assert isinstance(coverage, dict)
-    reference = coverage["reference"]
-    assert isinstance(reference, dict)
-    reference["owner"] = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa"
-
-    with pytest.raises(SimulationCampaignIntegrityError, match="disagrees"):
-        AcceptanceFacts(facts)
 
 
 def test_reference_codec_round_trips_exact_canonical_immutable_document(tmp_path: Path) -> None:

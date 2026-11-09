@@ -928,11 +928,11 @@ def _validate_result_grade(value: object, observations: list[Mapping[str, object
 
 
 #: How the execution of one observed Test Run ended.
-OBSERVATION_EXECUTIONS = frozenset(
+_OBSERVATION_EXECUTIONS = frozenset(
     {"completed", "timeout", "crash", "aborted", "setup_error", "blocked_by_build", "not_run"}
 )
-#: What one simulator observation records, in every result and facts version.
-OBSERVATION_FIELDS = frozenset(
+#: What one simulator observation records besides its Test Run.
+_OBSERVATION_FIELDS = frozenset(
     {
         "test",
         "execution",
@@ -944,7 +944,6 @@ OBSERVATION_FIELDS = frozenset(
         "cycle_count",
     }
 )
-_OBSERVATION_FIELDS = set(OBSERVATION_FIELDS)
 
 
 def _validate_observation(value: object, index: int) -> Mapping[str, object]:
@@ -952,7 +951,7 @@ def _validate_observation(value: object, index: int) -> Mapping[str, object]:
         value, {"test_run"} | _OBSERVATION_FIELDS, f"observations[{index}]"
     )
     _bounded_string(observation["test_run"], f"observations[{index}].test_run")
-    if observation["execution"] not in OBSERVATION_EXECUTIONS:
+    if observation["execution"] not in _OBSERVATION_EXECUTIONS:
         raise SimulationCampaignIntegrityError("observation execution is invalid")
     if observation["failure_class"] not in {None, "design", "infrastructure"}:
         raise SimulationCampaignIntegrityError("observation failure class is invalid")
