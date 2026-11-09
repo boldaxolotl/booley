@@ -413,3 +413,19 @@ Consequences:
 
 - A background shell the agent does wait for, such as a test run, still shows waiting for user input after `Stop`.
 - The hook ships in the Sandbox Image; a session running an older image keeps the previous mapping until the image is rebuilt.
+
+## Amendments (2026-11-08): The caller's checkout routes calls without `work_dir` (#2606)
+
+A call that omitted `work_dir` always ran on the server's cwd, so an agent working in a linked worktree had to remember to pass it. This amendment supersedes the 2026-10-06 rule "Registry is presentational ... never selects a Goal record or a `work_dir`" for `work_dir` only. The Session still never selects a Goal Record.
+
+- **The caller's checkout is the default.** A Booley MCP call that omits `work_dir` (or passes an empty one) targets the checkout of the calling agent's session process when that process's cwd is the root of a linked worktree of the server's repository other than the server cwd. The session process is the Claude Code peer process, or the owner of a marked `booley chat --no-daemon` Codex launch. Otherwise the call targets the server cwd, which in the Sandbox is the main checkout. An explicit `work_dir` always wins.
+- **Only linked worktrees route.** A cwd in the main checkout, a subdirectory, another repository, a submodule, a non-Git directory, or the server cwd itself is not routed. A deleted cwd, an unreadable process entry, and an unreadable Codex handle map fall back to the server cwd the same way.
+- **Ordinary Codex never routes.** Ordinary Codex threads, the shared daemon, and a Codex started by hand keep thread identity (2026-10-15) and are never routed: a daemon's cwd belongs to no particular tab, and Booley has no rule that tells a hand-started `--no-daemon` CLI from a daemon peer.
+- **One checkout, everywhere.** The routed `work_dir` is injected after schema validation, and only for tools whose schema declares `work_dir`. From there the call is indistinguishable from one that passed it: Flows get `--work-dir`, and job records store it. The registry row, the Dashboard work-directory column, and the shared-worktree warning use the same checkout.
+- **Goal binding.** A routed call counts as explicit, so it binds the active Goal Record of the caller's worktree. A caller in the main checkout is not routed and keeps the Goal refusal. This is deliberate: a forgotten `work_dir` must not silently run on the main checkout while the agent edits a Goal worktree.
+- **Endpoints must declare `work_dir`.** A routed caller's call to a Project-defined endpoint that declares no `work_dir` is refused ("Project-defined endpoints must declare `work_dir` to run for a caller working in a linked worktree."), because the endpoint would silently run on the server cwd while the row shows the worktree.
+
+Consequences:
+
+- A non-routed call from a session that was routed before, for example after its worktree was deleted, keeps the row's previous checkout under the 2026-10-15 rule "Migration retains the predecessor's worktree when a call omits `work_dir`", until registry maintenance prunes the row.
+- The peer lookup moves onto the request path of every call without `work_dir`, including poll and status loops. For Codex the owner walk runs twice per call (routing, then attribution). There is no cache.

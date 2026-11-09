@@ -25,7 +25,9 @@ class Observer:
     def __init__(self):
         self.calls = []
 
-    async def attribution(self, arguments, metadata, client_name, *, request=None, tool="request"):
+    async def attribution(
+        self, arguments, metadata, client_name, *, request=None, tool="request", caller=None
+    ):
         return Attribution(
             "codex:" + metadata.get("threadId", "unknown"),
             "thread",
@@ -588,3 +590,19 @@ async def test_cancel_after_the_call_returned_keeps_its_real_outcome():
             observer,
         )
     assert observer.calls == [("codex:one", "ordinary", "completed")]
+
+
+@pytest.mark.asyncio
+async def test_routed_checkout_survives_a_failing_session_observer(tmp_path):
+    """Routing never depends on presentation: observer failure keeps the caller's checkout."""
+    from booley.mcp.peer_checkout import CallerCheckout
+
+    class Failing(Observer):
+        async def attribution(self, *_args, **_kwargs):
+            raise RuntimeError("registry exploded")
+
+    params = CallToolRequestParams(name="ordinary", arguments={})
+    request = await server._observed_request_context(
+        context(), params, Failing(), CallerCheckout(None, tmp_path)
+    )
+    assert request.checkout == tmp_path and request.attribution is None

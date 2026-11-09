@@ -8,7 +8,8 @@ later resolver can retarget a whole call (jobs, state, logs, and the endpoint
 subprocess environment) without touching every reader.
 
 Ordinary calls use the explicit
-``work_dir`` or the server's cwd, the container-wide jobs root, and the server
+``work_dir`` or the server's cwd (an omitted ``work_dir`` may already have been
+filled at the SDK boundary from the calling agent's linked worktree), the container-wide jobs root, and the server
 process's own ``BOOLEY_*`` variables. ``subprocess_env_overrides`` is empty.
 An explicit worktree selects its active Goal Record and
 freezes one Run Binding. All evidence paths and subprocess overrides follow that
@@ -63,7 +64,11 @@ class CallContext:
 
     @property
     def work_dir(self) -> Path:
-        """Checkout the call targets: the explicit ``work_dir``, else the cwd now."""
+        """Checkout the call targets: the explicit ``work_dir``, else the cwd now.
+
+        An omitted ``work_dir`` may already have been filled at the SDK boundary
+        from the caller's checkout, in which case it is explicit here.
+        """
         if self.explicit_work_dir is not None:
             return self.explicit_work_dir
         return Path.cwd()
@@ -82,6 +87,9 @@ def _explicit_work_dir(arguments: Mapping[str, Any]) -> Path | None:
 
 def resolve_work_dir(arguments: Mapping[str, Any]) -> Path:
     """Checkout a call targets: its ``work_dir`` argument, else the server cwd.
+
+    An omitted ``work_dir`` may already have been filled at the SDK boundary
+    from the caller's checkout; the cwd default applies only when it was not.
 
     Validation stays with the caller (``_validate_work_dir``); this only
     applies the default.

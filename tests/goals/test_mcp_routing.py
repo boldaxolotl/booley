@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -1162,3 +1163,51 @@ def test_mcp_composes_schema_guidance_for_entry_status_warning_and_refusal(layou
         assert guidance.replace("`", "") in str(refusal.value)
     finally:
         catalog.work_dir_guidance.cache_clear()
+
+
+def _goal_status_application() -> Any:
+    return server._build_mcp_application([], [], server._McpLifetime(None, None))
+
+
+def test_caller_checkout_in_goal_worktree_binds_its_record(
+    goal_mode: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A caller whose process runs in the Goal worktree is treated as passing work_dir."""
+    from booley.mcp.application import McpRequestContext
+
+    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    application = _goal_status_application()
+    routed = asyncio.run(
+        application.call_tool(
+            "goal_status", {}, request_context=McpRequestContext(checkout=goal_mode.worktree)
+        )
+    )
+    explicit = asyncio.run(
+        application.call_tool("goal_status", {"work_dir": str(goal_mode.worktree)})
+    )
+    assert not routed.is_error and "Pass work_dir" not in routed.content[0].text
+    assert routed.content[0].text == explicit.content[0].text
+
+
+def test_main_checkout_caller_is_still_refused_while_goal_active(
+    goal_mode: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The main checkout is the server cwd: it is never routed, so it keeps the Goal refusal."""
+    from booley.mcp import peer_checkout
+    from booley.mcp.application import McpRequestContext
+    from booley.runtime.pid import ProcessIdentity
+
+    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    proc = tmp_path / "proc"
+    (proc / "300").mkdir(parents=True)
+    (proc / "300" / "cwd").symlink_to(goal_mode.main)
+    checkout = peer_checkout.process_checkout(
+        ProcessIdentity(300, "pid:[17]", 7), server_cwd=goal_mode.main, proc_root=proc
+    )
+    assert checkout is None
+    refused = asyncio.run(
+        _goal_status_application().call_tool(
+            "goal_status", {}, request_context=McpRequestContext(checkout=checkout)
+        )
+    )
+    assert refused.is_error and "Pass work_dir" in refused.content[0].text

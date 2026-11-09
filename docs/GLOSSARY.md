@@ -107,7 +107,7 @@ The structured result Finish produces for a Goal Mode: diff summary against the 
 _Avoid_: triage package, run report, acceptance report
 
 **Session**:
-In the Session Registry, one agent client thread or process that calls Booley from a worktree, falling back to the worktree itself when the client cannot be told apart. Presentational only: it feeds the Dashboard and the shared-worktree warning and never selects a Goal Record.
+In the Session Registry, one agent client thread or process that calls Booley from a worktree, falling back to the worktree itself when the client cannot be told apart. It feeds the Dashboard and the shared-worktree warning, and its process's checkout is the default checkout of its calls that omit `work_dir`. It never selects a Goal Record.
 _Avoid_: connection, tab, MCP session, Sandbox session
 
 **Sandbox Attachment**:
