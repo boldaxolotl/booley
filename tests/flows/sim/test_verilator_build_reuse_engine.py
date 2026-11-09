@@ -1,4 +1,4 @@
-"""End-to-end Verilator Simulation build reuse through ``SimulationExecution.run``.
+"""End-to-end Verilator Simulation build reuse through the prepared ordinary group path.
 
 Real Verilator is not required: each test installs a fake Verilator root
 (wrapper, ``verilator_bin``, ``include/verilated.mk``) plus a fake C++ driver
@@ -33,6 +33,7 @@ from booley.flows.sim.execution import (
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.flows.sim.launched_work import launched_work
+from tests.flows.sim.prepared_group import run_prepared_group
 
 pytestmark = pytest.mark.skipif(
     os.name == "nt", reason="Verilator build reuse is proven in the POSIX Sandbox"
@@ -318,12 +319,20 @@ def _run(
     *,
     test: str = "smoke",
     options: SimulationOptions | None = None,
+    legacy_run: bool = False,
 ) -> SimulationTargetOutcome:
+    """Launch one test; ``legacy_run`` keeps run()-only behavior (Pre-Sim) on ``run()``.
+
+    The flag goes away with the engine-deletion part of #2337.
+    """
     handle = _select(project)
     execution = SimulationExecution(
         invoke=recorder, options=options or SimulationOptions(timeout_ms=10_000)
     )
-    return execution.run(handle, NamedTests((test,)))
+    if legacy_run:
+        # Pre-Sim Commands fire only inside run(); that behavior stays there.
+        return execution.run(handle, NamedTests((test,)))
+    return run_prepared_group(execution, handle, (test,))
 
 
 def _select(project: Path) -> TargetHandle:
@@ -453,8 +462,8 @@ def test_pre_sim_output_in_run_cwd_keeps_reuse(verilator_env: Path) -> None:
         encoding="utf-8",
     )
     recorder = _Recorder(verilator_env)
-    _assert_passed(_run(verilator_env, recorder))
-    second = _run(verilator_env, recorder)
+    _assert_passed(_run(verilator_env, recorder, legacy_run=True))
+    second = _run(verilator_env, recorder, legacy_run=True)
     _assert_passed(second)
     assert recorder.builds == 1
     assert second.builds[0].ran is False
@@ -469,8 +478,8 @@ def test_pre_sim_output_in_build_root_forces_rebuild(verilator_env: Path, name: 
         encoding="utf-8",
     )
     recorder = _Recorder(verilator_env)
-    _assert_passed(_run(verilator_env, recorder))
-    second = _run(verilator_env, recorder)
+    _assert_passed(_run(verilator_env, recorder, legacy_run=True))
+    second = _run(verilator_env, recorder, legacy_run=True)
     _assert_passed(second)
     assert recorder.builds == 2
     assert second.builds[0].ran is True
@@ -517,8 +526,10 @@ def test_trace_and_plain_each_reuse_their_own_generation(verilator_env: Path) ->
         assert outcome.builds[0].cache_decision.startswith("hit;")
     assert len(recorder.launches) == 4
     plain_launches, trace_launches = recorder.launches[0::2], recorder.launches[1::2]
-    assert all("booleytrace" not in stdout for stdout in plain_launches)
-    assert all("booleytrace" in stdout and "+trace" in stdout for stdout in trace_launches)
+    # Launches run a snapshot copy, so the generation path (booleytrace) is not visible.
+    assert all("+trace" not in stdout for stdout in plain_launches)
+    assert all("+trace" in stdout for stdout in trace_launches)
+    assert _flags_line(plain_launches[0]) == _flags_line(plain_launches[1])
     assert _flags_line(trace_launches[0]) == _flags_line(trace_launches[1])
     assert _flags_line(trace_launches[0]) != _flags_line(plain_launches[0])
 

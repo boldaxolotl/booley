@@ -1093,53 +1093,6 @@ def _select_interactive_app(
     return dc.APP_NONE
 
 
-def _resolve_auth_token_source(app: str) -> Path | None:
-    """Return the host path to *app*'s subscription auth token, if it exists.
-
-    Mounted read-only into the container (ADR 0018). Returns ``None`` for
-    API-key auth or ``none`` (nothing to mount).
-    """
-    creds = {
-        dc.APP_CLAUDE: Path.home() / ".claude" / ".credentials.json",
-        dc.APP_CODEX: Path.home() / ".codex" / "auth.json",
-    }.get(app)
-    return creds if creds and creds.is_file() else None
-
-
-def _resolve_token_seed_source(app: str) -> Path | None:
-    """Return the host path of *app*'s stored rotation-free credential, if any.
-
-    The file ``booley auth`` writes (``~/.config/booley/...``, mode 0600).
-    Mounted read-only at the app's token-seed sidecar so
-    ``incontainer_register`` can apply it on every container start — the only
-    route that reaches VS Code's "Reopen in Container", which resolves the
-    spec's ``${localEnv:...}`` against VS Code's own process env where the
-    stored file is invisible. Gated on the file actually existing: a bind
-    mount whose source is missing fails container creation outright.
-    """
-    if app not in auth_token.CREDENTIALS:
-        return None
-    return auth_token.token_path(app) if auth_token.read_stored_token(app) else None
-
-
-def _resolve_config_seed_source(app: str) -> Path | None:
-    """Return the host ``~/.claude.json`` to seed the container's user config.
-
-    Claude Code caches statsig feature-gate grants (staged-rollout / promo model
-    access such as Fable), the install stableID, and onboarding state in
-    ``~/.claude.json`` — a file that sits *outside* the persisted ``~/.claude/``
-    volume, so the container is born without it and gated models drop off the
-    in-container picker. Seeding the container's copy from the host carries the
-    grants across (mounted read-only + copied; the host file is never written).
-    Only Claude keeps this cache; returns ``None`` for other apps or when the
-    host config is absent (e.g. a machine that never ran Claude Code).
-    """
-    if app != dc.APP_CLAUDE:
-        return None
-    cfg = Path.home() / ".claude.json"
-    return cfg if cfg.is_file() else None
-
-
 def _report_seeded_mounts(
     auth_apps: list[str],
     seeding_config: bool,

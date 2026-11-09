@@ -7,7 +7,7 @@ import pytest
 
 from booley.flows.base import SubprocessResult
 from booley.flows.progress_lifecycle import progress_document
-from booley.flows.sim.adapter_transport import AdapterResult, write_adapter_result
+from booley.flows.sim.adapter_transport import AdapterResult
 from booley.flows.sim.execution import SimulationExecution, SimulationOptions
 from booley.flows.sim.live_progress import (
     LiveProgressSink,
@@ -17,29 +17,24 @@ from booley.flows.sim.live_progress import (
     publish_checkpoint,
 )
 from tests.conftest import symlink_or_skip
+from tests.flows.sim.leased_session import canned_build_session
+from tests.flows.sim.prepared_group import run_prepared_group
 from tests.flows.sim.test_execution_engine import (
     _compile_surface_patch,
     _handle,
     _inspection,
     _prepared,
+    _write_transport,
 )
 
 
 def test_authenticated_build_publishes_execution_before_blocking_invoker(tmp_path, monkeypatch):
-
     monkeypatch.setenv("BOOLEY_RUN_ID", "current-run")
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
     path = tmp_path / "reports/sim/1/progress.json"
     sink = LiveProgressSink(path, tmp_path, "current-run")
-    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
-    session = MagicMock()
-    session.new_generation.return_value = prepared.work_root
-    session.capture_inputs.return_value = {}
-    session.try_reuse.return_value = None
-    execution._build_session = session
     observations = []
-    box = {}
 
     def invoke(command, *, timeout):
         del timeout
@@ -55,15 +50,18 @@ def test_authenticated_build_publishes_execution_before_blocking_invoker(tmp_pat
         assert stage["stage"] == "executing"
         assert stage["log"]["live"] is True
         assert (tmp_path / stage["log"]["path"]).is_file()
-        write_adapter_result(
-            box["attempt"].identity,
+        _write_transport(
+            handle,
+            prepared,
+            (),
             AdapterResult(passed=True, inconclusive=False, sva_errors=0, tests=()),
         )
         return SubprocessResult(returncode=0)
 
-    execution._invoke = invoke
+    execution = SimulationExecution(invoke=invoke, options=SimulationOptions())
     with (
         install_progress(sink),
+        canned_build_session(),
         _compile_surface_patch(handle),
         patch(
             "booley.flows.sim.execution.engine.TargetCatalog.build",
@@ -84,10 +82,13 @@ def test_authenticated_build_publishes_execution_before_blocking_invoker(tmp_pat
                 extra={"mode": "simulate"},
             ),
         )
-        attempt = execution._prepare_attempt(handle, ())
-        box["attempt"] = attempt
-        result = execution._execute_fresh_adapter(handle, attempt, session)
-    assert result.result is not None
+        outcome = run_prepared_group(
+            execution,
+            handle,
+            attempt_root=handle.project_root / "attempt",
+            copy_build_root=True,
+        )
+    assert outcome.passed
     assert len(observations) == 2
 
 

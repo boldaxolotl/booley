@@ -18,6 +18,7 @@ from booley.projects import cli as project_inventory_cli
 from booley.projects import inventory as project_inventory
 from booley.runtime import image_keepers as runtime_image_keepers
 from booley.runtime.session_issuance import keeper_image
+from tests.devcontainer_spec_support import build_spec
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -739,11 +740,12 @@ def test_forget_release_requires_reissuance_before_admission(
     from booley.runtime import interactive_docker
     from booley.runtime import session_issuance as issuance
     from tests.runtime.test_session_issuance import _install_trusted_validator
+    from tests.session_issuance_support import fixed
 
     validator = _install_trusted_validator(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", str(validator.parent))
     project = _remember(tmp_path)
-    spec = dc.build_devcontainer_spec(
+    spec = build_spec(
         dc.APP_NONE,
         mcp_start_command=dc.mcp_post_start_command(),
         protected_devcontainer_source=str(project / ".devcontainer"),
@@ -761,22 +763,21 @@ def test_forget_release_requires_reissuance_before_admission(
         ),
     )
     monkeypatch.setattr(issuance, "_project_data_alias_capable", lambda _image: False)
-    issuance.pin_image(spec)
-    issuance.seal(project, spec)
-    path = dc.write_devcontainer(project, spec)
+    prepared = issuance.preview(project, fixed(spec))
     monkeypatch.setattr(
         interactive_docker,
         "tag_image",
         lambda source, target: keeper_host.tags.update({target: source}),
     )
-    stamp = issuance.issue(project, spec, path)
+    stamp = issuance.issue_prepared(project, prepared, reconcile_dashboard=False)
+    path = dc.devcontainer_path(project)
     assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 0
     capsys.readouterr()
     assert issuance.stamp_path(project).exists()
     with pytest.raises(issuance.RuntimeSpecError, match="keeper is missing"):
-        issuance.validate(project, spec, path)
-    issuance.issue(project, spec, path)
-    assert issuance.validate(project, spec, path).image_id == stamp.image_id
+        issuance.validate(project, prepared.spec, path)
+    issuance.issue_prepared(project, prepared, reconcile_dashboard=False)
+    assert issuance.validate(project, prepared.spec, path).image_id == stamp.image_id
 
 
 def test_actual_vscode_down_then_forget_retains_stopped_container(
