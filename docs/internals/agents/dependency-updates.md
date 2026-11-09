@@ -9,7 +9,7 @@ runner is `.github/workflows/renovate.yml` (every 4 hours, plus
 
 | Group | Schedule | Touches | Approval |
 |-------|----------|---------|----------|
-| ci-tooling | weekly (Monday) | workflow and action `uses`, CI requirement files, CI tool pins | none |
+| ci-tooling | weekly | workflow and action `uses`, CI requirement files, CI tool pins | none |
 | dev-python | weekly | `pyproject.toml` extras and the CI pins they share | none |
 | sandbox-base | weekly | base image runtime pins, agent CLIs, Node, editor extensions, Ubuntu | none |
 | website | weekly | documentation site requirements | none |
@@ -33,25 +33,28 @@ PRs are off; do not re-enable them while Renovate runs.
 Limits:
 
 - A fix for a Python range in `pyproject.toml` that already admits the fixed
-  version gets no PR (no lock file; `rangeStrategy` is `update-lockfile`).
+  version gets no PR (`pyproject.toml` has no lock file, and vulnerability
+  fixes use `rangeStrategy` `update-lockfile`).
   Shipped images install the `==` pins in the requirement files, and those do
   get PRs.
 - SHA-pinned GitHub Actions raise no alerts; their fixes arrive through the
   weekly ci-tooling group.
-- Unverified: whether a security fix that crosses a major or hits a manual row
-  still waits for approval (Renovate docs are silent). If one sits on the
-  Dashboard, approve it at once and file an issue.
+- Security settings are forced over every matching rule (Renovate's
+  `force` merge), so a security fix that crosses a major or hits a manual row
+  opens without the Dashboard hold. Renovate's hourly PR limit skips security
+  fixes; the concurrent PR limit still counts them, in a separate counter.
 
 ## Review and land a Renovate PR
 
 1. Read the PR body: `prBodyNotes` list places no rewrite can reach.
 2. Check the CI jobs ran and passed. CI-only groups (ci-tooling, dev-python,
    website, rust crates) need nothing more.
-3. Image groups (sandbox-base, EDA tools, riscv, openroad, sidecars): PR CI
-   builds a test copy of the image and runs the sidecar, bwave and runtime
-   smoke jobs that `.github/scripts/ci_changes.py` selects. Confirm they ran.
-   When CI cannot cover it (for example RISC-V tooling), build the image
-   locally and run a smoke session.
+3. Image groups (sandbox-base, EDA tools, riscv, openroad, sidecars, the Rust
+   builder image): PR CI builds a test copy of the image and runs the
+   `sidecar-smoke` and `bwave-smoke` jobs that
+   `.github/scripts/ci_changes.py` selects. Confirm they ran. When a smoke job
+   was not selected for a change that affects what a session runs, build the
+   image locally and run a smoke session.
 4. Never dispatch `docker-base-publish.yml`, `docker-publish.yml` or
    `riscv-tooling-publish.yml` on a Renovate branch: a dispatch publishes and
    moves shared tags.
@@ -81,7 +84,8 @@ An OpenROAD PR is a human job (`ready-for-human`). Same items as its
    specifies: `# renovate: datasource=... depName=...`; a pin that follows a
    branch uses `packageName=` and `currentValue=<branch>` over a commit digest;
    a tag-plus-commit pair adds `# pin-companion: <PRIMARY_ARG>`. A pin that
-   must not be bumped automatically goes in `_MANUAL_PINS`; a build input that
+   must not be bumped automatically (OpenROAD only) goes in `_MANUAL_PINS`
+   and needs a manual-row rule with a hold in `renovate.json`; a build input that
    is not a pin goes in `_NOT_PINS`.
 2. A download with checksums or paired values: add it to `PINS` in
    `.github/scripts/pin_checksums.py`. Keep `fileFilters` in `renovate.json`,
@@ -92,15 +96,16 @@ An OpenROAD PR is a human job (`ready-for-human`). Same items as its
 4. Assign a group rule in `packageRules`, and keep its exact-name selectors in
    step with `tests/ci/test_renovate_config.py`.
 5. Validate with the strict check (`renovate-config` CI job, or
-   `renovate-config-validator --strict .github/renovate.json` from the runner
-   image).
+   `renovate-config-validator --strict --no-global .github/renovate.json` from
+   the runner image).
 
 ## Pushing to a Renovate branch
 
 Renovate treats a branch with a commit from another author as modified and
 makes no further commits: no rebase on conflict, no newer version. For a fresh
-Renovate update, tick the PR's rebase checkbox or close the PR; both discard
-the follow-up commits.
+Renovate update, tick the PR's rebase checkbox; it discards the follow-up
+commits. Do not close the PR: Renovate reads a closed, unmerged PR as "ignore
+this update" and will not reopen it for that version (for a major, that major).
 
 ## Rollback
 

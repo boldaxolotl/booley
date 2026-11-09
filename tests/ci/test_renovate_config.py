@@ -1,7 +1,7 @@
 """Guards for the Renovate runner and its repository configuration (#2996, tracker #2551).
 
-Renovate lists every pinned dependency on its Dependency Dashboard and holds each
-update for approval. These tests prove the parts that need no GitHub: custom managers
+Renovate lists every pinned dependency on its Dependency Dashboard; majors, Cargo
+lock-file maintenance and the manual rows wait there for approval. These tests prove the parts that need no GitHub: custom managers
 extract the pins on the real files, built-in managers see every pinned file, manual rows
 stay approval-only in groups of their own, shared pins resolve to one group, release age
 reaches only datasources with release timestamps, and the runner never exposes its token.
