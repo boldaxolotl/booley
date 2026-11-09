@@ -44,12 +44,7 @@ from .coordinator import (
     SimulationCampaign,
     SimulationCampaignCancellationError,
 )
-from .facts import (
-    AcceptanceFacts,
-    acceptance_facts_sha256,
-    decode_acceptance_facts,
-    encode_acceptance_facts,
-)
+from .facts import AcceptanceFacts
 from .inspection import (
     CampaignWorkItemEvidence,
     RetainedCampaignStatus,
@@ -121,13 +116,11 @@ __all__ = [
     "SimulatorBundle",
     "UnsupportedSimulationCampaignFormatError",
     "ValidatedResumeManifest",
-    "acceptance_facts_sha256",
     "authenticate_retained_campaign_inventory",
     "authenticate_work_item",
     "build_artifact_reference",
     "collect_pre_sim_firings",
     "create_simulation_campaign_plan",
-    "decode_acceptance_facts",
     "decode_bundle_build_attempt",
     "decode_bundle_build_result",
     "decode_executable_snapshot",
@@ -136,7 +129,6 @@ __all__ = [
     "decode_simulation_projection",
     "decode_simulation_result",
     "decode_simulator_bundle",
-    "encode_acceptance_facts",
     "encode_artifact_reference",
     "encode_bundle_build_attempt",
     "encode_bundle_build_result",
