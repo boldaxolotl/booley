@@ -233,26 +233,26 @@ def test_host_diagnostics_preserves_environment_failures_and_warning_identity(
     assert (actual.fix, actual.check_id) == (observation.fix, observation.check_id)
 
 
-@pytest.mark.parametrize("store_name", ["issuance", "admission", "refresh", "invalidation"])
 def test_host_doctor_reports_session_store_file_named_for_another_root(
-    monkeypatch, tmp_path: Path, store_name
+    monkeypatch, tmp_path: Path
 ):
     """A Session store file not named for the Project Root it holds fails Doctor read-only."""
     xdg_home = tmp_path / "config"
     xdg_home.mkdir(mode=0o700)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
-    module, attribute = {
-        "issuance": (session_issuance, "stamp_store"),
-        "admission": (session_admission, "claim_store"),
-        "refresh": (session_refresh, "journal_store"),
-        "invalidation": (issuance_invalidation, "journal_store"),
-    }[store_name]
-    store = getattr(module, attribute)()
-    store.private.ensure_directory()
     held_root = str(tmp_path / "project")
-    misnamed = store.private.root / (hashlib.sha256(b"another-root").hexdigest() + ".json")
-    store.private.atomic_write_text(misnamed.name, json.dumps({"project_root": held_root}))
-    before = misnamed.read_bytes()
+    misnamed = []
+    for module, attribute in (
+        (session_issuance, "stamp_store"),
+        (session_admission, "claim_store"),
+        (session_refresh, "journal_store"),
+        (issuance_invalidation, "journal_store"),
+    ):
+        store = getattr(module, attribute)()
+        store.private.ensure_directory()
+        path = store.private.root / (hashlib.sha256(b"another-root").hexdigest() + ".json")
+        store.private.atomic_write_text(path.name, json.dumps({"project_root": held_root}))
+        misnamed.append((path, path.read_bytes()))
 
     bootstrap = host_diagnostics.bootstrap
     monkeypatch.setattr(
@@ -273,7 +273,8 @@ def test_host_doctor_reports_session_store_file_named_for_another_root(
     result = host_diagnostics.inspect_host()
 
     failures = [f for f in result.report.findings if f.severity is Severity.FAIL]
-    assert len(failures) == 1
-    assert str(misnamed) in failures[0].message
-    assert "booley init --seed --project" in failures[0].message
-    assert misnamed.read_bytes() == before
+    assert len(failures) == len(misnamed)
+    for (path, before), failure in zip(misnamed, failures, strict=True):
+        assert str(path) in failure.message
+        assert "booley init --seed --project" in failure.message
+        assert path.read_bytes() == before

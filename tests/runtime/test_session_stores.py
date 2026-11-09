@@ -75,73 +75,70 @@ def _old_rule_name(project_root: str) -> str:
     return hashlib.sha256(project_root.encode()).hexdigest() + ".json"
 
 
-@pytest.mark.parametrize("name", STORE_NAMES)
-def test_store_scan_rejects_stray_entry(name: str, project: Path) -> None:
-    store = _store(name)
-    stray = _plant(store, "notes.txt", {"project_root": str(project)})
+def test_store_scan_rejects_stray_entry(project: Path) -> None:
+    for name in STORE_NAMES:
+        store = _store(name)
+        stray = _plant(store, "notes.txt", {"project_root": str(project)})
 
-    with pytest.raises(store.private.error_type, match=r"notes\.txt") as caught:
-        _scan_through_entry_point(name, project)()
+        with pytest.raises(store.private.error_type, match=r"notes\.txt") as caught:
+            _scan_through_entry_point(name, project)()
 
-    assert str(stray) in str(caught.value)
+        assert str(stray) in str(caught.value)
+        stray.unlink()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation needs a privilege on Windows")
-@pytest.mark.parametrize("name", STORE_NAMES)
-def test_store_scan_rejects_symlinked_entry(name: str, project: Path, tmp_path: Path) -> None:
-    store = _store(name)
-    store.private.ensure_directory()
+def test_store_scan_rejects_symlinked_entry(project: Path, tmp_path: Path) -> None:
     outside = tmp_path / "outside.json"
     outside.write_text(json.dumps({"project_root": str(project)}), encoding="utf-8")
-    link = store.private.root / store.filename(str(project))
-    link.symlink_to(outside)
+    for name in STORE_NAMES:
+        store = _store(name)
+        store.private.ensure_directory()
+        link = store.private.root / store.filename(str(project))
+        link.symlink_to(outside)
 
-    with pytest.raises(store.private.error_type, match="unexpected") as caught:
-        _scan_through_entry_point(name, project)()
+        with pytest.raises(store.private.error_type, match="unexpected") as caught:
+            _scan_through_entry_point(name, project)()
 
-    assert str(link) in str(caught.value)
+        assert str(link) in str(caught.value)
+        link.unlink()
 
 
-@pytest.mark.parametrize(
-    ("rule", "same_name"), [("windows", True), ("posix", False)], ids=["windows", "posix"]
-)
-def test_store_names_project_root_by_platform_case_rule(
-    rule: str, same_name: bool, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        private_store.os.path,
-        "normcase",
-        ntpath.normcase if rule == "windows" else posixpath.normcase,
+def test_store_names_project_root_by_platform_case_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    upper, mixed = "C:\\Work\\Project", "c:\\work\\PROJECT"
+    monkeypatch.setattr(private_store.os.path, "normcase", ntpath.normcase)
+    assert session_issuance.stamp_path_for_identity(upper) == (
+        session_issuance.stamp_path_for_identity(mixed)
     )
 
-    upper = session_issuance.stamp_path_for_identity("C:\\Work\\Project")
-    mixed = session_issuance.stamp_path_for_identity("c:\\work\\PROJECT")
+    monkeypatch.setattr(private_store.os.path, "normcase", posixpath.normcase)
+    assert session_issuance.stamp_path_for_identity(upper) != (
+        session_issuance.stamp_path_for_identity(mixed)
+    )
 
-    assert (upper == mixed) is same_name
 
-
-@pytest.mark.parametrize("name", ["issuance", "refresh", "invalidation"])
 def test_old_windows_rule_file_fails_closed_naming_file_and_repair(
-    name: str, project: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(private_store.os.path, "normcase", ntpath.normcase)
     root = str(project)
-    store = _store(name)
-    old = _plant(store, _old_rule_name(root), {"project_root": root})
-    assert old.name != store.filename(root)
     reads: dict[str, Callable[[], object]] = {
         "issuance": lambda: session_issuance.recovery_stamp_path(project),
         "refresh": lambda: session_refresh.has_pending_refresh(project),
         "invalidation": lambda: issuance_invalidation.has_pending(project),
     }
+    for name, read in reads.items():
+        store = _store(name)
+        old = _plant(store, _old_rule_name(root), {"project_root": root})
+        assert old.name != store.filename(root)
 
-    with pytest.raises(store.private.error_type) as caught:
-        reads[name]()
+        with pytest.raises(store.private.error_type) as caught:
+            read()
 
-    message = str(caught.value)
-    assert str(old) in message
-    assert f"booley init --seed --project {root}" in message
-    assert old.exists()
+        message = str(caught.value)
+        assert str(old) in message
+        assert f"booley init --seed --project {root}" in message
+        assert old.exists()
 
 
 def test_scan_reports_old_windows_rule_file(
