@@ -9,7 +9,13 @@ reaches only datasources with release timestamps, and the runner never exposes i
 Renovate is the authority on real matching: the lookup run recorded on #2996
 (``renovate --platform=local --dry-run=lookup``) re-checks these claims against the pinned
 image. The rule resolver below is deliberately small: last match wins, exact names and
-paths only, and an unknown ``match*`` key fails loudly.
+paths only, and an unknown ``match*`` key fails loudly (``prBodyNotes`` is the one
+option it merges, as Renovate does).
+
+Part 2 (#2998) adds the literal copies of each pin (docs, contract probes, source
+constants): a custom manager rewrites each one in the same Renovate PR as its canonical
+pin, joins the same branch, and the provenance comments no rewrite can reach are listed in
+the PR body.
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ import shlex
 import sys
 import tomllib
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +50,67 @@ _REAPER = f"{_DOCKER_DIR}/Dockerfile.reaper"
 _DEEP_TESTS = ".github/workflows/deep-tests.yml"
 _DEMO_CONTRACT = ".github/contracts/picorv32-demo.toml"
 _VENDORED_MANIFEST = "crates/bwave/vendor/fst-writer/Cargo.toml"
+_EDA_DOC = "docs/user/SUPPORTED-EDA-TOOLS.md"
+_SESSION_CONTRACT = ".github/contracts/session-runtime.toml"
+_TROUBLESHOOTING = "docs/user/TROUBLESHOOTING.md"
+_TROUBLESHOOTING_PACKAGED = "src/booley/data/refs/TROUBLESHOOTING.md"
+_VERILATOR_IDENTITY = "src/booley/flows/sim/verilator_identity.py"
+_DEVCONTAINER = "src/booley/runtime/devcontainer.py"
+_VAPORVIEW_MODULE = "src/booley/runtime/vaporview.py"
+
+# Dependency names exactly as the canonical pins (and so the copy managers) report them.
+_VERILATOR = "verilator/verilator"
+_YOSYS = "YosysHQ/yosys"
+_ICARUS = "steveicarus/iverilog"
+_SV2V = "zachjs/sv2v"
+_VERIBLE = "chipsalliance/verible"
+_XPACK = "xpack-dev-tools/riscv-none-elf-gcc-xpack"
+_SPIKE = "riscv-isa-sim"
+_VAPORVIEW = "lramseyer/vaporview"
+_HDL = "mshr-h/veriloghdl"
+_LIVE_SERVER = "ms-vscode/live-server"
+_UBUNTU = "docker.io/library/ubuntu"
+_OPENROAD_BUILDER = "docker.io/openroad/ubuntu26.04"
+_OPENROAD_EDA_BUILDER = "docker.io/openroad/ubuntu26.04-dev"
+_ACTIONLINT = "rhysd/actionlint"
+
+# Every literal copy of a canonical pin that Renovate must rewrite with it: (file,
+# dependency, number of places). A reworded line or a new copy fails the extraction test
+# below until this table and renovate.json agree.
+_COPIES: tuple[tuple[str, str, int], ...] = (
+    (_SESSION_CONTRACT, _VERILATOR, 1),
+    (_EDA_DOC, _VERILATOR, 1),
+    (_VERILATOR_IDENTITY, _VERILATOR, 1),
+    (_EDA_DOC, _YOSYS, 2),
+    (_EDA_DOC, _ICARUS, 1),
+    (_EDA_DOC, _SV2V, 1),
+    (_EDA_DOC, _VERIBLE, 1),
+    (_EDA_DOC, "fusesoc", 1),
+    (_EDA_DOC, "edalize", 1),
+    (_EDA_DOC, "cocotb", 1),
+    (_SESSION_CONTRACT, "cocotb", 1),
+    (_EDA_DOC, "cocotbext-axi", 1),
+    (_EDA_DOC, "cocotbext-uart", 1),
+    (_EDA_DOC, "numpy", 1),
+    (_EDA_DOC, _XPACK, 1),
+    (_SESSION_CONTRACT, _XPACK, 1),
+    (_EDA_DOC, _SPIKE, 1),
+    (_VAPORVIEW_MODULE, _VAPORVIEW, 1),
+    (_TROUBLESHOOTING, _VAPORVIEW, 3),
+    (_TROUBLESHOOTING_PACKAGED, _VAPORVIEW, 3),
+    (_DEVCONTAINER, _HDL, 1),
+    (_SESSION_CONTRACT, _HDL, 1),
+    (_TROUBLESHOOTING, _HDL, 1),
+    (_TROUBLESHOOTING_PACKAGED, _HDL, 1),
+    (_DEVCONTAINER, _LIVE_SERVER, 1),
+    (_SESSION_CONTRACT, _LIVE_SERVER, 1),
+    (_TROUBLESHOOTING, _LIVE_SERVER, 1),
+    (_TROUBLESHOOTING_PACKAGED, _LIVE_SERVER, 1),
+    (_EDA_DOC, _UBUNTU, 1),
+    (_DOCKERFILE_BASE, _UBUNTU, 1),
+    (_DOCKERFILE_BASE, _OPENROAD_BUILDER, 1),
+    (_DOCKERFILE_BASE, _OPENROAD_EDA_BUILDER, 1),
+)
 
 # Directories that hold the pins Renovate tracks outside Python and Rust manifests.
 _PIN_ROOTS = (
@@ -145,15 +213,27 @@ def _rule_matches(rule: dict[str, Any], dep: _Dep) -> bool:
 
 
 def _resolve(dep: _Dep) -> dict[str, Any]:
-    """Merge the top-level hold and every matching rule, later rules winning."""
+    """Merge the top-level hold and every matching rule, later rules winning.
+
+    ``prBodyNotes`` is the exception: Renovate merges it (``mergeable``), so every
+    matching rule's notes are kept, in rule order.
+    """
     resolved: dict[str, Any] = {
         "dependencyDashboardApproval": _config().get("dependencyDashboardApproval", False)
     }
+    notes: list[str] = []
     for rule in _rules():
         if _rule_matches(rule, dep):
+            notes.extend(rule.get("prBodyNotes", []))
             resolved.update(
-                {k: v for k, v in rule.items() if not k.startswith("match") and k != "description"}
+                {
+                    k: v
+                    for k, v in rule.items()
+                    if not k.startswith("match") and k not in ("description", "prBodyNotes")
+                }
             )
+    if notes:
+        resolved["prBodyNotes"] = notes
     return resolved
 
 
@@ -168,14 +248,30 @@ class _Extracted:
     current_digest: str | None
     package_name: str | None
     match: str
+    span: tuple[int, int]
+    versioning: str | None
+    extract_version: str | None
+
+
+def _copy_files() -> list[str]:
+    """Files holding literal copies, in the order the table lists them, once each."""
+    return list(dict.fromkeys(file for file, _dep, _count in _COPIES))
+
+
+def _manager_universe() -> list[str]:
+    """Files Renovate would show a manager: the pin roots plus the copy files, minus ignored."""
+    ignored = _config()["ignorePaths"]
+    paths = dict.fromkeys([*_pin_files(), *_copy_files()])
+    return [path for path in paths if not _glob_matches(ignored, path)]
 
 
 def _extract_custom() -> list[_Extracted]:
     """Run every custom manager's match strings over the files its patterns select."""
     extracted: list[_Extracted] = []
+    universe = _manager_universe()
     for manager in _config()["customManagers"]:
         assert manager["customType"] == "regex"
-        for path in _pin_files():
+        for path in universe:
             if not _file_pattern_matches(manager["managerFilePatterns"], path):
                 continue
             text = _text(path)
@@ -196,6 +292,11 @@ def _extract_custom() -> list[_Extracted]:
                             current_digest=groups.get("currentDigest"),
                             package_name=package,
                             match=found.group(0),
+                            span=found.span(),
+                            versioning=groups.get("versioning")
+                            or manager.get("versioningTemplate"),
+                            extract_version=groups.get("extractVersion")
+                            or manager.get("extractVersionTemplate"),
                         )
                     )
     return extracted
@@ -248,9 +349,15 @@ def test_custom_managers_extract_every_tracked_pin() -> None:
         assert got == expected, relative
     assert _annotated_pins(_DOCKERFILE_BASE), "Dockerfile.base lost every pin annotation"
     assert _annotated_pins(_RISCV), "Dockerfile.riscv lost its pins"
-    assert len({(e.file, e.dep_name) for e in extracted}) == len(
-        {(e.file, e.dep_name, e.match) for e in extracted}
-    ), "two custom managers extract the same dependency from one file"
+    # Renovate applies each upgrade by finding its matched text in the file, so two
+    # matches that share a character would make the second upgrade fail.
+    by_file: dict[str, list[_Extracted]] = {}
+    for item in extracted:
+        by_file.setdefault(item.file, []).append(item)
+    for file, items in by_file.items():
+        spans = sorted(item.span for item in items)
+        for (_, end), (start, _) in pairwise(spans):
+            assert end <= start, f"{file}: two custom matches overlap near offset {start}"
 
 
 def test_custom_managers_extract_ci_and_contract_pins() -> None:
@@ -262,12 +369,13 @@ def test_custom_managers_extract_ci_and_contract_pins() -> None:
     assert f"ARG OPENROAD_VERSION={openroad.current_value}\n" in _text(_DOCKERFILE_BASE)
 
     # cargo-fuzz and actionlint: the version is the one in the file, and actionlint's
-    # bare version appears twice inside the match so auto-replace rewrites both.
+    # step name and both URL occurrences sit inside one match so auto-replace rewrites all.
     fuzz = by_key[(_DEEP_TESTS, "cargo-fuzz")]
     assert f"cargo install cargo-fuzz --version {fuzz.current_value} " in _text(_DEEP_TESTS)
     actionlint = by_key[(_TEST_WORKFLOW, "rhysd/actionlint")]
     assert actionlint.current_value is not None
-    assert actionlint.match.count(actionlint.current_value) == 2
+    assert actionlint.match.startswith(f"Install actionlint v{actionlint.current_value}")
+    assert actionlint.match.count(actionlint.current_value) == 3
 
     # Demo contract refs: both repositories, each with the commit the file pins.
     contract = tomllib.loads(_text(_DEMO_CONTRACT))
@@ -616,6 +724,440 @@ def test_runner_and_config_hold_every_update() -> None:
     """AC2 (pre-merge part): the runner cannot leak its token and nothing updates unapproved."""
     _assert_runner_exposes_nothing()
     _assert_config_holds_every_update()
+
+
+# --- Literal copies of canonical pins (#2998) -------------------------------------------
+
+_IMAGE = re.compile(r"(?P<name>[^:@\s]+)(?::(?P<tag>[\w.]+))?@(?P<digest>sha256:[0-9a-f]{64})")
+
+
+@dataclass(frozen=True)
+class _Pin:
+    """A canonical pin read straight from its file, independent of the custom managers."""
+
+    file: str
+    manager: str
+    dep_type: str
+    datasource: str
+    value: str | None
+    digest: str | None
+    tokens: dict[str, str]
+
+
+def _annotation_tokens(dockerfile: str) -> dict[str, dict[str, str]]:
+    """Map depName to the ``key=value`` tokens of its ``# renovate:`` annotation."""
+    by_dep: dict[str, dict[str, str]] = {}
+    for line in _text(dockerfile).splitlines():
+        annotation = _ANNOTATION.fullmatch(line)
+        if annotation is not None:
+            tokens = dict(token.split("=", 1) for token in annotation["tokens"].split(" "))
+            by_dep[tokens["depName"]] = tokens
+    return by_dep
+
+
+def _canonical(dep: str) -> _Pin:
+    """Find the pin ``dep`` is tracked by: a Dockerfile annotation, a requirement or a ``FROM``."""
+    for dockerfile in (_DOCKERFILE_BASE, _RISCV):
+        tokens = _annotation_tokens(dockerfile)
+        if dep in tokens:
+            pin = next(p for p in _annotated_pins(dockerfile) if p[1] == dep)
+            return _Pin(dockerfile, "regex", "", pin[0], pin[2], pin[3], tokens[dep])
+    requirements = _pins(_text(_BASE_REQUIREMENTS))
+    if dep in requirements:
+        return _Pin(
+            _BASE_REQUIREMENTS, "pip_requirements", "", "pypi", requirements[dep], None, {}
+        )
+    for image in _FROM.findall(_text(_DOCKERFILE_BASE)):
+        reference = _IMAGE.fullmatch(image)
+        if reference is not None and reference["name"] == dep:
+            return _Pin(
+                _DOCKERFILE_BASE,
+                "dockerfile",
+                "stage",
+                "docker",
+                reference["tag"],
+                reference["digest"],
+                {},
+            )
+    raise AssertionError(f"no canonical pin found for {dep}")
+
+
+def _copy_value(canonical: str, extract_version: str | None) -> str:
+    """Return the value a copy holds: the release tag after the copy's own ``extractVersion``.
+
+    Every tag of the dependencies that use a template starts with ``v``, while the
+    canonical pin may omit it (xPack), so the tag is rebuilt before the template runs.
+    """
+    if extract_version is None:
+        return canonical
+    tag = canonical if canonical.startswith("v") else f"v{canonical}"
+    found = re.fullmatch(_python_regex(extract_version), tag)
+    assert found is not None, f"extractVersion {extract_version} rejects the tag {tag}"
+    return found["version"]
+
+
+def _historical_paths() -> list[str]:
+    """Dated records that mention old versions on purpose and must never be rewritten."""
+    named = (
+        "CHANGELOG.md",
+        "src/booley/data/refs/CHANGELOG.md",
+        "docs/internals/coverage-release-gate.md",
+        "qa/shared/coverage/RUNBOOK.md",
+        "qa/missions/uart/MISSION.md",
+        "qa/missions/uart/evaluator/README.md",
+    )
+    globbed = [
+        path.relative_to(_ROOT).as_posix()
+        for pattern in ("docs/adr/*.md", "docs/internals/validation/**/*", "qa/missions/taxi/**/*")
+        for path in _ROOT.glob(pattern)
+        if path.is_file()
+    ]
+    assert all((_ROOT / path).is_file() for path in named)
+    assert any(path.startswith("docs/adr/") for path in globbed)
+    return [*named, *globbed]
+
+
+def test_every_listed_copy_is_extracted_with_its_canonical_value() -> None:
+    """AC1/AC2: each copy is extracted with the canonical value and digest; history is not."""
+    extracted = _extract_custom()
+    ignored = _config()["ignorePaths"]
+    for file, dep, count in _COPIES:
+        assert not _glob_matches(ignored, file), f"{file} is ignored by Renovate"
+        found = [e for e in extracted if e.file == file and e.dep_name == dep]
+        assert len(found) == count, (file, dep, [e.match for e in found])
+        pin = _canonical(dep)
+        for copy in found:
+            assert copy.datasource == pin.datasource, (file, dep)
+            expected = None if pin.value is None else _copy_value(pin.value, copy.extract_version)
+            assert copy.current_value == expected, (file, dep, copy.match)
+            assert copy.current_digest in (None, pin.digest), (file, dep, copy.match)
+            if copy.current_value == pin.value:
+                # A copy in the canonical form must compare versions the way the pin does.
+                assert copy.versioning == pin.tokens.get("versioning"), (file, dep)
+                assert copy.extract_version == pin.tokens.get("extractVersion"), (file, dep)
+            if "packageName" in pin.tokens:
+                assert copy.package_name == pin.tokens["packageName"], (file, dep)
+
+    # Nothing outside the pin files and the listed copies is extracted, and no manager
+    # selects a dated record.
+    listed = {(file, dep) for file, dep, _count in _COPIES}
+    pin_files = set(_pin_files())
+    for item in extracted:
+        assert item.file in pin_files or (item.file, item.dep_name) in listed, item
+    patterns = [p for m in _config()["customManagers"] for p in m["managerFilePatterns"]]
+    for path in _historical_paths():
+        assert not _file_pattern_matches(patterns, path), f"{path} is a dated record"
+
+
+def test_copy_match_strings_use_only_re2_syntax() -> None:
+    """Match strings compile under RE2 in Renovate: reject lookaround and backreferences."""
+    for manager in _config()["customManagers"]:
+        for match_string in manager["matchStrings"]:
+            assert not re.search(r"\(\?<?[=!]", match_string), match_string
+            assert not re.search(r"\\[1-9]|\\k<", match_string), match_string
+
+
+def _branch_view(resolved: dict[str, Any]) -> dict[str, Any]:
+    """What puts two upgrades in one PR: everything resolved except the PR-body notes."""
+    return {key: value for key, value in resolved.items() if key != "prBodyNotes"}
+
+
+def test_copies_join_their_canonical_branch() -> None:
+    """AC1/AC2: a copy resolves to the group, schedule and holds of its canonical pin."""
+    extracted = _extract_custom()
+    for file, dep, _count in _COPIES:
+        pin = _canonical(dep)
+        canonical = _Dep(dep, pin.file, pin.datasource, pin.manager, pin.dep_type)
+        copies = [e for e in extracted if e.file == file and e.dep_name == dep]
+        assert copies, f"no manager extracts {dep} from {file}"
+        for copy in copies:
+            copy_dep = _Dep(dep, file, copy.datasource, "regex")
+            # Same depName and release gives the same branch topic when ungrouped; a
+            # group name puts the copy in the group's single branch.
+            assert _branch_view(_resolve(copy_dep)) == _branch_view(_resolve(canonical)), (
+                file,
+                dep,
+            )
+            if dep == _UBUNTU:
+                # The Dockerfile manager sets Ubuntu versioning itself; a regex copy needs the
+                # rule, or it proposes the next non-LTS release the pin does not follow.
+                assert _resolve(copy_dep)["versioning"] == "ubuntu", file
+
+
+# Where each dependency's version is recorded as prose, a comment or a behaviour claim no
+# rewrite can reach: {dependency: {repository path: regex the file must still match}}.
+_AGENT_CLI_PLACES = {
+    "src/booley/config/gateway.py": r"(?i)codex",
+    "src/booley/runtime/text_only_agent.py": r"(?i)codex",
+    "docs/internals/GATEWAY.md": r"(?i)codex",
+}
+_FUSESOC_PLACES = {
+    "src/booley/fusesoc/core_projection.py": r"FuseSoC",
+    "src/booley/fusesoc/fusesoc_registry.py": r"FuseSoC",
+}
+_EDALIZE_PLACES = {
+    "src/booley/flows/edam.py": r"(?i)edalize",
+    "src/booley/flows/fpga/backends/vivado/edam.py": r"(?i)edalize",
+    f"{_DOCKER_DIR}/Dockerfile": r"(?i)edalize",
+}
+_PROVENANCE: dict[str, dict[str, str]] = {
+    "@openai/codex": _AGENT_CLI_PLACES,
+    "@openai/codex-linux-x64": _AGENT_CLI_PLACES,
+    _VERILATOR: {
+        "src/booley/config/tests_toml_rules.py": r"Verilator",
+        _DOCKERFILE_BASE: r"Verilator",
+    },
+    "cocotb": {
+        "src/booley/flows/sim/backends/cocotb_results.py": r"cocotb",
+        "src/booley/harness/init_cmd.py": r"cocotb",
+        "src/booley/runtime/project_image.py": r"cocotb",
+    },
+    _VAPORVIEW: {
+        "src/booley/bwave/cli.py": r"VaporView",
+        "src/booley/runtime/vaporview_vsix.py": r"VaporView",
+    },
+    _HDL: {_DEVCONTAINER: r"veriloghdl"},
+    _ACTIONLINT: {".github/actionlint.yaml": r"actionlint"},
+    _SPIKE: {_EDA_DOC: r"Spike"},
+    "fusesoc": _FUSESOC_PLACES,
+    "edalize": _EDALIZE_PLACES,
+    # Version-free needle: the prose may be re-read and reworded on a tag change.
+    _UBUNTU: {
+        _DOCKERFILE_BASE: r"Ubuntu \d+\.\d+",
+        f"{_DOCKER_DIR}/Dockerfile": r"Ubuntu \d+\.\d+",
+    },
+}
+
+# Mentions of an old version that stay on purpose: (file, dependency, fragment of the
+# line, why). A line not listed here fails the old-version test. A fragment that is a
+# claim about a release holds no version number: a reviewer who follows the PR note and
+# rewrites the comment for the new release must not have to edit this test as well.
+_LEFTOVERS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "src/booley/config/tests_toml_rules.py",
+        _VERILATOR,
+        "Largest seed Booley accepts or draws",
+        "limit measured on that release; the PR note asks for re-verification",
+    ),
+    (
+        _DOCKERFILE_BASE,
+        _VERILATOR,
+        "v5.052 is the first stable release after",
+        "history of why the pin moved past v5.050; the PR note names the file",
+    ),
+    (
+        "src/booley/flows/sim/backends/cocotb_results.py",
+        "cocotb",
+        "cocotb 2.0.1 and 2.1.0",
+        "releases the parser was frozen against, not the image pin",
+    ),
+    (
+        "src/booley/harness/init_cmd.py",
+        "cocotb",
+        "``cocotb 2.1.0 -> 1.5.1``",
+        "example of an incident, a dated observation",
+    ),
+    (
+        "src/booley/runtime/project_image.py",
+        "cocotb",
+        "``cocotb 2.1.0 -> 1.5.1``",
+        "example of an incident, a dated observation",
+    ),
+    (
+        "src/booley/bwave/cli.py",
+        _VAPORVIEW,
+        "ends with an empty view",
+        "behaviour observed in that release; the PR note asks for re-verification",
+    ),
+    (
+        _DEVCONTAINER,
+        _HDL,
+        "so nothing else is required",
+        "dated grammar observation; the PR note asks for re-verification",
+    ),
+    (
+        _DOCKERFILE_BASE,
+        _UBUNTU,
+        "builder ships",
+        "prose about the OpenROAD builder image; the PR note names the file",
+    ),
+    (
+        _DOCKERFILE_BASE,
+        _UBUNTU,
+        "image already occupies",
+        "prose about the parent image; the PR note names the file",
+    ),
+    (
+        _DOCKERFILE_BASE,
+        _UBUNTU,
+        "system Python refuses ensurepip",
+        "prose about the parent image; the PR note names the file",
+    ),
+    (
+        f"{_DOCKER_DIR}/Dockerfile",
+        _UBUNTU,
+        "final image's Ubuntu",
+        "glibc claim about the final image; the PR note names the file",
+    ),
+    (
+        "src/booley/fusesoc/core_projection.py",
+        "fusesoc",
+        "parses fileset paths as expressions",
+        "behaviour of that release; the PR note asks for re-verification",
+    ),
+    (
+        "src/booley/fusesoc/fusesoc_registry.py",
+        "fusesoc",
+        "EDAM writer",
+        "behaviour of that release; the PR note asks for re-verification",
+    ),
+    (
+        "src/booley/flows/edam.py",
+        "edalize",
+        "empirically confirmed",
+        "behaviour of that release; the PR note asks for re-verification",
+    ),
+    (
+        "src/booley/flows/edam.py",
+        "edalize",
+        "has no dedicated flow in edalize",
+        "behaviour of that release; the PR note asks for re-verification",
+    ),
+    (
+        "src/booley/flows/fpga/backends/vivado/edam.py",
+        "edalize",
+        "exposes no ``strategy`` option",
+        "behaviour of that release; the PR note asks for re-verification",
+    ),
+    (
+        "src/booley/flows/fpga/backends/vivado/edam.py",
+        "edalize",
+        "vivado flow has no OOC knob",
+        "behaviour of that release; the PR note asks for re-verification",
+    ),
+    (
+        f"{_DOCKER_DIR}/Dockerfile",
+        "edalize",
+        "lint flow has no Verible node",
+        "reason for the patch layer; the PR note asks for re-verification",
+    ),
+)
+
+
+def _old_forms(dep: str, extracted: list[_Extracted]) -> set[str]:
+    """Every spelling of ``dep``'s current version and digest a file could still hold."""
+    pin = _canonical(dep)
+    forms: set[str] = set()
+    values = [pin.value, *(e.current_value for e in extracted if e.dep_name == dep)]
+    for value in values:
+        # The Spike copy tracks a branch ("master"), not a version; only its digest counts.
+        if value is not None and value != "master":
+            bare = value.removeprefix("v")
+            forms.update({value, bare, f"v{bare}"})
+    if pin.digest is not None:
+        forms.add(pin.digest)
+    return forms
+
+
+def _match_spans(
+    text: str, dep: str, file: str, extracted: list[_Extracted]
+) -> list[tuple[int, int]]:
+    """Spans Renovate rewrites for ``dep`` in one file: custom matches and image references."""
+    spans = [e.span for e in extracted if e.file == file and e.dep_name == dep]
+    if _canonical(dep).datasource == "docker":
+        reference = rf"{re.escape(dep)}(?::[\w.]+)?@sha256:[0-9a-f]{{64}}"
+        spans += [found.span() for found in re.finditer(reference, text)]
+    return spans
+
+
+def test_no_old_version_outside_a_match_in_copy_files() -> None:
+    """AC1: after a bump nothing old is left in a copy file except the listed leftovers.
+
+    Auto-replace rewrites every occurrence of the old value inside a match, so an
+    occurrence outside every match of that dependency is exactly what a bump leaves behind.
+    """
+    extracted = _extract_custom()
+    stray: list[str] = []
+    for dep in dict.fromkeys(dep for _file, dep, _count in _COPIES):
+        files = {file for file, copy_dep, _count in _COPIES if copy_dep == dep}
+        files |= set(_PROVENANCE.get(dep, {}))
+        for file in sorted(files):
+            text = _text(file)
+            spans = _match_spans(text, dep, file, extracted)
+            for form in sorted(_old_forms(dep, extracted)):
+                for found in re.finditer(rf"(?<![\w.]){re.escape(form)}(?!\w|\.\w)", text):
+                    if any(start <= found.start() and found.end() <= end for start, end in spans):
+                        continue
+                    line = text[text.rfind("\n", 0, found.start()) + 1 :].split("\n", 1)[0]
+                    if not any(
+                        entry[:2] == (file, dep) and entry[2] in line for entry in _LEFTOVERS
+                    ):
+                        stray.append(f"{file}: {dep} {form!r}: {line.strip()}")
+    assert not stray, "old versions outside any match:\n" + "\n".join(stray)
+
+
+_PATH_IN_NOTE = re.compile(r"`([\w.-]+(?:/[\w.-]+)+)`")
+
+
+def _notes_for(dep: str) -> list[str]:
+    """The PR-body notes a branch gains from ``dep`` (selected by name only)."""
+    notes: list[str] = _resolve(_Dep(dep, _DOCKERFILE_BASE, "github-tags", "regex")).get(
+        "prBodyNotes", []
+    )
+    return notes
+
+
+def _noted_paths(dep: str) -> set[str]:
+    """Repository paths the notes of ``dep`` name in backticks."""
+    return {path for note in _notes_for(dep) for path in _PATH_IN_NOTE.findall(note)}
+
+
+def test_provenance_dependencies_list_their_places() -> None:
+    """AC3: a PR for a dependency with provenance comments names the places to re-verify."""
+    for dep, places in _PROVENANCE.items():
+        assert _noted_paths(dep) == set(places), dep
+        for path, needle in places.items():
+            assert re.search(needle, _text(path)), f"{path} no longer mentions {dep}"
+    for file, dep, fragment, _reason in _LEFTOVERS:
+        assert file in _noted_paths(dep), f"{file} must be named in the {dep} notes"
+        assert fragment in _text(file), f"{file} no longer holds the leftover {fragment!r}"
+
+
+_OPENROAD_CHECKLIST_ARGS = (
+    "OPENROAD_SOURCE_REF",
+    "OPENROAD_BINARY_VERSION",
+    "OPENROAD_SOURCE_SENTINEL_SHA256",
+)
+_OPENROAD_CHECKLIST_PATHS = (
+    _DOCKERFILE_BASE,
+    f"{_DOCKER_DIR}/openroad-source-manifest.json",
+    "THIRD_PARTY_NOTICES.md",
+    _EDA_DOC,
+    _SESSION_CONTRACT,
+)
+
+
+def test_openroad_prs_carry_the_regeneration_checklist() -> None:
+    """AC3: every dependency of the openroad group resolves to the manual checklist."""
+    extracted = _extract_custom()
+    deps = list(_manual_rows()["openroad"])
+    deps += [
+        _Dep(e.dep_name, e.file, e.datasource, "regex")
+        for e in extracted
+        if e.file == _DOCKERFILE_BASE and "/openroad/" in e.dep_name
+    ]
+    assert len(deps) >= 5, "the label, two builder images and their LABEL copies"
+    base = _text(_DOCKERFILE_BASE)
+    for arg in _OPENROAD_CHECKLIST_ARGS:
+        assert re.search(rf"^ARG {arg}=", base, re.MULTILINE), arg
+    for path in _OPENROAD_CHECKLIST_PATHS:
+        assert (_ROOT / path).is_file(), path
+    for dep in deps:
+        resolved = _resolve(dep)
+        assert resolved["groupName"] == "openroad", dep
+        notes = "\n".join(resolved.get("prBodyNotes", []))
+        for item in (*_OPENROAD_CHECKLIST_ARGS, *_OPENROAD_CHECKLIST_PATHS):
+            assert item in notes, (dep.name, item)
 
 
 def _job_runs(job: dict[str, Any]) -> dict[str, str]:

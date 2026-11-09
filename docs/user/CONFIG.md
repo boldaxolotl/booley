@@ -267,8 +267,9 @@ quiet_after = 7200   # seconds, 60 to 604800
 ```
 
 With `dashboard = false` the [Dashboard](USAGE.md#the-dashboard) does not
-open on its own; `booley dashboard` in a container terminal still opens it. If
-it doesn't open when it should, see [Dashboard
+open on its own; `booley dashboard` in a container terminal still opens it, and
+so does **Booley: Open Dashboard** (it needs a trusted Sandbox window with one
+Git folder). If it doesn't open when it should, see [Dashboard
 troubleshooting](TROUBLESHOOTING.md#the-dashboard-does-not-open-on-sandbox-attach).
 
 A Goal session that makes no Booley call for `quiet_after` seconds (default two
@@ -357,16 +358,16 @@ example `_project_check.py`. How they work: [MCP-TOOLS.md](../internals/MCP-TOOL
 ### Worktree setup hooks
 
 Keep Project setup scripts, such as a `.booley/hooks/post-setup.sh` that builds a
-toolchain or fetches vectors, under `.booley/hooks/`. Booley doesn't run them in
-a Goal worktree: after `booley worktree new` creates one, run the setup it needs
-from that worktree before you start the Goal. Keep generated build outputs
-ignored by Git, and commit deliberate inputs before Goal entry. Hooks are frozen
-as Protected Inputs while a Goal runs.
+toolchain or fetches vectors, under `.booley/hooks/`. `booley worktree new` runs
+`post-setup` (`.sh`, `.py`, or no suffix) in the new worktree after it fills the
+Git submodules, with `BOOLEY_WORKTREE` set to the worktree. The output is shown
+and logged, and a failure removes the worktree again. Keep generated build
+outputs ignored by Git, and commit deliberate inputs before Goal entry. Hooks
+are frozen as Protected Inputs while a Goal runs.
 
-The one exception is Goal Mode's baseline runs, which measure the Goal's base
-commit. They run `post-setup` (`.sh`, `.py`, or no suffix) in their fresh
-checkout of that commit, with `BOOLEY_WORKTREE` set to it, so files the hook
-builds (a firmware image, say) exist at the base too. Make the hook safe to run
+Goal Mode's baseline runs, which measure the Goal's base commit, also run
+`post-setup` in their fresh checkout of that commit, with `BOOLEY_WORKTREE` set
+to it, so files the hook builds (a firmware image, say) exist at the base too. Make the hook safe to run
 twice and read its inputs from the checkout. If it fails, only the Targets that
 need its output lose their baseline, with the hook's error as the reason. A
 hook that changes a tracked file makes the baseline unavailable.

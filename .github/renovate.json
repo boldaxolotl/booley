@@ -1,7 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": [
-    "Renovate repository configuration (tracker #2551, part 1 #2996).",
+    "Renovate repository configuration (tracker #2551, part 1 #2996, part 2 #2998).",
+    "Literal copies of a pin (docs, contract probes, source constants) have a custom manager each, so Renovate rewrites them in the canonical pin's PR; prBodyNotes list the places no rewrite can reach.",
     "During this stage every update waits for approval on the Dependency Dashboard (top-level dependencyDashboardApproval); lock-file maintenance runs for Cargo only (the one manager with lock files), monthly, with its own approval. The cutover (#2562) removes only the top-level hold.",
     "Keep the exact-name selectors in packageRules in step with tests/ci/test_renovate_config.py."
   ],
@@ -94,11 +95,11 @@
       "datasourceTemplate": "crate"
     },
     {
-      "description": "actionlint release download in the lint job. The version is bare in the URL; auto-replace rewrites both occurrences inside the match.",
+      "description": "actionlint release download in the lint job. The match runs from the step name to the URL so auto-replace rewrites all three occurrences of the bare version together.",
       "customType": "regex",
       "managerFilePatterns": ["/(^|/)test\\.yml$/"],
       "matchStrings": [
-        "releases/download/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/actionlint_\\d+\\.\\d+\\.\\d+_linux_amd64"
+        "Install actionlint v(?<currentValue>\\d+\\.\\d+\\.\\d+)[\\s\\S]*?releases/download/v\\d+\\.\\d+\\.\\d+/actionlint_\\d+\\.\\d+\\.\\d+_linux_amd64"
       ],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "rhysd/actionlint",
@@ -134,6 +135,211 @@
         "(?<depName>renovate/renovate):(?<currentValue>[\\d.]+)@(?<currentDigest>sha256:[0-9a-f]{64})"
       ],
       "datasourceTemplate": "docker"
+    },
+    {
+      "description": "Copy of the Verilator pin: the session runtime probe stores the version without its v and the source revision on the next line (the lookup returns the tag's commit as the new digest).",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/contracts/session-runtime\\.toml$/"],
+      "matchStrings": [
+        "verilator --version \\| awk '\\{print \\$2\\}'\\)\\\" = \\\"(?<currentValue>\\d+\\.\\d+)\\\"\\ngrep -Fx 'Verilator source revision: (?<currentDigest>[0-9a-f]{40})'"
+      ],
+      "datasourceTemplate": "github-tags",
+      "depNameTemplate": "verilator/verilator",
+      "extractVersionTemplate": "^v(?<version>.+)$"
+    },
+    {
+      "description": "Copies of the Verilator pin: the supported-tools row and the collector identity (tag and commit together).",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/",
+        "/^src/booley/flows/sim/verilator_identity\\.py$/"
+      ],
+      "matchStrings": [
+        "\\| Verilator \\| (?<currentValue>v\\d+\\.\\d+) \\(commit `(?<currentDigest>[0-9a-f]{40})`\\)",
+        "tag=\\\"(?<currentValue>v\\d+\\.\\d+)\\\",\\n    commit=\\\"(?<currentDigest>[0-9a-f]{40})\\\""
+      ],
+      "datasourceTemplate": "github-tags",
+      "depNameTemplate": "verilator/verilator"
+    },
+    {
+      "description": "Copy of the Yosys pin: the supported-tools row.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "matchStrings": ["\\| Yosys \\| (?<currentValue>v\\d+\\.\\d+),"],
+      "datasourceTemplate": "github-tags",
+      "depNameTemplate": "YosysHQ/yosys"
+    },
+    {
+      "description": "Copy of the Yosys pin without its v: the slang frontend note.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "matchStrings": ["the standard image has (?<currentValue>\\d+\\.\\d+)\\."],
+      "datasourceTemplate": "github-tags",
+      "depNameTemplate": "YosysHQ/yosys",
+      "extractVersionTemplate": "^v(?<version>.+)$"
+    },
+    {
+      "description": "Copy of the Icarus Verilog pin: the supported-tools row.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "matchStrings": ["\\| Icarus Verilog \\| (?<currentValue>v\\d+_\\d+) \\|"],
+      "datasourceTemplate": "github-tags",
+      "depNameTemplate": "steveicarus/iverilog",
+      "versioningTemplate": "regex:^v(?<major>\\d+)_(?<minor>\\d+)$"
+    },
+    {
+      "description": "Copy of the sv2v pin: the supported-tools row.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "matchStrings": ["\\| sv2v \\| (?<currentValue>v\\d+\\.\\d+\\.\\d+) \\|"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "zachjs/sv2v"
+    },
+    {
+      "description": "Copy of the Verible pin: the supported-tools row.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "matchStrings": ["\\| Verible \\| (?<currentValue>v\\d+\\.\\d+-\\d+-g[0-9a-f]+) \\|"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "chipsalliance/verible",
+      "versioningTemplate": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)-(?<patch>\\d+)-g[0-9a-f]+$"
+    },
+    {
+      "description": "Copy of the FuseSoC pin: the first version of the supported-tools row (the match ends before the slash, so it never overlaps the Edalize match).",
+      "customType": "regex",
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "matchStrings": ["\\| FuseSoC / Edalize \\| (?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "datasourceTemplate": "pypi",
+      "depNameTemplate": "fusesoc"
+    },
+    {
+      "description": "Copy of the Edalize pin: the second version of the supported-tools row.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "matchStrings": ["/ (?<currentValue>\\d+\\.\\d+\\.\\d+) \\|"],
+      "datasourceTemplate": "pypi",
+      "depNameTemplate": "edalize"
+    },
+    {
+      "description": "Copies of the cocotb pin: the supported-tools row and the session runtime probe.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/",
+        "/^\\.github/contracts/session-runtime\\.toml$/"
+      ],
+      "matchStrings": [
+        "\\| cocotb \\| (?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "cocotb-config --version\\)\\\" = \\\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\\""
+      ],
+      "datasourceTemplate": "pypi",
+      "depNameTemplate": "cocotb"
+    },
+    {
+      "description": "Copies of the cocotb companion pins in the supported-tools row.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "matchStrings": [
+        "`(?<depName>cocotbext-axi|cocotbext-uart|numpy)` (?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "pypi"
+    },
+    {
+      "description": "Copy of the xPack GCC pin: the supported-tools prose (the build suffix belongs to the pin).",
+      "customType": "regex",
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "matchStrings": ["xPack RISC-V GCC\\n`(?<currentValue>\\d+\\.\\d+\\.\\d+-\\d+)`"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "xpack-dev-tools/riscv-none-elf-gcc-xpack",
+      "versioningTemplate": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-(?<build>\\d+)$",
+      "extractVersionTemplate": "^v(?<version>.+)$"
+    },
+    {
+      "description": "Copy of the xPack GCC pin without its build suffix: the compiler path in the session runtime probe (a build-only release leaves it unchanged).",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/contracts/session-runtime\\.toml$/"],
+      "matchStrings": [
+        "riscv-none-elf-gcc -ef /opt/riscv/bin/riscv-none-elf-gcc-(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "xpack-dev-tools/riscv-none-elf-gcc-xpack",
+      "versioningTemplate": "semver",
+      "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)-\\d+$"
+    },
+    {
+      "description": "Copy of the Spike commit: the supported-tools prose (digest only; the describe string beside it is named in the PR note).",
+      "customType": "regex",
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "matchStrings": ["Spike at commit\\n`(?<currentDigest>[0-9a-f]{40})`"],
+      "datasourceTemplate": "git-refs",
+      "depNameTemplate": "riscv-isa-sim",
+      "packageNameTemplate": "https://github.com/riscv-software-src/riscv-isa-sim",
+      "currentValueTemplate": "master"
+    },
+    {
+      "description": "Copies of the VaporView pin: the verified-version constant and the troubleshooting steps (public and packaged).",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^src/booley/runtime/vaporview\\.py$/",
+        "/^docs/user/TROUBLESHOOTING\\.md$/",
+        "/^src/booley/data/refs/TROUBLESHOOTING\\.md$/"
+      ],
+      "matchStrings": [
+        "VERIFIED_VERSION = \\\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\\"",
+        "bundled VaporView (?<currentValue>\\d+\\.\\d+\\.\\d+)\\.",
+        "vaporview-(?<currentValue>\\d+\\.\\d+\\.\\d+)\\.vsix",
+        "lramseyer\\.vaporview@(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "custom.openvsx",
+      "depNameTemplate": "lramseyer/vaporview"
+    },
+    {
+      "description": "Copies of the Verilog-HDL extension pin: the devcontainer constant, the session runtime bundle list and the troubleshooting commands.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^src/booley/runtime/devcontainer\\.py$/",
+        "/^\\.github/contracts/session-runtime\\.toml$/",
+        "/^docs/user/TROUBLESHOOTING\\.md$/",
+        "/^src/booley/data/refs/TROUBLESHOOTING\\.md$/"
+      ],
+      "matchStrings": [
+        "_HDL_VERSION = \\\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\\"",
+        "veriloghdl-(?<currentValue>\\d+\\.\\d+\\.\\d+)\\.vsix"
+      ],
+      "datasourceTemplate": "custom.openvsx",
+      "depNameTemplate": "mshr-h/veriloghdl"
+    },
+    {
+      "description": "Copies of the Live Preview extension pin: the devcontainer constant, the session runtime bundle list and the troubleshooting commands.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^src/booley/runtime/devcontainer\\.py$/",
+        "/^\\.github/contracts/session-runtime\\.toml$/",
+        "/^docs/user/TROUBLESHOOTING\\.md$/",
+        "/^src/booley/data/refs/TROUBLESHOOTING\\.md$/"
+      ],
+      "matchStrings": [
+        "_LIVE_PREVIEW_VERSION = \\\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\\"",
+        "live-server-(?<currentValue>\\d+\\.\\d+\\.\\d+)\\.vsix"
+      ],
+      "datasourceTemplate": "custom.openvsx",
+      "depNameTemplate": "ms-vscode/live-server"
+    },
+    {
+      "description": "Copy of the Ubuntu parent image tag: the supported-tools base image row.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "matchStrings": ["\\| Base image \\| Ubuntu (?<currentValue>\\d+\\.\\d+) \\|"],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "docker.io/library/ubuntu"
+    },
+    {
+      "description": "Copies of the image digests the base Dockerfile repeats in its provenance LABELs (the FROM lines are read by the Dockerfile manager). OpenROAD ones stay in the openroad group.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^src/booley/data/docker/Dockerfile\\.base$/"],
+      "matchStrings": [
+        "-artifact=(?<depName>docker\\.io/[^:@\\s]+)(?::(?<currentValue>[\\w.]+))?@(?<currentDigest>sha256:[0-9a-f]{64})"
+      ],
+      "datasourceTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -152,6 +358,12 @@
       "matchManagers": ["npm"],
       "matchDepNames": ["@openai/codex-linux-x64"],
       "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)(?:-(?<compatibility>linux-x64))?$"
+    },
+    {
+      "description": "The Ubuntu parent image follows Ubuntu versioning wherever it appears. The Dockerfile manager sets this itself; the copies (the supported-tools row, the provenance LABELs) are regex matches and need the rule, or they would propose the next non-LTS release the pin does not follow.",
+      "matchDatasources": ["docker"],
+      "matchDepNames": ["docker.io/library/ubuntu"],
+      "versioning": "ubuntu"
     },
     {
       "description": "Release age (3 days) only for datasources that publish release timestamps (#2552). Docker, git-refs and github-digest report none: under timestamp-required they would wait forever.",
@@ -216,6 +428,16 @@
       "schedule": ["* * 1 * *"]
     },
     {
+      "description": "riscv: the copies of the xPack and Spike pins in the supported-tools table and the session runtime contract (same branch as Dockerfile.riscv).",
+      "matchFileNames": [
+        "docs/user/SUPPORTED-EDA-TOOLS.md",
+        ".github/contracts/session-runtime.toml"
+      ],
+      "matchDepNames": ["xpack-dev-tools/riscv-none-elf-gcc-xpack", "riscv-isa-sim"],
+      "groupName": "riscv",
+      "schedule": ["* * 1 * *"]
+    },
+    {
       "description": "sandbox-base: runtime dependencies exported into the base image.",
       "matchDepTypes": ["project.dependencies"],
       "matchFileNames": ["pyproject.toml"],
@@ -227,6 +449,23 @@
       "matchFileNames": [
         "src/booley/data/docker/base-python-requirements.txt",
         "src/booley/data/docker/agent-clis-package.json"
+      ],
+      "groupName": "sandbox-base",
+      "schedule": ["* * * * 1"]
+    },
+    {
+      "description": "sandbox-base: copies of the Python pins in the supported-tools table and the session runtime contract (same branch as the base requirements).",
+      "matchFileNames": [
+        "docs/user/SUPPORTED-EDA-TOOLS.md",
+        ".github/contracts/session-runtime.toml"
+      ],
+      "matchDepNames": [
+        "cocotb",
+        "cocotbext-axi",
+        "cocotbext-uart",
+        "numpy",
+        "fusesoc",
+        "edalize"
       ],
       "groupName": "sandbox-base",
       "schedule": ["* * * * 1"]
@@ -284,6 +523,76 @@
       "schedule": ["* * * * 1"]
     },
     {
+      "description": "PR note: places that cite the agent CLI version and that no rewrite can reach.",
+      "matchDepNames": ["@openai/codex", "@openai/codex-linux-x64"],
+      "prBodyNotes": [
+        "Re-verify these places, which cite Codex behaviour of a specific release: `src/booley/config/gateway.py`, `src/booley/runtime/text_only_agent.py`, `docs/internals/GATEWAY.md`."
+      ]
+    },
+    {
+      "description": "PR note: Verilator provenance comments.",
+      "matchDepNames": ["verilator/verilator"],
+      "prBodyNotes": [
+        "Re-verify these places, which cite behaviour of a specific Verilator release: the largest accepted seed in `src/booley/config/tests_toml_rules.py` and the miscompile comment in `src/booley/data/docker/Dockerfile.base`."
+      ]
+    },
+    {
+      "description": "PR note: cocotb provenance comments.",
+      "matchDepNames": ["cocotb"],
+      "prBodyNotes": [
+        "Re-verify these places, which cite cocotb releases: the frozen results parser in `src/booley/flows/sim/backends/cocotb_results.py` and the example versions in `src/booley/harness/init_cmd.py` and `src/booley/runtime/project_image.py`."
+      ]
+    },
+    {
+      "description": "PR note: VaporView provenance and patched VSIX.",
+      "matchDepNames": ["lramseyer/vaporview"],
+      "prBodyNotes": [
+        "Re-verify these places, which depend on the VaporView release: the empty-view claim in `src/booley/bwave/cli.py` and the compatibility edits in `src/booley/runtime/vaporview_vsix.py`."
+      ]
+    },
+    {
+      "description": "PR note: Verilog-HDL grammar comment.",
+      "matchDepNames": ["mshr-h/veriloghdl"],
+      "prBodyNotes": [
+        "Re-verify the grammar comment that cites this release in `src/booley/runtime/devcontainer.py`."
+      ]
+    },
+    {
+      "description": "PR note: actionlint workaround comment.",
+      "matchDepNames": ["rhysd/actionlint"],
+      "prBodyNotes": [
+        "Re-verify `.github/actionlint.yaml`: its comment explains a workaround for the pinned release."
+      ]
+    },
+    {
+      "description": "PR note: the Spike describe string.",
+      "matchDepNames": ["riscv-isa-sim"],
+      "prBodyNotes": [
+        "Refresh the `1.1.1-dev` describe string beside the commit in `docs/user/SUPPORTED-EDA-TOOLS.md` by hand: it cannot be derived from the commit."
+      ]
+    },
+    {
+      "description": "PR note: FuseSoC behaviour comments.",
+      "matchDepNames": ["fusesoc"],
+      "prBodyNotes": [
+        "Re-verify the comments that cite behaviour of this FuseSoC release in `src/booley/fusesoc/core_projection.py` and `src/booley/fusesoc/fusesoc_registry.py`."
+      ]
+    },
+    {
+      "description": "PR note: Edalize behaviour comments and the Verible patch layer.",
+      "matchDepNames": ["edalize"],
+      "prBodyNotes": [
+        "Re-verify the comments that cite behaviour of this Edalize release in `src/booley/flows/edam.py` and `src/booley/flows/fpga/backends/vivado/edam.py`, and check whether the Verible patch layer in `src/booley/data/docker/Dockerfile` can now be deleted."
+      ]
+    },
+    {
+      "description": "PR note: Ubuntu release prose.",
+      "matchDepNames": ["docker.io/library/ubuntu"],
+      "prBodyNotes": [
+        "If the tag changed, re-read the Ubuntu release prose in `src/booley/data/docker/Dockerfile.base` and the glibc claim in `src/booley/data/docker/Dockerfile`; Renovate does not rewrite them."
+      ]
+    },
+    {
       "description": "Manual row, OpenROAD: release label and builder images stay approval-only and flagged for a human.",
       "matchDepNames": [
         "The-OpenROAD-Project/OpenROAD",
@@ -293,6 +602,10 @@
       "dependencyDashboardApproval": true,
       "groupName": "openroad",
       "addLabels": ["ready-for-human"],
+      "prBodyNotes": [
+        "OpenROAD manual regeneration checklist: refresh `OPENROAD_SOURCE_REF`, `OPENROAD_BINARY_VERSION` and `OPENROAD_SOURCE_SENTINEL_SHA256` in `src/booley/data/docker/Dockerfile.base`; regenerate `src/booley/data/docker/openroad-source-manifest.json`; update `THIRD_PARTY_NOTICES.md`; update the OpenROAD row of `docs/user/SUPPORTED-EDA-TOOLS.md` (its commit and self-reported version cannot be derived from the release label); update the source-archive path in `.github/contracts/session-runtime.toml`.",
+        "Verify that the builder-image digests in the `LABEL` lines of `src/booley/data/docker/Dockerfile.base` still match its `FROM` lines; a copy rule rewrites them with the images."
+      ],
       "schedule": ["at any time"]
     },
     {

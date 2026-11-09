@@ -16,7 +16,7 @@ import pytest
 from textual.binding import Binding
 from textual.widgets import Static
 
-from booley.harness.dashboard.app import HELP, DashboardApp
+from booley.harness.dashboard.app import HELP, DashboardApp, Navigation
 from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.harness.dashboard.topbar import TopBar
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
@@ -369,3 +369,23 @@ async def test_no_jobs_filter_text_says_recent_or_results():
     excerpt = excerpt.split("The Dashboard has two windows")[1].split("Sessions have short")[0]
     texts.append(excerpt)
     assert [text for text in texts if word.search(text)] == []
+
+
+def test_unhandled_process_owner_filter_is_readable_and_cycles():
+    """A handle-less process owner is named by PID, yet two starts of one PID stay distinct."""
+    raw, later = "pid:pid:[4026532225]:4865:81331", "pid:pid:[4026532225]:4865:81332"
+    readable = "PID 4865 · ns 4026532225"
+    current = world(
+        [
+            job("a", "completed", raw, owner_handle=raw),
+            job("b", "completed", later, owner_handle=later),
+        ]
+    )
+    app = DashboardApp(lambda: current)
+    app.snapshot = current
+    app.window = "jobs"
+    app.windows["jobs"][0] = Navigation("jobs", raw, "all")
+    assert app._jobs_orientation().endswith(f" · {readable}")
+    assert app._owner_filter_label(raw) == readable
+    # Same label, different durable keys: cycling still moves on to the second one.
+    assert app._next_owner() == later

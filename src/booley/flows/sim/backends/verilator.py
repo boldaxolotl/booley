@@ -25,45 +25,32 @@ import argparse
 import os
 import subprocess
 import sys
-import threading
-import time
 from collections import deque
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 
 from booley.bwave.waveform_store import StreamingConversion
+from booley.core.boundary import parse_positive_int_arg
 from booley.flows.run_log import write_run_log
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
     AdapterTraceResult,
     AdapterTransportIdentity,
     add_transport_arguments,
-    assess_native_verdict,
-    first_native_failure,
-    native_verdict_message,
+    evaluate_native_verdict,
     publish_native_adapter_result,
     transport_identity_from_args,
     work_transport_arguments,
 )
 from booley.flows.sim.backends.shared import (
     CurrentRunTraces,
-    RunLogProgress,
     RunTermination,
-    ambiguous_trace_reason,
-    append_child_cpu_marker,
-    child_cpu_snapshot,
-    format_idle_note,
 )
-from booley.flows.sim.result import (
-    extract_vrfc_warnings,
-    format_infra_error,
-    format_summary,
-    parse_sim_verdict,
-    write_result_json,
-)
+from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
+from booley.flows.sim.backends.trace_finalization import finalize_trace
+from booley.flows.sim.result import format_infra_error, parse_sim_verdict
 from booley.flows.sim.trace_recipe import TraceMode
-from booley.flows.sim.trace_session import TraceArtifact, TraceSession
+from booley.flows.sim.trace_session import TraceSession
 
 
 def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
@@ -201,14 +188,6 @@ def _build_run_cmd(
     return cmd, env
 
 
-def _new_trace_session(work_dir: Path, trace_scope: str | None) -> TraceSession:
-    """Create a verilator-backed trace session (tolerates older signatures)."""
-    try:
-        return TraceSession(work_dir, trace_scope, backend="verilator")
-    except TypeError:  # pragma: no cover - defensive against fakes in tests
-        return TraceSession(work_dir, trace_scope)
-
-
 def _setup_bwave(
     trace: TraceSession,
     cmd: list[str],
@@ -231,260 +210,6 @@ def _setup_trace(
         cmd.extend(_render_trace_args(trace_args, trace.work_bwave_path))
         return None
     return _setup_bwave(trace, cmd, trace_args)
-
-
-def _kill_with_reason(
-    proc: subprocess.Popen,
-    trace: TraceSession | None,
-    bwave_proc: StreamingConversion | None,
-    lines: deque[str],
-    reason: str,
-) -> bool:
-    """Kill the run, record *reason* (+ a trace incident when tracing), append it.
-
-    Shared by the mid-run abort paths (timeout, missing-$readmemh, disk budget)
-    so each names its own cause but they all tear the process tree down and
-    surface the reason on stdout/in the captured output the same way.
-    """
-    from booley.runtime.platform_paths import kill_process_tree
-
-    if proc.poll() is not None:
-        return False
-    incident: Path | None = None
-    if trace:
-        incident = trace.write_incident(
-            reason,
-            sim_proc=proc,
-            bwave_proc=bwave_proc,
-        )
-    if proc.poll() is not None:
-        return False
-    kill_process_tree(proc)
-    proc.wait()
-    msg = f"ERROR: {reason}"
-    print(msg)
-    lines.append(msg + "\n")
-    if incident is not None:
-        lines.append(f"TRACE_INCIDENT: {incident}\n")
-    return True
-
-
-def _supervise(proc: subprocess.Popen) -> None:
-    """Register *proc* with the parent-death guard (best-effort, F-13)."""
-    try:
-        from booley.flows.sim.run_guard import supervise_child
-
-        supervise_child(proc)
-    except ImportError:  # pragma: no cover - defensive against partial installs
-        pass
-
-
-def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeline; splitting it would strand the shared proc/timer/guard/progress state
-    cmd: list[str],
-    run_cwd: Path,
-    env: dict[str, str],
-    timeout: int,
-    trace: TraceSession | None,
-    bwave_proc: StreamingConversion | None,
-    max_rundir_bytes: int = 0,
-    work_dir: Path | None = None,
-    runtime_inputs: tuple[str, ...] = (),
-) -> tuple[deque[str], subprocess.Popen, RunTermination]:
-    """Run the binary, stream stdout live, enforce *timeout* (seconds).
-
-    Two safety guards ride alongside the timeout (see :mod:`booley.flows.sim.run_guard`):
-    a missing-``$readmemh``-file warning is fatal (SETUP-23 — the sim would
-    otherwise spin forever on uninitialised RAM), and *max_rundir_bytes* (>0)
-    caps how much *run_cwd* may grow before a runaway tracer/``$dumpfile`` is
-    killed (SETUP-25).
-
-    When *work_dir* is given, the streamed tail is flushed into its ``run.log``
-    every :data:`RUN_LOG_PROGRESS_INTERVAL_S` seconds so the run is observable
-    while it is still going (fpu F-18).
-    """
-    from booley.flows.sim.run_guard import (
-        DiskBudgetGuard,
-        child_death_kwargs,
-        classify_readmemh_termination,
-        parse_readmemh_fatal,
-        snapshot_dir_baseline,
-    )
-    from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
-
-    lines: deque[str] = deque(maxlen=5_000)
-    cpu_started = child_cpu_snapshot()
-    # BEFORE the spawn: the baseline walk takes seconds on the multi-GB trees
-    # this budget exists for, and anything the sim dumps during that walk would
-    # otherwise land in the baseline free of charge (fpu F-23).
-    disk_baseline = snapshot_dir_baseline(run_cwd, max_rundir_bytes)
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(run_cwd),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        **popen_new_group_kwargs(),
-        **child_death_kwargs(),
-    )
-    _supervise(proc)
-    if trace and bwave_proc:
-        trace.start_monitor(bwave_proc, proc)
-    guard = DiskBudgetGuard(run_cwd, max_rundir_bytes, proc, baseline=disk_baseline)
-    guard.start()
-    started = time.monotonic()
-    deadline = started + timeout
-    progress = RunLogProgress(work_dir, started)
-    # The in-loop deadline check below only runs when a line arrives, so a sim
-    # that goes SILENT (fpu F-21: $fopen on a directory, no sentinel, no output)
-    # would block in `for line in proc.stdout` past its budget forever and leave
-    # the kill to simulate's wrapper timeout — which reaps only the `sh -c` and
-    # orphans this supervisor plus its V<top> (fpu F-13). A timer thread kills
-    # the tree from here instead, where the group kill actually reaches it.
-    timed_out = {"hit": False}
-
-    def _kill_at_deadline() -> None:
-        if proc.poll() is None:
-            timed_out["hit"] = True
-            kill_process_tree(proc)
-
-    watchdog = threading.Timer(timeout, _kill_at_deadline)
-    watchdog.daemon = True
-    watchdog.start()
-
-    def _timeout_reason() -> str:
-        return f"Verilator simulation timed out ({timeout}s)" + format_idle_note(
-            progress.idle_s, len(lines)
-        )
-
-    stdout = proc.stdout
-    try:
-        assert stdout is not None
-        for line in stdout:
-            print(line, end="", flush=True)
-            lines.append(line)
-            progress.observe(lines)
-            # SETUP-23: a missing $readmemh init file warns once then spins
-            # forever on uninitialised RAM — treat that warning as fatal.
-            missing = parse_readmemh_fatal(line)
-            if missing and proc.poll() is None:
-                termination = classify_readmemh_termination(missing, run_cwd, runtime_inputs)
-                if not _kill_with_reason(
-                    proc,
-                    trace,
-                    bwave_proc,
-                    lines,
-                    termination.detail,
-                ):
-                    continue
-                return lines, proc, termination
-            # SETUP-25: the disk-budget watchdog kills the proc on a runaway;
-            # report it here (the for-loop sees EOF once the proc is gone).
-            if guard.tripped:
-                print(guard.message)
-                lines.append(guard.message + "\n")
-                return lines, proc, RunTermination("disk_budget", guard.message, "infrastructure")
-            if timed_out["hit"]:
-                reason = _timeout_reason()
-                return lines, proc, _record_timeout(proc, lines, reason)
-            if time.monotonic() > deadline and proc.poll() is None:
-                reason = _timeout_reason()
-                if _kill_with_reason(proc, trace, bwave_proc, lines, reason):
-                    return lines, proc, RunTermination("timeout", reason, "timeout")
-        return _finish_stream(
-            proc, trace, bwave_proc, guard, timed_out, deadline, _timeout_reason, lines
-        )
-    finally:
-        if stdout is not None:
-            stdout.close()
-        watchdog.cancel()
-        guard.stop()
-        progress.final_flush(lines)
-        append_child_cpu_marker(lines, cpu_started)
-
-
-def _finish_stream(proc, trace, bwave_proc, guard, timed_out, deadline, timeout_reason, lines):
-    """Resolve watchdog ownership after stdout closes, then reap the child."""
-    from booley.runtime.platform_paths import kill_process_tree
-
-    if guard.tripped:
-        print(guard.message)
-        lines.append(guard.message + "\n")
-        return lines, proc, RunTermination("disk_budget", guard.message, "infrastructure")
-    if timed_out["hit"]:
-        reason = timeout_reason()
-        return lines, proc, _record_timeout(proc, lines, reason)
-    try:
-        proc.wait(timeout=max(1, deadline - time.monotonic()))
-    except subprocess.TimeoutExpired as exc:
-        kill_process_tree(proc)
-        proc.wait()
-        exc.output = "".join(lines)
-        raise
-    guard.stop()
-    if timed_out["hit"] and not guard.tripped:
-        return lines, proc, _record_timeout(proc, lines, timeout_reason())
-    if not guard.tripped and not (trace and trace.stall_killed):
-        guard.finish()
-    if guard.tripped:
-        print(guard.message)
-        lines.append(guard.message + "\n")
-        return lines, proc, RunTermination("disk_budget", guard.message, "infrastructure")
-    return lines, proc, RunTermination()
-
-
-def _record_timeout(proc: subprocess.Popen, lines: deque[str], reason: str) -> RunTermination:
-    """Record the timer-owned kill after its process-tree teardown completes."""
-    proc.wait()
-    message = f"ERROR: {reason}"
-    print(message)
-    lines.append(message + "\n")
-    return RunTermination("timeout", reason, "timeout")
-
-
-def _evaluate_verdict(
-    output: str,
-    returncode: int,
-    work_dir: Path,
-    *,
-    pass_sentinels: list[str] | None = None,
-    fail_sentinels: list[str] | None = None,
-    termination: RunTermination | None = None,
-) -> None:
-    """Print the ``[SIM_SUMMARY]`` verdict + write result JSON (legacy parity)."""
-    termination = termination or RunTermination()
-    assessment = assess_native_verdict(
-        output,
-        returncode,
-        pass_sentinels=pass_sentinels,
-        fail_sentinels=fail_sentinels,
-        termination=termination,
-    )
-    vrfc = extract_vrfc_warnings(output)
-    print(
-        format_summary(
-            assessment.passed,
-            assessment.sva_errors,
-            vrfc,
-            inconclusive=assessment.inconclusive,
-        )
-    )
-    print(native_verdict_message("Verilator", assessment, returncode, termination))
-    first_err = first_native_failure(output, termination.detail) if not assessment.passed else ""
-    write_result_json(
-        work_dir,
-        assessment.passed,
-        assessment.sva_errors,
-        first_err,
-        returncode,
-        inconclusive=assessment.inconclusive,
-    )
-    # Persist the raw output next to result.json on pass AND fail:
-    # result.json only carries a 500-char first_error, so run.log is what
-    # survives MCP-level stdout truncation.
-    write_run_log(work_dir, output)
 
 
 def _resolve_single_scope(trace_scope: str | None) -> str | None:
@@ -525,84 +250,6 @@ class _TraceRuntime:
     conversion: StreamingConversion | None
 
 
-def _missing_trace_reason(trace_files: list[str] | None) -> str:
-    """Explain why no current trace artifact could be retained."""
-    reason = "trace requested but no fresh .fst store or convertible .vcd was produced"
-    if trace_files:
-        return reason + (
-            " (no fresh, nonempty file matching [flows.sim].trace_files "
-            f"{trace_files} was produced by the current run)"
-        )
-    return reason + (
-        " (a testbench with its own C++ main() writes its dump under a name "
-        "Booley cannot guess — declare it in [flows.sim].trace_files)"
-    )
-
-
-def _trace_incident_result(
-    trace: TraceSession,
-    reason: str,
-    proc: subprocess.Popen | None,
-    bwave_proc: StreamingConversion | None,
-) -> tuple[str, AdapterTraceResult]:
-    incident = trace.write_incident(reason, sim_proc=proc, bwave_proc=bwave_proc)
-    print(f"ERROR: {reason}")
-    print(f"TRACE_INCIDENT: {incident}")
-    return (
-        f"\nERROR: {reason}\nTRACE_INCIDENT: {incident}",
-        AdapterTraceResult("incident", path=str(incident), detail=reason),
-    )
-
-
-def _trace_success_result(artifact: TraceArtifact) -> tuple[str, AdapterTraceResult]:
-    output = f"TRACE_OK: {artifact.path}\n{artifact.metadata_line()}"
-    print(output)
-    return (
-        f"\n{output}",
-        AdapterTraceResult(
-            "ok",
-            path=str(artifact.path),
-            top_scope=artifact.top_scope,
-            signal_count=artifact.signal_count,
-            total_ticks=artifact.total_ticks,
-        ),
-    )
-
-
-def _finalize_trace(
-    current: CurrentRunTraces,
-    proc: subprocess.Popen | None,
-    bwave_proc: StreamingConversion | None,
-    trace_files: list[str] | None = None,
-) -> tuple[str, AdapterTraceResult]:
-    """Locate the produced waveform and emit the TRACE_OK / TRACE_INCIDENT line.
-
-    Returns the text to append to the run's captured output.
-    """
-    trace = current.session
-    selection = current.select()
-    found = selection.path
-    if selection.ambiguous:
-        failure_reason = ambiguous_trace_reason(selection.ambiguous)
-    elif found is None:
-        failure_reason = _missing_trace_reason(trace_files)
-    else:
-        inspection = trace.inspect(found)
-        failure_reason = (
-            ""
-            if inspection.usable
-            else (
-                "trace requested but the retained waveform is not queryable: "
-                f"{inspection.failure_reason}"
-            )
-        )
-    if failure_reason:
-        return _trace_incident_result(trace, failure_reason, proc, bwave_proc)
-    artifact = inspection.artifact
-    assert artifact is not None
-    return _trace_success_result(artifact)
-
-
 def _resolve_run_paths(
     bin_dir: Path,
     run_cwd: Path | None,
@@ -627,7 +274,7 @@ def _prepare_trace_runtime(
     trace_mode: TraceMode,
 ) -> _TraceRuntime:
     """Prepare trace output, freshness evidence, and any FIFO converter."""
-    session = _new_trace_session(paths.work_dir, trace_scope) if enabled else None
+    session = TraceSession(paths.work_dir, trace_scope, backend="verilator") if enabled else None
     current = (
         CurrentRunTraces.begin(
             session,
@@ -648,7 +295,7 @@ def _prepare_trace_runtime(
     )
 
 
-def _execute_with_heartbeat(
+def _execute_supervised(
     cmd: list[str],
     paths: _RunPaths,
     env: dict[str, str],
@@ -657,43 +304,25 @@ def _execute_with_heartbeat(
     max_rundir_bytes: int,
     runtime_inputs: tuple[str, ...],
 ) -> tuple[deque[str], subprocess.Popen, RunTermination]:
-    """Execute one simulator process with heartbeat and trace cleanup."""
-    from booley.harness.colors import dim
-    from booley.presentation.heartbeat import render_heartbeat
-    from booley.runtime.heartbeat import Heartbeat
-
-    heartbeat = Heartbeat(
-        "Verilator sim", render=partial(render_heartbeat, style=dim), interval=60
-    )
-    heartbeat.start()
+    """Execute one supervised simulator process and clean up its trace FIFO."""
     try:
-        return _stream_output(
-            cmd,
-            paths.run_cwd,
-            env,
-            timeout,
-            trace.session,
-            trace.conversion,
-            max_rundir_bytes=max_rundir_bytes,
-            work_dir=paths.work_dir,
-            runtime_inputs=runtime_inputs,
+        return run_supervised(
+            SimulatorLaunch(
+                label="Verilator",
+                command=cmd,
+                run_cwd=paths.run_cwd,
+                env=env,
+                timeout_s=timeout,
+                work_dir=paths.work_dir,
+                max_rundir_bytes=max_rundir_bytes,
+                runtime_inputs=runtime_inputs,
+                trace=trace.session,
+                conversion=trace.conversion,
+            )
         )
     finally:
-        heartbeat.stop()
         if trace.session is not None and trace.mode is TraceMode.VCD_FIFO:
             trace.session.cleanup_fifo(trace.conversion)
-
-
-def _timeout_result(
-    exc: subprocess.TimeoutExpired,
-    timeout: int,
-    work_dir: Path,
-) -> str:
-    """Persist and return the output of a simulator that exhausted its budget."""
-    print(f"ERROR: Verilator simulation timed out ({timeout}s)")
-    output = (exc.output or "") + f"\nTimed out after {timeout}s"
-    write_run_log(work_dir, output)
-    return output
 
 
 def _finalize_verilated_run(
@@ -701,21 +330,14 @@ def _finalize_verilated_run(
     proc: subprocess.Popen,
     paths: _RunPaths,
     trace: _TraceRuntime,
-    trace_files: list[str] | None,
     pass_sentinels: list[str] | None,
     fail_sentinels: list[str] | None,
     termination: RunTermination,
-) -> tuple[str, AdapterTraceResult | None, RunTermination]:
+) -> tuple[str, AdapterTraceResult | None]:
     """Persist the verdict and validate any trace produced by the current run."""
     output = "".join(lines)
-    if (
-        trace.session is not None
-        and trace.session.stall_killed
-        and termination.kind in {"completed", "timeout"}
-    ):
-        output += f"\nERROR: {trace.session.stall_message}"
-        termination = RunTermination("trace_stall", trace.session.stall_message, "infrastructure")
-    _evaluate_verdict(
+    evaluate_native_verdict(
+        "Verilator",
         output,
         proc.returncode,
         paths.work_dir,
@@ -723,18 +345,16 @@ def _finalize_verilated_run(
         fail_sentinels=fail_sentinels,
         termination=termination,
     )
-    if trace.session is None:
-        return output, None, termination
-    if trace.mode is TraceMode.VCD_FIFO and trace.conversion is None:
-        trace.session.postprocess(paths.work_dir / "trace.vcd")
-    assert trace.current is not None
-    trace_output, trace_result = _finalize_trace(
+    if trace.current is None:
+        return output, None
+    raw_vcd = paths.work_dir / "trace.vcd"
+    trace_output, trace_result = finalize_trace(
         trace.current,
         proc,
-        trace.conversion,
-        trace_files=trace_files,
+        conversion=trace.conversion,
+        raw_vcd=raw_vcd if trace.mode is TraceMode.VCD_FIFO and trace.conversion is None else None,
     )
-    return output + trace_output, trace_result, termination
+    return output + trace_output, trace_result
 
 
 def _missing_binary_result(
@@ -749,24 +369,6 @@ def _missing_binary_result(
         1,
         failure_kind="infrastructure",
         detail=output.strip(),
-    )
-    return output
-
-
-def _timeout_transport_result(
-    exc: subprocess.TimeoutExpired,
-    timeout: int,
-    work_dir: Path,
-    transport: AdapterTransportIdentity | None,
-) -> str:
-    output = _timeout_result(exc, timeout, work_dir)
-    _publish_adapter_result(
-        transport,
-        output,
-        1,
-        termination=RunTermination(
-            "timeout", f"Verilator simulation timed out after {timeout}s", "timeout"
-        ),
     )
     return output
 
@@ -808,7 +410,6 @@ def run_verilated_binary(
         trace,
         max_rundir_bytes,
         runtime_inputs,
-        trace_files,
         pass_sentinels,
         fail_sentinels,
         vcd,
@@ -832,24 +433,19 @@ def _execute_verilated_and_publish(
     trace,
     max_rundir_bytes,
     runtime_inputs,
-    trace_files,
     pass_sentinels,
     fail_sentinels,
     vcd,
     transport,
 ) -> str:
-    try:
-        lines, proc, termination = _execute_with_heartbeat(
-            cmd, paths, env, timeout, trace, max_rundir_bytes, runtime_inputs
-        )
-    except subprocess.TimeoutExpired as exc:
-        return _timeout_transport_result(exc, timeout, paths.work_dir, transport)
-    output, trace_result, termination = _finalize_verilated_run(
+    lines, proc, termination = _execute_supervised(
+        cmd, paths, env, timeout, trace, max_rundir_bytes, runtime_inputs
+    )
+    output, trace_result = _finalize_verilated_run(
         lines,
         proc,
         paths,
         trace,
-        trace_files,
         pass_sentinels,
         fail_sentinels,
         termination,
@@ -865,18 +461,6 @@ def _execute_verilated_and_publish(
         termination=termination,
     )
     return output
-
-
-def _positive_int(value: str) -> int:
-    """argparse type: reject non-positive timeouts at the CLI boundary.
-
-    A negative/zero ``--timeout`` reaches the deadline math and would time the
-    simulation out instantly, so validate range here rather than misbehave later.
-    """
-    ivalue = int(value)  # raises ValueError -> argparse reports the bad token
-    if ivalue <= 0:
-        raise argparse.ArgumentTypeError(f"must be a positive integer, got {ivalue}")
-    return ivalue
 
 
 def _add_trace_arguments(parser: argparse.ArgumentParser) -> None:
@@ -941,7 +525,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--work-dir", default=None, help="trace/result output dir")
     parser.add_argument(
         "--timeout",
-        type=_positive_int,
+        type=parse_positive_int_arg,
         default=600,
         help="run timeout (seconds)",
     )

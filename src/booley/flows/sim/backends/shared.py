@@ -211,6 +211,8 @@ class TraceSelection:
     path: Path | None
     # Fresh declared stores when more than one exists and Booley owns none.
     ambiguous: tuple[Path, ...] = ()
+    # The declared VCD is over the conversion cap: kept raw, never a waveform.
+    oversize: bool = False
 
 
 def ambiguous_trace_reason(stores: tuple[Path, ...]) -> str:
@@ -277,7 +279,7 @@ class CurrentRunTraces:
                     "earn TRACE_OK (convert it separately with `bwave build`, "
                     "or scope the dump down)"
                 )
-                return TraceSelection(match)
+                return TraceSelection(match, oversize=True)
             self.session.postprocess(match)
             # Owned-only lookup: the converted store, or the VCD that
             # postprocess retained when conversion failed.
