@@ -894,7 +894,7 @@ def test_serial_result_classifies_simulator_crash_as_design_failure() -> None:
         reason="terminated by signal 11",
     )
     observation = serial_execution._observation(test)
-    assert serial_execution._settled_state([serial_execution._observation(test)]) == "crash"
+    assert serial_execution._settled_state([observation]) == "crash"
     assert observation["execution"] == "crash"
     assert observation["failure_class"] == "design"
     assert observation["functional"] == "not_observed"

@@ -1049,6 +1049,7 @@ def test_backend_timeout_on_campaign_path_preserves_detail_and_adds_hint(
     timeout_line = next(
         line for line in result.outcome.report_text.splitlines() if backend_detail in line
     )
+    assert f"{backend_detail} (rc=" in timeout_line
     assert hint in timeout_line
     campaign = CampaignStore(tmp_path / "reports/sim/1/targets/sim/campaign").scan()
     published = campaign.items[0].result
