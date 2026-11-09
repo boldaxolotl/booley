@@ -27,6 +27,7 @@ from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
+    from booley.flows.prepared_invocation import PreparedInvocation
 
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ class PreparedExecution:
     display_label: str | None
     dry_run: bool
     non_persisting_dry_run: bool
-    simulation: object | None = None
+    invocation: PreparedInvocation
 
 
 def _apply_pre_state_gate(endpoint: EndpointState) -> EndpointOutcome | None:
@@ -117,23 +118,19 @@ def prepare_execution(
     endpoint._default_target_args()
     if (selection_error := _prepare_target_and_binding(endpoint)) is not None:
         return selection_error
-    simulation: object | None = None
-    if endpoint.name == "sim" and hasattr(endpoint, "prepare_simulation_endpoint"):
-        simulation = endpoint.prepare_simulation_endpoint()
-        if isinstance(simulation, EndpointOutcome):
-            endpoint._publish_console_report(simulation)
-            endpoint._report_criteria.project(simulation)
-            return simulation
+    invocation = endpoint.prepare_endpoint_invocation()
+    if isinstance(invocation, EndpointOutcome):
+        endpoint._publish_console_report(invocation)
+        endpoint._report_criteria.project(invocation)
+        return invocation
     if endpoint.endpoint_kind in {"flow", "specialist"}:
-        freeze(endpoint, simulation)
-    return _prepared_execution(endpoint, simulation)
+        freeze(endpoint, invocation)
+    return _prepared_execution(endpoint, invocation)
 
 
 def _prepare_target_and_binding(endpoint: EndpointState) -> EndpointOutcome | None:
     """Resolve omission before binding while preserving explicit rejection order."""
-    implicit_target = not endpoint._selected_target and not getattr(
-        endpoint.args, "resume_from", None
-    )
+    implicit_target = not endpoint._selected_target and not endpoint.manifest_names_targets()
     if implicit_target:
         target_error = endpoint.prepare_target_endpoint()
         if target_error is not None:
@@ -155,7 +152,9 @@ def _prepare_target_and_binding(endpoint: EndpointState) -> EndpointOutcome | No
     return None
 
 
-def _prepared_execution(endpoint: EndpointState, simulation: object | None) -> PreparedExecution:
+def _prepared_execution(
+    endpoint: EndpointState, invocation: PreparedInvocation
+) -> PreparedExecution:
     """Publish the start event after all preparation gates have succeeded."""
     display_target = endpoint._resolve_display_config()
     display_label = endpoint._resolve_display_label()
@@ -175,7 +174,7 @@ def _prepared_execution(endpoint: EndpointState, simulation: object | None) -> P
         display_label=display_label,
         dry_run=dry_run,
         non_persisting_dry_run=non_persisting_dry_run,
-        simulation=simulation,
+        invocation=invocation,
     )
 
 
@@ -226,10 +225,8 @@ def invoke_endpoint(
     sys.stdout = witness  # type: ignore[assignment]
     try:
         try:
-            if prepared.simulation is not None and hasattr(endpoint, "run_prepared_simulation"):
-                result = endpoint.run_prepared_simulation(prepared.simulation, admission)
-            else:
-                result = endpoint._run()
+            invocation = prepared.invocation
+            result = invocation.run(admission if invocation.borrows_admission else None)
         except Exception as exc:  # noqa: BLE001 — normalize the endpoint plugin boundary
             result = _exception_outcome(endpoint, prepared, exc)
     finally:

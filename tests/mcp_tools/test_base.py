@@ -2243,8 +2243,9 @@ def test_final_headline_contract_preserves_generic_endpoint(tmp_path, kind, call
         tool.set_criterion(key, met)
     result = McpToolResult(criterion_key="legacy", criterion_met=True)
     from booley.flows.endpoint_report_criteria import freeze
+    from booley.flows.prepared_invocation import OrdinaryRunInvocation
 
-    freeze(tool)
+    freeze(tool, OrdinaryRunInvocation(tool._run))
     report = json.loads(tool.write_report(result).read_text())
     if kind == "mcp_tool":
         assert (report["criterion_key"], report["criterion_met"]) == ("legacy", True)
@@ -2261,8 +2262,9 @@ def test_generic_submission_none_key_is_preserved(tmp_path):
     tool.parse_args(["--report-dir", str(tmp_path / "reports")])
     result = McpToolResult(criterion_key=None, criterion_met=None)
     from booley.flows.endpoint_report_criteria import freeze
+    from booley.flows.prepared_invocation import OrdinaryRunInvocation
 
-    freeze(tool)
+    freeze(tool, OrdinaryRunInvocation(tool._run))
     report = json.loads(tool.write_report(result).read_text())
     assert report["criterion_key"] is None
     assert report["criterion_met"] is None
@@ -2351,6 +2353,7 @@ def test_preexisting_met_state_is_not_a_current_report_evaluation(tmp_path):
 def test_project_local_sim_endpoint_writes_project_local_schema(tmp_path):
     """A Project-local endpoint named ``sim`` is not the Simulation Flow."""
     from booley.flows.endpoint_report_criteria import freeze
+    from booley.flows.prepared_invocation import OrdinaryRunInvocation
 
     class OtherTool(ConcreteMcpTool):
         name = "other"
@@ -2360,7 +2363,7 @@ def test_project_local_sim_endpoint_writes_project_local_schema(tmp_path):
         if tool.name == "test_endpoint":
             tool.name = "sim"
         tool.parse_args(["--report-dir", str(tmp_path / tool.name / "reports")])
-        freeze(tool)
+        freeze(tool, OrdinaryRunInvocation(tool._run))
         result = McpToolResult(criterion_key="legacy", criterion_met=False)
         documents[tool.name] = json.loads(tool.write_report(result).read_text())
     sim, other = documents["sim"], documents["other"]

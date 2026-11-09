@@ -24,6 +24,8 @@ DECLARED_NAMES = frozenset(
         "_skip_report_detail_refresh",
         "record_flow_owned_acceptance",
         "generic_binding_gate_applies",
+        "prepare_endpoint_invocation",
+        "manifest_names_targets",
     }
 )
 
@@ -125,3 +127,102 @@ def test_shared_acceptance_code_has_no_simulation_branches():
         and node.args[1].value in SIMULATION_ACCEPTANCE_NAMES
     )
     assert lookups == [], f"Simulation acceptance state looked up by name: {lookups}"
+
+
+# Simulation-only names the shared preparation may not look up by name: the
+# Simulation Flow reaches the lifecycle through its PreparedInvocation.
+SIMULATION_PREPARATION_NAMES = frozenset(
+    {
+        "prepare_simulation_endpoint",
+        "run_prepared_simulation",
+        "report_candidate_workloads",
+        "_prepared_target_selection",
+        "resume_from",
+        "mode",
+        "coverage",
+        "targets",
+    }
+)
+
+# Modules shared by every endpoint kind; they must not read the Target-selection field.
+SHARED_PREPARATION_MODULES = (
+    "endpoint_session.py",
+    "endpoint_admission.py",
+    "endpoint_report_criteria.py",
+    "prepared_invocation.py",
+)
+
+# BuiltinFlow methods that prepare an endpoint for every built-in Flow.
+BASE_PREPARATION_METHODS = ("prepare_target_endpoint", "prepare_endpoint_invocation")
+
+
+def _named_lookups(node: ast.AST, names: frozenset[str]) -> list[str]:
+    """``getattr``/``hasattr`` calls under *node* whose attribute name is in *names*."""
+    return [
+        f"line {child.lineno}: {child.func.id}({child.args[1].value!r})"
+        for child in ast.walk(node)
+        if isinstance(child, ast.Call)
+        and isinstance(child.func, ast.Name)
+        and child.func.id in {"getattr", "hasattr"}
+        and len(child.args) >= 2
+        and isinstance(child.args[1], ast.Constant)
+        and child.args[1].value in names
+    ]
+
+
+def _attribute_reads(node: ast.AST, name: str) -> list[int]:
+    """Line numbers of ``<x>.name`` attribute accesses under *node*."""
+    return [
+        child.lineno
+        for child in ast.walk(node)
+        if isinstance(child, ast.Attribute) and child.attr == name
+    ]
+
+
+def _instance_dict_membership(node: ast.AST) -> list[int]:
+    """Line numbers of ``"name" in <x>.__dict__`` tests (per-instance monkeypatch detection)."""
+    return [
+        child.lineno
+        for child in ast.walk(node)
+        if isinstance(child, ast.Compare)
+        and any(
+            isinstance(comparator, ast.Attribute) and comparator.attr == "__dict__"
+            for comparator in child.comparators
+        )
+    ]
+
+
+def shared_preparation_violations(filename: str, scope: ast.AST) -> list[str]:
+    """Simulation dispatch found in *scope*, a shared module or one shared method."""
+    found = [f"{filename}:{line}: compares with 'sim'" for line in _compares_with_sim(scope)]
+    found += [
+        f"{filename}:{lookup}: Simulation name looked up"
+        for lookup in _named_lookups(scope, SIMULATION_PREPARATION_NAMES)
+    ]
+    return found
+
+
+def test_shared_preparation_has_no_simulation_dispatch():
+    violations: list[str] = []
+    for module in SHARED_PREPARATION_MODULES:
+        tree = _parse(FLOWS / module)
+        violations += shared_preparation_violations(module, tree)
+        violations += [
+            f"{module}:{line}: reads _prepared_target_selection"
+            for line in _attribute_reads(tree, "_prepared_target_selection")
+        ]
+
+    # BuiltinFlow owns the Target-selection field, so only its dispatch is checked.
+    base = _parse(FLOWS / "base.py")
+    methods = {node.name: node for node in ast.walk(base) if isinstance(node, ast.FunctionDef)}
+    for name in BASE_PREPARATION_METHODS:
+        assert name in methods, f"base.{name} is missing"
+        violations += shared_preparation_violations(f"base.{name}", methods[name])
+
+    # A per-instance monkeypatch probe is not a seam: the run goes through the invocation.
+    for path in FLOWS.rglob("*.py"):
+        violations += [
+            f"{path.relative_to(FLOWS)}:{line}: tests an instance __dict__"
+            for line in _instance_dict_membership(_parse(path))
+        ]
+    assert violations == [], f"shared preparation dispatches on Simulation: {violations}"
