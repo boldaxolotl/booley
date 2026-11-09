@@ -1,4 +1,4 @@
-"""Agent-client lifecycle hook: record one session's activity for the Dashboard.
+"""Agent-client lifecycle hook: record one session's activity and conversation.
 
 The Sandbox Image installs this file at
 ``/usr/local/libexec/booley/session_activity_hook.py`` and configures Claude
@@ -12,6 +12,32 @@ of ``booley.runtime.session_activity``, the Session Registry key formats and
 the Main Booley Directory resolution of ``booley.core.booley_dir``;
 ``tests/harness/test_session_activity_hook.py`` holds the two in agreement.
 
+Two responsibilities share this script because they share its installation,
+its stdlib-only constraint, and its Main Booley Directory resolution:
+
+* Activity (Dashboard): every event in ``EVENT_STATES`` and ``SessionEnd``
+  writes one signal under ``runtime/session_activity``.
+* Conversation records (ADR 0068, #2610): ``SessionStart`` in an interactive
+  worktree (``<Main Booley Directory>/worktrees/<name>``) writes
+  ``worktrees/.conversations/<sha256(client + ":" + conversation_id)>.json``::
+
+      {
+          "schema": 1,
+          "client": "claude" | "codex",
+          "conversation_id": ...,
+          "cwd": ...,
+          "worktree": "<name>",
+          "handle": "S<N>" | null,
+          "process_key": ... | null,
+          "at": "<UTC RFC 3339>",
+      }
+
+  A later start of the same conversation replaces the record, or removes it
+  when the conversation starts outside a worktree, so a record names the
+  worktree last used. A record lives while ``worktrees/<worktree>`` exists. It
+  names the worktree by name only: a reader treats a worktree whose ``.git`` file
+  is newer than ``at`` as a different worktree of the same name.
+
 It prints nothing to stdout (clients feed hook output back to the model),
 reports a problem on stderr only, and always exits 0, so it can never block or
 alter a turn.
@@ -22,9 +48,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Mapping
+from itertools import islice
 from pathlib import Path
 
 CLIENTS = ("claude", "codex")
@@ -46,6 +74,8 @@ EVENT_STATES = {
     "Notification": WAITING_USER,
 }
 END_EVENT = "SessionEnd"
+# Not an activity event: it records which worktree a conversation started in.
+START_EVENT = "SessionStart"
 # What SessionEnd leaves behind: the same signal file, marked as ended.
 ENDED = "ended"
 # The only Claude Code notifications that mean "waiting for the user".
@@ -63,6 +93,11 @@ CLIENT_COMMAND = "claude"
 MAX_PAYLOAD_BYTES = 8 * 1024 * 1024
 MAX_ANCESTORS = 32
 MAX_SIGNALS = 4096
+MAX_CONVERSATIONS = 4096
+MAX_CWD = 4096
+CONVERSATIONS_DIR = ".conversations"
+# One path component, as booley.runtime.worktree_usage.WORKTREE_NAME.
+WORKTREE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 MAX_TOOL_NAME = 128
 MAX_THREAD_ID = 1024
 MAX_PARENT_DIRS = 128
@@ -144,13 +179,17 @@ def _command_name(proc_root: Path, pid: int) -> str:
 
 def _codex_key(payload: Mapping[str, object]) -> str | None:
     """Key of the Codex thread: a subagent reports its own thread as ``agent_id``."""
-    thread = payload.get("agent_id") or payload.get("session_id")
-    if isinstance(thread, str) and 0 < len(thread) <= MAX_THREAD_ID and thread.isprintable():
-        return "codex:" + thread
-    return None
+    thread = _valid_id(payload.get("agent_id") or payload.get("session_id"))
+    return None if thread is None else "codex:" + thread
 
 
-def _chat_aliases(project: Path) -> dict[str, str]:
+def _valid_id(value: object) -> str | None:
+    """*value* when it is usable as a thread or conversation identifier, else ``None``."""
+    ok = isinstance(value, str) and 0 < len(value) <= MAX_THREAD_ID and value.isprintable()
+    return value if ok and isinstance(value, str) else None
+
+
+def _handle_map(project: Path) -> tuple[dict[str, str], dict[str, str]]:
     """Validate the session-map contract of runtime.handles.HandleStore, but stricter.
 
     Only the Booley Directory entry itself (*project*) may be a link, as in the host
@@ -177,7 +216,7 @@ def _chat_aliases(project: Path) -> dict[str, str]:
             raise ValueError("handle mapping must contain strings")
     if type(data.get("next_number")) is not int:
         raise ValueError("invalid handle counter")
-    return aliases
+    return entries, aliases
 
 
 def _codex_process(proc_root: Path, pid: int) -> tuple[str, bool]:
@@ -196,7 +235,7 @@ def _codex_chat_key(project: Path, proc_root: Path, pid: int) -> str | None:
     """Only the launch's own CLI and its helpers can own the tab's activity."""
     nearest_client = child = None
     try:
-        aliases = _chat_aliases(project)
+        aliases = _handle_map(project)[1]
         for ancestor in _ancestors(proc_root, pid):
             executable, client = _codex_process(proc_root, ancestor)
             if client and nearest_client is None:
@@ -296,6 +335,16 @@ def record(
 ) -> bool:
     """Store the activity one hook event reports. Returns whether the store changed."""
     event = payload.get("hook_event_name")
+    if event == START_EVENT:
+        return _record_conversation(
+            client,
+            payload,
+            project,
+            now,
+            os.environ if env is None else env,
+            proc_root,
+            os.getpid() if pid is None else pid,
+        )
     if not isinstance(event, str) or not _reports_activity(payload):
         return False
     if client == "codex":
@@ -338,6 +387,158 @@ def _record_state(
     tool = payload.get("tool_name")
     named = state == WAITING_TOOL and isinstance(tool, str) and tool.isprintable()
     _write(root, key, state, tool[:MAX_TOOL_NAME] if named else "", now)
+    return True
+
+
+def _worktree_name(path: Path, project: Path) -> str | None:
+    """Name of the interactive worktree containing *path*, else ``None``.
+
+    Mirrors ``booley.runtime.worktree_usage.interactive_worktree_name``: the first
+    component below ``<project>/worktrees`` names a linked worktree (its ``.git``
+    is a file). Both sides are resolved, so the Sandbox spelling of the Main
+    Booley Directory compares equal to the host one.
+    """
+    try:
+        relative = path.resolve().relative_to((project / "worktrees").resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not relative.parts:
+        return None
+    name = relative.parts[0]
+    if not WORKTREE_NAME.fullmatch(name) or not (project / "worktrees" / name / ".git").is_file():
+        return None
+    return name
+
+
+def _claude_process_key(env: Mapping[str, str], proc_root: Path, pid: int) -> str | None:
+    """Key of the Claude Code process this hook descends from, at session start.
+
+    No registry row exists yet, so ``_claude_key`` cannot find the session:
+    ``CLAUDE_PID`` names the process directly, else the nearest ancestor whose
+    command is ``claude`` is it.
+    """
+    chain = _ancestors(proc_root, pid)
+    claimed = env.get("CLAUDE_PID", "")
+    if claimed.isdecimal() and int(claimed) in chain:
+        return _process_key(proc_root, int(claimed))
+    owner = next((a for a in chain if _command_name(proc_root, a) == CLIENT_COMMAND), None)
+    return None if owner is None else _process_key(proc_root, owner)
+
+
+def _handle_label(project: Path, names: list[str]) -> str | None:
+    """Handle label of the first of *names* the Session handle map allocates."""
+    try:
+        entries, aliases = _handle_map(project)
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        return None  # Handle storage must not disable the record.
+    for name in names:
+        label = entries.get(name if name in entries else aliases.get(name, ""))
+        if label is not None:
+            return label
+    return None
+
+
+def _conversations_root(project: Path) -> Path:
+    """The record directory, refused when it or ``worktrees`` is a link."""
+    root = project / "worktrees" / CONVERSATIONS_DIR
+    for part in (root, root.parent):
+        if part.is_symlink():
+            raise OSError(f"conversation storage is redirected: {part}")
+    return root
+
+
+def _record_gone(path: Path, project: Path) -> bool:
+    """Whether *path* is a record whose worktree directory no longer exists."""
+    if path.name.startswith(".") or path.is_symlink():
+        return False
+    try:
+        with path.open("rb") as stream:
+            record = json.loads(stream.read(MAX_CWD * 2))
+    except (OSError, ValueError, UnicodeError):
+        return False
+    worktree = record.get("worktree") if isinstance(record, dict) else None
+    if not isinstance(worktree, str) or not WORKTREE_NAME.fullmatch(worktree):
+        return False
+    return not os.path.lexists(project / "worktrees" / worktree)
+
+
+def _make_room(root: Path, project: Path) -> None:
+    """Ensure one more record fits; at the bound, evict records of gone worktrees first."""
+    with os.scandir(root) as scan:
+        paths = [Path(entry.path) for entry in islice(scan, MAX_CONVERSATIONS)]
+    if len(paths) < MAX_CONVERSATIONS:
+        return
+    gone = [path for path in paths if _record_gone(path, project)]
+    for path in gone:
+        path.unlink(missing_ok=True)
+    if not gone:
+        raise OSError("conversation store is full")
+
+
+def _conversation_record(
+    client: str,
+    conversation: str,
+    cwd: str,
+    worktree: str,
+    now: float,
+    project: Path,
+    owner: tuple[Mapping[str, str], Path, int],
+) -> dict[str, object]:
+    """The record of a conversation starting in *worktree*; *owner* locates its process."""
+    env, proc_root, pid = owner
+    if client == "codex":
+        key = _codex_chat_key(project, proc_root, pid)
+        names = ([key] if key else []) + ["codex:" + conversation]
+    else:
+        key = _claude_process_key(env, proc_root, pid)
+        names = [key] if key else []
+    return {
+        "schema": SCHEMA,
+        "client": client,
+        "conversation_id": conversation,
+        "cwd": cwd,
+        "worktree": worktree,
+        "handle": _handle_label(project, names),
+        "process_key": key,
+        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+    }
+
+
+def _record_conversation(
+    client: str,
+    payload: Mapping[str, object],
+    project: Path,
+    now: float,
+    env: Mapping[str, str],
+    proc_root: Path,
+    pid: int,
+) -> bool:
+    """Record (or remove) the worktree a conversation starts in. Returns whether one was written."""
+    conversation = _valid_id(payload.get("session_id"))
+    if conversation is None or (client == "codex" and payload.get("agent_id")):
+        return False  # A subagent shares its parent's conversation.
+    root = _conversations_root(project)
+    path = root / (hashlib.sha256(f"{client}:{conversation}".encode()).hexdigest() + ".json")
+    cwd = payload.get("cwd")
+    worktree = None
+    if isinstance(cwd, str) and 0 < len(cwd) <= MAX_CWD and cwd.isprintable():
+        worktree = _worktree_name(Path(cwd), project) if Path(cwd).is_absolute() else None
+    if worktree is None or not isinstance(cwd, str):
+        path.unlink(missing_ok=True)  # Resumed elsewhere: stop naming the old worktree.
+        return False
+    record = _conversation_record(
+        client, conversation, cwd, worktree, now, project, (env, proc_root, pid)
+    )
+    root.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        _make_room(root, project)
+    # One staging name per process; the dot prefix keeps it out of every reader.
+    temporary = root / f".{path.name}.{os.getpid()}.tmp"
+    try:
+        temporary.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return True
 
 
