@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from typing import TypeAlias
@@ -14,8 +11,11 @@ from booley.flows.sim.coverage_campaign import (
     CoveragePoint,
     CoverageRollup,
     DurableTargetIdentity,
-    FrozenJson,
-    _freeze_mapping,
+)
+from booley.flows.sim.coverage_json import (
+    CRITERION_FINGERPRINT_JSON,
+    content_digest,
+    freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_waivers import ApprovedWaiver, ApprovedWaiverSet
 
@@ -53,14 +53,6 @@ class CoverageCriterion:
 EvaluatedCoverageCampaign: TypeAlias = CoverageCampaign
 
 
-def _json_value(value: FrozenJson) -> object:
-    if isinstance(value, Mapping):
-        return {key: _json_value(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_json_value(item) for item in value]
-    return value
-
-
 def threshold_number(value: Fraction) -> int | float:
     return value.numerator if value.denominator == 1 else float(value)
 
@@ -84,11 +76,10 @@ def _criterion_fingerprint(
         "target": str(criterion.target),
         "metrics": thresholds,
         "tests": sorted(required_tests),
-        "waiver_configuration": _json_value(waivers.configuration),
+        "waiver_configuration": waivers.configuration,
         "approved_waiver_set_digest": waivers.digest,
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+    return content_digest(CRITERION_FINGERPRINT_JSON.encode(payload))
 
 
 def _metric_result(rollup: CoverageRollup, threshold: CoverageThreshold) -> dict[str, object]:
@@ -130,14 +121,14 @@ def _apply_waivers(campaign: CoverageCampaign, approved: ApprovedWaiverSet) -> C
     points = tuple(
         replace(
             point,
-            disposition=_freeze_mapping(
+            disposition=freeze_coverage_mapping(
                 {
                     "kind": "waived",
                     "reason": by_point[point.id].reason,
                     "waiver_id": by_point[point.id].waiver_id,
                     "waiver_file": by_point[point.id].waiver_file,
                     "waiver_fingerprint": by_point[point.id].waiver_fingerprint,
-                    "provenance": _json_value(by_point[point.id].provenance),
+                    "provenance": by_point[point.id].provenance,
                 }
             ),
         )
@@ -190,7 +181,7 @@ def _blocked_campaign(
         "metrics": [],
         "diagnostics": diagnostics,
     }
-    return replace(campaign, evaluation=_freeze_mapping(evaluation))
+    return replace(campaign, evaluation=freeze_coverage_mapping(evaluation))
 
 
 def _target_suite_diagnostics(
@@ -291,7 +282,7 @@ def _ungated_campaign(
         "metrics": [],
         "diagnostics": diagnostics,
     }
-    return replace(campaign, evaluation=_freeze_mapping(evaluation))
+    return replace(campaign, evaluation=freeze_coverage_mapping(evaluation))
 
 
 def _scored_campaign(
@@ -319,7 +310,7 @@ def _scored_campaign(
         "metrics": results,
         "diagnostics": [],
     }
-    return replace(campaign, evaluation=_freeze_mapping(evaluation))
+    return replace(campaign, evaluation=freeze_coverage_mapping(evaluation))
 
 
 def evaluate_coverage_campaign(

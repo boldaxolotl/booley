@@ -18,7 +18,11 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.flows.sim import coverage_waiver_application as application
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity, decode_coverage_campaign
+from booley.flows.sim.coverage_campaign import (
+    DurableTargetIdentity,
+    decode_coverage_campaign,
+    encode_coverage_point_id,
+)
 from booley.flows.sim.coverage_campaign_store import (
     load_coverage_campaign,
     publish_coverage_campaign,
@@ -203,10 +207,7 @@ def fixture_point(seed, index, *, hit):
     if index:
         point["identity"]["subject"]["basic_block"] = index
         point["identity"]["collector"]["native_key"] = f"10:basic-block-{index}"
-        identity_bytes = json.dumps(
-            point["identity"], sort_keys=True, separators=(",", ":")
-        ).encode()
-        point["id"] = "cp1:" + base64.urlsafe_b64encode(identity_bytes).decode().rstrip("=")
+        point["id"] = encode_coverage_point_id(point["identity"])
     if not hit:
         point["hits_by_run"] = {}
     return point

@@ -18,10 +18,10 @@ Mode.
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 from booley.flows.campaign_results import DurableCampaignResults
+from booley.flows.sim.coverage_json import SHA256_PREFIX, content_digest
 
 from .campaign import SimulationCampaignIntegrityError, read_durable_results
 from .coverage_acceptance import coverage_run_grade
@@ -39,8 +39,8 @@ def _coverage_identity(document: Path) -> tuple[str, str]:
     The document does not exist when collection starts, so the campaign is
     known by where it will be published.
     """
-    digest = hashlib.sha256(document.resolve().as_posix().encode("utf-8")).hexdigest()
-    return f"coverage-{digest[:32]}", f"sha256:{digest}"
+    digest = content_digest(document.resolve().as_posix().encode("utf-8"))
+    return f"coverage-{digest.removeprefix(SHA256_PREFIX)[:32]}", digest
 
 
 def read_unpublished_results(manifest_path: Path, manifest_sha256: str) -> DurableCampaignResults:
@@ -61,7 +61,7 @@ def read_unpublished_results(manifest_path: Path, manifest_sha256: str) -> Durab
         return DurableCampaignResults(digest, campaign_id, (), ())
     try:
         campaign = load_coverage_campaign(manifest_path).campaign
-        content = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        content = content_digest(manifest_path.read_bytes())
     except (CoverageCampaignStoreError, CoverageCampaignValidationError, OSError) as exc:
         raise SimulationCampaignIntegrityError(
             f"Coverage Campaign cannot be authenticated: {exc}"
@@ -77,5 +77,5 @@ def read_unpublished_results(manifest_path: Path, manifest_sha256: str) -> Durab
         }
         for run in campaign.runs
     )
-    results = ((_COVERAGE_DOCUMENT, f"sha256:{content}"),)
+    results = ((_COVERAGE_DOCUMENT, content),)
     return DurableCampaignResults(digest, campaign_id, results, rows, complete=True)

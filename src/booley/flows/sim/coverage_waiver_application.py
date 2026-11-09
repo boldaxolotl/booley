@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 import tomllib
 from collections.abc import Collection, Mapping
@@ -12,11 +11,8 @@ from typing import Any
 
 from booley.config.coverage_waiver_inputs import CoverageWaiverConfig
 from booley.core.booley_dir_links import is_booley_dir_entry
-from booley.flows.sim.coverage_campaign import (
-    CoverageCampaign,
-    DurableTargetIdentity,
-    _freeze_mapping,
-)
+from booley.flows.sim.coverage_campaign import CoverageCampaign, DurableTargetIdentity
+from booley.flows.sim.coverage_json import coverage_mapping_document, freeze_coverage_mapping
 from booley.flows.sim.coverage_policy import (
     CoverageCriterion,
     EvaluatedCoverageCampaign,
@@ -93,7 +89,7 @@ def load_promoted_waiver_set(
 def _unwaived(campaign: CoverageCampaign) -> CoverageCampaign:
     """The Campaign before any Approved Waiver was applied to its points."""
     points = tuple(
-        replace(point, disposition=_freeze_mapping({"kind": "eligible"}))
+        replace(point, disposition=freeze_coverage_mapping({"kind": "eligible"}))
         if point.disposition.get("kind") == "waived" and "waiver_id" in point.disposition
         else point
         for point in campaign.points
@@ -116,13 +112,7 @@ def strict_reevaluation(
 
 def evaluation_json(campaign: EvaluatedCoverageCampaign) -> Mapping[str, Any]:
     """Plain JSON of an evaluation, as Criterion details store it."""
-    return json.loads(json.dumps(campaign.evaluation, default=_plain))
-
-
-def _plain(value: object) -> object:
-    if isinstance(value, Mapping):
-        return dict(value)
-    raise TypeError(f"not JSON data: {type(value).__name__}")
+    return coverage_mapping_document(campaign.evaluation)
 
 
 __all__ = [
