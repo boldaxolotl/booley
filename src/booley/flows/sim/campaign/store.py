@@ -60,6 +60,7 @@ from .codec import (
     encode_simulation_campaign_manifest,
     encode_simulation_result,
     linked_manifest_path,
+    reads_campaign_records,
     validate_relative_path,
 )
 from .model import (
@@ -392,6 +393,7 @@ class CampaignStore:
     def publish_build_result(self, directory: Path, result: BundleBuildResult) -> Path:
         return self._publish(directory / "build-result.json", result, encode_bundle_build_result)
 
+    @reads_campaign_records
     def recover_shared_build(
         self, build_variant_id: str, producer_invocation_id: int
     ) -> SharedBuildRecovery | None:
@@ -635,6 +637,7 @@ class CampaignStore:
                     snapshots[directory] = snapshot
         return snapshots
 
+    @reads_campaign_records
     def _read_attempt_pre_sim_snapshot(self, manifest, item, directory, terminal):
         if not (directory / "attempt.json").exists():
             return None

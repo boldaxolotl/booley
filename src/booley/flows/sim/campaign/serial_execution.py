@@ -77,6 +77,7 @@ from .codec import (
     encode_bundle_build_result,
     encode_executable_snapshot,
     encode_simulator_bundle,
+    reads_campaign_records,
 )
 from .coordinator import (
     SerialWorkExecutor,
@@ -837,6 +838,7 @@ def _hook_infrastructure_outcome(
     )
 
 
+@reads_campaign_records
 def _recovered_shared_failure(directory: Path, result: BundleBuildResult) -> _SharedFailure:
     observation = cast(Mapping[str, object], result.document["observation"])
     detail = cast(Mapping[str, object], observation["detail"])

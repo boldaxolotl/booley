@@ -20,6 +20,7 @@ from .codec import (
     canonical_json_bytes,
     decode_executable_snapshot,
     encode_executable_snapshot,
+    validate_relative_path,
 )
 from .model import ExecutableSnapshot, SimulatorBundle
 
@@ -129,7 +130,7 @@ def authenticate_executable_snapshot(snapshot: ExecutableSnapshot, snapshot_root
 
 
 def _regular_child(root: Path, relative: str) -> Path:
-    path = root / relative
+    path = root / validate_relative_path(relative)
     try:
         path.absolute().relative_to(root.absolute())
     except ValueError as exc:
