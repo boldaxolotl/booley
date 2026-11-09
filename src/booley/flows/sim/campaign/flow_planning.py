@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -10,6 +9,7 @@ from typing import cast
 
 from booley.core.booley_dir import BooleyDirOutsideCheckoutError, own_booley_dir_relative
 from booley.core.booley_dir_links import lexical_booley_path
+from booley.flows.sim.campaign_files import document_digest, evidence_digest
 from booley.flows.sim.campaign_reports import simulation_booley_dir
 from booley.flows.sim.config import (
     parse_run_cwd_template,
@@ -30,7 +30,6 @@ from .codec import (
 )
 from .model import SimulationCampaignPlan, create_simulation_campaign_plan
 from .planning import (
-    canonical_sha256,
     derive_runtime_input_declarations,
     finalize_manifest,
 )
@@ -270,7 +269,7 @@ def _recipes(
         "eda_tool": inspection.eda_tool or "",
         "toplevel": inspection.toplevel,
         "arguments": [],
-        "command_model_sha256": canonical_sha256(command_model),
+        "command_model_sha256": document_digest(command_model),
     }
     return source_recipe, build_recipe
 
@@ -322,7 +321,7 @@ def _target_document(
         "vlnv": handle.vlnv,
         "name": handle.name,
         "selector": handle.selector,
-        "project_identity": canonical_sha256(str(root)),
+        "project_identity": document_digest(str(root)),
         "revision": revision,
         "role": role,
         "display_name": handle.selector,
@@ -342,7 +341,7 @@ def _variant_document(
         "trace": trace,
         "coverage": workload["coverage"],
     }
-    digest = canonical_sha256(recipe)
+    digest = document_digest(recipe)
     return {
         "build_variant_id": "variant:" + digest.removeprefix("sha256:"),
         "kind": recipe["kind"],
@@ -384,7 +383,7 @@ def _source_entries(root: Path, inputs: Sequence[TargetInput]) -> list[dict[str,
             {
                 "path": relative,
                 "bytes": len(raw),
-                "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                "sha256": evidence_digest(raw),
                 "kind": kind,
             }
         )
@@ -402,7 +401,7 @@ def _eda_identity(kind: str | None) -> str:
         raw = path.read_bytes()
     except OSError:
         return "unavailable"
-    return "sha256:" + hashlib.sha256(raw).hexdigest()
+    return evidence_digest(raw)
 
 
 def _required_suite(
@@ -430,7 +429,7 @@ def _required_suite(
         "default_invocation": not backed,
         "source_path": relative,
         "source_bytes": len(raw),
-        "source_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "source_sha256": evidence_digest(raw),
     }
 
 
@@ -499,7 +498,7 @@ def _work_items(
                 "collision_template": collision,
             },
         }
-        fingerprint = canonical_sha256(identity)
+        fingerprint = document_digest(identity)
         items.append(
             {
                 "work_item_id": (

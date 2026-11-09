@@ -8,7 +8,6 @@ and captures the engine-authorized private image as attempt-owned evidence.
 from __future__ import annotations
 
 import functools
-import hashlib
 import json
 import stat
 import threading
@@ -35,6 +34,7 @@ from booley.flows.sim.campaign.bundle import (
     authenticate_executable_snapshot,
     create_executable_snapshot,
 )
+from booley.flows.sim.campaign_files import document_digest, evidence_digest
 from booley.flows.sim.execution.contract import (
     PreSimEvidence,
     PreSimScopeStoppedError,
@@ -1019,8 +1019,8 @@ def _publish_ready_build_result(
         "simulation_attempt_id": request.attempt_id,
     }
     build_document = build_attempt.document
-    inventory = _sha_value(artifacts)
-    snapshot_inventory = _sha_value(
+    inventory = document_digest(artifacts)
+    snapshot_inventory = document_digest(
         [item for item in artifacts if item["kind"] != "runtime_input"]
     )
     bundle = decode_simulator_bundle(
@@ -1092,8 +1092,8 @@ def _shared_bundle(request, attempt, build_id, bundle_id, artifacts) -> Simulato
         "tool_provenance": attempt.document["tool_provenance"],
         "created_at": _now(),
         "artifacts": artifacts,
-        "inventory_sha256": _sha_value(artifacts),
-        "snapshot_inventory_sha256": _sha_value(
+        "inventory_sha256": document_digest(artifacts),
+        "snapshot_inventory_sha256": document_digest(
             [item for item in artifacts if item["kind"] != "runtime_input"]
         ),
     }
@@ -1132,7 +1132,7 @@ def _shared_ready_result_document(
             "bundle_id": bundle_id,
             "manifest_path": bundle_path.relative_to(directory).as_posix(),
             "manifest_bytes": len(bundle_raw),
-            "manifest_sha256": _sha_evidence_bytes(bundle_raw),
+            "manifest_sha256": evidence_digest(bundle_raw),
             "sharing": "shared_variant",
             "artifacts": artifacts,
         },
@@ -1242,7 +1242,7 @@ def _ready_build_result(
             "bundle_id": bundle.document["bundle_id"],
             "manifest_path": bundle_path.relative_to(build_directory).as_posix(),
             "manifest_bytes": len(bundle_raw),
-            "manifest_sha256": _sha_evidence_bytes(bundle_raw),
+            "manifest_sha256": evidence_digest(bundle_raw),
             "sharing": "private_work_item",
             "artifacts": [dict(item) for item in bundle.document["artifacts"]],
         },
@@ -1859,7 +1859,7 @@ def _capture_private_image(
             {
                 "path": target.relative_to(destination).as_posix(),
                 "bytes": len(raw),
-                "sha256": _sha_evidence_bytes(raw),
+                "sha256": evidence_digest(raw),
                 "kind": kind,
             }
         )
@@ -1887,7 +1887,7 @@ def _capture_outcome_evidence(
                 {
                     "$schema": "booley.cocotb-campaign-transport/v1",
                     "source_bytes": len(source_raw),
-                    "source_sha256": _sha_evidence_bytes(source_raw),
+                    "source_sha256": evidence_digest(source_raw),
                     "source_observations": source_observations,
                     "observations": (
                         _infrastructure_observations(request, outcome)
@@ -1990,7 +1990,7 @@ def _record_ref(path: Path, root: Path, raw: bytes, kind: str, owner: str) -> di
     return {
         "path": path.relative_to(root).as_posix(),
         "bytes": len(raw),
-        "sha256": _sha_evidence_bytes(raw),
+        "sha256": evidence_digest(raw),
         "kind": kind,
         "owner": owner,
     }
@@ -2010,18 +2010,6 @@ def _regular_child(root: Path, relative: str) -> Path:
 
 def _create_immutable(path: Path, raw: bytes) -> None:
     durable_create(path, raw)
-
-
-def _sha_bytes(raw: bytes) -> str:
-    return "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
-
-
-def _sha_evidence_bytes(raw: bytes) -> str:
-    return "sha256:" + hashlib.sha256(raw).hexdigest()
-
-
-def _sha_value(value: object) -> str:
-    return _sha_bytes(canonical_json_bytes(value))
 
 
 def _now() -> str:

@@ -72,6 +72,7 @@ from booley.flows.sim.campaign.test_run_report import (
     test_run_grade,
     test_run_row,
 )
+from booley.flows.sim.campaign_files import document_digest
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import (
@@ -214,7 +215,6 @@ from .campaign.flow_planning import (
 from .campaign.model import simulation_status_from_observations
 from .campaign.planning import (
     SimulationCampaignWorkloadMismatchError,
-    canonical_sha256,
     manifest_digest,
     verify_workload,
 )
@@ -869,7 +869,7 @@ def _pre_sim_preview_record(firing, invocation: Path | None) -> dict[str, object
         target=dict(document["target"]),
         test_count=len(document["test_names"]),
         test_names=list(document["test_names"][:8]),
-        test_names_sha256=canonical_sha256(list(document["test_names"])),
+        test_names_sha256=document_digest(list(document["test_names"])),
         terminal=firing.terminal,
         reference=_report_artifact_reference(
             firing.path,

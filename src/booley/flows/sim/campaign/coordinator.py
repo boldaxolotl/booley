@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 from collections.abc import Callable, Mapping
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import Protocol, cast, overload
 
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim.campaign_files import evidence_digest
 from booley.flows.sim.campaign_reports import simulation_booley_dir, target_report_directory
 from booley.flows.sim.coverage_campaign import CoverageCampaignValidationError
 from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
@@ -966,7 +966,7 @@ def _coverage_acceptance_reference(
             "path_base": "origin_invocation",
             "path": path.relative_to(invocation).as_posix(),
             "bytes": len(raw),
-            "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "sha256": evidence_digest(raw),
             "kind": "coverage_campaign_reference",
             "owner": manifest.document["campaign_id"],
         },
@@ -992,7 +992,7 @@ def collected_result_facts(
         item = by_id[recovered.work_item_id]
         result_path = store.work_item_directory(recovered.work_item_id) / "result.json"
         raw = result_path.read_bytes()
-        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+        digest = evidence_digest(raw)
         invocation = store.root.parents[2]
         relative = result_path.relative_to(invocation).as_posix()
         document = recovered.result.document
@@ -1082,7 +1082,7 @@ def _prerequisite_facts(
         selected = _selected_prerequisite_result(store.scan(linked), entry)
         result_path = store.work_item_directory(selected.work_item_id) / "result.json"
         raw = result_path.read_bytes()
-        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+        digest = evidence_digest(raw)
         result_reference = {
             "path_base": "origin_invocation",
             "path": result_path.relative_to(invocation).as_posix(),

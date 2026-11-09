@@ -387,7 +387,7 @@ def test_public_campaign_inspection_rejects_malformed_summary_but_reports_mismat
         inspect_retained_campaign(completed.store.manifest_path)
 
     completed.store.summary_path.write_bytes(canonical_json_bytes([]))
-    with pytest.raises(SimulationCampaignIntegrityError, match="not an object"):
+    with pytest.raises(SimulationCampaignIntegrityError, match="not a JSON object"):
         inspect_retained_campaign(completed.store.manifest_path)
 
     summary["complete"] = True

@@ -27,6 +27,7 @@ from booley.core.boundary import (
     require_str_value,
     require_uuid4,
 )
+from booley.flows.sim.campaign_files import canonical_json
 from booley.runtime.timefmt import parse_timestamp
 
 from .model import (
@@ -108,28 +109,12 @@ def raise_if_retired(document: Mapping[str, object]) -> None:
         raise UnsupportedSimulationCampaignFormatError(_RETIRED_SCHEMAS[schema], schema)
 
 
-def _thaw(value: FrozenJson) -> object:
-    if isinstance(value, Mapping):
-        return {key: _thaw(item) for key, item in value.items()}
-    if isinstance(value, tuple | list):
-        return [_thaw(item) for item in value]
-    return value
-
-
 def canonical_json_bytes(value: object) -> bytes:
     """Encode finite JSON as sorted UTF-8 with one trailing newline."""
-    thawed = _thaw(cast(FrozenJson, value))
     try:
-        text = json.dumps(
-            thawed,
-            ensure_ascii=False,
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        return canonical_json(value)
     except (TypeError, ValueError) as exc:
         raise SimulationCampaignIntegrityError(f"value is not canonical JSON: {exc}") from exc
-    return text.encode("utf-8") + b"\n"
 
 
 # v4 = the exact work-item shape with the required ``test_runs`` of every work
