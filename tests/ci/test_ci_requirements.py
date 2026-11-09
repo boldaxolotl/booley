@@ -275,6 +275,39 @@ def test_project_pip_caches_key_on_the_constraints_file() -> None:
     assert offenders == []
 
 
+def test_pip_caches_start_empty_after_a_prefix_restore() -> None:
+    """Every setup-python pip cache drops a prefix-restored older cache before installing.
+
+    On a dependency-hash miss setup-python restores the newest entry for the same
+    Python by key prefix, and pip never prunes. Without the purge each new entry
+    carries every older wheel forward; Windows Python 3.11 is pinned at 3.11.9,
+    so its prefix never changes and its entries grew to 2 GB.
+    """
+    offenders: list[str] = []
+    checked = 0
+    for path in sorted((_ROOT / ".github/workflows").glob("*.yml")):
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job_name, job in document["jobs"].items():
+            steps = list(job.get("steps", ()))
+            for index, step in enumerate(steps):
+                is_pip_cache = str(step.get("uses", "")).startswith("actions/setup-python") and (
+                    step.get("with", {}).get("cache") == "pip"
+                )
+                if not is_pip_cache:
+                    continue
+                checked += 1
+                purge = steps[index + 1] if index + 1 < len(steps) else {}
+                step_id = step.get("id")
+                if not (
+                    step_id
+                    and purge.get("if") == f"steps.{step_id}.outputs.cache-hit != 'true'"
+                    and purge.get("run") == "python -m pip cache purge"
+                ):
+                    offenders.append(f"{path.name}:{job_name}")
+    assert checked
+    assert offenders == []
+
+
 @pytest.mark.parametrize(
     ("script", "installs"),
     [

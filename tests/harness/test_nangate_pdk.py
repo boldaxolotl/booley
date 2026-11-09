@@ -7,6 +7,8 @@ import io
 import json
 import os
 import stat
+import urllib.error
+from email.message import Message
 from pathlib import Path
 
 import pytest
@@ -98,6 +100,66 @@ def test_checksum_failure_never_installs_download(tmp_path: Path, monkeypatch) -
         nangate_pdk.fetch(tmp_path / "cache", opener=lambda *_: io.BytesIO(b"wrong"))
 
     assert not (tmp_path / "cache" / "cell/lib/bad.lib").exists()
+
+
+def _flaky_opener(failures: list[Exception], payload: bytes):
+    """Return an opener that raises each of *failures* once, then serves *payload*."""
+    calls: list[str] = []
+
+    def opener(request, _timeout):
+        calls.append(request.full_url)
+        if failures:
+            raise failures.pop(0)
+        return io.BytesIO(payload)
+
+    return opener, calls
+
+
+def test_fetch_retries_a_timed_out_download_then_installs(tmp_path: Path, monkeypatch) -> None:
+    item = _item("upstream/a.lib", "cell/lib/a.lib", b"liberty\n")
+    monkeypatch.setattr(nangate_pdk, "FILES", (item,))
+    # A partial first attempt must not survive into the installed file.
+    opener, calls = _flaky_opener([TimeoutError("The read operation timed out")], b"liberty\n")
+    delays: list[float] = []
+
+    root = nangate_pdk.fetch(tmp_path / "cache", opener=opener, sleep=delays.append)
+
+    assert nangate_pdk.is_ready(root)
+    assert calls == [item.url, item.url]
+    assert delays == [2.0]
+
+
+def test_fetch_fails_after_every_attempt_times_out(tmp_path: Path, monkeypatch) -> None:
+    item = _item("upstream/a.lib", "cell/lib/a.lib", b"liberty\n")
+    monkeypatch.setattr(nangate_pdk, "FILES", (item,))
+    failures: list[Exception] = [
+        urllib.error.URLError(TimeoutError("timed out")),
+        urllib.error.HTTPError(item.url, 504, "Gateway Timeout", Message(), None),
+        TimeoutError("The read operation timed out"),
+    ]
+    opener, calls = _flaky_opener(failures, b"liberty\n")
+    delays: list[float] = []
+
+    with pytest.raises(nangate_pdk.NangatePdkError, match=r"attempt 3 of 3\): The read"):
+        nangate_pdk.fetch(tmp_path / "cache", opener=opener, sleep=delays.append)
+
+    assert len(calls) == 3
+    assert delays == [2.0, 4.0]
+    assert not (tmp_path / "cache" / item.destination).exists()
+
+
+def test_fetch_does_not_retry_a_client_error(tmp_path: Path, monkeypatch) -> None:
+    item = _item("upstream/a.lib", "cell/lib/a.lib", b"liberty\n")
+    monkeypatch.setattr(nangate_pdk, "FILES", (item,))
+    not_found = urllib.error.HTTPError(item.url, 404, "Not Found", Message(), None)
+    opener, calls = _flaky_opener([not_found], b"liberty\n")
+    delays: list[float] = []
+
+    with pytest.raises(nangate_pdk.NangatePdkError, match=r"attempt 1 of 3\).*404"):
+        nangate_pdk.fetch(tmp_path / "cache", opener=opener, sleep=delays.append)
+
+    assert len(calls) == 1
+    assert delays == []
 
 
 def test_validation_reports_missing_and_changed_members(tmp_path: Path, monkeypatch) -> None:

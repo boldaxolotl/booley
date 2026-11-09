@@ -6,7 +6,7 @@ horizontally:
 - Python 3.14 runs the complete suite on Windows in ten duration-balanced
   shards.
 - Python 3.14 runs the complete suite on Ubuntu under branch coverage, in the
-  three `coverage-shards` jobs. They use coverage.py's `sysmon` core
+  six `coverage-shards` jobs. They use coverage.py's `sysmon` core
   (`COVERAGE_CORE=sysmon`, PEP 669), which keeps tracing cheap enough that one
   instrumented run replaces a plain 3.14 run plus a separate coverage run.
 - Python 3.11 runs the complete suite on Ubuntu in two duration-balanced
@@ -60,7 +60,7 @@ always assigned to a shard. The `test` job owns compatibility execution, with
 from the sharded Ubuntu 3.11 group. The
 independent `coverage-shards` job owns coverage execution and the Ubuntu 3.14
 suite, balanced by `linux-test-timings.json`; `coverage` verifies
-its three exact shard selections before combining their raw data and enforcing
+its six exact shard selections before combining their raw data and enforcing
 the global and changed-line thresholds. `ci-required` waits for and validates
 both branches. Each verifier fails if a test is omitted, duplicated, or
 collected differently by two shards.
@@ -315,3 +315,19 @@ uv pip compile pyproject.toml --all-extras --universal --python-version 3.11 -o 
   environment, pip, and uv. Built-wheel installs (`publish.yml`,
   `docker-publish.yml`, `isolated_host_install_smoke.py`) and image Dockerfile
   installs stay unconstrained on purpose: they verify what users get.
+
+## pip cache
+
+Every `actions/setup-python` step with `cache: pip` has `id: setup-python` and is
+followed by a `Drop pip cache restored from an older dependency set` step. On an
+exact key hit (`cache-hit == 'true'`) the step is skipped and nothing is saved.
+On a miss, setup-python restores the newest entry for the same OS and Python
+patch version by key prefix and saves a new entry after the job. pip never
+prunes its cache, so without the purge each new entry carried every older
+wheel forward. Windows Python 3.11 is frozen at 3.11.9, the last 3.11 release
+with a Windows installer, so its prefix never reset: its entries reached 2 GB
+each, against about 180 MB for a fresh install, and pushed other caches out of
+the repository's 50 GB limit. After the purge, a new entry holds only the
+current dependency set. `test_pip_caches_start_empty_after_a_prefix_restore`
+in `tests/ci/test_ci_requirements.py` requires the step after every such cache.
+An existing bloated entry stays until its key changes or it is deleted.
