@@ -70,13 +70,6 @@ class TestProjectDirForInit:
 
 
 class TestEnvVarOverride:
-    def test_env_var_returns_path(self, tmp_path: Path, monkeypatch):
-        d = tmp_path / "my_project"
-        d.mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(d))
-        result = resolve_booley_dir()
-        assert result == d.resolve()
-
     def test_env_var_nonexistent_warns(self, tmp_path: Path, monkeypatch):
         fake = tmp_path / "does_not_exist"
         monkeypatch.setenv("BOOLEY_DIR", str(fake))

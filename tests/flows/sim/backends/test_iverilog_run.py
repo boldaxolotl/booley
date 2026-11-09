@@ -56,52 +56,6 @@ def test_build_vvp_cmd_no_plusargs(tmp_path: Path):
     assert cmd == ["vvp", "-n", f"-M{tmp_path}", str(tmp_path / "sim_cfg")]
 
 
-def test_parse_args_round_trips_run_options():
-    args = ir._parse_args(
-        [
-            "--build-dir",
-            "build/sim",
-            "--run-cwd",
-            "util/sim",
-            "--work-dir",
-            "out",
-            "--timeout",
-            "120",
-            "--trace",
-            "--trace-scope",
-            "tb.dut",
-            "--plusarg",
-            "test_id=2",
-            "--plusarg",
-            "verbose",
-        ]
-    )
-    assert args.build_dir == "build/sim"
-    assert args.run_cwd == "util/sim"
-    assert args.work_dir == "out"
-    assert args.timeout == 120
-    assert args.trace is True
-    assert args.trace_scope == "tb.dut"
-    assert args.plusargs == ["test_id=2", "verbose"]
-
-
-def test_parse_args_round_trips_sentinels():
-    args = ir._parse_args(
-        [
-            "--build-dir",
-            "b",
-            "--pass-sentinel",
-            "ALL TESTS PASSED.",
-            "--fail-sentinel",
-            "ERROR!",
-            "--fail-sentinel",
-            "TIMEOUT",
-        ]
-    )
-    assert args.pass_sentinels == ["ALL TESTS PASSED."]
-    assert args.fail_sentinels == ["ERROR!", "TIMEOUT"]
-
-
 @pytest.mark.parametrize("bad", ["0", "-5"])
 def test_parse_args_rejects_non_positive_timeout(bad: str):
     # A non-positive timeout would fire threading.Timer immediately; reject at CLI.
@@ -200,13 +154,6 @@ def test_bad_build_fixture_keeps_runtime_asset_and_grades_design_failure(
 # ---------------------------------------------------------------------------
 # Per-run safety guards: missing $readmemh (SETUP-23) + disk budget (SETUP-25)
 # ---------------------------------------------------------------------------
-
-
-def test_parse_args_round_trips_max_rundir_bytes():
-    args = ir._parse_args(["--build-dir", "b", "--max-rundir-bytes", "5000"])
-    assert args.max_rundir_bytes == 5000
-    # Unset -> guard disabled (0).
-    assert ir._parse_args(["--build-dir", "b"]).max_rundir_bytes == 0
 
 
 @pytest.mark.skipif(

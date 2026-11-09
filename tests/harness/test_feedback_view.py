@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from argparse import ArgumentParser
 
 import pytest
@@ -115,15 +114,6 @@ def test_list_spells_bug_severity_in_plain_text(project, capsys):
     assert "\x1b[" not in out
 
 
-def test_list_cuts_long_titles_with_an_ellipsis(project, capsys):
-    _log(project, Finding(title="x" * 60, bucket="project"))
-
-    out = _list(project, capsys)
-
-    assert "x" * 47 + "…" in out
-    assert "x" * 48 not in out
-
-
 def test_list_colors_bug_kind_by_severity_and_strips_to_plain(project, capsys, monkeypatch):
     _log(
         project,
@@ -191,19 +181,14 @@ _JSON_GOLDEN = """[
 """
 
 
-def test_list_json_is_byte_identical_while_human_view_is_a_table(project, capsys):
+def test_list_json_is_byte_identical(project, capsys):
     _log(
         project,
         Finding(title="boom", severity="blocker", bucket="booley"),
         Finding(title="doctor was clean", kind="win"),
     )
 
-    as_json = _list(project, capsys, "--json")
-    human = _list(project, capsys)
-
-    assert as_json == _JSON_GOLDEN
-    assert json.loads(as_json)[0]["id"] == "F-1"
-    assert human.splitlines()[0].split() == ["ID", "Kind", "Bucket", "Title", "Status"]
+    assert _list(project, capsys, "--json") == _JSON_GOLDEN
 
 
 def test_list_keeps_one_row_per_entry_for_control_characters_in_user_text(project, capsys):

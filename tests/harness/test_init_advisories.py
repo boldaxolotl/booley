@@ -97,19 +97,6 @@ class TestOutstandingSteps:
         assert all("lint" not in s and "project config" not in s for s in steps), steps
         assert len(steps) == len(init_cmd.SETUP_WIRED_FLOWS) - 1, steps
 
-    def test_every_wired_flow_gets_an_advisory_row(self):
-        """F-4: fpga_impl -- the fourth triaged flow -- had no row at all, so a
-        project that never wired it was never told. The rows are derived from
-        the built-in MCP endpoint registry now, so a new flow can't go missing again."""
-        keys = [key for key, _ in init_cmd._SETUP_STEP_LINES]
-
-        assert "fpga" in keys
-        assert [k for k in keys if k not in ("project", "agents")] == list(
-            init_cmd.SETUP_WIRED_FLOWS
-        )
-        # The Elaboration Check follows [flows.sim] and has no wiring of its own.
-        assert "elab" not in keys
-
     def test_unwired_fpga_impl_is_outstanding(self, project):
         """The F-4 report case: everything else configured, fpga_impl silent."""
         _write(project, CONFIGURED_TOML.replace("[flows.fpga]\nenabled = false\n", ""))

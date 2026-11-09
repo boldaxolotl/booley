@@ -56,10 +56,7 @@ class ConcreteMcpTool(McpTool):
 
 
 def test_documented_mcp_result_name_remains_source_compatible() -> None:
-    result = McpToolResult(report_text="ok")
-
     assert McpToolResult is EndpointOutcome
-    assert isinstance(result, EndpointOutcome)
 
 
 def test_mcp_adapter_preserves_structured_pre_state_rejection(capsys) -> None:

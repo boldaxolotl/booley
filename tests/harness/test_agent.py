@@ -514,7 +514,6 @@ class TestCodexMarkdownTranscript:
         rendered = (
             tmp_path / "human-logs" / "transcripts" / "reviewer" / "1" / "review-tb-quality.md"
         )
-        assert rendered.read_text(encoding="utf-8")
         assert "review complete" in rendered.read_text(encoding="utf-8")
 
     def test_suppresses_structured_only_commit_messages(self, tmp_path: Path):

@@ -98,7 +98,6 @@ def test_inside_executes_install_guide_and_only_exempts_full_bootstrap(tmp_path,
     assert f"booley-rtl @ {wheel.as_uri()}\n" in writes
     assert all(command in commands for command in smoke.PIPX_PREPARATION)
     assert "pipx install booley-rtl" in commands
-    assert smoke.BOOTSTRAP_EXEMPTION == "booley bootstrap"
     assert "booley bootstrap" not in commands
     assert [item[2] for item in probes] == ["claim", "refuse", "update", "refuse"]
     assert probes[0][1] == probes[-1][1] == "/home/smoke/.local/bin/booley"

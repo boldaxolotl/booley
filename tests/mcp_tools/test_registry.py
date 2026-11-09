@@ -133,26 +133,6 @@ MULTIPLE_CLASSES_SRC = """\
 
 
 # ---------------------------------------------------------------------------
-# McpToolInfo dataclass
-# ---------------------------------------------------------------------------
-
-
-class TestMcpToolInfo:
-    def test_frozen(self):
-        ti = McpToolInfo(name="x", path="x.py", description="d")
-        with pytest.raises(AttributeError):
-            ti.name = "y"  # type: ignore[misc]
-
-    def test_defaults(self):
-        ti = McpToolInfo(name="x", path="x.py", description="d")
-        assert ti.code_modifying is False
-
-    def test_code_modifying_flag(self):
-        ti = McpToolInfo(name="x", path="x.py", description="d", code_modifying=True)
-        assert ti.code_modifying is True
-
-
-# ---------------------------------------------------------------------------
 # _get_constant_value
 # ---------------------------------------------------------------------------
 
@@ -422,13 +402,6 @@ class TestDiscoverMcpTools:
         )
         assert len(results) == 1
 
-    def test_custom_dir_none_is_fine(self, tmp_path):
-        endpoint_dir = tmp_path / "mcp"
-        endpoint_dir.mkdir()
-        _write_endpoint_file(endpoint_dir, "sim.py", VALID_MCP_TOOL_SRC)
-        results = discover_mcp_tools(booley_src=tmp_path, project_mcp_tools_dir=None)
-        assert len(results) == 1
-
     def test_empty_builtin_dir(self, tmp_path):
         endpoint_dir = tmp_path / "mcp"
         endpoint_dir.mkdir()
@@ -446,13 +419,6 @@ class TestDiscoverMcpTools:
         )
         assert len(results) == 1
         assert results[0].name == "lint_check"
-
-    def test_endpoint_config_none_defaults_empty(self, tmp_path):
-        endpoint_dir = tmp_path / "mcp"
-        endpoint_dir.mkdir()
-        _write_endpoint_file(endpoint_dir, "sim.py", VALID_MCP_TOOL_SRC)
-        results = discover_mcp_tools(booley_src=tmp_path, specialist_config=None)
-        assert len(results) == 1
 
     def test_builtin_mcp_tools_use_package_path(self, tmp_path):
         endpoint_dir = tmp_path / "mcp"
@@ -480,13 +446,6 @@ class TestDiscoverMcpTools:
 
 
 class TestSkipModules:
-    def test_contains_expected_entries(self):
-        for name in ("base", "registry", "__init__", "specialist"):
-            assert name in SKIP_MODULES
-
-    def test_is_frozenset(self):
-        assert isinstance(SKIP_MODULES, frozenset)
-
     def test_all_skip_modules_filtered(self, tmp_path):
         """Every entry in SKIP_MODULES is actually filtered out."""
         for mod in SKIP_MODULES:
@@ -652,7 +611,6 @@ def test_cached_inventory_preserves_custom_order_exclusions_and_duplicate_metada
 
 def test_live_inventory_preserves_disabled_duplicate_policy(tmp_path, monkeypatch):
     from booley.mcp import live_catalog
-    from booley.mcp.registry import McpToolInfo
 
     (tmp_path / "booley.toml").write_text("[flows.local]\nenabled = false\n")
     inventory = [

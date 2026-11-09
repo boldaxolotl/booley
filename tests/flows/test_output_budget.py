@@ -62,7 +62,7 @@ class TestScaled:
 
     def test_integer_math_floors(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv(_ENV, "13000")
-        assert scaled(30) == (30 * 13_000) // 12_000  # 32, floored
+        assert scaled(30) == 32  # 32.5, floored
 
     def test_never_below_default(self, monkeypatch: pytest.MonkeyPatch):
         """A shrunken budget keeps today's caps — the MCP layer's own

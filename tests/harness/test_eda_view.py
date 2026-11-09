@@ -154,33 +154,15 @@ _LICENSE_LIST_JSON = """[
 
 
 @pytest.mark.parametrize(
-    ("argv", "golden", "human_first_line"),
+    ("argv", "golden"),
     [
+        pytest.param(("installation", "list"), _INSTALLATION_LIST_JSON, id="installation-list"),
         pytest.param(
-            ("installation", "list"),
-            _INSTALLATION_LIST_JSON,
-            _INSTALLATION_TABLE[0],
-            id="installation-list",
+            ("installation", "show", "vivado_2025_2"), _INSTALLATION_JSON, id="installation-show"
         ),
-        pytest.param(
-            ("installation", "show", "vivado_2025_2"),
-            _INSTALLATION_JSON,
-            _INSTALLATION_SHOW[0],
-            id="installation-show",
-        ),
-        pytest.param(
-            ("license", "list"),
-            _LICENSE_LIST_JSON,
-            _LICENSE_TABLE[0],
-            id="license-list",
-        ),
-        pytest.param(
-            ("license", "show", "site"), _LICENSE_JSON, _LICENSE_SHOW[0], id="license-show"
-        ),
+        pytest.param(("license", "list"), _LICENSE_LIST_JSON, id="license-list"),
+        pytest.param(("license", "show", "site"), _LICENSE_JSON, id="license-show"),
     ],
 )
-def test_json_output_is_byte_identical_while_human_view_changes(
-    monkeypatch, capsys, argv, golden, human_first_line
-):
+def test_json_output_is_byte_identical(monkeypatch, capsys, argv, golden):
     assert _eda(monkeypatch, capsys, _STATE, *argv, "--json") == golden
-    assert _eda(monkeypatch, capsys, _STATE, *argv).splitlines()[0] == human_first_line

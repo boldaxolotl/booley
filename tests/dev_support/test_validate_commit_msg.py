@@ -421,14 +421,11 @@ class TestValidateDiff:
         assert errors == []
 
     def test_deduplicates_errors(self):
-        """Same banned phrase on multiple lines should produce one error."""
-        diff_output = "+# claude wrote this\n+# claude also wrote that\n"
+        """The same banned line added twice produces one error, not two."""
+        diff_output = "+# claude wrote this\n+# claude wrote this\n"
         with _git_ok(diff_output):
             errors = validate_diff()
-        # Deduplicated — but phrase + truncated line makes each unique if
-        # lines differ. The code deduplicates by full error string.
-        # Two different display lines → two different errors.
-        assert len(errors) >= 1
+        assert errors == ["Banned phrase 'claude' in staged diff: # claude wrote this"]
 
     def test_long_lines_truncated_in_error(self):
         long_line = "+" + "x" * 40 + " claude " + "y" * 60

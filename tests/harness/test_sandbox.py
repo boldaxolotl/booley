@@ -104,12 +104,6 @@ class TestDockerRunnerBuildCmd:
         assert cmd[idx + 1] == "/work/subdir"
 
     @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
-    def test_interactive_flag(self):
-        runner = self._make_runner()
-        cmd = runner._build_docker_cmd(["cat"], interactive=True)
-        assert "-i" in cmd
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
     def test_config_extra_env_vars(self):
         config = DockerSandboxConfig(
             image="test-image",

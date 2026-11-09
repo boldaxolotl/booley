@@ -594,7 +594,6 @@ def test_acceptance_coordinator_uses_record_or_verify(tmp_path: Path) -> None:
         ),
     )
     assert result.committed is True
-    assert result.transaction_id == "a" * 64
     assert len(recorder.calls) == 1
     detail = recorder.calls[0][1][0].detail
     assert detail["selected_tests"] == ["smoke"]

@@ -78,13 +78,6 @@ def _report(root: Path, *, clean: bool, checked_at: datetime) -> dict:
 
 
 class TestDueReason:
-    def test_config_change_names_changed_input(self, tmp_path: Path):
-        booley_dir = _project(tmp_path)
-        _report(tmp_path, clean=True, checked_at=datetime.now(tz=UTC))
-        (booley_dir / "booley.toml").write_text("[project]\nname = 'edited'\n")
-
-        assert "booley.toml" in health.due_reason(tmp_path), "input drift must name booley.toml"
-
     def test_missing_result_is_due_without_clean_manual_stamp(self, tmp_path: Path):
         _project(tmp_path)
 

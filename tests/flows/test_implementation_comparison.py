@@ -9,6 +9,7 @@ from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.flows.baseline_worktree import resolve_ticket_baseline
 from booley.flows.implementation_comparison import (
     ImplementationComparisonError,
+    TargetExecutionRef,
     TargetPairPlan,
     baseline_execution_context,
     resolve_target_execution_ref,
@@ -370,8 +371,9 @@ def _basis_with_binding(
 
 
 def test_plan_has_no_public_authority_constructor() -> None:
-    with pytest.raises(TypeError):
-        TargetPairPlan()
+    ref = TargetExecutionRef("acme:lib:dut:1#synth", "synth", "acme:lib:dut:1")
+    with pytest.raises(TypeError, match="created by the pair-plan factory"):
+        TargetPairPlan("synth", ref, ref, None, object())
 
 
 def test_current_schema_rejects_empty_callable_selector(tmp_path: Path) -> None:

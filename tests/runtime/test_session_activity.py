@@ -205,7 +205,6 @@ def test_lasting_activity_sharing_error_reads_unknown_after_retrying(tmp_path, m
 
 
 def test_end_marker_reader_accepts_only_the_hook_layout(tmp_path):
-    assert getattr(activity, "ENDED", None) == "ended"
     now = 1791454205.0
     store = ActivityStore(tmp_path)
     write_activity_signal(tmp_path, "codex:t", "ended", "2026-10-08T10:10:00Z")
@@ -223,7 +222,6 @@ def test_end_marker_reader_accepts_only_the_hook_layout(tmp_path):
 def test_prune_removes_unretained_end_markers_at_once_and_spares_a_replacement(
     tmp_path, monkeypatch
 ):
-    assert getattr(activity, "ENDED", None) == "ended"
     store = ActivityStore(tmp_path)
     gone = write_activity_signal(tmp_path, "codex:gone", "ended", STAMP)
     kept = write_activity_signal(tmp_path, "codex:kept", "ended", STAMP)

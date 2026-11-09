@@ -4,10 +4,8 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-from rich.console import Console
-from rich.table import Table
 
-from booley.goals.format import format_criterion_metric, render_status, test_run_lines
+from booley.goals.format import format_criterion_metric, render_status
 from booley.goals.status import GoalStatus, GoalStatusView
 
 REVISION = "0123456789abcdef0123456789abcdef01234567"
@@ -218,98 +216,17 @@ def test_met_metric_fallback_preserves_raw_empty_output(key):
     assert format_met_goal_metric(key, entry) == "evidence recorded"
 
 
-def _baseline_test_runs(console: Console, view: GoalStatusView) -> None:
-    """Added with Goals that name Test Runs (#1233): the frozen Test Runs follow the table.
-
-    Their lines are pinned by tests/goals/test_test_run_evidence.py.
-    """
-    frozen = [line for goal in view.goals for line in test_run_lines(goal)]
-    if frozen:
-        console.print("Test Runs")
-    for line in frozen:
-        console.print(f"  {line}", soft_wrap=True)
-
-
-# Frozen from 9da903961 plus the Test Runs section; independent of the production renderer.
-def baseline_render_status(views: tuple[GoalStatusView, ...], *, short: bool | None = None) -> str:
-    """Render long detail for one Goal Mode, short rows for several by default."""
-    import io
-
-    stream = io.StringIO()
-    console = Console(file=stream, color_system=None, width=120, markup=False)
-    compact = len(views) != 1 if short is None else short
-    for view in views:
-        console.print(
-            f"{view.record.id} ({view.record.state.value}) · {view.met}/{len(view.goals)} met"
-        )
-        if view.warning:
-            console.print(view.warning)
-        if compact:
-            for goal in view.goals:
-                name = (
-                    goal.presentation.text
-                    if goal.presentation
-                    else "Goal unavailable (unsupported record)"
-                )
-                console.print(f"  {name}: {goal.status}")
-                if goal.sim_transitions is not None:
-                    from booley.goals.sim_transitions import transition_summary
-
-                    console.print(
-                        f"  {name}: baseline -> current: {transition_summary(goal.sim_transitions)}",
-                        soft_wrap=True,
-                    )
-        else:
-            console.print(f"Worktree: {view.record.worktree_path}")
-            console.print(f"Branch: {view.record.branch}")
-            table = Table(box=None, padding=(0, 1))
-            table.add_column("Goal", no_wrap=True)
-            table.add_column("Status", no_wrap=True)
-            table.add_column("Evidence")
-            for goal in view.goals:
-                evidence = goal.evidence_summary
-                if goal.status == "unmet" and goal.reason:
-                    evidence += f" — {goal.reason}"
-                table.add_row(
-                    goal.presentation.text
-                    if goal.presentation
-                    else "Goal unavailable (unsupported record)",
-                    goal.status,
-                    evidence,
-                )
-            console.print(table)
-            _baseline_test_runs(console, view)
-            console.print(f"Pending proposals: {view.pending_proposals}")
-            conflicts = dict(view.proposal_conflicts)
-            for proposal_view in view.proposals:
-                proposal = proposal_view.proposal
-                console.print(
-                    f"Proposal {proposal.id}: {proposal_view.state} · {proposal.kind.value} {proposal.goal_key} · {proposal.rationale}"
-                )
-                if proposal.id in conflicts:
-                    console.print(f"  Conflict: {conflicts[proposal.id]}")
-                if proposal_view.decision is not None:
-                    console.print(
-                        f"  {proposal_view.decision.source.value}: {proposal_view.decision.reason}"
-                    )
-            if view.interrupted_applies:
-                console.print("Interrupted applies: " + ", ".join(view.interrupted_applies))
-    return stream.getvalue().rstrip()
-
-
 @pytest.mark.parametrize("short", [None, True, False])
 @pytest.mark.parametrize("count", [0, 1, 2])
-@pytest.mark.parametrize("long_path", [False, True])
-def test_project_wide_prefix_preserves_baseline(goal_mode, short, count, long_path):
-    record = replace(
-        goal_mode.record,
-        worktree_path=goal_mode.record.worktree_path + "/directory" * (20 if long_path else 0),
+def test_project_wide_status_only_adds_the_prefix(goal_mode, short, count):
+    views = tuple(
+        GoalStatusView(replace(goal_mode.record, id=f"mode-{i}"), (), "", 0) for i in range(count)
     )
-    views = tuple(GoalStatusView(replace(record, id=f"mode-{i}"), (), "", 0) for i in range(count))
-    expected = baseline_render_status(views, short=short)
-    assert render_status(views, short=short) == expected
+    plain = render_status(views, short=short)
+    for index in range(count):
+        assert f"mode-{index} (active) · 0/0 met" in plain
     prefix = "No Goal Mode is active here. Active Goal Modes in this Project:\n" if count else ""
-    assert render_status(views, short=short, project_wide=True) == prefix + expected
+    assert render_status(views, short=short, project_wide=True) == prefix + plain
 
 
 def test_long_status_proposal_lines_are_frozen(goal_mode):

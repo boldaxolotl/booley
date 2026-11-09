@@ -478,18 +478,6 @@ def _configure_settings(monkeypatch, *, default_cli, clis=()):
     monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: settings)
 
 
-def _capture_exec(monkeypatch) -> list[tuple[str, list[str]]]:
-    """Replace the process-replacing exec with a recorder that stops the launch."""
-    executed: list[tuple[str, list[str]]] = []
-
-    def execvp(executable, argv):
-        executed.append((executable, argv))
-        raise _ExecCalledError
-
-    monkeypatch.setattr(chat_cmd.os, "execvp", execvp)
-    return executed
-
-
 def test_cli_flag_launches_allowed_cli(tmp_path, monkeypatch):
     _configure_settings(monkeypatch, default_cli="claude", clis=("claude", "codex"))
     executed = _capture_exec(monkeypatch)

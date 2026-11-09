@@ -229,7 +229,6 @@ def test_goal_record_directory_parameter_keeps_candidates_out_of_ticket_store(
     section = _record_candidates(context, loaded, campaign, path, sha, invocation_id="1")
     assert section["status"] == "recorded"
     assert (goal_dir / "waiver-candidates.json").is_file()
-    assert not (context.record_dir / "waiver-candidates").exists()
     assert not store.load(goal_dir).is_empty
 
 

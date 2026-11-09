@@ -264,9 +264,8 @@ def test_auto_budget_uses_source_size_without_hdl_features(tmp_path: Path) -> No
         {"path": "rtl/unterminated.vhd", "source_lines": 1, "source_bytes": 7},
         {"path": "rtl/empty.sv", "source_lines": 0, "source_bytes": 0},
     ]
-    for key in ["source_lines", "source_bytes"]:
-        assert preview[key] == sum(file[key] for file in preview["files"])
-    assert preview["readable_files"] == len(preview["files"])
+    assert (preview["source_lines"], preview["source_bytes"]) == (17, 311)
+    assert preview["readable_files"] == 3
     assert "always_blocks" not in breakdown
 
 

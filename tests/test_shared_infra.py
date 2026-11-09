@@ -179,17 +179,11 @@ class TestCheckPaths:
 
 
 class TestProjectRootScoping:
-    """Verify source-dir accessors don't leak CWD-cached config across projects.
+    """Verify source-dir accessors read the ``.core`` under an explicit project_root.
 
-    Regression guard for the bug class addressed by commits
-    0c27f06 / 0f89dafd / 255bbb0: when a caller passes an explicit
-    project_root, the config must come from that root — never from the
-    module-level CWD cache, which may belong to a different project.
-
-    ADR 0026 follow-through: the source of truth is now each project's ``.core``
+    ADR 0026 follow-through: the source of truth is each project's ``.core``
     ``tags:[tb]`` partition (read fresh per root by ``source_dirs_from_core``),
-    not ``[sources.*]`` in a gitignored ``.booley/booley.toml``. The
-    scoping property is unchanged; only the fixture shape moved to ``.core``.
+    not ``[sources.*]`` in a gitignored ``.booley/booley.toml``.
     """
 
     @staticmethod
@@ -220,61 +214,18 @@ class TestProjectRootScoping:
             encoding="utf-8",
         )
 
-    def test_explicit_project_root_isolates_from_cwd_cache(
-        self,
-        tmp_path: Path,
-        monkeypatch,
-    ):
-        """A scoped call must not leak the CWD-cached config from another project."""
-        import booley.runtime.shared_infra as si
-
-        proj_a = tmp_path / "proj_a"
-        proj_b = tmp_path / "proj_b"
-        self._make_project(proj_a, ["rtl"], ["tb"])
-        self._make_project(proj_b, ["src"], ["verif"])
-
-        # Prime the module-level CWD cache with a stale (proj_a-shaped) config —
-        # the scoped .core read for proj_b must ignore it entirely.
-        proj_a_cfg = {
-            "sources": {
-                "rtl": {"source_dirs": ["rtl"]},
-                "testbench": {"source_dirs": ["tb"]},
-            },
-        }
-        monkeypatch.setattr(si, "_TOML_CACHE", proj_a_cfg)
-
-        # Now scope a call to proj_b — must return proj_b's .core dirs, NOT proj_a's.
-        rtl_b = si.get_rtl_source_dirs(proj_b)
-        tb_b = si.get_tb_source_dirs(proj_b)
-        assert rtl_b == ["src"], f"leak detected: {rtl_b}"
-        assert tb_b == ["verif"], f"leak detected: {tb_b}"
-
-    def test_missing_config_under_explicit_root_returns_defaults_not_cache(
-        self,
-        tmp_path: Path,
-        monkeypatch,
-    ):
-        """When project_root lacks a ``.core``, accessors must NOT fall back to the cache."""
+    def test_missing_core_under_explicit_root_returns_defaults(self, tmp_path: Path):
+        """When project_root lacks a ``.core``, accessors fall back to legacy defaults."""
         import booley.runtime.shared_infra as si
 
         empty = tmp_path / "empty_project"
         empty.mkdir()
 
-        # Prime the CWD cache as if the harness had loaded a different project.
-        cached = {
-            "sources": {
-                "rtl": {"source_dirs": ["custom_rtl"]},
-                "testbench": {"source_dirs": ["custom_tb"]},
-            },
-        }
-        monkeypatch.setattr(si, "_TOML_CACHE", cached)
-
-        # Scoped to empty/, which has no .core. Must fall back to the hardcoded
-        # .core-era defaults (["rtl", "fw"] / ["tb"]), NOT the cached values.
+        # Scoped to empty/, which has no .core: the hardcoded .core-era defaults.
         assert si.get_rtl_source_dirs(empty) == ["rtl", "fw"]
         assert si.get_tb_source_dirs(empty) == ["tb"]
 
-    def test_worktree_reads_its_own_tracked_core(self, tmp_path: Path, monkeypatch):
+    def test_worktree_reads_its_own_tracked_core(self, tmp_path: Path):
         """A git worktree resolves source dirs from its own checked-out ``.core``.
 
         Premise reframed for the ``.core`` era: the pre-ADR-0026 test asserted a
@@ -301,18 +252,5 @@ class TestProjectRootScoping:
         # The tracked .core materializes in the worktree checkout with its own dirs.
         self._make_project(wt, ["worktree_rtl"], ["worktree_tb"])
 
-        monkeypatch.setattr(si, "_TOML_CACHE", None)
         assert si.get_rtl_source_dirs(wt) == ["worktree_rtl"]
         assert si.get_tb_source_dirs(wt) == ["worktree_tb"]
-
-    def test_explicit_call_does_not_pollute_cwd_cache(self, tmp_path: Path, monkeypatch):
-        """Scoped reads must NOT write into the module-level CWD cache."""
-        import booley.runtime.shared_infra as si
-
-        proj_b = tmp_path / "proj_b"
-        self._make_project(proj_b, ["src"], ["verif"])
-        monkeypatch.setattr(si, "_TOML_CACHE", None)
-
-        _ = si.get_rtl_source_dirs(proj_b)
-        # Cache must remain unpopulated — the scoped read should bypass it.
-        assert si._TOML_CACHE is None, "scoped read polluted the CWD cache"

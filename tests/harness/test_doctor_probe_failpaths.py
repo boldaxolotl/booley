@@ -160,20 +160,6 @@ class TestAgentBackendHealth:
         )
         assert rec.events == ([] if deep else [("note" if note_sink else "pass", expected)])
 
-    # LATENT (documenting, not fixing): the except tuple is (ImportError,
-    # AttributeError, RuntimeError, OSError, ValueError) — a backend whose
-    # health_check raises anything else (KeyError, TypeError, ...) crashes
-    # doctor instead of degrading to WARN. Pinned so a future broadening of
-    # the tuple is a conscious change.
-    def test_unlisted_exception_currently_escapes(self, tmp_path, monkeypatch):
-        def boom() -> str:
-            raise KeyError("not in the except tuple")
-
-        self._patch_backend(monkeypatch, SimpleNamespace(name="claude", health_check=boom))
-        rec = _Rec()
-        with pytest.raises(KeyError):
-            doctor._check_agent_backend_health(tmp_path, rec.p, rec.w)
-
 
 # ---------------------------------------------------------------------------
 # _check_sim_verdict_setup — sentinel WARNs + FuseSocError silent return

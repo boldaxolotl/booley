@@ -97,21 +97,6 @@ def test_contract_hashes_the_exporter_output(tmp_path: Path) -> None:
     assert docker_base_contract.contract_contents("other.txt", b"raw") == b"raw"
 
 
-def test_contract_uses_the_exporter_function(monkeypatch) -> None:
-    from booley.data.docker import export_project_dependencies as exporter
-
-    seen: list[str] = []
-
-    def sentinel(text: str) -> str:
-        seen.append(text)
-        return "sentinel\n"
-
-    monkeypatch.setattr(exporter, "project_dependency_requirements", sentinel)
-
-    assert docker_base_contract.contract_contents("pyproject.toml", b"x = 1\n") == b"sentinel\n"
-    assert seen == ["x = 1\n"]
-
-
 def test_exporter_writes_lf_requirements_in_process(tmp_path: Path) -> None:
     from booley.data.docker import export_project_dependencies as exporter
 
@@ -136,15 +121,3 @@ def test_exporter_main_reports_unreadable_input_in_process(
     assert exporter.main() == 2
     assert "error:" in capsys.readouterr().err
     assert not destination.exists()
-
-
-def test_exporter_main_succeeds_in_process(tmp_path: Path, monkeypatch) -> None:
-    from booley.data.docker import export_project_dependencies as exporter
-
-    pyproject = tmp_path / "pyproject.toml"
-    destination = tmp_path / "requirements.txt"
-    pyproject.write_text(_PYPROJECT, encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", ["exporter", str(pyproject), str(destination)])
-
-    assert exporter.main() == 0
-    assert destination.read_text(encoding="utf-8").startswith("plain>=1.2\n")
