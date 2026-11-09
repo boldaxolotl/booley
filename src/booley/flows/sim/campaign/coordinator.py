@@ -21,12 +21,12 @@ from booley.flows.sim.coverage_reference import (
     publish_coverage_campaign_reference,
 )
 from booley.flows.sim.execution.contract import PreSimScopeStoppedError, SimulationOptions
-from booley.runtime.execution_records import ExecutionId
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
 
 from .capacity import HeavyCapacity, HeavyCapacityError
-from .child_protocol import ChildExecutionRegistry
+from .child_protocol import recover_interrupted_attempts
 from .codec import SimulationCampaignIntegrityError, linked_manifest_path
 from .facts import ACCEPTANCE_FACTS_SCHEMA, AcceptanceFacts
 from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
@@ -41,11 +41,9 @@ from .planning import (
 from .pre_sim_evidence import PreSimFiring, PreSimFiringDecoder
 from .resume import ValidatedResumeManifest
 from .run_directory import (
-    cleanup_interrupted_run_directory,
     expand_run_directory,
     literal_run_path,
     require_literal_run_directory,
-    restore_run_directory,
 )
 from .scheduler import BoundedCampaignScheduler, ScheduledAttempt
 from .store import CampaignRecovery, CampaignStore, collect_pre_sim_firings
@@ -573,8 +571,13 @@ class SimulationCampaign:
             else None
         )
         project_root = binding.project_root if binding is not None else request.project_root
-        registry = ChildExecutionRegistry(manifest, project_root)
-        self._cleanup_interrupted_runs(store, recovery, project_root, registry)
+        project_data = resolve_checkout_booley_dir(project_root)
+        interrupted = {
+            work_item_id: attempt.document
+            for work_item_id in recovery.interrupted
+            if (attempt := store.latest_attempt(work_item_id)) is not None
+        }
+        recover_interrupted_attempts(manifest, interrupted, project_data, booley_dir=project_data)
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         by_id = {cast(str, item["work_item_id"]): item for item in items}
         invocation = _invocation_number(request.invocation_directory)
@@ -586,22 +589,15 @@ class SimulationCampaign:
         if pending:
             _preflight_run_directory(manifest, project_root)
         self._raise_if_cancelled(request)
-        capacity = HeavyCapacity(
-            request.admission,
-            terminal_proof=registry.is_terminal,
-            recover_child=registry.cancel,
-        )
-        self._scheduler(
-            capacity, registry, store, manifest, project_root, invocation, request
-        ).run(pending)
+        capacity = HeavyCapacity(request.admission, manifest, project_data)
+        self._scheduler(capacity, store, manifest, project_root, invocation, request).run(pending)
         self._raise_if_cancelled(request)
 
     def _scheduler(
-        self, capacity, registry, store, manifest, project_root, invocation, request
+        self, capacity, store, manifest, project_root, invocation, request
     ) -> BoundedCampaignScheduler:
         return BoundedCampaignScheduler(
             capacity,
-            registry,
             allocate=lambda item: self._allocate_scheduled(store, manifest, project_root, item),
             execute=lambda attempt, child_id: self._execute_scheduled(
                 store, manifest, attempt, invocation, request, child_id
@@ -635,38 +631,6 @@ class SimulationCampaign:
                 child_execution_id,
             )
         )
-
-    @staticmethod
-    def _cleanup_interrupted_runs(
-        store: CampaignStore,
-        recovery: CampaignRecovery,
-        project_root: Path,
-        registry: ChildExecutionRegistry,
-    ) -> None:
-        """Cancel each interrupted lane, then remove its attempt's run directory."""
-        for recovered in recovery.items:
-            if recovered.state != "interrupted":
-                continue
-            attempt = store.latest_attempt(recovered.work_item_id)
-            if attempt is None:
-                continue
-            document = attempt.document
-            lane_id = document.get("child_execution_id")
-            if lane_id is not None:
-                # Fail closed: never delete a run directory a live lane may still use.
-                registry.recover_lane(ExecutionId(cast(str, lane_id)))
-            run = restore_run_directory(
-                cast(Mapping[str, object], document["run_directory"]),
-                project_root=project_root,
-            )
-            cleanup_interrupted_run_directory(
-                run,
-                identity={
-                    "campaign_id": cast(str, document["campaign_id"]),
-                    "work_item_id": recovered.work_item_id,
-                    "attempt_id": cast(str, document["attempt_id"]),
-                },
-            )
 
     @staticmethod
     def _allocate_scheduled(

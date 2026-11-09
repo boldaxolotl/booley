@@ -234,7 +234,7 @@ from .execution import (
     SimulationTargetOutcome,
 )
 from .execution.artifacts import artifact_path_component as _artifact_path_component
-from .execution.engine import simulation_adapter_kind, target_test_plan
+from .execution.engine import TRACE_CLEANUP_MARGIN_S, simulation_adapter_kind, target_test_plan
 from .mode import SimulationMode, normalize_simulation_mode
 from .standalone import StandaloneMixin, _StandaloneOutcome, _StandalonePlanRecipe
 from .target_tests import (
@@ -262,8 +262,6 @@ def _target_is_cocotb(work_dir: Path, target: str) -> bool:
         return False
 
 
-# Default literal prefix for cycle count extraction from sim output.
-_DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
 # Patterns that indicate elaboration/compilation failure (before sim ran).
 # The `ERROR: <eda_tool> …` markers are Booley-echoed on build breakage (sandbox
 # script).
@@ -351,9 +349,6 @@ _DEFAULT_TIMEOUT_MS = default_timeout_ms("sim")
 # run (an Ibex ibex_tracer wrote 272MB/run) yet below the 27GB runaway that once
 # filled the disk; override via [flows.sim].max_rundir_bytes.
 _DEFAULT_MAX_RUNDIR_BYTES = 5 * 1024**3  # 5 GiB
-# Execution enablement is resolved once per run. Public simulation accepts only
-# the open-source Verilator and Icarus run halves.
-_TRACE_CLEANUP_MARGIN_S = 90
 
 # Max error lines shown per test in the display box
 _MAX_DISPLAY_ERRORS = 3
@@ -1666,84 +1661,6 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     replace_file(tmp, path)
-
-
-@dataclass(frozen=True)
-class CycleObservation:
-    """Typed result of parsing Cycle Count records for one named test."""
-
-    status: str
-    value: int | None = None
-
-
-def _cycle_records(
-    output: str,
-    sentinels: list[str],
-) -> tuple[list[tuple[str, str]], list[str], bool]:
-    """Collect named and legacy payloads without deciding admissibility."""
-    named: list[tuple[str, str]] = []
-    legacy: list[str] = []
-    malformed = False
-    for line in output.splitlines():
-        matched = next((sentinel for sentinel in sentinels if sentinel in line), None)
-        if matched is None:
-            continue
-        parts = line.split(matched, 1)[1].strip().split()
-        if len(parts) == 1:
-            legacy.append(parts[0])
-        elif len(parts) >= 2:
-            named.append((" ".join(parts[:-1]), parts[-1]))
-        else:
-            malformed = True
-    return named, legacy, malformed
-
-
-def parse_cycle_observation(
-    output: str,
-    test_name: str,
-    cycle_sentinels: list[str] | None = None,
-) -> CycleObservation:
-    """Parse named/default/configured records without discarding ambiguity."""
-    sentinels = [s for s in (cycle_sentinels or [_DEFAULT_CYCLE_SENTINEL]) if s]
-    sentinels.sort(key=len, reverse=True)
-    named, legacy, malformed = _cycle_records(output, sentinels)
-
-    matches = [record for record in named if record[0] == test_name]
-    observation = CycleObservation("missing")
-    if malformed:
-        observation = CycleObservation("malformed")
-    elif len(matches) > 1:
-        observation = CycleObservation("duplicate")
-    elif len(matches) == 1:
-        count = matches[0][1]
-        if not re.fullmatch(r"[0-9]+", count):
-            observation = CycleObservation("malformed")
-        else:
-            observation = CycleObservation("observed", int(count))
-    elif named:
-        observation = CycleObservation("wrong_test")
-    elif len(legacy) > 1:
-        observation = CycleObservation("duplicate")
-    elif len(legacy) == 1:
-        if not re.fullmatch(r"[0-9]+", legacy[0]):
-            observation = CycleObservation("malformed")
-        else:
-            observation = CycleObservation("legacy", int(legacy[0]))
-    return observation
-
-
-def parse_cycles(
-    output: str,
-    test_name: str,
-    cycle_sentinels: list[str] | None = None,
-    *,
-    allow_legacy: bool = True,
-) -> int | None:
-    """Compatibility value wrapper around :func:`parse_cycle_observation`."""
-    observation = parse_cycle_observation(output, test_name, cycle_sentinels)
-    if observation.status == "observed" or (allow_legacy and observation.status == "legacy"):
-        return observation.value
-    return None
 
 
 def _build_run_script(
@@ -3113,7 +3030,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     }
     # The MCP server computes mode-aware build, hook, execution, and finalization
     # headroom. This class default is only its defensive floor.
-    default_timeout: ClassVar[int] = (_DEFAULT_TIMEOUT_MS // 1000) * 2 + _TRACE_CLEANUP_MARGIN_S
+    default_timeout: ClassVar[int] = (_DEFAULT_TIMEOUT_MS // 1000) * 2 + TRACE_CLEANUP_MARGIN_S
 
     @property
     def _mode(self) -> SimulationMode:
@@ -3190,7 +3107,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """
         timeout_s = self._effective_timeout_ms() // 1000
         if self.args.trace:
-            timeout_s += _TRACE_CLEANUP_MARGIN_S
+            timeout_s += TRACE_CLEANUP_MARGIN_S
         return timeout_s
 
     def _cocotb_module_for_target(self, target: str) -> str | None:

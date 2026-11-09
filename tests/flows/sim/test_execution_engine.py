@@ -53,7 +53,11 @@ from booley.flows.sim.execution import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
-from booley.flows.sim.execution.engine import PreparedOrdinaryGroup, _preview_work
+from booley.flows.sim.execution.engine import (
+    PreparedOrdinaryGroup,
+    _cycle_observation,
+    _preview_work,
+)
 from booley.flows.sim.execution.freshness import ArtifactValidationError
 from booley.flows.sim.live_progress import LiveProgressSink, install_progress
 from booley.flows.sim.trace_recipe import TraceMode
@@ -65,6 +69,7 @@ from booley.runtime.booley_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.flows.sim.leased_session import canned_build_session, split_invoker
+from tests.flows.sim.prepared_group import run_prepared_group
 
 
 def _handle(root: Path, *, selector: str = "sim", eda_tool: str | None = "icarus") -> TargetHandle:
@@ -454,7 +459,12 @@ def _run_execution(
     artifact_root: Path | None = None,
     trace_mode: TraceMode | None = None,
     canned_at: str = "launch",
+    legacy_run: bool = False,
 ) -> SimulationTargetOutcome:
+    """Run one group on the prepared path; ``legacy_run`` keeps run()-only behavior on ``run()``.
+
+    The flag goes away with the engine-deletion part of #2337.
+    """
     execution = SimulationExecution(
         invoke=split_invoker(invoke, canned_at=canned_at),
         options=options or SimulationOptions(),
@@ -483,8 +493,21 @@ def _run_execution(
         stack.enter_context(
             patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123")
         )
-        selection = DefaultSelection() if names is None else NamedTests(names)
-        return execution.run(handle, selection)
+        if legacy_run:
+            selection = DefaultSelection() if names is None else NamedTests(names)
+            return execution.run(handle, selection)
+        return run_prepared_group(
+            execution,
+            handle,
+            names or (),
+            attempt_root=handle.project_root / "attempt",
+            copy_build_root=True,
+        )
+
+
+def _evidence_path(handle: TargetHandle) -> Path:
+    """Adapter transport path of a prepared-path launch under the test attempt root."""
+    return handle.project_root / "attempt" / "execution-evidence" / "adapter-abc123.json"
 
 
 def _write_transport(
@@ -494,50 +517,18 @@ def _write_transport(
     result: AdapterResult,
     *,
     adapter: str = "icarus",
+    result_path: Path | None = None,
 ) -> None:
+    # run()-only tests still launch from the build root and pass its transport path.
+    # ``result_path`` goes away with the engine-deletion part of #2337.
     identity = AdapterTransportIdentity(
         adapter,
         "abc123",
         handle.identity,
         names,
-        prepared.build_root / ".a-abc123.json",
+        result_path or _evidence_path(handle),
     )
     write_adapter_result(identity, result)
-
-
-def _passing_attempt_invoker(
-    handle: TargetHandle,
-    prepared: PreparedSimulationBuild,
-    attempts: tuple[tuple[str, tuple[str, ...]], ...],
-    *,
-    adapter: str,
-) -> Callable[..., SubprocessResult]:
-    remaining = iter(attempts)
-
-    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
-        del timeout
-        token, names = next(remaining)
-        identity = AdapterTransportIdentity(
-            adapter,
-            token,
-            handle.identity,
-            names,
-            prepared.build_root / f".a-{token[:24]}.json",
-        )
-        result = AdapterResult(
-            True,
-            False,
-            0,
-            names,
-            test_results=tuple(AdapterTestResult(name, "pass") for name in names),
-        )
-        write_adapter_result(identity, result)
-        return SubprocessResult(
-            returncode=0,
-            stdout=f"BOOLEY_BUILD_STAGE token={token} rc=0\n",
-        )
-
-    return invoke
 
 
 def _write_partial_timeout_transport(
@@ -551,7 +542,7 @@ def _write_partial_timeout_transport(
         "abc123",
         handle.identity,
         ("done", "active", "later"),
-        prepared.build_root / ".a-abc123.json",
+        _evidence_path(handle),
     )
     result = AdapterResult(
         False,
@@ -615,7 +606,7 @@ def _passing_trace_invoker(
             ),
         )
         if transport_modified_ns is not None:
-            result_path = prepared.build_root / ".a-abc123.json"
+            result_path = _evidence_path(handle)
             os.utime(result_path, ns=(transport_modified_ns, transport_modified_ns))
         return SubprocessResult(
             returncode=0,
@@ -674,6 +665,7 @@ class _ChangingTraceRun:
                 test_results=(AdapterTestResult("smoke", "pass"),),
                 trace=AdapterTraceResult("ok", path=str(trace)),
             ),
+            result_path=self.prepared.build_root / ".a-abc123.json",
         )
         return SubprocessResult(
             returncode=0,
@@ -753,64 +745,6 @@ def test_authenticated_cocotb_result_is_the_per_test_authority(tmp_path: Path) -
     _assert_authoritative_cocotb_outcome(outcome)
 
 
-def test_fresh_adapter_uses_build_budget_before_run_budget(tmp_path: Path) -> None:
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=True)
-    timeouts: list[int] = []
-    attempt_box: dict[str, Any] = {}
-
-    def invoke(command: list[str], *, timeout: int) -> SubprocessResult:
-        timeouts.append(timeout)
-        if "BOOLEY_BUILD_STAGE" in command[-1]:
-            return SubprocessResult(
-                returncode=0,
-                stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
-            )
-        write_adapter_result(
-            attempt_box["attempt"].identity,
-            AdapterResult(
-                passed=True,
-                inconclusive=False,
-                sva_errors=0,
-                tests=("reset", "count"),
-                test_results=(
-                    AdapterTestResult("reset", "pass"),
-                    AdapterTestResult("count", "pass"),
-                ),
-            ),
-        )
-        return SubprocessResult(returncode=0, stdout="adapter complete\n")
-
-    execution = SimulationExecution(
-        invoke=invoke,
-        options=SimulationOptions(timeout_ms=5000, build_timeout_ms=7000),
-    )
-    session = MagicMock()
-    session.new_generation.return_value = prepared.work_root
-    session.capture_inputs.return_value = {}
-    session.reusable_key.return_value = None
-    session.try_reuse.return_value = None
-    execution._build_session = session
-    with (
-        patch(
-            "booley.flows.sim.execution.engine.TargetCatalog.build",
-            return_value=_inspection(cocotb=True),
-        ),
-        _compile_surface_patch(handle),
-        patch(
-            "booley.flows.sim.execution.engine.prepare_simulation_build",
-            return_value=prepared,
-        ),
-        patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
-    ):
-        attempt = execution._prepare_attempt(handle, ("reset", "count"))
-        attempt_box["attempt"] = attempt
-        result = execution._execute_fresh_adapter(handle, attempt, session)
-
-    assert result.result is not None
-    assert timeouts == [7, 5]
-
-
 def test_default_cocotb_selection_snapshots_discovered_test_names(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=True)
@@ -860,7 +794,7 @@ def test_timeout_transport_preserves_completed_active_and_not_run_tests(
             token,
             handle.identity,
             ("done", "active", "later"),
-            prepared.build_root / f".a-{token[:24]}.json",
+            _evidence_path(handle),
         )
         write_adapter_result(
             identity,
@@ -1089,7 +1023,7 @@ def test_run_log_open_failure_is_typed_infrastructure(tmp_path: Path, observed) 
         patch("booley.flows.run_log.begin_run_log", side_effect=OSError("read-only filesystem")),
     ):
         outcome = _run_execution(
-            handle, prepared, invoke, ("smoke",), cocotb=False, canned_at="raw"
+            handle, prepared, invoke, ("smoke",), cocotb=False, canned_at="raw", legacy_run=True
         )
 
     assert outcome.verdict == "error"
@@ -1335,6 +1269,7 @@ def test_declared_runtime_input_is_cleaned_after_adapter_timeout(tmp_path: Path)
         timeout_invoke,
         ("dhry",),
         cocotb=False,
+        legacy_run=True,
     )
 
     assert outcome.tests[0].timed_out is True
@@ -1364,6 +1299,7 @@ def test_conflicting_runtime_input_is_typed_infrastructure_failure(tmp_path: Pat
         ("dhry",),
         cocotb=False,
         canned_at="raw",
+        legacy_run=True,
     )
 
     assert outcome.verdict == "error"
@@ -1395,7 +1331,7 @@ def _run_real_icarus(project: Path, handle: TargetHandle) -> SimulationTargetOut
             **{**kwargs, "fusesoc_cmd": fusesoc_cmd},
         ),
     ):
-        return execution.run(handle, NamedTests(("dhry",)))
+        return run_prepared_group(execution, handle, ("dhry",))
 
 
 def _run_real_icarus_twice(
@@ -1417,7 +1353,7 @@ def _run_real_icarus_twice(
             *args, **{**kwargs, "fusesoc_cmd": fusesoc_cmd}
         ),
     ):
-        return tuple(execution.run(handle, NamedTests(("dhry",))) for _ in range(2))
+        return tuple(run_prepared_group(execution, handle, ("dhry",)) for _ in range(2))
 
 
 def _doctor_view_paths(state: Path) -> tuple[Path, ...]:
@@ -1487,7 +1423,7 @@ def test_copyto_runtime_input_resolves_through_real_fusesoc_flow(
         (item.name, item.file_type) for item in resolved.files if item.file_type == "user"
     ] == [("firmware.hex", "user")]
     assert outcome.passed is True
-    assert not (project / "firmware.hex").is_symlink()
+    assert not (project / "firmware.hex").exists()
 
 
 @pytest.mark.parametrize(
@@ -1826,7 +1762,7 @@ def test_two_targets_never_launch_stale_image_after_equal_mtime_edit(
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
     for handle in handles:
-        assert execution.run(handle, NamedTests(("smoke",))).passed
+        assert run_prepared_group(execution, handle, ("smoke",)).passed
     assert len(observed) == 2 and all("OLD" in item for item in observed)
 
     old_stat = source.stat()
@@ -1834,7 +1770,7 @@ def test_two_targets_never_launch_stale_image_after_equal_mtime_edit(
     os.utime(source, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
     observed.clear()
     for handle in handles:
-        assert execution.run(handle, NamedTests(("smoke",))).passed
+        assert run_prepared_group(execution, handle, ("smoke",)).passed
     assert len(observed) == 2 and all("NEW" in item and "OLD" not in item for item in observed)
 
 
@@ -1858,8 +1794,8 @@ def test_matching_closed_icarus_inputs_reuse_verified_image(
         return base_invoke(command, timeout=timeout)
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
-    first = execution.run(handle, NamedTests(("first",)))
-    second = execution.run(handle, NamedTests(("second",)))
+    first = run_prepared_group(execution, handle, ("first",))
+    second = run_prepared_group(execution, handle, ("second",))
     assert first.passed, first.infrastructure_failure
     assert second.passed, (second.builds, second.tests, second.infrastructure_failure)
     assert sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands) == 1
@@ -1925,11 +1861,11 @@ def test_changed_input_with_failed_rebuild_never_launches_prior_image(
         return result
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
-    assert execution.run(handle, NamedTests(("smoke",))).passed
+    assert run_prepared_group(execution, handle, ("smoke",)).passed
     old_stat = source.stat()
     source.write_text("module tb; // BAD\nendmodule\n", encoding="utf-8")
     os.utime(source, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
-    outcome = execution.run(handle, NamedTests(("smoke",)))
+    outcome = run_prepared_group(execution, handle, ("smoke",))
     assert not outcome.passed
     assert len(observed) == 1
 
@@ -1955,7 +1891,7 @@ def test_corrupt_cache_forces_fresh_build(
         return base_invoke(command, timeout=timeout)
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
-    assert execution.run(handle, NamedTests(("smoke",))).passed
+    assert run_prepared_group(execution, handle, ("smoke",)).passed
     slot = simulation_build_slot(handle)
     pointer = json.loads((slot / "current.json").read_text(encoding="utf-8"))
     if tamper == "image":
@@ -1965,7 +1901,7 @@ def test_corrupt_cache_forces_fresh_build(
     else:
         pointer["build_root"] = "../outside"
         (slot / "current.json").write_text(json.dumps(pointer), encoding="utf-8")
-    assert execution.run(handle, NamedTests(("smoke",))).passed
+    assert run_prepared_group(execution, handle, ("smoke",)).passed
     assert sum("BOOLEY_BUILD_STAGE" in command[-1] for command in commands) == 2
 
 
@@ -1990,7 +1926,7 @@ def test_corrupt_retained_record_is_missing_provenance_and_rebuilds(
         return base_invoke(command, timeout=timeout)
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
-    assert execution.run(handle, NamedTests(("smoke",))).passed
+    assert run_prepared_group(execution, handle, ("smoke",)).passed
     slot = simulation_build_slot(handle)
     pointer_path = slot / "current.json"
     if record == "pointer":
@@ -2005,7 +1941,7 @@ def test_corrupt_retained_record_is_missing_provenance_and_rebuilds(
             / (".booley-build-manifest.json")
         )
     corrupt.write_text("{not json", encoding="utf-8")
-    second = execution.run(handle, NamedTests(("smoke",)))
+    second = run_prepared_group(execution, handle, ("smoke",))
     assert second.passed
     assert second.builds[0].ran is True
     assert second.builds[0].cache_decision.startswith("missing provenance;")
@@ -2227,7 +2163,7 @@ def test_icarus_trace_reaches_execution_on_first_and_repeat_run(
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(trace=True))
     for _ in range(2):
-        outcome = execution.run(handle, NamedTests(("smoke",)))
+        outcome = run_prepared_group(execution, handle, ("smoke",))
         assert outcome.passed
         _assert_execution_trace(outcome, tmp_path / "bwave-cache", queryable=queryable)
         assert any("BOOLEY_BUILD_STAGE" in command[-1] for command in commands)
@@ -2372,6 +2308,10 @@ def test_generation_allocation_failure_is_typed_infrastructure(tmp_path: Path) -
     assert "busy" in outcome.infrastructure_failure.detail
 
 
+class _StopBeforeBuildError(Exception):
+    """Raised by the patched build session to end a group right after its variant is chosen."""
+
+
 def _assert_live_and_preview_build_variant(
     tmp_path: Path,
     *,
@@ -2414,14 +2354,21 @@ def _assert_live_and_preview_build_variant(
 
     preview_root.assert_called_once_with(handle, expected)
     assert prepare.call_args.kwargs["build_root"] == work_root
+    execution._build_session = None
     with (
-        patch("booley.flows.sim.execution.engine.SimulationBuildSession") as session,
+        patch(
+            "booley.flows.sim.execution.engine.SimulationBuildSession",
+            side_effect=_StopBeforeBuildError,
+        ) as session,
         patch(
             "booley.flows.sim.execution.engine.TargetCatalog.build",
             return_value=_inspection(cocotb=False),
         ),
+        _compile_surface_patch(handle),
+        pytest.raises(_StopBeforeBuildError),
+        execution.ordinary_group(handle, ("smoke",)),
     ):
-        execution.run(handle, DefaultSelection(), planned_groups=())
+        pass
     session.assert_called_once_with(handle, expected)
     assert prepare.call_args.kwargs["variant"] == expected
     setup.assert_called_once_with(handle, build_root=work_root)
@@ -2472,7 +2419,7 @@ def test_legacy_selector_root_is_preserved_but_not_used(
     execution = SimulationExecution(
         invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=5000)
     )
-    assert execution.run(handle, NamedTests(("smoke",))).passed
+    assert run_prepared_group(execution, handle, ("smoke",)).passed
     assert sentinel.read_text(encoding="utf-8") == "stale\n"
     assert tuple((simulation_build_slot(handle) / "g").iterdir())
 
@@ -2706,7 +2653,7 @@ def _owned_main_invoker(
             "abc123",
             handle.identity,
             ("smoke",),
-            prepared.build_root / ".a-abc123.json",
+            _evidence_path(handle),
         )
         publish_native_adapter_result(
             identity,
@@ -2986,8 +2933,9 @@ def test_stale_compatibility_siblings_do_not_cross_execution_boundary(
     }
     for path in stale.values():
         path.write_text("stale", encoding="utf-8")
-    result = prepared.build_root / "result.json"
-    result.write_text("stale", encoding="utf-8")
+    (prepared.build_root / "result.json").write_text("stale", encoding="utf-8")
+    # The launched snapshot carries the stale copies; only a rewrite is current.
+    result = handle.project_root / "attempt" / "snapshot" / "result.json"
 
     def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
         del timeout
@@ -3306,7 +3254,7 @@ def test_missing_literal_run_cwd_fails_plain_run_before_any_build(tmp_path: Path
         invocations.append(command)
         return SubprocessResult(returncode=0, stdout="[SIM_RESULT] PASSED\n")
 
-    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
+    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False, legacy_run=True)
 
     assert outcome.verdict == "fail"
     detail = outcome.tests[0].error_tail
@@ -3316,29 +3264,95 @@ def test_missing_literal_run_cwd_fails_plain_run_before_any_build(tmp_path: Path
 
 
 @pytest.mark.parametrize(
-    ("record", "expected"),
+    "output",
     [
-        ("[SIM_CYCLES] smoke 1234\n", 1234),
-        ("[SIM_CYCLES] smoke -1\n", None),
-        ("[SIM_CYCLES] smoke nope\n", None),
-        ("", None),
+        pytest.param("[SIM_CYCLES]", id="empty-payload"),
+        pytest.param("[SIM_CYCLES] smoke nope", id="non-digit-count"),
+        pytest.param("[SIM_CYCLES] nope", id="non-digit-unnamed"),
+        pytest.param("[SIM_CYCLES] smoke \u0661\u0662", id="non-ascii-digits"),
+        pytest.param("[SIM_CYCLES] smoke \u00b2", id="superscript-digit"),
     ],
 )
-def test_actual_engine_ascii_cycle_records(tmp_path, record, expected):
-    from dataclasses import replace
+def test_cycle_count_malformed_records(output: str) -> None:
+    assert _cycle_observation(output, "smoke", ()) == ("malformed", None)
 
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=False)
-    passing = _passing_attempt_invoker(
-        handle, prepared, (("abc123", ("smoke",)),), adapter="icarus"
-    )
 
-    def invoke(command, *, timeout):
-        result = passing(command, timeout=timeout)
-        return replace(result, stdout=result.stdout + record)
+def test_cycle_count_tries_sentinels_longest_first() -> None:
+    sentinels = ("CYCLES", "CYCLES TOTAL")
+    assert _cycle_observation("CYCLES TOTAL smoke 20", "smoke", sentinels) == ("observed", 20)
 
-    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
-    assert outcome.tests[0].cycles == expected
+
+@pytest.mark.parametrize(
+    ("output", "sentinels", "expected"),
+    [
+        pytest.param(
+            "log\n[SIM_CYCLES] stress 200\n[SIM_CYCLES]   smoke   42\nmore",
+            (),
+            ("observed", 42),
+            id="observed",
+        ),
+        pytest.param(
+            "[SIM_CYCLES]\n[SIM_CYCLES] smoke 4",
+            (),
+            ("observed", 4),
+            id="empty-record-does-not-cancel",
+        ),
+        pytest.param("[SIM_CYCLES] stress 42", (), ("wrong_test", None), id="wrong-test"),
+        pytest.param("ordinary output", (), ("missing", None), id="missing"),
+        pytest.param("[SIM_CYCLES] 42", (), ("legacy", 42), id="legacy"),
+        pytest.param(
+            "[SIM_CYCLES] smoke 41\n[SIM_CYCLES] smoke 42",
+            (),
+            ("duplicate", None),
+            id="duplicate-named",
+        ),
+        pytest.param(
+            "[SIM_CYCLES] 10\n[SIM_CYCLES] 20", (), ("duplicate", None), id="duplicate-unnamed"
+        ),
+        pytest.param(
+            "[SIM_CYCLES] smoke 7\n[SIM_CYCLES] 3", (), ("observed", 7), id="named-beats-unnamed"
+        ),
+        pytest.param(
+            "[SIM_CYCLES] stress 5\n[SIM_CYCLES] 3",
+            (),
+            ("legacy", 3),
+            id="other-test-and-unnamed",
+        ),
+        pytest.param(
+            "[SIM_CYCLES] smoke 10\nCYCLES[1] smoke 9",
+            ("CYCLES[1]",),
+            ("observed", 9),
+            id="configured-literal-replaces-default",
+        ),
+        pytest.param(
+            "CoreMark completed in: smoke 12",
+            ("CoreMark completed in:",),
+            ("observed", 12),
+            id="configured-multi-word-sentinel",
+        ),
+    ],
+)
+def test_cycle_count_well_formed_statuses(
+    output: str, sentinels: tuple[str, ...], expected: tuple[str, int | None]
+) -> None:
+    assert _cycle_observation(output, "smoke", sentinels) == expected
+
+
+def test_cycle_count_multi_word_test_name() -> None:
+    output = "[SIM_CYCLES]   pipeline smoke   42"
+    assert _cycle_observation(output, "pipeline smoke", ()) == ("observed", 42)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        pytest.param("[SIM_CYCLES] smoke nope\n[SIM_CYCLES] 5", id="bad-named-not-rescued"),
+        pytest.param("[SIM_CYCLES] stress 5\n[SIM_CYCLES] nope", id="bad-unnamed-beats-other"),
+        pytest.param("[SIM_CYCLES]\n[SIM_CYCLES] stress 5", id="empty-without-own-record"),
+    ],
+)
+def test_cycle_count_malformed_record_outranks_other_records(output: str) -> None:
+    assert _cycle_observation(output, "smoke", ()) == ("malformed", None)
 
 
 @pytest.mark.parametrize("copyto", ["firmware.hex", "data/firmware.hex", None])

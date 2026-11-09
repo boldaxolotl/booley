@@ -21,12 +21,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
 
+from booley.core.boundary import BoundaryError
 from booley.flows.base import DEFAULT_TIMEOUT_S
-from booley.flows.sim.backends.cocotb_results import (
-    COCOTB_RESULTS_PREFIX,
-    parse_results_line,
-    reconcile,
-)
+from booley.flows.sim.backends.cocotb_results import decode_results_payload, reconcile
 from booley.flows.sim.build_session import project_compile_surface
 from booley.flows.sim.campaign.bundle import (
     SnapshotAttemptIdentity,
@@ -1947,12 +1944,9 @@ def _decode_cocotb_source(raw: bytes, selected: tuple[str, ...]) -> list[dict[st
     except UnicodeDecodeError as exc:
         raise SimulationCampaignIntegrityError("Cocotb transport is not UTF-8") from exc
     try:
-        compact = json.dumps(json.loads(encoded), separators=(",", ":"))
-    except json.JSONDecodeError as exc:
+        decoded = decode_results_payload(json.loads(encoded))
+    except (json.JSONDecodeError, BoundaryError) as exc:
         raise SimulationCampaignIntegrityError("Cocotb transport is invalid") from exc
-    decoded = parse_results_line(COCOTB_RESULTS_PREFIX + compact)
-    if decoded is None:
-        raise SimulationCampaignIntegrityError("Cocotb transport is invalid")
     names = selected or tuple(test.name for test in decoded.tests if test.name)
     return [
         {"test": name, "verdict": verdict, "detail": detail}

@@ -12,6 +12,8 @@ from typing import cast
 import pytest
 
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim.backends import cocotb_results
+from booley.flows.sim.campaign import serial_execution
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
 )
@@ -809,6 +811,7 @@ class _CocotbHarness:
     build_root: Path
     launches: list[tuple[str, ...]]
     reported: tuple[SimulationTestOutcome, ...] | None = None
+    raw: bytes | None = None  # written verbatim instead of the generated transport
 
     @contextmanager
     def ordinary_group(self, _handle, names, _test_runs=None):
@@ -848,7 +851,10 @@ class _CocotbGroup:
             SimulationTestOutcome(name=name, verdict="pass", passed=True) for name in self.names
         )
         transport_names = tuple(test.name for test in tests)
-        path.write_text(json.dumps(_transport(tests, transport_names)), encoding="utf-8")
+        if self._harness.raw is None:
+            path.write_text(json.dumps(_transport(tests, transport_names)), encoding="utf-8")
+        else:
+            path.write_bytes(self._harness.raw)
         return SimulationTargetOutcome(
             target="sim",
             target_identity=self._harness.handle.identity,
@@ -953,13 +959,14 @@ def _run_cocotb(
     root: Path,
     names: tuple[str, ...],
     reported: tuple[SimulationTestOutcome, ...],
+    raw: bytes | None = None,
 ) -> CampaignStore:
     plan = _plan(root, kind="cocotb_batch", names=names, cocotb=True)
     handle = TargetCatalog.build(root).select("sim", for_flow="sim")
     build_root = root / "build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"simulator")
-    execution = _CocotbHarness(handle, build_root, [], reported)
+    execution = _CocotbHarness(handle, build_root, [], reported, raw)
     executor = OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: execution,  # type: ignore[arg-type,return-value]
@@ -996,6 +1003,31 @@ def test_cocotb_result_preserves_exact_ordered_observations(tmp_path: Path) -> N
     assert observations[0]["assertions"] == "dirty"
     assert observations[0]["assertion_count"] == 2
     assert observations[0]["detail"] == {"reason": "counter assertion failed"}
+
+
+def test_cocotb_campaign_rejects_malformed_results_file(tmp_path: Path, monkeypatch) -> None:
+    """A results file the decoder rejects is a campaign integrity error, not a verdict.
+
+    The file is the payload itself: the campaign must decode it directly instead of
+    wrapping it in a stdout line for the line parser.
+    """
+    reported = (SimulationTestOutcome(name="count", verdict="pass", passed=True),)
+
+    def forbidden_parse(output: str) -> None:
+        raise AssertionError("campaign decoded the file through the stdout-line parser")
+
+    # Patch the defining module and the campaign's own namespace: either call style fails.
+    monkeypatch.setattr(cocotb_results, "parse_results_line", forbidden_parse)
+    monkeypatch.setattr(serial_execution, "parse_results_line", forbidden_parse, raising=False)
+    for name, raw, message in (
+        ("not-utf8", b"\xff", "Cocotb transport is not UTF-8"),
+        ("not-json", b"{broken", "Cocotb transport is invalid"),
+        ("not-a-results-object", b"[]", "Cocotb transport is invalid"),
+    ):
+        root = tmp_path / name
+        root.mkdir()
+        with pytest.raises(SimulationCampaignIntegrityError, match=message):
+            _run_cocotb(root, ("count",), reported, raw=raw)
 
 
 def test_unfiltered_cocotb_binds_discovered_order_and_detail(tmp_path: Path) -> None:

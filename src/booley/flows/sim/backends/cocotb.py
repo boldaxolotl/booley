@@ -61,6 +61,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from booley.core.boundary import BoundaryError
 from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 
 if TYPE_CHECKING:
@@ -84,9 +85,10 @@ from booley.flows.sim.backends.cocotb_results import (
     TIMEOUT_ACTIVE_DETAIL,
     VERDICT_PASS,
     CocotbResults,
+    compact_results,
+    decode_results_payload,
     find_import_failure,
     format_results_line,
-    parse_results_line,
     parse_results_xml,
     reconcile,
     recover_timeout_progress,
@@ -155,12 +157,14 @@ def _publish_adapter_result(
     output: str,
     passed: bool,
     *,
+    results: CocotbResults | None,
     failure_kind: str = "",
     detail: str = "",
     trace: AdapterTraceResult | None = None,
     termination: RunTermination | None = None,
     simulator_returncode: int = 0,
 ) -> None:
+    """Publish the adapter result built from *results*; ``None`` means none were produced."""
     if identity is None:
         return
     termination = termination or RunTermination()
@@ -169,6 +173,7 @@ def _publish_adapter_result(
         _cocotb_adapter_result(
             identity,
             output,
+            results,
             passed,
             failure_kind,
             detail,
@@ -182,6 +187,7 @@ def _publish_adapter_result(
 def _cocotb_adapter_result(
     identity: AdapterTransportIdentity,
     output: str,
+    results: CocotbResults | None,
     passed: bool,
     failure_kind: str,
     detail: str,
@@ -189,7 +195,6 @@ def _cocotb_adapter_result(
     termination: RunTermination,
     simulator_returncode: int,
 ) -> AdapterResult:
-    results = parse_results_line(output)
     discovered = tuple(test.name for test in results.tests if test.name) if results else ()
     names = identity.selected_tests or discovered
     extras = tuple(name for name in discovered if name not in names)
@@ -807,24 +812,32 @@ class _CocotbRun:
 
 
 def _persist_result_transport(
-    results,
+    results: CocotbResults,
     work_dir: Path,
     selected: list[str],
     focused: bool,
     result_verbosity: str,
-) -> tuple[str, int]:
-    """Write lossless JSON and return the requested stdout line plus skip count."""
+) -> tuple[str, CocotbResults | None, int]:
+    """Write lossless JSON; return the stdout line, what it carries, and the skip count.
+
+    The second value is the line's payload decoded back (``None`` when the
+    decoder rejects it, e.g. a non-finite time) so the adapter publishes exactly
+    what a stdout consumer would parse without re-reading the line.
+    """
+    full = results_payload(results)
     (work_dir / FULL_RESULTS_JSON_NAME).write_text(
-        json.dumps(results_payload(results), indent=2) + "\n",
+        json.dumps(full, indent=2) + "\n",
         encoding="utf-8",
     )
-    compact = results_payload(results, selected=selected, verbosity="compact")
-    line = format_results_line(
-        results,
-        selected=selected if focused else None,
-        verbosity=result_verbosity,
-    )
-    return line, int(compact["skipped_unselected"]) if focused else 0
+    compact = compact_results(results, selected) if focused else None
+    carried = compact if compact is not None and result_verbosity == "compact" else results
+    payload = full if carried is results else results_payload(carried)
+    try:
+        transported = decode_results_payload(payload)
+    except BoundaryError:
+        transported = None
+    skipped_unselected = compact.skipped_unselected if compact is not None else 0
+    return format_results_line(payload), transported, skipped_unselected
 
 
 def _selected_verdicts(tests: list[str], results) -> tuple[bool, list[str], list[tuple]]:
@@ -928,10 +941,12 @@ def _evaluate_verdict(
     result_verbosity: str = "compact",
     infrastructure_error: str = "",
     termination: RunTermination | None = None,
-) -> tuple[str, bool]:
+) -> tuple[str, bool, CocotbResults | None]:
     """Parse results.xml, print the verdict sentinels, persist result files.
 
-    Returns ``(output_with_sentinels, passed)``. The batch passes iff every
+    Returns ``(output_with_sentinels, passed, transported_results)``, where the
+    last item is what the printed ``[COCOTB_RESULTS]`` line carries (``None``
+    when it is undecodable). The batch passes iff every
     selected test reconciles to a real XML pass AND the raw output carries no
     SVA/$fatal errors AND nothing timed out (decision 6 / C2). Sentinel
     scanning (``parse_sim_verdict``) is deliberately absent — sentinels do not
@@ -946,7 +961,7 @@ def _evaluate_verdict(
     focused, assessment = _assess_verdict(
         results, output, returncode, termination, tests, infrastructure_error
     )
-    results_line, skipped_unselected = _persist_result_transport(
+    results_line, transported, skipped_unselected = _persist_result_transport(
         results,
         work_dir,
         list(assessment.selected),
@@ -964,7 +979,7 @@ def _evaluate_verdict(
         termination,
         infrastructure_error,
     )
-    return output, assessment.passed
+    return output, assessment.passed, transported
 
 
 def _persist_cocotb_verdict(
@@ -1195,7 +1210,7 @@ def _complete_cocotb_run(
     if trace_result.output:
         print(trace_result.output)
         output = f"{output}\n{trace_result.output}"
-    output, passed = _evaluate_verdict(
+    output, passed, transported = _evaluate_verdict(
         output,
         proc.returncode,
         termination.kind == "timeout",
@@ -1217,6 +1232,7 @@ def _complete_cocotb_run(
         transport,
         output,
         passed,
+        results=transported,
         failure_kind=failure_kind,
         trace=trace_result.evidence,
         termination=termination,
@@ -1259,7 +1275,9 @@ def run_cocotb_sim(
         seed=seed,
     )
     if isinstance(run, str):
-        _publish_adapter_result(transport, "", False, failure_kind="infrastructure", detail=run)
+        _publish_adapter_result(
+            transport, "", False, results=None, failure_kind="infrastructure", detail=run
+        )
         return 1
     _print_run_banner(run.env, run.command, run.run_cwd, cocotb_module, eda_tool, tests)
     lines, proc, termination = _execute_cocotb_run(

@@ -234,7 +234,7 @@ def test_zero_match_compact_cocotb_suite_remains_inconclusive(tmp_path: Path) ->
         state=cr.STATE_OK,
         tests=(cr.CocotbTest("run_test/ifg=12", "tb", "skipped"),),
     )
-    output = cr.format_results_line(results, selected=["run_test"], verbosity="compact")
+    output = cr.format_results_line(cr.results_payload(cr.compact_results(results, ["run_test"])))
     runs = [
         MutationTestRun(
             "<cocotb-suite>", process=_process(1), output=output, requires_cocotb_results=True

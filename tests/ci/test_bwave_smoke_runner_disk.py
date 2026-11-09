@@ -54,23 +54,16 @@ def test_runner_disk_is_freed_before_image_builds() -> None:
     steps = _steps()
     free = _index(steps, _FREE_STEP)
     step = steps[free]
-    script = step["run"]
 
+    # The removal list lives in one composite action shared with the Deep tests
+    # worktree-mounts job (#2896), so the two jobs cannot drift apart.
+    assert step.get("uses") == "./.github/actions/free-runner-disk"
+    assert "run" not in step
     assert "if" not in step, "the disk-freeing step must run on every lane"
     builds = [i for i, other in enumerate(steps) if _builds_image(other)]
     assert builds, "expected image-building steps in bwave-smoke"
     assert free < min(builds)
     assert free < _index(steps, "Start test-phase duration clock")
-
-    removal = script.index("sudo rm -rf")
-    assert script.count("df -h") >= 2
-    assert script.index("df -h") < removal < script.rindex("df -h")
-    # setup-python resolves Python from the toolcache: only CodeQL may go, so
-    # no removal target may be the toolcache itself, its trailing-slash form,
-    # or a glob over its entries.
-    removed = script[removal:].split("echo ", 1)[0].replace("\\\n", " ").split()[3:]
-    toolcache = [path for path in removed if path.startswith("/opt/hostedtoolcache")]
-    assert toolcache == ["/opt/hostedtoolcache/CodeQL"], toolcache
 
 
 def test_free_disk_is_logged_around_image_validations() -> None:
