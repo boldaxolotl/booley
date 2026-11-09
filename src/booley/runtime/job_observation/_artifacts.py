@@ -40,11 +40,22 @@ class JobArtifactCache:
     def complete(self) -> None:
         self._committed = self._next
 
-    def find(self, root: Path, endpoint: str, run_id: str, kind: str) -> Artifact | None:
+    def find(
+        self,
+        root: Path,
+        endpoint: str,
+        run_id: str,
+        kind: str,
+        *,
+        reports_parent: Path | None = None,
+    ) -> Artifact | None:
+        """Report or progress of one run; reports live under *reports_parent* (default: ``root.parent``)."""
         root = _absolute(root)
-        key = root, endpoint
+        parent = root.parent if reports_parent is None else _absolute(reports_parent)
+        # An explicit parent is its own scan root; the default keeps the records root.
+        key = root if reports_parent is None else parent, endpoint
         if key not in self._indexes:
-            self._indexes[key] = self._index(root, endpoint)
+            self._indexes[key] = self._index(key[0], endpoint, parent)
         index = self._indexes[key]
         if (kind, run_id) not in index and kind == "progress":
             for entry in self._overflow.get(key, ()):
@@ -74,9 +85,9 @@ class JobArtifactCache:
                 return info
         return None
 
-    def _candidates(self, root: Path, endpoint: str) -> list[tuple[int, int, Path]]:
+    def _candidates(self, parent: Path, endpoint: str) -> list[tuple[int, int, Path]]:
         candidates = []
-        roots = (root.parent / "flow-reports", root.parent / "mcp-tool-reports")
+        roots = (parent / "flow-reports", parent / "mcp-tool-reports")
         for reports in roots:
             endpoint_directory = reports / endpoint
             try:
@@ -105,13 +116,13 @@ class JobArtifactCache:
         except OSError:
             pass
 
-    def _index(self, root: Path, endpoint: str) -> dict[tuple[str, str], Artifact]:
+    def _index(self, root: Path, endpoint: str, parent: Path) -> dict[tuple[str, str], Artifact]:
         result: dict[tuple[str, str], Artifact] = {}
         if not root.is_relative_to(self._project):
             self.diagnostics.append(f"Job artifact root unavailable: {root}")
             return result
         total = 0
-        candidates = self._candidates(root, endpoint)
+        candidates = self._candidates(parent, endpoint)
         for index, entry in enumerate(candidates):
             total += entry[1]
             if index >= MAX_ARTIFACTS or total > MAX_ARTIFACT_BYTES:

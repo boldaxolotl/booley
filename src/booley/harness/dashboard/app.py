@@ -523,6 +523,8 @@ def _job_rows(job: JobView, *, now: float | None = None) -> list[ResultLine]:
         rows.extend(ResultLine("", path) for path in artifacts[:3])
         if len(artifacts) > 3:
             rows.append(ResultLine("", f"{len(artifacts) - 3} more artifacts in report"))
+    if job.log_path is not None:
+        rows.extend((ResultLine("Log", ""), ResultLine("", str(job.log_path))))
     if report:
         rows.extend((ResultLine("Report", ""), ResultLine("", report)))
     return rows
@@ -583,7 +585,8 @@ def job_paths(job: JobView) -> tuple[str, ...]:
     """Visible deduplicated side artifacts first, exact report last."""
     report = str(job.report_path) if job.report_path is not None else None
     artifacts = tuple(path for path in dict.fromkeys(job.artifacts) if path != report)[:3]
-    return (*artifacts, report) if report else artifacts
+    log = () if job.log_path is None else (str(job.log_path),)
+    return (*artifacts, *log, report) if report else (*artifacts, *log)
 
 
 def _job_words(job: JobView, now: float) -> str:

@@ -13,6 +13,7 @@ from booley.core.boundary import as_dict, as_float
 from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.model import GoalRecord
 from booley.goals.paths import record_paths
+from booley.harness.standalone_job import standalone_jobs_dir, standalone_log_path
 from booley.runtime import job_records
 from booley.runtime.handles import HandleStore, job_handle_expired
 from booley.runtime.job_observation import JobObservation, JobObserver
@@ -35,6 +36,8 @@ class JobView(JobObservation):
     eda_tool: str = ""
     handle: str = ""
     owner_handle: str = ""
+    # ``job.log`` of a Standalone Job, when the file exists.
+    log_path: Path | None = None
 
     @property
     def recorded_resources(self) -> tuple[float, float] | None:
@@ -75,11 +78,12 @@ class JobSnapshot:
 
 def target_arg(argv: list[str]) -> str | None:
     """Read the producer's Target once, without inventing one for legacy records."""
-    try:
-        index = argv.index("--target")
-    except ValueError:
-        return None
-    return argv[index + 1] if index + 1 < len(argv) else None
+    for index, word in enumerate(argv):
+        if word == "--target":
+            return argv[index + 1] if index + 1 < len(argv) else None
+        if word.startswith("--target="):
+            return word.removeprefix("--target=")
+    return None
 
 
 def retained_job_roots(
@@ -161,7 +165,11 @@ class JobReader:
             else (session_handles, ())
         )
         when = time.time() if now is None else now
-        rows = tuple(_job_view(job, catalogs, handles, owners, when) for job in observed.jobs)
+        standalone = standalone_jobs_dir(self._booley_dir)
+        rows = tuple(
+            _job_view(job, catalogs, handles, owners, when, self._booley_dir, standalone)
+            for job in observed.jobs
+        )
         return JobSnapshot(rows, (*observed.diagnostics, *diagnostics, *owner_diagnostics))
 
 
@@ -171,8 +179,16 @@ def _job_view(
     handles: dict[str, str],
     owners: dict[str, str],
     now: float,
+    booley_dir: Path,
+    standalone: Path,
 ) -> JobView:
     record = job.record
+    state, log_path = job.state, None
+    if job.root == standalone:
+        # A Standalone Job has no supervisor: its dead process is a failed run.
+        state = "failed" if state == "orphaned" else state
+        log = standalone_log_path(booley_dir, record.run_id)
+        log_path = log if log.is_file() else None
     handle = handles.get(record.run_id, "")
     owner_handle = owners.get(record.session_key or "", "")
     if not handle and job_handle_expired(record, now):
@@ -182,7 +198,7 @@ def _job_view(
     return JobView(
         root=job.root,
         record=job.record,
-        state=job.state,
+        state=state,
         report=job.report,
         report_path=job.report_path,
         stage=job.stage,
@@ -191,6 +207,7 @@ def _job_view(
         eda_tool=_configured_tool(job.record, catalogs),
         handle=handle,
         owner_handle=owner_handle,
+        log_path=log_path,
     )
 
 
