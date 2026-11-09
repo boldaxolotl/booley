@@ -596,6 +596,10 @@ class TerminalProgress:
             return
         if _ENVELOPE.match(clean) or _OWNED_RECORD.match(clean):
             return
+        if self.compact and not clean.strip():
+            # A terminal result tail shows content only; a CRLF child (Windows)
+            # would otherwise add a blank line after every line it prints.
+            return
         if lane is not None and snapshot is not None:
             self._lane_line(lane, snapshot, source, clean)
             return

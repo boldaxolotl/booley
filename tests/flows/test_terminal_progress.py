@@ -1401,6 +1401,21 @@ def test_tty_sim_attempt_leaves_compact_summary(tmp_path, monkeypatch):
     assert TOKEN_40.encode() in sink.log_path.read_bytes(), "transcript must keep the full token"
 
 
+def test_tty_crlf_child_output_leaves_no_blank_tail_rows(tmp_path, monkeypatch):
+    """A Windows child ends lines with CRLF; the terminal tail must not gain blank rows."""
+    from booley.flows.sim.execution.pre_sim import _run_pre_sim_process
+
+    sink = tty_observer(tmp_path, monkeypatch)
+    code = "import sys; sys.stdout.buffer.write(b'one\\r\\n\\r\\ntwo\\r\\n'); sys.stdout.flush()"
+    with sink.installed():
+        _run_pre_sim_process(
+            [sys.executable, "-c", code], cwd=tmp_path, env=dict(os.environ), timeout=30
+        )
+    sink.footer()
+
+    assert settled_lines(sink.stream.getvalue())[1:3] == ["    one", "    two"]
+
+
 def test_tty_stage_outside_command_shows_live_row(tmp_path, monkeypatch):
     """Between commands a stage change writes no record and leaves no panel rows that
     later output would have to erase (the name is pinned by the #2885 plan)."""
