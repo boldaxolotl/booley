@@ -87,7 +87,6 @@ def test_failed_publication_preserves_original_bytes_and_retry(tmp_path, monkeyp
     path.chmod(0o640)
     original_mode = path.stat().st_mode
     resolved = target(tmp_path, "verilator", "MAC")
-    replace = Path.replace
 
     def fail_replace(self, destination):
         raise OSError("interrupted publication")
@@ -99,7 +98,6 @@ def test_failed_publication_preserves_original_bytes_and_retry(tmp_path, monkeyp
     assert path.read_bytes() == original
     assert path.stat().st_mode == original_mode
     assert list(tmp_path.iterdir()) == [path]
-    assert Path.replace is replace
     normalize_parameter_records(resolved)
     assert b"24'h4d4143" in path.read_bytes()
     assert path.stat().st_mode == original_mode

@@ -85,7 +85,7 @@ def test_extract_preserves_crlf_body_bytes(tmp_path: Path, monkeypatch) -> None:
     )
 
     assert checker.main() == 0
-    assert output.read_bytes() == checker.release_entry(raw.decode(), "1.2.0").body.encode()
+    assert output.read_bytes() == b"\r\n### Bug fixes\r\n\r\n- Fixed it.\r\n"
 
 
 def test_validate_rejects_dated_heading_above_version(tmp_path: Path) -> None:

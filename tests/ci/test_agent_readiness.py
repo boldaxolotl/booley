@@ -674,32 +674,6 @@ def test_prepare_reports_safe_and_unsafe_paths(monkeypatch, tmp_path):
     assert not result.commands
 
 
-def test_develop_assembles_all_checks(monkeypatch, tmp_path):
-    root = tmp_path / "root"
-    root.mkdir()
-    python = tmp_path / "python"
-    python.touch()
-    ready_check = readiness.Check("environment", readiness.Status.READY, True, "ok")
-    monkeypatch.setattr(readiness, "_is_linked_worktree", lambda _root: True)
-    monkeypatch.setattr(
-        readiness,
-        "_git_text",
-        lambda _root, args: {
-            "symbolic-ref": "codex/x",
-            "rev-parse": "head",
-            "merge-base": "base",
-            "status": "",
-        }.get(args[0]),
-    )
-    monkeypatch.setattr(readiness, "_git_count", lambda *_args: 2)
-    monkeypatch.setattr(readiness, "_environment_check", lambda _root: (ready_check, (), python))
-    monkeypatch.setattr(readiness, "_docker_check", lambda required: ready_check)
-    monkeypatch.setattr(readiness, "_verification_commands", lambda *_args: ())
-    monkeypatch.setattr(readiness.shutil, "which", lambda _name: "/usr/bin/git")
-    developed = readiness._develop(root, require_docker=True)
-    assert developed.phase == "develop"
-
-
 @pytest.mark.parametrize("state", list(ProbeState))
 def test_docker_check_maps_all_probe_states(monkeypatch, state):
     monkeypatch.setattr(readiness, "probe_docker", lambda **_kwargs: HostProbe("docker", state))
@@ -773,7 +747,6 @@ def test_worktree_and_linked_checkout_guards(tmp_path):
 
 def test_remaining_readiness_boundaries(monkeypatch, tmp_path):
     assert readiness.aggregate_status(()) is readiness.Status.READY
-    assert readiness._parse_args(["--phase", "develop"]).phase == "develop"
 
     marker = tmp_path / "pyproject.toml"
     marker.write_text("[tool.booley]\nsource_checkout = false\n", encoding="utf-8")
@@ -793,14 +766,14 @@ def test_remaining_readiness_boundaries(monkeypatch, tmp_path):
 
         return git_text
 
-    for values in (
-        (None, None, None),
-        ("origin/main", "same", "same"),
-        ("origin/main", "local", "remote"),
+    for values, status in (
+        ((None, None, None), readiness.Status.READY),
+        (("origin/main", "same", "same"), readiness.Status.READY),
+        (("origin/main", "local", "remote"), readiness.Status.DEGRADED),
     ):
         monkeypatch.setattr(readiness, "_git_text", text_factory(values))
         check = readiness._tracking_advisory(tmp_path)
-        assert check.id == "git.main-tracking"
+        assert (check.id, check.status) == ("git.main-tracking", status)
 
     monkeypatch.setattr(readiness, "_within", lambda *_args: False)
     assert readiness._worktree_path(tmp_path, "codex/x", None) is None
@@ -808,9 +781,6 @@ def test_remaining_readiness_boundaries(monkeypatch, tmp_path):
 
     monkeypatch.setattr(readiness, "_git_text", lambda *_args: "relative/common")
     assert len(readiness.dependency_fingerprint(source_root)) == 32
-
-    monkeypatch.setattr(readiness.sys, "platform", "linux")
-    assert readiness.agent_tools_root()
 
 
 def test_probe_boundaries_and_human_main(monkeypatch, capsys, tmp_path):

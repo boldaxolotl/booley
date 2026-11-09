@@ -95,28 +95,6 @@ def test_encoding_and_planning_never_decode_their_own_output(monkeypatch) -> Non
     assert create_simulation_campaign_plan(manifest).manifest is manifest
 
 
-def test_attempt_golden_fixture_is_independent_literal_bytes() -> None:
-    fixture = (
-        Path(__file__).parents[1] / "fixtures/simulation_campaign/attempt.json"
-    ).read_bytes()
-    assert decode_simulation_attempt(fixture).canonical_bytes() == fixture
-
-
-@pytest.mark.parametrize(
-    ("name", "decoder"),
-    [
-        ("attempt-child.json", decode_simulation_attempt),
-        ("build-attempt-shared.json", decode_bundle_build_attempt),
-        ("build-attempt-private.json", decode_bundle_build_attempt),
-        ("bundle.json", decode_simulator_bundle),
-        ("snapshot.json", decode_executable_snapshot),
-    ],
-)
-def test_attempt_branch_golden_fixtures_are_literal_bytes(name, decoder) -> None:
-    fixture = (Path(__file__).parents[1] / "fixtures/simulation_campaign" / name).read_bytes()
-    assert decoder(fixture).canonical_bytes() == fixture
-
-
 @pytest.mark.parametrize(
     ("name", "decoder", "encoder"),
     [
@@ -130,7 +108,9 @@ def test_attempt_branch_golden_fixtures_are_literal_bytes(name, decoder) -> None
 )
 def test_document_encoders_round_trip_validated_values(name, decoder, encoder) -> None:
     raw = (Path(__file__).parents[1] / "fixtures/simulation_campaign" / name).read_bytes()
-    assert encoder(decoder(raw)) == raw
+    value = decoder(raw)
+    assert encoder(value) == raw
+    assert value.canonical_bytes() == raw
 
 
 def test_attempt_codec_rejects_unknown_fields_and_bool_integer() -> None:

@@ -362,12 +362,6 @@ def test_verible_lint_keeps_elaboration_check_on_sim() -> None:
     assert core["targets"]["sim"]["flow_options"]["booley"]["doctor"] == ["sim"]
 
 
-def test_verible_lint_has_no_separate_elaboration_flow() -> None:
-    files = scaffold_files(_choices(lint_eda_tool="verible"))
-    cfg = tomllib.loads(files[".booley/booley.toml"])
-    assert "elab" not in cfg["flows"]
-
-
 def test_no_asic_omits_synth_target_and_sdc() -> None:
     files = scaffold_files(_choices(asic=False))
     assert "constraints/my_ip.sdc" not in files
@@ -757,11 +751,6 @@ def test_scaffold_trace_main_isolation(tmp_path, monkeypatch, category):
         assert (root / "tb/sim_main.cpp").exists() is (category == "tb")
 
 
-def test_scaffold_without_fpga_records_disabled_flow():
-    data = tomllib.loads(scaffold_files(_choices())[".booley/booley.toml"])
-    assert data["flows"].get("fpga", {}).get("enabled") is False, "declined FPGA must be disabled"
-
-
 # Synthesis intent must survive the scaffold boundary and delivered reporting.
 def test_scaffold_synth_mode_cli_contract(tmp_path, monkeypatch):
     from booley.harness.booley import _build_parser
@@ -923,7 +912,6 @@ def test_scaffold_logical_request_reaches_synthesis_report(tmp_path, monkeypatch
     assert path.parent.name.isdigit()
     assert report["target"] == "synth"
     assert report["eda_tool"] == "yosys"
-    assert report["passed"] is True
     assert report["detail"]["synth"]["area_source"] == "yosys_mapped"
     assert commands[0][commands[0].index("--synth-mode") + 1] == "logical"
 

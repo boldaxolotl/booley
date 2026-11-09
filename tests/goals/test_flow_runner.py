@@ -15,11 +15,6 @@ from booley.mcp import goal_flow_runner
 from tests.goals.conftest import bind
 
 
-@pytest.fixture(autouse=True)
-def preview(monkeypatch):
-    pass
-
-
 @pytest.fixture
 def admitted(goal_mode, monkeypatch):
     binding = bind(goal_mode)

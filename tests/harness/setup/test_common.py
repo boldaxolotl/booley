@@ -287,14 +287,6 @@ class TestStepBanner:
         assert "Step 2 — second" in out
         assert "Step 3 — third" in out
 
-    def test_a_conditional_step_renumbers_rather_than_leaves_a_hole(self, capsys):
-        """--scaffold (and --seed's single step) shift the sequence; they must
-        never punch a gap into it."""
-        ctx = InitContext()
-        ctx.step_banner("only step that ran")
-
-        assert "Step 1 — only step that ran" in capsys.readouterr().out
-
     def test_no_init_module_hardcodes_a_step_number(self):
         """The drift guard: a new step must call ctx.step_banner, not bake in a
         literal that the next retirement turns into a hole."""

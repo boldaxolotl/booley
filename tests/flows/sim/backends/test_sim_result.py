@@ -1,10 +1,7 @@
 """Unit tests for sim_result.py — shared simulation output parsing."""
 
-import sys
-
 import pytest
 
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 import booley.flows.sim.result as sr
 
 # ---------------------------------------------------------------------------
@@ -17,8 +14,6 @@ class TestParseSimVerdict:
         assert sr.parse_sim_verdict("[SIM_RESULT] PASSED") is True
 
     def test_sentinel_failed(self):
-        # Smoke-test: just ensure no exception; real assertion is on next line
-        sr.parse_sim_verdict("[SIM_RESULT] FAILED")
         assert sr.parse_sim_verdict("[SIM_RESULT] FAILED") is False
 
     def test_failed_wins_over_passed(self):

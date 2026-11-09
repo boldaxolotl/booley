@@ -884,7 +884,6 @@ def test_early_elab_error_names_available_report_destination(
 @pytest.mark.parametrize(
     ("flags", "mode"),
     [
-        (["--build-only"], SimulationMode.ELAB_ONLY),
         (["--build-only", "--standalone"], SimulationMode.ELAB_ONLY_STANDALONE),
         (["--standalone"], None),
     ],

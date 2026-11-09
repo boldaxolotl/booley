@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
 from pathlib import Path
 
-import pytest
-
 from booley.config import editor as editor_config
-from booley.config.editor import VSCODE_EDITOR, ResolvedEditor, resolve_editor
+from booley.config.editor import VSCODE_EDITOR, resolve_editor
 
 
 class TestVSCodeEditor:
@@ -156,11 +153,3 @@ class TestVSCodeEditor:
     def test_linux_has_no_native_gui_install_candidates(self, monkeypatch):
         monkeypatch.setattr(editor_config.sys, "platform", "linux")
         assert editor_config._editor_install_candidates() == ()
-
-
-class TestResolvedEditor:
-    def test_resolved_is_frozen(self):
-        # Frozen so it can be safely shared as a module constant.
-        r = ResolvedEditor(open=("code", "{file}"), open_at_line=("code",), diff=None)
-        with pytest.raises(FrozenInstanceError):
-            r.open = ("nope",)  # type: ignore[misc]

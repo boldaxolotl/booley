@@ -105,7 +105,7 @@ def test_saved_dictionary_based_interrupted_apply_recovers_without_producer_inpu
     before = load_proposal(root, payload["id"])
     assert before.state == "approved"
     assert before.decision.payload_digest == legacy_digest(payload)
-    assert not (root / "runtime" / "flow-reports").exists()
+    assert not (root / ".runtime" / "flow-reports").exists()
     assert not (root / "waiver-candidates.json").exists()
     recover(env.store, payload["record_id"], env)
     assert load_proposal(root, payload["id"]).state == "applied"

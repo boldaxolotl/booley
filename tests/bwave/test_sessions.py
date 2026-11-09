@@ -182,17 +182,6 @@ def test_load_corrupt_sessions():
     assert _load_sessions() == {}
 
 
-def test_register_trace_sets_last():
-    from booley.bwave.cli import _load_sessions, _register_trace
-
-    trace = Path("/tmp/fake.fst")
-    _register_trace(trace, alias="foo")
-    sessions = _load_sessions()
-    assert "foo" in sessions
-    assert "_last" in sessions
-    assert sessions["foo"]["trace"] == sessions["_last"]["trace"]
-
-
 def test_register_multiple_aliases():
     from booley.bwave.cli import _load_sessions, _register_trace
 

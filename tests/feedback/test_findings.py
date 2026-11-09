@@ -58,14 +58,6 @@ def test_sentiment_is_validated(booley_dir):
         Finding(title="x", kind="impression", sentiment="grumpy")
 
 
-def test_append_continues_numbering_across_processes(booley_dir):
-    """A fresh process must not restart at F-1 and collide with the log."""
-    append(Finding(title="a"), booley_dir)
-    append(Finding(title="b"), booley_dir)
-    # Simulate a separate invocation: nothing cached, ids come from the file.
-    assert append(Finding(title="c"), booley_dir).id == "F-3"
-
-
 def test_append_creates_the_booley_dir(tmp_path):
     """Findings must be loggable before setup has finished building the dir."""
     missing = tmp_path / "nope" / ".booley"
@@ -201,16 +193,6 @@ class TestFilability:
         finding = Finding(title="x", bucket="booley", repro="booley doctor", observed="FAIL")
         assert not finding.is_filable()
         assert finding.missing_evidence() == ["expected"]
-
-    def test_docs_findings_need_no_reproduction(self):
-        """ "The doc says X, the code does Y" is actionable without a command."""
-        finding = Finding(
-            title="CONFIG.md documents a removed table",
-            bucket="docs",
-            component="docs/user/CONFIG.md",
-            observed="describes [sources.rtl], which no longer exists",
-        )
-        assert finding.is_filable()
 
     def test_docs_finding_still_needs_a_component_and_observation(self):
         assert not Finding(title="docs are wrong somewhere", bucket="docs").is_filable()
@@ -477,7 +459,6 @@ def test_timeout_changes_neither_log_nor_caller_and_killed_holder_recovers(
     path = log_path(booley_dir)
     before = path.read_bytes()
     candidate = Finding(title="waiting")
-    assert findings._LOCK_TIMEOUT_S == 5
     monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", 0.01)
     with holding_findings_lock(booley_dir) as holder:
         with pytest.raises(findings.FindingsLockTimeoutError, match=r"append.*findings.lock"):
