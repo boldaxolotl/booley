@@ -12,8 +12,8 @@ from booley.flows.sim.coverage_analysis_input import (
     read_coverage_campaign,
     verified_source_snapshot,
 )
-from booley.flows.sim.coverage_campaign import freeze_coverage_mapping
 from booley.flows.sim.coverage_evidence import CoverageEvidenceError, CoverageEvidenceSession
+from booley.flows.sim.coverage_json import freeze_coverage_mapping
 
 _SessionKey = tuple[str, str, str, str]
 
