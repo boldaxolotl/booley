@@ -316,8 +316,12 @@ PRESELECTION_CASES = {
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", PRESELECTION_CASES)
-async def test_preselects_highlighted_session_worktree_else_main(repo, case):
+async def test_preselects_highlighted_session_worktree_else_main(repo):
+    for case in PRESELECTION_CASES:
+        await check_preselection(repo, case)
+
+
+async def check_preselection(repo, case):
     tmp = repo.parent
     action, expected_target = PRESELECTION_CASES[case]
     current = three_sessions(tmp, repo)
@@ -340,7 +344,7 @@ async def test_preselects_highlighted_session_worktree_else_main(repo, case):
         await pilot.press("right", "right")
         await settle(app, pilot)
         assert app.window == "targets"
-        assert expected_target in selectors(app)
+        assert expected_target in selectors(app), case
 
 
 @pytest.mark.asyncio
@@ -407,13 +411,16 @@ UNRESOLVABLE_CASES = {
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", UNRESOLVABLE_CASES)
-async def test_unresolvable_target_stays_listed_and_detail_explains_why(
-    tmp_path, monkeypatch, case
-):
+async def test_unresolvable_target_stays_listed_and_detail_explains_why(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", 30.0)
-    root = tmp_path / "project"
+    for case in UNRESOLVABLE_CASES:
+        await check_unresolvable(tmp_path / case, case)
+
+
+async def check_unresolvable(base, case):
+    root = base / "project"
+    base.mkdir()
     init_repository(root)
     files, expected = UNRESOLVABLE_CASES[case]
     if files is None:
@@ -429,7 +436,7 @@ async def test_unresolvable_target_stays_listed_and_detail_explains_why(
         await settle(app, pilot)
         text = detail_text(app)
         for fragment in expected:
-            assert fragment in text, text
+            assert fragment in text, (case, text)
     assert sorted(path for path in root.rglob("*") if ".git" not in path.parts) == before
 
 
