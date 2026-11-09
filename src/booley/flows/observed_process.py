@@ -111,15 +111,19 @@ def communicate_observed(
     ]
     for capture in captures:
         capture.thread.start()
+    status = "stopped"  # an exception left before the process outcome was known
     try:
         completed = _wait(process, captures, timeout)
         if on_capture_complete is not None:
             on_capture_complete()
         if not completed:
+            status = "timed out"
             _shutdown(process, captures)
         for capture in captures:
             if capture.error is not None:
                 raise capture.error
+        if completed:
+            status = "done" if process.returncode == 0 else f"exit {process.returncode}"
         return captures[0].text(), captures[1].text(), not completed
     except BaseException:
         _shutdown(process, captures)
@@ -128,4 +132,4 @@ def communicate_observed(
         for capture in captures:
             capture.stop.set()
             capture.thread.join(timeout=0.5)
-        observer.end_command()
+        observer.end_command(status)
