@@ -79,11 +79,9 @@ from booley.flows.sim.config import (
     resolve_run_cwd,
     resolve_sim_build_timeout_ms,
 )
-from booley.flows.sim.coverage_campaign import (
-    CoverageCampaign,
-    FrozenJson,
-)
+from booley.flows.sim.coverage_campaign import CoverageCampaign
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
+from booley.flows.sim.coverage_json import FrozenJson
 from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_report import coverage_metrics
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
