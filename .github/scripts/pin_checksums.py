@@ -9,20 +9,25 @@ values in ``Dockerfile.base``, ``Dockerfile.riscv``, the ``Tests`` workflow and
 the picorv32 demo contract. Version-only copies are left to Renovate's depName
 rules; OpenROAD values are manual by decision.
 
-    python3 .github/scripts/pin_checksums.py DATA_FILE [--root CHECKOUT]
+    python3 .github/scripts/pin_checksums.py [DATA_FILE] [--root CHECKOUT]
 
 ``DATA_FILE`` is the update description Renovate writes for a post-upgrade
-command, ``{"upgrades": [{"depName": "zachjs/sv2v", "newValue": "v0.0.13"}]}``.
-Renovate renders no ``upgrades`` array in its default ``executionMode: "update"``;
-use ``executionMode: "branch"`` and a ``dataFileTemplate`` with triple braces
-(double braces HTML-escape)::
+command, ``{"upgrades": [{"depName": "zachjs/sv2v", "packageFile": "src/booley/
+data/docker/Dockerfile.base", "newValue": "v0.0.13"}]}``. Without the argument the
+path comes from ``RENOVATE_POST_UPGRADE_COMMAND_DATA_FILE``, where Renovate puts
+it (see ``renovate_data_file.py``). Renovate renders no ``upgrades`` array in its
+default ``executionMode: "update"``; ``.github/renovate.json`` uses
+``executionMode: "branch"`` and a ``dataFileTemplate`` with triple braces (double
+braces HTML-escape).
 
-    {"upgrades":[{{#each upgrades}}{"depName":"{{{depName}}}","newValue":"{{{newValue}}}"}{{#unless @last}},{{/unless}}{{/each}}]}
-
-Pins are known by depName: a GitHub repository (release assets),
-``openvsx:<namespace>/<name>`` (VSIX files) or ``node``. Unknown names are
-ignored. The files must already carry the new version (Renovate applied the
-bump). Exit 0: done, or nothing to do. Exit 1: a download failed, a companion
+Pins are known by depName, as the Dockerfile annotations and Renovate's copy
+managers spell it: a GitHub repository (release assets), an Open VSX extension
+(``<namespace>/<name>``, VSIX files) or ``node``. Only the canonical upgrade of
+a pin is acted on, the one whose ``packageFile`` holds the pin's version: its
+literal copies (docs, contract probes, source constants) arrive as further
+upgrades of the same name, possibly with another version spelling, and are
+skipped with the unknown names and the nameless lock-file maintenance. The files
+must already carry the new version (Renovate applied the bump). Exit 0: done, or nothing to do. Exit 1: a download failed, a companion
 value is missing, or upstream metadata disagrees with the artifact; files are
 written only after every upgrade succeeded. Exit 2: unusable data file. A
 digest-only pin renders an empty ``newValue``: that is fine for an unknown pin.
@@ -64,6 +69,8 @@ from typing import IO, Any, Literal
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / "src"))
 
+from renovate_data_file import Upgrade, data_file_path, load_upgrades
+
 from booley.core.boundary import require_list, require_str_value
 from booley.runtime.dockerfile_syntax import build_arguments
 
@@ -80,9 +87,6 @@ _WRITABLE = re.compile(r"[A-Za-z0-9._:/+~-]+")
 
 class PinError(Exception):
     """A pin cannot be rewritten safely; nothing is changed (exit 1)."""
-
-
-Upgrade = tuple[str, str]  # (depName, newValue)
 
 
 @dataclass(frozen=True)
@@ -238,13 +242,13 @@ PINS: dict[str, Pin] = {
         ),
         _GITHUB,
     ),
-    "openvsx:lramseyer/vaporview": _vsix(
+    "lramseyer/vaporview": _vsix(
         "VAPORVIEW", "lramseyer/vaporview", "Lramseyer/vaporview", "{version}-rel"
     ),
-    "openvsx:mshr-h/veriloghdl": _vsix(
+    "mshr-h/veriloghdl": _vsix(
         "VERILOGHDL", "mshr-h/veriloghdl", "mshr-h/vscode-verilog-hdl-support", "v{version}"
     ),
-    "openvsx:ms-vscode/live-server": _vsix(
+    "ms-vscode/live-server": _vsix(
         "LIVE_PREVIEW", "ms-vscode/live-server", "microsoft/vscode-livepreview", "v{version}"
     ),
     "node": Pin(
@@ -502,44 +506,31 @@ def rewrite(root: Path, upgrades: Sequence[Upgrade], upstream: Upstream) -> list
     Nothing is written unless every known upgrade succeeded.
     """
     tree = Tree(root)
-    for dep_name, new_value in upgrades:
-        pin = PINS.get(dep_name)
-        if pin is None:
-            print(f"ignored {dep_name}", file=sys.stderr)
+    for upgrade in upgrades:
+        pin = PINS.get(upgrade.dep_name)
+        if pin is None or pin.version.file != upgrade.package_file:
+            print(f"ignored {upgrade.dep_name} in {upgrade.package_file}", file=sys.stderr)
             continue
         try:
-            _apply(pin, new_value, tree, upstream)
+            _apply(pin, upgrade.new_value, tree, upstream)
         except (PinError, ValueError) as error:  # ValueError: malformed upstream JSON shape
-            raise PinError(f"{dep_name}: {error}") from error
+            raise PinError(f"{upgrade.dep_name}: {error}") from error
     return _publish(tree)
-
-
-def _load_upgrades(path: Path) -> list[Upgrade]:
-    """Read Renovate's update description; raise ``ValueError`` when it is unusable."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
-        raise ValueError(f"cannot read {path}: {error}") from error
-    entries = data.get("upgrades") if isinstance(data, dict) else None
-    if not isinstance(entries, list) or not entries:
-        raise ValueError(f"{path}: no 'upgrades' list (Renovate needs executionMode 'branch')")
-    upgrades: list[Upgrade] = []
-    for entry in entries:
-        names = (entry.get("depName"), entry.get("newValue")) if isinstance(entry, dict) else ()
-        if len(names) != 2 or not all(isinstance(name, str) for name in names) or not names[0]:
-            raise ValueError(f"{path}: every upgrade needs a depName and a newValue")
-        upgrades.append((names[0], names[1]))
-    return upgrades
 
 
 def main(argv: Sequence[str] | None = None, *, opener: Opener | None = None) -> int:
     """Run the script; return the exit code (0 done, 1 pin failure, 2 bad data file)."""
     parser = argparse.ArgumentParser(description="Rewrite pin checksums after a Renovate bump.")
-    parser.add_argument("data_file", type=Path, help="Renovate update description (JSON)")
+    parser.add_argument(
+        "data_file",
+        type=Path,
+        nargs="?",
+        help="Renovate update description (JSON); default: the Renovate environment variable",
+    )
     parser.add_argument("--root", type=Path, default=_ROOT, help="checkout to rewrite")
     args = parser.parse_args(argv)
     try:
-        upgrades = _load_upgrades(args.data_file)
+        upgrades = load_upgrades(data_file_path(args.data_file))
     except ValueError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

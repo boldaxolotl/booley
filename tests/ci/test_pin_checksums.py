@@ -99,16 +99,28 @@ _CASES: dict[str, tuple[str, str, frozenset[str], dict[str, list[str]]]] = {
         _GITHUB,
         {_WORKFLOW: [r"^ +ACTIONLINT_SHA256: (.*)$"]},
     ),
-    "vaporview": ("openvsx:lramseyer/vaporview", "1.6.0", _OPEN_VSX, {_BASE: _vsix("VAPORVIEW")}),
-    "veriloghdl": ("openvsx:mshr-h/veriloghdl", "1.29.0", _OPEN_VSX, {_BASE: _vsix("VERILOGHDL")}),
+    "vaporview": ("lramseyer/vaporview", "1.6.0", _OPEN_VSX, {_BASE: _vsix("VAPORVIEW")}),
+    "veriloghdl": ("mshr-h/veriloghdl", "1.29.0", _OPEN_VSX, {_BASE: _vsix("VERILOGHDL")}),
     "live-preview": (
-        "openvsx:ms-vscode/live-server",
+        "ms-vscode/live-server",
         "0.4.20",
         _OPEN_VSX,
         {_BASE: _vsix("LIVE_PREVIEW")},
     ),
     "node": ("node", "24.21.0", _NODE, {_BASE: _arg("NODE_SHA256", "NPM_VERSION")}),
 }
+
+
+# depName -> the file Renovate reports as ``packageFile`` of the pin's canonical upgrade.
+_PACKAGE_FILES = {
+    "xpack-dev-tools/riscv-none-elf-gcc-xpack": _RISCV,
+    "riscv/riscv-isa-manual": _RISCV,
+    "riscv/riscv-debug-spec": _RISCV,
+    "riscv-non-isa/riscv-elf-psabi-doc": _RISCV,
+    "rhysd/actionlint": _WORKFLOW,
+}
+_SESSION_CONTRACT = ".github/contracts/session-runtime.toml"
+_DATA_FILE_ENV = "RENOVATE_POST_UPGRADE_COMMAND_DATA_FILE"
 
 
 @functools.cache
@@ -175,10 +187,18 @@ def _checkout(tmp_path: Path, cases: list[str]) -> Path:
     return root
 
 
-def _data_file(tmp_path: Path, upgrades: list[tuple[str, str]]) -> Path:
+def _data_file(tmp_path: Path, upgrades: list[tuple[str, ...]]) -> Path:
+    """Write what Renovate's template renders: ``(depName, newValue[, packageFile])`` entries."""
     path = tmp_path / "upgrades.json"
-    body = {"upgrades": [{"depName": d, "currentValue": "0", "newValue": v} for d, v in upgrades]}
-    path.write_text(json.dumps(body), encoding="utf-8")
+    entries = [
+        {
+            "depName": dep,
+            "packageFile": rest[1] if len(rest) > 1 else _PACKAGE_FILES.get(dep, _BASE),
+            "newValue": rest[0],
+        }
+        for dep, *rest in upgrades
+    ]
+    path.write_text(json.dumps({"upgrades": entries}), encoding="utf-8")
     return path
 
 
@@ -234,7 +254,10 @@ def test_real_files_hold_every_pin_location_once() -> None:
 
 def test_second_run_changes_nothing(tmp_path: Path) -> None:
     root = _checkout(tmp_path, list(_CASES))
-    upgrades = [(dep, version) for dep, version, *_ in _CASES.values()]
+    upgrades = [
+        _script().Upgrade(dep, version, _PACKAGE_FILES.get(dep, _BASE))
+        for dep, version, *_ in _CASES.values()
+    ]
     upstream = _script().Upstream(_Upstream())
 
     first = _script().rewrite(root, upgrades, upstream)
@@ -393,8 +416,22 @@ def test_replace_failure_removes_temp_files(
     assert _snapshot(root) == before
 
 
+_NO_FILE = '{"upgrades": [{"depName": "a", "newValue": "1"}]}'
+_NO_VALUE = '{"upgrades": [{"depName": "a", "packageFile": "f"}]}'
+_NOT_TEXT = '{"upgrades": [{"depName": "a", "packageFile": "f", "newValue": 1}]}'
+
+
 @pytest.mark.parametrize(
-    "contents", ['{"upgrades": [', '{"upgrades": []}'], ids=["malformed", "empty-upgrades"]
+    "contents",
+    ['{"upgrades": [', '{"upgrades": []}', "[]", _NO_FILE, _NO_VALUE, _NOT_TEXT],
+    ids=[
+        "malformed",
+        "empty-upgrades",
+        "not-an-object",
+        "no-package-file",
+        "no-value",
+        "not-text",
+    ],
 )
 def test_bad_data_file_is_a_usage_error(contents: str, tmp_path: Path) -> None:
     root = _checkout(tmp_path, list(_CASES))
@@ -413,11 +450,77 @@ def test_unknown_dep_names_are_ignored(tmp_path: Path, capsys: pytest.CaptureFix
     root = _checkout(tmp_path, list(_CASES))
     before = _snapshot(root)
     # A digest-only Docker pin has no tag: Renovate renders its newValue empty.
-    unknown = [("YosysHQ/yosys", "v0.99"), ("openroad", "1.2.3"), ("docker.io/x/y", "")]
+    unknown = [
+        ("YosysHQ/yosys", "v0.99"),
+        ("openroad", "1.2.3"),
+        ("docker.io/x/y", ""),
+        # Cargo lock-file maintenance has no dependency name at all.
+        ("", "", "Cargo.lock"),
+    ]
     upstream = _Upstream()
 
     assert _run(root, _data_file(tmp_path, unknown), upstream) == 0
 
     assert upstream.requests == []
     assert _snapshot(root) == before
-    assert "ignored docker.io/x/y" in capsys.readouterr().err
+    assert f"ignored docker.io/x/y in {_BASE}" in capsys.readouterr().err
+
+
+def test_data_file_comes_from_renovate_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Renovate hands the data file over only as an environment variable."""
+    root = _checkout(tmp_path, ["vaporview"])
+    data_file = _data_file(tmp_path, [_CASES["vaporview"][:2]])
+    monkeypatch.setenv(_DATA_FILE_ENV, str(data_file))
+
+    assert _script().main(["--root", str(root)], opener=_Upstream()) == 0
+
+    assert _snapshot(root) == _snapshot(_FIXTURES / "repo")
+
+
+def test_argument_wins_over_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _checkout(tmp_path, ["sv2v"])
+    monkeypatch.setenv(_DATA_FILE_ENV, str(tmp_path / "missing.json"))
+
+    assert _run(root, _data_file(tmp_path, [_CASES["sv2v"][:2]]), _Upstream()) == 0
+
+
+def test_no_data_file_at_all_is_a_usage_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv(_DATA_FILE_ENV, raising=False)
+
+    assert _script().main(["--root", str(tmp_path)], opener=_Upstream()) == 2
+
+    assert _DATA_FILE_ENV in capsys.readouterr().err
+
+
+def test_literal_copies_of_a_pin_are_ignored(tmp_path: Path) -> None:
+    """Renovate reports every literal copy of a pin as an upgrade of the same depName.
+
+    Only the canonical one (the file holding the pin's version) is acted on: the xPack copy
+    in the session contract reports ``15.2.0`` where the pin is ``15.2.0-1``, and the
+    VaporView copies must not download the VSIX again.
+    """
+    root = _checkout(tmp_path, ["xpack-gcc", "vaporview"])
+    xpack, xpack_version = _CASES["xpack-gcc"][:2]
+    vaporview, vaporview_version = _CASES["vaporview"][:2]
+    upgrades = [
+        (xpack, xpack_version),
+        (xpack, "15.2.0", _SESSION_CONTRACT),
+        (xpack, "15.2.0", "docs/user/SUPPORTED-EDA-TOOLS.md"),
+        (vaporview, vaporview_version),
+        (vaporview, vaporview_version, "src/booley/runtime/vaporview.py"),
+        (vaporview, vaporview_version, "docs/user/VAPORVIEW.md"),
+    ]
+    upstream = _Upstream()
+
+    assert _run(root, _data_file(tmp_path, upgrades), upstream) == 0
+
+    assert _snapshot(root) == _snapshot(_FIXTURES / "repo")
+    urls = [url for url, _ in upstream.requests]
+    assert sum("/releases/download/" in url for url in urls) == 1
+    assert sum(url.endswith(".vsix") for url in urls) == 1

@@ -2,8 +2,9 @@ name: Renovate
 
 # Self-hosted Renovate (tracker #2551). It runs from the default branch only:
 # the `renovate` Environment deploys from main, so the GitHub App key never
-# reaches pull-request code. There is deliberately no pull_request trigger and
-# no checkout step: Renovate reads the repository through the API.
+# reaches pull-request code. There is deliberately no pull_request trigger:
+# Renovate reads the repository through the API. The one checkout is this
+# default-branch commit, mounted read-only for the post-upgrade scripts (#2999).
 on:
   schedule:
     # Every 4 hours. Group schedules in .github/renovate.json are whole days.
@@ -22,7 +23,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: renovate
+    permissions:
+      # Only for the checkout below; the App token does all the writing.
+      contents: read
     steps:
+      # The commit this default-branch-only workflow runs from: no `ref`, and no
+      # credential kept in the clone. Renovate's post-upgrade commands execute
+      # the scripts from this copy, never code from an update branch.
+      - name: Check out the post-upgrade scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Create the Renovate App token
         id: app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -42,9 +54,18 @@ jobs:
           RENOVATE_REQUIRE_CONFIG: required
           RENOVATE_USERNAME: booley-renovate[bot]
           RENOVATE_GIT_AUTHOR: booley-renovate[bot] <353471265+booley-renovate[bot]@users.noreply.github.com>
+          # Global-only (a repository config cannot widen it). Anchored, so no
+          # argument or chained command can be appended; no shell executor is
+          # enabled, so commands are split without shell expansion.
+          RENOVATE_ALLOWED_COMMANDS: >-
+            ["^python3 /opt/booley/\\.github/scripts/pin_checksums\\.py --root \\.$",
+            "^python3 /opt/booley/\\.github/scripts/renovate_artifacts\\.py (agent-cli-lock|constraints)$"]
+          # Post-upgrade `installTools` (python, node, uv) are installed on demand.
+          RENOVATE_BINARY_SOURCE: install
           LOG_LEVEL: info
         run: >-
           docker run --rm
+          -v "${GITHUB_WORKSPACE}:/opt/booley:ro"
           --env RENOVATE_TOKEN
           --env RENOVATE_PLATFORM
           --env RENOVATE_REPOSITORIES
@@ -52,5 +73,7 @@ jobs:
           --env RENOVATE_REQUIRE_CONFIG
           --env RENOVATE_USERNAME
           --env RENOVATE_GIT_AUTHOR
+          --env RENOVATE_ALLOWED_COMMANDS
+          --env RENOVATE_BINARY_SOURCE
           --env LOG_LEVEL
           "${IMAGE}"
