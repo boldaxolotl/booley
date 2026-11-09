@@ -56,10 +56,17 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
+        id: setup-python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
           cache: pip
+
+      # A prefix-restored pip cache never shrinks; see .github/ci/README.md#pip-cache.
+      - name: Drop pip cache restored from an older dependency set
+        if: steps.setup-python.outputs.cache-hit != 'true'
+        timeout-minutes: 3
+        run: python -m pip cache purge
 
       - name: Build wheel
         id: wheel
