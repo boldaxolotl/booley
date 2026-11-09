@@ -84,7 +84,7 @@ def relocated_checkouts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict
     _write(state / "tests.toml", "[tests]\n")
     _write(state / "rtl_style_guide.md", "relocated style\n")
     _write(state / "AGENTS.md", "guidance\n")
-    assert worktree_cmd.run(argparse.Namespace(name="demo"), root) == 0
+    assert worktree_cmd.run(argparse.Namespace(worktree_command="new", name="demo"), root) == 0
     worktree = state / "worktrees" / "demo"
     _write(
         worktree / "state" / "booley.toml",

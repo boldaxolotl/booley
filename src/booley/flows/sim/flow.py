@@ -85,8 +85,8 @@ from booley.flows.sim.config import (
 from booley.flows.sim.coverage_campaign import CoverageCampaign
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
 from booley.flows.sim.coverage_json import FrozenJson
+from booley.flows.sim.coverage_policy import coverage_metrics
 from booley.flows.sim.coverage_progress import CoverageProgress
-from booley.flows.sim.coverage_report import coverage_metrics
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
 from booley.flows.sim.live_progress import (
     LiveProgressSink,
@@ -1684,7 +1684,7 @@ def _resolve_max_rundir_bytes(work_dir: Path | None = None) -> int:
     killing an in-flight synth). Growth, not total size — see
     :class:`booley.flows.sim.run_guard.DiskBudgetGuard` for why (F-23). ``0`` disables
     the guard. Forwarded to the builtin
-    run-halves as ``--max-rundir-bytes``; mirrors the other ``_resolve_*`` knob
+    run-halves in the prepared work document; mirrors the other ``_resolve_*`` knob
     readers. Defaults to :data:`_DEFAULT_MAX_RUNDIR_BYTES` when unset.
     """
     try:

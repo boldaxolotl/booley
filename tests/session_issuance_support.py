@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -13,6 +14,21 @@ import pytest
 from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
 from tests.devcontainer_spec_support import build_spec
+
+
+def install_trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Create a host-owned validator without relying on the runner's install layout."""
+    prefix = tmp_path / "trusted-prefix"
+    executable = prefix / "bin" / ("booley.exe" if os.name == "nt" else "booley")
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setattr(
+        runtime_spec,
+        "_validator_prefix_anchors",
+        lambda: {executable.parent.resolve(): prefix.resolve()},
+    )
+    return executable
 
 
 def stub_keeper(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -171,6 +171,7 @@ def _assert_uploads(workflow: dict, tmp_path: Path, actions: dict | None = None)
         "bwave-integration",
         "sidecar-smoke",
         "bwave-smoke",
+        "riscv-image",
         "ci-metrics",
     }, "the workflow diagnostic audit must exercise every diagnostic-producing job"
 
@@ -292,7 +293,7 @@ def test_phase_timing_artifacts_avoid_shard_verification_patterns() -> None:
         and "pattern" in step.get("with", {})
     ]
 
-    assert labels == ["ubuntu-3.11-full", "ubuntu-3.14-full"]
+    assert labels == ["ubuntu-3.11-full"]
     assert patterns
     for label in labels:
         artifact = template.replace("${{ inputs.label }}", label)

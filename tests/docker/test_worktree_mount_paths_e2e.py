@@ -176,7 +176,7 @@ import argparse
 import sys
 from pathlib import Path
 from booley.harness import worktree_cmd
-sys.exit(worktree_cmd.run(argparse.Namespace(name='demo'), Path('/work')))
+sys.exit(worktree_cmd.run(argparse.Namespace(worktree_command='new', name='demo'), Path('/work')))
 """
 
 _SANDBOX_PATHS = ("/work/", "/booley-project")
