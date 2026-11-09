@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -159,3 +160,23 @@ def write_two_core_sim_project(root: Path, tests_toml: str, *, target: str = "si
             "    flow: sim\n    flow_options: {tool: verilator}\n",
             encoding="utf-8",
         )
+
+
+def write_sim_preview_project(root: Path, targets: dict[str, list[str]]) -> Path:
+    """Write one verilator sim ``.core`` per Target and a ``tests.toml``; return ``.booley``.
+
+    *targets* maps each Target selector to its configured Tests (empty: none).
+    """
+    data = root / ".booley"
+    data.mkdir(exist_ok=True)
+    registry = ""
+    for name, tests in targets.items():
+        (root / f"{name}.core").write_text(
+            f"CAPI=2:\nname: ::{name}:0\ntargets:\n  {name}:\n    flow: sim\n"
+            "    flow_options: {tool: verilator}\n    toplevel: alu_tb\n",
+            encoding="utf-8",
+        )
+        if tests:
+            registry += f"[{name}]\ntests = {json.dumps(tests)}\n"
+    (data / "tests.toml").write_text(registry, encoding="utf-8")
+    return data

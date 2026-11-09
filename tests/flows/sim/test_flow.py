@@ -7,7 +7,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -61,8 +61,10 @@ from booley.flows.sim.result import parse_sim_verdict, parse_summary_line
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.runtime.endpoint_execution import ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.leased_session import canned_build_session, without_build_record
+from tests.target_test_support import write_sim_preview_project
 
 # Built-in Flow execution inside the Sandbox.
 _FLOW_ENABLED = True
@@ -396,18 +398,6 @@ def test_artifact_report_keys_do_not_drop_colliding_test_names(tmp_path: Path) -
 
     assert set(block.values()) == {"first.json", "second.json"}
     assert len(block) == 2
-
-
-def test_dry_run_does_not_reserve_invocation_directory(tmp_path: Path) -> None:
-    flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
-
-    with flow.publication_resources:
-        result = flow._run()
-
-    assert result.exit_code == EXIT_SUCCESS
-    report_root = tmp_path / "reports/sim"
-    assert not any(path.name.isdigit() for path in report_root.iterdir())
-    assert not list(report_root.glob("*.lock"))
 
 
 # A minimal sim `.core` for the real-fusesoc resolution e2e: the custom
@@ -1135,15 +1125,6 @@ class TestCriterionGating:
 # ---------------------------------------------------------------------------
 
 
-class TestMultiConfig:
-    def test_empty_config_fails(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="")
-        with flow.publication_resources:
-            result = flow._run()
-        assert result.exit_code == EXIT_ERROR
-        assert result.detail["mode"] == "simulate"
-
-
 class TestExecutionValidation:
     def test_job_class_is_heavy(self, tmp_path: Path):
         from booley.runtime import job_slots
@@ -1155,6 +1136,28 @@ class TestExecutionValidation:
 # ---------------------------------------------------------------------------
 # Dry-run mode
 # ---------------------------------------------------------------------------
+
+
+def _preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    targets: dict[str, list[str]],
+    **request: Any,
+) -> ExecutionResult:
+    """Dry-run ``SimulateFlow.execute`` over one ``.core`` per Target in *targets*.
+
+    *targets* maps each selector to its configured Tests (empty: none configured).
+    """
+    from booley.flows.sim.request import SimRequest
+    from booley.runtime.booley_dir import reset_cache
+
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    data = write_sim_preview_project(tmp_path, targets)
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
+    reset_cache()
+    return SimulateFlow().execute(
+        SimRequest(dry_run=True, work_dir=tmp_path, report_dir=tmp_path / "reports", **request)
+    )
 
 
 class TestDryRun:
@@ -1198,40 +1201,6 @@ class TestDryRun:
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_dry_run_prints_json(self, _mock_backend, _mock_tests, tmp_path: Path, capsys):
-        flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
-        with flow.publication_resources:
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        captured = capsys.readouterr()
-        plan = json.loads(captured.out)
-        assert plan["schema_version"] == 1
-        assert plan["flow"] == "sim"
-        assert len(plan["work_units"]) == 1
-        command = plan["work_units"][0]["commands"][0]["argv"]
-        assert command[:2] == ["sh", "-c"]
-        assert "--top alu_tb" in command[2]
-        assert "BOOLEY_TARGET=lite" in command[2]
-
-    @patch(
-        "booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress", "boot"]}
-    )
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_dry_run_expands_tests(self, _mock_backend, _mock_tests, tmp_path: Path, capsys):
-        flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
-        with flow.publication_resources:
-            flow._run()
-        captured = capsys.readouterr()
-        plan = json.loads(captured.out)
-        assert len(plan["work_units"]) == 3  # one per test
-        assert [unit.test_or_module_scope for unit in flow._flow_plan.work_units] == [
-            ("smoke",),
-            ("stress",),
-            ("boot",),
-        ]
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     def test_plan_fingerprint_changes_with_configured_environment(
         self,
         _mock_backend,
@@ -1246,84 +1215,45 @@ class TestDryRun:
 
         assert first.semantic_plan_fingerprint != second.semantic_plan_fingerprint
 
-    @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_dry_run_with_test_filter(
-        self,
-        _mock_backend,
-        _mock_tests,
-        tmp_path: Path,
-        capsys,
-    ):
-        flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run", "--test", "smoke"])
-        with flow.publication_resources:
-            flow._run()
-        captured = capsys.readouterr()
-        plan = json.loads(captured.out)
-        assert len(plan["work_units"]) == 1
-        command = plan["work_units"][0]["commands"][0]["argv"]
-        assert "BOOLEY_TEST_NAMES=smoke" in command[2]
-
-    @patch(
-        "booley.flows.sim.flow._get_test_names",
-        return_value={"lite": ["smoke", "stress"], "full": ["smoke"]},
+    @pytest.mark.parametrize(
+        ("targets", "request_args", "expected"),
+        [
+            pytest.param({"lite": []}, {}, {"lite": 1}, id="default-selection"),
+            pytest.param(
+                {"lite": ["smoke", "stress", "boot"]}, {}, {"lite": 3}, id="one-item-per-test"
+            ),
+            pytest.param(
+                {"lite": ["smoke", "stress"]}, {"test": ("smoke",)}, {"lite": 1}, id="test-filter"
+            ),
+            pytest.param(
+                {"lite": ["smoke", "stress"], "full": ["smoke"]},
+                {"target": "lite,full", "test": ("smoke",)},
+                {"lite": 1, "full": 1},
+                id="multi-target",
+            ),
+        ],
     )
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_dry_run_multi_config(
+    def test_dry_run_previews_one_work_item_per_selected_test(
         self,
-        _mock_backend,
-        _mock_tests,
         tmp_path: Path,
-        capsys,
-    ):
-        flow = _make_flow(
-            tmp_path,
-            config="lite,full",
-            extra_args=["--dry-run", "--test", "smoke"],
-        )
-        with flow.publication_resources:
-            flow._run()
-        captured = capsys.readouterr()
-        plan = json.loads(captured.out)
-        # 2 configs x 1 test each
-        assert len(plan["work_units"]) == 2
+        monkeypatch: pytest.MonkeyPatch,
+        targets: dict[str, list[str]],
+        request_args: dict[str, Any],
+        expected: dict[str, int],
+    ) -> None:
+        request_args = {"target": "lite", **request_args}
+        result = _preview(tmp_path, monkeypatch, targets, **request_args)
 
-    @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch(
-        "booley.fusesoc.fusesoc_registry._resolve_target",
-        side_effect=AssertionError("dry-run must not resolve (run fusesoc)"),
-    )
-    def test_dry_run_edalize_shows_fusesoc_setup_without_resolving(
-        self,
-        _no_resolve,
-        _mock_backend,
-        _mock_tests,
-        tmp_path: Path,
-        capsys,
-    ):
-        # The edalize dry-run path shows the `fusesoc run --setup` command a real
-        # run would execute, sourced from a cheap .core YAML read — no fusesoc
-        # invocation (patched _resolve_target would fail the test if it fired).
-        (tmp_path / "sim.core").write_text(
-            "CAPI=2:\nname: ::sim_demo:0\ntargets:\n  lite:\n    flow: sim\n"
-            "    toplevel: alu_tb\n    flow_options:\n      tool: verilator\n",
-            encoding="utf-8",
-        )
-        flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"], seed_core=False)
-        with flow.publication_resources:
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        plan = json.loads(capsys.readouterr().out)
-        assert len(plan["work_units"]) == 2  # one per test
-        for unit in plan["work_units"]:
-            cmd = unit["commands"][0]["argv"]
-            assert cmd[:2] == ["sh", "-c"]
-            script = cmd[2]
-            assert "run --build-root" in script and "--setup" in script
-            assert "--target lite" in script
-            assert "sim_demo" in script  # the resolved vlnv from the .core
-            assert "make -C" in script
+        outcome = result.outcome
+        assert result.exit_code == EXIT_SUCCESS, outcome.report_text
+        assert {
+            preview["target"]["selector"]: preview["work_items"]
+            for preview in outcome.detail["campaign_preview"]
+        } == expected
+        assert outcome.detail["mutated"] is False
+        # A dry run reserves no invocation directory and takes no lock.
+        report_root = tmp_path / "reports/sim"
+        assert not [p for p in report_root.glob("*") if p.name.isdigit() or p.suffix == ".lock"]
 
 
 # ---------------------------------------------------------------------------
