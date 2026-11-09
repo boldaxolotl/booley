@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -11,23 +9,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .coverage_invocation import CoverageTargetPlan
 
+from booley.flows.sim.coverage_json import CAMPAIGN_FINGERPRINT_JSON, content_digest
 from booley.targets.domain import TargetInspection
 
 
 def coverage_digest(value: object) -> str:
     """Fingerprint canonical JSON data independently of mapping order."""
-    data = json.dumps(value, sort_keys=True, separators=(",", ":"), default=_json_value)
-    return content_digest(data.encode())
-
-
-def _json_value(value: object) -> object:
-    if isinstance(value, Mapping):
-        return dict(value)
-    raise TypeError(f"Unsupported coverage provenance value: {type(value).__name__}")
-
-
-def content_digest(data: bytes) -> str:
-    return "sha256:" + hashlib.sha256(data).hexdigest()
+    return content_digest(CAMPAIGN_FINGERPRINT_JSON.encode(value))
 
 
 def coverage_source_closure(inspection: TargetInspection) -> dict[str, list[dict[str, str]]]:
