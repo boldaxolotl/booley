@@ -7,9 +7,10 @@ non-Simulation Flow, and must not depend on the endpoint's name.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -76,8 +77,14 @@ class _Harness:
         default_factory=list[AdmissionContext | None]
     )
     behavior: Callable[[], EndpointOutcome] = EndpointOutcome
+    # The admission each invocation body received from its prepared invocation.
+    run_admissions: list[object | None] = field(default_factory=list[object | None])
+    # Prepares the Flow's real invocation kind; runs once, when the test first executes.
+    prepare: Callable[[], None] = lambda: None
 
     def execute(self) -> ExecutionResult:
+        self.prepare()
+        self.prepare = lambda: None
         return self.flow.execute(self.request)
 
 
@@ -85,22 +92,51 @@ class _Harness:
 def harness(
     request: pytest.FixtureRequest, runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> _Harness:
-    """Simulation and a heavy non-Simulation Flow, reduced to their invocation body."""
+    """Simulation and a heavy non-Simulation Flow, reduced to their invocation body.
+
+    Both run their real prepared-invocation kind: the Simulation Campaign (which
+    borrows admission) and Target selection (which does not).
+    """
     flow = FLOW_TYPES[request.param]()
     typed_request = flow.request_type(
         target="demo", work_dir=runtime, report_dir=runtime / "reports"
     )
     observed = _Harness(flow=flow, request=typed_request)
 
-    def run(*_args: object) -> EndpointOutcome:
+    def run() -> EndpointOutcome:
         observed.invocations.append(object())
         return observed.behavior()
 
     if request.param == "sim":
-        monkeypatch.setattr(flow, "prepare_simulation_endpoint", object)
-        monkeypatch.setattr(flow, "run_prepared_simulation", run)
+
+        def run_prepared_simulation(
+            _prepared: object, admission: object | None
+        ) -> EndpointOutcome:
+            observed.run_admissions.append(admission)
+            return run()
+
+        monkeypatch.setattr(flow, "run_prepared_simulation", run_prepared_simulation)
+
+        def prepare() -> None:
+            from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
+            from booley.flows.sim.flow import PreparedSimulationEndpoint
+            from tests.flows.invocation_doubles import prepare_as
+
+            invocation = SimulationCampaignInvocation(
+                flow, PreparedSimulationEndpoint((), None, (), {})
+            )
+            prepare_as(monkeypatch, flow, invocation)
     else:
-        monkeypatch.setattr(flow, "_run", run)
+        # Class-level, so the real Target-selection kind runs the double.
+        monkeypatch.setattr(type(flow), "_run", lambda _self: run())
+
+        def prepare() -> None:
+            from booley.flows.prepared_invocation import TargetSelectionInvocation
+            from tests.flows.invocation_doubles import prepare_as
+
+            prepare_as(monkeypatch, flow, TargetSelectionInvocation(flow, None, flow._run))
+
+    observed.prepare = prepare
 
     original_admission = EndpointState.admission
 
@@ -254,27 +290,51 @@ def test_slot_released_when_run_ends(
     assert store.released == [claim]
 
 
-def _prepared(*, dry_run: bool = False, simulation: object | None = None) -> PreparedExecution:
+def _prepared(*, dry_run: bool = False, borrowing: bool = False) -> PreparedExecution:
+    """A prepared execution; *borrowing* selects an invocation that takes admission."""
+    from booley.flows.prepared_invocation import OrdinaryRunInvocation
+
     return PreparedExecution(
         display_target=None,
         display_label=None,
         dry_run=dry_run,
         non_persisting_dry_run=dry_run,
-        simulation=simulation,
+        invocation=_borrowing_invocation()
+        if borrowing
+        else OrdinaryRunInvocation(EndpointOutcome),
     )
 
 
-@pytest.mark.parametrize("name", ("sim", "synth"))
-def test_dry_run_takes_no_slot(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    flow = FLOW_TYPES[name]()
+def _borrowing_invocation() -> object:
+    """A prepared invocation of the borrowing kind, as a Simulation Campaign is."""
+    from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
+    from booley.flows.sim.flow import PreparedSimulationEndpoint
+
+    return SimulationCampaignInvocation(
+        SimulateFlow(), PreparedSimulationEndpoint((), None, (), {})
+    )
+
+
+def test_dry_run_invocation_runs_without_admission(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-persisting dry run takes no slot and writes no numbered report."""
     monkeypatch.setattr(
         EndpointState,
         "_acquire_job_slot",
         lambda _self: pytest.fail("a dry run must not take a slot"),
     )
+    harness.request = replace(harness.request, dry_run=True)
 
-    with endpoint_admission.admission(flow, _prepared(dry_run=True)) as borrowed:
-        assert borrowed is None
+    result = harness.execute()
+
+    assert result.exit_code == 0
+    assert len(harness.invocations) == 1
+    assert harness.admissions == [None]
+    # Only the Simulation Campaign borrows admission, and it saw none.
+    if isinstance(harness.flow, SimulateFlow):
+        assert harness.run_admissions == [None]
+    assert not (harness.request.report_dir / harness.flow.name).exists()
 
 
 class _StubEndpoint:
@@ -332,7 +392,7 @@ def test_admission_ignores_endpoint_name(name: str, monkeypatch: pytest.MonkeyPa
     endpoint = _StubEndpoint(name, job_slots.CLASS_HEAVY)
     store, claim = _FakeStore(), object()
     monkeypatch.setattr(endpoint, "_acquire_job_slot", lambda: (store, claim))
-    prepared = _prepared(simulation=object())
+    prepared = _prepared(borrowing=True)
 
     with endpoint_admission.admission(endpoint, prepared) as borrowed:  # type: ignore[arg-type]
         assert isinstance(borrowed, AdmissionContext)
@@ -397,7 +457,110 @@ def test_body_failures_are_not_remapped_to_admission_rejections(
 
     with (
         pytest.raises(type(failure)),
-        endpoint_admission.admission(endpoint, _prepared(simulation=object())),  # type: ignore[arg-type]
+        endpoint_admission.admission(endpoint, _prepared(borrowing=True)),  # type: ignore[arg-type]
     ):
         raise failure
     assert store.released == [claim]
+
+
+def test_invocation_exception_is_normalized(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unexpected invocation failure becomes the stable exit-2 report, and cleans up."""
+    from booley.runtime.exception_diagnostics import exception_report_text
+
+    store, claim = _FakeStore(), object()
+    _use_slot(monkeypatch, store, claim)
+    harness.behavior = _fail
+    stdout_before = sys.stdout
+
+    result = harness.execute()
+
+    assert result.exit_code == EXIT_ERROR
+    expected = exception_report_text(harness.flow.name, RuntimeError("endpoint failed"))
+    # The persisted diagnostic path trails the stable "<name> failed: <Type>: <message>" text.
+    assert result.outcome.report_text.startswith(expected)
+    assert sys.stdout is stdout_before
+    assert store.released == [claim]
+
+
+def test_publication_resources_outlive_final_report(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invocation resources and the slot are held until the final report is written."""
+    store, claim = _FakeStore(), object()
+    _use_slot(monkeypatch, store, claim)
+    flow = harness.flow
+    events: list[str] = []
+    at_final_report: list[tuple[list[str], list[object]]] = []
+
+    def behavior() -> EndpointOutcome:
+        flow.publication_resources.callback(events.append, "resources_released")
+        if isinstance(flow, SimulateFlow):
+            # The numbered report directory the final report writes into.
+            assert flow.reserve_invocation_dir() is not None
+        return EndpointOutcome()
+
+    original_write_report = type(flow).write_report
+
+    def spy_write_report(self: object, result: EndpointOutcome) -> object:
+        at_final_report.append((list(events), list(store.released)))
+        return original_write_report(self, result)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(type(flow), "write_report", spy_write_report)
+    harness.behavior = behavior
+
+    assert harness.execute().exit_code == 0
+
+    assert at_final_report
+    assert at_final_report[-1] == ([], [])
+    assert events == ["resources_released"]
+    assert store.released == [claim]
+
+
+def test_target_authorization_precedes_job_admission(
+    runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simulation refuses an unauthorized prepared Target before taking a Job Slot."""
+    from booley.criteria.state import DevelopmentState
+    from tests.target_test_support import make_target_handle
+
+    state_path = runtime / "state.json"
+    state = DevelopmentState.load(state_path)
+    # Binds the requested token ``demo`` (so the generic gate passes), nothing else.
+    state.init_criteria({"sim_pass_demo": True}, strict=True)
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    # Real preparation reaches the real ``authorize_targets`` with a Target no Criterion binds.
+    stub = make_target_handle(runtime, "other")
+    monkeypatch.setattr(SimulateFlow, "prepare_target_endpoint", lambda _self: None)
+    monkeypatch.setattr(
+        SimulateFlow,
+        "_prepare_campaign_targets",
+        lambda _self: ((stub,), None, ("other",), {}),
+    )
+    monkeypatch.setattr(SimulateFlow, "_validate_prepared_selection", lambda *_args: None)
+    monkeypatch.setattr(
+        EndpointState,
+        "_acquire_job_slot",
+        lambda _self: pytest.fail("an unauthorized Target must not reach admission"),
+    )
+    ran: list[object] = []
+    monkeypatch.setattr(
+        SimulateFlow, "run_prepared_simulation", lambda *_args: ran.append(object())
+    )
+    flow = SimulateFlow()
+
+    result = flow.execute(
+        flow.request_type(target="demo", work_dir=runtime, report_dir=runtime / "reports")
+    )
+
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.report_text == (
+        "sim: Goal Mode has no authorized Criterion binding for Target(s): other"
+    )
+    assert ran == []
+    # Preparation itself returns the refusal, so no prepared invocation reaches admission.
+    refusal = flow.prepare_endpoint_invocation()
+    assert isinstance(refusal, EndpointOutcome)
+    assert refusal.report_text == result.outcome.report_text

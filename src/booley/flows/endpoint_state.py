@@ -38,6 +38,7 @@ from booley.flows.execution_persistence import (
     criterion_source_target_for,
     state_persistence_for,
 )
+from booley.flows.prepared_invocation import OrdinaryRunInvocation, PreparedInvocation
 from booley.runtime import job_slots
 from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.endpoint_execution import (
@@ -194,6 +195,21 @@ class EndpointState(ABC):
     def prepare_target_endpoint(self) -> EndpointOutcome | None:
         """Resolve Target selection before admission; only built-in Flows select Targets."""
         return None
+
+    def prepare_endpoint_invocation(self) -> PreparedInvocation | EndpointOutcome:
+        """Return the prepared invocation, or the refusal that ends the run.
+
+        The default wraps the endpoint's ordinary run.
+        """
+        return OrdinaryRunInvocation(self._run)
+
+    def manifest_names_targets(self) -> bool:
+        """Whether this invocation's Targets come from a manifest, not Target selection."""
+        return False
+
+    def report_families(self) -> set[str]:
+        """Criterion families this invocation's report scope plans."""
+        return set(self.satisfies)
 
     def set_report_targets(self, targets: list[str]) -> None:
         """Preserve selection cardinality even when some Targets never resolve."""
