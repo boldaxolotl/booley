@@ -217,6 +217,12 @@ def test_criterion_without_unique_v1_metrics_is_rejected_at_construction(
         CoverageCriterion(_TARGET, thresholds, None)
 
 
+def test_scorer_never_passes_an_empty_threshold_set() -> None:
+    from booley.flows.sim.coverage_policy import score_thresholds
+
+    assert score_thresholds(_campaign().rollups, ()).status == "fail"
+
+
 def test_target_mismatch_blocks_with_stable_diagnostic() -> None:
     criterion = CoverageCriterion(
         target=DurableTargetIdentity("acme:demo:other:1.0#sim_other"),

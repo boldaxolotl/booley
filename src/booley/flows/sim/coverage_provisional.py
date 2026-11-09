@@ -300,16 +300,17 @@ def criterion_from_evaluation(campaign: CoverageCampaign) -> CoverageCriterion:
         raise ProvisionalCoverageError("Campaign has no scored strict coverage evaluation")
     if not isinstance(suite, Mapping) or not isinstance(suite.get("required"), tuple):
         raise ProvisionalCoverageError("Campaign evaluation has no required test suite")
-    rebuilt = tuple(
-        coverage_threshold(str(metric), minimum)
+    stored = [
+        (str(metric), minimum)
         for metric, minimum in thresholds.items()
         if isinstance(minimum, int | float) and not isinstance(minimum, bool)
-    )
-    if len(rebuilt) != len(thresholds):
+    ]
+    if len(stored) != len(thresholds):
         raise ProvisionalCoverageError("Campaign thresholds are malformed")
     required = tuple(str(item) for item in suite["required"])
     tests = None if sorted(required) == sorted(campaign.declared_tests) else required
     try:
+        rebuilt = tuple(coverage_threshold(metric, minimum) for metric, minimum in stored)
         return CoverageCriterion(DurableTargetIdentity(campaign.target.identity), rebuilt, tests)
     except ValueError as exc:
         raise ProvisionalCoverageError(f"Campaign threshold is malformed: {exc}") from exc
