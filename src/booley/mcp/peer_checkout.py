@@ -62,8 +62,9 @@ def process_checkout(
     """The process's cwd when it is a routable linked-worktree root, else ``None``."""
     try:
         link_target = (proc_root / str(process.pid) / "cwd").readlink()
-        # Windows spells link targets with a ``\\?\`` prefix that never equals the
-        # ordinary spelling of the same path; strip it so comparisons hold.
+        # ``/proc`` targets are kernel-canonical, so no ``resolve()``. Only the Windows
+        # ``\\?\`` spelling (fake-proc tests; ``resolve()`` keeps it) needs stripping so
+        # it equals the ordinary spelling. The UNC form is deliberately not handled.
         cwd = Path(str(link_target).removeprefix("\\\\?\\"))
     except OSError:
         return None  # Exited or unreadable process entry.
