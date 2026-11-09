@@ -158,6 +158,8 @@ class TestWriteBuildStamp:
 
         The literal digests below were computed before the tree digest was
         shared; changing them invalidates every previously built image.
+        The fixture omits ``VERSION``: ``Path`` sorting is case-insensitive on
+        Windows, so a mixed-case sibling would order differently there.
         """
         root = tmp_path / "tree"
         included = {
@@ -168,7 +170,6 @@ class TestWriteBuildStamp:
             "crates/bwave/Cargo.lock": b"# lock\n",
             ".dockerignore": b"*\n",
             "pyproject.toml": b"[project]\n",
-            "VERSION": b"1.2.3\n",
         }
         excluded = {
             "src/booley/_build_commit.py": b"COMMIT = 'x'\n",
@@ -181,10 +182,10 @@ class TestWriteBuildStamp:
             path.write_bytes(content)
 
         assert resolve_payload_fingerprint(root) == (
-            "f2a226a15bc5592aad050afb92e2a3ac8351088149e76145216bd57794baebb0"
+            "4eefdc268142633c6d5f79b655b7080f1669d2f45c1868ddb4e1867baaef8e4a"
         )
         assert resolve_wheel_source_fingerprint(root) == (
-            "3bbed8cb3913688c0d6b735900f7128dc4be9ed927534aa45df11195b76c36b5"
+            "a41dde15065a469c31c11eb87f377265cac69bde2d0f82921e7f5d38e87843f0"
         )
 
     @staticmethod
