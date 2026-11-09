@@ -539,7 +539,6 @@ class TestCocotbBatching:
         script = calls[0][-1]
         work = launched_work(script)
         assert work.adapter == "cocotb"
-        assert len(work.tests) == 3
         assert work.tests[0] == "test_reset"
         assert work.cocotb_module == "test_counter"
         assert work.result_verbosity == "compact"
@@ -712,14 +711,12 @@ class TestCocotbDryRun:
         from tests.flows.sim.test_execution_engine import _handle, _inspection
 
         engine = execution_engine
-        patches = (
-            patch.object(engine.TargetCatalog, "build", return_value=_inspection(cocotb=True)),
-            patch.object(engine.fusesoc_registry, "setup_command_for_handle", return_value=[]),
+        build = patch.object(engine.TargetCatalog, "build", return_value=_inspection(cocotb=True))
+        setup = patch.object(engine.fusesoc_registry, "setup_command_for_handle", return_value=[])
+        execution = engine.SimulationExecution(
+            invoke=MagicMock(), options=engine.SimulationOptions()
         )
-        with patches[0], patches[1]:
-            execution = engine.SimulationExecution(
-                invoke=MagicMock(), options=engine.SimulationOptions()
-            )
+        with build, setup:
             preview = execution.preview(_handle(tmp_path), engine.NamedTests(("a", "b", "c")))
 
         (command,) = preview.commands

@@ -11,11 +11,9 @@ _ADAPTER_MODULE_PREFIX = "booley.flows.sim.backends."
 
 
 def launched_work(command: Sequence[str] | str) -> PreparedSimulationWork:
-    """Decode the work document that follows ``-m booley.flows.sim.backends.<adapter>``.
+    """Decode the document after ``-m booley.flows.sim.backends.<adapter>`` in *command*.
 
-    *command* is an adapter argv, a shell script, or an ``sh -c <script>``
-    tuple. The document is read with the production decoder, so a launch that
-    does not carry one valid document fails here.
+    *command* is an adapter argv, a shell script, or an ``sh -c <script>`` tuple.
     """
     from booley.flows.sim.adapter_contract import decode_simulation_work
 

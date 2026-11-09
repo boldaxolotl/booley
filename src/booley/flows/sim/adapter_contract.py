@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import json
 from collections.abc import Callable
@@ -80,17 +81,20 @@ class SimulationWorkError(ValueError):
 
 
 def encode_simulation_work(work: PreparedSimulationWork) -> str:
-    """The versioned JSON document that carries *work* to its adapter process.
+    """The versioned document that carries *work* to its adapter process.
 
     Every dataclass field is written, so a field added to the work description
-    reaches the adapter without a second list to keep in step.
+    reaches the adapter without a second list to keep in step. The JSON is
+    URL-safe base64 without padding: no quote, backslash, slash or colon, so
+    no shell can alter it (Git Bash rewrites such characters on Windows).
     """
     document: dict[str, object] = {
         field.name: getattr(work, field.name) for field in dataclasses.fields(work)
     }
     document["test_runs"] = [test_run_document(run) for run in work.test_runs]
     document["schema"] = SIMULATION_WORK_SCHEMA
-    return json.dumps(document, separators=(",", ":"), sort_keys=True)
+    text = json.dumps(document, separators=(",", ":"), sort_keys=True)
+    return base64.urlsafe_b64encode(text.encode()).decode("ascii").rstrip("=")
 
 
 def _string_tuple(value: object, name: str) -> tuple[str, ...]:
@@ -143,7 +147,9 @@ def decode_simulation_work(text: str) -> PreparedSimulationWork:
     that decodes is the work Booley encoded.
     """
     try:
-        document = require_dict(json.loads(text), field="work document")
+        # Extra "=" is ignored, so the padding the encoder stripped can be restored blindly.
+        raw = json.loads(base64.urlsafe_b64decode(text + "==").decode())
+        document = require_dict(raw, field="work document")
         schema = document.pop("schema", None)
         if schema != SIMULATION_WORK_SCHEMA:
             raise SimulationWorkError(

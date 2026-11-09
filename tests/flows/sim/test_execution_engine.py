@@ -2570,13 +2570,11 @@ def test_preview_resolves_configuration_from_each_handle_root(tmp_path: Path) ->
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh -n syntax check")
-def test_preview_is_a_runnable_chain(tmp_path: Path) -> None:
-    # Only Verilator seeds natively.
-    for adapter, run_name in (("verilator", "smoke@1"), ("icarus", "smoke")):
-        _assert_preview_is_runnable(tmp_path / adapter, adapter, run_name)
-
-
-def _assert_preview_is_runnable(tmp_path: Path, adapter: str, run_name: str) -> None:
+@pytest.mark.parametrize(
+    ("adapter", "run_name"),
+    [("verilator", "smoke@1"), ("icarus", "smoke")],  # only Verilator seeds
+)
+def test_preview_is_a_runnable_chain(tmp_path: Path, adapter: str, run_name: str) -> None:
     project = tmp_path / ".booley"
     project.mkdir(parents=True)
     (project / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n', encoding="utf-8")
@@ -3224,7 +3222,7 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
     assert Path(work.build_dir) == snapshot
     assert Path(work.run_cwd) == run_cwd
     assert Path(work.work_dir) == snapshot.parent / "execution-evidence"
-    assert str(prepared.build_root) not in launch
+    assert str(prepared.build_root) not in repr(work)
 
 
 def _snapshot_invoke(commands, eda_tool, handle, snapshot):

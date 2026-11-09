@@ -1813,7 +1813,7 @@ def test_prepared_ordinary_invoker_observes_owned_attempt_before_launch(
                     log = project / pointer["path"]
                     assert log.is_file()
                     assert "flow=sim" in log.read_text().splitlines()[0]
-                    assert str(log.parent) in command[-1]
+                    assert str(log.parent) in launched_work(command).adapter_result_path
                 observations.append(active["stage"])
         return original(command, timeout=timeout, cwd=cwd)
 

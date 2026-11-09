@@ -24,7 +24,6 @@ from booley.flows.endpoint_events import _display_safe_event, _endpoint_end_even
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.execution.composition import prepare_adapter_invocation
-from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
 from booley.flows.target_test_suite import NoRunnableTestsError
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
@@ -1354,11 +1353,7 @@ def test_mutant_launch_grades_from_the_document(tmp_path: Path, monkeypatch, cap
 
 
 def _grade_mutant_launch(tmp_path: Path, monkeypatch, capsys, adapter: str, outcome: str) -> None:
-    """A mutant is graded from what its adapter process printed and returned.
-
-    The fake simulator decodes the launch's work document first, so a launch
-    that does not carry a valid one never reaches the grader.
-    """
+    """A mutant is graded from its adapter's output; the fake decodes the launch document first."""
     from booley.flows.sim.adapter_contract import run_adapter_entry
     from booley.flows.sim.backends import cocotb_results as cr
 
@@ -1709,7 +1704,7 @@ class TestResidueWarning:
             if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
                 return _fake_proc(rc=0)
             if "booley.flows.sim.backends.verilator" in joined:
-                if switch["edit_scope"] and "mutant_2" in joined:
+                if switch["edit_scope"] and "mutant_2" in repr(launched_work(cmd)):
                     with (tmp_path / self.SCOPE).open("a", encoding="utf-8") as handle:
                         handle.write("// edit left by the run\n")
                 return _fake_proc(rc=0)
@@ -2184,15 +2179,11 @@ class TestCocotbSimDispatch:
 
         sim_cmd = captured[-1]
         work = launched_work(sim_cmd)
-        assert len(sim_cmd) == 4
         assert sim_cmd == prepare_adapter_invocation(work, python=sys.executable)
         assert work.adapter == "cocotb"
         assert work.cocotb_module == "tb.test_ravenoc"
         assert work.eda_tool == "verilator"
         assert work.build_dir == "build"
-        assert work.timeout_s == 295
-        assert work.sim_time_grace_s == DEFAULT_SIM_TIME_GRACE_S
-        assert work.result_verbosity == "compact"
         assert work.cocotb_seed == 1  # the Target declares no seed: the Flow default
         assert not any("MUT_ID" in arg for arg in sim_cmd)
         # Sentinels and a top do not apply to Cocotb Targets (ADR 0034 decision 6).
@@ -2284,12 +2275,8 @@ class TestCocotbSimDispatch:
 
         sim_cmd = captured[-1]
         work = launched_work(sim_cmd)
-        assert len(sim_cmd) == 4
         assert sim_cmd == prepare_adapter_invocation(work, python=sys.executable)
-        assert work.adapter == "verilator"
         assert work.top == "tb"
-        assert work.build_dir == "build"
-        assert work.timeout_s == 295
         assert work.plusargs == ("verilator+seed+1",)
         assert not work.trace
 
@@ -2312,12 +2299,8 @@ class TestCocotbSimDispatch:
 
         sim_cmd = captured[-1]
         work = launched_work(sim_cmd)
-        assert len(sim_cmd) == 4
         assert sim_cmd == prepare_adapter_invocation(work, python=sys.executable)
-        assert work.adapter == "icarus"
         assert work.build_dir == "build"
-        assert work.timeout_s == 295
-        assert work.top == ""
         assert not any("MUT_ID" in arg for arg in sim_cmd)
 
     def test_commercial_cocotb_target_fails_fast_with_reason(

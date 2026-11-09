@@ -1,8 +1,10 @@
 """Parent-side Simulation adapter composition contract."""
 
 import ast
+import base64
 import dataclasses
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,7 @@ def test_every_adapter_launch_is_one_work_document() -> None:
         document = encode_simulation_work(work)
 
         assert prepare_adapter_invocation(work) == ["python3", "-m", module, document]
+        assert re.fullmatch(r"[\w-]+", document)  # nothing a shell or Git Bash would rewrite
         assert prepare_adapter_invocation(work, python="/venv/python")[0] == "/venv/python"
 
 
@@ -86,16 +89,20 @@ def test_work_document_round_trips_every_field() -> None:
     assert decode_simulation_work(encode_simulation_work(_work())) == _work()
 
 
+def _armor(text: str) -> str:
+    return base64.urlsafe_b64encode(text.encode()).decode()
+
+
 def _document(**overrides: Any) -> str:
     from booley.flows.sim.adapter_contract import encode_simulation_work
 
-    document = json.loads(encode_simulation_work(_work()))
+    document = json.loads(base64.urlsafe_b64decode(encode_simulation_work(_work()) + "=="))
     for name, value in overrides.items():
         if value is None:
             document.pop(name)
         else:
             document[name] = value
-    return json.dumps(document)
+    return _armor(json.dumps(document))
 
 
 def test_work_document_rejects_wrong_schema_and_field_set() -> None:
@@ -109,8 +116,9 @@ def test_work_document_rejects_wrong_schema_and_field_set() -> None:
         "environment entries must be": _document(environment=[["only-a-name"]]),
         "timeout_s": _document(timeout_s=True),
         "sim_time_grace_s must be a number": _document(sim_time_grace_s="1"),
-        "must be a mapping": "[]",
-        "Expecting value": "not json",
+        "must be a mapping": _armor("[]"),
+        "Expecting value": _armor("not json"),
+        "Invalid base64": "A",
         "timeout must be positive": _document(timeout_s=0),
         "Test Run record": _document(test_runs=[{"name": "x"}]),
     }
