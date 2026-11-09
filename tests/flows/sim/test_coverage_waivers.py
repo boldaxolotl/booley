@@ -25,6 +25,7 @@ from booley.flows.sim.coverage_campaign import (
     CoverageRun,
     CoverageTarget,
     DurableTargetIdentity,
+    encode_coverage_point_id,
 )
 from booley.flows.sim.coverage_policy import (
     CoverageCriterion,
@@ -213,9 +214,7 @@ def _incomplete_point_id() -> str:
     payload = _POINT_ID.removeprefix("cp1:")
     identity = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
     del identity["location"]["start"]
-    canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    encoded = base64.urlsafe_b64encode(canonical.encode()).decode().rstrip("=")
-    return f"cp1:{encoded}"
+    return encode_coverage_point_id(identity)
 
 
 def _point(point_id: str, basic_block: int, *, covered: bool) -> CoveragePoint:

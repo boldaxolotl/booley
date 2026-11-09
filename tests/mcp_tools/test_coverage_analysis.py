@@ -272,7 +272,8 @@ def test_closure_recommendations_use_persisted_policy_not_simulation(status, rec
     from dataclasses import replace
     from fractions import Fraction
 
-    from booley.flows.sim.coverage_campaign import derive_coverage_rollups, freeze_coverage_mapping
+    from booley.flows.sim.coverage_campaign import derive_coverage_rollups
+    from booley.flows.sim.coverage_json import freeze_coverage_mapping
     from booley.flows.sim.coverage_policy import (
         ApprovedWaiverSet,
         CoverageCriterion,
@@ -333,11 +334,8 @@ def test_non_rtl_and_unscored_native_points_cannot_be_waiver_candidates(kind):
         document["collector"]["capabilities"] = [{"record_class": "fsm", "status": "reported"}]
     point["disposition"] = {"kind": "unscored", "reason": "outside_v1_scoring"}
     # Build the new rollup using the public codec/model seam before analysis.
-    from booley.flows.sim.coverage_campaign import (
-        CoveragePoint,
-        CoveragePointIdentity,
-        freeze_coverage_mapping,
-    )
+    from booley.flows.sim.coverage_campaign import CoveragePoint, CoveragePointIdentity
+    from booley.flows.sim.coverage_json import freeze_coverage_mapping
 
     identity = point["identity"]
     observation = CoveragePoint(
