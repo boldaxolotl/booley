@@ -22,6 +22,7 @@ from booley.flows.sim.adapter_transport import (
     work_transport_identity,
     write_adapter_result,
 )
+from booley.flows.sim.campaign import collect_pre_sim_firings
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.flow import SimulateFlow
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult, execute_endpoint
@@ -1592,9 +1593,8 @@ def test_public_ordinary_prepared_endpoint_reports_each_shared_build_launch(tmp_
         tmp_path / "reports/sim.json"
     ).read_bytes()
     manifest = tmp_path / "reports/sim/1/targets/sim_a/campaign/manifest.json"
-    from booley.flows.sim.campaign import read_pre_sim_firings
 
-    firings = read_pre_sim_firings(manifest)
+    firings = collect_pre_sim_firings(manifest)
     assert len(firings) == 2
     campaign_root = manifest.parent
     assert len(list(campaign_root.glob("build-variants/*/attempts/*/build-result.json"))) == 1
@@ -1676,7 +1676,6 @@ def _cocotb_hook_plan(document):
 def test_actual_hook_fires_once_for_two_test_cocotb_batch(tmp_path, monkeypatch):
     from dataclasses import replace
 
-    from booley.flows.sim.campaign import read_pre_sim_firings
     from booley.flows.sim.execution.contract import (
         SimulationArtifactEvidence,
         SimulationTestOutcome,
@@ -1716,7 +1715,7 @@ def test_actual_hook_fires_once_for_two_test_cocotb_batch(tmp_path, monkeypatch)
         tmp_path, monkeypatch, "immutable", transform=_cocotb_hook_plan
     )
     assert outcome.aggregate_grade == "pass"
-    firings = read_pre_sim_firings(invocation / "targets/sim/campaign/manifest.json")
+    firings = collect_pre_sim_firings(invocation / "targets/sim/campaign/manifest.json")
     assert len(firings) == 1
     assert firings[0].document["test_names"] == ("alpha", "beta")
     assert firings[0].document["stdout_tail"] == "hook-out\n"
@@ -2034,7 +2033,7 @@ def test_pre_sim_read_rejects_result_reference_without_published_firing(tmp_path
     store = CampaignStore(invocation / "targets/sim/campaign")
 
     with pytest.raises(SimulationCampaignIntegrityError, match="result references disagree"):
-        store.read_pre_sim_firings()
+        collect_pre_sim_firings(store.manifest_path)
 
 
 def _strict_sim_a_ticket(tmp_path, monkeypatch):

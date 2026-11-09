@@ -13,7 +13,7 @@ import pytest
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.backends import cocotb_results
-from booley.flows.sim.campaign import serial_execution
+from booley.flows.sim.campaign import collect_pre_sim_firings, serial_execution
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
     decode_simulation_result,
@@ -671,7 +671,7 @@ def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path
         "Pre-Sim Commands failed (failed): vector generator rejected input"
     )
 
-    firings = store.read_pre_sim_firings()
+    firings = collect_pre_sim_firings(store.manifest_path)
     assert [f.document["ordinal"] for f in firings] == [1, 2]
     assert [f.document["test_names"] for f in firings] == [("reset",), ("wrap",)]
     assert all(f.document["status"] == "failed" for f in firings)
@@ -719,7 +719,7 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
 
     # This injected external adapter has no observed process exit status.
     store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
-    (firing,) = store.read_pre_sim_firings()
+    (firing,) = collect_pre_sim_firings(store.manifest_path)
     assert firing.document["status"] == "spawn_error"
     assert firing.document["returncode"] is None
     assert firing.document["command_count"] == 1
@@ -760,22 +760,24 @@ def test_post_commit_failure_reports_incomplete_collection(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize(
-    ("coverage", "scans"), [(True, 3), (False, 2)], ids=["coverage", "ordinary"]
+    ("coverage", "scans"), [(True, 5), (False, 4)], ids=["coverage", "ordinary"]
 )
 def test_campaign_run_adds_no_recovery_scan_for_failure_facts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coverage: bool, scans: int
 ) -> None:
-    """Failure-detail facts reuse the coordinator's scans: 3 for coverage, 2 otherwise."""
-    from booley.flows.sim.campaign import coordinator
+    """Failure-detail facts reuse the coordinator's scans.
 
+    Run start, summary regeneration, final scan and the outcome collector scan
+    the Campaign (4); a coverage commit adds one (5).
+    """
     calls: list[None] = []
-    original = coordinator._scan_recovery
+    original = CampaignStore.scan
 
     def counting_scan(*args, **kwargs):
         calls.append(None)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(coordinator, "_scan_recovery", counting_scan)
+    monkeypatch.setattr(CampaignStore, "scan", counting_scan)
     if coverage:
         _run_coverage_campaign(tmp_path, NativeExecution())
     else:

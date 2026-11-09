@@ -12,7 +12,7 @@ import json
 import re
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import TypeVar, cast
@@ -127,12 +127,6 @@ class SharedBuildRecovery:
     result: BundleBuildResult
     bundle: SimulatorBundle | None
     build_execution: Mapping[str, object] | None
-
-
-@dataclass(frozen=True, slots=True)
-class _PreSimReadSnapshot:
-    attempt: SimulationAttempt
-    firings: tuple[PreSimFiring, ...]
 
 
 def _invocation_of(campaign_root: Path) -> Path | None:
@@ -482,40 +476,6 @@ class CampaignStore:
             raise SimulationCampaignIntegrityError("too many Pre-Sim Commands firings")
         return paths
 
-    def _read_pre_sim_snapshot(self, directory, attempt, manifest=None, item=None):
-        paths = self._pre_sim_paths(directory)
-        firings = []
-        if paths:
-            manifest = manifest or self.load_manifest()
-            item = item or next(
-                item
-                for item in manifest.document["work_items"]
-                if item["work_item_id"] == attempt.document["work_item_id"]
-            )
-            decoder = PreSimFiringDecoder(manifest)
-            for path in paths:
-                _require_safe_parents(path, directory, self.booley_dir)
-                raw = self._read(path, limit=MANIFEST_MAX_BYTES)
-                firings.append(
-                    PreSimFiring(
-                        self.manifest_path,
-                        path,
-                        MappingProxyType(_reference(path, raw, directory.name.split("-", 1)[1])),
-                        decoder.decode(raw, item, attempt),
-                        False,
-                    )
-                )
-        return _PreSimReadSnapshot(attempt, tuple(firings))
-
-    def inspect_pre_sim_firings(
-        self, manifest: SimulationCampaignManifest | None = None
-    ) -> tuple[PreSimFiring, ...]:
-        """Return firings from the same authenticated snapshot used by the full scan."""
-        manifest = manifest or self.load_manifest()
-        firings: list[PreSimFiring] = []
-        self._scan_manifest(manifest, manifest_digest(manifest), pre_sim_receiver=firings.extend)
-        return tuple(firings)
-
     def _reread_prior_attempt(
         self,
         manifest: SimulationCampaignManifest,
@@ -533,71 +493,78 @@ class CampaignStore:
         _require_safe_parents(directory, self.root, self.booley_dir)
         if directory.parent != self._work_item_directory(item) / "attempts":
             raise SimulationCampaignIntegrityError("prior hook attempt owner changed")
-        snapshot = self._read_attempt_pre_sim_snapshot(manifest, item, directory, None)
-        fresh = {candidate.key: candidate for candidate in snapshot.firings} if snapshot else {}
+        fresh = {
+            candidate.key: candidate
+            for candidate in self._attempt_firings(manifest, item, directory, None)
+        }
         for firing in owned:
             match = fresh.get(firing.key)
             if match is None or (match.path, match.reference) != (firing.path, firing.reference):
                 raise SimulationCampaignIntegrityError("prior hook reference changed")
         return {firing.key: fresh[firing.key] for firing in owned}
 
-    def read_pre_sim_firings(
-        self, manifest: SimulationCampaignManifest | None = None
-    ) -> tuple[PreSimFiring, ...]:
-        """Authenticate every retained attempt, including interrupted and older attempts."""
-        return tuple(
-            firing
-            for snapshot in self._read_pre_sim_snapshots(manifest).values()
-            for firing in snapshot.firings
-        )
-
-    def _read_pre_sim_snapshots(self, manifest=None) -> dict[Path, _PreSimReadSnapshot]:
-        manifest = manifest or self.load_manifest()
-        snapshots = {}
-        for item in cast(tuple[Mapping[str, object], ...], manifest.document["work_items"]):
-            work_root = self._work_item_directory(item)
-            terminal = None
-            result_path = work_root / "result.json"
-            if result_path.exists() or result_path.is_symlink():
-                terminal = self._decode_located(
-                    decode_simulation_result, result_path, RECORD_MAX_BYTES
-                )
-            for directory in self._attempt_directories(work_root / "attempts"):
-                snapshot = self._read_attempt_pre_sim_snapshot(manifest, item, directory, terminal)
-                if snapshot is not None:
-                    snapshots[directory] = snapshot
-        return snapshots
-
     @reads_campaign_records
-    def _read_attempt_pre_sim_snapshot(self, manifest, item, directory, terminal):
+    def _attempt_firings(
+        self,
+        manifest: SimulationCampaignManifest,
+        item: Mapping[str, object],
+        directory: Path,
+        terminal: SimulationResult | None,
+    ) -> tuple[PreSimFiring, ...]:
+        """Authenticate one attempt's sidecars; ``terminal`` is the result binding this attempt.
+
+        An attempt without sidecars and without a terminal result costs no read.
+        A terminal attempt always has its result references compared with its sidecars.
+        """
         if not (directory / "attempt.json").exists():
-            return None
+            return ()
+        paths = self._pre_sim_paths(directory)
+        if not paths and terminal is None:
+            return ()
         attempt = self.read_attempt(directory)
-        if (
-            directory.name
-            != f"{attempt.document['attempt_ordinal']:04d}-{attempt.document['attempt_id']}"
-        ):
-            raise SimulationCampaignIntegrityError("hook attempt directory owner disagrees")
-        snapshot = self._read_pre_sim_snapshot(directory, attempt, manifest, item)
-        completed = (
-            terminal is not None
-            and terminal.document["attempt_id"] == attempt.document["attempt_id"]
-        )
-        for ordinal, firing in enumerate(snapshot.firings, start=1):
-            if firing.document["ordinal"] != ordinal or firing.path.name != f"{ordinal:04d}.json":
-                raise SimulationCampaignIntegrityError("Pre-Sim Commands ordinal disagrees")
-        if completed and [
-            reference
-            for reference in terminal.document["evidence"]
-            if reference["kind"] == "pre_sim_commands"
-        ] != [firing.reference for firing in snapshot.firings]:
-            raise SimulationCampaignIntegrityError("Pre-Sim Commands result references disagree")
-        if completed and snapshot.firings:
-            _validate_result_attempt_binding(attempt, terminal)
-            snapshot = replace(
-                snapshot, firings=tuple(replace(f, terminal=True) for f in snapshot.firings)
-            )
-        return snapshot
+        _require_attempt_directory_name(directory, attempt)
+        firings: list[PreSimFiring] = []
+        if paths:
+            decoder = PreSimFiringDecoder(manifest)
+            for ordinal, path in enumerate(paths, start=1):
+                _require_safe_parents(path, directory, self.booley_dir)
+                raw = self._read(path, limit=MANIFEST_MAX_BYTES)
+                firing = PreSimFiring(
+                    self.manifest_path,
+                    path,
+                    MappingProxyType(_reference(path, raw, directory.name.split("-", 1)[1])),
+                    decoder.decode(raw, item, attempt),
+                    terminal is not None,
+                )
+                if firing.document["ordinal"] != ordinal or path.name != f"{ordinal:04d}.json":
+                    raise SimulationCampaignIntegrityError("Pre-Sim Commands ordinal disagrees")
+                firings.append(firing)
+        if terminal is not None:
+            if [
+                reference
+                for reference in terminal.document["evidence"]
+                if reference["kind"] == "pre_sim_commands"
+            ] != [firing.reference for firing in firings]:
+                raise SimulationCampaignIntegrityError(
+                    "Pre-Sim Commands result references disagree"
+                )
+            if firings:
+                _validate_result_attempt_binding(attempt, terminal)
+        return tuple(firings)
+
+    def _campaign_firings(
+        self, manifest: SimulationCampaignManifest, recovery: CampaignRecovery
+    ) -> tuple[PreSimFiring, ...]:
+        """Authenticate every retained attempt's firings against the scan's terminal results."""
+        items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
+        firings: list[PreSimFiring] = []
+        for item, recovered in zip(items, recovery.items, strict=True):
+            directories = self._attempt_directories(self._work_item_directory(item) / "attempts")
+            for directory in directories:
+                # The scan proved a result binds the final attempt, so only it is terminal.
+                terminal = recovered.result if directory == directories[-1] else None
+                firings.extend(self._attempt_firings(manifest, item, directory, terminal))
+        return tuple(firings)
 
     def _authenticate_reference(self, root: Path, reference: Mapping[str, object]) -> None:
         path = root / validate_relative_path(reference["path"])
@@ -613,33 +580,24 @@ class CampaignStore:
         _create_immutable(path, encoder(value))
         return path
 
-    def scan(self, manifest: SimulationCampaignManifest | None = None) -> CampaignRecovery:
+    def scan(
+        self,
+        manifest: SimulationCampaignManifest | None = None,
+        manifest_sha256: str | None = None,
+    ) -> CampaignRecovery:
+        """Recover work item state without reading Pre-Sim sidecars.
+
+        ``manifest_sha256`` is the authenticated digest of the passed ``manifest``;
+        callers that already hold it supply it instead of recomputing it.
+        """
         manifest = manifest or self.load_manifest()
-        return self._scan_manifest(manifest, manifest_digest(manifest))
-
-    def scan_validated(
-        self,
-        manifest: SimulationCampaignManifest,
-        manifest_sha256: str,
-    ) -> CampaignRecovery:
-        return self._scan_manifest(manifest, manifest_sha256)
-
-    def _scan_manifest(
-        self,
-        manifest: SimulationCampaignManifest,
-        manifest_sha256: str,
-        *,
-        pre_sim_receiver: Callable[[tuple[PreSimFiring, ...]], None] | None = None,
-    ) -> CampaignRecovery:
-        snapshots = self._read_pre_sim_snapshots(manifest)
-        if pre_sim_receiver is not None:
-            pre_sim_receiver(tuple(f for snapshot in snapshots.values() for f in snapshot.firings))
+        manifest_sha256 = manifest_sha256 or manifest_digest(manifest)
         expected_workload = cast(Mapping[str, str], manifest.document["fingerprints"])[
             "workload_sha256"
         ]
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         recovered = tuple(
-            self._scan_item(item, manifest_sha256, expected_workload, snapshots) for item in items
+            self._scan_item(item, manifest_sha256, expected_workload) for item in items
         )
         return CampaignRecovery(recovered)
 
@@ -648,7 +606,6 @@ class CampaignStore:
         work_item: Mapping[str, object],
         manifest_sha256: str,
         workload_sha256: str,
-        snapshots: dict[Path, _PreSimReadSnapshot],
     ) -> WorkItemRecovery:
         work_item_id = cast(str, work_item["work_item_id"])
         # ``scan`` already decoded the complete manifest.  Re-loading and
@@ -661,10 +618,7 @@ class CampaignStore:
             attempt_path = attempt_directory / "attempt.json"
             if not attempt_path.exists() and not is_report_link(attempt_path):
                 continue
-            snapshot = snapshots.get(attempt_directory)
-            attempt = (
-                snapshot.attempt if snapshot is not None else self.read_attempt(attempt_directory)
-            )
+            attempt = self.read_attempt(attempt_directory)
             document = attempt.document
             if (
                 document["work_item_id"] != work_item_id
@@ -675,6 +629,7 @@ class CampaignStore:
                 raise SimulationCampaignIntegrityError(
                     f"attempt identity disagrees for {work_item_id} ordinal {ordinal}"
                 )
+            _require_attempt_directory_name(attempt_directory, attempt)
             decoded_attempts.append(attempt)
         result_path = directory / "result.json"
         if result_path.exists() or is_report_link(result_path):
@@ -734,27 +689,15 @@ class CampaignStore:
                 raise SimulationCampaignIntegrityError(f"invalid attempt directory: {child}")
         return tuple(children)
 
-    def regenerate_summary(self) -> Mapping[str, object]:
-        manifest = self.load_manifest()
-        manifest_sha256 = manifest_digest(manifest)
-        recovery = self._scan_manifest(manifest, manifest_sha256)
-        return self._regenerate_summary(manifest, manifest_sha256, recovery)
-
-    def regenerate_summary_validated(
+    def regenerate_summary(
         self,
-        manifest: SimulationCampaignManifest,
-        manifest_sha256: str,
+        manifest: SimulationCampaignManifest | None = None,
+        manifest_sha256: str | None = None,
     ) -> Mapping[str, object]:
-        """Regenerate the projection from one authenticated manifest snapshot."""
-        recovery = self.scan_validated(manifest, manifest_sha256)
-        return self._regenerate_summary(manifest, manifest_sha256, recovery)
-
-    def _regenerate_summary(
-        self,
-        manifest: SimulationCampaignManifest,
-        manifest_sha256: str,
-        recovery: CampaignRecovery,
-    ) -> Mapping[str, object]:
+        """Regenerate the projection; ``manifest_sha256`` is the digest of the passed manifest."""
+        manifest = manifest or self.load_manifest()
+        manifest_sha256 = manifest_sha256 or manifest_digest(manifest)
+        recovery = self.scan(manifest, manifest_sha256)
         grades = tuple(
             cast(str, item.result.document["grade"])
             for item in recovery.items
@@ -788,15 +731,27 @@ _PRE_SIM_DAG_BOUND = 4096
 
 
 def collect_pre_sim_firings(
-    *manifest_paths: Path, booley_dir: Path | None = None
+    *manifest_paths: Path,
+    booley_dir: Path | None = None,
+    prior: tuple[PreSimFiring, ...] = (),
 ) -> tuple[PreSimFiring, ...]:
-    """Read every root's prerequisite DAG once and deduplicate by full firing identity.
+    """Read Pre-Sim firings; the only entry that does, in one of two modes.
 
-    The key ``(campaign_id, work_item_id, attempt_id, ordinal)`` keeps Candidate
-    and Cycle Count baseline firings distinct.  Each distinct manifest path is
-    scanned once.  Prerequisite references repeated by many work items count
-    once per ancestor chain toward the bound.
+    With ``manifest_paths``, read every root's prerequisite DAG once and
+    deduplicate by full firing identity.  The key ``(campaign_id, work_item_id,
+    attempt_id, ordinal)`` keeps Candidate and Cycle Count baseline firings
+    distinct.  Each distinct manifest path is scanned once.  Prerequisite
+    references repeated by many work items count once per ancestor chain toward
+    the bound.
+
+    With ``prior`` (and no paths), freshly reread earlier-authenticated firings,
+    one read per attempt.  No scan runs and no terminal record is consulted, so
+    unrelated terminal corruption cannot drop valid firing evidence, and changed
+    sidecar bytes change the reference and raise.  Only fresh firings matching a
+    prior key are returned.
     """
+    if prior:
+        return _reread_prior(prior, booley_dir)
     pending = [(Path(path).absolute(), None, frozenset()) for path in reversed(manifest_paths)]
     queued: set[tuple[Path, str, frozenset[str]]] = set()
     visited: set[Path] = set()
@@ -811,7 +766,8 @@ def collect_pre_sim_firings(
             raise SimulationCampaignIntegrityError("expected exact Campaign manifest path")
         store = CampaignStore(path.parent, booley_dir=booley_dir)
         manifest = store.load_manifest()
-        if expected is not None and manifest_digest(manifest) != expected:
+        digest = manifest_digest(manifest)
+        if expected is not None and digest != expected:
             raise SimulationCampaignIntegrityError("prerequisite hook manifest digest disagrees")
         campaign_id = str(manifest.document["campaign_id"])
         if campaign_id in ancestors:
@@ -819,7 +775,7 @@ def collect_pre_sim_firings(
         if path in visited:
             continue
         visited.add(path)
-        for firing in store.inspect_pre_sim_firings(manifest):
+        for firing in store._campaign_firings(manifest, store.scan(manifest, digest)):
             firings[firing.key] = firing
         for entry in manifest.document["prerequisites"]:
             reference = entry["manifest"]
@@ -831,15 +787,10 @@ def collect_pre_sim_firings(
     return tuple(firings.values())
 
 
-def reread_pre_sim_firings(
-    prior: tuple[PreSimFiring, ...], *, booley_dir: Path | None = None
+def _reread_prior(
+    prior: tuple[PreSimFiring, ...], booley_dir: Path | None
 ) -> tuple[PreSimFiring, ...]:
-    """Freshly reread earlier-authenticated firings, one snapshot per attempt.
-
-    No terminal record is consulted, so unrelated terminal corruption cannot
-    drop valid firing evidence, and changed sidecar bytes change the reference
-    and raise.  Only fresh firings matching a prior key are returned.
-    """
+    """Reread each attempt owning a prior firing once; raise when any reference changed."""
     by_manifest: dict[Path, dict[Path, list[PreSimFiring]]] = {}
     for firing in prior:
         attempts = by_manifest.setdefault(firing.manifest_path, {})
@@ -852,6 +803,13 @@ def reread_pre_sim_firings(
         for directory, owned in attempts.items():
             fresh.update(store._reread_prior_attempt(manifest, items, directory, owned))
     return tuple(fresh[key] for key in dict.fromkeys(firing.key for firing in prior))
+
+
+def _require_attempt_directory_name(directory: Path, attempt: SimulationAttempt) -> None:
+    """Refuse an attempt stored under a directory its own ordinal and id do not name."""
+    document = attempt.document
+    if directory.name != f"{document['attempt_ordinal']:04d}-{document['attempt_id']}":
+        raise SimulationCampaignIntegrityError("hook attempt directory owner disagrees")
 
 
 def _aggregate_grade(grades: tuple[str, ...], *, complete: bool) -> str:
