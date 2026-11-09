@@ -233,6 +233,25 @@ def test_host_diagnostics_preserves_environment_failures_and_warning_identity(
     assert (actual.fix, actual.check_id) == (observation.fix, observation.check_id)
 
 
+def _stub_offline_host(monkeypatch) -> None:
+    """Stub the host probes so `inspect_host` reaches the Session store scan offline."""
+    bootstrap = host_diagnostics.bootstrap
+    monkeypatch.setattr(
+        bootstrap, "reconcile_bootstrap", lambda intent: bootstrap.BootstrapResult(intent, ())
+    )
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    identity = _identity()
+    monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
+    monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: identity)
+    monkeypatch.setattr(
+        host_environment,
+        "probe_host_clock",
+        lambda: host_environment.EnvironmentFinding(
+            host_environment.EnvironmentSeverity.SKIP, "offline"
+        ),
+    )
+
+
 def test_host_doctor_reports_session_store_file_named_for_another_root(
     monkeypatch, tmp_path: Path
 ):
@@ -254,21 +273,7 @@ def test_host_doctor_reports_session_store_file_named_for_another_root(
         store.private.atomic_write_text(path.name, json.dumps({"project_root": held_root}))
         misnamed.append((path, path.read_bytes()))
 
-    bootstrap = host_diagnostics.bootstrap
-    monkeypatch.setattr(
-        bootstrap, "reconcile_bootstrap", lambda intent: bootstrap.BootstrapResult(intent, ())
-    )
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    identity = _identity()
-    monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
-    monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: identity)
-    monkeypatch.setattr(
-        host_environment,
-        "probe_host_clock",
-        lambda: host_environment.EnvironmentFinding(
-            host_environment.EnvironmentSeverity.SKIP, "offline"
-        ),
-    )
+    _stub_offline_host(monkeypatch)
 
     result = host_diagnostics.inspect_host()
 
@@ -278,3 +283,25 @@ def test_host_doctor_reports_session_store_file_named_for_another_root(
         assert str(path) in failure.message
         assert "booley init --seed --project" in failure.message
         assert path.read_bytes() == before
+
+
+def test_host_doctor_passes_healthy_session_stores(monkeypatch, tmp_path: Path):
+    """Doctor counts per-Project Session store files named for their Project Roots."""
+    xdg_home = tmp_path / "config"
+    xdg_home.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+    project_root = str(tmp_path / "project")
+    stores = (
+        session_issuance.stamp_store(),
+        session_admission.claim_store(),
+        session_refresh.journal_store(),
+        issuance_invalidation.journal_store(),
+    )
+    for store in stores:
+        store.write(project_root, json.dumps({"project_root": project_root}))
+    _stub_offline_host(monkeypatch)
+
+    findings = host_diagnostics.inspect_host().report.findings
+
+    assert not [f for f in findings if f.severity is Severity.FAIL]
+    assert any(f"Session stores: {len(stores)} per-Project file(s)" in f.message for f in findings)

@@ -1,4 +1,4 @@
-"""Compatibility imports and runtime policy for host-private Session stores."""
+"""Host-private Session store policy: the repair text, plus the `PrivateStore` re-export."""
 
 from booley.core.private_store import (
     PrivateStore,

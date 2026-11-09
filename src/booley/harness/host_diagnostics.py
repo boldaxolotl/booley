@@ -89,7 +89,9 @@ def _inspect_session_stores(report: Findings) -> None:
             # The message carries its own repair (reissue, chmod, or the stray path).
             report.fail(
                 f"Session store check: {exc}",
-                "follow the repair in the message, then rerun `booley doctor`",
+                "apply the repair in the message (a misnamed file: remove it and reissue with "
+                "`booley init --seed`) or remove the file it names, then rerun `booley doctor`; "
+                "Doctor names one file per store, so rerun until it passes",
             )
             healthy = False
     if healthy:

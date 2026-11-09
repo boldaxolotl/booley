@@ -471,7 +471,7 @@ def _scanned_project_root(persisted: str) -> Path:
         ) from exc
     if str(project) != persisted:
         raise sr.SessionError(
-            "Session refresh journal filename does not match its canonical Project identity"
+            "Session refresh journal Project Root does not resolve to its canonical identity"
         )
     return project
 

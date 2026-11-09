@@ -300,8 +300,11 @@ booley init --seed --project <root>
 
 After upgrading on Windows, Booley names a Project Root without regard to case.
 Files written by earlier releases are not migrated, so each Project needs this
-once. Removing a pending refresh file drops its rollback snapshot; `init --seed`
-regenerates the spec.
+once. Doctor names one file per store, so rerun it until it passes. Removing a
+pending refresh file drops its rollback snapshot and its parked prior Sandbox;
+removing a pending invalidation file skips its cleanup of the Project's FlexNet
+relay containers and networks, which then need removing by hand in Docker.
+`init --seed` regenerates the spec.
 
 ### Docker disk still used after removing a Project
 
