@@ -12,8 +12,8 @@ import binascii
 import json
 import math
 import re
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from types import MappingProxyType
 from typing import Literal, NewType, TypeAlias, cast
@@ -30,6 +30,12 @@ from booley.core.boundary import (
     require_str,
     require_str_value,
 )
+from booley.flows.sim.coverage_json import (
+    POINT_ID_JSON,
+    FrozenJson,
+    coverage_mapping_document,
+    freeze_coverage_mapping,
+)
 from booley.flows.test_runs import build_test_run, declared_inputs_fingerprint
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
@@ -37,9 +43,6 @@ DurableTargetIdentity = NewType("DurableTargetIdentity", str)
 CoverageCapabilityStatus: TypeAlias = Literal["reported", "absent", "unsupported"]
 SimulationVerdict: TypeAlias = Literal["pass", "fail", "elab_error", "timeout", "inconclusive"]
 CoverageRunCollectionState: TypeAlias = Literal["included", "collector_error"]
-
-JsonScalar: TypeAlias = str | int | float | bool | None
-FrozenJson: TypeAlias = JsonScalar | tuple["FrozenJson", ...] | Mapping[str, "FrozenJson"]
 
 _SCHEMA = "booley.coverage-campaign/v1"
 _SCORED_METRICS = frozenset({"line", "branch", "expression", "toggle", "cover_property"})
@@ -84,31 +87,6 @@ _TOP_LEVEL_FIELDS = (
     ("findings", "array"),
     ("evaluation", "object"),
 )
-
-
-def _freeze(value: object) -> FrozenJson:
-    if isinstance(value, Mapping):
-        return MappingProxyType({str(key): _freeze(value[key]) for key in sorted(value, key=str)})
-    if isinstance(value, list | tuple):
-        return tuple(_freeze(item) for item in value)
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
-    raise TypeError(f"coverage campaign contains non-JSON value {type(value).__name__}")
-
-
-def _freeze_mapping(value: object) -> Mapping[str, FrozenJson]:
-    frozen = _freeze(value)
-    if not isinstance(frozen, Mapping):
-        raise TypeError("coverage campaign object must be a JSON object")
-    return frozen
-
-
-def _thaw(value: FrozenJson) -> object:
-    if isinstance(value, Mapping):
-        return {key: _thaw(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_thaw(item) for item in value]
-    return value
 
 
 @dataclass(frozen=True)
@@ -816,17 +794,9 @@ def _structural_findings(document: Mapping[str, object]) -> tuple[CoverageFindin
     return tuple(findings)
 
 
-def _canonical_json(value: object) -> bytes:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-
-
-def _point_id(identity: object) -> str:
-    payload = base64.urlsafe_b64encode(_canonical_json(identity)).decode("ascii").rstrip("=")
+def encode_coverage_point_id(identity: object) -> str:
+    """Return the ``cp1:`` Coverage Point id that encodes one canonical identity."""
+    payload = base64.urlsafe_b64encode(POINT_ID_JSON.encode(identity)).decode("ascii").rstrip("=")
     return f"cp1:{payload}"
 
 
@@ -865,7 +835,7 @@ def decode_coverage_point_id(point_id: object) -> Mapping[str, object] | None:
         and _valid_point_position(location.get("start"))
         and _valid_point_position(location.get("end"))
         and bool(metric and hierarchy and source and subject)
-        and text == _point_id(identity)
+        and text == encode_coverage_point_id(identity)
     )
     return identity if complete else None
 
@@ -1027,7 +997,7 @@ def _validate_point_identity(
     reported_capabilities: set[str],
 ) -> list[CoverageFinding]:
     findings: list[CoverageFinding] = []
-    if point["id"] != _point_id(point["identity"]):
+    if point["id"] != encode_coverage_point_id(point["identity"]):
         findings.append(
             _error(
                 "COV_POINT_ID_MISMATCH",
@@ -1043,7 +1013,7 @@ def _validate_point_identity(
                 "Point id must encode one complete canonical Coverage Point identity.",
             )
         )
-    encoded_identity = _canonical_json(point["identity"])
+    encoded_identity = POINT_ID_JSON.encode(point["identity"])
     if encoded_identity in seen_identities:
         findings.append(
             _error(
@@ -1652,7 +1622,7 @@ def _decode_capability(document: Mapping[str, object]) -> CoverageCapability:
     return CoverageCapability(
         record_class=str(document["record_class"]),
         status=cast(CoverageCapabilityStatus, str(document["status"])),
-        attributes=_freeze_mapping(attributes),
+        attributes=freeze_coverage_mapping(attributes),
     )
 
 
@@ -1671,7 +1641,7 @@ def _decode_run(document: Mapping[str, object]) -> CoverageRun:
         simulation_verdict=cast(SimulationVerdict, str(document["simulation_verdict"])),
         collection=cast(CoverageRunCollectionState, str(document["collection"])),
         raw_artifact=(str(document["raw_artifact"]) if "raw_artifact" in document else None),
-        attributes=_freeze_mapping(
+        attributes=freeze_coverage_mapping(
             {key: value for key, value in document.items() if key not in known}
         ),
         **_decode_run_identity(document),
@@ -1703,7 +1673,7 @@ def _decode_artifact(document: Mapping[str, object]) -> CoverageArtifact:
         bytes=int(document["bytes"]),
         state=str(document["state"]),
         owner_run=str(document["owner_run"]) if "owner_run" in document else None,
-        attributes=_freeze_mapping(
+        attributes=freeze_coverage_mapping(
             {key: value for key, value in document.items() if key not in known}
         ),
     )
@@ -1718,15 +1688,15 @@ def _decode_point(document: Mapping[str, object]) -> CoveragePoint:
         id=str(document["id"]),
         identity=CoveragePointIdentity(
             metric=str(identity["metric"]),
-            location=_freeze_mapping(identity["location"]),
+            location=freeze_coverage_mapping(identity["location"]),
             hierarchy=str(identity["hierarchy"]),
-            subject=_freeze_mapping(identity["subject"]),
-            collector=_freeze_mapping(identity["collector"]),
+            subject=freeze_coverage_mapping(identity["subject"]),
+            collector=freeze_coverage_mapping(identity["collector"]),
         ),
         hits_by_run=MappingProxyType(
             {str(run_id): int(hits[run_id]) for run_id in sorted(hits, key=str)}
         ),
-        disposition=_freeze_mapping(document["disposition"]),
+        disposition=freeze_coverage_mapping(document["disposition"]),
     )
 
 
@@ -1757,8 +1727,8 @@ def _decode_collector(document: Mapping[str, object]) -> CoverageCollector:
     assert isinstance(capabilities, list)
     return CoverageCollector(
         kind=str(document["kind"]),
-        version=_freeze_mapping(document["version"]),
-        native_format=_freeze_mapping(document["native_format"]),
+        version=freeze_coverage_mapping(document["version"]),
+        native_format=freeze_coverage_mapping(document["native_format"]),
         capabilities=tuple(_decode_capability(item) for item in capabilities),
     )
 
@@ -1767,7 +1737,7 @@ def _decode_invocation(document: Mapping[str, object]) -> Mapping[str, FrozenJso
     invocation = dict(document)
     started_at = str(invocation["started_at"])
     invocation["started_at"] = rfc3339_from_epoch(parse_timestamp(started_at).timestamp())
-    return _freeze_mapping(invocation)
+    return freeze_coverage_mapping(invocation)
 
 
 def _decode_points(
@@ -1810,20 +1780,20 @@ def _decode_valid_campaign(
         invocation=_decode_invocation(invocation),
         target=CoverageTarget(identity=str(target["identity"]), selector=str(target["selector"])),
         collector=_decode_collector(collector),
-        build=_freeze_mapping(document["build"]),
-        coverage_window=_freeze_mapping(document["coverage_window"]),
-        fingerprints=_freeze_mapping(document["fingerprints"]),
-        source_closure=_freeze_mapping(document["source_closure"]),
+        build=freeze_coverage_mapping(document["build"]),
+        coverage_window=freeze_coverage_mapping(document["coverage_window"]),
+        fingerprints=freeze_coverage_mapping(document["fingerprints"]),
+        source_closure=freeze_coverage_mapping(document["source_closure"]),
         declared_tests=tuple(str(item) for item in tests["declared"]),
         selected_tests=tuple(str(item) for item in tests["selected"]),
         runs=tuple(_decode_run(item) for item in runs),
         artifacts=tuple(_decode_artifact(item) for item in artifacts),
-        normalization=_freeze_mapping(document["normalization"]),
+        normalization=freeze_coverage_mapping(document["normalization"]),
         points=_decode_points(points, consume_owned_points=consume_owned_points),
         rollups=tuple(_decode_rollup(item) for item in rollups),
-        collection=_freeze_mapping(document["collection"]),
+        collection=freeze_coverage_mapping(document["collection"]),
         findings=tuple(_decode_finding(item) for item in findings),
-        evaluation=_freeze_mapping(document["evaluation"]),
+        evaluation=freeze_coverage_mapping(document["evaluation"]),
     )
 
 
@@ -1869,7 +1839,7 @@ def _encode_capability(capability: CoverageCapability) -> dict[str, object]:
     return {
         "record_class": capability.record_class,
         "status": capability.status,
-        **_thaw(capability.attributes),
+        **coverage_mapping_document(capability.attributes),
     }
 
 
@@ -1886,7 +1856,7 @@ def _encode_run(run: CoverageRun) -> dict[str, object]:
     }
     if run.raw_artifact is not None:
         document["raw_artifact"] = run.raw_artifact
-    document.update(_thaw(run.attributes))
+    document.update(coverage_mapping_document(run.attributes))
     return document
 
 
@@ -1905,7 +1875,7 @@ def _encode_artifact(artifact: CoverageArtifact) -> dict[str, object]:
             "state": artifact.state,
         }
     )
-    document.update(_thaw(artifact.attributes))
+    document.update(coverage_mapping_document(artifact.attributes))
     return document
 
 
@@ -1914,13 +1884,13 @@ def _encode_point(point: CoveragePoint) -> dict[str, object]:
         "id": point.id,
         "identity": {
             "metric": point.identity.metric,
-            "location": _thaw(point.identity.location),
+            "location": coverage_mapping_document(point.identity.location),
             "hierarchy": point.identity.hierarchy,
-            "subject": _thaw(point.identity.subject),
-            "collector": _thaw(point.identity.collector),
+            "subject": coverage_mapping_document(point.identity.subject),
+            "collector": coverage_mapping_document(point.identity.collector),
         },
         "hits_by_run": dict(point.hits_by_run),
-        "disposition": _thaw(point.disposition),
+        "disposition": coverage_mapping_document(point.disposition),
     }
 
 
@@ -1946,33 +1916,33 @@ def encode_coverage_campaign(campaign: CoverageCampaign) -> dict[str, object]:
     return {
         "$schema": _SCHEMA,
         "campaign_id": campaign.campaign_id,
-        "invocation": _thaw(campaign.invocation),
+        "invocation": coverage_mapping_document(campaign.invocation),
         "target": {
             "identity": campaign.target.identity,
             "selector": campaign.target.selector,
         },
         "collector": {
             "kind": campaign.collector.kind,
-            "version": _thaw(campaign.collector.version),
-            "native_format": _thaw(campaign.collector.native_format),
+            "version": coverage_mapping_document(campaign.collector.version),
+            "native_format": coverage_mapping_document(campaign.collector.native_format),
             "capabilities": [
                 _encode_capability(capability) for capability in campaign.collector.capabilities
             ],
         },
-        "build": _thaw(campaign.build),
-        "coverage_window": _thaw(campaign.coverage_window),
-        "fingerprints": _thaw(campaign.fingerprints),
-        "source_closure": _thaw(campaign.source_closure),
+        "build": coverage_mapping_document(campaign.build),
+        "coverage_window": coverage_mapping_document(campaign.coverage_window),
+        "fingerprints": coverage_mapping_document(campaign.fingerprints),
+        "source_closure": coverage_mapping_document(campaign.source_closure),
         "tests": {
             "declared": list(campaign.declared_tests),
             "selected": list(campaign.selected_tests),
             "runs": [_encode_run(run) for run in campaign.runs],
         },
         "artifacts": [_encode_artifact(artifact) for artifact in campaign.artifacts],
-        "normalization": _thaw(campaign.normalization),
+        "normalization": coverage_mapping_document(campaign.normalization),
         "points": [_encode_point(point) for point in campaign.points],
         "rollups": [_encode_rollup(rollup) for rollup in campaign.rollups],
-        "collection": _thaw(campaign.collection),
+        "collection": coverage_mapping_document(campaign.collection),
         "findings": [
             {
                 "severity": finding.severity,
@@ -1982,16 +1952,47 @@ def encode_coverage_campaign(campaign: CoverageCampaign) -> dict[str, object]:
             }
             for finding in campaign.findings
         ],
-        "evaluation": _thaw(campaign.evaluation),
+        "evaluation": coverage_mapping_document(campaign.evaluation),
     }
 
 
-def derive_coverage_rollups(points: tuple[CoveragePoint, ...]) -> tuple[CoverageRollup, ...]:
-    """Derive canonical summaries for newly collected immutable observations."""
-    return tuple(
-        _decode_rollup(item)
-        for item in _calculate_rollups({"points": [_encode_point(point) for point in points]})
-    )
+def derive_coverage_rollups(points: Iterable[CoveragePoint]) -> tuple[CoverageRollup, ...]:
+    """Derive canonical per-metric summaries: the one rollup function.
+
+    One row per metric that has points, in canonical metric order.
+    """
+    by_metric: dict[str, list[CoveragePoint]] = {}
+    for point in points:
+        by_metric.setdefault(point.identity.metric, []).append(point)
+    rollups: list[CoverageRollup] = []
+    for metric, semantics in _METRIC_SEMANTICS.items():
+        matching = by_metric.get(metric)
+        if not matching:
+            continue
+        eligible = [point for point in matching if point.disposition.get("kind") == "eligible"]
+        waived = [point for point in matching if point.disposition.get("kind") == "waived"]
+        covered = [point for point in eligible if sum(point.hits_by_run.values()) > 0]
+        percent = round(len(covered) * 100 / len(eligible), 2) if eligible else None
+        rollups.append(
+            CoverageRollup(
+                metric, semantics, len(matching), len(eligible), len(covered), len(waived), percent
+            )
+        )
+    return tuple(rollups)
+
+
+def rederive_coverage_points(
+    campaign: CoverageCampaign, points: tuple[CoveragePoint, ...]
+) -> CoverageCampaign:
+    """Return *campaign* with *points* and the rollups those points imply.
+
+    Rollups exist only for complete, compatible collection, so a Campaign with
+    none keeps none and a Campaign with rollups gets exactly the derivation of
+    its new points. Rows are always canonical: one per metric with points, with
+    the canonical semantics text.
+    """
+    rollups = derive_coverage_rollups(points) if campaign.rollups else ()
+    return replace(campaign, points=points, rollups=rollups)
 
 
 def coverage_metric_semantics(metric: str) -> str:
@@ -2000,46 +2001,19 @@ def coverage_metric_semantics(metric: str) -> str:
 
 
 def derive_coverage_source_rollups(
-    points: tuple[CoveragePoint, ...],
+    points: Iterable[CoveragePoint],
 ) -> tuple[CoverageSourceRollup, ...]:
     """Derive canonical source-file summaries without using hierarchy."""
-    points_by_source: dict[str, list[dict[str, object]]] = {}
+    points_by_source: dict[str, list[CoveragePoint]] = {}
     for point in points:
-        document = _encode_point(point)
-        source = str(document["identity"]["location"]["source"])
-        points_by_source.setdefault(source, []).append(document)
+        points_by_source.setdefault(point.identity.source, []).append(point)
     summaries: list[CoverageSourceRollup] = []
     for source in sorted(points_by_source):
-        calculated = {
-            str(item["metric"]): item
-            for item in _calculate_rollups({"points": points_by_source[source]})
-        }
+        derived = {item.metric: item for item in derive_coverage_rollups(points_by_source[source])}
         rollups = tuple(
-            _decode_rollup(
-                calculated.get(
-                    metric,
-                    {
-                        "metric": metric,
-                        "semantics": coverage_metric_semantics(metric),
-                        "total_points": 0,
-                        "eligible_points": 0,
-                        "covered_points": 0,
-                        "waived_points": 0,
-                        "percent": None,
-                    },
-                )
-            )
+            derived.get(metric)
+            or CoverageRollup(metric, _METRIC_SEMANTICS[metric], 0, 0, 0, 0, None)
             for metric in SOURCE_ROLLUP_METRICS
         )
         summaries.append(CoverageSourceRollup(source, rollups))
     return tuple(summaries)
-
-
-def freeze_coverage_mapping(value: Mapping[str, object]) -> Mapping[str, FrozenJson]:
-    """Freeze newly assembled Campaign metadata before encoding and validation."""
-    return _freeze_mapping(value)
-
-
-def coverage_mapping_document(value: Mapping[str, FrozenJson]) -> dict[str, object]:
-    """Thaw immutable Campaign metadata for structured Flow reports."""
-    return {key: _thaw(item) for key, item in value.items()}

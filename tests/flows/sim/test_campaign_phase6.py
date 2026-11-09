@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover - Windows compatibility
 from booley.criteria.state import CriterionEntry, DevelopmentState
 from booley.flows.endpoint_admission import AdmissionGate
 from booley.flows.endpoint_session import PreparedExecution
+from booley.flows.prepared_invocation import OrdinaryRunInvocation
 from booley.flows.sim.acceptance import record_campaign_acceptance
 from booley.flows.sim.campaign import (
     SimulationCampaignWorkItemError,
@@ -865,7 +866,7 @@ def test_named_campaign_acceptance_persists_criterion_and_timeline(
 
     record_campaign_acceptance(endpoint, (outcome,))
     endpoint.finish_execution(
-        PreparedExecution(None, None, False, False),
+        PreparedExecution(None, None, False, False, OrdinaryRunInvocation(EndpointOutcome)),
         EndpointOutcome(),
         started=None,
         acceptance_recorded=True,

@@ -21,9 +21,15 @@ from tests.conftest import MINIMAL_FST_BYTES
 
 from booley.bwave import waveform_store
 from booley.flows.sim import trace_session
+from booley.flows.sim.adapter_transport import (
+    AdapterTransportIdentity,
+    partial_result_identity,
+    read_adapter_result,
+)
 from booley.flows.sim.backends import cocotb as crun
 from booley.flows.sim.backends import icarus as ir
 from booley.flows.sim.backends import verilator as vr
+from booley.flows.sim.backends.shared import CurrentRunTraces
 from booley.flows.sim.backends.trace_finalization import finalize_trace
 from booley.flows.sim.trace_session import TraceArtifact, TraceInspection, TraceSession
 
@@ -123,7 +129,7 @@ def _run(
         assert not isinstance(run, str)
         produce(dirs)
         output, _ = finalize_trace(
-            run.current, _FINISHED, raw_vcd=run.run_cwd / "dump.vcd", vcd_fallback=True
+            run.current, _FINISHED, convert_timeout_s=60, raw_vcd=run.run_cwd / "dump.vcd"
         )
     elif adapter == "verilator":
         (dirs.build / "Vtb_top").touch()
@@ -146,7 +152,7 @@ def _run(
             trace_mode=vr.TraceMode.NATIVE_FST,
             trace_args=["--trace={file}"],
             trace_files=declared,
-        )
+        ).output
     else:
         monkeypatch.setattr(crun, "_prepare_invocation", lambda **_kw: ({}, ["sim"]))
         run = crun._prepare_cocotb_run(
@@ -214,10 +220,10 @@ def test_icarus_converted_declared_vcd_beats_stale_declared_fst(tmp_path, monkey
     assert "TRACE_INCIDENT" not in out
 
 
-def test_icarus_unconvertible_declared_vcd_falls_back_despite_stale_fst(
+def test_icarus_unconvertible_declared_vcd_is_incident_despite_stale_fst(
     tmp_path, monkeypatch, capsys
 ):
-    """AC4/AC9: the retained VCD is the fallback; the stale store is not consulted."""
+    """A VCD that fails to convert is an incident; the stale store is not consulted."""
     _fail_conversion(monkeypatch)
     out = _run(
         "icarus",
@@ -229,8 +235,8 @@ def test_icarus_unconvertible_declared_vcd_falls_back_despite_stale_fst(
         trace_files=("tb.fst", "tb.vcd"),
     )
 
-    assert f"TRACE_FALLBACK: {tmp_path / 'work' / 'trace.vcd'}" in out
-    assert "TRACE_INCIDENT" not in out
+    assert "TRACE_INCIDENT" in out
+    assert "TRACE_FALLBACK" not in out and "TRACE_OK" not in out
     assert "no fresh" not in out
 
 
@@ -303,3 +309,130 @@ def test_stale_store_never_returned_after_failed_declared_vcd_conversion(
     assert "TRACE_OK" not in out
     assert "retained waveform is not queryable" in out
     assert "no fresh" not in out
+
+
+def _spy_conversion(monkeypatch: pytest.MonkeyPatch, partial: AdapterTransportIdentity) -> list:
+    """Fail every conversion, recording what ``<result>.partial`` holds while it runs."""
+    seen: list = []
+    failing = _convert(False)
+
+    def convert(vcd: Path, destination: Path, **kwargs):
+        seen.append(read_adapter_result(partial_result_identity(partial)))
+        return failing(vcd, destination, **kwargs)
+
+    monkeypatch.setattr(trace_session, "convert_vcd", convert)
+    monkeypatch.setattr(waveform_store, "convert_vcd", convert)
+    return seen
+
+
+def _check_cocotb_verdicts(pending, identity, passed: bool) -> None:
+    """Per-test verdicts are fixed too, and the final publish agrees with them."""
+    verdicts = {test.name: test.verdict for test in pending.test_results}
+    final = read_adapter_result(identity)
+    assert verdicts == {test.name: test.verdict for test in final.test_results}
+    assert verdicts == ({"t_ok": "inconclusive"} if passed else {"t_ok": "fail", "t_bad": "fail"})
+
+
+def _check_pending_partial(adapter, sim_output, tmp_path, monkeypatch) -> None:
+    """Killed mid-conversion, the attempt still has the simulation verdict plus an incident."""
+    identity = AdapterTransportIdentity(
+        "cocotb" if adapter == "cocotb" else adapter.split("-")[0],
+        "attempt",
+        "acme:lib:dut:1#sim",
+        () if adapter == "cocotb" else ("smoke",),
+        tmp_path / "result.json",
+    )
+    seen = _spy_conversion(monkeypatch, identity)
+    dirs = Dirs(tmp_path / "build", tmp_path / "run", tmp_path / "work")
+    for directory in dirs:
+        directory.mkdir()
+    passed = "PASSED" in sim_output
+
+    if adapter == "cocotb":
+        monkeypatch.setattr(crun, "_prepare_invocation", lambda **_kw: ({}, ["sim"]))
+        run = crun._prepare_cocotb_run(
+            build_dir=dirs.build,
+            run_cwd=dirs.run,
+            work_dir=dirs.work,
+            eda_tool="icarus",
+            module="test_counter",
+            tests=[],
+            plusargs=[],
+            vcd=True,
+            trace_scope="tb",
+        )
+        assert not isinstance(run, str)
+        (dirs.run / "dump.vcd").write_text(_VCD_TEXT)
+        failing = "" if passed else '<testcase name="t_bad"><failure message="boom"/></testcase>'
+        run.results_file.write_text(f'<testsuite><testcase name="t_ok"/>{failing}</testsuite>')
+        crun._complete_cocotb_run(
+            run,
+            deque([sim_output]),
+            SimpleNamespace(returncode=0 if passed else 1, pid=0, poll=lambda: 0),
+            crun.RunTermination(),
+            "compact",
+            identity,
+        )
+    elif adapter == "icarus":
+        # The real entry point, so dropping its ``publish_pending=`` wiring fails here.
+        (dirs.build / "sim_cfg.scr").write_text("")
+        monkeypatch.setattr(ir, "_find_vvp", lambda: "vvp")
+
+        def execute(*_args, **_kwargs):
+            (dirs.run / "tb.vcd").write_text(_VCD_TEXT)
+            proc = SimpleNamespace(returncode=0 if passed else 1, pid=0, poll=lambda: 0)
+            return [sim_output], proc, vr.RunTermination()
+
+        monkeypatch.setattr(ir, "_execute_icarus_run", execute)
+        ir.run_icarus_image(
+            build_dir=dirs.build,
+            run_cwd=dirs.run,
+            work_dir=dirs.work,
+            vcd=True,
+            trace_scope="tb",
+            trace_files=["tb.vcd"],
+            transport=identity,
+        )
+    else:  # the Verilator VCD fallback: a raw trace.vcd converted after the run
+        (dirs.work / "trace.vcd").write_text(_VCD_TEXT)
+        session = TraceSession(dirs.work, "tb", backend="verilator")
+        trace = vr._TraceRuntime(
+            session,
+            CurrentRunTraces(session, (), (), {}),
+            vr.TraceMode.VCD_FIFO,
+            None,
+        )
+        paths = vr._RunPaths(dirs.build, dirs.run, dirs.work)
+        vr._finalize_verilated_run(
+            deque([sim_output]),
+            SimpleNamespace(returncode=0 if passed else 1, pid=0, poll=lambda: 0),
+            paths,
+            trace,
+            None,
+            None,
+            vr.RunTermination(),
+            identity,
+        )
+
+    assert seen, "conversion never ran"
+    pending = seen[0]
+    assert pending.termination == "completed"  # a verdict, never a timeout
+    assert pending.trace is not None and pending.trace.status == "incident"
+    assert pending.passed is False
+    if adapter == "cocotb":
+        _check_cocotb_verdicts(pending, identity, passed)
+        return
+    # The simulation verdict is already fixed: a pass is degraded by the trace
+    # incident, a failing simulation stays failed, neither is a timeout.
+    assert pending.failure_kind == "artifact"
+    assert pending.test_results[0].verdict == ("inconclusive" if passed else "fail")
+    assert pending.simulator_returncode == (0 if passed else 1)
+
+
+def test_pending_partial_holds_verdict_during_conversion(tmp_path, monkeypatch):
+    """Every adapter, passing and failing simulation: the verdict is fixed before conversion."""
+    for adapter in ("icarus", "verilator-fallback", "cocotb"):
+        for sim_output in ("[SIM_RESULT] PASSED\n", "[SIM_RESULT] FAILED\n"):
+            case = tmp_path / f"{adapter}-{sim_output[13:19].strip()}"
+            case.mkdir()
+            _check_pending_partial(adapter, sim_output, case, monkeypatch)

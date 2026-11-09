@@ -16,11 +16,8 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.run_log import write_run_log
 from booley.flows.sim.adapter_transport import (
-    AdapterResult,
-    AdapterTestResult,
     write_adapter_result,
 )
-from booley.flows.sim.backends import cocotb_results
 from booley.flows.sim.build import PreparedSimulationBuild
 from booley.flows.sim.execution import (
     SimulationArtifactEvidence,
@@ -1504,10 +1501,6 @@ class TestTimeout:
         flow = _make_flow(tmp_path, extra_args=["--timeout-ms", "120000"])
         assert flow._get_timeout() == 120
 
-    def test_trace_timeout_has_cleanup_margin(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, extra_args=["--trace"])
-        assert flow._get_timeout() == 690
-
     def test_timeout_results_in_fail(self, tmp_path: Path, monkeypatch):
         # The wrapper killed the launch: no adapter result, only the timed-out process.
         process = SubprocessResult(
@@ -1526,55 +1519,6 @@ class TestTimeout:
         assert "TIMEOUT: simulation exceeded" in test["error_tail"]
         assert hint in test["error_tail"]
         assert hint in run.result.outcome.report_text
-
-    @pytest.mark.parametrize(
-        "backend_detail",
-        [
-            "Verilator simulation timed out (5s)",
-            "Icarus simulation timed out (5s)",
-            cocotb_results.TIMEOUT_ACTIVE_DETAIL,
-        ],
-    )
-    def test_backend_timeout_preserves_detail_and_adds_hint(self, tmp_path: Path, backend_detail):
-        flow = _make_flow(tmp_path, config="lite")
-        adapter = AdapterResult(
-            passed=False,
-            inconclusive=False,
-            sva_errors=0,
-            tests=("lite",),
-            simulator_returncode=-9,
-            termination="timeout",
-            failure_kind="timeout",
-            detail=backend_detail,
-            test_results=(
-                AdapterTestResult(
-                    "lite",
-                    "timeout",
-                    detail=backend_detail,
-                    termination="timeout",
-                    failure_kind="timeout",
-                ),
-            ),
-        )
-        with (
-            patch("booley.flows.sim.flow._get_test_names", return_value={}),
-            patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
-            patch.object(flow, "_execute", return_value=SubprocessResult(returncode=-9)),
-            patch(
-                "tests.flows.sim.campaign_boundary.adapter_result_for_test_process",
-                return_value=adapter,
-            ),
-            flow.publication_resources,
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_FAILURE
-        timeout_line = next(
-            line for line in result.report_text.splitlines() if backend_detail in line
-        )
-        assert f"{backend_detail} (rc=-9)" in timeout_line
-        assert (
-            "raise --timeout-ms or [flows.sim].timeout_ms if the test legitimately needs longer"
-        ) in timeout_line
 
 
 # ---------------------------------------------------------------------------

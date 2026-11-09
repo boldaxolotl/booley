@@ -67,6 +67,7 @@ from booley.runtime import paths as runtime_paths
 from booley.runtime.booley_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.leased_session import canned_build_session, split_invoker
 from tests.flows.sim.prepared_group import run_prepared_group
 
@@ -563,6 +564,7 @@ class _ChangingTraceRun:
                 'run_cwd = "other-run"\n'
                 'trace_files = ["../second/*.fst"]\n'
                 "timeout_ms = 2000\n"
+                "trace_convert_timeout_ms = 9000\n"
                 'cycle_sentinels = ["[NEW]"]\n'
                 'pre_run_commands = ["new"]\n',
                 encoding="utf-8",
@@ -788,6 +790,67 @@ def test_timeout_without_transport_recovers_cocotb_progress(tmp_path: Path) -> N
         ("active", "timeout"),
         ("later", "timeout"),
     ]
+
+
+def _check_post_simulation_partial(
+    tmp_path: Path,
+    timed_out: bool,
+    returncode: int,
+    sim_passed: bool,
+    names: tuple[str, ...] = ("smoke",),
+) -> None:
+    """An adapter dying mid-conversion leaves the simulation verdict, never a timeout.
+
+    ``names=()`` is the unnamed invocation (a Target with no registered Tests).
+    """
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    identity = AdapterTransportIdentity(
+        "icarus", "abc123", handle.identity, names, _evidence_path(handle)
+    )
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        partial = partial_result_identity(identity)
+        publish_native_adapter_result(
+            partial,
+            "[SIM_RESULT] PASSED\n" if sim_passed else "[SIM_RESULT] FAILED\n",
+            0 if sim_passed else 1,
+            trace_required=True,
+            trace=AdapterTraceResult("incident", detail="trace conversion had not finished"),
+        )
+        os.utime(partial.result_path, ns=(1, 1))
+        return SubprocessResult(
+            returncode=returncode,
+            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+            timed_out=timed_out,
+        )
+
+    outcome = _run_execution(handle, prepared, invoke, names or None, cocotb=False)
+
+    assert outcome.tests[0].timed_out is False
+    # Unnamed invocations have no per-test rows: the adapter-level verdict (a
+    # missing trace makes it inconclusive) applies, as on a run that was not killed.
+    assert outcome.tests[0].verdict == ("inconclusive" if sim_passed or not names else "fail")
+    assert outcome.verdict != "timeout"
+
+
+def test_post_simulation_partial_survives_adapter_kill(tmp_path: Path) -> None:
+    """Sigkill, shell 137 and an adapter exception, for a passing and a failing simulation."""
+    for returncode in (-9, 137, 1):
+        for sim_passed in (True, False):
+            case = tmp_path / f"rc{returncode}-{sim_passed}"
+            case.mkdir()
+            _check_post_simulation_partial(case, False, returncode, sim_passed)
+
+
+def test_post_simulation_partial_survives_kill_of_unnamed_invocation(tmp_path: Path) -> None:
+    """A Target without registered Tests keeps its verdict on a deadline kill or a signal."""
+    for timed_out, returncode in ((True, -9), (False, -9)):
+        for sim_passed in (True, False):
+            case = tmp_path / f"to{timed_out}-{sim_passed}"
+            case.mkdir()
+            _check_post_simulation_partial(case, timed_out, returncode, sim_passed, ())
 
 
 @pytest.mark.parametrize("simulator_returncode", [-15, 0, 7])
@@ -2029,19 +2092,19 @@ def _assert_execution_trace(
         )
         _assert_queryable_trace(outcome, cache_root)
     else:
-        traces = [
-            Path(artifact.path) for artifact in outcome.artifacts if artifact.kind == "trace"
-        ]
-        assert len(traces) == 1 and traces[0].suffix == ".vcd"
-        assert traces[0].read_text(encoding="utf-8") == (
+        # A VCD that failed to convert is a trace incident, never a waveform.
+        assert not any(artifact.kind == "trace" for artifact in outcome.artifacts)
+        (run_log,) = (Path(a.path) for a in outcome.artifacts if a.kind == "live_run_log")
+        work = run_log.parent  # the simulation work directory
+        assert (work / "trace.vcd").read_text(encoding="utf-8") == (
             "$date\nnow\n$end\n$timescale 1ns $end\n"
             "$scope module tb $end\n$var wire 1 ! signal $end\n"
             "$upscope $end\n$enddefinitions $end\n#0\n0!\n#1\n1!\n"
         )
-        assert "fixture conversion unavailable" in (
-            traces[0].parent / "trace.fst.stderr"
-        ).read_text(encoding="utf-8")
-        manifest = json.loads((traces[0].parent / "trace_status.json").read_text(encoding="utf-8"))
+        assert "fixture conversion unavailable" in (work / "trace.fst.stderr").read_text(
+            encoding="utf-8"
+        )
+        manifest = json.loads((work / "trace_status.json").read_text(encoding="utf-8"))
         assert any(
             attempt["kind"] == "vcd_postprocess" and attempt["status"] == "vcd_only"
             for attempt in manifest["attempts"]
@@ -2086,7 +2149,9 @@ def test_icarus_trace_reaches_execution_on_first_and_repeat_run(
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(trace=True))
     for _ in range(2):
         outcome = run_prepared_group(execution, handle, ("smoke",))
-        assert outcome.passed
+        # An unconvertible VCD leaves the Test Run inconclusive, not passed.
+        assert outcome.passed is queryable
+        assert outcome.verdict == ("pass" if queryable else "inconclusive")
         _assert_execution_trace(outcome, tmp_path / "bwave-cache", queryable=queryable)
         assert any("BOOLEY_BUILD_STAGE" in command[-1] for command in commands)
         assert any("booley.flows.sim.backends.icarus" in command[-1] for command in commands)
@@ -2486,8 +2551,40 @@ def test_preview_resolves_configuration_from_each_handle_root(tmp_path: Path) ->
         current_preview = execution.preview(_handle(current), NamedTests(("now",)))
         baseline_preview = execution.preview(_handle(baseline), NamedTests(("then",)))
 
-    assert "--plusarg=test=now" in current_preview.commands[0][-1]
-    assert "--plusarg=case=0" in baseline_preview.commands[0][-1]
+    assert "test=now" in launched_work(current_preview.commands[0]).plusargs
+    assert "case=0" in launched_work(baseline_preview.commands[0]).plusargs
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh -n syntax check")
+def test_preview_is_a_runnable_chain(tmp_path: Path) -> None:
+    for adapter, run_name in (
+        ("verilator", "smoke@1"),
+        ("icarus", "smoke"),
+    ):  # only Verilator seeds
+        root = tmp_path / adapter
+        (root / ".booley").mkdir(parents=True)
+        (root / ".booley/tests.toml").write_text('[sim]\ntests = ["smoke"]\n', encoding="utf-8")
+        inspection = _inspection(cocotb=False)
+        inspection.eda_tool = adapter
+        execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
+        with (
+            patch(
+                "booley.flows.sim.execution.engine.TargetCatalog.build", return_value=inspection
+            ),
+            patch(
+                "booley.flows.sim.execution.engine.fusesoc_registry.setup_command_for_handle",
+                return_value=["setup"],
+            ),
+        ):
+            preview = execution.preview(_handle(root), NamedTests(("smoke",)))
+
+        shell, flag, script = preview.commands[0]
+        assert (shell, flag) == ("sh", "-c")
+        subprocess.run(["sh", "-n", "-c", script], check=True)
+        work = launched_work(script)
+        assert (work.adapter, work.eda_tool, work.top) == (adapter, adapter, "tb_demo")
+        assert work.tests == ("smoke",)
+        assert [run.name for run in work.test_runs] == [run_name]
 
 
 @pytest.mark.parametrize("fresh, expected", [(True, "pass"), (False, "inconclusive")])
@@ -2968,13 +3065,14 @@ def _assert_attempt_config_freezing(
     second_snapshot = second.tests[0].workload_snapshot
     assert first_snapshot is not None and second_snapshot is not None
     assert first.verdict == second.verdict == "pass"
-    assert "../first/*.fst" in run.commands[0]
-    assert "../second/*.fst" in run.commands[1]
-    assert "--run-cwd run" in run.commands[0]
-    assert "--run-cwd other-run" in run.commands[1]
-    assert "--timeout 1" in run.commands[0]
-    assert "--timeout 2" in run.commands[1]
-    assert run.pre_sim_timeouts == run.invocation_timeouts == [91, 92]
+    first_work, second_work = (launched_work(command) for command in run.commands)
+    assert first_work.trace_files == ("../first/*.fst",)
+    assert second_work.trace_files == ("../second/*.fst",)
+    assert (first_work.run_cwd, second_work.run_cwd) == ("run", "other-run")
+    assert (first_work.timeout_s, second_work.timeout_s) == (1, 2)
+    assert (first_work.trace_convert_timeout_s, second_work.trace_convert_timeout_s) == (7, 9)
+    # simulation timeout + conversion budget + the fixed 90 s margin
+    assert run.pre_sim_timeouts == run.invocation_timeouts == [1 + 7 + 90, 2 + 9 + 90]
     assert first_snapshot["controls"]["run_cwd"] == "run"
     assert second_snapshot["controls"]["run_cwd"] == "other-run"
     assert first_snapshot["controls"]["pre_run_commands"] == ["old"]
@@ -2985,6 +3083,38 @@ def _assert_attempt_config_freezing(
     assert first_snapshot["inputs"][0]["bytes"] == len(f"generated{os.linesep}".encode())
     assert first.tests[0].cycles == 17
     assert second.tests[0].cycles == 23
+
+
+def test_traced_attempt_deadline_adds_conversion_budget(tmp_path: Path) -> None:
+    """A simulation passing near its timeout still has the whole conversion budget."""
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=False)
+    project = tmp_path / ".booley"
+    project.mkdir()
+    config = project / "booley.toml"
+    config.write_text(
+        "[flows.sim]\ntimeout_ms = 5000\ntrace_convert_timeout_ms = 7000\n", encoding="utf-8"
+    )
+    traces = (tmp_path / "first" / "wave.fst", tmp_path / "second" / "wave.fst")
+    run = _ChangingTraceRun(handle, prepared, config, traces)
+    execution = SimulationExecution(
+        invoke=split_invoker(run.invoke), options=SimulationOptions(trace=True)
+    )
+    with (
+        canned_build_session(),
+        patch(
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
+            return_value=_inspection(cocotb=False),
+        ),
+        patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.NATIVE_FST)),
+        patch.object(execution, "_run_pre_sim", side_effect=run.pre_sim),
+        patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
+    ):
+        execution.run(handle, NamedTests(("smoke",)))
+
+    assert run.invocation_timeouts == [5 + 7 + 90]
+    work = launched_work(run.commands[0])
+    assert (work.timeout_s, work.trace_convert_timeout_s) == (5, 7)
 
 
 def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
@@ -3005,6 +3135,7 @@ def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
         'run_cwd = "run"\n'
         'trace_files = ["../first/*.fst"]\n'
         "timeout_ms = 1000\n"
+        "trace_convert_timeout_ms = 7000\n"
         'cycle_sentinels = ["[OLD]"]\n'
         'pre_run_commands = ["old"]\n',
         encoding="utf-8",
@@ -3033,10 +3164,10 @@ def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("eda_tool", "artifact_names", "adapter_flag"),
+    ("eda_tool", "artifact_names"),
     [
-        ("icarus", ("demo.scr", "demo"), "--build-dir"),
-        ("verilator", ("Vtb_demo",), "--bin-dir"),
+        ("icarus", ("demo.scr", "demo")),
+        ("verilator", ("Vtb_demo",)),
     ],
 )
 @pytest.mark.parametrize("observed", [False, True])
@@ -3045,7 +3176,6 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
     tmp_path: Path,
     eda_tool: str,
     artifact_names: tuple[str, ...],
-    adapter_flag: str,
     observed: bool,
     log_failure: bool,
 ) -> None:
@@ -3107,12 +3237,12 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
     assert timeouts == [7, 5]
     assert len(commands) == 2
     launch = commands[1][-1]
-    assert adapter_flag in launch
-    assert str(snapshot) in launch
-    assert str(run_cwd) in launch
-    assert "--work-dir" in launch
-    assert str(snapshot.parent / "execution-evidence") in launch
-    assert str(prepared.build_root) not in launch
+    work = launched_work(launch)
+    assert work.adapter == eda_tool
+    assert Path(work.build_dir) == snapshot
+    assert Path(work.run_cwd) == run_cwd
+    assert Path(work.work_dir) == snapshot.parent / "execution-evidence"
+    assert str(prepared.build_root) not in repr(work)
 
 
 def _snapshot_invoke(commands, eda_tool, handle, snapshot):

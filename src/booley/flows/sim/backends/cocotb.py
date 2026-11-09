@@ -47,29 +47,27 @@ Icarus run-half already uses.
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from booley.core.boundary import BoundaryError, parse_positive_int_arg
+from booley.core.boundary import BoundaryError
 from booley.flows.run_log import write_run_log
-from booley.flows.sim.adapter_contract import PreparedSimulationWork
+from booley.flows.sim.adapter_contract import PreparedSimulationWork, run_adapter_entry
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
     AdapterTraceResult,
     AdapterTransportIdentity,
-    add_transport_arguments,
     partial_result_identity,
-    transport_identity_from_args,
-    work_transport_arguments,
+    work_transport_identity,
     write_adapter_result,
 )
 from booley.flows.sim.backends.cocotb_results import (
@@ -94,6 +92,7 @@ from booley.flows.sim.backends.shared import (
 )
 from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
 from booley.flows.sim.backends.trace_finalization import finalize_trace
+from booley.flows.sim.config import DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S
 from booley.flows.sim.result import (
     count_sva_errors,
     describe_error_message_count,
@@ -104,44 +103,6 @@ from booley.flows.sim.result import (
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, find_sim_time_stall
 from booley.flows.sim.trace_session import TraceSession
 from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
-
-
-def seed_arguments(seed: int | None) -> list[str]:
-    """The adapter arguments that seed one Cocotb process; none when unseeded."""
-    return [] if seed is None else ["--seed", str(seed)]
-
-
-def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
-    """Render one parent-side Cocotb adapter invocation."""
-    if work.adapter != "cocotb":
-        raise ValueError(f"Cocotb adapter cannot prepare {work.adapter!r} work")
-    cmd = [
-        "python3",
-        "-m",
-        "booley.flows.sim.backends.cocotb",
-        "--build-dir",
-        work.build_dir,
-        "--eda-tool",
-        work.eda_tool,
-        "--cocotb-module",
-        work.cocotb_module,
-        "--timeout",
-        str(work.timeout_s),
-    ]
-    cmd += [f"--test={name}" for name in work.tests]
-    cmd += seed_arguments(work.cocotb_seed)
-    cmd += ["--result-verbosity", work.result_verbosity]
-    cmd += ["--sim-time-grace", str(work.sim_time_grace_s)]
-    if work.max_rundir_bytes > 0:
-        cmd += ["--max-rundir-bytes", str(work.max_rundir_bytes)]
-    if work.run_cwd:
-        cmd += ["--run-cwd", work.run_cwd]
-    if work.trace:
-        cmd += ["--trace", "--expected-trace-scope", work.trace_scope]
-    cmd += [f"--plusarg={value}" for value in work.plusargs]
-    cmd += [f"--runtime-input={value}" for value in work.runtime_inputs]
-    cmd += work_transport_arguments(work)
-    return cmd
 
 
 def _publish_adapter_result(
@@ -1011,6 +972,39 @@ def _execute_cocotb_run(
     )
 
 
+def _pending_trace_publisher(
+    run: _CocotbRun,
+    output: str,
+    returncode: int,
+    termination: RunTermination,
+    transport: AdapterTransportIdentity | None,
+) -> Callable[[AdapterTraceResult], None] | None:
+    """Publish the simulation's verdict plus a trace incident before conversion starts.
+
+    A kill or crash during conversion then still leaves the verdict (never
+    ``timeout``) behind. Written in addition to the mid-simulation progress partial.
+    """
+    if transport is None:
+        return None
+    partial = partial_result_identity(transport)
+
+    def publish(pending: AdapterTraceResult) -> None:
+        results = _load_cocotb_results(run.results_file, output, termination.aborted, run.tests)
+        ran_clean = returncode == 0 and not count_sva_errors(output)
+        _publish_adapter_result(
+            partial,
+            output,
+            ran_clean and results.state == STATE_OK,
+            results=results,
+            failure_kind="" if ran_clean else "design",
+            trace=pending,
+            termination=termination,
+            simulator_returncode=returncode,
+        )
+
+    return publish
+
+
 def _complete_cocotb_run(
     run: _CocotbRun,
     lines,
@@ -1018,12 +1012,19 @@ def _complete_cocotb_run(
     termination: RunTermination,
     result_verbosity: str,
     transport: AdapterTransportIdentity | None,
+    trace_convert_timeout: int = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S,
 ) -> int:
     output = "".join(lines)
     trace_result = None
     if run.current is not None:
         trace_output, trace_result = finalize_trace(
-            run.current, proc, raw_vcd=run.run_cwd / _DEFAULT_VCD_NAME
+            run.current,
+            proc,
+            convert_timeout_s=trace_convert_timeout,
+            publish_pending=_pending_trace_publisher(
+                run, output, proc.returncode, termination, transport
+            ),
+            raw_vcd=run.run_cwd / _DEFAULT_VCD_NAME,
         )
         output += trace_output
     trace_failure = (
@@ -1078,6 +1079,7 @@ def run_cocotb_sim(
     runtime_inputs: tuple[str, ...] = (),
     transport: AdapterTransportIdentity | None = None,
     seed: int | None = None,
+    trace_convert_timeout: int = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S,
 ) -> int:
     """Run the edalize-built Cocotb simulator once; *seed* seeds cocotb's Python side."""
     tests = list(tests or [])
@@ -1107,126 +1109,35 @@ def run_cocotb_sim(
         transport,
         runtime_inputs,
     )
-    return _complete_cocotb_run(run, lines, proc, termination, result_verbosity, transport)
-
-
-def _non_negative_float(value: str) -> float:
-    """argparse type: a wall-clock grace in seconds; 0 disables the guard."""
-    fvalue = float(value)
-    if fvalue < 0:
-        raise argparse.ArgumentTypeError(f"must be >= 0, got {fvalue}")
-    return fvalue
-
-
-def _add_test_selection_arguments(parser: argparse.ArgumentParser) -> None:
-    """What the process runs: the selected Tests and their seed."""
-    parser.add_argument(
-        "--test",
-        action="append",
-        default=[],
-        dest="tests",
-        help="selected test-function name (repeatable; drives "
-        "COCOTB_TEST_FILTER — omit to run the whole module)",
-    )
-    parser.add_argument(
-        "--seed",
-        type=parse_positive_int_arg,
-        default=None,
-        help="seed exported through the installed cocotb's seed variable",
+    return _complete_cocotb_run(
+        run, lines, proc, termination, result_verbosity, transport, trace_convert_timeout
     )
 
 
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Run an edalize-built cocotb sim (Icarus or Verilator)",
-    )
-    p.add_argument(
-        "--build-dir",
-        required=True,
-        help="edalize build dir (vvp image / Vtop + staged Python TB)",
-    )
-    p.add_argument(
-        "--eda-tool",
-        required=True,
-        choices=["icarus", "verilator"],
-        help="EDA-tool family of the built sim",
-    )
-    p.add_argument(
-        "--cocotb-module",
-        required=True,
-        dest="cocotb_module",
-        help="cocotb test module (from the resolved flow options)",
-    )
-    _add_test_selection_arguments(p)
-    p.add_argument("--run-cwd", default=None, help="cwd to run the sim from")
-    p.add_argument("--work-dir", default=None, help="result/trace output dir")
-    p.add_argument(
-        "--timeout", type=parse_positive_int_arg, default=600, help="run timeout (seconds)"
-    )
-    p.add_argument(
-        "--max-rundir-bytes",
-        type=int,
-        default=0,
-        dest="max_rundir_bytes",
-        help="kill the run if the run dir exceeds this many bytes (0=off; SETUP-25)",
-    )
-    p.add_argument("--runtime-input", action="append", default=[])
-    p.add_argument(
-        "--sim-time-grace",
-        type=_non_negative_float,
-        default=DEFAULT_SIM_TIME_GRACE_S,
-        dest="sim_time_grace_s",
-        help="abort when simulation time is still 0.00 ns after this many "
-        "wall-clock seconds (0=off; F-25 cocotb/simulator run-loop mismatch)",
-    )
-    p.add_argument("--trace", action="store_true", help="postprocess a B-Wave trace from dump.vcd")
-    p.add_argument(
-        "--plusarg",
-        action="append",
-        default=[],
-        dest="plusargs",
-        help="plusarg passed to the sim (repeatable; +-prefix optional)",
-    )
-    p.add_argument(
-        "--result-verbosity",
-        choices=["compact", "full"],
-        default="compact",
-        help="Cocotb result transport detail (full results always remain in artifacts)",
-    )
-    _add_expected_trace_scope_argument(p)
-    add_transport_arguments(p)
-    return p.parse_args(argv)
-
-
-def _add_expected_trace_scope_argument(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--expected-trace-scope",
-        default="",
-        help="resolved DUT toplevel required to validate a requested trace",
+def _run_work(work: PreparedSimulationWork) -> int:
+    """Run the prepared *work* as this process's one Cocotb launch."""
+    return run_cocotb_sim(
+        build_dir=Path(work.build_dir),
+        eda_tool=work.eda_tool,
+        cocotb_module=work.cocotb_module,
+        tests=list(work.tests),
+        run_cwd=Path(work.run_cwd) if work.run_cwd else None,
+        vcd=work.trace,
+        plusargs=list(work.plusargs),
+        timeout=work.timeout_s,
+        max_rundir_bytes=work.max_rundir_bytes,
+        sim_time_grace_s=work.sim_time_grace_s,
+        result_verbosity=work.result_verbosity,
+        expected_trace_scope=work.trace_scope if work.trace else "",
+        runtime_inputs=work.runtime_inputs,
+        transport=work_transport_identity(work),
+        seed=work.cocotb_seed,
+        trace_convert_timeout=work.trace_convert_timeout_s,
     )
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv)
-    transport = transport_identity_from_args(args, "cocotb")
-    return run_cocotb_sim(
-        build_dir=Path(args.build_dir),
-        eda_tool=args.eda_tool,
-        cocotb_module=args.cocotb_module,
-        tests=args.tests,
-        run_cwd=Path(args.run_cwd) if args.run_cwd else None,
-        work_dir=Path(args.work_dir) if args.work_dir else None,
-        vcd=args.trace,
-        plusargs=args.plusargs,
-        timeout=args.timeout,
-        max_rundir_bytes=args.max_rundir_bytes,
-        sim_time_grace_s=args.sim_time_grace_s,
-        result_verbosity=args.result_verbosity,
-        expected_trace_scope=args.expected_trace_scope,
-        runtime_inputs=tuple(args.runtime_input),
-        transport=transport,
-        seed=args.seed,
-    )
+    return run_adapter_entry(sys.argv[1:] if argv is None else argv, _run_work)
 
 
 if __name__ == "__main__":  # pragma: no cover - subprocess entry-point

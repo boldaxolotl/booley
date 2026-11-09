@@ -37,7 +37,8 @@ SPECIALIST_CLI_ONLY_DESTS = frozenset(
 # extracted: the argparse default is Path.cwd() evaluated at server import —
 # a non-JSON-serializable Path baked to whatever directory the server started
 # in — and the CLI help text lacks the worktree guidance agents need. Omitting
-# the property keeps the default behavior (the endpoint uses its own cwd).
+# the property runs the endpoint on the server cwd for a caller outside a linked
+# worktree and is refused for one inside (server ``_unroutable_endpoint_error``).
 _WORK_DIR_PROPERTY: dict[str, Any] = {
     "type": "string",
     "description": (

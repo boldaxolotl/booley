@@ -8,6 +8,10 @@ workflow on one fixed commit, `e5bc6853f5f9614ce9eada544c473f6b6ec5fc23`, with
 shards). Each run below is a first attempt. Runs were dispatched one at a time,
 never overlapping.
 
+The plain Ubuntu 3.14 legs were later folded into the Python 3.14
+`coverage-shards` jobs (see the [CI README](README.md)), so the sharding default
+recorded here now applies to Ubuntu 3.11 only.
+
 ## Timing model
 
 Commit `e5bc6853f` refreshed `.github/ci/linux-test-timings.json` from the

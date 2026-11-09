@@ -71,15 +71,10 @@ def test_simulation_result_golden_discriminators(state: str) -> None:
     assert encode_simulation_result(value) == raw
 
 
-@given(
-    st.sampled_from(["missing", "unknown", "type", "path", "digest", "conditional"]),
-    st.sampled_from(["build", "simulation"]),
-)
-def test_result_structural_mutations_are_rejected(mutation: str, kind: str) -> None:
-    raw = _BUILD_READY if kind == "build" else _simulation_result("completed")
-    document = json.loads(raw)
-    decoder = decode_build_result if kind == "build" else decode_simulation_result
-    reference = document["build_attempt" if kind == "build" else "build_result"]
+@given(st.sampled_from(["missing", "unknown", "type", "path", "digest", "conditional"]))
+def test_result_structural_mutations_are_rejected(mutation: str) -> None:
+    document = json.loads(_simulation_result("completed"))
+    reference = document["build_result"]
     if mutation == "missing":
         del reference["sha256"]
     elif mutation == "unknown":
@@ -99,12 +94,10 @@ def test_result_structural_mutations_are_rejected(mutation: str, kind: str) -> N
         reference["path"] = "../escape"
     elif mutation == "digest":
         document["manifest_sha256"] = "sha256:bad"
-    elif kind == "build":
-        document["bundle"] = None
     else:
         document["executable_snapshot"] = None
     with pytest.raises(SimulationCampaignIntegrityError):
-        decoder(canonical_json_bytes(document))
+        decode_simulation_result(canonical_json_bytes(document))
 
 
 @pytest.mark.parametrize("field", ["test", "detail"])

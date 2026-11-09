@@ -100,3 +100,25 @@ Expected savings are the measured warm-cache delta (about 780 s of tooling build
 required-gate time on the containerd arms) minus the unmeasured cost of pulling and copying a
 roughly 2 GB tooling layer on the classic image store that automatic CI uses. #568 claims sustained
 savings only after at least 20 comparable automatic runs.
+
+## Amendments (2026-11-10)
+
+- **The lane is its own `riscv-image` job.** It ran inside the `bwave-smoke`
+  validation group and was the last step to finish whenever it was selected
+  (about 9.7 min at the median on merge-queue candidates). It also took CPU from
+  the standard smokes on the shared 4-vCPU runner. The job builds its own
+  standard substrate from the trusted cache (`bwave-smoke` remains the only cache
+  writer), so it depends only on `changes` and `package-artifacts`. It stays
+  path-gated on every event, and a `main` push, which runs only the
+  cache-writing tier, never selects it. The duration
+  budget described above now belongs to that job. Its registry and local pairs
+  still carry the values measured inside `bwave-smoke`.
+- **The composed substrate exports as zstd level 1.** BuildKit gzips
+  single-threaded, so exporting the ~1.6 GB tooling layer took 61–114 s. The
+  job's host Python is 3.14 because the image contract's `docker save`
+  hard-link audit reads zstd layer tars only from Python 3.14 on.
+- **Registry hits prefetch the tooling image.** A background `docker pull` of
+  the resolved digest overlaps the standard substrate build. It replaces the
+  roughly 60 s pull inside the RISC-V build, and a bounded wait precedes the
+  build. A failed or stuck prefetch never fails the lane: the build pulls
+  whatever is missing.

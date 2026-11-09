@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from typing import TypeAlias
 
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
-    CoveragePoint,
     CoverageRollup,
     DurableTargetIdentity,
-    FrozenJson,
-    _freeze_mapping,
+    rederive_coverage_points,
+)
+from booley.flows.sim.coverage_json import (
+    CRITERION_FINGERPRINT_JSON,
+    content_digest,
+    freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_waivers import ApprovedWaiver, ApprovedWaiverSet
 
@@ -25,7 +25,11 @@ __all__ = [
     "CoverageCriterion",
     "CoverageThreshold",
     "EvaluatedCoverageCampaign",
+    "ThresholdScore",
+    "coverage_metrics",
+    "coverage_threshold",
     "evaluate_coverage_campaign",
+    "score_thresholds",
 ]
 
 _CRITERION_SCHEMA = "booley.coverage-criterion/v1"
@@ -49,20 +53,32 @@ class CoverageCriterion:
     thresholds: tuple[CoverageThreshold, ...]
     tests: tuple[str, ...] | None
 
+    def __post_init__(self) -> None:
+        """Reject a Criterion no evaluation could score or persist exactly."""
+        metrics = [item.metric for item in self.thresholds]
+        if not metrics or len(set(metrics)) != len(metrics) or set(metrics) - set(_METRIC_ORDER):
+            raise ValueError("Coverage Criterion must name unique V1 metrics")
+        for item in self.thresholds:
+            value = item.minimum_percent
+            if isinstance(value, bool) or not 0 < value <= 100:
+                raise ValueError("Coverage thresholds must be finite numbers in (0, 100]")
+            if coverage_threshold(item.metric, threshold_number(value)).minimum_percent != value:
+                raise ValueError(
+                    f"Coverage threshold for {item.metric} does not round-trip "
+                    f"through its persisted number: {value}"
+                )
+
 
 EvaluatedCoverageCampaign: TypeAlias = CoverageCampaign
 
 
-def _json_value(value: FrozenJson) -> object:
-    if isinstance(value, Mapping):
-        return {key: _json_value(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_json_value(item) for item in value]
-    return value
-
-
 def threshold_number(value: Fraction) -> int | float:
     return value.numerator if value.denominator == 1 else float(value)
+
+
+def coverage_threshold(metric: str, stored: int | float) -> CoverageThreshold:
+    """Recover a threshold from its persisted number: the one recovery rule."""
+    return CoverageThreshold(metric, Fraction(str(stored)))
 
 
 def _criterion_fingerprint(
@@ -84,11 +100,10 @@ def _criterion_fingerprint(
         "target": str(criterion.target),
         "metrics": thresholds,
         "tests": sorted(required_tests),
-        "waiver_configuration": _json_value(waivers.configuration),
+        "waiver_configuration": waivers.configuration,
         "approved_waiver_set_digest": waivers.digest,
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+    return content_digest(CRITERION_FINGERPRINT_JSON.encode(payload))
 
 
 def _metric_result(rollup: CoverageRollup, threshold: CoverageThreshold) -> dict[str, object]:
@@ -104,6 +119,64 @@ def _metric_result(rollup: CoverageRollup, threshold: CoverageThreshold) -> dict
         "actual_percent": rollup.percent,
         "minimum_percent": threshold_number(threshold.minimum_percent),
         "verdict": "pass" if actual >= threshold.minimum_percent else "fail",
+    }
+
+
+@dataclass(frozen=True)
+class ThresholdScore:
+    """Per-metric rows of one scoring, the metrics it could not score, and the verdict."""
+
+    metrics: tuple[dict[str, object], ...]
+    empty: tuple[str, ...]
+    status: str
+
+
+def score_thresholds(
+    rollups: tuple[CoverageRollup, ...], thresholds: tuple[CoverageThreshold, ...]
+) -> ThresholdScore:
+    """Score *thresholds* against *rollups*: the one exact scorer.
+
+    Each threshold whose rollup has eligible points gets a row in metric order;
+    the others are listed in ``empty``. ``status`` is ``pass`` only with at least
+    one row, no ``empty`` metric and every row passing. It is meaningful only for
+    a non-empty threshold set (Criterion construction guarantees one) with no
+    ``empty`` metrics, which callers block on. The rounded percent never decides.
+    """
+    by_metric = {rollup.metric: rollup for rollup in rollups}
+    rows: list[dict[str, object]] = []
+    empty: list[str] = []
+    for threshold in sorted(thresholds, key=lambda item: _METRIC_ORDER.index(item.metric)):
+        rollup = by_metric.get(threshold.metric)
+        if rollup is None or rollup.eligible_points == 0:
+            empty.append(threshold.metric)
+        else:
+            rows.append(_metric_result(rollup, threshold))
+    passed = bool(rows) and not empty and all(row["verdict"] == "pass" for row in rows)
+    return ThresholdScore(tuple(rows), tuple(empty), "pass" if passed else "fail")
+
+
+def coverage_metrics(campaign: CoverageCampaign) -> dict[str, dict[str, object]]:
+    """Report per-metric threshold results for the Job report.
+
+    Independent of the aggregate Criterion verdict, so blocked evaluations keep
+    ``met``. Reads only the score's rows: a thresholded metric with no row has an
+    empty denominator and cannot meet its floor.
+    """
+    stored = campaign.evaluation["thresholds"]
+    thresholds = tuple(
+        coverage_threshold(rollup.metric, stored[rollup.metric])
+        for rollup in campaign.rollups
+        if stored.get(rollup.metric) is not None
+    )
+    rows = score_thresholds(campaign.rollups, thresholds).metrics
+    passed = {row["metric"] for row in rows if row["verdict"] == "pass"}
+    return {
+        rollup.metric: {
+            "percent": rollup.percent,
+            "threshold": stored.get(rollup.metric),
+            "met": None if stored.get(rollup.metric) is None else rollup.metric in passed,
+        }
+        for rollup in campaign.rollups
     }
 
 
@@ -130,14 +203,14 @@ def _apply_waivers(campaign: CoverageCampaign, approved: ApprovedWaiverSet) -> C
     points = tuple(
         replace(
             point,
-            disposition=_freeze_mapping(
+            disposition=freeze_coverage_mapping(
                 {
                     "kind": "waived",
                     "reason": by_point[point.id].reason,
                     "waiver_id": by_point[point.id].waiver_id,
                     "waiver_file": by_point[point.id].waiver_file,
                     "waiver_fingerprint": by_point[point.id].waiver_fingerprint,
-                    "provenance": _json_value(by_point[point.id].provenance),
+                    "provenance": by_point[point.id].provenance,
                 }
             ),
         )
@@ -145,24 +218,7 @@ def _apply_waivers(campaign: CoverageCampaign, approved: ApprovedWaiverSet) -> C
         else point
         for point in campaign.points
     )
-    rollups = tuple(_derive_rollup(rollup, points) for rollup in campaign.rollups)
-    return replace(campaign, points=points, rollups=rollups)
-
-
-def _derive_rollup(rollup: CoverageRollup, points: tuple[CoveragePoint, ...]) -> CoverageRollup:
-    matching = [point for point in points if point.identity.metric == rollup.metric]
-    eligible = [point for point in matching if point.disposition.get("kind") == "eligible"]
-    waived = [point for point in matching if point.disposition.get("kind") == "waived"]
-    covered = [point for point in eligible if sum(point.hits_by_run.values()) > 0]
-    percent = round(len(covered) * 100 / len(eligible), 2) if eligible else None
-    return replace(
-        rollup,
-        total_points=len(matching),
-        eligible_points=len(eligible),
-        covered_points=len(covered),
-        waived_points=len(waived),
-        percent=percent,
-    )
+    return rederive_coverage_points(campaign, points)
 
 
 def _blocked_campaign(
@@ -190,7 +246,7 @@ def _blocked_campaign(
         "metrics": [],
         "diagnostics": diagnostics,
     }
-    return replace(campaign, evaluation=_freeze_mapping(evaluation))
+    return replace(campaign, evaluation=freeze_coverage_mapping(evaluation))
 
 
 def _target_suite_diagnostics(
@@ -256,25 +312,6 @@ def _evidence_diagnostics(
     return diagnostics
 
 
-def _empty_denominator_diagnostics(
-    campaign: CoverageCampaign, criterion: CoverageCriterion
-) -> list[dict[str, str]]:
-    by_metric = {rollup.metric: rollup for rollup in campaign.rollups}
-    empty = [
-        item.metric
-        for item in criterion.thresholds
-        if item.metric not in by_metric or by_metric[item.metric].eligible_points == 0
-    ]
-    return [
-        _diagnostic(
-            "COV_EVAL_EMPTY_DENOMINATOR",
-            "/rollups",
-            f"Configured metric has no eligible points: {metric}.",
-        )
-        for metric in sorted(empty, key=_METRIC_ORDER.index)
-    ]
-
-
 def _ungated_campaign(
     campaign: CoverageCampaign, diagnostics: list[dict[str, str]]
 ) -> EvaluatedCoverageCampaign:
@@ -291,7 +328,7 @@ def _ungated_campaign(
         "metrics": [],
         "diagnostics": diagnostics,
     }
-    return replace(campaign, evaluation=_freeze_mapping(evaluation))
+    return replace(campaign, evaluation=freeze_coverage_mapping(evaluation))
 
 
 def _scored_campaign(
@@ -299,13 +336,11 @@ def _scored_campaign(
     criterion: CoverageCriterion,
     approved_waivers: ApprovedWaiverSet,
     required_tests: tuple[str, ...],
+    score: ThresholdScore,
 ) -> EvaluatedCoverageCampaign:
-    by_metric = {rollup.metric: rollup for rollup in campaign.rollups}
     ordered = sorted(criterion.thresholds, key=lambda item: _METRIC_ORDER.index(item.metric))
-    results = [_metric_result(by_metric[item.metric], item) for item in ordered]
-    status = "pass" if all(item["verdict"] == "pass" for item in results) else "fail"
     evaluation = {
-        "status": status,
+        "status": score.status,
         "criterion_fingerprint": _criterion_fingerprint(
             campaign, criterion, required_tests, approved_waivers
         ),
@@ -316,10 +351,10 @@ def _scored_campaign(
             "selected": sorted(campaign.selected_tests),
         },
         "thresholds": {item.metric: threshold_number(item.minimum_percent) for item in ordered},
-        "metrics": results,
+        "metrics": list(score.metrics),
         "diagnostics": [],
     }
-    return replace(campaign, evaluation=_freeze_mapping(evaluation))
+    return replace(campaign, evaluation=freeze_coverage_mapping(evaluation))
 
 
 def evaluate_coverage_campaign(
@@ -338,11 +373,19 @@ def evaluate_coverage_campaign(
         return _ungated_campaign(campaign, diagnostics)
     required_tests = campaign.declared_tests if criterion.tests is None else criterion.tests
     diagnostics.extend(_evidence_diagnostics(campaign, criterion, required_tests))
+    score = score_thresholds(campaign.rollups, criterion.thresholds)
     if (
         campaign.collection.get("status") == "complete"
         and campaign.normalization.get("status") != "incompatible"
     ):
-        diagnostics.extend(_empty_denominator_diagnostics(campaign, criterion))
+        diagnostics.extend(
+            _diagnostic(
+                "COV_EVAL_EMPTY_DENOMINATOR",
+                "/rollups",
+                f"Configured metric has no eligible points: {metric}.",
+            )
+            for metric in score.empty
+        )
     if diagnostics:
         return _blocked_campaign(
             campaign,
@@ -351,4 +394,4 @@ def evaluate_coverage_campaign(
             required_tests,
             diagnostics,
         )
-    return _scored_campaign(campaign, criterion, approved_waivers, required_tests)
+    return _scored_campaign(campaign, criterion, approved_waivers, required_tests, score)

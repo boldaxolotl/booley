@@ -28,7 +28,7 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Collection, Iterable, Iterator
 from enum import Enum
 from pathlib import Path, PurePosixPath
 
@@ -150,9 +150,15 @@ def resolve_source_updated_at(booley_root: Path) -> str:
     return _git_output(booley_root, "log", "-1", "--format=%cI", "HEAD").strip()
 
 
-def iter_payload_files(booley_root: Path) -> Iterator[Path]:
-    """Yield the canonical source inputs baked into a Sandbox Image payload."""
-    for relative in _PAYLOAD_TREES:
+def _iter_tree_files(
+    booley_root: Path, trees: tuple[str, ...], files: tuple[str, ...]
+) -> Iterator[Path]:
+    """Yield every source file under *trees* plus the listed *files* that exist.
+
+    Bytecode, ``__pycache__`` and the generated stamp/context artefacts are
+    skipped so the selection depends only on authored inputs.
+    """
+    for relative in trees:
         root = booley_root / relative
         if not root.is_dir():
             continue
@@ -162,97 +168,114 @@ def iter_payload_files(booley_root: Path) -> Iterator[Path]:
             if path.relative_to(booley_root).as_posix() in _PAYLOAD_EXCLUDED:
                 continue
             yield path
-    for relative in _PAYLOAD_FILES:
+    for relative in files:
         path = booley_root / relative
         if path.is_file():
             yield path
+
+
+def files_fingerprint(booley_root: Path, files: Iterable[Path]) -> str:
+    """Return the path-and-content SHA-256 of *files*, hashed in the order given.
+
+    Each file contributes ``<posix path relative to booley_root>\\0<bytes>\\0``.
+    The digest is persisted in image labels and stamps, so its layout is a
+    compatibility contract.
+    """
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(path.relative_to(booley_root).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _tree_fingerprint(
+    booley_root: Path, trees: tuple[str, ...], files: tuple[str, ...]
+) -> str | None:
+    """Fingerprint the sorted selection, or ``None`` when it selects nothing."""
+    selected = sorted(set(_iter_tree_files(booley_root, trees, files)))
+    return files_fingerprint(booley_root, selected) if selected else None
+
+
+def iter_payload_files(booley_root: Path) -> Iterator[Path]:
+    """Yield the canonical source inputs baked into a Sandbox Image payload."""
+    return _iter_tree_files(booley_root, _PAYLOAD_TREES, _PAYLOAD_FILES)
 
 
 def resolve_payload_fingerprint(booley_root: Path) -> str | None:
     """Return a path-and-content SHA-256 for every Sandbox Image payload input."""
-    files = sorted(set(iter_payload_files(booley_root)))
-    if not files:
-        return None
-    digest = hashlib.sha256()
-    for path in files:
-        digest.update(path.relative_to(booley_root).as_posix().encode())
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
+    return _tree_fingerprint(booley_root, _PAYLOAD_TREES, _PAYLOAD_FILES)
 
 
 def iter_wheel_source_files(booley_root: Path) -> Iterator[Path]:
     """Yield exactly the checkout inputs which determine the Booley wheel."""
-    for relative in _WHEEL_SOURCE_TREES:
-        root = booley_root / relative
-        if not root.is_dir():
-            continue
-        for path in root.rglob("*"):
-            if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
-                continue
-            if path.relative_to(booley_root).as_posix() in _PAYLOAD_EXCLUDED:
-                continue
-            yield path
-    for relative in _WHEEL_SOURCE_FILES:
-        path = booley_root / relative
-        if path.is_file():
-            yield path
+    return _iter_tree_files(booley_root, _WHEEL_SOURCE_TREES, _WHEEL_SOURCE_FILES)
 
 
 def resolve_wheel_source_fingerprint(booley_root: Path) -> str | None:
     """Return the deterministic compatibility identity of a wheel's sources."""
-    files = sorted(set(iter_wheel_source_files(booley_root)))
-    if not files:
-        return None
-    digest = hashlib.sha256()
-    for path in files:
-        digest.update(path.relative_to(booley_root).as_posix().encode())
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
+    return _tree_fingerprint(booley_root, _WHEEL_SOURCE_TREES, _WHEEL_SOURCE_FILES)
 
 
-def wheel_embedded_commit(wheel: Path) -> str:
-    """Read the embedded commit from a wheel without executing its contents."""
-    try:
-        with zipfile.ZipFile(wheel) as archive:
-            source = archive.read("booley/_build_commit.py").decode("utf-8")
-        module = ast.parse(source)
-    except (OSError, KeyError, UnicodeDecodeError, zipfile.BadZipFile, SyntaxError) as exc:
-        raise ValueError(f"wheel build commit is invalid in {wheel}") from exc
-    for statement in module.body:
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target = statement.targets[0]
-            if isinstance(target, ast.Name) and target.id == "COMMIT":
-                value = ast.literal_eval(statement.value)
-                if isinstance(value, str):
-                    return value
-    raise ValueError(f"wheel build commit is missing in {wheel}")
+def stamp_constants(source: str, names: Collection[str]) -> dict[str, object]:
+    """Return the literal values of top-level assignments to *names* in a stamp module.
 
-
-def wheel_embedded_source_fingerprint(wheel: Path) -> str:
-    """Read the wheel-source identity from one built wheel without importing it."""
-    try:
-        with zipfile.ZipFile(wheel) as archive:
-            source = archive.read("booley/_build_commit.py").decode("utf-8")
-    except (OSError, KeyError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
-        raise ValueError(f"could not read wheel build provenance from {wheel}: {exc}") from exc
+    Only single-name assignments count and the first assignment to each name
+    wins; names never assigned are absent from the result. The source is parsed,
+    never executed. Raises ``ValueError`` when the source does not parse or a
+    requested value is not a Python literal.
+    """
     try:
         module = ast.parse(source)
     except SyntaxError as exc:
-        raise ValueError(f"wheel build provenance is invalid in {wheel}") from exc
+        raise ValueError(f"build stamp is not valid Python: {exc}") from exc
+    values: dict[str, object] = {}
     for statement in module.body:
         if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
             continue
         target = statement.targets[0]
-        if isinstance(target, ast.Name) and target.id == "WHEEL_SOURCE_FINGERPRINT":
-            value = ast.literal_eval(statement.value)
-            if isinstance(value, str) and len(value) == 64:
-                return value
-            break
-    raise ValueError(f"wheel build provenance has no valid wheel-source fingerprint: {wheel}")
+        if not isinstance(target, ast.Name) or target.id not in names or target.id in values:
+            continue
+        try:
+            values[target.id] = ast.literal_eval(statement.value)
+        except (ValueError, TypeError, SyntaxError) as exc:
+            raise ValueError(f"build stamp constant {target.id} is not a literal") from exc
+    return values
+
+
+def _wheel_stamp_source(wheel: Path) -> str:
+    """Read ``booley/_build_commit.py`` from *wheel*; any read fault is a ``ValueError``."""
+    try:
+        with zipfile.ZipFile(wheel) as archive:
+            return archive.read("booley/_build_commit.py").decode("utf-8")
+    except (OSError, KeyError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"could not read wheel build provenance from {wheel}: {exc}") from exc
+
+
+def _wheel_stamp_constant(wheel: Path, name: str) -> object:
+    """Return one literal constant embedded in *wheel*'s stamp, ``None`` when absent."""
+    source = _wheel_stamp_source(wheel)
+    try:
+        return stamp_constants(source, {name}).get(name)
+    except ValueError as exc:
+        raise ValueError(f"wheel build provenance is invalid in {wheel}") from exc
+
+
+def wheel_embedded_commit(wheel: Path) -> str:
+    """Read the embedded commit from a wheel without executing its contents."""
+    value = _wheel_stamp_constant(wheel, "COMMIT")
+    if not isinstance(value, str):
+        raise ValueError(f"wheel build commit is missing in {wheel}")
+    return value
+
+
+def wheel_embedded_source_fingerprint(wheel: Path) -> str:
+    """Read the wheel-source identity from one built wheel without importing it."""
+    value = _wheel_stamp_constant(wheel, "WHEEL_SOURCE_FINGERPRINT")
+    if not isinstance(value, str) or len(value) != 64:
+        raise ValueError(f"wheel build provenance has no valid wheel-source fingerprint: {wheel}")
+    return value
 
 
 def embedded_payload_fingerprint() -> str | None:

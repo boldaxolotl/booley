@@ -6,11 +6,16 @@ import json
 import sys
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from tests.conftest import MINIMAL_FST_BYTES
 
-from booley.flows.sim.adapter_transport import AdapterTransportIdentity, read_adapter_result
+from booley.flows.sim.adapter_contract import PreparedSimulationWork
+from booley.flows.sim.adapter_transport import (
+    AdapterTransportIdentity,
+    read_adapter_result,
+)
 from booley.flows.sim.backends import shared as backend_shared
 from booley.flows.sim.backends import verilator as vr
 from booley.flows.sim.backends.supervision import SimulatorLaunch
@@ -90,83 +95,122 @@ class TestTraceArgContract:
         vr._setup_bwave(FakeTrace(), cmd, ["--trace={file}"])
         assert cmd == ["/bin/Vtop", f"--trace={tmp_path / 'trace.fifo'}"]
 
-    def test_trace_arg_round_trips_through_the_cli(self):
-        # The `=` form is mandatory for an option-like value: passing it as a
-        # separate argv item makes argparse read it as a runner option (F-12).
-        args = vr._parse_args(
-            [
-                "--bin-dir",
-                "build/sim",
-                "--top",
-                "tb",
-                "--trace",
-                "--trace-mode",
-                "native_fst",
-                "--trace-arg=--trace={file}",
-            ]
-        )
-        assert args.trace_args == ["--trace={file}"]
-        assert args.trace_mode == vr.TraceMode.NATIVE_FST
+
+def _verilator_work(tmp_path: Path, **overrides: object) -> PreparedSimulationWork:
+    """A Verilator launch whose build dir and work dir live under *tmp_path*."""
+    fields: dict[str, object] = {
+        "adapter": "verilator",
+        "build_dir": str(tmp_path / "build"),
+        "run_cwd": "",
+        "timeout_s": 30,
+        "top": "tb_top",
+    }
+    fields.update(overrides)
+    return PreparedSimulationWork(**fields)  # type: ignore[arg-type]
 
 
-def test_parse_args_round_trips_run_options():
-    args = vr._parse_args(
-        [
-            "--bin-dir",
-            "build/sim",
-            "--top",
-            "tb_top",
-            "--run-cwd",
-            "util/sim",
-            "--timeout",
-            "120",
-            "--trace",
-            "--trace-scope",
-            "tb.dut",
-            "--plusarg",
-            "test_id=2",
-            "--plusarg",
-            "verbose",
-        ]
+def test_document_fields_reach_run_verilated_binary(tmp_path: Path, monkeypatch):
+    from booley.flows.sim import run_guard
+    from booley.flows.sim.adapter_contract import encode_simulation_work
+
+    seen: dict[str, object] = {}
+
+    def record(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(exit_code=0)
+
+    monkeypatch.setattr(run_guard, "install_parent_death_guard", lambda: None)
+    monkeypatch.setattr(vr, "run_verilated_binary", record)
+    result_path = tmp_path / "adapter-result.json"
+    work = _verilator_work(
+        tmp_path,
+        run_cwd=str(tmp_path / "util"),
+        work_dir=str(tmp_path / "work"),
+        plusargs=("test_id=2", "verbose"),
+        trace=True,
+        trace_mode="native_fst",
+        trace_scope="tb.dut",
+        trace_args=("--trace={file}",),
+        trace_files=("fpu.vcd",),
+        trace_convert_timeout_s=90,
+        runtime_inputs=("firmware.hex",),
+        pass_sentinels=("ALL TESTS PASSED.",),
+        fail_sentinels=("ERROR!", "TIMEOUT"),
+        max_rundir_bytes=5000,
+        tests=("t1", "t2"),
+        adapter_result_path=str(result_path),
+        attempt_token="attempt-1",
+        target_identity="acme:lib:core:1#sim",
     )
-    assert args.bin_dir == "build/sim"
-    assert args.top == "tb_top"
-    assert args.run_cwd == "util/sim"
-    assert args.timeout == 120
-    assert args.trace is True
-    assert args.trace_scope == "tb.dut"
-    assert args.plusargs == ["test_id=2", "verbose"]
+
+    assert vr.main([encode_simulation_work(work)]) == 0
+
+    assert seen == {
+        "top_module": "tb_top",
+        "bin_dir": tmp_path / "build",
+        "run_cwd": tmp_path / "util",
+        "work_dir": tmp_path / "work",
+        "vcd": True,
+        "plusargs": ["test_id=2", "verbose"],
+        "timeout": 30,
+        "trace_args": ["--trace={file}"],
+        "trace_files": ["fpu.vcd"],
+        "trace_mode": vr.TraceMode.NATIVE_FST,
+        "pass_sentinels": ["ALL TESTS PASSED."],
+        "fail_sentinels": ["ERROR!", "TIMEOUT"],
+        "max_rundir_bytes": 5000,
+        "runtime_inputs": ("firmware.hex",),
+        "trace_convert_timeout": 90,
+        "transport": AdapterTransportIdentity(
+            adapter="verilator",
+            attempt_token="attempt-1",
+            target_identity="acme:lib:core:1#sim",
+            selected_tests=("t1", "t2"),
+            result_path=result_path,
+        ),
+    }  # fmt: skip
+    # The scope is not forwarded (the run-half resolves it itself).
+    assert "trace_scope" not in seen
 
 
-def test_parse_args_round_trips_sentinels():
-    args = vr._parse_args(
-        [
-            "--bin-dir",
-            "b",
-            "--top",
-            "tb",
-            "--pass-sentinel",
-            "ALL TESTS PASSED.",
-            "--fail-sentinel",
-            "ERROR!",
-            "--fail-sentinel",
-            "TIMEOUT",
-        ]
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX V<top> stub")
+def test_document_launch_exits_with_the_sentinel_verdict(tmp_path: Path, monkeypatch, capsys):
+    for printed, expected_exit in (("ALL TESTS PASSED.", 0), ("ERROR!", 1)):
+        _launch_prints(tmp_path / str(expected_exit), monkeypatch, capsys, printed, expected_exit)
+
+
+def _launch_prints(tmp_path: Path, monkeypatch, capsys, printed: str, expected_exit: int):
+    from booley.flows.sim import run_guard
+    from booley.flows.sim.adapter_contract import encode_simulation_work
+
+    monkeypatch.setattr(run_guard, "install_parent_death_guard", lambda: None)
+    build = tmp_path / "build"
+    build.mkdir(parents=True)
+    exe = build / "Vtb_top"
+    # The simulator's own exit code (3) must not decide the verdict.
+    exe.write_bytes(f"#!/bin/sh\necho '{printed}'\nexit 3\n".encode())
+    exe.chmod(0o755)
+    work = _verilator_work(
+        tmp_path,
+        work_dir=str(tmp_path / "work"),
+        pass_sentinels=("ALL TESTS PASSED.",),
+        fail_sentinels=("ERROR!",),
     )
-    assert args.pass_sentinels == ["ALL TESTS PASSED."]
-    assert args.fail_sentinels == ["ERROR!", "TIMEOUT"]
+
+    assert vr.main([encode_simulation_work(work)]) == expected_exit
+    assert printed in capsys.readouterr().out
 
 
 def test_run_verilated_binary_missing_exe_returns_error(tmp_path: Path):
     """A missing binary yields a clear error string (no crash)."""
-    out = vr.run_verilated_binary(top_module="tb_top", bin_dir=tmp_path)
+    out = vr.run_verilated_binary(top_module="tb_top", bin_dir=tmp_path).output
     assert "not found" in out
 
 
 def test_missing_exe_is_marked_as_infra_not_a_verdict(tmp_path: Path):
     """SETUP-F-41b: no binary means no observation — the marker lets a grading
     caller refuse to score the run instead of reading rc!=0 as a FAIL."""
-    out = vr.run_verilated_binary(top_module="tb_top", bin_dir=tmp_path)
+    out = vr.run_verilated_binary(top_module="tb_top", bin_dir=tmp_path).output
     assert SIM_INFRA_ERROR_PREFIX in out
     assert (tmp_path / "run.log").exists()
 
@@ -178,7 +222,7 @@ def test_cocotb_vtop_binary_is_named_not_silently_run(tmp_path: Path):
     (tmp_path / "Vtop").write_text("#!/bin/sh\n", encoding="utf-8")
     assert vr._find_binary(tmp_path, "ravenoc_wrapper") is None
 
-    out = vr.run_verilated_binary(top_module="ravenoc_wrapper", bin_dir=tmp_path)
+    out = vr.run_verilated_binary(top_module="ravenoc_wrapper", bin_dir=tmp_path).output
     assert "Cocotb Target" in out
     assert "booley.flows.sim.backends.cocotb" in out
 
@@ -389,7 +433,7 @@ def test_native_fst_run_writes_regular_file_without_fifo(tmp_path: Path, monkeyp
         vcd=True,
         trace_mode=vr.TraceMode.NATIVE_FST,
         trace_args=["--trace={file}"],
-    )
+    ).output
 
     assert f"TRACE_OK: {work_dir / 'trace.fst'}" in output
     assert "TRACE_METADATA:" in output
@@ -434,30 +478,16 @@ def test_declared_native_fst_must_be_fresh_for_current_run(tmp_path: Path, monke
         trace_mode=vr.TraceMode.NATIVE_FST,
         trace_args=["-t"],
         trace_files=["hardcoded.fst"],
-    )
+    ).output
 
     assert "TRACE_OK:" not in output
     assert "TRACE_INCIDENT:" in output
     assert "current run" in output
 
 
-@pytest.mark.parametrize("bad", ["0", "-5"])
-def test_parse_args_rejects_non_positive_timeout(bad: str):
-    # A non-positive timeout would make the deadline math time out instantly.
-    with pytest.raises(SystemExit):
-        vr._parse_args(["--bin-dir", "b", "--top", "t", "--timeout", bad])
-
-
 # ---------------------------------------------------------------------------
 # Per-run safety guards: missing $readmemh (SETUP-23) + disk budget (SETUP-25)
 # ---------------------------------------------------------------------------
-
-
-def test_parse_args_round_trips_max_rundir_bytes():
-    args = vr._parse_args(["--bin-dir", "b", "--top", "t", "--max-rundir-bytes", "5000"])
-    assert args.max_rundir_bytes == 5000
-    # Unset -> guard disabled (0).
-    assert vr._parse_args(["--bin-dir", "b", "--top", "t"]).max_rundir_bytes == 0
 
 
 class TestDeclaredTraceFiles:
@@ -503,35 +533,23 @@ class TestDeclaredTraceFiles:
         assert current.select().path == tmp_path / "dump_003.fst"
         assert trace.postprocessed == []  # already a store; no conversion
 
-    def test_huge_vcd_is_adopted_raw_instead_of_converted(self, tmp_path: Path, monkeypatch):
-        """The conversion is bounded — it runs inside the CALLER's budget.
-
-        ``TraceSession.postprocess`` shells out to an unbounded ``bwave build``
-        at finalize time, after the sim's own ``--timeout`` was honoured but
-        still inside the Flow-level ``timeout_ms``. On the 4.66 GB dump this
-        feature was written for that turns a passing simulation into a timeout
-        kill, so past the cap the raw VCD is adopted as-is — the run is still
-        reported as having produced a waveform, which was F-22's real complaint.
-        """
-        monkeypatch.setattr(backend_shared, "MAX_ADOPTED_VCD_BYTES", 16)
+    @pytest.mark.skipif(sys.platform == "win32", reason="NTFS would allocate the sparse 2 GiB")
+    def test_vcd_over_2gib_is_converted(self, tmp_path: Path):
+        """No size cap: a declared VCD past 2 GiB is converted and its store selected."""
+        store = tmp_path / "trace.fst"
+        store.write_bytes(b"fst")
         big = tmp_path / "fpu.vcd"
-        big.write_bytes(b"0" * 64)
-        trace = self._FakeTrace(tmp_path / "trace.fst")
+        with big.open("wb") as stream:
+            stream.truncate(2 * 1024**3 + 1)  # sparse: no real 2 GiB write
+        trace = self._FakeTrace(store)
 
         selection = self._current(trace, ["fpu.vcd"], [tmp_path]).select()
 
-        assert selection.path == big  # the dump itself, not a store
-        assert selection.oversize
-        assert trace.postprocessed == []  # no unbounded conversion was attempted
+        assert selection.path == store  # the converted store, what finalize turns into TRACE_OK
+        assert trace.postprocessed == [big]
 
     def test_empty_and_missing_candidates_are_ignored(self, tmp_path: Path):
         (tmp_path / "empty.vcd").write_text("")
         trace = self._FakeTrace(None)
         for patterns in (["empty.vcd"], ["nope.vcd"], []):
             assert self._current(trace, patterns, [tmp_path]).select().path is None
-
-
-def test_trace_file_round_trips_through_the_cli():
-    args = vr._parse_args(["--bin-dir", "b", "--top", "t", "--trace", "--trace-file=fpu.vcd"])
-    assert args.trace_files == ["fpu.vcd"]
-    assert vr._parse_args(["--bin-dir", "b", "--top", "t"]).trace_files == []

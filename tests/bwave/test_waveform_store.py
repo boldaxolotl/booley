@@ -117,6 +117,43 @@ def test_scoped_conversion_removes_partial_output_before_fallback(
     assert result.attempts[0].stderr == "no match"
 
 
+def test_conversion_deadline_bounds_every_build_attempt(tmp_path: Path, monkeypatch) -> None:
+    vcd = tmp_path / "trace.vcd"
+    vcd.write_text("$date now $end\n$scope module tb $end\n", encoding="utf-8")
+    destination = tmp_path / "trace.fst"
+    monkeypatch.setattr(stores, "native_bwave_binary", lambda: "bwave")
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(stores.time, "monotonic", lambda: clock["now"])
+    timeouts: list[float] = []
+
+    def run(command, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        clock["now"] += 100  # the scoped build eats the whole budget, then fails
+        return subprocess.CompletedProcess(command, 1, stdout=b"", stderr=b"boom")
+
+    monkeypatch.setattr(stores.subprocess, "run", run)
+
+    result = stores.convert_vcd(
+        vcd,
+        destination,
+        scope="tb",
+        allow_unscoped_fallback=True,
+        deadline=1100.0,
+    )
+
+    assert timeouts == [100.0]  # the remaining budget, not the fixed 900 s
+    assert result.success is False
+    assert result.failure_kind == "conversion_failed"
+    assert len(result.attempts) == 1  # the unscoped retry is skipped
+    assert result.detail.startswith("conversion budget exhausted")
+
+    result = stores.convert_vcd(vcd, destination, scope="tb", deadline=1100.0)
+
+    assert timeouts == [100.0]  # an already-spent budget starts no build at all
+    assert result.attempts == ()
+    assert result.detail.startswith("conversion budget exhausted")
+
+
 def test_refuse_policy_never_overwrites_even_an_invalid_destination(
     tmp_path: Path, monkeypatch
 ) -> None:
