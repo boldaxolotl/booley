@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from booley.flows.sim.campaign_files import document_digest
 from booley.flows.sim.runtime_inputs import preview_runtime_inputs
 from booley.targets.domain import TargetInput
 
@@ -16,7 +16,6 @@ from .codec import (
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_simulation_campaign_manifest,
-    encode_simulation_campaign_manifest,
     validate_relative_path,
 )
 from .model import SimulationCampaignManifest
@@ -439,11 +438,6 @@ _PROJECTORS = (
 )
 
 
-def canonical_sha256(value: object) -> str:
-    """Hash one canonical JSON value without the document trailing newline."""
-    return "sha256:" + hashlib.sha256(canonical_json_bytes(value).rstrip(b"\n")).hexdigest()
-
-
 def derive_runtime_input_declarations(
     inputs: Sequence[TargetInput],
 ) -> tuple[Mapping[str, str], ...]:
@@ -470,7 +464,7 @@ def derive_runtime_input_declarations(
             "source_artifact_path": normalized,
             "destination": normalized,
         }
-        declarations.append({"declaration_id": canonical_sha256(identity), **identity})
+        declarations.append({"declaration_id": document_digest(identity), **identity})
     return tuple(declarations)
 
 
@@ -503,14 +497,14 @@ def _manifest_fingerprints(mutable: Mapping[str, object]) -> dict[str, str]:
     workload = cast(Mapping[str, object], mutable["workload"])
     variants = cast(Sequence[Mapping[str, object]], mutable["build_variants"])
     return {
-        "target_recipe_sha256": canonical_sha256(
+        "target_recipe_sha256": document_digest(
             {
                 "target": mutable["target"],
                 "source_recipe": workload["source_recipe"],
                 "build_recipe": workload["build_recipe"],
             }
         ),
-        "source_closures_sha256": canonical_sha256(
+        "source_closures_sha256": document_digest(
             [
                 {
                     "build_variant_id": variant["build_variant_id"],
@@ -519,11 +513,11 @@ def _manifest_fingerprints(mutable: Mapping[str, object]) -> dict[str, str]:
                 for variant in variants
             ]
         ),
-        "required_suite_sha256": canonical_sha256(mutable["required_suite"]),
-        "planning_disclosures_sha256": canonical_sha256(mutable["planning_disclosures"]),
-        "prerequisites_sha256": canonical_sha256(mutable["prerequisites"]),
-        "work_items_sha256": canonical_sha256(mutable["work_items"]),
-        "workload_sha256": canonical_sha256(
+        "required_suite_sha256": document_digest(mutable["required_suite"]),
+        "planning_disclosures_sha256": document_digest(mutable["planning_disclosures"]),
+        "prerequisites_sha256": document_digest(mutable["prerequisites"]),
+        "work_items_sha256": document_digest(mutable["work_items"]),
+        "workload_sha256": document_digest(
             {
                 key: mutable[key]
                 for key in (
@@ -566,8 +560,7 @@ def verify_workload(
 
 def manifest_digest(manifest: SimulationCampaignManifest) -> str:
     """Return the canonical digest used by durable records."""
-    raw = encode_simulation_campaign_manifest(manifest)
-    return "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
+    return document_digest(manifest.document)
 
 
 def _identity_document(manifest: SimulationCampaignManifest) -> Mapping[str, object]:
@@ -644,7 +637,6 @@ __all__ = [
     "SimulationCampaignWorkloadMismatchError",
     "WorkloadDiagnostic",
     "WorkloadMismatch",
-    "canonical_sha256",
     "compare_manifests",
     "derive_runtime_input_declarations",
     "finalize_manifest",

@@ -18,10 +18,11 @@ PYTHONPATH=src python .github/scripts/image_contract.py \
   --flavor riscv \
   --contract .github/contracts/session-runtime.toml \
   --evidence "${EVIDENCE_DIR}/runtime-contract.json"
+# Only the RISC-V ceiling: bwave-smoke enforces the standard image's own.
 PYTHONPATH=src python .github/scripts/image_size_report.py \
-  --runtime-image sandbox=booley-test \
   --runtime-image "riscv=${IMAGE}" \
   --limits .github/contracts/image-size-limits.toml \
+  --limit-image riscv \
   --json "${EVIDENCE_DIR}/image-sizes.json" \
   --markdown "${EVIDENCE_DIR}/image-sizes.md"
 python .github/scripts/image_runtime_resources.py \

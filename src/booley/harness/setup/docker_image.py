@@ -12,7 +12,6 @@ it never imports back from ``init_cmd``.
 
 from __future__ import annotations
 
-import ast
 import contextlib
 import os
 import re
@@ -24,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.harness.setup.common import InitContext, current, err, hint, info, ok, skip, warn
+from booley.runtime import interactive_docker as idk
 from booley.runtime.build_stamp import (
     embedded_payload_fingerprint,
     iter_payload_files,
@@ -32,6 +32,7 @@ from booley.runtime.build_stamp import (
     resolve_source_updated_at,
     resolve_wheel_source_fingerprint,
     runtime_image_build_stamp,
+    stamp_constants,
     wheel_embedded_commit,
 )
 from booley.runtime.docker_build import DockerBuildResult, run_docker_build
@@ -43,7 +44,7 @@ from booley.runtime.docker_capacity import (
     DockerCapacityError,
 )
 from booley.runtime.image_build_contracts import source_image_build_contracts
-from booley.runtime.image_lifecycle import HostImageScope
+from booley.runtime.image_lifecycle import HostImageScope, ImageLifecycleError
 from booley.runtime.image_provenance import (
     LABEL_BUILD_ORIGIN,
     LABEL_PARENT_ARTIFACT,
@@ -147,22 +148,6 @@ def _docker_image_exists(image: str = DOCKER_IMAGE) -> bool:
     from booley.runtime.interactive_docker import image_exists
 
     return image_exists(image)
-
-
-def _docker_image_id(image: str) -> str | None:
-    """Return *image*'s immutable Docker ID, or ``None`` when unavailable."""
-    try:
-        result = subprocess.run(
-            ["docker", "image", "inspect", image, "--format", "{{.Id}}"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return None
-    value = result.stdout.strip()
-    return value if result.returncode == 0 and value else None
 
 
 # --- Image staleness guard (build-fingerprint label) -----------------------
@@ -280,7 +265,7 @@ def _image_is_stale(
     if image not in FLAVOR_IMAGES:
         return False
     stamped_base = _image_label(image, LABEL_BASE_IMAGE_ID)
-    current_base = _docker_image_id(DOCKER_IMAGE)
+    current_base = idk.image_id(DOCKER_IMAGE)
     return not stamped_base or not current_base or stamped_base != current_base
 
 
@@ -679,6 +664,10 @@ def _docker_local_build(
         err(f"stable runtime-base contract failed: {error}")
         ctx.record("docker_image", "err", "runtime-base contract failed")
         return
+    except ImageLifecycleError as error:
+        err(f"Sandbox Image capacity check failed: {error}")
+        ctx.record("docker_image", "err", f"Sandbox Image capacity check failed: {error}")
+        return
     runtime_base_id = _acquire_runtime_base(
         ctx,
         base_dockerfile,
@@ -773,7 +762,13 @@ def _build_local_sandbox_candidate(
     runtime_base_id: str,
     capacity_plan: DockerBuildPlan | None = None,
 ) -> int | None:
-    if _docker_image_id(LOCAL_RUNTIME_BASE_IMAGE) != runtime_base_id:
+    try:
+        base_before = idk.image_id(LOCAL_RUNTIME_BASE_IMAGE)
+    except idk.ImageInspectError as exc:
+        err(f"cannot verify the stable runtime-base tag before the Sandbox Image build: {exc}")
+        ctx.record("docker_image", "err", str(exc))
+        return None
+    if base_before != runtime_base_id:
         err("stable runtime-base tag changed before the Sandbox Image build")
         ctx.record("docker_image", "err", "runtime-base identity changed")
         return None
@@ -789,7 +784,15 @@ def _build_local_sandbox_candidate(
         capacity_plan=capacity_plan,
     )
     returncode = _docker_build_image(ctx, build)
-    if returncode == 0 and _docker_image_id(LOCAL_RUNTIME_BASE_IMAGE) != runtime_base_id:
+    if returncode != 0:
+        return returncode
+    try:
+        base_after = idk.image_id(LOCAL_RUNTIME_BASE_IMAGE)
+    except idk.ImageInspectError as exc:
+        err(f"cannot verify the stable runtime-base tag after the Sandbox Image build: {exc}")
+        ctx.record("docker_image", "err", str(exc))
+        return None
+    if base_after != runtime_base_id:
         err("stable runtime-base tag changed during the Sandbox Image build")
         ctx.record("docker_image", "err", "runtime-base identity changed")
         return None
@@ -875,7 +878,10 @@ def _local_build_capacity_requests(
 ) -> tuple[DockerBuildRequest, ...]:
     """Resolve the exact legacy local-build sequence before Docker mutation."""
     contract = source_image_build_contracts(booley_root).runtime_base
-    runtime_id = _docker_image_id(LOCAL_RUNTIME_BASE_IMAGE)
+    try:
+        runtime_id = idk.image_id(LOCAL_RUNTIME_BASE_IMAGE)
+    except idk.ImageInspectError as exc:
+        raise ImageLifecycleError(str(exc)) from exc
     runtime_current = (
         runtime_id is not None
         and _image_label(runtime_id, LABEL_RUNTIME_BASE_CONTRACT) == contract
@@ -961,18 +967,11 @@ def _wheel_build_stamp(booley_root: Path, *, preserve_stamp: bool):
     stamp_file = booley_root / "src" / "booley" / "_build_commit.py"
     if not stamp_file.is_file():
         raise OSError("verified development build stamp is missing")
-    tree = ast.parse(stamp_file.read_text(encoding="utf-8"))
-    commit = next(
-        (
-            ast.literal_eval(node.value)
-            for node in tree.body
-            if isinstance(node, ast.Assign)
-            and any(
-                isinstance(target, ast.Name) and target.id == "COMMIT" for target in node.targets
-            )
-        ),
-        "",
-    )
+    try:
+        constants = stamp_constants(stamp_file.read_text(encoding="utf-8"), {"COMMIT"})
+    except ValueError as exc:
+        raise OSError("verified development build stamp is invalid") from exc
+    commit = constants.get("COMMIT", "")
     if not isinstance(commit, str) or not commit:
         raise OSError("verified development build commit is missing")
     return contextlib.nullcontext(commit)
@@ -1096,7 +1095,7 @@ def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
     for name, value in spec.labels:
         build_cmd += ["--label", f"{name}={value}"]
     if spec.image in FLAVOR_IMAGES:
-        base_image_id = spec.parent_artifact or _docker_image_id(DOCKER_IMAGE)
+        base_image_id = spec.parent_artifact or idk.image_id(DOCKER_IMAGE)
         if base_image_id:
             build_cmd += ["--label", f"{LABEL_BASE_IMAGE_ID}={base_image_id}"]
             if spec.parent_artifact is None:
@@ -1169,7 +1168,7 @@ def _flavor_build(
     fingerprint: str | None,
 ) -> bool:
     """``docker build`` a flavor from its shipped Dockerfile; True once it exists."""
-    parent_image_id = _docker_image_id(DOCKER_IMAGE)
+    parent_image_id = idk.image_id(DOCKER_IMAGE)
     if parent_image_id is None:
         err(f"verified standard parent {DOCKER_IMAGE} could not be resolved")
         ctx.record("project_image", "err", "verified standard parent could not be resolved")

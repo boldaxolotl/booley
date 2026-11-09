@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "transaction_id": "txn-1",
   "project_root": "${PROJECT_ROOT}",
   "phase": "parked",
@@ -41,5 +41,7 @@
   },
   "target_image_id": null,
   "target_payload_fingerprint": null,
+  "target_wheel_sha256": null,
+  "prepared_images": [],
   "replacement_issuance": null
 }

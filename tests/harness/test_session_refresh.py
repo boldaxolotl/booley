@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -179,7 +180,6 @@ def test_commit_mismatch_names_every_refresh_image_field(
     journal = session_refresh._RefreshJournal(
         project_root=tmp_path.resolve(),
         transaction_id="transaction",
-        phase=session_refresh._RefreshPhase.PREPARED,
         direction=session_refresh._RecoveryDirection.RESTORE_ELIGIBLE,
         snapshot=_snapshot(tmp_path),
         prior_issuance=_issuance(tmp_path),
@@ -793,6 +793,24 @@ def test_forward_finalization_uses_authorized_dashboard_source_and_exclusions(
     assert calls == [("dashboard", tmp_path, source), ("excludes", tmp_path, expected)]
 
 
+def test_new_journal_document_has_no_phase(tmp_path, monkeypatch):
+    """New journals record no phase: no recovery decision ever read it."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    journal = session_refresh._prepared_journal(
+        tmp_path, _snapshot(tmp_path), _issuance(tmp_path), _parked(tmp_path), _result()
+    )
+
+    session_refresh._write_journal(journal)
+
+    path = session_refresh._journal_store().root / session_refresh._journal_name(
+        tmp_path.resolve()
+    )
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert document["version"] == 2
+    assert "phase" not in document
+    assert session_refresh._load_journal(tmp_path) == journal
+
+
 def test_ancillary_failure_after_verified_commit_keeps_forward_journal(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     journal = session_refresh._prepared_journal(
@@ -800,7 +818,6 @@ def test_ancillary_failure_after_verified_commit_keeps_forward_journal(tmp_path,
     )
     journal = replace(
         journal,
-        phase=session_refresh._RefreshPhase.VERIFIED,
         direction=session_refresh._RecoveryDirection.COMMITTED_FORWARD,
         prepared_images=(
             session_refresh.RefreshPreparedImage("ref", "ref-candidate", "sha256:c", None),

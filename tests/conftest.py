@@ -21,6 +21,15 @@ sys.path.insert(0, str(_SOURCE_ROOT / "src"))
 pytest_plugins = ["tests.timeout_evidence", "tests.timeout_headroom"]
 
 
+@pytest.fixture(autouse=True)
+def adapter_subprocesses_import_this_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A launched ``python3 -m booley.flows.sim.backends.*`` must run this checkout."""
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(filter(None, (str(_SOURCE_ROOT / "src"), os.environ.get("PYTHONPATH")))),
+    )
+
+
 @pytest.fixture
 def isolated_git_attributes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Attribute boundary tests select their own policy instead of the host's."""

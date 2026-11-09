@@ -99,6 +99,24 @@ def test_embedded_contracts_reject_dynamic_expressions(
         contracts.embedded_image_build_contracts()
 
 
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (b"RUNTIME_BASE_CONTRACT = (\n", "invalid"),
+        (b"\xff\xfe", "lacks"),
+    ],
+)
+def test_embedded_contracts_reject_unparseable_or_undecodable_stamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes, message: str
+) -> None:
+    stamp = tmp_path / "_build_commit.py"
+    stamp.write_bytes(content)
+    monkeypatch.setattr(contracts, "_embedded_stamp_path", lambda: stamp)
+
+    with pytest.raises(contracts.ImageBuildContractMetadataError, match=message):
+        contracts.embedded_image_build_contracts()
+
+
 def test_origin_resolver_uses_only_attributed_source_root(tmp_path: Path) -> None:
     root = _source_tree(tmp_path / "source")
     attribution = VersionAttribution("1.0.0", VersionOrigin.SOURCE, source_root=root)

@@ -57,6 +57,7 @@ from booley.flows.plan import (
     plan_value_fingerprint,
     stable_unit_id,
 )
+from booley.flows.prepared_invocation import PreparedInvocation
 from booley.flows.progress_lifecycle import (
     ProgressLifecycle,
     ProgressPublicationError,
@@ -72,6 +73,8 @@ from booley.flows.sim.campaign.test_run_report import (
     test_run_grade,
     test_run_row,
 )
+from booley.flows.sim.campaign_files import document_digest
+from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import (
@@ -83,8 +86,8 @@ from booley.flows.sim.config import (
 from booley.flows.sim.coverage_campaign import CoverageCampaign
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
 from booley.flows.sim.coverage_json import FrozenJson
+from booley.flows.sim.coverage_policy import coverage_metrics
 from booley.flows.sim.coverage_progress import CoverageProgress
-from booley.flows.sim.coverage_report import coverage_metrics
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
 from booley.flows.sim.live_progress import (
     LiveProgressSink,
@@ -213,7 +216,6 @@ from .campaign.flow_planning import (
 from .campaign.model import simulation_status_from_observations
 from .campaign.planning import (
     SimulationCampaignWorkloadMismatchError,
-    canonical_sha256,
     manifest_digest,
     verify_workload,
 )
@@ -868,7 +870,7 @@ def _pre_sim_preview_record(firing, invocation: Path | None) -> dict[str, object
         target=dict(document["target"]),
         test_count=len(document["test_names"]),
         test_names=list(document["test_names"][:8]),
-        test_names_sha256=canonical_sha256(list(document["test_names"])),
+        test_names_sha256=document_digest(list(document["test_names"])),
         terminal=firing.terminal,
         reference=_report_artifact_reference(
             firing.path,
@@ -1682,7 +1684,7 @@ def _resolve_max_rundir_bytes(work_dir: Path | None = None) -> int:
     killing an in-flight synth). Growth, not total size — see
     :class:`booley.flows.sim.run_guard.DiskBudgetGuard` for why (F-23). ``0`` disables
     the guard. Forwarded to the builtin
-    run-halves as ``--max-rundir-bytes``; mirrors the other ``_resolve_*`` knob
+    run-halves in the prepared work document; mirrors the other ``_resolve_*`` knob
     readers. Defaults to :data:`_DEFAULT_MAX_RUNDIR_BYTES` when unset.
     """
     try:
@@ -2706,15 +2708,45 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         return CandidateWorkload(handle, frozenset(selected), frozenset(eligible))
 
+    def prepare_endpoint_invocation(self) -> PreparedInvocation | EndpointOutcome:
+        """Prepare a Campaign; elaboration-only modes keep the Target-selection invocation."""
+        if self._mode.elaborates_only:
+            return super().prepare_endpoint_invocation()
+        prepared = self.prepare_simulation_endpoint()
+        if isinstance(prepared, EndpointOutcome):
+            return prepared
+        return SimulationCampaignInvocation(self, prepared)
+
+    def manifest_names_targets(self) -> bool:
+        """An explicit resume reads its Targets from the manifest."""
+        return self.args.resume_from is not None
+
+    def report_families(self) -> set[str]:
+        """Criterion families the selected mode can judge."""
+        mode = self._mode
+        if mode is SimulationMode.ELAB_ONLY_STANDALONE:
+            return {"elab_pass", "elaborate_standalone"}
+        if mode is SimulationMode.ELAB_ONLY:
+            return {"elab_pass"}
+        families = {"sim_pass", "cycle_count"}
+        if getattr(self.args, "coverage", False):
+            families.add("coverage")
+        if self.state._file_path is not None:
+            families.add("elab_pass")
+        return families
+
+    def conventional_report_families(self) -> set[str]:
+        """Families a non-strict Project may judge under their conventional names."""
+        if self._mode.elaborates_only:
+            return {"elab_pass"}
+        if self.state._file_path is None:
+            return {"sim_pass"}
+        return {"sim_pass", "elab_pass"}
+
     def prepare_simulation_endpoint(  # noqa: PLR0911 -- ordered pre-admission rejections
         self,
-    ) -> PreparedSimulationEndpoint | EndpointOutcome | None:
+    ) -> PreparedSimulationEndpoint | EndpointOutcome:
         """Resolve and authorize every Target before reservation or admission."""
-        # Contract tests and embedding adapters may replace the complete Flow
-        # implementation at the instance boundary.  Such an endpoint has no
-        # campaign execution to prepare and keeps the generic lifecycle.
-        if "_run" in self.__dict__ or self._mode.elaborates_only:
-            return None
         from booley.flows.endpoint_admission import authorize_targets
 
         try:
@@ -3498,7 +3530,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _run(self) -> EndpointOutcome:
         """Run the selected shape and stamp its canonical mode on every result."""
-        # prepare_simulation_endpoint sends every simulate-mode coverage run to
+        # prepare_endpoint_invocation sends every simulate-mode coverage run to
         # run_prepared_simulation; only elaboration-only modes reach this path.
         result = (
             EndpointOutcome(exit_code=2, report_text="Coverage requires simulation mode")

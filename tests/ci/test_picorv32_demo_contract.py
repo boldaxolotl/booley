@@ -213,7 +213,7 @@ def test_goal_readiness_evidence_is_mounted_and_retained(path, directory) -> Non
     assert "BOOLEY_GOAL_READINESS_EVIDENCE=/evidence/goal-readiness.json" in commands
     assert directory in commands
     if path == TEST_WORKFLOW:
-        steps = workflow["jobs"]["bwave-smoke"]["steps"]
+        steps = workflow["jobs"]["riscv-image"]["steps"]
         upload = next(
             step for step in steps if step.get("name") == "Upload Goal readiness evidence"
         )
@@ -251,7 +251,7 @@ def test_readiness_upload_requires_its_producer_to_run(
     path: Path, producer_name: str, upload_name: str
 ) -> None:
     workflow = yaml.safe_load(path.read_text())
-    job = "demo-contract" if path == WORKFLOW else "bwave-smoke"
+    job = "demo-contract" if path == WORKFLOW else "riscv-image"
     steps = workflow["jobs"][job]["steps"]
     all_steps = [child for step in steps for child in step.get("parallel", [step])]
     producer = next(step for step in all_steps if step.get("name") == producer_name)

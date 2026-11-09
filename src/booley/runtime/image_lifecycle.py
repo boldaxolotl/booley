@@ -24,7 +24,7 @@ from booley.core.boundary import (
 from booley.core.differences import format_differences
 from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
-from booley.runtime import project_image
+from booley.runtime import interactive_docker, project_image
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.build_stamp import (
     embedded_payload_fingerprint,
@@ -2223,8 +2223,8 @@ def _verified_result(
 class _DockerCli:
     def image_id(self, image: str) -> str | None:
         try:
-            return project_image.docker_image_id(image)
-        except project_image.DockerImageError as exc:
+            return interactive_docker.image_id(image)
+        except interactive_docker.ImageInspectError as exc:
             raise ImageLifecycleError(str(exc)) from exc
 
     def label(self, image: str, name: str) -> str | None:

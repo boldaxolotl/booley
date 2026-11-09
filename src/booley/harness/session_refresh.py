@@ -91,14 +91,7 @@ class _RuntimeImages:
     def _current_sources(
         self, project_root: Path, image_id: str | None
     ) -> init_cmd._InteractiveSpecSources:
-        pdk = init_cmd.nangate_pdk
-        root = pdk.cache_root() if pdk.is_ready() else init_cmd._NANGATE_PDK_NOT_REQUESTED
-        return init_cmd._interactive_spec_sources(
-            init_cmd.InitContext(project_root=project_root, force=False, verbose=False),
-            root,
-            None,
-            image_id,
-        )
+        return init_cmd._current_interactive_spec_sources(project_root, image_id)
 
     def prepare_spec(self, project_root: Path, image: runtime_refresh.RefreshImage) -> None:
         self._sources = self._current_sources(project_root, image.selected_id)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import ast
 import contextlib
+import functools
 import hashlib
 import json
 import os
@@ -102,7 +103,6 @@ from booley.fusesoc.core_projection import STATE_CORES_SUBDIR, lexical_stealth_p
 from booley.harness import (
     doctor_deep,
     host_diagnostics,
-    nangate_pdk,
     sandbox_git_identity,
     upgrade_cli,
     upgrade_review,
@@ -2966,6 +2966,19 @@ def _check_riscv_toolchain(
             _fail(finding.message, finding.fix)
 
 
+def _expected_interactive_spec(project_root: Path) -> Callable[[str | None], dict] | None:
+    """How inspection rebuilds the spec ``booley init`` would write; ``None`` in the Sandbox.
+
+    Inside the Sandbox the host inputs init reads are invisible, so inspection
+    compares only the host-independent parts of the spec instead.
+    """
+    if runtime_context.inside_session_runtime():
+        return None
+    from booley.harness import init_cmd
+
+    return functools.partial(init_cmd.current_interactive_spec, project_root)
+
+
 def _run_mcp_checks(
     project: ProjectAudit | None,
     docker_exe: str | None,
@@ -2988,8 +3001,8 @@ def _run_mcp_checks(
         declared_clis=_declared_clis(project),
         eda=project.eda,
         fpga_enabled=_flow_enabled(project, "fpga"),
-        expected_cache_mount=nangate_pdk.CONTAINER_ROOT if nangate_pdk.is_ready() else None,
         booley_dir=project.booley_dir,
+        expected_spec=_expected_interactive_spec(project.project_root),
     )
     reporter.diagnostics(inspection.inspect_runtime(request).report)
     _check_devcontainer_excludes(project.project_root, reporter.pass_, reporter.warn_)

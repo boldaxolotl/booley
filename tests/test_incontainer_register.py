@@ -9,6 +9,7 @@ import re
 import sys
 import tomllib
 from itertools import product
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -502,6 +503,24 @@ class TestSkills:
         reg.deploy_skills("claude", tmp_path)
         assert not (target / "booley-gone").is_symlink()
         assert (target / "booley-a" / "SKILL.md").is_file()
+
+    def test_link_failure_skips_only_that_skill(self, tmp_path, monkeypatch):
+        require_symlinks(tmp_path)
+        src = self._fake_skills(tmp_path, ["booley-a", "booley-b"])
+        self._patch_src(monkeypatch, src)
+        real_symlink_to = Path.symlink_to
+
+        def failing_first(self, target, target_is_directory=False):
+            if self.name == "booley-a":
+                raise OSError("read-only file system")
+            real_symlink_to(self, target, target_is_directory)
+
+        monkeypatch.setattr(Path, "symlink_to", failing_first)
+
+        assert reg.deploy_skills("claude", tmp_path) == 1
+        target = reg.skills_target_dir("claude", tmp_path)
+        assert not (target / "booley-a").exists()
+        assert (target / "booley-b" / "SKILL.md").is_file()
 
 
 class TestHostSkills:

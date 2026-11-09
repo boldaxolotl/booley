@@ -5,6 +5,7 @@ Project installs in CI also pass the committed constraints file (#2707).
 
 from __future__ import annotations
 
+import itertools
 import re
 import shlex
 import sys
@@ -272,6 +273,43 @@ def test_project_pip_caches_key_on_the_constraints_file() -> None:
                     keyed = settings.get("cache-dependency-path", "").split()
                     if not {"pyproject.toml", _CONSTRAINTS} <= set(keyed):
                         offenders.append(f"{path.name}:{job_name}")
+    assert offenders == []
+
+
+def _pip_cache_steps() -> list[tuple[str, dict, dict]]:
+    """Return ``(location, setup-python step, the step after it)`` for every pip cache."""
+    found: list[tuple[str, dict, dict]] = []
+    for path in sorted((_ROOT / ".github/workflows").glob("*.yml")):
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job_name, job in document["jobs"].items():
+            steps = [*job.get("steps", ()), {}]
+            found.extend(
+                (f"{path.name}:{job_name}", step, following)
+                for step, following in itertools.pairwise(steps)
+                if str(step.get("uses", "")).startswith("actions/setup-python")
+                and step.get("with", {}).get("cache") == "pip"
+            )
+    return found
+
+
+def test_pip_caches_start_empty_after_a_prefix_restore() -> None:
+    """Every setup-python pip cache drops a prefix-restored older cache before installing.
+
+    On a dependency-hash miss setup-python restores the newest entry for the same
+    Python by key prefix, and pip never prunes. Without the purge each new entry
+    carries every older wheel forward; Windows Python 3.11 is pinned at 3.11.9,
+    so its prefix never changes and its entries grew to 2 GB.
+    """
+    caches = _pip_cache_steps()
+    offenders = [
+        location
+        for location, step, purge in caches
+        if not step.get("id")
+        or purge.get("if") != f"steps.{step['id']}.outputs.cache-hit != 'true'"
+        or purge.get("run") != "python -m pip cache purge"
+    ]
+
+    assert caches
     assert offenders == []
 
 

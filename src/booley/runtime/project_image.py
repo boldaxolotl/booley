@@ -404,31 +404,6 @@ def managed_project_image_files(
     )
 
 
-def docker_image_id(image: str) -> str | None:
-    """Resolve a local Docker artifact; return ``None`` only when it is absent."""
-    try:
-        result = subprocess.run(
-            ["docker", "image", "inspect", image, "--format", "{{.Id}}"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError) as exc:
-        raise DockerImageError(f"could not inspect Docker image {image!r}: {exc}") from exc
-    value = result.stdout.strip()
-    if result.returncode == 0:
-        if value:
-            return value
-        raise DockerImageError(f"Docker returned no immutable ID for image {image!r}")
-    detail = (result.stderr or result.stdout).strip()
-    if "no such image" in detail.lower():
-        return None
-    raise DockerImageError(
-        f"could not inspect Docker image {image!r}: {detail or f'Docker exited {result.returncode}'}"
-    )
-
-
 def _layout_layers(record: dict) -> object:
     rootfs = record.get("RootFS")
     if not isinstance(rootfs, dict):

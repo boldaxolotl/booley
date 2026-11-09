@@ -8,6 +8,8 @@ differs) live in ``tests/docker``.
 from __future__ import annotations
 
 import re
+import shlex
+from itertools import groupby
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -28,6 +30,7 @@ from booley.flows.sim.execution.engine import (
     target_test_plan,
 )
 from booley.targets.domain import TargetHandle
+from tests.flows.sim.launched_work import launched_work
 
 _VARIANTS = """
 [sim.variants.stress]
@@ -92,9 +95,14 @@ def _work(root: Path, inspection: SimpleNamespace, names: tuple[str, ...], runs=
 
 
 def _plusargs(command: tuple[str, ...]) -> list[str]:
-    """The ``--plusarg=`` values of the adapter invocation, in order."""
-    words = command[-1].split(" && ")[-1].split()
-    return [word.removeprefix("--plusarg=") for word in words if word.startswith("--plusarg=")]
+    """The plusargs of the adapter invocation's work document, in order."""
+    return list(launched_work(command).plusargs)
+
+
+def _chain_steps(command: tuple[str, ...]) -> list[list[str]]:
+    """The ``&&``-joined steps of a previewed ``sh -c`` chain, as shell words."""
+    words = shlex.split(command[-1])
+    return [list(step) for is_join, step in groupby(words, "&&".__eq__) if not is_join]
 
 
 class TestVerilatorNativeSeed:
@@ -217,9 +225,9 @@ class TestCocotb:
             root, _inspection("icarus", cocotb=True), NamedTests(("test_a", "test_b", "test_c"))
         )
         assert preview.groups == (("test_a", "test_b", "test_c"),)
-        command = preview.commands[0][-1]
-        assert "--seed 1" in command
-        assert "verilator+seed" not in command
+        work = launched_work(preview.commands[0])
+        assert work.cocotb_seed == 1
+        assert not any("seed" in plusarg for plusarg in work.plusargs)
 
     def test_default_variants_that_differ_in_environment_split_the_batch(self, tmp_path: Path):
         root = _project(tmp_path, _COCOTB_TESTS.replace('default = "plain"', 'default = "slow"'))
@@ -240,7 +248,7 @@ class TestCocotb:
         )
         preview = _preview(root, inspection, SelectedTestRuns(runs))
         assert preview.groups == (("test_a", "test_c"), ("test_c",), ("test_b",))
-        assert ["--seed 5" in command[-1] for command in preview.commands] == [False, False, True]
+        assert [launched_work(command).cocotb_seed for command in preview.commands] == [1, 1, 5]
 
     def test_work_carries_the_seed_and_the_variant_environment(self, tmp_path: Path):
         root = _project(tmp_path, _COCOTB_TESTS)
@@ -285,14 +293,14 @@ class TestPreviewMatchesLaunch:
         fault = plan.run("stress", "fault")
 
         preview = _preview(root, inspection, SelectedTestRuns((fault,)))
-        steps = preview.commands[0][-1].split(" && ")
+        steps = _chain_steps(preview.commands[0])
 
-        assert steps[-2] == "export FAULT_MODE=1"
-        assert steps[-1].startswith("python3 -m booley.flows.sim.backends.verilator")
+        assert steps[-2] == ["export", "FAULT_MODE=1"]
+        assert steps[-1][:3] == ["python3", "-m", "booley.flows.sim.backends.verilator"]
         # The build steps before it see the Target's environment only.
-        build_steps = steps[: steps.index("export FAULT_MODE=1")]
-        assert "export FLAVOR=a" in build_steps
-        assert not any("FAULT_MODE" in step for step in build_steps)
+        build_steps = steps[: steps.index(["export", "FAULT_MODE=1"])]
+        assert ["export", "FLAVOR=a"] in build_steps
+        assert not any("FAULT_MODE" in word for step in build_steps for word in step)
         # The launch applies exactly the previewed variables.
         work = _work(root, inspection, ("stress",), (fault,))
         assert dict(_launch_environment((("FLAVOR", "a"),), work)) == {
@@ -303,8 +311,8 @@ class TestPreviewMatchesLaunch:
     def test_preview_of_a_run_without_variant_environment_is_unchanged(self, tmp_path: Path):
         root = _project(tmp_path, '[sim]\ntests = ["stress"]\n' + _VARIANTS)
         preview = _preview(root, _inspection("verilator"), NamedTests(("stress",)))
-        steps = preview.commands[0][-1].split(" && ")
-        assert not steps[-2].startswith("export ")
+        steps = _chain_steps(preview.commands[0])
+        assert steps[-2][0] != "export"
 
 
 class TestEvidenceGroups:

@@ -8,8 +8,7 @@ import subprocess
 
 import pytest
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
-from tests.runtime.test_session_issuance import _install_trusted_validator
-from tests.session_issuance_support import plain_builder
+from tests.session_issuance_support import install_trusted_validator, plain_builder
 
 from booley.audit.diagnostic_results import Severity
 from booley.config.eda import EdaConfig
@@ -35,7 +34,7 @@ def _configured_project(tmp_path, monkeypatch, *, active: bool):
     reset_cache()
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    executable = _install_trusted_validator(tmp_path, monkeypatch)
+    executable = install_trusted_validator(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", str(executable.parent))
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     return project
