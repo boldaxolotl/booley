@@ -108,7 +108,9 @@ savings only after at least 20 comparable automatic runs.
   (about 9.7 min at the median on merge-queue candidates). It also took CPU from
   the standard smokes on the shared 4-vCPU runner. The job builds its own
   standard substrate from the trusted cache (`bwave-smoke` remains the only cache
-  writer), so it depends only on `changes` and `package-artifacts`. The duration
+  writer), so it depends only on `changes` and `package-artifacts`. It stays
+  path-gated on every event, and a `main` push, which runs only the
+  cache-writing tier, never selects it. The duration
   budget described above now belongs to that job. Its registry and local pairs
   still carry the values measured inside `bwave-smoke`.
 - **The composed substrate exports as zstd level 1.** BuildKit gzips

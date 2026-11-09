@@ -30,8 +30,9 @@ result. `bwave-smoke` stays because only a `main` push may write the shared
 `sandbox-substrate` build cache, and it installs the wheel `package-artifacts`
 builds.
 
-A scheduled run on `main` every night at 01:47 UTC selects every job. It
-catches what the queue cannot: a classifier that skipped a needed job, a
+A scheduled run on `main` every night at 01:47 UTC selects every job except
+`riscv-image`, which stays path-gated on every event (see RISC-V on-demand
+builds). It catches what the queue cannot: a classifier that skipped a needed job, a
 maintainer's manual incident merge, and drift in runners, toolchains, or
 unpinned dependencies. It also refreshes the `main`-scoped pip and Rust caches
 after a dependency change and produces the complete-run artifacts that timing
@@ -224,7 +225,7 @@ Caches, temporary test projects, and build products are not diagnostic outputs.
 
 The `Tests` workflow's `riscv_measurement` dispatch input accepts `cold` and `automatic`.
 `cold` forces the RISC-V lane and builds tooling locally: `gh workflow run test.yml --ref <branch> -f riscv_measurement=cold`.
-`automatic` retains path gating and registry reuse; main and manual runs otherwise select the lane only when the last commit changed its inputs.
+`automatic` retains path gating and registry reuse; nightly and manual runs otherwise select the lane only when the last commit changed its inputs, and a `main` push never selects it (its queue candidate already ran it).
 The input cannot be set on pull requests.
 
 ### RISC-V tooling stage

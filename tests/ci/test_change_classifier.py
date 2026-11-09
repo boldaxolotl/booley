@@ -1134,6 +1134,9 @@ def test_main_push_runs_only_the_cache_writing_tier(tmp_path: Path) -> None:
     }
     # bwave-smoke still learns which images this push must build.
     assert outputs["build_stable_base"] == "true"
+    # A RISC-V input changed too, but the lane is not a cache writer: the
+    # queue candidate already ran `riscv-image` on this tree.
+    assert outputs["riscv_image"] == "true"
 
 
 @pytest.mark.parametrize(
@@ -1149,7 +1152,10 @@ def test_nightly_manual_and_release_runs_keep_every_job(
 
     outputs = _classify(repo, base, head, force_all=True, event_name=event_name, ref=ref)
 
-    assert _required(outputs) == set(ALL_JOBS) - {STRESS_JOB}
+    # `riscv-image` stays path-gated: forced runs rebuild the RISC-V image only
+    # when its compatibility inputs changed.
+    assert outputs["riscv_image"] == "false"
+    assert _required(outputs) == set(ALL_JOBS) - {STRESS_JOB, "riscv-image"}
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Win32 rejects newlines in path components")
