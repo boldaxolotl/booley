@@ -869,13 +869,7 @@ def test_timeout_without_transport_recovers_cocotb_progress(tmp_path: Path) -> N
     ]
 
 
-@pytest.mark.parametrize("sim_passed", [True, False], ids=["passing_sim", "failing_sim"])
-@pytest.mark.parametrize(
-    ("timed_out", "returncode"),
-    [(False, -9), (False, 137), (False, 1)],
-    ids=["sigkill", "shell137", "exception"],
-)
-def test_post_simulation_partial_survives_adapter_kill(
+def _check_post_simulation_partial(
     tmp_path: Path, timed_out: bool, returncode: int, sim_passed: bool
 ) -> None:
     """An adapter dying mid-conversion leaves the simulation verdict, never a timeout."""
@@ -907,6 +901,15 @@ def test_post_simulation_partial_survives_adapter_kill(
     assert outcome.tests[0].timed_out is False
     assert outcome.tests[0].verdict == ("inconclusive" if sim_passed else "fail")
     assert outcome.verdict != "timeout"
+
+
+def test_post_simulation_partial_survives_adapter_kill(tmp_path: Path) -> None:
+    """Sigkill, shell 137 and an adapter exception, for a passing and a failing simulation."""
+    for returncode in (-9, 137, 1):
+        for sim_passed in (True, False):
+            case = tmp_path / f"rc{returncode}-{sim_passed}"
+            case.mkdir()
+            _check_post_simulation_partial(case, False, returncode, sim_passed)
 
 
 @pytest.mark.parametrize("simulator_returncode", [-15, 0, 7])

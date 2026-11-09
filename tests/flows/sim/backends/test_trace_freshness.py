@@ -325,17 +325,7 @@ def _spy_conversion(monkeypatch: pytest.MonkeyPatch, partial: AdapterTransportId
     return seen
 
 
-@pytest.mark.parametrize(
-    "sim_output",
-    [
-        pytest.param("[SIM_RESULT] PASSED\n", id="passing_sim"),
-        pytest.param("[SIM_RESULT] FAILED\n", id="failing_sim"),
-    ],
-)
-@pytest.mark.parametrize("adapter", ["icarus", "verilator-fallback", "cocotb"])
-def test_pending_partial_holds_verdict_during_conversion(
-    adapter, sim_output, tmp_path, monkeypatch
-):
+def _check_pending_partial(adapter, sim_output, tmp_path, monkeypatch) -> None:
     """Killed mid-conversion, the attempt still has the simulation verdict plus an incident."""
     identity = AdapterTransportIdentity(
         "cocotb" if adapter == "cocotb" else adapter.split("-")[0],
@@ -423,3 +413,12 @@ def test_pending_partial_holds_verdict_during_conversion(
         assert pending.failure_kind == "artifact"
         assert pending.test_results[0].verdict == ("inconclusive" if passed else "fail")
         assert pending.simulator_returncode == (0 if passed else 1)
+
+
+def test_pending_partial_holds_verdict_during_conversion(tmp_path, monkeypatch):
+    """Every adapter, passing and failing simulation: the verdict is fixed before conversion."""
+    for adapter in ("icarus", "verilator-fallback", "cocotb"):
+        for sim_output in ("[SIM_RESULT] PASSED\n", "[SIM_RESULT] FAILED\n"):
+            case = tmp_path / f"{adapter}-{sim_output[13:19].strip()}"
+            case.mkdir()
+            _check_pending_partial(adapter, sim_output, case, monkeypatch)
