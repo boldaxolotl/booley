@@ -248,6 +248,7 @@ def _shell_build(step: WorkflowStep, run: str) -> Build:
     )
     fields = shlex.split(command.partition("docker buildx build")[2])
     fields = fields[: fields.index("|")] if "|" in fields else fields
+    stored, output_names = _image_output(fields)
     return Build(
         step=step,
         dockerfile=_option(fields, "--file"),
@@ -255,10 +256,27 @@ def _shell_build(step: WorkflowStep, run: str) -> Build:
         contexts=_repeated_key_values(fields, "--build-context"),
         build_args=_repeated_key_values(fields, "--build-arg"),
         labels={},
-        tags=tuple(_options(fields, "--tag")),
-        load="--load" in fields,
+        tags=(*_options(fields, "--tag"), *output_names),
+        load="--load" in fields or stored,
         push="--push" in fields,
     )
+
+
+def _image_output(fields: list[str]) -> tuple[bool, tuple[str, ...]]:
+    """Return whether ``--output type=image`` keeps the image locally, and its names.
+
+    With the default (docker-driver) builder an unpushed image export lands in
+    the daemon's image store, as ``--load`` does, but can choose its layer
+    compression.
+    """
+    outputs = _options(fields, "--output")
+    if len(outputs) != 1:
+        return False, ()
+    options = dict(item.partition("=")[::2] for item in outputs[0].split(","))
+    if options.get("type") != "image" or options.get("push") == "true":
+        return False, ()
+    name = options.get("name", "")
+    return True, (name,) if name else ()
 
 
 def _lines(value: object) -> tuple[str, ...]:
@@ -353,8 +371,20 @@ def _stable_base_errors(workflow: dict[str, Any]) -> list[str]:
     return errors
 
 
+# Each job that builds the standard candidate from the stable base. The RISC-V
+# job builds its own copy so it never waits on bwave-smoke.
+_TEST_CANDIDATE_JOBS = ("bwave-smoke", "riscv-image")
+
+
 def _test_graph_errors(workflow: dict[str, Any]) -> list[str]:
-    job = "bwave-smoke"
+    errors: list[str] = []
+    for job in _TEST_CANDIDATE_JOBS:
+        errors.extend(_test_candidate_errors(workflow, job))
+    errors.extend(_test_riscv_errors(workflow))
+    return errors
+
+
+def _test_candidate_errors(workflow: dict[str, Any], job: str) -> list[str]:
     name = "test.yml"
     try:
         resolver = find_step(name, workflow, job, name="Select compatible stable runtime base")
@@ -367,21 +397,38 @@ def _test_graph_errors(workflow: dict[str, Any]) -> list[str]:
         remote_step = find_step(
             name, workflow, job, name="Build candidate from published stable base"
         )
-        riscv_step = find_step(name, workflow, job, name="Run RISC-V candidate image contract")
-        base, local, remote, riscv = map(
-            parse_build, (base_step, local_step, remote_step, riscv_step)
-        )
+        base, local, remote = map(parse_build, (base_step, local_step, remote_step))
     except ValueError as error:
         return [f"test image graph: {error}"]
     errors = _resolver_errors("published-base test candidate", resolver, "${PUBLISHED_BASE}")
     if resolver.path >= remote.step.path:
         errors.append("published-base test candidate: resolver must precede its candidate build")
     errors.extend(_test_alternative_errors(base, local, remote))
-    errors.extend(_test_build_shape_errors(local, remote, riscv))
+    errors.extend(_test_build_shape_errors(local, remote))
     return errors
 
 
-def _test_build_shape_errors(local: Build, remote: Build, riscv: Build) -> list[str]:
+def _test_riscv_errors(workflow: dict[str, Any]) -> list[str]:
+    """The riscv-image job derives its candidate from its own standard substrate."""
+    try:
+        riscv = parse_build(
+            find_step(
+                "test.yml", workflow, "riscv-image", name="Run RISC-V candidate image contract"
+            )
+        )
+    except ValueError as error:
+        return [f"test image graph: {error}"]
+    return _build_shape_errors(
+        "local RISC-V candidate",
+        riscv,
+        _RISCV_DOCKERFILE,
+        {"booley-standard-substrate": "docker-image://booley-standard-substrate:ci"},
+        ("booley-riscv-substrate:ci",),
+        load=True,
+    )
+
+
+def _test_build_shape_errors(local: Build, remote: Build) -> list[str]:
     errors: list[str] = []
     errors.extend(
         _build_shape_errors(
@@ -401,16 +448,6 @@ def _test_build_shape_errors(local: Build, remote: Build, riscv: Build) -> list[
             _SUBSTRATE_DOCKERFILE,
             {"booley-runtime-base": remote_parent},
             ("booley-standard-substrate:ci",),
-            load=True,
-        )
-    )
-    errors.extend(
-        _build_shape_errors(
-            "local RISC-V candidate",
-            riscv,
-            _RISCV_DOCKERFILE,
-            {"booley-standard-substrate": "docker-image://booley-standard-substrate:ci"},
-            ("booley-riscv-substrate:ci",),
             load=True,
         )
     )
