@@ -233,8 +233,8 @@ commands inside the Sandbox, and remove a worktree as the
 ERROR: post-setup hook failed (rc=3); log: .../.booley/worktrees/.logs/<name>.log
 ```
 
-Booley removed the worktree and its `booley-worktree/<name>` branch, so nothing
-is left to clean up, unless the error also says `outer rollback failed`. Read
+Booley removed the worktree and its `booley/<name>` and `booley-worktree/<name>`
+branches, so nothing is left to clean up, unless the error also says `outer rollback failed`. Read
 the log the error names for the hook's output. Fix
 `.booley/hooks/post-setup.*`, commit the fix if your Booley Directory is its own
 Git repository (a Paired Checkout starts from its last commit), and run the

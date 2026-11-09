@@ -139,6 +139,7 @@ from booley.runtime.owned_scratch import sweep_stale_scratch
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 from booley.runtime.session_paths import logs_runtime_dir
 from booley.runtime.timefmt import format_human_datetime
+from booley.runtime.worktree_usage import record_worktree_use
 
 if TYPE_CHECKING:
     from mcp.server.context import ServerRequestContext
@@ -1841,6 +1842,30 @@ async def _dispatch_special_mcp_tool(
     return None
 
 
+def _stamp_worktree_use(
+    arguments: Mapping[str, Any], request_context: McpRequestContext | None
+) -> None:
+    """Record a call's interactive worktree as just used (``booley worktree list``).
+
+    The checkout is the call's ``work_dir`` (explicit or routed) or, for tools
+    without one, the caller's routed checkout. The stamp is bookkeeping, not
+    admission, so an unreadable layout never fails the call.
+    """
+    work_dir = arguments.get("work_dir")
+    if isinstance(work_dir, str) and work_dir:
+        checkout = Path(work_dir)
+    elif request_context is not None:
+        checkout = request_context.checkout
+    else:
+        checkout = None
+    if checkout is None:
+        return
+    try:
+        record_worktree_use(checkout, resolve_common_booley_dir())
+    except (FileNotFoundError, SourceCheckoutProjectError, BooleyLayoutError, OSError, ValueError):
+        logger.debug("Could not stamp worktree use for %s", checkout, exc_info=True)
+
+
 async def _dispatch_application_tool(
     name: str,
     arguments: dict[str, Any],
@@ -1853,6 +1878,7 @@ async def _dispatch_application_tool(
     server_identity: str | None = None,
 ) -> McpToolContent | McpInputRequired:
     """Dispatch one validated application call to its concrete endpoint."""
+    _stamp_worktree_use(arguments, request_context)
     caller = (
         None
         if server_identity is None

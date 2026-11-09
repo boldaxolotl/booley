@@ -9,7 +9,13 @@
 #                Booley Directory is <cwd>/booley.toml [project].dir (default .booley).
 #   cwd          (required) root of the Git repository to branch from.
 #   branch_ref   (optional) existing refs/heads/... branch to attach; without
-#                it the worktree starts on a detached HEAD at the current HEAD.
+#                it (and without new_branch) the worktree starts on a detached
+#                HEAD at the current HEAD.
+#   new_branch   (optional) new local branch name to create for the worktree
+#   start_point  (optional) commit the new branch starts at; required with
+#                new_branch and refused without it. Neither may be combined with
+#                branch_ref or a <branch>--<description> name. An existing
+#                new_branch is refused before anything is created.
 #   on_existing  (optional) policy when the destination already exists:
 #                  "refuse"  (default) exit 1 without touching anything when
 #                            the destination is an existing path, a registered
@@ -50,6 +56,8 @@ NAME=$(echo "$INPUT" | "${PY[@]}" -c "import sys,json; print(json.load(sys.stdin
 CWD=$(echo "$INPUT" | "${PY[@]}" -c "import sys,json; print(json.load(sys.stdin)['cwd'])")
 BRANCH_REF=$(echo "$INPUT" | "${PY[@]}" -c "import sys,json; value=json.load(sys.stdin).get('branch_ref', ''); isinstance(value, str) or sys.exit('ERROR: branch_ref must be a string'); print(value)")
 ON_EXISTING=$(echo "$INPUT" | "${PY[@]}" -c "import sys,json; value=json.load(sys.stdin).get('on_existing', 'refuse'); value in ('refuse', 'replace') or sys.exit('ERROR: on_existing must be \"refuse\" or \"replace\"'); print(value)")
+NEW_BRANCH=$(echo "$INPUT" | "${PY[@]}" -c "import sys,json; value=json.load(sys.stdin).get('new_branch', ''); isinstance(value, str) or sys.exit('ERROR: new_branch must be a string'); print(value)")
+START_POINT=$(echo "$INPUT" | "${PY[@]}" -c "import sys,json; value=json.load(sys.stdin).get('start_point', ''); isinstance(value, str) or sys.exit('ERROR: start_point must be a string'); print(value)")
 
 if [[ ! "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
     echo "ERROR: worktree name must be a single safe path component: $NAME" >&2
@@ -118,6 +126,27 @@ if [ -n "$BRANCH_REF" ]; then
     EXPLICIT_BRANCH="${BRANCH_REF#refs/heads/}"
 fi
 
+# new_branch and start_point come together, and only for a plain name.
+if [ -n "$NEW_BRANCH" ] || [ -n "$START_POINT" ]; then
+    if [ -z "$NEW_BRANCH" ] || [ -z "$START_POINT" ]; then
+        echo "ERROR: new_branch and start_point must be given together" >&2
+        exit 1
+    fi
+    if [ -n "$BRANCH_REF" ] || [[ "$NAME" == *--* ]]; then
+        echo "ERROR: new_branch cannot be combined with branch_ref or a branch--description name" >&2
+        exit 1
+    fi
+    if ! git -C "$CWD" check-ref-format --branch "$NEW_BRANCH" >/dev/null 2>&1; then
+        echo "ERROR: new_branch is not a valid branch name: $NEW_BRANCH" >&2
+        exit 1
+    fi
+    if ! git -C "$CWD" rev-parse --verify --quiet "${START_POINT}^{commit}" >/dev/null; then
+        echo "ERROR: start_point is not a commit: $START_POINT" >&2
+        exit 1
+    fi
+    START_POINT=$(git -C "$CWD" rev-parse --verify "${START_POINT}^{commit}")
+fi
+
 WORKTREE_DIR="$BOOLEY_DIR_PATH/worktrees/$NAME"
 CREATING_MARKER="$WORKTREE_DIR/.creating"
 
@@ -149,6 +178,16 @@ fi
 # after THIS invocation created the worktree, so an early failure can never
 # delete a half-created worktree that belongs to someone else.
 _OWNS_WORKTREE=false
+# Delete the branch this run created, but only while it still points at the
+# start point: a moved or pre-existing branch is never touched.
+_drop_new_branch() {
+    [ -n "$NEW_BRANCH" ] || return 0
+    local current
+    current=$(git -C "$CWD" rev-parse --verify --quiet "refs/heads/$NEW_BRANCH" 2>/dev/null) || return 0
+    if [ "$current" = "$START_POINT" ]; then
+        git -C "$CWD" update-ref -d "refs/heads/$NEW_BRANCH" "$current" 2>/dev/null || true
+    fi
+}
 cleanup_on_error() {
     local rc=$?
     if [ -n "$SNAPSHOT_LIST" ]; then rm -f "$SNAPSHOT_LIST"; fi
@@ -157,6 +196,7 @@ cleanup_on_error() {
         git -C "$CWD" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
         rm -rf "$WORKTREE_DIR"
         git -C "$CWD" worktree prune 2>/dev/null || true
+        _drop_new_branch
     fi
     exit $rc
 }
@@ -330,6 +370,14 @@ if [ "$ON_EXISTING" = "refuse" ]; then
     fi
 fi
 
+# The new branch must not exist. Under the parent-git lock and the per-name lock
+# no other Booley creation can make it, so a ref of this name after the add is ours.
+if [ -n "$NEW_BRANCH" ] && git -C "$CWD" show-ref --verify --quiet "refs/heads/$NEW_BRANCH"; then
+    _parent_lock_release
+    echo "ERROR: branch '$NEW_BRANCH' already exists; choose another name" >&2
+    exit 1
+fi
+
 git -C "$CWD" worktree prune 2>/dev/null || true
 
 # Replace policy: a same-name directory is a stale leftover from a previous
@@ -357,6 +405,8 @@ fi
 WORKTREE_ADD_TARGET=(--detach)
 if [ -n "$EXPLICIT_BRANCH" ]; then
     WORKTREE_ADD_TARGET=("$EXPLICIT_BRANCH")
+elif [ -n "$NEW_BRANCH" ]; then
+    WORKTREE_ADD_TARGET=(-b "$NEW_BRANCH" "$START_POINT")
 fi
 echo "Creating worktree: $WORKTREE_DIR" >&2
 # stdout goes to stderr too: `git worktree add` prints "HEAD is now at ..."
@@ -372,6 +422,16 @@ if ! git -C "$CWD" -c submodule.recurse=false worktree add "$WORKTREE_DIR" "${WO
     else
         cat "$ADD_ERR" >&2
         rm -f "$ADD_ERR"
+        # `worktree add -b` creates the branch before checkout and can fail after it
+        # (a failing post-checkout hook leaves the worktree registered): remove
+        # both, so the name can be retried.
+        if [ -n "$NEW_BRANCH" ]; then
+            git -C "$CWD" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
+            rm -rf "$WORKTREE_DIR"
+            git -C "$CWD" worktree prune 2>/dev/null || true
+            _drop_new_branch
+        fi
+        _parent_lock_release
         false
     fi
 fi
