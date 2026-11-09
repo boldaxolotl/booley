@@ -32,20 +32,21 @@ from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobSnapshot, JobV
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
 from booley.harness.dashboard.resources import Resources
-from booley.harness.dashboard.results import (
+from booley.harness.dashboard.topbar import FILTER, HELP_ITEM, OWNER, WINDOW, TopBar
+from booley.harness.dashboard.view_probe import ViewState
+from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
+from booley.presentation.report_results import (
     ReportPresentation,
     ResultLine,
     configuration,
     literal,
-    present_report,
+    present_job_report,
     project_facts,
     proposal_summary,
 )
-from booley.harness.dashboard.topbar import FILTER, HELP_ITEM, OWNER, WINDOW, TopBar
-from booley.harness.dashboard.view_probe import ViewState
-from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.review.goal_package import observation_facts
 from booley.runtime.handles import job_prefix
+from booley.runtime.job_records import parse_stamp
 from booley.runtime.pid import ProcessState
 from booley.runtime.session_activity import (
     UNKNOWN,
@@ -475,12 +476,12 @@ def _truncate_job_rows(
 
 
 def _job_presentation(job: JobView) -> ReportPresentation:
-    report = dict(job.report or {})
-    report["exit_code"] = job.record.exit_code
-    report["argv"] = job.record.argv
-    endpoint = job.record.endpoint
-    report["flow" if endpoint in {"sim", "lint", "synth", "fpga"} else "mcp_tool"] = endpoint
-    return present_report(report)
+    return present_job_report(
+        job.report or {},
+        endpoint=job.record.endpoint,
+        exit_code=job.record.exit_code,
+        argv=job.record.argv,
+    )
 
 
 def _line_text(rows: tuple[ResultLine, ...] | list[ResultLine]) -> str:
@@ -542,6 +543,7 @@ def _job_metadata(job: JobView, *, now: float | None = None) -> list[ResultLine]
     ):
         if stamp:
             rows.append(ResultLine(label, format_clock(stamp, now=now)))
+    rows.extend(_read_row(job, now=now))
     tool = job.recorded_tools
     if job.state not in _REPORT_DETAIL_STATES:
         tool = tool or job.eda_tool
@@ -556,6 +558,31 @@ def _job_metadata(job: JobView, *, now: float | None = None) -> list[ResultLine]
         rows.append(ResultLine("Stage", literal(job.stage)))
     rows.extend(_job_resources(job))
     return rows
+
+
+def _read_row(job: JobView, *, now: float | None = None) -> list[ResultLine]:
+    """When the owner first read a finished Job's result, and how long it waited.
+
+    A record without an owner (written before owners existed, or an inline
+    endpoint that never tracks reads) and a Job still running show no row: the
+    detail never invents a latency.
+    """
+    record = job.record
+    if record.read_at:
+        row = format_clock(record.read_at, now=now)
+        waited = _seconds_between(record.ended_at, record.read_at)
+        if waited is not None:
+            row += f" · {format_duration(max(0.0, waited))} after end"
+        return [ResultLine("Read", row)]
+    if record.owner is not None and job.state in _REPORT_DETAIL_STATES:
+        return [ResultLine("Read", "unread")]
+    return []
+
+
+def _seconds_between(start: str | None, end: str) -> float | None:
+    """Seconds from stamp *start* to stamp *end*; None when either is missing or unparseable."""
+    started, ended = parse_stamp(start), parse_stamp(end)
+    return None if started is None or ended is None else ended - started
 
 
 def _job_resources(job: JobView) -> list[ResultLine]:

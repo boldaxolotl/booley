@@ -708,3 +708,36 @@ def test_zero_resource_measurements_are_recorded(tmp_path):
     )
     assert "CPU time: 0s" in text
     assert "Peak memory (largest process): 0 MiB" in text
+
+
+def test_job_detail_read_latency_unread_and_legacy():
+    from pathlib import Path
+
+    from booley.harness.dashboard.app import job_detail
+    from booley.harness.dashboard.jobs import JobView
+    from booley.runtime.timefmt import format_clock
+
+    def detail(state, **fields):
+        record = rec(status="done", **fields)
+        return job_detail(JobView(Path("/jobs"), record, state))
+
+    finished = {"ended_at": "2026-10-08T10:01:00Z", "owner": "mcp-stdio:one"}
+    # (a) The first-read time and how long the result waited after the Job ended.
+    read_at = "2026-10-08T10:03:10Z"
+    assert f"Read: {format_clock(read_at)} · 2m 10s after end" in detail(
+        "completed", **finished, read_at=read_at
+    )
+    # (b) A finished, owned, unread Job says so, orphaned ones included.
+    assert "Read: unread" in detail("completed", **finished)
+    assert "Read: unread" in detail("orphaned", **finished)
+    # (c) A record without an owner invents no latency, and (d) neither does a running Job.
+    assert "Read:" not in detail("completed", ended_at=finished["ended_at"])
+    assert "Read:" not in detail("running", owner="mcp-stdio:one")
+    # (e) A read without an end time shows the clock only.
+    clock_only = detail("completed", owner="mcp-stdio:one", read_at=read_at)
+    assert f"Read: {format_clock(read_at)}" in clock_only
+    assert "after end" not in clock_only
+    # A read stamped before the end clamps to zero rather than going negative.
+    assert "· 0s after end" in detail(
+        "completed", ended_at="2026-10-08T10:05:00Z", owner="o", read_at=read_at
+    )

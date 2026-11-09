@@ -112,6 +112,8 @@ RequestDispatch = Callable[
 ]
 Canonicalize = Callable[[str], str]
 DiscoveryError = Callable[[str], None]
+# Last step of a tool response: may add to a payload, e.g. a notice for the caller.
+Finalize = Callable[["McpToolPayload", McpRequestContext], "McpToolPayload"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,8 +139,10 @@ class McpApplication:
         canonicalize: Canonicalize,
         on_discovery_error: DiscoveryError,
         request_dispatch: RequestDispatch | None = None,
+        finalize: Finalize | None = None,
     ) -> None:
         self.live_catalog: LiveCatalog | None = None
+        self._finalize = finalize
         self._dispatch = dispatch
         self._request_dispatch = request_dispatch
         self._canonicalize = canonicalize
@@ -192,6 +196,17 @@ class McpApplication:
             )
         return result if isinstance(result, McpInputRequired) else _normalize_payload(result)
 
+    def finalize(
+        self, payload: McpToolPayload | McpInputRequired, request_context: McpRequestContext
+    ) -> McpToolPayload | McpInputRequired:
+        """Apply the response hook to a tool result; a form request is returned unchanged.
+
+        A form elicitation is not a tool result and its message is shown to the human.
+        """
+        if self._finalize is None or isinstance(payload, McpInputRequired):
+            return payload
+        return self._finalize(payload, request_context)
+
     def replace_tools(self, definitions: Iterable[Mapping[str, Any]]) -> None:
         """Validate a complete candidate before publishing one atomic generation."""
         errors: list[str] = []
@@ -201,6 +216,7 @@ class McpApplication:
             canonicalize=self._canonicalize,
             on_discovery_error=errors.append,
             request_dispatch=self._request_dispatch,
+            finalize=self._finalize,
         )
         self._generation = candidate._generation
         for error in errors:
