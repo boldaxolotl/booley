@@ -350,7 +350,11 @@ def test_doctor_reports_the_auto_choice_and_accepts_an_unpinned_auto_spec(
     assert ("Claude Code" if app == "claude" else "Codex") in chosen[0]
     assert ("Claude is preferred" in chosen[0]) == (kind == "both")
     configuration = _auto_spec_report(sandbox, monkeypatch, declared_provider=None)
-    assert {f.severity.value for f in configuration.findings} == {"pass"}
+    # An unpinned auto spec is accepted: no WARN or FAIL, only the note that it is
+    # hand-written and so not compared with what `booley init` would write.
+    assert [(f.severity.value, "hand-written" in f.message) for f in configuration.findings] == [
+        ("note", True)
+    ]
 
 
 def _auto_spec_report(sandbox, monkeypatch, *, declared_provider):
