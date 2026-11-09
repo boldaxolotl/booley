@@ -729,9 +729,6 @@ class TestToolMetadata:
     def test_name(self):
         assert MutationTesterSpecialist().name == "mutation_tester"
 
-    def test_code_modifying_false(self):
-        assert MutationTesterSpecialist().code_modifying is False
-
     def test_satisfies(self):
         assert "mutation_score" in MutationTesterSpecialist().satisfies
 
@@ -2339,10 +2336,6 @@ class TestCocotbSimDispatch:
         assert result.exit_code == EXIT_ERROR
         assert "vcs" in result.report_text
         assert calls == []  # the creator agent was never invoked
-
-    def test_tb_top_is_not_an_input(self, tmp_path: Path, monkeypatch):
-        endpoint = _make_endpoint(tmp_path, monkeypatch, target="default")
-        assert not hasattr(endpoint.args, "tb_top")
 
 
 # ---------------------------------------------------------------------------

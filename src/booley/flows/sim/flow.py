@@ -78,12 +78,11 @@ from booley.flows.sim.config import (
     resolve_pre_sim_commands,
     resolve_run_cwd,
     resolve_sim_build_timeout_ms,
+    resolve_sim_trace_convert_timeout_ms,
 )
-from booley.flows.sim.coverage_campaign import (
-    CoverageCampaign,
-    FrozenJson,
-)
+from booley.flows.sim.coverage_campaign import CoverageCampaign
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
+from booley.flows.sim.coverage_json import FrozenJson
 from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_report import coverage_metrics
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
@@ -2741,6 +2740,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 if resume_error is not None:
                     return resume_error
             self._effective_build_timeout_ms()
+            # A malformed conversion budget must refuse before any spawn too.
+            resolve_sim_trace_convert_timeout_ms(self.args.work_dir)
             # A malformed Pre-Sim Commands knob must refuse here, before any
             # authorization, admission, build or Pre-Sim spawn.
             resolve_pre_sim_commands(self.args.work_dir)
@@ -3088,14 +3089,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _get_timeout(self) -> int:
         """Wrapper timeout in seconds, derived from the effective timeout (ms).
 
-        The child runner owns the actual simulator wall-clock budget.  When
-        tracing is on, keep the wrapper alive long enough for FIFO closure,
-        bwave finalization, and report writing after the sim budget expires.
+        The child runner owns the actual simulator wall-clock budget. Every
+        caller that spawns a traced simulation passes its own explicit timeout.
         """
-        timeout_s = self._effective_timeout_ms() // 1000
-        if self.args.trace:
-            timeout_s += TRACE_CLEANUP_MARGIN_S
-        return timeout_s
+        return self._effective_timeout_ms() // 1000
 
     def _cocotb_module_for_target(self, target: str) -> str | None:
         """The Target's declared ``cocotb_module``, from a cheap ``.core`` read.

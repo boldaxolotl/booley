@@ -113,7 +113,6 @@ assert project_config._CONFIG_CACHE is None
 
 def test_host_policy_is_only_applied_by_eda_loaders(document, monkeypatch):
     from booley import eda as public_eda
-    from booley.eda import config as compatibility
     from booley.eda.provisioning import configuration
 
     document.write_text('[eda.vivado]\nprovisioning = "host"\n')
@@ -124,27 +123,6 @@ def test_host_policy_is_only_applied_by_eda_loaders(document, monkeypatch):
     assert eda.load_eda_config(document.parent) == {"vivado": eda.EdaConfig("vivado", "host")}
     assert settings._load_booley_toml(document.parent)["eda"]["vivado"]["provisioning"] == "host"
     assert project_config._get("PROJECT_NAME") == "rtl_project"
-    for loader in (
-        configuration.load_eda_config,
-        compatibility.load_eda_config,
-        public_eda.load_eda_config,
-    ):
+    for loader in (configuration.load_eda_config, public_eda.load_eda_config):
         with pytest.raises(eda.EdaConfigError, match="unsupported on Windows"):
             loader(document.parent)
-
-
-def test_compatibility_exports_preserve_value_and_error_identity():
-    from booley import eda as public_eda
-    from booley.config import flow_enablement
-    from booley.eda import config as compatibility
-    from booley.eda.provisioning import authority, configuration
-
-    assert public_eda.EdaConfig is compatibility.EdaConfig is eda.EdaConfig
-    assert public_eda.EdaConfigError is compatibility.EdaConfigError is eda.EdaConfigError
-    assert compatibility.parse_eda_config is eda.parse_eda_config
-    assert compatibility.retired_config_error is flow_enablement.retired_config_error
-    assert compatibility.installation_name_error is authority.installation_name_error
-    assert (
-        compatibility.validate_host_provisioning_platform
-        is configuration.validate_host_provisioning_platform
-    )

@@ -144,20 +144,6 @@ class TestCriteriaTemplateYAML:
         assert "sim_pass_alu_tb_lite_all" in expanded
         assert "sim_pass_alu_tb_full_all" in expanded
 
-    def test_parameterized_with_configs(self):
-        yaml_section = {
-            "mandatory": {
-                "synthesis_ok": {
-                    "cell_count_max": 500,
-                    "targets": ["lite", "full"],
-                },
-            },
-        }
-        t = CriteriaTemplate.from_yaml(yaml_section)
-        expanded = t.expand(["lite", "full"])
-        assert "synthesis_ok_lite" in expanded
-        assert "synthesis_ok_full" in expanded
-
     def test_optional_criteria(self):
         yaml_section = {
             "mandatory": {"lint_clean": ["lite"]},

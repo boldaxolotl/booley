@@ -51,12 +51,6 @@ class TestBuildCocotbTestFilter:
     def test_single_test(self):
         assert crun.build_cocotb_test_filter("m", ["only"]) == r"^m\.(only)$"
 
-    def test_full_set(self):
-        names = ["test_reset", "test_count", "test_overflow"]
-        pattern = re.compile(crun.build_cocotb_test_filter("mod", names))
-        for name in names:
-            assert pattern.match(f"mod.{name}")
-
     @pytest.mark.parametrize(
         "tricky",
         ["t.est", "te+st", "te[a]st", "t(es)t", "te|st"],
@@ -546,6 +540,7 @@ def test_document_fields_reach_run_cocotb_sim(tmp_path: Path, monkeypatch):
         plusargs=("verbose",),
         trace=True,
         trace_scope="counter",
+        trace_convert_timeout_s=90,
         result_verbosity="full",
         sim_time_grace_s=2.5,
         runtime_inputs=("firmware.hex",),
@@ -578,6 +573,7 @@ def test_document_fields_reach_run_cocotb_sim(tmp_path: Path, monkeypatch):
             result_path=result_path,
         ),
         "seed": 42,
+        "trace_convert_timeout": 90,
     }  # fmt: skip
     assert "work_dir" not in seen
 

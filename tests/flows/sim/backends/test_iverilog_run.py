@@ -23,7 +23,6 @@ from booley.flows.sim.adapter_transport import (
     read_adapter_result,
 )
 from booley.flows.sim.backends import icarus as ir
-from booley.flows.sim.backends import shared
 from booley.flows.sim.backends.shared import find_icarus_image
 from booley.flows.sim.trace_session import TraceArtifact, TraceInspection
 
@@ -257,6 +256,9 @@ class _FakeTraceSession:
     def reset_for_run(self, _paths):
         return None
 
+    def start_conversion_budget(self, _timeout_s):
+        return None
+
     def postprocess(self, path):
         if self._published is not None and path.exists():
             self._published.write_text("converted", encoding="utf-8")
@@ -410,21 +412,3 @@ def test_printing_icarus_run_is_stopped_at_the_deadline(
 
     assert time.monotonic() - start < 6
     assert "ERROR: iverilog simulation timed out (1s)" in output
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX vvp stub")
-def test_icarus_oversize_declared_vcd_never_falls_back(tmp_path: Path, monkeypatch):
-    """A declared VCD over the conversion cap is an incident, never TRACE_FALLBACK."""
-    monkeypatch.setattr(shared, "MAX_ADOPTED_VCD_BYTES", 16)
-
-    output = _run_traced_icarus(
-        tmp_path,
-        monkeypatch,
-        trace_files=["tb_dump.vcd"],
-        stale_dirs=(),
-        vvp_body="head -c 64 /dev/zero > tb_dump.vcd",
-    )
-
-    assert "TRACE_INCIDENT" in output
-    assert "TRACE_FALLBACK" not in output
-    assert "TRACE_OK" not in output

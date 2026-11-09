@@ -11,7 +11,7 @@ from booley.flows.sim.execution import pre_sim
 from booley.flows.sim.execution.contract import PreSimScopeStoppedError
 from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
 from booley.runtime import execution_recovery, supervised_execution
-from booley.runtime.execution_records import ExecutionId
+from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
 
 
 class _Processes:
@@ -35,8 +35,16 @@ def test_supervised_pre_sim_process_propagates_identity_and_unregisters(monkeypa
         processes=processes,
     )
     monkeypatch.setattr(pre_sim, "current_supervised_execution", lambda: scope)
-    monkeypatch.setattr(pre_sim.subprocess, "Popen", lambda *_args, **kwargs: process)
-    result = pre_sim._run_pre_sim_process(["tool"], cwd=Path(), env={}, timeout=1)
+    popen_envs: list[dict[str, str]] = []
+
+    def popen(*_args, **kwargs):
+        popen_envs.append(kwargs["env"])
+        return process
+
+    monkeypatch.setattr(pre_sim.subprocess, "Popen", popen)
+    result = pre_sim._run_pre_sim_process(["tool"], cwd=Path(), env={"KEEP": "1"}, timeout=1)
+    # The child sees the caller's env plus the supervising execution's identity.
+    assert popen_envs == [{"KEEP": "1", RUNTIME_EXECUTION_ENV: "e" * 32}]
     assert (result.args, result.returncode, result.stdout, result.stderr) == (
         ["tool"],
         0,

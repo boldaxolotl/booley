@@ -21,15 +21,12 @@ from booley.flows.sim.campaign.codec import (
     UnsupportedSimulationCampaignFormatError,
 )
 from booley.flows.sim.campaign_reports import report_link_ancestor, target_report_directory
-from booley.flows.sim.coverage_campaign import (
-    CoverageCampaign,
-    FrozenJson,
-    freeze_coverage_mapping,
-)
+from booley.flows.sim.coverage_campaign import CoverageCampaign
 from booley.flows.sim.coverage_campaign_store import (
     LoadedCoverageCampaign,
     load_coverage_campaign,
 )
+from booley.flows.sim.coverage_json import FrozenJson, freeze_coverage_mapping
 from booley.flows.sim.coverage_reference import (
     MAX_REFERENCE_BYTES,
     REFERENCE_SCHEMA,
@@ -192,7 +189,8 @@ def coverage_sources(
     campaign: CoverageCampaign, project_root: Path
 ) -> CoverageSourceClosure | None:
     """Return the complete verified closure, or report-only on any mismatch."""
-    from booley.flows.sim.coverage_provenance import content_digest, coverage_digest
+    from booley.flows.sim.coverage_json import content_digest
+    from booley.flows.sim.coverage_provenance import coverage_digest
     from booley.fusesoc.core_projection import projection_enabled
     from booley.targets.catalog import TargetCatalog
     from booley.targets.domain import FuseSocError
@@ -246,7 +244,8 @@ def verified_source_snapshot(
     campaign: CoverageCampaign, sources: CoverageSourceClosure | None
 ) -> CoverageSourceClosure | None:
     """Return a source snapshot only when every Campaign-bound digest agrees."""
-    from booley.flows.sim.coverage_provenance import content_digest, coverage_digest
+    from booley.flows.sim.coverage_json import content_digest
+    from booley.flows.sim.coverage_provenance import coverage_digest
 
     if sources is None or sources.target_identity != campaign.target.identity:
         return None

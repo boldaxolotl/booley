@@ -52,14 +52,11 @@ def test_serial_oracle_rejects_wrong_fractional_cadence():
 
 
 def test_seed_stream_has_literal_known_answer():
-    import hashlib
-
     from qa.missions.uart.evaluator.cases import seed_bytes
 
-    expected = hashlib.sha256(
-        b"booley.qa.uart.seed.v1\n0123456789abcdef0123456789abcdef\nUART-TXRX\n00000000\n00000000\n"
-    ).digest()
-    assert seed_bytes("0123456789abcdef0123456789abcdef", "UART-TXRX", 0, 32) == expected
+    # SHA-256 of the reviewed v1 message for (seed, "UART-TXRX", index 0, block 0).
+    expected = "1508a18e2e6c4ce0391198801df46b6df23a30f9fdd665c7a77cffc1d2764a78"
+    assert seed_bytes("0123456789abcdef0123456789abcdef", "UART-TXRX", 0, 32).hex() == expected
 
 
 def test_serial_oracle_rejects_unrequested_extra_frame():

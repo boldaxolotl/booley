@@ -83,6 +83,10 @@ class TraceSession:
         # Stall-kill state — set by start_monitor when it escalates to a kill.
         self._stall_killed = False
         self._stall_message: str | None = None
+        # One monotonic deadline bounds every post-run conversion of the attempt.
+        self._conversion_deadline: float | None = None
+        # Once postprocess ran, find() must not convert the same VCD a second time.
+        self._postprocessed = False
         now = _utc_now()
         self._status: dict[str, object] = {
             "schema_version": TRACE_STATUS_SCHEMA_VERSION,
@@ -318,7 +322,11 @@ class TraceSession:
         ``CurrentRunTraces`` instead.
         """
         result = discover_waveform(
-            self._work_dir, cache_dir=self.cache_dir, store_name=self.bwave_path.name
+            self._work_dir,
+            cache_dir=self.cache_dir,
+            store_name=self.bwave_path.name,
+            convert_raw_vcd=not self._postprocessed,
+            deadline=self._conversion_deadline,
         )
         if result.failure_kind == "ambiguous":
             raise SystemExit(result.detail)
@@ -382,6 +390,7 @@ class TraceSession:
         session work directory.
         """
         self._raw_trace_paths = raw_trace_paths
+        self._postprocessed = False
         for path in self.owned_outputs:
             path.unlink(missing_ok=True)
 
@@ -583,8 +592,13 @@ class TraceSession:
         kill_process_tree(sim_proc)
         bwave_proc.kill()
 
+    def start_conversion_budget(self, timeout_s: float) -> None:
+        """Fix the one deadline that bounds every post-run conversion of this attempt."""
+        self._conversion_deadline = time.monotonic() + timeout_s
+
     def postprocess(self, vcd_path: Path) -> None:
         """Windows/fallback: convert VCD file → .fst after sim completes."""
+        self._postprocessed = True
         detail = f"{vcd_path} (exists={vcd_path.exists()}; scope={self._trace_scope or '<all>'})"
         self.record_attempt("vcd_postprocess", "started", detail=detail)
         success = False
@@ -595,10 +609,16 @@ class TraceSession:
                 scope=self._trace_scope,
                 allow_unscoped_fallback=True,
                 existing_store=ExistingStorePolicy.REPLACE,
+                deadline=self._conversion_deadline,
             )
             self._render_conversion(result)
             self._record_conversion("vcd_postprocess_build", result)
             success = result.success
+            if not success and self._budget_spent():
+                print(
+                    "[bwave] WARNING: trace conversion ran out of its budget; "
+                    "raise [flows.sim].trace_convert_timeout_ms"
+                )
             if success:
                 self._publish_bwave(self.bwave_path)
             elif result.detail:
@@ -609,6 +629,11 @@ class TraceSession:
             self._settle_postprocess_artifacts(vcd_path, success=success)
         status = "success" if success else "vcd_only"
         self.record_attempt("vcd_postprocess", status, detail=detail)
+
+    def _budget_spent(self) -> bool:
+        """True once the attempt's conversion deadline has passed."""
+        deadline = self._conversion_deadline
+        return deadline is not None and time.monotonic() >= deadline
 
     def _settle_postprocess_artifacts(self, vcd_path: Path, *, success: bool) -> None:
         """Keep raw fallback artifacts inside the managed simulation directory."""

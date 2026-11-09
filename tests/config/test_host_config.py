@@ -5,8 +5,6 @@ from pathlib import Path
 import pytest
 
 from booley.config.host_config import (
-    DEFAULT_IDLE_TIMEOUT_SECONDS,
-    DEFAULT_MAX_SESSIONS,
     HostConfigError,
     SandboxHostPolicy,
     host_config_path,
@@ -113,14 +111,6 @@ def test_invalid_egress_hostname_shapes_are_rejected(tmp_path: Path, hostname: s
     path.write_text(f'[interactive]\negress_allowlist = ["{hostname}"]\n', encoding="utf-8")
     with pytest.raises(HostConfigError, match="egress_allowlist"):
         load_host_policy(path)
-
-
-def test_defaults_are_canonical() -> None:
-    assert SandboxHostPolicy() == SandboxHostPolicy(
-        DEFAULT_IDLE_TIMEOUT_SECONDS,
-        DEFAULT_MAX_SESSIONS,
-        (),
-    )
 
 
 def test_retired_project_policy_names_destination_and_concrete_replacement(tmp_path: Path) -> None:

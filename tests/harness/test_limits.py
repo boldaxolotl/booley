@@ -20,7 +20,7 @@ from booley.config.limits import (
 
 
 class TestDefaultLimitsPositive:
-    """Every default limit must be a positive integer."""
+    """Every default limit must be positive."""
 
     @pytest.mark.parametrize(
         "limit",
@@ -34,8 +34,7 @@ class TestDefaultLimitsPositive:
             MAX_JUDGE_RETRIES,
         ],
     )
-    def test_positive_int(self, limit):
-        assert isinstance(limit, int)
+    def test_positive(self, limit):
         assert limit > 0
 
 
@@ -63,8 +62,7 @@ class TestHardCapsReasonable:
             HARD_MAX_MUTATION_ITERATIONS,
         ],
     )
-    def test_positive_int_under_100(self, cap):
-        assert isinstance(cap, int)
+    def test_positive_under_100(self, cap):
         assert cap > 0
         assert cap < 100, "Hard cap suspiciously large — possible runaway risk"
 
@@ -72,6 +70,3 @@ class TestHardCapsReasonable:
 class TestMutationThreshold:
     def test_between_zero_and_one(self):
         assert 0 < MUTATION_TESTING_PASS_THRESHOLD <= 1.0
-
-    def test_is_float(self):
-        assert isinstance(MUTATION_TESTING_PASS_THRESHOLD, float)

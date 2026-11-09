@@ -62,7 +62,6 @@ def test_issue_660_directions_cover_every_static_import_form(
 
     matching = [problem for problem in problems if problem.rule == rule]
     assert matching
-    assert all(problem.dependency is not None for problem in matching)
     assert all(
         problem.dependency is not None
         and problem.dependency.source == "booley." + source.removesuffix(".py").replace("/", ".")

@@ -25,7 +25,9 @@ class Observer:
     def __init__(self):
         self.calls = []
 
-    async def attribution(self, arguments, metadata, client_name, *, request=None, tool="request"):
+    async def attribution(
+        self, arguments, metadata, client_name, *, request=None, tool="request", caller=None
+    ):
         return Attribution(
             "codex:" + metadata.get("threadId", "unknown"),
             "thread",
@@ -131,7 +133,7 @@ async def test_validation_unknown_input_required_and_stdio_outcomes(monkeypatch)
     assert observer.calls[-1][-1] == "input-required"
 
 
-def test_job_submitter_is_immutable_when_current_caller_changes():
+def test_job_record_is_stamped_with_the_submitting_call():
     from booley.mcp.call_context import CallContext
 
     rec = job_records.JobRecord("one", "sim", "2026-10-08T10:00:00Z", 60)
@@ -139,10 +141,6 @@ def test_job_submitter_is_immutable_when_current_caller_changes():
         Path("/fixture"), None, None, None, None, {}, None, session_key="codex:submitter"
     )
     server._JobManager._stamp_context(rec, context)
-    caller = McpRequestContext(
-        attribution=Attribution("codex:poller", "thread", "/other", "other")
-    )
-    assert caller.attribution.key == "codex:poller"
     assert rec.session_key == "codex:submitter"
     assert rec.work_dir == str(context.work_dir)
 
@@ -588,3 +586,19 @@ async def test_cancel_after_the_call_returned_keeps_its_real_outcome():
             observer,
         )
     assert observer.calls == [("codex:one", "ordinary", "completed")]
+
+
+@pytest.mark.asyncio
+async def test_routed_checkout_survives_a_failing_session_observer(tmp_path):
+    """Routing never depends on presentation: observer failure keeps the caller's checkout."""
+    from booley.mcp.peer_checkout import CallerCheckout
+
+    class Failing(Observer):
+        async def attribution(self, *_args, **_kwargs):
+            raise RuntimeError("registry exploded")
+
+    params = CallToolRequestParams(name="ordinary", arguments={})
+    request = await server._observed_request_context(
+        context(), params, Failing(), CallerCheckout(None, tmp_path)
+    )
+    assert request.checkout == tmp_path and request.attribution is None

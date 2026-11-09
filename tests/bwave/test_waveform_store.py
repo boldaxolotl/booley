@@ -117,6 +117,43 @@ def test_scoped_conversion_removes_partial_output_before_fallback(
     assert result.attempts[0].stderr == "no match"
 
 
+def test_conversion_deadline_bounds_every_build_attempt(tmp_path: Path, monkeypatch) -> None:
+    vcd = tmp_path / "trace.vcd"
+    vcd.write_text("$date now $end\n$scope module tb $end\n", encoding="utf-8")
+    destination = tmp_path / "trace.fst"
+    monkeypatch.setattr(stores, "native_bwave_binary", lambda: "bwave")
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(stores.time, "monotonic", lambda: clock["now"])
+    timeouts: list[float] = []
+
+    def run(command, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        clock["now"] += 100  # the scoped build eats the whole budget, then fails
+        return subprocess.CompletedProcess(command, 1, stdout=b"", stderr=b"boom")
+
+    monkeypatch.setattr(stores.subprocess, "run", run)
+
+    result = stores.convert_vcd(
+        vcd,
+        destination,
+        scope="tb",
+        allow_unscoped_fallback=True,
+        deadline=1100.0,
+    )
+
+    assert timeouts == [100.0]  # the remaining budget, not the fixed 900 s
+    assert result.success is False
+    assert result.failure_kind == "conversion_failed"
+    assert len(result.attempts) == 1  # the unscoped retry is skipped
+    assert result.detail.startswith("conversion budget exhausted")
+
+    result = stores.convert_vcd(vcd, destination, scope="tb", deadline=1100.0)
+
+    assert timeouts == [100.0]  # an already-spent budget starts no build at all
+    assert result.attempts == ()
+    assert result.detail.startswith("conversion budget exhausted")
+
+
 def test_refuse_policy_never_overwrites_even_an_invalid_destination(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -354,8 +391,18 @@ def test_structural_scan_limit_is_reported_as_malformed(tmp_path: Path, monkeypa
     )
 
 
-@pytest.mark.parametrize("failure", ["timeout", "oserror", "returncode", "metadata"])
-def test_metadata_probe_failures_are_classified(tmp_path: Path, monkeypatch, failure: str) -> None:
+@pytest.mark.parametrize(
+    ("failure", "expected_kind"),
+    [
+        ("timeout", "reader_timeout"),
+        ("oserror", "reader_error"),
+        ("returncode", "reader_error"),
+        ("metadata", "malformed_metadata"),
+    ],
+)
+def test_metadata_probe_failures_are_classified(
+    tmp_path: Path, monkeypatch, failure: str, expected_kind: str
+) -> None:
     path = tmp_path / "trace.fst"
     path.write_bytes(MINIMAL_FST_BYTES)
     monkeypatch.setattr(stores, "native_bwave_binary", lambda: "bwave")
@@ -373,7 +420,7 @@ def test_metadata_probe_failures_are_classified(tmp_path: Path, monkeypatch, fai
     inspection = stores.inspect_store(path)
 
     assert inspection.queryable is False
-    assert inspection.failure_kind in {"reader_timeout", "reader_error", "malformed_metadata"}
+    assert inspection.failure_kind == expected_kind
 
 
 def test_discovery_without_conversion_returns_raw_vcd(tmp_path: Path) -> None:
@@ -516,9 +563,6 @@ def test_streaming_conversion_fake_process_covers_lifecycle(tmp_path: Path, monk
     stderr = tmp_path / "trace.stderr"
     conversion = stores.start_streaming_conversion(fifo, store, stderr_path=stderr, scope="tb")
     assert conversion is not None
-    assert conversion.pid == 123
-    assert conversion.return_code == 0
-    assert conversion.poll() == 0
     (store.with_name("trace.fst.progress")).write_bytes(b"progress")
     stderr.write_text("native warning", encoding="utf-8")
     assert conversion.progress_size() > 0

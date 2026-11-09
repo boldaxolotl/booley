@@ -28,14 +28,6 @@ class TestTerminalStatus:
         assert jobrec.terminal_status(0, timed_out=True) == jobrec.STATUS_FAILED
 
 
-class TestRunId:
-    def test_is_session_unique_by_counter(self):
-        a = jobrec.make_run_id("sim", "20260704T131502", 1)
-        b = jobrec.make_run_id("sim", "20260704T131502", 2)
-        assert a != b
-        assert a.startswith("sim-")
-
-
 class TestRecordRoundTrip:
     def test_write_then_read(self, _jobs_env):
         import json

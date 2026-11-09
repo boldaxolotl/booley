@@ -60,8 +60,10 @@ class _Owner:
                 if reply is not None:
                     with suppress(OSError):  # the probe may hang up before it reads
                         connection.sendall(reply)
-                else:  # accepted, then silent until the probe gives up
-                    threading.Event().wait(1.0)
+                else:  # accepted, then silent until the probe gives up and hangs up
+                    connection.settimeout(5.0)
+                    with suppress(OSError):
+                        connection.recv(1)
 
     def close(self):
         self.listener.close()

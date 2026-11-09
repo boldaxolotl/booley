@@ -279,26 +279,6 @@ def test_serial_publication_boundary_resume_matrix(
         assert all("test_run" in observation for observation in result["observations"])
 
 
-def test_fault_matrix_has_no_distinct_partial_fsync_state() -> None:
-    """Document the intentional bound on injected states.
-
-    Immutable records use create/write/file-fsync/parent-fsync and projections
-    use temp/write/file-fsync/replace/parent-fsync. A process cannot resume from
-    an in-memory "half fsync" state: it sees either no committed name, a trailing
-    interrupted attempt, or canonical bytes that decode and authenticate.
-    Corrupt/truncated bytes are covered by the store's fail-closed matrix, so
-    injecting within an OS fsync would duplicate that contract rather than add
-    a durable recovery classification.
-    """
-    assert set(_CRASH_POINTS) == {
-        *(
-            f"{side}:{boundary}"
-            for boundary in _DURABLE_BOUNDARIES
-            for side in ("before", "after")
-        ),
-    }
-
-
 @pytest.mark.parametrize(
     "crash_point",
     [

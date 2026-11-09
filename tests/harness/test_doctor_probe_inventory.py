@@ -38,24 +38,10 @@ _PROBE_NAME_RE = re.compile(
     r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$)"
 )
 
-# The orchestrators whose call lists this ratchet pins. run_doctor is the
-# root; the _run_* entries are the phase groupings it delegates to.
-ORCHESTRATORS = (
-    "_run_container_checks",
-    "_run_container_tool_checks",
-    "_run_mcp_checks",
-    "_run_project_checks",
-    "_run_deep_checks",
-    "_run_deep_phase",
-    "_run_project_phase",
-    "_run_runtime_phase",
-    "_run_flow_and_core_phase",
-    "run_doctor_result",
-    "run_doctor",
-)
-
 # ---------------------------------------------------------------------------
 # Frozen inventories — the committed expectation this ratchet checks against.
+# Keys are the orchestrators whose call lists this ratchet pins: run_doctor is
+# the root; the _run_* entries are the phase groupings it delegates to.
 #
 # Derived from doctor.py as of 2026-07-26 by the same extractor that the test
 # runs (so a green run means "unchanged", not "re-derived"). When you wire a
@@ -194,7 +180,7 @@ def _probe_refs(func_name: str) -> frozenset[str]:
     node = _module_functions().get(func_name)
     assert node is not None, (
         f"orchestrator {func_name!r} no longer exists as a module-level "
-        f"function in {_DOCTOR_SRC} — update ORCHESTRATORS/EXPECTED_INVENTORY "
+        f"function in {_DOCTOR_SRC} — update EXPECTED_INVENTORY "
         "after verifying the restructure is deliberate"
     )
     names: set[str] = set()
@@ -211,12 +197,7 @@ def _probe_refs(func_name: str) -> frozenset[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_expected_inventory_covers_exactly_the_orchestrator_list() -> None:
-    """Keep ORCHESTRATORS and EXPECTED_INVENTORY keys in lockstep."""
-    assert set(EXPECTED_INVENTORY) == set(ORCHESTRATORS)
-
-
-@pytest.mark.parametrize("orchestrator", ORCHESTRATORS)
+@pytest.mark.parametrize("orchestrator", list(EXPECTED_INVENTORY))
 def test_orchestrator_probe_inventory(orchestrator: str) -> None:
     actual = _probe_refs(orchestrator)
     expected = EXPECTED_INVENTORY[orchestrator]

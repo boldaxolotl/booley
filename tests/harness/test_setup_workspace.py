@@ -159,57 +159,6 @@ def _assert_moved_worktree_portable(
     assert commit.returncode == 0, commit.stderr
 
 
-# ===========================================================================
-# Branch creation logic
-# ===========================================================================
-
-
-class TestBranchCreation:
-    """Every implementation Ticket owns an isolated branch."""
-
-    def test_integration_uses_ticket_branch(self):
-        branch = _pick_branch(is_integration=True, slug="fix-fsm", base_branch="int/batch-1")
-        assert branch == "fix-fsm"
-
-    def test_normal_uses_slug(self):
-        branch = _pick_branch(is_integration=False, slug="fix-fsm", base_branch="master")
-        assert branch == "fix-fsm"
-
-
-class TestBranchFallback:
-    """Test -b failure → checkout existing branch."""
-
-    def test_create_succeeds(self):
-        result = _try_create_branch("fix-fsm", create_rc=0)
-        assert result == "fix-fsm"
-
-    def test_create_fails_checkout_succeeds(self):
-        result = _try_create_branch("fix-fsm", create_rc=1, checkout_rc=0)
-        assert result == "fix-fsm"
-
-    def test_both_fail_returns_error(self):
-        result = _try_create_branch("fix-fsm", create_rc=1, checkout_rc=1)
-        assert result is None
-
-
-# ===========================================================================
-# Hook detection
-# ===========================================================================
-
-
-class TestHookDetection:
-    def test_hook_exists(self, tmp_path: Path):
-        hook = tmp_path / ".agents" / "hooks" / "worktree_create.sh"
-        hook.parent.mkdir(parents=True)
-        hook.write_text("#!/bin/bash\necho hello", encoding="utf-8")
-        assert hook.exists()
-
-    def test_hook_missing_blocks(self, tmp_path: Path):
-        hook = tmp_path / ".agents" / "hooks" / "worktree_create.sh"
-        result = _check_hook(hook)
-        assert "not found" in result
-
-
 class TestWorktreeCreateScript:
     def test_rejects_missing_explicit_branch_without_removing_stale_path(
         self, tmp_path: Path
@@ -413,7 +362,7 @@ class TestWorktreeCreateScript:
 
 
 # ===========================================================================
-# Helpers -- replicate pure logic from setup/workspace.py
+# Helpers
 # ===========================================================================
 
 
@@ -427,35 +376,3 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
         check=False,
         timeout=SUBPROCESS_TIMEOUT_S,
     )
-
-
-def _pick_branch(is_integration: bool, slug: str, base_branch: str) -> str:
-    """Replicate branch selection logic."""
-    del is_integration, base_branch
-    return slug
-
-
-def _try_create_branch(name: str, create_rc: int = 0, checkout_rc: int = 0) -> str | None:
-    """Replicate branch creation with fallback."""
-    if create_rc == 0:
-        return name
-    if checkout_rc == 0:
-        return name
-    return None
-
-
-def _check_hook(hook_path: Path) -> str | None:
-    """Replicate hook existence check."""
-    if not hook_path.exists():
-        return f"Worktree hook not found: {hook_path}"
-    return None
-
-
-# ===========================================================================
-# Integration tests — call actual workspace-setup run() with mocked subprocess
-# ===========================================================================
-
-
-# ===========================================================================
-# Hardening regression tests
-# ===========================================================================

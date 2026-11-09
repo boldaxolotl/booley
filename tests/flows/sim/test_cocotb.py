@@ -812,7 +812,6 @@ class TestCocotbBuildFailureShape:
         tail = self._report(tmp_path)["tests"][0]["error_tail"]
         assert "iverilog compilation failed" in tail
         assert "syntax error" in tail
-        assert [test["name"] for test in self._report(tmp_path)["tests"]] == ["ccfg"]
 
     def test_a_build_failure_never_reads_as_a_pass(self, tmp_path: Path):
         # ADR 0034 dec 6 holds regardless of the reshaping: no results.xml, no

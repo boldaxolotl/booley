@@ -44,7 +44,11 @@ from booley.flows.sim.backends.shared import (
     RunTermination,
 )
 from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
-from booley.flows.sim.backends.trace_finalization import finalize_trace
+from booley.flows.sim.backends.trace_finalization import (
+    finalize_trace,
+    native_pending_publisher,
+)
+from booley.flows.sim.config import DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S
 from booley.flows.sim.result import format_infra_error
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.trace_session import TraceSession
@@ -210,6 +214,7 @@ class _TraceRuntime:
     current: CurrentRunTraces | None
     mode: TraceMode
     conversion: StreamingConversion | None
+    convert_timeout_s: int = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S
 
 
 def _resolve_run_paths(
@@ -234,6 +239,7 @@ def _prepare_trace_runtime(
     cmd: list[str],
     trace_args: list[str] | None,
     trace_mode: TraceMode,
+    convert_timeout_s: int = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S,
 ) -> _TraceRuntime:
     """Prepare trace output, freshness evidence, and any FIFO converter."""
     session = TraceSession(paths.work_dir, trace_scope, backend="verilator") if enabled else None
@@ -254,6 +260,7 @@ def _prepare_trace_runtime(
         current=current,
         mode=trace_mode,
         conversion=conversion,
+        convert_timeout_s=convert_timeout_s,
     )
 
 
@@ -295,6 +302,7 @@ def _finalize_verilated_run(
     pass_sentinels: list[str] | None,
     fail_sentinels: list[str] | None,
     termination: RunTermination,
+    transport: AdapterTransportIdentity | None,
 ) -> tuple[str, AdapterTraceResult | None]:
     """Persist the verdict and validate any trace produced by the current run."""
     output = "".join(lines)
@@ -313,6 +321,15 @@ def _finalize_verilated_run(
     trace_output, trace_result = finalize_trace(
         trace.current,
         proc,
+        convert_timeout_s=trace.convert_timeout_s,
+        publish_pending=native_pending_publisher(
+            transport,
+            output,
+            proc.returncode,
+            pass_sentinels=pass_sentinels,
+            fail_sentinels=fail_sentinels,
+            termination=termination,
+        ),
         conversion=trace.conversion,
         raw_vcd=raw_vcd if trace.mode is TraceMode.VCD_FIFO and trace.conversion is None else None,
     )
@@ -356,6 +373,7 @@ def run_verilated_binary(
     max_rundir_bytes: int = 0,
     runtime_inputs: tuple[str, ...] = (),
     transport: AdapterTransportIdentity | None = None,
+    trace_convert_timeout: int = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S,
 ) -> NativeRun:
     """Run one edalize-built ``V<top>`` under the resolved trace recipe."""
     paths = _resolve_run_paths(bin_dir, run_cwd, work_dir)
@@ -365,7 +383,9 @@ def run_verilated_binary(
         return _missing_binary_result(paths, top_module, transport, pass_sentinels, fail_sentinels)
     scope = _resolve_single_scope(trace_scope)
     cmd, env = _build_run_cmd(exe, paths.bin_dir, plusargs)
-    trace = _prepare_trace_runtime(paths, vcd, scope, trace_files, cmd, trace_args, trace_mode)
+    trace = _prepare_trace_runtime(
+        paths, vcd, scope, trace_files, cmd, trace_args, trace_mode, trace_convert_timeout
+    )
     _print_verilator_banner(top_module, paths.run_cwd, cmd)
     return _execute_verilated_and_publish(
         cmd,
@@ -414,6 +434,7 @@ def _execute_verilated_and_publish(
         pass_sentinels,
         fail_sentinels,
         termination,
+        transport,
     )
     return _publish_adapter_result(
         transport,
@@ -450,6 +471,7 @@ def _run_work(work: PreparedSimulationWork) -> int:
         max_rundir_bytes=work.max_rundir_bytes,
         runtime_inputs=work.runtime_inputs,
         transport=work_transport_identity(work),
+        trace_convert_timeout=work.trace_convert_timeout_s,
     )
     return run.exit_code
 

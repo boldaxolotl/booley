@@ -60,7 +60,11 @@ from booley.flows.sim.backends.shared import (
     find_icarus_image,
 )
 from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
-from booley.flows.sim.backends.trace_finalization import finalize_trace
+from booley.flows.sim.backends.trace_finalization import (
+    finalize_trace,
+    native_pending_publisher,
+)
+from booley.flows.sim.config import DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S
 from booley.flows.sim.trace_session import TraceSession
 
 # The dump module's explicit ``$dumpfile`` name — identical to iverilog's
@@ -210,6 +214,7 @@ def run_icarus_image(
     max_rundir_bytes: int = 0,
     runtime_inputs: tuple[str, ...] = (),
     transport: AdapterTransportIdentity | None = None,
+    trace_convert_timeout: int = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S,
 ) -> NativeRun:
     """Run an edalize-built vvp image once and return its output and verdict."""
     run = _prepare_icarus_run(
@@ -237,7 +242,18 @@ def run_icarus_image(
     trace_result = None
     if run.current is not None:
         trace_output, trace_result = finalize_trace(
-            run.current, proc, raw_vcd=run.run_cwd / _DEFAULT_VCD_NAME, vcd_fallback=True
+            run.current,
+            proc,
+            convert_timeout_s=trace_convert_timeout,
+            publish_pending=native_pending_publisher(
+                transport,
+                output,
+                proc.returncode,
+                pass_sentinels=pass_sentinels,
+                fail_sentinels=fail_sentinels,
+                termination=termination,
+            ),
+            raw_vcd=run.run_cwd / _DEFAULT_VCD_NAME,
         )
         output += trace_output
     return _publish_adapter_result(
@@ -272,6 +288,7 @@ def _run_work(work: PreparedSimulationWork) -> int:
         max_rundir_bytes=work.max_rundir_bytes,
         runtime_inputs=work.runtime_inputs,
         transport=work_transport_identity(work),
+        trace_convert_timeout=work.trace_convert_timeout_s,
     )
     return run.exit_code
 

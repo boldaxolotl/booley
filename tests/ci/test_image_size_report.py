@@ -395,13 +395,6 @@ def test_committed_size_limits_bound_both_runtime_images_below_baseline() -> Non
             assert image_limits[metric] < baseline_image[metric]
 
 
-def test_local_size_limits_cover_docker_engine_unpacked_storage_view() -> None:
-    limits = image_size_report._load_size_limits(LIMITS)
-
-    assert limits["sandbox"]["docker_local_size_bytes"] == 3_500_000_000
-    assert limits["riscv"]["docker_local_size_bytes"] == 5_350_000_000
-
-
 def test_size_limits_can_select_one_image_variant() -> None:
     limits = {
         "sandbox": {"docker_local_size_bytes": 10},

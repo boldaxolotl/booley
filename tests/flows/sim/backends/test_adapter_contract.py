@@ -66,6 +66,7 @@ def test_work_document_round_trips_every_field() -> None:
         "trace_scope": "tb",
         "trace_args": ("--trace={file}",),
         "trace_files": ("dump.vcd",),
+        "trace_convert_timeout_s": 90,
         "runtime_inputs": ("firmware.hex",),
         "pass_sentinels": ("PASS",),
         "fail_sentinels": ("FAIL",),

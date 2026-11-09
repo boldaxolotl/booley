@@ -141,10 +141,6 @@ def test_missing_standard_parent_stops_flavor_build(flavor_repo, monkeypatch):
     assert "standard parent" in ctx.results[-1].detail
 
 
-class TestFlavorDispatch:
-    pass
-
-
 class TestFlavorStaleness:
     def test_flavor_shares_the_base_fingerprint_label(self, monkeypatch):
         """`_image_is_stale` must read the label off the image it is asked about,

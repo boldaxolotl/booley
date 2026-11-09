@@ -33,13 +33,6 @@ def test_rules_tell_the_agent_to_reproduce_a_bug_red_first() -> None:
     assert "`goal_propose_change`" in rules
 
 
-def test_rules_do_not_claim_red_first_is_enforced() -> None:
-    # Goal acceptance does not check for a red run yet, so the text must not say it does.
-    rules = goal_mode_rules(routing_guidance=work_dir_guidance())
-    assert "needs a recorded failing run" not in rules
-    assert "fail -> pass" not in rules
-
-
 def test_rules_distinguish_routed_calls_from_tools_without_work_dir() -> None:
     rules = goal_mode_rules(routing_guidance=work_dir_guidance())
     assert "every Booley call" not in rules

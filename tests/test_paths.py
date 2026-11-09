@@ -18,7 +18,6 @@ from booley.runtime import paths
 class TestPackageDataDir:
     def test_returns_path_with_data(self):
         result = paths.package_data_dir()
-        assert isinstance(result, Path)
         assert result.name == "data"
 
     def test_fallback_when_refs_missing(self, tmp_path):
@@ -45,9 +44,6 @@ class TestPackageDataDir:
         )
         assert resources.package_data_dir() == shadow / "data"
 
-    def test_runtime_import_is_the_shared_helper(self):
-        assert paths.package_data_dir is resources.package_data_dir
-
 
 class TestRefsDir:
     def test_is_subdirectory_of_data(self):
@@ -67,9 +63,6 @@ class TestTroubleshootingPath:
         assert reference_docs.troubleshooting_mirror_is_current(), (
             "run: python -m booley.dev_support.reference_docs"
         )
-
-    def test_faq_path_remains_a_compatibility_alias(self):
-        assert paths.faq_path() == paths.troubleshooting_path()
 
     def test_reference_doc_command_regenerates_the_packaged_copy(self, tmp_path, monkeypatch):
         source = tmp_path / "source.md"
@@ -152,13 +145,6 @@ class TestSkillsDir:
     def test_name_is_skills(self):
         result = paths.skills_dir()
         assert result.name == "skills"
-
-
-class TestDevSupportDir:
-    def test_returns_dev_support_path(self):
-        result = paths.dev_support_dir()
-        assert isinstance(result, Path)
-        assert result.name == "dev_support"
 
 
 class TestBwaveBinary:

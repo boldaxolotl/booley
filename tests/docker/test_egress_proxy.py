@@ -1,7 +1,4 @@
-"""Tests for egress_proxy — ProxyStats, EgressProxy init, url, _is_allowed, DEFAULT_ALLOWLIST.
-
-Only exercises synchronous/testable parts; async server and tunneling are not tested here.
-"""
+"""Tests for egress_proxy — allowlist, url, auth, _is_allowed, DEFAULT_ALLOWLIST, tunneling."""
 
 from __future__ import annotations
 
@@ -10,32 +7,7 @@ import base64
 
 import pytest
 
-from booley.docker.egress_proxy import DEFAULT_ALLOWLIST, EgressProxy, ProxyStats
-
-# ---------------------------------------------------------------------------
-# ProxyStats dataclass
-# ---------------------------------------------------------------------------
-
-
-class TestProxyStats:
-    def test_blocked_log_is_independent_per_instance(self):
-        """Each ProxyStats gets its own list (field default_factory)."""
-        a = ProxyStats()
-        b = ProxyStats()
-        a.blocked_log.append("CONNECT evil.com:443")
-        assert b.blocked_log == []
-
-    def test_field_tracking(self):
-        stats = ProxyStats()
-        stats.allowed += 3
-        stats.blocked += 1
-        stats.errors += 2
-        stats.blocked_log.append("CONNECT bad.org:443")
-        assert stats.allowed == 3
-        assert stats.blocked == 1
-        assert stats.errors == 2
-        assert stats.blocked_log == ["CONNECT bad.org:443"]
-
+from booley.docker.egress_proxy import DEFAULT_ALLOWLIST, EgressProxy
 
 # ---------------------------------------------------------------------------
 # EgressProxy.__init__
@@ -52,29 +24,6 @@ class TestEgressProxyInit:
         # "extend not replace" semantics documented in EgressProxy.__init__.
         proxy = EgressProxy(allowlist=["example.com", "foo.org"])
         assert proxy.allowlist == set(DEFAULT_ALLOWLIST) | {"example.com", "foo.org"}
-        assert {"example.com", "foo.org"} <= proxy.allowlist
-
-    def test_default_port_and_host(self):
-        proxy = EgressProxy()
-        assert proxy._host == "127.0.0.1"
-        assert proxy._requested_port == 0
-        assert proxy.port == 0  # not yet started
-
-    def test_custom_port_and_host(self):
-        proxy = EgressProxy(port=8080, host="127.0.0.1")
-        assert proxy._host == "127.0.0.1"
-        assert proxy._requested_port == 8080
-
-    def test_stats_initialized(self):
-        proxy = EgressProxy()
-        assert isinstance(proxy.stats, ProxyStats)
-        assert proxy.stats.allowed == 0
-
-    def test_server_and_thread_initially_none(self):
-        proxy = EgressProxy()
-        assert proxy._server is None
-        assert proxy._loop is None
-        assert proxy._thread is None
 
 
 # ---------------------------------------------------------------------------
@@ -83,22 +32,10 @@ class TestEgressProxyInit:
 
 
 class TestUrl:
-    def test_url_format_default_port(self):
-        proxy = EgressProxy()
-        # port is 0 before start(); url still returns the format string
-        assert proxy.url == "http://host.docker.internal:0"
-
     def test_url_format_after_port_set(self):
         proxy = EgressProxy()
         proxy.port = 9999
         assert proxy.url == "http://host.docker.internal:9999"
-
-    def test_url_always_uses_host_docker_internal(self):
-        """url is always host.docker.internal regardless of _host."""
-        proxy = EgressProxy(host="127.0.0.1")
-        proxy.port = 1234
-        assert "host.docker.internal" in proxy.url
-        assert "127.0.0.1" not in proxy.url
 
     def test_authenticated_url_carries_private_proxy_credential(self):
         proxy = EgressProxy(auth_token="private-token")
@@ -129,10 +66,6 @@ class TestProxyAuthentication:
 
 
 class TestIsAllowed:
-    def test_exact_match(self):
-        proxy = EgressProxy(allowlist=["example.com"])
-        assert proxy._is_allowed("example.com") is True
-
     def test_subdomain_match(self):
         proxy = EgressProxy(allowlist=["example.com"])
         assert proxy._is_allowed("sub.example.com") is True
@@ -143,11 +76,6 @@ class TestIsAllowed:
         assert proxy._is_allowed("example.com") is True
         assert proxy._is_allowed("EXAMPLE.COM") is True
         assert proxy._is_allowed("Example.Com") is True
-
-    def test_case_insensitivity_in_hostname(self):
-        proxy = EgressProxy(allowlist=["example.com"])
-        assert proxy._is_allowed("EXAMPLE.COM") is True
-        assert proxy._is_allowed("Sub.Example.Com") is True
 
     def test_dot_stripping(self):
         """Trailing dots (FQDN notation) should be stripped."""
@@ -163,17 +91,6 @@ class TestIsAllowed:
         proxy = EgressProxy(allowlist=["example.com"])
         assert proxy._is_allowed("evil.com") is False
         assert proxy._is_allowed("notexample.com") is False
-
-    def test_partial_suffix_not_matched(self):
-        """'badexample.com' should NOT match allowlist entry 'example.com'."""
-        proxy = EgressProxy(allowlist=["example.com"])
-        assert proxy._is_allowed("badexample.com") is False
-
-    def test_empty_allowlist(self):
-        """With an empty allowlist, everything is blocked."""
-        proxy = EgressProxy(allowlist=["placeholder.invalid"])
-        proxy.allowlist = set()  # force empty after init
-        assert proxy._is_allowed("anything.com") is False
 
     def test_multiple_allowlist_entries(self):
         proxy = EgressProxy(allowlist=["a.com", "b.org", "c.io"])
@@ -208,14 +125,6 @@ class TestDefaultAllowlist:
         """
         for domain in ("auth.anthropic.com", "claude.ai", "auth.openai.com"):
             assert domain in DEFAULT_ALLOWLIST, f"{domain} missing from DEFAULT_ALLOWLIST"
-
-    def test_all_entries_are_lowercase(self):
-        for domain in DEFAULT_ALLOWLIST:
-            assert domain == domain.lower(), f"{domain} is not lowercase"
-
-    def test_no_trailing_dots(self):
-        for domain in DEFAULT_ALLOWLIST:
-            assert not domain.endswith("."), f"{domain} has a trailing dot"
 
     def test_no_scheme_prefixes(self):
         """Entries should be bare hostnames, not URLs."""

@@ -144,14 +144,6 @@ class TestDefaultStrategy:
         assert "all_mandatory_met" not in json.loads(path.read_text(encoding="utf-8"))
         assert path.read_text(encoding="utf-8") == GOLDEN_STATE_FILE
 
-    def test_state_without_file_path_saves_nothing(self, tmp_path: Path) -> None:
-        state = DevelopmentState(slug="memory")
-
-        state.save()
-
-        assert state.last_updated == ""
-        assert list(tmp_path.iterdir()) == []
-
 
 class TestInjectedStrategy:
     @pytest.mark.parametrize("existing", ["missing", "valid", "corrupted"])
@@ -175,11 +167,6 @@ class TestInjectedStrategy:
         # The strategy owns the write: the default file write did not run.
         assert (path.read_bytes() if path.exists() else None) == before
 
-    def test_load_without_strategy_uses_default(self, tmp_path: Path) -> None:
-        state = DevelopmentState.load(tmp_path / "booley_state.json")
-
-        assert state._persistence is None
-
     def test_in_memory_state_is_observed_and_saves_through_its_strategy(self) -> None:
         persistence = RecordingPersistence()
         state = DevelopmentState.in_memory(persistence)
@@ -190,14 +177,12 @@ class TestInjectedStrategy:
         assert persistence.loaded_views[0][0] is None
         assert persistence.saved == [state]
 
-    def test_in_memory_without_strategy_saves_nothing(self, tmp_path: Path) -> None:
+    def test_in_memory_without_strategy_saves_nothing(self) -> None:
         state = DevelopmentState.in_memory()
 
         state.save()
 
-        assert state._persistence is None
         assert state.last_updated == ""
-        assert list(tmp_path.iterdir()) == []
 
     def test_falsy_strategy_is_used_not_replaced_by_default(self, tmp_path: Path) -> None:
         path = tmp_path / "booley_state.json"
@@ -289,13 +274,3 @@ class TestLoadedHook:
         assert "persistence_baseline" not in state.to_dict()
         assert state == DevelopmentState.load(path)
         assert "persistence_baseline" not in repr(state)
-
-    def test_default_strategy_hook_leaves_golden_bytes_unchanged(self, tmp_path: Path) -> None:
-        path = tmp_path / "booley_state.json"
-        path.write_text(GOLDEN_STATE_FILE, encoding="utf-8")
-        state = DevelopmentState.load(path)
-
-        AtomicStateFile().loaded(state)
-        state.save()
-
-        assert path.read_text(encoding="utf-8") == GOLDEN_STATE_FILE

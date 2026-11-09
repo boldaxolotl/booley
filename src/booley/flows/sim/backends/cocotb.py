@@ -92,6 +92,7 @@ from booley.flows.sim.backends.shared import (
 )
 from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
 from booley.flows.sim.backends.trace_finalization import finalize_trace
+from booley.flows.sim.config import DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S
 from booley.flows.sim.result import (
     count_sva_errors,
     describe_error_message_count,
@@ -971,6 +972,39 @@ def _execute_cocotb_run(
     )
 
 
+def _pending_trace_publisher(
+    run: _CocotbRun,
+    output: str,
+    returncode: int,
+    termination: RunTermination,
+    transport: AdapterTransportIdentity | None,
+) -> Callable[[AdapterTraceResult], None] | None:
+    """Publish the simulation's verdict plus a trace incident before conversion starts.
+
+    A kill or crash during conversion then still leaves the verdict (never
+    ``timeout``) behind. Written in addition to the mid-simulation progress partial.
+    """
+    if transport is None:
+        return None
+    partial = partial_result_identity(transport)
+
+    def publish(pending: AdapterTraceResult) -> None:
+        results = _load_cocotb_results(run.results_file, output, termination.aborted, run.tests)
+        ran_clean = returncode == 0 and not count_sva_errors(output)
+        _publish_adapter_result(
+            partial,
+            output,
+            ran_clean and results.state == STATE_OK,
+            results=results,
+            failure_kind="" if ran_clean else "design",
+            trace=pending,
+            termination=termination,
+            simulator_returncode=returncode,
+        )
+
+    return publish
+
+
 def _complete_cocotb_run(
     run: _CocotbRun,
     lines,
@@ -978,12 +1012,19 @@ def _complete_cocotb_run(
     termination: RunTermination,
     result_verbosity: str,
     transport: AdapterTransportIdentity | None,
+    trace_convert_timeout: int = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S,
 ) -> int:
     output = "".join(lines)
     trace_result = None
     if run.current is not None:
         trace_output, trace_result = finalize_trace(
-            run.current, proc, raw_vcd=run.run_cwd / _DEFAULT_VCD_NAME
+            run.current,
+            proc,
+            convert_timeout_s=trace_convert_timeout,
+            publish_pending=_pending_trace_publisher(
+                run, output, proc.returncode, termination, transport
+            ),
+            raw_vcd=run.run_cwd / _DEFAULT_VCD_NAME,
         )
         output += trace_output
     trace_failure = (
@@ -1038,6 +1079,7 @@ def run_cocotb_sim(
     runtime_inputs: tuple[str, ...] = (),
     transport: AdapterTransportIdentity | None = None,
     seed: int | None = None,
+    trace_convert_timeout: int = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S,
 ) -> int:
     """Run the edalize-built Cocotb simulator once; *seed* seeds cocotb's Python side."""
     tests = list(tests or [])
@@ -1067,7 +1109,9 @@ def run_cocotb_sim(
         transport,
         runtime_inputs,
     )
-    return _complete_cocotb_run(run, lines, proc, termination, result_verbosity, transport)
+    return _complete_cocotb_run(
+        run, lines, proc, termination, result_verbosity, transport, trace_convert_timeout
+    )
 
 
 def _run_work(work: PreparedSimulationWork) -> int:
@@ -1088,6 +1132,7 @@ def _run_work(work: PreparedSimulationWork) -> int:
         runtime_inputs=work.runtime_inputs,
         transport=work_transport_identity(work),
         seed=work.cocotb_seed,
+        trace_convert_timeout=work.trace_convert_timeout_s,
     )
 
 
