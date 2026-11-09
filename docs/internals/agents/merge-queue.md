@@ -219,6 +219,8 @@ Mergify gives PRs with either of these labels the same high-priority tier:
 
 - `urgent`: an incident or regression whose delay is actively blocking or
   degrading repository development or a release.
+  Renovate security PRs carry it by configuration; keep it unless the advisory
+  does not affect Booley, then remove it before queueing.
 - `ci`: a change whose primary purpose is to restore or materially improve
   required CI or merge infrastructure.
 
