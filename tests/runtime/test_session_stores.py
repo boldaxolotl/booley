@@ -106,12 +106,14 @@ def test_store_scan_rejects_symlinked_entry(project: Path, tmp_path: Path) -> No
 
 def test_store_names_project_root_by_platform_case_rule(monkeypatch: pytest.MonkeyPatch) -> None:
     upper, mixed = "C:\\Work\\Project", "c:\\work\\PROJECT"
+    # Capture first: on POSIX the patch target is posixpath itself.
+    posix_normcase = posixpath.normcase
     monkeypatch.setattr(private_store.os.path, "normcase", ntpath.normcase)
     assert session_issuance.stamp_path_for_identity(upper) == (
         session_issuance.stamp_path_for_identity(mixed)
     )
 
-    monkeypatch.setattr(private_store.os.path, "normcase", posixpath.normcase)
+    monkeypatch.setattr(private_store.os.path, "normcase", posix_normcase)
     assert session_issuance.stamp_path_for_identity(upper) != (
         session_issuance.stamp_path_for_identity(mixed)
     )
