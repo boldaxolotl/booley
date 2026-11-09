@@ -1,6 +1,5 @@
 """Advisory interpretation of immutable native Coverage Campaign evidence."""
 
-import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -15,17 +14,22 @@ from booley.flows.sim.coverage_analysis_input import (
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     CoveragePoint,
-    FrozenJson,
     decode_coverage_point_id,
     encode_coverage_campaign,
     encode_coverage_point,
-    freeze_coverage_mapping,
 )
 from booley.flows.sim.coverage_campaign_store import (
     CAMPAIGN_SCHEMA_V5,
     CoverageCampaignSummary,
 )
 from booley.flows.sim.coverage_evidence import is_coverage_point_reference
+from booley.flows.sim.coverage_json import (
+    SHA256_PREFIX,
+    FrozenJson,
+    content_digest,
+    coverage_mapping_document,
+    freeze_coverage_mapping,
+)
 
 
 @dataclass(frozen=True)
@@ -35,7 +39,7 @@ class CoverageAnalysisReport:
     document: Mapping[str, FrozenJson]
 
     def to_dict(self) -> dict[str, object]:
-        return json.loads(json.dumps(self.document, default=_json_value))
+        return coverage_mapping_document(self.document)
 
 
 @dataclass(frozen=True)
@@ -45,12 +49,6 @@ class CoverageModelResult:
     response: object
     analysis_scope: Mapping[str, FrozenJson]
     point_references: Mapping[str, str]
-
-
-def _json_value(value: object) -> object:
-    if isinstance(value, Mapping):
-        return dict(value)
-    raise TypeError(f"Not JSON data: {type(value).__name__}")
 
 
 @dataclass(frozen=True)
@@ -72,7 +70,7 @@ def _analysis_envelope(
     manifest = None
     if summary is not None:
         storage_schema = summary.source_schema
-        manifest = cast(dict[str, object], _json_value(summary.document))
+        manifest = coverage_mapping_document(summary.document)
         point_store = manifest.get("point_store")
     reference = {
         "campaign_reference": {
@@ -152,17 +150,18 @@ def _analysis_prompt(
     instruction: str,
 ) -> str:
     return json.dumps(
-        {
-            **envelope.model_campaign,
-            "evidence_access": (
-                "Use the coverage_evidence tool for overview, zero_point_sources, points, and verified source "
-                "excerpts. Begin with overview, retrieve only evidence needed for the "
-                "analysis, and cite only point_ref values returned by the tool."
-            ),
-            "source_access": "verified" if sources is not None else "report_only",
-            "instruction": instruction,
-        },
-        default=_json_value,
+        coverage_mapping_document(
+            {
+                **envelope.model_campaign,
+                "evidence_access": (
+                    "Use the coverage_evidence tool for overview, zero_point_sources, points, and verified source "
+                    "excerpts. Begin with overview, retrieve only evidence needed for the "
+                    "analysis, and cite only point_ref values returned by the tool."
+                ),
+                "source_access": "verified" if sources is not None else "report_only",
+                "instruction": instruction,
+            }
+        )
     )
 
 
@@ -361,7 +360,7 @@ def _resolve_reference(
 
 def _reference_fingerprint(value: object) -> str:
     raw = value.encode() if isinstance(value, str) else type(value).__name__.encode()
-    return f"sha256:{hashlib.sha256(raw).hexdigest()[:12]}"
+    return content_digest(raw)[: len(SHA256_PREFIX) + 12]
 
 
 def _raise_reference_issues(issues: list[_ReferenceIssue]) -> None:

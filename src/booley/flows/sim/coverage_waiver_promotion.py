@@ -14,13 +14,13 @@ anything is written; that loader is the only validation gate.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from booley.config.coverage_waiver_inputs import is_safe_relative_posix
+from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.waiver_candidates import WaiverCandidate
 
 APPROVAL_SCHEMA = "booley.coverage-waivers/v1"
@@ -94,7 +94,7 @@ class WaiverPromotion:
             record["proof"] = {
                 "kind": REVIEW_PROOF_KIND,
                 "reference": review_proof_path(waiver_id),
-                "sha256": f"sha256:{hashlib.sha256(self.proof).hexdigest()}",
+                "sha256": content_digest(self.proof),
             }
         return record
 
