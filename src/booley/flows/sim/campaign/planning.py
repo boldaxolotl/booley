@@ -475,7 +475,7 @@ def derive_runtime_input_declarations(
 
 
 def finalize_manifest(document: Mapping[str, object]) -> SimulationCampaignManifest:
-    """Compute every component fingerprint and return a strictly validated manifest."""
+    """Compute every component fingerprint and return the decoded manifest."""
     mutable = _json_copy(document)
     required = {
         "$schema",

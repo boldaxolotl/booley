@@ -488,49 +488,6 @@ def test_relative_cycle_goals_on_two_tests_share_one_baseline_campaign(tmp_path,
     assert counters["launch"] == 2  # the shared baseline already ran; only the candidate runs
 
 
-def test_prerequisites_may_share_a_campaign_but_not_a_work_item():
-    """Prerequisites are unique by work item; one campaign is referenced consistently."""
-    from booley.flows.sim.campaign.codec import (
-        SimulationCampaignIntegrityError,
-        canonical_json_bytes,
-        decode_simulation_campaign_manifest,
-    )
-
-    baseline = _cycle_baseline_manifest(("alpha", "beta"))
-    reference = {
-        "path_base": "origin_invocation",
-        "path": "targets/baseline/campaign/manifest.json",
-        "bytes": 1,
-        "sha256": "sha256:" + "a" * 64,
-        "kind": "simulation_campaign_manifest",
-        "owner": CAMPAIGN_ID,
-    }
-
-    def entry(item, **changes):
-        return {
-            "role": "cycle_count_baseline",
-            "manifest": {**reference, **changes},
-            "campaign_id": CAMPAIGN_ID,
-            "target": baseline.document["target"],
-            "required_observation": "cycle_count",
-            "work_item_id": item["work_item_id"],
-        }
-
-    alpha, beta = baseline.document["work_items"]
-    shared = _candidate_manifest(("alpha", "beta"), [entry(alpha), entry(beta)])
-    decoded = decode_simulation_campaign_manifest(canonical_json_bytes(shared.document))
-    assert len(decoded.document["prerequisites"]) == 2
-
-    for entries, message in (
-        ([entry(alpha), entry(alpha)], "unique"),
-        ([entry(alpha), entry(beta, bytes=2)], "same campaign"),
-    ):
-        document = json.loads(canonical_json_bytes(shared.document))
-        document["prerequisites"] = entries
-        with pytest.raises(SimulationCampaignIntegrityError, match=message):
-            decode_simulation_campaign_manifest(canonical_json_bytes(document))
-
-
 def _shared_baseline_candidate(tmp_path, monkeypatch):
     """Run a two-Test baseline and a candidate linking both of its work items."""
     from booley.flows.sim.campaign.model import create_simulation_campaign_plan
@@ -600,3 +557,97 @@ def test_a_campaign_that_lists_itself_as_prerequisite_is_a_cycle(tmp_path, monke
     invocation.mkdir(parents=True)
     with pytest.raises(SimulationCampaignIntegrityError, match="cyclic"):
         _run_campaign(tmp_path, monkeypatch, _candidate_manifest(("alpha",), [entry]), invocation)
+
+
+def _write_candidate_with_prerequisite(tmp_path, manifest_path):
+    """A candidate manifest on disk linking one prerequisite at *manifest_path*."""
+    from booley.flows.sim.campaign.codec import canonical_json_bytes
+    from tests.flows.sim.test_campaign_manifest_codec import _manifest
+
+    document = _manifest()
+    entry = {
+        "role": "cycle_count_baseline",
+        "manifest": {
+            "path_base": "origin_invocation",
+            "path": manifest_path,
+            "bytes": 1,
+            "sha256": "sha256:" + "a" * 64,
+            "kind": "simulation_campaign_manifest",
+            "owner": CAMPAIGN_ID,
+        },
+        "campaign_id": CAMPAIGN_ID,
+        "target": {**document["target"], "role": "cycle_count_baseline"},
+        "required_observation": "cycle_count",
+        "work_item_id": "item:0000:0123456789abcdef",
+    }
+    document["prerequisites"] = [entry]
+    path = tmp_path / "reports/1/targets/sim/campaign/manifest.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(canonical_json_bytes(document))
+    return path
+
+
+@pytest.mark.parametrize("walk", ["resume-walk", "pre-sim-walk"])
+def test_an_escaping_prerequisite_manifest_path_is_refused_before_use(tmp_path, walk):
+    """Decode no longer checks prerequisite paths, so each walk checks the one it opens."""
+    from booley.flows.sim.campaign import collect_pre_sim_firings
+    from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
+    from booley.flows.sim.campaign.resume import validate_resume_manifest
+
+    path = _write_candidate_with_prerequisite(
+        tmp_path, "../outside/targets/x/campaign/manifest.json"
+    )
+    walk_function = (
+        collect_pre_sim_firings
+        if walk == "pre-sim-walk"
+        else lambda manifest: validate_resume_manifest(manifest, project_root=tmp_path)
+    )
+
+    with pytest.raises(
+        SimulationCampaignIntegrityError, match=r"is not targets/<Target>/campaign/manifest\.json"
+    ):
+        walk_function(path)
+
+
+def test_an_escaping_work_item_id_is_refused_before_use(tmp_path):
+    from booley.flows.sim.campaign.codec import (
+        SimulationCampaignIntegrityError,
+        canonical_json_bytes,
+    )
+    from booley.flows.sim.campaign.store import CampaignStore
+    from tests.flows.sim.test_campaign_manifest_codec import _manifest
+
+    document = _manifest()
+    escaping = "item:0000:x/../../e"
+    document["work_items"][0]["work_item_id"] = escaping
+    store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
+    store.root.mkdir(parents=True)
+    store.manifest_path.write_bytes(canonical_json_bytes(document))
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="not one contained path component"):
+        store.work_item_directory(escaping)
+
+
+def test_planning_refuses_a_duplicate_prerequisite_link():
+    """Two Test Runs of one candidate must not read one baseline work item (#2136)."""
+    from booley.flows.sim.flow import _link_baseline_prerequisites
+    from booley.flows.sim.test_run_invocation import BaselineLink
+    from booley.flows.test_runs import build_test_run
+
+    def document(ordinal):
+        return {"campaign_id": CAMPAIGN_ID, "work_item_id": f"item:{ordinal:04d}:0123456789abcdef"}
+
+    alpha, beta, gamma = (build_test_run(name, seed=1) for name in ("alpha", "beta", "gamma"))
+    by_run = {alpha.name: document(0), beta.name: document(1), gamma.name: document(1)}
+
+    def links(*runs):
+        return [BaselineLink("sim", "base", run.test, run) for run in runs]
+
+    # Two links to different work items of one baseline campaign stay allowed.
+    prerequisites = {"sim": []}
+    _link_baseline_prerequisites(prerequisites, links(alpha, beta), by_run)
+    assert prerequisites["sim"] == [document(0), document(1)]
+
+    prerequisites = {"sim": []}
+    with pytest.raises(ValueError, match=r"Test Run gamma@1.*separate runs"):
+        _link_baseline_prerequisites(prerequisites, links(beta, gamma), by_run)

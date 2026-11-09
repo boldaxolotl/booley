@@ -9,15 +9,7 @@ from typing import Any
 
 from booley.flows.cli_arguments import BuiltinArguments
 from booley.flows.cli_help import HelpGroup, HelpOption, SurfaceHelp
-from booley.flows.test_runs import (
-    MAX_SEED,
-    SEED_WITH_SEEDED_SELECTOR,
-    TestRunLimitError,
-    TestRunNameError,
-    UnpinnedSeed,
-    parse_seed_request,
-    parse_test_selector,
-)
+from booley.flows.test_runs import MAX_SEED, TestRunNameError, parse_seed_request
 
 from .mode import SimulationMode, parse_simulation_mode
 
@@ -177,7 +169,10 @@ class SimArguments(BuiltinArguments):
 
     @staticmethod
     def normalize(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
-        """Normalize legacy mode flags into the single canonical selector."""
+        """Normalize legacy mode flags into the single canonical selector.
+
+        Selection rules are checked once, by ``SimRequest``.
+        """
         BuiltinArguments.normalize(args, parser)
         legacy_requested = args._legacy_elab_only or args._legacy_standalone
         if args.mode is not None and legacy_requested:
@@ -193,74 +188,8 @@ class SimArguments(BuiltinArguments):
             args.mode = SimulationMode.ELAB_ONLY_STANDALONE
         elif args._legacy_elab_only:
             args.mode = SimulationMode.ELAB_ONLY
-        if args.test and args.tests_file is not None:
-            parser.error("--test and --tests-file are mutually exclusive")
-        if args.seed is not None and args.mode is not None and args.mode.elaborates_only:
-            parser.error("--seed applies to simulation, not to an elaboration mode")
-        if args.resume_from is not None:
-            conflicts = SimArguments._resume_conflicts(args)
-            if conflicts:
-                parser.error("--resume-from cannot be combined with " + ", ".join(conflicts))
-            args.target = ""
-        elif args.no_waivers and not args.coverage:
-            parser.error("--no-waivers requires --coverage")
-        if args.tests_file is not None:
-            args.test = SimArguments._read_tests_file(args.tests_file, parser)
-            args.tests_file = None
-        duplicates = sorted({name for name in (args.test or []) if args.test.count(name) > 1})
-        if duplicates:
-            parser.error("duplicate exact test name(s): " + ", ".join(duplicates))
-        if args.test is not None:
-            args.test = tuple(args.test)
-        SimArguments._check_test_run_selection(args, parser)
         vars(args).pop("_legacy_elab_only")
         vars(args).pop("_legacy_standalone")
-
-    @staticmethod
-    def _check_test_run_selection(
-        args: argparse.Namespace, parser: argparse.ArgumentParser
-    ) -> None:
-        """Refuse a malformed selector, and ``--seed`` beside a seeded selector."""
-        try:
-            selectors = [parse_test_selector(text) for text in args.test or ()]
-        except (TestRunNameError, TestRunLimitError) as exc:
-            parser.error(str(exc))
-        if args.seed is not None and any(
-            not isinstance(selector.seed_form, UnpinnedSeed) for selector in selectors
-        ):
-            parser.error(SEED_WITH_SEEDED_SELECTOR)
-
-    @staticmethod
-    def _resume_conflicts(args: argparse.Namespace) -> list[str]:
-        return [
-            option
-            for present, option in (
-                (bool(args.target), "--target"),
-                (args.test is not None, "--test"),
-                (args.tests_file is not None, "--tests-file"),
-                (args.seed is not None, "--seed"),
-                (args.mode is not None, "--mode"),
-                (args.coverage, "--coverage"),
-                (args.no_waivers, "--no-waivers"),
-                (args.trace, "--trace"),
-            )
-            if present
-        ]
-
-    @staticmethod
-    def _read_tests_file(path: Path, parser: argparse.ArgumentParser) -> list[str]:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            parser.error(f"cannot read --tests-file {path}: {exc}")
-        names = [
-            line.strip()
-            for line in text.splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        ]
-        if not names:
-            parser.error("--tests-file contains no test names")
-        return names
 
     @staticmethod
     def _add_run_control_args(parser: Any) -> None:

@@ -70,6 +70,8 @@ def test_worktree_help_describes_the_refusal_and_detached_head(capsys) -> None:
     assert ".booley/worktrees/<name>" in help_text
     assert "detached HEAD" in help_text
     assert "refused" in help_text
+    assert "last commit" in help_text
+    assert "post-setup" in help_text
 
 
 def test_missing_script_fails_without_running_anything(monkeypatch, tmp_path, capsys) -> None:
@@ -165,6 +167,7 @@ def test_creates_a_detached_worktree_and_prints_its_path(project: Path, capsys, 
     assert output.out == f"{worktree}\n"
     # Success prints one calm line pointing at the removal docs, not the steps themselves.
     assert output.err == (
+        "Filling git submodules from the main checkout...\n"
         "Created worktree 'goal-entry' with a Snapshot. "
         "To remove it later, see https://booley.dev/docs/cli-reference/#worktrees\n"
     )
@@ -336,7 +339,11 @@ def test_user_command_pairs_committed_project_and_prints_removal(versioned_proje
         assert git(paired, "config", "--worktree", "--get", key) == value
     output = capsys.readouterr()
     assert output.out.strip() == str(worktree)
-    assert output.err.startswith("Created worktree 'real-paired' with a Paired Checkout.")
+    assert (
+        output.err.strip()
+        .splitlines()[-1]
+        .startswith("Created worktree 'real-paired' with a Paired Checkout.")
+    )
     assert "#worktrees" in output.err and "git -C" not in output.err
     assert _new("real-paired", root) == 1
     error = capsys.readouterr().err
@@ -378,28 +385,29 @@ def test_python_pairing_accepts_detached_project_head(versioned_project, python_
 
 
 @pytest.mark.parametrize("dirty", ["tracked", "untracked"])
-def test_dirty_project_refuses_and_rolls_back(versioned_project, python_outer, capsys, dirty):
+def test_dirty_project_pairs_head_and_warns(versioned_project, python_outer, capsys, dirty):
     from tests.goals.conftest import git
 
     root = versioned_project
     source = root / ".booley"
-    path = source / ("cores/top.core" if dirty == "tracked" else "untracked.sdc")
-    before = path.read_bytes() if path.exists() else None
+    relative = "cores/top.core" if dirty == "tracked" else "untracked.sdc"
+    path = source / relative
+    committed = path.read_bytes() if path.exists() else None
     path.write_text("work in progress\n", encoding="utf-8")
     name = f"dirty-{dirty}"
-    try:
-        assert _new(name, root) == 1
-        error = capsys.readouterr().err
-        assert path.relative_to(source).as_posix() in error
-        assert "commit them in `.booley` first" in error
-        _assert_creation_absent(root, name)
-        assert path.read_text(encoding="utf-8") == "work in progress\n"
-    finally:
-        if before is None:
-            path.unlink()
-        else:
-            path.write_bytes(before)
-        assert not git(source, "status", "--porcelain")
+    assert _new(name, root) == 0
+    error = capsys.readouterr().err
+    assert "WARNING" in error and relative in error
+    assert "1 uncommitted or untracked file(s)" in error
+    paired = worktree_cmd.worktree_path(root, name) / ".booley"
+    assert git(paired, "rev-parse", "HEAD") == git(source, "rev-parse", "HEAD")
+    assert git(paired, "symbolic-ref", "--short", "HEAD") == f"booley-worktree/{name}"
+    if committed is None:
+        assert not (paired / relative).exists()
+    else:
+        assert (paired / relative).read_bytes() == committed
+    # The source keeps its uncommitted work untouched.
+    assert path.read_text(encoding="utf-8") == "work in progress\n"
 
 
 def _assert_creation_absent(root, name):
@@ -670,63 +678,12 @@ def test_canonical_transient_classifier_matches_git_including_reincludes(version
         assert is_project_transient_path(path) == (result.returncode == 0), path
 
 
-@pytest.mark.parametrize("mixed", [False, True])
-@pytest.mark.parametrize(
-    "evidence_path",
-    [
-        None,
-        "reviewer-evidence/audit.json",
-        "findings.jsonl",
-        "findings.jsonl.tmp",
-        "BOOLEY-FEEDBACK.md",
-        "setup-evidence/attachments/log.txt",
-        "PARITY-REPORT.md",
-    ],
-)
-def test_stale_ignore_diagnoses_transient_and_input_groups(
-    versioned_project, monkeypatch, capsys, mixed, evidence_path
-):
-    from tests.goals.conftest import git
-
-    root = versioned_project
-    source = root / ".booley"
-    # Retain the existing runtime ignore, but model an older Project without Goal/report patterns.
-    _write(source / ".gitignore", "worktrees/\nruntime/\n")
-    git(source, "add", ".gitignore")
-    git(source, "commit", "-qm", "old ignore policy")
-    _write(source / "goals/g1/record.json", "transient\n")
-    _write(source / "flow-reports/report.json", "transient\n")
-    if evidence_path:
-        _write(source / evidence_path, "local evidence\n")
-    if mixed:
-        _write(source / "cores/top.core", "design edit\n")
-
-    def unexpected(*_args, **_kwargs):
-        pytest.fail("outer creation must not run for invalid source inputs")
-
-    monkeypatch.setattr(worktree_cmd, "_create_outer", unexpected)
-    assert _new("stale", root) == 1
-    error = capsys.readouterr().err
-    assert "Project .gitignore is missing current Booley patterns" in error
-    assert "run `booley init` from a host terminal" in error
-    assert "goals/g1/record.json" in error and "flow-reports/report.json" in error
-    if evidence_path:
-        assert evidence_path in error
-    if mixed:
-        assert "inputs: cores/top.core; commit them in `.booley` first" in error
-    else:
-        assert "commit them" not in error
-    _assert_creation_absent(root, "stale")
-
-
-@pytest.mark.parametrize("problem", ["dirty", "collision", "unborn"])
+@pytest.mark.parametrize("problem", ["collision", "unborn"])
 def test_precheck_refuses_before_outer_creation(versioned_project, monkeypatch, problem):
     from tests.goals.conftest import git
 
     source = versioned_project / ".booley"
-    if problem == "dirty":
-        _write(source / "new.core", "uncommitted\n")
-    elif problem == "collision":
+    if problem == "collision":
         git(source, "branch", "booley-worktree/precheck")
     else:
         git(source, "symbolic-ref", "HEAD", "refs/heads/unborn")
@@ -738,7 +695,7 @@ def test_precheck_refuses_before_outer_creation(versioned_project, monkeypatch, 
     assert _new("precheck", versioned_project) == 1
 
 
-@pytest.mark.parametrize("boundary", ["outer", "paired"])
+@pytest.mark.parametrize("boundary", ["outer", "paired", "hook"])
 def test_interrupt_rolls_back_and_reraises(versioned_project, python_outer, monkeypatch, boundary):
     from booley.runtime import project_worktree_pairing as pairing
 
@@ -747,8 +704,11 @@ def test_interrupt_rolls_back_and_reraises(versioned_project, python_outer, monk
 
     if boundary == "outer":
         monkeypatch.setattr(worktree_cmd, "pair_project_worktree", interrupt)
-    else:
+    elif boundary == "paired":
         monkeypatch.setattr(pairing, "_configure_checkout", interrupt)
+    else:
+        _commit_hook(versioned_project / ".booley", "print('never reached')\n")
+        monkeypatch.setattr(worktree_cmd, "prepare_project", interrupt)
     with pytest.raises(KeyboardInterrupt, match="injected interrupt"):
         _new("interrupted", versioned_project)
     _assert_creation_absent(versioned_project, "interrupted")
@@ -853,7 +813,7 @@ def test_goal_entry_and_finish_use_real_user_worktree(versioned_project, monkeyp
         reset_cache()
 
 
-def test_pairing_source_is_discovered_once_and_dirty_state_is_rechecked(
+def test_pairing_source_is_discovered_once_and_left_out_files_are_read_under_the_lock(
     versioned_project, python_outer, monkeypatch, capsys
 ):
     source_query = worktree_cmd.project_pairing_source
@@ -870,10 +830,138 @@ def test_pairing_source_is_discovered_once_and_dirty_state_is_rechecked(
 
     monkeypatch.setattr(worktree_cmd, "project_pairing_source", discover)
     monkeypatch.setattr(worktree_cmd, "_create_outer", build)
-    assert _new("moving-inputs", versioned_project) == 1
+    assert _new("moving-inputs", versioned_project) == 0
     assert queries == [versioned_project]
-    assert "cores/top.core" in capsys.readouterr().err
-    _assert_creation_absent(versioned_project, "moving-inputs")
+    error = capsys.readouterr().err
+    assert "WARNING" in error and "cores/top.core" in error
+    paired = worktree_cmd.worktree_path(versioned_project, "moving-inputs") / ".booley"
+    assert "changed during outer creation" not in (paired / "cores/top.core").read_text("utf-8")
+
+
+_HOOK_MARKER = """\
+import os, pathlib
+pathlib.Path("hook-marker.txt").write_text(
+    os.getcwd() + "\\n" + os.environ["BOOLEY_DIR"] + "\\n", encoding="utf-8"
+)
+print("hook says hi")
+"""
+
+
+def _commit_hook(source: Path, body: str) -> None:
+    """Commit a ``post-setup.py`` hook into the Versioned Booley Directory."""
+    from tests.goals.conftest import git
+
+    _write(source / "hooks/post-setup.py", body)
+    git(source, "add", "hooks/post-setup.py")
+    git(source, "commit", "-qm", "Add post-setup hook")
+
+
+def _hook_log(root: Path, name: str) -> Path:
+    return root / ".booley/worktrees/.logs" / f"{name}.log"
+
+
+@pytest.mark.parametrize("layout", ["paired", "snapshot"])
+def test_post_setup_hook_runs_in_new_worktree_with_visible_output(layout, request, capsys):
+    if layout == "paired":
+        request.getfixturevalue("python_outer")
+        root = request.getfixturevalue("versioned_project")
+        _commit_hook(root / ".booley", _HOOK_MARKER)
+        booley_dir = worktree_cmd.worktree_path(root, "hooked") / ".booley"
+    else:
+        if shutil.which("git") is None or os.name == "nt":
+            pytest.skip("the Snapshot script needs git and a POSIX shell")
+        root = request.getfixturevalue("project")
+        _write(root / ".booley/hooks/post-setup.py", _HOOK_MARKER)
+        booley_dir = worktree_cmd.worktree_path(root, "hooked") / ".booley"
+    assert _new("hooked", root) == 0
+    worktree = worktree_cmd.worktree_path(root, "hooked")
+    cwd, hook_booley_dir = (worktree / "hook-marker.txt").read_text("utf-8").splitlines()
+    assert Path(cwd).resolve() == worktree.resolve()
+    assert Path(hook_booley_dir).resolve() == booley_dir.resolve()
+    output = capsys.readouterr()
+    assert output.out.strip() == str(worktree)
+    lines = output.err.splitlines()
+    fill = lines.index("Filling git submodules from the main checkout...")
+    running = next(i for i, line in enumerate(lines) if line.startswith("Running post-setup hook"))
+    visible = lines.index("hook says hi")
+    assert fill < running < visible
+    assert f"(log: {_hook_log(root, 'hooked')})" in lines[running]
+    assert _hook_log(root, "hooked").read_text("utf-8").splitlines() == ["hook says hi"]
+
+
+def test_no_hook_prints_only_the_submodule_progress_line(versioned_project, python_outer, capsys):
+    assert _new("plain", versioned_project) == 0
+    error = capsys.readouterr().err
+    assert "Filling git submodules" in error and "post-setup" not in error
+    assert not _hook_log(versioned_project, "plain").exists()
+
+
+def test_post_setup_hook_runs_outside_the_layout_gate(
+    versioned_project, python_outer, monkeypatch
+):
+    from booley.core.layout_lock import layout_gate
+
+    _commit_hook(versioned_project / ".booley", "print('unused')\n")
+    entered = []
+
+    def probe(root, worktree, name):
+        with layout_gate(root, timeout_s=1):  # raises if the creation still holds the gate
+            entered.append(name)
+
+    monkeypatch.setattr(worktree_cmd, "_run_post_setup", probe)
+    assert _new("gate-free", versioned_project) == 0
+    assert entered == ["gate-free"]
+
+
+def test_failing_post_setup_hook_rolls_back_and_names_the_log(
+    versioned_project, python_outer, capsys
+):
+    root = versioned_project
+    source = root / ".booley"
+    _commit_hook(source, "import sys\nprint('boom')\nsys.exit(3)\n")
+    assert _new("failing", root) == 1
+    error = capsys.readouterr().err
+    log = _hook_log(root, "failing")
+    assert "rc=3" in error and f"log: {log}" in error and "boom" in error
+    assert log.read_text("utf-8").splitlines() == ["boom"]
+    _assert_creation_absent(root, "failing")
+    leftover = _git(source, "config", "--get-regexp", r"^branch\.booley-worktree/failing\.")
+    assert leftover.returncode != 0 and not leftover.stdout
+
+
+def test_hook_flow_config_error_rolls_back(versioned_project, python_outer, monkeypatch, capsys):
+    from booley.flows.execution import FlowConfigError
+
+    def unreadable(*_args, **_kwargs):
+        raise FlowConfigError("bad flow table")
+
+    _commit_hook(versioned_project / ".booley", "print('unused')\n")
+    monkeypatch.setattr(worktree_cmd, "flow_enabled", unreadable)
+    assert _new("bad-flows", versioned_project) == 1
+    assert "bad flow table" in capsys.readouterr().err
+    _assert_creation_absent(versioned_project, "bad-flows")
+
+
+def test_failed_regate_during_hook_rollback_is_reported(
+    versioned_project, python_outer, monkeypatch, capsys
+):
+    from booley.core import layout_lock
+    from booley.core.file_lock import LockTimeoutError
+
+    _commit_hook(versioned_project / ".booley", "import sys\nsys.exit(1)\n")
+    real_gate = layout_lock.layout_gate
+    calls = []
+
+    def gate(root, **kwargs):
+        calls.append(root)
+        if len(calls) == 2:  # the first call admits creation; the second guards the rollback
+            raise LockTimeoutError("gate busy")
+        return real_gate(root, **kwargs)
+
+    monkeypatch.setattr(layout_lock, "layout_gate", gate)
+    assert _new("busy-gate", versioned_project) == 1
+    error = capsys.readouterr().err
+    assert "outer rollback failed: gate busy" in error and "Remove the Paired Checkout" in error
 
 
 def test_unexpected_runtime_error_is_rolled_back_and_reraised(
@@ -1001,49 +1089,16 @@ def test_failed_add_preserves_a_moved_branch_it_did_not_create(
     assert not worktree_cmd.worktree_path(versioned_project, "raced").exists()
 
 
-@pytest.mark.parametrize("tracked", [False, True])
-def test_transient_named_inputs_are_not_misdiagnosed(
-    versioned_project, monkeypatch, capsys, tracked
-):
-    from tests.goals.conftest import git
-
+def test_dirty_warning_lists_ten_then_count(versioned_project, python_outer, capsys):
     source = versioned_project / ".booley"
-    path = source / "logs/authored.txt"
-    if tracked:
-        _write(path, "committed\n")
-        git(source, "add", "-f", str(path))
-        git(source, "commit", "-qm", "authored log")
-    else:
-        with (source / ".gitignore").open("a") as handle:
-            handle.write("!/logs/\n!/logs/**\n")
-        git(source, "add", ".gitignore")
-        git(source, "commit", "-qm", "authored logs allowed")
-    _write(path, "changed\n")
-    monkeypatch.setattr(
-        worktree_cmd, "_create_outer", lambda *_a, **_kw: pytest.fail("build before refusal")
-    )
-    assert _new("input", versioned_project) == 1
+    for index in range(12):
+        _write(source / f"extra{index:02d}.txt", "uncommitted\n")
+    assert _new("bounded", versioned_project) == 0
     error = capsys.readouterr().err
-    assert "inputs: logs/authored.txt" in error
-    assert "transient state" not in error
-    assert "booley init" not in error
-
-
-def test_dirty_diagnostics_cap_each_group(versioned_project, capsys):
-    from tests.goals.conftest import git
-
-    source = versioned_project / ".booley"
-    _write(source / ".gitignore", "/worktrees/\n/runtime/\n")
-    git(source, "add", ".gitignore")
-    git(source, "commit", "-qm", "old ignores")
-    for index in range(7):
-        _write(source / f"logs/run{index}", "state\n")
-        _write(source / f"input{index}.txt", "input\n")
-    assert _new("bounded", versioned_project) == 1
-    error = capsys.readouterr().err
-    assert error.count("and 2 more") == 2
-    assert "run4" in error and "input4.txt" in error
-    assert "run5" not in error and "input5.txt" not in error
+    assert "12 uncommitted or untracked file(s)" in error
+    assert "extra09.txt, and 2 more" in error
+    assert "extra10.txt" not in error and "extra11.txt" not in error
+    assert error.count("WARNING") == 1
 
 
 @pytest.mark.parametrize("name", ["bad..ref", "bad.lock", "bad."])
@@ -1127,17 +1182,6 @@ def test_existing_project_registration_is_refused_and_preserved(
     assert git(source, "rev-parse", "booley-ticket/taken")
 
 
-def test_undecodable_gitignore_still_explains_dirty_project(
-    versioned_project, python_outer, capsys
-):
-    root = versioned_project
-    source = root / ".booley"
-    (source / ".gitignore").write_bytes("logs/\n".encode("utf-16"))
-
-    assert _new("utf16", root) == 1
-    assert "uncommitted changes" in capsys.readouterr().err
-
-
 @_real_script
 def test_paired_hint_skips_project_snapshot(versioned_project, monkeypatch):
     from booley.runtime import project_worktree_pairing as pairing
@@ -1188,7 +1232,9 @@ def test_failed_outer_rollback_is_reported_and_noted(
 
 
 @pytest.mark.timeout(120)  # Windows runs both init paths; see the headroom guard (#1202).
-def test_worktree_new_after_managed_bundle_runtime_init(tmp_path, monkeypatch, python_outer):
+def test_worktree_new_after_managed_bundle_runtime_init(
+    tmp_path, monkeypatch, python_outer, capsys
+):
     from tests.harness.test_init_rerun import _managed_git, _run_full_init
     from tests.harness.test_init_rerun import repo as init_repo
 
@@ -1210,6 +1256,7 @@ def test_worktree_new_after_managed_bundle_runtime_init(tmp_path, monkeypatch, p
     baseline = _managed_git(data, "rev-parse", "HEAD")
     assert _run_full_init(root) == 0
     assert _new("runtime-init", root) == 0
+    assert "WARNING" not in capsys.readouterr().err
     paired = worktree_cmd.worktree_path(root, "runtime-init") / ".booley"
     assert bundle.is_file()
     assert not (paired / ".managed/project-git-hooks.pyz").exists()
@@ -1252,161 +1299,13 @@ def test_tracked_bundle_manual_remedy_preserves_copy_and_allows_pairing(
     _managed_git(data, "commit", "-qm", "intentional generated bundle removal")
     _step_booley_dir(InitContext(project_root=root))
     step_project_git_hooks(InitContext(project_root=root))
+    capsys.readouterr()
     assert _new("manual-remedy", root) == 0
+    assert "WARNING" not in capsys.readouterr().err
     paired = worktree_cmd.worktree_path(root, "manual-remedy") / ".booley"
     assert bundle.is_file()
     assert not (paired / ".managed/project-git-hooks.pyz").exists()
     reset_cache()
-
-
-@pytest.fixture
-def per_path_project(isolated_git_attributes, request, tmp_path):
-    if shutil.which("git") is None or os.name == "nt":
-        pytest.skip("needs git and a POSIX shell")
-    root = request.getfixturevalue("versioned_project")
-    empty = tmp_path / "empty-excludes"
-    empty.write_text("", encoding="utf-8")
-    for repository in (root, root / ".booley"):
-        assert _git(repository, "config", "core.excludesFile", str(empty)).returncode == 0
-        assert _git(repository, "config", "user.name", "Test User").returncode == 0
-        assert _git(repository, "config", "user.email", "test@example.com").returncode == 0
-    return root
-
-
-def _per_path_policy(source, patterns, reincludes=""):
-    _write(source / ".gitignore", "".join(f"{pattern}\n" for pattern in patterns) + reincludes)
-    assert _git(source, "add", ".gitignore").returncode == 0
-    assert _git(source, "commit", "-qm", "Project ignore policy").returncode == 0
-
-
-def _per_path_observation(source, path, expected_pattern):
-    result = _git(source, "check-ignore", "--no-index", "-v", path)
-    assert result.returncode in {0, 1}
-    if expected_pattern is None:
-        assert result.stdout == ""
-    else:
-        metadata, observed = result.stdout.rstrip("\n").split("\t")
-        assert observed == path
-        assert metadata.split(":", 2)[2] == expected_pattern
-    assert f"?? {path}" in _git(source, "status", "--porcelain", "--untracked-files=all").stdout
-
-
-@pytest.mark.parametrize("mixed", [False, True])
-def test_unrelated_missing_pattern_preserves_per_path_input_group(per_path_project, capsys, mixed):
-    from booley.runtime.project_gitignore import PROJECT_GITIGNORE_PATTERNS
-
-    root = per_path_project
-    source = root / ".booley"
-    patterns = [pattern for pattern in PROJECT_GITIGNORE_PATTERNS if pattern != "flow-reports/"]
-    _per_path_policy(source, patterns, "!/logs/\n!/logs/**\n")
-    _write(source / "logs/authored.txt", "authored\n")
-    _per_path_observation(source, "logs/authored.txt", "!/logs/**")
-    if mixed:
-        _write(source / "flow-reports/report.json", "evidence\n")
-        _per_path_observation(source, "flow-reports/report.json", None)
-    assert _new("per-path", root) == 1
-    error = capsys.readouterr().err
-    expected = "Booley Directory's repository has uncommitted changes; "
-    if mixed:
-        expected += (
-            "transient state: flow-reports/report.json; Project .gitignore is missing "
-            "current Booley patterns; run `booley init` from a host terminal, "
-            "then commit the updated .gitignore; "
-        )
-    expected += "inputs: logs/authored.txt; commit them in `.booley` first"
-    assert expected in error
-    if not mixed:
-        assert "booley init" not in error
-    _assert_creation_absent(root, "per-path")
-
-
-@pytest.mark.parametrize(
-    ("path", "missing", "reincludes", "transient", "oracle"),
-    [
-        ("flow-reports/report.json", "flow-reports/", "", True, None),
-        ("logs/authored.txt", "flow-reports/", "!/logs/\n!/logs/**\n", False, "!/logs/**"),
-        ("cores/logs/authored.txt", "flow-reports/", "", False, None),
-        ("logs/authored.txt", None, "!/logs/\n!/logs/**\n", False, "!/logs/**"),
-        ("logs/tmp/state.json", "tmp/", "!/logs/\n!/logs/**\n", False, "!/logs/**"),
-        ("cores/runtime/state.json", "runtime/", "", True, None),
-        ("goals/history/kept.md", "flow-reports/", "", False, None),
-        ("goals/history/tmp/state.json", "tmp/", "", True, None),
-    ],
-)
-def test_per_path_remedy_respects_nested_and_history_policy(
-    per_path_project, capsys, path, missing, reincludes, transient, oracle
-):
-    from booley.runtime.project_gitignore import PROJECT_GITIGNORE_PATTERNS
-
-    root = per_path_project
-    source = root / ".booley"
-    if missing == "runtime/":
-        (source / "runtime/doctor/stale.lock").unlink()
-    _per_path_policy(source, [p for p in PROJECT_GITIGNORE_PATTERNS if p != missing], reincludes)
-    _write(source / path, "state\n")
-    _per_path_observation(source, path, oracle)
-    assert _new("per-path", root) == 1
-    error = capsys.readouterr().err
-    assert f"{'transient state' if transient else 'inputs'}: {path};" in error
-    assert ("booley init" in error) == transient
-    _assert_creation_absent(root, "per-path")
-
-
-@pytest.mark.parametrize("missing", ["/logs/", "flow-reports/"])
-def test_per_path_tracked_changes_always_require_input_commit(per_path_project, capsys, missing):
-    from booley.runtime.project_gitignore import PROJECT_GITIGNORE_PATTERNS
-
-    root = per_path_project
-    source = root / ".booley"
-    _per_path_policy(source, [p for p in PROJECT_GITIGNORE_PATTERNS if p != missing])
-    _write(source / "logs/authored.txt", "committed\n")
-    assert _git(source, "add", "-f", "logs/authored.txt").returncode == 0
-    assert _git(source, "commit", "-qm", "Authored log").returncode == 0
-    _write(source / "logs/authored.txt", "edited\n")
-    assert _new("per-path", root) == 1
-    error = capsys.readouterr().err
-    assert "inputs: logs/authored.txt; commit them in `.booley` first" in error
-    assert "booley init" not in error
-    _assert_creation_absent(root, "per-path")
-
-
-@pytest.mark.parametrize("missing", ["tmp/", "/tmp/"])
-def test_responsible_overlap_membership_selects_per_path_remedy(
-    per_path_project, capsys, monkeypatch, missing
-):
-    from booley.runtime import project_gitignore as policy
-
-    root = per_path_project
-    source = root / ".booley"
-    patterns = ("runtime/", "tmp/", "/tmp/")
-    monkeypatch.setattr(policy, "PROJECT_GITIGNORE_PATTERNS", patterns)
-    _per_path_policy(source, [p for p in patterns if p != missing], "!/tmp/\n!/tmp/**\n")
-    _write(source / "tmp/authored.txt", "authored\n")
-    _per_path_observation(source, "tmp/authored.txt", "!/tmp/**")
-    assert _new("responsible", root) == 1
-    error = capsys.readouterr().err
-    transient = missing == "/tmp/"
-    assert f"{'transient state' if transient else 'inputs'}: tmp/authored.txt;" in error
-    assert ("booley init" in error) == transient
-    _assert_creation_absent(root, "responsible")
-
-
-def test_responsible_canonical_negation_keeps_per_path_input(
-    per_path_project, capsys, monkeypatch
-):
-    from booley.runtime import project_gitignore as policy
-
-    root = per_path_project
-    source = root / ".booley"
-    monkeypatch.setattr(policy, "PROJECT_GITIGNORE_PATTERNS", ("runtime/", "*.json", "!*.json"))
-    _per_path_policy(source, ("runtime/", "!*.json"))
-    _write(source / "authored.json", "{}\n")
-    _per_path_observation(source, "authored.json", "!*.json")
-    assert _new("responsible", root) == 1
-    error = capsys.readouterr().err
-    assert "inputs: authored.json;" in error
-    assert "booley init" not in error
-    _assert_creation_absent(root, "responsible")
 
 
 # ---------------------------------------------------------------------------

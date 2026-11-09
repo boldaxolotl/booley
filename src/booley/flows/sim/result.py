@@ -108,14 +108,14 @@ def parse_sim_verdict(
 
 
 # The EDA tool names Booley's own halves put in front of the markers below —
-# ``sim_edam._ELAB_FAIL_MARKERS`` ("Verilator elaboration failed", "iverilog
-# compilation failed", "xcelium/vcs elaboration failed") plus the run-halves'
+# the harness's elaboration-failure markers ("Verilator elaboration failed",
+# "iverilog compilation failed") plus the run-halves'
 # own "<EDA-tool> simulation timed out" / "Verilator executable V<top> not found".
 # A closed list, deliberately: spelling these as ``\w+`` swallows testbench
 # prose. "ERROR: DUT compilation failed at time 100" is a TB talking about the
 # *design*; treating it as infra drops it from the SVA count and turns a FAIL
 # with rc=0 into an INCONCLUSIVE — a false-PASS-adjacent lie.
-_HARNESS_EDA_TOOL = r"(?i:verilator|iverilog|icarus|xcelium|xrun|vcs|cocotb)"
+_HARNESS_EDA_TOOL = r"(?i:verilator|iverilog|icarus|cocotb)"
 
 # Harness-emitted *infrastructure* markers — every ``ERROR:`` line Booley's own
 # build/run/trace/guard machinery prints. They all begin "ERROR: ...", which the
@@ -180,82 +180,6 @@ def count_sva_errors(output: str) -> int:
         if is_harness_infra_line(line):
             continue  # harness/Flow-infrastructure marker, not a DUT assertion (B5.1, F-30)
         # SVA assertion lines OR Icarus "ERROR: ..." at line start
-        if ("Assertion" in line and ("FAILED" in line or "ERROR" in line)) or re.match(
-            r"^ERROR:\s", line
-        ):
-            count += 1
-    return count
-
-
-# Xcelium (xrun) error lines. The front-end EDA tools prefix diagnostics as
-# ``xmvlog: *E,CODE (...)`` / ``xmelab: *E,CODE: ...`` / ``xmsim: *E,CODE: ...``
-# (``*F,`` for fatals); SVA assertion failures carry an ``*E,ASRT…`` code (e.g.
-# ``ASRTST``). Patterns frozen against real xrun(64) 21.03-s001 logs in the
-# Phase B calibration loop (ADR 0025, 2026-07). Observed verdict table:
-#   compile error   xmvlog: *E,SVILTY (file,l|c): …  + xrun: *E,VLGERR   exit 1
-#   elab error      xmelab: *E,NOUNIT/*E,CUVUNF: …   + xrun: *E,ELBERR   exit 1
-#   SVA failure     xmsim: *E,ASRTST (file,l): (time T) Assertion … has failed
-#                   — sim continues; xrun exits 1, TB sentinel may still PASS
-#   $fatal          xmsim: *F,FATSEV (file,l): (time T).  — xrun exits 2
-#   SIGTERM/kill    xmsim: *W,NCTERM: Simulation received SIGTERM … (warning,
-#                   not counted; the non-zero exit code drives the verdict)
-#   TB data FAIL    plain $finish — exit 0; only [SIM_RESULT] FAILED marks it
-_XCELIUM_EDA_TOOL_ERROR_RE = re.compile(r"^\s*(?:xmvlog|xmelab|xmsim|xrun)\s*:\s*\*[EF],\w+")
-_XCELIUM_ASSERT_RE = re.compile(r"\*[EF],ASRT\w*")
-
-
-def count_sva_errors_xcelium(output: str) -> int:
-    """Count error/assertion-failure lines in Xcelium (xrun) output.
-
-    The Xcelium analogue of :func:`count_sva_errors`: xrun logs spell errors as
-    ``<EDA-tool>: *E,CODE`` lines rather than Verilator/Icarus wording, so the
-    generic scanner misses them. TB-emitted generic markers (a sentinel TB's
-    own ``Assertion … FAILED`` / leading ``ERROR:`` lines) still count, so a
-    simulator-agnostic testbench keeps its verdict under xrun.
-    """
-    count = 0
-    for line in output.splitlines():
-        if is_harness_infra_line(line):
-            continue  # harness/Flow-infrastructure marker, not a DUT assertion (F-30)
-        if _XCELIUM_EDA_TOOL_ERROR_RE.match(line) or _XCELIUM_ASSERT_RE.search(line):
-            count += 1
-            continue
-        if ("Assertion" in line and ("FAILED" in line or "ERROR" in line)) or re.match(
-            r"^ERROR:\s", line
-        ):
-            count += 1
-    return count
-
-
-# VCS (Synopsys) error lines. The front-end EDA tools (vlogan/vcs) tag diagnostics
-# as ``Error-[TAG]`` / ``Fatal-[TAG]`` block headers; runtime severity tasks in
-# the built simv (``$error``/``$fatal``/failed SVA default action) print
-# ``Error: "file.sv", 42: ...`` / ``Fatal: ...`` lines. Build-half patterns
-# frozen against real vcs X-2025.06-1 logs (Phase D, ADR 0025): Error-[TAG]
-# headers confirmed (ICPD_INIT), Warning-[TAG]/Lint-[TAG] not counted, license
-# failures emit no tagged lines (exit code carries the verdict). Runtime
-# Error:/Fatal: patterns PROVISIONAL until a licensed simv run is captured.
-_VCS_EDA_TOOL_ERROR_RE = re.compile(r"^\s*(?:Error|Fatal)-\[[^\]]+\]")
-_VCS_RUNTIME_ERROR_RE = re.compile(r"^\s*(?:Error|Fatal):\s")
-
-
-def count_sva_errors_vcs(output: str) -> int:
-    """Count error/assertion-failure lines in VCS (simv/vlogan/vcs) output.
-
-    The VCS analogue of :func:`count_sva_errors_xcelium`: VCS spells EDA-tool
-    diagnostics as ``Error-[TAG]`` block headers and runtime severity-task
-    output as ``Error:``/``Fatal:``-prefixed lines, so the generic scanner
-    misses them. TB-emitted generic markers (``Assertion … FAILED`` / leading
-    ``ERROR:`` lines) still count, so a simulator-agnostic testbench keeps its
-    verdict under VCS.
-    """
-    count = 0
-    for line in output.splitlines():
-        if is_harness_infra_line(line):
-            continue  # harness/Flow-infrastructure marker, not a DUT assertion (F-30)
-        if _VCS_EDA_TOOL_ERROR_RE.match(line) or _VCS_RUNTIME_ERROR_RE.match(line):
-            count += 1
-            continue
         if ("Assertion" in line and ("FAILED" in line or "ERROR" in line)) or re.match(
             r"^ERROR:\s", line
         ):

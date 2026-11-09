@@ -29,12 +29,9 @@ _RUN_CWD_FIELDS = frozenset({"campaign", "target", "test", "attempt"})
 
 def _sim_config(work_dir: Path | str | None) -> Mapping[str, Any]:
     """Return the configured Simulation Flow section, or an empty mapping."""
-    try:
-        from booley.runtime.shared_infra import _load_rtl_config
+    from booley.runtime.shared_infra import _load_rtl_config
 
-        config = _load_rtl_config(work_dir)
-    except ImportError:
-        return {}
+    config = _load_rtl_config(work_dir)
     if not config:
         return {}
     flows = config.get("flows", {})
@@ -55,6 +52,9 @@ def parse_run_cwd_template(configured: str) -> tuple[str, ...]:
     """Validate and return first-occurrence ordered campaign placeholders."""
     if not configured or "\0" in configured:
         raise ValueError("[flows.sim].run_cwd must be a nonempty path template")
+    # Either separator: a backslash path must not pass on POSIX and fail on Windows.
+    if ".." in re.split(r"[\\/]", configured):
+        raise ValueError(f"[flows.sim].run_cwd must not contain a '..' component: {configured}")
     fields: list[str] = []
     try:
         parsed = Formatter().parse(configured)
@@ -215,3 +215,11 @@ def resolve_sim_time_grace_s(work_dir: Path | str | None = None) -> float:
 def resolve_cycle_sentinels(work_dir: Path | str | None = None) -> list[str]:
     """Return configured Cycle Count record prefixes."""
     return [str(value) for value in (_sim_config(work_dir).get("cycle_sentinels") or []) if value]
+
+
+def resolve_sim_sentinels(work_dir: Path | str | None = None) -> tuple[list[str], list[str]]:
+    """Return project-defined passing and failing simulator-output markers."""
+    sim = _sim_config(work_dir)
+    passes = [str(s) for s in (sim.get("pass_sentinels") or [])]
+    fails = [str(s) for s in (sim.get("fail_sentinels") or [])]
+    return passes, fails

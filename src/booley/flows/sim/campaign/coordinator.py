@@ -28,9 +28,7 @@ from booley.targets.domain import TargetHandle
 
 from .capacity import HeavyCapacity, HeavyCapacityError
 from .child_protocol import recover_interrupted_attempts
-from .codec import (
-    SimulationCampaignIntegrityError,
-)
+from .codec import SimulationCampaignIntegrityError, linked_manifest_path
 from .facts import ACCEPTANCE_FACTS_SCHEMA, AcceptanceFacts
 from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
 from .planning import (
@@ -1056,7 +1054,7 @@ def _prerequisite_campaign(
         if isinstance(request, ResumeCampaignRunRequest)
         else None
     )
-    path = node.path if node is not None else invocation / cast(str, reference["path"])
+    path = node.path if node is not None else linked_manifest_path(invocation, reference)
     booley_dir = (
         request.validated.booley_dir
         if isinstance(request, ResumeCampaignRunRequest)
@@ -1076,7 +1074,7 @@ def _prerequisite_facts(
     for entry in entries:
         manifest_reference = cast(Mapping[str, object], entry["manifest"])
         store = CampaignStore(
-            (invocation / cast(str, manifest_reference["path"])).parent,
+            linked_manifest_path(invocation, manifest_reference).parent,
             booley_dir=owner_store.booley_dir,
         )
         linked, expected_test, baseline_run = _authenticate_prerequisite_manifest(

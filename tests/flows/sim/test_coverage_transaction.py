@@ -22,7 +22,6 @@ from booley.flows.sim.coverage_json import freeze_coverage_mapping
 from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
 from booley.flows.sim.execution.contract import PreSimEvidence
-from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
     SimulationBuildResult,
@@ -185,42 +184,6 @@ def test_missing_input_is_a_design_failure_with_structured_abort_projection(
     assert campaign["collection"]["status"] == "incomplete"
 
 
-def test_coverage_cli_renders_one_concise_line_per_pre_sim_firing(tmp_path: Path):
-    detail = freeze_coverage_mapping(
-        {
-            "simulation": "elab_error",
-            "collection": "collector_error",
-            "evaluation": "not_requested",
-            "tests": [
-                {
-                    "name": "reset",
-                    "pre_sim": {"status": "failed", "elapsed_s": 0.125},
-                },
-                {
-                    "name": "wrap",
-                    "pre_sim": {"status": "passed", "elapsed_s": 0.25},
-                },
-            ],
-        }
-    )
-    outcome = CoverageTargetOutcome(
-        "sim_0",
-        2,
-        tmp_path / "missing-coverage.json",
-        tmp_path / "missing-simulation.json",
-        detail,
-    )
-
-    result = SimulateFlow()._coverage_result([outcome])
-    rendered = result.report_text
-    assert result.detail["pre_sim_lines"] == [
-        line for line in rendered.splitlines() if line.startswith("pre_run_commands (")
-    ]
-
-    assert "pre_run_commands (0 line(s)) for sim_0/reset: rc=unavailable in 0.1s" in rendered
-    assert "pre_run_commands (0 line(s)) for sim_0/wrap: rc=unavailable in 0.2s" in rendered
-
-
 @pytest.mark.parametrize(
     ("failure", "events", "expected_finding", "gated"),
     [
@@ -346,12 +309,6 @@ def _assert_invalid_hook_consumers(tmp_path: Path, outcome: CoverageTargetOutcom
     assert simulation["passed"] is True
     assert simulation["collection"] == "collector_error"
     assert outcome.detail["collection"] == "collector_error"
-    reporting = replace(
-        outcome,
-        campaign_path=tmp_path / "missing-coverage.json",
-        simulation_path=tmp_path / "missing-simulation.json",
-    )
-    assert "collection=collector_error" in SimulateFlow()._coverage_result([reporting]).report_text
     provider_calls = []
     analyst = CoverageAnalystSpecialist(model=provider_calls.append)
     result = analyst.execute_cli(
@@ -554,7 +511,6 @@ approval_ref = "review:CR-1042"
 @pytest.mark.parametrize("invalid", ["unsafe_directory", "malformed_file"])
 def test_invalid_waivers_block_every_coverage_run(tmp_path, invalid):
     from booley.flows.sim.coverage_waivers import CoverageWaiverConfig
-    from booley.flows.sim.request import SimRequest
 
     results = {}
     for gated in (False, True):
@@ -575,9 +531,6 @@ def test_invalid_waivers_block_every_coverage_run(tmp_path, invalid):
         document = json.loads(outcome.campaign_path.read_text())
         assert document["evaluation"]["status"] == "blocked"
         assert document["collection"]["status"] == "complete"
-        flow = SimulateFlow()
-        flow._args = SimRequest(work_dir=root)
-        assert "--no-waivers" in flow._coverage_result([outcome]).report_text
         results[gated] = [
             (item["code"], item["pointer"], item["message"])
             for item in document["evaluation"]["diagnostics"]
@@ -957,10 +910,9 @@ def gap_plan(tmp_path, sources=None, *, includes=(), testbench=None, criterion=F
     return replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
 
 
-def test_direct_publication_preserves_source_gaps_and_card_preview(tmp_path):
+def test_direct_publication_preserves_source_gaps(tmp_path):
     from booley.flows.sim import coverage_source_gaps as gaps
     from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
-    from booley.flows.sim.request import SimRequest
 
     plan = gap_plan(tmp_path / "gap", criterion=True)
     outcome = run_coverage_target(plan, NativeExecution(), Progress())
@@ -968,10 +920,6 @@ def test_direct_publication_preserves_source_gaps_and_card_preview(tmp_path):
     assert gaps.source_gap_paths(loaded.campaign) == ("rtl/unused.sv",)
     session = CoverageEvidenceSession(loaded.campaign, None)
     assert session.query({"view": "zero_point_sources"})["paths"] == ["rtl/unused.sv"]
-    flow = SimulateFlow()
-    flow._args = SimRequest(work_dir=tmp_path / "gap")
-    card = flow._coverage_result([outcome]).report_text
-    assert "RTL sources without coverage points: 1" in card and "rtl/unused.sv" in card
     # The finding is advisory: exit code, Criterion and verdict match a project without the gap.
     clean = gap_plan(tmp_path / "clean", {}, criterion=True)
     baseline = run_coverage_target(clean, NativeExecution(), Progress())

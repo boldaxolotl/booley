@@ -4,10 +4,23 @@ Execution takes a copy: preparation and baseline work may change the working
 inputs without changing the caller's request. Concrete Flows add typed options.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from booley.core.boundary import require_bool, require_int
+
+
+class RequestFieldError(ValueError):
+    """A broken request rule whose message names request fields.
+
+    ``describe`` renders the message with a caller's spelling of each field:
+    ``str(error)`` uses field names; the built-in Flow CLI uses its flags.
+    """
+
+    def __init__(self, describe: Callable[[Callable[[str], str]], str]) -> None:
+        self.describe = describe
+        super().__init__(describe(str))
 
 
 @dataclass(kw_only=True)

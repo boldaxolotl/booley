@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from booley.core.boundary import BoundaryError, require_dict, require_int, require_str_value
-from booley.flows.sim.campaign_durability import durable_create
+from booley.flows.artifact_durability import durable_create
 from booley.flows.sim.coverage_campaign_store import (
     CAMPAIGN_SCHEMA_V5,
     MAX_MANIFEST_BYTES,

@@ -188,6 +188,35 @@ def test_standalone_requires_elab_only(tmp_path: Path) -> None:
     assert "--mode elab-only-standalone" in result.report_text
 
 
+def test_coverage_requires_simulation_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    (tmp_path / "sim.core").write_text(
+        "CAPI=2:\nname: ::sim:0\ntargets:\n  sim_dut:\n    flow: sim\n"
+        "    flow_options: {tool: verilator}\n    toplevel: tb_demo\n",
+        encoding="utf-8",
+    )
+
+    result = SimulateFlow().execute_cli(
+        [
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+            "--target",
+            "sim_dut",
+            "--mode",
+            "elab-only",
+            "--coverage",
+        ]
+    )
+
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.report_text == "Coverage requires simulation mode"
+    assert result.outcome.detail["mode"] == "elab_only"
+
+
 def test_elab_only_disabled_result_keeps_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

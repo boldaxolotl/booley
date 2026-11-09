@@ -134,8 +134,11 @@ It doesn't open when:
   back to `true` and run `booley init` again;
 - the window isn't a Dev Containers or Codespaces window, the folder isn't a
   Git repository, or the window is not trusted yet;
-- you closed it earlier in this window session; reload the window to get it
-  back;
+- you closed it earlier in this window session; run **Booley: Open Dashboard**
+  from the Command Palette to get it back;
+- `booley dashboard` says it is already open: the Dashboard is shown in another
+  window or terminal. One left behind by a window reload is replaced within
+  about 15 seconds;
 - the Booley Sandbox Integration extension is missing or out of date. Doctor
   warns about it. After upgrading Booley, run `booley init` on the host and
   rebuild the container: a running container never picks up a newer image.
@@ -223,6 +226,26 @@ A worktree created in the Sandbox can sit at a container path the host can't
 reach, so host Git marks it `prunable`. Don't prune them from the host. Run Git worktree
 commands inside the Sandbox, and remove a worktree as the
 [CLI reference](https://booley.dev/docs/cli-reference/#worktrees) describes.
+
+### `booley worktree new` fails in the post-setup hook
+
+```text
+ERROR: post-setup hook failed (rc=3); log: .../.booley/worktrees/.logs/<name>.log
+```
+
+Booley removed the worktree and its `booley-worktree/<name>` branch, so nothing
+is left to clean up, unless the error also says `outer rollback failed`. Read
+the log the error names for the hook's output. Fix
+`.booley/hooks/post-setup.*`, commit the fix if your Booley Directory is its own
+Git repository (a Paired Checkout starts from its last commit), and run the
+command again. The same cleanup follows a failed submodule fill.
+
+### A new worktree lacks my uncommitted `.booley` changes
+
+`booley worktree new` warned that files were left out. A Paired Checkout starts
+from the last commit of your Booley Directory's repository, so uncommitted and
+untracked files there are not copied. Commit the files the warning names, then
+create the worktree again with a new name.
 
 ### `git` cannot see files under `.booley/`
 

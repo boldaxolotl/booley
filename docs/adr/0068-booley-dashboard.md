@@ -1,6 +1,6 @@
 # Booley Dashboard replaces the Console
 
-Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health; amended 2026-10-26: readability and navigation redesign; amended 2026-10-29: Jobs list columns; amended 2026-10-29: session end and tool-call registration, see Amendments)
+Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health; amended 2026-10-26: readability and navigation redesign; amended 2026-10-29: Jobs list columns; amended 2026-10-29: session end and tool-call registration; amended 2026-11-08: readable process keys; amended 2026-11-08: unseen Dashboards and the open command, see Amendments)
 
 The Console showed one Ticket execution at a time. Goal Mode (ADR 0067)
 removes Ticket execution and runs several agent sessions, often unattended,
@@ -413,3 +413,26 @@ Consequences:
 
 - A background shell the agent does wait for, such as a test run, still shows waiting for user input after `Stop`.
 - The hook ships in the Sandbox Image; a session running an older image keeps the previous mapping until the image is rebuilt.
+
+## Amendments (2026-11-08, unseen Dashboards and the open command)
+
+A reload of a browser-based VS Code window could not deliver the Dashboard terminal's disposal to the remote terminal host, so the Dashboard process survived with no terminal showing it. It still held the Sandbox socket, so the attach policy reported it as open and the reload's new auto-open attempt stopped, as did a manual `booley dashboard` (#2857). This amendment refines "A Sandbox socket remains the final singleton guard"; the socket still decides who owns the view, but a socket alone no longer proves the view is shown.
+
+- **Open means seen.** The Dashboard sends a terminal cursor-position request on its 2 s refresh and records when its terminal last answered. A terminal emulator attached to the pty answers, wherever it runs (any VS Code window, a plain terminal, tmux); a pty whose renderer is gone does not. A Dashboard counts as open while it answered within the last ~6 s. A Dashboard that starts counts its start as an answer. One unanswered for 15 s is unseen. Between 6 s and 15 s the check waits and asks once more, and an owner that accepts the connection but does not reply is asked a second time before it counts as wedged, so a hidden browser tab, a busy Sandbox or one late reply does not lose its Dashboard. Heartbeat and verdict live in one module (`view_probe`), and a small thread answers the check from the Dashboard process, so a starting or blocked UI cannot delay the answer.
+- **An unseen Dashboard is retired.** `booley dashboard` and `booley dashboard --on-attach` stop an unseen owner (`SIGTERM`, then `SIGKILL`) and start a new one. The signal goes only to a process whose start time still matches the one recorded when the owner was identified. `booley dashboard --attach-policy` reports `already_open: false` for an unseen Dashboard, so the extension's re-attempt after a reload opens the view again. A re-attempt that runs while the old Dashboard still counts as seen (it answered within the last ~6 s) is repeated once, 16 s later; the tab can take up to about 30 s to come back.
+- **No takeover without proof.** An owner that cannot prove it is unseen counts as open: one from an older Booley that never answers the check, one that belongs to another user, one that sends a malformed reply, or a socket bound but not yet listening. An owner that is alive but wedged and never replies is unseen.
+- **Open command.** The extension contributes `booley.dashboard.open` (**Booley: Open Dashboard**). In a trusted Sandbox window with one Git folder it reveals the Dashboard terminal the window shows (adopting one the extension created with its fixed launch if its own handle was lost to an extension-host restart), or opens one. It may reopen the Dashboard in the same session, which supersedes "deliberately closing it does not restart it in that session" for this explicit action only; the automatic attempt is unchanged. It is explicit like manual `booley dashboard`, so it ignores the attach protocol setting, the automatic-task preference and the Project's auto-open opt-outs, but not trust. In an untrusted window it opens nothing and says why. It waits for a pending automatic attempt instead of opening a second terminal, and reports an already-open Dashboard instead of opening another.
+
+Consequences:
+
+- A window whose connection stays down for more than 15 s while another window attaches loses its Dashboard to the newcomer, which becomes the view.
+- Recovery after a reload takes up to about 30 s instead of being immediate, in exchange for never stopping a view that is still shown.
+- The terminal stays transient; persistence across reloads is not restored.
+
+## Amendments (2026-11-08): Readable process keys (#2887)
+
+A `booley chat` tab is keyed `pid:<scope>:<pid>:<start>`, and on Linux the scope is itself `pid:[<namespace inode>]`, so the Dashboard printed `pid:pid:[4026532225]:4865:81331`. The key is a durable identifier, not a name a human reads. This amendment supersedes, for process keys only, the 2026-10-14 rule "Full keys remain secondary detail text" and the 2026-10-29 Handle pruning rule that an owner "shows the owner's session key when that session has no handle".
+
+- **Process keys render as a PID identity.** Wherever the Dashboard shows a process key (the `Session key:` line of session details, the `Session key` and `Owner` lines of Job details, the Jobs list owner cell, and the Jobs owner filter in its orientation, empty-state text and top bar), it shows `PID <pid> · ns <inode>` for a Linux key. Windows and POSIX `ps` keys carry no namespace and show `PID <pid>`. The namespace is always shown for a Linux key, not only when it differs from the Dashboard's own, because retained Jobs can name owners from an earlier container where the namespace is what tells a reused PID apart.
+- **Everything else is unchanged.** A key that is not a process key (`codex:<thread>`, `worktree:path:...`), a handle, and a malformed `pid:` key display as stored. The row label stays `Session key:`.
+- **Display only.** The stored key, the activity files named after it, the handle map and Job records do not change, and the Dashboard still looks up and cycles filters by the stored key. Two process keys that differ only in their start token read alike but stay separate entries.

@@ -15,6 +15,7 @@ from booley.flows.sim.adapter_transport import (
     AdapterTransportError,
     AdapterTransportIdentity,
     assess_native_verdict,
+    evaluate_native_verdict,
     native_verdict_message,
     partial_result_identity,
     read_adapter_result,
@@ -716,3 +717,43 @@ def test_native_fatal_only_failure_names_assertion_fatal_messages(count: int, la
     assert assessment.inconclusive is False
     message = native_verdict_message("Verilator", assessment, 1, RunTermination())
     assert message == f"\nVerilator sim FAILED ({label})"
+
+
+# --- evaluate_native_verdict: the shared Verilator/iverilog verdict printer ----------------
+
+_SENTINELS = {"pass_sentinels": ["ALL TESTS PASSED."], "fail_sentinels": ["ERROR!"]}
+
+
+@pytest.mark.parametrize(
+    ("tool", "output", "returncode", "sentinels", "expected"),
+    [
+        ("Verilator", "ALL TESTS PASSED.", 0, _SENTINELS, "PASSED (rc=0)"),
+        ("iverilog", "ERROR!", 0, _SENTINELS, "FAILED (fail sentinel matched)"),
+        ("Verilator", "[SIM_RESULT] FAILED", 1, {}, "FAILED (rc=1)"),
+        ("iverilog", "no sentinel here", 0, {}, "INCONCLUSIVE (rc=0, no sentinel)"),
+    ],
+)
+def test_native_verdict_message_names_the_tool(
+    tmp_path, capsys, tool: str, output: str, returncode: int, sentinels: dict, expected: str
+) -> None:
+    evaluate_native_verdict(tool, output, returncode, tmp_path, **sentinels)
+
+    assert f"\n{tool} sim {expected}" in capsys.readouterr().out
+    assert (tmp_path / "run.log").read_text(
+        encoding="utf-8"
+    ) == output  # persisted on pass and fail
+
+
+@pytest.mark.parametrize(
+    ("line", "sentinels"),
+    [
+        ("[0]ERROR! list crc 0x1234", {"fail_sentinels": ["ERROR!"]}),
+        ("Error at cycle 9", {}),
+        ("Error :( expected 1", {}),
+    ],
+)
+def test_native_verdict_captures_the_first_error(tmp_path, line: str, sentinels: dict) -> None:
+    evaluate_native_verdict("iverilog", f"{line}\n[SIM_RESULT] FAILED\n", 1, tmp_path, **sentinels)
+
+    result = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+    assert result["first_error"] == line

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from booley.flows.sim.campaign_durability import (
+from booley.flows.artifact_durability import (
     durable_copy,
     durable_create,
     durable_directory,

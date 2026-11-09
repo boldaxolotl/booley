@@ -22,7 +22,7 @@ from booley.goals.flow_execution import GoalFlowExecution
 from booley.goals.model import GoalState
 from booley.goals.paths import record_paths
 from booley.mcp.base import McpTool, McpToolResult
-from booley.runtime.endpoint_execution import ExecutionResult
+from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 from tests.goals.conftest import (
     LINT_KEY,
     bind,
@@ -148,7 +148,7 @@ def test_in_flight_change_and_revert_is_not_caught(endpoint_env: SimpleNamespace
 
 
 class _CampaignProbe(McpTool):
-    """Hands one campaign outcome to the generic completion path, which records it as V2."""
+    """Records Flow-owned V2 acceptance through the declared hook, as Simulation does."""
 
     name = "goal_campaign_probe"
     description = "Synthetic Simulation Campaign endpoint"
@@ -158,15 +158,15 @@ class _CampaignProbe(McpTool):
         return
 
     def _run(self) -> McpToolResult:
-        self._simulation_campaign_outcomes = (object(),)
         return McpToolResult(exit_code=0, report_text="campaign passed")
 
-    def record_campaign_acceptance(self, _outcomes: tuple[object, ...]) -> None:
+    def record_flow_owned_acceptance(self, _outcome: EndpointOutcome) -> bool:
         shadow = DevelopmentState.from_json_object(self.state.to_dict())
         changes = shadow.set_criterion(LINT_KEY, True, detail={"warnings": 0})
         self._acceptance_recorder.record_or_verify_transaction(
             self.state, changes, acceptance_facts=campaign_facts(), identity={}
         )
+        return True
 
 
 def test_v2_campaign_discard_is_caught_once_at_completion(endpoint_env: SimpleNamespace) -> None:

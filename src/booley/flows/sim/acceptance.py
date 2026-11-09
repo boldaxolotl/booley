@@ -54,6 +54,7 @@ from booley.targets.domain import criterion_matches_target
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
+    from booley.runtime.endpoint_execution import EndpointOutcome
 
 
 @dataclass(frozen=True, slots=True)
@@ -1041,9 +1042,33 @@ def _goal_coverage_change(
     ]
 
 
+def retain_partial_campaign_acceptance(
+    outcome: EndpointOutcome,
+    campaign_outcomes: tuple[object, ...],
+    accepted: tuple[object, ...],
+) -> None:
+    """Expose durable per-Target acceptance completed before projection failed."""
+    entries: list[dict[str, object]] = []
+    for campaign, disposition in zip(campaign_outcomes, accepted, strict=False):
+        target = getattr(campaign, "target", {})
+        selector = target.get("selector", "") if isinstance(target, Mapping) else ""
+        entries.append(
+            {
+                "target": str(selector),
+                "committed": bool(getattr(disposition, "committed", False)),
+                "transaction_id": getattr(disposition, "transaction_id", None),
+                "reason": str(getattr(disposition, "reason", "unknown")),
+            }
+        )
+    if entries:
+        outcome.detail = dict(outcome.detail)
+        outcome.detail["acceptance"] = {"status": "partial", "targets": entries}
+
+
 __all__ = [
     "AcceptanceContext",
     "AcceptanceOutcome",
     "SimulationAcceptanceCoordinator",
     "record_campaign_acceptance",
+    "retain_partial_campaign_acceptance",
 ]

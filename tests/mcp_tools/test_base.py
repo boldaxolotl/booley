@@ -606,6 +606,36 @@ class TestMcpToolGateBehavior:
         assert capsys.readouterr().err.count("lint --target lint_uart") == 1
         assert "lint_clean_sim_uart" not in DevelopmentState.load(state_file).criteria
 
+    def test_project_local_sim_endpoint_with_coverage_is_binding_gated(
+        self, tmp_path: Path, capsys
+    ):
+        """Only the built-in Simulation Flow declares coverage runs outside the generic gate."""
+        state_file = tmp_path / "state.json"
+        state = DevelopmentState.load(state_file)
+        state.init_criteria({"sim_pass_other": True}, strict=True)
+        state.save()
+
+        class CoverageSimTool(SimLikeMcpTool):
+            ran = False
+
+            def _add_args(self, parser: argparse.ArgumentParser) -> None:
+                parser.add_argument("--coverage", action="store_true")
+
+            def _run(self) -> McpToolResult:
+                self.ran = True
+                return McpToolResult(exit_code=EXIT_SUCCESS)
+
+        endpoint = CoverageSimTool()
+        with mock.patch.dict(os.environ, _env_with_state(state_file)):
+            exit_code = endpoint.main(["--target", "demo", "--coverage"])
+
+        assert exit_code == EXIT_ERROR
+        assert endpoint.ran is False
+        assert endpoint.generic_binding_gate_applies() is True
+        assert (
+            "Target(s) demo do not bind an Acceptance Basis criterion" in capsys.readouterr().err
+        )
+
     def test_qualified_selector_matches_bare_target_criterion_identity(self, tmp_path: Path):
         (tmp_path / "rtl").mkdir()
         (tmp_path / "rtl" / "uart.sv").write_text("module uart; endmodule\n")
