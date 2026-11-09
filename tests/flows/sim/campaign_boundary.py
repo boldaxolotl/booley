@@ -122,14 +122,17 @@ def run_campaign_sim(
     monkeypatch.setenv("BOOLEY_DIR", str(data))
     reset_cache()
     launched: list[tuple[str, tuple[str, ...]]] = []
-    _install_fakes(monkeypatch, process, build, adapter_result, launched)
     flow = SimulateFlow()
     if report_dir is _DEFAULT_REPORT_DIR:
         report_dir = tmp_path / "reports"
-    result = flow.execute(
-        SimRequest(work_dir=tmp_path, report_dir=report_dir, **request),
-        adapter=adapter,
-    )
+    # Undo the fakes before returning: an autouse fixture may have patched the same
+    # class attributes, and a test-long undo would restore its patch after it exits.
+    with monkeypatch.context() as scoped:
+        _install_fakes(scoped, process, build, adapter_result, launched)
+        result = flow.execute(
+            SimRequest(work_dir=tmp_path, report_dir=report_dir, **request),
+            adapter=adapter,
+        )
     return CampaignSimRun(result, flow, launched)
 
 
