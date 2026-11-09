@@ -14,7 +14,6 @@ from booley.flows.run_log import write_run_log_progress
 from booley.flows.sim.trace_session import TraceSession
 
 RUN_LOG_PROGRESS_INTERVAL_S = 5.0
-MAX_ADOPTED_VCD_BYTES = 2 * 1024**3
 TraceFileSnapshot = dict[Path, tuple[int, int, int]]
 ChildCpuSnapshot = tuple[float, float]
 RunTerminationKind = Literal[
@@ -211,8 +210,6 @@ class TraceSelection:
     path: Path | None
     # Fresh declared stores when more than one exists and Booley owns none.
     ambiguous: tuple[Path, ...] = ()
-    # The declared VCD is over the conversion cap: kept raw, never a waveform.
-    oversize: bool = False
 
 
 def ambiguous_trace_reason(stores: tuple[Path, ...]) -> str:
@@ -271,15 +268,6 @@ class CurrentRunTraces:
         for match in fresh:
             if match.suffix.lower() != ".vcd":
                 return TraceSelection(match)
-            if (size := match.stat().st_size) > MAX_ADOPTED_VCD_BYTES:
-                print(
-                    f"WARNING: declared trace {match} is {size:,} bytes, over the "
-                    f"{MAX_ADOPTED_VCD_BYTES:,}-byte finalize-time conversion cap; "
-                    "retaining the raw VCD for incident diagnostics; it cannot "
-                    "earn TRACE_OK (convert it separately with `bwave build`, "
-                    "or scope the dump down)"
-                )
-                return TraceSelection(match, oversize=True)
             self.session.postprocess(match)
             # Owned-only lookup: the converted store, or the VCD that
             # postprocess retained when conversion failed.

@@ -116,6 +116,7 @@ def test_every_optional_field_renders_a_command_its_entry_point_accepts(adapter:
         "trace_scope": "tb",
         "trace_args": ("--trace={file}",),
         "trace_files": ("dump.vcd",),
+        "trace_convert_timeout_s": 90,
         "runtime_inputs": ("firmware.hex",),
         "pass_sentinels": ("PASS",),
         "fail_sentinels": ("FAIL",),
@@ -138,7 +139,9 @@ def test_every_optional_field_renders_a_command_its_entry_point_accepts(adapter:
     argv = prepare_adapter_invocation(PreparedSimulationWork(adapter=adapter, **every_field))
 
     entry_point = importlib.import_module(argv[2])
-    entry_point._parse_args(argv[3:])  # argparse exits 2 on a flag the entry point rejects
+    args = entry_point._parse_args(argv[3:])  # argparse exits 2 on a flag the entry point rejects
+    assert argv[argv.index("--trace-convert-timeout") + 1] == "90"
+    assert args.trace_convert_timeout == 90
     if adapter == "icarus":
         assert "--trace" in argv
 
