@@ -1183,10 +1183,21 @@ def _link_baseline_prerequisites(
     links: Sequence[BaselineLink],
     by_run: Mapping[str, Mapping[str, object]],
 ) -> None:
-    """Give each candidate the baseline observation of its own Test Run."""
+    """Give each candidate the baseline observation of its own Test Run.
+
+    Two Test Runs of one candidate cannot read the same baseline work item (one
+    Cocotb batch holds several): a campaign links each work item once.
+    """
     for link in links:
         assert link.run is not None, "an accepted baseline link has a Test Run"
-        prerequisites[link.candidate].append(by_run[link.run.name])
+        document = by_run[link.run.name]
+        if document in prerequisites[link.candidate]:
+            raise ValueError(
+                f"Cycle Count comparison of {link.candidate} Test Run {link.run.name} would "
+                f"read a baseline work item of {link.baseline} that another of its Test Runs "
+                "already reads; compare these Tests in separate runs"
+            )
+        prerequisites[link.candidate].append(document)
 
 
 def _manifest_trace(manifest: SimulationCampaignManifest) -> bool:

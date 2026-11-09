@@ -78,6 +78,15 @@ def test_invalid_run_cwd_template_is_refused_before_a_manifest_exists(tmp_path: 
         _plan(handle, inspection, preview, ("reset", "count"))
 
 
+def test_run_cwd_with_a_parent_component_is_refused_at_planning(tmp_path: Path) -> None:
+    """``run_cwd`` itself stays inside the Project (testbench ``../`` paths are fine)."""
+    project, handle, inspection, preview = _planning_fixture(tmp_path)
+    (project / "booley.toml").write_text('[flows.sim]\nrun_cwd = "../shared"\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"run_cwd must not contain a '\.\.' component"):
+        _plan(handle, inspection, preview, ("reset", "count"))
+
+
 @pytest.mark.parametrize(
     "value",
     ['"make -C tests build"', '["make", 3]'],

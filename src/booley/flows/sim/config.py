@@ -52,6 +52,9 @@ def parse_run_cwd_template(configured: str) -> tuple[str, ...]:
     """Validate and return first-occurrence ordered campaign placeholders."""
     if not configured or "\0" in configured:
         raise ValueError("[flows.sim].run_cwd must be a nonempty path template")
+    # Either separator: a backslash path must not pass on POSIX and fail on Windows.
+    if ".." in re.split(r"[\\/]", configured):
+        raise ValueError(f"[flows.sim].run_cwd must not contain a '..' component: {configured}")
     fields: list[str] = []
     try:
         parsed = Formatter().parse(configured)

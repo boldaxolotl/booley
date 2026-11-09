@@ -873,8 +873,8 @@ def _fresh_shared_failure(
 def _work_item_test_runs(work_item: Mapping[str, object]) -> tuple[TestRun, ...]:
     """The concrete Test Runs a work item froze.
 
-    The manifest codec already validated every record, so a decode failure
-    here means the record was altered after validation.
+    Manifest decode reads these records raw, so this is where they are parsed
+    strictly; a failure means the record was altered after planning.
     """
     try:
         return tuple(
