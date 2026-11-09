@@ -648,17 +648,21 @@ def _allowed_guard_emails() -> set[str]:
     return emails
 
 
-def _docker_env_names(command: str) -> list[str]:
-    """Names passed as ``--env NAME`` (no value) in a ``docker run`` command."""
+_CHECKOUT_MOUNT = "${GITHUB_WORKSPACE}:/opt/booley:ro"
+
+
+def _docker_arguments(command: str) -> tuple[list[str], list[str]]:
+    """Names passed as ``--env NAME`` (no value) and ``-v`` mounts of a ``docker run`` command."""
     tokens = shlex.split(command)
     assert tokens[:3] == ["docker", "run", "--rm"], tokens[:3]
     names: list[str] = []
+    mounts: list[str] = []
     rest = tokens[3:]
-    while rest and rest[0] == "--env":
-        names.append(rest[1])
+    while rest and rest[0] in {"--env", "-v"}:
+        (names if rest[0] == "--env" else mounts).append(rest[1])
         rest = rest[2:]
     assert rest == ["${IMAGE}"], f"unexpected docker arguments: {rest}"
-    return names
+    return names, mounts
 
 
 def _assert_runner_exposes_nothing() -> None:
@@ -671,7 +675,12 @@ def _assert_runner_exposes_nothing() -> None:
     assert list(workflow["jobs"]) == ["renovate"]
     job = workflow["jobs"]["renovate"]
     assert job["environment"] == "renovate"
-    assert not any("actions/checkout" in str(step.get("uses", "")) for step in job["steps"])
+    # The one checkout is the default-branch commit this workflow runs from. It is mounted
+    # read-only for the post-upgrade scripts (#2999) and keeps no credential in its clone.
+    [checkout] = [step for step in job["steps"] if "actions/checkout" in str(step.get("uses", ""))]
+    assert re.fullmatch(r"actions/checkout@[0-9a-f]{40}", checkout["uses"])
+    assert checkout["with"] == {"persist-credentials": False}  # and no `ref` override
+    assert job["permissions"] == {"contents": "read"}  # what the checkout's own token needs
 
     token_step, run_step = _renovate_steps()
     text = _WORKFLOW_PATH.read_text(encoding="utf-8")
@@ -681,7 +690,8 @@ def _assert_runner_exposes_nothing() -> None:
     assert text.count("${{ secrets.") == 1  # only the App private key, only to the token step
 
     env = run_step["env"]
-    passed = _docker_env_names(run_step["run"])
+    passed, mounts = _docker_arguments(run_step["run"])
+    assert mounts == [_CHECKOUT_MOUNT]
     assert sorted(passed) == sorted(
         k for k in env if k.startswith("RENOVATE_") or k == "LOG_LEVEL"
     )
@@ -724,6 +734,123 @@ def test_runner_and_config_hold_every_update() -> None:
     """AC2 (pre-merge part): the runner cannot leak its token and nothing updates unapproved."""
     _assert_runner_exposes_nothing()
     _assert_config_holds_every_update()
+
+
+# --- Post-upgrade tasks (#2999) ----------------------------------------------------------
+
+_SCRIPTS = "/opt/booley/.github/scripts"
+
+
+def _post_upgrade_tasks() -> dict[str, Any]:
+    tasks: dict[str, Any] = _config()["postUpgradeTasks"]
+    return tasks
+
+
+def _allowed_commands() -> list[str]:
+    """The runner's ``RENOVATE_ALLOWED_COMMANDS``: a JSON array of regular expressions."""
+    _, run_step = _renovate_steps()
+    patterns: list[str] = json.loads(run_step["env"]["RENOVATE_ALLOWED_COMMANDS"])
+    return patterns
+
+
+def _written_files() -> set[str]:
+    """Files the post-upgrade scripts write: paired values of each pin, the lock, constraints."""
+    import pin_checksums
+    import renovate_artifacts
+
+    files = {renovate_artifacts.AGENT_CLI_LOCK, renovate_artifacts.CONSTRAINTS_FILE}
+    for pin in pin_checksums.PINS.values():
+        values = [*([pin.npm] if pin.npm else [])]
+        for download in pin.downloads:
+            values += [*download.sha, *download.url_copies]
+        if pin.vsix:
+            values += [pin.vsix.tag, pin.vsix.commit]
+        files |= {value.file for value in values}
+    return files
+
+
+def test_checksum_pins_are_the_upgrades_renovate_extracts() -> None:
+    """AC1: the script knows each pin by the name Renovate reports, in the file it reports."""
+    import pin_checksums
+
+    extracted = _extract_custom()
+    tree = pin_checksums.Tree(_ROOT)
+    for dep, pin in pin_checksums.PINS.items():
+        value = tree.read(pin.version)
+        reported = {
+            (found.dep_name, found.file, found.current_value)
+            for found in extracted
+            if found.dep_name == dep
+        }
+        assert (dep, pin.version.file, value) in reported, f"{dep} is never extracted as {value}"
+
+
+def test_post_upgrade_commands_are_allowlisted_default_branch_scripts() -> None:
+    """AC4: only anchored, allowlisted commands run, and only default-branch repository code."""
+    tasks = _post_upgrade_tasks()
+    assert tasks["executionMode"] == "branch"
+    patterns = _allowed_commands()
+    assert patterns
+    for pattern in patterns:
+        assert pattern.startswith("^") and pattern.endswith("$"), pattern
+    for command in tasks["commands"]:
+        # Renovate tests each command against every pattern: exactly one must accept it.
+        assert sum(bool(re.search(pattern, command)) for pattern in patterns) == 1, command
+        program, script, *_ = shlex.split(command)
+        assert program == "python3"
+        assert script.startswith(f"{_SCRIPTS}/"), command
+        assert (_ROOT / ".github/scripts" / script.removeprefix(f"{_SCRIPTS}/")).is_file()
+    # Nothing but the commands is allowed: every pattern accepts one of them.
+    assert all(
+        any(re.search(pattern, command) for command in tasks["commands"]) for pattern in patterns
+    )
+    # A suffix, a prefix or a branch-relative script is not accepted.
+    for command in tasks["commands"]:
+        for tampered in (f"{command} && id", f"; {command}", command.replace("/opt/booley/", "")):
+            assert not any(re.search(pattern, tampered) for pattern in patterns), tampered
+
+    # The runner mounts its own credential-less default-branch checkout read-only and gives
+    # Renovate no shell to run commands through.
+    _, run_step = _renovate_steps()
+    assert _docker_arguments(run_step["run"])[1] == [_CHECKOUT_MOUNT]
+    assert run_step["env"]["RENOVATE_BINARY_SOURCE"] == "install"
+    assert "SHELL_EXECUTOR" not in _WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert set(tasks["installTools"]) == {"python", "node", "uv"}
+    # Only what the scripts write is committed.
+    assert set(tasks["fileFilters"]) == _written_files()
+
+
+def test_data_file_template_renders_what_the_scripts_read(tmp_path: Path) -> None:
+    """The template (triple braces, one entry per upgrade) renders JSON the loader accepts."""
+    import renovate_data_file
+
+    template = _post_upgrade_tasks()["dataFileTemplate"]
+    shape = re.fullmatch(
+        r"(?P<head>.*)\{\{#each upgrades\}\}(?P<item>.*)"
+        r"\{\{#unless @last\}\},\{\{/unless\}\}\{\{/each\}\}(?P<tail>.*)",
+        template,
+    )
+    assert shape is not None, template
+    upgrades = [
+        {"depName": "zachjs/sv2v", "packageFile": "a/Dockerfile.base", "newValue": "v0.0.13"},
+        {"depName": "", "packageFile": "Cargo.lock", "newValue": ""},
+    ]
+    items = []
+    for upgrade in upgrades:
+        item = shape["item"]
+        for name, value in upgrade.items():
+            item = item.replace(f"{{{{{{{name}}}}}}}", value)
+        items.append(item)
+    rendered = shape["head"] + ",".join(items) + shape["tail"]
+    assert "{{" not in rendered
+    path = tmp_path / "data.json"
+    path.write_text(rendered, encoding="utf-8")
+
+    loaded = renovate_data_file.load_upgrades(path)
+
+    assert [(u.dep_name, u.package_file, u.new_value) for u in loaded] == [
+        (u["depName"], u["packageFile"], u["newValue"]) for u in upgrades
+    ]
 
 
 # --- Literal copies of canonical pins (#2998) -------------------------------------------
