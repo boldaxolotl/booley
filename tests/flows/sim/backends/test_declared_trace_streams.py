@@ -178,6 +178,21 @@ def test_declared_vcd_streams_to_trace_ok(adapter, tmp_path, monkeypatch):
     assert not [a for a in out.attempts("vcd_postprocess") if "fpu.vcd" in a.get("detail", "")]
 
 
+def _assert_host_without_streaming_converts_after_the_run(tmp_path, monkeypatch):
+    """Windows or no native B-Wave: the same entry stays a plain file, converted afterwards."""
+    steps, entries = "write:fpu.vcd;record:fpu.vcd", ["fpu.vcd"]
+    streaming = _run(
+        "verilator", tmp_path / "on", monkeypatch, "record:fpu.vcd;write:fpu.vcd", entries
+    )
+    monkeypatch.setattr(waveform_store, "can_stream_waveform", lambda: False)
+    plain = _run("verilator", tmp_path / "off", monkeypatch, steps, entries)
+
+    assert streaming.types() == {"fpu.vcd": "fifo"}
+    assert plain.types() == {"fpu.vcd": "file"}
+    assert "TRACE_OK" in plain.output
+    assert any("fpu.vcd" in a["detail"] for a in plain.attempts("vcd_postprocess"))
+
+
 @pytest.mark.parametrize(
     ("entry", "written", "op"),
     [
@@ -185,10 +200,14 @@ def test_declared_vcd_streams_to_trace_ok(adapter, tmp_path, monkeypatch):
         pytest.param("{tmp}/abs.vcd", "{tmp}/abs.vcd", "write", id="absolute"),
         pytest.param("../outside.vcd", "../outside.vcd", "write", id="outside_run_dir"),
         pytest.param("other.fst", "other.fst", "write_fst", id="fst"),
+        pytest.param(None, "fpu.vcd", "write", id="no_stream_support"),
     ],
 )
 def test_ineligible_entries_are_not_piped(entry, written, op, tmp_path, monkeypatch):
     """An entry that cannot stream stays a plain file next to one that does."""
+    if entry is None:  # Windows or no native B-Wave
+        _assert_host_without_streaming_converts_after_the_run(tmp_path, monkeypatch)
+        return
     written = written.format(tmp=tmp_path)
     entries = [entry.format(tmp=tmp_path), "fpu.vcd"]
     steps = f"{op}:{written};record:fpu.vcd,{written};write:fpu.vcd"
@@ -202,21 +221,6 @@ def test_ineligible_entries_are_not_piped(entry, written, op, tmp_path, monkeypa
     if written.endswith(".vcd"):  # the plain VCD was converted after the run
         details = [a["detail"] for a in out.attempts("vcd_postprocess")]
         assert any(Path(written).name in detail for detail in details)
-
-
-def test_host_without_streaming_converts_after_the_run(tmp_path, monkeypatch):
-    """Windows or no native B-Wave: the same entry stays a plain file, converted afterwards."""
-    steps, entries = "write:fpu.vcd;record:fpu.vcd", ["fpu.vcd"]
-    streaming = _run(
-        "verilator", tmp_path / "on", monkeypatch, "record:fpu.vcd;write:fpu.vcd", entries
-    )
-    monkeypatch.setattr(waveform_store, "can_stream_waveform", lambda: False)
-    plain = _run("verilator", tmp_path / "off", monkeypatch, steps, entries)
-
-    assert streaming.types() == {"fpu.vcd": "fifo"}
-    assert plain.types() == {"fpu.vcd": "file"}
-    assert "TRACE_OK" in plain.output
-    assert any("fpu.vcd" in a["detail"] for a in plain.attempts("vcd_postprocess"))
 
 
 @pytest.mark.parametrize("how", ["unlink", "replace"])
