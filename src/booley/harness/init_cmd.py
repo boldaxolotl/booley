@@ -8,6 +8,13 @@ already satisfied. A first init defaults to Claude with automatic credential
 selection; flags, existing configuration, or terminal answers override those
 defaults.
 
+Project Initialization is the location-neutral part: :func:`initialize_project`
+reconciles every Project file (Booley Directory, ``[agent]``, core projections,
+Goalsets, Git integration, line endings, guidance links) with no Docker, host
+credentials or Sandbox Issuance (ADR 0085). Host ``booley init`` runs it and then
+the host-only steps; ``booley session refresh`` runs it through
+:func:`reinitialize_project` without rewriting tracked files.
+
 Steps, in the order :func:`run_init` runs them. The number the user sees is
 allocated at print time by :meth:`InitContext.step_banner`, so it is always
 contiguous; identity lives in the ``record`` key, not the number.
@@ -42,7 +49,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -141,7 +148,7 @@ from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills
 from booley.harness.terminal_status import LineStatus, section_header, status_line
 from booley.projects.inventory import ProjectInventoryError, remember_project
-from booley.runtime import auth_token, doctor_stamp, project_repositories
+from booley.runtime import auth_token, dashboard_tasks, doctor_stamp, project_repositories
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
@@ -300,7 +307,7 @@ def _backfill_project_gitignore(booley_dir: Path, ctx: InitContext) -> None:
     if not missing:
         return
 
-    if ctx.check_only:
+    if ctx.check_only or ctx.preserve_tracked_content:  # the file may be tracked
         warn(
             f"would add {len(missing)} missing ignore pattern(s) to {gitignore.name}: {', '.join(missing)}"
         )
@@ -710,7 +717,7 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
         err(f"cannot persist agent selection: refusing symlinked {path}")
         ctx.record("agent_config", "err", "symlinked booley.toml")
         return False
-    if ctx.check_only:
+    if ctx.check_only or (ctx.preserve_tracked_content and path.is_file()):
         warn(f"would record [agent] {selection.provider}/{selection.auth} in {path}")
         ctx.record("agent_config", "warn", f"{selection.provider}/{selection.auth}")
         return True
@@ -1479,6 +1486,36 @@ def _step_interactive(
     _report_interactive_changes(ctx, sources, changes)
 
 
+def _step_interactive_files(ctx: InitContext) -> None:
+    """Reconcile the Dashboard task and Interactive excludes without a Sandbox.
+
+    These are the Project-file parts of Interactive Mode: no Docker, no Sandbox
+    Issuance. Records nothing when everything is current, and nothing in check-only.
+    """
+    if ctx.check_only:
+        return
+    root = ctx.project_root
+    try:
+        excludes_changed = add_git_excludes(root, interactive_init.exclude_names(root))
+        transaction = dashboard_tasks.reconcile(root, authorized_project_data_source(root))
+    except (OSError, RuntimeError, RuntimeSpecError) as exc:
+        err(f"could not reconcile Interactive Mode files: {exc}")
+        ctx.record("interactive_files", "err", str(exc))
+        return
+    if excludes_changed:
+        ok(
+            "reconciled Interactive Mode git exclusions (info/exclude); existing exclusions retained"
+        )
+    for notice in transaction.plan.notices:
+        info(notice)
+    for diagnostic in transaction.plan.diagnostics:
+        warn(diagnostic)
+    if transaction.plan.diagnostics:
+        ctx.record("interactive_files", "warn", "; ".join(transaction.plan.diagnostics))
+    elif excludes_changed or transaction.applied:
+        ctx.record("interactive_files", "ok", "reconciled")
+
+
 # ---------------------------------------------------------------------------
 # Advisories
 # ---------------------------------------------------------------------------
@@ -2172,7 +2209,8 @@ def _step_line_endings_and_guidance(
     still refusing a tree the user had left dirty.
     """
     booley_dir = _line_ending_booley_dir(ctx.project_root)
-    if _release_guidance_for_line_endings(ctx, booley_dir):
+    # Detaching hardlinks only serves a normalization, which this mode never runs.
+    if not ctx.preserve_tracked_content and _release_guidance_for_line_endings(ctx, booley_dir):
         guidance_plan = None  # the preflight plan observed the detached links
     _step_line_endings(ctx, booley_dir, clean_baseline=clean_baseline)
     _step_guidance_links(ctx, guidance_plan)
@@ -2281,13 +2319,15 @@ def _sandbox_git_version(image_id: str | None) -> tuple[int, int, int] | None:
     return parse_git_version(result.stdout) if result.returncode == 0 else None
 
 
-def _step_worktree_policies(ctx: InitContext, runtime_image_id: str | None) -> None:
+def _step_worktree_policies(
+    ctx: InitContext, sandbox_git_version: tuple[int, int, int] | None
+) -> None:
     """Reconcile pruning safety and the two-sided worktree-link policy."""
     booley_dir = booley_dir_for_init(ctx.project_root)
     _step_worktree_prune_guard(ctx, booley_dir=booley_dir)
     _step_worktree_link_policy(
         ctx,
-        sandbox_git_version=_sandbox_git_version(runtime_image_id),
+        sandbox_git_version=sandbox_git_version,
         booley_dir=booley_dir,
     )
 
@@ -2302,6 +2342,94 @@ def _initialize_project_configuration(
     if any(result.name == "booley_dir" and result.status == "err" for result in ctx.results):
         return False
     return _step_agent_config(ctx, selection, agent_config_path)
+
+
+@dataclass(frozen=True)
+class ProjectFacts:
+    """Facts only the host can determine, injected into Project Initialization."""
+
+    #: Git version inside the Sandbox Image; ``None`` when unknown.
+    sandbox_git_version: tuple[int, int, int] | None
+
+
+@dataclass(frozen=True)
+class ProjectInitialization:
+    """Inputs of one :func:`initialize_project` run, besides the step context."""
+
+    agent: AgentSelection
+    agent_config_path: Path
+    #: Called once, after the Booley Directory content steps and before Git integration.
+    host_facts: Callable[[], ProjectFacts]
+    #: Also reconcile the Dashboard task and Interactive excludes (host init leaves
+    #: them to its Sandbox Issuance step, which owns their preconditions).
+    reconcile_interactive_files: bool = True
+    guidance_plan: InitPlan | None = None
+    line_ending_baseline: Mapping[Path, bool | None] | None = None
+
+
+def initialize_project(ctx: InitContext, request: ProjectInitialization) -> bool:
+    """Apply every Project-file step; False when the Booley Directory or [agent] failed.
+
+    Idempotent and location-neutral: nothing here uses Docker, host credentials, the
+    host-wide lock, the private store or Sandbox Issuance. Callers wrap it in
+    :func:`init_booley_dir_scope`.
+    """
+    if not _initialize_project_configuration(ctx, request.agent, request.agent_config_path):
+        return False
+    _step_core_projections(ctx)
+    _step_goalsets(ctx)
+    facts = request.host_facts()
+    _step_git_hooks(ctx)
+    _step_project_git_hooks(ctx)
+    _step_worktree_policies(ctx, facts.sandbox_git_version)
+    _step_line_endings_and_guidance(ctx, request.guidance_plan, request.line_ending_baseline)
+    if request.reconcile_interactive_files:
+        _step_interactive_files(ctx)
+    return True
+
+
+def reinitialize_project(project_root: Path, facts: ProjectFacts) -> list[StepResult]:
+    """Run Project Initialization for ``booley session refresh``.
+
+    Never prompts and never rewrites an existing tracked file: pending rewrites are
+    reported as ``warn`` results and left for host ``booley init``.
+    """
+    ctx = InitContext(
+        project_root=project_root,
+        interactive=False,
+        show_step_banners=False,
+        preserve_tracked_content=True,
+    )
+    banner("Project Initialization")
+    with init_booley_dir_scope(project_root):
+        config_path = _agent_config_path(project_root, seed=False)
+        if not _project_config_migration_preflight(ctx, config_path):
+            return ctx.results
+        selection = _resolve_agent_selection(ctx, argparse.Namespace(), config_path)
+        if selection is not None:
+            request = ProjectInitialization(selection, config_path, lambda: facts)
+            initialize_project(ctx, request)
+    return ctx.results
+
+
+@dataclass
+class _HostPreparation:
+    """Host-only steps whose outcome Project Initialization and Sandbox Issuance share."""
+
+    ctx: InitContext
+    selection: AgentSelection
+    skip_credentials: bool
+    pdk_root: Path | object | None = None
+    image_result: LifecycleResult | None = None
+    runtime_image_id: str | None = None
+
+    def facts(self) -> ProjectFacts:
+        """Authenticate, fetch the PDK and reconcile the image; return what Git needs."""
+        _step_auth(self.ctx, self.selection, skip_credentials=self.skip_credentials)
+        self.pdk_root = nangate_pdk.cache_root()
+        self.image_result = _reconcile_initialized_image(self.ctx)
+        self.runtime_image_id = _selected_runtime_image_id(self.image_result)
+        return ProjectFacts(_sandbox_git_version(self.runtime_image_id))
 
 
 def _run_project_init_steps(
@@ -2323,30 +2451,25 @@ def _run_project_init_steps(
     if getattr(args, "scaffold", None) and not step_scaffold(ctx, args):
         return _print_summary(ctx)
 
-    if not _initialize_project_configuration(ctx, selection, agent_config_path):
-        return _print_summary(ctx)
-    _step_core_projections(ctx)
-    _step_goalsets(ctx)
-    _step_auth(
-        ctx,
+    host = _HostPreparation(ctx, selection, getattr(args, "skip_credentials", False))
+    request = ProjectInitialization(
         selection,
-        skip_credentials=getattr(args, "skip_credentials", False),
+        agent_config_path,
+        host.facts,
+        reconcile_interactive_files=False,
+        guidance_plan=guidance_plan,
+        line_ending_baseline=line_ending_baseline,
     )
-    pdk_root = nangate_pdk.cache_root()
-    image_result = _reconcile_initialized_image(ctx)
-    runtime_image_id = _selected_runtime_image_id(image_result)
-    _step_git_hooks(ctx)
-    _step_project_git_hooks(ctx)
-    _step_worktree_policies(ctx, runtime_image_id)
-    _step_line_endings_and_guidance(ctx, guidance_plan, line_ending_baseline)
+    if not initialize_project(ctx, request):
+        return _print_summary(ctx)
     _step_interactive(
         ctx,
-        nangate_pdk_root=pdk_root,
+        nangate_pdk_root=host.pdk_root,
         agent_app=selection.provider,
-        runtime_image_id=runtime_image_id,
+        runtime_image_id=host.runtime_image_id,
         init_will_create_booley_dir=True,
     )
-    _step_retire_superseded_images(ctx, image_result)
+    _step_retire_superseded_images(ctx, host.image_result)
     _step_project_inventory(ctx)
     _step_project_trackability(ctx)
     _step_advisories(ctx)

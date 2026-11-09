@@ -143,7 +143,7 @@ def test_exclude_names_cover_relocated_booley_dir_in_stealth(tmp_path, monkeypat
     reset_cache()
     monkeypatch.setattr(interactive, "stealth_enabled", lambda _root: True)
 
-    assert interactive._exclude_names(tmp_path) == (
+    assert interactive.exclude_names(tmp_path) == (
         ".devcontainer",
         ".claude",
         ".booley",

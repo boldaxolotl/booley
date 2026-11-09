@@ -403,7 +403,7 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
         result = images.prepare(project_root, verbose=verbose)
         result = images.commit()
         images.reissue(project_root, result.selected_id, verbose=verbose)
-        return result
+        return session_refresh.RefreshResult(result, "kept", None, "container-new")
 
     with (
         patch.object(
@@ -441,10 +441,20 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
             ),
         ),
         patch.object(harness_refresh.runtime_refresh, "refresh", side_effect=drive_runtime),
+        patch.object(
+            harness_refresh.init_cmd,
+            "_sandbox_git_version",
+            side_effect=lambda image_id: events.append(("git-version", image_id)) or (2, 50, 0),
+        ),
+        patch.object(
+            harness_refresh.init_cmd,
+            "reinitialize_project",
+            side_effect=lambda root, facts: events.append(("reinitialize", root, facts)) or [],
+        ),
     ):
         result = harness_refresh.refresh(tmp_path, verbose=True)
 
-    assert result == session_refresh.RefreshImage(
+    assert result.image == session_refresh.RefreshImage(
         "booley-sandbox",
         "sha256:fresh",
         "payload-123",
@@ -466,6 +476,8 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
         ("prepare", tmp_path, True),
         ("commit", prepared),
         ("reissue", tmp_path, "sha256:fresh", True),
+        ("git-version", "sha256:fresh"),
+        ("reinitialize", tmp_path, harness_refresh.init_cmd.ProjectFacts((2, 50, 0))),
     ]
 
 
