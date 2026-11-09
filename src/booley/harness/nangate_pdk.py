@@ -12,6 +12,7 @@ import hashlib
 import http.client
 import json
 import os
+import ssl
 import stat
 import tempfile
 import time
@@ -33,7 +34,7 @@ SOURCE_MANIFEST = "SOURCE.json"
 _BASE_URL = f"https://raw.githubusercontent.com/The-OpenROAD-Project/OpenROAD/{REVISION}"
 _USER_AGENT = "Booley-Nangate-Setup/0.2"
 # raw.githubusercontent.com occasionally times out or answers 5xx; the files are
-# pinned by checksum, so repeating a download is safe. Waits are 2 s, then 4 s.
+# pinned by checksum, so repeating a download is safe. Waits double each retry.
 _DOWNLOAD_ATTEMPTS = 3
 _RETRY_BASE_DELAY_SECONDS = 2.0
 # Client errors that mean "try again later" rather than "this request is wrong".
@@ -224,10 +225,24 @@ def _download_once(item: PinnedFile, target: Path, opener: OpenUrl) -> str:
 
 
 def _is_transient(exc: OSError | http.client.HTTPException) -> bool:
-    """Whether a failed download may succeed when repeated (not a 4xx refusal)."""
+    """Whether a failed download may succeed when repeated.
+
+    Network failures may. A 4xx refusal, an untrusted certificate, and a local
+    write error (a full disk, a denied path) will not, so they fail at once.
+    """
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code >= 500 or exc.code in _RETRYABLE_CLIENT_STATUSES
-    return True
+    cause = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    if isinstance(cause, ssl.SSLCertVerificationError):
+        return False
+    transient = (
+        urllib.error.URLError,
+        TimeoutError,
+        ConnectionError,
+        ssl.SSLError,
+        http.client.HTTPException,
+    )
+    return isinstance(exc, transient)
 
 
 def _download(item: PinnedFile, target: Path, opener: OpenUrl, sleep: Sleep) -> None:
@@ -274,7 +289,7 @@ def fetch(
 ) -> Path:
     """Download, verify, then atomically replace each pinned file in *root*.
 
-    Each download is tried up to three times when it fails transiently.
+    A download that fails transiently is retried with backoff (see ``_download``).
     """
     root = root or cache_root()
     secure_config_dir_for_cache(root)

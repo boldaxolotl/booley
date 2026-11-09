@@ -35,7 +35,11 @@ def test_merge_queue_uses_mergify_integration_for_updates_and_merges() -> None:
 
 
 def test_merge_queue_checks_four_serial_single_pr_candidates() -> None:
-    """Four cumulative candidates (A..A+B+C+D) run at once, each adding one PR."""
+    """Four cumulative candidates run at once, each adding one PR.
+
+    docs/internals/agents/merge-queue.md documents this contract (A, A+B, A+B+C,
+    A+B+C+D) for agents that monitor and recover queued PRs.
+    """
     config = _load_config()
     merge_queue = require_dict(config.get("merge_queue"), field="merge_queue")
     queue_rules = require_list(config.get("queue_rules"), field="queue_rules")
