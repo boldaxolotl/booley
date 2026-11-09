@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from booley.flows.run_log import write_run_log_progress
+from booley.flows.sim.backends.declared_streams import DeclaredTraceStreams
 from booley.flows.sim.trace_session import TraceSession
 
 RUN_LOG_PROGRESS_INTERVAL_S = 5.0
@@ -237,6 +238,8 @@ class CurrentRunTraces:
     patterns: tuple[str, ...]
     roots: tuple[Path, ...]
     before: TraceFileSnapshot
+    # Declared ``.vcd`` entries streaming through pipes; ``None`` when none may.
+    streams: DeclaredTraceStreams | None = None
 
     @classmethod
     def begin(
@@ -246,15 +249,40 @@ class CurrentRunTraces:
         raw_trace_paths: tuple[Path, ...] = (),
         patterns: tuple[str, ...] = (),
         roots: tuple[Path, ...] = (),
+        stream_from: Path | None = None,
     ) -> CurrentRunTraces:
-        """Clear Booley-owned outputs, then snapshot declared files in every root."""
+        """Clear Booley-owned outputs, snapshot declared files in every root, then stream.
+
+        With *stream_from* (the run directory) eligible declared VCDs become
+        pipes, started after the snapshot so freshness evidence is unchanged.
+        """
         session.reset_for_run(raw_trace_paths)
         before: TraceFileSnapshot = {}
         for match in _declared_trace_matches(patterns, roots):
             stamp = trace_file_stamp(match)
             if stamp is not None:
                 before[match.resolve()] = stamp
-        return cls(session, patterns, roots, before)
+        streams = (
+            DeclaredTraceStreams.start(session, patterns, stream_from)
+            if stream_from is not None
+            else None
+        )
+        return cls(session, patterns, roots, before, streams)
+
+    def close_streams(self) -> None:
+        """After the simulator stopped: give converters EOF and remove our pipes."""
+        if self.streams is not None:
+            self.streams.close_inputs()
+
+    def finish_streams(self) -> None:
+        """Wait for the declared-stream converters within the conversion budget."""
+        if self.streams is not None:
+            self.streams.finish()
+
+    @property
+    def stream_failures(self) -> tuple[str, ...]:
+        """Why each failed declared stream failed."""
+        return tuple(self.streams.failures.values()) if self.streams is not None else ()
 
     def select(self) -> TraceSelection:
         """Choose this run's waveform: owned output first, else one fresh declared file."""
@@ -262,7 +290,11 @@ class CurrentRunTraces:
         if owned is not None:
             return TraceSelection(owned)
         fresh = self._fresh_declared()
-        stores = tuple(path for path in fresh if path.suffix.lower() != ".vcd")
+        streamed = set(self.streams.stores.values()) if self.streams is not None else set()
+        # A streamed store stands in for a VCD, so it never makes the choice ambiguous.
+        stores = tuple(
+            path for path in fresh if path.suffix.lower() != ".vcd" and path not in streamed
+        )
         if len(stores) > 1:
             return TraceSelection(None, ambiguous=stores)
         for match in fresh:
@@ -281,13 +313,19 @@ class CurrentRunTraces:
         if not self.patterns:
             return []
         owned = {path.resolve() for path in self.session.owned_outputs}
+        stores = self.streams.stores if self.streams is not None else {}
         fresh: list[Path] = []
-        for match in _declared_trace_matches(self.patterns, self.roots):
-            resolved = match.resolve()
-            stamp = trace_file_stamp(match)
-            if resolved in owned or stamp is None or stamp[1] == 0:
-                continue
-            if self.before.get(resolved) == stamp:
-                continue
-            fresh.append(match)
+        seen: set[Path] = set()
+        for pattern in self.patterns:
+            if pattern in stores:
+                fresh.append(stores[pattern])
+            for match in _declared_trace_matches((pattern,), self.roots):
+                resolved = match.resolve()
+                stamp = trace_file_stamp(match)
+                if resolved in owned or resolved in seen or stamp is None or stamp[1] == 0:
+                    continue
+                seen.add(resolved)
+                if self.before.get(resolved) == stamp:
+                    continue
+                fresh.append(match)
         return fresh

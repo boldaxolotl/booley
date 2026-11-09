@@ -27,10 +27,11 @@ def _missing_trace_reason(current: CurrentRunTraces) -> str:
     """Explain why no current trace artifact could be retained."""
     reason = "trace requested but no fresh .fst store or convertible .vcd was produced"
     if current.patterns:
-        return reason + (
+        reason += (
             " (no fresh, nonempty file matching [flows.sim].trace_files "
             f"{list(current.patterns)} was produced by the current run)"
         )
+        return "; ".join((reason, *current.stream_failures))
     if current.roots:
         return reason + (
             " (a testbench writing its dump under its own name needs "
@@ -107,6 +108,7 @@ def finalize_trace(
     session.start_conversion_budget(convert_timeout_s)
     if publish_pending is not None:
         publish_pending(AdapterTraceResult("incident", detail=_PENDING_DETAIL))
+    current.finish_streams()
     if raw_vcd is not None:
         session.postprocess(raw_vcd)
     selection = current.select()

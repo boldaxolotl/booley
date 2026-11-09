@@ -86,3 +86,39 @@ def test_trace_session_streams_into_its_own_cache_destination(tmp_path) -> None:
         check=False,
     )
     assert probe.returncode == 0, probe.stderr
+
+
+def test_declared_stream_builds_queryable_store(tmp_path) -> None:
+    """A declared VCD entry streams into a store the real reader can query."""
+    from booley.flows.sim.backends.declared_streams import DeclaredTraceStreams
+
+    _require_binary()
+    run = tmp_path / "run"
+    run.mkdir()
+    session = TraceSession(tmp_path / "work")
+    session.start_conversion_budget(60)
+    streams = DeclaredTraceStreams.start(session, ("fpu.vcd",), run)
+
+    _write_fifo(run / "fpu.vcd", MINIMAL_VCD.encode())
+    streams.close_inputs()
+    streams.finish()
+
+    store = streams.stores["fpu.vcd"]
+    assert inspect_store(store).queryable is True
+    assert not (run / "fpu.vcd").exists()
+
+
+def test_reopened_stream_fails_instead_of_merging(tmp_path) -> None:
+    """A testbench that reopens its dump appends a second header: bwave rejects it."""
+    _require_binary()
+    fifo = tmp_path / "trace.fifo"
+    conversion = start_streaming_conversion(
+        fifo, tmp_path / "trace.fst", stderr_path=tmp_path / "trace.stderr"
+    )
+    assert conversion is not None
+
+    _write_fifo(fifo, MINIMAL_VCD.encode() + MINIMAL_VCD.encode())
+    result = conversion.finish()
+
+    assert result.success is False
+    assert "second VCD header" in result.detail

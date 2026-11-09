@@ -480,3 +480,46 @@ def _inline_ended_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
             GoalStore(booley_dir), repo_dir
         ),
     )
+
+
+_FAKE_BWAVE = '''#!{python}
+"""Stand-in for ``bwave build``: modes come from FAKE_BWAVE_MODE."""
+import os
+import sys
+import time
+
+args = sys.argv[1:]
+store = args[args.index("-o") + 1]
+mode = os.environ.get("FAKE_BWAVE_MODE", "ok")
+if mode == "never_read":
+    time.sleep(60)
+if mode == "exit_early":
+    sys.stderr.write("fake bwave refused the input\\n")
+    sys.exit(1)
+data = sys.stdin.buffer.read()
+if b"$enddefinitions" not in data:
+    sys.stderr.write("fake bwave: no VCD header\\n")
+    sys.exit(1)
+with open(store, "wb") as out:
+    out.write({store_bytes!r})
+'''
+
+
+@pytest.fixture
+def fake_bwave(tmp_path, monkeypatch):
+    """A POSIX ``bwave build`` fake selected as the native binary (never via PATH).
+
+    It reads stdin to EOF and writes a minimal store when it saw a VCD header,
+    else exits 1. ``FAKE_BWAVE_MODE`` = ``never_read`` (sleeps without reading
+    stdin) or ``exit_early`` (exits 1 at once).
+    """
+    from booley.bwave import waveform_store
+
+    script = tmp_path / "fake-bin" / "bwave"
+    script.parent.mkdir()
+    script.write_text(
+        _FAKE_BWAVE.format(python=sys.executable, store_bytes=MINIMAL_FST_BYTES), encoding="utf-8"
+    )
+    script.chmod(0o755)
+    monkeypatch.setattr(waveform_store, "native_bwave_binary", lambda: str(script))
+    return script

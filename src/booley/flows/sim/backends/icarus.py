@@ -184,6 +184,7 @@ def _prepare_icarus_run(
             raw_trace_paths=(run / _DEFAULT_VCD_NAME,),
             patterns=tuple(trace_files),
             roots=tuple(_trace_roots(run, work, build)),
+            stream_from=run,
         )
         if trace is not None
         else None
@@ -202,18 +203,23 @@ def _execute_icarus_run(
     print(f"{'=' * 60}")
     print(f"CWD: {run.run_cwd}")
     print(f"CMD: {' '.join(run.command)}\n")
-    return run_supervised(
-        SimulatorLaunch(
-            label="iverilog",
-            command=run.command,
-            run_cwd=run.run_cwd,
-            env=os.environ.copy(),
-            timeout_s=timeout,
-            work_dir=run.work_dir,
-            max_rundir_bytes=max_rundir_bytes,
-            runtime_inputs=runtime_inputs,
+    try:
+        return run_supervised(
+            SimulatorLaunch(
+                label="iverilog",
+                command=run.command,
+                run_cwd=run.run_cwd,
+                env=os.environ.copy(),
+                timeout_s=timeout,
+                work_dir=run.work_dir,
+                max_rundir_bytes=max_rundir_bytes,
+                runtime_inputs=runtime_inputs,
+                streams=run.current.streams if run.current is not None else None,
+            )
         )
-    )
+    finally:
+        if run.current is not None:
+            run.current.close_streams()
 
 
 def _icarus_setup_failure(

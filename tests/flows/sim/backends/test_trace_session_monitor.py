@@ -8,8 +8,10 @@ verilator, or bwave on PATH.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -131,6 +133,84 @@ class TestStallKill:
 
         assert session.stall_killed is False
         assert session.stall_message is None
+
+
+@pytest.mark.skipif(os.name != "posix", reason="named pipes need POSIX")
+class TestSpareSimulatorMonitor:
+    """A declared-file stream's monitor never takes the testbench's simulator down."""
+
+    @staticmethod
+    def _stream(tmp_path):
+        from booley.bwave.waveform_store import start_streaming_conversion
+
+        conversion = start_streaming_conversion(
+            tmp_path / "pipe.vcd",
+            tmp_path / "out.fst",
+            stderr_path=tmp_path / "out.stderr",
+            replace_existing=False,
+        )
+        assert conversion is not None
+        return conversion
+
+    def test_spare_simulator_monitor_ignores_idle_pipe(self, tmp_path, fake_bwave, monkeypatch):
+        """No unread bytes means no stall, however long the converter sits idle."""
+        monkeypatch.setenv("FAKE_BWAVE_MODE", "never_read")
+        conversion = self._stream(tmp_path)
+        sim_proc = _spawn_sleeper()
+        try:
+            TraceSession(tmp_path / "work").start_monitor(
+                conversion,
+                sim_proc,
+                stall_timeout=0.1,
+                poll_interval=0.05,
+                kill_after_stalls=2,
+                spare_simulator=True,
+            )
+            time.sleep(1.0)  # ten stall windows with nothing written
+            assert conversion.poll() is None
+            assert sim_proc.poll() is None
+        finally:
+            sim_proc.kill()
+            sim_proc.wait(timeout=5)
+            conversion.kill()
+            conversion.finish(timeout_s=5)
+
+    def test_spare_simulator_monitor_kills_only_stalled_converter(
+        self, tmp_path, fake_bwave, monkeypatch
+    ):
+        """A converter that stopped reading is killed; the blocked writer is then drained."""
+        monkeypatch.setenv("FAKE_BWAVE_MODE", "never_read")
+        conversion = self._stream(tmp_path)
+        sim_proc = _spawn_sleeper()
+        session = TraceSession(tmp_path / "work")
+
+        def write_a_megabyte() -> None:
+            descriptor = os.open(str(tmp_path / "pipe.vcd"), os.O_WRONLY)
+            try:
+                os.write(descriptor, b"x" * (1 << 20))
+            finally:
+                os.close(descriptor)
+
+        writer = threading.Thread(target=write_a_megabyte, daemon=True)
+        try:
+            writer.start()
+            session.start_monitor(
+                conversion,
+                sim_proc,
+                stall_timeout=0.1,
+                poll_interval=0.05,
+                kill_after_stalls=2,
+                spare_simulator=True,
+            )
+            assert _wait_dead(conversion, timeout=10.0), "stalled converter should be killed"
+            writer.join(timeout=10.0)
+            assert not writer.is_alive(), "the writer must be drained, not left blocked"
+            assert sim_proc.poll() is None
+            assert session.stall_killed is False
+        finally:
+            sim_proc.kill()
+            sim_proc.wait(timeout=5)
+            conversion.finish(timeout_s=5)
 
 
 class TestTraceStatusManifest:

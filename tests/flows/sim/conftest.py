@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.bwave import waveform_store
 from booley.flows.sim import flow, verilator_coverage_execution
 from booley.flows.sim.build_session import TargetCompileSurface
 from booley.flows.sim.execution import engine
@@ -34,6 +35,12 @@ def explicit_surface_for_lightweight_target_handles(
     monkeypatch.setattr(
         verilator_coverage_execution, "resolve_target_compile_surface", resolve_or_fake
     )
+
+
+@pytest.fixture(autouse=True)
+def declared_trace_files_convert_after_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep declared-file tests host-independent: no native B-Wave means no pipes."""
+    monkeypatch.setattr(waveform_store, "can_stream_waveform", lambda: False)
 
 
 @pytest.fixture(autouse=True)

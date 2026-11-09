@@ -293,6 +293,7 @@ def _prepare_trace_runtime(
             session,
             patterns=tuple(trace_files or ()),
             roots=(paths.run_cwd, paths.work_dir, paths.bin_dir),
+            stream_from=paths.run_cwd,
         )
         if session is not None
         else None
@@ -332,9 +333,12 @@ def _execute_supervised(
                 runtime_inputs=runtime_inputs,
                 trace=trace.session,
                 conversion=trace.conversion,
+                streams=trace.current.streams if trace.current is not None else None,
             )
         )
     finally:
+        if trace.current is not None:
+            trace.current.close_streams()
         if trace.session is not None and trace.mode is TraceMode.VCD_FIFO:
             trace.session.cleanup_fifo(trace.conversion)
 
