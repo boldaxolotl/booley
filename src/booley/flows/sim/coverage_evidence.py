@@ -19,6 +19,7 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
+from booley.flows.sim.coverage_json import coverage_mapping_document
 
 from .coverage_analysis_input import CoverageSourceClosure
 from .coverage_campaign import (
@@ -26,11 +27,10 @@ from .coverage_campaign import (
     CoverageFinding,
     CoveragePoint,
     CoverageRollup,
-    FrozenJson,
     decode_coverage_point_id,
     encode_coverage_point,
-    freeze_coverage_mapping,
 )
+from .coverage_json import FrozenJson, freeze_coverage_mapping
 from .coverage_source_gaps import source_gap_overview, source_gap_paths
 
 #: The largest Campaign one Analyst evidence session indexes.
@@ -267,14 +267,14 @@ class CoverageEvidenceSession:
                 "identity": self._campaign.target.identity,
                 "selector": self._campaign.target.selector,
             },
-            "collection": _plain_json(self._campaign.collection),
+            "collection": coverage_mapping_document(self._campaign.collection),
             "normalization": {
                 "status": self._campaign.normalization["status"],
                 "unrecognized_record_count": len(
                     cast(tuple[object, ...], self._campaign.normalization["unrecognized_records"])
                 ),
             },
-            "evaluation": _plain_json(self._campaign.evaluation),
+            "evaluation": coverage_mapping_document(self._campaign.evaluation),
             "rollups": [_rollup(rollup) for rollup in self._campaign.rollups],
             "point_counts": dict(sorted(self._point_counts.items())),
             "uncovered_eligible_by_metric": dict(sorted(self._uncovered_metrics.items())),
@@ -623,10 +623,6 @@ def _finding(value: CoverageFinding) -> dict[str, object]:
 
 def _encoded_size(value: object) -> int:
     return len(json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode())
-
-
-def _plain_json(value: object) -> object:
-    return json.loads(json.dumps(value, default=dict))
 
 
 def _minimal_overview(value: Mapping[str, object]) -> dict[str, object]:

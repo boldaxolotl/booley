@@ -143,8 +143,8 @@ def _successful_claude_query(options_seen):
 def persist_large_current_campaign(root: Path, point_count: int = 2_000) -> Path:
     from booley.flows.sim.coverage_campaign import (
         DurableTargetIdentity,
-        _point_id,
         decode_coverage_campaign,
+        encode_coverage_point_id,
     )
     from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
 
@@ -158,7 +158,7 @@ def persist_large_current_campaign(root: Path, point_count: int = 2_000) -> Path
         point["identity"]["location"]["end"]["line"] = line
         point["identity"]["subject"]["basic_block"] = index
         point["identity"]["collector"]["native_key"] = f"{line}:basic-block-{index}"
-        point["id"] = _point_id(point["identity"])
+        point["id"] = encode_coverage_point_id(point["identity"])
         points.append(point)
     document["points"] = points
     document["rollups"][0].update(
@@ -438,7 +438,8 @@ def test_wrapper_rejects_noncanonical_or_unfinished_report_before_model(tmp_path
 
 
 def source_project(root):
-    from booley.flows.sim.coverage_provenance import content_digest, coverage_digest
+    from booley.flows.sim.coverage_json import content_digest
+    from booley.flows.sim.coverage_provenance import coverage_digest
 
     path = persist_campaign(root)
     (root / "rtl").mkdir()
@@ -982,7 +983,8 @@ def test_source_inspection_accepts_inputs_under_a_linked_entry(tmp_path, monkeyp
 
 def _rebind_source_digests(path: Path, root: Path) -> None:
     """Rewrite the Campaign closure for a testbench moved under ``.booley``."""
-    from booley.flows.sim.coverage_provenance import content_digest, coverage_digest
+    from booley.flows.sim.coverage_json import content_digest
+    from booley.flows.sim.coverage_provenance import coverage_digest
 
     document = json.loads(path.read_text())
     document["source_closure"]["testbench"] = [
