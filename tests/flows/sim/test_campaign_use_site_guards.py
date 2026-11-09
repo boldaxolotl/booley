@@ -8,10 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.flows.sim.campaign.bundle import (
-    authenticate_bundle_artifacts,
-    require_bundle_inventory,
-)
+from booley.flows.sim.campaign.bundle import authenticate_bundle_artifacts
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
@@ -184,6 +181,8 @@ def _bundle_with_artifacts(artifacts: list[dict[str, object]]):
 
 @pytest.mark.parametrize("case", ["unknown_kind", "duplicate_path", "no_executable"])
 def test_a_bundle_inventory_the_decoder_no_longer_checks_is_refused(case: str) -> None:
+    from booley.flows.sim.campaign.bundle import require_bundle_inventory
+
     executable = {"bytes": 1, "kind": "simulator_executable", "path": "simv", "sha256": "sha256:b"}
     artifacts = {
         "unknown_kind": [executable | {"kind": "bogus"}],
