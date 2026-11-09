@@ -13,7 +13,7 @@ import pytest
 import booley
 from booley.harness import image_lifecycle as harness_lifecycle
 from booley.runtime import image_lifecycle as lifecycle
-from booley.runtime import project_image
+from booley.runtime import interactive_docker, project_image
 from booley.runtime.docker_capacity import (
     BuildEstimateClass,
     DockerBuildPlan,
@@ -271,7 +271,7 @@ def test_host_capacity_requests_reports_inspect_failure_as_lifecycle_error(
     # Fail every Docker seam (the shared helper and raw subprocess); an empty PATH
     # does not hide `docker` on Windows.
     monkeypatch.setattr(docker_image.subprocess, "run", docker_missing)
-    monkeypatch.setattr(docker_image.idk, "_run_docker", docker_missing)
+    monkeypatch.setattr(interactive_docker, "_run_docker", docker_missing)
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="cannot inspect Docker image"):
         harness_lifecycle.host_capacity_requests(lifecycle.Intent.ENSURE)
