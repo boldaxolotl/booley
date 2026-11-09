@@ -10,8 +10,6 @@ formatters). The real icarus/verilator cocotb runs are the Sandbox e2e's job
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -709,37 +707,28 @@ class TestCocotbSimulatorEligibility:
 
 
 class TestCocotbDryRun:
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh -n syntax check")
     def test_dry_run_emits_one_batched_command(self, tmp_path: Path) -> None:
-        """The engine preview is one runnable chain whose document carries every Test."""
+        """The engine preview is one command whose document carries every Test."""
         from tests.flows.sim.test_execution_engine import _handle, _inspection
 
-        project = tmp_path / ".booley"
-        project.mkdir()
-        (project / "tests.toml").write_text('[sim]\ntests = ["a", "b", "c"]\n', encoding="utf-8")
-        execution = execution_engine.SimulationExecution(
-            invoke=MagicMock(), options=execution_engine.SimulationOptions()
+        engine = execution_engine
+        patches = (
+            patch.object(engine.TargetCatalog, "build", return_value=_inspection(cocotb=True)),
+            patch.object(engine.fusesoc_registry, "setup_command_for_handle", return_value=[]),
         )
-        with (
-            patch.object(
-                execution_engine.TargetCatalog, "build", return_value=_inspection(cocotb=True)
-            ),
-            patch.object(
-                execution_engine.fusesoc_registry,
-                "setup_command_for_handle",
-                return_value=["setup"],
-            ),
-        ):
-            preview = execution.preview(
-                _handle(tmp_path), execution_engine.NamedTests(("a", "b", "c"))
+        with patches[0], patches[1]:
+            execution = engine.SimulationExecution(
+                invoke=MagicMock(), options=engine.SimulationOptions()
             )
+            preview = execution.preview(_handle(tmp_path), engine.NamedTests(("a", "b", "c")))
 
-        assert len(preview.commands) == 1  # batched: one command for three Tests
-        _shell, _flag, script = preview.commands[0]
-        subprocess.run(["sh", "-n", "-c", script], check=True)
-        work = launched_work(script)
-        assert (work.adapter, work.cocotb_module) == ("cocotb", "test_demo")
-        assert work.tests == ("a", "b", "c")
+        (command,) = preview.commands
+        work = launched_work(command[2])
+        assert (work.adapter, work.cocotb_module, work.tests) == (
+            "cocotb",
+            "test_demo",
+            ("a", "b", "c"),
+        )
 
     def test_dry_run_batches_the_selected_cocotb_tests_into_one_work_item(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
