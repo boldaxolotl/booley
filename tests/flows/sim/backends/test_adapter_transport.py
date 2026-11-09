@@ -18,6 +18,7 @@ from booley.flows.sim.adapter_transport import (
     evaluate_native_verdict,
     native_verdict_message,
     partial_result_identity,
+    publish_native_adapter_result,
     read_adapter_result,
     write_adapter_result,
 )
@@ -359,6 +360,24 @@ def test_native_adapter_publishes_authenticated_terminal_evidence(tmp_path, adap
         tests=("reset",),
         test_results=(AdapterTestResult("reset", "pass"),),
     )
+
+
+def test_native_run_exit_code_is_the_sentinel_verdict(tmp_path) -> None:
+    identity = _identity(tmp_path)
+    cases = [
+        ("[SIM_RESULT] PASSED\n", 0, 0),
+        ("[SIM_RESULT] FAILED\n", 0, 1),
+        ("no sentinel\n", 0, 1),
+        # The sentinel verdict alone decides, as the output re-read it did before.
+        ("[SIM_RESULT] PASSED\nERROR: assertion\n", 0, 0),
+        ("[SIM_RESULT] PASSED\n", 3, 0),
+    ]
+    for transport in (None, identity):
+        for output, returncode, exit_code in cases:
+            run = publish_native_adapter_result(transport, output, returncode)
+
+            assert (run.output, run.exit_code) == (output, exit_code)
+        assert identity.result_path.exists() is (transport is not None)
 
 
 @pytest.mark.parametrize("adapter", [verilator, icarus])
