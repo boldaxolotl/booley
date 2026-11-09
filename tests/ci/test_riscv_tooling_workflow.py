@@ -1,4 +1,4 @@
-"""Behavior of the ``Tests`` workflow's RISC-V tooling steps (ADR 0070).
+"""Behavior of the ``Tests`` workflow's ``riscv-image`` job (ADR 0070).
 
 The step scripts run for real under bash. ``docker``, ``python``, and
 ``timeout`` are fakes on ``PATH`` that log every call, so these tests pin the
@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -73,13 +74,11 @@ if [[ "$1" == chmod ]]; then shift; exec chmod "$@"; fi
 
 def _steps() -> list[dict]:
     workflow = yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
-    return workflow["jobs"]["bwave-smoke"]["steps"]
+    return workflow["jobs"]["riscv-image"]["steps"]
 
 
 def _step(name: str) -> dict:
-    steps = _steps()
-    group = next(step for step in steps if "parallel" in step)["parallel"]
-    return next(step for step in (*steps, *group) if step.get("name") == name)
+    return next(step for step in _steps() if step.get("name") == name)
 
 
 def _expressions_removed(script: str) -> str:
@@ -165,18 +164,22 @@ def _resolve_calls(calls: list[str]) -> list[str]:
     return [call for call in calls if call.startswith(".github/scripts/riscv_tooling.py resolve")]
 
 
-def test_resolve_step_is_path_gated_and_runs_before_the_lanes() -> None:
+def test_resolve_step_runs_before_any_image_build() -> None:
+    """Resolving first lets the tooling pull overlap the standard substrate build."""
     steps = _steps()
     resolve = next(step for step in steps if step.get("id") == "riscv-tooling")
-    group = next(index for index, step in enumerate(steps) if "parallel" in step)
-    buildx = next(
+    python = next(
         index
         for index, step in enumerate(steps)
-        if str(step.get("uses", "")).startswith("docker/setup-buildx-action@")
+        if str(step.get("uses", "")).startswith("actions/setup-python@")
     )
+    builds = [
+        index
+        for index, step in enumerate(steps)
+        if str(step.get("name", "")).startswith("Build ") or "buildx build" in step.get("run", "")
+    ]
 
-    assert resolve["if"] == "needs.changes.outputs.riscv_image == 'true'"
-    assert buildx < steps.index(resolve) < group
+    assert python < steps.index(resolve) < min(builds)
     assert "uses" not in resolve
 
 
@@ -314,7 +317,7 @@ def test_failed_local_rebuild_still_fails_the_lane(tmp_path: Path) -> None:
 # --- Duration budget ------------------------------------------------------
 
 
-def _budget(tmp_path: Path, record: str | None, riscv: str = "true") -> tuple[int, str, str]:
+def _budget(tmp_path: Path, record: str | None) -> tuple[int, str, str]:
     """Return the exit code and the (warn, budget) thresholds the step passed on."""
     step = _step("Enforce duration budget")
     path = tmp_path / "runner" / "riscv-image-evidence" / "tooling-source.json"
@@ -326,7 +329,6 @@ def _budget(tmp_path: Path, record: str | None, riscv: str = "true") -> tuple[in
         step,
         {
             **{name: str(value) for name, value in step["env"].items()},
-            "RISCV_IMAGE": riscv,
             "TOOLING_RECORD": str(path),
             "REGISTRY_WARN_SECONDS": "100",
             "REGISTRY_BUDGET_SECONDS": "111",
@@ -360,10 +362,6 @@ def test_budget_without_a_source_record_is_the_local_budget(tmp_path: Path) -> N
     assert _budget(tmp_path, None) == (0, "200", "222")
 
 
-def test_budget_without_the_riscv_lane_is_the_standard_budget(tmp_path: Path) -> None:
-    assert _budget(tmp_path, None, riscv="false") == (0, "640", "670")
-
-
 def test_budget_rejects_an_unreadable_source_record(tmp_path: Path) -> None:
     status, warn, budget = _budget(tmp_path, "{not json")
 
@@ -383,7 +381,7 @@ def test_every_lane_warns_at_or_below_its_budget() -> None:
     """The script rejects a warn threshold above its fail threshold; catch it at config time."""
     env = _step("Enforce duration budget")["env"]
 
-    for lane in ("STANDARD", "REGISTRY", "LOCAL"):
+    for lane in ("REGISTRY", "LOCAL"):
         assert 0 < env[f"{lane}_WARN_SECONDS"] <= env[f"{lane}_BUDGET_SECONDS"]
 
 
@@ -412,3 +410,126 @@ def test_readiness_upload_marker_tracks_demo_attempt(
     output = tmp_path / "github-output"
     assert (output.exists() and "started=true" in output.read_text()) == started
     assert any(call.startswith("run_picorv32_ci_demo.sh ") for call in calls) == started
+
+
+# --- Tooling prefetch and export ------------------------------------------
+
+
+def _wait_for_exit(pid: int) -> None:
+    """Wait (bounded) for a backgrounded fake to finish writing its log."""
+    for _ in range(100):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"background process {pid} did not exit")
+
+
+def test_prefetch_pulls_the_published_digest_in_the_background(tmp_path: Path) -> None:
+    step = _step("Prefetch published RISC-V tooling")
+    steps = _steps()
+
+    assert step["if"] == "steps.riscv-tooling.outputs.source == 'registry'"
+    assert steps.index(_step("Resolve RISC-V tooling source")) < steps.index(step)
+    assert steps.index(step) < steps.index(_step("Build candidate from published stable base"))
+    result, _ = _run(tmp_path, step, {"TOOLING_CONTEXT": _CONTEXT})
+    assert result.returncode == 0, result.stderr
+    _wait_for_exit(int((tmp_path / "runner/riscv-tooling-prefetch.pid").read_text()))
+    calls = (tmp_path / "calls.log").read_text(encoding="utf-8").splitlines()
+    assert calls == [f"docker pull --quiet {_CONTEXT.removeprefix('docker-image://')}"]
+
+
+def _run_prefetch_wait_step(tmp_path: Path, pid: int | None) -> subprocess.CompletedProcess[str]:
+    """Run the wait step with a one-second bound (fake ``seq``, no-op ``sleep``).
+
+    ``pid`` is the prefetch process to wait on; ``None`` means the prefetch
+    never wrote its pid file.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    for name, body in (("seq", "#!/usr/bin/env bash\necho 1\n"), ("sleep", "#!/bin/sh\n")):
+        (bin_dir / name).write_text(body, encoding="utf-8")
+        (bin_dir / name).chmod(0o755)
+    evidence = tmp_path / "runner/riscv-image-evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    (evidence / "tooling-prefetch.log").write_text("pulled\n", encoding="utf-8")
+    if pid is not None:
+        (tmp_path / "runner/riscv-tooling-prefetch.pid").write_text(f"{pid}\n", encoding="utf-8")
+    step = _step("Wait for RISC-V tooling prefetch")
+    result, _ = _run(tmp_path, step, {name: str(value) for name, value in step["env"].items()})
+    return result
+
+
+def test_wait_returns_once_the_prefetch_has_exited(tmp_path: Path) -> None:
+    done = subprocess.Popen(["true"])
+    done.wait(timeout=10)
+
+    result = _run_prefetch_wait_step(tmp_path, done.pid)
+
+    assert result.returncode == 0, result.stderr
+    assert "pulled" in result.stdout
+    assert "::warning::" not in result.stdout
+
+
+def test_wait_gives_up_on_a_stuck_prefetch_without_failing(tmp_path: Path) -> None:
+    """The prefetch is an optimization; a stuck pull must never fail the lane."""
+    stuck = subprocess.Popen(["sleep", "30"])
+    try:
+        result = _run_prefetch_wait_step(tmp_path, stuck.pid)
+    finally:
+        stuck.kill()
+        stuck.wait(timeout=10)
+
+    assert result.returncode == 0, result.stderr
+    assert "::warning::RISC-V tooling prefetch still running" in result.stdout
+
+
+def test_wait_without_a_started_prefetch_does_not_fail(tmp_path: Path) -> None:
+    result = _run_prefetch_wait_step(tmp_path, None)
+
+    assert result.returncode == 0, result.stderr
+    assert "::warning::" not in result.stdout
+
+
+def test_wait_runs_on_the_lane_clock_before_the_build() -> None:
+    steps = _steps()
+    wait = _step("Wait for RISC-V tooling prefetch")
+
+    assert wait["if"] == "steps.riscv-tooling.outputs.source == 'registry'"
+    assert steps.index(_step("Start test-phase duration clock")) < steps.index(wait)
+    assert steps.index(wait) < steps.index(_step("Run RISC-V candidate image contract"))
+
+
+@pytest.mark.parametrize("source", ["registry", "local"])
+def test_substrate_exports_zstd_without_a_gzip_load(tmp_path: Path, source: str) -> None:
+    """BuildKit gzips single-threaded; zstd level 1 exports the tooling layer in seconds."""
+    result, calls = _lane(tmp_path, TOOLING_SOURCE=source)
+
+    assert result.returncode == 0, result.stderr
+    (build,) = _substrate_builds(calls)
+    assert (
+        "--output type=image,name=booley-riscv-substrate:ci,compression=zstd,compression-level=1"
+        in build
+    )
+    assert "--load" not in build
+    assert "force-compression" not in build  # inherited standard layers keep their blobs
+
+
+def test_lane_host_python_can_audit_zstd_layers() -> None:
+    """image_contract.py reads zstd layer tars only on Python >= 3.14."""
+    setup = next(
+        step for step in _steps() if str(step.get("uses", "")).startswith("actions/setup-python@")
+    )
+
+    assert setup["with"]["python-version"] == "3.14"
+
+
+def test_budget_is_reported_under_the_lane_label() -> None:
+    step = _step("Enforce duration budget")
+
+    assert "--label riscv-image" in step["run"]
+    assert step["if"] == (
+        "always() && steps.runtime-base.outputs.build != 'true' && "
+        "steps.duration-clock.outcome == 'success'"
+    )

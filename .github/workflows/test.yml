@@ -1208,8 +1208,7 @@ jobs:
       # The duration budget times validation, not image builds: the substrate
       # build swings 50-545 s with runner and cache-network speed while the
       # validations stay steady. The clock starts once the standard candidate
-      # exists; the RISC-V lane's own image build stays on the clock (its
-      # budget follows its tooling source).
+      # exists.
       - name: Start test-phase duration clock
         id: duration-clock
         shell: bash
@@ -1282,22 +1281,6 @@ jobs:
           path: ${{ runner.temp }}/docker-build-evidence/
           if-no-files-found: error
 
-      # Prepare the reviewed demo before the native parallel group. The
-      # derived image itself then builds alongside the standard-image smokes.
-      - name: Prepare exact reviewed PicoRV32 candidate contract
-        if: needs.changes.outputs.riscv_image == 'true'
-        id: riscv-demo
-        uses: ./.github/actions/prepare-picorv32-demo
-
-      - name: Prepare exact reviewed Ibex candidate
-        if: needs.changes.outputs.riscv_image == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: lowRISC/ibex
-          ref: 34b0705760ef3dfa00e99637432473d2be8f22f3
-          path: ibex-demo
-          persist-credentials: false
-
       - name: Prepare and verify sandbox image test prerequisites
         shell: bash
         run: |
@@ -1323,36 +1306,6 @@ jobs:
             install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
           done
 
-      # ADR 0070: reuse the published RISC-V tooling stage when the main-only
-      # publisher has a label-verified image for this exact stage text. A
-      # missing key, an unreachable registry, or a slow lookup builds the stage
-      # locally instead of failing; a tag with the wrong labels fails. The
-      # source record drives the duration budget.
-      - name: Resolve RISC-V tooling source
-        if: needs.changes.outputs.riscv_image == 'true'
-        id: riscv-tooling
-        shell: bash
-        env:
-          MEASUREMENT_ARM: ${{ inputs.riscv_measurement || 'automatic' }}
-        run: |
-          record="${RUNNER_TEMP}/riscv-image-evidence/tooling-source.json"
-          resolve=(
-            python .github/scripts/riscv_tooling.py resolve
-            --record "${record}" --github-output "${GITHUB_OUTPUT}"
-          )
-          if [[ "${MEASUREMENT_ARM}" == cold ]]; then
-            "${resolve[@]}" --force-local cold
-            exit 0
-          fi
-          status=0
-          timeout 120 "${resolve[@]}" || status=$?
-          if (( status == 124 )); then
-            echo '::warning::RISC-V tooling lookup timed out; building the stage locally.'
-            "${resolve[@]}" --force-local registry-timeout
-          elif (( status != 0 )); then
-            exit "${status}"
-          fi
-
       - name: Log free disk before image validations
         shell: bash
         run: df -h /
@@ -1373,73 +1326,6 @@ jobs:
               --mount type=bind,src="${VALIDATION_TMP}",dst=/evidence
               booley-test bash /booley-source/.github/scripts/verify_openroad_runtime.sh
               /opt/pdk /evidence
-
-          # Build the derived image from the exact standard candidate while
-          # its independent validations run. Release CI remains the publication
-          # gate, not the first place RISC-V behavior is exercised.
-          - name: Run RISC-V candidate image contract
-            if: needs.changes.outputs.riscv_image == 'true'
-            env:
-              TOOLING_SOURCE: ${{ steps.riscv-tooling.outputs.source }}
-              TOOLING_CONTEXT: ${{ steps.riscv-tooling.outputs.context }}
-            run: |
-              evidence="${RUNNER_TEMP}/riscv-image-evidence"
-              tooling_record="${evidence}/tooling-source.json"
-              mkdir -p "${evidence}"
-
-              build_tool_substrate() {
-                docker buildx build --builder default --load \
-                  "$@" \
-                  --file src/booley/data/docker/Dockerfile.riscv \
-                  --tag booley-riscv-substrate:ci \
-                  --build-context booley-standard-substrate=docker-image://booley-standard-substrate:ci .
-              }
-
-              if test "${TOOLING_SOURCE}" = registry; then
-                # The published digest replaces the same-named stage.
-                build_status=0
-                build_tool_substrate --build-context "riscv-tooling=${TOOLING_CONTEXT}" || build_status=$?
-                # Quick compatibility check of the published tooling against
-                # this candidate's substrate: the contract's [riscv] probes,
-                # including the shared-library closure of every host ELF.
-                compat_status=1
-                if test "${build_status}" -eq 0; then
-                  python .github/scripts/riscv_tooling.py checks \
-                    > "${evidence}/tooling-checks.sh"
-                  compat_status=0
-                  docker run --rm -i --init --network none --entrypoint bash \
-                    booley-riscv-substrate:ci < "${evidence}/tooling-checks.sh" \
-                    > "${evidence}/tooling-compat.log" 2>&1 || compat_status=$?
-                  if test "${compat_status}" -ne 0; then
-                    tail -n 40 "${evidence}/tooling-compat.log" >&2
-                  fi
-                fi
-                if test "${build_status}" -ne 0 || test "${compat_status}" -ne 0; then
-                  detail="composed candidate build exited ${build_status}"
-                  if test "${build_status}" -eq 0; then
-                    detail="compatibility check exited ${compat_status}"
-                  fi
-                  echo "::warning::Published RISC-V tooling ${TOOLING_CONTEXT} failed: ${detail}; building the tooling stage locally."
-                  python .github/scripts/riscv_tooling.py fallback \
-                    --record "${tooling_record}" --detail "${detail}"
-                  build_tool_substrate
-                fi
-              else
-                build_tool_substrate
-              fi
-
-              docker buildx build --builder default --load \
-                --file src/booley/data/docker/Dockerfile.wheel \
-                --tag booley-riscv-test \
-                --build-context booley-substrate=docker-image://booley-riscv-substrate:ci .
-
-              .github/scripts/verify_riscv_image_contract.sh \
-                "${evidence}" booley-riscv-test booley-standard-substrate:ci \
-                "${RUNNER_TEMP}/docker-build-evidence/standard-package-inventory.json"
-              touch "${evidence}/goal-readiness-started"
-              .github/scripts/run_picorv32_ci_demo.sh \
-                "${{ github.workspace }}" \
-                "booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-riscv"
 
           - name: Run installed agent CLI policy probe
             env:
@@ -1605,10 +1491,9 @@ jobs:
           set +e
           df -h /
           shopt -s nullglob
-          # Only existing directories: the group may not have run, and the
-          # RISC-V evidence directory exists only on the RISC-V lane.
+          # Only existing directories: the group may not have run.
           scratch=()
-          for dir in "${RUNNER_TEMP}"/bwave-smoke/* "${RUNNER_TEMP}"/riscv-image-evidence; do
+          for dir in "${RUNNER_TEMP}"/bwave-smoke/*; do
             [[ -d "${dir}" ]] && scratch+=("${dir}")
           done
           # Validations write as root or the image's agent user.
@@ -1617,24 +1502,6 @@ jobs:
           fi
           timeout 10 docker system df
           exit 0
-
-      - name: Run pinned Ibex lint demo
-        if: needs.changes.outputs.riscv_image == 'true'
-        shell: bash
-        run: |
-          test "$(git -C ibex-demo rev-parse HEAD)" = \
-            34b0705760ef3dfa00e99637432473d2be8f22f3
-          sudo chown -R 1000:1000 ibex-demo
-          .github/scripts/run_with_container_cleanup.sh \
-            booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ibex \
-            docker run --rm --init --network none --user agent \
-            --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ibex \
-            --mount type=bind,src="${{ github.workspace }}/ibex-demo",dst=/work \
-            -w /work \
-            booley-riscv-test bash -euo pipefail -c \
-              'test -f /work/rtl/ibex_core.sv && \
-              fusesoc --cores-root=/work run --target=lint \
-              lowrisc:ibex:ibex_core --verilator_options="--Wno-fatal"'
 
       - name: Clean up image validation containers
         if: always()
@@ -1645,49 +1512,6 @@ jobs:
           if (( ${#containers[@]} )); then
             docker rm -f "${containers[@]}"
           fi
-
-      - name: Restore RISC-V demo checkout ownership
-        if: always() && needs.changes.outputs.riscv_image == 'true'
-        run: |
-          if test -e demo; then
-            sudo chown -R "$(id -u):$(id -g)" demo
-          fi
-          if test -e ibex-demo; then
-            sudo chown -R "$(id -u):$(id -g)" ibex-demo
-          fi
-          readiness="${RUNNER_TEMP}/riscv-image-evidence/goal-readiness"
-          if test -e "${readiness}"; then
-            sudo chown -R "$(id -u):$(id -g)" "${readiness}"
-          fi
-          if test -f "${readiness}/goal-readiness.json"; then
-            sudo chmod a+r "${readiness}/goal-readiness.json"
-          fi
-
-      - name: Upload candidate RISC-V evidence
-        if: always() && needs.changes.outputs.riscv_image == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: riscv-image-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/riscv-image-evidence/
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Read Goal readiness attempt marker
-        id: goal-readiness
-        if: always() && needs.changes.outputs.riscv_image == 'true'
-        run: |
-          if test -f "${RUNNER_TEMP}/riscv-image-evidence/goal-readiness-started"; then
-            echo "started=true" >> "${GITHUB_OUTPUT}"
-          fi
-
-      - name: Upload Goal readiness evidence
-        if: always() && steps.goal-readiness.outputs.started == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: goal-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/riscv-image-evidence/goal-readiness/goal-readiness.json
-          if-no-files-found: error
-          retention-days: 14
 
       - name: Upload coverage release test timing
         if: always()
@@ -1733,12 +1557,12 @@ jobs:
           retention-days: 14
 
       # The clock covers the test phase only (from "Start test-phase duration
-      # clock" to here). Each lane has a (warn, fail) pair. A run over warn
-      # but within fail passes with a ::warning annotation; a run over fail
-      # fails. A warning means the suite has drifted past its measured
-      # maximum (by over 10 % for standard and registry): re-derive the pair.
-      # A RISC-V lane's pair depends on its tooling source (ADR 0070), so a
-      # slow registry hit cannot hide behind the local-build ceiling.
+      # clock" to here). A run over warn but within fail passes with a
+      # ::warning annotation; a run over fail fails. A warning means the
+      # suite has drifted past its measured maximum (by over 10 % for
+      # standard and registry): re-derive the pair. The registry and local
+      # pairs below were derived while the RISC-V lane ran in this job's
+      # validation group; they now sit on the riscv-image job.
       # Measurement: every test.yml run created 2026-10-22 to 2026-11-05 (the
       # last run 2026-11-05 08:38Z), all attempts of its bwave-smoke job, kept
       # when the job succeeded or its only failed step was this budget;
@@ -1775,34 +1599,404 @@ jobs:
           steps.duration-clock.outcome == 'success'
         shell: bash
         env:
-          RISCV_IMAGE: ${{ needs.changes.outputs.riscv_image }}
           STARTED_AT_EPOCH: ${{ steps.duration-clock.outputs.started_at_epoch }}
-          TOOLING_RECORD: ${{ runner.temp }}/riscv-image-evidence/tooling-source.json
           STANDARD_WARN_SECONDS: 640
           STANDARD_BUDGET_SECONDS: 670
+        run: |
+          PYTHONPATH=src python .github/scripts/ci_duration_budget.py \
+            --label bwave-smoke \
+            --started-at-epoch "${STARTED_AT_EPOCH}" \
+            --warn-seconds "${STANDARD_WARN_SECONDS}" \
+            --budget-seconds "${STANDARD_BUDGET_SECONDS}" \
+            --summary "${GITHUB_STEP_SUMMARY}"
+
+  # The RISC-V candidate image lane (ADR 0070), on its own runner. Inside
+  # bwave-smoke it was the last validation to finish and took CPU from the
+  # standard smokes; here it runs beside them and finishes first. It builds
+  # the standard substrate itself (restoring, never writing, the shared
+  # cache), so it waits on nothing but the wheel.
+  riscv-image:
+    runs-on: ubuntu-latest
+    needs: [changes, package-artifacts]
+    if: fromJSON(needs.changes.outputs.jobs)['riscv-image']
+    # Same reason as bwave-smoke: a changed stable base builds the EDA stack
+    # from source when its cache is cold.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The standard and RISC-V images together still need the space the
+      # shared action frees (#2681).
+      - name: Free unused runner disk
+        uses: ./.github/actions/free-runner-disk
+
+      # Python 3.14: the RISC-V substrate exports its new layers as zstd, and
+      # the image contract's `docker save` hard-link audit reads zstd layer
+      # tars only on Python >= 3.14.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            .github/ci/constraints.txt
+            .github/ci/requirements-runners.txt
+
+      # ADR 0070: reuse the published RISC-V tooling stage when the main-only
+      # publisher has a label-verified image for this exact stage text. A
+      # missing key, an unreachable registry, or a slow lookup builds the stage
+      # locally instead of failing; a tag with the wrong labels fails. The
+      # source record drives the duration budget.
+      - name: Resolve RISC-V tooling source
+        id: riscv-tooling
+        shell: bash
+        env:
+          MEASUREMENT_ARM: ${{ inputs.riscv_measurement || 'automatic' }}
+        run: |
+          record="${RUNNER_TEMP}/riscv-image-evidence/tooling-source.json"
+          resolve=(
+            python .github/scripts/riscv_tooling.py resolve
+            --record "${record}" --github-output "${GITHUB_OUTPUT}"
+          )
+          if [[ "${MEASUREMENT_ARM}" == cold ]]; then
+            "${resolve[@]}" --force-local cold
+            exit 0
+          fi
+          status=0
+          timeout 120 "${resolve[@]}" || status=$?
+          if (( status == 124 )); then
+            echo '::warning::RISC-V tooling lookup timed out; building the stage locally.'
+            "${resolve[@]}" --force-local registry-timeout
+          elif (( status != 0 )); then
+            exit "${status}"
+          fi
+
+      # Inside the build, pulling the ~1.6 GB tooling image took about a
+      # minute. Pull it in the background while the standard substrate builds;
+      # BuildKit then resolves the named context from the local image store.
+      # The pull is only a head start: if it fails, the build pulls itself.
+      - name: Prefetch published RISC-V tooling
+        if: steps.riscv-tooling.outputs.source == 'registry'
+        shell: bash
+        env:
+          TOOLING_CONTEXT: ${{ steps.riscv-tooling.outputs.context }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/riscv-image-evidence"
+          nohup docker pull --quiet "${TOOLING_CONTEXT#docker-image://}" \
+            > "${RUNNER_TEMP}/riscv-image-evidence/tooling-prefetch.log" 2>&1 &
+          echo "$!" > "${RUNNER_TEMP}/riscv-tooling-prefetch.pid"
+
+      - name: Install host-side test dependencies
+        run: pip install -r .github/ci/requirements-runners.txt
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pr-dist
+          path: dist/
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The standard substrate below repeats bwave-smoke's selection and
+      # builds, so the RISC-V image layers on the same candidate bytes.
+      - name: Compute stable-base compatibility contract
+        id: base-contract
+        shell: bash
+        run: |
+          python .github/scripts/docker_base_contract.py \
+            --repo . --github-output "${GITHUB_OUTPUT}"
+          echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
+
+      - name: Select compatible stable runtime base
+        id: runtime-base
+        shell: bash
+        env:
+          BUILD_STABLE_BASE: >-
+            ${{ needs.changes.outputs.build_stable_base == 'true' ||
+                (github.event_name == 'pull_request' && github.base_ref != 'main') }}
+          PUBLISHED_BASE: ghcr.io/boldaxolotl/booley-sandbox-base:main
+        run: |
+          if [[ "${BUILD_STABLE_BASE}" == "true" ]]; then
+            echo "build=true" >> "${GITHUB_OUTPUT}"
+            echo "image=booley-runtime-base:ci" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          python .github/scripts/docker_base_contract.py --repo . \
+            --resolver remote --resolve-image "${PUBLISHED_BASE}" \
+            --github-output "${GITHUB_OUTPUT}"
+          echo "build=false" >> "${GITHUB_OUTPUT}"
+
+      - name: Build changed stable runtime base locally
+        if: steps.runtime-base.outputs.build == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: src/booley/data/docker/Dockerfile.base
+          load: true
+          tags: booley-runtime-base:ci
+          build-args: |
+            BOOLEY_BASE_SOURCE_REVISION=${{ github.sha }}
+            BOOLEY_BASE_CONTRACT=${{ steps.base-contract.outputs.contract }}
+            BOOLEY_BASE_BUILT_AT=${{ steps.base-contract.outputs.built_at }}
+          cache-from: type=gha,scope=sandbox-runtime-base
+
+      - name: Build candidate from changed stable base
+        if: steps.runtime-base.outputs.build == 'true'
+        shell: bash
+        run: |
+          docker buildx build --builder default --load \
+            --file src/booley/data/docker/Dockerfile.substrate \
+            --tag booley-standard-substrate:ci \
+            --build-context booley-runtime-base=docker-image://booley-runtime-base:ci .
+
+      # Restores the trusted main-branch cache; bwave-smoke stays its only writer.
+      - name: Build candidate from published stable base
+        if: steps.runtime-base.outputs.build != 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: src/booley/data/docker/Dockerfile.substrate
+          build-contexts: |
+            booley-runtime-base=docker-image://${{ steps.runtime-base.outputs.image }}
+          load: true
+          tags: booley-standard-substrate:ci
+          cache-from: type=gha,scope=sandbox-substrate
+
+      # The RISC-V image must carry the standard candidate's exact package
+      # inventory; the wheel overlay never changes it, so the substrate's copy
+      # is the standard one.
+      - name: Export standard package inventory
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/riscv-image-evidence"
+          docker run --rm --network none --entrypoint cat booley-standard-substrate:ci \
+            /usr/local/share/booley/base-package-inventory.json \
+            > "${RUNNER_TEMP}/riscv-image-evidence/standard-package-inventory.json"
+
+      - name: Prepare exact reviewed PicoRV32 candidate contract
+        id: riscv-demo
+        uses: ./.github/actions/prepare-picorv32-demo
+
+      - name: Prepare exact reviewed Ibex candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lowRISC/ibex
+          ref: 34b0705760ef3dfa00e99637432473d2be8f22f3
+          path: ibex-demo
+          persist-credentials: false
+
+      # The clock times the RISC-V lane itself, image build included: its
+      # budget follows the tooling source. Standard-substrate build speed
+      # stays off the clock, as in bwave-smoke.
+      - name: Start test-phase duration clock
+        id: duration-clock
+        shell: bash
+        run: echo "started_at_epoch=$(date +%s)" >> "${GITHUB_OUTPUT}"
+
+      # Bounded: once the wait expires, the build pulls whatever is still
+      # missing. A prefetch that never started leaves nothing to wait for.
+      - name: Wait for RISC-V tooling prefetch
+        if: steps.riscv-tooling.outputs.source == 'registry'
+        shell: bash
+        env:
+          PREFETCH_WAIT_SECONDS: 300
+        run: |
+          pid="$(cat "${RUNNER_TEMP}/riscv-tooling-prefetch.pid" 2>/dev/null)" || exit 0
+          for _ in $(seq "${PREFETCH_WAIT_SECONDS}"); do
+            if ! kill -0 "${pid}" 2>/dev/null; then
+              cat "${RUNNER_TEMP}/riscv-image-evidence/tooling-prefetch.log" || true
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::warning::RISC-V tooling prefetch still running after ${PREFETCH_WAIT_SECONDS} s; the build pulls the rest."
+
+      - name: Log free disk before the RISC-V lane
+        shell: bash
+        run: df -h /
+
+      # Release CI remains the publication gate, not the first place RISC-V
+      # behavior is exercised. The substrate exports as zstd level 1: BuildKit
+      # gzips single-threaded, which took 1-2 min for the tooling layer.
+      - name: Run RISC-V candidate image contract
+        env:
+          TOOLING_SOURCE: ${{ steps.riscv-tooling.outputs.source }}
+          TOOLING_CONTEXT: ${{ steps.riscv-tooling.outputs.context }}
+        run: |
+          evidence="${RUNNER_TEMP}/riscv-image-evidence"
+          tooling_record="${evidence}/tooling-source.json"
+          mkdir -p "${evidence}"
+
+          build_tool_substrate() {
+            docker buildx build --builder default \
+              --output type=image,name=booley-riscv-substrate:ci,compression=zstd,compression-level=1 \
+              "$@" \
+              --file src/booley/data/docker/Dockerfile.riscv \
+              --build-context booley-standard-substrate=docker-image://booley-standard-substrate:ci .
+          }
+
+          if test "${TOOLING_SOURCE}" = registry; then
+            # The published digest replaces the same-named stage.
+            build_status=0
+            build_tool_substrate --build-context "riscv-tooling=${TOOLING_CONTEXT}" || build_status=$?
+            # Quick compatibility check of the published tooling against
+            # this candidate's substrate: the contract's [riscv] probes,
+            # including the shared-library closure of every host ELF.
+            compat_status=1
+            if test "${build_status}" -eq 0; then
+              python .github/scripts/riscv_tooling.py checks \
+                > "${evidence}/tooling-checks.sh"
+              compat_status=0
+              docker run --rm -i --init --network none --entrypoint bash \
+                booley-riscv-substrate:ci < "${evidence}/tooling-checks.sh" \
+                > "${evidence}/tooling-compat.log" 2>&1 || compat_status=$?
+              if test "${compat_status}" -ne 0; then
+                tail -n 40 "${evidence}/tooling-compat.log" >&2
+              fi
+            fi
+            if test "${build_status}" -ne 0 || test "${compat_status}" -ne 0; then
+              detail="composed candidate build exited ${build_status}"
+              if test "${build_status}" -eq 0; then
+                detail="compatibility check exited ${compat_status}"
+              fi
+              echo "::warning::Published RISC-V tooling ${TOOLING_CONTEXT} failed: ${detail}; building the tooling stage locally."
+              python .github/scripts/riscv_tooling.py fallback \
+                --record "${tooling_record}" --detail "${detail}"
+              build_tool_substrate
+            fi
+          else
+            build_tool_substrate
+          fi
+
+          docker buildx build --builder default --load \
+            --file src/booley/data/docker/Dockerfile.wheel \
+            --tag booley-riscv-test \
+            --build-context booley-substrate=docker-image://booley-riscv-substrate:ci .
+
+          .github/scripts/verify_riscv_image_contract.sh \
+            "${evidence}" booley-riscv-test booley-standard-substrate:ci \
+            "${evidence}/standard-package-inventory.json"
+          touch "${evidence}/goal-readiness-started"
+          .github/scripts/run_picorv32_ci_demo.sh \
+            "${{ github.workspace }}" \
+            "booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-riscv"
+
+      - name: Run pinned Ibex lint demo
+        shell: bash
+        run: |
+          test "$(git -C ibex-demo rev-parse HEAD)" = \
+            34b0705760ef3dfa00e99637432473d2be8f22f3
+          sudo chown -R 1000:1000 ibex-demo
+          .github/scripts/run_with_container_cleanup.sh \
+            booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ibex \
+            docker run --rm --init --network none --user agent \
+            --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ibex \
+            --mount type=bind,src="${{ github.workspace }}/ibex-demo",dst=/work \
+            -w /work \
+            booley-riscv-test bash -euo pipefail -c \
+              'test -f /work/rtl/ibex_core.sv && \
+              fusesoc --cores-root=/work run --target=lint \
+              lowrisc:ibex:ibex_core --verilator_options="--Wno-fatal"'
+
+      - name: Clean up image validation containers
+        if: always()
+        shell: bash
+        run: |
+          prefix="^/booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-"
+          mapfile -t containers < <(docker ps -aq --filter "name=${prefix}")
+          if (( ${#containers[@]} )); then
+            docker rm -f "${containers[@]}"
+          fi
+
+      - name: Restore RISC-V demo checkout ownership
+        if: always()
+        run: |
+          if test -e demo; then
+            sudo chown -R "$(id -u):$(id -g)" demo
+          fi
+          if test -e ibex-demo; then
+            sudo chown -R "$(id -u):$(id -g)" ibex-demo
+          fi
+          readiness="${RUNNER_TEMP}/riscv-image-evidence/goal-readiness"
+          if test -e "${readiness}"; then
+            sudo chown -R "$(id -u):$(id -g)" "${readiness}"
+          fi
+          if test -f "${readiness}/goal-readiness.json"; then
+            sudo chmod a+r "${readiness}/goal-readiness.json"
+          fi
+
+      - name: Upload candidate RISC-V evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: riscv-image-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/riscv-image-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Read Goal readiness attempt marker
+        id: goal-readiness
+        if: always()
+        run: |
+          if test -f "${RUNNER_TEMP}/riscv-image-evidence/goal-readiness-started"; then
+            echo "started=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Upload Goal readiness evidence
+        if: always() && steps.goal-readiness.outputs.started == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: goal-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/riscv-image-evidence/goal-readiness/goal-readiness.json
+          if-no-files-found: error
+          retention-days: 14
+
+      # Same out-of-disk attribution as bwave-smoke (#2681); never fails the job.
+      - name: Log disk use after the RISC-V lane
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          df -h /
+          if [[ -d "${RUNNER_TEMP}/riscv-image-evidence" ]]; then
+            sudo timeout 10 du -sh -- "${RUNNER_TEMP}/riscv-image-evidence"
+          fi
+          timeout 10 docker system df
+          exit 0
+
+      # The budget follows the recorded tooling source (ADR 0070), so a slow
+      # registry hit cannot hide behind the local-build ceiling. Both pairs
+      # were derived when this lane ran inside bwave-smoke's validation group
+      # (see that job's budget comment), where it shared four vCPUs with the
+      # standard smokes and its clock also covered their setup. The dedicated
+      # job runs well inside them; re-derive both pairs from two weeks of
+      # riscv-image runs. A lane that stopped before writing its record is
+      # judged as local.
+      - name: Enforce duration budget
+        if: >-
+          always() && steps.runtime-base.outputs.build != 'true' &&
+          steps.duration-clock.outcome == 'success'
+        shell: bash
+        env:
+          STARTED_AT_EPOCH: ${{ steps.duration-clock.outputs.started_at_epoch }}
+          TOOLING_RECORD: ${{ runner.temp }}/riscv-image-evidence/tooling-source.json
           REGISTRY_WARN_SECONDS: 720
           REGISTRY_BUDGET_SECONDS: 820
           LOCAL_WARN_SECONDS: 1030
           LOCAL_BUDGET_SECONDS: 1130
         run: |
-          warn="${STANDARD_WARN_SECONDS}"
-          budget="${STANDARD_BUDGET_SECONDS}"
-          if [[ "${RISCV_IMAGE}" == true ]]; then
-            # A lane that stopped before resolving its source is judged as local.
-            tooling_source=local
-            if [[ -f "${TOOLING_RECORD}" ]]; then
-              tooling_source="$(jq -er .source "${TOOLING_RECORD}")"
-            fi
-            warn="${LOCAL_WARN_SECONDS}"
-            budget="${LOCAL_BUDGET_SECONDS}"
-            if [[ "${tooling_source}" == registry ]]; then
-              warn="${REGISTRY_WARN_SECONDS}"
-              budget="${REGISTRY_BUDGET_SECONDS}"
-            fi
-            echo "RISC-V tooling source: \`${tooling_source}\` (warn ${warn} s, budget ${budget} s)" >> "${GITHUB_STEP_SUMMARY}"
+          tooling_source=local
+          if [[ -f "${TOOLING_RECORD}" ]]; then
+            tooling_source="$(jq -er .source "${TOOLING_RECORD}")"
           fi
+          warn="${LOCAL_WARN_SECONDS}"
+          budget="${LOCAL_BUDGET_SECONDS}"
+          if [[ "${tooling_source}" == registry ]]; then
+            warn="${REGISTRY_WARN_SECONDS}"
+            budget="${REGISTRY_BUDGET_SECONDS}"
+          fi
+          echo "RISC-V tooling source: \`${tooling_source}\` (warn ${warn} s, budget ${budget} s)" >> "${GITHUB_STEP_SUMMARY}"
           PYTHONPATH=src python .github/scripts/ci_duration_budget.py \
-            --label bwave-smoke \
+            --label riscv-image \
             --started-at-epoch "${STARTED_AT_EPOCH}" \
             --warn-seconds "${warn}" \
             --budget-seconds "${budget}" \
@@ -1827,6 +2021,7 @@ jobs:
       - scanner-smoke
       - renovate-config
       - bwave-smoke
+      - riscv-image
       - flake-stress
     # Skipped with `changes` on a draft PR; otherwise always resolve status.
     # Branch protection counts a skipped required check as passing. That is
