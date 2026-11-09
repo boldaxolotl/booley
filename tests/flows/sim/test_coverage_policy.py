@@ -193,6 +193,34 @@ def test_threshold_miss_uses_exact_rational_not_display_percentage() -> None:
     assert evaluated.evaluation["metrics"][0]["verdict"] == "fail"
 
 
+def test_non_decimal_threshold_is_rejected_at_criterion_construction() -> None:
+    with pytest.raises(ValueError, match="does not round-trip"):
+        _criterion(Fraction(200, 3))
+
+
+@pytest.mark.parametrize(
+    "minimum",
+    [Fraction(0), Fraction(101), Fraction(-5)],
+    ids=["zero", "above-range", "negative"],
+)
+def test_out_of_range_threshold_is_rejected_at_criterion_construction(minimum: Fraction) -> None:
+    with pytest.raises(ValueError, match=r"finite numbers in \(0, 100\]"):
+        _criterion(minimum)
+
+
+@pytest.mark.parametrize(
+    "metrics",
+    [(), ("line", "line"), ("line", "mutation")],
+    ids=["empty", "duplicate", "unknown"],
+)
+def test_criterion_without_unique_v1_metrics_is_rejected_at_construction(
+    metrics: tuple[str, ...],
+) -> None:
+    thresholds = tuple(CoverageThreshold(metric, Fraction(50)) for metric in metrics)
+    with pytest.raises(ValueError, match="unique V1 metrics"):
+        CoverageCriterion(_TARGET, thresholds, None)
+
+
 def test_target_mismatch_blocks_with_stable_diagnostic() -> None:
     criterion = CoverageCriterion(
         target=DurableTargetIdentity("acme:demo:other:1.0#sim_other"),

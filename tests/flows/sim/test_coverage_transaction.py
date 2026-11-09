@@ -1113,7 +1113,7 @@ def test_direct_coverage_outcome_includes_metrics(tmp_path):
             retained_plan, NativeExecution(), Progress(), publication_checkpoint=checkpoint
         )
         assert retained.exit_code == 2 and retained.detail["coverage_metrics"] == expected
-    from booley.flows.sim.coverage_report import coverage_metrics
+    from booley.flows.sim.coverage_policy import coverage_metrics
 
     campaign = load_coverage_campaign(outcome.campaign_path).campaign
     for covered, eligible, percent, met in ((2, 3, 66.67, False), (0, 0, None, False)):
