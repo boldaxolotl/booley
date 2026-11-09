@@ -1,8 +1,7 @@
 """Strict canonical JSON codecs for immutable Simulation Campaign values.
 
 This module is deliberately infrastructure-free. It decodes untrusted
-documents into immutable values that later store/execution modules can trust.
-Manifests are checked for shape only: planning proved their content and
+documents into immutable values. Manifests are checked for shape only: planning proved their content and
 published them atomically, so each manifest reader below reads just the members
 its callers use (#2136). Attempt, build attempt/result, bundle and snapshot
 records get only the boundary check: size, UTF-8 JSON, exact fields, ``$schema``
@@ -66,7 +65,6 @@ MAX_DETAIL_BYTES = 2 * 1024
 MAX_JSON_DEPTH = 64
 MAX_LIST_ITEMS = 100_000
 
-_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _VARIANT_ID_RE = re.compile(r"variant:[0-9a-f]{64}\Z")
 _WORK_ITEM_ID_RE = re.compile(r"item:[0-9]{4}:[0-9a-f]{16}\Z")
 _WINDOWS_DRIVE_RE = re.compile(r"[A-Za-z]:")
@@ -288,7 +286,7 @@ def reads_campaign_records(function: Callable[_P, _R]) -> Callable[_P, _R]:
     Attempt, build and bundle decoders check only the document boundary (#1743),
     so the code that reads a nested member of a record from disk wraps itself
     here: a missing or mistyped member becomes the integrity error instead of a
-    bare ``KeyError``/``TypeError``/``ValueError``. OS errors, including lock
+    bare ``KeyError``/``TypeError``/``ValueError``/``AttributeError``. OS errors, including lock
     timeouts, pass through.
     """
 
@@ -298,7 +296,7 @@ def reads_campaign_records(function: Callable[_P, _R]) -> Callable[_P, _R]:
             return function(*args, **kwargs)
         except (SimulationCampaignIntegrityError, UnsupportedSimulationCampaignFormatError):
             raise
-        except (KeyError, TypeError, ValueError) as exc:
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
             raise SimulationCampaignIntegrityError(
                 f"published campaign record is malformed: {exc!r}"
             ) from exc
@@ -334,11 +332,12 @@ def _decode(
     if document.get("$schema") != schema:
         raise SimulationCampaignIntegrityError(f"unsupported $schema {document.get('$schema')!r}")
     try:
-        # Records without a reader get only the boundary check above plus the
-        # canonical-bytes check (#1743); their consumers guard what they use.
+        # The depth/size walk bounds recursion for every record. Records without
+        # a reader get nothing more than the canonical-bytes check (#1743);
+        # their consumers guard what they use.
+        _validate_json(document)
         reader = _DOCUMENT_READERS.get(schema)
         if reader is not None:
-            _validate_json(document)
             _validate_common(document)
         if canonical_json_bytes(document) != raw:
             raise SimulationCampaignIntegrityError("document is not canonical JSON")

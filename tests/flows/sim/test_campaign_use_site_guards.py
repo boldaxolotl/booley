@@ -8,7 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from booley.flows.sim.campaign.bundle import authenticate_bundle_artifacts
+from booley.flows.sim.campaign.bundle import (
+    authenticate_bundle_artifacts,
+    require_bundle_inventory,
+)
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
@@ -105,7 +108,19 @@ def test_a_bundle_artifact_path_outside_its_root_is_refused_before_use(tmp_path:
         authenticate_bundle_artifacts(bundle, bundle_root)
 
 
-@pytest.mark.parametrize("case", ["shared_failure", "ordinal", "run_directory", "ready_bundle"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "shared_failure",
+        "shared_failure_text",
+        "shared_failure_detail",
+        "ordinal",
+        "run_directory",
+        "ready_bundle",
+        "bundle_path",
+        "build_state",
+    ],
+)
 def test_a_malformed_published_record_is_corrupt_storage(tmp_path: Path, case: str) -> None:
     """Nested data the decoders no longer check fails as the integrity error where it is read."""
     completed = _completed(tmp_path)
@@ -113,9 +128,19 @@ def test_a_malformed_published_record_is_corrupt_storage(tmp_path: Path, case: s
     build_path = completed.build_dir / "build-result.json"
     build_result = _read(build_path)
     variant = build_result["build_variant_id"]
-    if case == "shared_failure":
+    if case.startswith("shared_failure"):
         # A second item of the same variant reuses the tampered shared result at launch.
-        build_result.update(state="design_failure", bundle=None, observation=None)
+        observation = {
+            "shared_failure": None,
+            "shared_failure_text": {"class": "design", "code": "c", "message": 42, "detail": {}},
+            "shared_failure_detail": {
+                "class": "design",
+                "code": "c",
+                "message": "m",
+                "detail": "x",
+            },
+        }[case]
+        build_result.update(state="design_failure", bundle=None, observation=observation)
         _write(build_path, build_result)
         manifest = store.load_manifest()
         item = manifest.document["work_items"][0]
@@ -139,7 +164,41 @@ def test_a_malformed_published_record_is_corrupt_storage(tmp_path: Path, case: s
             with pytest.raises(SimulationCampaignIntegrityError):
                 recover_retained_campaign_resources(status, project_data)
     else:
-        build_result["bundle"] = None
+        if case == "ready_bundle":
+            build_result["bundle"] = None
+        elif case == "bundle_path":
+            build_result["bundle"]["manifest_path"] = "../escape"
+        else:
+            build_result["state"] = "bogus"
         _write(build_path, build_result)
         with pytest.raises(SimulationCampaignIntegrityError):
             store.recover_shared_build(variant, 1)
+
+
+def _bundle_with_artifacts(artifacts: list[dict[str, object]]):
+    fixture = Path(__file__).parents[1] / "fixtures/simulation_campaign/bundle.json"
+    document = json.loads(fixture.read_bytes())
+    document["artifacts"] = artifacts
+    return decode_simulator_bundle(canonical_json_bytes(document))
+
+
+@pytest.mark.parametrize("case", ["unknown_kind", "duplicate_path", "no_executable"])
+def test_a_bundle_inventory_the_decoder_no_longer_checks_is_refused(case: str) -> None:
+    executable = {"bytes": 1, "kind": "simulator_executable", "path": "simv", "sha256": "sha256:b"}
+    artifacts = {
+        "unknown_kind": [executable | {"kind": "bogus"}],
+        "duplicate_path": [executable, executable],
+        "no_executable": [executable | {"kind": "runtime_data"}],
+    }[case]
+    with pytest.raises(SimulationCampaignIntegrityError):
+        require_bundle_inventory(_bundle_with_artifacts(artifacts))
+
+
+def test_a_deeply_nested_record_is_refused_at_decode() -> None:
+    """Skipping the nested-field checks must not skip the nesting ceiling (#1743)."""
+    fixture = Path(__file__).parents[1] / "fixtures/simulation_campaign/bundle.json"
+    document = json.loads(fixture.read_bytes())
+    document["created_at"] = "X"
+    raw = canonical_json_bytes(document).replace(b'"X"', b"[" * 600 + b"]" * 600)
+    with pytest.raises(SimulationCampaignIntegrityError, match="nesting"):
+        decode_simulator_bundle(raw)

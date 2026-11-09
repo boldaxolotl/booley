@@ -842,7 +842,9 @@ def _hook_infrastructure_outcome(
 def _recovered_shared_failure(directory: Path, result: BundleBuildResult) -> _SharedFailure:
     observation = cast(Mapping[str, object], result.document["observation"])
     detail = cast(Mapping[str, object], observation["detail"])
-    text = cast(str, detail.get("text", observation["message"]))
+    text = detail.get("text", observation["message"])
+    if not isinstance(text, str):
+        raise SimulationCampaignIntegrityError("shared build failure text must be a string")
     return _SharedFailure(
         directory,
         result,
