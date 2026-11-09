@@ -85,6 +85,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "_resolve_image_id",
         lambda image: image if image.startswith("sha256:") else tags.get(image, _IMAGE_B),
     )
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", tags.get)
     root = tmp_path / "project"
     (root / ".booley").mkdir(parents=True)
     return root

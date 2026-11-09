@@ -59,8 +59,8 @@ def fake_docker(monkeypatch):
 
 
 class TestIssuedImageKeepers:
-    def test_strict_image_id_distinguishes_absence_from_daemon_failure(self, fake_docker):
-        fake_docker(
+    def test_image_id_returns_none_only_for_missing_image(self, fake_docker):
+        fake = fake_docker(
             [
                 (
                     lambda args: args[:2] == ["image", "inspect"],
@@ -68,8 +68,20 @@ class TestIssuedImageKeepers:
                 )
             ]
         )
-        assert idk.image_id_strict("keeper") is None
+        assert idk.image_id("keeper") is None
+        assert fake.calls == [["image", "inspect", "keeper", "--format", "{{.Id}}"]]
 
+        fake_docker(
+            [
+                (
+                    lambda args: args[:2] == ["image", "inspect"],
+                    _cp(0, stdout="sha256:" + "a" * 64 + "\n"),
+                )
+            ]
+        )
+        assert idk.image_id("keeper") == "sha256:" + "a" * 64
+
+        # A daemon failure is not "absent": the same lookup must refuse to answer.
         fake_docker(
             [
                 (
@@ -78,8 +90,54 @@ class TestIssuedImageKeepers:
                 )
             ]
         )
-        with pytest.raises(RuntimeError, match="Cannot connect"):
-            idk.image_id_strict("keeper")
+        with pytest.raises(RuntimeError, match="Cannot connect") as caught:
+            idk.image_id("keeper")
+        assert isinstance(caught.value, idk.ImageInspectError)
+
+    def test_image_id_raises_for_docker_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        cases: list[tuple[Any, str]] = [
+            (FileNotFoundError("docker"), "docker"),
+            (subprocess.TimeoutExpired("docker", 30), "timed out"),
+            (_cp(125, stderr="Cannot connect to the Docker daemon"), "Cannot connect"),
+            (_cp(1), "exited 1"),
+            (_cp(0), "no image ID"),
+        ]
+        timeouts: list[int] = []
+        for failure, cause in cases:
+
+            def fake(
+                args: Any,
+                *,
+                timeout: int = 0,
+                _failure: Any = failure,
+                **_kwargs: Any,
+            ) -> subprocess.CompletedProcess:
+                timeouts.append(timeout)
+                if isinstance(_failure, BaseException):
+                    raise _failure
+                return _failure
+
+            monkeypatch.setattr(idk, "_run_docker", fake)
+
+            with pytest.raises(RuntimeError, match=cause) as caught:
+                idk.image_id("keeper:tag")
+
+            assert isinstance(caught.value, idk.ImageInspectError)
+            assert "'keeper:tag'" in str(caught.value)
+        assert timeouts == [30] * len(cases)
+
+    def test_image_id_raises_for_non_executable_docker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess:
+            raise PermissionError("not executable")
+
+        monkeypatch.setattr(idk, "_run_docker", fake)
+
+        with pytest.raises(RuntimeError, match="not executable") as caught:
+            idk.image_id("keeper:tag")
+
+        assert isinstance(caught.value, idk.ImageInspectError)
 
     def test_remove_keeper_is_idempotent_but_surfaces_daemon_failure(self, fake_docker):
         fake_docker(
@@ -126,7 +184,7 @@ class TestIssuedImageKeepers:
                 )
             ]
         )
-        assert idk.issued_image_tags() == [keeper]
+        assert idk.issued_image_tags() == (keeper,)
 
 
 def test_external_selection_compares_exact_image_ids(monkeypatch) -> None:
@@ -236,7 +294,7 @@ def test_keeper_cleanup_rejects_invalid_container_image(
         idk.container_image_ids_strict()
 
 
-@pytest.mark.parametrize("operation", ["issued_image_tags_strict", "container_image_ids_strict"])
+@pytest.mark.parametrize("operation", ["issued_image_tags", "container_image_ids_strict"])
 def test_keeper_cleanup_daemon_failure_is_not_empty_inventory(
     operation: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -254,7 +312,7 @@ def test_keeper_cleanup_daemon_failure_is_not_empty_inventory(
 @pytest.mark.parametrize(
     "failure", [FileNotFoundError("docker"), subprocess.TimeoutExpired("docker", 30)]
 )
-@pytest.mark.parametrize("operation", ["issued_image_tags_strict", "container_image_ids_strict"])
+@pytest.mark.parametrize("operation", ["issued_image_tags", "container_image_ids_strict"])
 def test_keeper_cleanup_missing_docker_and_timeout_fail_closed(
     failure: Any, operation: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
