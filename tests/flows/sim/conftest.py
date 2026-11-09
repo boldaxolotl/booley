@@ -1,6 +1,5 @@
 """Shared Simulation test fixtures: compile-surface doubles and Windows lock emulation."""
 
-import os
 import sys
 from pathlib import Path
 
@@ -34,15 +33,6 @@ def explicit_surface_for_lightweight_target_handles(
     monkeypatch.setattr(flow, "resolve_target_compile_surface", resolve_or_fake)
     monkeypatch.setattr(
         verilator_coverage_execution, "resolve_target_compile_surface", resolve_or_fake
-    )
-
-
-@pytest.fixture(autouse=True)
-def adapter_subprocesses_import_this_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A launched ``python3 -m booley.flows.sim.backends.*`` must run this checkout."""
-    source = str(Path(__file__).resolve().parents[3] / "src")
-    monkeypatch.setenv(
-        "PYTHONPATH", os.pathsep.join(filter(None, (source, os.environ.get("PYTHONPATH"))))
     )
 
 
