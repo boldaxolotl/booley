@@ -1273,6 +1273,7 @@ def _auth_reseed_boundaries(project, monkeypatch):
     monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
     monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: pdk)
     monkeypatch.setattr(session_issuance, "_resolve_image_id", lambda _: "sha256:" + "a" * 64)
+    monkeypatch.setattr(session_issuance, "_keeper_image_id", lambda _: "sha256:" + "a" * 64)
     monkeypatch.setattr(session_issuance, "_project_data_alias_capable", lambda *a: False)
     monkeypatch.setattr(session_issuance, "_pin_initialize_command", lambda *a: None)
     monkeypatch.setattr(session_issuance, "_seal_with_requirements", lambda *a: "synthetic-digest")
