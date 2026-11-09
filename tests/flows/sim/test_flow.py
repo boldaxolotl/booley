@@ -14,12 +14,10 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
-from booley.flows.plan import FlowPlan
 from booley.flows.run_log import write_run_log
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
-    AdapterTraceResult,
     write_adapter_result,
 )
 from booley.flows.sim.backends import cocotb_results
@@ -37,7 +35,6 @@ from booley.flows.sim.execution.telemetry import (
 )
 from booley.flows.sim.flow import (
     _INCONCLUSIVE_NO_SENTINEL,
-    _TRACE_OK_RE,
     TargetResult,
     _append_batch_output_lines,
     _append_error_excerpt,
@@ -47,7 +44,6 @@ from booley.flows.sim.flow import (
     _filter_tests,
     _resolve_sim_campaign_work_units,
     _test_status_line,
-    _trace_metadata,
     parse_sva_errors,
 )
 from booley.flows.sim.flow import (
@@ -57,12 +53,19 @@ from booley.flows.sim.flow import (
     TestResult as SimTestResult,  # aliased: a Test* name would be pytest-collected
 )
 from booley.flows.sim.mode import SimulationMode
-from booley.flows.sim.result import parse_sim_verdict, parse_summary_line
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import ExecutionResult
 from booley.targets.catalog import TargetCatalog
+from tests.flows.sim import campaign_boundary
+from tests.flows.sim.campaign_boundary import (
+    FAIL_PROCESS,
+    INCONCLUSIVE_PROCESS,
+    PASS_PROCESS,
+    CampaignSimRun,
+    run_campaign_sim,
+)
 from tests.flows.sim.leased_session import canned_build_session, without_build_record
 from tests.target_test_support import write_sim_preview_project
 
@@ -613,7 +616,9 @@ class _BoundaryHarness(SimulationExecution):
             stashed, self._stashed = self._stashed, None
             write_adapter_result(
                 self._attempt.identity,
-                _adapter_result_for_test_process(self._attempt.identity.selected_tests, stashed),
+                campaign_boundary.adapter_result_for_test_process(
+                    self._attempt.identity.selected_tests, stashed
+                ),
             )
             fresh_ns = time.time_ns()
             os.utime(self._attempt.identity.result_path, ns=(fresh_ns, fresh_ns))
@@ -644,169 +649,6 @@ class _BoundaryHarness(SimulationExecution):
             peak_rss_mb=process.peak_rss_mb,
             oom_kill_delta=process.oom_kill_delta,
         )
-
-
-def _adapter_result_for_test_process(
-    names: tuple[str, ...],
-    process: SubprocessResult,
-) -> AdapterResult:
-    output = process.stdout + ("\n" + process.stderr if process.stderr else "")
-    try:
-        summary = parse_summary_line(output)
-    except ValueError:
-        summary = None
-    parsed = cocotb_results.parse_results_line(output)
-    if parsed is not None:
-        return _cocotb_adapter_result(names, process, output, summary, parsed)
-    return _native_adapter_result(names, process, output, summary)
-
-
-def _cocotb_adapter_result(names, process, output, summary, parsed) -> AdapterResult:
-    timed_out = "cocotb simulation timed out" in output.lower() or process.timed_out
-    if timed_out:
-        parsed = cocotb_results.recover_timeout_progress(output, list(names), parsed)
-    elapsed = {test.name: test.elapsed_s for test in parsed.tests}
-    tests = tuple(
-        AdapterTestResult(
-            name,
-            "timeout" if detail == cocotb_results.TIMEOUT_ACTIVE_DETAIL else verdict,
-            elapsed.get(name, process.duration_s),
-            detail,
-        )
-        for name, verdict, detail in cocotb_results.reconcile(list(names), parsed)
-    )
-    extras = tuple(test.name for test in parsed.tests if test.name not in names)
-    diagnostics = (
-        (
-            "results.xml reports extra non-selected test(s): "
-            f"{', '.join(extras)} — logged, not verdict-bearing",
-        )
-        if extras
-        else ()
-    )
-    sva_errors = int(summary.get("sva_errors", 0)) if summary else 0
-    tests = _normalize_canned_cocotb_timeout(tests, timed_out)
-    inconclusive = not timed_out and any(test.verdict == "inconclusive" for test in tests)
-    passed = bool(
-        process.returncode == 0
-        and summary is not None
-        and summary["passed"]
-        and sva_errors == 0
-        and tests
-        and all(test.verdict == "pass" for test in tests)
-    )
-    return _test_adapter_result(
-        names,
-        tests,
-        passed,
-        inconclusive,
-        sva_errors,
-        diagnostics,
-        _test_trace_result(output),
-        simulator_returncode=process.returncode,
-        termination="timeout" if timed_out else "completed",
-        termination_detail="cocotb simulation timed out" if timed_out else "",
-    )
-
-
-def _normalize_canned_cocotb_timeout(tests, timed_out):
-    if not timed_out:
-        return tests
-    detail = "cocotb simulation timed out"
-    return tuple(
-        test
-        if test.verdict in {"pass", "fail"}
-        else AdapterTestResult(
-            test.name,
-            "timeout",
-            test.elapsed_s,
-            detail,
-            "timeout",
-            "timeout",
-        )
-        for test in tests
-    )
-
-
-def _native_adapter_result(names, process, output, summary) -> AdapterResult:
-    sentinel = parse_sim_verdict(output)
-    passed = bool(
-        process.returncode == 0
-        and (summary["passed"] if summary is not None else sentinel is True)
-    )
-    inconclusive = summary is None and sentinel is None and not process.timed_out
-    verdict = (
-        "timeout"
-        if process.timed_out
-        else "pass"
-        if passed
-        else "inconclusive"
-        if inconclusive
-        else "fail"
-    )
-    tests = tuple(AdapterTestResult(name, verdict, process.duration_s) for name in names)
-    sva_errors = int(summary.get("sva_errors", 0)) if summary else 0
-    return _test_adapter_result(
-        names,
-        tests,
-        passed,
-        inconclusive,
-        sva_errors,
-        (),
-        _test_trace_result(output),
-        simulator_returncode=process.returncode,
-    )
-
-
-def _test_trace_result(output: str) -> AdapterTraceResult | None:
-    paths = _TRACE_OK_RE.findall(output)
-    if not paths:
-        return None
-    top_scope, signal_count, total_ticks = _trace_metadata(output)
-    return AdapterTraceResult(
-        "ok",
-        path=paths[-1],
-        top_scope=top_scope,
-        signal_count=signal_count,
-        total_ticks=total_ticks,
-    )
-
-
-def _test_adapter_result(
-    names,
-    tests,
-    passed,
-    inconclusive,
-    sva_errors,
-    diagnostics,
-    trace=None,
-    *,
-    simulator_returncode=0,
-    termination="completed",
-    termination_detail="",
-):
-    timed_out = any(test.verdict == "timeout" for test in tests)
-    return AdapterResult(
-        passed=passed,
-        inconclusive=inconclusive,
-        sva_errors=sva_errors,
-        tests=names,
-        simulator_returncode=simulator_returncode,
-        termination=termination,
-        failure_kind=(
-            "timeout"
-            if timed_out
-            else "inconclusive"
-            if inconclusive
-            else "design"
-            if not passed
-            else ""
-        ),
-        detail=termination_detail,
-        test_results=tests,
-        diagnostics=diagnostics,
-        trace=trace,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1020,22 +862,6 @@ class TestUnknownTestSelector:
         "lite": ["lite_smoke", "lite_stress", "lite_boot"],
     }
 
-    def test_unknown_name_returns_error(self, tmp_path: Path):
-        # The reported bug: --test no_such_test used to run the TB's default
-        # test and report PASS. It must now surface an error instead.
-        flow = _make_flow(
-            tmp_path,
-            config="lite",
-            extra_args=["--test", "no_such_test"],
-        )
-        result = flow._validate_test_selector(["lite"], self._NAMES)
-        assert result is not None
-        assert result.exit_code == EXIT_ERROR
-        assert "no_such_test" in result.report_text
-        assert "lite" in result.report_text
-        # The declared tests are listed so the fix (a typo) is one hop away.
-        assert "lite_smoke" in result.report_text
-
     def test_valid_exact_name_passes(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "lite_stress"])
         assert flow._validate_test_selector(["lite"], self._NAMES) is None
@@ -1057,31 +883,6 @@ class TestUnknownTestSelector:
         assert result is not None
         assert result.exit_code == EXIT_ERROR
         assert "full" in result.report_text
-
-    @patch(
-        "booley.flows.sim.flow._get_test_names",
-        return_value={"lite": ["lite_smoke", "lite_stress"]},
-    )
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(
-        SimulateFlow,
-        "_run_target",
-        side_effect=AssertionError("must not run a sim on an unknown --test"),
-    )
-    def test_run_rejects_unknown_test_without_executing(
-        self,
-        _no_run,
-        _mock_backend,
-        _mock_names,
-        tmp_path: Path,
-    ):
-        # End-to-end through _run: an unknown --test short-circuits to EXIT_ERROR
-        # and never reaches _run_target — so no default test runs, no false PASS.
-        flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "typo"])
-        with flow.publication_resources:
-            result = flow._run()
-        assert result.exit_code == EXIT_ERROR
-        assert "typo" in result.report_text
 
 
 # ---------------------------------------------------------------------------
@@ -1288,200 +1089,325 @@ def _mock_execute_pass(self, cmd: list[str]) -> SubprocessResult:
     )
 
 
-def _mock_execute_fail(self, cmd: list[str]) -> SubprocessResult:
-    """Simulate a failing test run with [SIM_SUMMARY] JSON."""
-    return SubprocessResult(
-        returncode=1,
-        stdout='[SIM_RESULT] FAILED\n[SIM_CYCLES] 8012\n[SIM_SUMMARY] {"passed":false,"sva_errors":0}\n',
-        stderr="Error: assertion failed",
-        duration_s=12.3,
+# ---------------------------------------------------------------------------
+# Ordinary simulation through the campaign path (SimulateFlow.execute)
+#
+# These run the real endpoint, campaign planning and execution, and Criteria
+# reconciliation; only the process edge is faked (``campaign_boundary``).
+# ---------------------------------------------------------------------------
+
+
+def _projection(tmp_path: Path, target: str = "lite") -> dict[str, Any]:
+    """Return the ``simulation.json`` projection Target *target* published."""
+    path = tmp_path / f"reports/sim/1/targets/{target}/simulation.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _launched_tests(run: CampaignSimRun) -> list[str]:
+    return [test for _target, tests in run.launched for test in tests]
+
+
+def test_campaign_rejects_unknown_test_without_launching(tmp_path: Path, monkeypatch):
+    # The reported bug: --test no_such_test used to run the TB's default test and
+    # report PASS. The campaign must reject it before any simulator launches.
+    run = run_campaign_sim(
+        tmp_path,
+        monkeypatch,
+        {"lite": ["smoke", "stress"]},
+        PASS_PROCESS,
+        target="lite",
+        test=("typo",),
     )
+    assert run.result.exit_code == EXIT_ERROR
+    report_text = run.result.outcome.report_text
+    assert "typo" in report_text
+    assert "lite" in report_text
+    # The declared tests are listed so the fix (a typo) is one hop away.
+    assert "smoke" in report_text
+    assert run.launched == []
 
 
-def _mock_execute_custom_cycle_pass(self, cmd: list[str]) -> SubprocessResult:
-    """Simulate a passing test run with a project-native cycle prefix."""
-    return SubprocessResult(
+@pytest.mark.parametrize(
+    ("selector", "expected"),
+    [(None, ["smoke", "boot"]), (("stress",), ["stress"])],
+    ids=["one-skip", "explicit-test-overrides-skip"],
+)
+def test_campaign_runs_tests_left_by_skip_list(
+    tmp_path: Path, monkeypatch, selector: tuple[str, ...] | None, expected: list[str]
+):
+    # Naming a skipped test by hand is a clear override of the skip list.
+    run = run_campaign_sim(
+        tmp_path,
+        monkeypatch,
+        {"lite": ["smoke", "stress", "boot"]},
+        PASS_PROCESS,
+        skip={"lite": ["stress"]},
+        target="lite",
+        test=selector,
+    )
+    assert run.result.exit_code == EXIT_SUCCESS, run.result.outcome.report_text
+    assert _launched_tests(run) == expected
+
+
+def test_campaign_rejects_target_whose_tests_are_all_skipped(tmp_path: Path, monkeypatch):
+    run = run_campaign_sim(
+        tmp_path,
+        monkeypatch,
+        {"lite": ["smoke", "stress"]},
+        PASS_PROCESS,
+        skip={"lite": ["smoke", "stress"]},
+        target="lite",
+    )
+    assert run.result.exit_code == EXIT_ERROR
+    assert "no runnable tests" in run.result.outcome.report_text
+    assert run.launched == []
+
+
+def _lite_passes_full_fails(target: str, _tests: tuple[str, ...]) -> SubprocessResult:
+    return PASS_PROCESS if target == "lite" else FAIL_PROCESS
+
+
+@pytest.mark.parametrize(
+    ("targets", "process", "target", "exit_code", "grades"),
+    [
+        ({"lite": ["smoke"]}, PASS_PROCESS, "lite", EXIT_SUCCESS, {"lite": "pass"}),
+        ({"lite": ["smoke"]}, FAIL_PROCESS, "lite", EXIT_FAILURE, {"lite": "fail"}),
+        (
+            {"lite": ["smoke"]},
+            INCONCLUSIVE_PROCESS,
+            "lite",
+            EXIT_FAILURE,
+            {"lite": "inconclusive"},
+        ),
+        (
+            {"lite": ["smoke", "stress"]},
+            PASS_PROCESS,
+            "lite",
+            EXIT_SUCCESS,
+            {"lite": "pass"},
+        ),
+        (
+            {"lite": ["smoke"], "full": ["smoke"]},
+            _lite_passes_full_fails,
+            "lite,full",
+            EXIT_FAILURE,
+            {"lite": "pass", "full": "fail"},
+        ),
+    ],
+    ids=["summary-pass", "summary-fail", "inconclusive", "two-tests-pass", "mixed-targets"],
+)
+def test_campaign_verdict_sets_exit_code(
+    tmp_path: Path, monkeypatch, targets, process, target, exit_code, grades
+):
+    run = run_campaign_sim(tmp_path, monkeypatch, targets, process, target=target)
+    outcome = run.result.outcome
+    assert run.result.exit_code == exit_code, outcome.report_text
+    assert {name: row["grade"] for name, row in outcome.detail["campaigns"].items()} == grades
+    assert f"report: {tmp_path / 'reports/sim.json'}" in outcome.report_text
+    if grades == {"lite": "inconclusive"}:
+        assert "INCONCLUSIVE" in outcome.report_text
+
+
+def _ticket_state(tmp_path: Path, monkeypatch, keys: list[str]) -> Path:
+    """Save a strict Ticket state declaring *keys*, and name it as the state file."""
+    state_path = tmp_path / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.slug, state.ticket_type = "ticket", "implementation"
+    state.init_criteria(dict.fromkeys(keys, True), strict=True)
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    return state_path
+
+
+@pytest.mark.parametrize(
+    ("process", "ticket", "expected"),
+    [
+        (_lite_passes_full_fails, True, {"sim_pass_lite": True, "sim_pass_full": False}),
+        (INCONCLUSIVE_PROCESS, True, {"sim_pass_lite": False, "sim_pass_full": False}),
+        (PASS_PROCESS, False, {"sim_pass_lite": True}),
+        (FAIL_PROCESS, False, {"sim_pass_lite": False}),
+        (INCONCLUSIVE_PROCESS, False, {}),
+    ],
+    ids=[
+        "ticket-mixed",
+        "ticket-inconclusive",
+        "standalone-pass",
+        "standalone-fail",
+        "standalone-inconclusive",
+    ],
+)
+def test_campaign_records_criteria(
+    tmp_path: Path, monkeypatch, process, ticket: bool, expected: dict[str, bool]
+):
+    """Ticket Mode reconciles every declared Criterion through the acceptance
+    coordinator; a standalone run records pass and fail but nothing when inconclusive."""
+    from tests.flows.sim.test_coverage_flow import _AcceptanceAdapter
+
+    targets = {"lite": ["smoke"], "full": ["smoke"]} if ticket else {"lite": ["smoke"]}
+    if not ticket:
+        monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
+        run = run_campaign_sim(tmp_path, monkeypatch, targets, process, target="lite")
+        criteria = run.flow.state.criteria
+        assert {key: criterion.met for key, criterion in criteria.items()} == expected
+        return
+    state_path = _ticket_state(tmp_path, monkeypatch, list(expected))
+    recorder = _AcceptanceAdapter(
+        log_dir=tmp_path / "logs",
+        identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+    )
+    run_campaign_sim(tmp_path, monkeypatch, targets, process, target="lite,full", adapter=recorder)
+    saved = DevelopmentState.load(state_path)
+    assert {key: saved.is_met(key) for key in expected} == expected
+    # One acceptance transaction per declared Criterion: the coordinator recorded them.
+    assert len(saved.acceptance_transactions) == len(expected)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX unreadable-directory regression")
+@pytest.mark.parametrize("relative", ["unreadable", ".booley/unreadable"])
+def test_unreadable_unrelated_directory_does_not_block_plain_simulation(
+    tmp_path: Path, monkeypatch, relative: str
+) -> None:
+    unreadable = tmp_path / relative
+    unreadable.mkdir(parents=True)
+    unreadable.chmod(0)
+    try:
+        run = run_campaign_sim(
+            tmp_path, monkeypatch, {"lite": ["smoke"]}, PASS_PROCESS, target="lite"
+        )
+    finally:
+        unreadable.chmod(0o700)
+
+    assert run.result.exit_code == EXIT_SUCCESS, run.result.outcome.report_text
+
+
+def test_campaign_projection_reports_tests_and_label(tmp_path: Path, monkeypatch):
+    run = run_campaign_sim(
+        tmp_path, monkeypatch, {"lite": ["smoke", "stress"]}, PASS_PROCESS, target="lite"
+    )
+    report = _projection(tmp_path)
+    assert report["flow"] == "sim"
+    assert report["target"] == "lite"
+    assert report["passed"] is True
+    assert [test["name"] for test in report["tests"]] == ["smoke", "stress"]
+    assert report["tests"][0]["cycles"] == 2561
+    assert run.result.outcome.display_label == "target lite · 2 tests"
+
+
+def test_configured_cycle_sentinel_reaches_report_and_projection(tmp_path: Path, monkeypatch):
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text(
+        '[flows.sim]\ncycle_sentinels = ["CoreMark completed in:"]\n', encoding="utf-8"
+    )
+    process = SubprocessResult(
         returncode=0,
         stdout=(
             "[SIM_RESULT] PASSED\n"
             "CoreMark completed in: coremark 31415\n"
             '[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n'
         ),
-        stderr="",
-        duration_s=6.1,
+        duration_s=1.0,
     )
+    run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["coremark"]}, process, target="lite")
+
+    assert "coremark: cycles=31415" in run.result.outcome.report_text
+    assert _projection(tmp_path)["tests"][0]["cycles"] == 31415
 
 
-def _mock_execute_inconclusive(self, cmd: list[str]) -> SubprocessResult:
-    """Simulate an inconclusive run — rc=0, no sentinel, no summary."""
-    return SubprocessResult(
-        returncode=0,
-        stdout="simulation finished\nno sentinel here\n",
-        stderr="",
-        duration_s=3.5,
-    )
+def _run_logs(tmp_path: Path) -> list[Path]:
+    """Every work item's evidence ``run.log``, in work-item order."""
+    return sorted((tmp_path / "reports").rglob("execution-evidence/run.log"))
 
 
-# ---------------------------------------------------------------------------
-# Inconclusive detection
-# ---------------------------------------------------------------------------
+def test_campaign_keeps_each_test_log_in_its_own_work_item(tmp_path: Path, monkeypatch):
+    """Each HDL launch gets durable evidence before the next one starts."""
+    first_bytes: list[bytes] = []
 
-
-class TestInconclusiveDetection:
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_execute", _mock_execute_inconclusive)
-    def test_inconclusive_no_criterion(self, _mock_backend, _mock_tests, tmp_path: Path):
-        """No summary, rc=0 → inconclusive; criterion NOT set."""
-        flow = _make_flow(tmp_path, config="lite")
-        with flow.publication_resources:
-            result = flow._run()
-        assert result.exit_code == EXIT_FAILURE
-        assert "INCONCLUSIVE" in result.report_text
-        assert not flow.state.is_met("sim_pass_lite")
-        # Criterion should not exist at all (skipped, not set to False)
-        assert not flow.state.has_criterion("sim_pass_lite")
-
-
-class TestFullRun:
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
-    def test_single_config_pass(self, _mock_backend, _mock_tests, tmp_path: Path, capsys):
-        flow = _make_flow(tmp_path, config="lite")
-        with flow.publication_resources:
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        assert result.criterion_met is True
-        assert (
-            f"  report: {(Path(flow.args.report_dir) / 'sim.json').resolve()}"
-            in result.report_text
+    def process(_target: str, tests: tuple[str, ...]) -> SubprocessResult:
+        if tests == ("stress",):
+            first_bytes.append(_run_logs(tmp_path)[0].read_bytes())
+            return SubprocessResult(
+                returncode=1, stdout="STRESS_ONLY\n[SIM_RESULT] FAILED\n", duration_s=0.1
+            )
+        return SubprocessResult(
+            returncode=0, stdout="SMOKE_ONLY\n[SIM_RESULT] PASSED\n", duration_s=0.1
         )
-        assert "manifest:" not in result.report_text
-        assert capsys.readouterr().out.count(result.report_text) == 1
 
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_execute", _mock_execute_fail)
-    def test_single_config_fail(self, _mock_backend, _mock_tests, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite")
-        with flow.publication_resources:
-            result = flow._run()
-        assert result.exit_code == EXIT_FAILURE
-        assert result.criterion_met is False
+    run = run_campaign_sim(
+        tmp_path, monkeypatch, {"lite": ["smoke", "stress"]}, process, target="lite"
+    )
 
-    @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
-    def test_multi_test_all_pass(self, _mock_backend, _mock_tests, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite")
-        with flow.publication_resources:
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_multi_config_mixed(self, _mock_backend, _mock_tests, tmp_path: Path):
-        """First config passes, second fails => overall FAIL."""
-        call_count = 0
-
-        def _alternating_execute(self_inner, cmd):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return SubprocessResult(
-                    returncode=0,
-                    stdout='[SIM_RESULT] PASSED\n[SIM_CYCLES] 100\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n',
-                    duration_s=1.0,
-                )
-            return SubprocessResult(
-                returncode=1,
-                stdout='[SIM_RESULT] FAILED\n[SIM_SUMMARY] {"passed":false,"sva_errors":0}\n',
-                duration_s=2.0,
-            )
-
-        with patch.object(SimulateFlow, "_execute", _alternating_execute):
-            flow = _make_flow(tmp_path, config="lite,full")
-            with flow.publication_resources:
-                result = flow._run()
-        assert result.exit_code == EXIT_FAILURE
-        assert result.detail["targets_passed"] == 1
+    assert run.result.exit_code == EXIT_FAILURE
+    assert _launched_tests(run) == ["smoke", "stress"]
+    smoke_log, stress_log = _run_logs(tmp_path)
+    assert smoke_log.read_bytes() == first_bytes[0]
+    assert "SMOKE_ONLY" in smoke_log.read_text(encoding="utf-8")
+    assert "STRESS_ONLY" not in smoke_log.read_text(encoding="utf-8")
+    assert "STRESS_ONLY" in stress_log.read_text(encoding="utf-8")
+    assert "SMOKE_ONLY" not in stress_log.read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# Per-config criterion setting
-# ---------------------------------------------------------------------------
+def test_consecutive_campaigns_preserve_first_evidence(tmp_path: Path, monkeypatch):
+    def run(output: str) -> tuple[Path, bytes]:
+        run_campaign_sim(
+            tmp_path,
+            monkeypatch,
+            {"lite": ["smoke"]},
+            SubprocessResult(returncode=0, stdout=f"{output}\n[SIM_RESULT] PASSED\n"),
+            target="lite",
+            test=("smoke",),
+        )
+        path = _run_logs(tmp_path)[-1]
+        return path, path.read_bytes()
+
+    first_path, first_bytes = run("FIRST_ONLY")
+    second_path, second_bytes = run("SECOND_ONLY")
+
+    assert first_path != second_path
+    assert first_path.read_bytes() == first_bytes
+    assert b"FIRST_ONLY" in first_bytes
+    assert b"SECOND_ONLY" in second_bytes
 
 
-class TestCriterionSetting:
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
-    def test_sets_sim_pass_lite(self, _mock_backend, _mock_tests, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite")
-        with flow.publication_resources:
-            flow._run()
-        assert flow.state.is_met("sim_pass_lite")
+def test_campaign_crash_keeps_completed_target_in_progress(tmp_path: Path, monkeypatch):
+    def process(target: str, _tests: tuple[str, ...]) -> SubprocessResult:
+        if target == "full":
+            raise RuntimeError("simulated outer interruption")
+        return PASS_PROCESS
 
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_execute", _mock_execute_fail)
-    def test_sets_sim_pass_full_false(self, _mock_backend, _mock_tests, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="full")
-        with flow.publication_resources:
-            flow._run()
-        assert not flow.state.is_met("sim_pass_full")
+    monkeypatch.setenv("BOOLEY_RUN_ID", "sim-checkpoint-1")
+    run = run_campaign_sim(
+        tmp_path, monkeypatch, {"lite": ["smoke"], "full": ["smoke"]}, process, target="lite,full"
+    )
 
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_sets_criteria_per_config(self, _mock_backend, _mock_tests, tmp_path: Path):
-        """Multi-config sets separate criteria."""
-        call_count = 0
-
-        def _mixed(self_inner, cmd):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return SubprocessResult(
-                    returncode=0,
-                    stdout='[SIM_RESULT] PASSED\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n',
-                    duration_s=1.0,
-                )
-            return SubprocessResult(
-                returncode=1,
-                stdout='[SIM_RESULT] FAILED\n[SIM_SUMMARY] {"passed":false,"sva_errors":0}\n',
-                duration_s=1.0,
-            )
-
-        with patch.object(SimulateFlow, "_execute", _mixed):
-            flow = _make_flow(tmp_path, config="lite,full")
-            with flow.publication_resources:
-                flow._run()
-        assert flow.state.is_met("sim_pass_lite")
-        assert not flow.state.is_met("sim_pass_full")
+    assert run.result.exit_code == EXIT_ERROR
+    assert "simulated outer interruption" in run.result.outcome.report_text
+    progress = json.loads((tmp_path / "reports/sim/1/progress.json").read_text(encoding="utf-8"))
+    assert progress["run_id"] == "sim-checkpoint-1"
+    assert progress["complete"] is True
+    assert progress["phase"] == "aborted"
+    assert progress["completed_targets"] == ["lite"]
+    assert progress["pending_targets"] == ["full"]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX unreadable-directory regression")
-@pytest.mark.parametrize("relative", ["unreadable", ".booley/unreadable"])
-def test_unreadable_unrelated_directory_does_not_block_plain_simulation(
-    tmp_path: Path, relative: str
-) -> None:
-    flow = _make_flow(tmp_path, config="lite")
-    unreadable = tmp_path / relative
-    unreadable.mkdir(parents=True)
-    unreadable.chmod(0)
-    try:
-        with (
-            patch("booley.flows.sim.flow._get_test_names", return_value={}),
-            patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
-            patch.object(SimulateFlow, "_execute", _mock_execute_pass),
-            flow.publication_resources,
-        ):
-            result = flow._run()
-    finally:
-        unreadable.chmod(0o700)
-
-    assert result.exit_code == EXIT_SUCCESS
+def test_default_report_root_uses_project_data(tmp_path: Path, monkeypatch):
+    rtl = tmp_path / "rtl-checkout"
+    rtl.mkdir()
+    project_data = tmp_path / "project-data"
+    run = run_campaign_sim(
+        rtl,
+        monkeypatch,
+        {"lite": []},
+        PASS_PROCESS,
+        target="lite",
+        report_dir=None,
+        project_data=project_data,
+    )
+    assert run.result.exit_code == EXIT_SUCCESS, run.result.outcome.report_text
+    invocation = project_data / "flow-reports/sim/1"
+    assert (invocation / "progress.json").is_file()
+    assert (invocation / "targets/lite/simulation.json").is_file()
+    assert not (rtl / "flow-reports").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1490,25 +1416,6 @@ def test_unreadable_unrelated_directory_does_not_block_plain_simulation(
 
 
 class TestReportGeneration:
-    @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
-    def test_writes_config_report(self, _mock_backend, _mock_tests, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite")
-        with flow.publication_resources:
-            result = flow._run()
-        report_path = tmp_path / "reports/sim/1/targets/lite/simulation.json"
-        assert report_path.exists()
-        report = json.loads(report_path.read_text())
-        assert report["flow"] == "sim"
-        assert report["target"] == "lite"
-        assert report["tb_top"] == "alu_tb"
-        assert report["passed"] is True
-        assert len(report["tests"]) == 2
-        assert report["tests"][0]["name"] == "smoke"
-        assert report["tests"][0]["cycles"] == 2561
-        assert result.display_label == "target lite · 2 tests"
-
     def test_native_report_persists_phase_and_resource_telemetry(self, tmp_path: Path):
         output = (
             "BOOLEY_BUILD_MILLISECONDS: 125\n"
@@ -1579,248 +1486,6 @@ class TestReportGeneration:
             assert recovered["complete"] is True
             assert recovered["phase_timings_s"]["total"] >= 1.0
 
-    @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["coremark"]})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_execute", _mock_execute_custom_cycle_pass)
-    def test_configured_cycle_sentinel_reaches_mcp_and_json_reports(
-        self,
-        _mock_backend,
-        _mock_tests,
-        tmp_path: Path,
-    ):
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        (booley_dir / "booley.toml").write_text(
-            '[flows.sim]\ncycle_sentinels = ["CoreMark completed in:"]\n',
-            encoding="utf-8",
-        )
-
-        flow = _make_flow(tmp_path, config="lite")
-        with flow.publication_resources:
-            result = flow._run()
-
-        assert "31,415 cycles" in result.report_text
-        report = json.loads((tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text())
-        assert report["tests"][0]["cycles"] == 31415
-
-    def test_grouped_hdl_run_preserves_each_test_log_after_later_failure(
-        self,
-        tmp_path: Path,
-    ):
-        """Each HDL process gets durable evidence before the next one starts."""
-        flow = _make_flow(tmp_path, config="lite")
-        build_root = tmp_path / "build" / "lite"
-        first_path = tmp_path / "reports/sim/1/artifacts/candidate/sim_lite/tests/smoke@1/run.log"
-        first_bytes: bytes | None = None
-        calls = 0
-
-        def execute(_cmd):
-            nonlocal calls, first_bytes
-            calls += 1
-            if calls == 1:
-                return SubprocessResult(
-                    returncode=0,
-                    stdout="SMOKE_ONLY\n[SIM_RESULT] PASSED\n",
-                    duration_s=0.1,
-                )
-            assert first_path.is_file(), "first artifact must land before test two starts"
-            first_bytes = first_path.read_bytes()
-            return SubprocessResult(
-                returncode=1,
-                stdout="STRESS_ONLY\n[SIM_RESULT] FAILED\n",
-                duration_s=0.1,
-            )
-
-        with (
-            patch(
-                "booley.flows.sim.flow._get_test_names",
-                return_value={"lite": ["smoke", "stress"]},
-            ),
-            patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
-            patch.object(flow, "_execute", side_effect=execute),
-            flow.publication_resources,
-        ):
-            result = flow._run()
-
-        assert result.exit_code == EXIT_FAILURE
-        assert calls == 2
-        report = json.loads((tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text())
-        assert [test["name"] for test in report["tests"]] == ["smoke", "stress"]
-        pointers = [test["artifacts"]["run_log"] for test in report["tests"]]
-        assert pointers == [
-            "reports/sim/1/artifacts/candidate/sim_lite/tests/smoke@1/run.log",
-            "reports/sim/1/artifacts/candidate/sim_lite/tests/stress@1/run.log",
-        ]
-        smoke_log, stress_log = (tmp_path / pointer for pointer in pointers)
-        assert smoke_log.read_bytes() == first_bytes
-        assert "SMOKE_ONLY" in smoke_log.read_text()
-        assert "STRESS_ONLY" not in smoke_log.read_text()
-        assert "STRESS_ONLY" in stress_log.read_text()
-        assert "SMOKE_ONLY" not in stress_log.read_text()
-        # Compatibility/live-tail contract: the Target-level file remains and
-        # holds the most recently completed test.
-        assert "STRESS_ONLY" in (build_root / "run.log").read_text()
-        assert "SMOKE_ONLY" not in (build_root / "run.log").read_text()
-
-    def test_single_hdl_test_report_has_the_same_run_log_artifact(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "smoke"])
-        with (
-            patch(
-                "booley.flows.sim.flow._get_test_names",
-                return_value={"lite": ["smoke", "stress"]},
-            ),
-            patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
-            patch.object(
-                flow,
-                "_execute",
-                return_value=SubprocessResult(
-                    returncode=0,
-                    stdout="SINGLE_ONLY\n[SIM_RESULT] PASSED\n",
-                    duration_s=0.1,
-                ),
-            ),
-            flow.publication_resources,
-        ):
-            result = flow._run()
-
-        assert result.exit_code == EXIT_SUCCESS
-        report = json.loads((tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text())
-        assert len(report["tests"]) == 1
-        pointer = report["tests"][0]["artifacts"]["run_log"]
-        assert pointer == "reports/sim/1/artifacts/candidate/sim_lite/tests/smoke@1/run.log"
-        assert "SINGLE_ONLY" in (tmp_path / pointer).read_text()
-
-    def test_consecutive_direct_runs_preserve_first_archived_evidence(self, tmp_path: Path):
-        def run(output: str):
-            flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "smoke"])
-            with (
-                patch(
-                    "booley.flows.sim.flow._get_test_names",
-                    return_value={"lite": ["smoke"]},
-                ),
-                patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
-                patch.object(
-                    flow,
-                    "_execute",
-                    return_value=SubprocessResult(
-                        returncode=0,
-                        stdout=f"{output}\n[SIM_RESULT] PASSED\n",
-                        duration_s=0.1,
-                    ),
-                ),
-                flow.publication_resources,
-            ):
-                flow._run()
-            report_dir = sorted((tmp_path / "reports/sim").glob("[0-9]*"))[-1]
-            report = json.loads(
-                (report_dir / "targets/lite/simulation.json").read_text(encoding="utf-8")
-            )
-            path = tmp_path / report["tests"][0]["artifacts"]["run_log"]
-            return path, path.read_bytes()
-
-        first_path, first_bytes = run("FIRST_ONLY")
-        second_path, second_bytes = run("SECOND_ONLY")
-
-        assert first_path != second_path
-        assert first_path.read_bytes() == first_bytes
-        assert b"FIRST_ONLY" in first_bytes
-        assert b"SECOND_ONLY" in second_bytes
-
-    def test_completed_target_survives_later_campaign_crash(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite,full")
-        flow._flow_plan = FlowPlan("sim", "simulate", ())
-        first = TargetResult(
-            target="lite",
-            tb_top="alu_tb",
-            eda_tool="verilator",
-            passed=True,
-            elapsed_s=1.0,
-            tests=[SimTestResult(name="smoke", passed=True, elapsed_s=1.0)],
-        )
-        calls = 0
-
-        def run_target(*_args, **_kwargs):
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                return first
-            raise RuntimeError("simulated outer interruption")
-
-        with (
-            patch.dict(os.environ, {"BOOLEY_RUN_ID": "sim-checkpoint-1"}),
-            patch.object(
-                flow,
-                "_resolve_run_targets",
-                return_value=(["lite", "full"], {}),
-            ),
-            patch.object(flow, "_maybe_dispatch_special_run", return_value=None),
-            patch.object(flow, "_tb_top_for_target", return_value="alu_tb"),
-            patch.object(flow, "_run_target", side_effect=run_target),
-            patch.object(flow, "_compile_command_str", return_value=None),
-            patch.object(flow, "_fileset_for_report", return_value=None),
-            patch.object(flow, "_artifacts_for", return_value={}),
-            pytest.raises(RuntimeError, match="outer interruption"),
-            flow.publication_resources,
-        ):
-            flow._run()
-
-        report_dir = tmp_path / "reports"
-        target_report = json.loads((report_dir / "sim/1/targets/lite/simulation.json").read_text())
-        assert target_report["run_id"] == "sim-checkpoint-1"
-        invocation_dirs = sorted((report_dir / "sim").iterdir())
-        progress = json.loads((invocation_dirs[-1] / "progress.json").read_text())
-        assert progress["run_id"] == "sim-checkpoint-1"
-        assert progress["complete"] is True
-        assert progress["phase"] == "aborted"
-        assert progress["completed_targets"] == ["lite"]
-        assert progress["pending_targets"] == ["full"]
-        assert (invocation_dirs[-1] / "targets/lite/simulation.json").is_file()
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
-    def test_default_report_root_uses_project_data(
-        self, _mock_backend, _mock_tests, tmp_path: Path, monkeypatch
-    ):
-        from booley.flows.endpoint_session import _apply_default_endpoint_report_root
-        from booley.runtime.booley_dir import reset_cache
-
-        rtl = tmp_path / "rtl-checkout"
-        rtl.mkdir()
-        project_data = tmp_path / "project-data"
-        project_data.mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(project_data))
-        reset_cache()
-        state_file = _make_state(rtl)
-        env = _env_with_state(state_file)
-        # ADR 0039: selection validates against a real .core surface.
-        # The replacement targets FuseSoC's upstream CAPI2 ``tool`` field.
-        (rtl / "lite.core").write_text(
-            "CAPI=2:\nname: ::lite:0\ntargets:\n  lite:\n    flow: sim\n"
-            "    flow_options: {tool: verilator}\n    toplevel: alu_tb\n",
-            encoding="utf-8",
-        )
-        flow = SimulateFlow()
-        with patch.dict(os.environ, env):
-            flow.parse_args(
-                [
-                    "--work-dir",
-                    str(rtl),
-                    "--target",
-                    "lite",
-                ]
-            )
-        assert _apply_default_endpoint_report_root(flow) is None
-        flow.read_state()
-        flow._simulation_execution_override = _BoundaryHarness(flow)
-        with flow.publication_resources:
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        invocation = project_data / "flow-reports/sim/1"
-        assert (invocation / "progress.json").is_file()
-        assert (invocation / "targets/lite/simulation.json").is_file()
-        assert not (rtl / "flow-reports").exists()
-
 
 # ---------------------------------------------------------------------------
 # Timeout
@@ -1843,43 +1508,24 @@ class TestTimeout:
         flow = _make_flow(tmp_path, extra_args=["--trace"])
         assert flow._get_timeout() == 690
 
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_timeout_results_in_fail(self, _mock_backend, _mock_tests, tmp_path: Path):
-        def _timeout_execute(self_inner, cmd):
-            return SubprocessResult(
-                returncode=-1,
-                stdout="BOOLEY_BUILD_MILLISECONDS: 250\npartial output",
-                stderr="",
-                timed_out=True,
-                duration_s=600.0,
-                peak_rss_mb=96.5,
-                oom_kill_delta=1,
-            )
-
-        with patch.object(SimulateFlow, "_execute", _timeout_execute):
-            flow = _make_flow(tmp_path, config="lite")
-            with flow.publication_resources:
-                result = flow._run()
-        assert result.exit_code == EXIT_FAILURE
-        report = json.loads(
-            (tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text(encoding="utf-8")
+    def test_timeout_results_in_fail(self, tmp_path: Path, monkeypatch):
+        # The wrapper killed the launch: no adapter result, only the timed-out process.
+        process = SubprocessResult(
+            returncode=-1,
+            stdout="partial output",
+            timed_out=True,
+            duration_s=600.0,
         )
-        test = report["tests"][0]
-        assert report["complete"] is True
+        run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite")
+
+        assert run.result.exit_code == EXIT_FAILURE
+        test = _projection(tmp_path)["tests"][0]
         assert test["timed_out"] is True
-        assert test["verdict"] == "timeout"
+        assert test["execution"] == "timeout"
+        hint = "raise --timeout-ms or [flows.sim].timeout_ms if the test legitimately needs longer"
         assert "TIMEOUT: simulation exceeded" in test["error_tail"]
-        timeout_line = next(line for line in result.report_text.splitlines() if "TIMEOUT:" in line)
-        assert (
-            "raise --timeout-ms or [flows.sim].timeout_ms if the test legitimately needs longer"
-        ) in timeout_line
-        assert test["phase_timings_s"]["build"] == 0.25
-        assert test["phase_timings_s"]["run"] == 599.75
-        assert test["resources"] == {
-            "command_peak_rss_mb": 96.5,
-            "command_oom_kill_delta": 1,
-        }
+        assert hint in test["error_tail"]
+        assert hint in run.result.outcome.report_text
 
     @pytest.mark.parametrize(
         "backend_detail",
@@ -1914,7 +1560,10 @@ class TestTimeout:
             patch("booley.flows.sim.flow._get_test_names", return_value={}),
             patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
             patch.object(flow, "_execute", return_value=SubprocessResult(returncode=-9)),
-            patch(f"{__name__}._adapter_result_for_test_process", return_value=adapter),
+            patch(
+                "tests.flows.sim.campaign_boundary.adapter_result_for_test_process",
+                return_value=adapter,
+            ),
             flow.publication_resources,
         ):
             result = flow._run()
@@ -2021,77 +1670,39 @@ def _mock_execute_raw_verilator_pass(self, cmd: list[str]) -> SubprocessResult:
 
 class TestErrorTailSource:
     """The error excerpt must surface the DUT's own (stdout) failure signal, not
-    the build's stderr lint-warning storm — except for elaboration failures,
-    whose only diagnostic lives on stderr with no sim stdout to fall back to."""
+    the build's stderr lint-warning storm — except for a failed build, whose only
+    diagnostic lives on stderr with no sim stdout to fall back to."""
 
-    @staticmethod
-    def _read_tail(tmp_path: Path) -> str:
-        report = json.loads(
-            (tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text(encoding="utf-8")
-        )
-        return report["tests"][0]["error_tail"]
-
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_sim_failure_tail_from_stdout_not_stderr_noise(
-        self,
-        _mock_backend,
-        _mock_tests,
-        tmp_path: Path,
-    ):
+    def test_sim_failure_tail_from_stdout_not_stderr_noise(self, tmp_path: Path, monkeypatch):
         """A real sim FAIL: the build's stderr warning storm must not bury the
         stdout mismatch line in the 50-line excerpt window."""
-        # Mismatch on stdout (the DUT's verdict) + a warning storm on stderr
-        # (the first test's (re)build). Combined = stdout + "\n" + stderr, so a
-        # naive combined tail would be 50 trailing warnings with no signal.
         noise = "\n".join(
             f"/work/rtl/foo.sv:{i}: warning: @* is sensitive to all 16 words" for i in range(60)
         )
+        process = SubprocessResult(
+            returncode=1,
+            stdout="[SIM_RESULT] FAILED\nFAIL: coeff mismatch at index 7\n",
+            stderr=noise,
+            duration_s=5.0,
+        )
+        run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite")
 
-        def _execute(self_inner, cmd):
-            return SubprocessResult(
-                returncode=1,
-                stdout="[SIM_RESULT] FAILED\nFAIL: coeff mismatch at index 7\n",
-                stderr=noise,
-                duration_s=5.0,
-            )
-
-        with patch.object(SimulateFlow, "_execute", _execute):
-            flow = _make_flow(tmp_path, config="lite")
-            with flow.publication_resources:
-                result = flow._run()
-
-        assert result.exit_code == EXIT_FAILURE
-        tail = self._read_tail(tmp_path)
+        assert run.result.exit_code == EXIT_FAILURE
+        tail = _projection(tmp_path)["tests"][0]["error_tail"]
         assert "coeff mismatch at index 7" in tail
         assert "warning:" not in tail
 
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_elab_failure_tail_falls_back_to_stderr(
-        self,
-        _mock_backend,
-        _mock_tests,
-        tmp_path: Path,
-    ):
-        """An elaboration failure produces no sim stdout — the excerpt must fall
-        back to the combined tail so the stderr diagnostic is not lost."""
+    def test_elab_failure_tail_falls_back_to_stderr(self, tmp_path: Path, monkeypatch):
+        """A failed build produces no sim stdout — the excerpt must carry the
+        stderr diagnostic so it is not lost."""
+        build = SubprocessResult(returncode=1, stderr="%Error: rtl/top.sv:17: syntax error\n")
+        run = run_campaign_sim(
+            tmp_path, monkeypatch, {"lite": ["smoke"]}, PASS_PROCESS, target="lite", build=build
+        )
 
-        def _execute(self_inner, cmd):
-            return SubprocessResult(
-                returncode=1,
-                stdout="",
-                stderr="%Error: rtl/top.sv:17: syntax error\n",
-                duration_s=4.2,
-            )
-
-        with patch.object(SimulateFlow, "_execute", _execute):
-            flow = _make_flow(tmp_path, config="lite")
-            with flow.publication_resources:
-                result = flow._run()
-
-        assert result.exit_code == EXIT_FAILURE
-        assert "syntax error" in self._read_tail(tmp_path)
+        assert run.result.exit_code == EXIT_FAILURE
+        assert run.launched == []
+        assert "syntax error" in _projection(tmp_path)["tests"][0]["error_tail"]
 
 
 # ---------------------------------------------------------------------------
@@ -2592,18 +2203,6 @@ def _fake_sim_resolved(
 # ---------------------------------------------------------------------------
 
 
-def _missing_binary_execute(stdout: str, returncode: int = 2):
-    def _exec(self, cmd):
-        return SubprocessResult(
-            returncode=returncode,
-            stdout=stdout,
-            stderr="",
-            duration_s=0.05,
-        )
-
-    return _exec
-
-
 class TestMissingExecutableDetection:
     def test_dash_not_found(self):
         from booley.flows.sim.flow import find_missing_executable
@@ -2650,44 +2249,37 @@ class TestMissingExecutableDetection:
 class TestMissingExecutableIsEdaToolError:
     """F-32: the verdict channel must not say FAIL when nothing ever ran."""
 
-    @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["t1"]})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_missing_verilator_in_build_exits_2(self, _sel, _tests, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite")
-        # What the sandbox script actually prints with verilator off PATH: the
-        # canonical elab marker (accurate rc, wrong stage) over sh's own gripe.
-        stdout = (
-            "/bin/sh: 1: verilator: not found\n"
-            "make: *** [Makefile:9: Vtop] Error 127\n"
-            "ERROR: Verilator elaboration failed (rc=2)\n"
-            "BOOLEY_BUILD_STAGE token=abc123 rc=2\n"
+    def test_missing_verilator_in_build_exits_2(self, tmp_path: Path, monkeypatch):
+        # What the sandbox script actually prints with verilator off PATH.
+        build = SubprocessResult(
+            returncode=127,
+            stdout=(
+                "/bin/sh: 1: verilator: not found\n"
+                "make: *** [Makefile:9: Vtop] Error 127\n"
+                "ERROR: Verilator elaboration failed (rc=127)\n"
+            ),
         )
-        with (
-            patch.object(SimulateFlow, "_execute", _missing_binary_execute(stdout)),
-            flow.publication_resources,
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_ERROR
-        assert result.detail["missing_executable"] == "verilator"
-        assert "elaboration failed" not in result.report_text.split("--- output tail ---")[0]
+        run = run_campaign_sim(
+            tmp_path, monkeypatch, {"lite": ["t1"]}, PASS_PROCESS, target="lite", build=build
+        )
+        outcome = run.result.outcome
+        assert run.result.exit_code == EXIT_ERROR
+        assert outcome.detail["eda_tool_error"] == "build_infrastructure"
+        assert "missing tool: verilator" in outcome.report_text
+        assert run.launched == []
 
-    @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
-    def test_live_sim_echoing_command_not_found_is_not_hijacked(
-        self, _sel, _tests, tmp_path: Path
-    ):
+    def test_live_sim_echoing_command_not_found_is_not_hijacked(self, tmp_path: Path, monkeypatch):
         """A running TB's own $system noise must not become a Flow error."""
-        flow = _make_flow(tmp_path, config="lite")
-        stdout = (
-            "sh: 1: helper_script: not found\n"
-            '[SIM_RESULT] FAILED\n[SIM_SUMMARY] {"passed":false,"sva_errors":0}\n'
+        process = SubprocessResult(
+            returncode=1,
+            stdout=(
+                "sh: 1: helper_script: not found\n"
+                '[SIM_RESULT] FAILED\n[SIM_SUMMARY] {"passed":false,"sva_errors":0}\n'
+            ),
         )
-        with (
-            patch.object(SimulateFlow, "_execute", _missing_binary_execute(stdout, 1)),
-            flow.publication_resources,
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_FAILURE
+        run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["t1"]}, process, target="lite")
+        assert run.result.exit_code == EXIT_FAILURE
+        assert "eda_tool_error" not in run.result.outcome.detail
 
 
 # ---------------------------------------------------------------------------
