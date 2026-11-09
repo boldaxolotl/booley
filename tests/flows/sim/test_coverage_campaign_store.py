@@ -6,6 +6,7 @@ import gzip
 import json
 import os
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -15,20 +16,32 @@ from booley.flows.sim.coverage_campaign import (
     CoveragePoint,
     CoveragePointIdentity,
     DurableTargetIdentity,
-    decode_coverage_campaign,
     derive_coverage_rollups,
     encode_coverage_point,
     encode_coverage_point_id,
 )
 from booley.flows.sim.coverage_campaign_store import (
     CAMPAIGN_SCHEMA_V5,
+    MAX_MANIFEST_BYTES,
     CoverageCampaignStoreError,
     load_coverage_campaign,
     load_coverage_campaign_bytes,
     publish_coverage_campaign,
 )
-from booley.flows.sim.coverage_json import freeze_coverage_mapping
-from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_v4
+from booley.flows.sim.coverage_json import (
+    MANIFEST_JSON,
+    content_digest,
+    coverage_mapping_document,
+    freeze_coverage_mapping,
+)
+from booley.flows.sim.coverage_policy import (
+    ApprovedWaiverSet,
+    CoverageCriterion,
+    CoverageThreshold,
+    coverage_metrics,
+    evaluate_coverage_campaign,
+)
+from tests.flows.sim.coverage_campaign_test_support import decode_document, rewrite_manifest_as_v4
 from tests.flows.sim.test_coverage_campaign import _valid_document
 from tests.runtime.test_sandbox_layout import project_alias
 
@@ -38,7 +51,7 @@ TARGET = DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
 
 
 def _campaign():
-    return decode_coverage_campaign(_valid_document(), TARGET)
+    return decode_document(_valid_document(), TARGET)
 
 
 @pytest.mark.parametrize("boundary", ["manifest", "jsonl"])
@@ -106,8 +119,10 @@ def _invalid_campaign():
     )
 
 
-def _large_campaign(point_count: int):
+def _large_campaign(point_count: int, covered: int | None = None):
+    """Build *point_count* eligible line points; the first *covered* are hit (default all)."""
     base = _campaign()
+    covered = point_count if covered is None else covered
     points = []
     for index in range(point_count):
         identity = CoveragePointIdentity(
@@ -128,7 +143,7 @@ def _large_campaign(point_count: int):
         point = CoveragePoint(
             "pending",
             identity,
-            {"run:reset": 1},
+            {"run:reset": 1} if index < covered else {},
             freeze_coverage_mapping({"kind": "eligible"}),
         )
         encoded_identity = encode_coverage_point(point)["identity"]
@@ -136,6 +151,25 @@ def _large_campaign(point_count: int):
         points.append(replace(point, id=encode_coverage_point_id(encoded_identity)))
     frozen = tuple(points)
     return replace(base, points=frozen, rollups=derive_coverage_rollups(frozen))
+
+
+def _evaluated_campaign(covered: int, total: int, minimum: Fraction, *, scored: bool = True):
+    """Evaluate *covered* of *total* line points against a line floor of *minimum* percent.
+
+    Without scored capability attributes the evaluation is ``blocked``.
+    """
+    campaign = _large_campaign(total, covered)
+    attributes = {"collection": "supported", "scoring": "scored_v1"} if scored else {}
+    capabilities = tuple(
+        replace(capability, attributes=freeze_coverage_mapping(attributes))
+        for capability in campaign.collector.capabilities
+    )
+    campaign = replace(campaign, collector=replace(campaign.collector, capabilities=capabilities))
+    criterion = CoverageCriterion(TARGET, (CoverageThreshold("line", minimum),), None)
+    waivers = ApprovedWaiverSet(
+        freeze_coverage_mapping({"status": "disabled"}), "sha256:empty", ()
+    )
+    return evaluate_coverage_campaign(campaign, criterion, waivers)
 
 
 def _point(
@@ -323,7 +357,7 @@ def test_publish_decodes_nothing_it_just_encoded(tmp_path: Path, monkeypatch) ->
         raise AssertionError("publication must not decode the manifest it just encoded")
 
     with monkeypatch.context() as patched:
-        patched.setattr(store, "_decode_owned_coverage_campaign", refuse_decode)
+        patched.setattr(store, "decode_coverage_campaign", refuse_decode)
         paths = publish_coverage_campaign(tmp_path, _campaign())
 
     assert load_coverage_campaign(paths.campaign, TARGET).campaign == _campaign()
@@ -422,24 +456,44 @@ def test_deep_load_validates_the_campaign_once(tmp_path: Path, monkeypatch) -> N
     structural = codec._structural_findings
     calls = 0
 
-    def counted(document):
+    def counted(document, points):
         nonlocal calls
         calls += 1
-        return structural(document)
+        return structural(document, points)
 
     monkeypatch.setattr(codec, "_structural_findings", counted)
     load_coverage_campaign(paths.campaign, TARGET)
     assert calls == 1
 
 
-def test_deep_load_rejects_invalid_stored_evaluation(tmp_path: Path) -> None:
-    paths = publish_coverage_campaign(tmp_path, _campaign())
+@pytest.mark.parametrize(
+    ("honest", "forged"),
+    [("not_requested", "pass"), ("blocked", "pass"), ("blocked", "fail")],
+)
+def test_deep_load_rejects_a_forged_verdict(tmp_path: Path, honest: str, forged: str) -> None:
+    campaign = (
+        _campaign()
+        if honest == "not_requested"
+        else _evaluated_campaign(1, 2, Fraction(50), scored=False)
+    )
+    assert campaign.evaluation["status"] == honest
+    paths = publish_coverage_campaign(tmp_path, campaign)
     manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    manifest["evaluation"]["status"] = "pass"
+    manifest["evaluation"]["status"] = forged
     paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
 
-    with pytest.raises(CoverageCampaignValidationError, match="COV_EVALUATION_MISMATCH"):
+    with pytest.raises(CoverageCampaignValidationError) as caught:
         load_coverage_campaign(paths.campaign, TARGET)
+
+    assert [
+        (finding.code, finding.pointer, finding.message) for finding in caught.value.findings
+    ] == [
+        (
+            "COV_EVALUATION_MISMATCH",
+            "/evaluation",
+            "Stored evaluation does not match the exact deterministic derivation.",
+        )
+    ]
 
 
 def _load_bytes(path: Path, target: DurableTargetIdentity):
@@ -483,15 +537,15 @@ def test_unsupported_schema_is_rejected_before_campaign_decode(
 
     path = tmp_path / "coverage.json"
     path.write_text(json.dumps(_valid_document()), encoding="utf-8")
-    decode = store._decode_owned_coverage_campaign
+    decode = store.decode_coverage_campaign
     calls = 0
 
-    def counted_decode(document, expected_target):
+    def counted_decode(manifest, points, expected_target):
         nonlocal calls
         calls += 1
-        return decode(document, expected_target)
+        return decode(manifest, points, expected_target)
 
-    monkeypatch.setattr(store, "_decode_owned_coverage_campaign", counted_decode)
+    monkeypatch.setattr(store, "decode_coverage_campaign", counted_decode)
 
     with pytest.raises(CoverageCampaignStoreError) as error:
         load_coverage_campaign(path, TARGET)
@@ -625,3 +679,94 @@ def test_a_run_without_its_test_run_identity_is_refused(
     findings = {(finding.code, finding.pointer) for finding in error.value.findings}
     for field in dropped:
         assert ("COV_FIELD_REQUIRED", f"/tests/runs/0/{field}") in findings
+
+
+# Pinned on the base commit, before the load recomputed anything: the sha256 of the
+# manifest Booley then wrote for ``_evaluated_campaign(1, 2, Fraction(50))``, with
+# the zlib-dependent ``point_store.sha256`` and ``point_store.bytes`` dropped.
+_PRE_CHANGE_MANIFEST_SHA256 = (
+    "sha256:ccb00a40f16b8d95f1dd9eddbb15fe7721970ac03fc14445e749d2a6fd25e2ee"
+)
+
+
+def test_a_scored_campaign_written_before_the_change_reloads_unchanged(tmp_path: Path) -> None:
+    evaluated = _evaluated_campaign(1, 2, Fraction(50))
+    assert evaluated.evaluation["status"] == "pass"
+    paths = publish_coverage_campaign(tmp_path, evaluated)
+    stored = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    pinned = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    for volatile in ("sha256", "bytes"):
+        del pinned["point_store"][volatile]
+    assert content_digest(MANIFEST_JSON.encode(pinned)) == _PRE_CHANGE_MANIFEST_SHA256
+
+    loaded = load_coverage_campaign(paths.campaign, TARGET)
+
+    summary = coverage_mapping_document(loaded.summary.document)
+    assert loaded.campaign == evaluated
+    assert summary["rollups"] == stored["rollups"]
+    assert summary["evaluation"] == stored["evaluation"]
+    assert coverage_metrics(loaded.campaign) == coverage_metrics(evaluated)
+
+
+@pytest.mark.parametrize(
+    ("covered", "total", "minimum", "verdict"),
+    [
+        pytest.param(1, 2, "50", "pass", id="exact-hit"),
+        pytest.param(1, 3, "33.33", "pass", id="third-passes"),
+        pytest.param(2, 3, "66.67", "fail", id="two-thirds-fails"),
+    ],
+)
+def test_reload_rescores_threshold_edges_like_the_criterion(
+    tmp_path: Path, covered: int, total: int, minimum: str, verdict: str
+) -> None:
+    evaluated = _evaluated_campaign(covered, total, Fraction(minimum))
+    assert evaluated.evaluation["status"] == verdict
+    paths = publish_coverage_campaign(tmp_path, evaluated)
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    # Tamper with every stored derived value: rollup, row verdict and status.
+    manifest["rollups"][0]["covered_points"] = 0
+    manifest["rollups"][0]["percent"] = 0.0
+    flipped = "fail" if verdict == "pass" else "pass"
+    manifest["evaluation"]["metrics"][0]["verdict"] = flipped
+    manifest["evaluation"]["status"] = flipped
+    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
+
+    loaded = load_coverage_campaign(paths.campaign, TARGET)
+
+    assert loaded.campaign.evaluation["status"] == verdict
+    assert loaded.campaign == evaluated
+    summary = coverage_mapping_document(loaded.summary.document)
+    assert summary["evaluation"]["status"] == verdict
+    assert summary["rollups"][0]["covered_points"] == covered
+
+
+@pytest.mark.parametrize(
+    ("case", "code"),
+    [
+        ("missing-field", "COV_MANIFEST_FORMAT"),
+        ("extra-field", "COV_MANIFEST_FORMAT"),
+        ("oversized", "COV_MANIFEST_LIMIT"),
+        ("huge-integer", "COV_MANIFEST_FORMAT"),
+    ],
+)
+def test_manifest_field_set_and_read_ceiling_keep_their_codes(
+    tmp_path: Path, case: str, code: str
+) -> None:
+    paths = publish_coverage_campaign(tmp_path, _campaign())
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    if case == "missing-field":
+        del manifest["findings"]
+    elif case == "extra-field":
+        manifest["unexpected"] = 1
+    raw = json.dumps(manifest).encode()
+    if case == "oversized":
+        raw = b" " * (MAX_MANIFEST_BYTES + 1)
+    elif case == "huge-integer":
+        # Python refuses to convert an integer of more than 4,300 digits.
+        raw = b'{"$schema": 1' + b"0" * 5_000 + b"}"
+    paths.campaign.write_bytes(raw)
+
+    for reader in (load_coverage_campaign, _load_bytes):
+        with pytest.raises(CoverageCampaignStoreError) as error:
+            reader(paths.campaign, TARGET)
+        assert error.value.code == code

@@ -2,7 +2,8 @@
 
 The codec is deliberately independent of filesystems, simulation orchestration,
 policy evaluation, and Verilator's native coverage format.  Its input is an
-already-read JSON value and its output is one immutable per-Target campaign.
+already-read manifest mapping with its point rows and its output is one immutable
+per-Target campaign.
 """
 
 from __future__ import annotations
@@ -10,11 +11,9 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-import math
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from fractions import Fraction
 from types import MappingProxyType
 from typing import Literal, NewType, TypeAlias, cast
 
@@ -48,15 +47,6 @@ _SCHEMA = "booley.coverage-campaign/v1"
 _SCORED_METRICS = frozenset({"line", "branch", "expression", "toggle", "cover_property"})
 _COLLECTION_STATUSES = frozenset({"complete", "collector_error", "incomplete", "incompatible"})
 SOURCE_ROLLUP_METRICS = ("line", "branch", "expression", "toggle")
-_ROLLUP_FIELDS = (
-    "metric",
-    "semantics",
-    "total_points",
-    "eligible_points",
-    "covered_points",
-    "waived_points",
-    "percent",
-)
 _METRIC_SEMANTICS = {
     "line": "One Verilator basic-block point; covered when its count is greater than zero.",
     "branch": "One branch outcome; each outcome is a separate point covered when count is greater than zero.",
@@ -69,7 +59,6 @@ _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 #: environment. It is what a run of a document older than storage v5 had.
 NO_DECLARED_INPUTS_FINGERPRINT = declared_inputs_fingerprint((), {})
 _TOP_LEVEL_FIELDS = (
-    ("$schema", "string"),
     ("campaign_id", "string"),
     ("invocation", "object"),
     ("target", "object"),
@@ -81,7 +70,6 @@ _TOP_LEVEL_FIELDS = (
     ("tests", "object"),
     ("artifacts", "array"),
     ("normalization", "object"),
-    ("points", "array"),
     ("rollups", "array"),
     ("collection", "object"),
     ("findings", "array"),
@@ -311,7 +299,8 @@ def _is_json_integer(value: object) -> bool:
 def _is_json_number(value: object) -> bool:
     try:
         require_finite_number(value, field="value")
-    except BoundaryError:
+    except (BoundaryError, OverflowError):
+        # A 401-digit integer is not a finite float: ``math.isfinite`` overflows.
         return False
     return True
 
@@ -358,7 +347,7 @@ def _check_field(
 
 
 def _check_array_items(
-    values: list[object],
+    values: Sequence[object],
     expected: str,
     pointer: str,
     findings: list[CoverageFinding],
@@ -624,7 +613,7 @@ def _validate_identity_shape(
         )
 
 
-def _validate_point_shapes(points: list[object], findings: list[CoverageFinding]) -> None:
+def _validate_point_shapes(points: Sequence[object], findings: list[CoverageFinding]) -> None:
     valid = _check_array_items(points, "object", "/points", findings)
     for index, point in enumerate(valid):
         assert isinstance(point, Mapping)
@@ -648,17 +637,6 @@ def _validate_point_shapes(points: list[object], findings: list[CoverageFinding]
                     )
         if isinstance(disposition, Mapping):
             _check_field(disposition, "kind", "string", f"{pointer}/disposition", findings)
-
-
-def _validate_rollup_shapes(rollups: list[object], findings: list[CoverageFinding]) -> None:
-    valid = _check_array_items(rollups, "object", "/rollups", findings)
-    for index, rollup in enumerate(valid):
-        assert isinstance(rollup, Mapping)
-        pointer = f"/rollups/{index}"
-        _check_string_fields(rollup, ("metric", "semantics"), pointer, findings)
-        for key in ("total_points", "eligible_points", "covered_points", "waived_points"):
-            _check_field(rollup, key, "integer", pointer, findings)
-        _check_field(rollup, "percent", "number_or_null", pointer, findings)
 
 
 def _validate_finding_shapes(records: list[object], findings: list[CoverageFinding]) -> None:
@@ -703,6 +681,38 @@ def _validate_collection_shape(
             _check_field(merge, "artifact", "string_or_null", "/collection/merge", findings)
 
 
+def _validate_suite_shape(suite: Mapping[str, object], findings: list[CoverageFinding]) -> None:
+    _check_field(suite, "status", "string", "/evaluation/suite", findings)
+    if "required" not in suite:
+        return
+    required = _check_field(suite, "required", "array", "/evaluation/suite", findings)
+    if isinstance(required, list):
+        _check_array_items(required, "string", "/evaluation/suite/required", findings)
+
+
+def _validate_metric_row_shapes(rows: list[object], findings: list[CoverageFinding]) -> None:
+    """Each row is an object naming a string metric and verdict; a metric is named once."""
+    seen: set[str] = set()
+    _check_array_items(rows, "object", "/evaluation/metrics", findings)
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping):
+            continue
+        pointer = f"/evaluation/metrics/{index}"
+        _check_string_fields(row, ("metric", "verdict"), pointer, findings)
+        metric = row.get("metric")
+        if not isinstance(metric, str):
+            continue
+        if metric in seen:
+            findings.append(
+                _error(
+                    "COV_FIELD_TYPE",
+                    f"{pointer}/metric",
+                    f"Evaluation names metric {metric} more than once.",
+                )
+            )
+        seen.add(metric)
+
+
 def _validate_evaluation_shape(
     evaluation: Mapping[str, object], findings: list[CoverageFinding]
 ) -> None:
@@ -718,22 +728,35 @@ def _validate_evaluation_shape(
             "/evaluation",
             findings,
         )
-    _check_field(evaluation, "suite", "object", "/evaluation", findings)
+    suite = _check_field(evaluation, "suite", "object", "/evaluation", findings)
     thresholds = _check_field(evaluation, "thresholds", "object", "/evaluation", findings)
-    _check_field(evaluation, "metrics", "array", "/evaluation", findings)
+    metrics = _check_field(evaluation, "metrics", "array", "/evaluation", findings)
     diagnostics = _check_field(evaluation, "diagnostics", "array", "/evaluation", findings)
     if isinstance(diagnostics, list):
         _validate_diagnostic_shapes(diagnostics, "/evaluation/diagnostics", findings)
+    if isinstance(suite, Mapping):
+        _validate_suite_shape(suite, findings)
     if isinstance(thresholds, Mapping):
         for metric, threshold in thresholds.items():
+            pointer = f"/evaluation/thresholds/{_pointer_token(metric)}"
+            if metric not in _SCORED_METRICS:
+                findings.append(
+                    _error(
+                        "COV_FIELD_TYPE",
+                        pointer,
+                        "Coverage threshold must name a scored V1 metric.",
+                    )
+                )
             if not _matches_json_type(threshold, "number"):
                 findings.append(
                     _error(
                         "COV_FIELD_TYPE",
-                        f"/evaluation/thresholds/{_pointer_token(metric)}",
+                        pointer,
                         "Coverage threshold must be a finite JSON number.",
                     )
                 )
+    if isinstance(metrics, list):
+        _validate_metric_row_shapes(metrics, findings)
 
 
 def _validate_provenance_shapes(
@@ -756,7 +779,7 @@ def _validate_provenance_shapes(
 
 
 def _validate_observation_shapes(
-    valid_top: Mapping[str, object], findings: list[CoverageFinding]
+    valid_top: Mapping[str, object], points: Sequence[object], findings: list[CoverageFinding]
 ) -> None:
     if isinstance(valid_top.get("tests"), Mapping):
         _validate_tests_shape(valid_top["tests"], findings)
@@ -764,10 +787,7 @@ def _validate_observation_shapes(
         _validate_artifact_shapes(valid_top["artifacts"], findings)
     if isinstance(valid_top.get("normalization"), Mapping):
         _validate_normalization_shape(valid_top["normalization"], findings)
-    if isinstance(valid_top.get("points"), list):
-        _validate_point_shapes(valid_top["points"], findings)
-    if isinstance(valid_top.get("rollups"), list):
-        _validate_rollup_shapes(valid_top["rollups"], findings)
+    _validate_point_shapes(points, findings)
 
 
 def _validate_outcome_shapes(
@@ -781,7 +801,9 @@ def _validate_outcome_shapes(
         _validate_evaluation_shape(valid_top["evaluation"], findings)
 
 
-def _structural_findings(document: Mapping[str, object]) -> tuple[CoverageFinding, ...]:
+def _structural_findings(
+    document: Mapping[str, object], points: Sequence[object]
+) -> tuple[CoverageFinding, ...]:
     findings: list[CoverageFinding] = []
     valid_top: dict[str, object] = {}
     for key, expected in _TOP_LEVEL_FIELDS:
@@ -789,7 +811,7 @@ def _structural_findings(document: Mapping[str, object]) -> tuple[CoverageFindin
         if value is not None:
             valid_top[key] = value
     _validate_provenance_shapes(valid_top, findings)
-    _validate_observation_shapes(valid_top, findings)
+    _validate_observation_shapes(valid_top, points, findings)
     _validate_outcome_shapes(valid_top, findings)
     return tuple(findings)
 
@@ -892,35 +914,7 @@ def _validate_tests(document: Mapping[str, object]) -> tuple[list[CoverageFindin
         _duplicate_findings(selected, "COV_SELECTED_TEST_DUPLICATE", "/tests/selected")
     )
     findings.extend(_duplicate_key_findings(runs, "id", "COV_RUN_ID_DUPLICATE", "/tests/runs"))
-    declared_set = {str(test) for test in declared}
-    selected_set = {str(test) for test in selected}
-    for index, test in enumerate(selected):
-        if str(test) not in declared_set:
-            findings.append(
-                _error(
-                    "COV_SELECTED_TEST_UNDECLARED",
-                    f"/tests/selected/{index}",
-                    f"Selected test {test!r} is not declared by the Target.",
-                )
-            )
-        if not any(str(run["test"]) == str(test) for run in runs):
-            findings.append(
-                _error(
-                    "COV_SELECTED_TEST_RUN_CARDINALITY",
-                    f"/tests/selected/{index}",
-                    f"Selected test {test!r} must have at least one simulator run.",
-                )
-            )
     findings.extend(_test_run_identity_findings(runs))
-    for index, run in enumerate(runs):
-        if str(run["test"]) not in selected_set:
-            findings.append(
-                _error(
-                    "COV_RUN_FOR_UNSELECTED_TEST",
-                    f"/tests/runs/{index}",
-                    f"Run {run['id']!r} belongs to an unselected test.",
-                )
-            )
     run_ids = {str(run["id"]) for run in runs}
     return findings, run_ids
 
@@ -1109,11 +1103,11 @@ def _validate_point_incidence(
     return findings
 
 
-def _validate_points(document: Mapping[str, object], run_ids: set[str]) -> list[CoverageFinding]:
-    points = document["points"]
+def _validate_points(
+    document: Mapping[str, object], points: Sequence[object], run_ids: set[str]
+) -> list[CoverageFinding]:
     collector = document["collector"]
     source_closure = document["source_closure"]
-    assert isinstance(points, list)
     assert isinstance(collector, Mapping)
     assert isinstance(source_closure, Mapping)
     reported = {
@@ -1154,144 +1148,35 @@ def _validate_capabilities(document: Mapping[str, object]) -> list[CoverageFindi
     return findings
 
 
-def _validate_included_raw_artifacts(
-    runs: list[object], by_id: Mapping[str, Mapping[str, object]]
-) -> list[CoverageFinding]:
-    findings: list[CoverageFinding] = []
-    for index, run in enumerate(runs):
-        assert isinstance(run, Mapping)
-        if run["collection"] != "included":
-            continue
-        raw = by_id.get(str(run.get("raw_artifact", "")))
-        if (
-            raw is None
-            or raw["kind"] != "raw_native"
-            or raw.get("owner_run") != run["id"]
-            or raw["state"] != "fresh_queryable"
-        ):
-            findings.append(
-                _error(
-                    "COV_INCLUDED_RUN_RAW_INVALID",
-                    f"/tests/runs/{index}/raw_artifact",
-                    "Included run must own one fresh, queryable raw native artifact.",
-                )
-            )
-    return findings
-
-
-def _validate_complete_collection(
-    runs: list[object],
-    collection: Mapping[str, object],
-    normalization: Mapping[str, object],
-    by_id: Mapping[str, Mapping[str, object]],
-) -> list[CoverageFinding]:
-    if collection["status"] != "complete":
-        return []
-    findings: list[CoverageFinding] = []
-    if any(run["collection"] != "included" for run in runs):
-        findings.append(
-            _error(
-                "COV_COMPLETE_EXCLUDES_RUN",
-                "/collection/status",
-                "Complete collection must include every selected simulator run.",
-            )
-        )
-    if normalization["status"] not in {"complete", "complete_with_unknown_records"}:
-        findings.append(
-            _error(
-                "COV_COMPLETE_NORMALIZATION_INVALID",
-                "/normalization/status",
-                "Complete collection requires successful lossless normalization.",
-            )
-        )
-    merge = collection["merge"]
-    if merge["status"] != "equivalent":
-        findings.append(
-            _error(
-                "COV_COMPLETE_MERGE_UNVERIFIED",
-                "/collection/merge/status",
-                "Complete collection requires independently verified merge equivalence.",
-            )
-        )
-    merged = by_id.get(str(merge.get("artifact", "")))
-    if merged is None or merged["kind"] != "merged_native" or merged["state"] != "fresh_queryable":
-        findings.append(
-            _error(
-                "COV_COMPLETE_MERGED_ARTIFACT_INVALID",
-                "/collection/merge/artifact",
-                "Complete collection requires one fresh, queryable merged artifact.",
-            )
-        )
-    return findings
-
-
 def _validate_collection(document: Mapping[str, object]) -> list[CoverageFinding]:
-    tests = document["tests"]
-    artifacts = document["artifacts"]
     collection = document["collection"]
-    normalization = document["normalization"]
-    assert isinstance(tests, Mapping)
-    assert isinstance(artifacts, list)
     assert isinstance(collection, Mapping)
-    assert isinstance(normalization, Mapping)
-    runs = tests["runs"]
-    assert isinstance(runs, list)
-    by_id = {str(artifact["id"]): artifact for artifact in artifacts}
-    findings = _validate_included_raw_artifacts(runs, by_id)
-    if collection["status"] not in _COLLECTION_STATUSES:
-        findings.append(
-            _error(
-                "COV_COLLECTION_STATUS_INVALID",
-                "/collection/status",
-                "Collection status is not a supported Campaign state.",
-            )
+    if collection["status"] in _COLLECTION_STATUSES:
+        return []
+    return [
+        _error(
+            "COV_COLLECTION_STATUS_INVALID",
+            "/collection/status",
+            "Collection status is not a supported Campaign state.",
         )
-    findings.extend(_validate_complete_collection(runs, collection, normalization, by_id))
-    return findings
+    ]
 
 
-def _expected_evaluation_metrics(document: Mapping[str, object]) -> list[dict[str, object]] | None:
-    evaluation = document["evaluation"]
-    assert isinstance(evaluation, Mapping)
-    thresholds = evaluation["thresholds"]
-    assert isinstance(thresholds, Mapping)
-    if set(thresholds) - _SCORED_METRICS:
-        return None
-    by_metric = {str(rollup["metric"]): rollup for rollup in document["rollups"]}
-    metrics: list[dict[str, object]] = []
-    for metric in _METRIC_SEMANTICS:
-        if metric not in thresholds:
-            continue
-        threshold = thresholds[metric]
-        rollup = by_metric.get(str(metric))
-        if (
-            rollup is None
-            or isinstance(threshold, bool)
-            or not isinstance(threshold, int | float)
-            or not math.isfinite(threshold)
-            or rollup["eligible_points"] == 0
-        ):
-            return None
-        actual = Fraction(rollup["covered_points"] * 100, rollup["eligible_points"])
-        verdict = "pass" if actual >= Fraction(str(threshold)) else "fail"
-        metrics.append(
-            {
-                "metric": metric,
-                "total_points": rollup["total_points"],
-                "eligible_points": rollup["eligible_points"],
-                "covered_points": rollup["covered_points"],
-                "waived_points": rollup["waived_points"],
-                "actual_numerator": rollup["covered_points"] * 100,
-                "actual_denominator": rollup["eligible_points"],
-                "actual_percent": rollup["percent"],
-                "minimum_percent": threshold,
-                "verdict": verdict,
-            }
-        )
-    return metrics
+#: A stored pass/fail verdict the load cannot trust or re-score.
+EVALUATION_MISMATCH = _error(
+    "COV_EVALUATION_MISMATCH",
+    "/evaluation",
+    "Stored evaluation does not match the exact deterministic derivation.",
+)
 
 
 def _validate_evaluation(document: Mapping[str, object]) -> list[CoverageFinding]:
+    """Check what the store's re-scoring of a stored pass/fail verdict relies on.
+
+    The verdict itself is recomputed by the store from the points, so this only
+    refuses a verdict that could not have been written: an unknown status, an
+    incomplete collection, or a suite that did not match.
+    """
     evaluation = document["evaluation"]
     collection = document["collection"]
     assert isinstance(evaluation, Mapping)
@@ -1316,189 +1201,12 @@ def _validate_evaluation(document: Mapping[str, object]) -> list[CoverageFinding
                 "Pass or fail requires complete compatible collection evidence.",
             )
         )
-    expected_metrics = _expected_evaluation_metrics(document)
-    expected_status = (
-        "pass"
-        if expected_metrics is not None
-        and expected_metrics
-        and all(metric["verdict"] == "pass" for metric in expected_metrics)
-        else "fail"
-    )
-    if evaluation["metrics"] != expected_metrics or status != expected_status:
-        findings.append(
-            _error(
-                "COV_EVALUATION_MISMATCH",
-                "/evaluation",
-                "Stored evaluation does not match the exact deterministic derivation.",
-            )
-        )
-    return findings
-
-
-def _calculate_rollups(document: Mapping[str, object]) -> list[dict[str, object]]:
-    points = document["points"]
-    assert isinstance(points, list)
-    rollups: list[dict[str, object]] = []
-    for metric, semantics in _METRIC_SEMANTICS.items():
-        matching = [point for point in points if point["identity"]["metric"] == metric]
-        if not matching:
-            continue
-        eligible = [point for point in matching if point["disposition"]["kind"] == "eligible"]
-        waived = [point for point in matching if point["disposition"]["kind"] == "waived"]
-        covered = [point for point in eligible if sum(point["hits_by_run"].values()) > 0]
-        percentage = round(len(covered) * 100 / len(eligible), 2) if eligible else None
-        rollups.append(
-            {
-                "metric": metric,
-                "semantics": semantics,
-                "total_points": len(matching),
-                "eligible_points": len(eligible),
-                "covered_points": len(covered),
-                "waived_points": len(waived),
-                "percent": percentage,
-            }
-        )
-    return rollups
-
-
-def _rollup_mismatch_finding(
-    actual: list[object], expected: list[dict[str, object]]
-) -> CoverageFinding:
-    aggregate = _error(
-        "COV_ROLLUP_MISMATCH",
-        "/rollups",
-        "Rollups do not match the deterministic derivation from points.",
-    )
-    if len(actual) != len(expected):
-        return aggregate
-    for index, (actual_row, expected_row) in enumerate(zip(actual, expected, strict=True)):
-        assert isinstance(actual_row, Mapping)
-        if actual_row["metric"] != expected_row["metric"]:
-            return aggregate
-        for field in _ROLLUP_FIELDS:
-            if actual_row[field] != expected_row[field]:
-                metric = expected_row["metric"]
-                return _error(
-                    "COV_ROLLUP_MISMATCH",
-                    f"/rollups/{index}/{field}",
-                    f"Stored rollup field {field} for metric {metric} does not match "
-                    "the deterministic derivation from points.",
-                )
-    return aggregate
-
-
-def _validate_unknown_records(document: Mapping[str, object]) -> list[CoverageFinding]:
-    normalization = document["normalization"]
-    artifacts = document["artifacts"]
-    stored_findings = document["findings"]
-    assert isinstance(normalization, Mapping)
-    assert isinstance(artifacts, list)
-    assert isinstance(stored_findings, list)
-    raw_artifact_ids = {
-        artifact["id"] for artifact in artifacts if artifact["kind"] == "raw_native"
-    }
-    finding_keys = {(finding["code"], finding["pointer"]) for finding in stored_findings}
-    findings: list[CoverageFinding] = []
-    for index, record in enumerate(normalization["unrecognized_records"]):
-        pointer = f"/normalization/unrecognized_records/{index}"
-        if record["raw_artifact"] not in raw_artifact_ids:
-            findings.append(
-                _error(
-                    "COV_UNKNOWN_RECORD_ARTIFACT_UNKNOWN",
-                    f"{pointer}/raw_artifact",
-                    "A retained unknown record must reference a raw native artifact.",
-                )
-            )
-        if ("COV_NATIVE_RECORD_UNKNOWN", pointer) not in finding_keys:
-            findings.append(
-                _error(
-                    "COV_UNKNOWN_RECORD_FINDING_MISSING",
-                    pointer,
-                    "A retained unknown record requires its explicit campaign finding.",
-                )
-            )
-    return findings
-
-
-def _validate_unknown_record_capabilities(
-    document: Mapping[str, object],
-) -> list[CoverageFinding]:
-    collector = document["collector"]
-    normalization = document["normalization"]
-    assert isinstance(collector, Mapping)
-    assert isinstance(normalization, Mapping)
-    findings: list[CoverageFinding] = []
-    capabilities = {
-        (str(item["record_class"]), str(item["status"])) for item in collector["capabilities"]
-    }
-    for index, record in enumerate(normalization["unrecognized_records"]):
-        required_capability = (f"native:{record['native_type']}", "reported")
-        if required_capability not in capabilities:
-            findings.append(
-                _error(
-                    "COV_UNKNOWN_RECORD_CAPABILITY_MISSING",
-                    f"/normalization/unrecognized_records/{index}/native_type",
-                    "A retained unknown record requires a reported capability fact.",
-                )
-            )
-    return findings
-
-
-def _validate_incompatible_native_format(
-    document: Mapping[str, object],
-) -> list[CoverageFinding]:
-    collector = document["collector"]
-    normalization = document["normalization"]
-    collection = document["collection"]
-    evaluation = document["evaluation"]
-    assert isinstance(collector, Mapping)
-    assert isinstance(normalization, Mapping)
-    assert isinstance(collection, Mapping)
-    assert isinstance(evaluation, Mapping)
-    native_format = collector["native_format"]
-    assert isinstance(native_format, Mapping)
-    if native_format["compatibility"] != "incompatible":
-        return []
-    findings: list[CoverageFinding] = []
-    if normalization["status"] != "incompatible":
-        findings.append(
-            _error(
-                "COV_INCOMPATIBLE_FORMAT_NORMALIZED",
-                "/normalization/status",
-                "An incompatible native format cannot claim successful normalization.",
-            )
-        )
-    if document["points"]:
-        findings.append(
-            _error(
-                "COV_INCOMPATIBLE_FORMAT_POINTS_PRESENT",
-                "/points",
-                "An incompatible native format cannot expose normalized points.",
-            )
-        )
-    if collection["status"] != "incompatible":
-        findings.append(
-            _error(
-                "COV_INCOMPATIBLE_FORMAT_COLLECTION",
-                "/collection/status",
-                "An incompatible native format requires incompatible collection state.",
-            )
-        )
-    if evaluation["status"] not in {"blocked", "not_requested"}:
-        findings.append(
-            _error(
-                "COV_INCOMPATIBLE_FORMAT_EVALUATION",
-                "/evaluation/status",
-                "An incompatible native format must block any requested evaluation.",
-            )
-        )
-    return findings
-
-
-def _validate_native_format(document: Mapping[str, object]) -> list[CoverageFinding]:
-    findings = _validate_unknown_record_capabilities(document)
-    findings.extend(_validate_unknown_records(document))
-    findings.extend(_validate_incompatible_native_format(document))
+    suite = evaluation["suite"]
+    assert isinstance(suite, Mapping)
+    if suite["status"] != "match" or evaluation["diagnostics"]:
+        findings.append(EVALUATION_MISMATCH)
+    elif "required" not in suite:
+        findings.append(_missing_field("/evaluation/suite/required", "required"))
     return findings
 
 
@@ -1517,35 +1225,25 @@ def _identity_semantic_findings(
     expected_target: DurableTargetIdentity,
     structural_findings: tuple[CoverageFinding, ...],
 ) -> list[CoverageFinding]:
-    findings: list[CoverageFinding] = []
-    if (
-        _sections_are_structurally_valid(structural_findings, "/$schema")
-        and document["$schema"] != _SCHEMA
-    ):
-        findings.append(
-            _error(
-                "COV_SCHEMA_VERSION_UNSUPPORTED",
-                "/$schema",
-                f"Expected {_SCHEMA!r}.",
-            )
-        )
     if not _sections_are_structurally_valid(structural_findings, "/target"):
-        return findings
+        return []
     target = document["target"]
     assert isinstance(target, Mapping)
-    if target["identity"] != expected_target:
-        findings.append(
-            _error(
-                "COV_TARGET_MISMATCH",
-                "/target/identity",
-                "Campaign belongs to a different Target.",
-            )
+    if target["identity"] == expected_target:
+        return []
+    return [
+        _error(
+            "COV_TARGET_MISMATCH",
+            "/target/identity",
+            "Campaign belongs to a different Target.",
         )
-    return findings
+    ]
 
 
 def _observation_semantic_findings(
-    document: Mapping[str, object], structural_findings: tuple[CoverageFinding, ...]
+    document: Mapping[str, object],
+    points: Sequence[object],
+    structural_findings: tuple[CoverageFinding, ...],
 ) -> list[CoverageFinding]:
     findings: list[CoverageFinding] = []
     tests_valid = _sections_are_structurally_valid(structural_findings, "/tests")
@@ -1559,18 +1257,7 @@ def _observation_semantic_findings(
         findings.extend(_validate_capabilities(document))
     point_dependencies = ("/points", "/collector", "/source_closure")
     if tests_valid and _sections_are_structurally_valid(structural_findings, *point_dependencies):
-        findings.extend(_validate_points(document, run_ids))
-    native_dependencies = (
-        "/collector",
-        "/normalization",
-        "/points",
-        "/artifacts",
-        "/findings",
-        "/collection",
-        "/evaluation",
-    )
-    if _sections_are_structurally_valid(structural_findings, *native_dependencies):
-        findings.extend(_validate_native_format(document))
+        findings.extend(_validate_points(document, points, run_ids))
     return findings
 
 
@@ -1578,39 +1265,21 @@ def _outcome_semantic_findings(
     document: Mapping[str, object], structural_findings: tuple[CoverageFinding, ...]
 ) -> list[CoverageFinding]:
     findings: list[CoverageFinding] = []
-    if _sections_are_structurally_valid(structural_findings, "/points", "/rollups", "/collection"):
-        collection = document["collection"]
-        assert isinstance(collection, Mapping)
-        if collection["status"] == "complete":
-            expected_rollups = _calculate_rollups(document)
-            actual_rollups = document["rollups"]
-            assert isinstance(actual_rollups, list)
-            if actual_rollups != expected_rollups:
-                findings.append(_rollup_mismatch_finding(actual_rollups, expected_rollups))
-        elif document["rollups"]:
-            findings.append(
-                _error(
-                    "COV_INVALID_SCORING_ROLLUPS",
-                    "/rollups",
-                    "A non-complete Campaign must not publish scored rollups.",
-                )
-            )
-    collection_dependencies = ("/tests", "/artifacts", "/collection", "/normalization")
-    if _sections_are_structurally_valid(structural_findings, *collection_dependencies):
+    if _sections_are_structurally_valid(structural_findings, "/collection"):
         findings.extend(_validate_collection(document))
-    evaluation_dependencies = ("/evaluation", "/collection", "/rollups")
-    if _sections_are_structurally_valid(structural_findings, *evaluation_dependencies):
+    if _sections_are_structurally_valid(structural_findings, "/evaluation", "/collection"):
         findings.extend(_validate_evaluation(document))
     return findings
 
 
 def _semantic_findings(
     document: Mapping[str, object],
+    points: Sequence[object],
     expected_target: DurableTargetIdentity,
     structural_findings: tuple[CoverageFinding, ...],
 ) -> tuple[CoverageFinding, ...]:
     findings = _identity_semantic_findings(document, expected_target, structural_findings)
-    findings.extend(_observation_semantic_findings(document, structural_findings))
+    findings.extend(_observation_semantic_findings(document, points, structural_findings))
     findings.extend(_outcome_semantic_findings(document, structural_findings))
     return tuple(findings)
 
@@ -1700,19 +1369,6 @@ def _decode_point(document: Mapping[str, object]) -> CoveragePoint:
     )
 
 
-def _decode_rollup(document: Mapping[str, object]) -> CoverageRollup:
-    percent = document["percent"]
-    return CoverageRollup(
-        metric=str(document["metric"]),
-        semantics=str(document["semantics"]),
-        total_points=int(document["total_points"]),
-        eligible_points=int(document["eligible_points"]),
-        covered_points=int(document["covered_points"]),
-        waived_points=int(document["waived_points"]),
-        percent=float(percent) if percent is not None else None,
-    )
-
-
 def _decode_finding(document: Mapping[str, object]) -> CoverageFinding:
     return CoverageFinding(
         severity=str(document["severity"]),
@@ -1740,22 +1396,17 @@ def _decode_invocation(document: Mapping[str, object]) -> Mapping[str, FrozenJso
     return freeze_coverage_mapping(invocation)
 
 
-def _decode_points(
-    points: list[object], *, consume_owned_points: bool
-) -> tuple[CoveragePoint, ...]:
-    if not consume_owned_points:
-        return tuple(_decode_point(item) for item in points)
+def _decode_points(points: list[dict[str, object]]) -> tuple[CoveragePoint, ...]:
+    """Decode the caller's row list, consuming it so each row is freed once frozen."""
     decoded = []
     while points:
-        item = points.pop()
-        assert isinstance(item, Mapping)
-        decoded.append(_decode_point(item))
+        decoded.append(_decode_point(points.pop()))
     decoded.reverse()
     return tuple(decoded)
 
 
 def _decode_valid_campaign(
-    document: Mapping[str, object], *, consume_owned_points: bool = False
+    document: Mapping[str, object], points: list[dict[str, object]]
 ) -> CoverageCampaign:
     invocation = document["invocation"]
     target = document["target"]
@@ -1767,14 +1418,16 @@ def _decode_valid_campaign(
     assert isinstance(tests, Mapping)
     runs = tests["runs"]
     artifacts = document["artifacts"]
-    points = document["points"]
-    rollups = document["rollups"]
     findings = document["findings"]
+    collection = document["collection"]
     assert isinstance(runs, list)
     assert isinstance(artifacts, list)
-    assert isinstance(points, list)
-    assert isinstance(rollups, list)
     assert isinstance(findings, list)
+    assert isinstance(collection, Mapping)
+    decoded_points = _decode_points(points)
+    # Rollups exist only for complete collection; they are always derived from the
+    # points and never decoded from the stored array.
+    rollups = derive_coverage_rollups(decoded_points) if collection["status"] == "complete" else ()
     return CoverageCampaign(
         campaign_id=str(document["campaign_id"]),
         invocation=_decode_invocation(invocation),
@@ -1789,50 +1442,28 @@ def _decode_valid_campaign(
         runs=tuple(_decode_run(item) for item in runs),
         artifacts=tuple(_decode_artifact(item) for item in artifacts),
         normalization=freeze_coverage_mapping(document["normalization"]),
-        points=_decode_points(points, consume_owned_points=consume_owned_points),
-        rollups=tuple(_decode_rollup(item) for item in rollups),
-        collection=freeze_coverage_mapping(document["collection"]),
+        points=decoded_points,
+        rollups=rollups,
+        collection=freeze_coverage_mapping(collection),
         findings=tuple(_decode_finding(item) for item in findings),
         evaluation=freeze_coverage_mapping(document["evaluation"]),
     )
 
 
-def decode_coverage_campaign(
-    document: object,
+def _decode_manifest(
+    manifest: Mapping[str, object],
+    points: list[dict[str, object]],
     expected_target: DurableTargetIdentity,
 ) -> CoverageCampaign:
-    """Decode one already-read V1 document into an immutable Campaign."""
-    validated = _validated_campaign_document(document, expected_target)
-    return _decode_valid_campaign(validated)
+    """Validate a manifest and its point rows once, then decode them to a Campaign.
 
-
-def _validated_campaign_document(
-    document: object, expected_target: DurableTargetIdentity
-) -> Mapping[str, object]:
-    if not isinstance(document, Mapping):
-        raise CoverageCampaignValidationError(
-            (
-                _error(
-                    "COV_DOCUMENT_TYPE",
-                    "",
-                    "Coverage Campaign document must be a JSON object.",
-                ),
-            )
-        )
-    structural_findings = _structural_findings(document)
-    semantic_findings = _semantic_findings(document, expected_target, structural_findings)
-    all_findings = structural_findings + semantic_findings
-    if all_findings:
+    Consumes *points*. Stored rollups are ignored: the Campaign's are derived.
+    """
+    structural_findings = _structural_findings(manifest, points)
+    semantic_findings = _semantic_findings(manifest, points, expected_target, structural_findings)
+    if all_findings := structural_findings + semantic_findings:
         raise CoverageCampaignValidationError(all_findings)
-    return document
-
-
-def _decode_owned_coverage_campaign(
-    document: Mapping[str, object], expected_target: DurableTargetIdentity
-) -> CoverageCampaign:
-    """Validate then consume loader-owned point dictionaries during domain decoding."""
-    validated = _validated_campaign_document(document, expected_target)
-    return _decode_valid_campaign(validated, consume_owned_points=True)
+    return _decode_valid_campaign(manifest, points)
 
 
 def _encode_capability(capability: CoverageCapability) -> dict[str, object]:

@@ -17,6 +17,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   timed-out conversion reports a trace incident: a failing simulation stays
   failed, a passing one is reported inconclusive, and neither is `timeout`.
   Icarus no longer reports an unconverted raw VCD as a waveform.
+- A Coverage Campaign whose stored rollups or pass/fail metric rows disagree
+  with its points now loads with values recomputed from the points instead of
+  failing. A forged pass/fail on a blocked or not-requested evaluation is still
+  refused (`COV_EVALUATION_MISMATCH`).
 
 ## 0.4.0 - 04 NOV 2026
 
