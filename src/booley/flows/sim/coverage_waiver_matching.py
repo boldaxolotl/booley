@@ -9,8 +9,8 @@ from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     CoverageFinding,
     DurableTargetIdentity,
-    FrozenJson,
 )
+from booley.flows.sim.coverage_json import FrozenJson
 
 
 @dataclass(frozen=True)
