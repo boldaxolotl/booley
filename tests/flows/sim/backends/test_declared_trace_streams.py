@@ -137,7 +137,7 @@ def _run(
     if adapter == "icarus":
         (dirs.build / "sim_cfg.scr").write_text("", encoding="utf-8")
         monkeypatch.setattr(icarus_adapter, "_find_vvp", lambda: str(sim))
-        output = icarus_adapter.run_icarus_image(
+        run = icarus_adapter.run_icarus_image(
             build_dir=dirs.build,
             run_cwd=dirs.run,
             work_dir=dirs.work,
@@ -147,7 +147,7 @@ def _run(
         )
     else:
         (dirs.build / "Vtb_top").symlink_to(sim)
-        output = verilator_adapter.run_verilated_binary(
+        run = verilator_adapter.run_verilated_binary(
             top_module="tb_top",
             bin_dir=dirs.build,
             run_cwd=dirs.run,
@@ -158,7 +158,7 @@ def _run(
             trace_files=entries,
             timeout=timeout,
         )
-    return Outcome(output, dirs)
+    return Outcome(run.output, dirs)
 
 
 def _no_pipe_left(run_dir: Path, name: str) -> None:
