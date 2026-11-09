@@ -1,9 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": [
-    "Renovate repository configuration (tracker #2551, part 1 #2996, part 2 #2998).",
+    "Renovate repository configuration (tracker #2551, part 1 #2996, part 2 #2998, part 3 #2999).",
     "Literal copies of a pin (docs, contract probes, source constants) have a custom manager each, so Renovate rewrites them in the canonical pin's PR; prBodyNotes list the places no rewrite can reach.",
     "During this stage every update waits for approval on the Dependency Dashboard (top-level dependencyDashboardApproval); lock-file maintenance runs for Cargo only (the one manager with lock files), monthly, with its own approval. The cutover (#2562) removes only the top-level hold.",
+    "Post-upgrade tasks (#2999): one run per update branch, each a repository script that reads the data file and acts only on the upgrades it owns. pin_checksums.py rewrites the checksums and paired values of a bumped download pin; renovate_artifacts.py agent-cli-lock refreshes the agent CLI lockfile after a manifest bump and renovate_artifacts.py constraints regenerates .github/ci/constraints.txt after a pyproject.toml bump.",
+    "The commands run only repository scripts from the runner's own default-branch checkout, mounted read-only at /opt/booley, never code from the update branch, and the runner's RENOVATE_ALLOWED_COMMANDS admits them by anchored patterns. npm runs with --ignore-scripts in a directory holding only its two files, uv with --no-build --no-config. A failing command is an artifact error on the PR, never a committed wrong value.",
+    "fileFilters lists exactly the files the scripts write. Keep it, the allowlist in .github/workflows/renovate.yml and tests/ci/test_renovate_config.py in step.",
     "Keep the exact-name selectors in packageRules in step with tests/ci/test_renovate_config.py."
   ],
   "extends": ["config:recommended"],
@@ -40,6 +43,28 @@
   },
   "automerge": false,
   "platformCommit": "disabled",
+  "postUpgradeTasks": {
+    "commands": [
+      "python3 /opt/booley/.github/scripts/pin_checksums.py --root .",
+      "python3 /opt/booley/.github/scripts/renovate_artifacts.py agent-cli-lock",
+      "python3 /opt/booley/.github/scripts/renovate_artifacts.py constraints"
+    ],
+    "executionMode": "branch",
+    "dataFileTemplate": "{\"upgrades\":[{{#each upgrades}}{\"depName\":\"{{{depName}}}\",\"packageFile\":\"{{{packageFile}}}\",\"newValue\":\"{{{newValue}}}\"}{{#unless @last}},{{/unless}}{{/each}}]}",
+    "installTools": {
+      "python": {},
+      "node": {},
+      "uv": {}
+    },
+    "fileFilters": [
+      "src/booley/data/docker/Dockerfile.base",
+      "src/booley/data/docker/Dockerfile.riscv",
+      ".github/workflows/test.yml",
+      ".github/contracts/picorv32-demo.toml",
+      "src/booley/data/docker/agent-clis-package-lock.json",
+      ".github/ci/constraints.txt"
+    ]
+  },
   "stopUpdatingLabel": "queued",
   "labels": ["dependencies"],
   "vulnerabilityAlerts": {
