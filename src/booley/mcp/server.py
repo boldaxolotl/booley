@@ -1622,14 +1622,14 @@ def _sim_planned_timeout_seconds(
 ) -> int:
     """Sum child stage limits plus finalization slack for one Simulation call."""
     from booley.flows.base import DEFAULT_TIMEOUT_S
-    from booley.flows.sim.flow import _TRACE_CLEANUP_MARGIN_S
+    from booley.flows.sim.execution.engine import TRACE_CLEANUP_MARGIN_S
     from booley.flows.sim.mode import SimulationMode
 
     if mode.elaborates_only:
         sweep_s = run_s if mode is SimulationMode.ELAB_ONLY_STANDALONE else 0
         return target_count * build_s + sweep_s + 30
     if arguments.get("coverage"):
-        runs_s = work_units * (run_s + DEFAULT_TIMEOUT_S + _TRACE_CLEANUP_MARGIN_S)
+        runs_s = work_units * (run_s + DEFAULT_TIMEOUT_S + TRACE_CLEANUP_MARGIN_S)
         targets_s = target_count * (build_s + 30 + DEFAULT_TIMEOUT_S)
         return runs_s + targets_s + 30
     baseline_scale = 2 if _baseline_required("cycle_count_", state_path) else 1
@@ -1637,7 +1637,7 @@ def _sim_planned_timeout_seconds(
     build_units = target_count * baseline_scale
     planned_s = build_units * build_s + run_units * (DEFAULT_TIMEOUT_S + run_s)
     if arguments.get("trace"):
-        planned_s += _TRACE_CLEANUP_MARGIN_S * run_units
+        planned_s += TRACE_CLEANUP_MARGIN_S * run_units
     return planned_s + 30
 
 
@@ -2029,12 +2029,22 @@ async def _call_application_tool(
     """Translate one application result or failure into MCP SDK types."""
     request = await _observed_request_context(context, params, observer)
     try:
-        if context is None and observer is None:
-            payload = await application.call_tool(params.name, params.arguments or {})
-        else:
-            payload = await application.call_tool(
-                params.name, params.arguments or {}, request_context=request
-            )
+        try:
+            if context is None and observer is None:
+                payload = await application.call_tool(params.name, params.arguments or {})
+            else:
+                payload = await application.call_tool(
+                    params.name, params.arguments or {}, request_context=request
+                )
+        except asyncio.CancelledError:
+            # The client went away mid-call: the call is over, not still running.
+            # record() queues the outcome before its first await, so the write
+            # survives a second cancel. A cancel after the call returned keeps
+            # its real outcome, so only the tool call itself is guarded here.
+            if observer is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await _record_presence(observer, request.attribution, params.name, "cancelled")
+            raise
         payload = await _observe_tool_completion(payload, request, params.name, observer)
         return _sdk_tool_result(payload)
     except UnknownMcpToolError as exc:

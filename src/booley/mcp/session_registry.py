@@ -33,6 +33,8 @@ from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 MAX_ROWS = 4096
 MAX_ROW_BYTES = 65536
 CALL_HISTORY = 20
+CALL_STARTED = "started"  # The one outcome meaning the call is still running.
+MAX_CALL_ID = 64
 logger = logging.getLogger(__name__)
 
 
@@ -55,9 +57,11 @@ class Attribution:
 class RecentCall:
     """Bounded metadata only; arguments and result payloads are never saved."""
 
-    at: str
+    at: str  # When the call was first recorded; the history's ordering key.
     tool: str
     outcome: str
+    call_id: str = ""  # Opaque per-call identity; empty in legacy rows and unobserved writes.
+    ended_at: str = ""  # When the outcome was recorded; empty while the call is running.
 
 
 @dataclass(frozen=True)
@@ -137,18 +141,40 @@ def _parse_row(raw: bytes) -> SessionRow:
 def _parse_call(value: object) -> RecentCall:
     data = require_dict(value, field="recent call")
     at = require_str(data, "at")
-    if rfc3339_from_epoch(parse_timestamp(at).timestamp()) != at:
+    ended_at = require_str_value(data.get("ended_at", ""), field="ended_at", allow_empty=True)
+    call_id = require_str_value(data.get("call_id", ""), field="call_id", allow_empty=True)
+    if any(
+        stamp and rfc3339_from_epoch(parse_timestamp(stamp).timestamp()) != stamp
+        for stamp in (at, ended_at)
+    ):
         raise ValueError("call timestamps must be canonical UTC seconds")
-    return RecentCall(at, require_str(data, "tool"), require_str(data, "outcome"))
+    if len(call_id) > MAX_CALL_ID:
+        raise ValueError("call id is too long")
+    return RecentCall(
+        at, require_str(data, "tool"), require_str(data, "outcome"), call_id, ended_at
+    )
 
 
 def _updated_row(
-    facts: Attribution, prior: list[SessionRow], tool: str, outcome: str, now: float
+    facts: Attribution,
+    prior: list[SessionRow],
+    tool: str,
+    outcome: str,
+    now: float,
+    call_id: str = "",
 ) -> SessionRow:
+    """Record one call event: replace the entry of a known call, else append one."""
     stamp = max([rfc3339_from_epoch(now), *(row.last_call_at for row in prior)])
     started = min([stamp, *(row.started_at for row in prior)])
     calls = sorted((call for row in prior for call in row.calls), key=lambda call: call.at)
-    calls.append(RecentCall(stamp, tool[:128], outcome[:64]))
+    ended_at = "" if outcome == CALL_STARTED else stamp
+    index = next((i for i, call in enumerate(calls) if call_id and call.call_id == call_id), None)
+    if index is None:
+        calls.append(RecentCall(stamp, tool[:128], outcome[:64], call_id, ended_at))
+    else:
+        calls[index] = replace(
+            calls[index], tool=tool[:128], outcome=outcome[:64], ended_at=ended_at
+        )
     return SessionRow(facts, started, stamp, tuple(calls[-CALL_HISTORY:]))
 
 
@@ -368,8 +394,14 @@ class SessionRegistry:
         *,
         now: float,
         predecessor_keys: tuple[str, ...] = (),
+        call_id: str = "",
     ) -> None:
-        """Preserve first presence and migrate path fallbacks under the same writer lock."""
+        """Preserve first presence and migrate path fallbacks under the same writer lock.
+
+        A call_id already in the row's history updates that call's entry in place.
+        An older call ending after a newer one started keeps the stored attribution,
+        which carries the newest start's facts.
+        """
         with self._writer():
             original_key = attribution.key
             attribution = self.chat_attribution(attribution)
@@ -378,7 +410,12 @@ class SessionRegistry:
             predecessor_keys = (original_key, *predecessor_keys)
             predecessors = self._predecessors(attribution, predecessor_keys)
             attribution = self.preserve_worktree(attribution, predecessor_keys=predecessor_keys)
-            row = _updated_row(attribution, [row for _, row in predecessors], tool, outcome, now)
+            stored = next((row for prior, row in predecessors if prior == path), None)
+            if call_id and stored is not None and any(c.call_id == call_id for c in stored.calls):
+                attribution = stored.attribution
+            row = _updated_row(
+                attribution, [row for _, row in predecessors], tool, outcome, now, call_id
+            )
             if (
                 not predecessors
                 and len(list(islice(self.root.glob("*.json"), MAX_ROWS))) >= MAX_ROWS

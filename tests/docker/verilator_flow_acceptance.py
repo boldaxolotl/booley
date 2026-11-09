@@ -6,16 +6,20 @@ import argparse
 import json
 import subprocess
 import sys
+import tempfile
 from functools import partial
 from pathlib import Path
 
 from booley.flows.base import SubprocessResult
-from booley.flows.sim.execution import NamedTests, SimulationExecution, SimulationOptions
+from booley.flows.sim.execution import SimulationExecution, SimulationOptions
 from booley.flows.sim.verilator_coverage_execution import collect_target_coverage
 from booley.targets.catalog import TargetCatalog
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fixtures" / "verilator_acceptance"))
+# The repo root makes ``tests`` importable when this file runs as a plain script.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from flow_fixture import write_project
+from tests.flows.sim.prepared_group import run_prepared_group
 
 _EXPECTED = {
     "pass": "pass",
@@ -45,9 +49,16 @@ def check_case(root: Path, harness: str, outcome: str) -> dict:
     write_project(root, harness, outcome)
     handle = TargetCatalog.build(root).select("sim", for_flow="sim")
     options = SimulationOptions(timeout_ms=2000)
-    ordinary = SimulationExecution(invoke=partial(invoke, cwd=root), options=options).run(
-        handle, NamedTests(("check",))
-    )
+    # The launch writes owner-only (0700) evidence directories. The container
+    # user differs from the CI runner that uploads this work dir, so remove the
+    # attempt before the runner scans it (EACCES in the upload step otherwise).
+    with tempfile.TemporaryDirectory(prefix="attempt-", dir=root.parent) as attempt_dir:
+        ordinary = run_prepared_group(
+            SimulationExecution(invoke=partial(invoke, cwd=root), options=options),
+            handle,
+            ("check",),
+            attempt_root=Path(attempt_dir),
+        )
     coverage = collect_target_coverage(
         handle,
         selected_tests=("check",),

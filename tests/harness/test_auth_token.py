@@ -20,6 +20,7 @@ from booley.harness import booley as tlr
 from booley.runtime import auth_token, issuance_invalidation, runtime_context, session_runtime
 from booley.runtime import devcontainer as dc
 from booley.runtime.platform_paths import docker_mount_path
+from tests.devcontainer_spec_support import build_spec
 
 _TOKEN = "sk-ant-oat01-abcdef123456"  # claude: one-year setup-token
 _API_KEY = "sk-proj-codex-abcdef123456"  # codex: API key (no setup-token exists)
@@ -133,11 +134,7 @@ class TestCodex:
     def test_spec_seeds_codex_auth_onto_writable_volume(self, home):
         # The regression: a read-only bind at ~/.codex/auth.json makes Codex's
         # own refresh write FAIL, 401ing the session once the token expires.
-        from booley.runtime import devcontainer as dc
-
-        spec = dc.build_devcontainer_spec(
-            dc.APP_CODEX, auth_token_source="/home/u/.codex/auth.json"
-        )
+        spec = build_spec(dc.APP_CODEX, login_source="/home/u/.codex/auth.json")
 
         assert all(f"target={dc.AGENT_HOME}/.codex/auth.json" not in m for m in spec["mounts"])
         assert f"{dc.AGENT_HOME}/.codex-auth-seed.json" in spec["postStartCommand"]
@@ -151,24 +148,24 @@ class TestCodex:
 class TestResolution:
     def test_absent_resolves_to_none_not_empty_string(self, home):
         # The whole point: "" would shadow the mounted subscription creds.
-        assert auth_token.resolve_oauth_token() is None
+        assert auth_token.resolve_token(auth_token.APP_CLAUDE) is None
 
     def test_stored_token_resolves_without_any_export(self, home):
         auth_token.store_token(_TOKEN)
 
-        assert auth_token.resolve_oauth_token() == _TOKEN
+        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == _TOKEN
 
     def test_exported_token_wins_over_stored(self, home, monkeypatch):
         auth_token.store_token(_TOKEN)
         monkeypatch.setenv(auth_token.ENV_VAR, "sk-ant-oat01-exported")
 
-        assert auth_token.resolve_oauth_token() == "sk-ant-oat01-exported"
+        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == "sk-ant-oat01-exported"
 
     def test_blank_export_does_not_shadow_stored(self, home, monkeypatch):
         auth_token.store_token(_TOKEN)
         monkeypatch.setenv(auth_token.ENV_VAR, "   ")
 
-        assert auth_token.resolve_oauth_token() == _TOKEN
+        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == _TOKEN
 
     def test_container_seed_sidecar_fills_the_gap(self, isolated_home):
         # In-container `booley auth` storage lives on the HOST; the spec mounts
@@ -176,14 +173,14 @@ class TestResolution:
         seed = isolated_home / auth_token.TOKEN_SEED_BASENAME[auth_token.APP_CLAUDE]
         seed.write_text(f"{_TOKEN}\n")
 
-        assert auth_token.resolve_oauth_token() == _TOKEN
+        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == _TOKEN
 
     def test_config_store_wins_over_seed_sidecar(self, isolated_home):
         seed = isolated_home / auth_token.TOKEN_SEED_BASENAME[auth_token.APP_CLAUDE]
         seed.write_text("sk-ant-oat01-seed\n")
         auth_token.store_token(_TOKEN)
 
-        assert auth_token.resolve_oauth_token() == _TOKEN
+        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == _TOKEN
 
 
 class TestEffectiveCredential:
@@ -1280,7 +1277,7 @@ def _auth_reseed_boundaries(project, monkeypatch):
     monkeypatch.setattr(session_issuance, "_pin_initialize_command", lambda *a: None)
     monkeypatch.setattr(session_issuance, "_seal_with_requirements", lambda *a: "synthetic-digest")
     issued = SimpleNamespace(license_profile=None, project_data_layout="legacy")
-    monkeypatch.setattr(session_issuance, "_prospective_issuance", lambda *a: issued)
+    monkeypatch.setattr(session_issuance, "_issuance", lambda *a, **k: issued)
     monkeypatch.setattr(
         session_issuance,
         "inspect_prepared",

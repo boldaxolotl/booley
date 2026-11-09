@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -47,6 +48,56 @@ def test_rejects_required_suite_skip(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="at most 0 skips"):
         assert_junit.validate(assert_junit.read_counts(junit), min_tests=1, max_skips=0)
+
+
+def test_valid_junit_file_prints_summary_and_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    junit = tmp_path / "junit.xml"
+    summary = tmp_path / "summary.md"
+    _write_junit(junit, '<testsuite tests="4" failures="0" errors="0" skipped="1"/>')
+    monkeypatch.setattr(
+        sys, "argv", ["assert_junit.py", str(junit), "--label", "demo", "--summary", str(summary)]
+    )
+
+    assert assert_junit.main() == 0
+
+    expected = "- demo: 4 collected, 1 skipped, 0 failed, 0 errors\n"
+    assert capsys.readouterr().out == expected
+    assert summary.read_text(encoding="utf-8") == expected
+
+
+def test_missing_junit_file_fails_with_one_line(tmp_path: Path) -> None:
+    missing = tmp_path / "junit.xml"
+
+    result = subprocess.run(
+        [sys.executable, str(_SCRIPT), str(missing)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "Traceback" not in result.stderr
+    assert result.stderr.strip() == (
+        f"no JUnit file at {missing}: pytest didn't run or didn't finish; "
+        "see the earlier failed step"
+    )
+
+
+def test_malformed_junit_file_failure_names_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    junit = tmp_path / "junit.xml"
+    _write_junit(junit, "<testsuite")
+    monkeypatch.setattr(sys, "argv", ["assert_junit.py", str(junit)])
+
+    with pytest.raises(SystemExit) as excinfo:
+        assert_junit.main()
+
+    assert str(excinfo.value).startswith(f"malformed JUnit file at {junit}")
 
 
 _GITHUB_DIR = Path(__file__).parents[2] / ".github"

@@ -33,6 +33,7 @@ _PROJECT_TARGET = re.compile(
 _INSTALLING_ACTION = "./.github/actions/prepare-picorv32-demo"
 _PROJECT_INSTALL_LOCATIONS = {
     "test.yml:docs-check",
+    "test.yml:renovate-config",
     "test.yml:lint",
     "test.yml:test",
     "test.yml:flake-stress",

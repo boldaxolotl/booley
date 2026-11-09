@@ -455,7 +455,9 @@ def test_cleanup_staging_lock_ownership_on_timeout(tmp_path, monkeypatch, preexi
 
 
 def test_sandbox_identity_preserves_host_and_waiver_guard(tmp_path, monkeypatch):
-    from booley.runtime.devcontainer import build_devcontainer_spec, git_identity_command
+    from tests.devcontainer_spec_support import build_spec
+
+    from booley.runtime.devcontainer import git_identity_command
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -470,7 +472,7 @@ def test_sandbox_identity_preserves_host_and_waiver_guard(tmp_path, monkeypatch)
         BOOLEY_DIR=str(project),
         PYTHONPATH=str(Path(identity_setup.__file__).resolve().parents[2]),
     )
-    spec = build_devcontainer_spec(app="codex", image="test", booley_dir_source=str(project))
+    spec = build_spec(app="codex", image="test", booley_dir_source=str(project))
     sandbox = {**env, **spec["containerEnv"]}
     subprocess.run(
         [sys.executable, *git_identity_command().split()[1:]],

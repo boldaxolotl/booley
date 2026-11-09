@@ -436,7 +436,7 @@ def test_reasonless_coverage_infrastructure_keeps_its_message(tmp_path: Path) ->
     assert message == "coverage Verilator identity mismatch"
 
 
-def test_legacy_missing_tool_still_reported_as_missing_executable(tmp_path: Path) -> None:
+def test_prepared_build_failure_reports_missing_executable(tmp_path: Path) -> None:
     for preamble in ("", "x" * 3000 + "\n"):
         outcome = _run_execution(
             _handle(tmp_path),
@@ -448,6 +448,9 @@ def test_legacy_missing_tool_still_reported_as_missing_executable(tmp_path: Path
             cocotb=False,
             canned_at="build",
         )
+        assert outcome.infrastructure_failure is not None
+        assert outcome.infrastructure_failure.missing_executable == "verilator"
+        # Legacy Flow projection; the Flow-deletion part drops only these lines.
         with pytest.raises(MissingExecutableError) as caught:
             SimulateFlow()._project_execution_outcome(outcome)
         assert caught.value.binary == "verilator"

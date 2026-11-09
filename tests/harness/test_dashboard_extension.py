@@ -16,6 +16,7 @@ import pytest
 
 from booley.runtime import dashboard_extension, devcontainer
 from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
+from tests.devcontainer_spec_support import build_spec
 
 
 def test_vsix_is_deterministic_and_contains_installable_workspace_manifest(tmp_path):
@@ -60,7 +61,7 @@ def test_doctor_reports_missing_and_stale_extension_artifacts(tmp_path):
 
 def test_every_sandbox_app_gets_the_image_local_extension():
     for app in devcontainer.SUPPORTED_APPS:
-        spec = devcontainer.build_devcontainer_spec(app, dashboard=True)
+        spec = build_spec(app, dashboard=True)
         settings = spec["customizations"]["vscode"]
         assert dashboard_extension.VSIX_PATH in settings["extensions"]
         assert settings["settings"]["booley.dashboard.attachProtocol"] == 1
@@ -176,7 +177,7 @@ def test_vaporview_bridge_in_node(tmp_path):
 def test_disabled_dashboard_keeps_the_viewer_bridge_but_never_opens_the_dashboard():
     # The extension also hosts the `bwave gui` viewer bridge, so it is always
     # installed; the attach protocol alone keeps the Dashboard terminal closed.
-    spec = devcontainer.build_devcontainer_spec(dashboard=False)
+    spec = build_spec(dashboard=False)
     settings = spec["customizations"]["vscode"]
     assert dashboard_extension.VSIX_PATH in settings["extensions"]
     assert settings["settings"]["booley.dashboard.attachProtocol"] == 0

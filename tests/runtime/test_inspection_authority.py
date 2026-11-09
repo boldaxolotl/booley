@@ -9,6 +9,7 @@ import subprocess
 import pytest
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.runtime.test_session_issuance import _install_trusted_validator
+from tests.session_issuance_support import plain_builder
 
 from booley.audit.diagnostic_results import Severity
 from booley.config.eda import EdaConfig
@@ -92,15 +93,8 @@ def _fake_runtime_transport(monkeypatch):
 
 
 def _issue_runtime_request(project, *, active: bool):
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    session_issuance.pin_image(spec)
-    session_issuance.seal(project, spec)
-    path = dc.write_devcontainer(project, spec)
-    session_issuance.issue(project, spec, path)
+    prepared = session_issuance.preview(project, plain_builder(project))
+    session_issuance.issue_prepared(project, prepared, reconcile_dashboard=False)
     return inspection.RuntimeInspectionRequest(
         project,
         "sha256:" + "a" * 64,
@@ -114,7 +108,7 @@ def _issue_runtime_request(project, *, active: bool):
 def headless_repair_owner(monkeypatch):
     from booley.runtime import session_runtime
 
-    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(session_runtime, "vscode_session_container", lambda _root: None)
 
 
 @pytest.fixture(params=[False, True], ids=["no-active-eda", "active-image-eda"])
@@ -224,15 +218,8 @@ def test_doctor_issuance_owner_reports_alias_probe_failure_without_mutation(
     request, _observations, _calls = issued_environment
     project = request.project_root
     monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: True)
-    spec = dc.build_devcontainer_spec(
-        dc.APP_NONE,
-        mcp_start_command=dc.mcp_post_start_command(),
-        protected_devcontainer_source=str(project / ".devcontainer"),
-    )
-    session_issuance.pin_image(spec)
-    session_issuance.seal(project, spec)
-    path = dc.write_devcontainer(project, spec)
-    session_issuance.issue(project, spec, path)
+    prepared = session_issuance.preview(project, plain_builder(project))
+    session_issuance.issue_prepared(project, prepared, reconcile_dashboard=False)
     stamp = session_issuance.stamp_path(project)
     before = stamp.read_bytes()
 
