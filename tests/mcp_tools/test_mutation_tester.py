@@ -25,7 +25,7 @@ from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.execution.composition import prepare_adapter_invocation
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
-from booley.flows.sim.target_tests import NoRunnableTestsError
+from booley.flows.target_test_suite import NoRunnableTestsError
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.specialists.mutation_tester import (
@@ -1327,8 +1327,11 @@ def test_sim_forwards_project_verdict_sentinels(tmp_path: Path, monkeypatch):
         _fake_run,
     )
     monkeypatch.setattr(
-        "booley.specialists.mutation_tester._resolve_sim_sentinels",
-        lambda work_dir: (["Correct operation validated."], ["ERROR!"]),
+        "booley.flows.sim.config._sim_config",
+        lambda work_dir: {
+            "pass_sentinels": ["Correct operation validated."],
+            "fail_sentinels": ["ERROR!"],
+        },
     )
 
     endpoint = _make_endpoint(tmp_path, monkeypatch)

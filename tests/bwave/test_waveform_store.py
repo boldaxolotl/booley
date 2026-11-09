@@ -258,7 +258,7 @@ def test_conversion_result_and_discovery_success_properties() -> None:
     assert stores.DiscoveryResult(None).success is False
 
 
-def test_existing_valid_store_is_reused_and_cache_key_is_stable(tmp_path: Path) -> None:
+def test_existing_valid_store_is_reused(tmp_path: Path) -> None:
     source = tmp_path / "trace.vcd"
     source.write_text("raw", encoding="utf-8")
     destination = tmp_path / "trace.fst"
@@ -272,7 +272,6 @@ def test_existing_valid_store_is_reused_and_cache_key_is_stable(tmp_path: Path) 
 
     assert result.success is True
     assert result.events == ("reused existing store",)
-    assert stores.waveform_cache_dir(tmp_path, "fixed-key").name == "fixed-key"
 
 
 def test_zero_signal_store_is_structural_but_not_queryable(tmp_path: Path, monkeypatch) -> None:

@@ -262,10 +262,8 @@ script lines) as you go.
   per the version rule in Part A's preamble). Verilator, Icarus, Yosys
   (+OpenROAD) and sv2v are built in. AMD Vivado 2025.2 is built in only
   through the Linux-x86-64 administrator-registered, host-provisioned policy.
-  Xcelium and VCS parser modules are internal incubation material, not public
-  simulator integrations; Xcelium, VCS, Questa/ModelSim, Design
-  Compiler/Genus, SpyGlass, and the like are outside the matrix (red for that
-  flow).
+  Xcelium, VCS, Questa/ModelSim, Design Compiler/Genus, SpyGlass, and the like
+  are outside the matrix (red for that flow).
   **Not every script in the repo is a flow.** Sort what you find into three
   piles before mapping anything:
   - *Flow scripts* — they build, elaborate, simulate, lint, or synthesize.

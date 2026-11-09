@@ -54,7 +54,6 @@ from booley.flows import artifacts as _artifacts
 from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.execution_persistence import execution_goal_name
 from booley.flows.flow_config import tb_top_for_target
-from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.adapter_contract import AdapterKind, PreparedSimulationWork
 from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
@@ -71,6 +70,7 @@ from booley.flows.sim.build import (
 from booley.flows.sim.config import (
     literal_run_cwd_problem,
     resolve_run_cwd,
+    resolve_sim_sentinels,
 )
 from booley.flows.sim.execution.composition import prepare_adapter_invocation
 from booley.flows.sim.execution.engine import (
@@ -80,12 +80,12 @@ from booley.flows.sim.execution.engine import (
 )
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX, has_infra_error
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, unstaged_runtime_input_diagnostic
-from booley.flows.sim.runner import resolve_sim_sentinels
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputError,
     declared_runtime_inputs,
     materialize_runtime_inputs,
 )
+from booley.flows.simulator_family import matching_eda_tool, normalize_eda_tool
 from booley.flows.target_campaign import (
     CampaignUnit,
     TargetCampaign,
@@ -117,8 +117,6 @@ def _target_environment(work_dir: Path, identity: str) -> dict[str, str]:
     sections = load_test_configuration_field(work_dir, "env")
     return dict(lookup_target_section(sections, identity) or {})
 
-
-_resolve_sim_sentinels = resolve_sim_sentinels
 
 logger = logging.getLogger(__name__)
 
@@ -1940,7 +1938,7 @@ replacement must differ, and every proposal must remain a single source edit.
     ) -> str:
         """Authenticate configured simulator metadata against the Target declaration."""
         try:
-            family = sim_edam.matching_eda_tool(declared, configured, target=target)
+            family = matching_eda_tool(declared, configured, target=target)
         except ValueError as exc:
             raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
         return cls._supported_sim_tool(family, target)
@@ -1949,7 +1947,7 @@ replacement must differ, and every proposal must remain a single source edit.
     def _supported_sim_tool(eda_tool: str | None, target: str) -> str:
         """Normalize one mutation-capable simulator without choosing a default."""
         try:
-            family = sim_edam.normalize_eda_tool(eda_tool)
+            family = normalize_eda_tool(eda_tool)
         except ValueError as exc:
             raise UnsupportedSimTargetError(
                 f"mutation_tester: Target {target!r} has unsupported simulator "
@@ -2143,7 +2141,7 @@ replacement must differ, and every proposal must remain a single source edit.
         eda_tool = self._classic_eda_tool(target, work_dir, build_path)
         names = (test_name,) if test_name is not None else ()
         launch, plusargs = self._default_test_run_launch(target, work_dir, eda_tool, names)
-        pass_sentinels, fail_sentinels = _resolve_sim_sentinels(work_dir)
+        pass_sentinels, fail_sentinels = resolve_sim_sentinels(work_dir)
         adapter: AdapterKind = "icarus" if eda_tool == "icarus" else "verilator"
         work = replace(
             _mutant_work(adapter, pinned, work_dir, timeout, plusargs),

@@ -9,8 +9,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
+from booley.flows.artifact_durability import durable_directory
 from booley.flows.sim.campaign.bundle import authenticate_executable_snapshot
-from booley.flows.sim.campaign_durability import durable_directory
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
 from booley.flows.sim.execution.contract import (

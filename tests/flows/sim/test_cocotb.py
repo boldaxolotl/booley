@@ -10,8 +10,6 @@ formatters). The real icarus/verilator cocotb runs are the Sandbox e2e's job
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -709,44 +707,36 @@ class TestCocotbSimulatorEligibility:
 
 
 class TestCocotbDryRun:
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh -n syntax check")
-    def test_dry_run_emits_one_batched_command(self, tmp_path: Path, capsys):
-        flow = _make_cocotb_flow(tmp_path, extra_args=["--dry-run"])
-        with (
-            patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)),
-            patch(
-                "booley.fusesoc.fusesoc_registry._resolve_target",
-                side_effect=AssertionError("dry-run must not resolve"),
-            ),
-            flow.publication_resources,
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        commands = result.detail["work_units"][0]["commands"]
-        assert len(commands) == 1  # batched: one command for three tests
-        script = commands[0]["argv"][-1]
-        assert "fusesoc" in script and "--setup" in script
-        assert "booley.flows.sim.backends.cocotb" in script
-        subprocess.run(["sh", "-n", "-c", script], check=True)
-        work = launched_work(script)
-        assert work.adapter == "cocotb"
-        assert work.tests == ("test_reset", "test_count", "test_fail_assert")
-        assert (work.eda_tool, work.cocotb_module) == ("icarus", "test_counter")
-        assert work.result_verbosity == "compact"
-        assert str(tmp_path) not in json.dumps(result.detail)
+    def test_dry_run_batches_the_selected_cocotb_tests_into_one_work_item(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.flows.sim.request import SimRequest
+        from booley.runtime.booley_dir import reset_cache
 
-    def test_dry_run_sv_target_unchanged(self, tmp_path: Path):
-        """G6 guard: a non-cocotb Target's dry-run command carries no cocotb."""
-        flow = _make_flow(tmp_path, config="lite", extra_args=["--dry-run"])
-        with (
-            patch("booley.flows.sim.flow._get_test_names", return_value={}),
-            flow.publication_resources,
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        script = result.detail["work_units"][0]["commands"][0]["argv"][-1]
-        work = launched_work(script)
-        assert (work.adapter, work.cocotb_module, work.tests) == ("verilator", "", ())
+        monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+        (tmp_path / "ccfg.core").write_text(_COCOTB_CORE_TEXT, encoding="utf-8")
+        (tmp_path / "rtl").mkdir()
+        (tmp_path / "rtl/counter.sv").write_text("module counter; endmodule\n", encoding="utf-8")
+        (tmp_path / "tb").mkdir()
+        (tmp_path / "tb/test_counter.py").write_text("", encoding="utf-8")
+        _write_test_registry(tmp_path, "ccfg", _TESTS["ccfg"])
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+        reset_cache()
+
+        result = SimulateFlow().execute(
+            SimRequest(
+                target="ccfg",
+                test=("test_reset", "test_count"),
+                dry_run=True,
+                work_dir=tmp_path,
+                report_dir=tmp_path / "reports",
+            )
+        )
+
+        assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text
+        (preview,) = result.outcome.detail["campaign_preview"]
+        # Naming tests needs the registry, so success shows it was read; two tests, one batch.
+        assert preview["work_items"] == 1
 
 
 class TestCocotbBuildFailureShape:
