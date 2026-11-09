@@ -789,6 +789,47 @@ def test_session_without_work_dir_shows_its_default_checkout_and_branch():
     assert (detached.work_dir, detached.branch) == ("/work (default)", "")
 
 
+#: A Linux process key as stored (doubled ``pid:``) and the readable form the Dashboard shows.
+PROCESS_KEY = "pid:pid:[4026532225]:4865:81331"
+PROCESS_KEY_LABEL = "PID 4865 · ns 4026532225"
+
+
+def test_process_keyed_session_detail_shows_readable_identity():
+    """Session detail names a process-keyed client by PID; the stored key still drives lookups."""
+    from booley.runtime.session_activity import WAITING_USER, Activity
+
+    row = SessionRow(Attribution(PROCESS_KEY, "process", "/w", "wt"), STAMP, STAMP)
+    app = DashboardApp(lambda: None)
+    app.snapshot = model.DashboardSnapshot(
+        sessions=(row,),
+        session_handles={PROCESS_KEY: "S1"},
+        activity={PROCESS_KEY: Activity(WAITING_USER, STAMP)},
+        observed_at=1791454200,
+    )
+    app.navigation = Navigation("session", PROCESS_KEY)
+    orientation, _ = app._session()
+    assert f"Session key: {PROCESS_KEY_LABEL}" in orientation
+    assert "pid:pid:" not in orientation
+    # The raw key, not the label, still selects the reported activity.
+    assert "\nWaiting for user input · 10m 00s" in orientation
+
+
+def test_process_keyed_job_detail_shows_readable_identity():
+    """An expired Job whose owner has no handle shows the owner's process key readably."""
+    record = JobRecord(
+        "one", "sim", STAMP, 60, session_key=PROCESS_KEY, status="done", ended_at=STAMP
+    )
+    job = JobView(Path("/jobs"), record, "completed", owner_handle=PROCESS_KEY)
+    app = DashboardApp(lambda: None)
+    app.snapshot = model.DashboardSnapshot(jobs=JobSnapshot((job,)), observed_at=1791454200)
+    detail = app._job_detail(job).plain
+    assert f"Owner: {PROCESS_KEY_LABEL} (disconnected)" in detail
+    assert f"Session key: {PROCESS_KEY_LABEL}" in detail
+    assert "pid:pid:" not in detail
+    cells = dashboard_app._job_cells(job, app.snapshot.observed_at, {})
+    assert cells[2].plain == PROCESS_KEY_LABEL
+
+
 @pytest.mark.asyncio
 async def test_slow_refresh_eventually_renders_completed_read_without_restarting(monkeypatch):
     import asyncio
