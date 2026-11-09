@@ -308,16 +308,11 @@ def _cycle_reconciliation(
 
 
 def _v2_facts_with_coverage_and_cycle_baseline() -> dict[str, object]:
-    """v2 facts as the coordinator builds them: a Coverage Campaign reference
-    and a Cycle Count baseline prerequisite."""
-    campaign_id, baseline_id = (
-        "12345678-1234-4234-9234-123456789abc",
-        ("12345678-1234-4234-9234-123456789abd"),
-    )
-    attempt_id, work_item_id = (
-        "87654321-4321-4432-a234-cba987654321",
-        ("item:0000:0123456789abcdef"),
-    )
+    """v2 facts as built by the coordinator, with Coverage and Cycle Count baseline."""
+    campaign_id = "12345678-1234-4234-9234-123456789abc"
+    baseline_id = "12345678-1234-4234-9234-123456789abd"
+    attempt_id = "87654321-4321-4432-a234-cba987654321"
+    work_item_id = "item:0000:0123456789abcdef"
     target = {
         "vlnv": "acme:demo:counter:1.0",
         "name": "sim_counter",
