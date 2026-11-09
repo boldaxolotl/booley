@@ -20,6 +20,7 @@ from tests.devcontainer_spec_support import build_spec
 from tests.session_issuance_support import (
     damaged,
     fixed,
+    install_trusted_validator,
     issue_built,
     plain_builder,
     stub_keeper,
@@ -48,24 +49,9 @@ _HOST_PATH = os.environ.get("PATH", os.defpath)
 _HOST_GIT = shutil.which("git", path=_HOST_PATH)
 
 
-def _install_trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Create a host-owned validator without relying on the runner's install layout."""
-    prefix = tmp_path / "trusted-prefix"
-    executable = prefix / "bin" / ("booley.exe" if os.name == "nt" else "booley")
-    executable.parent.mkdir(parents=True)
-    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    executable.chmod(0o755)
-    monkeypatch.setattr(
-        runtime_spec,
-        "_validator_prefix_anchors",
-        lambda: {executable.parent.resolve(): prefix.resolve()},
-    )
-    return executable
-
-
 @pytest.fixture
 def trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    executable = _install_trusted_validator(tmp_path, monkeypatch)
+    executable = install_trusted_validator(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", str(executable.parent))
     return executable
 
@@ -1834,7 +1820,7 @@ def test_seal_rejects_project_controlled_mount_source(
 def test_seal_rejects_workspace_path_poisoned_booley(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    trusted = _install_trusted_validator(tmp_path, monkeypatch)
+    trusted = install_trusted_validator(tmp_path, monkeypatch)
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
@@ -1859,7 +1845,7 @@ def test_seal_skips_tmp_path_poisoned_booley(
     poisoned.parent.mkdir()
     poisoned.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     poisoned.chmod(0o755)
-    trusted = _install_trusted_validator(tmp_path, monkeypatch)
+    trusted = install_trusted_validator(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", os.pathsep.join((str(poisoned.parent), str(trusted.parent))))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
@@ -1872,7 +1858,7 @@ def test_finder_uses_current_absolute_entry_point_before_path(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    invoked = _install_trusted_validator(tmp_path, monkeypatch)
+    invoked = install_trusted_validator(tmp_path, monkeypatch)
     fallback = tmp_path / "other-prefix" / "bin" / invoked.name
     fallback.parent.mkdir(parents=True)
     fallback.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -1941,7 +1927,7 @@ def test_normalized_project_launcher_does_not_fall_back_to_path(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    trusted = _install_trusted_validator(tmp_path, monkeypatch)
+    trusted = install_trusted_validator(tmp_path, monkeypatch)
     poisoned = project / ".venv" / "Scripts" / "booley.exe"
     poisoned.parent.mkdir(parents=True)
     poisoned.write_text("launcher", encoding="utf-8")
@@ -2023,7 +2009,7 @@ def test_find_trusted_validator_resolves_managed_cli_symlink(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    trusted = _install_trusted_validator(tmp_path, monkeypatch)
+    trusted = install_trusted_validator(tmp_path, monkeypatch)
     launcher = tmp_path / ".local" / "bin" / "booley"
     launcher.parent.mkdir(parents=True)
     launcher.symlink_to(trusted)
