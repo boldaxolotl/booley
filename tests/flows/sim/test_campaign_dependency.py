@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import shutil
 from types import SimpleNamespace
 
@@ -209,15 +210,22 @@ def test_dependency_receipt_rejects_changed_oversized_and_linked_files(tmp_path)
         read_campaign_dependencies(origin)
 
     receipt.write_bytes(b"x" * (DEPENDENCY_MAX_BYTES + 1))
-    with pytest.raises(ValueError, match="Unsafe"):
+    with pytest.raises(ValueError, match="size limit"):
         read_campaign_dependencies(origin)
 
     receipt.unlink()
     target = tmp_path / "receipt.json"
     target.write_text("{}", encoding="utf-8")
     receipt.symlink_to(target)
-    with pytest.raises(ValueError, match="Unsafe"):
+    with pytest.raises(ValueError, match="not a regular file"):
         read_campaign_dependencies(origin)
+
+    if os.name != "nt":
+        # A FIFO is refused before it is opened, so the read cannot block.
+        receipt.unlink()
+        os.mkfifo(receipt)
+        with pytest.raises(ValueError, match="not a regular file"):
+            read_campaign_dependencies(origin)
 
 
 def test_detached_dependency_receipt_is_inventory_but_not_deletion_authority(tmp_path):
@@ -355,7 +363,7 @@ def test_dependency_receipt_reauthenticates_origin_manifest(tmp_path, manifest_d
     )
     origin.write_text(json.dumps(manifest_document), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="origin"):
+    with pytest.raises(ValueError, match=r"JSON object|identity disagrees"):
         read_campaign_dependencies(origin)
 
 

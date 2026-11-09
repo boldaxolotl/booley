@@ -234,6 +234,41 @@ def skills_target_dir(app: str, home: Path | None = None) -> Path | None:
     return None if rel is None else (home or _agent_home()) / rel
 
 
+def _link_skills(source: Path, target: Path) -> int:
+    """Prune dangling links in *target*, then link each skill dir of *source* not already there.
+
+    The skills dir persists across rebuilds (named volume), so a skill renamed,
+    removed, or unmounted leaves a dangling link; pruning it first keeps the
+    agent from being offered a skill it can no longer read. An existing entry
+    (including a dangling link, guarded by ``is_symlink``) is left alone, so an
+    earlier deployment wins a name clash and the routine stays idempotent.
+    Individual link failures are skipped so one bad skill can't block the rest.
+    Returns the number of skills newly linked.
+    """
+    target.mkdir(parents=True, exist_ok=True)
+
+    for child in target.iterdir():
+        if child.is_symlink() and not child.exists():
+            try:
+                child.unlink()
+            except OSError:
+                continue
+
+    linked = 0
+    for skill_dir in sorted(source.iterdir()):
+        if not skill_dir.is_dir() or not (skill_dir / "SKILL.md").is_file():
+            continue
+        link = target / skill_dir.name
+        if link.exists() or link.is_symlink():
+            continue
+        try:
+            link.symlink_to(skill_dir)
+            linked += 1
+        except OSError:
+            continue
+    return linked
+
+
 def deploy_skills(app: str, home: Path | None = None) -> int:
     """Symlink packaged Booley skills into the dir *app* discovers them from.
 
@@ -249,34 +284,7 @@ def deploy_skills(app: str, home: Path | None = None) -> int:
     src = skills_dir()
     if not src.is_dir():
         return 0
-
-    target.mkdir(parents=True, exist_ok=True)
-
-    # The skills dir now persists across rebuilds (named volume), so a skill
-    # renamed or removed in a newer image leaves a dangling link. Prune dead
-    # links first so the agent isn't offered a skill it can no longer read.
-    for child in target.iterdir():
-        if child.is_symlink() and not child.exists():
-            try:
-                child.unlink()
-            except OSError:
-                continue
-
-    linked = 0
-    for skill_dir in sorted(src.iterdir()):
-        if not skill_dir.is_dir() or not (skill_dir / "SKILL.md").is_file():
-            continue
-        link = target / skill_dir.name
-        # ``exists()`` follows symlinks; also guard ``is_symlink`` so a dangling
-        # link (stale image rebuild) isn't re-created on top of itself.
-        if link.exists() or link.is_symlink():
-            continue
-        try:
-            link.symlink_to(skill_dir)
-            linked += 1
-        except OSError:
-            continue
-    return linked
+    return _link_skills(src, target)
 
 
 def deploy_host_skills(app: str, home: Path | None = None) -> int:
@@ -286,7 +294,7 @@ def deploy_host_skills(app: str, home: Path | None = None) -> int:
     ``~/.booley-host-skills/<name>`` (see ``[sandbox] mount_host_skills``); this
     links them into the same skills dir as the built-ins. Runs AFTER
     :func:`deploy_skills`, so a built-in of the same name is already present and
-    an ``exists()`` skip lets it win the name clash. Idempotent, prunes dangling
+    the existing-entry skip lets it win the name clash. Idempotent, prunes dangling
     links from a removed/renamed host skill, and skips individual failures.
     Returns the number of host skills newly linked.
     """
@@ -296,33 +304,7 @@ def deploy_host_skills(app: str, home: Path | None = None) -> int:
     sidecar = (home or _agent_home()) / _HOST_SKILLS_SIDECAR
     if not sidecar.is_dir():
         return 0
-
-    target.mkdir(parents=True, exist_ok=True)
-
-    # Drop links to a host skill that is no longer mounted (renamed/removed on
-    # the host, or mount_host_skills turned off) before re-linking the rest.
-    for child in target.iterdir():
-        if child.is_symlink() and not child.exists():
-            try:
-                child.unlink()
-            except OSError:
-                continue
-
-    linked = 0
-    for skill_dir in sorted(sidecar.iterdir()):
-        if not skill_dir.is_dir() or not (skill_dir / "SKILL.md").is_file():
-            continue
-        link = target / skill_dir.name
-        # A built-in (deployed first) or a prior host link of this name wins;
-        # guard is_symlink too so a dangling link isn't recreated on itself.
-        if link.exists() or link.is_symlink():
-            continue
-        try:
-            link.symlink_to(skill_dir)
-            linked += 1
-        except OSError:
-            continue
-    return linked
+    return _link_skills(sidecar, target)
 
 
 # ---------------------------------------------------------------------------

@@ -739,10 +739,9 @@ def test_forget_release_requires_reissuance_before_admission(
     from booley.runtime import devcontainer as dc
     from booley.runtime import interactive_docker
     from booley.runtime import session_issuance as issuance
-    from tests.runtime.test_session_issuance import _install_trusted_validator
-    from tests.session_issuance_support import fixed
+    from tests.session_issuance_support import fixed, install_trusted_validator
 
-    validator = _install_trusted_validator(tmp_path, monkeypatch)
+    validator = install_trusted_validator(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", str(validator.parent))
     project = _remember(tmp_path)
     spec = build_spec(
@@ -762,6 +761,7 @@ def test_forget_release_requires_reissuance_before_admission(
             else (_ for _ in ()).throw(issuance.RuntimeSpecError("missing image"))
         ),
     )
+    monkeypatch.setattr(issuance, "_keeper_image_id", keeper_host.tags.get)
     monkeypatch.setattr(issuance, "_project_data_alias_capable", lambda _image: False)
     prepared = issuance.preview(project, fixed(spec))
     monkeypatch.setattr(

@@ -1,8 +1,8 @@
 # Merge queue
 
 Mergify is the only normal merge path into `main`. It merges in queue order and
-validates up to three cumulative candidates concurrently: A, A+B, and A+B+C,
-not three unrelated changes against the same old `main`.
+validates up to four cumulative candidates concurrently: A, A+B, A+B+C, and
+A+B+C+D, not four unrelated changes against the same old `main`.
 
 ## Enable speculative checks
 
@@ -14,10 +14,10 @@ does not establish compatibility with their metadata and cumulative commits.
 The `main_protection` ruleset must have **Require branches to be up to date
 before merging** disabled (`strict_required_status_checks_policy: false`).
 Strict checks limit Mergify to one check slot even when `max_parallel_checks`
-is three. Retain both required checks, the rest of `main_protection`, and the
+is four. Retain both required checks, the rest of `main_protection`, and the
 separate `mergify_exclusive` ruleset. Coordinate this live setting with rollout;
 a configuration PR cannot change the GitHub ruleset. Runner capacity must
-support three concurrent CI runs.
+support four concurrent CI runs.
 
 See [Mergify queue modes](https://docs.mergify.com/merge-queue/queue-modes/)
 and [parallel checks](https://docs.mergify.com/merge-queue/performance/).
@@ -284,13 +284,15 @@ Read the Mergify status and underlying Actions failure, then:
 - For a known flake, requeue unchanged once. A failure is a known flake when
   the PR's diff does not touch the failing test or the code it exercises, and
   either an open issue describes the same failure or recent `main` runs of that
-  job show it alongside green runs. Match a crashed worker or a duration-budget
-  overrun by job and error signature instead of a test ID. When no issue
+  job show it alongside green runs. A push to `main` runs only the package and
+  image jobs, so `main` evidence for the test jobs comes from the nightly
+  scheduled `Tests` run. Match a crashed worker or a duration-budget overrun by
+  job and error signature instead of a test ID. When no issue
   exists, first file a `bug`, `ci`, `needs-triage` issue with the run link,
   test ID or job, and error, scanned as `AGENTS.md` requires. When `main`'s
-  latest run of that job fails the same way, `main` has regressed: report it
-  instead of requeueing. A second failure of the same flake on the same PR is a
-  repeated interruption.
+  latest run of that job (for test jobs, the latest nightly run) fails the
+  same way, `main` has regressed: report it instead of requeueing. A second
+  failure of the same flake on the same PR is a repeated interruption.
 - For an unexplained or repeated interruption, report an incident; do not retry
   until it happens to pass.
 

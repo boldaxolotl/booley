@@ -61,6 +61,7 @@ from .serial_execution import (
     _record_ref,
     _result,
     _runtime_documents,
+    _settled_state,
 )
 
 
@@ -435,7 +436,7 @@ def _completed_result(
         request,
         captured.directory,
         captured.result,
-        state=_coverage_result_state(observations),
+        state=_settled_state(observations),
         bundle_id=captured.bundle.document["bundle_id"],
         snapshot={
             "manifest": captured.snapshot_reference,
@@ -512,17 +513,6 @@ def _publish_coverage_build_failure(
         infrastructure=infrastructure,
         evidence=_coverage_evidence(request, outcome),
     )
-
-
-def _coverage_result_state(observations: list[dict[str, object]]) -> str:
-    executions = {str(item["execution"]) for item in observations}
-    if "aborted" in executions:
-        return "aborted"
-    if "crash" in executions:
-        return "crash"
-    if "timeout" in executions:
-        return "timeout"
-    return "completed"
 
 
 def _coverage_tests(outcome: CoverageTargetOutcome) -> tuple[Mapping[str, object], ...]:

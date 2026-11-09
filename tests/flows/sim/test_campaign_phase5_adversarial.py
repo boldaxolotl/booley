@@ -16,6 +16,8 @@ from booley.flows.sim.backends import cocotb_results
 from booley.flows.sim.campaign import serial_execution
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
+    decode_simulation_result,
+    encode_simulation_result,
 )
 from booley.flows.sim.campaign.coordinator import (
     CampaignPolicy,
@@ -579,6 +581,45 @@ def test_coverage_campaign_rejects_score_bearing_invalid_nested_result(
         _run_coverage_campaign(tmp_path, NativeExecution())
 
     assert isinstance(caught.value.__cause__, SimulationCampaignIntegrityError)
+
+
+class _TimeoutThenMissingInputExecution(NativeExecution):
+    """The first Test times out; the second aborts on a missing input (a design fault)."""
+
+    def run(self, request):
+        super().run(request)
+        if len(self.runs) == 1:
+            return SimulationRunResult("timeout", "simulation timed out")
+        return SimulationRunResult(
+            "fail",
+            "$readmemh: Cannot open memory.hex",
+            termination="fatal_init",
+            failure_kind="missing_input",
+        )
+
+
+def test_coverage_timeout_before_design_abort_publishes_aborted_fail(tmp_path: Path) -> None:
+    """Abort dominates: the earlier timeout is recorded as an aborted design observation.
+
+    Coverage runs one process per Test and continues after a timeout or a
+    non-infrastructure abort, so both observations reach one result.
+    """
+    outcome, store = _run_coverage_campaign(tmp_path, _TimeoutThenMissingInputExecution())
+
+    assert outcome.complete is True
+    result = store.scan().items[0].result
+    assert result is not None
+    assert decode_simulation_result(encode_simulation_result(result)) == result
+    assert result.document["state"] == "aborted"
+    assert result.document["grade"] == "fail"
+    for observation in result.document["observations"]:
+        assert (
+            observation["execution"],
+            observation["failure_class"],
+            observation["functional"],
+            observation["assertions"],
+            observation["cycle_count"],
+        ) == ("aborted", "design", "fail", "not_observed", None)
 
 
 def test_coverage_attempt_stages_runtime_before_binding_and_records_real_build_time(

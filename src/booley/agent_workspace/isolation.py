@@ -10,6 +10,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.config_paths import main_repository_root
 from booley.flows.endpoint_diff import read_source_dirs_from_toml
 
 logger = logging.getLogger(__name__)
@@ -28,33 +29,6 @@ CATEGORY_DIRS_DEFAULT: dict[str, tuple[str, ...]] = {
 # ---------------------------------------------------------------------------
 
 
-def _resolve_main_repo_root(work_dir: Path) -> Path | None:
-    """Follow a worktree's ``.git`` file to find the main repository root.
-
-    In a git worktree, ``.git`` is a *file* containing ``gitdir: <path>``
-    (pointing into the main repo's ``.git/worktrees/`` directory).
-    Returns the main Project Root, or ``None`` if *work_dir* is already the
-    main repo or has no recognisable ``.git`` file.
-    """
-    git_path = work_dir / ".git"
-    if not git_path.is_file():
-        return None
-    try:
-        content = git_path.read_text(encoding="utf-8").strip()
-        if not content.startswith("gitdir:"):
-            return None
-        gitdir = Path(content.split(":", 1)[1].strip())
-        if not gitdir.is_absolute():
-            gitdir = (work_dir / gitdir).resolve()
-        # gitdir is e.g. /repo/.git/worktrees/<name> — walk up to .git/
-        for parent in gitdir.parents:
-            if parent.name == ".git":
-                return parent.parent
-    except (OSError, ValueError):
-        pass
-    return None
-
-
 def get_category_dirs(work_dir: Path | None = None) -> dict[str, tuple[str, ...]]:
     """Resolve category source prefixes in *work_dir*, merging with defaults.
 
@@ -67,7 +41,7 @@ def get_category_dirs(work_dir: Path | None = None) -> dict[str, tuple[str, ...]
     """
     parsed = read_source_dirs_from_toml(work_dir) if work_dir else None
     if parsed is None and work_dir is not None:
-        main_root = _resolve_main_repo_root(work_dir)
+        main_root = main_repository_root(work_dir)
         if main_root is not None:
             parsed = read_source_dirs_from_toml(main_root)
             if parsed is not None:

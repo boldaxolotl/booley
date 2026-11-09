@@ -395,8 +395,7 @@ def load_issued_snapshot(project_root: Path) -> Issuance:
     issuance = _load_stamp(_stamp_read_path(project))
     if issuance.project_root != str(project):
         raise RuntimeSpecError("host-issued spec stamp belongs to a different Project")
-    if issuance.keeper_image != keeper_image(project):
-        raise RuntimeSpecError("host-issued spec image keeper differs from this Project")
+    _require_project_keeper(project, issuance)
     return issuance
 
 
@@ -408,21 +407,31 @@ def load_recovery_snapshot(project_root: Path, spec: dict[str, Any], spec_path: 
         raise RuntimeSpecError(
             "prior Sandbox spec differs from its issuance stamp: " + differences
         )
-    expected_keeper = keeper_image(project)
-    if issuance.keeper_image != expected_keeper:
-        raise RuntimeSpecError("prior Sandbox keeper belongs to a different Project")
-    try:
-        retained_id = _resolve_image_id(expected_keeper)
-    except RuntimeSpecError as exc:
-        raise RuntimeSpecError("prior Sandbox Image keeper is missing") from exc
-    if retained_id != issuance.image_id:
-        raise RuntimeSpecError("prior Sandbox Image keeper points at different bytes")
+    _require_retained_keeper(project, issuance)
     return issuance
 
 
 def keeper_image(project_root: Path) -> str:
     """Private Docker tag retaining the image bytes for one Project issuance."""
     return keeper_image_for_identity(str(project_root.resolve()))
+
+
+def _require_project_keeper(project: Path, issuance: Issuance) -> str:
+    """Return this Project's keeper tag after proving *issuance* names it."""
+    expected = keeper_image(project)
+    if issuance.keeper_image != expected:
+        raise RuntimeSpecError("Sandbox Image keeper differs from this Project")
+    return expected
+
+
+def _require_retained_keeper(project: Path, issuance: Issuance) -> None:
+    """Prove the Project's keeper tag still retains the issued image bytes."""
+    keeper = _require_project_keeper(project, issuance)
+    retained_id = _keeper_image_id(keeper)  # a Docker failure raises, naming the keeper
+    if retained_id is None:
+        raise RuntimeSpecError("issued Sandbox Image keeper is missing")
+    if retained_id != issuance.image_id:
+        raise RuntimeSpecError("issued Sandbox Image keeper points at different bytes")
 
 
 def keeper_image_for_identity(project_root: str) -> str:
@@ -809,10 +818,10 @@ def _current_keeper_id(project: Path) -> str | None:
     from booley.runtime import interactive_docker as docker
 
     try:
-        return docker.image_id_strict(keeper_image(project))
+        return docker.image_id(keeper_image(project))
     except RuntimeError as exc:
         raise RuntimeSpecError(
-            "cannot snapshot the prior Sandbox Image keeper before issuance"
+            f"cannot snapshot the prior Sandbox Image keeper before issuance: {exc}"
         ) from exc
 
 
@@ -829,7 +838,7 @@ def _restore_keeper(project: Path, image_id: str | None) -> None:
         raise RuntimeSpecError(
             "failed issuance also prevented restoration of the prior Sandbox Image keeper"
         ) from exc
-    if _resolve_image_id(keeper) != image_id:
+    if _keeper_image_id(keeper) != image_id:
         raise RuntimeSpecError(
             "failed issuance restored the prior stamp but not its Sandbox Image keeper"
         )
@@ -875,15 +884,7 @@ def _validate_image_identity(project: Path, spec: dict[str, Any], stamp: Issuanc
             "Sandbox Image tag/digest has drifted since issuance: "
             + format_differences(expected, actual)
         )
-    expected_keeper = keeper_image(project)
-    if stamp.keeper_image != expected_keeper:
-        raise RuntimeSpecError("Sandbox Image keeper differs from this Project")
-    try:
-        retained_id = _resolve_image_id(stamp.keeper_image)
-    except RuntimeSpecError as exc:
-        raise RuntimeSpecError("issued Sandbox Image keeper is missing") from exc
-    if retained_id != stamp.image_id:
-        raise RuntimeSpecError("issued Sandbox Image keeper points at different bytes")
+    _require_retained_keeper(project, stamp)
 
 
 def _validate_grant_identity(
@@ -975,8 +976,8 @@ def _is_issuance_label(value: str) -> bool:
     return value.startswith(_ISSUANCE_LABEL_PREFIXES)
 
 
-def _spec_digest(spec: dict[str, Any]) -> str:
-    """Digest the sealed spec excluding only its self-describing label pairs."""
+def without_issuance_labels(spec: dict[str, Any]) -> dict[str, Any]:
+    """Copy *spec* without the ``--label`` pairs that describe its own issuance."""
     normalized = json.loads(json.dumps(spec))
     raw = normalized.get("runArgs")
     if not isinstance(raw, list):
@@ -995,7 +996,14 @@ def _spec_digest(spec: dict[str, Any]) -> str:
         cleaned.append(raw[index])
         index += 1
     normalized["runArgs"] = cleaned
-    encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
+    return normalized
+
+
+def _spec_digest(spec: dict[str, Any]) -> str:
+    """Digest the sealed spec excluding only its self-describing label pairs."""
+    encoded = json.dumps(
+        without_issuance_labels(spec), sort_keys=True, separators=(",", ":")
+    ).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -2001,10 +2009,31 @@ def _runtime_authority_error(spec: dict[str, Any], exc: Exception) -> RuntimeSpe
 def _resolve_image_id(image: str) -> str:
     from booley.runtime import interactive_docker as docker
 
-    value = docker.image_id(image)
+    try:
+        value = docker.image_id(image)
+    except docker.ImageInspectError as exc:
+        raise RuntimeSpecError(str(exc)) from exc
     if not value:
         raise RuntimeSpecError(f"cannot resolve Sandbox Image to an immutable ID: {image}")
     return value
+
+
+def _keeper_image_id(keeper: str) -> str | None:
+    """Return the keeper tag's image ID, ``None`` when the keeper is absent.
+
+    Unlike :func:`_resolve_image_id`, absence returns ``None`` instead of raising.
+    A Docker failure is never read as "absent": it raises ``RuntimeSpecError``
+    naming the keeper, so callers cannot report a missing keeper or retag one
+    because Docker was unreachable.
+    """
+    from booley.runtime import interactive_docker as docker
+
+    try:
+        return docker.image_id(keeper)
+    except docker.ImageInspectError as exc:
+        raise RuntimeSpecError(
+            f"cannot inspect issued Sandbox Image keeper {keeper}: {exc}"
+        ) from exc
 
 
 def _retain_issued_image(issuance: Issuance) -> None:
@@ -2016,17 +2045,14 @@ def _retain_issued_image(issuance: Issuance) -> None:
     """
     from booley.runtime import interactive_docker as docker
 
-    try:
-        retained_id = _resolve_image_id(issuance.keeper_image)
-    except RuntimeSpecError:
-        retained_id = None
+    retained_id = _keeper_image_id(issuance.keeper_image)
     if retained_id == issuance.image_id:
         return
     try:
         docker.tag_image(issuance.image_id, issuance.keeper_image)
     except RuntimeError as exc:
         raise RuntimeSpecError(str(exc)) from exc
-    if _resolve_image_id(issuance.keeper_image) != issuance.image_id:
+    if _keeper_image_id(issuance.keeper_image) != issuance.image_id:
         raise RuntimeSpecError("issued Sandbox Image keeper could not be verified")
 
 

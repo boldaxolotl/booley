@@ -68,7 +68,7 @@ def _issuance(project: Path, image_id: str = "sha256:prior") -> Issuance:
 def _write_restore_journal(
     config: Path,
     project: Path,
-    fixture: str = "restore_eligible_v1.json",
+    fixture: str = "restore_eligible_v2.json",
     replacement_issuance: Issuance | None = None,
 ) -> Path:
     root = config / "booley" / "eda" / "session-refresh"
@@ -102,7 +102,6 @@ def _write_restore_journal(
 def _commit_forward(path: Path, project: Path) -> None:
     document = json.loads(path.read_text(encoding="utf-8"))
     document["direction"] = "committed_forward"
-    document["phase"] = "verified"
     document["target_image_id"] = "sha256:fresh"
     document["target_payload_fingerprint"] = "payload-fresh"
     document["replacement_issuance"] = asdict(_issuance(project, "sha256:fresh"))
@@ -114,7 +113,6 @@ def _commit_forward(path: Path, project: Path) -> None:
 def _record_replacement_before_commit(path: Path, project: Path) -> Issuance:
     replacement = _issuance(project, "sha256:fresh")
     document = json.loads(path.read_text(encoding="utf-8"))
-    document["phase"] = "issued"
     document["target_image_id"] = "sha256:fresh"
     document["target_payload_fingerprint"] = "payload-fresh"
     document["replacement_issuance"] = asdict(replacement)
@@ -153,7 +151,6 @@ def _configure_interrupted_journal(path: Path, project: Path, state: str) -> Iss
         spec.write_text('{"image":"sha256:fresh"}\n', encoding="utf-8")
         return _record_replacement_before_commit(path, project)
     document = json.loads(path.read_text(encoding="utf-8"))
-    document["phase"] = "prepared" if state == "prepared" else "image_selected"
     if state == "publishing":
         document["target_image_id"] = "sha256:fresh"
         document["target_payload_fingerprint"] = "payload-fresh"
@@ -215,6 +212,7 @@ def test_fresh_recovery_restores_interrupted_park(tmp_path: Path, monkeypatch) -
         patch.object(sr, "restore_refresh_session") as restore_runtime,
         patch.object(sr, "verify_restored_refresh_session") as verify_runtime,
         patch.object(runtime_spec, "_resolve_image_id", return_value="sha256:prior"),
+        patch.object(runtime_spec, "_keeper_image_id", return_value="sha256:prior"),
         patch(
             "booley.runtime.session_spec.subprocess.run",
             return_value=SimpleNamespace(returncode=0, stderr=""),
@@ -263,6 +261,7 @@ def test_checked_in_committed_fixture_resumes_forward(
         lambda: {validator.parent.resolve(): validator.parent.parent.resolve()},
     )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:fresh")
+    monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:fresh")
     prepared, spec_path, replacement = issue_built(
         project,
         lambda _inputs: build_spec(
@@ -275,7 +274,7 @@ def test_checked_in_committed_fixture_resumes_forward(
     journal_path = _write_restore_journal(
         config,
         project,
-        "committed_forward_v1.json",
+        "committed_forward_v2.json",
         replacement,
     )
     created = Mock()
@@ -436,13 +435,21 @@ def test_coherent_replacement_resumes_and_commits_forward(tmp_path: Path, monkey
     assert not path.exists()
 
 
-def test_snapshot_restore_refuses_symlink_substitution(tmp_path: Path) -> None:
+@pytest.mark.parametrize("substituted", ["spec-file", "spec-directory"])
+def test_snapshot_restore_refuses_symlink_substitution(tmp_path: Path, substituted: str) -> None:
     project = tmp_path / "project"
-    spec = project / ".devcontainer" / "devcontainer.json"
-    spec.parent.mkdir(parents=True)
-    outside = tmp_path / "outside.json"
-    outside.write_text("outside\n", encoding="utf-8")
-    spec.symlink_to(outside)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_spec = outside / "devcontainer.json"
+    outside_spec.write_text("outside\n", encoding="utf-8")
+    if substituted == "spec-file":
+        spec = project / ".devcontainer" / "devcontainer.json"
+        spec.parent.mkdir(parents=True)
+        spec.symlink_to(outside_spec)
+    else:
+        project.mkdir()
+        (project / ".devcontainer").symlink_to(outside, target_is_directory=True)
+        spec = project / ".devcontainer" / "devcontainer.json"
     snapshot = SessionSpecSnapshot(
         spec,
         b'{"image":"sha256:prior"}\n',
@@ -456,7 +463,37 @@ def test_snapshot_restore_refuses_symlink_substitution(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="symlink"):
         session_refresh.restore_session_spec(project, snapshot)
 
-    assert outside.read_text(encoding="utf-8") == "outside\n"
+    assert outside_spec.read_text(encoding="utf-8") == "outside\n"
+
+
+def test_version_one_journal_is_rejected_and_kept(tmp_path: Path, monkeypatch) -> None:
+    """A version 1 journal (no target_wheel_sha256 / prepared_images) is unreadable."""
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    config = tmp_path / "config"
+    journal_path = _write_restore_journal(config, project)
+    document = json.loads(journal_path.read_text(encoding="utf-8"))
+    document["version"] = 1
+    del document["target_wheel_sha256"]
+    del document["prepared_images"]
+    journal_path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+
+    with (
+        patch.object(sr, "restore_refresh_session") as restore_runtime,
+        patch.object(sr, "verify_restored_refresh_session") as verify_runtime,
+        patch.object(session_refresh, "restore_session_spec") as restore_spec,
+        pytest.raises(
+            sr.SessionError,
+            match=r"cannot decode Session refresh journal.*unsupported version 1",
+        ),
+    ):
+        session_refresh.recover_project_locked(project)
+
+    assert journal_path.exists()
+    restore_spec.assert_not_called()
+    restore_runtime.assert_not_called()
+    verify_runtime.assert_not_called()
 
 
 def test_host_scan_rejects_journal_filename_identity_mismatch(tmp_path: Path, monkeypatch) -> None:
@@ -548,6 +585,7 @@ def test_recovery_tolerates_egress_network_identity_change(tmp_path: Path, monke
         patch.object(sr, "restore_refresh_session", side_effect=restore_with_recovery_only),
         patch.object(sr, "verify_restored_refresh_session", side_effect=verify_with_recovery_only),
         patch.object(runtime_spec, "_resolve_image_id", return_value="sha256:prior"),
+        patch.object(runtime_spec, "_keeper_image_id", return_value="sha256:prior"),
         patch(
             "booley.runtime.session_spec.subprocess.run",
             return_value=SimpleNamespace(returncode=0, stderr=""),
@@ -698,6 +736,7 @@ def test_recovery_snapshot_rejects_keeper_on_different_image(tmp_path: Path) -> 
         patch.object(runtime_spec, "_file_sha256", return_value=issuance.file_sha256),
         patch.object(runtime_spec, "_spec_digest", return_value=issuance.spec_sha256),
         patch.object(runtime_spec, "_resolve_image_id", return_value="sha256:different"),
+        patch.object(runtime_spec, "_keeper_image_id", return_value="sha256:different"),
         pytest.raises(runtime_spec.RuntimeSpecError, match=r"keeper.*different"),
     ):
         runtime_spec.load_recovery_snapshot(project, spec, spec_path)

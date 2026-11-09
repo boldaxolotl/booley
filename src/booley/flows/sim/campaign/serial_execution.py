@@ -8,7 +8,6 @@ and captures the engine-authorized private image as attempt-owned evidence.
 from __future__ import annotations
 
 import functools
-import hashlib
 import json
 import stat
 import threading
@@ -35,6 +34,8 @@ from booley.flows.sim.campaign.bundle import (
     authenticate_executable_snapshot,
     create_executable_snapshot,
 )
+from booley.flows.sim.campaign_files import document_digest
+from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.execution.contract import (
     PreSimEvidence,
     PreSimScopeStoppedError,
@@ -77,6 +78,7 @@ from .codec import (
     encode_bundle_build_result,
     encode_executable_snapshot,
     encode_simulator_bundle,
+    reads_campaign_records,
 )
 from .coordinator import (
     SerialWorkExecutor,
@@ -837,10 +839,13 @@ def _hook_infrastructure_outcome(
     )
 
 
+@reads_campaign_records
 def _recovered_shared_failure(directory: Path, result: BundleBuildResult) -> _SharedFailure:
     observation = cast(Mapping[str, object], result.document["observation"])
     detail = cast(Mapping[str, object], observation["detail"])
-    text = cast(str, detail.get("text", observation["message"]))
+    text = detail.get("text", observation["message"])
+    if not isinstance(text, str):
+        raise SimulationCampaignIntegrityError("shared build failure text must be a string")
     return _SharedFailure(
         directory,
         result,
@@ -1019,8 +1024,8 @@ def _publish_ready_build_result(
         "simulation_attempt_id": request.attempt_id,
     }
     build_document = build_attempt.document
-    inventory = _sha_value(artifacts)
-    snapshot_inventory = _sha_value(
+    inventory = document_digest(artifacts)
+    snapshot_inventory = document_digest(
         [item for item in artifacts if item["kind"] != "runtime_input"]
     )
     bundle = decode_simulator_bundle(
@@ -1092,8 +1097,8 @@ def _shared_bundle(request, attempt, build_id, bundle_id, artifacts) -> Simulato
         "tool_provenance": attempt.document["tool_provenance"],
         "created_at": _now(),
         "artifacts": artifacts,
-        "inventory_sha256": _sha_value(artifacts),
-        "snapshot_inventory_sha256": _sha_value(
+        "inventory_sha256": document_digest(artifacts),
+        "snapshot_inventory_sha256": document_digest(
             [item for item in artifacts if item["kind"] != "runtime_input"]
         ),
     }
@@ -1132,7 +1137,7 @@ def _shared_ready_result_document(
             "bundle_id": bundle_id,
             "manifest_path": bundle_path.relative_to(directory).as_posix(),
             "manifest_bytes": len(bundle_raw),
-            "manifest_sha256": _sha_evidence_bytes(bundle_raw),
+            "manifest_sha256": content_digest(bundle_raw),
             "sharing": "shared_variant",
             "artifacts": artifacts,
         },
@@ -1242,7 +1247,7 @@ def _ready_build_result(
             "bundle_id": bundle.document["bundle_id"],
             "manifest_path": bundle_path.relative_to(build_directory).as_posix(),
             "manifest_bytes": len(bundle_raw),
-            "manifest_sha256": _sha_evidence_bytes(bundle_raw),
+            "manifest_sha256": content_digest(bundle_raw),
             "sharing": "private_work_item",
             "artifacts": [dict(item) for item in bundle.document["artifacts"]],
         },
@@ -1474,9 +1479,7 @@ def _snapshot_result(
         if outcome.infrastructure_failure is not None
         else [_observation(test) for test in outcome.tests]
     )
-    state = (
-        "aborted" if outcome.infrastructure_failure is not None else _result_state(outcome.tests)
-    )
+    state = _settled_state(observations)
     publication_checkpoint("before:execution_evidence")
     evidence = _capture_outcome_evidence(request, outcome)
     publication_checkpoint("after:execution_evidence")
@@ -1806,12 +1809,31 @@ def _infrastructure_observations(
     ]
 
 
-def _result_state(tests: tuple[SimulationTestOutcome, ...]) -> str:
-    if any(test.termination != "completed" for test in tests):
+def _settled_state(observations: list[dict[str, object]]) -> str:
+    """Return the result state implied by ``observations``, settling them to match.
+
+    The campaign codec accepts only one pairing of result state and observations:
+    an ``aborted`` result carries no ``timeout`` or ``crash`` observation. So an
+    abort dominates: when any observation is ``aborted``, every ``timeout`` or
+    ``crash`` observation is rewritten in place to the aborted design matrix
+    (functional ``fail``, assertions ``not_observed``, no cycle count, detail
+    kept) and the state is ``aborted``. Otherwise the state is ``crash``, then
+    ``timeout``, then ``completed`` (``not_run`` counts as completed).
+    """
+    executions = {str(item["execution"]) for item in observations}
+    if "aborted" in executions:
+        for item in observations:
+            if item["execution"] in {"timeout", "crash"}:
+                item.update(
+                    execution="aborted",
+                    functional="fail",
+                    assertions="not_observed",
+                    cycle_count=None,
+                )
         return "aborted"
-    if any(test.crashed for test in tests):
+    if "crash" in executions:
         return "crash"
-    if any(test.timed_out for test in tests):
+    if "timeout" in executions:
         return "timeout"
     return "completed"
 
@@ -1859,7 +1881,7 @@ def _capture_private_image(
             {
                 "path": target.relative_to(destination).as_posix(),
                 "bytes": len(raw),
-                "sha256": _sha_evidence_bytes(raw),
+                "sha256": content_digest(raw),
                 "kind": kind,
             }
         )
@@ -1887,7 +1909,7 @@ def _capture_outcome_evidence(
                 {
                     "$schema": "booley.cocotb-campaign-transport/v1",
                     "source_bytes": len(source_raw),
-                    "source_sha256": _sha_evidence_bytes(source_raw),
+                    "source_sha256": content_digest(source_raw),
                     "source_observations": source_observations,
                     "observations": (
                         _infrastructure_observations(request, outcome)
@@ -1990,7 +2012,7 @@ def _record_ref(path: Path, root: Path, raw: bytes, kind: str, owner: str) -> di
     return {
         "path": path.relative_to(root).as_posix(),
         "bytes": len(raw),
-        "sha256": _sha_evidence_bytes(raw),
+        "sha256": content_digest(raw),
         "kind": kind,
         "owner": owner,
     }
@@ -2010,18 +2032,6 @@ def _regular_child(root: Path, relative: str) -> Path:
 
 def _create_immutable(path: Path, raw: bytes) -> None:
     durable_create(path, raw)
-
-
-def _sha_bytes(raw: bytes) -> str:
-    return "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
-
-
-def _sha_evidence_bytes(raw: bytes) -> str:
-    return "sha256:" + hashlib.sha256(raw).hexdigest()
-
-
-def _sha_value(value: object) -> str:
-    return _sha_bytes(canonical_json_bytes(value))
 
 
 def _now() -> str:
