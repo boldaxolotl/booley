@@ -721,11 +721,8 @@ class TestCocotbDryRun:
 
         (command,) = preview.commands
         work = launched_work(command[2])
-        assert (work.adapter, work.cocotb_module, work.tests) == (
-            "cocotb",
-            "test_demo",
-            ("a", "b", "c"),
-        )
+        assert (work.adapter, work.cocotb_module) == ("cocotb", "test_demo")
+        assert work.tests == ("a", "b", "c")
 
     def test_dry_run_batches_the_selected_cocotb_tests_into_one_work_item(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -7,8 +7,6 @@ from collections.abc import Sequence
 
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 
-_ADAPTER_MODULE_PREFIX = "booley.flows.sim.backends."
-
 
 def launched_work(command: Sequence[str] | str) -> PreparedSimulationWork:
     """Decode the document after ``-m booley.flows.sim.backends.<adapter>`` in *command*.
@@ -21,6 +19,6 @@ def launched_work(command: Sequence[str] | str) -> PreparedSimulationWork:
     if len(words) == 3 and words[1] == "-c":  # an ``sh -c <script>`` tuple
         words = shlex.split(words[2])
     for index in range(1, len(words) - 1):
-        if words[index - 1] == "-m" and words[index].startswith(_ADAPTER_MODULE_PREFIX):
+        if words[index - 1] == "-m" and words[index].startswith("booley.flows.sim.backends."):
             return decode_simulation_work(words[index + 1])
     raise AssertionError(f"no adapter launch in {command!r}")

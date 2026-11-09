@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from itertools import groupby
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -100,13 +101,8 @@ def _plusargs(command: tuple[str, ...]) -> list[str]:
 
 def _chain_steps(command: tuple[str, ...]) -> list[list[str]]:
     """The ``&&``-joined steps of a previewed ``sh -c`` chain, as shell words."""
-    steps: list[list[str]] = [[]]
-    for word in shlex.split(command[-1]):
-        if word == "&&":
-            steps.append([])
-        else:
-            steps[-1].append(word)
-    return steps
+    words = shlex.split(command[-1])
+    return [list(step) for is_join, step in groupby(words, "&&".__eq__) if not is_join]
 
 
 class TestVerilatorNativeSeed:
