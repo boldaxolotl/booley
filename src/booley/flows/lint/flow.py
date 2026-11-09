@@ -541,6 +541,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
     )
     code_modifying: bool = False
     satisfies: ClassVar[list[str]] = ["lint_clean"]
+    conventional_families: ClassVar[frozenset[str]] = frozenset({"lint_clean"})
 
     # The built-in path is make-driven end-to-end in the Sandbox.
 

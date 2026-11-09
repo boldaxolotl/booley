@@ -1163,6 +1163,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     # per-target timeout, matrix width, and baseline/current pass count.
     default_timeout: ClassVar[int] = 7200
     satisfies: ClassVar[list[str]] = ["synthesis_ok"]
+    conventional_families: ClassVar[frozenset[str]] = frozenset({"synthesis_ok"})
 
     # The built-in flow is make-driven: run_yosys_syn renders the build tree,
     # then results are interpreted from files under that same directory.

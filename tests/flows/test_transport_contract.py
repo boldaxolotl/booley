@@ -7,14 +7,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from booley.flows.base import BuiltinFlow
 from booley.flows.endpoint_state import EndpointState
 from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintFlow
+from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.verilator_identity import PINNED_VERILATOR
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.flow_adapter import flow_schema
+from tests.flows.invocation_doubles import prepare_as, replace_run
 from tests.flows.report_headline import assert_paired_headline
 
 FLOWS = (LintFlow, SimulateFlow, AsicSynthesizeFlow, FpgaImplFlow)
@@ -84,7 +87,7 @@ def test_typed_request_executes_without_constructing_a_parser(
     monkeypatch.setattr(
         argparse, "ArgumentParser", lambda **kwargs: pytest.fail("parser constructed")
     )
-    monkeypatch.setattr(flow, "_run", lambda: EndpointOutcome(detail={"evidence": "same"}))
+    replace_run(monkeypatch, flow, lambda: EndpointOutcome(detail={"evidence": "same"}))
     result = flow.execute(request)
     assert result.exit_code == 0
     assert result.outcome.detail["evidence"] == "same"
@@ -101,7 +104,7 @@ def test_flow_report_root_precedence(runtime, monkeypatch):
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     flow = LintFlow()
-    monkeypatch.setattr(flow, "_run", EndpointOutcome)
+    replace_run(monkeypatch, flow, EndpointOutcome)
     explicit = runtime / "explicit"
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime / "runtime"))
 
@@ -129,7 +132,7 @@ def test_adapter_report_root_wins_over_direct_default(runtime, monkeypatch):
             return ResolvedFlowAcceptance(ticket_backed=True)
 
     flow = LintFlow()
-    monkeypatch.setattr(flow, "_run", EndpointOutcome)
+    replace_run(monkeypatch, flow, EndpointOutcome)
     result = flow.execute(
         flow.request_type(target="demo", work_dir=runtime),
         adapter=RuntimeSelectingExecution(),
@@ -143,7 +146,9 @@ def test_direct_simulation_invocations_share_report_numbering(runtime, monkeypat
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     reserved = []
-    monkeypatch.setattr(SimulateFlow, "prepare_simulation_endpoint", lambda self: None)
+    monkeypatch.setattr(
+        SimulateFlow, "prepare_endpoint_invocation", BuiltinFlow.prepare_endpoint_invocation
+    )
     monkeypatch.setattr(SimulateFlow, "prepare_target_endpoint", lambda self: None)
 
     def run(session):
@@ -172,7 +177,7 @@ def test_uninitialized_flow_fails_before_state_or_execution(runtime, monkeypatch
     monkeypatch.setattr(
         EndpointState, "read_state", lambda self: pytest.fail("loaded state before report root")
     )
-    monkeypatch.setattr(flow, "_run", lambda: pytest.fail("executed uninitialized Flow"))
+    replace_run(monkeypatch, flow, lambda: pytest.fail("executed uninitialized Flow"))
 
     result = flow.execute(flow.request_type(target="demo", work_dir=uninitialized))
 
@@ -244,7 +249,7 @@ def test_structured_and_cli_paths_preserve_acceptance_before_save(flow_type, run
                 criterion_key=key, criterion_met=True, detail={"evidence": "identical"}
             )
 
-        monkeypatch.setattr(flow, "_run", run)
+        replace_run(monkeypatch, flow, run)
         if direct:
             result = flow.execute(
                 flow.request_type(target="demo", work_dir=runtime),
@@ -310,7 +315,7 @@ def test_simulation_coverage_run_is_not_binding_gated(runtime, monkeypatch):
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
     flow = SimulateFlow()
     sentinel = EndpointOutcome(exit_code=2, report_text="coverage preparation refusal")
-    monkeypatch.setattr(flow, "prepare_simulation_endpoint", lambda: sentinel)
+    prepare_as(monkeypatch, flow, sentinel)
     monkeypatch.setattr(
         EndpointState, "_acquire_job_slot", lambda self: pytest.fail("admitted before preparation")
     )
@@ -381,7 +386,7 @@ def test_acceptance_failures_keep_their_distinct_persistence_semantics(
         flow.set_criterion("lint_clean_demo", True)
         return EndpointOutcome()
 
-    monkeypatch.setattr(flow, "_run", run)
+    replace_run(monkeypatch, flow, run)
     monkeypatch.setattr(DevelopmentState, "save", save_state)
     monkeypatch.setattr(
         EndpointState,
@@ -546,7 +551,7 @@ def test_repeated_typed_calls_get_fresh_invocation_metadata(runtime, monkeypatch
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     flow = LintFlow()
-    monkeypatch.setattr(flow, "_run", EndpointOutcome)
+    replace_run(monkeypatch, flow, EndpointOutcome)
     flow.execute_cli(["--target", "demo"])
     first_id = flow._invocation_id
     flow._eda_tool = "previous tool"
@@ -575,7 +580,7 @@ def test_typed_failure_releases_admission_and_restores_stdout(failure, runtime, 
     def run():
         raise failure("interrupted execution")
 
-    monkeypatch.setattr(flow, "_run", run)
+    replace_run(monkeypatch, flow, run)
     stdout = sys.stdout
     request = flow.request_type(target="demo", work_dir=runtime)
     if failure is KeyboardInterrupt:
@@ -595,7 +600,7 @@ def test_flow_exception_produces_actionable_report_without_console_traceback(
     def fail():
         raise ValueError("boom")
 
-    monkeypatch.setattr(flow, "_run", fail)
+    replace_run(monkeypatch, flow, fail)
     result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
 
     assert result.exit_code == 2
@@ -662,7 +667,7 @@ def test_partial_evaluation_final_report_and_completion(
         flow.set_criterion(f"{family}_first", met)
         raise RuntimeError("second workload infrastructure failed")
 
-    monkeypatch.setattr(flow, "_run", run)
+    replace_run(monkeypatch, flow, run)
     result = flow.execute(flow.request_type(target=target, work_dir=runtime))
     expected = (f"{family}_first", met) if target == "first" else ("", None)
     report = _assert_headline(result, runtime / "flow-reports", flow.name, expected, events)
@@ -682,7 +687,7 @@ def test_reused_endpoint_resets_evaluation_before_early_gate(
         flow.set_criterion("lint_clean_first", True)
         return EndpointOutcome()
 
-    monkeypatch.setattr(flow, "_run", run)
+    replace_run(monkeypatch, flow, run)
     request = flow.request_type(target="first", work_dir=runtime)
     first = flow.execute(request)
     _assert_headline(first, runtime / "flow-reports", "lint", ("lint_clean_first", True))
@@ -734,7 +739,7 @@ def test_candidate_mapping_excludes_baseline_prerequisite(
         {"candidate": ["smoke"]},
     )
     flow = SimulateFlow()
-    monkeypatch.setattr(flow, "prepare_simulation_endpoint", lambda: prepared)
+    prepare_as(monkeypatch, flow, SimulationCampaignInvocation(flow, prepared))
     monkeypatch.setattr(EndpointState, "admission", lambda *_args: nullcontext())
 
     def run(*_args):
@@ -768,7 +773,7 @@ def test_frozen_candidate_bindings_do_not_shrink_after_partial_evaluation(
         flow.set_criterion(f"{family}_first", False)
         return EndpointOutcome(exit_code=2)
 
-    monkeypatch.setattr(flow, "_run", run)
+    replace_run(monkeypatch, flow, run)
     result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
     assert result.exit_code == 2
     _assert_headline(result, runtime / "flow-reports", flow.name, ("", None))
@@ -799,7 +804,7 @@ def test_override_freezes_parameter_bound_candidate_criteria(
         flow.set_criterion("sim_pass_candidate", True)
         return EndpointOutcome(exit_code=2)
 
-    monkeypatch.setattr(flow, "_run", run)
+    replace_run(monkeypatch, flow, run)
     result = flow.execute(flow.request_type(target="candidate", work_dir=runtime))
     assert result.exit_code == 2
     _assert_headline(result, runtime / "flow-reports", "sim", ("", None))
@@ -889,7 +894,7 @@ def test_alias_first_headline_ignores_family_key_acceptance_also_binds(
         flow.set_criterion("lint_clean_first", met)
         return EndpointOutcome()
 
-    monkeypatch.setattr(flow, "_run", run)
+    replace_run(monkeypatch, flow, run)
     result = flow.execute(flow.request_type(target="first", work_dir=runtime))
     _assert_headline(result, runtime / "flow-reports", "lint", ("lint_clean_atomic", met))
     assert flow.state.criteria["lint_clean"].met is False
@@ -924,7 +929,9 @@ def test_prepared_identity_partial_report_is_null(
     _report_targets(runtime, flow=flow_type.name)
     flow = flow_type()
     if flow_type is SimulateFlow:
-        monkeypatch.setattr(flow_type, "prepare_simulation_endpoint", lambda self: None)
+        monkeypatch.setattr(
+            flow_type, "prepare_endpoint_invocation", BuiltinFlow.prepare_endpoint_invocation
+        )
 
     def run(self):
         self.set_criterion(f"{family}_first", met)
