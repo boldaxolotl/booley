@@ -2,8 +2,8 @@
 
 from dataclasses import replace
 
-from booley.flows.sim.coverage_campaign import freeze_coverage_mapping
 from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
+from booley.flows.sim.coverage_json import freeze_coverage_mapping
 from booley.flows.sim.coverage_source_gaps import GAP_CODE, source_gap_report_lines
 from booley.flows.sim.coverage_transaction import run_coverage_target
 from tests.flows.sim.test_coverage_transaction import NativeExecution, Progress, gap_plan
