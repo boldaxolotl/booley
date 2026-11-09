@@ -2255,11 +2255,12 @@ def _poll_blocked_flow(
             active = report["active"][0]
             assert active["stage"] == "executing"
             assert active["log"]["live"] is True
-            assert active["log"]["path"].endswith("execution-evidence/run.log")
+            assert Path(active["log"]["path"]).parts[-2:] == ("execution-evidence", "run.log")
             assert "passed" not in payload.structured_content
         finally:
             release.set()
-            future.result(timeout=30)
+            # The released run must finish cleanly, not merely stop blocking.
+            assert future.result(timeout=30).result.exit_code == 0
 
 
 def test_oversized_live_checkpoint_preserves_owned_active_log_pointer():

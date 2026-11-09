@@ -89,7 +89,6 @@ def run_campaign_sim(
     *,
     skip: dict[str, list[str]] | None = None,
     build: SubprocessResult | None = None,
-    adapter_result: AdapterResult | None = None,
     report_dir: Path | None = _DEFAULT_REPORT_DIR,
     project_data: Path | None = None,
     adapter: Any = None,
@@ -99,9 +98,8 @@ def run_campaign_sim(
 
     *targets* maps each Target to its tests. *process* is the canned simulator
     result (or a callable of ``(target, tests)``); *build* answers the build
-    stage (default: success); *adapter_result* overrides the adapter result
-    derived from *process*. A timed-out launch writes no adapter result (the
-    wrapper killed the adapter). ``report_dir=None`` keeps the endpoint default
+    stage (default: success). The adapter result is derived from *process*; a
+    timed-out launch writes none (the wrapper killed the adapter). ``report_dir=None`` keeps the endpoint default
     report root; *project_data* places ``.booley`` outside *tmp_path*.
     """
     from booley.runtime.booley_dir import reset_cache
@@ -128,7 +126,7 @@ def run_campaign_sim(
     # Undo the fakes before returning: an autouse fixture may have patched the same
     # class attributes, and a test-long undo would restore its patch after it exits.
     with monkeypatch.context() as scoped:
-        _install_fakes(scoped, process, build, adapter_result, launched)
+        _install_fakes(scoped, process, build, launched)
         result = flow.execute(
             SimRequest(work_dir=tmp_path, report_dir=report_dir, **request),
             adapter=adapter,
@@ -140,7 +138,6 @@ def _install_fakes(
     monkeypatch: Any,
     process: SubprocessResult | ProcessFactory,
     build: SubprocessResult | None,
-    adapter_result: AdapterResult | None,
     launched: list[tuple[str, tuple[str, ...]]],
 ) -> None:
     def prepare_build(self: SimulationExecution, handle: Any) -> Any:
@@ -196,11 +193,8 @@ def _install_fakes(
         selected = identity.selected_tests
         launched.append((target, selected))
         canned = process(target, selected) if callable(process) else process
-        if adapter_result is not None or not canned.timed_out:
-            write_adapter_result(
-                identity,
-                adapter_result or adapter_result_for_test_process(selected, canned),
-            )
+        if not canned.timed_out:
+            write_adapter_result(identity, adapter_result_for_test_process(selected, canned))
         return canned
 
     monkeypatch.setattr(SimulationExecution, "_prepare_build", prepare_build)
