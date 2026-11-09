@@ -802,9 +802,7 @@ def test_new_journal_document_has_no_phase(tmp_path, monkeypatch):
 
     session_refresh._write_journal(journal)
 
-    path = session_refresh._journal_store().root / session_refresh._journal_name(
-        tmp_path.resolve()
-    )
+    path = session_refresh.journal_store().path(str(tmp_path.resolve()))
     document = json.loads(path.read_text(encoding="utf-8"))
     assert document["version"] == 2
     assert "phase" not in document

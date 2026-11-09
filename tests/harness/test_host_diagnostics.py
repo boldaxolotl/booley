@@ -1,7 +1,10 @@
 """Host diagnostics use Bootstrap observations without initiating preparation."""
 
+import hashlib
+import json
 import subprocess
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -9,7 +12,13 @@ from booley.audit import host_environment
 from booley.audit.diagnostic_results import Severity
 from booley.config.host_config import SandboxHostPolicy
 from booley.harness import host_diagnostics
-from booley.runtime import runtime_context
+from booley.runtime import (
+    issuance_invalidation,
+    runtime_context,
+    session_admission,
+    session_issuance,
+    session_refresh,
+)
 from booley.runtime.host_install import HostInstallationIdentity
 
 
@@ -222,3 +231,49 @@ def test_host_diagnostics_preserves_environment_failures_and_warning_identity(
     actual = next(f for f in report.findings if f.message == observation.message)
     assert actual.severity == severity.value
     assert (actual.fix, actual.check_id) == (observation.fix, observation.check_id)
+
+
+@pytest.mark.parametrize("store_name", ["issuance", "admission", "refresh", "invalidation"])
+def test_host_doctor_reports_session_store_file_named_for_another_root(
+    monkeypatch, tmp_path: Path, store_name
+):
+    """A Session store file not named for the Project Root it holds fails Doctor read-only."""
+    xdg_home = tmp_path / "config"
+    xdg_home.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+    module, attribute = {
+        "issuance": (session_issuance, "stamp_store"),
+        "admission": (session_admission, "claim_store"),
+        "refresh": (session_refresh, "journal_store"),
+        "invalidation": (issuance_invalidation, "journal_store"),
+    }[store_name]
+    store = getattr(module, attribute)()
+    store.private.ensure_directory()
+    held_root = str(tmp_path / "project")
+    misnamed = store.private.root / (hashlib.sha256(b"another-root").hexdigest() + ".json")
+    store.private.atomic_write_text(misnamed.name, json.dumps({"project_root": held_root}))
+    before = misnamed.read_bytes()
+
+    bootstrap = host_diagnostics.bootstrap
+    monkeypatch.setattr(
+        bootstrap, "reconcile_bootstrap", lambda intent: bootstrap.BootstrapResult(intent, ())
+    )
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    identity = _identity()
+    monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
+    monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: identity)
+    monkeypatch.setattr(
+        host_environment,
+        "probe_host_clock",
+        lambda: host_environment.EnvironmentFinding(
+            host_environment.EnvironmentSeverity.SKIP, "offline"
+        ),
+    )
+
+    result = host_diagnostics.inspect_host()
+
+    failures = [f for f in result.report.findings if f.severity is Severity.FAIL]
+    assert len(failures) == 1
+    assert str(misnamed) in failures[0].message
+    assert "booley init --seed --project" in failures[0].message
+    assert misnamed.read_bytes() == before

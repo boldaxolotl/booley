@@ -503,7 +503,7 @@ def test_host_scan_rejects_journal_filename_identity_mismatch(tmp_path: Path, mo
     path.rename(wrong)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
 
-    with pytest.raises(sr.SessionError, match=r"filename.*Project identity"):
+    with pytest.raises(sr.SessionError, match="identity mismatch"):
         session_refresh.recover_all_locked()
 
     assert wrong.is_file()

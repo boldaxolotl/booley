@@ -17,6 +17,14 @@ Packaged release history starts at 0.2.7. For older changes, see
   timed-out conversion reports a trace incident: a failing simulation stays
   failed, a passing one is reported inconclusive, and neither is `timeout`.
   Icarus no longer reports an unconverted raw VCD as a waveform.
+- Doctor now scans the per-Project Session stores on the host and fails when a
+  file is not named for the Project Root it holds, naming the file and its
+  repair. On Windows the stores now name a Project Root without regard to
+  case, so Sandbox issuance, pending refresh, and pending invalidation files
+  written by earlier releases are not migrated: each fails closed once,
+  naming the file. Remove it, then run `booley init --seed --project <root>`
+  on the host to reissue the Sandbox spec. Linux and macOS file names do not
+  change.
 
 ## 0.4.0 - 04 NOV 2026
 

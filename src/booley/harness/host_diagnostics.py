@@ -8,8 +8,15 @@ from dataclasses import dataclass
 
 from booley.audit import host_environment
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
+from booley.core.private_store import ProjectStore
 from booley.harness import bootstrap
-from booley.runtime import runtime_context, session_admission
+from booley.runtime import (
+    issuance_invalidation,
+    runtime_context,
+    session_admission,
+    session_issuance,
+    session_refresh,
+)
 from booley.runtime.host_install import (
     HostInstallationError,
     current_host_installation,
@@ -61,7 +68,32 @@ def inspect_host() -> HostDiagnosticResult:
         if result.policy is not None:
             _inspect_sandbox_egress(result.policy.egress, docker_ready, report)
         _add_environment(host_environment.probe_host_clock(), report)
+        _inspect_session_stores(report)
     return HostDiagnosticResult(report.report(), docker_exe)
+
+
+def _inspect_session_stores(report: Findings) -> None:
+    """Scan each per-Project Session store read-only for files that fail closed at use."""
+    stores: tuple[ProjectStore, ...] = (
+        session_issuance.stamp_store(),
+        session_admission.claim_store(),
+        session_refresh.journal_store(),
+        issuance_invalidation.journal_store(),
+    )
+    count = 0
+    healthy = True
+    for store in stores:
+        try:
+            count += len(store.scan())
+        except store.private.error_type as exc:
+            # The message carries its own repair (reissue, chmod, or the stray path).
+            report.fail(
+                f"Session store check: {exc}",
+                "follow the repair in the message, then rerun `booley doctor`",
+            )
+            healthy = False
+    if healthy:
+        report.pass_(f"Session stores: {count} per-Project file(s) match their Project Roots")
 
 
 def _inspect_sandbox_egress(host_egress: str, docker_ready: bool, report: Findings) -> None:
