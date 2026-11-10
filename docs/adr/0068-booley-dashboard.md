@@ -328,12 +328,16 @@ cannot identify every session or remain meaningful across Dashboard restarts.
   through process attribution so registration can migrate a previous thread row
   and establish handle aliases. Historical allocations are never renumbered.
   Migration retains the predecessor's worktree when a call omits `work_dir`.
-  A thread-ownership alias redirects delayed peerless observations only while
-  that marked process is proven running in the same namespace; cached outcomes
-  are normalized again before observer ordering.
+  No alias records thread ownership. A late peerless completion that began
+  before tab ownership lands on the thread row until the next attributed call
+  folds it into the tab. Until then its own response may carry a false
+  shared-worktree warning and the Dashboard may briefly show two rows with the
+  tab's handle.
   Marked process rows follow process liveness rather than thread quiet expiry.
 - **Activity boundaries.** The lifecycle hook uses the same process identity
-  and validates the same handle-map contract as the registry. Only the main
+  and reads the handle map's aliases advisorily (bounded parse): `HandleStore`
+  owns validation, and a marker exists only where it accepted the map. A map the
+  hook cannot read keeps thread attribution. Only the main
   conversation's events update that tab's activity. A separately launched inner
   Codex CLI, such as `codex exec`, retains its own thread attribution and cannot
   update the outer tab's signal. The nearest CLI must belong to the marked

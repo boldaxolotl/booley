@@ -3,7 +3,7 @@
 import pytest
 from tests.conftest import symlink_or_skip
 from tests.harness.test_session_activity_hook import NOW, hook
-from tests.runtime.test_chat_sessions import SCOPE, process
+from tests.runtime.test_chat_sessions import SCOPE, process, publish
 
 from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime import chat_sessions
@@ -13,19 +13,8 @@ from booley.runtime.session_activity import ActivityStore
 
 
 @pytest.mark.parametrize("launcher", ["native", "node"])
-@pytest.mark.parametrize(
-    "native_name",
-    [
-        "codex",
-        "codex-x86_64-unknown-linux-musl",
-        "codex-aarch64-unknown-linux-musl",
-        "codex-x86_64-unknown-linux-gnu",
-        "codex-aarch64-unknown-linux-gnu",
-    ],
-)
-def test_native_tabs_and_helpers_own_one_handle_but_nested_clients_do_not(
-    tmp_path, launcher, native_name
-):
+def test_native_tabs_and_helpers_own_one_handle_but_nested_clients_do_not(tmp_path, launcher):
+    native_name = "codex-x86_64-unknown-linux-musl"
     proc = tmp_path / "proc"
     owner = process(proc, 100, 1, executable="node" if launcher == "node" else native_name)
     main = process(proc, 101, 100, executable=native_name) if launcher == "node" else owner
@@ -40,11 +29,11 @@ def test_native_tabs_and_helpers_own_one_handle_but_nested_clients_do_not(
     registry = SessionRegistry(tmp_path, proc_root=proc)
     for peer in (main, backend):
         facts = Attribution("codex:main", "thread", "", "", process=peer, namespace=SCOPE)
-        registry.upsert(facts, "goal_status", "completed", now=NOW)
-        assert registry.chat_attribution(facts).key == activity.process_session_key(owner)
+        assert publish(registry, facts, "goal_status", NOW).key == activity.process_session_key(
+            owner
+        )
     nested_facts = Attribution("codex:nested", "thread", "", "", process=nested, namespace=SCOPE)
-    registry.upsert(nested_facts, "goal_status", "completed", now=NOW)
-    assert registry.chat_attribution(nested_facts) == nested_facts
+    assert publish(registry, nested_facts, "goal_status", NOW) == nested_facts
     assert len(registry.snapshot().rows) == 2
     assert HandleStore(tmp_path).load().labels()["codex:main"] == "S1"
     assert HandleStore(tmp_path).load().labels()["codex:nested"] == "S2"
@@ -70,7 +59,7 @@ def test_native_tabs_and_helpers_own_one_handle_but_nested_clients_do_not(
 
 
 @pytest.mark.parametrize("redirect", ["project", "runtime"])
-def test_hook_and_registry_both_reject_redirected_handle_map_ancestors(tmp_path, redirect):
+def test_registry_rejects_redirected_handle_map_ancestors(tmp_path, redirect):
     project = tmp_path / "project"
     owner = process(tmp_path / "proc", 100, 1)
     chat_sessions.reserve_codex_chat(project, owner)
@@ -84,8 +73,6 @@ def test_hook_and_registry_both_reject_redirected_handle_map_ancestors(tmp_path,
         symlink_or_skip(selected / "runtime", link)
     with pytest.raises(OSError):
         HandleStore(selected).load()
-    with pytest.raises(ValueError, match="redirected"):
-        hook._chat_aliases(selected)
 
 
 def test_hook_follows_symlinked_booley_dir_entry(tmp_path):

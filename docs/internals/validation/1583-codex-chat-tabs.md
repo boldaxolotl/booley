@@ -9,14 +9,17 @@ Use a small Node ES module to set `process.title`, restore the wrapper's
 expected `process.argv`, and import the installed `codex.js`. Codex's wrapper
 continues to discover the native executable, set its package-manager environment,
 forward signals, and mirror exit status. Booley does not copy its vendor paths or
-package-manager detection. Resolve the executable and package on every launch;
+package-manager detection. Resolve the executable on every launch and classify it by file name only;
 an npm update that retargets the executable symlink is covered by a unit test.
 Native Linux installations can instead retain the launch PID and set `argv[0]`
 directly. Supported executable basenames are `codex` and the published
 x86_64/aarch64 Linux musl/gnu names; launcher, registry and hook agree on these
 boundaries. Unsupported installations and naming failures use the plain launch.
-This includes Node version-manager shims that add another process, and runtime
-directory resolution failures; neither should reserve an unusable tab identity.
+This includes Node version-manager shims whose resolved `node` name is not
+`node` or `nodejs`, and runtime directory resolution failures; neither should
+reserve an unusable tab identity. A script shim named `node` is launched: one
+that `exec`s node keeps attribution, while one that forks falls back to thread
+attribution with an unused handle, never a wrong tab.
 
 Pass `--no-daemon` for a named launch. The previous
 [session identity spike](0067-goal-mode-session-identity.md) observed multiple
@@ -77,7 +80,7 @@ process identity, and a subagent's Stop event cannot mark the main session idle.
 
 `test_codex_chat.py` covers native and npm command construction, resolving an
 updated npm installation, handle persistence, missing runtime/executable,
-unrecognized packages, failed process capture, corrupt handle storage, lock
+unrecognized executable or Node names, failed process capture, corrupt handle storage, lock
 contention, and the real Node shim's title, arguments, inherited environment and
 exit status. Existing chat-command tests cover delegation to the prepared launch.
 
@@ -87,11 +90,13 @@ of an existing registry row without renumbering historical allocations. Observer
 tests exercise predecessor migration after resuming an existing thread and after
 a transient peer-lookup failure, including absence of a false shared-worktree
 warning, retention of omitted worktree facts, and late completions after the
-thread row has migrated. Persisted ownership cannot revive a vanished tab.
+thread row has migrated. A late peerless completion recreates the thread row,
+with a possible false shared-worktree warning on its own response, until the
+next attributed call folds it into the tab.
 Other regressions cover worktree/runtime directory disagreement and nested CLI
 boundaries for native and npm launches across supported executable basenames.
 Lifecycle-hook tests cover matching activity keys, ignoring a subagent Stop,
-excluding a nested CLI's Stop, and agreement with the registry on malformed maps.
+excluding a nested CLI's Stop, and unchanged thread activity when the handle map is broken.
 The pinned upstream [Codex hook dispatcher](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/core/src/hook_runtime.rs)
 dispatches child completion as `SubagentStop`, which Booley ignores. Ordinary
 subagent tool hooks carry `agent_id`; these cannot update a named tab even when

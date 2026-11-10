@@ -66,6 +66,7 @@ MAX_SIGNALS = 4096
 MAX_TOOL_NAME = 128
 MAX_THREAD_ID = 1024
 MAX_PARENT_DIRS = 128
+MAX_HANDLE_MAP_BYTES = 16 * 1024 * 1024
 BOOLEY_DIR_NAME = ".booley"
 CODEX_NATIVE_NAMES = frozenset(
     {
@@ -150,34 +151,19 @@ def _codex_key(payload: Mapping[str, object]) -> str | None:
     return None
 
 
-def _chat_aliases(project: Path) -> dict[str, str]:
-    """Validate the session-map contract of runtime.handles.HandleStore, but stricter.
+def _chat_aliases(project: Path) -> Mapping[str, object]:
+    """Advisory read of the handle map's aliases; ``HandleStore`` owns validation.
 
-    Only the Booley Directory entry itself (*project*) may be a link, as in the host
-    store: the Sandbox ``BOOLEY_DIR=/booley-project`` is an image symlink to
-    ``/work/.booley``, and a host ``.booley`` may be a link. Links above or below
-    that entry stay refused. This file runs as ``python3 -I -S`` without Booley
-    imports, so the rule of ``booley.core.booley_dir_links`` is inlined.
+    A ``chat:codex:`` marker exists only where the host store accepted the map when
+    the tab was launched, so this read needs only a bounded parse. Oversized or
+    misshapen documents yield no aliases (thread attribution); unreadable or
+    non-JSON files raise to the caller, which does the same.
     """
-    path = project / "runtime/sessions/handles/map.json"
-    if any(part.is_symlink() for part in (path, *path.parents) if part != project):
-        raise ValueError("handle map is redirected")
-    with path.open("rb") as stream:
-        raw = stream.read(16 * 1024 * 1024 + 1)
-    if len(raw) > 16 * 1024 * 1024:
-        raise ValueError("handle map exceeds size bound")
-    data = json.loads(raw)
-    if not isinstance(data, dict) or type(data.get("schema")) is not int or data["schema"] != 1:
-        raise ValueError("unsupported handle map schema")
-    aliases, entries = data.get("aliases"), data.get("entries")
-    if not isinstance(aliases, dict) or not isinstance(entries, dict):
-        raise ValueError("invalid handle map")
-    for mapping in (entries, aliases):
-        if any(not isinstance(k, str) or not isinstance(v, str) for k, v in mapping.items()):
-            raise ValueError("handle mapping must contain strings")
-    if type(data.get("next_number")) is not int:
-        raise ValueError("invalid handle counter")
-    return aliases
+    with (project / "runtime/sessions/handles/map.json").open("rb") as stream:
+        raw = stream.read(MAX_HANDLE_MAP_BYTES + 1)
+    data = json.loads(raw) if len(raw) <= MAX_HANDLE_MAP_BYTES else None
+    aliases = data.get("aliases") if isinstance(data, dict) else None
+    return aliases if isinstance(aliases, dict) else {}
 
 
 def _codex_process(proc_root: Path, pid: int) -> tuple[str, bool]:

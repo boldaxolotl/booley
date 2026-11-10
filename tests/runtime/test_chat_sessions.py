@@ -37,6 +37,13 @@ def process(
     return ProcessIdentity(pid, SCOPE, start)
 
 
+def publish(registry, facts, tool, now):
+    """Store a call as the observer does: resolve chat ownership, then upsert."""
+    resolved = registry.chat_attribution(facts)
+    registry.upsert(resolved, tool, "completed", now=now, predecessor_keys=(facts.key,))
+    return resolved
+
+
 def test_two_tabs_carry_handles_without_allocating_subagent_ids(tmp_path):
     proc = tmp_path / "proc"
     first, second = (
@@ -49,8 +56,7 @@ def test_two_tabs_carry_handles_without_allocating_subagent_ids(tmp_path):
     registry = SessionRegistry(tmp_path, proc_root=proc)
     for key, peer in [("main", first_peer), ("child", first_peer), ("other", second_peer)]:
         facts = Attribution("codex:" + key, "thread", "", "", process=peer, namespace=SCOPE)
-        registry.upsert(facts, "sim", "completed", now=100)
-        resolved = registry.chat_attribution(facts)
+        resolved = publish(registry, facts, "sim", 100)
         assert resolved.key == process_session_key(first if peer == first_peer else second)
         assert resolved.kind == "process"
     labels = HandleStore(tmp_path).load().labels()
@@ -72,22 +78,9 @@ def test_ordinary_codex_does_not_inherit_an_unmarked_ancestor_handle(tmp_path):
     registry = SessionRegistry(tmp_path, proc_root=proc)
     facts = Attribution("codex:direct", "thread", "", "", process=peer, namespace=SCOPE)
     assert registry.preserve_worktree(facts) == facts
-    registry.upsert(facts, "sim", "completed", now=100)
+    assert registry.chat_attribution(facts) == facts
+    publish(registry, facts, "sim", 100)
     assert HandleStore(tmp_path).load().labels()[facts.key] == "S2"
-
-
-def test_pid_reuse_unreadable_procfs_and_walk_bound_do_not_guess(tmp_path, monkeypatch):
-    proc = tmp_path / "proc"
-    parent, peer = process(proc, 100, 1, executable="node"), process(proc, 101, 100)
-    chat_sessions.reserve_codex_chat(tmp_path, parent)
-    assert chat_sessions.codex_chat_owner(tmp_path, peer, proc_root=proc) == parent
-    monkeypatch.setattr(chat_sessions, "MAX_ANCESTORS", 1)
-    assert chat_sessions.codex_chat_owner(tmp_path, peer, proc_root=proc) is None
-    monkeypatch.setattr(chat_sessions, "MAX_ANCESTORS", 32)
-    process(proc, 100, 1, start=8)
-    assert chat_sessions.codex_chat_owner(tmp_path, peer, proc_root=proc) is None
-    (proc / "101/stat").unlink()
-    assert chat_sessions.codex_chat_owner(tmp_path, peer, proc_root=proc) is None
 
 
 def test_existing_thread_allocation_is_not_renumbered_when_a_tab_takes_ownership(tmp_path):
@@ -96,9 +89,9 @@ def test_existing_thread_allocation_is_not_renumbered_when_a_tab_takes_ownership
     peer = process(proc, 101, 100)
     registry = SessionRegistry(tmp_path, proc_root=proc)
     facts = Attribution("codex:main", "thread", "", "", process=peer, namespace=SCOPE)
-    registry.upsert(facts, "sim", "completed", now=100)
+    publish(registry, facts, "sim", 100)
     assert chat_sessions.reserve_codex_chat(tmp_path, owner) == "S2"
-    registry.upsert(facts, "sim", "completed", now=101)
+    publish(registry, facts, "sim", 101)
     # Existing allocations are never renumbered by handle alias creation.
     assert HandleStore(tmp_path).load().labels()[facts.key] == "S1"
     assert [row.attribution.key for row in registry.snapshot().rows] == [
@@ -120,31 +113,36 @@ def test_corrupt_handles_preserve_thread_presence_and_report_the_failure(tmp_pat
     assert "Session handle unavailable" in caplog.text
 
 
-def test_registry_keeps_late_peerless_updates_on_the_migrated_owner(tmp_path):
+def test_late_peerless_thread_row_folds_into_the_tab_on_the_next_attributed_call(tmp_path):
     proc = tmp_path / "proc"
     owner = process(proc, 100, 1, executable="node")
     peer = process(proc, 101, 100)
     registry = SessionRegistry(tmp_path, proc_root=proc)
     earlier = Attribution("codex:main", "thread", "/repo", "git:known", namespace=SCOPE)
-    registry.upsert(earlier, "first", "started", now=100)
+    publish(registry, earlier, "first", 100)
     chat_sessions.reserve_codex_chat(tmp_path, owner)
     current = Attribution("codex:main", "thread", "", "", process=peer, namespace=SCOPE)
-    registry.upsert(current, "second", "completed", now=101)
-    registry.upsert(earlier, "first", "completed", now=102)
+    publish(registry, current, "second", 101)
+    assert [row.attribution.key for row in registry.snapshot().rows] == [
+        process_session_key(owner)
+    ]
+    # A late peerless completion recreates the thread row until the next attributed call.
+    publish(registry, earlier, "first", 102)
+    assert registry.path(earlier.key).exists()
+    publish(registry, current, "third", 103)
     (row,) = registry.snapshot().rows
     assert row.attribution.key == process_session_key(owner)
     assert row.attribution.worktree_key == "git:known"
-    assert [call.tool for call in row.calls] == ["first", "second", "first"]
+    assert sorted(call.tool for call in row.calls) == ["first", "first", "second", "third"]
     assert not registry.path(earlier.key).exists()
-    # A historic alias cannot bind a fresh peerless client to a vanished tab.
-    (proc / "100/stat").unlink()
-    assert registry.chat_attribution(earlier) == earlier
+    assert HandleStore(tmp_path).load().labels()[earlier.key] == "S1"
 
 
 @pytest.mark.parametrize(
-    "fault", ["invalid-parent", "self-parent", "missing-exe", "missing-parent"]
+    "fault",
+    ["invalid-parent", "self-parent", "missing-exe", "missing-parent", "walk-bound", "pid-reuse"],
 )
-def test_unreadable_or_invalid_ancestry_cannot_confer_a_handle(tmp_path, fault):
+def test_unreadable_or_invalid_ancestry_cannot_confer_a_handle(tmp_path, monkeypatch, fault):
     proc = tmp_path / "proc"
     owner = process(proc, 100, 1, executable="node")
     peer = process(proc, 101, 100)
@@ -155,6 +153,10 @@ def test_unreadable_or_invalid_ancestry_cannot_confer_a_handle(tmp_path, fault):
         (proc / "101/stat").write_text("101 (codex) " + " ".join(fields))
     elif fault == "missing-exe":
         (proc / "101/exe").unlink()
+    elif fault == "walk-bound":
+        monkeypatch.setattr(chat_sessions, "MAX_ANCESTORS", 1)
+    elif fault == "pid-reuse":
+        process(proc, 100, 1, start=8)  # the reserved PID now names another process
     else:
         (proc / "100/stat").unlink()
     assert chat_sessions.codex_chat_owner(tmp_path, peer, proc_root=proc) is None
@@ -212,11 +214,17 @@ async def test_observer_migrates_thread_rows_without_a_false_shared_warning(
         assert [row.attribution.key for row in registry.snapshot().rows] == [facts.key]
         assert len(registry.snapshot().rows[0].calls) == 2
         assert await observer.shared(facts) == ((facts.key,), "")
-        # A delayed completion from before migration must not restore a thread row.
         await observer.record(earlier, "late", "completed")
+        if initial_peer_unavailable:
+            # A late peerless completion recreates the thread row; the next attributed
+            # call folds it into the tab.
+            assert registry.path("codex:main").exists()
+            facts = await observer.attribution({}, metadata, "codex-mcp-client")
+        else:
+            # A delayed completion from before migration must not restore a thread row.
+            assert await observer.shared(earlier) == ((facts.key,), "")
         assert not registry.path("codex:main").exists()
         assert [row.attribution.key for row in registry.snapshot().rows] == [facts.key]
-        assert await observer.shared(earlier) == ((facts.key,), "")
         # New threads get aliases without allocating their own display IDs.
         await observer.attribution(arguments, {"threadId": "child"}, "codex-mcp-client")
         assert (
@@ -225,26 +233,3 @@ async def test_observer_migrates_thread_rows_without_a_false_shared_warning(
         )
     finally:
         observer.close()
-
-
-def test_equal_labels_do_not_hide_thread_route_changes(tmp_path):
-    proc = tmp_path / "proc"
-    first = process(proc, 100, 1, executable="node")
-    second = process(proc, 200, 1, executable="node")
-    first_peer, second_peer = process(proc, 101, 100), process(proc, 201, 200)
-    chat_sessions.reserve_codex_chat(tmp_path, first)
-    chat_sessions.reserve_codex_chat(tmp_path, second)
-    store = HandleStore(tmp_path)
-    state = store.load()
-    state.entries[process_session_key(second)] = "S1"
-    state.entries["codex:main"] = "S9"
-    state.next_number = 10
-    store.save(state)
-    registry = SessionRegistry(tmp_path, proc_root=proc)
-    for peer, owner in [(first_peer, first), (second_peer, second)]:
-        facts = Attribution("codex:main", "thread", "", "", process=peer, namespace=SCOPE)
-        registry.upsert(facts, "sim", "completed", now=100)
-        assert store.load().aliases["chat:thread:codex:main"] == process_session_key(owner)
-    peerless = Attribution("codex:main", "thread", "", "", namespace=SCOPE)
-    assert registry.chat_attribution(peerless).key == process_session_key(second)
-    assert store.load().entries["codex:main"] == "S9"
