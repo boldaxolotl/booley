@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 from typing import IO, cast
 
 from booley.core.file_lock import acquire_file_lock, release_file_lock
@@ -174,13 +175,13 @@ class PrivateStore:
             raise
 
     def _wait_for_lock(self, lock: IO[str], timeout_s: float, busy_message: str) -> None:
-        deadline = time.monotonic() + timeout_s
+        deadline = monotonic() + timeout_s
         while True:
             try:
                 acquire_file_lock(lock)
                 return
             except BlockingIOError as exc:
-                if time.monotonic() >= deadline:
+                if monotonic() >= deadline:
                     self._raise(busy_message, cause=exc)
                 time.sleep(0.1)
 

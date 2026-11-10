@@ -1,9 +1,11 @@
 """Regression contracts for shipped workflow skills."""
 
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
+import yaml
 
 from booley.runtime.paths import skills_dir
 
@@ -130,6 +132,69 @@ def test_setup_greenfield_passes_stealth_request():
     assert "scaffold-authored root cores" in plan
     assert "`.booley/cores/`" in plan
     assert "stealth.scaffold-core-tracked" in plan
+
+
+def test_setup_greenfield_scaffolds_on_host_after_plain_init():
+    # Blockquote line wraps leave "> " fragments inside the compacted text.
+    greenfield = _compact_skill_text("booley-setup", "steps/new-greenfield.md").replace("> ", "")
+    skill = _compact_skill_text("booley-setup")
+
+    # The grill and the scaffold run on the host, after plain `booley init`.
+    assert "Run it on the host, after plain `booley init`" in greenfield
+    assert "tell the user to run `/booley-setup new` on the host" in greenfield
+    assert "greenfield mode's grill and `booley init --scaffold` are host steps" in skill.lower()
+    # Every answer reaches the scaffold command as a flag, including the IP name.
+    assert "the IP name for `booley init --scaffold <name>`" in greenfield
+    assert "passing **every** answer as a flag" in greenfield
+    for flag in (
+        "--sim-eda-tool",
+        "--tb-style",
+        "--lint-eda-tool",
+        "--asic",
+        "--no-asic",
+        "--synth-mode",
+        "--fpga-part",
+        "--stealth",
+    ):
+        assert flag in greenfield
+    assert "Keep Booley out of your git history?" in greenfield
+    assert "Do not pass `--provider` or `--auth`" in greenfield
+    assert "removes the empty inner `.booley` repository" in greenfield
+    # The container comes after the scaffold, and the Doctor gate is unchanged.
+    scaffolded = greenfield.index("record `scaffold: applied`")
+    assert scaffolded < greenfield.index("**Reopen in Container**")
+    assert "`SETUP-PLAN.md` approved with `scaffold: applied`" in greenfield
+    assert "declare the project ready until both plain and deep Doctor exit 0" in greenfield
+    # No text sends a new-IP user into the container before the skill.
+    assert "then **Reopen in Container** and run" not in greenfield
+    assert "Reopen in Container, then run `/booley-setup new`" not in greenfield
+
+
+def test_setup_guide_describes_one_sequence():
+    guide = " ".join(
+        (Path(__file__).resolve().parents[2] / "docs/user/SETUP.md")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+
+    assert (
+        "Install, `booley init`, then `/booley-setup` on the host "
+        "(`/booley-setup new` for a new IP)" in guide
+    )
+    # One init command for both paths; the scaffold is run by the skill.
+    assert "The command is the same for both paths" in guide
+    assert "booley init --scaffold my_ip ``` Init asks" not in guide
+    init_section = guide.split("## Initialize the Project", 1)[1].split("### Sign-in", 1)[0]
+    assert "booley init --scaffold my_ip" not in init_section
+    assert "`/booley-setup new` asks the design choices" in guide
+    # The user guide describes only the user-visible command, never the internal one.
+    assert "booley init --scaffold" not in guide
+    assert "keeps the `[agent]` table" in guide
+    # The old two-step instruction is gone.
+    assert "You already ran the scaffold on the host" not in guide
+    assert "On a terminal it asks the choices below" not in guide
+    assert "Reopen in Container**, then run `/booley-setup new`" not in guide
+    assert "run `/booley-setup new` on the host" in guide
 
 
 def test_setup_preserves_upstream_verdict_sources_when_adapter_is_sufficient():
@@ -936,3 +1001,22 @@ def test_setup_preserves_delivered_facts_after_feedback_report_render():
         "independent",
     ):
         assert phrase in text
+
+
+def test_setup_templates_use_axis_subject_target_names():
+    """The setup skill must not teach a bare-axis Target (`sim`, `lint`, ...)."""
+    axes = {"sim", "lint", "synth", "fpga"}
+    core_text = _skill_text("booley-setup", "CORE_TEMPLATE.yaml")
+    core = yaml.safe_load(core_text)
+    assert core["targets"], "template must declare Targets"
+    assert not axes & set(core["targets"])
+    assert all(name.split("_", 1)[0] in axes for name in core["targets"])
+    assert "bare axis" not in core_text
+
+    # Enable the commented examples so they are checked too.
+    tests_text = _skill_text("booley-setup", "TESTS_TEMPLATE.toml")
+    tests_text = re.sub(r"^#\s+(\[[^\]]+\])$", r"\1", tests_text, flags=re.MULTILINE)
+    sections = tomllib.loads(tests_text)
+    keys = {key.rpartition("#")[2] for key in sections if key != "test_lists"}
+    assert keys
+    assert not axes & keys

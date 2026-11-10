@@ -1051,9 +1051,5 @@ def test_structural_script_keeps_complete_frontend_assignment_commands(tmp_path,
     build = _build_dir(tmp_path)
     syn_make.configure_synthesis(spec, build)
     script = (build / "synth.ys").read_text()
+    # The declared string travels byte-escaped, so the "; " split keeps the command whole.
     assert "-set NAME 32'h613b2062 -set WIDTH 8" in script
-    # Legacy no-metadata expression transport also retains literal semicolon-space.
-    syn_make._write_yosys_script(dataclasses.replace(spec, params={"NAME": '"a; b"'}), build)
-    assert any(
-        '-set NAME "a; b" dut' in line for line in (build / "synth.ys").read_text().splitlines()
-    )

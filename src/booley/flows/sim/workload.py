@@ -15,10 +15,14 @@ from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget, mirror
 WORKLOAD_SNAPSHOT_SCHEMA = 1
 
 
+# File types of timing and pin constraints.
+CONSTRAINT_FILE_TYPES = frozenset({"sdc", "xdc"})
+
+
 def _role(file: ResolvedFile) -> str:
     if file.is_tb:
         return "tb"
-    if file.file_type.lower() in {"sdc", "xdc"}:
+    if file.file_type.lower() in CONSTRAINT_FILE_TYPES:
         return "constraint"
     if file.is_hdl:
         return "rtl"

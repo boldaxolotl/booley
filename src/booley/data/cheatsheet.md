@@ -17,7 +17,7 @@ the default Agent CLI (`booley chat --cli <name>` picks another allowed one).
 | `booley dashboard` | Show sessions, Goals, and Jobs |
 | `booley flow` | List or directly run deterministic Booley Flows |
 | `booley specialist` | List or directly run visible Specialists |
-| `booley worktree` | Create or list linked worktrees (Paired Checkout or Snapshot) |
+| `booley worktree` | Create, list, or remove linked worktrees (Paired Checkout or Snapshot) |
 
 #### Either-location commands
 
@@ -203,7 +203,7 @@ Goal argument examples:
 `CYCLE_COUNT:{target}` Goals name the Target with `target` and one Test Run with `test` (`test`, `test+variant`, or either with `@seed`); put bounds in `thresholds`. All thresholds for that Test Run must pass. Relative forms compare the same Test Run of the same Target at the Goal base commit.
 
 ```json
-{"family": "CYCLE_COUNT", "target": "sim", "test": "smoke",
+{"family": "CYCLE_COUNT", "target": "sim_smoke", "test": "smoke",
  "thresholds": {"cycle_count_max": 1000, "cycle_count_reduce_at_least": "8%"}}
 ```
 

@@ -14,13 +14,13 @@ import os
 import re
 import shlex
 import sys
-import time
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
+from time import monotonic
 from typing import Any, ClassVar, cast
 
 from booley.bwave.contract import decode_trace_metadata
@@ -184,6 +184,7 @@ from .campaign import (
     CampaignOutcome,
     CampaignPolicy,
     CampaignRecoveryStatus,
+    NewCampaignPreview,
     NewCampaignPreviewRequest,
     NewCampaignRunRequest,
     ResumeCampaignPreview,
@@ -1177,6 +1178,29 @@ def _baseline_refusal_line(refusal: BaselineRefusal) -> str:
     return (
         f"Cycle Count comparison inconclusive for {link.candidate} Test {link.test}{run}: "
         f"{refusal.reason}"
+    )
+
+
+def _campaign_preview_entry(preview: NewCampaignPreview) -> dict[str, object]:
+    """Summarize one new-campaign preview for the dry-run report and detail."""
+    return {
+        "target": dict(preview.target),
+        "work_items": len(preview.work_items),
+        "build_variants": len(preview.build_variants),
+        "prerequisites": len(preview.prerequisites),
+    }
+
+
+def _campaign_preview_outcome(previews: Sequence[dict[str, object]]) -> EndpointOutcome:
+    """Build the successful, non-mutating dry-run outcome for *previews*."""
+    return EndpointOutcome(
+        exit_code=EXIT_SUCCESS,
+        detail={"campaign_preview": list(previews), "mutated": False},
+        report_text="\n".join(
+            f"{cast(Mapping[str, object], item['target'])['selector']}: "
+            f"{item['work_items']} pending work item(s)"
+            for item in previews
+        ),
     )
 
 
@@ -4105,7 +4129,43 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return resolved
 
     def _run_coverage_campaigns(self, admission: object | None) -> EndpointOutcome:
+        # A dry run borrows no admission, so it must be answered before the
+        # admission check in ``_execute_coverage_campaigns`` (as resume does).
+        if self.args.dry_run:
+            return self._preview_coverage_campaigns()
         return self._with_live_progress(lambda: self._execute_coverage_campaigns(admission))
+
+    def _preview_coverage_campaigns(self) -> EndpointOutcome:
+        """Preview one coverage Campaign per prepared Target.
+
+        Reserves no invocation directory, publishes no manifest, registers no
+        campaign with the execution adapter, and builds or simulates nothing.
+        """
+        campaign = SimulationCampaign()
+        try:
+            previews = [
+                _campaign_preview_entry(
+                    campaign.preview(
+                        NewCampaignPreviewRequest(
+                            # Placeholder ids: a preview reserves no invocation and
+                            # starts no execution, so neither is ever read.
+                            self._coverage_campaign_plan(plan, invocation_id=1, execution_id=""),
+                            Path(self.args.work_dir),
+                            self.args.report_dir,
+                            self._campaign_policy(),
+                        )
+                    )
+                )
+                for plan in self._coverage_prepared.targets
+            ]
+        except (OSError, ValueError, RuntimeError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"Simulation Campaign coverage preview failed: {exc}",
+            )
+        outcome = _campaign_preview_outcome(previews)
+        outcome.detail["coverage"] = True
+        return outcome
 
     def _execute_coverage_campaigns(self, admission: object | None) -> EndpointOutcome:
         """Run each native coverage selection as one durable aggregate item."""
@@ -4351,7 +4411,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return mode_error
         if self._mode.elaborates_only:
             return self._run_elab_only()
-        total_start = time.monotonic()
+        total_start = monotonic()
         resolution_started = total_start
         if prepared is None:
             resolved = self._resolve_run_targets()
@@ -4361,7 +4421,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         else:
             targets = list(prepared.selected_targets)
             test_names_map = prepared.test_names_map
-        resolution_s = time.monotonic() - resolution_started
+        resolution_s = monotonic() - resolution_started
 
         special_result = self._maybe_dispatch_special_run(
             targets, test_names_map, campaign_prepared=prepared is not None
@@ -4423,7 +4483,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     results,
                     lines,
                     passed,
-                    time.monotonic() - total_start,
+                    monotonic() - total_start,
                     resolution_s,
                 )
                 lifecycle.complete()
@@ -4955,27 +5015,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                         self._campaign_policy(),
                     )
                 )
-                previews.append(
-                    {
-                        "target": dict(preview.target),
-                        "work_items": len(preview.work_items),
-                        "build_variants": len(preview.build_variants),
-                        "prerequisites": len(preview.prerequisites),
-                    }
-                )
+                previews.append(_campaign_preview_entry(preview))
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Campaign preview failed: {exc}",
             )
-        return EndpointOutcome(
-            exit_code=EXIT_SUCCESS,
-            detail={"campaign_preview": previews, "mutated": False},
-            report_text="\n".join(
-                f"{item['target']['selector']}: {item['work_items']} pending work item(s)"
-                for item in previews
-            ),
-        )
+        return _campaign_preview_outcome(previews)
 
     def _preview_campaign_baselines(
         self,
@@ -5561,7 +5607,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         observe_stage(target, "preparing")
         announce_unit("configure elaboration-only", target=target)
-        started = time.monotonic()
+        started = monotonic()
         handle = self._target_handle(target)
         try:
             compile_surface = resolve_target_compile_surface(handle)
@@ -5587,7 +5633,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         except SimulationBuildSlotError as exc:
             outcome = setup_failure_outcome(
                 f"Simulation build slot failed: {exc}",
-                elapsed_s=time.monotonic() - started,
+                elapsed_s=monotonic() - started,
             )
             return ElabOnlyTargetResult(target=target, outcome=outcome)
 
@@ -5610,7 +5656,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             logger.debug("sim elab-only setup failed for %s", target, exc_info=True)
             outcome = setup_failure_outcome(
                 f"setup failed: {exc}",
-                elapsed_s=time.monotonic() - started,
+                elapsed_s=monotonic() - started,
             )
             result = ElabOnlyTargetResult(target=target, outcome=outcome)
             result.log_path = self._persist_elab_only_log(target, outcome.output)
@@ -6626,9 +6672,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         output_lines: list[str],
     ) -> TargetResult:
         """Resolve target metadata, then include that work in setup timing."""
-        resolution_started = time.monotonic()
+        resolution_started = monotonic()
         tb_top = self._tb_top_for_target(target)
-        resolution_s = time.monotonic() - resolution_started
+        resolution_s = monotonic() - resolution_started
         result = self._run_target(target, tb_top, test_names_map, output_lines)
         result.elapsed_s = round(result.elapsed_s + resolution_s, 3)
         timings = result.phase_timings_s
@@ -7265,7 +7311,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _persist_target_outcome(self, result: TargetResult) -> None:
         """Durably record one terminal Target before starting the next."""
-        started = time.monotonic()
+        started = monotonic()
         # Publish an explicit recovery checkpoint before Criteria mutation.
         # A retry can safely replace it; readers never mistake it for a fully
         # committed target when interruption prevents the final publication.
@@ -7276,7 +7322,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self._record_cycle_count_criteria(result)
         if self.state._file_path is not None:
             self.state.save()
-        publication_s = round(time.monotonic() - started, 3)
+        publication_s = round(monotonic() - started, 3)
         result.phase_timings_s["publication"] = publication_s
         execution_s = result.phase_timings_s.get("execution_total", result.elapsed_s)
         result.phase_timings_s["total"] = round(execution_s + publication_s, 3)

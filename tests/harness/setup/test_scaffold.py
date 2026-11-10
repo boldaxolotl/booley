@@ -110,7 +110,7 @@ def test_default_combo_files_and_shapes() -> None:
 
     core = _core(files)
     assert core["name"] == "::my_ip:0"
-    sim = core["targets"]["sim"]
+    sim = core["targets"]["sim_my_ip"]
     assert sim["flow"] == "sim"
     assert sim["flow_options"]["tool"] == "verilator"
     # The owned C++ main drives the event scheduler and trace lifecycle.
@@ -118,7 +118,7 @@ def test_default_combo_files_and_shapes() -> None:
     assert sim["toplevel"] == "tb_my_ip"
     assert core["filesets"]["tb"]["tags"] == ["tb"]
 
-    lint = core["targets"]["lint"]
+    lint = core["targets"]["lint_my_ip"]
     assert lint["flow"] == "lint"
     assert lint["flow_options"] == {
         "tool": "verilator",
@@ -126,7 +126,7 @@ def test_default_combo_files_and_shapes() -> None:
     }
     assert lint["toplevel"] == "my_ip"
 
-    synth = core["targets"]["synth"]
+    synth = core["targets"]["synth_my_ip"]
     assert synth["flow"] == "generic"
     assert synth["flow_options"] == {
         "tool": "yosys",
@@ -153,8 +153,8 @@ def test_default_combo_files_and_shapes() -> None:
     assert cfg["flows"]["fpga"] == {"enabled": False}
 
     tests_cfg = tomllib.loads(files[".booley/tests.toml"])
-    assert tests_cfg["sim"]["tests"] == ["reset", "count"]
-    assert tests_cfg["sim"]["select"] == "+test_id={index}"
+    assert tests_cfg["sim_my_ip"]["tests"] == ["reset", "count"]
+    assert tests_cfg["sim_my_ip"]["select"] == "+test_id={index}"
 
     tb = files["tb/tb_my_ip.sv"]
     assert "[SIM_RESULT] PASSED" in tb and "[SIM_RESULT] FAILED" in tb
@@ -205,7 +205,7 @@ def test_scaffold_supplies_doctor_fail_path_fixtures(
         booley_dir=booley_dir,
         booley_toml=tomllib.loads((booley_dir / "booley.toml").read_text(encoding="utf-8")),
         configs_toml=tomllib.loads((booley_dir / "tests.toml").read_text(encoding="utf-8")),
-        first_target="sim",
+        first_target="sim_my_ip",
     )
     warnings: list[str] = []
 
@@ -214,9 +214,9 @@ def test_scaffold_supplies_doctor_fail_path_fixtures(
 
     assert warnings == []
     assert sim_plan is not None
-    assert sim_plan.good.target == sim_plan.bad.target == "sim"
+    assert sim_plan.good.target == sim_plan.bad.target == "sim_my_ip"
     assert lint_plan is not None
-    assert lint_plan.good.target == "lint"
+    assert lint_plan.good.target == "lint_my_ip"
     assert lint_plan.bad.target == "lint_selftest_bad"
 
     core = _core(files)
@@ -253,7 +253,7 @@ def test_scaffold_sim_bad_overlay_replaces_the_staged_rtl(tmp_path: Path) -> Non
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 
-    resolved = _resolve_target("sim", project_root=tmp_path, build_root=tmp_path / "build")
+    resolved = _resolve_target("sim_my_ip", project_root=tmp_path, build_root=tmp_path / "build")
     staged_rtl = resolved.build_root / "my_ip.sv"
     assert staged_rtl.read_text(encoding="utf-8") == files["rtl/my_ip.sv"]
 
@@ -299,7 +299,7 @@ def test_asic_scaffold_sdc_excludes_clock_and_asynchronous_reset_from_data_timin
 
 def test_icarus_combo_uses_g2012() -> None:
     core = _core(scaffold_files(_choices(sim_eda_tool="icarus")))
-    opts = core["targets"]["sim"]["flow_options"]
+    opts = core["targets"]["sim_my_ip"]["flow_options"]
     assert opts["tool"] == "icarus"
     assert opts["iverilog_options"] == ["-g2012"]
     assert "verilator_options" not in opts
@@ -312,7 +312,7 @@ def test_icarus_lint_target_gets_g2012() -> None:
     # read like design bugs. LINT_EDA_TOOLS has no Icarus entry today; the rule is
     # keyed on the EDA tool so the gap cannot reopen if the wizard grows one.
     core = _core(scaffold_files(_choices(lint_eda_tool="icarus")))
-    opts = core["targets"]["lint"]["flow_options"]
+    opts = core["targets"]["lint_my_ip"]["flow_options"]
     assert opts == {
         "tool": "icarus",
         "iverilog_options": ["-g2012"],
@@ -326,7 +326,7 @@ def test_cocotb_combo_shapes() -> None:
     assert "tb/tb_my_ip.sv" not in files
 
     core = _core(files)
-    sim = core["targets"]["sim"]
+    sim = core["targets"]["sim_my_ip"]
     assert sim["flow_options"]["cocotb_module"] == "test_my_ip"
     assert sim["flow_options"]["iverilog_options"] == ["-g2012"]
     assert sim["toplevel"] == "my_ip"  # the DUT itself — no HDL wrapper
@@ -334,9 +334,9 @@ def test_cocotb_combo_shapes() -> None:
     assert tb_entry == {"tb/test_my_ip.py": {"file_type": "user", "copyto": "test_my_ip.py"}}
 
     tests_cfg = tomllib.loads(files[".booley/tests.toml"])
-    assert tests_cfg["sim"]["tests"] == ["test_reset", "test_count"]
+    assert tests_cfg["sim_my_ip"]["tests"] == ["test_reset", "test_count"]
     # A select plusarg on a Cocotb Target is a setup-time error — never emit one.
-    assert "select" not in tests_cfg["sim"]
+    assert "select" not in tests_cfg["sim_my_ip"]
 
     tb = files["tb/test_my_ip.py"]
     assert "@cocotb.test()" in tb
@@ -345,28 +345,28 @@ def test_cocotb_combo_shapes() -> None:
 
 def test_cocotb_verilator_options() -> None:
     core = _core(scaffold_files(_choices(sim_eda_tool="verilator", tb_style="cocotb")))
-    opts = core["targets"]["sim"]["flow_options"]
+    opts = core["targets"]["sim_my_ip"]["flow_options"]
     assert opts["verilator_options"] == ["--timing", "-Wno-fatal"]
 
 
 def test_verible_lint_keeps_elaboration_check_on_sim() -> None:
     files = scaffold_files(_choices(lint_eda_tool="verible"))
     core = _core(files)
-    assert core["targets"]["lint"]["flow_options"] == {
+    assert core["targets"]["lint_my_ip"]["flow_options"] == {
         "tool": "verible",
         "booley": {"doctor": ["lint"]},
     }
 
     cfg = tomllib.loads(files[".booley/booley.toml"])
     assert "elab" not in cfg["flows"]
-    assert core["targets"]["sim"]["flow_options"]["booley"]["doctor"] == ["sim"]
+    assert core["targets"]["sim_my_ip"]["flow_options"]["booley"]["doctor"] == ["sim"]
 
 
 def test_no_asic_omits_synth_target_and_sdc() -> None:
     files = scaffold_files(_choices(asic=False))
     assert "constraints/my_ip.sdc" not in files
     core = _core(files)
-    assert "synth" not in core["targets"]
+    assert "synth_my_ip" not in core["targets"]
     assert "constraints" not in core["filesets"]
     cfg = tomllib.loads(files[".booley/booley.toml"])
     assert cfg["flows"]["synth"]["enabled"] is False
@@ -377,7 +377,7 @@ def test_fpga_part_emits_fpga_target_and_xdc() -> None:
     files = scaffold_files(_choices(fpga_part="xc7a200tfbg484-1"))
     assert "constraints/my_ip.xdc" in files
     core = _core(files)
-    fpga = core["targets"]["fpga"]
+    fpga = core["targets"]["fpga_my_ip"]
     assert fpga["flow"] == "generic"
     assert fpga["flow_options"] == {
         "tool": "vivado",
@@ -414,7 +414,7 @@ def test_every_combo_parses_with_booleys_own_readers(
     assert core["CAPI=2"] is None  # marker line parsed as expected
 
     targets = {handle.name for handle in TargetCatalog.build(tmp_path).list()}
-    expected = {"sim", "lint", "synth", "fpga"}
+    expected = {"sim_my_ip", "lint_my_ip", "synth_my_ip", "fpga_my_ip"}
     assert expected <= targets
     assert "lint_selftest_bad" not in targets
     monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
@@ -445,8 +445,15 @@ def test_gather_rejects_unsupported_commercial_simulators(
     assert "future roadmap" in capsys.readouterr().out
 
 
-def test_gather_non_interactive_defaults(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_gather_reports_defaults_without_prompting(tmp_path: Path, monkeypatch, capsys) -> None:
+    """Init asks no design question, even on a TTY: each default is reported instead."""
     ctx = _ctx(tmp_path, monkeypatch)
+    ctx.interactive = True
+
+    def no_prompt(*_args, **_kwargs):
+        raise AssertionError("scaffold prompted for a design choice")
+
+    monkeypatch.setattr("builtins.input", no_prompt)
     choices = gather_scaffold_choices(_args(), ctx)
     assert choices == ScaffoldChoices(
         name="my_ip",
@@ -456,7 +463,17 @@ def test_gather_non_interactive_defaults(tmp_path: Path, monkeypatch, capsys) ->
         asic=True,
         fpga_part=None,
     )
-    capsys.readouterr()
+    out = capsys.readouterr().out
+    for line in (
+        "Simulator: verilator (default; set --sim-eda-tool)",
+        "Testbench style: sv (default; set --tb-style)",
+        "Lint EDA tool: verilator (default; set --lint-eda-tool)",
+        "ASIC synthesis: enabled (default; set --no-asic to skip)",
+        "Synthesis mode: physical (default; set --synth-mode)",
+        "FPGA implementation: skipped (default; set --fpga-part to enable)",
+        "Stealth: off (default; set --stealth)",
+    ):
+        assert line in out
 
 
 def test_gather_flags_win_over_defaults(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -503,13 +520,68 @@ def test_step_refuses_on_existing_design(tmp_path: Path, monkeypatch, capsys) ->
     capsys.readouterr()
 
 
-def test_step_refuses_on_populated_config(tmp_path: Path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize(
+    "content",
+    [
+        '[project]\nname = "existing"\n',
+        '[project]\nname = "existing"\n\n[agent]\nprovider = "claude"\n',
+    ],
+    ids=["project", "project-and-agent"],
+)
+def test_step_refuses_on_populated_config(
+    tmp_path: Path, monkeypatch, capsys, content: str
+) -> None:
     pd = tmp_path / ".booley"
     pd.mkdir()
-    (pd / "booley.toml").write_text('[project]\nname = "existing"\n')
+    (pd / "booley.toml").write_text(content)
     ctx = _ctx(tmp_path, monkeypatch)
     assert step_scaffold(ctx, _args()) is False
     assert ctx.results[-1].status == "err"
+    assert (pd / "booley.toml").read_text() == content
+    capsys.readouterr()
+
+
+def test_step_keeps_agent_table_from_plain_init(tmp_path: Path, monkeypatch, capsys) -> None:
+    """The `[agent]` table plain init wrote is not authored config: the scaffold keeps it."""
+    pd = tmp_path / ".booley"
+    pd.mkdir()
+    (pd / "booley.toml").write_text(
+        "# booley-init-origin: port\n"
+        + BOOLEY_TOML_SKELETON
+        + '\n[agent]\nprovider = "codex"\nauth = "api_key"\n',
+        encoding="utf-8",
+    )
+    ctx = _ctx(tmp_path, monkeypatch)
+    assert step_scaffold(ctx, _args()) is True
+    text = (pd / "booley.toml").read_text(encoding="utf-8")
+    cfg = tomllib.loads(text)
+    assert cfg["agent"] == {"provider": "codex", "auth": "api_key"}
+    assert cfg["project"]["name"] == "my_ip"
+    assert "# booley-init-origin: scaffold" in text
+    assert "# booley-init-origin: port" not in text
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize(
+    "agent_toml",
+    [
+        'agent = { provider = "codex", auth = "api_key" }\n',
+        'agent.provider = "codex"\nagent.auth = "api_key"\n',
+    ],
+    ids=["inline", "dotted"],
+)
+def test_step_keeps_hand_written_agent_forms_as_a_table(
+    tmp_path: Path, monkeypatch, capsys, agent_toml: str
+) -> None:
+    """An inline or dotted `agent` must not land inside the trailing `[flows.fpga]` table."""
+    pd = tmp_path / ".booley"
+    pd.mkdir()
+    (pd / "booley.toml").write_text(agent_toml, encoding="utf-8")
+    ctx = _ctx(tmp_path, monkeypatch)
+    assert step_scaffold(ctx, _args()) is True
+    cfg = tomllib.loads((pd / "booley.toml").read_text(encoding="utf-8"))
+    assert cfg["agent"] == {"provider": "codex", "auth": "api_key"}
+    assert "agent" not in cfg["flows"]["fpga"]
     capsys.readouterr()
 
 
@@ -544,7 +616,8 @@ def test_step_writes_everything_in_fresh_repo(tmp_path: Path, monkeypatch, capsy
     ):
         assert (tmp_path / rel).is_file(), rel
     reset_cache()
-    capsys.readouterr()
+    # The closing hint names the real Target, not a bare axis.
+    assert "target 'sim_my_ip'" in capsys.readouterr().out
 
 
 def test_step_writes_config_through_a_symlinked_booley_directory(
@@ -662,6 +735,13 @@ def _healthy_host_doctor(root: Path, monkeypatch) -> None:
     ]
 
 
+def _assert_target_names_conform(findings) -> None:
+    """Doctor's naming pass ran and raised no `<axis>_<subject>` note."""
+    messages = [f.message for f in findings]
+    assert any("Target names follow the <axis>_<subject> convention" in m for m in messages)
+    assert not [m for m in messages if "rename it" in m or "bare axis" in m]
+
+
 def _assert_variant_sources_and_header(tmp_path, simulator, tb_style, asic, fpga):
     rtl = (tmp_path / "rtl/my_ip.sv").read_text()
     header = rtl.split("every configured flow (")[1].split(")")[0]
@@ -681,13 +761,13 @@ def _assert_variant_sources_and_header(tmp_path, simulator, tb_style, asic, fpga
             "files": [{"tb/sim_main.cpp": {"file_type": "cppSource"}}],
             "tags": ["tb"],
         }
-        assert core["targets"]["sim"]["filesets"] == ["rtl", "tb", "tb_cpp"]
-        assert core["targets"]["sim"]["flow_options"]["booley"]["coverage"] == {
+        assert core["targets"]["sim_my_ip"]["filesets"] == ["rtl", "tb", "tb_cpp"]
+        assert core["targets"]["sim_my_ip"]["flow_options"]["booley"]["coverage"] == {
             "custom_main_hooks": ["write_hook"]
         }
     catalog = TargetCatalog.build(tmp_path)
     sources = doctor._CoreAuditInputs(catalog, {h.name: h for h in catalog.list()}).sources_for(
-        "sim"
+        "sim_my_ip"
     )
     tb = "tb/tb_my_ip.sv" if tb_style == "sv" else "tb/test_my_ip.py"
     assert set(sources.tb_files) == {tb, *(["tb/sim_main.cpp"] if owned else [])}
@@ -717,7 +797,7 @@ def test_scaffold_variants_have_no_doctor_warnings_and_enabled_header(
         cfg,
         tomllib.loads((cfg / "booley.toml").read_text()),
         tomllib.loads((cfg / "tests.toml").read_text()),
-        "sim",
+        "sim_my_ip",
     )
     reporter = doctor._Reporter.create()
     doctor._run_core_audit(
@@ -732,6 +812,7 @@ def test_scaffold_variants_have_no_doctor_warnings_and_enabled_header(
     assert not [
         (f.check_id, f.subject, f.message) for f in findings if f.severity in {"warn", "fail"}
     ]
+    _assert_target_names_conform(findings)
     _assert_variant_sources_and_header(tmp_path, simulator, tb_style, asic, fpga)
     _healthy_host_doctor(tmp_path, monkeypatch)
 
@@ -777,14 +858,14 @@ def test_scaffold_logical_synthesis_has_no_sdc(tmp_path, monkeypatch):
     assert getattr(choices, "synth_mode", None) == "logical", "logical scaffold mode was dropped"
     assert step_scaffold(ctx, args)
     core = read_core(tmp_path / "my_ip.core")
-    assert core["targets"]["synth"]["flow_options"]["synth_mode"] == "logical"
-    assert core["targets"]["synth"]["filesets"] == ["rtl"]
+    assert core["targets"]["synth_my_ip"]["flow_options"]["synth_mode"] == "logical"
+    assert core["targets"]["synth_my_ip"]["filesets"] == ["rtl"]
     assert "constraints" not in core["filesets"]
     assert not (tmp_path / "constraints/my_ip.sdc").exists()
     assert (tmp_path / "constraints/my_ip.xdc").is_file()
     assert core_schema_errors(tmp_path / "my_ip.core") == []
-    assert "synth" in {h.name for h in TargetCatalog.build(tmp_path).list()}
-    resolved = _resolve_target("synth", project_root=tmp_path, build_root=tmp_path / "build")
+    assert "synth_my_ip" in {h.name for h in TargetCatalog.build(tmp_path).list()}
+    resolved = _resolve_target("synth_my_ip", project_root=tmp_path, build_root=tmp_path / "build")
     assert resolved.eda_tool == "yosys"
     _track_scaffold(tmp_path)
     cfg = tmp_path / ".booley"
@@ -793,7 +874,7 @@ def test_scaffold_logical_synthesis_has_no_sdc(tmp_path, monkeypatch):
         cfg,
         tomllib.loads((cfg / "booley.toml").read_text()),
         tomllib.loads((cfg / "tests.toml").read_text()),
-        "sim",
+        "sim_my_ip",
     )
     reporter = doctor._Reporter.create()
     doctor._run_core_audit(
@@ -812,21 +893,18 @@ def test_scaffold_physical_default_and_disabled_synthesis(tmp_path, monkeypatch)
     for mode in (None, "physical"):
         files = scaffold_files(gather_scaffold_choices(_args(synth_mode=mode), ctx))
         core = _core(files)
-        assert core["targets"]["synth"]["flow_options"]["synth_mode"] == "physical"
-        assert "constraints" in core["targets"]["synth"]["filesets"]
+        assert core["targets"]["synth_my_ip"]["flow_options"]["synth_mode"] == "physical"
+        assert "constraints" in core["targets"]["synth_my_ip"]["filesets"]
         assert "constraints/my_ip.sdc" in files
     files = scaffold_files(gather_scaffold_choices(_args(asic=False), ctx))
-    assert "synth" not in _core(files)["targets"]
+    assert "synth_my_ip" not in _core(files)["targets"]
     assert "constraints/my_ip.sdc" not in files
 
 
 def test_scaffold_rejects_explicit_mode_with_no_asic(tmp_path, monkeypatch, capsys):
-    from booley.harness.setup import scaffold
-
     ctx = _ctx(tmp_path, monkeypatch)
     before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     for mode in ("logical", "physical"):
-        ctx.interactive = False
         args = _args(asic=False, synth_mode=mode)
         assert gather_scaffold_choices(args, ctx) is None, (
             "explicit synthesis mode with no ASIC was accepted"
@@ -836,21 +914,6 @@ def test_scaffold_rejects_explicit_mode_with_no_asic(tmp_path, monkeypatch, caps
         assert {
             p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()
         } == before
-        ctx.interactive = True
-        monkeypatch.setattr(scaffold, "_ask_yes_no", lambda *a, **k: False)
-        assert (
-            gather_scaffold_choices(
-                _args(
-                    asic=None,
-                    synth_mode=mode,
-                    sim_eda_tool="verilator",
-                    tb_style="sv",
-                    lint_eda_tool="verilator",
-                ),
-                ctx,
-            )
-            is None
-        )
     output = capsys.readouterr()
     assert "--synth-mode" in output.err + output.out
     assert "--no-asic" in output.err + output.out
@@ -894,7 +957,7 @@ def test_scaffold_logical_request_reaches_synthesis_report(tmp_path, monkeypatch
     flow.parse_args(
         [
             "--target",
-            "synth",
+            "synth_my_ip",
             "--work-dir",
             str(tmp_path),
             "--report-dir",
@@ -906,38 +969,14 @@ def test_scaffold_logical_request_reaches_synthesis_report(tmp_path, monkeypatch
     path = write_report(flow, result)
     report = json.loads(path.read_text())
     assert report["passed"] is True
-    assert report["detail"]["synth"]["synth_mode"] == "logical", (
+    assert report["detail"]["synth_my_ip"]["synth_mode"] == "logical", (
         "scaffold request did not reach the delivered synthesis report"
     )
     assert path.parent.name.isdigit()
-    assert report["target"] == "synth"
+    assert report["target"] == "synth_my_ip"
     assert report["eda_tool"] == "yosys"
-    assert report["detail"]["synth"]["area_source"] == "yosys_mapped"
+    assert report["detail"]["synth_my_ip"]["area_source"] == "yosys_mapped"
     assert commands[0][commands[0].index("--synth-mode") + 1] == "logical"
-
-
-def test_scaffold_interactive_synthesis_mode(tmp_path, monkeypatch):
-    from booley.harness.setup import scaffold
-
-    ctx = _ctx(tmp_path, monkeypatch)
-    ctx.interactive = True
-    questions = []
-
-    def choice(question, options, default):
-        questions.append(question)
-        return "logical" if "synthesis mode" in question else default
-
-    monkeypatch.setattr(scaffold, "_ask_choice", choice)
-    args = _args(asic=True, fpga_part="xc7a200tfbg484-1")
-    assert gather_scaffold_choices(args, ctx).synth_mode == "logical"
-    assert any("synthesis mode" in q for q in questions)
-    questions.clear()
-    args.synth_mode = "physical"
-    assert gather_scaffold_choices(args, ctx).synth_mode == "physical"
-    assert not any("synthesis mode" in q for q in questions)
-    args.asic, args.synth_mode = False, None
-    assert gather_scaffold_choices(args, ctx).asic is False
-    assert not any("synthesis mode" in q for q in questions)
 
 
 # ---------------------------------------------------------------------------
@@ -1010,10 +1049,10 @@ def test_stealth_scaffold_targets_resolve_and_audit_clean(
         booley_dir,
         tomllib.loads((booley_dir / "booley.toml").read_text()),
         tomllib.loads((booley_dir / "tests.toml").read_text()),
-        "sim",
+        "sim_my_ip",
     )
 
-    for target in ("sim", "lint"):
+    for target in ("sim_my_ip", "lint_my_ip"):
         _resolve_target(target, project_root=tmp_path, build_root=tmp_path / "build" / target)
     bad = _resolve_target(
         "lint_selftest_bad", project_root=tmp_path, build_root=tmp_path / "build" / "bad"
@@ -1025,7 +1064,9 @@ def test_stealth_scaffold_targets_resolve_and_audit_clean(
     assert doctor._selftest_plan(project, "sim", warnings.append) is not None
     assert doctor._selftest_plan(project, "lint", warnings.append) is not None
     assert warnings == []
-    sim = _resolve_target("sim", project_root=tmp_path, build_root=tmp_path / "build" / "sim2")
+    sim = _resolve_target(
+        "sim_my_ip", project_root=tmp_path, build_root=tmp_path / "build" / "sim2"
+    )
     assert selftest_overlay.stage_bad_overlay(booley_dir, "sim", sim.build_root) == 1
 
     reporter = doctor._Reporter.create()
@@ -1038,6 +1079,7 @@ def test_stealth_scaffold_targets_resolve_and_audit_clean(
         _note=reporter.note_,
     )
     findings = list(reporter.result(0).findings)
+    _assert_target_names_conform(findings)
     findings += readiness.check_stealth_cores(
         project, mode=readiness.ReadinessMode.RECONCILE
     ).findings
