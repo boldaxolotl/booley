@@ -14,7 +14,7 @@ import sys
 import sysconfig
 import tempfile
 import tomllib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
@@ -32,7 +32,7 @@ from booley.core.boundary import (
 )
 from booley.core.differences import format_differences
 from booley.core.egress_modes import declared_egress
-from booley.core.private_store import PrivateStore
+from booley.core.private_store import PrivateStore, ProjectStore
 from booley.core.project_identity import project_label_id
 from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
@@ -59,6 +59,7 @@ from booley.runtime.incontainer_git_identity import (
     load_git_identity,
 )
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
+from booley.runtime.private_store import SESSION_STORE_REPAIR
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 _IS_WINDOWS = os.name == "nt"
@@ -318,23 +319,26 @@ def stamp_path(project_root: Path) -> Path:
 
 def stamp_path_for_identity(project_root: str) -> Path:
     """Private host path for an already-canonical persisted Project identity."""
-    identity = hashlib.sha256(project_root.encode()).hexdigest()
-    return _stamp_store().root / f"{identity}.json"
+    return stamp_store().path(project_root)
 
 
 def invalidate_project(project_root: str) -> None:
     """Remove the host-issued stamp for an already-canonical Project identity."""
-    unlink_file(stamp_path_for_identity(project_root), missing_ok=True)
-    unlink_file(_legacy_stamp_path(project_root), missing_ok=True)
+    # Withdrawal also removes a stamp named by the pre-normalisation Windows
+    # rule: removal is not migration, and it must not outlive a revoked Project.
+    for path in (*stamp_store().paths(project_root), _legacy_stamp_path(project_root)):
+        unlink_file(path, missing_ok=True)
 
 
-def _stamp_store() -> PrivateStore:
-    return PrivateStore(
+def stamp_store() -> ProjectStore:
+    """The per-Project issuance stamps; Doctor scans it read-only."""
+    private = PrivateStore(
         config_dir() / "runtime" / "session-specs",
         config_dir().parent,
         "host-issued Sandbox spec",
         RuntimeSpecError,
     )
+    return ProjectStore(private, SESSION_STORE_REPAIR)
 
 
 def validate_auth_reseed_storage(project_root: Path) -> None:
@@ -344,7 +348,7 @@ def validate_auth_reseed_storage(project_root: Path) -> None:
     from booley.eda.provisioning.configuration import load_eda_config
 
     authorized_project_data_source(project_root)
-    store = _stamp_store()
+    store = stamp_store().private
     # Validate each existing prefix even if the final stamp directory is absent.
     for root in (store.root.parent, store.root):
         PrivateStore(
@@ -370,9 +374,11 @@ def _legacy_stamp_path(project_root: str) -> Path:
 
 
 def _stamp_read_path(project_root: Path) -> Path:
+    # `locate` refuses a stamp named by the old Windows rule rather than ignoring it.
+    located = stamp_store().locate(str(project_root.resolve()))
+    if located is not None:
+        return located
     preferred = stamp_path(project_root)
-    if preferred.exists() or preferred.is_symlink():
-        return preferred
     legacy = _legacy_stamp_path(str(project_root.resolve()))
     return legacy if legacy.exists() or legacy.is_symlink() else preferred
 
@@ -427,10 +433,9 @@ def _require_project_keeper(project: Path, issuance: Issuance) -> str:
 def _require_retained_keeper(project: Path, issuance: Issuance) -> None:
     """Prove the Project's keeper tag still retains the issued image bytes."""
     keeper = _require_project_keeper(project, issuance)
-    try:
-        retained_id = _resolve_image_id(keeper)
-    except RuntimeSpecError as exc:
-        raise RuntimeSpecError("issued Sandbox Image keeper is missing") from exc
+    retained_id = _keeper_image_id(keeper)  # a Docker failure raises, naming the keeper
+    if retained_id is None:
+        raise RuntimeSpecError("issued Sandbox Image keeper is missing")
     if retained_id != issuance.image_id:
         raise RuntimeSpecError("issued Sandbox Image keeper points at different bytes")
 
@@ -819,10 +824,10 @@ def _current_keeper_id(project: Path) -> str | None:
     from booley.runtime import interactive_docker as docker
 
     try:
-        return docker.image_id_strict(keeper_image(project))
+        return docker.image_id(keeper_image(project))
     except RuntimeError as exc:
         raise RuntimeSpecError(
-            "cannot snapshot the prior Sandbox Image keeper before issuance"
+            f"cannot snapshot the prior Sandbox Image keeper before issuance: {exc}"
         ) from exc
 
 
@@ -839,7 +844,7 @@ def _restore_keeper(project: Path, image_id: str | None) -> None:
         raise RuntimeSpecError(
             "failed issuance also prevented restoration of the prior Sandbox Image keeper"
         ) from exc
-    if _resolve_image_id(keeper) != image_id:
+    if _keeper_image_id(keeper) != image_id:
         raise RuntimeSpecError(
             "failed issuance restored the prior stamp but not its Sandbox Image keeper"
         )
@@ -959,6 +964,17 @@ def labels(issuance: Issuance) -> tuple[str, ...]:
         "booley.license-profile": issuance.license_profile or "none",
     }
     return tuple(f"{key}={value}" for key, value in values.items())
+
+
+def missing_labels(issuance: Issuance, container_labels: Mapping[str, object]) -> tuple[str, ...]:
+    """Issuance labels a container lacks or carries with another value."""
+    pairs = (label.split("=", 1) for label in labels(issuance))
+    return tuple(f"{key}={value}" for key, value in pairs if container_labels.get(key) != value)
+
+
+def labels_cover(issuance: Issuance, container_labels: Mapping[str, object]) -> bool:
+    """Whether a container's labels include every issuance label with its exact value."""
+    return not missing_labels(issuance, container_labels)
 
 
 _ISSUANCE_LABEL_PREFIXES = tuple(
@@ -2010,10 +2026,31 @@ def _runtime_authority_error(spec: dict[str, Any], exc: Exception) -> RuntimeSpe
 def _resolve_image_id(image: str) -> str:
     from booley.runtime import interactive_docker as docker
 
-    value = docker.image_id(image)
+    try:
+        value = docker.image_id(image)
+    except docker.ImageInspectError as exc:
+        raise RuntimeSpecError(str(exc)) from exc
     if not value:
         raise RuntimeSpecError(f"cannot resolve Sandbox Image to an immutable ID: {image}")
     return value
+
+
+def _keeper_image_id(keeper: str) -> str | None:
+    """Return the keeper tag's image ID, ``None`` when the keeper is absent.
+
+    Unlike :func:`_resolve_image_id`, absence returns ``None`` instead of raising.
+    A Docker failure is never read as "absent": it raises ``RuntimeSpecError``
+    naming the keeper, so callers cannot report a missing keeper or retag one
+    because Docker was unreachable.
+    """
+    from booley.runtime import interactive_docker as docker
+
+    try:
+        return docker.image_id(keeper)
+    except docker.ImageInspectError as exc:
+        raise RuntimeSpecError(
+            f"cannot inspect issued Sandbox Image keeper {keeper}: {exc}"
+        ) from exc
 
 
 def _retain_issued_image(issuance: Issuance) -> None:
@@ -2025,17 +2062,14 @@ def _retain_issued_image(issuance: Issuance) -> None:
     """
     from booley.runtime import interactive_docker as docker
 
-    try:
-        retained_id = _resolve_image_id(issuance.keeper_image)
-    except RuntimeSpecError:
-        retained_id = None
+    retained_id = _keeper_image_id(issuance.keeper_image)
     if retained_id == issuance.image_id:
         return
     try:
         docker.tag_image(issuance.image_id, issuance.keeper_image)
     except RuntimeError as exc:
         raise RuntimeSpecError(str(exc)) from exc
-    if _resolve_image_id(issuance.keeper_image) != issuance.image_id:
+    if _keeper_image_id(issuance.keeper_image) != issuance.image_id:
         raise RuntimeSpecError("issued Sandbox Image keeper could not be verified")
 
 
@@ -2150,7 +2184,7 @@ def _load_stamp(path: Path) -> Issuance:
 
 
 def _write_stamp(path: Path, issuance: Issuance) -> None:
-    store = _stamp_store()
+    store = stamp_store().private
     if path.parent == store.root:
         store.ensure_directory()
     else:

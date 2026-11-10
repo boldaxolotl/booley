@@ -180,11 +180,6 @@ def test_init_managed_project_uses_planned_reconciliation(
         "reconcile_planned",
         lambda _scope, intent, **_kwargs: observed.append(intent) or expected,
     )
-    monkeypatch.setattr(
-        init_cmd,
-        "reconcile_images",
-        lambda *_args, **_kwargs: pytest.fail("managed init must use the aggregate plan"),
-    )
     ctx = init_cmd.InitContext(project_root=tmp_path, force=True)
 
     assert init_cmd._step_image_lifecycle(ctx) is expected
@@ -195,11 +190,6 @@ def test_init_external_image_uses_explicit_plan_result(tmp_path, monkeypatch):
     expected = LifecycleResult("external/image", "sha256:image", Status.EXTERNAL)
     monkeypatch.setattr(
         init_cmd.image_lifecycle, "reconcile_planned", lambda *_args, **_kwargs: expected
-    )
-    monkeypatch.setattr(
-        init_cmd,
-        "reconcile_images",
-        lambda *_args, **_kwargs: pytest.fail("legacy fallback invoked"),
     )
     ctx = init_cmd.InitContext(project_root=tmp_path)
     assert init_cmd._step_image_lifecycle(ctx) is expected

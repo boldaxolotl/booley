@@ -25,7 +25,6 @@ from textual.widgets import DataTable, Static
 from booley.core.boundary import as_float
 from booley.goals.model import OCCUPYING_STATES
 from booley.goals.presentation import proposal_presentation
-from booley.harness.colors import PALETTE_DODGER_BLUE, PALETTE_MAUVE, PALETTE_ORANGE
 from booley.harness.dashboard import sessions
 from booley.harness.dashboard.footer import BackTarget, footer_hints
 from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobSnapshot, JobView, target_arg
@@ -35,6 +34,7 @@ from booley.harness.dashboard.resources import Resources
 from booley.harness.dashboard.topbar import FILTER, HELP_ITEM, OWNER, WINDOW, TopBar
 from booley.harness.dashboard.view_probe import ViewState
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
+from booley.presentation.colors import PALETTE_DODGER_BLUE, PALETTE_MAUVE, PALETTE_ORANGE
 from booley.presentation.report_results import (
     ReportPresentation,
     ResultLine,
@@ -524,6 +524,8 @@ def _job_rows(job: JobView, *, now: float | None = None) -> list[ResultLine]:
         rows.extend(ResultLine("", path) for path in artifacts[:3])
         if len(artifacts) > 3:
             rows.append(ResultLine("", f"{len(artifacts) - 3} more artifacts in report"))
+    if job.log_path:
+        rows.extend((ResultLine("Log", ""), ResultLine("", job.log_path)))
     if report:
         rows.extend((ResultLine("Report", ""), ResultLine("", report)))
     return rows
@@ -608,10 +610,10 @@ def _job_resources(job: JobView) -> list[ResultLine]:
 
 
 def job_paths(job: JobView) -> tuple[str, ...]:
-    """Visible deduplicated side artifacts first, exact report last."""
+    """Visible deduplicated side artifacts first, then ``job.log``, exact report last."""
     report = str(job.report_path) if job.report_path is not None else None
     artifacts = tuple(path for path in dict.fromkeys(job.artifacts) if path != report)[:3]
-    return (*artifacts, report) if report else artifacts
+    return (*artifacts, *(path for path in (job.log_path, report) if path))
 
 
 def _job_words(job: JobView, now: float) -> str:

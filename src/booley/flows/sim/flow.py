@@ -73,6 +73,7 @@ from booley.flows.sim.campaign.test_run_report import (
     test_run_grade,
     test_run_row,
 )
+from booley.flows.sim.campaign_files import document_digest
 from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
@@ -121,8 +122,8 @@ from booley.flows.test_runs import (
     test_run_from_document,
 )
 from booley.fusesoc import fusesoc_registry
-from booley.harness import colors
-from booley.harness.terminal_table import render_table
+from booley.presentation import colors
+from booley.presentation.terminal_table import render_table
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
     EXIT_CANCELLED,
@@ -183,6 +184,7 @@ from .campaign import (
     CampaignOutcome,
     CampaignPolicy,
     CampaignRecoveryStatus,
+    NewCampaignPreview,
     NewCampaignPreviewRequest,
     NewCampaignRunRequest,
     ResumeCampaignPreview,
@@ -215,7 +217,6 @@ from .campaign.flow_planning import (
 from .campaign.model import simulation_status_from_observations
 from .campaign.planning import (
     SimulationCampaignWorkloadMismatchError,
-    canonical_sha256,
     manifest_digest,
     verify_workload,
 )
@@ -870,7 +871,7 @@ def _pre_sim_preview_record(firing, invocation: Path | None) -> dict[str, object
         target=dict(document["target"]),
         test_count=len(document["test_names"]),
         test_names=list(document["test_names"][:8]),
-        test_names_sha256=canonical_sha256(list(document["test_names"])),
+        test_names_sha256=document_digest(list(document["test_names"])),
         terminal=firing.terminal,
         reference=_report_artifact_reference(
             firing.path,
@@ -1177,6 +1178,29 @@ def _baseline_refusal_line(refusal: BaselineRefusal) -> str:
     return (
         f"Cycle Count comparison inconclusive for {link.candidate} Test {link.test}{run}: "
         f"{refusal.reason}"
+    )
+
+
+def _campaign_preview_entry(preview: NewCampaignPreview) -> dict[str, object]:
+    """Summarize one new-campaign preview for the dry-run report and detail."""
+    return {
+        "target": dict(preview.target),
+        "work_items": len(preview.work_items),
+        "build_variants": len(preview.build_variants),
+        "prerequisites": len(preview.prerequisites),
+    }
+
+
+def _campaign_preview_outcome(previews: Sequence[dict[str, object]]) -> EndpointOutcome:
+    """Build the successful, non-mutating dry-run outcome for *previews*."""
+    return EndpointOutcome(
+        exit_code=EXIT_SUCCESS,
+        detail={"campaign_preview": list(previews), "mutated": False},
+        report_text="\n".join(
+            f"{cast(Mapping[str, object], item['target'])['selector']}: "
+            f"{item['work_items']} pending work item(s)"
+            for item in previews
+        ),
     )
 
 
@@ -2906,16 +2930,19 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self, result: EndpointOutcome, origin_manifest: Path | None = None
     ) -> EndpointOutcome:
         """Attach authentic hook evidence even when no terminal Campaign outcome exists."""
-        from .campaign import read_invocation_pre_sim_firings
+        from .campaign import collect_pre_sim_firings
         from .campaign_retention import invocation_booley_dir
 
         invocation = self._reserved_invocation_dir
         if invocation is None:
             return result
         try:
-            firings = read_invocation_pre_sim_firings(
-                invocation, origin_manifest, booley_dir=invocation_booley_dir(invocation)
-            )
+            paths = sorted((invocation / "targets").glob("*/campaign/manifest.json"))
+            if len(paths) > 4000:
+                raise SimulationCampaignIntegrityError("invocation Campaign count exceeds bound")
+            if origin_manifest is not None:
+                paths.append(origin_manifest)
+            firings = collect_pre_sim_firings(*paths, booley_dir=invocation_booley_dir(invocation))
         except (OSError, ValueError) as exc:
             return self._retain_pre_sim_after_scan_error(result, exc)
         return self._project_published_pre_sim(result, firings, invocation)
@@ -2935,7 +2962,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _retain_pre_sim_after_scan_error(
         self, result: EndpointOutcome, error: Exception
     ) -> EndpointOutcome:
-        from .campaign import reread_pre_sim_firings
+        from .campaign import collect_pre_sim_firings
         from .campaign_retention import invocation_booley_dir
 
         firings = tuple(
@@ -2949,8 +2976,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             try:
                 result = self._project_published_pre_sim(
                     result,
-                    reread_pre_sim_firings(
-                        firings,
+                    collect_pre_sim_firings(
+                        prior=firings,
                         booley_dir=None
                         if invocation is None
                         else invocation_booley_dir(invocation),
@@ -4102,7 +4129,43 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return resolved
 
     def _run_coverage_campaigns(self, admission: object | None) -> EndpointOutcome:
+        # A dry run borrows no admission, so it must be answered before the
+        # admission check in ``_execute_coverage_campaigns`` (as resume does).
+        if self.args.dry_run:
+            return self._preview_coverage_campaigns()
         return self._with_live_progress(lambda: self._execute_coverage_campaigns(admission))
+
+    def _preview_coverage_campaigns(self) -> EndpointOutcome:
+        """Preview one coverage Campaign per prepared Target.
+
+        Reserves no invocation directory, publishes no manifest, registers no
+        campaign with the execution adapter, and builds or simulates nothing.
+        """
+        campaign = SimulationCampaign()
+        try:
+            previews = [
+                _campaign_preview_entry(
+                    campaign.preview(
+                        NewCampaignPreviewRequest(
+                            # Placeholder ids: a preview reserves no invocation and
+                            # starts no execution, so neither is ever read.
+                            self._coverage_campaign_plan(plan, invocation_id=1, execution_id=""),
+                            Path(self.args.work_dir),
+                            self.args.report_dir,
+                            self._campaign_policy(),
+                        )
+                    )
+                )
+                for plan in self._coverage_prepared.targets
+            ]
+        except (OSError, ValueError, RuntimeError) as exc:
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=f"Simulation Campaign coverage preview failed: {exc}",
+            )
+        outcome = _campaign_preview_outcome(previews)
+        outcome.detail["coverage"] = True
+        return outcome
 
     def _execute_coverage_campaigns(self, admission: object | None) -> EndpointOutcome:
         """Run each native coverage selection as one durable aggregate item."""
@@ -4952,27 +5015,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                         self._campaign_policy(),
                     )
                 )
-                previews.append(
-                    {
-                        "target": dict(preview.target),
-                        "work_items": len(preview.work_items),
-                        "build_variants": len(preview.build_variants),
-                        "prerequisites": len(preview.prerequisites),
-                    }
-                )
+                previews.append(_campaign_preview_entry(preview))
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Campaign preview failed: {exc}",
             )
-        return EndpointOutcome(
-            exit_code=EXIT_SUCCESS,
-            detail={"campaign_preview": previews, "mutated": False},
-            report_text="\n".join(
-                f"{item['target']['selector']}: {item['work_items']} pending work item(s)"
-                for item in previews
-            ),
-        )
+        return _campaign_preview_outcome(previews)
 
     def _preview_campaign_baselines(
         self,

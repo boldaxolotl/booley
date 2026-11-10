@@ -64,3 +64,5 @@ through simulation, synthesis, linting, and Goal workflows.
 - **Domain docs:** Read `GLOSSARY-MAP.md`, then the glossary for each context the
   work touches. ADR history lives under `docs/adr/`. See
   `docs/internals/agents/domain.md`.
+- **Dependency updates:** Renovate opens update and security PRs. See
+  `docs/internals/agents/dependency-updates.md`.

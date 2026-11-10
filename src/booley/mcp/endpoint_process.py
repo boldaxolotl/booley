@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from booley.flows.endpoint_events import _write_display_event
 from booley.mcp.call_context import CallContext
@@ -50,17 +50,65 @@ def _stderr_cap_bytes() -> int:
     return _max_stderr_bytes() * _STREAM_CAP_MULTIPLIER
 
 
-async def _read_tail(stream: asyncio.StreamReader, cap: int) -> bytes:
+class _JobLog:
+    """Best-effort ``job.log`` sink shared by both output readers of one Job.
+
+    The log is a convenience for humans: the first ``OSError`` (open or write)
+    closes the file, stops logging and leaves a one-line ``notice`` for the
+    agent-facing stderr. The Job itself is never affected, and ``write`` never
+    raises, so a reader task cannot die from a full or unwritable disk.
+    """
+
+    def __init__(self, path: Path | None) -> None:
+        self.notice: str | None = None
+        self._file: BinaryIO | None = None
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._file = path.open("wb")
+        except OSError as exc:
+            self._fail(exc)
+
+    def write(self, chunk: bytes) -> None:
+        """Append *chunk*; on the first failure disable the log and keep a notice."""
+        if self._file is None:
+            return
+        try:
+            # Buffered handle: ``write`` finishes partial writes; flush so a tailing
+            # reader (the Dashboard link) sees output while the Job runs.
+            self._file.write(chunk)
+            self._file.flush()
+        except OSError as exc:
+            self._fail(exc)
+
+    def close(self) -> None:
+        """Close the file (idempotent); a close error is ignored."""
+        file, self._file = self._file, None
+        if file is not None:
+            with contextlib.suppress(OSError):
+                file.close()
+
+    def _fail(self, exc: OSError) -> None:
+        self.close()
+        self.notice = f"job.log unavailable: {exc}"
+
+
+async def _read_tail(
+    stream: asyncio.StreamReader, cap: int, sink: Callable[[bytes], None]
+) -> bytes:
     """Drain *stream* to EOF, keeping only the last *cap* bytes.
 
     Trims periodically so peak memory stays under ~2x cap regardless of
-    total output volume.
+    total output volume. Every chunk goes to *sink* (the Job's ``job.log``)
+    before it is buffered.
     """
     buf = bytearray()
     while True:
         chunk = await stream.read(8192)
         if not chunk:
             break
+        sink(chunk)
         buf.extend(chunk)
         if len(buf) > cap * 2:
             del buf[:-cap]
@@ -166,8 +214,14 @@ async def _run_subprocess(
     on_first_active: Callable[[], None] | None = None,
     watchdog_tick: float = _WATCHDOG_TICK_SECONDS,
     cancel_grace: float = CANCEL_GRACE_SECONDS,
+    log_path: Path | None = None,
 ) -> tuple[int, str, str, bool]:
-    """Run a grouped child with bounded tails and wall-clock or active-time budget."""
+    """Run a grouped child with bounded tails and wall-clock or active-time budget.
+
+    With *log_path* the child's full combined output is also written there as it
+    arrives; a log failure never fails the run and is reported as a final
+    stderr line.
+    """
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -184,20 +238,27 @@ async def _run_subprocess(
         with contextlib.suppress(Exception):
             on_spawn(proc.pid)
     assert proc.stdout is not None and proc.stderr is not None
+    log = _JobLog(log_path)
     child = _RunningProcess(
         proc,
         group,
-        asyncio.create_task(_read_tail(proc.stdout, _stdout_cap_bytes())),
-        asyncio.create_task(_read_tail(proc.stderr, _stderr_cap_bytes())),
+        asyncio.create_task(_read_tail(proc.stdout, _stdout_cap_bytes(), log.write)),
+        asyncio.create_task(_read_tail(proc.stderr, _stderr_cap_bytes(), log.write)),
     )
-    return await _supervise_output(
-        child,
-        timeout,
-        is_queued=is_queued,
-        on_first_active=on_first_active,
-        watchdog_tick=watchdog_tick,
-        cancel_grace=cancel_grace,
-    )
+    try:
+        exit_code, stdout, stderr, timed_out = await _supervise_output(
+            child,
+            timeout,
+            is_queued=is_queued,
+            on_first_active=on_first_active,
+            watchdog_tick=watchdog_tick,
+            cancel_grace=cancel_grace,
+        )
+    finally:
+        log.close()
+    if log.notice is not None:
+        stderr = f"{stderr.rstrip()}\n{log.notice}" if stderr else log.notice
+    return exit_code, stdout, stderr, timed_out
 
 
 async def _supervise_output(

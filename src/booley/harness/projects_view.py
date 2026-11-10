@@ -11,10 +11,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from booley.presentation import colors
+from booley.presentation.terminal_table import render_table
 from booley.projects.image_keepers import Leftover
-
-from . import colors
-from .terminal_table import render_table
 
 
 def render_leftovers(leftovers: Sequence[Leftover]) -> str:

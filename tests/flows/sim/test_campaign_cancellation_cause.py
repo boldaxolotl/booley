@@ -9,17 +9,29 @@ from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from booley.config.jobs import SlotCaps
 from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign import coordinator
 from booley.flows.sim.campaign.capacity import HeavyCapacity, HeavyCapacityError
-from booley.flows.sim.campaign.scheduler import BoundedCampaignScheduler
+from booley.flows.sim.campaign.coordinator import (
+    SimulationCampaign,
+    SimulationCampaignCancellationError,
+)
+from booley.flows.sim.campaign.scheduler import (
+    BoundedCampaignScheduler,
+)
 from booley.flows.sim.campaign.store import CampaignStore
-from booley.runtime.execution_records import ExecutionId
-from booley.runtime.job_slots import CLASS_HEAVY, SlotStore
-from tests.flows.sim.test_campaign_phase3 import _two_item_manifest
-from tests.flows.sim.test_campaign_phase4 import _scheduled_attempt
+from booley.runtime.execution_records import (
+    ExecutionId,
+)
+from booley.runtime.job_slots import (
+    CLASS_HEAVY,
+    SlotStore,
+)
+from tests.flows.sim.campaign_test_support import _scheduled_attempt, _two_item_manifest
 
 
 class _Campaign:
@@ -151,3 +163,16 @@ def test_child_cancellation_cause_names_a_lost_lease(tmp_path: Path) -> None:
         assert cause == "Job Slot lease lost: heavy/child.json"
     finally:
         campaign.slots.release(campaign.outer)
+
+
+def test_cancelled_campaign_stops_before_publication() -> None:
+    request = SimpleNamespace(
+        admission=SimpleNamespace(
+            cancellation=lambda: True,
+            cancellation_cause=lambda: "Job Slot token missing: heavy/entry.json",
+        )
+    )
+    with pytest.raises(
+        SimulationCampaignCancellationError, match="cancelled: Job Slot token missing"
+    ):
+        SimulationCampaign._raise_if_cancelled(request)  # type: ignore[arg-type]

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
 
 from booley.evidence.fields import ACCEPTANCE_FACTS_SCHEMA_V2
+from booley.flows.sim.campaign_files import document_digest
 
 from .codec import canonical_json_bytes
 from .model import _freeze_json
@@ -20,7 +20,7 @@ ACCEPTANCE_FACTS_SCHEMA = ACCEPTANCE_FACTS_SCHEMA_V2
 
 @dataclass(frozen=True, slots=True)
 class AcceptanceFacts:
-    """Facts built from records already checked at their read boundaries.
+    """Facts built from records checked at their read boundaries and use sites.
 
     The document is deep-frozen once; nothing re-validates or decodes it.
     """
@@ -35,7 +35,7 @@ class AcceptanceFacts:
     @property
     def sha256(self) -> str:
         """``sha256:`` digest of the canonical bytes without their trailing newline."""
-        return "sha256:" + hashlib.sha256(self.canonical_bytes().rstrip(b"\n")).hexdigest()
+        return document_digest(self.document)
 
     def canonical_bytes(self) -> bytes:
         """Sorted, compact UTF-8 JSON with one trailing newline."""

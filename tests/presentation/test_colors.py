@@ -1,4 +1,4 @@
-"""Tests for harness.colors — terminal color utilities."""
+"""Tests for presentation.colors — terminal color utilities."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-import booley.harness.colors as colors_mod
-from booley.harness.colors import (
+import booley.presentation.colors as colors_mod
+from booley.presentation.colors import (
     _ANSI_RE,
     _FG,
     _style,

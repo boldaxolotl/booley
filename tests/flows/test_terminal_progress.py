@@ -1096,7 +1096,7 @@ def test_vivado_stage_identification_accepts_native_path_separators(
 
 def test_tty_adaptive_intervals_use_monotonic_differences(tmp_path, monkeypatch):
     monkeypatch.setenv("TERM", "xterm")
-    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", False)
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
     screen = Screen(tty=True)
     now = [1000000.0]
     progress = observer(
@@ -1133,7 +1133,7 @@ def _cells(text):
 def _tty_sink(tmp_path, monkeypatch, *, width=120, colors=False, target="top"):
     """A TTY observer with stubbed size, clock and color policy (no host dependence)."""
     monkeypatch.setenv("TERM", "xterm")
-    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", colors)
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", colors)
     clock = [0.0]
     sink = TerminalProgress(
         "sim",
@@ -1172,7 +1172,7 @@ def test_tty_status_row_is_compact(tmp_path, monkeypatch, last_output, expected)
 
 
 def test_tty_status_row_styles_through_color_helpers(tmp_path, monkeypatch):
-    from booley.harness.colors import accent, amber, dim
+    from booley.presentation.colors import accent, amber, dim
 
     sink, clock = _tty_sink(tmp_path, monkeypatch, colors=True)
     sink.stage = "building"
@@ -1220,7 +1220,7 @@ def _two_lane_sink(tmp_path, monkeypatch, *, colors, width=120):
 
 @pytest.mark.parametrize("colors", [False, True], ids=["plain", "colored"])
 def test_tty_lane_rows_are_indented_and_aligned(tmp_path, monkeypatch, colors):
-    from booley.harness.colors import strip_ansi
+    from booley.presentation.colors import strip_ansi
 
     sink = _two_lane_sink(tmp_path, monkeypatch, colors=colors)
     frame = _frame(sink)
@@ -1277,10 +1277,10 @@ REDIRECTED_GOLDEN = "\n".join(
 
 def test_redirected_progress_records_are_byte_identical(tmp_path, monkeypatch):
     from booley.flows.terminal_progress import announce_unit, progress_lane
-    from booley.harness.colors import strip_ansi
+    from booley.presentation.colors import strip_ansi
 
     monkeypatch.setenv("TERM", "xterm")
-    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", True)
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", True)
     monkeypatch.setattr(
         "booley.flows.terminal_progress.utc_now_rfc3339", lambda: "2026-10-05T13:00:00Z"
     )
@@ -1349,7 +1349,7 @@ def settled_lines(text):
 def tty_observer(tmp_path, monkeypatch, *, flow="sim", target="sim_demo"):
     """A TTY observer with a constant clock, so every elapsed time renders ``0s``."""
     monkeypatch.setenv("TERM", "xterm")
-    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", False)
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
     return TerminalProgress(
         flow,
         target,
@@ -1440,7 +1440,6 @@ def test_tty_two_target_lint_leaves_compact_output(tmp_path, monkeypatch):
     monkeypatch.setenv("TERM", "xterm")
     monkeypatch.setenv("COLUMNS", "120")
     monkeypatch.setenv("LINES", "24")
-    monkeypatch.setattr("booley.harness.cli_goal_notice.warn_cli_goal_recording", lambda *_: None)
     targets = ("lint_a", "lint_b")
     source = write_lint_progress_core(tmp_path, targets)
 
@@ -1608,7 +1607,7 @@ def test_tty_transcript_failure_prints_one_plain_line(tmp_path, monkeypatch):
 def test_tty_window_shrink_keeps_compact_output(tmp_path, monkeypatch):
     """A window that drops below the panel height mid-run draws nothing, not raw records."""
     monkeypatch.setenv("TERM", "xterm")
-    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", False)
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
     now = [0.0]
     height = [24]
     sink = TerminalProgress(
@@ -1645,3 +1644,27 @@ def test_human_text_shortens_hashes_but_not_design_data(tmp_path, monkeypatch):
     sink.tick()
     assert "Paired Checkout -> 01234567" in sink.stream.getvalue()
     assert sha not in sink.stream.getvalue()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX pty or FIFO")
+@pytest.mark.parametrize("terminal", ["pty", "pipe"])
+def test_raw_terminal_lines_reach_job_log_without_frames(tmp_path, monkeypatch, terminal):
+    """Raw fd writes bypass a Standalone Job's tee: permanent lines are copied, redraws are not."""
+    from booley.harness.standalone_job import JobLogStream
+
+    monkeypatch.setenv("TERM", "xterm")
+    reader, writer = os.openpty() if terminal == "pty" else os.pipe()
+    log_path = tmp_path / "job.log"
+    with os.fdopen(writer, "w") as screen, log_path.open("wb", buffering=0) as log:
+        sink = observer(
+            tmp_path,
+            stream=JobLogStream(screen, log),
+            clock=lambda: 10.0,
+            dimensions=lambda: os.terminal_size((120, 24)),
+        )
+        sink.tick()  # a pty draws the live status panel; a pipe draws nothing
+        assert (sink.rows > 0) == (terminal == "pty")
+        sink._say("permanent \x1b[1mline\x1b[0m")
+        sink.close()
+    os.close(reader)
+    assert log_path.read_text(encoding="utf-8") == "permanent line\n"

@@ -298,3 +298,20 @@ def test_reference_follows_only_the_booley_dir_entry(tmp_path, layout):
             follow()
     else:
         follow()
+
+
+def test_artifact_reference_accepts_a_hard_linked_artifact(tmp_path):
+    base, reference = _reference(tmp_path)
+    artifact = base / "campaign/manifest.json"
+    (base / "campaign/manifest-alias.json").hardlink_to(artifact)
+
+    resolved = resolve_artifact_reference(
+        reference,
+        bases={"origin_target": base},
+        allowed_bases={"origin_target"},
+        expected_kind="simulation_campaign_manifest",
+        expected_owner="campaign-id",
+        maximum=1024,
+    )
+
+    assert resolved.path == artifact

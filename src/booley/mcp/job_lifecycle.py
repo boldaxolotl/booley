@@ -247,7 +247,14 @@ class JobLifecycle:
 
     def _forget_synchronous(self, rec: jobrec.JobRecord) -> None:
         """Drop a finished inline run's record and its pinned root."""
-        jobrec.delete_record(rec.run_id, root=self._write_root(rec))
+        root = self._write_root(rec)
+        jobrec.delete_record(rec.run_id, root=root)
+        log = jobrec.job_log_path(rec.run_id, root)
+        if log is not None:
+            # The log lives exactly as long as the record it sits beside.
+            with contextlib.suppress(OSError):
+                log.unlink(missing_ok=True)
+                log.parent.rmdir()
         self._job_roots.pop(rec.run_id, None)
 
     def _abort_synchronous(self, rec: jobrec.JobRecord) -> None:
@@ -347,6 +354,7 @@ class JobLifecycle:
             env=_endpoint_subprocess_env(context, pytest_scope=rec.endpoint, **overrides),
             is_queued=lambda: self._child_is_queued(rec),
             on_first_active=lambda: self._stamp_run_started(rec),
+            log_path=jobrec.job_log_path(rec.run_id, self._write_root(rec)),
         )
 
     async def _run_and_record(self, rec: jobrec.JobRecord, context: CallContext) -> None:
