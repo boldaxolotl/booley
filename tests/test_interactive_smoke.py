@@ -486,6 +486,8 @@ class TestInitInteractive:
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
         (tmp_path / ".booley").mkdir()
+        # Stealth must be explicit for the Booley Directory to join the exclusions.
+        (tmp_path / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
 
         # No docker; isolate from host app detection / creds.
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
