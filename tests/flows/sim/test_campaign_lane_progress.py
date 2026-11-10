@@ -28,8 +28,7 @@ from booley.flows.sim.execution.pre_sim import _run_pre_sim_process
 from booley.flows.terminal_progress import TerminalProgress, announce_unit
 from booley.runtime.execution_records import ExecutionId
 from booley.runtime.job_slots import CLASS_HEAVY, SlotStore
-from tests.flows.sim.test_campaign_phase3 import _two_item_manifest
-from tests.flows.sim.test_campaign_phase4 import _managed
+from tests.flows.sim.campaign_test_support import _managed, _two_item_manifest
 from tests.flows.test_terminal_progress import settled_lines
 
 # Bound for every cross-lane wait so a regression fails instead of hanging.

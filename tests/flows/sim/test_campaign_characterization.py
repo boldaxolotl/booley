@@ -42,9 +42,9 @@ from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.domain import TargetHandle
 from tests.flows.report_headline import final_report_omits_headline
+from tests.flows.sim.campaign_test_support import _facts, _plan, _unmanaged
 from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.leased_session import canned_build_session
-from tests.flows.sim.test_campaign_phase5_adversarial import _facts, _plan, _unmanaged
 from tests.flows.sim.test_flow import SimulateFlow, _make_flow
 
 

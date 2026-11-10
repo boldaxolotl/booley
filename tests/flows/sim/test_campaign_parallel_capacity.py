@@ -1,4 +1,4 @@
-"""Stable-seam verification for bounded Simulation Campaign scheduling."""
+"""Bounded parallel execution, capacity, cancellation and lease loss of Simulation Campaigns."""
 
 from __future__ import annotations
 
@@ -8,18 +8,15 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-_WORK_DIR_NOTICE = "booley: --work-dir is deprecated; use --project instead (removal after one compatibility release)\n"
-
 from booley.config.jobs import SlotCaps
 from booley.flows.base import FlowMechanics
-from booley.flows.endpoint_admission import AdmissionContext, AdmissionGate
+from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign import child_protocol
 from booley.flows.sim.campaign.capacity import HeavyCapacity, HeavyCapacityError
 from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
@@ -30,25 +27,23 @@ from booley.flows.sim.campaign.codec import (
 from booley.flows.sim.campaign.coordinator import (
     CampaignPolicy,
     NewCampaignRunRequest,
-    ResumeCampaignRunRequest,
     SimulationCampaign,
-    SimulationCampaignCancellationError,
 )
-from booley.flows.sim.campaign.model import SimulationAttempt, create_simulation_campaign_plan
-from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
-from booley.flows.sim.campaign.resume import (
-    ValidatedManifestNode,
-    ValidatedResumeManifest,
-    ValidatedTargetBinding,
+from booley.flows.sim.campaign.model import create_simulation_campaign_plan
+from booley.flows.sim.campaign.run_directory import (
+    RunDirectory,
+    claimed_run_directory,
+    expand_run_directory,
 )
 from booley.flows.sim.campaign.scheduler import (
     BoundedCampaignScheduler,
     CampaignSchedulingError,
     ScheduledAttempt,
 )
-from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
+from booley.flows.sim.campaign.serial_execution import (
+    OrdinaryHdlSerialExecutor,
+)
 from booley.flows.sim.campaign.store import CampaignStore
-from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
 from booley.runtime.execution_records import (
     ExecutionId,
     child_context_matches,
@@ -60,8 +55,6 @@ from booley.runtime.job_slots import (
     HOLDING,
     QUEUED,
     ROLE_INTERACTIVE,
-    ClaimAbortedError,
-    ClaimLostError,
     SlotStore,
 )
 from booley.runtime.supervised_execution import (
@@ -69,8 +62,21 @@ from booley.runtime.supervised_execution import (
     SupervisedProcessSet,
     supervised_execution_scope,
 )
-from tests.flows.sim.test_campaign_manifest_codec import _sha
-from tests.flows.sim.test_campaign_phase3 import _build_execution, _two_item_manifest
+from tests.flows.sim.campaign_test_support import (
+    _PARALLEL_SYNC_TIMEOUT_S,
+    _assert_no_child_records,
+    _capacity,
+    _lane_registry,
+    _managed,
+    _parallel_environment,
+    _ParallelExecution,
+    _run_identity,
+    _scheduled_attempt,
+    _three_item_manifest,
+    _two_item_manifest,
+    _unmanaged,
+    _wait_until,
+)
 
 
 def _unique_execution_id() -> ExecutionId:
@@ -82,51 +88,6 @@ def _unique_execution_id() -> ExecutionId:
     return ExecutionId(uuid.uuid4().hex)
 
 
-def _unmanaged() -> AdmissionContext:
-    return AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
-
-
-def _managed(store: SlotStore, outer, *, max_heavy: int = 2) -> AdmissionContext:
-    return AdmissionContext(
-        "managed",
-        store,
-        outer,
-        max_heavy,
-        "interactive",
-        "a" * 32,
-        5.0,
-        lambda: False,
-    )
-
-
-def test_cancelled_campaign_stops_before_publication() -> None:
-    request = SimpleNamespace(
-        admission=SimpleNamespace(
-            cancellation=lambda: True,
-            cancellation_cause=lambda: "Job Slot token missing: heavy/entry.json",
-        )
-    )
-    with pytest.raises(
-        SimulationCampaignCancellationError, match="cancelled: Job Slot token missing"
-    ):
-        SimulationCampaign._raise_if_cancelled(request)  # type: ignore[arg-type]
-
-
-def _capacity(admission: AdmissionContext, tmp_path: Path) -> HeavyCapacity:
-    """Real heavy capacity, with its lane registry, over a fresh Booley Directory."""
-    project_data = tmp_path / "project" / ".booley"
-    project_data.mkdir(parents=True, exist_ok=True)
-    return HeavyCapacity(admission, _two_item_manifest(), project_data)
-
-
-def _lane_registry(tmp_path: Path) -> ChildExecutionRegistry:
-    """A registry over the Booley Directory ``_capacity`` uses, to read lane records."""
-    project_data = tmp_path / "project" / ".booley"
-    return ChildExecutionRegistry.from_project_data(
-        _two_item_manifest(), project_data, booley_dir=project_data
-    )
-
-
 def _child_permit(capacity: HeavyCapacity, work_item_id: str = "item"):
     """Enter a child lane for a dummy attempt."""
     return capacity.child_permit(
@@ -136,45 +97,6 @@ def _child_permit(capacity: HeavyCapacity, work_item_id: str = "item"):
         attempt_directory=Path("attempt"),
         publish=lambda _child: None,
     )
-
-
-def _three_item_manifest(execution_id: str = ""):
-    document = json.loads(canonical_json_bytes(_two_item_manifest().document))
-    document.pop("fingerprints")
-    document["origin"]["execution_id"] = execution_id
-    document["required_suite"]["names"] = ["alpha", "beta", "gamma"]
-    identity = {
-        key: value
-        for key, value in document["work_items"][1].items()
-        if key not in {"work_item_id", "fingerprint_sha256"}
-    }
-    identity["ordinal"] = 2
-    identity["selection"] = {"kind": "named", "names": ["gamma"]}
-    from tests.flows.sim.test_campaign_manifest_codec import _selection_test_runs
-
-    identity["test_runs"] = _selection_test_runs(("gamma",))
-    identity["arguments"] = ["gamma"]
-    fingerprint = _sha(identity)
-    document["work_items"].append(
-        {
-            "work_item_id": "item:0002:" + fingerprint.removeprefix("sha256:")[:16],
-            **identity,
-            "fingerprint_sha256": fingerprint,
-        }
-    )
-    return finalize_manifest(document)
-
-
-def _wait_until(predicate, timeout: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError("condition did not become true before the deadline")
-
-
-_PARALLEL_SYNC_TIMEOUT_S = 20.0
 
 
 def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -438,52 +360,6 @@ def test_capacity_exception_recovers_then_releases_exact_child(tmp_path: Path) -
         store.release(outer)
 
 
-@pytest.mark.parametrize(
-    ("when", "error", "match", "cause"),
-    [
-        ("before_slot", ClaimAbortedError, "shutdown requested", "campaign_error"),
-        ("in_work", HeavyCapacityError, "plain capacity failure", "orphan_recovered"),
-        ("after_work", ClaimAbortedError, "cancellation requested", "completed"),
-    ],
-)
-def test_child_permit_retires_the_lane_on_every_exit(
-    tmp_path: Path, when: str, error: type[Exception], match: str, cause: str
-) -> None:
-    store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
-    outer = store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
-    cancelled = threading.Event()
-    admission = replace(_managed(store, outer), cancellation=cancelled.is_set)
-    capacity = _capacity(admission, tmp_path)
-    lanes: list[ExecutionId] = []
-
-    def publish(child_id: ExecutionId) -> None:
-        lanes.append(child_id)
-        if when == "before_slot":
-            cancelled.set()
-
-    try:
-        with (
-            capacity.outer_permit(),
-            pytest.raises(error, match=match),
-            capacity.child_permit(
-                "item",
-                attempt_id="attempt",
-                attempt_ordinal=1,
-                attempt_directory=Path("attempt"),
-                publish=publish,
-            ),
-        ):
-            if when == "in_work":
-                raise HeavyCapacityError("plain capacity failure")
-            cancelled.set()
-    finally:
-        store.release(outer)
-    record = read_json(
-        execution_paths(lanes[0], booley_dir=_lane_registry(tmp_path).project_data).record
-    )
-    assert (record["state"], record["terminal_cause"]) == ("terminal", cause)
-
-
 def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(
     tmp_path: Path,
 ) -> None:
@@ -547,23 +423,6 @@ def test_lease_loss_starts_exact_child_recovery_before_work_returns(
     # A lost child lease is lane-scoped: it neither stops nor taints the campaign.
     assert capacity.shutdown_requested is False
     assert capacity.cancellation_cause() is None
-
-
-@pytest.mark.parametrize("defect", ["symlink", "hardlink"])
-def test_child_protocol_conflict_read_rejects_links(tmp_path: Path, defect: str) -> None:
-    raw = canonical_json_bytes({"value": "expected"})
-    source = tmp_path / "source.json"
-    source.write_bytes(raw)
-    record = tmp_path / "record.json"
-    if defect == "symlink":
-        record.symlink_to(source.name)
-    else:
-        record.hardlink_to(source)
-
-    with pytest.raises(SimulationCampaignIntegrityError, match="link"):
-        child_protocol._publish_or_verify(record, raw)
-
-    assert source.read_bytes() == raw
 
 
 def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path) -> None:
@@ -724,358 +583,6 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
     scheduler._await_lanes([], _ExitsDuringFinalWait())
 
 
-def _scheduled_attempt(store: CampaignStore, item) -> ScheduledAttempt:
-    attempt_id = os.urandom(16).hex()
-    ordinal, directory = store.allocate_attempt_directory(str(item["work_item_id"]), attempt_id)
-    return ScheduledAttempt(item, attempt_id, ordinal, directory, attempt_id)
-
-
-def test_attempt_is_published_before_real_child_waiter_and_cancel_writes_no_child_records(
-    tmp_path: Path,
-) -> None:
-    manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
-    campaign_store.publish_manifest(manifest)
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".booley").mkdir()
-    registry = ChildExecutionRegistry(manifest, project)
-    slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
-    outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
-    cancelled = threading.Event()
-    admission = AdmissionContext(
-        "managed",
-        slots,
-        outer,
-        2,
-        "interactive",
-        "a" * 32,
-        _PARALLEL_SYNC_TIMEOUT_S,
-        cancelled.is_set,
-    )
-    capacity = HeavyCapacity(admission, manifest, registry.project_data)
-    attempts: list[Path] = []
-
-    def allocate(item) -> ScheduledAttempt:
-        attempt_id = str(uuid.uuid4())
-        ordinal, directory = campaign_store.allocate_attempt_directory(
-            str(item["work_item_id"]), attempt_id
-        )
-        return ScheduledAttempt(item, attempt_id, ordinal, directory, attempt_id)
-
-    def prepare(attempt, child_id, *_entry_digest) -> None:
-        attempts.append(attempt.directory / "attempt.json")
-        published = SimulationAttempt(
-            {
-                "$schema": "booley.simulation-attempt/v1",
-                "campaign_id": manifest.document["campaign_id"],
-                "manifest_sha256": manifest_digest(manifest),
-                "workload_sha256": "sha256:" + "0" * 64,
-                "work_item_id": attempt.item["work_item_id"],
-                "attempt_id": attempt.attempt_id,
-                "attempt_ordinal": attempt.ordinal,
-                "producer_invocation_id": 1,
-                "build_variant_id": "variant:" + "0" * 64,
-                "run_directory": {
-                    "kind": "literal",
-                    "configured": "run",
-                    "resolved": "run",
-                    "collision_key": "run",
-                    "owned": True,
-                },
-                "child_execution_id": child_id,
-                "child_entry_sha256": None,
-                "pre_sim_build_access": "immutable",
-                "policy": {"timeout_seconds": None, "no_kill": False, "diagnostic": False},
-                "started_at": "2026-09-22T14:00:00Z",
-            }
-        )
-        (attempt.directory / "attempt.json").write_bytes(published.canonical_bytes())
-
-    errors: list[BaseException] = []
-    scheduler = BoundedCampaignScheduler(
-        capacity,
-        allocate=allocate,
-        prepare_child=prepare,
-        execute=lambda *_args: cancelled.wait(_PARALLEL_SYNC_TIMEOUT_S),
-    )
-    worker = threading.Thread(
-        target=lambda: _capture_error(errors, scheduler.run, manifest.document["work_items"])
-    )
-    worker.start()
-    try:
-        _cancel_child_and_assert(slots, attempts, registry, campaign_store, cancelled, worker)
-        # Cancelling while the second item waits for a heavy slot legitimately
-        # aborts that claim; anything else (e.g. a spurious bounded-shutdown
-        # CampaignSchedulingError, #977) is a failure.
-        assert all(isinstance(e, (ClaimAbortedError, ClaimLostError)) for e in errors), errors
-    finally:
-        slots.release(outer)
-
-
-def _assert_no_child_records(campaign_root: Path, project_data: Path) -> None:
-    """Parallel lanes publish only execution records: no child entry or retirement anywhere."""
-    assert not (campaign_root / "child-executions").exists()
-    assert not (project_data / ".runtime" / "campaign-child-executions").exists()
-
-
-def _cancel_child_and_assert(slots, attempts, registry, campaign_store, cancelled, worker) -> None:
-    _wait_until(lambda: len(slots.snapshot(CLASS_HEAVY)[1]) == 1)
-    assert attempts and attempts[0].is_file()
-    # The attempt names its lane execution, which already has a context and a waiting record.
-    attempt = json.loads(attempts[0].read_bytes())
-    lane = execution_paths(
-        ExecutionId(attempt["child_execution_id"]), booley_dir=registry.project_data
-    )
-    assert lane.context.is_file() and read_json(lane.record)["state"] == "waiting"
-    _assert_no_child_records(campaign_store.root, registry.project_data)
-    cancelled.set()
-    worker.join(timeout=_PARALLEL_SYNC_TIMEOUT_S)
-    assert not worker.is_alive()
-    _assert_no_child_records(campaign_store.root, registry.project_data)
-    assert registry.is_terminal(ExecutionId(attempt["child_execution_id"]))
-    assert slots.snapshot(CLASS_HEAVY)[1] == []
-
-
-def _capture_error(errors: list[BaseException], call, *args) -> None:
-    try:
-        call(*args)
-    except BaseException as exc:  # noqa: BLE001 -- thread ferry for assertion
-        errors.append(exc)
-
-
-class _ParallelState:
-    def __init__(self, build_root, run_log, handle, first_finisher, schedule_seed):
-        self.build_root = build_root
-        self.run_log = run_log
-        self.handle = handle
-        self.first_finisher = first_finisher
-        self.schedule_seed = schedule_seed
-        self.barrier = threading.Barrier(2, timeout=_PARALLEL_SYNC_TIMEOUT_S)
-        self.first_finished = threading.Event()
-        self.interval_gate = threading.Lock()
-        self.intervals: list[tuple[str, float, float]] = []
-        self.completion_order: list[str] = []
-        self.compile_count = 0
-
-
-class _ParallelGroup:
-    def __init__(self, state: _ParallelState, names: tuple[str, ...]) -> None:
-        self.state = state
-        self.names = names
-        self.build_root = state.build_root
-        self.artifact_paths = (state.build_root / "simv",)
-        self.compile_surface = SimpleNamespace(
-            project_root=state.build_root.parent.resolve(),
-            authored_paths=(),
-            operational_paths=(),
-            optional_paths=(),
-        )
-
-    def planning_disclosure(self):
-        return {}
-
-    def compile(self):
-        self.state.compile_count += 1
-        return SimpleNamespace(passed=True)
-
-    def build_recovery_document(self):
-        return _build_execution()
-
-    def bind_authenticated_bundle(self, evidence) -> None:
-        assert evidence == _build_execution()
-
-    def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
-        del snapshot_root, run_cwd
-        name = self.names[0]
-        started = time.monotonic()
-        self._coordinate(name)
-        finished = time.monotonic()
-        with self.state.interval_gate:
-            self.state.intervals.append((name, started, finished))
-            self.state.completion_order.append(name)
-        passed = name != "beta"
-        test = SimulationTestOutcome(
-            name, "pass" if passed else "fail", passed, str(self.state.run_log)
-        )
-        return SimulationTargetOutcome(
-            "sim",
-            self.state.handle.identity,
-            "tb",
-            "icarus",
-            passed,
-            "pass" if passed else "fail",
-            0.1,
-            (test,),
-        )
-
-    def _coordinate(self, name: str) -> None:
-        if name not in {"alpha", "beta"}:
-            return
-        self.state.barrier.wait()
-        time.sleep(0.001 * self.state.schedule_seed)
-        if name == self.state.first_finisher:
-            self.state.first_finished.set()
-        else:
-            assert self.state.first_finished.wait(timeout=_PARALLEL_SYNC_TIMEOUT_S)
-
-
-class _ParallelExecution:
-    def __init__(self, state: _ParallelState) -> None:
-        self.state = state
-
-    @contextmanager
-    def ordinary_group(self, _handle, names, _test_runs=None):
-        yield _ParallelGroup(self.state, names)
-
-
-class _CampaignAdmissionEndpoint:
-    _invocation_id = "sim-20260925T153819Z-1"
-
-    def __init__(self, slots: SlotStore, runtime_execution_id: str | None) -> None:
-        self._slots = slots
-        self._runtime_execution_id = runtime_execution_id
-
-    def _acquire_job_slot(self):
-        execution_id = (
-            ExecutionId(self._runtime_execution_id) if self._runtime_execution_id else None
-        )
-        return self._slots, self._slots.acquire(
-            CLASS_HEAVY, pid=os.getpid(), execution_id=execution_id
-        )
-
-
-def _validated_campaign(store, manifest, project, handle) -> ValidatedResumeManifest:
-    node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
-    return ValidatedResumeManifest(
-        node,
-        (),
-        (handle,),
-        (ValidatedTargetBinding(node, project.resolve(), handle),),
-    )
-
-
-def _child_parent_ids(project: Path) -> set[str]:
-    """Parent execution IDs named by the lane context sidecars under the Booley Directory."""
-    contexts = (project / ".booley/.runtime/executions").glob("*/context.json")
-    return {json.loads(path.read_text())["parent_execution_id"] for path in contexts}
-
-
-@pytest.mark.parametrize("runtime_execution_id", ["b" * 32, None])
-def test_interrupted_managed_campaign_exact_resume_preserves_parent_identity(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    runtime_execution_id: str | None,
-) -> None:
-    case = _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id)
-    assert not case.store.summary_path.exists()
-    assert len(case.state.completion_order) == 3
-    _assert_no_child_records(case.store.root, case.project / ".booley")
-    parent_ids = _child_parent_ids(case.project)
-    if runtime_execution_id is not None:
-        assert parent_ids == {runtime_execution_id}
-    assert len(parent_ids) == 1 and _CampaignAdmissionEndpoint._invocation_id not in parent_ids
-    ExecutionId(next(iter(parent_ids)))
-
-    case.fault_enabled[0] = False
-    summaries, outcomes = _resume_campaign_twice(case, runtime_execution_id)
-    assert summaries[0] == summaries[1]
-    assert all(outcome.complete for outcome in outcomes)
-    assert len(case.state.completion_order) == 3
-    assert case.store.load_manifest().document["origin"]["execution_id"] == (
-        runtime_execution_id or ""
-    )
-    assert case.slots.snapshot(CLASS_HEAVY) == ([], [])
-
-
-def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
-    manifest = _three_item_manifest(runtime_execution_id or "")
-    plan = create_simulation_campaign_plan(manifest)
-    project, state = _parallel_environment(tmp_path, "alpha", 0)
-    monkeypatch.setattr(
-        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
-        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
-    )
-    executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
-        execution_factory=lambda _options: _ParallelExecution(state),  # type: ignore[arg-type,return-value]
-    )
-    invocation = tmp_path / "reports/000001"
-    invocation.mkdir(parents=True)
-    slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=3))
-    _set_runtime_execution_id(monkeypatch, runtime_execution_id)
-    monkeypatch.setenv("BOOLEY_RUN_ID", _CampaignAdmissionEndpoint._invocation_id)
-    fault_enabled, original_mark = [True], ChildExecutionRegistry.mark_terminal
-    work_items = invocation / "targets/sim/campaign/work-items"
-
-    def interrupted_mark(registry, prepared, terminal_cause) -> None:
-        if fault_enabled[0]:
-            # Interrupt only after every item has published its result.
-            _wait_until(
-                lambda: len(tuple(work_items.glob("*/result.json"))) == 3,
-                timeout=_PARALLEL_SYNC_TIMEOUT_S,
-            )
-            raise RuntimeError("injected terminal-record interruption")
-        original_mark(registry, prepared, terminal_cause)
-
-    monkeypatch.setattr(ChildExecutionRegistry, "mark_terminal", interrupted_mark)
-    campaign = SimulationCampaign(executor)
-    with (
-        pytest.raises(RuntimeError, match="injected terminal-record interruption"),
-        AdmissionGate(
-            _CampaignAdmissionEndpoint(slots, runtime_execution_id)  # type: ignore[arg-type]
-        ).enter() as admission,
-    ):
-        campaign.run(
-            NewCampaignRunRequest(
-                plan, project, invocation.parent, CampaignPolicy(), invocation, admission
-            )
-        )
-    store = CampaignStore(invocation / "targets/sim/campaign")
-    validated = _validated_campaign(store, manifest, project, state.handle)
-    return SimpleNamespace(
-        campaign=campaign,
-        fault_enabled=fault_enabled,
-        invocation=invocation,
-        manifest=manifest,
-        plan=plan,
-        project=project,
-        slots=slots,
-        state=state,
-        store=store,
-        validated=validated,
-    )
-
-
-def _resume_campaign_twice(case, runtime_execution_id):
-    request_args = (
-        case.validated,
-        case.plan,
-        case.project,
-        case.invocation.parent,
-        CampaignPolicy(),
-        case.invocation,
-    )
-    summaries = []
-    outcomes = []
-    for _ in range(2):
-        with AdmissionGate(
-            _CampaignAdmissionEndpoint(case.slots, runtime_execution_id)  # type: ignore[arg-type]
-        ).enter() as admission:
-            outcomes.append(case.campaign.run(ResumeCampaignRunRequest(*request_args, admission)))
-        summaries.append(case.store.summary_path.read_bytes())
-    return summaries, outcomes
-
-
-def _set_runtime_execution_id(
-    monkeypatch: pytest.MonkeyPatch, runtime_execution_id: str | None
-) -> None:
-    if runtime_execution_id is None:
-        monkeypatch.delenv("BOOLEY_RUNTIME_EXECUTION_ID", raising=False)
-    else:
-        monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", runtime_execution_id)
-
-
 @pytest.mark.parametrize("first_finisher", ["alpha", "beta"])
 @pytest.mark.parametrize("schedule_seed", range(5))
 def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(
@@ -1100,25 +607,6 @@ def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(
     )
     _assert_parallel_outcome(outcome, plan, state, first_finisher)
     _assert_child_claim_integrity(invocation, slot_store, plan, project / ".booley")
-
-
-def _parallel_environment(tmp_path, first_finisher, schedule_seed):
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".booley").mkdir()
-    build_root = tmp_path / "engine-build"
-    build_root.mkdir()
-    (build_root / "simv").write_bytes(b"image")
-    (build_root / "input.bin").write_bytes(b"runtime")
-    run_log = build_root / "run.log"
-    run_log.write_text("PASS\n", encoding="utf-8")
-    handle = SimpleNamespace(
-        identity="acme:lib:dut:1#sim",
-        project_root=project,
-        selector="sim",
-        eda_tool="icarus",
-    )
-    return project, _ParallelState(build_root, run_log, handle, first_finisher, schedule_seed)
 
 
 def _run_parallel_campaign(tmp_path, manifest, plan, project, executor):
@@ -1178,59 +666,6 @@ def _assert_child_claim_integrity(invocation, slot_store, plan, project_data) ->
         record = read_json(lane.record)
         assert record["state"] == "terminal" and record["tree_terminal"] is True
     assert slot_store.snapshot(CLASS_HEAVY) == ([], [])
-
-
-@pytest.mark.parametrize("mode", ["success", "failure", "mismatch"])
-def test_cli_resume_announces_validated_origin_before_execution(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], mode: str
-) -> None:
-    from booley.flows.sim.flow import SimulateFlow
-    from tests.flows.sim.test_coverage_flow import _interrupt_coverage_publication
-    from tests.flows.sim.test_coverage_transaction import NativeExecution
-
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
-    destination = tmp_path / "destination reports"
-    flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
-    executor = flow._resume_campaign_executor
-    witnessed: list[str] = []
-
-    def before_executor(plan):
-        witnessed.append(capsys.readouterr().err)
-        assert witnessed == [_WORK_DIR_NOTICE + f"campaign manifest: {manifest.resolve()}\n"]
-        assert manifest.is_file()
-        if mode == "failure":
-            raise RuntimeError("resume executor unavailable")
-        return executor(plan)
-
-    monkeypatch.setattr(flow, "_resume_campaign_executor", before_executor)
-    if mode == "mismatch":
-        (tmp_path / "rtl/counter.sv").write_text("module counter; wire changed; endmodule\n")
-    capsys.readouterr()
-    result = flow.execute_cli(
-        [
-            "--quiet",
-            "--work-dir",
-            str(tmp_path),
-            "--report-dir",
-            str(destination),
-            "--resume-from",
-            str(manifest),
-        ]
-    )
-    output = capsys.readouterr()
-    assert result.exit_code == (0 if mode == "success" else 2)
-    if mode == "mismatch":
-        assert witnessed == []
-        assert "campaign manifest: " not in output.err
-        assert "  manifest: " not in result.outcome.report_text
-        assert "source changed: rtl/counter.sv" in result.outcome.report_text
-        assert result.outcome.detail["mismatches"]
-    else:
-        assert len(witnessed) == 1
-        assert f"  manifest: {manifest.resolve()}" in result.outcome.report_text
-        assert f"  report: {(destination / 'sim.json').resolve()}" in result.outcome.report_text
-        assert result.outcome.report_text.count("  manifest:") == 1
 
 
 @pytest.mark.parametrize("scope_stop", [True, False, "coverage"])
@@ -1318,10 +753,7 @@ def _assert_scheduler_terminal_cause(registry, campaign_store, child_ids, scope_
 def _execute_pre_cancelled_coverage(tmp_path):
     from booley.flows.sim.campaign.coverage_execution import CoverageAggregateExecutor
     from booley.flows.sim.execution.contract import PreSimScopeStoppedError
-    from tests.flows.sim.test_campaign_phase3_integrity import (
-        _maximum_hook_selection_plan,
-        _request,
-    )
+    from tests.flows.sim.campaign_test_support import _maximum_hook_selection_plan, _request
 
     plan, _ = _maximum_hook_selection_plan(("alpha",))
     store = CampaignStore(tmp_path / "coverage-cancel")
@@ -1362,7 +794,7 @@ def test_attempt_scan_reads_no_child_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A Booley 0.3.0 child binding is no longer authenticated while scanning attempts."""
-    from tests.flows.sim.test_campaign_phase3_adversarial import _completed
+    from tests.flows.sim.campaign_test_support import _completed
 
     (tmp_path / ".booley").mkdir()
     monkeypatch.chdir(tmp_path)
@@ -1430,3 +862,39 @@ def test_interrupted_attempt_cleanup_recovers_every_lane_before_any_run_director
         with pytest.raises(SimulationCampaignIntegrityError, match="recovery is incomplete"):
             clean()
         assert events == [("lane", "c" * 32)]
+
+
+def test_canonical_collision_keys_are_stable_across_threads(tmp_path: Path) -> None:
+    literal = tmp_path / "literal"
+    literal.mkdir()
+    first = expand_run_directory(
+        str(literal),
+        project_root=tmp_path,
+        campaign_id=str(uuid.uuid4()),
+        target_key="sim",
+        work_item_key="item",
+        attempt_key="attempt",
+    )
+    alias = expand_run_directory(
+        str(literal / ".." / "literal"),
+        project_root=tmp_path,
+        campaign_id=str(uuid.uuid4()),
+        target_key="sim",
+        work_item_key="item",
+        attempt_key="attempt",
+    )
+    barrier = threading.Barrier(2)
+    keys: list[str] = []
+
+    def claim(run: RunDirectory) -> None:
+        barrier.wait()
+        with claimed_run_directory(run, identity=_run_identity()):
+            keys.append(run.collision_key)
+
+    threads = [threading.Thread(target=claim, args=(run,)) for run in (first, alias)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert first.collision_key == alias.collision_key
+    assert keys == [first.collision_key, first.collision_key]

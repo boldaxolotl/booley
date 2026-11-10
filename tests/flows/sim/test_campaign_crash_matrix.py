@@ -21,9 +21,15 @@ from booley.flows.sim.campaign.coordinator import (
     ResumeCampaignRunRequest,
     SimulationCampaign,
 )
+from booley.flows.sim.campaign.coverage_execution import (
+    _CoverageAggregateError,
+)
 from booley.flows.sim.campaign.model import create_simulation_campaign_plan
 from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
-from booley.flows.sim.campaign.resume import ValidatedManifestNode, ValidatedResumeManifest
+from booley.flows.sim.campaign.resume import (
+    ValidatedManifestNode,
+    ValidatedResumeManifest,
+)
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.campaign_reports import write_compatibility_projection
@@ -33,9 +39,12 @@ from booley.flows.sim.execution.contract import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
+from booley.flows.sim.verilator_coverage import SimulationRunResult
 from tests.criteria import ledger_support as acceptance_ledger
 from tests.criteria.test_evidence_ledger import _campaign_facts, _transaction_state
+from tests.flows.sim.campaign_test_support import _run_coverage_campaign
 from tests.flows.sim.test_campaign_manifest_codec import _manifest
+from tests.flows.sim.test_coverage_transaction import NativeExecution
 
 _DURABLE_BOUNDARIES = (
     "manifest_commit",
@@ -703,11 +712,7 @@ def _baseline_disclosure_manifest(manifest):
 
 
 def _resume_real_hook_crash(tmp_path, invocation, store):
-    from tests.flows.sim.test_campaign_phase3_integrity import (
-        _executor,
-        _handle,
-        _legacy_disclosures,
-    )
+    from tests.flows.sim.campaign_test_support import _executor, _handle, _legacy_disclosures
 
     manifest = store.load_manifest()
     node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
@@ -801,3 +806,34 @@ def test_result_commit_and_scan_trust_evidence_changed_after_publication(
 
     assert outcome.complete is True
     assert [item.state for item in store.scan().items] == ["complete"]
+
+
+def test_post_commit_failure_reports_incomplete_collection(tmp_path: Path) -> None:
+    """A committed `incomplete` collection survives a later publication failure."""
+
+    class MissingInput(NativeExecution):
+        def run(self, request):
+            return SimulationRunResult(
+                "fail",
+                "$readmemh: Cannot open memory.hex",
+                termination="fatal_init",
+                failure_kind="missing_input",
+            )
+
+        def command(self, request):
+            raise AssertionError("merge must not run after a design abort")
+
+    def fail_after_commit(boundary: str) -> None:
+        if boundary == "after:coverage_campaign":
+            raise OSError("injected post-commit publication failure")
+
+    with pytest.raises(_CoverageAggregateError) as raised:
+        _run_coverage_campaign(tmp_path, MissingInput(), publication_checkpoint=fail_after_commit)
+
+    detail = raised.value.detail
+    assert detail["collection"] == "incomplete"
+    assert detail["evaluation"] == "not_requested"
+    assert detail["abort_remaining"] is True
+    assert detail["passed"] is False
+    assert detail["simulation"] == "aborted"
+    assert "coverage_campaign" not in detail

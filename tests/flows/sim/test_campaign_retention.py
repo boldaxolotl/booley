@@ -5,12 +5,22 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 import booley
+from booley.flows.sim.campaign import (
+    inspect_retained_campaign,
+)
+from booley.flows.sim.campaign.codec import (
+    SimulationCampaignIntegrityError,
+    canonical_json_bytes,
+)
+from booley.flows.sim.campaign.store import CampaignStore
+from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
 from booley.flows.sim.coverage_campaign import DurableTargetIdentity
 from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_invocation import (
@@ -19,8 +29,12 @@ from booley.flows.sim.coverage_invocation import (
 )
 from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_transaction import run_coverage_target
+from booley.runtime.booley_dir import reset_cache
+from booley.runtime.execution_records import ExecutionId
+from tests.flows.sim.campaign_test_support import _own_attempt_run_directory, _retained_invocation
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
+from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
 
 __all__ = ["project_alias"]
@@ -879,7 +893,7 @@ def test_retention_owns_a_shared_build_compiled_by_a_later_invocation(tmp_path: 
         inspect_retained_campaign,
     )
     from booley.flows.sim.campaign.store import CampaignStore
-    from tests.flows.sim.test_campaign_phase3_integrity import _executor, _manifest_for, _request
+    from tests.flows.sim.campaign_test_support import _executor, _manifest_for, _request
 
     manifest = _manifest_for(("alpha", "beta"))
     project = tmp_path / "project"
@@ -1007,3 +1021,255 @@ def test_pruning_a_coverage_campaign_written_by_booley_0_3_0_names_its_directory
     assert str(outcome.campaign_path.parent) in pruned.stderr
     assert "Traceback" not in pruned.stderr
     assert outcome.campaign_path.is_file()
+
+
+@pytest.mark.parametrize("layout", ["runtime", "flow-reports", "below"])
+def test_prune_follows_only_the_booley_dir_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str
+) -> None:
+    """#2191: pruning follows a symlinked ``.booley`` entry and refuses a link below it."""
+    project = tmp_path / "project"
+    project.mkdir()
+    external = symlinked_booley_dir(project, tmp_path / "external-booley")
+    entry = project / ".booley"
+    if layout == "below":
+        # Reports live physically elsewhere; ``.runtime`` below the entry is the link.
+        real_runtime = tmp_path / "real-runtime"
+        real_runtime.mkdir()
+        (external / ".runtime").symlink_to(real_runtime, target_is_directory=True)
+        reports, _unused, _store = _retained_invocation(
+            tmp_path, reports=real_runtime / "flow-reports"
+        )
+        reports = entry / ".runtime" / "flow-reports"
+    else:
+        reports_dir = (
+            entry / ".runtime" / "flow-reports" if layout == "runtime" else entry / "flow-reports"
+        )
+        reports, _unused, _store = _retained_invocation(
+            tmp_path, reports=reports_dir, booley_dir=entry
+        )
+    if layout == "flow-reports":
+        # The retention CLI runs from the Project; ownership inference reads the cwd.
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
+        monkeypatch.chdir(project)
+        reset_cache()
+
+    if layout == "below":
+        with pytest.raises((CampaignRetentionError, SimulationCampaignIntegrityError)):
+            prune_invocation(reports, 1)
+        assert (reports / "sim/1").is_dir()
+        return
+    prune_invocation(reports, 1)
+
+    assert (reports / "sim" / ".pruned-1").is_dir()
+
+
+def _interrupt_latest_attempt(
+    tmp_path: Path, reports: Path, store: CampaignStore, lane_id: str | None = None
+) -> tuple[Path, dict[str, object]]:
+    """Turn the retained Campaign's only item into an interrupted one with an owned run directory.
+
+    Returns the owned run directory and the rewritten attempt document. With ``lane_id`` the
+    attempt names that lane execution (a Campaign written by the current release).
+    """
+    status = inspect_retained_campaign(store.manifest_path)
+    work_item_id = status.completed[0]
+    (store.work_item_directory(work_item_id) / "result.json").unlink()
+    store.summary_path.unlink()
+    (store.root.parent / "simulation.json").unlink()
+    progress_path = reports / "sim/1/progress.json"
+    progress = json.loads(progress_path.read_text())
+    progress.update(completed_targets=[], pending_targets=["sim"], complete=False, phase="running")
+    progress_path.write_text(json.dumps(progress))
+    return _own_attempt_run_directory(tmp_path, store, work_item_id, lane_id)
+
+
+def test_full_pruning_cleans_interrupted_owned_run_directory(tmp_path: Path) -> None:
+    reports, _project_data, store = _retained_invocation(tmp_path)
+    run_path, _document = _interrupt_latest_attempt(tmp_path, reports, store)
+
+    prune_invocation(reports, 1)
+
+    assert not run_path.exists()
+    assert not (reports / "sim/1").exists()
+
+
+@pytest.mark.parametrize("recovered", [True, False], ids=["recovered", "incomplete"])
+def test_full_pruning_recovers_interrupted_lane_before_run_directory_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recovered: bool
+) -> None:
+    """Pruning cancels the lane a crashed Campaign left behind, or keeps everything."""
+    from booley.flows.sim.campaign.child_protocol import ChildExecutionRegistry
+
+    reports, project_data, store = _retained_invocation(tmp_path)
+    # Unique: real recovery signals every host process carrying this ID (xdist workers too).
+    lane = ExecutionId(uuid.uuid4().hex)
+    run_path, document = _interrupt_latest_attempt(tmp_path, reports, store, str(lane))
+    registry = ChildExecutionRegistry.from_project_data(store.load_manifest(), project_data)
+    registry.prepare(
+        lane,
+        work_item_id=str(document["work_item_id"]),
+        attempt_id=str(document["attempt_id"]),
+        attempt_ordinal=int(document["attempt_ordinal"]),  # type: ignore[call-overload]
+        attempt_directory=store.root,
+        parent_execution_id=ExecutionId("a" * 32),
+    )
+    assert not registry.is_terminal(lane)
+    if not recovered:
+        monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _self, _id: False)
+
+    if recovered:
+        prune_invocation(reports, 1)
+        assert registry.is_terminal(lane)
+        assert not run_path.exists()
+        assert not (reports / "sim/1").exists()
+    else:
+        with pytest.raises(CampaignRetentionError, match="recovery is incomplete"):
+            prune_invocation(reports, 1)
+        assert run_path.exists()
+        assert (reports / "sim/1").exists()
+
+
+@pytest.mark.usefixtures("mandatory_file_locks")
+def test_complete_campaign_pruning_accepts_windows_lock_sentinel(tmp_path: Path) -> None:
+    reports, project_data, store = _retained_invocation(tmp_path)
+    (store.root / ".lock").write_bytes(b"\0")
+
+    prune_invocation(reports, 1, project_data=project_data)
+
+    assert list((reports / "sim" / ".pruned-1").iterdir()) == []
+
+
+@pytest.mark.usefixtures("mandatory_file_locks")
+@pytest.mark.parametrize("state", ["terminal-unpublished", "interrupted"])
+def test_full_pruning_accepts_authenticated_abandoned_campaign(tmp_path: Path, state: str) -> None:
+    reports, _project_data, store = _retained_invocation(tmp_path)
+    target = store.root.parent
+    store.summary_path.unlink()
+    (target / "simulation.json").unlink()
+    if state == "interrupted":
+        status = inspect_retained_campaign(store.manifest_path)
+        result = store.work_item_directory(status.completed[0]) / "result.json"
+        result.unlink()
+        progress_path = reports / "sim/1/progress.json"
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        progress["completed_targets"] = []
+        progress["pending_targets"] = ["sim"]
+        progress["phase"] = "aborted"  # terminalized on a catchable exit
+        progress_path.write_text(json.dumps(progress), encoding="utf-8")
+
+    prune_invocation(reports, 1)
+
+    assert not (reports / "sim/1").exists()
+    assert list((reports / "sim/.pruned-1").iterdir()) == []
+
+
+def test_full_pruning_rejects_foreign_file_in_completed_attempt(tmp_path: Path) -> None:
+    reports, project_data, store = _retained_invocation(tmp_path)
+    status = inspect_retained_campaign(store.manifest_path)
+    attempts = store.work_item_directory(status.completed[0]) / "attempts"
+    foreign = next(attempts.iterdir()) / "evidence" / "foreign.txt"
+    foreign.parent.mkdir(exist_ok=True)
+    foreign.write_text("not produced by Booley", encoding="utf-8")
+
+    with pytest.raises(CampaignRetentionError, match=r"foreign\.txt"):
+        prune_invocation(reports, 1, project_data=project_data)
+
+    assert foreign.read_text(encoding="utf-8") == "not produced by Booley"
+    assert (reports / "sim/1").is_dir()
+
+
+def test_interrupted_campaign_without_surviving_resources_needs_no_project_data(
+    tmp_path: Path,
+) -> None:
+    reports, _project_data, store = _retained_invocation(
+        tmp_path, reports=tmp_path / "external-reports"
+    )
+    target = store.root.parent
+    store.summary_path.unlink()
+    (target / "simulation.json").unlink()
+    status = inspect_retained_campaign(store.manifest_path)
+    result = store.work_item_directory(status.completed[0]) / "result.json"
+    result.unlink()
+    progress_path = reports / "sim/1/progress.json"
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    progress["completed_targets"] = []
+    progress["pending_targets"] = ["sim"]
+    # A killed producer never terminalizes its progress.
+    progress["complete"] = False
+    progress["phase"] = "running"
+    progress_path.write_text(json.dumps(progress), encoding="utf-8")
+
+    prune_invocation(reports, 1)
+
+    assert not (reports / "sim/1").exists()
+    assert list((reports / "sim/.pruned-1").iterdir()) == []
+
+
+def test_interrupted_campaign_with_surviving_run_directory_needs_project_data(
+    tmp_path: Path,
+) -> None:
+    reports, _project_data, store = _retained_invocation(
+        tmp_path, reports=tmp_path / "external-reports"
+    )
+    run_path, _document = _interrupt_latest_attempt(tmp_path, reports, store)
+
+    with pytest.raises(CampaignRetentionError, match="Booley Directory is required"):
+        prune_invocation(reports, 1)
+
+    assert run_path.exists()
+
+
+def test_full_pruning_refuses_a_campaign_owned_by_resume(tmp_path: Path) -> None:
+    reports, _project_data, store = _retained_invocation(tmp_path)
+
+    with store.mutation_lock(), pytest.raises(CampaignRetentionError, match="being resumed"):
+        prune_invocation(reports, 1)
+
+    assert (reports / "sim/1").is_dir()
+    assert not (reports / "sim/.pruned-1").exists()
+
+
+def test_campaign_mutation_lock_never_recreates_a_missing_root(tmp_path: Path) -> None:
+    store = CampaignStore(tmp_path / "campaign")
+
+    with (
+        pytest.raises(SimulationCampaignIntegrityError, match="directory disappeared"),
+        store.mutation_lock(),
+    ):
+        raise AssertionError("unreachable")
+
+    assert not store.root.exists()
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_complete_campaign_pruning_rejects_unrecognized_campaign_file(
+    tmp_path: Path, nested: bool
+) -> None:
+    reports, project_data, store = _retained_invocation(tmp_path)
+    parent = store.root
+    if nested:
+        parent = next(store.root.glob("work-items/*/attempts/*")) / "evidence"
+    stray = parent / "stray.txt"
+    stray.write_text("do not delete", encoding="utf-8")
+
+    with pytest.raises(CampaignRetentionError, match=r"stray\.txt"):
+        prune_invocation(reports, 1, project_data=project_data)
+
+    assert stray.read_text(encoding="utf-8") == "do not delete"
+    assert (reports / "sim" / "1").is_dir()
+
+
+def test_pruning_rejects_complete_results_before_acceptance_projection(
+    tmp_path: Path,
+) -> None:
+    reports, _project_data, store = _retained_invocation(tmp_path)
+    projection = store.root.parent / "simulation.json"
+    document = json.loads(projection.read_bytes())
+    document["complete"] = False
+    projection.write_bytes(canonical_json_bytes(document))
+
+    with pytest.raises(CampaignRetentionError, match="acceptance projections"):
+        prune_invocation(reports, 1)
+
+    assert store.manifest_path.is_file()

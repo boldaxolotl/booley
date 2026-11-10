@@ -35,11 +35,8 @@ from booley.flows.sim.flow import MissingExecutableError, SimulateFlow
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from booley.mcp.base import EXIT_ERROR
 from tests.flows.sim import test_campaign_crash_matrix as crash_matrix
+from tests.flows.sim.campaign_test_support import _FailedCoverageBuild, _run_coverage_campaign
 from tests.flows.sim.test_campaign_crash_matrix import _admission
-from tests.flows.sim.test_campaign_phase5_adversarial import (
-    _FailedCoverageBuild,
-    _run_coverage_campaign,
-)
 from tests.flows.sim.test_execution_engine import _handle, _prepared, _run_execution
 from tests.flows.sim.test_verilator_coverage_execution import (
     _build_coverage,
@@ -219,8 +216,8 @@ def _run_private_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcom
 
 
 def _run_shared_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome):
-    from tests.flows.sim.test_campaign_phase3 import _handle as shared_handle
-    from tests.flows.sim.test_campaign_phase3 import _named_manifest
+    from tests.flows.sim.campaign_test_support import _handle as shared_handle
+    from tests.flows.sim.campaign_test_support import _named_manifest
 
     plan = create_simulation_campaign_plan(_named_manifest(("tail", "quick")))
     project = tmp_path / "project"
@@ -553,7 +550,7 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
 ) -> None:
     from dataclasses import replace
 
-    from tests.flows.sim.test_campaign_phase5_adversarial import _plan
+    from tests.flows.sim.campaign_test_support import _plan
 
     names = tuple(f"test_{index}" for index in range(1000))
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True, names=names)
