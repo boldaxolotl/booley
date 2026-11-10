@@ -93,10 +93,7 @@ def _launch(provider: str, project_root: Path, agent_args: list[str]) -> int:
     try:
         executable, argv = provider, [provider]
         if provider == "codex":
-            try:
-                executable, argv = codex_chat.command(resolve_common_booley_dir(project_root))
-            except (OSError, ValueError, RuntimeError) as exc:
-                print(f"NOTE: Codex tab handle is unavailable: {exc}", file=sys.stderr)
+            executable, argv = codex_chat.command(project_root)
         elif provider == "claude":
             argv = _claude_argv(project_root, agent_args)
             _hide_gateway_from_claude()
