@@ -35,8 +35,11 @@ from booley.flows.sim.flow import MissingExecutableError, SimulateFlow
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from booley.mcp.base import EXIT_ERROR
 from tests.flows.sim import test_campaign_crash_matrix as crash_matrix
-from tests.flows.sim.campaign_test_support import _FailedCoverageBuild, _run_coverage_campaign
-from tests.flows.sim.test_campaign_crash_matrix import _admission
+from tests.flows.sim.campaign_test_support import (
+    _admission,
+    _FailedCoverageBuild,
+    _run_coverage_campaign,
+)
 from tests.flows.sim.test_execution_engine import _handle, _prepared, _run_execution
 from tests.flows.sim.test_verilator_coverage_execution import (
     _build_coverage,

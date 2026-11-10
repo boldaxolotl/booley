@@ -28,6 +28,7 @@ from booley.flows.sim.campaign.coordinator import (
 )
 from booley.flows.sim.campaign.coverage_execution import (
     CoverageAggregateExecutor,
+    _CoverageAggregateError,
 )
 from booley.flows.sim.campaign.flow_planning import plan_coarse_simulation_campaign
 from booley.flows.sim.campaign.model import create_simulation_campaign_plan
@@ -62,7 +63,6 @@ from tests.flows.sim.campaign_test_support import (
     _request,
     _run_coverage_campaign,
     _unfiltered_cocotb_manifest,
-    _unmanaged,
     _validated_resume,
 )
 from tests.flows.sim.test_campaign_crash_matrix import (
@@ -304,7 +304,7 @@ def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None
             invocation.parent,
             CampaignPolicy(),
             invocation,
-            _unmanaged(),
+            _admission(),
         )
     )
     store = CampaignStore(invocation / "targets/sim_0/campaign")
@@ -318,7 +318,7 @@ def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None
             invocation.parent,
             CampaignPolicy(),
             invocation,
-            _unmanaged(),
+            _admission(),
         )
     )
 
@@ -380,6 +380,37 @@ def test_coverage_timeout_before_design_abort_publishes_aborted_fail(tmp_path: P
             observation["assertions"],
             observation["cycle_count"],
         ) == ("aborted", "design", "fail", "not_observed", None)
+
+
+def test_post_commit_failure_reports_incomplete_collection(tmp_path: Path) -> None:
+    """A committed `incomplete` collection survives a later publication failure."""
+
+    class MissingInput(NativeExecution):
+        def run(self, request):
+            return SimulationRunResult(
+                "fail",
+                "$readmemh: Cannot open memory.hex",
+                termination="fatal_init",
+                failure_kind="missing_input",
+            )
+
+        def command(self, request):
+            raise AssertionError("merge must not run after a design abort")
+
+    def fail_after_commit(boundary: str) -> None:
+        if boundary == "after:coverage_campaign":
+            raise OSError("injected post-commit publication failure")
+
+    with pytest.raises(_CoverageAggregateError) as raised:
+        _run_coverage_campaign(tmp_path, MissingInput(), publication_checkpoint=fail_after_commit)
+
+    detail = raised.value.detail
+    assert detail["collection"] == "incomplete"
+    assert detail["evaluation"] == "not_requested"
+    assert detail["abort_remaining"] is True
+    assert detail["passed"] is False
+    assert detail["simulation"] == "aborted"
+    assert "coverage_campaign" not in detail
 
 
 def test_coverage_attempt_stages_runtime_before_binding_and_records_real_build_time(
@@ -533,7 +564,7 @@ def _start_crashed_cocotb_campaign(
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
     request = NewCampaignRunRequest(
-        plan, root, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+        plan, root, invocation.parent, CampaignPolicy(), invocation, _admission()
     )
     crash = _CrashOnce("before:simulation_result")
     with pytest.raises(_InjectedProcessDeath):
@@ -573,7 +604,7 @@ def test_production_cocotb_batch_retries_whole_batch_after_crash(tmp_path: Path)
             invocation.parent,
             CampaignPolicy(),
             invocation,
-            _unmanaged(),
+            _admission(),
         )
     )
 
@@ -609,7 +640,7 @@ def _run_cocotb(
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
     request = NewCampaignRunRequest(
-        plan, root, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+        plan, root, invocation.parent, CampaignPolicy(), invocation, _admission()
     )
     SimulationCampaign(executor).run(request)
     return CampaignStore(invocation / "targets/sim/campaign")
@@ -657,6 +688,7 @@ def test_cocotb_campaign_rejects_malformed_results_file(tmp_path: Path, monkeypa
     for name, raw, message in (
         ("not-utf8", b"\xff", "Cocotb transport is not UTF-8"),
         ("not-json", b"{broken", "Cocotb transport is invalid"),
+        ("not-a-results-object", b"[]", "Cocotb transport is invalid"),
     ):
         root = tmp_path / name
         root.mkdir()

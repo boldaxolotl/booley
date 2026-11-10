@@ -440,7 +440,7 @@ def test_request_replacement_reauthenticates_manifest_and_attempt(tmp_path, monk
 
 @pytest.mark.parametrize(
     "corruption",
-    ["manifest", "producer", "selection", "ordinal", "status"],
+    ["manifest", "producer", "selection", "ordinal", "status", "item"],
 )
 def test_request_publication_rejects_changed_attempt_after_success(tmp_path, corruption):
     from dataclasses import replace
@@ -451,6 +451,9 @@ def test_request_publication_rejects_changed_attempt_after_success(tmp_path, cor
     _publish_request_hook(request)
     first_bytes = (request.attempt_directory / "pre-sim/0001.json").read_bytes()
     first_publication = published.copy()
+    if corruption == "item":
+        other = _hook_publication_request(tmp_path / "other", ("gamma",))
+        request = replace(request, work_item=other.work_item)
     if corruption in {"manifest", "producer"}:
         path = request.attempt_directory / "attempt.json"
         document = json.loads(path.read_bytes())
@@ -462,6 +465,7 @@ def test_request_publication_rejects_changed_attempt_after_success(tmp_path, cor
     status = "timed_out" if corruption == "status" else "passed"
     expected = {
         "manifest": "hook attempt does not bind its frozen workload",
+        "item": "hook attempt does not bind its frozen workload",
         "producer": "Pre-Sim Commands evidence owner disagrees",
         "selection": "selection is outside workload",
         "ordinal": "invalid ordinal",
@@ -599,19 +603,22 @@ def test_store_follows_only_the_booley_dir_entry(tmp_path, linked):
 
 @pytest.mark.parametrize(
     "case",
-    ["manifest", "attempt"],
+    ["manifest", "workload", "work_item", "attempt"],
 )
 def test_scan_rejects_complete_result_identity_mutations(tmp_path: Path, case: str) -> None:
     """The scan still binds a complete result to its manifest, item and final attempt."""
     completed = _completed(tmp_path)
     path = completed.store.work_item_directory(completed.item_id) / "result.json"
     result = _read(path)
-    if case == "manifest":
-        result["manifest_sha256"] = _BAD_DIGEST
+    if case in {"manifest", "workload"}:
+        result[f"{case}_sha256"] = _BAD_DIGEST
+    elif case == "work_item":
+        result["work_item_id"] = "item:9999:" + "e" * 16
     else:
         result["attempt_id"] = str(uuid.uuid4())
     _write(path, result)
-    with pytest.raises(SimulationCampaignIntegrityError):
+    message = "result" if case == "attempt" else "result identity disagrees"
+    with pytest.raises(SimulationCampaignIntegrityError, match=message):
         completed.store.scan()
 
 

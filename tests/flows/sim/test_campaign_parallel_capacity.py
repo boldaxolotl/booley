@@ -62,6 +62,7 @@ from booley.runtime.supervised_execution import (
 )
 from tests.flows.sim.campaign_test_support import (
     _PARALLEL_SYNC_TIMEOUT_S,
+    _admission,
     _capacity,
     _lane_registry,
     _managed,
@@ -71,7 +72,6 @@ from tests.flows.sim.campaign_test_support import (
     _scheduled_attempt,
     _three_item_manifest,
     _two_item_manifest,
-    _unmanaged,
     _wait_until,
 )
 
@@ -244,7 +244,7 @@ def test_child_permit_checks_lease_loss_before_return(tmp_path: Path) -> None:
 
 
 def test_unmanaged_capacity_borrows_one_lane_and_never_claims_a_child(tmp_path: Path) -> None:
-    capacity = _capacity(_unmanaged(), tmp_path)
+    capacity = _capacity(_admission(), tmp_path)
     with capacity.outer_permit() as permit:
         assert permit.execution_id is None
         assert isinstance(capacity.parent_execution_id, ExecutionId)
@@ -613,7 +613,7 @@ def _assert_child_claim_integrity(invocation, slot_store, plan, project_data) ->
 
 @pytest.mark.parametrize("scope_stop", [False, "coverage"])
 def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scope_stop: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scope_stop: bool | str
 ) -> None:
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
     manifest = _two_item_manifest()

@@ -889,10 +889,6 @@ def _observe_pre_sim_reads(monkeypatch):
     return accesses, decodes
 
 
-def _unmanaged() -> AdmissionContext:
-    return AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
-
-
 def _managed(store: SlotStore, outer, *, max_heavy: int = 2) -> AdmissionContext:
     return AdmissionContext(
         "managed",
@@ -1358,7 +1354,7 @@ def _run_coverage_campaign(
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
     request = NewCampaignRunRequest(
-        plan, root, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+        plan, root, invocation.parent, CampaignPolicy(), invocation, _admission()
     )
     outcome = SimulationCampaign(executor).run(request)
     return outcome, CampaignStore(invocation / "targets/sim_0/campaign")

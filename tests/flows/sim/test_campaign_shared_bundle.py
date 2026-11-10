@@ -355,12 +355,21 @@ def _mutate_build_attempt(case: str, completed: _Completed) -> None:
     document = _read(path)
     if case == "campaign":
         document["campaign_id"] = str(uuid.uuid4())
+    elif case in {"manifest", "workload"}:
+        document[f"{case}_sha256"] = _BAD_DIGEST
     elif case == "variant":
         document["build_variant_id"] = "variant:" + "e" * 64
     elif case == "invocation":
         document["producer_invocation_id"] += 1
     elif case == "ordinal":
         document["build_attempt_ordinal"] += 1
+    elif case == "owner":
+        document["owner"] = {
+            "work_item_id": completed.item_id,
+            "simulation_attempt_id": str(uuid.uuid4()),
+        }
+    elif case == "tool_provenance":
+        document["tool_provenance"]["eda_version"] = "transplanted"
     _write(path, document)
     result_path = completed.build_dir / "build-result.json"
     result = _read(result_path)
@@ -370,7 +379,16 @@ def _mutate_build_attempt(case: str, completed: _Completed) -> None:
 
 @pytest.mark.parametrize(
     "case",
-    ["campaign", "variant", "invocation", "ordinal"],
+    [
+        "campaign",
+        "manifest",
+        "workload",
+        "variant",
+        "invocation",
+        "ordinal",
+        "owner",
+        "tool_provenance",
+    ],
 )
 def test_shared_recovery_rejects_build_attempt_transplants(tmp_path: Path, case: str) -> None:
     completed = _completed(tmp_path)
@@ -379,13 +397,18 @@ def test_shared_recovery_rejects_build_attempt_transplants(tmp_path: Path, case:
     if case == "invocation":
         assert completed.store.recover_shared_build(variant, 1) is None
         return
-    with pytest.raises(SimulationCampaignIntegrityError):
+    # Each case is tied to the store check it reaches.
+    scope = case in {"ordinal", "owner", "tool_provenance"}
+    message = {"variant": "variant is not in manifest"}.get(
+        case, "Build Attempt scope" if scope else "Build Attempt identity"
+    )
+    with pytest.raises(SimulationCampaignIntegrityError, match=message):
         completed.store.recover_shared_build(variant, 1)
 
 
 @pytest.mark.parametrize(
     "case",
-    ["campaign", "owner", "digest"],
+    ["campaign", "owner", "digest", "artifact_remove"],
 )
 def test_shared_recovery_rejects_build_result_reference_mutations(
     tmp_path: Path, case: str
@@ -397,8 +420,10 @@ def test_shared_recovery_rejects_build_result_reference_mutations(
         document["campaign_id"] = str(uuid.uuid4())
     elif case == "owner":
         document["build_attempt"]["owner"] = str(uuid.uuid4())
-    else:
+    elif case == "digest":
         document["build_attempt"]["sha256"] = _BAD_DIGEST
+    else:
+        document["bundle"]["artifacts"] = []
     _write(path, document)
     variant = document["build_variant_id"]
     with pytest.raises(SimulationCampaignIntegrityError):
@@ -410,8 +435,17 @@ def _mutate_bundle(case: str, completed: _Completed) -> None:
     bundle = _read(bundle_path)
     if case == "campaign":
         bundle["campaign_id"] = str(uuid.uuid4())
-    else:
+    elif case == "attempt":
         bundle["build_attempt_id"] = str(uuid.uuid4())
+    elif case == "owner":
+        bundle["owner"] = {
+            "work_item_id": completed.item_id,
+            "simulation_attempt_id": str(uuid.uuid4()),
+        }
+    elif case == "tool_provenance":
+        bundle["tool_provenance"]["eda_version"] = "transplanted"
+    else:
+        bundle["artifacts"] = []
     _write(bundle_path, bundle)
     result_path = completed.build_dir / "build-result.json"
     result = _read(result_path)
@@ -422,13 +456,14 @@ def _mutate_bundle(case: str, completed: _Completed) -> None:
 
 @pytest.mark.parametrize(
     "case",
-    ["campaign", "attempt"],
+    ["campaign", "attempt", "owner", "tool_provenance", "artifact_remove"],
 )
 def test_shared_recovery_rejects_bundle_transplants(tmp_path: Path, case: str) -> None:
     completed = _completed(tmp_path)
     variant = _read(completed.build_dir / "build-attempt.json")["build_variant_id"]
     _mutate_bundle(case, completed)
-    with pytest.raises(SimulationCampaignIntegrityError):
+    message = "Bundle identity" if case == "campaign" else "Bundle binding"
+    with pytest.raises(SimulationCampaignIntegrityError, match=message):
         completed.store.recover_shared_build(variant, 1)
 
 
@@ -512,7 +547,7 @@ def test_recovered_bundle_preserves_verdict_log_trace_timeout_and_launch_contrac
 
 @pytest.mark.parametrize(
     "declared",
-    ["../image/in.hex"],
+    ["../image/in.hex", "C:in.hex", ""],
 )
 def test_private_image_capture_refuses_an_unsafe_runtime_input_path(
     tmp_path: Path, declared: str

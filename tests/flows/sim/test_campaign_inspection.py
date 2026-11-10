@@ -229,7 +229,7 @@ def test_pre_sim_reader_rejects_corrupt_record(tmp_path, error):
         request.store.read_pre_sim_firings()
 
 
-def test_pre_sim_inspection_reads_fresh(tmp_path, monkeypatch):
+def test_pre_sim_inspection_rereads_evidence_and_rejects_later_tampering(tmp_path, monkeypatch):
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
     invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
@@ -268,7 +268,7 @@ def test_pre_sim_inspection_reads_fresh(tmp_path, monkeypatch):
     ],
     ids=lambda value: None if value is None else str(value)[:32],
 )
-def test_pre_sim_read_identity_and_reference_cases(tmp_path, monkeypatch, defect, value, message):
+def test_pre_sim_reader_rejects_bad_binding(tmp_path, monkeypatch, defect, value, message):
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _successful_pre_sim_campaign
 
     invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")

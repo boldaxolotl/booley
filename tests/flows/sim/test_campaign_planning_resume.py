@@ -50,10 +50,9 @@ from tests.flows.sim.campaign_test_support import (
 )
 
 
-@pytest.mark.parametrize("template", ["run/{"])
-def test_run_directory_parser_rejects_unsupported_formatting(template: str) -> None:
+def test_run_directory_parser_rejects_an_unclosed_format_field() -> None:
     with pytest.raises(ValueError):
-        parse_run_cwd_template(template)
+        parse_run_cwd_template("run/{")
 
 
 def test_pre_sim_build_access_is_strict(monkeypatch: pytest.MonkeyPatch) -> None:

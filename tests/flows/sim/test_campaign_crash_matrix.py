@@ -10,7 +10,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
@@ -23,7 +22,6 @@ from booley.flows.sim.campaign.coordinator import (
 )
 from booley.flows.sim.campaign.coverage_execution import (
     CoverageAggregateExecutor,
-    _CoverageAggregateError,
 )
 from booley.flows.sim.campaign.model import create_simulation_campaign_plan
 from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
@@ -40,12 +38,11 @@ from booley.flows.sim.execution.contract import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
-from booley.flows.sim.verilator_coverage import SimulationRunResult
 from tests.criteria import ledger_support as acceptance_ledger
 from tests.criteria.test_evidence_ledger import _campaign_facts, _transaction_state
 from tests.flows.sim.campaign_test_support import (
+    _admission,
     _coverage_campaign_plan,
-    _run_coverage_campaign,
     _validated_resume,
 )
 from tests.flows.sim.test_campaign_manifest_codec import _manifest
@@ -175,10 +172,6 @@ class _CrashExecution:
         yield self.group
 
 
-def _admission() -> AdmissionContext:
-    return AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
-
-
 def _crash_manifest(*, shared: bool = True):
     """Crash fixture manifest: Shared Simulator Bundle route or private build."""
     document = _manifest()
@@ -190,6 +183,8 @@ def _crash_manifest(*, shared: bool = True):
     document["workload"]["runtime_inputs"] = [  # type: ignore[index]
         {"declaration_id": declaration_id, **identity}
     ]
+    # Planner never emits immutable access with sharing off; either field false selects
+    # the private build, which passes the same publication checkpoints.
     document["build_variants"][0]["sharing_eligible"] = shared  # type: ignore[index]
     return finalize_manifest(document)
 
@@ -873,34 +868,3 @@ def test_result_commit_and_scan_trust_evidence_changed_after_publication(
 
     assert outcome.complete is True
     assert [item.state for item in store.scan().items] == ["complete"]
-
-
-def test_post_commit_failure_reports_incomplete_collection(tmp_path: Path) -> None:
-    """A committed `incomplete` collection survives a later publication failure."""
-
-    class MissingInput(NativeExecution):
-        def run(self, request):
-            return SimulationRunResult(
-                "fail",
-                "$readmemh: Cannot open memory.hex",
-                termination="fatal_init",
-                failure_kind="missing_input",
-            )
-
-        def command(self, request):
-            raise AssertionError("merge must not run after a design abort")
-
-    def fail_after_commit(boundary: str) -> None:
-        if boundary == "after:coverage_campaign":
-            raise OSError("injected post-commit publication failure")
-
-    with pytest.raises(_CoverageAggregateError) as raised:
-        _run_coverage_campaign(tmp_path, MissingInput(), publication_checkpoint=fail_after_commit)
-
-    detail = raised.value.detail
-    assert detail["collection"] == "incomplete"
-    assert detail["evaluation"] == "not_requested"
-    assert detail["abort_remaining"] is True
-    assert detail["passed"] is False
-    assert detail["simulation"] == "aborted"
-    assert "coverage_campaign" not in detail

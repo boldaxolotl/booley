@@ -536,8 +536,8 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
     from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
     from tests.flows.sim.test_campaign_characterization import (
         _AdapterAbortExecution,
+        _admission,
         _plan,
-        _unmanaged,
     )
 
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
@@ -557,7 +557,7 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
             invocation.parent,
             CampaignPolicy(),
             invocation,
-            _unmanaged(),
+            _admission(),
         )
     )
     flow = SimulateFlow()

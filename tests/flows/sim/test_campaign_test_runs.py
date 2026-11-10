@@ -349,7 +349,7 @@ def _stored_result(tmp_path: Path):
     from booley.flows.sim.campaign import CampaignPolicy, NewCampaignRunRequest, SimulationCampaign
     from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
     from booley.flows.sim.campaign.store import CampaignStore
-    from tests.flows.sim.campaign_test_support import _plan, _unmanaged
+    from tests.flows.sim.campaign_test_support import _admission, _plan
     from tests.flows.sim.test_campaign_characterization import _NoVerdictExecution
 
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
@@ -361,7 +361,7 @@ def _stored_result(tmp_path: Path):
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
     store = CampaignStore(invocation / "targets/sim/campaign")

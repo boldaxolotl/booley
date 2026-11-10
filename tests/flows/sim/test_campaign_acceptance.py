@@ -343,7 +343,7 @@ def test_acceptance_facts_hold_the_built_document_without_decoding(
         facts.document["prerequisites"].append({})  # type: ignore[union-attr]
 
 
-def test_acceptance_coordinator_uses_record_or_verify(tmp_path: Path) -> None:
+def test_acceptance_coordinator_records_selected_test_detail(tmp_path: Path) -> None:
     class Recorder:
         def __init__(self) -> None:
             self.calls = []
