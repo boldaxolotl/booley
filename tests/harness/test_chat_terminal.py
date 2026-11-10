@@ -46,7 +46,7 @@ _SETTLE_SECONDS = 0.3
 _AGENT_EXIT_CODE = 7
 
 # The fake agent. Runs as the `claude` script and, in a copy of the interpreter
-# named `codex`, via `-c`. Everything it records is written before AGENT-READY.
+# named `codex`, via `-c`. Its identity (agent.json) is written before AGENT-READY.
 _AGENT_SOURCE = r"""
 import _thread, importlib.util, json, os, select, signal, subprocess, sys, threading, time
 from pathlib import Path
