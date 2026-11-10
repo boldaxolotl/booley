@@ -591,6 +591,8 @@ def test_flake_stress_repeats_changed_modules_on_linux_and_windows() -> None:
     assert '--count="${STRESS_COUNT}"' in command
     assert "-n 4 --dist=load " in command
     assert "--timeout=60" in command
+    # Only exit 5 (every module skipped itself, e.g. Linux-only on Windows) is tolerated.
+    assert '-ne 0 ] && [ "${status}" -ne 5 ]' in command
     assert stress["env"]["HEADROOM"] in shard["run"]  # same Windows headroom gate
     assert _named_step(job, "Publish pytest evidence")["uses"] == (
         "./.github/actions/publish-pytest-evidence"
