@@ -43,8 +43,9 @@ from booley.runtime.docker_capacity import (
     DockerCacheEvidence,
     DockerCapacityError,
 )
+from booley.runtime.host_base_acquisition import RuntimeBaseBuildError, acquire, build_timeout
 from booley.runtime.image_build_contracts import source_image_build_contracts
-from booley.runtime.image_lifecycle import HostImageScope, ImageLifecycleError
+from booley.runtime.image_lifecycle import ImageLifecycleError
 from booley.runtime.image_provenance import (
     LABEL_BUILD_ORIGIN,
     LABEL_PARENT_ARTIFACT,
@@ -118,23 +119,6 @@ def _image_build_metadata_args(booley_root: Path) -> list[str]:
             resolve_source_updated_at(booley_root) if is_checkout else "unknown"
         ),
         "BOOLEY_VERSION": _expected_version(booley_root),
-    }
-    return [
-        item
-        for name, value in values.items()
-        for item in ("--build-arg", f"{name}={value or 'unknown'}")
-    ]
-
-
-def _runtime_base_build_metadata_args(booley_root: Path, runtime_base_contract: str) -> list[str]:
-    """Docker build args for explicit stable-base provenance and compatibility."""
-    is_checkout = (booley_root / ".git").exists()
-    values = {
-        "BOOLEY_BASE_SOURCE_REVISION": (
-            resolve_build_commit(booley_root) if is_checkout else "unknown"
-        ),
-        "BOOLEY_BASE_CONTRACT": runtime_base_contract,
-        "BOOLEY_BASE_BUILT_AT": utc_now_rfc3339(),
     }
     return [
         item
@@ -670,11 +654,9 @@ def _docker_local_build(
         return
     runtime_base_id = _acquire_runtime_base(
         ctx,
-        base_dockerfile,
         booley_root,
         rebuild=rebuild_runtime_base,
         capacity_plan=capacity_plan,
-        scope=HostImageScope(),
     )
     if runtime_base_id is None:
         return
@@ -805,67 +787,43 @@ def _short_contract(contract: str) -> str:
 
 def _acquire_runtime_base(
     ctx: InitContext,
-    dockerfile: Path,
     booley_root: Path,
     *,
     rebuild: bool,
-    scope: HostImageScope,
     capacity_plan: DockerBuildPlan | None = None,
 ) -> str | None:
     """Return one compatible immutable runtime-base ID, building when required."""
-    from booley.runtime.host_base_acquisition import acquire
-
     try:
-        contract = source_image_build_contracts(booley_root).runtime_base
         return acquire(
-            booley_root,
-            scope=scope,
-            rebuild=rebuild,
-            capacity_plan=capacity_plan,
-            build=lambda: _docker_build_runtime_base(
-                ctx, dockerfile, booley_root, contract, capacity_plan=capacity_plan
-            ),
+            booley_root, rebuild=rebuild, capacity_plan=capacity_plan, verbose=ctx.verbose
         )
+    except RuntimeBaseBuildError as exc:
+        _report_runtime_base_build_failure(ctx, exc)
+        return None
     except (OSError, ValueError, RuntimeError) as exc:
         err(f"runtime-base acquisition failed: {exc}")
         ctx.record("runtime_base", "err", str(exc))
         return None
 
 
-def _docker_build_runtime_base(
-    ctx: InitContext,
-    dockerfile: Path,
-    booley_root: Path,
-    contract: str,
-    *,
-    capacity_plan: DockerBuildPlan | None = None,
-) -> bool:
-    """Build the local named base consumed by the thin candidate Dockerfile."""
-    from booley.runtime import image_lifecycle
-
-    node, _ = image_lifecycle._source_graph_base(
-        source_image_build_contracts(booley_root), dockerfile.parent
-    )
-    labels = image_lifecycle._prepared_provenance(node, None)
-    build_args = _runtime_base_build_metadata_args(booley_root, contract)
-    build = _DockerBuildSpec(
-        dockerfile=dockerfile,
-        context=booley_root,
-        exists=_docker_image_exists(LOCAL_RUNTIME_BASE_IMAGE),
-        image=LOCAL_RUNTIME_BASE_IMAGE,
-        build_note="reusing layers when runtime-base Dockerfile inputs are unchanged",
-        labels=tuple(labels.items()),
-        build_args=tuple(build_args),
-        capacity_request=capacity_plan.current if capacity_plan is not None else None,
-        capacity_plan=capacity_plan,
-    )
-    returncode = _docker_build_image(ctx, build)
-    if returncode == 0:
-        return True
-    if returncode is not None:
-        err("stable runtime-base build failed — re-run with -v for full output")
-        ctx.record("docker_image", "err", "runtime-base build failed")
-    return False
+def _report_runtime_base_build_failure(ctx: InitContext, failure: RuntimeBaseBuildError) -> None:
+    """Report a failed runtime-base build the way every Docker image build reports it."""
+    result = failure.result
+    if result is None:
+        cause = failure.__cause__
+        err(f"docker build failed: {cause}")
+        ctx.record("docker_image", "err", str(cause))
+        return
+    _render_build_diagnostics(result)
+    if result.timed_out:
+        err(
+            f"docker build timed out after {format_duration(build_timeout())} "
+            "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
+        )
+        ctx.record("docker_image", "err", "build timed out")
+        return
+    err("stable runtime-base build failed — re-run with -v for full output")
+    ctx.record("docker_image", "err", "runtime-base build failed")
 
 
 def _local_build_capacity_requests(
@@ -1121,20 +1079,20 @@ def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
     """Run one specified image build, recording infrastructure failures."""
     action = "Rebuilding" if spec.exists else "Building"
     info(f"{action} {spec.image} image — {spec.build_note}.")
-    build_timeout = int(os.environ.get("BOOLEY_IMAGE_BUILD_TIMEOUT", "7200"))
+    timeout_seconds = build_timeout()
     try:
         result = run_docker_build(
             _docker_build_command(spec),
             image=spec.image,
             verbose=ctx.verbose,
-            timeout=build_timeout,
+            timeout=timeout_seconds,
             current_request=spec.capacity_request,
             remaining_plan=spec.capacity_plan,
         )
         _render_build_diagnostics(result)
         if result.timed_out:
             err(
-                f"docker build timed out after {format_duration(build_timeout)} "
+                f"docker build timed out after {format_duration(timeout_seconds)} "
                 "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
             )
             ctx.record(spec.record_key, "err", "build timed out")
@@ -1144,7 +1102,7 @@ def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
         raise
     except subprocess.TimeoutExpired:
         err(
-            f"docker build timed out after {format_duration(build_timeout)} "
+            f"docker build timed out after {format_duration(timeout_seconds)} "
             "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
         )
         ctx.record(spec.record_key, "err", "build timed out")
@@ -1297,15 +1255,12 @@ def ensure_flavor_image(
     ctx: InitContext,
     image: str,
     *,
-    scope: HostImageScope,
     ensure_base: Callable[[], None] | None = None,
     allow_pull: bool = True,
 ) -> bool:
     """Pull, build, or refresh the selected Booley-shipped sandbox flavor.
     Return whether this run changed the image.
     """
-    if not isinstance(scope, HostImageScope):
-        raise TypeError("shared flavor maintenance requires HostImageScope")
     dockerfile, exists, fingerprint, expected_version = _flavor_inputs(image)
     prepared = _prepare_flavor_without_build(
         ctx,

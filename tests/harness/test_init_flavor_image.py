@@ -108,9 +108,7 @@ def test_missing_flavor_binds_verified_standard_parent(flavor_repo, monkeypatch)
     )
     monkeypatch.setattr(idi, "_report_build_cache", lambda: None)
 
-    idi.ensure_flavor_image(
-        InitContext(project_root=flavor_repo), FLAVOR, scope=idi.HostImageScope()
-    )
+    idi.ensure_flavor_image(InitContext(project_root=flavor_repo), FLAVOR)
 
     assert len(captured) == 1
     spec = captured[0]
@@ -135,7 +133,7 @@ def test_missing_standard_parent_stops_flavor_build(flavor_repo, monkeypatch):
     )
     ctx = InitContext(project_root=flavor_repo)
 
-    assert idi.ensure_flavor_image(ctx, FLAVOR, scope=idi.HostImageScope()) is False
+    assert idi.ensure_flavor_image(ctx, FLAVOR) is False
 
     assert ctx.results[-1].status == "err"
     assert "standard parent" in ctx.results[-1].detail
@@ -200,7 +198,7 @@ class TestFlavorWithoutCheckout:
         monkeypatch.setattr(idi.subprocess, "run", docker.run)
         ctx = InitContext(project_root=tmp_path)
 
-        changed = idi.ensure_flavor_image(ctx, FLAVOR, scope=idi.HostImageScope())
+        changed = idi.ensure_flavor_image(ctx, FLAVOR)
 
         assert changed is True
         assert ctx.results[-1].detail == f"flavor {FLAVOR} pulled"
@@ -220,7 +218,7 @@ class TestFlavorWithoutCheckout:
         monkeypatch.setattr(idi.subprocess, "run", docker.run)
         ctx = InitContext(project_root=tmp_path)
 
-        changed = idi.ensure_flavor_image(ctx, FLAVOR, scope=idi.HostImageScope())
+        changed = idi.ensure_flavor_image(ctx, FLAVOR)
 
         output = capsys.readouterr().out
         assert changed is False
@@ -240,7 +238,7 @@ class TestFlavorWithoutCheckout:
         monkeypatch.setattr(idi.subprocess, "run", docker.run)
         ctx = InitContext(project_root=tmp_path, check_only=True)
 
-        changed = idi.ensure_flavor_image(ctx, FLAVOR, scope=idi.HostImageScope())
+        changed = idi.ensure_flavor_image(ctx, FLAVOR)
 
         output = capsys.readouterr().out
         assert changed is False
@@ -278,7 +276,6 @@ class TestFlavorWithoutCheckout:
         changed = idi.ensure_flavor_image(
             ctx,
             FLAVOR,
-            scope=idi.HostImageScope(),
             ensure_base=lambda: idi._step_docker_image(ctx, FLAVOR),
         )
 
