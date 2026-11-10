@@ -171,7 +171,11 @@ class TargetsReader:
         """Git's registered worktrees; a Git failure becomes the problem text."""
         try:
             return WorktreeList(list_worktrees(self.root))
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        except subprocess.CalledProcessError as exc:
+            # Git's own stderr says why; the exception text only shows the exit code.
+            reason = first_line(ValueError(exc.stderr or f"git exited {exc.returncode}"))
+            return WorktreeList(problem=f"Worktrees unavailable: {reason}")
+        except (subprocess.TimeoutExpired, OSError) as exc:
             return WorktreeList(problem=f"Worktrees unavailable: {first_line(exc)}")
 
     def listing(self, worktree: Path) -> TargetListing:

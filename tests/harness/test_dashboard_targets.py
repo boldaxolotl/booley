@@ -498,7 +498,20 @@ async def test_failed_git_is_explained_and_the_window_falls_back_to_the_root(
         assert empty_text(app) == f"No Targets in plain ({root})."
         await pilot.press("up", "right", "enter")
         await pilot.pause()
-        assert empty_text(app).startswith("Worktrees unavailable: ")
+        # Git's stderr, not just the exit code, explains the failure.
+        assert empty_text(app).startswith("Worktrees unavailable: fatal: not a git repository")
+
+
+def test_hung_git_is_explained_without_a_traceback(tmp_path, monkeypatch):
+    from booley.harness.dashboard.targets import TargetsReader
+
+    def hang(_root: Path):
+        raise subprocess.TimeoutExpired("git worktree list", 5)
+
+    monkeypatch.setattr("booley.harness.dashboard.targets.list_worktrees", hang)
+    problem = TargetsReader(tmp_path).worktrees().problem
+    assert problem is not None
+    assert problem.startswith("Worktrees unavailable: Command 'git worktree list'")
 
 
 @pytest.mark.asyncio
