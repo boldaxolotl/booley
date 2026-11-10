@@ -34,7 +34,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   `booley init --seed` on the host.
 
   Finish or recover any interrupted `booley session refresh` before upgrading,
-  because its journal cannot be resumed after the upgrade.
+  because its journal cannot be resumed after the upgrade. If you already
+  upgraded, every lifecycle command fails closed naming the journal file:
+  remove it, then run `booley init --seed --project <root>` on the host.
 
   A Sandbox Image without the current provenance schema is stale and is rebuilt
   or re-pulled.

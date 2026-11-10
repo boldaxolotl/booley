@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.core.differences import format_differences
+from booley.core.project_identity import project_label_id
 from booley.runtime import auth_token, image_identity, project_image
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
@@ -1356,7 +1357,7 @@ def _vscode_config_matches_workspace(labels: Mapping[str, Any], workspace: Path)
     )
 
 
-def outdated_vscode_container_remedy(names: list[str]) -> str:
+def _outdated_vscode_container_remedy(names: list[str]) -> str:
     """Name the host repair for running VS Code containers with outdated mounts."""
     joined = " ".join(names)
     return (
@@ -1366,12 +1367,19 @@ def outdated_vscode_container_remedy(names: list[str]) -> str:
     )
 
 
+def _ambiguous_sandbox_remedy(names: list[str]) -> str:
+    """Name the manual inspection for Sandbox resources Booley cannot identify as its own."""
+    joined = ", ".join(repr(name) for name in names)
+    return f"inspect ambiguous Sandbox resource(s) {joined}; Booley will not remove them automatically"
+
+
 def _refuse_outdated_vscode_containers(workspace: Path, spec: dict[str, Any]) -> None:
     """Refuse, never migrate, running containers with an outdated Booley Directory layout.
 
-    Only refuses, so reading the not yet validated spec is safe: a tampered spec
-    still fails `validate` right after.  A spec too malformed to read is left
-    to `validate` as well.
+    Reads the not yet validated spec only to pick the layout to check; a
+    tampered spec still fails `validate` right after.  A spec too malformed to
+    read is left to `validate`.  Proving a canonical-alias layout probes the
+    spec's image, and a failed probe raises `SessionError` unchanged.
     """
     from booley.runtime import session_issuance as runtime_spec
 
@@ -1383,20 +1391,35 @@ def _refuse_outdated_vscode_containers(workspace: Path, spec: dict[str, Any]) ->
         return
     pending = runtime_spec.authorized_project_data_source(workspace)
     layout = runtime_spec.spec_project_data_layout(spec)
-    outdated = [
-        name
-        for name, raw in _strict_running_interactive_states()
-        if _inspected_container_serves_workspace(name, raw, workspace)
-        and not _project_data_mount_root_is_pinned(
+    expected = {"booley.project-id": project_label_id(str(workspace.resolve()))}
+    identified: list[str] = []
+    ambiguous: list[str] = []
+    for name, raw in _strict_running_interactive_states():
+        if not _inspected_container_serves_workspace(
+            name, raw, workspace
+        ) or _project_data_mount_root_is_pinned(
             raw, workspace, pending, layout=layout, image_id=image
-        )
-    ]
-    if outdated:
-        names = ", ".join(repr(name) for name in outdated)
+        ):
+            continue
+        state = _decode_container_inspect(raw)
+        assert state is not None
+        labels = _vscode_runtime_labels_for_workspace(state, workspace, expected)
+        if labels is not None and _vscode_config_matches_workspace(labels, workspace):
+            identified.append(name)
+        else:
+            ambiguous.append(name)
+    if identified or ambiguous:
+        # Only a positively identified VS Code Sandbox gets removal commands.
+        repairs = []
+        if identified:
+            repairs.append(_outdated_vscode_container_remedy(identified))
+        if ambiguous:
+            repairs.append(_ambiguous_sandbox_remedy(ambiguous))
+        names = ", ".join(repr(name) for name in identified + ambiguous)
         raise SessionError(
             f"refusing Sandbox preparation: running Sandbox(es) {names} mount an outdated "
             "Booley Directory layout (for example from before Booley 0.3.0) and are not "
-            f"migrated; {outdated_vscode_container_remedy(outdated)}"
+            f"migrated; {'; '.join(repairs)}"
         )
 
 
@@ -1479,25 +1502,25 @@ def issued_runtime_drift_fix(
         running = _inspected_running(state)
         if not is_ours or running is None:
             ambiguous.append(name)
-        elif running and not _project_data_mount_root_is_pinned(
-            raw,
-            workspace,
-            pending,
-            layout=issuance.project_data_layout,
-            image_id=issuance.image_id,
-        ):
-            outdated.append(name)
         elif running:
-            running_vscode.append(name)
+            try:
+                pinned = _project_data_mount_root_is_pinned(
+                    raw,
+                    workspace,
+                    pending,
+                    layout=issuance.project_data_layout,
+                    image_id=issuance.image_id,
+                )
+            except SessionError:
+                # The image probe failed: treat the container as unproven, not as a crash.
+                ambiguous.append(name)
+                continue
+            (running_vscode if pinned else outdated).append(name)
     actions: list[str] = []
     if ambiguous:
-        names = ", ".join(repr(name) for name in ambiguous)
-        actions.append(
-            f"inspect ambiguous Sandbox resource(s) {names}; "
-            "Booley will not remove them automatically"
-        )
+        actions.append(_ambiguous_sandbox_remedy(ambiguous))
     if outdated:
-        actions.append(outdated_vscode_container_remedy(outdated))
+        actions.append(_outdated_vscode_container_remedy(outdated))
     if running_vscode:
         names = ", ".join(repr(name) for name in running_vscode)
         actions.append(f"stop VS Code Sandbox(s) {names}, then {rebuild}")

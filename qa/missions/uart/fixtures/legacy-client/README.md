@@ -22,7 +22,7 @@ The control matrix uses actual resources, not simulated Docker inspection:
 | legacy-refuse-running | One running old VS Code Sandbox Attachment | Refusal naming the container, its removal and `booley init --seed`; the container is unchanged and still running |
 | legacy-refuse-headless | Old Sandbox created through `booley session up`, not VS Code | Refusal; Sandbox unchanged |
 | legacy-refuse-foreign | Use the old Sandbox belonging to a second run-owned Project; make the selected VS Code workspace-association label conflict in a separately created disposable container | Refusal; both Projects and original Sandbox unchanged |
-| legacy-refuse-ambiguous | Separate disposable container has the selected VS Code workspace-association label but lacks the authentic issued identity/configuration labels | Refusal; every container unchanged |
+| legacy-refuse-ambiguous | Separate disposable container has the selected VS Code workspace-association label but lacks the authentic issued identity/configuration labels | Refusal with the inspect-only repair (no removal commands); every container unchanged |
 | legacy-refuse-multiple | Two distinct running containers reproduced from the authenticated old VS Code creation configuration, including its original bind/volume definitions | Refusal; neither stops; preserve both IDs |
 | legacy-repair | Follow the repair from legacy-refuse-running: close VS Code, stop and remove that container, run `booley init --seed`, reopen in the container | The current VS Code Sandbox Attachment opens; named volumes survive |
 

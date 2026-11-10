@@ -667,7 +667,10 @@ class TestPrepareLegacyContainer:
         with pytest.raises(sr.SessionError, match=_OUTDATED_LAYOUT_REFUSAL) as caught:
             sr.prepare(workspace)
 
-        assert "'legacy'" in str(caught.value)
+        message = str(caught.value)
+        assert "'legacy'" in message
+        assert "docker rm" not in message
+        assert "Booley will not remove them automatically" in message
         validate.assert_not_called()
 
     def test_running_dual_bind_container_allows_validation(
@@ -985,6 +988,28 @@ class TestIssuedRuntimeDriftFix:
         assert "`docker rm active-vscode`" in fix
         assert "`booley init --seed`" in fix
         assert "stop VS Code Sandbox(s)" not in fix
+
+    def test_failed_layout_probe_requires_manual_inspection(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        state = self._state(workspace, running=True, pinned=False)
+        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
+        monkeypatch.setattr(
+            sr,
+            "_project_data_mount_root_is_pinned",
+            Mock(side_effect=sr.SessionError("cannot prove Booley Directory layout")),
+        )
+
+        fix = sr.issued_runtime_drift_fix(
+            workspace,
+            _test_issuance(workspace),
+            ["active-vscode"],
+        )
+
+        assert "inspect ambiguous Sandbox resource(s) 'active-vscode'" in fix
+        assert "docker rm" not in fix
 
     def test_ambiguous_origin_requires_manual_inspection(
         self,
