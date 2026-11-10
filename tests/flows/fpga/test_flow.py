@@ -2126,7 +2126,6 @@ def test_summary_table_tty_failure_prints_once_on_stdout(
     endpoint = SimpleNamespace(
         _console_publication_requested=True,
         _stdout_witness=witness,
-        _human_report=None,
         endpoint_kind="flow",
         _automatic_target_notice="",
         _automatic_target_notice_published=False,

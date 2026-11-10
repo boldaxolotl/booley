@@ -412,25 +412,19 @@ manifest across exact resume. The replaceable compatibility report at
 `origin_target` references to the immutable manifest and optional public Coverage
 reference. Legacy producer-absolute strings are compatibility hints only; local
 Simulation Campaign authentication is authoritative. The projection also carries
-the resolved identity (`target`, `tb_top`, `eda_tool`), timing, the target
-`passed` flag, and a `tests`
-list: Simulation Campaign entries contain `name`, `passed`, nullable `cycles`,
-`sva_errors`, `timed_out`, `execution`, `failure_kind`, and `error_tail`.
-Legacy/unprepared entries also carry `verdict`, `cycle_observation`, and a
-workload fingerprint when resolved inputs are available. Full cycle counts are
-also copied to `report.json` (see [FLOW_REPORTS.md](FLOW_REPORTS.md)). For
-native HDL Targets, every entry also carries
-`artifacts.run_log`, a work-directory-relative pointer to an atomic,
-unabridged, attempt-specific copy of that test's simulator output. A grouped
-run preserves this copy before starting the next test, including for failed,
-timed-out, and inconclusive tests that produced output. The Target build
-directory retains its compatibility `run.log` (the latest test's output,
-tail-truncated to 10 MB) and `result.json`; Cocotb adds its `results.xml`.
-
-`sim` adds one stricter invariant: it omits the entire block unless the current
-run's header proves the pointers are fresh. A build that dies before the
-simulator starts must not cite a previous run's `result.json` or trace as current
-evidence.
+the resolved identity (`target`, `target_identity`), the target `passed` and
+`inconclusive` flags, a `test_runs` list, and a `tests` list whose entries
+contain `name`, `passed`, nullable `cycles`, `sva_errors`, `timed_out`,
+`execution`, `failure_kind`, and `error_tail`, plus the observed Test Run's
+`test_run`, `variant`, `seed`, and `fingerprint`. Full cycle counts are also
+copied to `report.json` (see [FLOW_REPORTS.md](FLOW_REPORTS.md)). For native HDL
+Targets, each test's unabridged, attempt-specific simulator output is kept as
+`run.log` evidence in its Campaign work item, not referenced from the
+projection. A grouped run preserves this copy before starting the next test,
+including for failed, timed-out, and inconclusive tests that produced output.
+The Target build directory retains its compatibility `run.log` (the latest
+test's output, tail-truncated to 10 MB) and `result.json`; Cocotb adds its
+`results.xml`.
 
 Trace artifacts stay off the pass/fail path by design: `--trace` builds a
 separate trace-overlay Target (its own build root) so it never clobbers the fast

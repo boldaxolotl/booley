@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from booley.flows.run_log import begin_run_log, run_log_is_current
+from booley.flows.run_log import RUN_LOG_IN_PROGRESS_PREFIX, begin_run_log
 from booley.flows.sim.backends import shared
 from booley.flows.sim.backends import supervision as sup
 from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
@@ -290,4 +290,5 @@ def test_run_log_is_refreshed_while_running(tmp_path: Path, monkeypatch):
 
     content = (work / "run.log").read_text(encoding="utf-8")
     assert "cycle 2" in content and "output line(s)" in content
-    assert run_log_is_current(work, "run-live") is False  # the adapter's verdict has not landed
+    # The adapter's verdict has not landed: the log still reads as in progress.
+    assert RUN_LOG_IN_PROGRESS_PREFIX in content
