@@ -1,6 +1,7 @@
 # Launch Booley Flows and Specialists from the Dashboard
 
-Status: accepted (2026-10-28)
+Status: accepted (2026-10-28; the `mutation_tester` Specialist form is
+superseded by [ADR 0087](0087-generate-mutants-deterministically-in-a-mutation-flow.md))
 
 Supersedes the **Read-only** decision of ADR 0068 (Booley Dashboard) for
 human-started Booley Flows and Specialists only. Everything else that bullet

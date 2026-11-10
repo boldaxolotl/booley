@@ -1,6 +1,7 @@
 # Run each Specialist on the Agent CLI its model implies
 
-Status: accepted
+Status: accepted. The `mutation_tester` model key is superseded by
+[ADR 0087](0087-generate-mutants-deterministically-in-a-mutation-flow.md).
 
 ## Context
 

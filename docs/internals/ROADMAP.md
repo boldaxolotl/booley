@@ -110,6 +110,9 @@ and runs each one. That is a temporary design. Mutation testing will become
 fully deterministic, with no LLM involved: the same RTL and configuration
 always produce the same mutations, so kill rates are reproducible, comparable
 across runs, and free of LLM cost.
+[ADR 0087](../adr/0087-generate-mutants-deterministically-in-a-mutation-flow.md)
+records the design: a rule-based Mutant generator in the `booley flow
+mutation` Booley Flow.
 
 ## Continuous Integration (`booley ci`)
 
