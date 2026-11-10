@@ -1510,6 +1510,57 @@ def test_scaffold_refuses_inner_repo_with_commits(repo, monkeypatch, capsys):
     assert "/.booley" in _exclude_lines(repo)
 
 
+def test_scaffold_refuses_symlinked_inner_git(repo, monkeypatch, capsys, tmp_path):
+    """A symlinked `.booley/.git` cannot be removed with rmtree: refuse before any change."""
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_hidden_layout(repo)
+    real_git = tmp_path / "elsewhere.git"
+    (repo / ".booley/.git").rename(real_git)
+    symlink_or_skip(repo / ".booley/.git", real_git)
+    capsys.readouterr()
+    before = _filesystem_snapshot(repo)
+
+    assert init_cmd.run_init(_after_init_scaffold_args(), repo) == 2
+
+    assert "own git repository with history" in capsys.readouterr().out
+    assert _filesystem_snapshot(repo) == before
+    assert "/.booley" in _exclude_lines(repo)
+
+
+def test_scaffold_removal_failure_keeps_the_exclusion(repo, monkeypatch, capsys):
+    """If the inner repository cannot be removed, the exclusion stays and the run stops."""
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_hidden_layout(repo)
+
+    def failing_rmtree(path, *args, **kwargs):
+        raise OSError("simulated rmtree failure")
+
+    monkeypatch.setattr("booley.harness.setup.scaffold.shutil.rmtree", failing_rmtree)
+    capsys.readouterr()
+
+    assert init_cmd.run_init(_after_init_scaffold_args(), repo) == 2
+
+    assert "could not remove the hidden layout" in capsys.readouterr().out
+    assert "/.booley" in _exclude_lines(repo)
+    assert (repo / ".booley/.git").is_dir()
+
+
+def test_scaffold_leaves_symlinked_booley_footprint(repo, monkeypatch, capsys, tmp_path):
+    """A symlinked `.booley` with a hidden footprint is left alone with a warning."""
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_hidden_layout(repo)
+    real = tmp_path / "pinned"
+    (repo / ".booley").rename(real)
+    symlink_or_skip(repo / ".booley", real)
+    capsys.readouterr()
+
+    init_cmd.run_init(_after_init_scaffold_args(), repo)
+
+    assert "is a symlink; leaving its hidden layout as is" in capsys.readouterr().out
+    assert (real / ".git").is_dir()
+    assert "/.booley" in _exclude_lines(repo)
+
+
 def test_scaffold_ownership_conflict_keeps_hidden_layout(repo, monkeypatch, capsys):
     """Refusals precede the destructive step: a blocked write leaves the footprint."""
     _current_auth_and_image(monkeypatch)

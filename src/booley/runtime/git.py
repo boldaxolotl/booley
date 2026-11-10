@@ -300,7 +300,10 @@ def git_exclude_entries(wt: Path, names: Iterable[str]) -> tuple[str, ...]:
     exclude = common / "info" / "exclude"
     if not exclude.is_file():
         return ()
-    present = set(exclude.read_text(encoding="utf-8").splitlines())
+    try:
+        present = set(exclude.read_text(encoding="utf-8").splitlines())
+    except (OSError, UnicodeDecodeError):
+        return ()  # an unreadable exclude file cannot hold a footprint to remove
     return tuple(f"/{name}" for name in names if f"/{name}" in present)
 
 

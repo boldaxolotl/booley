@@ -544,9 +544,9 @@ def test_remove_git_excludes_keeps_other_entries(tmp_path):
 
 
 def test_git_exclude_helpers_without_git_or_exclude_file(tmp_path):
+    """Outside a repository, or with no exclude file, both helpers are no-ops."""
     from booley.runtime.git import git_exclude_entries, remove_git_excludes
 
-    """Outside a repository, or with no exclude file, both helpers are no-ops."""
     plain = tmp_path / "plain"
     plain.mkdir()
     assert git_exclude_entries(plain, [".booley"]) == ()
@@ -576,3 +576,12 @@ def test_remove_git_excludes_refuses_symlinked_exclude(tmp_path):
         remove_git_excludes(repo, ["/.booley"])
 
     assert destination.read_bytes() == before
+
+
+def test_git_exclude_entries_ignores_an_undecodable_exclude_file(tmp_path):
+    """A non-UTF-8 info/exclude holds no removable footprint: no crash, no entries."""
+    from booley.runtime.git import git_exclude_entries
+
+    repo = _init_repo(tmp_path / "repo")
+    (repo / ".git" / "info" / "exclude").write_bytes(b"/.booley\n\xff\xfe\n")
+    assert git_exclude_entries(repo, [".booley"]) == ()

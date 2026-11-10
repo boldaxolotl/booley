@@ -562,6 +562,29 @@ def test_step_keeps_agent_table_from_plain_init(tmp_path: Path, monkeypatch, cap
     capsys.readouterr()
 
 
+@pytest.mark.parametrize(
+    "agent_toml",
+    [
+        'agent = { provider = "codex", auth = "api_key" }\n',
+        'agent.provider = "codex"\nagent.auth = "api_key"\n',
+    ],
+    ids=["inline", "dotted"],
+)
+def test_step_keeps_hand_written_agent_forms_as_a_table(
+    tmp_path: Path, monkeypatch, capsys, agent_toml: str
+) -> None:
+    """An inline or dotted `agent` must not land inside the trailing `[flows.fpga]` table."""
+    pd = tmp_path / ".booley"
+    pd.mkdir()
+    (pd / "booley.toml").write_text(agent_toml, encoding="utf-8")
+    ctx = _ctx(tmp_path, monkeypatch)
+    assert step_scaffold(ctx, _args()) is True
+    cfg = tomllib.loads((pd / "booley.toml").read_text(encoding="utf-8"))
+    assert cfg["agent"] == {"provider": "codex", "auth": "api_key"}
+    assert "agent" not in cfg["flows"]["fpga"]
+    capsys.readouterr()
+
+
 def test_step_overwrites_comment_only_skeletons(tmp_path: Path, monkeypatch, capsys) -> None:
     # A prior plain `booley init` leaves comment-only skeletons; scaffolding
     # over them is the supported "ran init first, then decided to scaffold" path.

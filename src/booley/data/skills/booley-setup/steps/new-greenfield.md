@@ -10,6 +10,9 @@
 > scaffold need the container. If you are invoked inside the container on a repo
 > that is not yet scaffolded, stop and tell the user to run `/booley-setup new`
 > on the host (`booley init` refuses in the container).
+>
+> **Check first:** when `SETUP-PLAN.md` is approved with `scaffold: applied`, skip
+> the grill below and take that branch at the end of this file.
 
 In the initial scaffold, every flow is green by construction, including
 conventional simulation and lint fail-path fixtures that let deep Doctor prove known-bad inputs fail, so there is

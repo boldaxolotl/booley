@@ -1014,7 +1014,7 @@ def _inspect_hidden_footprint(
         return _HiddenFootprint()
     if not inner_git.exists() and not inner_git.is_symlink():
         return _HiddenFootprint(None, exclude_entries)
-    if _inner_repo_has_history(booley_dir):
+    if inner_git.is_symlink() or _inner_repo_has_history(booley_dir):
         err(
             f"{booley_dir} is its own git repository with history, so an open scaffold "
             "would commit an embedded repository. Rerun with `--stealth` to keep the "
@@ -1026,14 +1026,14 @@ def _inspect_hidden_footprint(
 
 
 def _remove_hidden_footprint(ctx: InitContext, footprint: _HiddenFootprint) -> bool:
-    """Remove the footprint (exclusion first: cheap to re-add); report each part."""
+    """Remove the footprint (inner repo first, so a failure keeps the exclusion); report each part."""
     try:
-        if footprint.exclude_entries:
-            remove_git_excludes(ctx.project_root, footprint.exclude_entries)
-            ok("removed /.booley from git info/exclude")
         if footprint.inner_repo is not None:
             shutil.rmtree(footprint.inner_repo)
             ok(f"removed empty inner git repository {footprint.inner_repo}")
+        if footprint.exclude_entries:
+            remove_git_excludes(ctx.project_root, footprint.exclude_entries)
+            ok("removed /.booley from git info/exclude")
     except OSError as exc:
         err(f"could not remove the hidden layout: {exc}; fix it and rerun the scaffold")
         ctx.record("scaffold", "err", "hidden layout removal failed")
@@ -1056,8 +1056,12 @@ def _keep_agent_table(files: dict[str, str], existing_config: Path) -> None:
         return  # unreadable config was already refused by the input gate
     if agent is None:
         return
+    # Re-emit as a real `[agent]` table: an inline `agent = {...}` or dotted
+    # key appended after `[flows.fpga]` would land inside that table instead.
+    agent_table = tomlkit.table()
+    agent_table.update(agent)
     kept = tomlkit.document()
-    kept["agent"] = agent
+    kept["agent"] = agent_table
     files[".booley/booley.toml"] += "\n" + kept.as_string()
 
 
