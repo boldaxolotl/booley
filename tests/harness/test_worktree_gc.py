@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import os
 import shutil
 import time
@@ -11,11 +10,12 @@ from pathlib import Path
 import pytest
 
 from booley.audit.diagnostic_results import Findings
+from booley.config.worktree import parse_age
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
 from booley.harness.setup import readiness
 from tests.goals.conftest import git
-from tests.harness.test_worktree_rm import _add, _commit, _versioned
+from tests.harness.test_worktree_rm import _add, _commit, _pin_namespace, _session, _versioned
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
@@ -195,6 +195,87 @@ def test_gc_reports_an_errored_removal_and_continues(
     assert first.is_dir() and not second.exists()
 
 
+def test_gc_keeps_an_idle_worktree_with_a_live_session_or_active_goal(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.goals.store import GoalStore
+    from tests.goals.test_store import _enter
+
+    _pin_namespace(monkeypatch)
+    with_session = _idle(repo, "s1", 10)
+    with_goal = _idle(repo, "s2", 10)
+    _session(repo, with_session)
+    _enter(GoalStore(repo / ".booley"), with_goal, "fix-20261006T101500Z")
+
+    assert _gc(repo) == 0
+
+    out = capsys.readouterr().out
+    assert "live Session" in out
+    assert "active Goal Record fix-20261006T101500Z" in out
+    assert out.endswith("Removed 0 worktree(s); kept 2.\n")
+    assert with_session.is_dir() and with_goal.is_dir()
+
+
+def test_gc_keeps_a_worktree_that_contains_another_worktree(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    outer = _idle(repo, "s1", 10)
+    nested = outer / ".booley" / ".baseline-wt-1-abc"
+    git(repo, "worktree", "add", "-q", "-b", "baseline", str(nested), "HEAD")
+
+    assert _gc(repo) == 0
+
+    out = capsys.readouterr().out
+    assert "Kept worktree s1: refused\n  - worktree s1 contains other worktrees" in out
+    assert out.endswith("Removed 0 worktree(s); kept 1.\n")
+    assert nested.is_dir()
+
+
+def test_gc_names_the_evidence_an_earlier_attempt_moved(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.harness import worktree_gc
+    from booley.harness.worktree_rm import WorktreeRemovalRefusedError
+
+    def refuse(root: Path, name: str, *, force: bool):
+        raise WorktreeRemovalRefusedError(
+            name, ["1 uncommitted change(s)"], [Path("old-evidence")]
+        )
+
+    monkeypatch.setattr(worktree_gc, "remove_worktree", refuse)
+    _idle(repo, "s1", 10)
+
+    assert _gc(repo) == 0
+
+    assert (
+        "An earlier attempt already moved evidence to: old-evidence\n" in capsys.readouterr().out
+    )
+
+
+def test_gc_reports_an_unreadable_stamp_and_still_prints_earlier_removals(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.harness import worktree_gc
+
+    real_last_used = worktree_gc.last_used
+
+    def unreadable_for_s2(common: Path, name: str) -> float | None:
+        if name == "s2":
+            raise PermissionError("stamp is unreadable")
+        return real_last_used(common, name)
+
+    monkeypatch.setattr(worktree_gc, "last_used", unreadable_for_s2)
+    first = _idle(repo, "s1", 10)
+    second = _idle(repo, "s2", 10)
+
+    assert _gc(repo) == 1
+
+    out = capsys.readouterr().out
+    assert "Removed worktree s1.\n" in out
+    assert "could not remove s2: stamp is unreadable\n" in out
+    assert not first.exists() and second.is_dir()
+
+
 def test_gc_without_worktrees_says_so(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
     (repo / ".booley").mkdir()
     assert _gc(repo) == 0
@@ -260,13 +341,10 @@ def test_invalid_knob_fails_doctor_validation(tmp_path: Path) -> None:
     )
 
     (failure,) = [f for f in findings.report().findings if "gc_older_than" in f.message]
-    assert "gc_older_than" in failure.message
     assert 'such as "7d"' in failure.fix
 
 
 def test_parse_age_grammar() -> None:
-    parse_age = importlib.import_module("booley.config.worktree").parse_age
-
     for text, seconds in (("7d", 7 * DAY), ("1d12h", 129600), ("90m", 5400), ("1h30m15s", 5415)):
         assert parse_age(text) == seconds
     for bad in ("", "7", "0d", "12h1d", "7days", "-1d", "1d1d", "d", " 7d", "1" * 400 + "d"):

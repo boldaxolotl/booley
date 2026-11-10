@@ -62,7 +62,7 @@ booley dashboard                  # sessions and Jobs; see Usage
 booley worktree new <name>        # a linked worktree for parallel work; see below
 booley worktree list              # each worktree's branch, changes, and use
 booley worktree rm <name>         # remove a worktree, keeping its evidence and branches
-booley worktree gc                # remove worktrees idle for a week or more, where safe
+booley worktree gc                # remove idle worktrees (default: a week), where safe
 ```
 
 The Dashboard opens by itself when you attach to the container; see
@@ -262,8 +262,8 @@ unsaved work (see the list above). A removed worktree prints the same lines as
 worktree <name>:` and why, such as that it was used too recently, that the
 worktree you are in cannot be removed from inside, that it predates the
 last-use record (`LAST USED` reads `never`), or `rm`'s refusal reasons. The
-command ends with the totals, and exits 1 if the setting is invalid or a
-removal failed.
+command ends with the totals, and exits 1 if the setting is invalid, the
+worktrees cannot be listed, or a removal failed.
 
 If `booley worktree new` fails and leaves a checkout behind, it prints the
 manual Git steps with the real Sandbox paths; use those, not host paths.

@@ -92,6 +92,13 @@ class WorktreeRemovalError(Exception):
     """Removal cannot start or continue; nothing destructive happened for this cause."""
 
 
+class WorktreeRemovalBlockedError(WorktreeRemovalError):
+    """The worktree's layout makes removal unsafe; fix the layout first.
+
+    ``--force`` does not override it. Like a refusal, it keeps the worktree.
+    """
+
+
 @dataclass(frozen=True)
 class Removal:
     """What a completed removal left behind, for the report."""
@@ -243,7 +250,7 @@ def _refuse_nested(target: _Target) -> None:
     ]
     if nested:
         listed = "\n".join(f"  - {path}" for path in nested)
-        raise WorktreeRemovalError(
+        raise WorktreeRemovalBlockedError(
             f"worktree {target.name} contains other worktrees:\n{listed}\n"
             "Remove them first with booley worktree rm or git worktree remove."
         )
@@ -263,7 +270,7 @@ def _refuse_foreign_booley_dir(target: _Target) -> None:
         or not _is_inside(booley_dir, target.path)
         or booley_dir.resolve() == target.common.resolve()
     ):
-        raise WorktreeRemovalError(
+        raise WorktreeRemovalBlockedError(
             f"the Booley Directory of worktree {target.name} is a link or lies outside it: "
             f"{booley_dir}\nRemove that link first; removal would otherwise touch the "
             "Main Booley Directory."

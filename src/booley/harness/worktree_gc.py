@@ -20,6 +20,7 @@ from booley.core.booley_dir import resolve_common_booley_dir, resolve_main_check
 from booley.harness.worktree_list import Registration, interactive_registrations
 from booley.harness.worktree_rm import (
     REMOVAL_FAILURES,
+    WorktreeRemovalBlockedError,
     WorktreeRemovalRefusedError,
     remove_worktree,
     report_removal,
@@ -44,6 +45,16 @@ def _kept(name: str, reason: str) -> GcOutcome:
 def _collect_one(
     project_root: Path, registration: Registration, common: Path, age: GcAge, now: float
 ) -> GcOutcome:
+    """Outcome for one worktree; an error becomes a ``failed`` outcome so the run goes on."""
+    try:
+        return _decide(project_root, registration, common, age, now)
+    except REMOVAL_FAILURES as exc:
+        return GcOutcome("failed", f"could not remove {registration.path.name}: {exc}")
+
+
+def _decide(
+    project_root: Path, registration: Registration, common: Path, age: GcAge, now: float
+) -> GcOutcome:
     """Decide on one worktree and, when it is idle, try the non-forced removal."""
     path = registration.path
     name = path.name
@@ -58,9 +69,13 @@ def _collect_one(
         removal = remove_worktree(project_root, name, force=False)
     except WorktreeRemovalRefusedError as refusal:
         reasons = "".join(f"\n  - {reason}" for reason in refusal.reasons)
-        return _kept(name, f"refused{reasons}")
-    except REMOVAL_FAILURES as exc:
-        return GcOutcome("failed", f"could not remove {name}: {exc}")
+        earlier = "".join(
+            f"\n  An earlier attempt already moved evidence to: {path}"
+            for path in refusal.earlier_evidence
+        )
+        return _kept(name, f"refused{reasons}{earlier}")
+    except WorktreeRemovalBlockedError as blocked:
+        return _kept(name, f"refused\n  - {blocked}")
     return GcOutcome("removed", report_removal(name, removal))
 
 
