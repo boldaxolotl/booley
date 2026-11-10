@@ -776,6 +776,7 @@ class TestCommitMsgBannedPhraseSalvage:
         worktree = tmp_path / "wt"
         worktree.mkdir()
         (worktree / ".git").write_text("gitdir: /elsewhere\n", encoding="utf-8")
+        _stealth_project(worktree)
         mock_args.work_dir = worktree
         endpoint._args = mock_args
         endpoint._default_commit_message = default_msg
@@ -897,11 +898,18 @@ class TestSpecialistGitCommit:
         assert "feat(rtl): recover stale lock" in log
 
 
+def _stealth_project(root: Path, extra: str = "") -> Path:
+    """A Project in Stealth Mode, which must be enabled explicitly."""
+    (root / ".booley").mkdir()
+    (root / ".booley" / "booley.toml").write_text(f"[stealth]\nenabled = true\n{extra}")
+    return root
+
+
 class TestBannedPhraseNote:
     """commit_msg_banned_phrase_note() exposes the live banned list to agents."""
 
-    def test_note_starts_with_header(self):
-        note = Specialist.commit_msg_banned_phrase_note()
+    def test_note_starts_with_header(self, tmp_path):
+        note = Specialist.commit_msg_banned_phrase_note(_stealth_project(tmp_path))
         assert note.startswith("## Banned Words")
 
 
@@ -918,8 +926,8 @@ def test_specialist_preserves_files_outside_its_selected_paths(monkeypatch):
     assert specialist._resolve_stageable_files(["selected.sv"]) == (["selected.sv"], [])
 
 
-def test_privacy_note_tracks_audited_default_vocabulary() -> None:
-    note = Specialist.commit_msg_banned_phrase_note().lower()
+def test_privacy_note_tracks_audited_default_vocabulary(tmp_path) -> None:
+    note = Specialist.commit_msg_banned_phrase_note(_stealth_project(tmp_path)).lower()
     for term in (
         "claude",
         "anthropic",
@@ -951,11 +959,7 @@ def test_privacy_note_tracks_audited_default_vocabulary() -> None:
 
 
 def test_specialist_note_describes_both_matching_tiers(tmp_path):
-    directory = tmp_path / ".booley"
-    directory.mkdir()
-    (directory / "booley.toml").write_text(
-        '[stealth]\nbanned_words = ["agent"]\nbanned_substrings = ["quokka"]\n'
-    )
+    _stealth_project(tmp_path, 'banned_words = ["agent"]\nbanned_substrings = ["quokka"]\n')
     note = Specialist.commit_msg_banned_phrase_note(tmp_path)
     assert "agent" in note and "quokka" in note
     assert "CamelCase" in note and "banned_substrings match anywhere" in note

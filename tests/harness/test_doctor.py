@@ -2245,7 +2245,7 @@ def test_doctor_fails_when_interactive_logs_tracked(tmp_path, monkeypatch, capsy
     base_run = doctor.subprocess.run
 
     def run_with_tracked_logs(cmd, **kwargs):
-        if cmd[:2] == ["git", "ls-files"]:
+        if cmd[:4] == ["git", "ls-files", "--", ".interactive_logs"]:
             return subprocess.CompletedProcess(
                 cmd,
                 0,
