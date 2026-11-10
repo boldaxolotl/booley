@@ -8,7 +8,7 @@ import json
 import os
 import zlib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from booley.core.boundary import (
@@ -24,11 +24,12 @@ from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 from .campaign_reports import report_link_ancestor
 from .coverage_campaign import (
+    EVALUATION_MISMATCH,
     CoverageCampaign,
     CoverageCampaignValidationError,
     CoverageRollup,
     DurableTargetIdentity,
-    _decode_owned_coverage_campaign,
+    _decode_manifest,
     derive_coverage_source_rollups,
     encode_coverage_campaign,
     encode_coverage_point,
@@ -40,8 +41,9 @@ from .coverage_json import (
     content_digest,
     freeze_coverage_mapping,
 )
+from .coverage_policy import score_thresholds
+from .coverage_provisional import ProvisionalCoverageError, criterion_from_evaluation
 
-CAMPAIGN_SCHEMA_V1 = "booley.coverage-campaign/v1"
 #: v5: every run names its Test Run and declared-inputs fingerprint (ADR 0072),
 #: and one selected Test may have several runs. Booley reads and writes only v5.
 CAMPAIGN_SCHEMA_V5 = "booley.coverage-campaign/v5"
@@ -73,8 +75,6 @@ _MANIFEST_FIELDS = frozenset(
         "evaluation",
     }
 )
-#: Manifest keys the codec does not read; the store consumes or republishes them.
-_STORE_FIELDS = frozenset({"point_store", "source_rollups", "scoring"})
 
 
 @dataclass(frozen=True)
@@ -311,6 +311,33 @@ def _point_documents(path: Path) -> list[dict[str, object]]:
     return rows
 
 
+def decode_coverage_campaign(
+    manifest: Mapping[str, object],
+    points: list[dict[str, object]],
+    expected_target: DurableTargetIdentity,
+) -> CoverageCampaign:
+    """Decode a manifest and its point rows into a Campaign: the one decode.
+
+    *manifest* has already passed the store's v5 schema gate, exact field set
+    and size ceilings; ``load_coverage_campaign*`` are the entry points for
+    persisted bytes. Consumes *points*. Stored rollups are discarded and
+    derived from the points; a stored pass/fail evaluation is re-scored from
+    them with the stored thresholds, so no stored derived value is trusted.
+    """
+    campaign = _decode_manifest(manifest, points, expected_target)
+    if campaign.evaluation["status"] not in {"pass", "fail"}:
+        return campaign
+    try:
+        criterion = criterion_from_evaluation(campaign)
+    except ProvisionalCoverageError as exc:
+        raise CoverageCampaignValidationError((EVALUATION_MISMATCH,)) from exc
+    score = score_thresholds(campaign.rollups, criterion.thresholds)
+    if score.empty:
+        raise CoverageCampaignValidationError((EVALUATION_MISMATCH,))
+    evaluation = {**campaign.evaluation, "status": score.status, "metrics": list(score.metrics)}
+    return replace(campaign, evaluation=freeze_coverage_mapping(evaluation))
+
+
 def _load_manifest(
     path: Path, raw: bytes, expected_target: DurableTargetIdentity | None
 ) -> LoadedCoverageCampaign:
@@ -320,7 +347,13 @@ def _load_manifest(
             raise CoverageCampaignStoreError(
                 "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds its size limit"
             )
-        document = dict(require_dict(json.loads(raw)))
+        try:
+            parsed = json.loads(raw)
+        except ValueError as exc:  # a JSONDecodeError, or an integer over the digit limit
+            raise CoverageCampaignStoreError(
+                "COV_MANIFEST_FORMAT", f"Cannot load Coverage Campaign: {exc}"
+            ) from exc
+        document = dict(require_dict(parsed))
         schema = document.get("$schema")
         if schema != CAMPAIGN_SCHEMA_V5:
             raise CoverageCampaignStoreError(
@@ -336,20 +369,26 @@ def _load_manifest(
         if expected_target is None:
             target = require_dict(document.get("target"), field="target")
             expected_target = DurableTargetIdentity(require_str(target, "identity"))
-        # Source rollups and scoring are writer-derived manifest content (ADR 0062).
-        v1_document = {key: value for key, value in document.items() if key not in _STORE_FIELDS}
-        v1_document["$schema"] = CAMPAIGN_SCHEMA_V1
-        v1_document["points"] = _point_documents(path.parent / POINT_STORE_NAME)
-        campaign = _decode_owned_coverage_campaign(v1_document, expected_target)
+        campaign = decode_coverage_campaign(
+            document, _point_documents(path.parent / POINT_STORE_NAME), expected_target
+        )
     except (CoverageCampaignValidationError, CoverageCampaignStoreError):
         raise
-    except (json.JSONDecodeError, UnicodeError, BoundaryError) as exc:
+    except (UnicodeError, BoundaryError) as exc:
         raise CoverageCampaignStoreError(
             "COV_MANIFEST_FORMAT", f"Cannot load Coverage Campaign: {exc}"
         ) from exc
     summary = CoverageCampaignSummary(
         source_schema=schema,
-        document=freeze_coverage_mapping(document),
+        # Source rollups and scoring are writer-derived content passed through (ADR 0062);
+        # the overall rollups and evaluation are the recomputed ones.
+        document=freeze_coverage_mapping(
+            {
+                **document,
+                "rollups": [_rollup_document(rollup) for rollup in campaign.rollups],
+                "evaluation": campaign.evaluation,
+            }
+        ),
         manifest_sha256=content_digest(raw),
         point_store=point_store,
     )

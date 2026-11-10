@@ -9,6 +9,14 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley bootstrap --egress proxy|unproxied` records `[sandbox] egress` in the
+  host config, creating the file if needed and changing nothing else in it, then
+  bootstraps under that mode. `--check-only` reports the pending change without
+  writing it, and running Sandboxes still on the old mode are named with their
+  recreate steps.
+- A fresh Sandbox no longer shows Claude Code's auto-mode default nudge on the
+  first chat: registration marks it as seen (`hasSeenAutoDefaultNudge`), with or
+  without a credential, and keeps any value already in `~/.claude.json`.
 - `sim --trace` converts a declared `trace_files` VCD of any size; the 2 GiB
   limit is gone. Post-run VCD-to-FST conversion now has its own
   `[flows.sim].trace_convert_timeout_ms` budget (default `1800000`, 30 minutes)
@@ -25,6 +33,15 @@ Packaged release history starts at 0.2.7. For older changes, see
   repository and the `/.booley` git exclusion, or refuses (changing nothing)
   when that repository has commits. Plain `booley init` in a repo with no RTL now suggests
   `/booley-setup new`.
+- A Coverage Campaign whose stored rollups or pass/fail metric rows disagree
+  with its points now loads with values recomputed from the points instead of
+  failing. A forged pass/fail on a blocked or not-requested evaluation or one
+  that cannot be re-scored (no thresholds, invalid thresholds or a missing
+  rollup) is still refused (`COV_EVALUATION_MISMATCH`), as is an incomplete
+  collection (`COV_INCOMPLETE_EVALUATED`); an unknown threshold metric or
+  malformed or repeated metric rows are refused with the field codes. The
+  load no longer cross-checks collection state, selected tests against runs,
+  or native-format and unknown-record consistency; those fields load as stored.
 - `sim --trace` now converts a declared `trace_files` entry that is a literal
   relative `.vcd` path inside the run directory while the test runs, so the
   waveform is ready at run end and no VCD is left on disk. Other entries still

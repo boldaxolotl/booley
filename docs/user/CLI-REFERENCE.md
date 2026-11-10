@@ -35,6 +35,7 @@ skills and stay out of that list.
 booley bootstrap                  # prepare this machine once for every Project
 booley bootstrap --update         # rerun after every Booley upgrade
 booley bootstrap --check-only     # report pending work; change nothing
+booley bootstrap --egress unproxied  # record the Sandbox egress mode, then bootstrap
 booley init                       # set up the Project in the current directory
 booley auth                       # save a long-lived Claude login for unattended runs
 booley auth --cli codex           # the same for Codex: paste an API key
