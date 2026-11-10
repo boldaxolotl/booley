@@ -3,6 +3,8 @@
 import importlib
 import os
 import re
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +23,8 @@ from booley.runtime.pid import (
 )
 from booley.runtime.session_activity import process_session_key
 from booley.runtime.timefmt import rfc3339_from_epoch
+from tests.booley_checkouts_support import init_repo, isolate_git, main_project
+from tests.project_runtime_git_support import git
 
 NOW = 1_800_000_000.0
 DAY = 24 * 3600.0
@@ -281,3 +285,96 @@ def test_server_start_logs_pruning_failure_and_still_serves(tmp_path, monkeypatc
         started[0].join(timeout=10)
     assert served == [True]
     assert any("Handle pruning skipped" in r.getMessage() for r in caplog.records)
+
+
+def test_session_entry_lives_while_its_worktree_exists(tmp_path):
+    """A handle named ``S<N>`` stays while ``worktrees/s<N>`` exists, whatever else is gone (#2610)."""
+    assert handles.reserve_session_handle(tmp_path, "codex:x") == "S1"
+    worktree = tmp_path / "worktrees" / "s1"
+    worktree.mkdir(parents=True)
+    prune(tmp_path)
+    assert session_map(tmp_path).entries == {"codex:x": "S1"}
+    worktree.rmdir()
+    prune(tmp_path)
+    assert session_map(tmp_path).entries == {}
+
+
+def test_only_session_labels_are_tied_to_worktrees(tmp_path):
+    """A label that is not ``S<N>`` has no worktree to keep it."""
+    (tmp_path / "worktrees" / "s1").mkdir(parents=True)
+    handles.HandleStore(tmp_path).save(handles.HandleMap({"codex:y": "X1"}, next_number=2))
+    prune(tmp_path)
+    assert session_map(tmp_path).entries == {}
+
+
+def take_number_one(kind: str, main: Path, booley_dir: Path) -> None:
+    """Make ``s1`` taken in the way *kind* names, in the checkout that owns that name."""
+    if kind == "worktree":
+        (booley_dir / "worktrees" / "s1").mkdir(parents=True)
+    elif kind == "paired-branch":
+        init_repo(booley_dir)
+        git(booley_dir, "commit", "--allow-empty", "-qm", "fixture")
+        git(booley_dir, "branch", "booley-worktree/s1")
+    else:
+        git(main, "branch", "booley/s1/x" if kind == "nested-branch" else "booley/s1")
+
+
+def test_allocation_after_full_prune_skips_taken_numbers(tmp_path, monkeypatch):
+    """An emptied map restarts numbering, but never at a number whose worktree or branch lives."""
+    isolate_git(tmp_path, monkeypatch)
+    for kind in ("worktree", "branch", "nested-branch", "paired-branch"):
+        (tmp_path / kind).mkdir()
+        main = main_project(tmp_path / kind)
+        booley_dir = main / ".booley"
+        assert handles.reserve_session_handle(booley_dir, "codex:old") == "S1", kind
+        prune(booley_dir)
+        assert session_map(booley_dir) == handles.HandleMap(), kind
+        # Taken only after the prune, so retention cannot explain the result.
+        take_number_one(kind, main, booley_dir)
+        assert handles.reserve_session_handle(booley_dir, "codex:new") == "S2", kind
+        assert session_map(booley_dir).entries == {"codex:new": "S2"}, kind
+
+
+def test_allocation_without_usable_git_skips_only_worktree_directories(
+    tmp_path, monkeypatch, caplog
+):
+    """Allocation never fails for want of Git: it warns and honours the directory rule alone."""
+
+    def timeout(*_args, **kwargs):
+        raise subprocess.TimeoutExpired("git", kwargs["timeout"])
+
+    for failure in ("not-a-repository", "git-missing", "timeout"):
+        checkout = tmp_path / failure / "checkout"
+        booley_dir = checkout / ".booley"
+        (booley_dir / "worktrees" / "s1").mkdir(parents=True)
+        pointer = "gitdir: " + str(tmp_path / "nowhere") + "\n"
+        (checkout / ".git").write_text(pointer, encoding="utf-8")
+        caplog.clear()
+        with monkeypatch.context() as patch, caplog.at_level("WARNING"):
+            if failure == "git-missing":
+                patch.setenv("PATH", "")
+            elif failure == "timeout":
+                patch.setattr(subprocess, "run", timeout)
+            assert handles.reserve_session_handle(booley_dir, "codex:new") == "S2", failure
+        assert any("Git branch list unavailable" in r.getMessage() for r in caplog.records), (
+            failure
+        )
+        assert session_map(booley_dir).entries == {"codex:new": "S2"}, failure
+
+
+def test_allocation_survives_a_branch_name_that_is_not_utf8(tmp_path, monkeypatch):
+    """One undecodable branch name must not stop handle allocation."""
+    real_run = subprocess.run
+    listing = (
+        "import sys; sys.stdout.buffer.write(b'refs/heads/booley/s1\\nrefs/heads/booley/\\xff\\n')"
+    )
+
+    def run_listing(_command, **kwargs):
+        return real_run([sys.executable, "-c", listing], **kwargs)
+
+    checkout = tmp_path / "checkout"
+    booley_dir = checkout / ".booley"
+    booley_dir.mkdir(parents=True)
+    (checkout / ".git").mkdir()
+    monkeypatch.setattr(subprocess, "run", run_listing)
+    assert handles.reserve_session_handle(booley_dir, "codex:new") == "S2"

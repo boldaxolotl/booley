@@ -85,7 +85,7 @@ def test_hook_and_registry_both_reject_redirected_handle_map_ancestors(tmp_path,
     with pytest.raises(OSError):
         HandleStore(selected).load()
     with pytest.raises(ValueError, match="redirected"):
-        hook._chat_aliases(selected)
+        hook._handle_map(selected)
 
 
 def test_hook_follows_symlinked_booley_dir_entry(tmp_path):

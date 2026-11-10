@@ -14,7 +14,7 @@
     "image_id": "sha256:prior"
   },
   "prior_issuance": {
-    "version": 4,
+    "version": 5,
     "project_root": "${PROJECT_ROOT}",
     "spec_sha256": "74d49af930a8b7da7522dfcee8503a0d2a3c614853e52b2637ac535d61f76967",
     "image": "sha256:prior",
@@ -27,7 +27,8 @@
     "relay_image_id": null,
     "validator_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "file_sha256": "b7463783ec9c2d069f832ddc160d1ac008ce8ff2dd4d2426c942ac0590cb36b2",
-    "project_data_source": "${PROJECT_DATA_SOURCE}"
+    "project_data_source": "${PROJECT_DATA_SOURCE}",
+    "project_data_layout": "legacy"
   },
   "prior_runtime": {
     "name": "${SESSION_NAME}",
@@ -44,7 +45,7 @@
   "target_wheel_sha256": null,
   "prepared_images": [],
   "replacement_issuance": {
-    "version": 4,
+    "version": 5,
     "project_root": "${PROJECT_ROOT}",
     "spec_sha256": "b2c797ea5a61cd21ad572237b81ae519b72adcf152f154a28e17010d640d4cc3",
     "image": "sha256:fresh",
@@ -57,6 +58,7 @@
     "relay_image_id": null,
     "validator_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "file_sha256": "9fb5c9d2e459db8382e4829e9aa20ae6a1c2644f6152903714070969ccf119e3",
-    "project_data_source": "${PROJECT_DATA_SOURCE}"
+    "project_data_source": "${PROJECT_DATA_SOURCE}",
+    "project_data_layout": "legacy"
   }
 }

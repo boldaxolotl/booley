@@ -146,6 +146,7 @@ def _issued_runtime_state(tmp_path: Path):
         relay_image_id=None,
         validator_sha256="d" * 64,
         file_sha256="c" * 64,
+        project_data_source=str(tmp_path / ".booley"),
     )
     spec = {
         "image": image,

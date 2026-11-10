@@ -424,13 +424,6 @@ COMPOSITION_PERMISSIONS = (
         "booley.specialists.specialist",
         "The MCP server classifies and composes Specialist endpoints.",
     ),
-    CompositionPermission(
-        "C8",
-        "D6",
-        "booley.runtime.incontainer_register",
-        "booley.harness.incontainer_register",
-        "The former module path remains an exact compatibility entry point.",
-    ),
 )
 
 LEGACY_WAIVERS = ()
@@ -441,15 +434,9 @@ APPROVED_LEGACY_SCCS = (
     frozenset(
         f"booley.{name}"
         for name in (
-            "agent_workspace",
             "bwave",
             "criteria",
-            "dev_support",
-            "feedback",
             "flows",
-            "goals",
-            "harness",
-            "mcp",
             "runtime",
         )
     ),
