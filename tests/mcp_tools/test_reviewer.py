@@ -4005,12 +4005,55 @@ def test_unbound_done_findings_do_not_claim_goal_approval(
     assert DevelopmentState.load(state_file).criteria["review_rtl_bugs_done"].detail["issue_list"]
 
 
-def test_external_legacy_acceptance_owner_keeps_approval_policy():
-    from tests.criteria.ledger_support import FixtureRecorder
+@pytest.mark.parametrize("path", ["fresh", "replay"])
+@patch("booley.specialists.specialist._call_agent_sync")
+def test_standalone_done_findings_print_no_approval_notice(
+    mock_agent, state_file: Path, monkeypatch: pytest.MonkeyPatch, path
+):
+    """A standalone recorder gets the same `done` report as Goal and interactive runs."""
+    from booley.flows.execution_persistence import StandaloneFlowExecution
 
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
     endpoint = ReviewerSpecialist()
-    endpoint._acceptance_recorder = FixtureRecorder(identity={"generation": "d" * 32})
-    assert "explicit human approval" in " ".join(endpoint._done_approval_notice(True))
+    endpoint.configure_flow_execution(StandaloneFlowExecution())
+    endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
+    if path == "fresh":
+        mock_agent.return_value = _make_agent_result([_make_issue_dict("CRITICAL")])
+        endpoint.read_state()
+        result = endpoint._run()
+        assert "RESULT: REVIEWED WITH FINDINGS" in result.report_text
+    else:
+        st = DevelopmentState.load(state_file)
+        st.set_criterion(
+            "review_rtl_bugs_done",
+            met=True,
+            detail={
+                "issues": 1,
+                "issue_list": [
+                    {
+                        "severity": "MINOR",
+                        "confidence": "HIGH",
+                        "category": "bugs",
+                        "file": "rtl/mod_a.sv",
+                        "line": 42,
+                        "summary": "unused signal",
+                    }
+                ],
+                "gate_passed": True,
+                "review_detail_version": 4,
+                "contract": endpoint._review_contract_detail(),
+                SOURCE_FINGERPRINT_DETAIL_KEY: {
+                    "categories": ["rtl"],
+                    "fingerprint": compute_source_fingerprint(Path.cwd()),
+                },
+            },
+        )
+        st.save()
+        endpoint.read_state()
+        result = endpoint._replay_done_verdict("review_rtl_bugs_done")
+        assert "rtl/mod_a.sv:42 — unused signal" in result.report_text
+        assert result.detail["review_outcome"] == "corrective"
+    assert "explicit human approval" not in result.report_text
 
 
 @pytest.mark.parametrize("category,scope", [("rtl", "shared/main.cpp"), ("tb", "shared/dut.sv")])
