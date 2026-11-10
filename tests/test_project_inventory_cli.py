@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from booley.harness import projects_view
-from booley.harness.terminal_table import render_table
+from booley.presentation.terminal_table import render_table
 from booley.projects import cli as project_inventory_cli
 from booley.projects import inventory as project_inventory
 from booley.runtime import image_keepers as runtime_image_keepers

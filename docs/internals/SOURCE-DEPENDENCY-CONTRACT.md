@@ -5,7 +5,7 @@ stable rules leave other edges unclassified; the current package graph is not a
 universal allowlist. The test-only analyzer records source knowledge without adding
 a production abstraction layer.
 
-Current measurements are dated 2026-10-11. Historical snapshots retain their original revisions and dates. Goal Mode is the public development workflow. Package names such as `booley.harness` below identify
+Current measurements are dated 2026-11-10. Historical snapshots retain their original revisions and dates. Goal Mode is the public development workflow. Package names such as `booley.harness` below identify
 source owners, not an active execution mode. Direction rules
 are normative; dated graph snapshots are diagnostic evidence.
 
@@ -33,7 +33,7 @@ environment and configuration analysis and typed diagnostic report values; `bool
 `booley.eda` owns trusted EDA registrations and Grants; `booley.review` renders
 review artifacts from resolved immutable evidence; `booley.projects` owns Project inventory commands; `booley.core` owns
 dependency-light primitives; and `booley.dev_support`, `booley.docker`, `booley.data`,
-and `booley.feedback` own their named mechanisms. These descriptions create no new
+and `booley.feedback` own their named mechanisms; `booley.presentation` owns dependency-light shared terminal presentation (colour helpers, table renderer, heartbeat). These descriptions create no new
 domain concepts.
 
 ## Commit policy and Feedback composition boundaries
@@ -389,7 +389,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D23 | Prefix `booley.config` | Prefix `booley.eda` | Forbid | Config owns declarative requests without depending on EDA provisioning policy. |
 | D24 | Prefix `booley.eda` | Prefix `booley.runtime` | Forbid | EDA uses neutral host mechanisms without depending on Runtime execution or issuance. |
 | D25 | Exact modules `booley.core.private_store`, `booley.core.file_lock`, `booley.core.resources` | Prefixes `booley.agent_workspace`, `booley.audit`, `booley.bwave`, `booley.commit_policy`, `booley.config`, `booley.criteria`, `booley.dev_support`, `booley.docker`, `booley.eda`, `booley.evidence`, `booley.feedback`, `booley.flows`, `booley.fusesoc`, `booley.goals`, `booley.harness`, `booley.mcp`, `booley.presentation`, `booley.projects`, `booley.review`, `booley.runtime`, `booley.specialists`, `booley.targets` | Forbid | Shared private storage, locking, and package resources do not own caller policy. |
-| D26 | Exact modules `booley.harness.host_diagnostics`, `booley.harness.setup.readiness` | Exact modules `booley.harness.doctor`, `booley.harness.init_cmd`, `booley.harness.booley`, `booley.harness.colors`, `booley.harness.setup.common` | Forbid | Diagnostic owners return complete observations without depending on command orchestration or rendering. |
+| D26 | Exact modules `booley.harness.host_diagnostics`, `booley.harness.setup.readiness` | Exact modules `booley.harness.doctor`, `booley.harness.init_cmd`, `booley.harness.booley`, `booley.presentation.colors`, `booley.harness.setup.common` | Forbid | Diagnostic owners return complete observations without depending on command orchestration or rendering. |
 | D27 | Prefix `booley.targets` | Prefixes `booley.flows`, `booley.runtime` | Forbid | Target inspection uses shared build identity without Flow execution or Runtime. |
 | D28 | Prefix `booley.fusesoc` | Prefix `booley.runtime` | Forbid | FuseSoC provenance consumes pure Scope matching without Runtime or Git execution. |
 | D29 | Prefix `booley.bwave` | Prefix `booley.flows` | Forbid | B-Wave owns reusable waveform mechanics without Flow execution or Simulation evidence policy. |
@@ -401,6 +401,8 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D35 | Prefix `booley.goals` | Prefixes `booley.harness`, `booley.mcp`, `booley.specialists`, `booley.flows.{sim,synth,fpga,lint}` | Forbid | Goal Mode policy and records are composed by MCP and command entry points; they do not depend on those entry points, Specialists, or concrete Flows |
 | D36 | Prefix `booley.runtime` | Prefix `booley.goals` | Forbid | Runtime consumes explicit execution inputs; Goal history and binding interpretation belong to higher-level composition. |
 | D37 | Prefix `booley.runtime.job_observation` | Prefix `booley.targets` | Forbid | Job observation owns process and artifact facts without interpreting Target policy. |
+| D39 | Prefix `booley.flows` | Prefix `booley.harness` | Forbid | Flows run under any composition; the Harness command layer supplies human CLI concerns through the invocation, never by Flow import. |
+| D40 | Prefix `booley.presentation` | Prefixes `booley.harness`, `booley.mcp`, `booley.runtime`, `booley.goals`, `booley.flows` | Forbid | Shared presentation primitives stay beneath every composition and execution owner. |
 
 ## Simulation Campaign storage boundary
 
@@ -1019,4 +1021,35 @@ Cyclic top-level package groups:
 - booley.agent_workspace, booley.bwave, booley.criteria, booley.dev_support, booley.feedback, booley.flows, booley.goals, booley.harness, booley.mcp, booley.runtime
 - booley.fusesoc, booley.targets
 
+```
+
+## Current snapshot: 10 NOV 2026 — Flow/Harness edge removed
+
+`booley.flows` no longer imports `booley.harness`. The colour helpers and the
+table renderer moved to `booley.presentation` (`colors`, `terminal_table`), which
+Harness, Dashboard and Flows all import; their API and output are unchanged. The
+human Goal-recording advisory for `booley flow` and `booley specialist` is
+supplied by the Harness command composition through `CliInvocation`, so Flow code
+calls it without importing Harness. D39 forbids any `booley.flows` import of
+`booley.harness` with no composition permission; D40 keeps `booley.presentation`
+free of Harness, MCP, Runtime, Goals, and Flows imports; D26 now names
+`booley.presentation.colors`. `booley.flows <-> booley.harness` is no longer a
+mutual pair. The approved cyclic groups are unchanged: removing these edges
+leaves both strongly connected components intact.
+
+Measured with `python3 tests/architecture/report.py --top 10`:
+
+```text
+Parsed Python modules: 710
+Normalized dependency facts: 4139
+Unique normalized edges: 3691
+
+Cyclic top-level package groups:
+- booley.agent_workspace, booley.bwave, booley.criteria, booley.dev_support, booley.feedback, booley.flows, booley.goals, booley.harness, booley.mcp, booley.runtime
+- booley.fusesoc, booley.targets
+
+Mutual top-level package pairs:
+- booley.flows <-> booley.runtime
+- booley.fusesoc <-> booley.targets
+- booley.harness <-> booley.runtime
 ```

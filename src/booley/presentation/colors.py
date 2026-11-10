@@ -1,4 +1,4 @@
-"""Terminal color utilities for harness output.
+"""Terminal color utilities for Booley terminal output.
 
 ANSI 256-color with automatic fallback for dumb terminals / pipes.
 """

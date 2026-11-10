@@ -7,8 +7,8 @@ import importlib.util
 
 import pytest
 
-from booley.harness import colors
-from booley.harness.terminal_table import render_table
+from booley.presentation import colors
+from booley.presentation.terminal_table import render_table
 from booley.projects.image_keepers import Leftover
 
 

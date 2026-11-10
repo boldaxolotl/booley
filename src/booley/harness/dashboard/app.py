@@ -25,7 +25,6 @@ from textual.widgets import DataTable, Static
 from booley.core.boundary import as_float
 from booley.goals.model import OCCUPYING_STATES
 from booley.goals.presentation import proposal_presentation
-from booley.harness.colors import PALETTE_DODGER_BLUE, PALETTE_MAUVE, PALETTE_ORANGE
 from booley.harness.dashboard import sessions
 from booley.harness.dashboard.footer import BackTarget, footer_hints
 from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobSnapshot, JobView, target_arg
@@ -44,6 +43,7 @@ from booley.harness.dashboard.results import (
 from booley.harness.dashboard.topbar import FILTER, HELP_ITEM, OWNER, WINDOW, TopBar
 from booley.harness.dashboard.view_probe import ViewState
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
+from booley.presentation.colors import PALETTE_DODGER_BLUE, PALETTE_MAUVE, PALETTE_ORANGE
 from booley.review.goal_package import observation_facts
 from booley.runtime.handles import job_prefix
 from booley.runtime.pid import ProcessState

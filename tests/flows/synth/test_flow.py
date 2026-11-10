@@ -6023,7 +6023,7 @@ class _TtyOut(io.StringIO):
 class TestSummaryTable:
     @staticmethod
     def _force_color(monkeypatch: pytest.MonkeyPatch) -> None:
-        from booley.harness import colors
+        from booley.presentation import colors
 
         monkeypatch.setattr(colors, "COLORS_ENABLED", True)
 
@@ -6103,7 +6103,7 @@ class TestSummaryTable:
         printed = out.getvalue()
         assert f"{_GREEN}PASS\x1b[0m" in printed
         assert "\x1b" not in result.report_text
-        from booley.harness.colors import strip_ansi
+        from booley.presentation.colors import strip_ansi
 
         assert strip_ansi(printed) == result.report_text + "\n"
 

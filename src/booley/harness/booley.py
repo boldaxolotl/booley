@@ -36,7 +36,6 @@ from booley.feedback import cli as feedback_cli
 from booley.feedback.storage import feedback_storage_dir
 from booley.harness import (
     cheatsheet,
-    colors,
     feedback_view,
     projects_view,
     resources_cli,
@@ -53,9 +52,10 @@ from booley.harness.render_md import render
 from booley.harness.setup import cleanup_cli
 from booley.harness.setup.common import configure_progress_output
 from booley.harness.terminal_status import MAX_WIDTH, section_header
-from booley.harness.terminal_table import render_table, width_budget
 from booley.harness.worktree_cmd import add_subparser as add_worktree_subparser
 from booley.harness.worktree_cmd import run as run_worktree
+from booley.presentation import colors
+from booley.presentation.terminal_table import render_table, width_budget
 from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import own_booley_dir
@@ -432,6 +432,7 @@ def _outer_endpoint_selection(args: argparse.Namespace) -> bool:
 
 def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
     from booley.flows.cli_selection import CliInvocation
+    from booley.harness.cli_goal_notice import warn_cli_goal_recording
     from booley.harness.endpoint_help import supports_shared_cli
 
     selected = getattr(args, "_cli_endpoint_project", None)
@@ -444,7 +445,10 @@ def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
             file=sys.stderr,
         )
         return 2
-    endpoint._cli_invocation = CliInvocation(project=selected)
+    # Flow code must not import Harness, so the command layer supplies the human advisory.
+    endpoint._cli_invocation = CliInvocation(
+        project=selected, goal_recording_advisory=warn_cli_goal_recording
+    )
     return endpoint.main(argv, **kwargs)
 
 
