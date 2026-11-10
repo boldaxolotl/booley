@@ -248,7 +248,8 @@ path is Git-trackable and owned by the RTL repository. Stealth, excluded, or
 Paired Checkout summaries stay local.
 
 Booley deletes a finished, abandoned, or failed Goal Record, with its Session
-Summary and Review Package, once both its worktree (`git worktree remove`, or
+Summary and Review Package, once both its worktree (`booley worktree rm <name>` for a
+worktree under `.booley/worktrees/`, else `git worktree remove`, or
 `git worktree prune` after deleting the directory by hand) and its Goal Branch
 are gone. Committed summaries under `goals/history/` are kept. Copy anything
 you want to keep before you remove both the worktree and the branch.
