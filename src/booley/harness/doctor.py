@@ -21,12 +21,12 @@ import shutil
 import socket
 import subprocess
 import sys
-import time
 import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from time import time as wall_clock
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -165,6 +165,7 @@ from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
+from booley.runtime.worktree_evidence import untracked_common_paths
 from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
@@ -1180,7 +1181,7 @@ def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) ->
         ):
             continue
         try:
-            untracked = _untracked_common_paths(entry.path, booley_dir)
+            untracked = untracked_common_paths(entry.path, booley_dir)
         except FileNotFoundError:
             continue  # A baseline worktree removed while scanning.
         except subprocess.CalledProcessError as exc:
@@ -1196,49 +1197,6 @@ def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) ->
             _warn_common_state_in_worktree(booley_dir, untracked, reporter)
     if not warned:
         reporter.pass_(f"no Common Booley State in {scanned} worktree Booley Directories")
-
-
-def _untracked_common_paths(worktree: Path, booley_dir: Path) -> list[str]:
-    """Return the Common Booley State paths in *booley_dir* that Git does not track.
-
-    Raises:
-        OSError: the directory cannot be walked.
-        subprocess.CalledProcessError: ``git ls-files`` failed, so tracked paths cannot be told apart.
-        ValueError: Git printed a path name that is not valid UTF-8.
-    """
-    from booley.core.booley_dir_parts import BooleyDirClass, iter_booley_dir
-
-    common = [
-        path
-        for path, booley_class in iter_booley_dir(booley_dir)
-        if booley_class is BooleyDirClass.COMMON
-    ]
-    if not common:
-        return []
-    tracked = _tracked_booley_paths(worktree, booley_dir)
-    return [path for path in common if not _is_tracked(path, tracked)]
-
-
-def _tracked_booley_paths(worktree: Path, booley_dir: Path) -> set[str]:
-    """Return Git-tracked paths under *booley_dir*, relative to it and ``/``-separated.
-
-    Raises:
-        subprocess.CalledProcessError: ``git ls-files`` failed, so tracked paths cannot be told apart.
-    """
-    own_repository = (booley_dir / ".git").exists()
-    cwd = booley_dir if own_repository else worktree
-    relative = booley_dir.relative_to(worktree).as_posix()
-    args = ["ls-files", "-z"] if own_repository else ["ls-files", "-z", "--", relative]
-    result = project_repositories.run_git(cwd, *args)
-    if result.returncode != 0:
-        raise subprocess.CalledProcessError(result.returncode, args, stderr=result.stderr)
-    prefix = "" if own_repository else f"{relative}/"
-    return {name.removeprefix(prefix) for name in result.stdout.split("\0") if name}
-
-
-def _is_tracked(path: str, tracked: set[str]) -> bool:
-    """Return whether *path*, or any file below it, is in *tracked*."""
-    return path in tracked or any(name.startswith(f"{path}/") for name in tracked)
 
 
 def _warn_common_state_in_worktree(
@@ -2723,7 +2681,7 @@ def _check_current_runtime_activity_hooks(_pass: Check, _warn: Check) -> None:
     error = hooks_error()
     if error:
         _warning_sink(_warn, "sandbox.activity-hooks-unavailable")(
-            f"Dashboard session activity will show as unknown: {error}; "
+            f"Dashboard session activity or worktree conversation records are unavailable: {error}; "
             "rebuild the sandbox image, then rebuild/reopen the Sandbox"
         )
         return
@@ -3693,7 +3651,7 @@ def _check_subscription_creds_health(
     if policy == "api_key":
         return
 
-    now = time.time()
+    now = wall_clock()
     creds_path = auth_token.subscription_creds_path(app)
     expiry = _claude_creds_expiry(creds_path)
     if expiry is not None and expiry <= now:
@@ -5737,7 +5695,7 @@ def _check_target_naming(
     reads in ``--target``, ``sim_pass_<target>``, and ``tests.toml`` keys. See
     :mod:`booley.targets.target_naming` for the rule.
 
-    WARN, never FAIL, and only for owned cores (:func:`_owned_core_files`): a
+    A note, never a failure, and only for owned cores (:func:`_owned_core_files`): a
     non-conforming name still runs, and renaming a vendored upstream Target is
     unfollowable advice for a repo that must stay byte-identical (ADR 0036).
     """
@@ -5761,7 +5719,9 @@ def _check_target_naming(
         _pass("Target names follow the <axis>_<subject> convention")
         return
     for name, ref in offenders:
-        suggestion = target_naming.suggest_name(name, doctor_axes.get(name))
+        # The core name backs a bare axis (``sim`` -> ``sim_<core name>``).
+        core_name = ref.vlnv.split(":")[:3][-1]
+        suggestion = target_naming.suggest_name(name, doctor_axes.get(name), subject=core_name)
         fix = (
             f"rename it '{suggestion}'"
             if suggestion

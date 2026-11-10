@@ -127,7 +127,7 @@ def test_cancel_reports_timeout(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(child_protocol, "request_cancellation", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(child_protocol, "recover_execution", lambda *_args, **_kwargs: False)
     moments = iter([0.0, 6.0])
-    monkeypatch.setattr(child_protocol.time, "monotonic", lambda: next(moments))
+    monkeypatch.setattr(child_protocol, "monotonic", lambda: next(moments))
     assert registry.cancel(ExecutionId("e" * 32)) is False
 
 

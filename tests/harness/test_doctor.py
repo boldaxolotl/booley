@@ -46,6 +46,7 @@ from booley.runtime import devcontainer as dc
 from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
+from tests.conftest import add_git_command_config
 from tests.devcontainer_spec_support import build_spec
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
@@ -5298,9 +5299,7 @@ class TestWorktreePortability:
             monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
             monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
         elif source == "environment":
-            monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-            monkeypatch.setenv("GIT_CONFIG_KEY_0", "worktree.useRelativePaths")
-            monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+            add_git_command_config(monkeypatch, "worktree.useRelativePaths", "true")
         elif source == "file":
             monkeypatch.setenv("GIT_CONFIG", str(config))
         elif source == "worktree":
@@ -6950,7 +6949,7 @@ targets:
 
 
 class TestCheckTargetNaming:
-    """The <axis>_<subject> convention — WARN, and only on cores the project owns."""
+    """The <axis>_<subject> convention: a note, and only on cores the project owns."""
 
     _CORE = """\
 CAPI=2:
@@ -7052,6 +7051,52 @@ sim_ok:
         assert len(warns) == 1
         assert "Target 'soc'" in warns[0]
         assert "rename it 'sim_soc'" in warns[0]
+
+    @pytest.mark.parametrize(
+        ("axis", "flow", "tool"),
+        [
+            ("sim", "sim", "verilator"),
+            ("lint", "lint", "verilator"),
+            ("synth", "generic", "yosys"),
+            ("fpga", "generic", "vivado"),
+        ],
+    )
+    def test_bare_axis_target_notes_core_name_rename(self, tmp_path, axis, flow, tool):
+        """A bare axis says nothing about the design; the note suggests <axis>_<core name>."""
+        block = f"""\
+{axis}:
+    filesets: [rtl]
+    flow: {flow}
+    flow_options: {{tool: {tool}, booley: {{doctor: [{axis}]}}}}
+    toplevel: dut
+"""
+        passes, warns = self._run(tmp_path, block, {"flows": {axis: {}}})
+        assert not passes
+        assert len(warns) == 1
+        assert "bare axis; add a subject" in warns[0]
+        assert f"rename it '{axis}_demo'" in warns[0]
+
+    def test_bare_axis_note_skips_vendored_core(self, tmp_path):
+        """Only the selected, owned core's bare Target is noted; an unselected one stays exempt."""
+        (tmp_path / "vendor.core").write_text(
+            "CAPI=2:\nname: ::upstream:0\nfilesets:\n"
+            "  rtl: {files: [dut.v], file_type: verilogSource}\n"
+            "targets:\n  lint:\n    filesets: [rtl]\n    flow: lint\n"
+            "    flow_options: {tool: verilator}\n    toplevel: dut\n",
+            encoding="utf-8",
+        )
+        block = """\
+sim:
+    filesets: [rtl]
+    flow: sim
+    flow_options: {tool: verilator, booley: {doctor: [sim]}}
+    toplevel: tb
+"""
+        passes, warns = self._run(tmp_path, block, {"flows": {"sim": {}}})
+        assert not passes
+        assert len(warns) == 1
+        assert "Target 'sim' in design.core" in warns[0]
+        assert "lint" not in warns[0]
 
 
 class TestCheckStrayDefaultTargets:
@@ -8057,7 +8102,7 @@ class TestSubscriptionCredsHealth:
 
         now = datetime(2026, 10, 8, 10, 30, tzinfo=UTC).timestamp()
         monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
-        monkeypatch.setattr(doctor.time, "time", lambda: now)
+        monkeypatch.setattr(doctor, "wall_clock", lambda: now)
         monkeypatch.setattr(doctor, "_configured_provider", lambda _: auth_token.APP_CLAUDE)
         monkeypatch.setattr(doctor, "_configured_auth_policy", lambda *_: "auto")
         monkeypatch.setattr(doctor, "_check_agent_auth_token", lambda *_a, **_k: None)

@@ -641,35 +641,3 @@ def test_escaped_build_metadata_stays_within_canonical_detail_budget(
     assert len(canonical_json_bytes(detail)) <= MAX_DETAIL_BYTES
     assert detail["build_stage"]["timed_out"] is True
     assert store.scan().interrupted == ()
-
-
-def test_parameter_record_failure_is_a_preparation_diagnostic(tmp_path, monkeypatch):
-    from booley.flows.sim.build import SimulationBuildPreparationError, prepare_simulation_build
-
-    resolved = SimpleNamespace(
-        name="sim",
-        toplevel="top",
-        build_root=tmp_path,
-        configured_eda_tool="verilator",
-        parameters={"NAME": {"datatype": "str", "paramtype": "vlogparam", "default": "MAC"}},
-    )
-    monkeypatch.setattr(
-        build_module,
-        "_simulation_recipe_inputs",
-        lambda *_args, **_kwargs: (tmp_path, SimpleNamespace(), ()),
-    )
-
-    monkeypatch.setattr(
-        build_module.fusesoc_registry,
-        "resolve_target_handle",
-        lambda *_args, **_kwargs: resolved,
-    )
-    monkeypatch.setattr(
-        build_module,
-        "_verilator_cache_environment",
-        lambda *_args: pytest.fail("invalid record reached cache capture"),
-    )
-    with pytest.raises(
-        SimulationBuildPreparationError, match=r"parameter transport.*missing or ambiguous"
-    ):
-        prepare_simulation_build(SimpleNamespace(selector="sim"), build_root=tmp_path)

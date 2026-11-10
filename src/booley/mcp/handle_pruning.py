@@ -2,8 +2,10 @@
 
 A Job handle lives while its Job runs and for 24 h after it ends. A Session handle
 lives while a registry row names it (or one of its aliases), while a live Job
-names it as owner, or, for a ``booley chat`` tab, while its process is not
-proven dead. Everything else goes; a map left empty restarts numbering at 1.
+names it as owner, while its worktree ``worktrees/s<N>`` exists in the Main Booley
+Directory, or, for a ``booley chat`` tab, while its process is not proven dead.
+Everything else goes; a map left empty restarts numbering at 1, and allocation
+then skips every number a worktree or branch still occupies.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from booley.runtime.handles import (
 from booley.runtime.pid import observe_process
 from booley.runtime.session_activity import process_identity_from_session_key
 from booley.runtime.session_paths import project_job_roots, session_jobs_dir
+from booley.runtime.worktree_usage import handle_worktree
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +110,10 @@ def _session_select(
 ) -> Callable[[HandleMap], set[str]]:
     """Choose the Session entries nothing keeps alive; runs under the Session writer lock."""
 
+    def worktree_exists(label: str) -> bool:
+        worktree = handle_worktree(booley_dir, label)
+        return worktree is not None and os.path.lexists(worktree)
+
     def select(handles: HandleMap) -> set[str]:
         rows = _registry_row_names(booley_dir / "runtime" / "sessions")
         names: dict[str, set[str]] = {entry: {entry} for entry in handles.entries}
@@ -115,7 +122,8 @@ def _session_select(
         return {
             entry
             for entry, entry_names in names.items()
-            if not any(
+            if not worktree_exists(handles.entries[entry])
+            and not any(
                 sha256(name.encode()).hexdigest() + ".json" in rows
                 or name in owners
                 or process_retained(name)

@@ -349,7 +349,7 @@ async def test_running_goal_poll_is_goal_aware_and_keeps_progress_payload(
     )
     monkeypatch.setattr(server, "_job_record", lambda _: record)
     monkeypatch.setattr(server, "is_pid_alive", lambda _: True)
-    monkeypatch.setattr(server.jobrec.time, "time", lambda: 1791453601)
+    monkeypatch.setattr(server.jobrec, "wall_clock", lambda: 1791453601)
     monkeypatch.setattr(server, "_format_job_running_poll", lambda *_: "RUNNING: sim")
     monkeypatch.setattr(server, "_running_progress", lambda _: {"run_id": "run"})
 

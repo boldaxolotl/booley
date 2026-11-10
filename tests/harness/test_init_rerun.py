@@ -24,6 +24,7 @@ import re
 import stat
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -39,6 +40,7 @@ from booley.runtime import project_image as pi
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.git import add_git_excludes
 from booley.runtime.image_lifecycle import LifecycleResult
 from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
 from tests.conftest import symlink_or_skip
@@ -1281,8 +1283,10 @@ def test_check_only_scaffold_reports_prospective_greenfield_route(repo, monkeypa
 
     output = capsys.readouterr().out
     assert "After applying the scaffold" in output, "planned scaffold needs prospective advice"
-    assert "Reopen in Container" in output
-    assert "/booley-setup new" in output
+    assert "/booley-setup new` in your agent chat here on the host" in output
+    advice = output[output.index("After applying the scaffold") :]
+    assert advice.index("/booley-setup new") < advice.index("Reopen in Container")
+    assert 'choose "Reopen in Container"' not in output
     assert "Scaffolded starter project" not in output
     assert "plan phase, here on the host" not in output
     assert "Checked initialization: pending or unresolved" in output.splitlines()[-1]
@@ -1357,16 +1361,264 @@ def test_legacy_init_modes_never_backfill_origin(repo, monkeypatch, capsys):
             setattr(args, mode, True)
         assert init_cmd.run_init(args, repo) == 0
         assert config.read_text(encoding="utf-8") == original
-        assert "/booley-setup new" not in capsys.readouterr().out
+        # A legacy header without the origin marker never gets the scaffold send-off.
+        output = capsys.readouterr().out
+        assert "Scaffolded starter project" not in output
+        assert "if it ran this scaffold" not in output
 
 
-def test_completed_port_init_still_refuses_scaffold(repo, monkeypatch):
+def _git(root: Path, *args: str) -> str:
+    """Run one Git command with a fixed identity and no detached auto-maintenance.
+
+    ``git commit`` may spawn ``maintenance run --auto`` in the background; it
+    creates and removes ``.git/objects/maintenance.lock`` at an arbitrary time,
+    which flakes any test that snapshots the tree around a later call.
+    """
+    result = subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "maintenance.auto=false",
+            "-c",
+            "gc.auto=0",
+            *args,
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
+    return result.stdout
+
+
+def _plain_init_with_hidden_layout(repo: Path) -> None:
+    """A completed default plain init: `[agent]` plus the Stealth inner repo and exclusion."""
+    assert _run_full_init(repo) == 0
+    assert (repo / ".booley/.git").is_dir(), "plain init must create the Stealth inner repo"
+    # The Interactive step is stubbed in this fixture; add its `/.booley` exclusion as it would.
+    add_git_excludes(repo, [".booley"])
+    assert "/.booley" in _exclude_lines(repo)
+
+
+def _exclude_lines(repo: Path) -> list[str]:
+    return (repo / ".git/info/exclude").read_text(encoding="utf-8").splitlines()
+
+
+def _after_init_scaffold_args(**overrides):
+    """Scaffold args as `/booley-setup new` passes them: no provider or auth."""
+    args = _scaffold_args()
+    args.provider = None
+    args.auth = None
+    for name, value in overrides.items():
+        setattr(args, name, value)
+    return args
+
+
+def _never_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the run interactive and fail the test on any prompt."""
+    real_context = init_cmd._init_context
+
+    def interactive_context(args, project_root):
+        ctx = real_context(args, project_root)
+        ctx.interactive = True
+        return ctx
+
+    def no_prompt(*_args, **_kwargs):
+        raise AssertionError("scaffold after plain init prompted the user")
+
+    monkeypatch.setattr(init_cmd, "_init_context", interactive_context)
+    monkeypatch.setattr("builtins.input", no_prompt)
+
+
+def test_scaffold_after_plain_init_opens_hidden_layout(repo, monkeypatch, capsys):
+    from booley.harness import doctor
+
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_hidden_layout(repo)
+    config = repo / ".booley/booley.toml"
+    assert "[agent]" in config.read_text(encoding="utf-8")
+    _never_prompt(monkeypatch)
+    capsys.readouterr()
+
+    # A check-only pass reports the removal and changes nothing.
+    before = _filesystem_snapshot(repo)
+    check = _after_init_scaffold_args(check_only=True)
+    assert init_cmd.run_init(check, repo) == 1
+    output = capsys.readouterr().out
+    assert "would remove empty inner git repository" in output
+    assert "would remove /.booley from git info/exclude" in output
+    assert _filesystem_snapshot(repo) == before
+    assert (repo / ".booley/.git").is_dir()
+
+    reset_cache()
+    assert init_cmd.run_init(_after_init_scaffold_args(), repo) == 0
+
+    text = config.read_text(encoding="utf-8")
+    parsed = tomllib.loads(text)
+    assert parsed["agent"] == {"provider": "claude", "auth": "subscription"}, "[agent] kept"
+    assert parsed["stealth"]["enabled"] is False
+    assert "# booley-init-origin: scaffold" in text
+    assert not (repo / ".booley/.git").exists(), "no inner repository for an open scaffold"
+    assert "/.booley" not in _exclude_lines(repo)
+    assert "?? .booley/" in _git(repo, "status", "--porcelain"), "`.booley/` must be trackable"
+    assert (repo / "rtl/starter.sv").is_file()
+
+    # The result passes the same Doctor core audit as a fresh scaffold.
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "scaffold")
+    project = doctor.ProjectAudit(
+        repo,
+        repo / ".booley",
+        parsed,
+        tomllib.loads((repo / ".booley/tests.toml").read_text(encoding="utf-8")),
+        "sim",
+    )
+    reporter = doctor._Reporter.create()
+    doctor._run_core_audit(
+        project,
+        reporter.pass_,
+        reporter.warn_,
+        reporter.skip_,
+        reporter.fail_,
+        _note=reporter.note_,
+    )
+    assert not [
+        (f.check_id, f.subject, f.message)
+        for f in reporter.result(0).findings
+        if f.severity in {"warn", "fail"}
+    ]
+
+
+def test_stealth_scaffold_after_plain_init_keeps_hidden_layout(repo, monkeypatch):
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_hidden_layout(repo)
+    _never_prompt(monkeypatch)
+
+    reset_cache()
+    assert init_cmd.run_init(_after_init_scaffold_args(stealth=True), repo) == 0
+
+    parsed = tomllib.loads((repo / ".booley/booley.toml").read_text(encoding="utf-8"))
+    assert parsed["agent"] == {"provider": "claude", "auth": "subscription"}
+    assert parsed["stealth"]["enabled"] is True
+    assert (repo / ".booley/.git").is_dir(), "Stealth keeps the inner repository"
+    assert "/.booley" in _exclude_lines(repo)
+    assert (repo / ".booley/cores/starter.core").is_file()
+
+
+def test_scaffold_refuses_inner_repo_with_commits(repo, monkeypatch, capsys):
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_hidden_layout(repo)
+    inner = repo / ".booley"
+    _git(inner, "add", "booley.toml")
+    _git(inner, "commit", "-qm", "history")
+    capsys.readouterr()
+    before = _filesystem_snapshot(repo)
+
+    assert init_cmd.run_init(_after_init_scaffold_args(), repo) == 2
+
+    output = capsys.readouterr().out
+    assert "own git repository with history" in output
+    assert "--stealth" in output, "the refusal says how to resolve it"
+    assert _filesystem_snapshot(repo) == before, "a refused scaffold changes nothing"
+    assert "/.booley" in _exclude_lines(repo)
+
+
+def test_scaffold_refuses_symlinked_inner_git(repo, monkeypatch, capsys, tmp_path):
+    """A symlinked `.booley/.git` cannot be removed with rmtree: refuse before any change."""
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_hidden_layout(repo)
+    real_git = tmp_path / "elsewhere.git"
+    (repo / ".booley/.git").rename(real_git)
+    symlink_or_skip(repo / ".booley/.git", real_git)
+    capsys.readouterr()
+    before = _filesystem_snapshot(repo)
+
+    assert init_cmd.run_init(_after_init_scaffold_args(), repo) == 2
+
+    assert "own git repository with history" in capsys.readouterr().out
+    assert _filesystem_snapshot(repo) == before
+    assert "/.booley" in _exclude_lines(repo)
+
+
+def test_scaffold_removal_failure_keeps_the_exclusion(repo, monkeypatch, capsys):
+    """If the inner repository cannot be removed, the exclusion stays and the run stops."""
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_hidden_layout(repo)
+
+    def failing_rmtree(path, *args, **kwargs):
+        raise OSError("simulated rmtree failure")
+
+    monkeypatch.setattr("booley.harness.setup.scaffold.shutil.rmtree", failing_rmtree)
+    capsys.readouterr()
+
+    assert init_cmd.run_init(_after_init_scaffold_args(), repo) == 2
+
+    assert "could not remove the hidden layout" in capsys.readouterr().out
+    assert "/.booley" in _exclude_lines(repo)
+    assert (repo / ".booley/.git").is_dir()
+
+
+def test_scaffold_leaves_symlinked_booley_footprint(repo, monkeypatch, capsys, tmp_path):
+    """A symlinked `.booley` with a hidden footprint is left alone with a warning."""
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_hidden_layout(repo)
+    real = tmp_path / "pinned"
+    (repo / ".booley").rename(real)
+    symlink_or_skip(repo / ".booley", real)
+    capsys.readouterr()
+
+    init_cmd.run_init(_after_init_scaffold_args(), repo)
+
+    assert "is a symlink; leaving its hidden layout as is" in capsys.readouterr().out
+    assert (real / ".git").is_dir()
+    assert "/.booley" in _exclude_lines(repo)
+
+
+def test_scaffold_ownership_conflict_keeps_hidden_layout(repo, monkeypatch, capsys):
+    """Refusals precede the destructive step: a blocked write leaves the footprint."""
+    _current_auth_and_image(monkeypatch)
+    _plain_init_with_hidden_layout(repo)
+    constraints = repo / "constraints"
+    constraints.mkdir()
+    sdc = constraints / "starter.sdc"
+    sdc.write_text("# user-owned\n", encoding="utf-8")
+    _git(repo, "add", "constraints/starter.sdc")
+    capsys.readouterr()
+
+    args = _after_init_scaffold_args(asic=True)
+    assert init_cmd.run_init(args, repo) == 2
+
+    assert "user-owned path" in capsys.readouterr().out
+    assert (repo / ".booley/.git").is_dir()
+    assert "/.booley" in _exclude_lines(repo)
+    assert sdc.read_text(encoding="utf-8") == "# user-owned\n"
+
+
+def test_scaffold_after_init_refuses_rtl_and_other_config(repo, monkeypatch):
     _current_auth_and_image(monkeypatch)
     assert _run_full_init(repo) == 0
     config = repo / ".booley/booley.toml"
-    original = config.read_bytes()
-    assert init_cmd.run_init(_scaffold_args(), repo) == 2
-    assert config.read_bytes() == original
+
+    # The generated config holds non-ASCII comments: write it back as UTF-8
+    # (Windows defaults to cp1252) and keep "\n" line endings.
+    config.write_text(
+        config.read_text(encoding="utf-8") + '\n[project]\nname = "x"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    authored = config.read_bytes()
+    assert init_cmd.run_init(_after_init_scaffold_args(), repo) == 2
+    assert config.read_bytes() == authored
+
+    config.write_bytes(authored.split(b"\n[project]")[0])
+    (repo / "top.sv").write_text("module top; endmodule\n", encoding="utf-8")
+    assert init_cmd.run_init(_after_init_scaffold_args(), repo) == 2
+    assert not (repo / "tb").exists()
 
 
 def test_init_origin_ignores_external_booley_dir(repo, monkeypatch):

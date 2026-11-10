@@ -66,11 +66,14 @@ refusing Sandbox preparation: generated bind source for <target> is missing: <so
 Restore that folder. If you removed it on purpose, run `booley init --seed` on
 the host and reopen the container.
 
-When the container's mounts are out of date, Booley recreates the container.
-Mounted folders and named volumes survive; anything written only inside the
-container is lost. If Booley says a headless Sandbox is running, run
-`booley session down` first. If it refuses because the container is still
-running or is ambiguous, stop and remove that container yourself, then reopen.
+When a stopped container's mounts are out of date, Booley recreates the
+container. Mounted folders and named volumes survive; anything written only
+inside the container is lost. If Booley says a headless Sandbox is running, run
+`booley session down` first. A running container whose Booley Directory mounts
+are outdated, including any from before Booley 0.3.0, is refused, not migrated:
+close VS Code, stop and remove that container, run `booley init --seed` on the
+host, then reopen. If Booley calls the container ambiguous, inspect it and
+remove it yourself if it is yours.
 
 ### `booley` is missing from `/mcp` in Claude Code or Codex
 
@@ -224,8 +227,9 @@ worktree but doesn't separate the agents.
 
 A worktree created in the Sandbox can sit at a container path the host can't
 reach, so host Git marks it `prunable`. Don't prune them from the host. Run Git worktree
-commands inside the Sandbox, and remove a worktree as the
-[CLI reference](https://booley.dev/docs/cli-reference/#worktrees) describes.
+commands inside the Sandbox, and remove a worktree with
+`booley worktree rm <name>` (see the
+[CLI reference](https://booley.dev/docs/cli-reference/#worktrees)).
 
 ### `booley worktree new` fails in the post-setup hook
 

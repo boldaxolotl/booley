@@ -8,9 +8,9 @@ import os
 import re
 import shlex
 import shutil
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from booley.core.build_paths import work_root_for
@@ -304,9 +304,9 @@ class StandaloneMixin:
         failures: list[dict[str, str]] = []
         unparsed: list[dict[str, str]] = []
         log_chunks: list[str] = []
-        deadline = time.monotonic() + (self._effective_timeout_ms() / 1000)
+        deadline = monotonic() + (self._effective_timeout_ms() / 1000)
         for module, rel in modules:
-            remaining_s = deadline - time.monotonic()
+            remaining_s = deadline - monotonic()
             if remaining_s <= 0:
                 return (
                     failures,
@@ -366,7 +366,7 @@ class StandaloneMixin:
         primary_ok: bool = True,
     ) -> _StandaloneOutcome:
         """Run the optional per-module sweep and record its criterion."""
-        t0 = time.monotonic()
+        t0 = monotonic()
         prepared = self._prepare_standalone_check(targets)
         if isinstance(prepared, _StandaloneOutcome):
             return prepared
@@ -397,7 +397,7 @@ class StandaloneMixin:
             failures,
             unparsed,
             log_pointer,
-            time.monotonic() - t0,
+            monotonic() - t0,
         )
 
     def _prepare_standalone_check(
