@@ -13,6 +13,8 @@ from typing import Any
 
 import pytest
 
+from tests.python_command_support import test_interpreter_path
+
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 
 # Ensure src/ is importable (fallback when not installed via pip install -e .)
@@ -27,6 +29,31 @@ def adapter_subprocesses_import_this_checkout(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv(
         "PYTHONPATH",
         os.pathsep.join(filter(None, (str(_SOURCE_ROOT / "src"), os.environ.get("PYTHONPATH")))),
+    )
+
+
+@pytest.fixture(scope="session")
+def _python_shim_directory(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Hold the bare ``python``/``python3`` shims, written once per session (xdist worker)."""
+    return tmp_path_factory.mktemp("python-shim")
+
+
+@pytest.fixture(autouse=True)
+def subprocesses_run_the_test_interpreter(
+    monkeypatch: pytest.MonkeyPatch, _python_shim_directory: Path
+) -> None:
+    """A launched bare ``python3``, ``python`` or ``fusesoc`` must come from the test interpreter.
+
+    Production launches adapters as ``python3 -m booley...`` and FuseSoC as
+    ``fusesoc``; both resolve from ``PATH``, which on a developer host finds the
+    system interpreter and a user-site FuseSoC. Putting the interpreter shims and
+    its scripts directory first makes children independent of the host. Tests that
+    set their own ``PATH`` keep precedence. Like the ``PYTHONPATH`` fixture, this
+    covers test bodies and function-scoped fixtures, not module or session
+    fixtures, import-time ``PATH`` captures, or a test's own ``monkeypatch.undo()``.
+    """
+    monkeypatch.setenv(
+        "PATH", test_interpreter_path(_python_shim_directory, os.environ.get("PATH", os.defpath))
     )
 
 
