@@ -1,9 +1,11 @@
 """Regression contracts for shipped workflow skills."""
 
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
+import yaml
 
 from booley.runtime.paths import skills_dir
 
@@ -268,13 +270,14 @@ def test_heal_has_bounded_doctor_repair_and_verification_loop():
         "zero `FAIL` findings",
         "zero active `WARN` findings",
         "Doctor's `→` fix hint",
-        "from booley.runtime.paths import troubleshooting_path",
+        "/booley-docs/TROUBLESHOOTING.md",
         "booley doctor --deep",
         "after 12 remediation passes",
         "final plain `booley doctor`",
         "host: final plain `booley doctor`",
     ):
         assert required in skill
+    assert "troubleshooting_path" not in skill  # the python one-liner fails on pipx hosts
     normalized = " ".join(skill.split())
     assert (
         "A complete, qualifying run with no active findings other than the expected "
@@ -935,3 +938,22 @@ def test_setup_preserves_delivered_facts_after_feedback_report_render():
         "independent",
     ):
         assert phrase in text
+
+
+def test_setup_templates_use_axis_subject_target_names():
+    """The setup skill must not teach a bare-axis Target (`sim`, `lint`, ...)."""
+    axes = {"sim", "lint", "synth", "fpga"}
+    core_text = _skill_text("booley-setup", "CORE_TEMPLATE.yaml")
+    core = yaml.safe_load(core_text)
+    assert core["targets"], "template must declare Targets"
+    assert not axes & set(core["targets"])
+    assert all(name.split("_", 1)[0] in axes for name in core["targets"])
+    assert "bare axis" not in core_text
+
+    # Enable the commented examples so they are checked too.
+    tests_text = _skill_text("booley-setup", "TESTS_TEMPLATE.toml")
+    tests_text = re.sub(r"^#\s+(\[[^\]]+\])$", r"\1", tests_text, flags=re.MULTILINE)
+    sections = tomllib.loads(tests_text)
+    keys = {key.rpartition("#")[2] for key in sections if key != "test_lists"}
+    assert keys
+    assert not axes & keys

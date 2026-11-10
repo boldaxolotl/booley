@@ -95,7 +95,6 @@ _PRODUCT_FAULTS = {
     "truncated-gzip": {"COV_POINT_FORMAT"},
     "trailing-data": {"COV_POINT_FORMAT"},
     "symlink": {"COV_PATH_UNSAFE"},
-    "wrong-rollup": {"COV_ROLLUP_MISMATCH"},
     "wrong-evaluation": {"COV_EVALUATION_MISMATCH"},
     "v1": {"COV_SCHEMA_VERSION_UNSUPPORTED"},
     "v2": {"COV_SCHEMA_VERSION_UNSUPPORTED"},
@@ -172,3 +171,21 @@ def test_nested_manifest_cannot_mutate_borrowed_file(tmp_path: Path, link_kind: 
 
     assert sentinel.read_text() == '{"preserve": true}'
     assert reference.read_bytes() == before
+
+
+def test_wrong_evaluation_refuses_a_scored_evaluation(tmp_path: Path) -> None:
+    """A scored verdict is rescored on load, so forging it would be accepted silently."""
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    (owned / ".qa-coverage-fault-copy").touch()
+    manifest = owned / NESTED
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"evaluation": {"status": "pass"}}))
+    (manifest.parent / "coverage-points.jsonl.gz").write_bytes(b"")
+    reference = _reference(owned, manifest)
+    before = manifest.read_bytes()
+
+    with pytest.raises(ValueError, match="blocked or not-requested"):
+        faults.mutate(reference, owned, "wrong-evaluation")
+
+    assert manifest.read_bytes() == before

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ntpath
+import os
 import signal
 import subprocess
 import sys
@@ -224,3 +226,23 @@ def test_run_captured_bounded_kills_the_tree_when_interrupted():
         for pipe in (proc.stdout, proc.stderr):
             if pipe is not None:
                 pipe.close()
+
+
+# ---------------------------------------------------------------------------
+# same_host_path
+# ---------------------------------------------------------------------------
+
+
+class TestSameHostPath:
+    def test_spelling_decides_before_the_filesystem(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
+        assert platform_paths.same_host_path("C:/Users/Dev", Path("c:\\users\\dev"))
+
+    def test_missing_different_paths_are_not_equal(self, tmp_path: Path):
+        assert not platform_paths.same_host_path(tmp_path / "a", tmp_path / "b")
+
+    def test_nul_byte_in_a_label_is_not_equal(self, tmp_path: Path):
+        assert not platform_paths.same_host_path(str(tmp_path) + "\0", tmp_path)
+
+    def test_same_directory_through_a_trailing_separator_is_equal(self, tmp_path: Path):
+        assert platform_paths.same_host_path(str(tmp_path) + os.sep, tmp_path)

@@ -93,7 +93,7 @@ Support for additional commercial EDA tools is coming soon; see the
 ## Documentation
 
 - [Features](https://booley.dev/docs/features/)
-- [Architecture](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ARCHITECTURE.md)
+- [Architecture](https://booley.dev/docs/architecture/)
 - [Setup](https://booley.dev/docs/setup/)
 - [Usage](https://booley.dev/docs/usage/)
 - [Flow reference](https://booley.dev/docs/flow-reference/)

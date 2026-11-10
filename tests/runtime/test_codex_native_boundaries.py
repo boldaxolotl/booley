@@ -73,6 +73,8 @@ def test_registry_rejects_redirected_handle_map_ancestors(tmp_path, redirect):
         symlink_or_skip(selected / "runtime", link)
     with pytest.raises(OSError):
         HandleStore(selected).load()
+    with pytest.raises(ValueError, match="redirected"):
+        hook._handle_map(selected)
 
 
 def test_hook_follows_symlinked_booley_dir_entry(tmp_path):

@@ -14,14 +14,14 @@ import pytest
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
-from booley.runtime.docs_links import SITE_URL, USER_DOCS, github_anchor
+from booley.runtime.docs_links import SITE_DOCS, SITE_URL, github_anchor
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GITHUB_REPOSITORY_PATH = "/boldaxolotl/Booley"
 GITHUB_BLOB_PREFIX = "/boldaxolotl/Booley/blob/main/"
 SITE = urlsplit(SITE_URL)
 SITE_DOCS_PREFIX = f"{SITE.path}docs/"
-USER_DOC_FILES = {doc.slug: doc.file for doc in USER_DOCS}
+SITE_DOC_PATHS = {doc.slug: doc.path for doc in SITE_DOCS}
 
 
 def _frozen_upstream_documents() -> set[Path]:
@@ -88,16 +88,16 @@ def _repository_target(target: Path, destination: str) -> Path:
 
 
 def _site_doc_path(site_path: str) -> Path | None:
-    """Map a project-site URL path under ``docs/`` to its source in ``docs/user/``."""
+    """Map a project-site URL path under ``docs/`` to its source in the repository."""
     if not site_path.startswith(SITE_DOCS_PREFIX):
         return None  # home page, videos, and other site-only pages
     page = unquote(site_path.removeprefix(SITE_DOCS_PREFIX))
     if page.startswith("assets/"):
         return REPO_ROOT / "docs/user" / page
     slug = page.strip("/")
-    if slug not in USER_DOC_FILES:
-        raise ValueError(f"unknown user-doc slug: {slug}")
-    return REPO_ROOT / "docs/user" / USER_DOC_FILES[slug]
+    if slug not in SITE_DOC_PATHS:
+        raise ValueError(f"unknown site-doc slug: {slug}")
+    return REPO_ROOT / SITE_DOC_PATHS[slug]
 
 
 def _web_path(netloc: str, path: str) -> Path | None:
@@ -202,6 +202,7 @@ def test_repository_paths_cannot_escape(destination: str) -> None:
     [
         (f"{SITE_URL}docs/setup/#the-booley-setup-skill", "docs/user/SETUP.md"),
         (f"{SITE_URL}docs/assets/booley-screenshot.png", "docs/user/assets/booley-screenshot.png"),
+        (f"{SITE_URL}docs/architecture/", "docs/internals/ARCHITECTURE.md"),
         (f"{SITE_URL}videos/", None),
     ],
 )
@@ -211,7 +212,7 @@ def test_site_urls_resolve_to_user_doc_sources(destination: str, target: str | N
 
 
 def test_unknown_site_doc_slug_fails() -> None:
-    with pytest.raises(ValueError, match="unknown user-doc slug: nope"):
+    with pytest.raises(ValueError, match="unknown site-doc slug: nope"):
         _repository_path(REPO_ROOT / "README.md", f"{SITE_URL}docs/nope/")
 
 
@@ -312,3 +313,45 @@ def test_tracked_files_name_the_site_by_its_current_domain() -> None:
     assert result.returncode in (0, 1), result.stderr
     stale = sorted(set(result.stdout.splitlines()) - _RETIRED_HOST_ALLOWED)
     assert not stale, f"replace {_RETIRED_SITE_HOST} links with {SITE_URL} in: {stale}"
+
+
+PACKAGED_DOCS = REPO_ROOT / "src/booley/data/docs"
+
+
+def _packaged_links() -> list[tuple[Path, str]]:
+    """Return every ``(packaged doc, destination)`` pair, asserting the copies exist."""
+    documents = sorted(PACKAGED_DOCS.glob("*.md"))
+    assert documents, f"no packaged docs in {PACKAGED_DOCS}; run booley.dev_support.reference_docs"
+    return [
+        (document, destination)
+        for document in documents
+        for destination in _destinations(document)
+    ]
+
+
+def test_packaged_doc_links_resolve_to_sibling_files() -> None:
+    """A shipped doc's link to a shipped doc is a bare sibling file name with a live anchor."""
+    failures: list[str] = []
+    for document, destination in _packaged_links():
+        parts = urlsplit(destination)
+        if parts.scheme or parts.netloc or not parts.path:
+            continue  # external URL or in-page anchor
+        sibling = PACKAGED_DOCS / parts.path
+        if parts.path != Path(parts.path).name or not sibling.is_file():
+            failures.append(f"{document.name}: {destination} is not a sibling packaged doc")
+        elif reason := _destination_failure(sibling, destination):
+            failures.append(f"{document.name}: {destination} -> {reason}")
+    assert not failures, "\n".join(failures)
+    assert PACKAGED_DOCS / "TROUBLESHOOTING.md" in _markdown_files()
+
+
+def test_packaged_docs_link_no_unshipped_doc() -> None:
+    """No packaged link, relative or on the docs site, points back at an unshipped repo doc."""
+    failures: list[str] = []
+    for document, destination in _packaged_links():
+        target = _repository_path(document, destination)
+        if target is not None and not target.is_relative_to(PACKAGED_DOCS.resolve()):
+            failures.append(f"{document.name}: {destination} -> {target.relative_to(REPO_ROOT)}")
+    assert not failures, "links to docs that are not shipped must be plain text:\n" + "\n".join(
+        failures
+    )

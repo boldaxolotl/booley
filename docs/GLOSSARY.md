@@ -151,12 +151,32 @@ The exact FlexNet server identifier advertised by the license manager and mapped
 _Avoid_: server hostname, DNS name, upstream address
 
 **Job**:
-A background run of a Booley Flow or Specialist, tracked by a `run_id` through the submit → poll contract from submission to a terminal result. A Job that starts immediately and finishes quickly completes inline, reading like a synchronous call; one that waits for a slot surfaces a QUEUED state first and can be withdrawn by `run_id` while it waits.
+A run of a Booley Flow or Specialist, tracked by a Job record and its `run_id` from submission to a terminal result. A Developer Agent's Job goes through the submit → poll contract: one that starts immediately and finishes quickly completes inline, reading like a synchronous call; one that waits for a slot surfaces a QUEUED state first and can be withdrawn by `run_id` while it waits. A human's Job runs in the foreground of a Sandbox shell or detached from the Booley Dashboard.
 _Avoid_: task, process, async call
+
+**Standalone Job**:
+A Job with no owning session, started by a human from a Sandbox shell or the Booley Dashboard. It takes Job slots like any other Job, writes `job.log`, and never records, satisfies, or invalidates Goal evidence.
+_Avoid_: human run, dashboard job, manual job
 
 **Job Class**:
 The admission category of a Job, determined by which scarce resource it consumes: EDA work inside the Sandbox (`heavy`) or model-API-bound Specialist work (`light`). Each class has a configurable concurrency cap; excess work queues without preempting running work, and a full queue refuses admission. Queue priority comes from the requester role, independently of class: `interactive` sorts ahead of other requester roles; unknown persisted roles retain a fallback priority.
 _Avoid_: tier, weight, pool, semaphore
+
+**Resource History**:
+The per-**Project** record of each Job phase's measured peak memory, CPU time and wall-clock time, from which Booley estimates what the next run of that phase will need.
+_Avoid_: telemetry, metrics, profile
+
+**Memory Budget**:
+The part of a **Sandbox**'s memory that Booley may hand out to running Jobs: the Sandbox's memory limit minus a reserve for the Developer Agent and Booley's own processes.
+_Avoid_: memory limit (the Sandbox's hard limit), capacity, quota
+
+**Memory Reservation**:
+The share of the **Memory Budget** a running Job holds: the estimated peak of its largest remaining phase. It shrinks as phases finish and never grows.
+_Avoid_: slot, allocation, lease
+
+**Seat Cap**:
+The number of Jobs that may use one licensed EDA tool at the same time, declared by the **Project**.
+_Avoid_: licence budget, seat pool, license count
 
 ### Configuration
 
@@ -314,7 +334,7 @@ _Avoid_: regex, marker, exit-code-only verdict
 ### Presentation
 
 **Booley Dashboard**:
-The read-only terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, and health signals in that Sandbox.
+The terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, Targets, and health signals in that Sandbox, from which a human can also launch Booley Flows and built-in Specialists as Standalone Jobs.
 _Avoid_: control room, console, monitor
 
 **Session activity**:

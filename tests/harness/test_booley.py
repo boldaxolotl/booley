@@ -22,6 +22,13 @@ from booley.runtime.booley_dir import reset_cache
 TICKETS_REL = Path(".booley") / "tickets"
 
 
+@pytest.fixture(autouse=True)
+def _outside_any_job(monkeypatch):
+    """CLI dispatch tests never record a Standalone Job into a real Project (e.g. inside a Sandbox)."""
+    for name in ("BOOLEY_DIR", "BOOLEY_RUN_ID", "_BOOLEY_CLI_INVOCATION_ORIGIN"):
+        monkeypatch.delenv(name, raising=False)
+
+
 # ===========================================================================
 # ts()
 # ===========================================================================
@@ -267,6 +274,18 @@ def test_bootstrap_parser_exposes_qa_selection_flags(flag, attribute):
 
     assert getattr(args, attribute) is True
     assert args.force is True
+
+
+def test_bootstrap_parser_accepts_egress_mode(capsys):
+    parser = tlr._build_parser()
+
+    assert parser.parse_args(["bootstrap", "--egress", "unproxied"]).egress == "unproxied"
+    assert parser.parse_args(["bootstrap", "--check-only", "--egress", "proxy"]).egress == "proxy"
+    assert parser.parse_args(["bootstrap"]).egress is None
+    with pytest.raises(SystemExit) as raised:
+        parser.parse_args(["bootstrap", "--egress", "open"])
+    assert raised.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
 
 
 def test_bootstrap_dispatch_precedes_project_discovery(monkeypatch):
@@ -1256,6 +1275,8 @@ class TestCmdFlow:
         help_text = tlr._build_parser().format_help()
         assert "flow" in help_text
         assert "Run a Booley Flow directly" in help_text
+        # Collapse whitespace so argparse wrapping cannot split the example.
+        assert "--target lint_soc" in " ".join(help_text.split())
 
 
 class TestEndpointResolution:

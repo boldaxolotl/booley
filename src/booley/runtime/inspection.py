@@ -48,6 +48,7 @@ from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.filesystem_utils import read_file_bytes
+from booley.runtime.platform_paths import same_host_path
 
 
 @dataclass(frozen=True)
@@ -535,8 +536,8 @@ def _accepted_booley_dir(value: str, project_root: Path) -> bool:
 
     Accepted spellings are the image alias ``/booley-project`` and the ``.booley``
     entry directly under the inspected Project Root, either one resolving to an
-    existing directory. The entry may be a symlink; only its parent is resolved,
-    so the comparison tolerates aliased Project Root spellings. Paths alone
+    existing directory. The entry may be a symlink; its parent must be the same
+    location as the Project Root, so aliased Project Root spellings are tolerated. Paths alone
     decide: ambient platform variables such as ``CODESPACES`` are spoofable
     (ADR 0077) and never widen the rule.
     """
@@ -548,10 +549,7 @@ def _accepted_booley_dir(value: str, project_root: Path) -> bool:
         return False  # relative spellings depend on cwd; dangling entries are not directories
     if selected.name != BOOLEY_DIR_NAME:
         return False
-    try:
-        return selected.parent.resolve(strict=True) == project_root.resolve(strict=True)
-    except (OSError, RuntimeError):
-        return False  # unresolvable parent or Project Root cannot prove identity
+    return same_host_path(selected.parent, project_root)
 
 
 def _check_booley_dir_identity(project_root: Path, report: Findings) -> None:
