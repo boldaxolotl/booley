@@ -113,6 +113,8 @@ when the child stops, and takes the terminal back only after the child exits.
     `booley-worktree/s<N>` branch already exists. Without this, numbering
     that restarts at 1 after a full prune would collide with branches that
     `rm` kept.
+
+  Implemented by #2610 (2026-11-10): see ADR 0068 Amendments (2026-11-10).
 - **Branch.** The worktree is created on a new branch `booley/<name>` from the
   main checkout's HEAD, not on a detached HEAD. Commits therefore stay
   reachable after the worktree is removed. `booley worktree new` switches to
@@ -147,6 +149,10 @@ with the cwd. `booley chat --resume <id>`, Claude `-c`/`--continue`, and Codex
 when it still exists, and alias the new process key to the old handle through
 the existing `predecessors` mechanism, so S3 resumes as S3. A conversation
 whose worktree is gone resumes in the main checkout, with a notice.
+
+Implemented by #2610 (2026-11-10): the records only. The hook writes
+`worktrees/.conversations/<hash>.json`; nothing resumes from it yet. See ADR
+0068 Amendments (2026-11-10).
 
 ### Exit
 

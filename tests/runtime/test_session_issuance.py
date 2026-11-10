@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -26,21 +27,23 @@ from tests.session_issuance_support import (
     stub_keeper,
 )
 
+from booley.audit.diagnostic_results import Severity
 from booley.config.host_config import host_config_path
+from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.licensing import flexnet_docker
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, POLICY_REVISION, wrapper_path
 from booley.harness import booley, eda_grants
 from booley.runtime import devcontainer as dc
-from booley.runtime import interactive_docker as idk
 from booley.runtime import (
+    inspection,
     issuance_invalidation,
     session_admission,
     session_refresh,
     session_runtime,
-    session_spec,
 )
+from booley.runtime import interactive_docker as idk
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.platform_paths import docker_mount_path
@@ -707,7 +710,6 @@ def test_missing_issuance_is_withdrawn(issued, reader, remove_parent) -> None:
     project, spec, path, _stamp = issued
     current = runtime_spec.stamp_path(project)
     current.unlink()
-    assert not runtime_spec._legacy_stamp_path(str(project.resolve())).exists()
     if remove_parent:
         current.parent.rmdir()
     readers = {
@@ -759,42 +761,78 @@ def test_corrupt_issuance_is_not_withdrawn(issued, monkeypatch, damage) -> None:
     assert isinstance(raised.value.__cause__, causes[damage])
 
 
-def test_valid_legacy_issuance_still_authenticates(issued) -> None:
-    project, spec, path, stamp = issued
-    current = runtime_spec.stamp_path(project)
-    legacy = runtime_spec._legacy_stamp_path(str(project.resolve()))
-    authority._store().ensure_directory()
-    legacy.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    current.replace(legacy)
-    assert runtime_spec.validate(project, spec, path) == stamp
+def _pre_030_stamp_path(project: Path) -> Path:
+    """Where releases before 0.3.0 kept the host-issued stamp."""
+    identity = hashlib.sha256(str(project.resolve()).encode()).hexdigest()
+    return config_dir() / "eda" / "session-specs" / f"{identity}.json"
 
 
-def test_real_invalidation_removes_both_issuance_stamps(issued, monkeypatch) -> None:
+def _rewrite_stamp(project: Path, mutate) -> None:
+    """Rewrite the persisted stamp document in place, keeping its private mode."""
+    path = runtime_spec.stamp_path(project)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    mutate(document)
+    path.write_text(json.dumps(document), encoding="utf-8")
+    path.chmod(0o600)
+
+
+def test_pre_bump_stamp_version_is_rejected(issued) -> None:
+    project, spec, path, _stamp = issued
+    _rewrite_stamp(project, lambda document: document.__setitem__("version", 4))
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"corrupt.*unsupported version"):
+        runtime_spec.validate(project, spec, path)
+
+
+def test_stamp_at_legacy_location_is_not_read(issued) -> None:
     project, spec, path, _stamp = issued
     current = runtime_spec.stamp_path(project)
-    legacy = runtime_spec._legacy_stamp_path(str(project.resolve()))
-    authority._store().ensure_directory()
+    legacy = _pre_030_stamp_path(project)
     legacy.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    legacy.write_bytes(current.read_bytes())
-    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
-    monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", lambda _id: ())
-    issuance_invalidation.prepare(str(project.resolve()))
-    assert issuance_invalidation.recover_project_locked(str(project.resolve()))
-    assert not current.exists()
-    assert not legacy.exists()
-    assert issuance_invalidation.pending_invalidations() == ()
+    current.replace(legacy)
     with pytest.raises(runtime_spec.RuntimeSpecError) as raised:
         runtime_spec.validate(project, spec, path)
     assert str(raised.value) == _WITHDRAWN_ISSUANCE
+    assert legacy.is_file()
+
+
+def _move_stamp_to_legacy_location(project: Path) -> None:
+    legacy = _pre_030_stamp_path(project)
+    legacy.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    runtime_spec.stamp_path(project).replace(legacy)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        pytest.param(
+            lambda project: _rewrite_stamp(project, lambda doc: doc.__setitem__("version", 4)),
+            id="old-version",
+        ),
+        pytest.param(_move_stamp_to_legacy_location, id="legacy-location"),
+        pytest.param(
+            lambda project: _rewrite_stamp(project, lambda doc: doc.pop("project_data_layout")),
+            id="missing-layout",
+        ),
+    ],
+)
+def test_doctor_names_reseed_for_rejected_pre_030_issuance(issued, damage) -> None:
+    """Doctor FAILs a rejected pre-0.3.0 issuance and names `booley init --seed`."""
+    project, _spec, _path, _stamp = issued
+    damage(project)
+    request = inspection.RuntimeInspectionRequest(project, "sha256:" + "a" * 64, None)
+    failures = [
+        finding
+        for finding in inspection.inspect_runtime(request).issuance.findings
+        if finding.severity is Severity.FAIL
+    ]
+    assert len(failures) == 1
+    assert "Sandbox host issuance is invalid" in failures[0].message
+    assert "booley init --seed" in failures[0].fix
 
 
 def test_real_grant_add_writes_no_journal_and_removes_stamp(issued, monkeypatch) -> None:
     project, _spec, _path, _stamp = issued
     current = runtime_spec.stamp_path(project)
-    legacy = runtime_spec._legacy_stamp_path(str(project.resolve()))
-    authority._store().ensure_directory()
-    legacy.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    legacy.write_bytes(current.read_bytes())
     monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
     monkeypatch.setattr(
         issuance_invalidation,
@@ -818,7 +856,6 @@ def test_real_grant_add_writes_no_journal_and_removes_stamp(issued, monkeypatch)
 
     assert authority.load_state().grants == (grant,)
     assert not current.exists()
-    assert not legacy.exists()
     assert issuance_invalidation.pending_invalidations() == ()
 
 
@@ -920,7 +957,7 @@ def test_inspect_prepared_rejects_missing_document_without_creating_it(issued) -
     assert not path.exists()
 
 
-def test_legacy_registrar_remains_valid_for_issued_specs(
+def test_legacy_registrar_is_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     trusted_validator: Path,
@@ -933,17 +970,16 @@ def test_legacy_registrar_remains_valid_for_issued_specs(
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     legacy = "python -m booley.runtime.incontainer_register"
-    prepared, path, stamp = issue_built(
-        project,
-        lambda _inputs: build_spec(
-            dc.APP_NONE,
-            mcp_start_command=legacy,
-            protected_devcontainer_source=str(project / ".devcontainer"),
-        ),
-        monkeypatch,
-    )
-
-    assert runtime_spec.validate(project, prepared.spec, path) == stamp
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="differs from fixed Booley policy"):
+        issue_built(
+            project,
+            lambda _inputs: build_spec(
+                dc.APP_NONE,
+                mcp_start_command=legacy,
+                protected_devcontainer_source=str(project / ".devcontainer"),
+            ),
+            monkeypatch,
+        )
 
 
 def test_recovery_snapshot_uses_sealed_issuance_without_current_authority(
@@ -957,23 +993,6 @@ def test_recovery_snapshot_uses_sealed_issuance_without_current_authority(
     )
 
     assert runtime_spec.load_issued_snapshot(project) == stamp
-
-
-def test_legacy_eda_stamp_recovers_and_next_issue_migrates_to_runtime(issued_preview) -> None:
-    project, prepared, _path, stamp = issued_preview
-    current = runtime_spec.stamp_path(project)
-    legacy = runtime_spec._legacy_stamp_path(str(project.resolve()))
-    legacy.parent.mkdir(parents=True, mode=0o700)
-    legacy.parent.chmod(0o700)
-    current.replace(legacy)
-
-    assert runtime_spec.load_issued_snapshot(project) == stamp
-    snapshot = session_spec.capture_session_spec(project)
-    assert snapshot.stamp_path == current
-    assert snapshot.stamp_content == legacy.read_bytes()
-    assert runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False) == stamp
-    assert current.is_file()
-    assert not legacy.exists()
 
 
 def test_recovery_snapshot_rejects_different_project_identity(issued, monkeypatch) -> None:
@@ -2618,6 +2637,12 @@ def test_previewed_spec_issues_for_every_project_data_layout(
 
     assert stamp.project_data_layout == expected_layout
     assert runtime_spec.inspect_prepared(project, prepared) == stamp
+    # The persisted document carries the current version and an explicit layout,
+    # and a "legacy" layout at the current version still validates.
+    document = json.loads(runtime_spec.stamp_path(project).read_text(encoding="utf-8"))
+    assert document["version"] == runtime_spec.STAMP_VERSION == 5
+    assert document["project_data_layout"] == expected_layout
+    assert runtime_spec.validate(project, prepared.spec, dc.devcontainer_path(project)) == stamp
 
 
 @pytest.mark.parametrize("key", ["dst", "destination"])
@@ -2693,20 +2718,19 @@ def test_mount_surface_rejects_normalized_forbidden_target():
         )
 
 
-def test_issuance_document_accepts_only_legacy_layout_omission(
+def test_issuance_document_requires_project_data_layout(
     issued: tuple[Path, dict, Path, runtime_spec.Issuance],
 ) -> None:
     from dataclasses import asdict
 
     _project, _spec, _path, stamp = issued
     raw = asdict(stamp)
+    assert runtime_spec.issuance_from_document(raw) == stamp
     raw.pop("project_data_layout")
-    assert runtime_spec.issuance_from_document(raw).project_data_layout == "legacy"
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="unexpected or missing fields"):
-        runtime_spec.issuance_from_document({**raw, "unknown": "legacy"})
-    raw.pop("image_id")
     with pytest.raises(runtime_spec.RuntimeSpecError, match="unexpected or missing fields"):
         runtime_spec.issuance_from_document(raw)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="unexpected or missing fields"):
+        runtime_spec.issuance_from_document({**raw, "project_data_layout": "legacy", "unknown": 1})
 
 
 @pytest.mark.parametrize("layout", [[], {}, None, 42, "unknown-layout"])
@@ -2810,16 +2834,15 @@ def test_missing_launcher_repair_names_canonical_installed_launcher(monkeypatch,
         )
 
 
-@pytest.mark.parametrize("flag", ["--project", "--project-root"])
 def test_initialize_validator_accepts_only_approved_complete_forms(
-    tmp_path, monkeypatch, trusted_validator, flag
+    tmp_path, monkeypatch, trusted_validator
 ):
     project = tmp_path / "project"
     project.mkdir()
     command = runtime_spec.initialize_command(str(trusted_validator))
-    command[3] = flag
     runtime_spec._validate_initialize_command(project, command)
     for altered in (
+        [*command[:3], "--project-root", *command[4:]],
         [*command, "extra"],
         [*command[:4], "/untrusted/workspace"],
         ["relative-booley", *command[1:]],
@@ -2829,23 +2852,24 @@ def test_initialize_validator_accepts_only_approved_complete_forms(
             runtime_spec._validate_initialize_command(project, altered)
 
 
-@pytest.mark.parametrize("flag", ["--project", "--project-root"])
-def test_pinning_migrates_approved_initialize_forms(tmp_path, monkeypatch, flag):
+def test_pinning_rejects_legacy_initialize_form(tmp_path, monkeypatch):
     project = tmp_path / "project"
-    command = runtime_spec.initialize_command()
-    command[3] = flag
     executable = tmp_path / "trusted/bin/booley"
     monkeypatch.setattr(runtime_spec, "_find_trusted_validator", lambda _project: executable)
-    spec = {"initializeCommand": command}
-    runtime_spec._pin_initialize_command(project, spec)
-    assert spec["initializeCommand"] == runtime_spec.initialize_command(str(executable))
-    assert spec["initializeCommand"][3] == "--project"
+    current = {"initializeCommand": runtime_spec.initialize_command()}
+    runtime_spec._pin_initialize_command(project, current)
+    assert current["initializeCommand"] == runtime_spec.initialize_command(str(executable))
+    legacy = runtime_spec.initialize_command()
+    legacy[3] = "--project-root"
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="no fixed host validation command"):
+        runtime_spec._pin_initialize_command(project, {"initializeCommand": legacy})
 
 
-def test_previously_issued_legacy_prepare_survives_full_validation(
+def test_previously_issued_legacy_initialize_command_is_rejected(
     tmp_path, monkeypatch, trusted_validator
 ):
-    """Model an old issuer, then authenticate its unchanged sealed document."""
+    """Model an old issuer: a spec sealed with the `--project-root` command no longer issues."""
+    del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
@@ -2859,22 +2883,10 @@ def test_previously_issued_legacy_prepare_survives_full_validation(
         spec["initializeCommand"][3] = "--project-root"
 
     stub_keeper(monkeypatch)
-    with monkeypatch.context() as old_issuer:
-        old_issuer.setattr(runtime_spec, "_pin_initialize_command", old_issuer_pin)
+    monkeypatch.setattr(runtime_spec, "_pin_initialize_command", old_issuer_pin)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="no fixed host validation command"):
         prepared = runtime_spec.preview(project, plain_builder(project))
-    spec = prepared.spec
-    stamp = runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
-    path = dc.devcontainer_path(project)
-    assert spec["initializeCommand"] == [
-        str(trusted_validator),
-        "session",
-        "prepare",
-        "--project-root",
-        "${localWorkspaceFolder}",
-    ]
-    assert runtime_spec.authenticate(project, spec, path) == stamp
-    assert runtime_spec.validate(project, spec, path) == stamp
-    assert runtime_spec.load_issued_snapshot(project) == stamp
+        runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
 
 
 def test_project_label_preserves_exact_full_digest_for_deleted_root():

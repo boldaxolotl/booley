@@ -72,12 +72,6 @@ def test_codex_registration_installation_failure_precedes_all_writes(
         mcp_config._codex_toml_parser.cache_clear()
 
 
-def test_legacy_runtime_module_keeps_entrypoint_compatibility():
-    from booley.runtime import incontainer_register as compatibility
-
-    assert compatibility.main is entry.main
-
-
 def test_main_launches_automatic_doctor_after_server(monkeypatch, capsys):
     events: list[str] = []
     monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
