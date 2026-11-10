@@ -61,3 +61,13 @@ def test_worktree_script_ships_in_the_distribution():
     script = worktree_create_script()
     assert script.is_file()
     assert script.as_posix().endswith(resource)
+
+
+def test_packaged_docs_are_expected_resources():
+    """The image build asserts every shipped doc copy is in the installed wheel."""
+    from booley.dev_support import reference_docs
+
+    validator = _load_validator()
+    expected = {f"booley/data/docs/{Path(source).name}" for source in reference_docs.SHIPPED_DOCS}
+    assert len(expected) == 13
+    assert expected <= validator.EXPECTED_RESOURCES

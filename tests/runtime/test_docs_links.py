@@ -9,6 +9,7 @@ from pathlib import Path
 
 from tests.docs.test_links import _markdown_anchors
 
+from booley.dev_support.reference_docs import SHIPPED_DOCS
 from booley.runtime.docs_links import USER_DOCS, docs_url
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -19,7 +20,7 @@ _USER_DOC_PATH = re.compile(
 )
 # Modules whose string literals may name user docs by repo path or file name.
 _REPO_PATH_ALLOWED = {
-    # Agent-facing: Sandbox Specialists and agents read the Markdown in the repo.
+    # Agent-facing: name an unshipped doc as "<FILE> (host doc, not shipped)".
     "specialists/review_contract.py",
     "runtime/project_worktree_pairing.py",
     # The slug table itself.
@@ -38,19 +39,24 @@ def _python_sources() -> list[Path]:
     return [path for path in SOURCE_ROOT.rglob("*.py") if "data" not in path.parts]
 
 
-def _docs_url_calls(tree: ast.AST) -> list[ast.Call]:
+def _calls_to(tree: ast.AST, function: str) -> list[ast.Call]:
     return [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "docs_url"
+        and node.func.id == function
     ]
 
 
+def _docs_url_calls(tree: ast.AST) -> list[ast.Call]:
+    return _calls_to(tree, "docs_url")
+
+
 def _exempt_ids(tree: ast.AST) -> set[int]:
-    """Return ``id()`` of docstrings and ``docs_url()`` arguments in one module."""
-    ids = {id(arg) for call in _docs_url_calls(tree) for arg in call.args}
+    """Return ``id()`` of docstrings and ``docs_url()``/``sandbox_doc_path()`` arguments."""
+    calls = _docs_url_calls(tree) + _calls_to(tree, "sandbox_doc_path")
+    ids = {id(arg) for call in calls for arg in call.args}
     for node in ast.walk(tree):
         if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             body = node.body
@@ -122,3 +128,19 @@ def test_printed_messages_link_user_docs_on_the_site() -> None:
             and _USER_DOC_PATH.search(node.value)
         ]
     assert not offenders, "use booley.runtime.docs_links.docs_url():\n" + "\n".join(offenders)
+
+
+def test_sandbox_doc_path_calls_name_shipped_docs() -> None:
+    shipped = {Path(source).name for source in SHIPPED_DOCS}
+    calls = [
+        (path, call)
+        for path in _python_sources()
+        for call in _calls_to(ast.parse(path.read_text(encoding="utf-8")), "sandbox_doc_path")
+    ]
+    assert calls, "no sandbox_doc_path() calls found"
+    unshipped = [
+        f"{path.relative_to(REPO_ROOT)}:{call.lineno}"
+        for path, call in calls
+        if ast.literal_eval(call.args[0]) not in shipped
+    ]
+    assert not unshipped, f"sandbox_doc_path() must name a shipped doc: {unshipped}"
