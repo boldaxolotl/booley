@@ -114,6 +114,9 @@ class JobRecord:
     # that owner first read the final result; None for records that predate them.
     owner: str | None = None
     read_at: str | None = None
+    # Directory holding this Job's ``flow-reports/`` and ``mcp-tool-reports/`` when it is
+    # not the records root's parent (a Standalone Job's records live elsewhere).
+    report_root: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -137,7 +140,7 @@ def _validate_envelope(data: dict[str, Any]) -> None:
     schema = data.get("schema", 1)
     if require_int(schema, field="Job schema") <= 0:
         raise BoundaryError("Job schema must be positive")
-    for key in ("work_dir", "session_key"):
+    for key in ("work_dir", "session_key", "report_root"):
         if data.get(key) is not None:
             require_str(data, key)
     if data.get("binding") is not None:

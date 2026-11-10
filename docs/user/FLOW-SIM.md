@@ -282,6 +282,10 @@ A failing simulation stays failed and a passing one is reported inconclusive
 (no waveform to query); neither becomes a timeout. Dump FST instead, or raise
 `trace_convert_timeout_ms`, when conversion is too slow.
 
+A literal relative `.vcd` entry inside the run directory is converted while
+the test runs, so the waveform is ready when the run ends and no VCD is left
+on disk. Any other case is converted after the run, as described above.
+
 ### Tracing a Cocotb Target
 
 `booley flow sim --target <target> --trace` works on a Cocotb Target with no
