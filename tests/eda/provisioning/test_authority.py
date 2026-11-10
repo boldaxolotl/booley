@@ -69,7 +69,7 @@ def test_authority_lock_contention_has_controlled_error(
         lambda _lock: (_ for _ in ()).throw(BlockingIOError()),
     )
     times = iter((0.0, 11.0))
-    monkeypatch.setattr(private_store.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(private_store, "monotonic", lambda: next(times))
     monkeypatch.setattr(private_store.time, "sleep", lambda _seconds: None)
     store = authority._store()
     store.ensure_directory()

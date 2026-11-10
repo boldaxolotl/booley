@@ -14,13 +14,13 @@ import os
 import re
 import shlex
 import sys
-import time
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
+from time import monotonic
 from typing import Any, ClassVar, cast
 
 from booley.bwave.contract import decode_trace_metadata
@@ -4411,7 +4411,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return mode_error
         if self._mode.elaborates_only:
             return self._run_elab_only()
-        total_start = time.monotonic()
+        total_start = monotonic()
         resolution_started = total_start
         if prepared is None:
             resolved = self._resolve_run_targets()
@@ -4421,7 +4421,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         else:
             targets = list(prepared.selected_targets)
             test_names_map = prepared.test_names_map
-        resolution_s = time.monotonic() - resolution_started
+        resolution_s = monotonic() - resolution_started
 
         special_result = self._maybe_dispatch_special_run(
             targets, test_names_map, campaign_prepared=prepared is not None
@@ -4483,7 +4483,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     results,
                     lines,
                     passed,
-                    time.monotonic() - total_start,
+                    monotonic() - total_start,
                     resolution_s,
                 )
                 lifecycle.complete()
@@ -5607,7 +5607,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         observe_stage(target, "preparing")
         announce_unit("configure elaboration-only", target=target)
-        started = time.monotonic()
+        started = monotonic()
         handle = self._target_handle(target)
         try:
             compile_surface = resolve_target_compile_surface(handle)
@@ -5633,7 +5633,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         except SimulationBuildSlotError as exc:
             outcome = setup_failure_outcome(
                 f"Simulation build slot failed: {exc}",
-                elapsed_s=time.monotonic() - started,
+                elapsed_s=monotonic() - started,
             )
             return ElabOnlyTargetResult(target=target, outcome=outcome)
 
@@ -5656,7 +5656,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             logger.debug("sim elab-only setup failed for %s", target, exc_info=True)
             outcome = setup_failure_outcome(
                 f"setup failed: {exc}",
-                elapsed_s=time.monotonic() - started,
+                elapsed_s=monotonic() - started,
             )
             result = ElabOnlyTargetResult(target=target, outcome=outcome)
             result.log_path = self._persist_elab_only_log(target, outcome.output)
@@ -6672,9 +6672,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         output_lines: list[str],
     ) -> TargetResult:
         """Resolve target metadata, then include that work in setup timing."""
-        resolution_started = time.monotonic()
+        resolution_started = monotonic()
         tb_top = self._tb_top_for_target(target)
-        resolution_s = time.monotonic() - resolution_started
+        resolution_s = monotonic() - resolution_started
         result = self._run_target(target, tb_top, test_names_map, output_lines)
         result.elapsed_s = round(result.elapsed_s + resolution_s, 3)
         timings = result.phase_timings_s
@@ -7311,7 +7311,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _persist_target_outcome(self, result: TargetResult) -> None:
         """Durably record one terminal Target before starting the next."""
-        started = time.monotonic()
+        started = monotonic()
         # Publish an explicit recovery checkpoint before Criteria mutation.
         # A retry can safely replace it; readers never mistake it for a fully
         # committed target when interruption prevents the final publication.
@@ -7322,7 +7322,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self._record_cycle_count_criteria(result)
         if self.state._file_path is not None:
             self.state.save()
-        publication_s = round(time.monotonic() - started, 3)
+        publication_s = round(monotonic() - started, 3)
         result.phase_timings_s["publication"] = publication_s
         execution_s = result.phase_timings_s.get("execution_total", result.elapsed_s)
         result.phase_timings_s["total"] = round(execution_s + publication_s, 3)

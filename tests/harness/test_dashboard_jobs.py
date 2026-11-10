@@ -24,12 +24,18 @@ layout = goal_fixtures.layout
 
 
 def snapshot_jobs(
-    booley_dir, *, interactive_root=None, slots_root=None, proc_root=None, reader=None
+    booley_dir,
+    *,
+    interactive_root=None,
+    slots_root=None,
+    proc_root=None,
+    reader=None,
+    now=None,
 ):
     options = {} if proc_root is None else {"proc_root": proc_root}
     reader = reader or JobReader(booley_dir, slots_root=slots_root, **options)
     records = GoalStore(booley_dir).list_records().records
-    return reader.read(records, interactive_root=interactive_root)
+    return reader.read(records, interactive_root=interactive_root, now=now)
 
 
 def files(root):
@@ -309,11 +315,7 @@ def test_sandbox_capacity_is_explicit_in_resource_projection(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("stage", [None, "simulation"])
-def test_running_job_details_use_live_elapsed_reported_stage_and_declared_tool(
-    tmp_path, monkeypatch, stage
-):
-    import time
-
+def test_running_job_details_use_live_elapsed_reported_stage_and_declared_tool(tmp_path, stage):
     from booley.flows.progress_lifecycle import progress_document
     from booley.runtime.pid import capture_process_identity
     from tests.mcp_tools.test_session_registry import _fake_process
@@ -351,16 +353,16 @@ def test_running_job_details_use_live_elapsed_reported_stage_and_declared_tool(
     )
     progress.write_text(json.dumps(document))
     before = files(tmp_path)
-    monkeypatch.setattr(time, "time", lambda: 1791453605)
-    view = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc).jobs[0]
-    text = job_detail(view)
+    now = 1791453605
+    view = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc, now=now).jobs[0]
+    text = job_detail(view, now=now)
     assert "elapsed 5s" in text
     assert f"Stage: {stage}" in text if stage else "Stage:" not in text
     assert "EDA tool: icarus" in text
     assert files(tmp_path) == before
     (work / "fixture.core").unlink()
-    missing = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc).jobs[0]
-    assert "EDA tool:" not in job_detail(missing)
+    missing = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc, now=now).jobs[0]
+    assert "EDA tool:" not in job_detail(missing, now=now)
 
 
 def test_dashboard_artifacts_are_indexed_once_and_reparsed_only_when_changed(

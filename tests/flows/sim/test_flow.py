@@ -96,7 +96,7 @@ def test_target_metadata_resolution_is_counted_as_setup(tmp_path: Path) -> None:
     with (
         patch.object(flow, "_tb_top_for_target", return_value="alu_tb"),
         patch.object(flow, "_run_target", return_value=target_result),
-        patch("booley.flows.sim.flow.time.monotonic", side_effect=[10.0, 10.25]),
+        patch("booley.flows.sim.flow.monotonic", side_effect=[10.0, 10.25]),
     ):
         result = flow._run_resolved_target("lite", {}, [])
 

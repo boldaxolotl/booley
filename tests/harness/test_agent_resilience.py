@@ -209,7 +209,7 @@ class TestHandleRateLimitEvent:
 
         with (
             patch("booley.runtime._claude_backend.anyio") as mock_anyio,
-            patch("booley.runtime._claude_backend.time.time", return_value=1000),
+            patch("booley.runtime._claude_backend.wall_clock", return_value=1000),
         ):
             mock_anyio.sleep = AsyncMock()
 
@@ -256,7 +256,7 @@ class TestHandleRateLimitEvent:
         # Should not raise
         with (
             patch("booley.runtime._claude_backend.anyio") as mock_anyio,
-            patch("booley.runtime._claude_backend.time.time", return_value=1000),
+            patch("booley.runtime._claude_backend.wall_clock", return_value=1000),
         ):
             mock_anyio.sleep = AsyncMock()
             await _handle_rate_limit_event(event)
