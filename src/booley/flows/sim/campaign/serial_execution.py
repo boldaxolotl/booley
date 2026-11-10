@@ -28,6 +28,7 @@ from booley.flows.artifact_durability import (
 )
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.sim.backends.cocotb_results import decode_results_payload, reconcile
+from booley.flows.sim.build import BuildOutcome
 from booley.flows.sim.build_session import project_compile_surface
 from booley.flows.sim.campaign.bundle import (
     SnapshotAttemptIdentity,
@@ -187,7 +188,7 @@ class _OrdinaryGroup(Protocol):
     artifact_paths: tuple[Path, ...]
 
     def planning_disclosure(self) -> dict[str, object]: ...
-    def compile(self) -> object: ...
+    def compile(self) -> BuildOutcome: ...
     def finish_build_failure(self) -> SimulationTargetOutcome: ...
     def build_recovery_document(self) -> dict[str, object]: ...
     def bind_authenticated_bundle(self, evidence: Mapping[str, object]) -> None: ...
@@ -404,7 +405,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         workload: Mapping[str, object],
     ) -> _CapturedBuild | None:
         """Compile *group* and capture its evidence; ``None`` when the compile failed."""
-        if not group.compile().passed:  # type: ignore[attr-defined]
+        if not group.compile().passed:
             return None
         build_execution = group.build_recovery_document()
         execution_ref = _capture_build_execution(
@@ -980,6 +981,7 @@ def _setup_result(
 def runtime_input_documents(
     request: WorkExecutionRequest, bindings: tuple[RuntimeInputBinding, ...]
 ) -> list[dict[str, object]]:
+    """Describe the runtime inputs bound to *request*'s work item as record documents."""
     return [
         binding.result_document(
             reference_path=binding.authoritative_copy.relative_to(
@@ -1269,6 +1271,7 @@ def blocked_result(
     infrastructure: bool = False,
     evidence: list[dict[str, object]] | None = None,
 ) -> SimulationResult:
+    """Build the terminal result for a work item blocked before it ran."""
     observations = (
         _infrastructure_observations(request, outcome, build_failure=True)
         if infrastructure
@@ -1444,6 +1447,7 @@ def create_snapshot(
     bundle: SimulatorBundle,
     snapshot_root: Path,
 ) -> ExecutableSnapshot:
+    """Snapshot the built bundle for one simulation attempt."""
     fingerprints = cast(Mapping[str, str], request.manifest.document["fingerprints"])
     return create_executable_snapshot(
         bundle=bundle,
@@ -1486,6 +1490,7 @@ def simulation_result(
     runtime_inputs: list[dict[str, object]] | None = None,
     diagnostics: tuple[str, ...] = (),
 ) -> SimulationResult:
+    """Build the terminal simulation result for a completed run."""
     observations = _named_observations(request.work_item, observations)
     document = {
         "$schema": RESULT_SCHEMA,
@@ -1547,6 +1552,7 @@ def outcome_diagnostics_safe(
 def observation_document(
     test: SimulationTestOutcome, *, execution: str | None = None, reason_limit: int = 768
 ) -> dict[str, object]:
+    """Render one test outcome as an observation record document."""
     observed_execution = execution or (
         "aborted"
         if test.failure_kind == "infrastructure"
@@ -1773,6 +1779,7 @@ def capture_private_image(
     destination: Path,
     runtime_declarations: tuple[Mapping[str, str], ...],
 ) -> list[dict[str, object]]:
+    """Copy the build artifacts into *destination* and return their evidence records."""
     if not paths:
         raise SimulationCampaignIntegrityError("successful build has no authenticated image")
     destination.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -1940,6 +1947,7 @@ def _build_result_ref(
 def record_reference(
     path: Path, root: Path, raw: bytes, kind: str, owner: str
 ) -> dict[str, object]:
+    """Reference the record at *path* by digest, size and owner."""
     return {
         "path": path.relative_to(root).as_posix(),
         "bytes": len(raw),

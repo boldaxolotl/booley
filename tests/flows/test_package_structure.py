@@ -83,17 +83,17 @@ def _imported_modules(source_file: Path) -> set[str]:
 def test_native_coverage_execution_imports_no_private_serial_executor_names() -> None:
     source_file = FLOWS_ROOT / "sim" / "campaign" / "coverage_execution.py"
     tree = ast.parse(source_file.read_text(encoding="utf-8"), filename=str(source_file))
-    private_names: set[str] = set()
+    imported_names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and (node.module or "").endswith("serial_execution"):
-            private_names.update(alias.name for alias in node.names)
+            imported_names.update(alias.name for alias in node.names)
         elif (
             isinstance(node, ast.Attribute)
             and isinstance(node.value, ast.Name)
             and node.value.id == "serial_execution"
         ):
-            private_names.add(node.attr)
-    assert not {name for name in private_names if name.startswith("_")}
+            imported_names.add(node.attr)
+    assert not {name for name in imported_names if name.startswith("_")}
 
 
 def test_flow_packages_do_not_import_one_another() -> None:

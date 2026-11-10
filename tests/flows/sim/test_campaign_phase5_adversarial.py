@@ -547,6 +547,7 @@ def _assert_native_build_scope(store: CampaignStore) -> None:
     assert result["bundle"]["sharing"] == "private_work_item"
     assert attempt["owner"] == bundle["owner"]
     assert attempt["owner"]["simulation_attempt_id"] == simulation_attempt_id
+    assert attempt["owner"]["work_item_id"]
     assert attempt["build_attempt_id"] == simulation_attempt_id
     assert attempt["build_attempt_ordinal"] == 1
     assert result["build_attempt"]["build_attempt_id"] == simulation_attempt_id
