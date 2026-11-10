@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from tests.booley_checkouts_support import commit_all, init_repo, isolate_git
-from tests.source_checkout_support import copy_source_checkout
 
 
 def _files_under(root: Path) -> set[str]:
@@ -18,6 +17,8 @@ def _files_under(root: Path) -> set[str]:
 def test_copy_takes_git_listed_working_tree_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from tests.source_checkout_support import copy_source_checkout
+
     isolate_git(tmp_path, monkeypatch)
     source = tmp_path / "source"
     init_repo(source)
@@ -47,6 +48,8 @@ def test_copy_takes_git_listed_working_tree_files(
 def test_listing_fails_naming_a_root_that_is_not_a_git_checkout_top(
     case: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from tests.source_checkout_support import copy_source_checkout
+
     isolate_git(tmp_path, monkeypatch)
     if case == "nested":
         enclosing = tmp_path / "enclosing"
