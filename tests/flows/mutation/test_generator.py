@@ -471,7 +471,8 @@ def test_parse_failure_names_file_and_diagnostic(tmp_path: Path) -> None:
     with pytest.raises(_error("SourceParseError")) as raised:
         generate_mutants(tmp_path, names, _ALL, 1)
 
-    assert [name for name, _ in raised.value.failures] == ["syntax_error.sv"]
+    failures: list[tuple[str, str]] = list(raised.value.failures)  # type: ignore[attr-defined]
+    assert [name for name, _ in failures] == ["syntax_error.sv"]
     assert "syntax_error.sv:2:18: error: expected expression" in str(raised.value)
     assert str(tmp_path) not in str(raised.value)
 
