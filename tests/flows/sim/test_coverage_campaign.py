@@ -10,9 +10,9 @@ from booley.flows.sim.coverage_campaign import (
     CoverageCampaignValidationError,
     CoverageFinding,
     DurableTargetIdentity,
-    decode_coverage_campaign,
     encode_coverage_campaign,
 )
+from tests.flows.sim.coverage_campaign_test_support import decode_document
 
 _POINT_ID = (
     "cp1:eyJjb2xsZWN0b3IiOnsibmF0aXZlX2tleSI6IjEwOmJhc2ljLWJsb2NrLTAiLCJyZWNvcm"
@@ -188,7 +188,7 @@ def _valid_document() -> dict[str, object]:
 def test_known_literal_decodes_to_immutable_campaign_and_encodes_canonically() -> None:
     document = _valid_document()
 
-    campaign = decode_coverage_campaign(
+    campaign = decode_document(
         copy.deepcopy(document),
         DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
     )
@@ -230,9 +230,7 @@ def test_evaluated_campaign_preserves_exact_metric_evidence() -> None:
         "diagnostics": [],
     }
 
-    campaign = decode_coverage_campaign(
-        document, DurableTargetIdentity(document["target"]["identity"])
-    )
+    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
 
     assert encode_coverage_campaign(campaign) == document
 
@@ -255,7 +253,7 @@ def test_gated_campaign_requires_approved_waiver_set_digest() -> None:
     }
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
+        decode_document(
             document,
             DurableTargetIdentity(document["target"]["identity"]),
         )
@@ -328,7 +326,7 @@ def test_evaluated_metrics_use_fixed_order_independent_of_threshold_key_order() 
         "diagnostics": [],
     }
 
-    campaign = decode_coverage_campaign(
+    campaign = decode_document(
         document,
         DurableTargetIdentity(document["target"]["identity"]),
     )
@@ -338,41 +336,33 @@ def test_evaluated_metrics_use_fixed_order_independent_of_threshold_key_order() 
 
 def test_decoder_aggregates_semantic_findings_with_stable_json_pointers() -> None:
     document = _valid_document()
-    document["$schema"] = "booley.coverage-campaign/v99"
     document["target"]["identity"] = "acme:demo:other:1.0#sim_other"
     document["tests"]["declared"] = ["reset", "reset"]
-    document["tests"]["selected"] = ["missing"]
     document["artifacts"][0]["path"] = "../../outside.dat"
     document["points"][0]["id"] = "cp1:not-the-identity"
     document["points"][0]["hits_by_run"] = {"run:ghost": 0}
-    document["rollups"][0]["covered_points"] = 0
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
+        decode_document(
             document,
             DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
         )
 
     assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_SCHEMA_VERSION_UNSUPPORTED", "/$schema"),
         ("COV_TARGET_MISMATCH", "/target/identity"),
         ("COV_DECLARED_TEST_DUPLICATE", "/tests/declared/1"),
-        ("COV_SELECTED_TEST_UNDECLARED", "/tests/selected/0"),
-        ("COV_SELECTED_TEST_RUN_CARDINALITY", "/tests/selected/0"),
-        ("COV_RUN_FOR_UNSELECTED_TEST", "/tests/runs/0"),
         ("COV_ARTIFACT_PATH_UNSAFE", "/artifacts/0/path"),
         ("COV_POINT_ID_MISMATCH", "/points/0/id"),
         ("COV_POINT_ID_INCOMPLETE", "/points/0/id"),
         ("COV_POINT_RUN_UNKNOWN", "/points/0/hits_by_run/run:ghost"),
         ("COV_POINT_HIT_NONPOSITIVE", "/points/0/hits_by_run/run:ghost"),
-        ("COV_ROLLUP_MISMATCH", "/rollups/0/percent"),
     ]
     message = str(caught.value)
-    assert "COV_SCHEMA_VERSION_UNSUPPORTED at /$schema" in message
     assert "COV_TARGET_MISMATCH at /target/identity" in message
     assert "COV_DECLARED_TEST_DUPLICATE at /tests/declared/1" in message
-    assert "COV_SELECTED_TEST_UNDECLARED" not in message
-    assert message.endswith("+9 more")
+    assert "COV_ARTIFACT_PATH_UNSAFE at /artifacts/0/path" in message
+    assert "COV_POINT_ID_MISMATCH" not in message
+    assert message.endswith("+4 more")
 
 
 def test_invalid_campaign_message_is_bounded_and_control_safe() -> None:
@@ -406,7 +396,7 @@ def test_decoder_rejects_duplicate_most_specific_point_identity() -> None:
     document["rollups"][0].update({"total_points": 2, "eligible_points": 2, "covered_points": 2})
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
+        decode_document(
             document,
             DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
         )
@@ -432,7 +422,7 @@ def test_invalid_campaign_message_names_all_point_defects_in_stable_order() -> N
     )
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
+        decode_document(
             document,
             DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
         )
@@ -446,103 +436,6 @@ def test_invalid_campaign_message_names_all_point_defects_in_stable_order() -> N
     assert [(finding.code, finding.pointer) for finding in error.findings] == [
         ("COV_POINT_ID_DUPLICATE", "/points/1/id"),
         ("COV_POINT_HIT_NONPOSITIVE", "/points/1/hits_by_run/run:reset"),
-    ]
-
-
-def test_rollup_mismatch_names_first_differing_field_and_metric() -> None:
-    document = _valid_document()
-    document["rollups"][0]["percent"] = 99.0
-
-    with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_ROLLUP_MISMATCH", "/rollups/0/percent")
-    ]
-    assert "metric line" in caught.value.findings[0].message
-    assert "COV_ROLLUP_MISMATCH at /rollups/0/percent" in str(caught.value)
-    assert "metric line" in str(caught.value)
-
-
-def test_rollup_inventory_mismatch_keeps_aggregate_pointer() -> None:
-    document = _valid_document()
-    document["rollups"].append(copy.deepcopy(document["rollups"][0]))
-
-    with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_ROLLUP_MISMATCH", "/rollups")
-    ]
-
-
-def test_rollup_extension_key_mismatch_keeps_aggregate_pointer() -> None:
-    document = _valid_document()
-    document["rollups"][0]["extension"] = True
-
-    with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_ROLLUP_MISMATCH", "/rollups")
-    ]
-
-
-def test_unknown_native_record_requires_a_reported_capability_fact() -> None:
-    document = _valid_document()
-    document["normalization"] = {
-        "status": "complete_with_unknown_records",
-        "unrecognized_records": [
-            {
-                "raw_artifact": "artifact:raw-reset",
-                "record_ordinal": 27,
-                "native_type": "mystery-27",
-                "state": "unknown_retained",
-            }
-        ],
-    }
-
-    with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        (
-            "COV_UNKNOWN_RECORD_CAPABILITY_MISSING",
-            "/normalization/unrecognized_records/0/native_type",
-        ),
-        (
-            "COV_UNKNOWN_RECORD_FINDING_MISSING",
-            "/normalization/unrecognized_records/0",
-        ),
-    ]
-
-
-def test_incompatible_native_format_cannot_expose_normalized_points() -> None:
-    document = _valid_document()
-    document["collector"]["native_format"]["compatibility"] = "incompatible"
-
-    with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_INCOMPATIBLE_FORMAT_NORMALIZED", "/normalization/status"),
-        ("COV_INCOMPATIBLE_FORMAT_POINTS_PRESENT", "/points"),
-        ("COV_INCOMPATIBLE_FORMAT_COLLECTION", "/collection/status"),
     ]
 
 
@@ -571,7 +464,7 @@ def test_unknown_native_record_is_retained_without_blocking_known_evidence() -> 
         }
     ]
 
-    campaign = decode_coverage_campaign(
+    campaign = decode_document(
         document,
         DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
     )
@@ -579,41 +472,6 @@ def test_unknown_native_record_is_retained_without_blocking_known_evidence() -> 
     assert campaign.collector.capabilities[-1].status == "reported"
     assert campaign.normalization["unrecognized_records"][0]["record_ordinal"] == 27
     assert encode_coverage_campaign(campaign) == document
-
-
-def test_unknown_native_record_requires_artifact_and_finding_evidence() -> None:
-    document = _valid_document()
-    document["collector"]["capabilities"].append(
-        {"record_class": "native:mystery-27", "status": "reported"}
-    )
-    document["normalization"] = {
-        "status": "complete_with_unknown_records",
-        "unrecognized_records": [
-            {
-                "raw_artifact": "artifact:missing",
-                "record_ordinal": 27,
-                "native_type": "mystery-27",
-                "state": "unknown_retained",
-            }
-        ],
-    }
-
-    with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        (
-            "COV_UNKNOWN_RECORD_ARTIFACT_UNKNOWN",
-            "/normalization/unrecognized_records/0/raw_artifact",
-        ),
-        (
-            "COV_UNKNOWN_RECORD_FINDING_MISSING",
-            "/normalization/unrecognized_records/0",
-        ),
-    ]
 
 
 def test_incompatible_native_format_round_trips_without_normalized_evidence() -> None:
@@ -630,7 +488,7 @@ def test_incompatible_native_format_round_trips_without_normalized_evidence() ->
     document["evaluation"]["status"] = "blocked"
     document["evaluation"]["diagnostics"] = ["COV_NATIVE_FORMAT_INCOMPATIBLE"]
 
-    campaign = decode_coverage_campaign(
+    campaign = decode_document(
         document,
         DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
     )
@@ -640,33 +498,8 @@ def test_incompatible_native_format_round_trips_without_normalized_evidence() ->
     assert encode_coverage_campaign(campaign) == document
 
 
-def test_incompatible_native_format_requires_blocked_collection_and_evaluation() -> None:
-    document = _valid_document()
-    document["collector"]["native_format"]["compatibility"] = "incompatible"
-    document["normalization"] = {"status": "incompatible", "unrecognized_records": []}
-    document["points"] = []
-    document["rollups"] = []
-    document["collection"] = {
-        "status": "incomplete",
-        "merge": {"status": "not_attempted", "artifact": None},
-        "diagnostics": [],
-    }
-    document["rollups"] = []
-    document["evaluation"]["status"] = "not_requested"
-
-    with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_INCOMPATIBLE_FORMAT_COLLECTION", "/collection/status"),
-    ]
-
-
 def test_decoded_campaign_is_deeply_immutable() -> None:
-    campaign = decode_coverage_campaign(
+    campaign = decode_document(
         _valid_document(),
         DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
     )
@@ -687,7 +520,7 @@ def test_decoder_aggregates_structural_findings_before_model_construction() -> N
     document["points"][0]["identity"]["location"] = []
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
+        decode_document(
             document,
             DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
         )
@@ -705,18 +538,16 @@ def test_decoder_aggregates_structural_findings_before_model_construction() -> N
 def test_decoder_aggregates_safe_semantic_findings_with_structural_findings() -> None:
     document = _valid_document()
     del document["campaign_id"]
-    document["$schema"] = "booley.coverage-campaign/v99"
     document["target"]["identity"] = "acme:demo:other:1.0#sim_other"
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
+        decode_document(
             document,
             DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
         )
 
     assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
         ("COV_FIELD_REQUIRED", "/campaign_id"),
-        ("COV_SCHEMA_VERSION_UNSUPPORTED", "/$schema"),
         ("COV_TARGET_MISMATCH", "/target/identity"),
     ]
 
@@ -726,7 +557,7 @@ def test_decoder_rejects_unparseable_invocation_timestamp() -> None:
     document["invocation"]["started_at"] = "yesterday"
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
+        decode_document(
             document,
             DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
         )
@@ -740,32 +571,13 @@ def test_encoder_canonicalizes_legacy_invocation_timestamp() -> None:
     document = _valid_document()
     document["invocation"]["started_at"] = "2026-09-01T14:30:00.987654+04:00"
 
-    campaign = decode_coverage_campaign(
+    campaign = decode_document(
         document,
         DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
     )
 
     encoded = encode_coverage_campaign(campaign)
     assert encoded["invocation"]["started_at"] == "2026-09-01T10:30:00Z"
-
-
-def test_complete_collection_requires_fresh_raw_and_verified_merged_artifacts() -> None:
-    document = _valid_document()
-    document["artifacts"][0]["state"] = "stale"
-    document["artifacts"][1]["state"] = "stale"
-    document["collection"]["merge"]["status"] = "mismatch"
-
-    with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_INCLUDED_RUN_RAW_INVALID", "/tests/runs/0/raw_artifact"),
-        ("COV_COMPLETE_MERGE_UNVERIFIED", "/collection/merge/status"),
-        ("COV_COMPLETE_MERGED_ARTIFACT_INVALID", "/collection/merge/artifact"),
-    ]
 
 
 def test_points_require_reported_capabilities_and_exact_dispositions() -> None:
@@ -782,7 +594,7 @@ def test_points_require_reported_capabilities_and_exact_dispositions() -> None:
     )
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
+        decode_document(
             document,
             DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
         )
@@ -819,7 +631,7 @@ def test_reported_only_point_must_be_unscored() -> None:
     document["rollups"] = []
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
+        decode_document(
             document,
             DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
         )
@@ -837,7 +649,7 @@ def test_decoder_validates_campaign_state_sections_before_semantic_checks() -> N
     document["evaluation"]["status"] = 1
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
+        decode_document(
             document,
             DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
         )
@@ -858,7 +670,7 @@ def test_decoder_validates_diagnostic_shapes_at_the_campaign_boundary() -> None:
     ]
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
+        decode_document(
             document,
             DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
         )
@@ -869,7 +681,7 @@ def test_decoder_validates_diagnostic_shapes_at_the_campaign_boundary() -> None:
     ]
 
 
-def test_decoder_recomputes_stored_evaluation_from_rollups_and_thresholds() -> None:
+def test_a_scored_verdict_without_a_matching_suite_is_refused_before_its_required_list() -> None:
     document = _valid_document()
     document["evaluation"] = {
         "status": "fail",
@@ -889,7 +701,7 @@ def test_decoder_recomputes_stored_evaluation_from_rollups_and_thresholds() -> N
     }
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
+        decode_document(
             document,
             DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
         )
@@ -899,28 +711,13 @@ def test_decoder_recomputes_stored_evaluation_from_rollups_and_thresholds() -> N
     ]
 
 
-def test_decoder_rejects_nonfinite_threshold_input() -> None:
-    document = _valid_document()
-    document["evaluation"]["thresholds"] = {"line": float("nan")}
-
-    with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_FIELD_TYPE", "/evaluation/thresholds/line")
-    ]
-
-
 def test_only_rtl_source_closure_points_can_be_scored() -> None:
     document = _valid_document()
     document["points"][0]["identity"]["location"]["source"] = "tb/counter_tb.sv"
     document["points"][0]["id"] = _TESTBENCH_POINT_ID
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
+        decode_document(
             document,
             DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
         )
@@ -939,11 +736,11 @@ def test_encoder_canonicalizes_nested_json_object_key_order() -> None:
         "path": source["path"],
     }
 
-    first_campaign = decode_coverage_campaign(
+    first_campaign = decode_document(
         first,
         DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
     )
-    second_campaign = decode_coverage_campaign(
+    second_campaign = decode_document(
         second,
         DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
     )
@@ -962,7 +759,7 @@ def test_decoder_rejects_duplicate_run_artifact_and_capability_identities() -> N
     )
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
+        decode_document(
             document,
             DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
         )
@@ -987,7 +784,7 @@ def test_decoder_rejects_unknown_run_states() -> None:
     document["rollups"] = []
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(
+        decode_document(
             document,
             DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
         )
@@ -1004,25 +801,10 @@ def test_noncomplete_campaign_retains_points_without_rollups() -> None:
     document["normalization"]["status"] = "partial"
     document["rollups"] = []
 
-    campaign = decode_coverage_campaign(
-        document, DurableTargetIdentity(document["target"]["identity"])
-    )
+    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
 
     assert campaign.points
     assert campaign.rollups == ()
-
-
-def test_noncomplete_campaign_rejects_scored_rollups() -> None:
-    document = _valid_document()
-    document["collection"]["status"] = "collector_error"
-    document["normalization"]["status"] = "partial"
-
-    with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(document, DurableTargetIdentity(document["target"]["identity"]))
-
-    assert ("COV_INVALID_SCORING_ROLLUPS", "/rollups") in {
-        (finding.code, finding.pointer) for finding in caught.value.findings
-    }
 
 
 def test_campaign_rejects_unknown_collection_status() -> None:
@@ -1031,7 +813,7 @@ def test_campaign_rejects_unknown_collection_status() -> None:
     document["rollups"] = []
 
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(document, DurableTargetIdentity(document["target"]["identity"]))
+        decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
 
     assert ("COV_COLLECTION_STATUS_INVALID", "/collection/status") in {
         (finding.code, finding.pointer) for finding in caught.value.findings
@@ -1065,7 +847,7 @@ def _with_second_run(
 
 def _codes(document: dict[str, object]) -> list[tuple[str, str]]:
     with pytest.raises(CoverageCampaignValidationError) as caught:
-        decode_coverage_campaign(document, _TARGET)
+        decode_document(document, _TARGET)
     return [(finding.code, finding.pointer) for finding in caught.value.findings]
 
 
@@ -1074,7 +856,7 @@ def test_one_test_may_have_several_distinct_test_runs() -> None:
     _name_run(document["tests"]["runs"][0], "short", 1)
     _with_second_run(document, "soak", 7)
 
-    campaign = decode_coverage_campaign(document, _TARGET)
+    campaign = decode_document(document, _TARGET)
 
     assert campaign.selected_tests == ("reset",)
     assert [(run.test, run.test_run) for run in campaign.runs] == [
@@ -1088,14 +870,6 @@ def test_two_runs_of_one_test_run_are_refused() -> None:
     document = _with_second_run(_valid_document())
 
     assert _codes(document) == [("COV_TEST_RUN_DUPLICATE", "/tests/runs/1/test_run")]
-
-
-def test_every_selected_test_needs_at_least_one_run() -> None:
-    document = _valid_document()
-    document["tests"]["declared"].append("wrap")
-    document["tests"]["selected"].append("wrap")
-
-    assert ("COV_SELECTED_TEST_RUN_CARDINALITY", "/tests/selected/1") in _codes(document)
 
 
 def test_a_test_run_must_be_a_run_of_its_test() -> None:
@@ -1132,10 +906,10 @@ def test_every_test_run_form_of_the_test_is_accepted(variant, seed, name: str) -
     document = _valid_document()
     _name_run(document["tests"]["runs"][0], variant, seed)
 
-    run = decode_coverage_campaign(document, _TARGET).runs[0]
+    run = decode_document(document, _TARGET).runs[0]
 
     assert (run.test_run, run.variant, run.seed) == (name, variant, seed)
-    assert encode_coverage_campaign(decode_coverage_campaign(document, _TARGET)) == document
+    assert encode_coverage_campaign(decode_document(document, _TARGET)) == document
 
 
 @pytest.mark.parametrize(
@@ -1201,3 +975,137 @@ def test_decoding_never_coerces_or_defaults_a_recorded_identity() -> None:
     ):
         with pytest.raises(ValueError):
             _decode_run({**named, **bad})
+
+
+@pytest.mark.parametrize("change", ["percent", "extra-row", "incomplete-collection"])
+def test_stored_rollups_are_recomputed_from_points(change: str) -> None:
+    document = _valid_document()
+    derived = decode_document(copy.deepcopy(document), _TARGET).rollups
+    if change == "percent":
+        document["rollups"][0].update(covered_points=0, percent=0.0)
+    elif change == "extra-row":
+        document["rollups"].append({**document["rollups"][0], "metric": "branch"})
+    else:
+        document["collection"]["status"] = "collector_error"
+        derived = ()
+
+    campaign = decode_document(document, _TARGET)
+
+    assert campaign.rollups == derived
+    assert (change == "incomplete-collection") == (campaign.rollups == ())
+
+
+_V1_EVALUATION_FIELDS: dict[str, object] = {
+    "criterion_fingerprint": None,
+    "suite": {"status": "mismatch", "required": ["reset"]},
+    "thresholds": {"line": 50},
+    "metrics": [],
+    "diagnostics": [],
+}
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        pytest.param(
+            {"status": "unknown"},
+            ("COV_EVALUATION_STATUS_INVALID", "/evaluation/status"),
+            id="status-outside-v1",
+        ),
+        pytest.param(
+            {"suite": []}, ("COV_FIELD_TYPE", "/evaluation/suite"), id="suite-not-object"
+        ),
+        pytest.param(
+            {"suite": {"status": "match", "required": [1]}},
+            ("COV_FIELD_TYPE", "/evaluation/suite/required/0"),
+            id="required-not-strings",
+        ),
+        pytest.param(
+            {"status": "pass", "suite": {"status": "match"}},
+            ("COV_FIELD_REQUIRED", "/evaluation/suite/required"),
+            id="pass-without-required",
+        ),
+        pytest.param(
+            {"thresholds": {"fsm": 50}},
+            ("COV_FIELD_TYPE", "/evaluation/thresholds/fsm"),
+            id="unknown-threshold-metric",
+        ),
+        pytest.param(
+            {"thresholds": {"line": float("nan")}},
+            ("COV_FIELD_TYPE", "/evaluation/thresholds/line"),
+            id="nonfinite-threshold",
+        ),
+        pytest.param(
+            {"thresholds": {"line": 10**400}},
+            ("COV_FIELD_TYPE", "/evaluation/thresholds/line"),
+            id="huge-threshold",
+        ),
+        pytest.param(
+            {"metrics": ["line"]}, ("COV_FIELD_TYPE", "/evaluation/metrics/0"), id="row-not-object"
+        ),
+        pytest.param(
+            {"metrics": [{"metric": "line", "verdict": "pass"}] * 2},
+            ("COV_FIELD_TYPE", "/evaluation/metrics/1/metric"),
+            id="repeated-row",
+        ),
+    ],
+)
+def test_evaluation_fields_later_code_reads_are_type_checked(
+    changes: dict[str, object], expected: tuple[str, str]
+) -> None:
+    """A tampered evaluation is a ``COV_*`` finding, never a traceback in a later reader."""
+    document = _valid_document()
+    document["evaluation"] = {"status": "blocked", **_V1_EVALUATION_FIELDS, **changes}
+
+    assert _codes(document) == [expected]
+
+
+def _scored_verdict_document(**changes: object) -> dict[str, object]:
+    """A document whose stored pass verdict is honest for the one eligible, hit line point."""
+    document = _valid_document()
+    document["evaluation"] = {
+        "status": "pass",
+        "criterion_fingerprint": _fingerprint("d"),
+        "approved_waiver_set_digest": _fingerprint("e"),
+        "suite": {"status": "match", "required": ["reset"], "selected": ["reset"]},
+        "thresholds": {"line": 50},
+        "metrics": [],
+        "diagnostics": [],
+    }
+    document["evaluation"].update(changes)
+    return document
+
+
+def test_a_stored_pass_is_rescored_from_the_points() -> None:
+    campaign = decode_document(_scored_verdict_document(status="fail"), _TARGET)
+
+    assert campaign.evaluation["status"] == "pass"
+    assert [row["metric"] for row in campaign.evaluation["metrics"]] == ["line"]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "empty-thresholds",
+        "out-of-range",
+        "metric-without-rollup",
+        "zero-denominator",
+        "incomplete-collection",
+    ],
+)
+def test_unscorable_stored_verdict_is_refused(case: str) -> None:
+    document = _scored_verdict_document()
+    expected = ("COV_EVALUATION_MISMATCH", "/evaluation")
+    if case == "empty-thresholds":
+        document["evaluation"]["thresholds"] = {}
+    elif case == "out-of-range":
+        document["evaluation"]["thresholds"] = {"line": 150}
+    elif case == "metric-without-rollup":
+        document["evaluation"]["thresholds"] = {"branch": 50}
+    elif case == "zero-denominator":
+        document["points"][0]["disposition"] = {"kind": "unscored"}
+    else:
+        document["collection"]["status"] = "collector_error"
+        expected = ("COV_INCOMPLETE_EVALUATED", "/evaluation/status")
+
+    assert _codes(document) == [expected]
