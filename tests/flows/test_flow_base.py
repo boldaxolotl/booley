@@ -449,6 +449,8 @@ class TestTimeoutKillsTheWholeTree:
 
         The drain bound is patched to 1 s to keep the idle runtime short; a
         change to the constant's value is not covered, only the call-site bound.
+        The final liveness assertion assumes the kill is group-scoped; a kill
+        that reaches other sessions would need a different escape model.
         """
         pid_file = tmp_path / "grandchild.pid"
         tree_wait_s = 15
@@ -466,10 +468,15 @@ class TestTimeoutKillsTheWholeTree:
                 grandchild = int(pid_file.read_text(encoding="utf-8"))
                 seen["alive"] = self._alive(grandchild)
                 assert proc.stdout is not None
-                seen["holds_stdout"] = (
-                    Path(f"/proc/{grandchild}/fd/1").readlink()
-                    == Path(f"/proc/self/fd/{proc.stdout.fileno()}").readlink()
-                )
+                try:
+                    # A vanished grandchild must not abort before the real
+                    # communicate runs, or the hung child would leak.
+                    seen["holds_stdout"] = (
+                        Path(f"/proc/{grandchild}/fd/1").readlink()
+                        == Path(f"/proc/self/fd/{proc.stdout.fileno()}").readlink()
+                    )
+                except OSError:
+                    seen["holds_stdout"] = False
             seen["clock_start"] = time.monotonic()
             return real_communicate(cmd, proc, scope, started, timeout)
 
@@ -481,6 +488,8 @@ class TestTimeoutKillsTheWholeTree:
                 patch.object(flow_base, "_FLOW_KILL_DRAIN_TIMEOUT_S", 1),
             ):
                 result = flow._execute(flow._build_command())
+            if "clock_start" not in seen:
+                pytest.fail("the communicate seam was never reached — the flow ran another path")
             elapsed = time.monotonic() - seen["clock_start"]
 
             if not seen["tree_up"]:
@@ -491,9 +500,8 @@ class TestTimeoutKillsTheWholeTree:
                 pytest.fail(
                     f"process tree never came up within {tree_wait_s} s — the hang was not exercised"
                 )
-            assert seen["alive"] and seen["holds_stdout"], (
-                "grandchild was not alive and holding the child's stdout when the clock started"
-            )
+            assert seen["alive"], "grandchild was not alive when the clock started"
+            assert seen["holds_stdout"], "grandchild did not hold the child's stdout"
             assert result.timed_out is True, result.stderr
             # 2s budget + kill grace + 1s patched drain; a drain that blocks
             # behind the grandchild lasts until its 40s sleep ends.
