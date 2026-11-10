@@ -5,7 +5,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol, cast
 
-from booley.flows.execution_persistence import AcceptanceRecordingError
 from booley.runtime.timefmt import utc_now_rfc3339
 
 from .campaign_reports import target_report_directory, write_campaign_json
@@ -150,7 +149,7 @@ def run_coverage_target(
     embedded_root: Path | None = None,
     publication_checkpoint: Callable[[str], None] | None = None,
 ) -> CoverageTargetOutcome:
-    """Publish Campaign, Simulation, acceptance and state, then checkpoint progress."""
+    """Publish Campaign and Simulation, then checkpoint progress."""
     assert plan.invocation_dir is not None and plan.collection_request is not None
     root = embedded_root or target_report_directory(plan.invocation_dir, plan.handle.selector)
     outcome = _execute_coverage_transaction(
@@ -194,7 +193,7 @@ def _execute_coverage_transaction(
             publication_checkpoint=publication_checkpoint,
             campaign_published=record_campaign_publication,
         )
-    except (OSError, ValueError, AcceptanceRecordingError) as exc:
+    except (OSError, ValueError) as exc:
         return _transaction_error(
             plan, root, result, exc, campaign, campaign_published=campaign_published
         )
@@ -262,8 +261,6 @@ def _publish(
         freeze_coverage_mapping(detail),
         abort_remaining=result.infrastructure_error,
     )
-    if plan.acceptance is not None and not embedded:
-        plan.acceptance.publish(plan, campaign, campaign_path)
     return outcome
 
 

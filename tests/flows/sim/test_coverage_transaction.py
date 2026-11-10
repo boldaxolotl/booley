@@ -569,57 +569,6 @@ def test_no_waivers_diagnostic_criterion_skips_invalid_waivers(tmp_path):
     )
 
 
-def test_ticket_publishes_campaign_before_independent_acceptance_evidence(tmp_path):
-    from fractions import Fraction
-
-    from booley.criteria.state import CriterionEntry, DevelopmentState
-    from booley.flows.sim.coverage_acceptance import CoverageAcceptance
-    from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
-    from tests.criteria.ledger_support import FixtureRecorder
-
-    context = project(tmp_path)
-    state = DevelopmentState.load(tmp_path / "state.json")
-    state.strict_criteria = True
-    state.criteria = {"coverage_sim_0": CriterionEntry(), "sim_pass_sim_0": CriterionEntry()}
-    criterion = CoverageCriterion(
-        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
-        (CoverageThreshold("line", Fraction(100)),),
-        None,
-    )
-    context = replace(context, criteria={"coverage_sim_0": criterion})
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(
-        prepared.plan.targets[0],
-        invocation_dir=tmp_path / "reports/sim/1",
-        acceptance=CoverageAcceptance(
-            state,
-            FixtureRecorder(log_dir=tmp_path / "logs"),
-        ),
-    )
-    outcome = run_coverage_target(plan, NativeExecution(verdict="fail"), Progress())
-    saved = DevelopmentState.load(tmp_path / "state.json")
-    assert saved.criteria["coverage_sim_0"].met is True
-    assert "_source_fingerprint" in saved.criteria["coverage_sim_0"].detail
-    assert saved.criteria["sim_pass_sim_0"].met is False
-    records = [
-        json.loads(path.read_text())
-        for path in (tmp_path / "logs/acceptance/evidence").rglob("record.json")
-    ]
-    assert {record["criterion"]: record["met"] for record in records} == {
-        "coverage_sim_0": True,
-        "sim_pass_sim_0": False,
-    }
-    assert all(
-        record["detail"]["campaign_id"]
-        == load_coverage_campaign(
-            outcome.campaign_path,
-            DurableTargetIdentity("acme:demo:counter:1#sim_0"),
-        ).campaign.campaign_id
-        for record in records
-    )
-    assert all(str(outcome.campaign_path) not in json.dumps(record) for record in records)
-
-
 def test_unknown_native_records_remain_in_canonical_campaign(tmp_path):
     context = project(tmp_path)
     prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
@@ -639,34 +588,6 @@ def test_unknown_native_records_remain_in_canonical_campaign(tmp_path):
     assert records[0]["native_type"] == "future"
     assert records[0]["hits"] == 2
     assert "native_key" in records[0]
-
-
-def test_simulation_report_failure_leaves_prior_criterion_evidence_unchanged(tmp_path):
-    from booley.criteria.state import CriterionEntry, DevelopmentState
-    from booley.flows.sim.coverage_acceptance import CoverageAcceptance
-    from tests.criteria.ledger_support import FixtureRecorder
-
-    context = project(tmp_path)
-    state = DevelopmentState.load(tmp_path / "state.json")
-    state.criteria = {"sim_pass_sim_0": CriterionEntry(met=True, detail={"prior": "valid"})}
-    state.save()
-    before = (tmp_path / "state.json").read_bytes()
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(
-        prepared.plan.targets[0],
-        invocation_dir=tmp_path / "reports/sim/1",
-        acceptance=CoverageAcceptance(
-            state,
-            FixtureRecorder(log_dir=tmp_path / "logs"),
-        ),
-    )
-    (tmp_path / "reports/sim/1/targets/sim_0/simulation.json").mkdir(parents=True)
-    outcome = run_coverage_target(plan, NativeExecution(verdict="fail"), Progress())
-    assert outcome.exit_code == 2
-    assert outcome.abort_remaining is True
-    assert outcome.campaign_path.is_file()
-    assert (tmp_path / "state.json").read_bytes() == before
-    assert not (tmp_path / "logs").exists()
 
 
 def test_source_drift_after_preflight_never_runs_with_stale_provenance(tmp_path):
@@ -798,12 +719,10 @@ def persistence_fault(boundary):
     import os
 
     original_replace, original_link = Path.replace, os.link
-    evidence_count = 0
     filenames = {
         "point_store": "coverage-points.jsonl.gz",
         "campaign": "coverage.json",
         "simulation": "simulation.json",
-        "state": "state.json",
         "progress": "progress.json",
     }
 
@@ -813,38 +732,21 @@ def persistence_fault(boundary):
         return original_replace(source, destination)
 
     def link_file(source, destination, **kwargs):
-        nonlocal evidence_count
         # The point store and manifest are published by linking them into place.
         if Path(destination).name == filenames.get(boundary):
             raise OSError(f"injected {boundary} failure")
-        if Path(destination).name == "record.json":
-            evidence_count += 1
-            if (boundary == "first_evidence" and evidence_count == 1) or (
-                boundary == "second_evidence" and evidence_count == 2
-            ):
-                raise OSError("injected evidence failure")
         return original_link(source, destination, **kwargs)
 
     return replace_file, link_file
 
 
-def gated_ticket_plan(tmp_path):
+def gated_plan(tmp_path):
+    """A coverage-gated Target plan whose Campaign publishes under ``reports/sim/1``."""
     from fractions import Fraction
 
-    from booley.criteria.state import CriterionEntry, DevelopmentState
-    from booley.flows.sim.coverage_acceptance import CoverageAcceptance
     from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
-    from tests.criteria.ledger_support import FixtureRecorder
 
     context = project(tmp_path)
-    state_path = tmp_path / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.strict_criteria = True
-    state.criteria = {
-        key: CriterionEntry(met=True, detail={"prior": "valid"})
-        for key in ("coverage_sim_0", "sim_pass_sim_0")
-    }
-    state.save()
     criterion = CoverageCriterion(
         DurableTargetIdentity("acme:demo:counter:1#sim_0"),
         (CoverageThreshold("line", Fraction(100)),),
@@ -854,16 +756,7 @@ def gated_ticket_plan(tmp_path):
         CoverageInvocationRequest(("sim_0",)),
         replace(context, criteria={"coverage_sim_0": criterion}),
     )
-    invocation = tmp_path / "reports/sim/1"
-    plan = replace(
-        prepared.plan.targets[0],
-        invocation_dir=invocation,
-        acceptance=CoverageAcceptance(
-            state,
-            FixtureRecorder(log_dir=tmp_path / "logs"),
-        ),
-    )
-    return plan, state, state_path
+    return replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
 
 
 def gap_plan(tmp_path, sources=None, *, includes=(), testbench=None, criterion=False):
@@ -947,108 +840,14 @@ def test_incomplete_collection_never_accuses_module_sources(tmp_path):
     assert not any(f.code == GAP_CODE for f in campaign.findings)
 
 
-def test_coverage_ledger_failure_retains_evaluated_final_report(tmp_path):
-    from booley.flows.sim.coverage_acceptance import CoverageAcceptance
-    from booley.runtime.endpoint_execution import EndpointOutcome
-    from tests.mcp_tools.test_base import ConcreteMcpTool
-
-    plan, state, state_path = gated_ticket_plan(tmp_path)
-    del state.criteria["sim_pass_sim_0"]
-    state.save()
-    before = state_path.read_bytes()
-    tool = ConcreteMcpTool()
-    tool.endpoint_kind = "specialist"
-    tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
-    tool._state = state
-
-    from tests.criteria.ledger_support import FixtureRecorder
-
-    class FailedRecorder(FixtureRecorder):
-        def record_changes(self, *_args, **_kwargs):
-            raise OSError("coverage ledger unavailable")
-
-    recorder = FailedRecorder(identity={"generation": "d" * 32})
-    tool._acceptance_recorder = recorder
-    plan = replace(
-        plan, acceptance=CoverageAcceptance(state, recorder, tool.record_report_criteria)
-    )
-    outcome = run_coverage_target(plan, NativeExecution(), Progress())
-    assert outcome.exit_code == 2
-    from booley.flows.endpoint_report_criteria import freeze
-    from booley.flows.prepared_invocation import OrdinaryRunInvocation
-
-    freeze(tool, OrdinaryRunInvocation(tool._run))
-    report = json.loads(tool.write_report(EndpointOutcome(exit_code=2)).read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == ("coverage_sim_0", True)
-    assert report["passed"] is False
-    assert state_path.read_bytes() == before
-
-
-def test_failed_state_commit_keeps_prior_acceptance_usable(tmp_path, monkeypatch):
-    from booley.criteria.state import CriterionEntry, DevelopmentState
-    from booley.flows.sim.coverage_acceptance import CoverageAcceptance
-    from booley.mcp.unbound_recorder import UnboundAcceptanceRecorder
-
-    context = project(tmp_path)
-    state_path = tmp_path / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.strict_criteria = True
-    state.criteria = {"sim_pass_sim_0": CriterionEntry(met=True, detail={"prior": "valid"})}
-    state.save()
-    before = state_path.read_bytes()
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(
-        prepared.plan.targets[0],
-        invocation_dir=tmp_path / "reports/sim/1",
-        acceptance=CoverageAcceptance(
-            state,
-            UnboundAcceptanceRecorder(log_dir=tmp_path / "logs"),
-        ),
-    )
-    original = Path.replace
-
-    def fail_state(source, destination):
-        if destination == state_path:
-            raise OSError("injected state commit failure")
-        return original(source, destination)
-
-    # Fault the filesystem boundary, leaving every Booley collaborator real.
-    with monkeypatch.context() as patch:
-        patch.setattr(Path, "replace", fail_state)
-        outcome = run_coverage_target(plan, NativeExecution(verdict="fail"), Progress())
-    assert outcome.exit_code == 2
-    assert state_path.read_bytes() == before
-    saved = DevelopmentState.load(state_path)
-    assert saved.criteria["sim_pass_sim_0"].met
-    assert saved.criteria["sim_pass_sim_0"].detail == {"prior": "valid"}
-    assert saved.acceptance_transactions == []
-
-
-@pytest.mark.parametrize(
-    "boundary",
-    [
-        "point_store",
-        "campaign",
-        "simulation",
-        "first_evidence",
-        "second_evidence",
-        "state",
-        "progress",
-    ],
-)
-def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
-    tmp_path, monkeypatch, boundary
-):
+@pytest.mark.parametrize("boundary", ["point_store", "campaign", "simulation", "progress"])
+def test_persistence_boundaries_abort_with_a_truthful_outcome(tmp_path, monkeypatch, boundary):
     import os
 
-    from booley.criteria.state import DevelopmentState
     from booley.flows.sim.coverage_progress import CoverageProgress
 
-    plan, state, state_path = gated_ticket_plan(tmp_path)
-    prior = run_coverage_target(plan, NativeExecution(), Progress())
-    assert prior.exit_code == 0
-    invocation = tmp_path / "reports/sim/2"
-    plan = replace(plan, invocation_dir=invocation)
+    plan = gated_plan(tmp_path)
+    invocation = tmp_path / "reports/sim/1"
     replace_file, link_file = persistence_fault(boundary)
     with monkeypatch.context() as patch:
         patch.setattr(Path, "replace", replace_file)
@@ -1058,15 +857,6 @@ def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
         )
     assert outcome.exit_code == 2
     assert outcome.abort_remaining
-    saved = DevelopmentState.load(state_path)
-    committed = boundary == "progress"
-    assert {entry.met for entry in saved.criteria.values()} == {not committed}
-    from booley.criteria import evidence_ledger
-    from tests.criteria.ledger_support import FIXTURE_SCOPE
-
-    records = evidence_ledger.read_evidence_records(FIXTURE_SCOPE, tmp_path / "logs", saved, {})
-    assert len(records) == (4 if committed else 2)
-    assert {entry.met for entry in state.criteria.values()} == {not committed}
     assert outcome.campaign_path.exists() == (boundary not in {"point_store", "campaign"})
     assert outcome.simulation_path.exists() == (
         boundary not in {"point_store", "campaign", "simulation"}
