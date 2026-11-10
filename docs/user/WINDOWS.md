@@ -72,7 +72,8 @@ it (check `pipx list` or `uv tool list`), or add the directory that holds
 
 ## Host-provisioned Vivado isn't available
 
-Windows uses only the EDA tools inside the Sandbox Image. A Vivado installed on
+Windows uses only the EDA tools inside the Sandbox Image. Vivado isn't one of
+them, so the `fpga` Flow doesn't run on Windows. A Vivado installed on
 Windows can't run in the Linux container, and Booley rejects
 `provisioning = "host"` in `[eda.*]` on Windows. See
 [Supported EDA tools](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy).

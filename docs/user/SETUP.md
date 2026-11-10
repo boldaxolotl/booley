@@ -85,7 +85,7 @@ mkdir my_ip && cd my_ip && git init      # a new IP, from scratch
 booley init --scaffold my_ip
 ```
 
-Init asks which agent provider (`claude` or `codex`) and auth policy
+Init asks which default Agent CLI (`claude` or `codex`) and auth policy
 (`subscription`, `api-key`, or `auto`) this project uses; see
 [Sign-in and billing](#sign-in-and-billing) before you answer. Press Enter to
 accept the `claude` and `auto` defaults, or pass them as flags:
@@ -94,9 +94,10 @@ accept the `claude` and `auto` defaults, or pass them as flags:
 booley init --provider codex --auth subscription
 ```
 
-The choice is recorded in the `[agent]` table of `.booley/booley.toml`.
-Re-running init keeps it; to change it later, edit that table (see
-[CONFIG.md](CONFIG.md)).
+The choice is recorded in the `[agent]` table of `.booley/booley.toml`, as
+`provider` (the older name for `default`) and `auth`. The flag spells the
+policy `api-key`; the file spells it `api_key`. Re-running init keeps it; to
+change it later, edit that table (see [CONFIG.md](CONFIG.md)).
 
 `booley init` is safe to re-run. It never overwrites a hand-edited
 `.booley/docker/{Dockerfile,requirements.txt}` (one missing its
@@ -292,9 +293,10 @@ Project Initialization above) asked the scaffold choices and wrote a working,
 green-by-construction project. So there's no feasibility triage and no config to
 author — the skill only has to finish the job.
 
-**Reopen in Container**, then run `/booley-setup new` from the Project Root. It
+Still on the host, run `/booley-setup new` from the Project Root. It
 detects the scaffolded repo, reads the choices the scaffold recorded into the
-config, and confirms them in one message rather than re-asking. Because the
+config, and confirms them in one message rather than re-asking. It then tells
+you to **Reopen in Container**, where you re-invoke it to finish. Because the
 scaffold already wrote the config (Step 2) and the project adopts the built-in
 Booley Flows, it skips config authoring and runs:
 

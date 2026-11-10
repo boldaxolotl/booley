@@ -106,7 +106,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
     ```
 
     `booley` (or `booley chat`) just starts the Developer Agent chosen by
-    `[agent] default` in `.booley/booley.toml`:
+    `[agent] default` (or its older name `provider`) in `.booley/booley.toml`:
 
     | Provider | Same as running |
     | --- | --- |
@@ -157,7 +157,7 @@ kind of run that Project Setup configured, so ask the agent which ones you have.
 | `sim` | Builds and runs your tests in Verilator or Icarus, optionally with coverage | *"Debug the backpressure test failure on the `sim_heavy` target."* | [FLOW-SIM.md](FLOW-SIM.md), [TESTS.md](TESTS.md), [COVERAGE.md](COVERAGE.md) |
 | `lint` | Lints with Verilator (structure and semantics) or Verible (style) | *"Run lint and explain every finding."* | [FLOW-LINT.md](FLOW-LINT.md) |
 | `synth` | Quick ASIC area and timing estimate with Yosys and OpenROAD | *"Compare synth area between these two commits: ..."* | [FLOW-SYNTH.md](FLOW-SYNTH.md) |
-| `fpga` | FPGA implementation with AMD Vivado installed on your computer | *"Run FPGA implementation and tell me whether timing is met."* | [FLOW-FPGA.md](FLOW-FPGA.md) |
+| `fpga` | FPGA implementation with AMD Vivado installed on a Linux x86-64 host | *"Run FPGA implementation and tell me whether timing is met."* | [FLOW-FPGA.md](FLOW-FPGA.md) |
 | `reviewer` | AI code review with one focus: bugs, protocol, spec, security, style, optimization, or testbench quality | *"Run a security review on the control unit module."* | [CLI-REFERENCE.md](CLI-REFERENCE.md#reviewer) |
 | `mutation_tester` | Plants small bugs in your RTL and checks that your tests catch them | *"Check whether the FIFO tests catch injected bugs."* | [CLI-REFERENCE.md](CLI-REFERENCE.md#mutation_tester) |
 | `coverage_analyst` | Explains a coverage report and suggests what to test next | *"Explain the coverage gaps from the last run."* | [COVERAGE.md](COVERAGE.md), [CLI-REFERENCE.md](CLI-REFERENCE.md#coverage_analyst) |
@@ -186,7 +186,7 @@ Agent chat:
 
 | Skill | Use it when |
 | --- | --- |
-| `/booley-setup` | Setting up a Project (you ran this already, on the host) |
+| `/booley-setup` | Setting up a Project (you started this on the host during setup) |
 | `/booley-goal` | Work needs conditions that must be met, with evidence |
 | `/booley-heal` | Doctor reports problems, or a Flow stopped working |
 | `/booley-feedback` | Reporting a Booley bug, confusion, praise, or an idea |
