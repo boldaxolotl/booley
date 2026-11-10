@@ -41,6 +41,7 @@ def _error(name: str) -> type[Exception]:
 _FIXTURES = Path(__file__).parent / "fixtures"
 _EVERY_APPLICABLE_FIXTURE = (
     "relational.v",
+    "relational_sv.sv",
     "arith_logic.sv",
     "conditions.sv",
     "exclusions.sv",
@@ -129,6 +130,15 @@ def test_relational_operator_sites(tmp_path: Path) -> None:
         (5, ">=", ">"),
         (6, "==", "!="),
         (7, "!=", "=="),
+        (8, "===", "!=="),
+        (9, "!==", "==="),
+    ]
+
+
+def test_wildcard_equality_sites(tmp_path: Path) -> None:
+    assert _sites(_generate(tmp_path, "relational_sv.sv")) == [
+        (2, "==?", "!=?"),
+        (3, "!=?", "==?"),
     ]
 
 
@@ -145,6 +155,10 @@ def test_arithmetic_logical_operator_sites(tmp_path: Path) -> None:
         (9, ">>", "<<"),
         (10, "&&", "||"),
         (11, "||", "&&"),
+        (12, "~^", "^"),
+        (13, "^~", "^"),
+        (14, "<<<", ">>>"),
+        (15, ">>>", "<<<"),
     ]
 
 
@@ -172,10 +186,12 @@ def test_excluded_contexts_yield_no_mutants(tmp_path: Path) -> None:
     """Each excluded construct sits inside design code, so removing any one rule shows up."""
     selection = _generate(tmp_path, "exclusions.sv")
 
-    # Kept: the two equality tests, and `+` next to an attribute (a delay and an event expression are excluded too). Everything else in the
-    # fixture is excluded: comment, string, parameter defaults, nonblocking `<=`,
-    # part-select bound, `$display` argument, assertion, macro-ended condition,
-    # `initial`, class method, and generate-for bound.
+    # Kept: the two equality tests, and `+` next to an attribute.  Everything else
+    # in the fixture is excluded: comment, string, parameter defaults, nonblocking
+    # `<=`, part-select bound, block-local dimension, delays, event expression,
+    # `for` initializer and step, `$display` argument, assertions (immediate,
+    # assume, cover, and concurrent), macro-ended condition, `initial`, generate-for
+    # bound, and class methods at file level and inside a package.
     assert _sites(selection) == [
         (12, "==", "!="),
         (13, "==", "!="),
@@ -222,6 +238,26 @@ def test_every_mutant_applies_through_variant_plan(tmp_path: Path) -> None:
             )
             assert written[index].read_bytes() == expected, (name, mutant)
             assert expected != pristine
+
+
+def test_constant_condition_yields_only_variants_that_change_it(tmp_path: Path) -> None:
+    name = _write(
+        tmp_path,
+        "k.sv",
+        "module k(input a, output y, z);\n"
+        "  always_comb if (1'b1) y = a;\n"
+        "  always_comb while (1'b0) z = a;\n"
+        "endmodule\n",
+    )
+
+    selection = generate_mutants(tmp_path, [name], _ALL, 1)
+
+    # Forcing a constant true (or false) would be a no-op the applier rejects.
+    assert sorted((m.line, m.mutated_code) for m in selection.mutants) == [
+        (2, "!(1'b1)"),
+        (2, "1'b0"),
+    ]
+    _apply_all(tmp_path, [name], selection.mutants)  # the applier accepts every one
 
 
 def test_repeated_text_on_one_line_is_anchored_uniquely(tmp_path: Path) -> None:
@@ -338,6 +374,20 @@ def test_ids_are_unique_across_condition_variants(tmp_path: Path) -> None:
     assert len({m.id for m in conditions}) == 3
 
 
+def test_file_level_functions_have_stable_ids(tmp_path: Path) -> None:
+    f1 = "function int f1(int a, int b);\n  return a + b;\nendfunction\n"
+    f2 = "function int f2(int a, int b);\n  return a - b;\nendfunction\n"
+    f0 = "function int f0(int a);\n  return a * 2;\nendfunction\n"
+    name = _write(tmp_path, "f.sv", f1 + f2)
+    before = {m.id for m in generate_mutants(tmp_path, [name], _ALL, 1).mutants}
+
+    _write(tmp_path, "f.sv", f1 + f0 + f2)  # a function of another name between the two
+    after = {m.id for m in generate_mutants(tmp_path, [name], _ALL, 1).mutants}
+
+    assert len(before) == 2
+    assert before < after
+
+
 def test_ifdef_branch_follows_defines(tmp_path: Path) -> None:
     plain = _generate(tmp_path, "ifdef.sv")
     defined = _generate(tmp_path, "ifdef.sv", defines={"X": "1"})
@@ -401,13 +451,13 @@ def test_selection_is_round_robin_across_operators(tmp_path: Path) -> None:
 
 def test_fewer_candidates_than_count_returns_all_and_says_so(tmp_path: Path) -> None:
     _stage(tmp_path, "relational.v")
-    exact = generate_mutants(tmp_path, ["relational.v"], 6, 1)
+    exact = generate_mutants(tmp_path, ["relational.v"], 8, 1)
     asked = generate_mutants(tmp_path, ["relational.v"], 50, 1)
 
-    assert len(asked.mutants) == 6
-    assert (asked.requested, asked.available) == (50, 6)
+    assert len(asked.mutants) == 8
+    assert (asked.requested, asked.available) == (50, 8)
     assert asked.shortfall == (
-        "only 6 candidate Mutants exist; returning all of them (50 requested)"
+        "only 8 candidate Mutants exist; returning all of them (50 requested)"
     )
     assert exact.shortfall is None
 

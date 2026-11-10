@@ -26,9 +26,23 @@ module excl #(parameter W = 4 + 1) (input logic clk, input logic [W-1:0] a, b, i
   end
   for (genvar g = 0; g < 2; g++) begin : gen
   end
+  always_comb begin
+    logic [1 + 1:0] t;
+    for (int i = 1 + 0; ; i = i + 1) y = a;
+    assume (a == b);
+    cover (a == b);
+  end
+  always @(posedge clk) assert property (@(posedge clk) a == b);
 endmodule
 class C;
   function void h();
     int q = 1 + 2;
   endfunction
 endclass
+package pk;
+  class D;
+    task run(input logic a, b, output logic y);
+      if (a == b) y = a + b;
+    endtask
+  endclass
+endpackage

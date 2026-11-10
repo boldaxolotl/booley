@@ -79,7 +79,8 @@ def _names(text: str) -> frozenset[str]:
 
 
 # A site must sit under one design context and one design unit (a compilation-unit
-# function or task counts); class, program and checker code is verification code.
+# function or task counts); class, program, checker and covergroup code is
+# verification code, even nested in a module or package (see _DENIED).
 _DESIGN_CONTEXTS = _names(
     "ContinuousAssign NetDeclaration AlwaysBlock AlwaysCombBlock AlwaysFFBlock AlwaysLatchBlock "
     "FunctionDeclaration TaskDeclaration"
@@ -97,7 +98,8 @@ _DENIED = _names(
     "RepeatedEventControl ImmediateAssertStatement ImmediateAssumeStatement "
     "ImmediateCoverStatement AssertPropertyStatement AssumePropertyStatement "
     "CoverPropertyStatement CoverSequenceStatement RestrictPropertyStatement "
-    "ExpectPropertyStatement"
+    "ExpectPropertyStatement ClassDeclaration ProgramDeclaration CheckerDeclaration "
+    "CovergroupDeclaration"
 )
 
 # A while, do-while, or for condition may only be forced false: negating or forcing
@@ -155,11 +157,20 @@ class _SiteCollector:
         seen: dict[tuple[str, str], int] = {}
         for member in self._members:
             kind = member.kind.name
-            name = member.header.name.rawText if hasattr(member, "header") else ""
+            name = self._unit_name(member)
             seen[kind, name] = ordinal = seen.get((kind, name), -1) + 1
             first = member.getFirstToken()
             # A unit that starts inside a macro has no file offset: use 0.
             self._units[id(member)] = (f"{kind}:{name}#{ordinal}", self._offset(first) or 0)
+
+    @staticmethod
+    def _unit_name(member: Any) -> str:
+        """The declared name of a top-level module, interface, package, function, or task."""
+        if hasattr(member, "header"):
+            return str(member.header.name.rawText)
+        if hasattr(member, "prototype"):
+            return str(member.prototype.name.getLastToken().rawText)
+        return ""
 
     def visit(self, node: Any) -> None:
         if not isinstance(node, self._node_type):
@@ -198,8 +209,10 @@ class _SiteCollector:
         if unit is not None and start is not None and end is not None:
             text = self._source[start:end].decode("utf-8", "replace")
             key, unit_start = unit
-            sites = (Site(operator, start, end, v.format(text), key, unit_start) for v in variants)
-            self.sites.extend(sites)
+            for variant in variants:
+                replacement = variant.format(text)
+                if replacement != text:  # the applier rejects a no-op, e.g. forcing `1'b1` true
+                    self.sites.append(Site(operator, start, end, replacement, key, unit_start))
 
     def _offset(self, token: Any, extra: int = 0) -> int | None:
         """The token's file offset (+ ``extra``), or None if it comes from another buffer."""
