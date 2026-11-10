@@ -611,13 +611,44 @@ def test_pr_compatibility_matrix_is_pairwise() -> None:
     assert workflow["jobs"]["changes"]["outputs"]["test_matrix"] == (
         "${{ steps.classify.outputs.test_matrix }}"
     )
-    assert shard_input["default"] == "10"
+    assert shard_input["default"] == "4"
     assert shard_input["options"] == ["4", "6", "8", "10"]
     assert benchmark_input["default"] is False
     classify_step = next(
         step for step in jobs["changes"]["steps"] if step.get("name") == "Classify changed paths"
     )
     assert "--windows-shard-benchmark" in classify_step["run"]
+    assert "${{ inputs.windows_shard_count || '4' }}" in classify_step["run"]
+
+
+def test_ci_mark_expressions_never_deselect_sandbox_only_tests() -> None:
+    """Sandbox-only tests skip on Windows only; no `-m` expression may drop them anywhere."""
+    from tests.sandbox_only import SANDBOX_ONLY_PATHS, is_sandbox_only
+
+    workflows = (REPOSITORY_ROOT / ".github" / "workflows").glob("*.yml")
+    mentions = [path.name for path in workflows if "sandbox_only" in path.read_text("utf-8")]
+    assert not mentions, f"workflows must not select on sandbox_only: {mentions}"
+    compatibility = _named_step(
+        _test_workflow()["jobs"]["test"], "Run focused Windows compatibility suite"
+    )
+    paths = [word for word in shlex.split(compatibility["run"]) if word.startswith("tests/")]
+    assert paths
+    # A compatibility leg whose paths are all skipped on Windows would pass while testing nothing.
+    # A test file is judged by the registry (its Windows exceptions included); a directory
+    # overlaps when any registry entry sits inside it or contains it.
+    skipped = [
+        path
+        for path in paths
+        if (
+            is_sandbox_only(path)
+            if path.endswith(".py")
+            else any(
+                path.startswith(entry) or entry.startswith(path.rstrip("/") + "/")
+                for entry in SANDBOX_ONLY_PATHS
+            )
+        )
+    ]
+    assert not skipped, f"Windows compatibility paths overlap the Sandbox-only registry: {skipped}"
 
 
 def test_main_push_tier_keeps_a_nightly_full_run_on_main() -> None:
@@ -655,7 +686,7 @@ def test_windows_shards_are_exactly_verified() -> None:
         if step.get("name") == "Prove every sharded test ran exactly once"
     )
     assert verify_step["env"]["WINDOWS_SHARD_COUNT"] == (
-        "${{ inputs.windows_shard_count || '10' }}"
+        "${{ inputs.windows_shard_count || '4' }}"
     )
 
 
