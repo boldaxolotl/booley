@@ -23,7 +23,7 @@ _POLL_MCP_TOOL_DESCRIPTION = (
     "longer than the inline wait, its call returns a 'run_id' instead of the result. With "
     "several Jobs running, call with no run_id: it returns the full result of the first of "
     "your Jobs to finish (or one that finished but whose result you have not read), lists "
-    "your other Jobs, and answers at once when there is nothing to wait for. Pass a run_id "
+    "your other still-running Jobs, and answers at once when there is nothing to wait for. Pass a run_id "
     "only to wait for one specific Job. Pass 'wait_seconds' (0-270) to long-poll: the call "
     "blocks up to that long, turning a poll-loop into one blocking call; if nothing has "
     "finished afterwards it returns 'RUNNING' — call again to keep waiting. Claude and "
