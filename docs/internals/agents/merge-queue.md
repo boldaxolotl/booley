@@ -217,7 +217,8 @@ confirmation and authorized cleanup; the watcher does neither. To stop
 monitoring, send SIGINT or SIGTERM. The watcher terminates its child read and
 reports `cancelled` with the conventional signal exit code.
 
-A non-null `mergedAt` finishes the wait; a `dequeued` label starts recovery.
+A non-null `mergedAt` finishes the wait; a `dequeued` label starts recovery
+(after the confirmation in "React to a failed batch").
 Otherwise, ownership is passive: leave predecessors to their owners and trust
 Mergify's serial priority queue. Wait ten minutes, check only the owned PR once,
 then repeat the quiet wait if unchanged. Do not query GitHub during an interval.
@@ -238,9 +239,9 @@ PR follows that work, preserving CI time already spent.
 
 Outside the `required_checks_missing` procedure above, use one-shot
 `gh pr checks <number>` only after the owned PR reports a failed required check
-or Mergify dequeues it. A predecessor or batchmate failure needs no
-action from waiting agents: Mergify advances the queue while that PR's owner
-handles recovery.
+or Mergify dequeues it. A predecessor or batchmate failure needs no action
+from waiting agents: Mergify advances the queue while that PR's owner handles
+recovery.
 
 ## React to a failed batch
 
@@ -258,11 +259,13 @@ never retested alone.
   required checks, never from a batch draft, so handle it as before.
 - **`queue_failed` while the PR still has `queued` or `merge-queue-checking`
   and no `dequeued` label:** read the Mergify check once. If it shows the batch
-  being split or the PR requeued, start one new watcher under the restart rules
-  with the original deadline. If that watcher reports `queue_failed` again,
-  treat it as unresolved: wait quietly ten minutes, read the PR once with
-  `gh pr view`, and if it is still queued with a failing Mergify check, report
-  an incident.
+  being split or the PR requeued, do not restart the watcher yet: a new watcher
+  reports `queue_failed` again at once while the Mergify check still fails.
+  Wait quietly ten minutes, read the PR once with `gh pr view`, and repeat
+  while it stays queued, up to the original deadline (a split round can take
+  the full 90 minutes). When the Mergify check stops failing, start one new
+  watcher under the restart rules. If the deadline passes with the PR still
+  queued and the Mergify check failing, report an incident.
 - **`dequeued`:** before recovery, read the Mergify check once and confirm that
   Mergify did not already requeue the PR after a split (an active queue label is
   back). If it did, start one new watcher instead of requeueing. Only a
@@ -302,10 +305,10 @@ the maintainer to decide.
 ## Tell a stale base from a conflict
 
 A PR that is only behind `main` is ready to queue: `main_protection` does not
-require an up-to-date branch, and Mergify validates the PR on top of `main`, its
-queue predecessors, and its batchmates. Leave such a branch as it is, and keep the local
-verification tied to its tree. Rebase or merge `main` only for a real conflict
-or for a change the PR depends on, then verify the new tree again.
+require an up-to-date branch, and Mergify validates the PR on top of `main`,
+its queue predecessors, and its batchmates. Leave such a branch as it is, and
+keep the local verification tied to its tree. Rebase or merge `main` only for a
+real conflict or for a change the PR depends on, then verify the new tree again.
 
 Check the live ruleset read-only before relying on this. If the setting is
 unreadable or requires an up-to-date branch, update the branch before queueing.

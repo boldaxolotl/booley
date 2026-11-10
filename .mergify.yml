@@ -1,8 +1,9 @@
 # Validate up to four cumulative candidates concurrently, each adding a batch
 # of up to three PRs (up to 12 PRs in flight), with no automatic retries. When
-# a batch fails, Mergify splits it to find the culprit. Before rollout, verify required checks on a
-# draft-PR compatibility canary and disable strict up-to-date branch checks
-# while retaining required checks and Mergify-exclusive merges.
+# a batch fails, Mergify splits it to find the culprit. Before rollout, verify
+# required checks on a draft-PR compatibility canary and disable strict
+# up-to-date branch checks while retaining required checks and
+# Mergify-exclusive merges.
 merge_queue:
   mode: serial
   # Keep queue progress in Mergify's dashboard and checks instead of posting

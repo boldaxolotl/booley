@@ -43,11 +43,15 @@ def _default_rule(config: dict[Any, Any]) -> dict[Any, Any]:
 
 
 def _load_watch_pr() -> Any:
-    spec = importlib.util.spec_from_file_location("watch_pr", WATCH_PR_SCRIPT)
+    """Load the watcher under a private name so `sys.modules["watch_pr"]` stays intact."""
+    spec = importlib.util.spec_from_file_location("watch_pr_mergify_contract", WATCH_PR_SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    sys.modules[spec.name] = module  # dataclasses resolve their module by name
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        del sys.modules[spec.name]
     return module
 
 
