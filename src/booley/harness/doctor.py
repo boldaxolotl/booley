@@ -1699,7 +1699,7 @@ def _report_attributes_policy_risk(report, identity: str, _warn: Check) -> bool:
         emit = _warning_sink(_warn, "git.line-endings-unreadable", subject=report.repository.role)
         emit(
             f"{identity}: {policy_risk.detail}",
-            "inspect attributes policy, then re-run booley init",
+            f"inspect attributes policy, then re-run {runtime_context.booley_init_hint()}",
         )
         return True
     return _report_unreadable_line_endings(report, identity, _warn)
@@ -1714,7 +1714,7 @@ def _report_attributes_migration(report, identity: str, _warn: Check) -> bool:
         emit = _warning_sink(_warn, "git.line-ending-migration", subject=report.repository.role)
         emit(
             f"{identity}: repository-local line-ending default awaits Stealth opt-out migration",
-            "booley init   (migrates the local default to the root attributes policy)",
+            f"{runtime_context.booley_init_hint()}   (migrates the local default to the root attributes policy)",
         )
         return True
     return False
@@ -1735,7 +1735,7 @@ def _report_repository_line_endings(
             f"{identity}: {crlf.count} tracked file(s) are checked out with CRLF — the "
             "Sandbox sees every one as modified, which breaks the dirty-tree check, "
             "protected inputs, and worktrees",
-            "booley init   (automatically repairs a clean tree; commit or stash first)",
+            f"{runtime_context.booley_init_hint()}   (automatically repairs a clean tree; commit or stash first)",
         )
         return
     risk = _line_ending_observation(
@@ -1751,7 +1751,7 @@ def _report_repository_line_endings(
         emit = _warning_sink(_warn, "git.autocrlf-risk", subject=repository.role)
         emit(
             f"{identity}: {message}",
-            f"git -C {repository.root} config --local core.autocrlf false   (or re-run `booley init`)",
+            f"git -C {repository.root} config --local core.autocrlf false   (or re-run {runtime_context.booley_init_hint(code=True)})",
         )
         return
     if _report_attributes_policy_risk(report, identity, _warn):
@@ -1760,7 +1760,7 @@ def _report_repository_line_endings(
     if stale is not None:
         _fail(
             f"{identity}: tracked files have stale Git index metadata after line-ending repair — status reports modifications although staged and unstaged diffs are empty",
-            "booley init   (refreshes the affected tracked index entries)",
+            f"{runtime_context.booley_init_hint()}   (refreshes the affected tracked index entries)",
         )
         return
     if _report_attributes_migration(report, identity, _warn):
@@ -1850,12 +1850,12 @@ def _check_worktree_core_shadow_guard(
         _warn(
             f".booley/FUSESOC_IGNORE missing and {len(shadow_cores)} "
             "worktree .core copy/copies can shadow the source at the Project Root in "
-            "FuseSoC's --cores-root scan; run `booley init` to add the marker"
+            f"FuseSoC's --cores-root scan; run {runtime_context.booley_init_hint(code=True)} to add the marker"
         )
     else:
         _warn(
             ".booley/FUSESOC_IGNORE missing; a future worktree's "
-            ".core could shadow the source at the Project Root — run `booley init`"
+            f".core could shadow the source at the Project Root — run {runtime_context.booley_init_hint(code=True)}"
         )
 
 
@@ -4331,7 +4331,7 @@ def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Check) -> No
     if not gitignore.is_file():
         _warn(
             ".booley/.gitignore missing; transient Booley state may be tracked",
-            "booley init",
+            runtime_context.booley_init_hint(),
         )
         return
     try:
@@ -4343,7 +4343,7 @@ def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Check) -> No
     if missing:
         _warn(
             f".booley/.gitignore is missing {len(missing)} pattern(s): {', '.join(missing)}",
-            "booley init",
+            runtime_context.booley_init_hint(),
         )
         return
     _pass("transient Booley state is gitignored")
@@ -4353,7 +4353,7 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
     """Inspect durable inputs in their owning repositories, separately from outer history."""
     from booley.commit_policy import stealth_enabled
     from booley.runtime.project_trackability import (
-        FIX,
+        fix,
         history_probe,
         inspect_project_trackability,
     )
@@ -4367,7 +4367,7 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
         if group.history and probe is not None and probe in group.paths:
             continue
         check_id = "goals.history-ignored" if group.history else "project.inputs-ignored"
-        _warning_sink(_warn, check_id, subject=group.subject)(group.message, FIX)
+        _warning_sink(_warn, check_id, subject=group.subject)(group.message, fix())
     for error in inspection.errors:
         _warning_sink(_warn, "project.trackability-inspection", subject="inspection-incomplete")(
             error, "repair repository access and rerun booley doctor"

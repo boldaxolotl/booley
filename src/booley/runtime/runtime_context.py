@@ -1,17 +1,23 @@
 """Sandbox detection and entry-point guards.
 
 Booley workflows execute inside the per-project Sandbox.  This module
-depends only on the stdlib and ``booley.core``, so it sits at the bottom of the
-import graph and every entry point can detect that runtime and restore its
+depends only on the stdlib, ``booley.core`` and the import-free leaf
+``sandbox_layout``, so it sits at the bottom of the import graph and every entry point can detect that runtime and restore its
 fixed egress proxy environment.
 """
 
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from enum import Enum
+from pathlib import Path, PurePosixPath
 
 from booley.core.egress_modes import EGRESS_MODES
+from booley.runtime.sandbox_layout import (
+    BOOLEY_DIR_TARGET,
+    DEVCONTAINER_TARGET,
+    PROJECT_DATA_MOUNT_PATH,
+)
 
 
 def inside_session_runtime() -> bool:
@@ -19,6 +25,69 @@ def inside_session_runtime() -> bool:
     if os.environ.get("BOOLEY_CONTAINER") == "1":
         return True
     return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+
+
+class RuntimeLocation(Enum):
+    """Where this process runs, as far as `booley init` needs to tell."""
+
+    HOST = "host"
+    HAND_WRITTEN_SANDBOX = "hand-written Sandbox"
+    ISSUED_SANDBOX = "Booley-issued Sandbox"
+
+
+_MOUNTINFO = Path("/proc/self/mountinfo")
+#: Mount points only Session Issuance creates; a process cannot unmount them unprivileged.
+_ISSUED_MOUNT_TARGETS = (BOOLEY_DIR_TARGET, PROJECT_DATA_MOUNT_PATH, DEVCONTAINER_TARGET)
+
+
+def _issued_mount_points() -> bool:
+    """Return whether any mount point is, or lies under, an issued-Sandbox target.
+
+    An unreadable mountinfo counts as issued: the only consequence of a false
+    "issued" verdict is a refusal.
+    """
+    try:
+        lines = _MOUNTINFO.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return True
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        # Field 5 is the mount point; spaces in it are escaped as ``\040``.
+        mount_point = PurePosixPath(fields[4].replace("\\040", " "))
+        if any(mount_point.is_relative_to(target) for target in _ISSUED_MOUNT_TARGETS):
+            return True
+    return False
+
+
+def runtime_location() -> RuntimeLocation:
+    """Classify the runtime as host, hand-written Sandbox or Booley-issued Sandbox.
+
+    Not cached, so long-lived processes see the current mounts. No environment or
+    platform variable takes part in the issued verdict.
+    """
+    if not inside_session_runtime():
+        return RuntimeLocation.HOST
+    if _issued_mount_points():
+        return RuntimeLocation.ISSUED_SANDBOX
+    return RuntimeLocation.HAND_WRITTEN_SANDBOX
+
+
+def booley_init_hint(*, code: bool = False) -> str:
+    """Name the `booley init` command together with where to run it.
+
+    The host says only the command; a hand-written Sandbox runs it in place; a
+    Booley-issued Sandbox refuses it, so the hint sends the user to the host.
+    ``code=True`` wraps the command in backticks for prose.
+    """
+    command = "`booley init`" if code else "booley init"
+    location = runtime_location()
+    if location is RuntimeLocation.HAND_WRITTEN_SANDBOX:
+        return f"{command} in this Sandbox"
+    if location is RuntimeLocation.ISSUED_SANDBOX:
+        return f"{command} on the host"
+    return command
 
 
 _PROXY_URL = "http://booley-proxy:8080"

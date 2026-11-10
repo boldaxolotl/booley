@@ -35,6 +35,7 @@ from booley.harness.setup.guidance_links import (
 )
 from booley.harness.setup.project_origin import read_project_origin
 from booley.harness.setup.scaffold import is_scaffold_core_description
+from booley.runtime import runtime_context
 from booley.runtime.booley_dir import (
     resolve_checkout_booley_dir,
     resolve_common_booley_dir,
@@ -99,7 +100,7 @@ def load_project(project_root: Path) -> ProjectLoadResult:
     try:
         booley_dir = resolve_checkout_booley_dir(project_root)
     except FileNotFoundError:
-        report.fail("Booley Directory not found", "booley init")
+        report.fail("Booley Directory not found", runtime_context.booley_init_hint())
         return ProjectLoadResult(report.report(), None, None)
     project = _check_project_setup(project_root, booley_dir, report)
     return ProjectLoadResult(report.report(), booley_dir, project)
@@ -255,7 +256,7 @@ def _inspect_repository_policies(
                     if inferred_host
                     else ""
                 ),
-                "run `booley init`",
+                f"run {runtime_context.booley_init_hint(code=True)}",
                 check_id="git.worktree-portability",
                 subject=str(repository),
             )
@@ -426,7 +427,7 @@ def _first_target(project_root: Path, configs_toml: dict[str, dict[str, Any]]) -
 
 def _load_toml(path: Path, report: Findings) -> dict[str, Any] | None:
     if not path.is_file():
-        report.fail(f"{path.name} missing", "booley init")
+        report.fail(f"{path.name} missing", runtime_context.booley_init_hint())
         return None
     try:
         with path.open("rb") as handle:
@@ -469,7 +470,7 @@ def _validate_booley_toml(data: dict[str, Any], booley_dir: Path, report: Findin
     # [sources.*] table — those fields were retired (ADR 0026 follow-through).
 
     if not booley_dir.exists():
-        report.fail(f"Booley Directory missing: {booley_dir}", "booley init")
+        report.fail(f"Booley Directory missing: {booley_dir}", runtime_context.booley_init_hint())
         valid = False
     return valid
 
@@ -666,7 +667,8 @@ def _check_core_projections(project_root: Path, report: Findings, *, repair: boo
             core_projection.reconcile_projected_cores(project_root)
         except (core_projection.CoreProjectionError, OSError) as exc:
             report.fail(
-                f"stealth core projection failed: {exc}", "fix the conflict and run booley init"
+                f"stealth core projection failed: {exc}",
+                f"fix the conflict and run {runtime_context.booley_init_hint()}",
             )
             failed = True
     try:
@@ -674,14 +676,14 @@ def _check_core_projections(project_root: Path, report: Findings, *, repair: boo
     except (core_projection.CoreProjectionError, OSError) as exc:
         report.fail(
             f"could not inspect stealth core projections: {exc}",
-            "fix the core and run booley init",
+            f"fix the core and run {runtime_context.booley_init_hint()}",
         )
         failed = True
         issues = ()
     if issues:
         report.fail(
             f"stealth core projections are not current: {', '.join(issues)}",
-            "run booley init to reconcile the ignored root-level projections",
+            f"run {runtime_context.booley_init_hint()} to reconcile the ignored root-level projections",
         )
     elif not failed:
         report.pass_("stealth core projections match .booley/cores/")
@@ -699,7 +701,7 @@ def _check_projection_exclude(project_root: Path, report: Findings) -> None:
     if pattern not in lines:
         report.fail(
             "stealth core projections are not excluded from host git status",
-            "run booley init to add the generated projection pattern to .git/info/exclude",
+            f"run {runtime_context.booley_init_hint()} to add the generated projection pattern to .git/info/exclude",
         )
     else:
         report.pass_("stealth core projections are excluded through .git/info/exclude")

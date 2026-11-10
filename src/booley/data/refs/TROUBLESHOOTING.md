@@ -130,7 +130,7 @@ It doesn't open when:
 - your user setting `task.allowAutomaticTasks` is `"off"`, or the Project's
   `.vscode/settings.json` sets it to `"off"`;
 - you removed or edited the Dashboard task in `.vscode/tasks.json`, or Git
-  tracks that file. To restore a removed task, set `[sandbox].dashboard = false`, run `booley init` on the host, set it
+  tracks that file. To restore a removed task, set `[sandbox].dashboard = false`, run `booley init` (on the host, or in a hand-written Sandbox such as a Codespace; a Booley-issued Sandbox needs the host), set it
   back to `true` and run `booley init` again;
 - the window isn't a Dev Containers or Codespaces window, the folder isn't a
   Git repository, or the window is not trusted yet;

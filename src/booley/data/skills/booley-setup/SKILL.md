@@ -108,7 +108,7 @@ an observation transcript. Human live-output options are documented in
 `docs/user/FLOW_REFERENCE.md` → “Live progress and logs”.
 
 The CLIs fail fast on the wrong side, each naming the fix: `booley init`
-refuses in-container; the workflow CLI (`booley goal`, `booley dashboard`, `bwave`) refuses
+refuses inside a Booley-issued Sandbox (a hand-written Sandbox runs Project Initialization only); the workflow CLI (`booley goal`, `booley dashboard`, `bwave`) refuses
 on the host. To check explicitly: `/.dockerenv` exists only in the container.
 `SETUP-PLAN.md` carries the full context across the boundary — a fresh
 in-container session just re-invokes this skill and phase detection resumes

@@ -7,6 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.runtime import runtime_context
 from booley.runtime.booley_dir import own_booley_dir_repo_path, resolve_checkout_booley_dir
 from booley.runtime.git_attributes_policy import has_managed_attributes
 from booley.runtime.git_environment import inherited_git_environment
@@ -33,10 +34,14 @@ _INPUT_TREES = (
     "goals/history",
     "tickets/history",
 )
-FIX = (
-    "edit the reported exclusion (including excluded ancestors) to allow the named paths, "
-    "then rerun booley init or booley doctor"
-)
+
+
+def fix() -> str:
+    """Return the repair hint, naming where `booley init` runs at the time of the call."""
+    return (
+        "edit the reported exclusion (including excluded ancestors) to allow the named paths, "
+        f"then rerun {runtime_context.booley_init_hint()} or booley doctor"
+    )
 
 
 def history_probe(root: Path) -> str | None:
