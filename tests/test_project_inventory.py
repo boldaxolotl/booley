@@ -175,7 +175,7 @@ def test_inventory_lock_contention_has_a_bounded_error(tmp_path: Path, monkeypat
         lambda _lock: (_ for _ in ()).throw(BlockingIOError()),
     )
     times = iter((0.0, 11.0))
-    monkeypatch.setattr(private_store.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(private_store, "monotonic", lambda: next(times))
     monkeypatch.setattr(private_store.time, "sleep", lambda _seconds: None)
 
     with pytest.raises(project_inventory.ProjectInventoryError, match="busy"):
