@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,6 +84,9 @@ class TraceSession:
         # Stall-kill state — set by start_monitor when it escalates to a kill.
         self._stall_killed = False
         self._stall_message: str | None = None
+        # Stall-monitor lifetime: start_monitor keeps the thread, stop_monitor ends it.
+        self._monitor_stop = threading.Event()
+        self._monitor_thread: threading.Thread | None = None
         # One monotonic deadline bounds every post-run conversion of the attempt.
         self._conversion_deadline: float | None = None
         # Once postprocess ran, find() must not convert the same VCD a second time.
@@ -476,15 +480,28 @@ class TraceSession:
         `bwave_proc`, and records the event on the TraceSession so callers
         can surface a clear "trace pipeline stalled" error instead of riding
         the outer job timeout out.
-        """
-        import threading
 
-        t = threading.Thread(
+        The caller must pair this with :meth:`stop_monitor` once the run is over.
+        """
+        thread = threading.Thread(
             target=self._monitor_stalls,
             args=(bwave_proc, sim_proc, stall_timeout, poll_interval, kill_after_stalls),
             daemon=True,
         )
-        t.start()
+        self._monitor_thread = thread
+        thread.start()
+
+    def stop_monitor(self) -> None:
+        """Wake the stall monitor, then wait until its thread has ended.
+
+        Idempotent, and does nothing when no monitor was started. A stall kill
+        already in flight finishes first, so no kill outlives the run. The wait
+        is deliberately unbounded: the kill path is bounded (about 10 s on
+        POSIX, about 30 s on Windows, where each ``taskkill`` may take 10 s).
+        """
+        self._monitor_stop.set()
+        if self._monitor_thread is not None:
+            self._monitor_thread.join()
 
     def _monitor_stalls(
         self,
@@ -494,13 +511,12 @@ class TraceSession:
         poll_interval: float,
         kill_after_stalls: int,
     ) -> None:
-        import time
-
         last_size = -1
         stall_start: float | None = None
         stall_count = 0
         while sim_proc.poll() is None and bwave_proc.poll() is None:
-            time.sleep(poll_interval)
+            if self._monitor_stop.wait(poll_interval):
+                return
             size = bwave_proc.progress_size()
             if size != last_size:
                 last_size, stall_start, stall_count = size, None, 0
