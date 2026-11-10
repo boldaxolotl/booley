@@ -536,8 +536,8 @@ def _accepted_booley_dir(value: str, project_root: Path) -> bool:
 
     Accepted spellings are the image alias ``/booley-project`` and the ``.booley``
     entry directly under the inspected Project Root, either one resolving to an
-    existing directory. The entry may be a symlink; only its parent is resolved,
-    so the comparison tolerates aliased Project Root spellings. Paths alone
+    existing directory. The entry may be a symlink; its parent must be the same
+    location as the Project Root, so aliased Project Root spellings are tolerated. Paths alone
     decide: ambient platform variables such as ``CODESPACES`` are spoofable
     (ADR 0077) and never widen the rule.
     """

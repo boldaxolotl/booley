@@ -875,6 +875,21 @@ def test_project_inventory_classifies_unproven_relay_from_one_inspect(tmp_path: 
     assert inspected == ["hinted-id"]
 
 
+def test_project_inventory_refuses_relay_hinted_row_with_malformed_mounts(
+    tmp_path: Path,
+) -> None:
+    """A relay-hinted row whose `Mounts` is malformed is refused, never skipped."""
+    project = tmp_path / "project"
+    project.mkdir()
+    document = _hinted_document(project, workspace_bind=False)
+    document["Mounts"] = "not-a-list"
+    run, inspected = _counting_docker([_relay_hinted_row(project)], document)
+
+    with pytest.raises(session_admission.AdmissionError, match="cannot inspect possible Sandbox"):
+        session_admission.running_project_sandboxes(project, run=run)
+    assert inspected == ["hinted-id"]
+
+
 def test_project_inventory_skips_proven_relay_after_one_inspect(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

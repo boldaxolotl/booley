@@ -3244,6 +3244,19 @@ class TestSessionsOnStaleImage:
         )
         assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+    def test_vscode_container_for_symlinked_folder_is_reported(self, workspace: Path, monkeypatch):
+        # A label naming the workspace through a symlink is the same directory.
+        alias = workspace.parent / "alias"
+        alias.symlink_to(workspace, target_is_directory=True)
+        self._patch_docker(
+            monkeypatch,
+            names="goofy_ellis\n",
+            container_ids={"goofy_ellis": self.OLD_ID},
+            folders={"goofy_ellis": str(alias)},
+        )
+        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == ["goofy_ellis"]
+
     def test_same_image_id_is_silent(self, workspace: Path, monkeypatch):
         # The rebuild was a no-op (all layers cached): the tag still resolves to
         # the very image the container runs, so there is nothing to restart for.

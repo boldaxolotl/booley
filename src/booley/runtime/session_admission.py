@@ -200,16 +200,9 @@ def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[S
                 continue
             if _foreign_listing(folder, project_id, name, root, local_name):
                 continue
-            # One inspect classifies the row: a proven relay is skipped, any other
-            # possible Sandbox is built from the same document.
-            document = _inspect_document(container_id, name, run)
-            if (
-                name != local_name
-                and role == "license-relay"
-                and _noninteractive_relay(document, container_id, name)
-            ):
+            item = _classified_sandbox(container_id, name, role, local_name, run)
+            if item is None:
                 continue
-            item = _sandbox(document, container_id, name, exact_id=True)
             if not _valid_identity(item, item.project_root):
                 raise AdmissionError(_identity_recovery(item, root))
             local_root = same_host_path(item.project_root, root)
@@ -224,6 +217,20 @@ def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[S
         return tuple(items.values())
     except (OSError, subprocess.SubprocessError) as exc:
         raise AdmissionError(f"cannot inspect Project Sandboxes safely: {exc}") from exc
+
+
+def _classified_sandbox(
+    container_id: str, name: str, role: str, local_name: str, run: Run
+) -> Sandbox | None:
+    """Inspect one listed row once: ``None`` for a proven relay, else its Sandbox."""
+    document = _inspect_document(container_id, name, run)
+    if (
+        name != local_name
+        and role == "license-relay"
+        and _noninteractive_relay(document, container_id, name)
+    ):
+        return None
+    return _sandbox(document, container_id, name, exact_id=True)
 
 
 def running_sandboxes(*, run: Run = _run) -> tuple[Sandbox, ...]:
