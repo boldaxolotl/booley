@@ -37,7 +37,6 @@ booley bootstrap --update         # rerun after every Booley upgrade
 booley bootstrap --check-only     # report pending work; change nothing
 booley bootstrap --egress unproxied  # record the Sandbox egress mode, then bootstrap
 booley init                       # set up the Project in the current directory
-booley init --scaffold my_ip      # start a new IP from scratch in a fresh repo
 booley auth                       # save a long-lived Claude login for unattended runs
 booley auth --cli codex           # the same for Codex: paste an API key
 booley auth --status              # show which login each agent would use
