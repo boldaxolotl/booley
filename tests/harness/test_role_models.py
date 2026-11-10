@@ -193,9 +193,29 @@ def test_model_settings_maps_each_model_to_its_keys(model_pin, expected):
     assert settings.model_settings() == expected
 
 
-def test_project_credential_policy_refuses_toml_gateway(tmp_path):
-    """Sandbox Issuance cannot route Codex through the gateway from booley.toml yet."""
+def test_project_credential_policy_accepts_codex_gateway(tmp_path):
+    """A Booley-issued Sandbox may route Codex through the gateway; Claude never."""
     _write_toml(tmp_path, '[agent]\nprovider = "codex"\nauth = "gateway"\n')
+    assert bc.project_credential_policy(tmp_path, booley_dir=tmp_path / ".booley") == (
+        "codex",
+        "gateway",
+    )
+
+    _write_toml(
+        tmp_path,
+        '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n\n'
+        '[agent.auth]\nclaude = "subscription"\ncodex = "gateway"\n',
+    )
+    assert bc.project_credential_policy(tmp_path, booley_dir=tmp_path / ".booley") == (
+        "claude",
+        "subscription",
+    )
+    assert bc.project_credential_policies(tmp_path, booley_dir=tmp_path / ".booley").policies == {
+        "claude": "subscription",
+        "codex": "gateway",
+    }
+
+    _write_toml(tmp_path, '[agent]\nclis = ["claude"]\n\n[agent.auth]\nclaude = "gateway"\n')
     with pytest.raises(BackendConfigError, match="gateway"):
         bc.project_credential_policy(tmp_path, booley_dir=tmp_path / ".booley")
 
@@ -216,16 +236,6 @@ def test_malformed_clis_entries_fail_naming_the_key(tmp_path):
         _write_toml(tmp_path, f"[agent]\nclis = [{entry}]\n")
         with pytest.raises(BackendConfigError, match="clis"):
             load_agent_settings(tmp_path)
-
-
-def test_project_credential_policy_refuses_gateway_for_any_listed_cli(tmp_path):
-    """Sandbox Issuance refuses a toml ``gateway`` even when Codex is not the default CLI."""
-    _write_toml(
-        tmp_path,
-        '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n\n[agent.auth]\ncodex = "gateway"\n',
-    )
-    with pytest.raises(BackendConfigError, match="gateway"):
-        bc.project_credential_policy(tmp_path, booley_dir=tmp_path / ".booley")
 
 
 def test_models_audit_reports_an_environment_error_without_an_agent_table(monkeypatch):
@@ -286,7 +296,7 @@ def test_sandbox_settings_take_each_cli_policy_from_spec_record(tmp_path, monkey
 
 def test_malformed_spec_record_falls_back_to_the_default_cli_hand_off(monkeypatch):
     data = {"agent": {"clis": ["claude", "codex"], "default": "claude"}}
-    monkeypatch.setenv("BOOLEY_AGENT_CLIS", "claude=subscription,codex=gateway")
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", "claude=gateway,codex=auto")
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "api_key")
 
     settings = bc.settings_from_data(data, lazy=True)
@@ -296,7 +306,14 @@ def test_malformed_spec_record_falls_back_to_the_default_cli_hand_off(monkeypatc
 
 @pytest.mark.parametrize(
     "raw",
-    ["claude", "claude=bogus", "gemini=auto", "claude=auto,claude=auto", "codex=gateway", "=auto"],
+    [
+        "claude",
+        "claude=bogus",
+        "gemini=auto",
+        "claude=auto,claude=auto",
+        "claude=gateway",
+        "=auto",
+    ],
 )
 def test_cli_record_decoding_is_strict(raw):
     with pytest.raises(ValueError):

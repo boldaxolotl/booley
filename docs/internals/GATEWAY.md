@@ -12,10 +12,25 @@ The policy is selected by the environment. Set these in the environment of a
 Sandbox that does not come from `booley init`, such as a Codespace or a
 hand-written devcontainer. `booley.toml` may also declare
 `[agent.auth] codex = "gateway"` (Codex only; a string `auth = "gateway"` is
-rejected while `claude` is listed), which is honored inside a Sandbox, but
-Booley's own Sandbox Issuance refuses it until it can issue a gateway Sandbox
-per Agent CLI ([#2755](https://github.com/boldaxolotl/booley/issues/2755)). Booley-issued Sandboxes take their policy from
-`booley.toml`, and a host export is ignored (`booley doctor` warns about it).
+rejected while `claude` is listed), which is honored inside a Sandbox.
+Booley-issued Sandboxes take their policy from `booley.toml` (the per-CLI
+record `BOOLEY_AGENT_CLIS`), and a host export is ignored (`booley doctor`
+warns about it). With `codex = "gateway"`, Sandbox Issuance forwards
+`BOOLEY_GATEWAY_URL` and the one token source the issuing shell exports as
+`${localEnv:KEY}` references (no model or effort pin, no Codex login, no API
+key). VS Code resolves `localEnv` from its own process environment, so it must
+start from a shell that exports them; its `initializeCommand` refuses to open
+the Sandbox otherwise, and a headless start or `booley session enter/run` names
+the missing variable. Host `booley doctor` from a shell without the exports
+WARNs `interactive.devcontainer-unverified`.
+
+In an issued Sandbox whose record has `codex = "gateway"`, Claude is scrubbed:
+the gateway variables are blanked in Claude's `settings.json`, Claude SDK runs
+and `booley chat --cli claude`, and `BOOLEY_HIDDEN_GATEWAY=1` marks it. This is
+environment-level, not isolation (see
+[ADR 0080](../adr/0080-route-codex-specialists-through-an-env-selected-gateway.md)).
+Hand-written Sandboxes keep today's environment. Under the marker, Doctor and
+`booley auth --status` print a NOTE instead of failing for the gateway.
 
 | Variable | Meaning |
 | --- | --- |
@@ -28,8 +43,9 @@ With `BOOLEY_AGENT_APP=auto`, leave `BOOLEY_PRIMARY_AUTH` unset or `auto`:
 the gateway is then used only when the user has no Claude or Codex
 credential (see [the agent app](../user/SANDBOX.md#agent-app-in-a-hand-written-spec-booley_agent_app)).
 
-`[agent] default` (or its older name `provider`) must be `codex`. Codex
-Specialists use the gateway; no OpenAI or Anthropic credential and no Codex
+`[agent] default` (or its older name `provider`) must be `codex`, unless Codex
+is listed with `gateway` in a Booley-issued Sandbox, where `default` may be
+Claude. Codex Specialists use the gateway; no OpenAI or Anthropic credential and no Codex
 login reaches them. The gateway
 host must be reachable from the Sandbox. Text-only Codex Specialists such as
 `coverage_analyst` use the gateway too, on the same model as other Specialists.
@@ -38,7 +54,7 @@ They need no Codex models cache: Booley writes the model's catalog entry.
 ## Validation
 
 A missing variable, both or neither token source, a non-`https` URL, or a
-Claude provider fails `booley doctor` and `booley auth --status` naming the
+Claude provider (unless Codex is also on the gateway per CLI) fails `booley doctor` and `booley auth --status` naming the
 problem. A failing token command fails `booley doctor`, which quotes the
 command's stderr; `booley auth --status` does not run the command. A complete
 configuration passes Doctor and exits 0.
@@ -68,7 +84,9 @@ can run the command can get a token.
 
 ## Interactive Codex
 
-On every Sandbox start under `BOOLEY_PRIMARY_AUTH=gateway`, the in-Sandbox
+On every Sandbox start under `BOOLEY_PRIMARY_AUTH=gateway`, or whose
+`BOOLEY_AGENT_CLIS` record has `codex=gateway` (including a Claude-default
+Sandbox), the in-Sandbox
 registrar edits the user's Codex `config.toml` (the same file as the MCP
 entry), keeping unrelated keys:
 
@@ -96,7 +114,9 @@ entry), keeping unrelated keys:
   entries: when a start registers Codex on a non-gateway policy, it removes the
   `booley_gateway` table, plus `model_provider` and `model` when they still
   hold the gateway's values. `features.fast_mode` and the token exclusion stay.
-  A start that resolves to Claude leaves the Codex config untouched.
+  Under `auto`, a start that resolves to Claude leaves the Codex config
+  untouched; an issued Claude-default Sandbox with `codex = "gateway"` still
+  writes the provider.
 
 Because Booley does not spawn this Codex, the in-memory cache and the 401 retry
 of Specialist runs do not apply. The `auth` helper runs
@@ -127,7 +147,7 @@ single place that decides this; `booley doctor` mirrors the condition in
 
 | Variable | Effect |
 | --- | --- |
-| `BOOLEY_GATEWAY_MODEL` | One model id (no whitespace or control characters), passed to Codex as is. Replaces the model of every Specialist that runs on Codex (a `gpt-*` `[models]` entry, or no entry while Codex is the default Agent CLI), and Booley's internal model when Codex is the default, including the model Doctor's developer probe uses. A Specialist pinned to a `claude-*` model keeps it. |
+| `BOOLEY_GATEWAY_MODEL` | One model id (no whitespace or control characters), passed to Codex as is. An issued Sandbox forwards no model or effort pin. Replaces the model of every Specialist that runs on Codex (a `gpt-*` `[models]` entry, or no entry while Codex is the default Agent CLI), and Booley's internal model when Codex is the default, including the model Doctor's developer probe uses. A Specialist pinned to a `claude-*` model keeps it. |
 | `BOOLEY_GATEWAY_EFFORT` | Reasoning effort for every Codex Specialist call and the mutation creator and developer probe calls: `none` (no reasoning, not "unset"), `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` or `persistent` (case-insensitive). Unset, each call keeps its usual effort. Whether the gateway's model supports a level is the gateway's call. |
 
 Notes:
