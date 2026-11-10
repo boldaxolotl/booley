@@ -277,6 +277,7 @@ markers = [
     "string_parameter_eda: actual string parameter receiver acceptance",
     "native_bwave: tests that execute the compiled native B-Wave binary",
     "slow: marks slow-running tests (deselect with '-m \"not slow\"')",
+    "sandbox_only: exercises only code that runs in the Sandbox; skipped on Windows (see .github/ci/README.md#sandbox-only-tests)",
 ]
 filterwarnings = [
     "error",

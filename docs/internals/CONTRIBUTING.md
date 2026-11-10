@@ -340,6 +340,12 @@ Porting EDA tools is #1, but not the only way to help:
   [Getting set up](#getting-set-up) above); a change that breaks tests is yours
   to fix.
 - **Match the surrounding code**: comment density, naming, and idiom.
+- **Register tests of Sandbox-only code.** Windows CI skips tests listed in
+  `tests/sandbox_only.py`, the `sandbox_only` marker's registry, because that code
+  never runs on a Windows host. Add a test module there only when the module it
+  exercises runs only in the Sandbox; a guard test fails if a module a host
+  command can import is left with only Sandbox-only tests. See
+  [Sandbox-only tests](../../.github/ci/README.md#sandbox-only-tests).
 - **One concern per PR.** An EDA-tool port, a refactor, and a doc fix are three PRs.
 - **Keep slow tests well inside their time budget.** CI gives each test 60
   seconds unless a `@pytest.mark.timeout(N)` marker says otherwise. On Windows

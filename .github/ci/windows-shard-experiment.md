@@ -66,3 +66,23 @@ from real durations; refreshing it is separate work.
 The first ten-shard run, pull request run
 [37897720629](https://github.com/boldaxolotl/booley/actions/runs/37897720629),
 ran its slowest Windows shard in 743 seconds and its fastest in 413 seconds.
+
+## November 10, 2026: default lowered to four
+
+Windows CI skips [Sandbox-only tests](README.md#sandbox-only-tests), which carry
+about 62% of the summed Windows test time, so four shards, the smallest
+supported count, replace ten. The criterion is the existing timeout headroom: no
+Windows shard's pytest step may come closer to its 12-minute step limit than the
+slowest ten-shard step does today. Projection per run: the longest of four
+longest-processing-time shards of the tests the registry keeps, divided by the
+four workers, plus 20 seconds of worker overhead and the run's longest collection.
+
+| Ten-shard run | Slowest step today | Kept test time | Slowest of four shards | Projected step |
+| --- | ---: | ---: | ---: | ---: |
+| [42888369399](https://github.com/boldaxolotl/booley/actions/runs/42888369399) | 573 s | 4,954 s | 1,239 s | 418 s |
+| [42890283558](https://github.com/boldaxolotl/booley/actions/runs/42890283558) | 573 s | 4,780 s | 1,195 s | 406 s |
+| [42889969548](https://github.com/boldaxolotl/booley/actions/runs/42889969548) | 543 s | 4,386 s | 1,097 s | 376 s |
+
+All three projections are well under today's slowest step, so four shards stay
+within the headroom. The timing model is unchanged; shard balance weighs skipped
+tests at zero. Manual runs can still select six, eight, or ten shards.
