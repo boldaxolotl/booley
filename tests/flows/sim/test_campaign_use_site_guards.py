@@ -262,6 +262,28 @@ def test_result_observations_refuses_a_malformed_baseline_cycle_count() -> None:
             result_observations(result)
 
 
+def test_result_observations_refuses_an_observation_that_could_override_identity() -> None:
+    """An extra member would override the work item identity in acceptance facts (#1744)."""
+    from booley.flows.sim.campaign.coordinator import result_observations
+
+    document = json.loads(_simulation_result("completed"))
+    document["observations"][0]["role"] = "candidate"
+    result = decode_simulation_result(canonical_json_bytes(document))
+    with pytest.raises(SimulationCampaignIntegrityError):
+        result_observations(result)
+
+
+def test_result_observations_refuses_observations_that_are_not_a_list() -> None:
+    """A mapping in place of the observation list is refused, not iterated by key (#1744)."""
+    from booley.flows.sim.campaign.coordinator import result_observations
+
+    document = json.loads(_simulation_result("completed"))
+    document["observations"] = {}
+    result = decode_simulation_result(canonical_json_bytes(document))
+    with pytest.raises(SimulationCampaignIntegrityError):
+        result_observations(result)
+
+
 def test_coverage_owner_refuses_malformed_result_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

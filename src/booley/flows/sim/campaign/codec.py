@@ -3,8 +3,8 @@
 This module is deliberately infrastructure-free. It decodes untrusted
 documents into immutable values. Manifests are checked for shape only: planning proved their content and
 published them atomically, so each manifest reader below reads just the members
-its callers use (#2136). Attempt, build attempt/result, bundle, snapshot and result
-records get only the boundary check: size, UTF-8 JSON, exact fields, ``$schema``
+its callers use (#2136). Attempt, build attempt, build result, bundle, snapshot and
+result records get only the boundary check: size, UTF-8 JSON, exact fields, ``$schema``
 and canonical bytes (#1743, #1744).
 """
 
@@ -441,10 +441,6 @@ def _exact_list(value: object, field: str, ceiling: int) -> list[object]:
     if len(decoded) > ceiling:
         raise SimulationCampaignIntegrityError(f"{field} must be a list capped at {ceiling}")
     return decoded
-
-
-#: How the execution of one observed Test Run ended.
-#: What one simulator observation records besides its Test Run.
 
 
 def _read_manifest(value: Mapping[str, object]) -> None:

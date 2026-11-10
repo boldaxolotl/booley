@@ -20,7 +20,7 @@ ACCEPTANCE_FACTS_SCHEMA = ACCEPTANCE_FACTS_SCHEMA_V2
 
 @dataclass(frozen=True, slots=True)
 class AcceptanceFacts:
-    """Facts built from records checked at their read boundaries and use sites (result_observations).
+    """Facts built from records checked at their read boundaries and use sites.
 
     The document is deep-frozen once; nothing re-validates or decodes it.
     """

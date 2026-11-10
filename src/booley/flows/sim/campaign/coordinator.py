@@ -1033,6 +1033,21 @@ def collected_result_facts(
     return consumed, observations
 
 
+_OBSERVATION_MEMBERS = frozenset(
+    {
+        "test_run",
+        "test",
+        "execution",
+        "failure_class",
+        "functional",
+        "assertions",
+        "assertion_count",
+        "detail",
+        "cycle_count",
+    }
+)
+
+
 @reads_campaign_records
 def result_observations(result: SimulationResult) -> tuple[Mapping[str, object], ...]:
     """The observations of a stored *result*, each checked for the members facts read.
@@ -1042,7 +1057,13 @@ def result_observations(result: SimulationResult) -> tuple[Mapping[str, object],
     here. A bad value raises the campaign integrity error.
     """
     observations = cast(tuple[Mapping[str, object], ...], result.document["observations"])
+    if not isinstance(observations, tuple):
+        raise TypeError("result observations must be a list")
     for item in observations:
+        # Facts spread each observation after the identity members, so an extra key would
+        # override them.
+        if set(item) != _OBSERVATION_MEMBERS:
+            raise ValueError("observation must have exactly the recorded members")
         ExecutionObservation(item["execution"])
         FunctionalObservation(item["functional"])
         AssertionObservation(item["assertions"])
