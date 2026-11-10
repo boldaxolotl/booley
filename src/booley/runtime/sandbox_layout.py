@@ -19,6 +19,9 @@ BOOLEY_DIR_TARGET = "/booley-project"
 WORK_DIR = "/work"
 PROJECT_DATA_MOUNT_PATH = "/work/.booley"
 
+# Read-only bind of the issued devcontainer spec; only Session Issuance mounts it.
+DEVCONTAINER_TARGET = "/work/.devcontainer"
+
 
 def canonical_project_alias_path(path: Path) -> Path:
     """Translate only the protected image alias, preserving every suffix link.

@@ -30,6 +30,7 @@ requires the Sandbox.
 | `booley cheat` | either | List sections; use section flags or `--all` to print the reference |
 | `booley doctor` | either | Check project, Sandbox, and toolchain health |
 | `booley help` | either | Show top-level help, same as `booley --help` |
+| `booley init` | either | Initialize the Project; scaffold, reseed, and image work are host-only |
 | `booley resources` | either | Show measured peak memory and run time per Target and Job phase |
 | `booley targets` | either | List or filter Targets; full detail resolution requires the Sandbox |
 
@@ -40,7 +41,6 @@ requires the Sandbox.
 | `booley auth` | Configure or inspect Developer Agent and Specialist credentials |
 | `booley bootstrap` | Check or reconcile reusable host resources |
 | `booley eda` | Manage host commercial-EDA installations, grants, and licenses |
-| `booley init` | Initialize, scaffold, or reseed project integration |
 | `booley projects` | List remembered Project paths and their Grants |
 
 Use the [Skills](#skills) for guided agent workflows such as Goal Mode, feedback,
@@ -401,7 +401,7 @@ The `booley-sandbox` image contains Booley's EDA toolchain, Developer Agent clie
 
 | Command | What it does |
 |---------|-------------|
-| `booley init` | Set up project + pull or build the image |
+| `booley init` | Set up project; on the host also pull or build the image |
 | `booley init --force` | Refresh Booley-managed resources; keep caches and user files |
 | `booley doctor` | Verify image + container EDA tools |
 | `booley session up` | Start the Sandbox headlessly (no VS Code) |
@@ -421,4 +421,4 @@ it starts the native CLI as a child process and exits with its status. Arguments
 Bare `booley` prints help on the host and starts the configured Developer Agent in the
 Sandbox. For parallel Goal work, use one linked worktree per session. The
 Dashboard automatic opening defaults on; set `[sandbox].dashboard=false` to opt out.
-`booley init` and `booley session` run on the host; Doctor works on either side.
+`booley session` runs on the host. `booley init` runs on the host or in a hand-written Sandbox (Project Initialization only); a Booley-issued Sandbox refuses it. Doctor works on either side.
