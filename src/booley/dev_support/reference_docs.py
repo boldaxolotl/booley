@@ -238,14 +238,14 @@ def _parser_destinations(source: str, text: str) -> list[str]:
     for token in parser.parse(text):
         if token.type == "html_block" and _HTML_HREF.search(token.content):
             raise UnclassifiedLinkError(
-                f"{source}: an HTML link is a link form the rewriter cannot classify; "
-                "use an inline Markdown link"
+                f"{source}: an HTML link (href=...) is a link form the rewriter cannot "
+                "classify; use an inline Markdown link"
             )
         for child in token.children or []:
             if child.type == "html_inline" and _HTML_HREF.search(child.content):
                 raise UnclassifiedLinkError(
-                    f"{source}: an HTML link is a link form the rewriter cannot classify; "
-                    "use an inline Markdown link"
+                    f"{source}: an HTML link (href=...) is a link form the rewriter cannot "
+                    "classify; use an inline Markdown link"
                 )
             if child.type == "link_open":
                 destinations.append(child.attrGet("href") or "")
@@ -275,8 +275,10 @@ def _repo_target(source: str, destination: str) -> tuple[str | None, str]:
             f"{source}: link '{destination}' is unclassified; use a relative path"
         )
     resolved = posixpath.normpath(posixpath.join(posixpath.dirname(source), unquote(parts.path)))
-    if resolved.startswith(".."):
-        raise UnclassifiedLinkError(f"{source}: link '{destination}' escapes the repository")
+    if resolved == ".." or resolved.startswith("../"):
+        raise UnclassifiedLinkError(
+            f"{source}: link '{destination}' escapes the repository; link a file inside it"
+        )
     return resolved, fragment
 
 
@@ -307,7 +309,7 @@ def _rewrite_region(source: str, region: str) -> str:
         if link.start < enclosing_end:
             raise UnclassifiedLinkError(
                 f"{source}: link '{destination}' ({target}) is nested in another doc link; "
-                "the rewriter cannot classify it"
+                "the rewriter cannot classify it; unnest the link"
             )
         shipped = target in SHIPPED_DOCS
         if link.is_image or not (shipped or target in PLAIN_TEXT_TARGETS):

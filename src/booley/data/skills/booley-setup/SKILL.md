@@ -109,8 +109,10 @@ an observation transcript. Human live-output options are documented in
 `/booley-docs/FLOW_REFERENCE.md` → “Live progress and logs”.
 
 The Sandbox ships offline copies of the user docs cited here at `/booley-docs/`;
-that path does not exist on the host, where you read the same pages on the docs
-site (https://booley.dev/docs/, one page per doc name).
+that path does not exist on the host, where you read the same pages matching the
+installed version: the GitHub release tag `v<booley --version>`, folder `docs/user/`.
+The docs site (https://booley.dev/docs/, one page per doc name) shows the latest
+release, so use it only when its version equals the installed one.
 
 The CLIs fail fast on the wrong side, each naming the fix: `booley init`
 refuses in-container; the workflow CLI (`booley goal`, `booley dashboard`, `bwave`) refuses

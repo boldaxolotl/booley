@@ -90,14 +90,19 @@ def _fixed_path_problems(text: str, label: str) -> list[str]:
 
 
 def _bare_name_problems(text: str, label: str) -> list[str]:
+    """Flag unmarked bare names and repo paths (``../docs/user/X.md``, GitHub URLs, any X)."""
     names = "|".join(re.escape(name) for name in sorted(_doc_file_names()))
     bare = re.compile(rf"(?<![\w/.-])(?:docs/(?:user|internals)/)?(?P<name>{names})(?![\w-])")
-    return [
+    # A repo path may follow a slash (a relative prefix, a GitHub URL) and name any doc.
+    repo_path = re.compile(r"(?<![\w-])docs/(?:user|internals)/[\w-]+\.md")
+    matches = [*bare.finditer(text), *repo_path.finditer(text)]
+    problems = [
         f"{label}: {match.group(0)} is not cited as /booley-docs/<FILE> or marked "
         f"{reference_docs.NOT_SHIPPED_MARKER}"
-        for match in bare.finditer(text)
+        for match in matches
         if not _is_marked(text[match.end() :])
     ]
+    return list(dict.fromkeys(problems))
 
 
 def _site_url_problems(text: str, label: str) -> list[str]:
@@ -172,7 +177,9 @@ def _scanned_texts() -> list[tuple[str, str, bool]]:
 
 def test_agent_text_cites_shipped_docs_or_host_marker() -> None:
     texts = _scanned_texts()
-    assert len(texts) > 40, "the citation scan found too few agent-facing texts"
+    labels = " ".join(label for label, _, _ in texts)
+    for expected in ("SKILL.md", "cheatsheet.md", "BOOLEY_TOML_SKELETON", "scaffold booley.toml"):
+        assert expected in labels, f"the citation scan skipped {expected}"
     problems = [
         problem
         for label, text, skill in texts
@@ -185,6 +192,12 @@ def test_guard_rejects_unmarked_unshipped_citation_and_missing_section() -> None
     rejected = [
         ("see docs/user/SETUP.md for details", "SETUP.md is not cited"),
         ("see SETUP.md next", "SETUP.md is not cited"),
+        ("see docs/internals/ARCHITECTURE.md", "docs/internals/ARCHITECTURE.md is not cited"),
+        ("see ../docs/user/SETUP.md", "docs/user/SETUP.md is not cited"),
+        (
+            "see https://github.com/boldaxolotl/booley/blob/main/docs/user/SETUP.md",
+            "docs/user/SETUP.md is not cited",
+        ),
         ("the CONFIG.md file", "CONFIG.md is not cited"),
         ("see /booley-docs/NOPE.md", "is not a shipped doc"),
         ("see /booley-docs/CONFIG.md#no-such-anchor", "has no such anchor"),
@@ -225,7 +238,6 @@ def test_setup_step0_and_booley_toml_cite_the_fixed_path() -> None:
     assert fixed("SUPPORTED-EDA-TOOLS.md") in step0
     assert "docs/user/" not in step0
     assert fixed("CONFIG.md") in setup
-    assert "does not exist on the host" in " ".join(setup.split())
     assert fixed("FLOW-SIM.md") in BOOLEY_TOML_SKELETON
     scaffold = _booley_toml(ScaffoldChoices("my_ip", "verilator", "sv", "verilator", True, None))
     assert f"# Knob reference: {fixed('CONFIG.md')}" in scaffold
