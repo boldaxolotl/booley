@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +14,7 @@ from booley.harness import codex_chat
 from booley.runtime.handles import HandleStore
 from booley.runtime.pid import ProcessIdentity
 from tests.conftest import symlink_or_skip
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture
@@ -173,12 +173,9 @@ def test_shim_preserves_arguments_environment_and_exit_status(tmp_path, monkeypa
     )
     monkeypatch.setenv("BOOLEY_SHIM_TEST", "inherited")
     shim = Path(codex_chat.__file__).parents[1] / "data/codex_chat.mjs"
-    result = subprocess.run(
+    result = run_bounded_child(
         [node, str(shim), "S123", str(entrypoint), "argument with spaces", "--no-daemon"],
-        capture_output=True,
-        text=True,
         timeout=30,  # Allow Node startup headroom on busy Windows runners.
-        check=False,
     )
     assert result.returncode == 17
     assert json.loads(result.stdout) == {

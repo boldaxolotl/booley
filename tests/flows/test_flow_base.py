@@ -230,7 +230,11 @@ class TestResourceEvidence:
 
         result = flow._execute_local([sys.executable, "-c", script], timeout=30)
 
-        assert result.returncode == 0, result.stderr
+        assert result.returncode == 0, (
+            f"timed_out={result.timed_out} after {result.duration_s:.1f} s\n"
+            f"stdout:\n{result.stdout or '(none captured)'}\n"
+            f"stderr:\n{result.stderr or '(none captured)'}"
+        )
         runtime = tmp_path / ".runtime" / "python-artifacts"
         assert any((runtime / "bytecode").rglob("*.pyc"))
         assert any((runtime / "pytest").rglob("*"))
