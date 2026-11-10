@@ -13,13 +13,16 @@ from booley.runtime.session_activity import END_EVENT, EVENT_STATES
 HOOK_SCRIPT = Path("usr/local/libexec/booley/session_activity_hook.py")
 # -I -S keeps user-site, PYTHON* overrides and site imports out of a per-event process.
 HOOK_COMMAND = f"python3 -I -S /{HOOK_SCRIPT.as_posix()}"
+# Not an activity event (it stays out of session_activity.py): SessionStart records
+# which worktree a conversation started in (#2610).
+START_EVENT = "SessionStart"
 # Events only one client emits. Codex has no failed-tool event (its next event
 # after a failed call is PostToolUse or Stop) and no notifications; Claude Code
 # has no interrupt event.
 CLAUDE_ONLY = frozenset({"PostToolUseFailure", "Notification"})
 CODEX_ONLY = frozenset({"Interrupt"})
-CLAUDE_EVENTS = frozenset({*EVENT_STATES, END_EVENT}) - CODEX_ONLY
-CODEX_EVENTS = frozenset({*EVENT_STATES, END_EVENT}) - CLAUDE_ONLY
+CLAUDE_EVENTS = frozenset({*EVENT_STATES, END_EVENT, START_EVENT}) - CODEX_ONLY
+CODEX_EVENTS = frozenset({*EVENT_STATES, END_EVENT, START_EVENT}) - CLAUDE_ONLY
 
 
 def _hooked_events(hooks: Any, command: str) -> set[str]:
