@@ -14,7 +14,7 @@ from booley.config.gateway import GATEWAY_ENV_KEYS, HIDDEN_GATEWAY_ENV, GatewayC
 from booley.config.settings import BackendConfigError, get_agent_settings, load_agent_settings
 from booley.harness import codex_chat
 from booley.runtime.booley_dir import resolve_checkout_booley_dir, resolve_common_booley_dir
-from booley.runtime.foreground_child import run_foreground_child
+from booley.runtime.foreground_child import exec_agent, run_foreground_child
 from booley.runtime.handles import reserve_session_handle
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import process_session_key
@@ -100,7 +100,7 @@ def _launch(provider: str, project_root: Path, agent_args: list[str]) -> int:
         # Last statement before the process is replaced: the CLI exists and the
         # launch arguments are settled, so the notice only precedes a real start.
         print(f"Booley is starting the {provider} interactive agent.", file=sys.stderr)
-        os.execvp(executable, [*argv, *agent_args])
+        exec_agent(executable, [*argv, *agent_args])
     except FileNotFoundError:
         return _cli_not_found(provider)
     except OSError as exc:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import signal
+import threading
 
 import pytest
 
@@ -160,3 +161,203 @@ def test_a_closed_stderr_does_not_stop_the_launch(monkeypatch: pytest.MonkeyPatc
         foreground_child.run_foreground_child(lambda: 2)
 
     assert raised.value.code == 2
+
+
+# -- signals held across the launch window -----------------------------------------
+
+
+def _current_mask() -> frozenset[int]:
+    return frozenset(signal.pthread_sigmask(signal.SIG_BLOCK, []))
+
+
+@pytest.fixture
+def fake_terminal_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
+    """Make `_ForegroundRun` believe it owns a terminal without touching process groups."""
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(foreground_child, "_foreground_tty", lambda: True)
+    monkeypatch.setattr(
+        foreground_child.os, "setpgid", lambda pid, group: calls.append(("setpgid", pid))
+    )
+    monkeypatch.setattr(
+        foreground_child.os, "tcsetpgrp", lambda _fd, group: calls.append(("tcsetpgrp", group))
+    )
+    monkeypatch.setattr(foreground_child.os, "tcgetpgrp", lambda _fd: os.getpgrp())
+    return calls
+
+
+def _fake_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the forked-child branch in-process: the 'child' closes the only write end."""
+
+    def exit_child(code: int) -> None:
+        raise _ChildExitError(code)
+
+    monkeypatch.setattr(foreground_child.os, "fork", lambda: 0)
+    monkeypatch.setattr(foreground_child.os, "_exit", exit_child)
+    monkeypatch.setattr(foreground_child.os, "isatty", lambda _fd: False)
+
+
+@_needs_fork
+def test_the_child_holds_launch_signals_until_exec(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_child(monkeypatch)
+    outer_mask = _current_mask()
+    seen: dict[str, object] = {}
+
+    def launch() -> int:
+        seen["mask"] = _current_mask()
+        seen["release"] = set(foreground_child._held_until_exec)
+        return 5
+
+    with pytest.raises(_ChildExitError):
+        foreground_child.run_foreground_child(launch)
+
+    held = {signal.SIGINT, signal.SIGQUIT}
+    assert seen == {"mask": outer_mask | held, "release": held}
+    # The in-process stand-in must not leak the hold into the test worker.
+    assert _current_mask() == outer_mask
+    assert foreground_child._held_until_exec == set()
+
+
+@_needs_fork
+def test_a_terminal_child_also_holds_ctrl_z_and_takes_the_terminal_first(
+    monkeypatch: pytest.MonkeyPatch, fake_terminal_calls: list[tuple[str, int]]
+) -> None:
+    _fake_child(monkeypatch)
+    seen: dict[str, object] = {}
+
+    def launch() -> int:
+        seen["held"] = {signal.SIGINT, signal.SIGQUIT, signal.SIGTSTP} <= _current_mask()
+        seen["calls"] = list(fake_terminal_calls)
+        return 5
+
+    with pytest.raises(_ChildExitError):
+        foreground_child.run_foreground_child(launch)
+
+    assert seen == {
+        "held": True,
+        "calls": [("setpgid", 0), ("tcsetpgrp", os.getpgrp())],
+    }
+
+
+@_needs_fork
+@pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.parametrize("name", ["SIGINT", "SIGQUIT", None])
+def test_the_parent_forwards_a_held_signal_to_the_child_once(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_terminal_calls: list[tuple[str, int]],
+    terminal: bool,
+    name: str | None,
+) -> None:
+    """A copy that reached only the parent is consumed and re-sent, never left to kill it."""
+    monkeypatch.setattr(foreground_child, "_foreground_tty", lambda: terminal)
+    monkeypatch.setattr(foreground_child.os, "isatty", lambda _fd: terminal)
+    child = 4242
+    sent: list[tuple[int, int]] = []
+    during_wait: dict[str, object] = {}
+
+    def fork_after_signalling_itself() -> int:
+        if name is not None:
+            # Thread-directed: a pytest-xdist worker has other threads that would take
+            # (and die of) a process-directed copy; this thread has it blocked.
+            signal.pthread_kill(threading.get_ident(), getattr(signal, name))
+        return child
+
+    def wait_for_child(pid: int, _flags: int) -> tuple[int, int]:
+        during_wait["pending"] = signal.sigpending()
+        during_wait["disposition"] = signal.getsignal(signal.SIGINT)
+        return pid, 0
+
+    monkeypatch.setattr(foreground_child.os, "fork", fork_after_signalling_itself)
+    monkeypatch.setattr(foreground_child.os, "waitpid", wait_for_child)
+    monkeypatch.setattr(
+        foreground_child.os, "kill", lambda pid, number: sent.append((pid, number))
+    )
+    outer_mask = _current_mask()
+    entry_int = signal.getsignal(signal.SIGINT)
+
+    assert foreground_child.run_foreground_child(lambda: 0) == 0
+
+    assert sent == ([] if name is None else [(child, getattr(signal, name))])
+    assert during_wait["pending"] == set()  # the parent's own copy is gone
+    # Shared: the parent ignores them; terminal: the repair handler is installed.
+    assert (during_wait["disposition"] == signal.SIG_IGN) is (not terminal)
+    assert _current_mask() == outer_mask
+    assert signal.getsignal(signal.SIGINT) == entry_int
+
+
+@_needs_fork
+def test_the_hold_is_released_when_the_fork_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse_fork() -> int:
+        raise OSError("pids limit")
+
+    monkeypatch.setattr(foreground_child.os, "fork", refuse_fork)
+    monkeypatch.setattr(foreground_child.os, "isatty", lambda _fd: False)
+    outer_mask = _current_mask()
+
+    assert foreground_child.run_foreground_child(lambda: 4) == 4
+
+    assert _current_mask() == outer_mask
+
+
+@_needs_fork
+def test_without_a_hold_the_agent_exec_is_a_plain_execvp(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(foreground_child.os, "execvp", lambda exe, argv: calls.append((exe, argv)))
+
+    foreground_child.exec_agent("agent", ["agent", "--flag"])
+
+    assert calls == [("agent", ["agent", "--flag"])]
+
+
+@_needs_fork
+def test_a_failed_agent_exec_restores_the_caught_dispositions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def caught(_number: int, _frame: object) -> None:  # a Python handler, as Booley's own
+        pass
+
+    monkeypatch.setattr(foreground_child, "_held_until_exec", {signal.SIGINT})
+    previous = signal.signal(signal.SIGINT, caught)
+    outer_mask = signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGINT])
+    try:
+        with pytest.raises(FileNotFoundError):
+            foreground_child.exec_agent("booley-no-such-agent-cli", ["booley-no-such-agent-cli"])
+        assert signal.getsignal(signal.SIGINT) is caught
+        assert signal.SIGINT in _current_mask()  # still held: the launch goes on to fail
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, outer_mask)
+        signal.signal(signal.SIGINT, previous)
+
+
+@_needs_fork
+def test_a_pending_quit_costs_no_core_file_and_acts_before_the_exec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Order matters: default disposition and core limit first, unblock, then exec."""
+    events: list[str] = []
+
+    def caught(_number: int, _frame: object) -> None:
+        pass
+
+    def record_mask(how: int, _signals: object) -> set[signal.Signals]:
+        events.append(f"mask:{how}:{signal.getsignal(signal.SIGQUIT) == signal.SIG_DFL}")
+        return set()
+
+    def refuse_exec(_exe: str, _argv: list[str]) -> None:
+        events.append("exec")
+        raise FileNotFoundError
+
+    monkeypatch.setattr(foreground_child, "_held_until_exec", {signal.SIGQUIT})
+    monkeypatch.setattr(signal, "sigpending", lambda: {signal.SIGQUIT})
+    monkeypatch.setattr(signal, "pthread_sigmask", record_mask)
+    monkeypatch.setattr("resource.setrlimit", lambda *_args: events.append("rlimit"))
+    monkeypatch.setattr(foreground_child.os, "execvp", refuse_exec)
+    previous = signal.signal(signal.SIGQUIT, caught)
+    try:
+        with pytest.raises(FileNotFoundError):
+            foreground_child.exec_agent("agent", ["agent"])
+    finally:
+        signal.signal(signal.SIGQUIT, previous)
+
+    unblock = f"mask:{signal.SIG_UNBLOCK}:True"
+    restore = f"mask:{signal.SIG_SETMASK}:False"  # handler back before the mask is restored
+    assert events == [f"mask:{signal.SIG_BLOCK}:False", "rlimit", unblock, "exec", restore]
