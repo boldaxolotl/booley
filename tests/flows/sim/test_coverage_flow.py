@@ -2918,7 +2918,7 @@ def _observe_pre_sim_projection(monkeypatch):
 def _owned_coverage_hook_request(tmp_path):
     from booley.flows.sim.campaign.codec import canonical_json_bytes
     from booley.flows.sim.campaign.planning import finalize_manifest
-    from booley.flows.sim.campaign.serial_execution import _attempt
+    from booley.flows.sim.campaign.serial_execution import simulation_attempt
     from booley.flows.sim.campaign.store import CampaignStore
     from tests.flows.sim.test_campaign_phase3_integrity import (
         _maximum_hook_selection_plan,
@@ -2936,7 +2936,7 @@ def _owned_coverage_hook_request(tmp_path):
     store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")
     store.publish_manifest(manifest)
     request = _request(store, manifest, manifest.document["work_items"][0], tmp_path, invocation=1)
-    store.publish_attempt(request.attempt_directory, _attempt(request)[0])
+    store.publish_attempt(request.attempt_directory, simulation_attempt(request)[0])
     return request
 
 
