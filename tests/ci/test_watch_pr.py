@@ -22,6 +22,22 @@ sys.modules[SPEC.name] = watch_pr
 SPEC.loader.exec_module(watch_pr)
 
 
+_CHECKOUT_SRC = Path(__file__).resolve().parents[2] / "src"
+
+
+@pytest.fixture(autouse=True)
+def watcher_imports_this_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The watcher child imports ``booley``; the test interpreter need not have it installed.
+
+    ``tests/ci/conftest.py`` drops the suite-wide ``PYTHONPATH`` fixture for the
+    ``pip check`` tests, so this module restores it for its ``python3`` children.
+    """
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(filter(None, (str(_CHECKOUT_SRC), os.environ.get("PYTHONPATH")))),
+    )
+
+
 HEAD = "a" * 40
 NEXT_HEAD = "b" * 40
 URL = "https://github.com/example/repo/pull/7"
