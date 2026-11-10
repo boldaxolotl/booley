@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import zipfile
@@ -15,6 +14,7 @@ import pytest
 from booley.runtime import image_build_contracts as contracts
 from booley.runtime.build_stamp import BuildProfile, write_build_stamp
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+from tests.source_checkout_support import copy_source_checkout
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 
@@ -154,21 +154,7 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
     tmp_path: Path,
 ) -> None:
     checkout = tmp_path / "checkout"
-    shutil.copytree(
-        SOURCE_ROOT,
-        checkout,
-        ignore=shutil.ignore_patterns(
-            ".git",
-            ".worktrees",
-            ".runtime",
-            ".venv",
-            "target",
-            "build",
-            "dist",
-            # Coverage workers create and delete these while the checkout is copied.
-            ".coverage*",
-        ),
-    )
+    copy_source_checkout(SOURCE_ROOT, checkout)
     expected = contracts.source_image_build_contracts(checkout)
     write_build_stamp(checkout, profile=BuildProfile.OFFICIAL_RELEASE)
     wheel_dir = tmp_path / "wheel"

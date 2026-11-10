@@ -10,7 +10,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign import collect_pre_sim_firings
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
@@ -22,9 +21,15 @@ from booley.flows.sim.campaign.coordinator import (
     ResumeCampaignRunRequest,
     SimulationCampaign,
 )
+from booley.flows.sim.campaign.coverage_execution import (
+    CoverageAggregateExecutor,
+)
 from booley.flows.sim.campaign.model import create_simulation_campaign_plan
 from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
-from booley.flows.sim.campaign.resume import ValidatedManifestNode, ValidatedResumeManifest
+from booley.flows.sim.campaign.resume import (
+    ValidatedManifestNode,
+    ValidatedResumeManifest,
+)
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.campaign_reports import write_compatibility_projection
@@ -36,7 +41,13 @@ from booley.flows.sim.execution.contract import (
 )
 from tests.criteria import ledger_support as acceptance_ledger
 from tests.criteria.test_evidence_ledger import _campaign_facts, _transaction_state
+from tests.flows.sim.campaign_test_support import (
+    _admission,
+    _coverage_campaign_plan,
+    _validated_resume,
+)
 from tests.flows.sim.test_campaign_manifest_codec import _manifest
+from tests.flows.sim.test_coverage_transaction import NativeExecution
 
 _DURABLE_BOUNDARIES = (
     "manifest_commit",
@@ -162,11 +173,8 @@ class _CrashExecution:
         yield self.group
 
 
-def _admission() -> AdmissionContext:
-    return AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
-
-
-def _crash_manifest():
+def _crash_manifest(*, shared: bool = True):
+    """Crash fixture manifest: Shared Simulator Bundle route or private build."""
     document = _manifest()
     document.pop("fingerprints")
     identity = {"source_artifact_path": "input.bin", "destination": "inputs/input.bin"}
@@ -176,6 +184,12 @@ def _crash_manifest():
     document["workload"]["runtime_inputs"] = [  # type: ignore[index]
         {"declaration_id": declaration_id, **identity}
     ]
+    # Routing reads only ``pre_sim_build_access``: immutable access shares one
+    # Simulator Bundle, legacy-per-test access compiles a private per-attempt build.
+    # Planning derives ``sharing_eligible`` from the same access, so keep them aligned.
+    access = "immutable" if shared else "legacy-per-test"
+    document["workload"]["pre_sim_build_access"] = access  # type: ignore[index]
+    document["build_variants"][0]["sharing_eligible"] = shared  # type: ignore[index]
     return finalize_manifest(document)
 
 
@@ -229,14 +243,16 @@ def _assert_crash_recovery(outcome, store, crash_point, launches, crash) -> None
     assert crash_point in crash.seen
 
 
+@pytest.mark.parametrize("route", ("shared", "private"))
 @pytest.mark.parametrize("crash_point", _CRASH_POINTS)
 def test_serial_publication_boundary_resume_matrix(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     crash_point: str,
+    route: str,
 ) -> None:
-    """Every durable prefix resumes; only a committed Result suppresses rerun."""
-    manifest = _crash_manifest()
+    """Every durable prefix resumes on both build routes; only a committed Result suppresses rerun."""
+    manifest = _crash_manifest(shared=route == "shared")
     plan = create_simulation_campaign_plan(manifest)
     project, build_root, run_log = _crash_environment(tmp_path)
     launches: list[int] = []
@@ -269,6 +285,9 @@ def test_serial_publication_boundary_resume_matrix(
     store = CampaignStore(invocation / "targets" / "sim" / "campaign")
     outcome = _resume_crashed_campaign(campaign, new_request, store, manifest, plan, crash_point)
     _assert_crash_recovery(outcome, store, crash_point, launches, crash)
+    # The route axis must really reach its build: private builds live under the attempt.
+    private_builds = list(store.root.glob("work-items/*/attempts/*/private-build"))
+    assert bool(private_builds) == (route == "private")
     from booley.flows.sim.campaign.codec import MANIFEST_SCHEMA, RESULT_SCHEMA
 
     assert store.load_manifest().document["$schema"] == MANIFEST_SCHEMA
@@ -278,6 +297,64 @@ def test_serial_publication_boundary_resume_matrix(
         result = json.loads(path.read_bytes())
         assert result["$schema"] == RESULT_SCHEMA
         assert all("test_run" in observation for observation in result["observations"])
+
+
+@pytest.mark.parametrize(
+    "crash_point",
+    [
+        f"{side}:{boundary}"
+        for boundary in ("simulation_attempt", "runtime_inputs")
+        for side in ("before", "after")
+    ],
+)
+def test_coverage_aggregate_boundary_resume_matrix(tmp_path: Path, crash_point: str) -> None:
+    """The coverage aggregate's own durable boundaries resume to one terminal Result."""
+    plan, target = _coverage_campaign_plan(tmp_path, runtime_input=True)
+
+    def fresh_execution(_plan, _options, _commands, _access) -> NativeExecution:
+        # Binding the snapshot rewrites the executable path, so each attempt needs its own.
+        native = NativeExecution()
+        runtime = native.build_root / "data/stimulus.bin"
+        runtime.parent.mkdir()
+        runtime.write_bytes(b"authenticated runtime input")
+        return native
+
+    crash = _CrashOnce(crash_point)
+    campaign = SimulationCampaign(
+        CoverageAggregateExecutor(
+            plans={target.handle.identity: target},
+            execution_factory=fresh_execution,
+            publication_checkpoint=crash,
+        )
+    )
+    invocation = tmp_path / "reports" / "1"
+    invocation.mkdir(parents=True)
+    policy = CampaignPolicy()
+
+    with pytest.raises(_InjectedProcessDeath, match=crash_point):
+        campaign.run(
+            NewCampaignRunRequest(
+                plan, tmp_path, invocation.parent, policy, invocation, _admission()
+            )
+        )
+    store = CampaignStore(invocation / "targets/sim_0/campaign")
+    outcome = campaign.run(
+        ResumeCampaignRunRequest(
+            _validated_resume(store, plan, target, tmp_path),
+            plan,
+            tmp_path,
+            invocation.parent,
+            policy,
+            invocation,
+            _admission(),
+        )
+    )
+
+    assert outcome.complete is True
+    assert crash.tripped is True
+    # The crashed attempt stays on disk; the resume adds exactly one.
+    assert store.scan().items[0].attempt_count == 2
+    assert len(list(store.root.glob("work-items/*/result.json"))) == 1
 
 
 @pytest.mark.parametrize(
@@ -704,11 +781,7 @@ def _baseline_disclosure_manifest(manifest):
 
 
 def _resume_real_hook_crash(tmp_path, invocation, store):
-    from tests.flows.sim.test_campaign_phase3_integrity import (
-        _executor,
-        _handle,
-        _legacy_disclosures,
-    )
+    from tests.flows.sim.campaign_test_support import _executor, _handle, _legacy_disclosures
 
     manifest = store.load_manifest()
     node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
