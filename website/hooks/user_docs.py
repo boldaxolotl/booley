@@ -6,6 +6,10 @@ each file to the build as a virtual page ``docs/<NAME>.md`` served at
 and MkDocs validates their anchors. Strict-mode warnings therefore name the
 virtual path: ``docs/USAGE.md`` means ``docs/user/USAGE.md``.
 
+A few contributor docs (``CONTRIBUTOR_DOCS``, such as
+docs/internals/ARCHITECTURE.md) are published the same way, after the user
+docs, and also stay where they are in the repository.
+
 The slug table comes from src/booley/runtime/docs_links.py, the same table
 Booley's printed links use. It is loaded by path because the site toolchain
 does not install booley.
@@ -40,24 +44,42 @@ def _load_docs_links():
 
 
 docs_links = _load_docs_links()
-_FILE_BY_SLUG = {doc.slug: doc.file for doc in docs_links.USER_DOCS}
+_FILE_BY_SLUG = {doc.slug: doc.file for doc in docs_links.SITE_DOCS}
+# Published docs by virtual name (docs/<NAME>.md) and by repository path.
+_DOC_BY_FILE = {doc.file: doc for doc in docs_links.SITE_DOCS}
+_DOC_BY_PATH = {doc.path: doc for doc in docs_links.SITE_DOCS}
+if len(_DOC_BY_FILE) != len(docs_links.SITE_DOCS):
+    raise ValueError("two published docs share a file name, so their site pages would clash")
 # Inline Markdown link and image destinations: ](target) or ](<target>).
 _LINK = re.compile(r"(\]\(\s*<?)([^)\s>]+)")
 _FENCE = re.compile(r"^ *(```+|~~~+)")
-_GITHUB_USER_DOCS = re.compile(
-    r"^https://github\.com/boldaxolotl/booley/blob/main/docs/user/(?P<path>[^#?]+)",
+_GITHUB_BLOB_URL = re.compile(
+    r"^https://github\.com/boldaxolotl/booley/blob/main/(?P<path>[^#?]+)",
     re.IGNORECASE,
 )
 
 
 # ------------------------------------------------------------ link rewriting
+def _virtual_path(repo_path: PurePosixPath) -> str | None:
+    """Return the virtual docs/ path of a published repository file, else None.
+
+    Everything under docs/user/ (docs and assets) mirrors to docs/; a
+    contributor doc maps to its file name.
+    """
+    if repo_path.parts[:2] == ("docs", "user") and len(repo_path.parts) > 2:
+        return PurePosixPath(*repo_path.parts[2:]).as_posix()
+    doc = _DOC_BY_PATH.get(repo_path.as_posix())
+    return None if doc is None else doc.file
+
+
 def _site_relative(url: str) -> str | None:
-    """Map a public URL of a user doc (GitHub or site) to the virtual docs/ path."""
+    """Map a public URL of a published doc (GitHub or site) to the virtual docs/ path."""
     parts = urlsplit(url)
     fragment = f"#{parts.fragment}" if parts.fragment else ""
-    github = _GITHUB_USER_DOCS.match(url)
+    github = _GITHUB_BLOB_URL.match(url)
     if github:
-        return github.group("path") + fragment
+        virtual = _virtual_path(PurePosixPath(github.group("path")))
+        return None if virtual is None else virtual + fragment
     site = urlsplit(docs_links.SITE_URL)
     if parts.netloc != site.netloc or not parts.path.startswith(f"{site.path}docs/"):
         return None
@@ -79,8 +101,9 @@ def _rewrite_target(target: str, repo_dir: PurePosixPath | None) -> str:
         return target
     path, hash_mark, fragment = target.partition("#")
     resolved = PurePosixPath(*_normalized_parts(repo_dir / path))
-    if resolved.parts[:2] == ("docs", "user"):
-        return target
+    virtual = _virtual_path(resolved)
+    if virtual is not None:
+        return f"{virtual}{hash_mark}{fragment}"
     return f"{GITHUB_BLOB}{resolved}{hash_mark}{fragment}"
 
 
@@ -99,10 +122,11 @@ def _normalized_parts(path: PurePosixPath) -> list[str]:
 def rewrite_links(markdown: str, repo_dir: PurePosixPath | None) -> str:
     """Point a docs page's links where they work on the site.
 
-    - Public URLs of a user doc (GitHub blob or site) become relative virtual
-      paths, so MkDocs checks the anchor and ``mkdocs serve`` stays local.
+    - Public URLs of a published doc (GitHub blob or site) become relative
+      virtual paths, so MkDocs checks the anchor and ``mkdocs serve`` stays local.
     - When ``repo_dir`` (the page's directory in the repository) is given,
-      relative links leaving docs/user/ become GitHub URLs on ``main``.
+      relative links to published files become virtual paths, and links to
+      anything else become GitHub URLs on ``main``.
 
     Fenced code blocks are left alone.
     """
@@ -124,13 +148,11 @@ def rewrite_links(markdown: str, repo_dir: PurePosixPath | None) -> str:
 
 # ------------------------------------------------------------- MkDocs events
 def on_files(files, config):
-    """Add docs/user/*.md as pages at docs/<slug>/ and docs/user/assets/ as files."""
+    """Add every published doc as a page at docs/<slug>/ and docs/user/assets/ as files."""
     from mkdocs.structure.files import File
 
-    for doc in docs_links.USER_DOCS:
-        page = File.generated(
-            config, f"docs/{doc.file}", abs_src_path=str(USER_DOCS_DIR / doc.file)
-        )
+    for doc in docs_links.SITE_DOCS:
+        page = File.generated(config, f"docs/{doc.file}", abs_src_path=str(REPO / doc.path))
         page.dest_uri = f"docs/{doc.slug}/index.html"
         files.append(page)
     for asset in sorted((USER_DOCS_DIR / "assets").iterdir()):
@@ -140,6 +162,8 @@ def on_files(files, config):
 
 def on_serve(server, config, builder):
     server.watch(str(USER_DOCS_DIR))
+    for doc in docs_links.CONTRIBUTOR_DOCS:
+        server.watch(str(REPO / doc.path))
     server.watch(str(REPO / "src" / "booley" / "runtime" / "docs_links.py"))
     return server
 
@@ -154,7 +178,7 @@ def on_env(env, config, files):
             "url": f"docs/{doc.slug}/",
             "src_uri": f"docs/{doc.file}",
         }
-        for doc in docs_links.USER_DOCS
+        for doc in docs_links.SITE_DOCS
     ]
     return env
 
@@ -166,11 +190,11 @@ def on_page_markdown(markdown, page, config, files):
         return markdown
     page.meta["template"] = "doc.html"
     page.meta["doc_section"] = True  # base.html marks the header's Docs link current
-    name = src_uri.removeprefix("docs/")
-    if name not in {doc.file for doc in docs_links.USER_DOCS}:
+    doc = _DOC_BY_FILE.get(src_uri.removeprefix("docs/"))
+    if doc is None:
         return rewrite_links(markdown, None)  # the landing page: no repository-relative links
-    page.meta["doc_source"] = f"{GITHUB_BLOB}docs/user/{name}"
-    return rewrite_links(markdown, PurePosixPath("docs/user"))
+    page.meta["doc_source"] = f"{GITHUB_BLOB}{doc.path}"
+    return rewrite_links(markdown, PurePosixPath(doc.directory))
 
 
 def on_page_content(content, page, config, files):
