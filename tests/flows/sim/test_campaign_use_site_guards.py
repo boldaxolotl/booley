@@ -25,15 +25,15 @@ from booley.flows.sim.campaign.inspection import (
 )
 from booley.flows.sim.campaign.planning import manifest_digest
 from booley.flows.sim.config import parse_run_cwd_template
-from tests.flows.sim.test_campaign_codec_golden import _simulation_result
-from tests.flows.sim.test_campaign_flow_planning import _planning_fixture
-from tests.flows.sim.test_campaign_phase3_adversarial import (
+from tests.flows.sim.campaign_test_support import (
     _completed,
-    _executor,
     _read,
+    _recovery_executor,
+    _request,
     _write,
 )
-from tests.flows.sim.test_campaign_phase3_integrity import _request
+from tests.flows.sim.test_campaign_codec_golden import _simulation_result
+from tests.flows.sim.test_campaign_flow_planning import _planning_fixture
 
 
 @pytest.mark.parametrize(
@@ -148,7 +148,7 @@ def test_a_malformed_published_record_is_corrupt_storage(tmp_path: Path, case: s
         item = manifest.document["work_items"][0]
         request = _request(store, manifest, item, tmp_path / "project", invocation=1)
         with pytest.raises(SimulationCampaignIntegrityError):
-            _executor(tmp_path / "engine-build").execute(request)
+            _recovery_executor(tmp_path / "engine-build").execute(request)
     elif case == "ordinal":
         attempt_path = completed.attempt_dir / "attempt.json"
         _write(attempt_path, _read(attempt_path) | {"attempt_ordinal": "1"})

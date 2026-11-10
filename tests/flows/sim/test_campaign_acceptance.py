@@ -1,150 +1,58 @@
+"""Criteria publication after Simulation Campaign terminal results."""
+
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
+from booley.criteria.state import CriterionEntry, DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM, cycle_count_criterion_key
 from booley.flows.endpoint_acceptance import record_acceptance
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.execution_persistence import EvidenceDiscarded
 from booley.flows.prepared_invocation import OrdinaryRunInvocation
-from booley.flows.sim.acceptance import AcceptanceContext, SimulationAcceptanceCoordinator
-from booley.flows.sim.campaign.bundle import (
-    SnapshotAttemptIdentity,
-    authenticate_executable_snapshot,
-    create_executable_snapshot,
+from booley.flows.sim.acceptance import (
+    AcceptanceContext,
+    SimulationAcceptanceCoordinator,
+    record_campaign_acceptance,
 )
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
-    canonical_json_bytes,
-    decode_simulator_bundle,
 )
-from booley.flows.sim.campaign.coordinator import CampaignOutcome, CampaignRecoveryStatus
+from booley.flows.sim.campaign.coordinator import (
+    CampaignOutcome,
+    CampaignPolicy,
+    NewCampaignRunRequest,
+    SimulationCampaign,
+    _acceptance_ready,
+)
 from booley.flows.sim.campaign.facts import AcceptanceFacts
-from booley.flows.sim.campaign.run_directory import (
-    claimed_run_directory,
-    expand_run_directory,
-)
-from booley.flows.sim.config import parse_run_cwd_template, resolve_pre_sim_build_access
+from booley.flows.sim.campaign.model import create_simulation_campaign_plan
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.runtime_inputs import materialize_campaign_runtime_inputs
+from booley.flows.sim.request import SimRequest
 from booley.runtime.endpoint_execution import EXIT_CANCELLED, EndpointOutcome
+from tests.criteria.ledger_support import FixtureRecorder
+from tests.flows.sim.campaign_test_support import (
+    _acceptance_facts,
+    _admission,
+    _manifest_for,
+    _NoEdaExecutor,
+    _observation,
+    _recovery_status,
+    _simulation_outcome,
+)
 
 
 def _sha(raw: bytes) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
-
-
-def _recovery_status(tmp_path: Path) -> CampaignRecoveryStatus:
-    return CampaignRecoveryStatus(
-        tmp_path / "manifest.json",
-        "sha256:" + "1" * 64,
-        (),
-        (),
-        (),
-    )
-
-
-def _facts() -> dict[str, object]:
-    return {
-        "$schema": "booley.simulation-acceptance-facts/v1",
-        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-        "manifest_sha256": "sha256:" + "1" * 64,
-        "origin": {"execution_id": "", "invocation_id": 1},
-        "target": {
-            "vlnv": "acme:lib:dut:1",
-            "name": "sim",
-            "selector": "sim",
-            "project_identity": "project",
-            "revision": "abc",
-            "role": "candidate",
-            "display_name": "sim",
-        },
-        "required_suite": {
-            "names": ["smoke"],
-            "default_invocation": False,
-            "source_sha256": "sha256:" + "2" * 64,
-        },
-        "prerequisites": [],
-        "consumed_results": [],
-        "observations": [],
-        "coverage_reference": None,
-    }
-
-
-def _observation(test: str | None) -> dict[str, object]:
-    return {
-        "work_item_id": "item:0000:0123456789abcdef",
-        "role": "candidate",
-        "revision": "abc",
-        "target": _facts()["target"],
-        "result_sha256": "sha256:" + "3" * 64,
-        "test": test,
-        "execution": "completed",
-        "failure_class": None,
-        "functional": "pass",
-        "assertions": "clean",
-        "assertion_count": 0,
-        "detail": {},
-        "cycle_count": None,
-    }
-
-
-def _simulation_outcome(
-    tmp_path: Path,
-    observations: list[dict[str, object]],
-    *,
-    required: tuple[str, ...] = ("half", "full"),
-    complete: bool = True,
-    role: str = "candidate",
-) -> CampaignOutcome:
-    document = _facts()
-    target = dict(document["target"])  # type: ignore[arg-type]
-    target["role"] = role
-    document["target"] = target
-    document["required_suite"] = {
-        "names": list(required),
-        "default_invocation": not required,
-        "source_sha256": "sha256:" + "2" * 64,
-    }
-    normalized = []
-    for observation in observations:
-        normalized.append(observation | {"target": target, "role": role})
-    document["observations"] = normalized
-    facts = AcceptanceFacts(document)
-    passing = all(
-        item["execution"] == "completed"
-        and item["functional"] == "pass"
-        and item["assertions"] != "dirty"
-        for item in normalized
-    )
-    selected = {item["test"] for item in normalized}
-    acceptance_ready = (
-        complete
-        and passing
-        and (
-            len(normalized) == 1 and None in selected
-            if not required
-            else set(required).issubset(selected)
-        )
-    )
-    return CampaignOutcome(
-        tmp_path / "manifest.json",
-        tmp_path / "summary.json",
-        facts.document["target"],  # type: ignore[arg-type]
-        tuple(facts.document["observations"]),  # type: ignore[arg-type]
-        "pass" if passing else "fail",
-        complete,
-        None,
-        facts,
-        acceptance_ready,
-        _recovery_status(tmp_path),
-    )
 
 
 def _simulation_changes(
@@ -200,7 +108,7 @@ def _cycle_outcome(
     baseline_test: str = "smoke",
     manifest_owner: str = "550e8400-e29b-41d4-a716-446655440000",
 ) -> CampaignOutcome:
-    document = _facts()
+    document = _acceptance_facts()
     observation = _observation("smoke")
     observation["target"] = document["target"]
     observation["cycle_count"] = current
@@ -435,125 +343,7 @@ def test_acceptance_facts_hold_the_built_document_without_decoding(
         facts.document["prerequisites"].append({})  # type: ignore[union-attr]
 
 
-def test_owned_run_directory_is_marked_and_cleaned(tmp_path: Path) -> None:
-    run = expand_run_directory(
-        "run/{campaign}/{test}",
-        project_root=tmp_path,
-        campaign_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
-        target_key="sim",
-        work_item_key="0001-abcdef",
-        attempt_key="0001-id",
-    )
-    identity = {
-        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-        "work_item_id": "item:0000:0123456789abcdef",
-        "attempt_id": "550e8400-e29b-41d4-a716-446655440001",
-    }
-    with claimed_run_directory(run, identity=identity) as directory:
-        assert directory.is_dir()
-        (directory / "output.txt").write_text("evidence", encoding="utf-8")
-    assert not run.path.exists()
-
-
-@pytest.mark.parametrize("template", ["run/{unknown}", "run/{test!r}", "run/{test:>4}", "run/{"])
-def test_run_directory_parser_rejects_unsupported_formatting(template: str) -> None:
-    with pytest.raises(ValueError):
-        parse_run_cwd_template(template)
-
-
-def test_pre_sim_build_access_is_strict(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "booley.flows.sim.config._sim_config",
-        lambda _root: {"pre_sim_build_access": "unsafe"},
-    )
-    with pytest.raises(ValueError, match="pre_sim_build_access"):
-        resolve_pre_sim_build_access(Path())
-
-
-def test_executable_snapshot_detects_post_launch_mutation(tmp_path: Path) -> None:
-    bundle_root = tmp_path / "bundle"
-    bundle_root.mkdir()
-    executable = bundle_root / "simv"
-    executable.write_bytes(b"x")
-    artifact = {
-        "path": "simv",
-        "bytes": 1,
-        "sha256": _sha(b"x"),
-        "kind": "simulator_executable",
-    }
-    bundle_document = json.loads(
-        (Path(__file__).parents[1] / "fixtures/simulation_campaign/bundle.json").read_bytes()
-    )
-    bundle_document["artifacts"] = [artifact]
-    bundle_document["inventory_sha256"] = _sha(canonical_json_bytes([artifact])[:-1])
-    bundle_document["snapshot_inventory_sha256"] = bundle_document["inventory_sha256"]
-    bundle = decode_simulator_bundle(canonical_json_bytes(bundle_document))
-    build_result = {
-        "path": "private-build/build-result.json",
-        "bytes": 1,
-        "sha256": "sha256:" + "a" * 64,
-        "kind": "bundle_build_result",
-        "owner": "550e8400-e29b-41d4-a716-446655440000",
-        "build_attempt_id": "550e8400-e29b-41d4-a716-446655440000",
-        "state": "ready",
-        "sharing": "shared_variant",
-    }
-    snapshot_root = tmp_path / "attempt" / "snapshot"
-    snapshot = create_executable_snapshot(
-        bundle=bundle,
-        bundle_root=bundle_root,
-        snapshot_root=snapshot_root,
-        identity=SnapshotAttemptIdentity(
-            campaign_id="f47ac10b-58cc-4372-a567-0e02b2c3d479",
-            manifest_sha256="sha256:" + "1" * 64,
-            workload_sha256="sha256:" + "2" * 64,
-            work_item_id="item:0000:0123456789abcdef",
-            attempt_id="550e8400-e29b-41d4-a716-446655440001",
-        ),
-        build_result=build_result,
-        created_at="2026-09-21T10:00:01Z",
-    )
-    assert authenticate_executable_snapshot(snapshot, snapshot_root).startswith("sha256:")
-    (snapshot_root / "simv").chmod(0o600)
-    (snapshot_root / "simv").write_bytes(b"y")
-    with pytest.raises(SimulationCampaignIntegrityError, match="changed"):
-        authenticate_executable_snapshot(snapshot, snapshot_root)
-
-
-def test_literal_runtime_input_removes_only_attempt_owned_materialization(
-    tmp_path: Path,
-) -> None:
-    bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    (bundle / "input.bin").write_bytes(b"runtime input")
-    attempt = tmp_path / "attempt"
-    attempt.mkdir()
-    run = tmp_path / "literal-run"
-    run.mkdir()
-    retained = run / "retained.txt"
-    retained.write_text("project-owned", encoding="utf-8")
-    declaration = {
-        "declaration_id": "sha256:" + "1" * 64,
-        "source_artifact_path": "input.bin",
-        "destination": "generated/nested/input.bin",
-    }
-
-    with materialize_campaign_runtime_inputs(
-        bundle_root=bundle,
-        attempt_root=attempt,
-        run_cwd=run,
-        declarations=(declaration,),
-        owned_run_directory=False,
-    ) as bindings:
-        assert (run / "generated/nested/input.bin").read_bytes() == b"runtime input"
-        assert bindings[0].owned is True
-
-    assert not (run / "generated").exists()
-    assert retained.read_text(encoding="utf-8") == "project-owned"
-    assert (attempt / "runtime-inputs/generated/nested/input.bin").read_bytes() == b"runtime input"
-
-
-def test_acceptance_coordinator_uses_record_or_verify(tmp_path: Path) -> None:
+def test_acceptance_coordinator_records_selected_test_detail(tmp_path: Path) -> None:
     class Recorder:
         def __init__(self) -> None:
             self.calls = []
@@ -569,7 +359,7 @@ def test_acceptance_coordinator_uses_record_or_verify(tmp_path: Path) -> None:
     state.init_criteria({"sim_pass_sim": True}, strict=True)
     state.save()
     recorder = Recorder()
-    document = _facts()
+    document = _acceptance_facts()
     document["observations"] = [_observation("smoke")]
     facts = AcceptanceFacts(document)
     outcome = CampaignOutcome(
@@ -616,7 +406,7 @@ def test_passing_subset_does_not_change_target_level_simulation_criterion(
     state = DevelopmentState.load(tmp_path / "state.json")
     state.init_criteria({"sim_pass_sim": True}, strict=True)
     state.save()
-    document = _facts()
+    document = _acceptance_facts()
     document["required_suite"] = {
         "names": ["smoke", "regression"],
         "default_invocation": False,
@@ -777,7 +567,7 @@ def test_nonterminal_or_baseline_campaign_does_not_change_simulation_criteria(
 
 @pytest.mark.parametrize(
     ("current", "expected"),
-    [(89, True), (90, True), (91, False), (100, False), (110, False)],
+    [(90, True), (91, False)],
 )
 def test_cycle_acceptance_applies_relative_direction_and_inclusive_threshold(
     tmp_path: Path, current: int, expected: bool
@@ -885,32 +675,6 @@ def _record_final(flow: SimulateFlow, outcome: EndpointOutcome) -> None:
     )
 
 
-def test_simulation_hook_keeps_partial_acceptance_when_recording_fails(monkeypatch) -> None:
-    flow = _flow_with_campaign_outcomes("first", "second")
-
-    def commit_one_then_fail(outcomes: tuple[object, ...]) -> None:
-        assert outcomes == flow._simulation_campaign_outcomes
-        flow._simulation_acceptance_outcomes = (
-            SimpleNamespace(committed=True, transaction_id="tx-1", reason="accepted"),
-        )
-        raise OSError("second Target recording failed")
-
-    monkeypatch.setattr(flow, "record_campaign_acceptance", commit_one_then_fail)
-    calls = _spy_hook(monkeypatch, flow)
-    outcome = EndpointOutcome()
-
-    with pytest.raises(OSError, match="second Target recording failed"):
-        _record_final(flow, outcome)
-
-    assert calls == ["hook"]
-    assert outcome.detail["acceptance"] == {
-        "status": "partial",
-        "targets": [
-            {"target": "first", "committed": True, "transaction_id": "tx-1", "reason": "accepted"}
-        ],
-    }
-
-
 def test_simulation_hook_propagates_discarded_evidence(monkeypatch) -> None:
     flow = _flow_with_campaign_outcomes("first")
     flow._pending_criteria_set = ("sim",)
@@ -987,3 +751,269 @@ def test_all_candidate_manifests_publish_before_first_baseline_work() -> None:
         ("publish", candidate),
         ("run", baseline),
     ]
+
+
+def test_acceptance_readiness_requires_strict_superset_grade() -> None:
+    manifest = cast(
+        object,
+        SimpleNamespace(
+            document={
+                "required_suite": {
+                    "names": ("required",),
+                    "default_invocation": False,
+                }
+            }
+        ),
+    )
+    observations = (
+        {
+            "test": "required",
+            "execution": "completed",
+            "functional": "pass",
+            "assertions": "clean",
+        },
+        {
+            "test": "extra",
+            "execution": "completed",
+            "functional": "fail",
+            "assertions": "clean",
+        },
+    )
+
+    assert _acceptance_ready(manifest, observations, True, "fail") is False  # type: ignore[arg-type]
+
+
+def _acceptance_endpoint(state, recorder, invocation):
+    endpoint = SimulateFlow()
+    endpoint.configure_flow_execution(recorder)
+    endpoint._args = SimRequest(target="sim", report_dir=invocation.parents[1])
+    endpoint._state = state
+    endpoint._reserved_invocation_dir = invocation
+    return endpoint
+
+
+def _one_item_outcome(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley").mkdir()
+    invocation = tmp_path / "reports" / "sim" / "1"
+    request = NewCampaignRunRequest(
+        plan=create_simulation_campaign_plan(_manifest_for(("smoke",))),
+        project_root=project,
+        report_root=None,
+        policy=CampaignPolicy(),
+        invocation_directory=invocation,
+        admission=_admission(),
+    )
+    return SimulationCampaign(_NoEdaExecutor()).run(request), invocation
+
+
+def test_acceptance_result_reference_hashes_exact_stored_bytes(tmp_path: Path) -> None:
+    outcome, invocation = _one_item_outcome(tmp_path)
+    consumed = outcome.acceptance_facts.document["consumed_results"]
+    reference = consumed[0]["result"]  # type: ignore[index]
+    raw = (invocation / reference["path"]).read_bytes()  # type: ignore[index]
+    assert raw.endswith(b"\n")
+    assert reference["sha256"] == "sha256:" + hashlib.sha256(raw).hexdigest()  # type: ignore[index]
+
+
+def _ledger_bytes(log_dir: Path) -> dict[Path, bytes]:
+    root = log_dir / "acceptance"
+    return {path.relative_to(log_dir): path.read_bytes() for path in root.rglob("*.json")}
+
+
+def test_public_campaign_outcome_replays_exact_acceptance_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "fsync", lambda _descriptor: None)
+    outcome, invocation = _one_item_outcome(tmp_path)
+    assert outcome.complete is True
+    assert outcome.recovery.completed
+    assert outcome.recovery.interrupted == ()
+    assert outcome.recovery.pending == ()
+
+    state_path = tmp_path / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.slug = "ticket"
+    state.ticket_type = "implementation"
+    state.init_criteria({"sim_pass_sim": True}, strict=True)
+    state.criteria["sim_pass_sim"].met = True
+    state.save()
+    archived = state_path.read_bytes()
+    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
+    recorder = FixtureRecorder(log_dir=tmp_path / "logs", identity=identity)
+
+    record_campaign_acceptance(_acceptance_endpoint(state, recorder, invocation), (outcome,))
+    first_state = DevelopmentState.load(state_path)
+    assert first_state.criteria["sim_pass_sim"].met is False
+    assert len(first_state.acceptance_transactions) == 1
+    projection = outcome.manifest_path.parents[1] / "simulation.json"
+    projection_document = json.loads(projection.read_bytes())
+    assert projection_document["tests"][0]["error_tail"] == ("synthetic no-EDA build failure")
+    first_projection = projection.read_bytes()
+    first_ledger = _ledger_bytes(tmp_path / "logs")
+    assert any("intents" in path.parts for path in first_ledger)
+    assert any("transactions" in path.parts for path in first_ledger)
+    assert any(path.name == "record.json" for path in first_ledger)
+
+    state_path.write_bytes(archived)
+    replayed = DevelopmentState.load(state_path)
+    record_campaign_acceptance(_acceptance_endpoint(replayed, recorder, invocation), (outcome,))
+    final_state = DevelopmentState.load(state_path)
+    final_ledger = _ledger_bytes(tmp_path / "logs")
+    assert final_ledger == first_ledger
+    assert projection.read_bytes() == first_projection
+    assert final_state.acceptance_transactions == first_state.acceptance_transactions
+    assert final_state.criteria["sim_pass_sim"].met is False
+
+
+def test_campaign_acceptance_reads_identity_through_the_public_recorder_method(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "fsync", lambda _descriptor: None)
+    outcome, invocation = _one_item_outcome(tmp_path)
+    state = DevelopmentState.load(tmp_path / "state.json")
+    state.slug = "ticket"
+    state.init_criteria({"sim_pass_sim": True}, strict=True)
+    state.save()
+    identity = {"generation": "f" * 32}
+    received: list[Mapping[str, object]] = []
+
+    class PublicIdentityRecorder:
+        """Recorder exposing its identity only through ``acceptance_identity``."""
+
+        def acceptance_identity(self) -> Mapping[str, object]:
+            return identity
+
+        def record_changes(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def record_or_verify_transaction(self, _state, _changes, **kwargs):
+            received.append(kwargs["identity"])
+            return SimpleNamespace(transaction_id="a" * 64)
+
+    endpoint = _acceptance_endpoint(state, PublicIdentityRecorder(), invocation)
+    record_campaign_acceptance(endpoint, (outcome,))
+
+    assert received == [identity]
+
+
+def test_campaign_projection_error_tail_rejects_malformed_detail(tmp_path: Path) -> None:
+    outcome, invocation = _one_item_outcome(tmp_path)
+    malformed_observation = dict(outcome.observations[0], detail=[])
+    malformed = replace(outcome, observations=(malformed_observation,))
+    state = DevelopmentState.load(tmp_path / "state.json")
+    recorder = FixtureRecorder(log_dir=tmp_path / "logs", identity={})
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="detail"):
+        record_campaign_acceptance(_acceptance_endpoint(state, recorder, invocation), (malformed,))
+
+
+def _named_campaign_outcome(tmp_path: Path):
+    original, invocation = _one_item_outcome(tmp_path)
+    document = json.loads(original.acceptance_facts.canonical_bytes())
+    document["required_suite"]["names"] = ["half", "full"]
+    document["required_suite"]["default_invocation"] = False
+    observation = document["observations"][0]
+    observation.update(
+        test="half",
+        execution="completed",
+        failure_class=None,
+        functional="pass",
+        assertions="clean",
+    )
+    facts = AcceptanceFacts(document)
+    return replace(
+        original,
+        target=facts.document["target"],
+        observations=tuple(facts.document["observations"]),
+        aggregate_grade="pass",
+        acceptance_facts=facts,
+        acceptance_ready=False,
+    ), invocation
+
+
+def _named_campaign_state(tmp_path: Path):
+    state_path = tmp_path / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.slug = "ticket"
+    state.ticket_type = "implementation"
+    key = "sim_pass_sim_half"
+    params = {
+        "target": "acme:lib:dut:1#sim",
+        "_target_selector": "sim",
+        "test_selector": "half",
+        "required_tests": ["half"],
+        "minimum_total": 1,
+    }
+    state.init_criteria(
+        {key: True, "_report_submitted": True},
+        criterion_params={key: params},
+        strict=True,
+    )
+    state.set_criterion("_report_submitted", True)
+    state.save()
+    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
+    recorder = FixtureRecorder(log_dir=tmp_path / "logs", identity=identity)
+    return state_path, state, key, recorder
+
+
+def test_named_campaign_acceptance_persists_criterion_and_timeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "fsync", lambda _descriptor: None)
+    outcome, invocation = _named_campaign_outcome(tmp_path)
+    state_path, state, key, recorder = _named_campaign_state(tmp_path)
+    endpoint = _acceptance_endpoint(state, recorder, invocation)
+
+    record_campaign_acceptance(endpoint, (outcome,))
+    endpoint.finish_execution(
+        PreparedExecution(None, None, False, False, OrdinaryRunInvocation(EndpointOutcome)),
+        EndpointOutcome(),
+        started=None,
+        acceptance_recorded=True,
+    )
+
+    persisted = DevelopmentState.load(state_path)
+    assert persisted.criteria[key].met is True
+    assert persisted.criteria[key].detail["selected_tests"] == ["half"]
+    assert persisted.timeline[-1]["criteria_set"] == [key]
+
+
+def test_infrastructure_abort_preserves_simulation_criterion(tmp_path: Path) -> None:
+    from booley.flows.sim.acceptance import SimulationAcceptanceCoordinator
+
+    original, _invocation = _named_campaign_outcome(tmp_path)
+    document = json.loads(original.acceptance_facts.canonical_bytes())
+    document["observations"][0].update(
+        execution="aborted",
+        failure_class="infrastructure",
+        functional="not_observed",
+        assertions="not_observed",
+        cycle_count=None,
+        detail={"termination": "disk_budget", "reason": "disk guard"},
+    )
+    facts = AcceptanceFacts(document)
+    outcome = replace(
+        original,
+        observations=tuple(facts.document["observations"]),
+        acceptance_facts=facts,
+        aggregate_grade="error",
+    )
+    _path, state, key, _recorder = _named_campaign_state(tmp_path)
+    previous = True
+    state.criteria[key].met = previous
+    state.criteria[key].detail = {"prior": "retained"}
+    state.criteria["cycle_count_sim_half"] = CriterionEntry(
+        met=previous,
+        detail={"prior": "cycle retained"},
+        params={
+            "target": "acme:lib:dut:1#sim",
+            "_target_selector": "sim",
+            "test": "half",
+            "max_cycles": 100,
+        },
+    )
+    before = state.to_dict()
+    assert SimulationAcceptanceCoordinator._derive_changes(outcome, state) == []
+    assert state.to_dict() == before

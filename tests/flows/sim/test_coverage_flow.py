@@ -497,7 +497,7 @@ def test_many_current_coverage_firings_keep_all_lines_and_bounded_preview(tmp_pa
 
     from booley.flows.sim.campaign.store import CampaignStore
     from booley.runtime.endpoint_execution import EndpointOutcome
-    from tests.flows.sim.test_campaign_phase3_integrity import _executor, _handle, _request
+    from tests.flows.sim.campaign_test_support import _executor, _handle, _request
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
 
     def transform(document):
@@ -2924,10 +2924,7 @@ def _owned_coverage_hook_request(tmp_path):
     from booley.flows.sim.campaign.planning import finalize_manifest
     from booley.flows.sim.campaign.serial_execution import simulation_attempt
     from booley.flows.sim.campaign.store import CampaignStore
-    from tests.flows.sim.test_campaign_phase3_integrity import (
-        _maximum_hook_selection_plan,
-        _request,
-    )
+    from tests.flows.sim.campaign_test_support import _maximum_hook_selection_plan, _request
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _refresh_hook_workload_identity
 
     plan, _ = _maximum_hook_selection_plan(("wrap",))

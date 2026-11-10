@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -416,6 +417,23 @@ def _booley_dir_spelling(project_root: Path, spelling: str) -> str:
     else:
         raise AssertionError(f"unknown spelling {spelling}")
     return str(entry)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_runtime_accepts_booley_dir_under_symlinked_project_root(
+    mounted_runtime, monkeypatch, tmp_path
+):
+    """A ``.booley`` entry under a symlink alias of the Project Root is the same location."""
+    request, _, _ = mounted_runtime
+    real_root = tmp_path / "workspace"
+    (real_root / ".booley").mkdir(parents=True)
+    alias_root = tmp_path / "alias"
+    alias_root.symlink_to(real_root, target_is_directory=True)
+    monkeypatch.setenv("BOOLEY_DIR", str(real_root / ".booley"))
+    _hide_image_alias(monkeypatch)
+    monkeypatch.delenv("CODESPACES", raising=False)
+    report = inspection.inspect_runtime(replace(request, project_root=alias_root)).issuance
+    assert any("Booley Directory identity verified" in f.message for f in report.findings)
 
 
 @pytest.mark.parametrize("spelling", ["fixed-alias", "project-directory", "project-symlink"])
