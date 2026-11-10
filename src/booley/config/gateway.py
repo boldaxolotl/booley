@@ -17,6 +17,13 @@ GATEWAY_AUTH = "gateway"
 GATEWAY_URL_ENV = "BOOLEY_GATEWAY_URL"
 GATEWAY_TOKEN_ENV = "BOOLEY_GATEWAY_TOKEN"
 GATEWAY_TOKEN_COMMAND_ENV = "BOOLEY_GATEWAY_TOKEN_COMMAND"
+# Set to "1" in a Claude process that had the gateway settings scrubbed (a Booley-issued
+# Sandbox with Codex on the gateway). Deliberately outside the ``BOOLEY_GATEWAY_`` prefix
+# so that no ``BOOLEY_GATEWAY_*`` value reaches Claude, yet Doctor can tell "hidden" from
+# "never configured".
+HIDDEN_GATEWAY_ENV = "BOOLEY_HIDDEN_GATEWAY"
+# What a Booley-issued Sandbox spec may forward from the host: the URL and one token source.
+GATEWAY_FORWARDED_ENV = (GATEWAY_URL_ENV, GATEWAY_TOKEN_ENV, GATEWAY_TOKEN_COMMAND_ENV)
 
 
 class GatewayConfigError(ValueError):
@@ -86,13 +93,12 @@ def gateway_settings_from_env(environ: Mapping[str, str] = os.environ) -> Gatewa
     url = (environ.get(GATEWAY_URL_ENV) or "").strip()
     if not url:
         raise GatewayConfigError(
-            f"{GATEWAY_AUTH!r} auth (BOOLEY_PRIMARY_AUTH=gateway) needs {GATEWAY_URL_ENV} "
-            "(the gateway's https:// base URL)"
+            f"{GATEWAY_AUTH!r} auth needs {GATEWAY_URL_ENV} (the gateway's https:// base URL)"
         )
     url = _validated_url(url)
     token = (environ.get(GATEWAY_TOKEN_ENV) or "").strip()
     command = (environ.get(GATEWAY_TOKEN_COMMAND_ENV) or "").strip()
-    prefix = f"{GATEWAY_AUTH!r} auth (BOOLEY_PRIMARY_AUTH=gateway)"
+    prefix = f"{GATEWAY_AUTH!r} auth"
     if token and command:
         raise GatewayConfigError(
             f"{prefix}: set exactly one of {GATEWAY_TOKEN_ENV} and {GATEWAY_TOKEN_COMMAND_ENV}"
@@ -106,8 +112,19 @@ def gateway_settings_from_env(environ: Mapping[str, str] = os.environ) -> Gatewa
     return GatewaySettings(url=url, token=token)
 
 
+def gateway_forwarded_keys(environ: Mapping[str, str] = os.environ) -> tuple[str, str]:
+    """The ``(url key, token source key)`` a Booley-issued spec forwards from *environ*.
+
+    The host's validated gateway configuration picks the one token source; raises
+    :class:`GatewayConfigError` naming the offending variable.
+    """
+    return GATEWAY_URL_ENV, gateway_settings_from_env(environ).token_source
+
+
 GATEWAY_MODEL_ENV = "BOOLEY_GATEWAY_MODEL"
 GATEWAY_EFFORT_ENV = "BOOLEY_GATEWAY_EFFORT"
+# Every gateway setting: the set hidden from Claude sessions.
+GATEWAY_ENV_KEYS = (*GATEWAY_FORWARDED_ENV, GATEWAY_MODEL_ENV, GATEWAY_EFFORT_ENV)
 # Named variants of Codex's ``ReasoningEffort`` (``model_reasoning_effort``).
 # Source: codex-rs/protocol/src/openai_models.rs at tag rust-v0.160.0, the
 # Codex release the Sandbox pins in ``data/docker/agent-clis-package.json``.

@@ -1810,3 +1810,171 @@ def test_codex_publish_refuses_invalid_text_by_default(tmp_path):
     with pytest.raises(ValueError, match=re.escape(str(path))):
         reg._publish_codex_config(path, "notice=true\n")
     assert path.read_text() == 'model="existing"\n'
+
+
+# ===========================================================================
+# Per-CLI Codex gateway in a Booley-issued Sandbox (#2897)
+# ===========================================================================
+
+_GATEWAY_URL = "https://gw.example/v1"
+_GATEWAY_KEYS = (
+    "BOOLEY_GATEWAY_URL",
+    "BOOLEY_GATEWAY_TOKEN",
+    "BOOLEY_GATEWAY_TOKEN_COMMAND",
+    "BOOLEY_GATEWAY_MODEL",
+    "BOOLEY_GATEWAY_EFFORT",
+)
+
+
+def _gateway_start(first_run, tmp_path, monkeypatch, *, app, record, gateway_values=True):
+    """Prepare a container start of the registrar hook; ``record=None`` is a hand-written spec."""
+    from booley.config import agent as agent_config
+
+    project = tmp_path / "hook-project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("PWD", str(project))
+    monkeypatch.setenv("HOME", str(first_run.home))
+    monkeypatch.setenv("USERPROFILE", str(first_run.home))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "booley-project"))
+    monkeypatch.setenv("BOOLEY_AGENT_APP", app)
+    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
+    for key in _GATEWAY_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    if gateway_values:
+        monkeypatch.setenv("BOOLEY_GATEWAY_URL", _GATEWAY_URL)
+        monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC_GATEWAY_TOKEN")
+    if record is None:
+        monkeypatch.delenv("BOOLEY_AGENT_CLIS", raising=False)
+        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
+    else:
+        monkeypatch.setenv("BOOLEY_AGENT_CLIS", record)
+        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
+    monkeypatch.setattr(reg, "ensure_http_server", lambda *, mode: "running")
+    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "current")
+    monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
+
+
+_ISSUED_RECORD = "claude=subscription,codex=gateway"
+
+
+def _assert_gateway_hidden(home):
+    env_map = _claude_settings(home)["env"]
+    assert [env_map[key] for key in _GATEWAY_KEYS] == [""] * len(_GATEWAY_KEYS)
+    assert env_map["BOOLEY_HIDDEN_GATEWAY"] == "1"
+    return env_map
+
+
+def test_claude_default_gateway_start_routes_codex_and_hides_gateway_from_claude(
+    first_run, tmp_path, monkeypatch, capsys
+):
+    _gateway_start(first_run, tmp_path, monkeypatch, app="claude", record=_ISSUED_RECORD)
+    settings_path = reg.claude_settings_path(first_run.home)
+    settings_path.parent.mkdir()
+    settings_path.write_text(json.dumps({"env": {"USER_KEY": "keep"}}), encoding="utf-8")
+
+    entry.main()
+
+    codex = _codex_config(first_run.home)
+    assert codex["model_provider"] == "booley_gateway"
+    assert codex["model_providers"]["booley_gateway"]["base_url"] == _GATEWAY_URL
+    assert _assert_gateway_hidden(first_run.home)["USER_KEY"] == "keep"
+    err = capsys.readouterr().err
+    assert "gateway:written" in err
+    assert "claude-gateway:hidden" in err
+
+
+def test_gateway_start_hides_unset_gateway_keys_from_claude(
+    first_run, tmp_path, monkeypatch, capsys
+):
+    """VS Code without exports: the keys are blanked anyway for a later attach."""
+    _gateway_start(
+        first_run,
+        tmp_path,
+        monkeypatch,
+        app="claude",
+        record=_ISSUED_RECORD,
+        gateway_values=False,
+    )
+
+    entry.main()
+
+    _assert_gateway_hidden(first_run.home)
+    assert "gateway:invalid" in capsys.readouterr().err
+
+
+def test_gateway_hiding_is_idempotent(first_run, tmp_path, monkeypatch):
+    _gateway_start(first_run, tmp_path, monkeypatch, app="codex", record=_ISSUED_RECORD)
+
+    assert reg.hide_gateway_from_claude(first_run.home) == "hidden"
+    writes: list[Path] = []
+    monkeypatch.setattr(reg, "_write_private_json", lambda path, _data: writes.append(path))
+
+    assert reg.hide_gateway_from_claude(first_run.home) == "hidden"
+    assert writes == []  # nothing changed, so the file is not rewritten
+
+
+def test_gateway_hiding_replaces_a_misshaped_env_map(first_run, tmp_path, monkeypatch):
+    _gateway_start(first_run, tmp_path, monkeypatch, app="codex", record=_ISSUED_RECORD)
+    path = reg.claude_settings_path(first_run.home)
+    path.parent.mkdir()
+    path.write_text(json.dumps({"env": ["not", "a", "map"], "theme": "dark"}), encoding="utf-8")
+
+    reg.hide_gateway_from_claude(first_run.home)
+
+    _assert_gateway_hidden(first_run.home)
+    assert _claude_settings(first_run.home)["theme"] == "dark"
+
+
+def test_unreadable_claude_settings_refuses_a_gateway_start(
+    first_run, tmp_path, monkeypatch, capsys
+):
+    _gateway_start(first_run, tmp_path, monkeypatch, app="codex", record=_ISSUED_RECORD)
+    path = reg.claude_settings_path(first_run.home)
+    path.parent.mkdir()
+    path.write_text("{ not json", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as raised:
+        entry.main()
+
+    assert raised.value.code == 1
+    assert "registration refused" in capsys.readouterr().err
+    assert path.read_text(encoding="utf-8") == "{ not json"
+
+
+def test_refused_claude_registration_still_hides_gateway(first_run, tmp_path, monkeypatch, capsys):
+    _gateway_start(first_run, tmp_path, monkeypatch, app="claude", record=_ISSUED_RECORD)
+    _write_claude_config(first_run.home, {"mcpServers": ["not", "an", "object"]})
+
+    with pytest.raises(SystemExit) as raised:
+        entry.main()
+
+    assert raised.value.code == 1
+    assert "refused" in capsys.readouterr().err
+    _assert_gateway_hidden(first_run.home)
+
+
+def test_invalid_codex_config_refuses_a_gateway_start_but_still_hides(
+    first_run, tmp_path, monkeypatch, capsys
+):
+    _gateway_start(first_run, tmp_path, monkeypatch, app="claude", record=_ISSUED_RECORD)
+    codex_path = reg.codex_config_path(first_run.home)
+    codex_path.parent.mkdir()
+    codex_path.write_text("broken = [", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as raised:
+        entry.main()
+
+    assert raised.value.code == 1
+    assert "registration refused" in capsys.readouterr().err
+    _assert_gateway_hidden(first_run.home)
+
+
+def test_handwritten_gateway_start_leaves_claude_settings_alone(first_run, tmp_path, monkeypatch):
+    """Guard: a hand-written Claude-app spec (no record) keeps Claude's environment."""
+    _gateway_start(first_run, tmp_path, monkeypatch, app="claude", record=None)
+
+    entry.main()
+
+    assert "env" not in _claude_settings(first_run.home)
+    assert not reg.codex_config_path(first_run.home).exists()

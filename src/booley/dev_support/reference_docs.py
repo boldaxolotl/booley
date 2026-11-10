@@ -70,6 +70,7 @@ PLAIN_TEXT_TARGETS: frozenset[str] = frozenset(
         "docs/user/CLI-REFERENCE.md",
         "docs/user/INSTALL.md",
         "docs/user/WINDOWS.md",
+        "docs/internals/GATEWAY.md",
         "docs/internals/MCP-TOOLS.md",
         "docs/internals/ROADMAP.md",
         "docs/internals/FLOW_IMPLEMENTATION.md",
