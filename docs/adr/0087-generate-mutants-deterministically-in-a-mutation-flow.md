@@ -5,7 +5,8 @@ Status: accepted (2026-11-07 triage of
 
 For mutation testing only, supersedes the `mutation_tester` key of the
 `[models]` table in
-[ADR 0084](0084-run-each-specialist-on-the-agent-cli-its-model-implies.md) and the `mutation_tester` Specialist form with its **Start fresh** option in
+[ADR 0084](0084-run-each-specialist-on-the-agent-cli-its-model-implies.md)
+and the `mutation_tester` Specialist form with its **Start fresh** option in
 [ADR 0086](0086-launch-flows-and-specialists-from-the-dashboard.md).
 
 ## Context
