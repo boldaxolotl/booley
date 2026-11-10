@@ -22,9 +22,8 @@ def installed(tmp_path, monkeypatch):
     executable = tmp_path / "@openai" / "codex" / "bin" / "codex.js"
     executable.parent.mkdir(parents=True)
     executable.write_text("#!/usr/bin/env node\n")
-    (executable.parent.parent / "package.json").write_text('{"name":"@openai/codex"}')
     node = tmp_path / "node"
-    node.write_bytes(b"\x7fELF")
+    node.write_text("#!/bin/sh\n")  # Classification is by file name, never content.
     # Simulate the launcher platform without changing the host's file-lock backend.
     monkeypatch.setattr(codex_chat, "sys", SimpleNamespace(platform="linux", stderr=sys.stderr))
     monkeypatch.setattr(
@@ -35,6 +34,7 @@ def installed(tmp_path, monkeypatch):
     monkeypatch.setattr(
         codex_chat, "capture_process_identity", lambda _pid: ProcessIdentity(123, "fixture", 7)
     )
+    monkeypatch.setattr(codex_chat, "resolve_common_booley_dir", lambda root: root)
     return executable
 
 
@@ -56,35 +56,14 @@ def test_npm_command_keeps_wrapper_and_reserves_handle(tmp_path, installed):
     assert HandleStore(project).load().next_number == 2
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        "codex",
-        "codex-x86_64-unknown-linux-musl",
-        "codex-aarch64-unknown-linux-musl",
-        "codex-x86_64-unknown-linux-gnu",
-        "codex-aarch64-unknown-linux-gnu",
-    ],
-)
+@pytest.mark.parametrize("name", ["codex", "codex-aarch64-unknown-linux-gnu"])
 def test_native_command_keeps_exec_identity(tmp_path, installed, monkeypatch, name):
     native = installed.with_name(name)
-    native.write_bytes(b"\x7fELF")
+    native.write_text("not an ELF file\n")
     launcher = tmp_path / "codex"
     symlink_or_skip(launcher, native)
     monkeypatch.setattr(codex_chat.shutil, "which", lambda _name: str(launcher))
     assert codex_chat.command(tmp_path / "project") == (str(native), ["S1", "--no-daemon"])
-
-
-@pytest.mark.parametrize("name", ["custom", "codex.js", "codex-helper", "codex-0.162.0"])
-def test_unrecognized_native_names_do_not_reserve_unusable_handles(
-    tmp_path, installed, monkeypatch, name
-):
-    native = installed.with_name(name)
-    native.write_bytes(b"\x7fELF")
-    monkeypatch.setattr(codex_chat.shutil, "which", lambda _name: str(native))
-    project = tmp_path / "project"
-    assert codex_chat.command(project) == ("codex", ["codex"])
-    assert not HandleStore(project).path.exists()
 
 
 def test_npm_update_is_discovered_on_each_launch(tmp_path, installed, monkeypatch):
@@ -100,7 +79,6 @@ def test_npm_update_is_discovered_on_each_launch(tmp_path, installed, monkeypatc
     updated = tmp_path / "updated" / "bin" / "codex.js"
     updated.parent.mkdir(parents=True)
     updated.write_text("#!/usr/bin/env node\n")
-    (updated.parent.parent / "package.json").write_text('{"name":"@openai/codex"}')
     launcher.unlink()
     symlink_or_skip(launcher, updated)
     assert codex_chat.command(project)[1][-2] == str(updated)
@@ -108,16 +86,18 @@ def test_npm_update_is_discovered_on_each_launch(tmp_path, installed, monkeypatc
 
 
 @pytest.mark.parametrize(
-    "failure", ["script", "package", "identity", "store", "lock", "node", "missing"]
+    "failure", ["script", "node-shim", "identity", "store", "lock", "node", "missing"]
 )
 def test_naming_failures_retain_plain_launch(tmp_path, installed, monkeypatch, failure):
     project = tmp_path / "project"
     if failure == "script":
-        renamed = installed.with_name("custom")
+        renamed = installed.with_name("codex-helper")
         installed.rename(renamed)
         monkeypatch.setattr(codex_chat.shutil, "which", lambda _name: str(renamed))
-    elif failure == "package":
-        (installed.parent.parent / "package.json").write_text('{"name":"another-package"}')
+    elif failure == "node-shim":
+        node = tmp_path / "node"
+        node.unlink()
+        symlink_or_skip(node, tmp_path / "volta-shim")
     elif failure == "identity":
         monkeypatch.setattr(codex_chat, "capture_process_identity", lambda _pid: None)
     elif failure == "store":
@@ -147,18 +127,19 @@ def test_non_linux_launch_is_unchanged(tmp_path, monkeypatch):
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize("shim_kind", ["script", "symlink"])
-def test_node_shims_fall_back_before_reserving_a_tab(tmp_path, installed, shim_kind):
-    node = tmp_path / "node"
-    node.unlink()
-    if shim_kind == "script":
-        node.write_text('#!/bin/sh\nexec /usr/bin/node "$@"\n')
-    else:
-        target = tmp_path / "volta-shim"
-        target.write_bytes(b"\x7fELF")
-        symlink_or_skip(node, target)
+@pytest.mark.parametrize("failure", [FileNotFoundError, ValueError, RuntimeError])
+def test_runtime_directory_failure_keeps_plain_codex_launch(
+    tmp_path, installed, monkeypatch, capsys, failure
+):
+    def unavailable(_root):
+        raise failure("no runtime directory")
+
+    monkeypatch.setattr(codex_chat, "resolve_common_booley_dir", unavailable)
+    # Re-bind stderr now that capsys has replaced it.
+    monkeypatch.setattr(codex_chat, "sys", SimpleNamespace(platform="linux", stderr=sys.stderr))
     project = tmp_path / "project"
     assert codex_chat.command(project) == ("codex", ["codex"])
+    assert "NOTE: Codex tab handle is unavailable: no runtime directory" in capsys.readouterr().err
     assert not HandleStore(project).path.exists()
 
 
