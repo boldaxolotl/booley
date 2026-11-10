@@ -12,7 +12,7 @@ import sys
 from collections.abc import Sequence
 from typing import NamedTuple
 
-from booley.harness import colors
+from booley.presentation import colors
 
 #: Placeholder for a metric the run did not produce.
 MISSING = "—"

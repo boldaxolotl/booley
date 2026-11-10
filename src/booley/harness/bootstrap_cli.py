@@ -11,8 +11,8 @@ from booley.harness.bootstrap import (
     inspect_bootstrap,
     reconcile_bootstrap,
 )
-from booley.harness.colors import green, red, yellow
 from booley.harness.terminal_status import LineStatus, section_header, status_line
+from booley.presentation.colors import green, red, yellow
 from booley.runtime.host_install import HostInstallationError, register_host_installation
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
