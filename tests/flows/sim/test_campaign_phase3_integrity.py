@@ -16,7 +16,7 @@ import pytest
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.build_session import TargetCompileSurface
-from booley.flows.sim.campaign import serial_execution
+from booley.flows.sim.campaign import collect_pre_sim_firings, serial_execution
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
@@ -28,7 +28,7 @@ from booley.flows.sim.campaign.coordinator import (
     WorkExecutionRequest,
 )
 from booley.flows.sim.campaign.model import create_simulation_campaign_plan
-from booley.flows.sim.campaign.planning import finalize_manifest
+from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import (
@@ -587,7 +587,6 @@ def _maximum_hook_selection_plan(names):
 
 @pytest.mark.timeout(180)
 def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_path):
-    from booley.flows.sim.campaign import read_pre_sim_firings
     from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
     from booley.flows.sim.execution.contract import PreSimEvidence
     from booley.flows.sim.flow import _pre_sim_projection
@@ -612,7 +611,7 @@ def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_pat
     reference = publish_pre_sim_firing(request, evidence)
     assert 1024 * 1024 < reference["bytes"] < 16 * 1024 * 1024
     assert len(canonical_json_bytes(reference)) < 1024
-    firings = read_pre_sim_firings(store.manifest_path)
+    firings = collect_pre_sim_firings(store.manifest_path)
     assert firings[0].document["test_names"] == names
     detail, _card = _pre_sim_projection(
         {f.key: f for f in firings}, frozenset(f.key for f in firings), invocation
@@ -817,7 +816,7 @@ def test_scope_stop_after_real_hook_retains_firing_without_simulator_launch(tmp_
     with supervised_execution_scope(scope), pytest.raises(PreSimScopeStoppedError):
         executor.execute(request)
     assert counters["launch"] == 0
-    firings = store.read_pre_sim_firings()
+    firings = collect_pre_sim_firings(store.manifest_path)
     assert len(firings) == 1
     assert firings[0].document["returncode"] == 0
     assert firings[0].document["stdout_tail"] == "actual-hook\n"
@@ -874,7 +873,7 @@ def test_maximum_aggregate_result_overflow_keeps_all_authenticated_sidecars(tmp_
     with pytest.raises(SimulationCampaignIntegrityError, match="byte size ceiling"):
         store.publish_result(request.work_item["work_item_id"], decode_simulation_result(raw))
     assert not (request.attempt_directory.parent.parent / "result.json").exists()
-    assert len(store.read_pre_sim_firings()) == 4000
+    assert len(collect_pre_sim_firings(store.manifest_path)) == 4000
     without_hooks = {**document, "evidence": []}
     assert len(canonical_json_bytes(without_hooks)) < RECORD_MAX_BYTES
     assert (
@@ -926,7 +925,7 @@ def test_request_reuses_authenticated_manifest_across_firings(tmp_path, monkeypa
     assert len(calls) == 1
     assert first["path"] == "pre-sim/0001.json"
     assert second["path"] == "pre-sim/0002.json"
-    assert len(request.store.read_pre_sim_firings()) == 2
+    assert len(collect_pre_sim_firings(request.store.manifest_path)) == 2
 
 
 def test_request_replacement_reauthenticates_manifest_and_attempt(tmp_path, monkeypatch):
@@ -961,7 +960,7 @@ def test_request_replacement_reauthenticates_manifest_and_attempt(tmp_path, monk
     _publish_request_hook(first)
     _publish_request_hook(changed, "gamma")
     assert len(calls) == 4
-    records = changed.store.read_pre_sim_firings()
+    records = collect_pre_sim_firings(changed.store.manifest_path)
     assert records[0].document["manifest_sha256"] == changed.pre_sim_decoder.manifest_sha256
     assert records[0].document["producer_invocation_id"] == 2
     with pytest.raises(SimulationCampaignIntegrityError):
@@ -986,7 +985,10 @@ def test_request_isolates_frozen_manifest_from_caller_mutation(tmp_path):
     assert frozen.pre_sim_decoder.manifest_sha256 == digest
     assert manifest.document["workload"]["source_recipe"]["pre_sim_commands"] == ("true",)
     assert manifest.document["work_items"][0]["selection"]["names"] == ("alpha", "beta")
-    assert frozen.store.read_pre_sim_firings()[0].document["manifest_sha256"] == digest
+    assert (
+        collect_pre_sim_firings(frozen.store.manifest_path)[0].document["manifest_sha256"]
+        == digest
+    )
 
 
 @pytest.mark.parametrize(
@@ -1127,7 +1129,7 @@ def test_campaign_pre_sim_project_relative_hook_uses_project_root(
 def test_pre_sim_reader_rejects_corrupt_record(tmp_path, error):
     request = _hook_publication_request(tmp_path)
     _publish_request_hook(request)
-    assert len(request.store.read_pre_sim_firings()) == 1
+    assert len(collect_pre_sim_firings(request.store.manifest_path)) == 1
     path = request.attempt_directory / "pre-sim/0001.json"
     document = json.loads(path.read_bytes())
     if error == "schema":
@@ -1137,7 +1139,7 @@ def test_pre_sim_reader_rejects_corrupt_record(tmp_path, error):
     path.chmod(0o600)
     path.write_bytes(b"{" if error == "truncated" else canonical_json_bytes(document))
     with pytest.raises(SimulationCampaignIntegrityError):
-        request.store.read_pre_sim_firings()
+        collect_pre_sim_firings(request.store.manifest_path)
 
 
 def test_pre_sim_inspection_reads_fresh(tmp_path, monkeypatch):
@@ -1148,9 +1150,9 @@ def test_pre_sim_inspection_reads_fresh(tmp_path, monkeypatch):
     store = CampaignStore(invocation / "targets/sim/campaign")
 
     def inspect():
-        assert store.inspect_pre_sim_firings() == outcome.pre_sim_firings
+        assert collect_pre_sim_firings(store.manifest_path) == outcome.pre_sim_firings
 
-    accesses, _ = _observe_pre_sim_reads(monkeypatch)
+    accesses, _decodes, _results = _observe_pre_sim_reads(monkeypatch)
     inspect()
     first = accesses[firing.path]
     assert first > 0
@@ -1211,7 +1213,10 @@ def test_pre_sim_read_identity_and_reference_cases(tmp_path, monkeypatch, defect
             directory.rename(directory.with_name("0001-other-owner"))
     store = CampaignStore(invocation / "targets/sim/campaign")
     with pytest.raises(SimulationCampaignIntegrityError, match=message):
-        store.scan()
+        if defect == "directory-owner":
+            store.scan()  # the owner check lives in the scan, not in firing collection
+        else:
+            collect_pre_sim_firings(store.manifest_path)
 
 
 def _observe_pre_sim_reads(monkeypatch):
@@ -1219,7 +1224,7 @@ def _observe_pre_sim_reads(monkeypatch):
 
     from booley.flows.sim.campaign.pre_sim_evidence import PreSimFiringDecoder
 
-    accesses, decodes = Counter(), Counter()
+    accesses, decodes, results = Counter(), Counter(), Counter()
 
     def observe(method):
         def read(store, path, **kwargs):
@@ -1229,6 +1234,13 @@ def _observe_pre_sim_reads(monkeypatch):
 
         return read
 
+    read_bytes = CampaignStore._read
+
+    def count_results(store, path, **kwargs):
+        if path.name == "result.json":
+            results[path] += 1
+        return read_bytes(store, path, **kwargs)
+
     decode = PreSimFiringDecoder.decode
 
     def count_decode(decoder, raw, item, attempt):
@@ -1236,10 +1248,10 @@ def _observe_pre_sim_reads(monkeypatch):
         decodes[(document["attempt_id"], document["ordinal"])] += 1
         return document
 
-    monkeypatch.setattr(CampaignStore, "_read", observe(CampaignStore._read))
+    monkeypatch.setattr(CampaignStore, "_read", observe(count_results))
     monkeypatch.setattr(CampaignStore, "_identity", observe(CampaignStore._identity))
     monkeypatch.setattr(PreSimFiringDecoder, "decode", count_decode)
-    return accesses, decodes
+    return accesses, decodes, results
 
 
 def _pre_sim_read_case(tmp_path, monkeypatch, *, interrupted=False):
@@ -1251,15 +1263,46 @@ def _pre_sim_read_case(tmp_path, monkeypatch, *, interrupted=False):
     if interrupted:
         (firing.path.parents[3] / "result.json").unlink()
     expected = store.scan()
-    accesses, decodes = _observe_pre_sim_reads(monkeypatch)
-    return store, firing, expected, accesses, decodes
+    return store, firing, expected, *_observe_pre_sim_reads(monkeypatch)
 
 
-def test_scan_validates_each_pre_sim_snapshot_once(tmp_path, monkeypatch):
-    store, firing, expected, accesses, decodes = _pre_sim_read_case(tmp_path, monkeypatch)
+def test_scan_opens_no_pre_sim_sidecar_and_each_result_once(tmp_path, monkeypatch):
+    store, firing, expected, accesses, decodes, results = _pre_sim_read_case(tmp_path, monkeypatch)
     assert store.scan() == expected
+    assert accesses == {}, "a scan must not open any Pre-Sim sidecar"
+    assert decodes == {}, "a scan must not decode any Pre-Sim sidecar"
+    assert results == {firing.path.parents[3] / "result.json": 1}, "each result is read once"
+
+
+def test_collector_reads_each_sidecar_and_result_once(tmp_path, monkeypatch):
+    store, firing, _expected, accesses, decodes, results = _pre_sim_read_case(
+        tmp_path, monkeypatch
+    )
+    (collected,) = collect_pre_sim_firings(store.manifest_path)
+    assert collected.key == firing.key and collected.terminal
     assert accesses == {firing.path: 1}, "each sidecar must have one byte access"
     assert decodes == {(firing.key[2], firing.key[3]): 1}, "each sidecar must be decoded once"
+    assert results == {firing.path.parents[3] / "result.json": 1}, "each result is read once"
+
+
+def test_scan_checks_attempts_against_the_callers_digest(tmp_path, monkeypatch):
+    store, _firing, expected, *_ = _pre_sim_read_case(tmp_path, monkeypatch)
+    manifest = store.load_manifest()
+    with pytest.raises(SimulationCampaignIntegrityError, match="attempt identity disagrees"):
+        store.scan(manifest, "0" * 64)
+    with pytest.raises(SimulationCampaignIntegrityError, match="attempt identity disagrees"):
+        store.regenerate_summary(manifest, "0" * 64)
+    digest = manifest_digest(manifest)
+    assert store.scan(manifest, digest) == expected
+    assert store.regenerate_summary(manifest, digest) == store.regenerate_summary()
+
+
+def test_scan_ignores_corrupt_sidecar_that_collection_refuses(tmp_path, monkeypatch):
+    store, firing, expected, *_ = _pre_sim_read_case(tmp_path, monkeypatch)
+    firing.path.write_bytes(firing.path.read_bytes() + b" ")
+    assert store.scan() == expected
+    with pytest.raises(SimulationCampaignIntegrityError, match="result references disagree"):
+        collect_pre_sim_firings(store.manifest_path)
 
 
 @pytest.mark.parametrize(
@@ -1267,12 +1310,10 @@ def test_scan_validates_each_pre_sim_snapshot_once(tmp_path, monkeypatch):
     [("retained", False), ("scan", True), ("retained", True)],
     ids=["complete-retained", "interrupted-scan", "interrupted-retained"],
 )
-def test_other_inspections_validate_each_pre_sim_snapshot_once(
-    tmp_path, monkeypatch, entry, interrupted
-):
+def test_other_inspections_open_no_pre_sim_sidecar(tmp_path, monkeypatch, entry, interrupted):
     from booley.flows.sim.campaign.inspection import inspect_retained_campaign
 
-    store, firing, expected, accesses, decodes = _pre_sim_read_case(
+    store, firing, expected, accesses, decodes, _results = _pre_sim_read_case(
         tmp_path, monkeypatch, interrupted=interrupted
     )
     if entry == "scan":
@@ -1282,8 +1323,8 @@ def test_other_inspections_validate_each_pre_sim_snapshot_once(
         assert status.completed == expected.complete
         assert status.interrupted == expected.interrupted
         assert firing.path.absolute() in status.retention_files
-    assert accesses == {firing.path: 1}, "each sidecar must have one byte access"
-    assert decodes == {(firing.key[2], firing.key[3]): 1}, "each sidecar must be decoded once"
+    assert accesses == {}, "no sidecar may be opened"
+    assert decodes == {}, "no sidecar may be decoded"
 
 
 @pytest.mark.parametrize("status,returncode", [("passed", 0), ("failed", 1)])
@@ -1311,7 +1352,7 @@ def test_publication_does_not_decode_its_own_bytes(tmp_path, monkeypatch, status
         reference = _publish_request_hook(request, status=status, returncode=returncode)
         assert (request.attempt_directory / reference["path"]).is_file()
         assert calls == {"decoder": [], "json": []}
-    records = request.store.read_pre_sim_firings()
+    records = collect_pre_sim_firings(request.store.manifest_path)
     assert len(records) == 1
     assert records[0].document["status"] == status
     assert records[0].document["returncode"] == returncode
