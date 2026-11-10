@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.conftest import reset_git_command_config
 
 from booley.runtime import project_trackability as pt
 from booley.runtime import runtime_context
@@ -29,7 +30,7 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(home / "gitconfig"))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
+    reset_git_command_config(monkeypatch)
     root = tmp_path / "rtl"
     root.mkdir()
     git(root, "init", "-q", "-b", "main")

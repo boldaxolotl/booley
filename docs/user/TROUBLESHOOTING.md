@@ -227,8 +227,9 @@ worktree but doesn't separate the agents.
 
 A worktree created in the Sandbox can sit at a container path the host can't
 reach, so host Git marks it `prunable`. Don't prune them from the host. Run Git worktree
-commands inside the Sandbox, and remove a worktree as the
-[CLI reference](https://booley.dev/docs/cli-reference/#worktrees) describes.
+commands inside the Sandbox, and remove a worktree with
+`booley worktree rm <name>` (see the
+[CLI reference](https://booley.dev/docs/cli-reference/#worktrees)).
 
 ### `booley worktree new` fails in the post-setup hook
 
