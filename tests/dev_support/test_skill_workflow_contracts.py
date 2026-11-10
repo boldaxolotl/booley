@@ -185,7 +185,8 @@ def test_setup_guide_describes_one_sequence():
     init_section = guide.split("## Initialize the Project", 1)[1].split("### Sign-in", 1)[0]
     assert "booley init --scaffold my_ip" not in init_section
     assert "`/booley-setup new` asks the design choices" in guide
-    assert "asks no design questions itself" in guide
+    # The user guide describes only the user-visible command, never the internal one.
+    assert "booley init --scaffold" not in guide
     assert "keeps the `[agent]` table" in guide
     # The old two-step instruction is gone.
     assert "You already ran the scaffold on the host" not in guide

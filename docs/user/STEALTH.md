@@ -19,8 +19,7 @@ all.
     enabled = true
     ```
 
-    For a new IP, answer yes in `/booley-setup new`; it runs
-    `booley init --scaffold <ip_name> --stealth` for you.
+    For a new IP, answer yes to the Stealth question in `/booley-setup new`.
 2. `booley init` hides `.booley/` from your repository and makes it a separate
    Git repository. Commit your Booley setup there, not in the RTL repo.
 3. Commit and push the RTL repo as usual; the hooks below do their work.
@@ -30,7 +29,7 @@ missing, the hooks treat Stealth as on, but Booley doesn't set up hidden cores.
 Turning Stealth off stops the hooks at once, but `.booley/` stays hidden and
 stays its own repository. Booley doesn't undo that; `booley init` warns about
 the hidden files instead. The one exception is a new IP: an open
-`booley init --scaffold` run right after plain init removes the still-empty inner
+`/booley-setup new` run right after plain init removes the still-empty inner
 repository and the `/.booley` exclusion, and refuses (changing nothing) if the
 inner repository already has commits.
 

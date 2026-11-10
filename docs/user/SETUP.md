@@ -19,8 +19,7 @@ host (`/booley-setup new` for a new IP). They differ only in the skill mode:
 
 - **A new IP, from scratch.** The easy path. Every flow is green by
   construction with the built-in Booley Flows, so you skip the feasibility triage
-  entirely: `/booley-setup new` asks the design choices, runs
-  `booley init --scaffold` with your answers to write a working,
+  entirely: `/booley-setup new` asks the design choices and writes a working,
   wired-together starter project, and drives it to a green
   `booley doctor` (Booley's built-in health check, explained at
   [Step 4](#porting-an-existing-project-plan-then-execute)).
@@ -169,25 +168,24 @@ The saved login lives in `~/.config/booley/`, outside every project, so it can't
 be committed by accident. Booley passes it to every container on its own,
 including VS Code's; rebuild an existing container once to pick it up.
 
-### What `/booley-setup new` runs: `booley init --scaffold`
+### What `/booley-setup new` asks and writes
 
 > **New IP from scratch only.** Porting an existing project? Skip to
 > [The `booley-setup` skill](#the-booley-setup-skill).
 
-You don't normally type this command: `/booley-setup new` asks the design
-choices below, explains the trade-offs, and runs `booley init --scaffold <name>`
-on the host with your answers as flags. `booley init --scaffold` asks no
-design questions itself; a flag you leave out takes the default, and init
-prints which defaults it used:
+`/booley-setup new` runs on the host after plain `booley init`. It asks the
+design choices below, explains the trade-offs, and writes the starter project
+with your answers. A choice you leave to the default takes the default, and the
+skill tells you which defaults it used:
 
-| Choice | Options | Flag |
-| --- | --- | --- |
-| Simulator EDA tool | Verilator (default) / Icarus | `--sim-eda-tool` |
-| Testbench style | SystemVerilog (default) / cocotb | `--tb-style` |
-| Lint EDA tool | Verilator (default) / Verible | `--lint-eda-tool` |
-| Flows to enable | ASIC synthesis (default on), FPGA (default off, give the part) | `--asic` / `--no-asic`, `--fpga-part` |
-| ASIC synthesis mode | `physical` (default) / `logical` | `--synth-mode` |
-| Keep Booley out of git history | off (default) / on | `--stealth` |
+| Choice | Options |
+| --- | --- |
+| Simulator EDA tool | Verilator (default) / Icarus |
+| Testbench style | SystemVerilog (default) / cocotb |
+| Lint EDA tool | Verilator (default) / Verible |
+| Flows to enable | ASIC synthesis (default on), FPGA (default off, give the part) |
+| ASIC synthesis mode | `physical` (default) / `logical` |
+| Keep Booley out of git history | off (default) / on |
 
 cocotb works with Verilator or Icarus.
 
@@ -200,22 +198,22 @@ What lands, wired together and ready to run:
 - `tb/tb_my_ip.sv` (or `tb/test_my_ip.py` for cocotb): a self-checking
   testbench with two tests, following the shipped TB style guides
 - `my_ip.core`: one Target per enabled flow (`sim`, `lint`, and optionally
-  `synth` (plus SDC in physical mode), `fpga` + XDC); with `--stealth` it
+  `synth` (plus SDC in physical mode), `fpga` + XDC); with Stealth on it
   lives at `.booley/cores/my_ip.core`
 - `.booley/booley.toml` and [`tests.toml`](TESTS.md), populated rather than
   skeletons. The scaffolded config turns
   [stealth mode](STEALTH.md#stealth-mode) off, since this repo exists to
-  exercise Booley and commit messages should stay verbatim. `--stealth`
+  exercise Booley and commit messages should stay verbatim. Choosing Stealth
   writes `[stealth] enabled = true` instead and puts the design and Doctor
   selftest cores under `.booley/cores/`
 
-The scaffold follows a completed plain `booley init`. It keeps the `[agent]`
+The starter follows a completed plain `booley init`. It keeps the `[agent]`
 table init wrote and doesn't ask for the provider or auth again. Without
-`--stealth` it also removes the empty inner `.booley` git repository and the
+Stealth it also removes the empty inner `.booley` git repository and the
 `/.booley` git exclusion that plain init set up (see
 [Stealth](STEALTH.md#turning-it-on)), so you can commit `.booley/`
-normally. If that inner repository already has commits, the scaffold refuses
-and changes nothing; rerun with `--stealth` to keep the hidden layout, or move
+normally. If that inner repository already has commits, `/booley-setup new`
+stops and changes nothing; choose Stealth to keep the hidden layout, or move
 the inner repository's history away first.
 
 The scaffold refuses to run in a repo that already contains `.core` or RTL
@@ -300,7 +298,7 @@ After `booley init`, run `/booley-setup new` on the host, in your Claude Code or
 Codex chat at the Project Root. It asks the design choices in one batched round
 (IP name, simulator, testbench style, lint tool, flows, synthesis mode, and
 whether to keep Booley out of git history, each with a recommended answer),
-then runs `booley init --scaffold` with your answers to write a working,
+then writes a working,
 green-by-construction project. So there's no feasibility triage and no config
 to author.
 
