@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from booley.config.agent import AGENT_CLIS
+from booley.core.egress_modes import EGRESS_MODES
 from booley.feedback import cli as feedback_cli
 from booley.feedback.storage import feedback_storage_dir
 from booley.harness import (
@@ -768,6 +769,11 @@ def _add_bootstrap_subparser(sub) -> None:
         action="store_true",
         help="Update Host Bootstrap after upgrading Booley",
     )
+    parser.add_argument(
+        "--egress",
+        choices=EGRESS_MODES,
+        help="Record the Sandbox egress mode in the host config, then bootstrap under it",
+    )
     qa_skills = parser.add_mutually_exclusive_group()
     qa_skills.add_argument(
         "--with-qa-skills",
@@ -788,7 +794,7 @@ def _add_flow_subparser(sub) -> None:
     """Add direct Flow execution."""
     flow_p = sub.add_parser(
         "flow",
-        help="Run a Booley Flow directly (e.g. `booley flow lint --target lint`)",
+        help="Run a Booley Flow directly (e.g. `booley flow lint --target lint_soc`)",
     )
     flow_p.add_argument(
         "endpoint_name",

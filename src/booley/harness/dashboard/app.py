@@ -10,7 +10,8 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, ClassVar
+from pathlib import Path
+from typing import Any, ClassVar, TypeVar
 
 from rich.cells import cell_len
 from rich.text import Text
@@ -21,6 +22,7 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.css.query import NoMatches
 from textual.widgets import DataTable, Static
+from textual.worker import Worker, WorkerState
 
 from booley.core.boundary import as_float
 from booley.goals.model import OCCUPYING_STATES
@@ -40,7 +42,16 @@ from booley.harness.dashboard.results import (
     project_facts,
     proposal_summary,
 )
-from booley.harness.dashboard.topbar import FILTER, HELP_ITEM, OWNER, WINDOW, TopBar
+from booley.harness.dashboard.targets import (
+    TargetDetail,
+    TargetListing,
+    TargetsReader,
+    WorktreeChoice,
+    WorktreeList,
+    first_line,
+    order_worktrees,
+)
+from booley.harness.dashboard.topbar import FILTER, HELP_ITEM, OWNER, WINDOW, WORKTREE, TopBar
 from booley.harness.dashboard.view_probe import ViewState
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.presentation.colors import PALETTE_DODGER_BLUE, PALETTE_MAUVE, PALETTE_ORANGE
@@ -68,7 +79,7 @@ FINISHED_JOBS = 50
 _REPORT_DETAIL_STATES = TERMINAL_JOB_STATES | {"orphaned"}
 HELP = (
     "↑↓ move through the list · Enter opens the selected row · Esc goes back one level\n"
-    "←→ switch between the Sessions and Jobs windows; each keeps its place\n"
+    "←→ switch between the Sessions, Jobs and Targets windows; each keeps its place\n"
     "↑ on the first row (an empty list, or the top of a detail view) reaches the top bar:"
     " ←→ choose, Enter apply, ↓ or Esc back\n"
     "The top bar holds the window tabs and Help; in the Jobs window also its filters:\n"
@@ -76,6 +87,9 @@ HELP = (
     " (Enter cycles All sessions, each session, Standalone)\n"
     "The Jobs tab counts unfinished Jobs; the Jobs window always opens on All sessions\n"
     "and keeps the Running / Finished / All choice\n"
+    "The Targets window lists the selected worktree's Targets with their core and Flows;\n"
+    "Enter shows filesets, tests, Test Variants and constraints. Its top bar Worktree item\n"
+    "picks the worktree: those with sessions first, the main checkout last\n"
     "Job details appear beside the list on wide terminals; Enter opens them on narrow terminals\n"
     "Booley call rows are informational; Enter does not open them\n"
     "The footer shows the keys that apply where the cursor is\n"
@@ -109,7 +123,9 @@ SEMANTIC_STYLE = {
 UNMOUNTED_LIST_WIDTH = 160
 NO_SESSIONS = "No agent sessions connected. Sessions appear when an agent client calls Booley."
 # Views that replace the list with one full-width detail.
-DEDICATED_VIEWS = frozenset({"job", "goal", "help", "proposal"})
+DEDICATED_VIEWS = frozenset({"job", "goal", "help", "proposal", "target"})
+# Windows left to right; the arrow keys step along them.
+WINDOW_ORDER = ("sessions", "jobs", "targets")
 # Terminal columns from which a detail (Jobs) or preview (Sessions) sits beside the list.
 WIDE_COLUMNS = 120
 # Jobs list columns, left to right. Crit repeats the detail's Criterion line as a mark.
@@ -120,6 +136,11 @@ _TARGET, _RESULT = JOB_COLUMNS.index("Target"), JOB_COLUMNS.index("Result")
 TARGET_MIN = 8
 _ABSENT = "—"
 _ELLIPSIS = "…"
+
+
+_Read = TypeVar("_Read")
+TARGETS_GROUP_PREFIX = "targets-"
+NO_PROJECT_ROOT = "Targets unavailable: no Project root"
 
 
 class Owner(Enum):
@@ -660,8 +681,8 @@ class DashboardApp(App[None]):
         Binding("q", "quit", show=False),
         Binding("escape", "back", show=False),
         # Priority: the focused DataTable binds left/right/up itself.
-        Binding("left", "switch_window('sessions')", show=False, priority=True),
-        Binding("right", "switch_window('jobs')", show=False, priority=True),
+        Binding("left", "step_window(-1)", show=False, priority=True),
+        Binding("right", "step_window(1)", show=False, priority=True),
         Binding("up", "focus_top_bar", show=False, priority=True),
     ]
     CSS = """
@@ -682,19 +703,32 @@ class DashboardApp(App[None]):
         reader: Callable[[], DashboardSnapshot],
         opener: Callable[[str], str] = open_in_editor,
         view_state: ViewState | None = None,
+        targets: TargetsReader | None = None,
     ) -> None:
         super().__init__()
         self.reader = reader
         self.opener = opener
         # Set by `booley dashboard`: the heartbeat that shows a terminal still renders this view.
         self.view_state = view_state
+        # Reads for the Targets window; without one the window reads nothing.
+        self.targets = targets
         self.snapshot = DashboardSnapshot()
         # Each window keeps its own non-empty history; its first entry is the top level.
         self.windows: dict[str, list[Navigation]] = {
             "sessions": [Navigation()],
             "jobs": [Navigation("jobs", None, "running")],
+            "targets": [Navigation("targets")],
         }
         self.window = "sessions"
+        # The Targets window's worktree is shared by all its views; until the human
+        # picks one in the worktree list, entering the window preselects it.
+        self._worktree: Path | None = None
+        self._worktree_chosen = False
+        # Set by entering the window: the next worktree list that arrives may preselect.
+        self._preselect_pending = False
+        self._worktree_list: WorktreeList | None = None
+        self._listing: TargetListing | None = None
+        self._detail: TargetDetail | None = None
         self._known_sessions: dict[str, SessionRow] = {}
         self.row_keys: list[str] = []
         self._read_task: asyncio.Task[DashboardSnapshot] | None = None
@@ -839,13 +873,17 @@ class DashboardApp(App[None]):
         self._remember()
         if window == "jobs" and self.window != "jobs":
             self._reset_jobs_owner()
+        entering_targets = window == "targets" and self.window != "targets"
         self.window = window
+        if entering_targets:
+            self._enter_targets()
         self._show()
 
-    def action_switch_window(self, window: str) -> None:
-        """Left shows Sessions, right shows Jobs; toward the shown window does nothing."""
-        if window != self.window:
-            self._show_window(window)
+    def action_step_window(self, step: int) -> None:
+        """Left and right step along the windows; toward an edge does nothing."""
+        index = WINDOW_ORDER.index(self.window) + step
+        if 0 <= index < len(WINDOW_ORDER):
+            self._show_window(WINDOW_ORDER[index])
 
     def action_focus_top_bar(self) -> None:
         self.query_one(TopBar).focus()
@@ -867,7 +905,7 @@ class DashboardApp(App[None]):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Window keys act only on the base screen and while the top bar is not focused."""
-        if action not in {"switch_window", "focus_top_bar"}:
+        if action not in {"step_window", "focus_top_bar"}:
             return True
         if len(self.screen_stack) > 1 or isinstance(self.focused, TopBar):
             return False
@@ -882,8 +920,11 @@ class DashboardApp(App[None]):
             self._set_jobs_filter(job_filter=message.value)
         elif message.kind == OWNER:
             self._set_jobs_filter(session=self._next_owner())
+        elif message.kind == WORKTREE:
+            self._open_worktrees()
         # A scroll view has no list to hand the keyboard back to: it takes it (#2886).
-        if self.navigation.view in DEDICATED_VIEWS:
+        # The worktree list is for choosing from, so it takes the keyboard too.
+        if self.navigation.view in DEDICATED_VIEWS or message.kind == WORKTREE:
             self._focus_content()
 
     def on_top_bar_left(self, _message: TopBar.Left) -> None:
@@ -1191,6 +1232,8 @@ class DashboardApp(App[None]):
             )
         if nav.view == "session":
             return self._session_content()
+        if nav.view in {"targets", "worktrees", "target"}:
+            return self._targets_window_content()
         return nav.view.title(), [], []
 
     def _session_content(self) -> tuple[Text, list[str], list[tuple[object, ...]]]:
@@ -1387,11 +1430,7 @@ class DashboardApp(App[None]):
         orientation, keys, rows = self._content()
         self.query_one("#orientation", Static).update(_orientation_text(orientation))
         empty = self.query_one("#empty", Static)
-        empty_text = (
-            NO_SESSIONS
-            if not self.snapshot.sessions and self.navigation.view == "overview"
-            else (self._jobs_empty_text() if not rows and self.navigation.view == "jobs" else "")
-        )
+        empty_text = self._empty_text(rows)
         empty.update(empty_text)
         empty.display = bool(empty_text)  # no text, no row (#2886)
         self.query_one("#resources", Static).update(_resource_text(self.snapshot.resources))
@@ -1407,6 +1446,7 @@ class DashboardApp(App[None]):
         bar.job_filter = jobs_root.job_filter
         bar.owner = self._owner_filter_label(jobs_root.session)
         bar.unfinished = sum(not _finished(job) for job in self.snapshot.jobs.jobs)
+        bar.worktree = self._worktree.name if self._worktree else ""
         table = self.query_one(SessionList)
         selected = self._selected_key()
         scroll = (
@@ -1504,6 +1544,8 @@ class DashboardApp(App[None]):
         return {
             "overview": ((self._overview_header, None),),
             "session": (("Goals" if self._session()[1] else BOOLEY_ACTIVITY, None),),
+            "targets": (("Target", None), ("Core", None), ("Flows", None)),
+            "worktrees": (("Worktree", None),),
         }.get(self.navigation.view, self._list_columns_shown)
 
     def _refit_job_columns(self) -> None:
@@ -1565,10 +1607,10 @@ class DashboardApp(App[None]):
                 f"{goal.presentation.label}\n{goal.state}\nRequirement: {goal.presentation.requirement}\n{goal.presentation.detail}\n"
                 + _evidence_detail(goal, now=self.snapshot.observed_at)
             ), goal.artifacts
-        if view == "help":
-            return HELP, ()
         if view == "proposal":
             return self._selected_proposal_detail(), ()
+        if view in {"help", "target"}:
+            return (HELP if view == "help" else self._target_detail_text()), ()
         return self._preview_content() if view == "overview" else ("", ())
 
     def _preview_content(self) -> tuple[Text, tuple[str, ...]]:
@@ -1697,6 +1739,7 @@ class DashboardApp(App[None]):
                     top_bar=isinstance(self.focused, TopBar),
                     enter_opens=self._enter_target() is not None,
                     jobs_list=self.navigation.view == "jobs",
+                    targets_list=self.navigation.view == "targets",
                     nested=len(self.windows[self.window]) > 1,
                     scrolling=self.focused is self.query_one("#aside"),
                     back_to=_back_target(self.navigation.view),
@@ -1732,6 +1775,10 @@ class DashboardApp(App[None]):
             target = self._session_row_target(nav, key)
         elif nav.view == "jobs" and self.size.width < WIDE_COLUMNS:
             target = Navigation("job", nav.session, nav.job_filter, key)
+        elif nav.view == "targets":
+            target = Navigation("target", selected=key)
+        elif nav.view == "worktrees":
+            target = Navigation("targets")  # Choosing a worktree opens its Targets list.
         return target
 
     @staticmethod
@@ -1747,5 +1794,247 @@ class DashboardApp(App[None]):
 
     def _open_selected(self) -> None:
         target = self._enter_target()
-        if target is not None:
-            self._push(target)
+        if target is None:
+            return
+        if self.navigation.view == "worktrees":
+            self._choose_worktree(Path(self._selected_key()))
+            return
+        if target.view == "target":
+            self._detail = None
+            self._load_detail(target.selected)
+        self._push(target)
+
+    # --- Targets window (#2301): reads run on worker threads, results apply here ---
+
+    def _empty_text(self, rows: list[tuple[object, ...]]) -> str:
+        """Say why the shown list is empty (or the overview has no sessions)."""
+        view = self.navigation.view
+        if view == "overview":
+            return NO_SESSIONS if not self.snapshot.sessions else ""
+        if rows:
+            return ""
+        if view == "jobs":
+            return self._jobs_empty_text()
+        if view == "targets":
+            return self._targets_empty_text()
+        if view == "worktrees":
+            return self._worktrees_empty_text()
+        return ""
+
+    def _targets_empty_text(self) -> str:
+        if self.targets is None:
+            return NO_PROJECT_ROOT
+        worktree, listing = self._worktree, self._listing
+        if worktree is None or listing is None:
+            return f"Loading Targets in {worktree.name}…" if worktree else "Loading Targets…"
+        if listing.problem:
+            return f"Targets unavailable in {worktree.name}: {listing.problem}"
+        return f"No Targets in {worktree.name} ({worktree})."
+
+    def _worktrees_empty_text(self) -> str:
+        if self.targets is None:
+            return NO_PROJECT_ROOT
+        if self._worktree_list is None:
+            return "Loading…"
+        return self._worktree_list.problem or "No worktrees."
+
+    def _targets_window_content(self) -> tuple[str, list[str], list[tuple[object, ...]]]:
+        """Orientation, row keys and cells of the Targets window's views."""
+        nav = self.navigation
+        if nav.view == "worktrees":
+            choices = self._worktree_choices()
+            return (
+                "Worktrees",
+                [str(item.path) for item in choices],
+                [(item.label,) for item in choices],
+            )
+        if nav.view == "target":
+            return f"Target · {nav.selected}", [], []
+        rows = self._listing.rows if self._listing else ()
+        orientation = f"Targets · {self._worktree.name}" if self._worktree else "Targets"
+        return (
+            orientation,
+            [row.selector for row in rows],
+            [(row.selector, row.core, ", ".join(row.flows) or _ABSENT) for row in rows],
+        )
+
+    def _target_detail_text(self) -> Text:
+        """The open Target's declarations; each part that could not be read says so."""
+        detail = self._detail
+        if detail is None or detail.selector != self.navigation.selected:
+            return Text("Loading…")
+        text = Text()
+
+        def add(label: str, value: str, style: str = "") -> None:
+            text.append(("\n" if text else "") + label + ":", style=_CHROME)
+            text.append(" " + value if value else "", style=style)
+
+        def part(lines: tuple[str, ...] | None) -> tuple[str, str]:
+            return ("unavailable", "dim") if lines is None else (", ".join(lines) or "none", "")
+
+        if detail.row is not None:
+            add("Core", f"{detail.row.core} ({detail.core_file})")
+            add("Flows", ", ".join(detail.row.flows) or "none")
+            add("Filesets", ", ".join(detail.filesets) or "none")
+            add("Constraints", *part(detail.constraints))
+            if detail.tests:  # The lines follow below.
+                add("Tests", "", "")
+            else:
+                add("Tests", *part(detail.tests))
+            for line in detail.tests or ():
+                text.append("\n  " + line)
+        for problem in detail.problems:
+            text.append(("\n" if text else "") + problem, style=SEMANTIC_STYLE["attention"])
+        return text
+
+    def _session_checkouts(self) -> list[tuple[Path, str]]:
+        """Each connected session's checkout and ``S3 Interactive`` label, in handle order."""
+
+        def number(row: SessionRow) -> int:
+            match = _HANDLE_NUMBER.fullmatch(self._session_handle(row.attribution.key))
+            return int(match[1]) if match else 1 << 30
+
+        pairs: list[tuple[Path, str]] = []
+        for row in sorted(self.snapshot.sessions, key=number):
+            facts = row.attribution
+            checkout = facts.work_dir or facts.default_work_dir
+            if checkout:
+                label = f"{self._session_handle(facts.key)} {self._session_facts(row).mode}"
+                pairs.append((Path(checkout), label))
+        return pairs
+
+    def _worktree_choices(self) -> tuple[WorktreeChoice, ...]:
+        """The worktrees to pick from; sessions' first, the main checkout last."""
+        entries = self._worktree_list.entries if self._worktree_list else ()
+        return order_worktrees(entries, self._session_checkouts())
+
+    def _highlighted_checkout(self) -> Path | None:
+        """The checkout of the session the Sessions window has open or under its cursor."""
+        nav = self.windows["sessions"][-1]
+        key = nav.session if isinstance(nav.session, str) else nav.selected
+        row = self._known_sessions.get(key)
+        checkout = row.attribution.work_dir or row.attribution.default_work_dir if row else ""
+        return Path(checkout) if checkout else None
+
+    def _enter_targets(self) -> None:
+        """Entering the window refreshes its reads and, until a choice, preselects the worktree."""
+        self._preselect_pending = not self._worktree_chosen
+        self._load_worktrees()
+        if not self._apply_preselection():
+            self._load_listing()
+
+    def _apply_preselection(self) -> bool:
+        """Preselect the highlighted session's worktree, else the main checkout.
+
+        Returns True when that changed the worktree (and so reset the window).
+        """
+        if self._worktree_chosen or self.targets is None or self._worktree_list is None:
+            return False
+        choices = self._worktree_choices()
+        checkout = self._highlighted_checkout()
+        picked = next(
+            (
+                item.path
+                for item in choices
+                if checkout and item.path.resolve() == checkout.resolve()
+            ),
+            None,
+        ) or next((item.path for item in choices if item.main), self.targets.root)
+        if picked == self._worktree:
+            return False
+        self._set_worktree(picked)
+        return True
+
+    def _set_worktree(self, worktree: Path) -> None:
+        """List another worktree's Targets; no detail of the old one stays open."""
+        self._worktree = worktree
+        self._listing = None
+        self._detail = None
+        self.windows["targets"] = [Navigation("targets")]
+        self._load_listing()
+
+    def _choose_worktree(self, worktree: Path) -> None:
+        """The human picked a worktree: keep it from now on and show its Targets list."""
+        self._worktree_chosen = True
+        self._set_worktree(worktree)
+        self._show()
+
+    def _open_worktrees(self) -> None:
+        if self.navigation.view != "worktrees":
+            self._load_worktrees()
+            self._push(Navigation("worktrees", selected=str(self._worktree or "")))
+
+    def _load_worktrees(self) -> None:
+        reader = self.targets
+        if reader is not None:
+            self._run_targets_read(
+                "worktrees", reader.worktrees, lambda why: WorktreeList(problem=why)
+            )
+
+    def _load_listing(self) -> None:
+        reader, worktree = self.targets, self._worktree
+        if reader is not None and worktree is not None:
+            self._run_targets_read(
+                "listing",
+                lambda: reader.listing(worktree),
+                lambda why: TargetListing(worktree, (), why),
+            )
+
+    def _load_detail(self, selector: str) -> None:
+        reader, worktree = self.targets, self._worktree
+        if reader is not None and worktree is not None:
+            self._run_targets_read(
+                "detail",
+                lambda: reader.detail(worktree, selector),
+                lambda why: TargetDetail(worktree, selector, problems=(why,)),
+            )
+
+    def _run_targets_read(
+        self, name: str, read: Callable[[], _Read], failed: Callable[[str], _Read]
+    ) -> None:
+        """Run one read on a worker thread; a newer read of the same kind replaces it.
+
+        Whatever else the read raises is logged and shown as that read's problem.
+        """
+
+        def guarded() -> _Read:
+            try:
+                return read()
+            except Exception as exc:
+                logger.exception("Dashboard Targets %s read failed", name)
+                return failed(first_line(exc))
+
+        self.run_worker(
+            guarded,
+            name=name,
+            group=TARGETS_GROUP_PREFIX + name,
+            thread=True,
+            exclusive=True,
+            exit_on_error=False,
+        )
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        """Apply a finished Targets read, unless it answers a worktree or Target not shown now."""
+        if event.state is not WorkerState.SUCCESS or not event.worker.group.startswith(
+            TARGETS_GROUP_PREFIX
+        ):
+            return
+        result = event.worker.result
+        reset = False
+        if isinstance(result, WorktreeList):
+            self._worktree_list = result
+            # Only the read started by entering the window preselects: a list opened later
+            # by the human must not swap the worktree under them.
+            reset = (
+                self.window == "targets"
+                and self._preselect_pending
+                and self.navigation.view != "worktrees"
+                and self._apply_preselection()
+            )
+            self._preselect_pending = False
+        elif isinstance(result, TargetListing) and result.worktree == self._worktree:
+            self._listing = result
+        elif isinstance(result, TargetDetail) and result.worktree == self._worktree:
+            self._detail = result
+        if self.is_running and self.window == "targets":
+            self._show() if reset else self.render_snapshot()

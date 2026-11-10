@@ -157,34 +157,48 @@ figure { margin: 36px 0 8px; }
 figcaption { font: 400 14.5px/1.45 var(--sans); color: var(--ink-2); margin-top: 10px; max-width: 80ch; }
 figcaption b { color: var(--ink); font-weight: 650; }
 
-/* Figure 2: architecture, datasheet line art  */
-.arch text { font-family: var(--sans); fill: var(--ink); font-stretch: 85%; }
-.arch .t { font-size: 15px; font-weight: 650; }                 /* box title */
-.arch .s { font-size: 13px; fill: var(--ink-2); }               /* box sub-label */
-.arch .b { font-size: 13.5px; }                                 /* box body line */
-.arch .b tspan.k { font-weight: 650; }                          /* Specialist name */
-.arch .q { font-size: 13.5px; fill: var(--ink-2); font-style: italic; }   /* example prompt */
-.arch .id { font: 600 12px var(--mono); fill: var(--ink); }    /* Goal ID: the only mono */
-.arch .e { font-size: 12.5px; fill: var(--ink-2); font-style: italic; }   /* edge label */
-.arch .e.ok, .arch .sbl { fill: var(--mask); }
-.arch .sbl { font-size: 14px; font-weight: 650; font-stretch: 90%; }      /* Sandbox label */
-.arch .bx { fill: var(--paper); stroke: var(--ink); stroke-width: 1.2; }
-.arch .hd { fill: var(--fill); stroke: var(--ink); stroke-width: 1.2; }  /* grey header band */
-.arch .hd.ok { fill: var(--ok-fill); stroke: var(--mask); }                       /* Goals: truth-table accent */
-.arch .bx.ok { stroke: var(--mask); }
-.arch .grp { fill: var(--fill-2); stroke: var(--rule); stroke-width: 1; }
-.arch .sandbox { fill: none; stroke: var(--mask); stroke-width: 1.5; stroke-dasharray: 6 4; }
-.arch .ln { fill: none; stroke: var(--ink); stroke-width: 1.3; }
-.arch .ln.ok { stroke: var(--mask); stroke-width: 1.8; }
-.arch .ah { fill: var(--ink); }
-.arch .ah.ok { fill: var(--mask); }
-/* two drawings of one diagram: wide for desktop, stacked for phones; nothing scrolls sideways */
-.fig2-tall { display: none !important; }
-/* the stacked drawing renders at ~0.85x on a 390 px phone: larger type in user units keeps it >= 11.5 px */
-.arch-m .t { font-size: 16.5px; }
-.arch-m .s, .arch-m .b, .arch-m .q, .arch-m .e { font-size: 14.5px; }
-.arch-m .id { font-size: 14px; }
-.arch-m .sbl { font-size: 16px; }
+/* Figure 2: where Booley runs, as schematic line art. A switch flips Local /
+   Server. Desktop animates one drawing: your PC keeps its box while the Sandbox
+   slides onto the server. Phones show one stacked drawing per setup. */
+.dep text { font-family: var(--sans); fill: var(--ink); font-stretch: 85%; }
+.dep .t { font-size: 15px; font-weight: 650; }                  /* part name */
+.dep .t2 { font-size: 13.5px; font-weight: 650; }               /* block name */
+.dep .s2 { font-size: 12px; fill: var(--ink-2); }               /* sub-label */
+.dep .e { font-size: 12.5px; fill: var(--ink-2); font-style: italic; }   /* wire label */
+.dep .m { font-size: 16px; font-weight: 750; }                  /* machine name */
+.dep .note { font-size: 14px; fill: var(--ink-2); font-style: italic; }
+.dep .wip { font-size: 13px; fill: var(--ink-2); }
+.dep .mark { font-size: 13px; font-weight: 780; letter-spacing: 0.08em; }  /* chip marking */
+.dep .pn { font-size: 10px; fill: var(--ink-2); }                         /* pin number */
+.dep .mach { fill: var(--paper); stroke: var(--ink); stroke-width: 1.6; }
+.dep .bx { fill: var(--paper); stroke: var(--ink); stroke-width: 1.2; }
+.dep .chip { fill: var(--paper); stroke: var(--ink); stroke-width: 2; }
+.dep .chip.ghost { stroke: var(--ink-2); stroke-width: 1.2; }
+.dep .blk { fill: var(--fill-2); stroke: var(--ink-2); stroke-width: 1; }
+.dep .ln { fill: none; stroke: var(--ink); stroke-width: 1.4; }
+.dep .ah { fill: var(--ink); }
+.dep .wipbox { fill: none; stroke: var(--ink-2); stroke-width: 1.4; }
+/* the switch: a thumb slides under two buttons; the script unhides it */
+.dep__switch { position: relative; display: inline-grid; grid-template-columns: 1fr 1fr; margin: 0 0 12px; border: 1.5px solid var(--ink); }
+.dep__switch[hidden] { display: none; }
+.dep__thumb { position: absolute; inset: 0 auto 0 0; width: 50%; background: var(--ink); transition: transform 0.28s cubic-bezier(0.3, 0.7, 0.3, 1); }
+.dep[data-mode="server"] .dep__thumb { transform: translateX(100%); }
+.dep__switch button { position: relative; z-index: 1; padding: 9px 18px; border: 0; background: none; color: var(--ink);
+  font: 650 15px/1 var(--sans); font-stretch: 88%; white-space: nowrap; cursor: pointer; transition: color 0.28s; }
+.dep[data-mode="local"] .dep__switch [data-mode="local"], .dep[data-mode="server"] .dep__switch [data-mode="server"] { color: var(--paper); }
+.dep__switch small { margin-left: 6px; font-size: 13px; font-weight: 450; }
+.dep__switch small::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 5px; border: 1.5px solid currentColor; vertical-align: 1px; }
+/* desktop motion: local centres the PC with the Sandbox inside; server moves the PC left and the Sandbox onto the server */
+.dep .pc, .dep .mv { transition: transform 0.55s cubic-bezier(0.5, 0, 0.2, 1); }
+.dep[data-mode="local"] :is(.pc, .mv) { transform: translateX(230px); }
+.dep[data-mode="server"] .mv { transform: translateX(460px); }
+.dep .only-local, .dep .only-server { opacity: 0; transition: opacity 0.15s; }
+.dep[data-mode="local"] .only-local, .dep[data-mode="server"] .only-server { opacity: 1; transition: opacity 0.3s 0.5s; }
+.dep[data-mode="local"] .dep__cap--server, .dep[data-mode="server"] .dep__cap--local { display: none; }
+.dep-tall { display: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .dep :is(.pc, .mv, .only-local, .only-server, .dep__thumb), .dep__switch button { transition: none !important; }
+}
 
 
 /* ---- Figure 1: frame, callout markers and legend (vendor "board photo" style) ---- */
@@ -280,8 +294,12 @@ td.st { white-space: nowrap; }
 }
 @media (max-width: 600px) {
   .fig__frame { padding: 12px 8px; }
-  .fig2-wide { display: none !important; }
-  .fig2-tall { display: block !important; }
+  .dep-wide { display: none !important; }
+  /* the drawing itself shows the server's status, so the switch drops its note to fit */
+  .dep__switch { display: grid; }
+  .dep__switch[hidden] { display: none; }
+  .dep__switch small { display: none; }
+  .dep[data-mode="local"] .dep-tall--local, .dep[data-mode="server"] .dep-tall--server { display: block !important; }
   /* stacked datasheet rows: each spec-table row becomes a small block
      (only .tbl tables; plain tables elsewhere stay tables) */
   .tbl table, .tbl table tbody, .tbl table tr, .tbl table td { display: block; }
