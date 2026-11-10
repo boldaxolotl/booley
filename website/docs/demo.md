@@ -4,7 +4,8 @@ document: Free browser demo
 ---
 
 <!-- booley.dev/demo is the link the demo gateway prints in its notice and its
-     "allowance used up" errors; keep the #bring-your-own-key anchor. -->
+     "allowance used up" errors; keep the #bring-your-own-key anchor even though
+     the heading says "account". -->
 <div class="strip"><span><a class="strip__home" href="./"><b>DEMO</b>Free browser demo</a></span><span>Booley product family &middot; booley-rtl</span></div>
 <h1>Try Booley free in your browser</h1>
 <p class="lede">One click opens Booley with the PicoRV32 RISC-V CPU in browser VS Code, with simulation, synthesis and waveform tools already installed. Nothing to install, and nothing to pay.</p>
@@ -15,6 +16,7 @@ document: Free browser demo
   <h2 class="sec" id="s1"><span class="n">1</span>How the free demo works</h2>
   <ul>
     <li>The Codespace runs on your GitHub account's free monthly Codespaces allowance. The first launch takes 3-4 minutes while the container image builds.</li>
+    <li>VS Code opens the Codespace in Restricted Mode and asks whether you trust the authors of the files in this folder. Choose <strong>Trust Folder &amp; Continue</strong>; Booley's terminals start only after you do.</li>
     <li>The agent runs OpenAI's GPT-6 Luna through the Booley demo gateway, on the Booley maintainer's account. You run <code>booley-demo-claim</code> in a terminal: it shows a short notice, you agree and sign in with GitHub to get a demo token. The gateway logs usage numbers, never your prompts or code.</li>
     <li>Each GitHub account gets $1 of demo usage per month.</li>
     <li><a href="https://github.com/boldaxolotl/booley-prj-picorv32/blob/main/START-HERE.md">START-HERE.md</a> opens in the Codespace and walks you through the rest.</li>
@@ -22,7 +24,7 @@ document: Free browser demo
 </section>
 
 <section aria-labelledby="bring-your-own-key">
-  <h2 class="sec" id="bring-your-own-key"><span class="n">2</span>Bring your own key</h2>
+  <h2 class="sec" id="bring-your-own-key"><span class="n">2</span>Bring your own account</h2>
   <p>Your own Claude or ChatGPT account gives you a stronger model and no demo allowance. In the Codespace, open a terminal and sign in with one of:</p>
   <pre><code>BROWSER=none claude auth login
 codex login --device-auth</code></pre>
