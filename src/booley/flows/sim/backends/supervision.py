@@ -182,7 +182,7 @@ def run_supervised(
     launch: SimulatorLaunch,
 ) -> tuple[deque[str], subprocess.Popen[str], RunTermination]:
     """Spawn *launch*, stream and guard it, and return why it stopped."""
-    from booley.harness.colors import dim
+    from booley.presentation.colors import dim
     from booley.presentation.heartbeat import render_heartbeat
     from booley.runtime.heartbeat import Heartbeat
 

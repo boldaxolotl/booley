@@ -334,6 +334,28 @@ def test_retained_resources_separate_current_project_from_other_project_keepers(
     assert report.details[0].after_finding == len(report.findings)
 
 
+def test_keeper_listing_failure_is_a_doctor_finding(tmp_path, monkeypatch):
+    """A Docker failure while listing keepers is a FAIL, never "no retained keepers"."""
+    from booley.runtime import interactive_docker
+
+    monkeypatch.setattr(
+        interactive_docker,
+        "_run_docker",
+        lambda args, **_kwargs: subprocess.CompletedProcess(
+            args, 1, "", "Cannot connect to the Docker daemon"
+        ),
+    )
+
+    report = inspection.inspect_retained_resources(tmp_path, "docker")
+
+    failures = _fail_findings(report)
+    assert len(failures) == 1
+    assert "could not list issued Sandbox Image keepers" in failures[0].message
+    assert "Cannot connect to the Docker daemon" in failures[0].message
+    assert "booley doctor" in failures[0].fix
+    assert not any("no retained Sandbox Image keepers" in f.message for f in report.findings)
+
+
 def test_host_inspection_reports_unknown_project_inventory(
     workspace, project_sandbox_resolution, monkeypatch
 ):

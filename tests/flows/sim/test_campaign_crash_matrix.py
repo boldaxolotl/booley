@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim.campaign import collect_pre_sim_firings
 from booley.flows.sim.campaign.codec import (
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
@@ -745,7 +746,7 @@ def test_process_death_at_actual_hook_publication_recovers_immutable_evidence(
     assert crash.tripped
     invocation = tmp_path / "reports/1"
     store = CampaignStore(invocation / "targets/sim/campaign")
-    old = store.read_pre_sim_firings()
+    old = collect_pre_sim_firings(store.manifest_path)
     assert len(old) == int(side == "after")
     assert store.scan().interrupted
     before_bytes = {firing.path: firing.path.read_bytes() for firing in old}

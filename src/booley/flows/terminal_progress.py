@@ -27,8 +27,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO, NamedTuple, TextIO
 
-from booley.harness.colors import accent, amber, dim
 from booley.harness.standalone_job import JobLogStream
+from booley.presentation.colors import accent, amber, dim
 from booley.runtime.booley_dir import runtime_dir
 from booley.runtime.timefmt import format_age, format_duration, utc_now_rfc3339
 

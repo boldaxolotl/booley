@@ -165,6 +165,15 @@ def _record_path(run_id: str, root: Path | None) -> Path | None:
     return (root / f"{run_id}.json") if root is not None else None
 
 
+def job_log_path(run_id: str, root: Path | None) -> Path | None:
+    """Location of a Job's combined-output ``job.log``, beside its flat record.
+
+    ``<root>/<run_id>/job.log``: a per-Job directory that every ``*.json``
+    reader of the jobs root ignores. ``None`` without a root, like a record.
+    """
+    return (root / run_id / "job.log") if root is not None else None
+
+
 def write_record_strict(rec: JobRecord, root: Path | None) -> None:
     """Persist (or overwrite) a job record, raising ``OSError`` when it cannot land.
 

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from booley.core.boundary import (
     BoundaryError,
+    is_str_list,
     require_dict,
     require_list,
     require_str,
@@ -69,6 +70,11 @@ class ImageMetadata:
     image_id: str
     labels: Mapping[str, str]
     environment: Mapping[str, str]
+    layers: tuple[str, ...]
+
+    def label(self, name: str) -> str | None:
+        """Return the stripped label value; a blank label reads as absent."""
+        return self.labels.get(name, "").strip() or None
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,33 +96,45 @@ def _available(value: object) -> str | None:
     return normalized
 
 
-def decode_image_metadata(reference: str, document: object) -> ImageMetadata | None:
-    """Decode one ``docker image inspect`` document without guessing."""
-    try:
-        records = require_list(document, field="docker image inspect response")
-        if len(records) != 1:
-            return None
-        record = require_dict(records[0], field="docker image inspect record")
-        image_id = require_str(record, "Id")
-        config = require_dict(record.get("Config"), field="Config")
-        raw_labels, raw_env = config.get("Labels"), config.get("Env")
-        labels = {} if raw_labels is None else require_dict(raw_labels, field="Config.Labels")
-        labels = {
-            require_str_value(key, field="label name"): require_str_value(
-                value, field=f"label {key!r}", allow_empty=True
-            )
-            for key, value in labels.items()
-        }
-        items = [] if raw_env is None else require_list(raw_env, field="Config.Env")
-        items = [
-            require_str_value(item, field="Config.Env item", allow_empty=True) for item in items
-        ]
-        environment = {
-            key: value for item in items if "=" in item for key, value in (item.split("=", 1),)
-        }
-    except BoundaryError:
-        return None
-    return ImageMetadata(reference, image_id, labels, environment)
+def decode_image_metadata(reference: str, document: object) -> ImageMetadata:
+    """Decode one ``docker image inspect`` document without guessing.
+
+    Raises :class:`BoundaryError` for any shape Docker does not produce. A
+    ``null``/absent ``Config`` means no labels or environment; an absent
+    ``RootFS`` or an omitted ``Layers`` list (metadata-only images) means no layers.
+    """
+    records = require_list(document, field="docker image inspect response")
+    if len(records) != 1:
+        raise BoundaryError("docker image inspect response must hold exactly one image")
+    record = require_dict(records[0], field="docker image inspect record")
+    image_id = require_str(record, "Id")
+    raw_config = record.get("Config")
+    config = {} if raw_config is None else require_dict(raw_config, field="Config")
+    raw_labels, raw_env = config.get("Labels"), config.get("Env")
+    labels = {} if raw_labels is None else require_dict(raw_labels, field="Config.Labels")
+    labels = {
+        require_str_value(key, field="label name"): require_str_value(
+            value, field=f"label {key!r}", allow_empty=True
+        )
+        for key, value in labels.items()
+    }
+    items = [] if raw_env is None else require_list(raw_env, field="Config.Env")
+    items = [require_str_value(item, field="Config.Env item", allow_empty=True) for item in items]
+    environment = {
+        key: value for item in items if "=" in item for key, value in (item.split("=", 1),)
+    }
+    return ImageMetadata(reference, image_id, labels, environment, _decode_layers(record))
+
+
+def _decode_layers(record: dict[object, object]) -> tuple[str, ...]:
+    """Read ``RootFS.Layers``; absent sections and omitted lists mean no layers."""
+    if "RootFS" not in record:
+        return ()
+    rootfs = require_dict(record["RootFS"], field="RootFS")
+    layers = rootfs.get("Layers", [])
+    if not is_str_list(layers):
+        raise BoundaryError("RootFS.Layers must be a list of strings")
+    return tuple(layers)
 
 
 def build_identity(metadata: ImageMetadata) -> BooleyBuildIdentity:

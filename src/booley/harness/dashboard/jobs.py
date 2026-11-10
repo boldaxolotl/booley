@@ -36,8 +36,8 @@ class JobView(JobObservation):
     eda_tool: str = ""
     handle: str = ""
     owner_handle: str = ""
-    # ``job.log`` of a Standalone Job, when the file exists.
-    log_path: Path | None = None
+    # ``job.log`` of a Standalone or MCP Job, when it is a regular file.
+    log_path: str = ""
 
     @property
     def recorded_resources(self) -> tuple[float, float] | None:
@@ -183,12 +183,13 @@ def _job_view(
     standalone: Path,
 ) -> JobView:
     record = job.record
-    state, log_path = job.state, None
+    state = job.state
+    log_path = job_records.job_log_path(record.run_id, job.root)
     if job.root == standalone:
-        # A Standalone Job has no supervisor: its dead process is a failed run.
+        # A Standalone Job has no supervisor: its dead process is a failed run,
+        # and its log lives under the human-facing standalone log root.
         state = "failed" if state == "orphaned" else state
-        log = standalone_log_path(booley_dir, record.run_id)
-        log_path = log if log.is_file() else None
+        log_path = standalone_log_path(booley_dir, record.run_id)
     handle = handles.get(record.run_id, "")
     owner_handle = owners.get(record.session_key or "", "")
     if not handle and job_handle_expired(record, now):
@@ -207,8 +208,20 @@ def _job_view(
         eda_tool=_configured_tool(job.record, catalogs),
         handle=handle,
         owner_handle=owner_handle,
-        log_path=log_path,
+        log_path=_job_log(log_path),
     )
+
+
+def _job_log(path: Path | None) -> str:
+    """Absolute ``job.log`` path when it is a regular file outside any symlink, else ``""``."""
+    if path is None:
+        return ""
+    try:
+        if path.parent.is_symlink() or path.is_symlink() or not path.is_file():
+            return ""
+    except OSError:
+        return ""
+    return str(path)
 
 
 def _configured_tool(rec: job_records.JobRecord, catalogs: dict[str, TargetCatalog | None]) -> str:

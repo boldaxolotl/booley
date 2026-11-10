@@ -8,7 +8,7 @@ import os
 import pytest
 
 from booley.goals.store import GoalStore
-from booley.harness.dashboard.app import job_detail
+from booley.harness.dashboard.app import job_detail, job_paths
 from booley.harness.dashboard.jobs import JobReader, target_arg
 from booley.harness.dashboard.resources import ResourceSampler
 from booley.mcp import (
@@ -16,6 +16,7 @@ from booley.mcp import (
 )
 from booley.runtime import job_records
 from booley.runtime.pid import ProcessIdentity
+from tests.conftest import symlink_or_skip
 from tests.goals import conftest as goal_fixtures
 from tests.goals.conftest import INPUT_PATHS
 
@@ -717,7 +718,6 @@ def test_standalone_job_lists_with_log_and_report(layout, monkeypatch, capsys):
     """A shell Flow run shows in the Dashboard with its ``job.log`` and its own report."""
     from booley.flows.lint.flow import LintFlow
     from booley.harness import booley as cli
-    from booley.harness.dashboard.app import job_paths
     from booley.mcp.registry import McpToolInfo
     from booley.runtime import runtime_context
     from booley.runtime.endpoint_execution import EndpointOutcome
@@ -767,3 +767,28 @@ def test_standalone_job_lists_with_log_and_report(layout, monkeypatch, capsys):
 )
 def test_target_arg_reads_both_spellings(argv, expected):
     assert target_arg(argv) == expected
+
+
+def test_job_detail_links_job_log(tmp_path):
+    root = tmp_path / "logs/.runtime/jobs"
+    job_records.write_record(rec(status="done", exit_code=0), root)
+    log = root / "one" / "job.log"
+    log.parent.mkdir()
+    log.write_bytes(b"full output\n")
+    view = snapshot_jobs(tmp_path, interactive_root=root).jobs[0]
+    assert view.log_path == str(log)
+    assert f"Log:\n{log}" in job_detail(view)
+    assert str(log) in job_paths(view)
+
+
+def test_symlinked_job_log_is_not_linked(tmp_path):
+    root = tmp_path / "logs/.runtime/jobs"
+    job_records.write_record(rec(status="done", exit_code=0), root)
+    target = tmp_path / "elsewhere.log"
+    target.write_bytes(b"secret\n")
+    (root / "one").mkdir()
+    symlink_or_skip(root / "one" / "job.log", target)
+    view = snapshot_jobs(tmp_path, interactive_root=root).jobs[0]
+    assert view.log_path == ""
+    assert "Log:" not in job_detail(view)
+    assert str(root / "one" / "job.log") not in job_paths(view)

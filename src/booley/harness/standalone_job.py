@@ -27,7 +27,7 @@ from typing import BinaryIO, TextIO
 
 from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
-from booley.harness.colors import strip_ansi
+from booley.presentation.colors import strip_ansi
 from booley.runtime import job_records
 from booley.runtime.handles import register_job
 from booley.runtime.pid import (

@@ -834,7 +834,14 @@ def _check_issued_image_keepers(
     if not docker_exe:
         report.skip("issued image-keeper check skipped - runtime unavailable")
         return
-    tags = idk.issued_image_tags()
+    try:
+        tags = idk.issued_image_tags()
+    except RuntimeError as exc:
+        report.fail(
+            f"could not list issued Sandbox Image keepers: {exc}",
+            "check that Docker is running and responsive, then rerun booley doctor",
+        )
+        return
     if not tags:
         report.pass_("no retained Sandbox Image keepers")
         return

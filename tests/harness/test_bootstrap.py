@@ -2188,7 +2188,7 @@ def _render_one_per_state(capsys: pytest.CaptureFixture[str]) -> list[str]:
 def test_bootstrap_rows_use_the_shared_header_and_glyphs(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from booley.harness import colors
+    from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
     lines = _render_one_per_state(capsys)
@@ -2208,8 +2208,8 @@ def test_bootstrap_rows_use_the_shared_header_and_glyphs(
 def test_current_and_skipped_render_differently(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from booley.harness import colors
     from booley.harness.setup import common
+    from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
     bootstrap_cli._render_result(bootstrap.BootstrapResult(Intent.ENSURE, (_current("proxy"),)))

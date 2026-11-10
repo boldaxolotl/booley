@@ -168,10 +168,15 @@ def sessions_on_stale_image(workspace: Path, image: str) -> list[str]:
     *IDs*, never names. Callers use this to tell the user their fresh build is not
     what the live session is running.
 
-    Empty on any doubt (no Docker, no such image, inspect failed): this only ever
-    gates a warning, and a false alarm is worse than a missed one.
+    Empty on any doubt: this only ever gates a warning, and a false alarm is worse
+    than a missed one. A missing image is silent; a Docker failure while resolving
+    *image* logs a warning naming it, so a blind probe is not mistaken for "none".
     """
-    image_id = _docker_stdout(["docker", "image", "inspect", "--format", "{{.Id}}", image])
+    try:
+        image_id = idk.image_id(image)
+    except idk.ImageInspectError as exc:
+        logger.warning("cannot check running Sandboxes against image %r: %s", image, exc)
+        return []
     if not image_id:
         return []
     stale = []

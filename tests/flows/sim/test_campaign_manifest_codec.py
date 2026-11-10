@@ -607,7 +607,7 @@ def test_resume_reads_through_the_booley_dir_entry(
     )
 
     if spelling == "below":
-        with pytest.raises(SimulationCampaignIntegrityError, match="cannot read resume manifest"):
+        with pytest.raises(SimulationCampaignIntegrityError, match="not a regular file"):
             validate_resume_manifest(lexical, project_root=project)
         return
     validated = validate_resume_manifest(
@@ -893,8 +893,8 @@ def test_serial_result_classifies_simulator_crash_as_design_failure() -> None:
         crashed=True,
         reason="terminated by signal 11",
     )
-    observation = serial_execution._observation(test)
-    assert serial_execution._settled_state([observation]) == "crash"
+    observation = serial_execution.observation_document(test)
+    assert serial_execution.settled_state([observation]) == "crash"
     assert observation["execution"] == "crash"
     assert observation["failure_class"] == "design"
     assert observation["functional"] == "not_observed"
@@ -1128,13 +1128,13 @@ def test_parameter_diagnostics_preserve_values_and_absence(old_parameters, new_p
 
 
 def test_runtime_declarations_are_aligned_by_destination():
-    from booley.flows.sim.campaign.planning import canonical_sha256
+    from booley.flows.sim.campaign_files import document_digest
 
     old, new = _diagnostic_document(), _diagnostic_document()
     for document, source in ((old, "old/data.bin"), (new, "new/data.bin")):
         declaration = {"destination": "input/data.bin", "source_artifact_path": source}
         document["workload"]["runtime_inputs"] = [
-            {**declaration, "declaration_id": canonical_sha256(declaration)}
+            {**declaration, "declaration_id": document_digest(declaration)}
         ]
     diagnostic = _project_diagnostics(old, new)
     assert diagnostic.mismatch_summary == ("runtime input changed: input/data.bin",)
@@ -1264,14 +1264,14 @@ def test_unrecognized_identity_changes_remain_visible(field):
 def test_runtime_declaration_list_changes_use_destination_identity(
     old_destinations, new_destinations, line
 ):
-    from booley.flows.sim.campaign.planning import canonical_sha256
+    from booley.flows.sim.campaign_files import document_digest
 
     old, new = _diagnostic_document(), _diagnostic_document()
     for document, destinations in ((old, old_destinations), (new, new_destinations)):
         declarations = []
         for destination in destinations:
             declaration = {"destination": destination, "source_artifact_path": destination}
-            declarations.append({**declaration, "declaration_id": canonical_sha256(declaration)})
+            declarations.append({**declaration, "declaration_id": document_digest(declaration)})
         document["workload"]["runtime_inputs"] = declarations
     diagnostic = _project_diagnostics(old, new)
     assert diagnostic.mismatch_summary == (line,)
