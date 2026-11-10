@@ -220,12 +220,12 @@ def test_mode_change_names_running_sandboxes_on_old_mode(
     assert host.run(egress="unproxied") == 0
 
     out = capsys.readouterr().out
-    # The remedy quotes commands per host shell, so compare against its own rendering.
-    assert session_admission.recreate_remedy(editor) in out
-    assert session_admission.recreate_remedy(headless) in out
     assert "Sandbox editor (Project /work/editor) still runs with egress 'proxy'" in out
     assert "Dev Containers: Rebuild Container" in out
     assert "Sandbox headless (Project /work/headless) still runs with egress 'proxy'" in out
+    # The remedy quotes commands per host shell, so compare against its own rendering.
+    assert session_admission.recreate_remedy(editor) in out
+    assert session_admission.recreate_remedy(headless) in out
     assert "Sandbox current" not in out
 
 
