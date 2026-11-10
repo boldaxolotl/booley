@@ -482,6 +482,7 @@ class TraceSession:
         the outer job timeout out.
 
         The caller must pair this with :meth:`stop_monitor` once the run is over.
+        A session supports one monitor: it cannot be restarted after a stop.
         """
         thread = threading.Thread(
             target=self._monitor_stalls,

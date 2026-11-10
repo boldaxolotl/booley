@@ -351,25 +351,30 @@ def test_no_stall_monitor_outlives_the_run(tmp_path: Path, monkeypatch, request,
         on_line_calls.append(line)
         raise RuntimeError("on_line boom")
 
+    def assert_monitor_joined() -> None:
+        # Checked before the simulator is reaped below: that delay would let a merely
+        # woken (not joined) monitor finish and hide a missing join.
+        assert len(monitors) == 1
+        assert not monitors[0][0].is_alive()
+
     try:
         if ending == "completed":
             run_supervised(_launch(tmp_path, "print('x')", **launch))
+            assert_monitor_joined()
         elif ending == "timeout":
             request.getfixturevalue("instant_timer")
             _, _, termination = run_supervised(_launch(tmp_path, SLEEP, **launch))
             assert termination.kind == "timeout"
+            assert_monitor_joined()
         else:
             script = "import time; print('x', flush=True); time.sleep(60)"
             with pytest.raises(RuntimeError, match="on_line boom"):
                 run_supervised(_launch(tmp_path, script, on_line=raising_on_line, **launch))
             assert on_line_calls
+            assert_monitor_joined()
     finally:
         for _, sim_proc in monitors:
             # Reaping the simulator after an on_line failure belongs to #3183.
             if sim_proc.poll() is None:
                 kill_process_tree(sim_proc)
             sim_proc.wait(timeout=KILLED_WITHIN_S)
-
-    assert len(monitors) == 1
-    monitor_thread = monitors[0][0]
-    assert not monitor_thread.is_alive()

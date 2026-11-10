@@ -166,7 +166,7 @@ class TestStallKill:
         session._monitor_stalls = recording_monitor  # type: ignore[method-assign]
         session.start_monitor(_AliveStub(), _AliveStub(), stall_timeout=30.0, poll_interval=30.0)
         try:
-            # Let the thread enter its 30 s wait before stopping it.
+            # Wait until the monitor thread is running.
             deadline = time.monotonic() + 5.0
             while not monitors and time.monotonic() < deadline:
                 time.sleep(0.01)
