@@ -25,6 +25,7 @@ from booley.flows.sim.coverage_policy import (
     CoverageThreshold,
     evaluate_coverage_campaign,
 )
+from tests.flows.sim.coverage_campaign_test_support import decode_document
 
 _TARGET = DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
 
@@ -537,7 +538,6 @@ def test_fingerprint_ignores_metric_authoring_order_and_numeric_spelling() -> No
 
 
 def test_fingerprint_is_independent_of_campaign_storage_version(tmp_path) -> None:
-    from booley.flows.sim.coverage_campaign import decode_coverage_campaign
     from booley.flows.sim.coverage_campaign_store import (
         load_coverage_campaign,
         publish_coverage_campaign,
@@ -546,7 +546,7 @@ def test_fingerprint_is_independent_of_campaign_storage_version(tmp_path) -> Non
 
     document = _valid_document()
     document["collector"]["capabilities"][0].update(collection="supported", scoring="scored_v1")
-    campaign = decode_coverage_campaign(document, _TARGET)
+    campaign = decode_document(document, _TARGET)
     evaluated = evaluate_coverage_campaign(campaign, _criterion(), _empty_waivers())
     paths = publish_coverage_campaign(tmp_path, evaluated)
     loaded = load_coverage_campaign(paths.campaign, _TARGET).campaign

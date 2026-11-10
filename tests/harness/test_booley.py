@@ -276,6 +276,18 @@ def test_bootstrap_parser_exposes_qa_selection_flags(flag, attribute):
     assert args.force is True
 
 
+def test_bootstrap_parser_accepts_egress_mode(capsys):
+    parser = tlr._build_parser()
+
+    assert parser.parse_args(["bootstrap", "--egress", "unproxied"]).egress == "unproxied"
+    assert parser.parse_args(["bootstrap", "--check-only", "--egress", "proxy"]).egress == "proxy"
+    assert parser.parse_args(["bootstrap"]).egress is None
+    with pytest.raises(SystemExit) as raised:
+        parser.parse_args(["bootstrap", "--egress", "open"])
+    assert raised.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
+
+
 def test_bootstrap_dispatch_precedes_project_discovery(monkeypatch):
     args = tlr._build_parser().parse_args(["bootstrap"])
     monkeypatch.setattr(tlr, "_parse_cli", lambda: args)

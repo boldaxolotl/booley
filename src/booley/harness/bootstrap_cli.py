@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from booley.config.host_config import HostConfigError, HostEgressChange, plan_host_egress
 from booley.harness.bootstrap import (
     BootstrapFinding,
     BootstrapResult,
@@ -13,6 +14,7 @@ from booley.harness.bootstrap import (
 )
 from booley.harness.terminal_status import LineStatus, section_header, status_line
 from booley.presentation.colors import green, red, yellow
+from booley.runtime.guarded_write import replace_regular_file
 from booley.runtime.host_install import HostInstallationError, register_host_installation
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
@@ -62,14 +64,19 @@ def _check_bootstrap(args: object) -> BootstrapResult:
     from booley.runtime import issuance_invalidation, session_runtime
     from booley.runtime.session_refresh import shared_recovery_blocks_command
 
+    change = _plan_egress(getattr(args, "egress", None), Intent.CHECK)
+    if isinstance(change, BootstrapResult):
+        return change
     findings: tuple[BootstrapFinding, ...] = ()
+    if change is not None:
+        findings = (_egress_check_finding(change),)
     try:
         recovery_pending = shared_recovery_blocks_command(read_only=True)
     except (issuance_invalidation.InvalidationError, session_runtime.SessionError) as exc:
-        findings = _recovery_error(Intent.CHECK, exc).findings
+        findings += _recovery_error(Intent.CHECK, exc).findings
     else:
         if recovery_pending:
-            findings = (
+            findings += (
                 BootstrapFinding(
                     "runtime-recovery",
                     BootstrapState.PENDING,
@@ -94,6 +101,9 @@ def _mutate_bootstrap(
     from booley.runtime.session_refresh import shared_recovery_blocks_command
 
     with host_lifecycle_lock("host bootstrap"):
+        change = _plan_egress(getattr(args, "egress", None), intent)
+        if isinstance(change, BootstrapResult):
+            return change
         try:
             recovery_performed = shared_recovery_blocks_command(read_only=False)
         except (issuance_invalidation.InvalidationError, session_runtime.SessionError) as exc:
@@ -115,20 +125,111 @@ def _mutate_bootstrap(
                     f"{identity.version} ({identity.payload_fingerprint[:12]})."
                 )
             )
-        if not _apply_qa_enable(with_qa):
+        # Record the mode last, so a failed step above never leaves it changed.
+        if not _apply_qa_enable(with_qa) or not _record_egress(change):
             return None
         result = reconcile_bootstrap(
             intent,
             verbose=getattr(args, "verbose", False),
             qa_opt_out=without_qa,
         )
-        if without_qa and _qa_prune_succeeded(result):
-            try:
-                disable_qa_skills()
-            except OSError as exc:
-                print(red(f"Cannot disable QA skills: {exc}"))
-                return None
-        return result
+        return result if _prune_qa_if_opted_out(result, without_qa) else None
+
+
+def _prune_qa_if_opted_out(result: BootstrapResult, without_qa: bool) -> bool:
+    """Disable QA skills once Bootstrap pruned them; False when disabling failed."""
+    if without_qa and _qa_prune_succeeded(result):
+        try:
+            disable_qa_skills()
+        except OSError as exc:
+            print(red(f"Cannot disable QA skills: {exc}"))
+            return False
+    return True
+
+
+def _plan_egress(mode: str | None, intent: Intent) -> HostEgressChange | BootstrapResult | None:
+    """Plan the requested egress edit; a refusal becomes the command's error result."""
+    if mode is None:
+        return None
+    try:
+        return plan_host_egress(mode)
+    except HostConfigError as exc:
+        # The message already names the fix, so the finding carries no extra remedy.
+        finding = BootstrapFinding("host-config", BootstrapState.ERROR, str(exc), remedy="")
+        return BootstrapResult(intent, (finding,))
+
+
+def _egress_check_finding(change: HostEgressChange) -> BootstrapFinding:
+    """Describe the egress edit a real run would make, without making it."""
+    if change.content is None:
+        detail = f"[sandbox] egress is already {change.requested}"
+        return BootstrapFinding("host-config", BootstrapState.CURRENT, detail)
+    detail = (
+        f'would set [sandbox] egress = "{change.requested}" in {change.path} '
+        f"(now {change.previous}); run `booley bootstrap --egress {change.requested}`"
+    )
+    return BootstrapFinding("host-config", BootstrapState.PENDING, detail)
+
+
+def _record_egress(change: HostEgressChange | None) -> bool:
+    """Write the planned egress edit and report it; False when the write failed.
+
+    Reporting happens here, at write time, so a later failing step cannot hide
+    that the host config changed.
+    """
+    if change is None:
+        return True
+    if change.content is None:
+        print(
+            status_line(
+                LineStatus.CURRENT, f"host-config: [sandbox] egress is already {change.requested}"
+            )
+        )
+        return True
+    try:
+        replace_regular_file(change.path, change.content)
+    except OSError as exc:
+        print(red(f"Cannot record host egress mode: {exc}"))
+        return False
+    print(
+        status_line(
+            LineStatus.PASS,
+            f'host-config: recorded [sandbox] egress = "{change.requested}" in {change.path} '
+            f"(was {change.previous})",
+        )
+    )
+    _report_sandboxes_on_old_mode(change.requested)
+    return True
+
+
+def _report_sandboxes_on_old_mode(mode: str) -> None:
+    """Name running Sandboxes still on another egress mode with their recreate remedy."""
+    from booley.runtime import session_admission
+
+    sandboxes: tuple[session_admission.Sandbox, ...] = ()
+    try:
+        sandboxes = session_admission.running_sandboxes()
+    except session_admission.AdmissionError as exc:
+        print(
+            status_line(
+                LineStatus.WARN,
+                f"cannot list running Sandboxes to check the egress change: {exc}; "
+                "run `booley doctor` once Docker is available",
+            )
+        )
+    for item in sandboxes:
+        if item.egress != mode:
+            print(
+                status_line(
+                    LineStatus.WARN,
+                    f"Sandbox {item.name} (Project {item.project_root}) still runs with "
+                    f"egress '{item.egress}'; {session_admission.recreate_remedy(item)}",
+                )
+            )
+    print(
+        "Stopped Sandboxes use the new mode on their next start, "
+        "or are refused with a recreate remedy."
+    )
 
 
 def _recovery_error(intent: Intent, error: RuntimeError) -> BootstrapResult:
