@@ -1,5 +1,7 @@
 """Unit tests for sim_result.py — shared simulation output parsing."""
 
+import json
+
 import pytest
 
 import booley.flows.sim.result as sr
@@ -144,90 +146,42 @@ class TestExtractVrfcWarnings:
 
 
 # ---------------------------------------------------------------------------
-# format_summary / parse_summary_line
+# format_summary
 # ---------------------------------------------------------------------------
 
 
-class TestSummaryRoundTrip:
+def _summary_payload(line: str) -> dict:
+    """The JSON object ``format_summary`` put after the ``[SIM_SUMMARY]`` prefix."""
+    assert line.startswith(sr.SIM_SUMMARY_PREFIX)
+    return json.loads(line[len(sr.SIM_SUMMARY_PREFIX) :])
+
+
+class TestFormatSummary:
     def test_passed_basic(self):
-        line = sr.format_summary(True)
-        parsed = sr.parse_summary_line(line)
-        assert parsed is not None
-        assert parsed["passed"] is True
-        assert parsed["sva_errors"] == 0
+        payload = _summary_payload(sr.format_summary(True))
+        assert payload["passed"] is True
+        assert payload["sva_errors"] == 0
 
     def test_failed_with_sva(self):
-        line = sr.format_summary(False, sva_errors=3)
-        parsed = sr.parse_summary_line(line)
-        assert parsed["passed"] is False
-        assert parsed["sva_errors"] == 3
+        payload = _summary_payload(sr.format_summary(False, sva_errors=3))
+        assert payload["passed"] is False
+        assert payload["sva_errors"] == 3
 
     def test_with_vrfc_warnings(self):
         warnings = ["WARNING: [VRFC 10-3380] issue A"]
-        line = sr.format_summary(True, vrfc_warnings=warnings)
-        parsed = sr.parse_summary_line(line)
-        assert parsed["vrfc_warnings"] == warnings
+        payload = _summary_payload(sr.format_summary(True, vrfc_warnings=warnings))
+        assert payload["vrfc_warnings"] == warnings
 
     def test_no_vrfc_key_when_empty(self):
-        line = sr.format_summary(True)
-        parsed = sr.parse_summary_line(line)
-        assert "vrfc_warnings" not in parsed
+        assert "vrfc_warnings" not in _summary_payload(sr.format_summary(True))
 
-    def test_embedded_in_output(self):
-        output = (
-            "lots of sim output\nmore output\n"
-            + sr.format_summary(True)
-            + "\n>>> Simulation PASSED"
-        )
-        parsed = sr.parse_summary_line(output)
-        assert parsed is not None
-        assert parsed["passed"] is True
-
-    def test_missing_returns_none(self):
-        assert sr.parse_summary_line("no summary here") is None
-
-    def test_malformed_json_raises(self):
-        with pytest.raises(ValueError, match="Malformed SIM_SUMMARY"):
-            sr.parse_summary_line("[SIM_SUMMARY] {bad json}")
-
-    def test_inconclusive_roundtrip(self):
-        line = sr.format_summary(False, inconclusive=True)
-        parsed = sr.parse_summary_line(line)
-        assert parsed is not None
-        assert parsed["passed"] is False
-        assert parsed["inconclusive"] is True
+    def test_inconclusive_flag(self):
+        payload = _summary_payload(sr.format_summary(False, inconclusive=True))
+        assert payload["passed"] is False
+        assert payload["inconclusive"] is True
 
     def test_no_inconclusive_key_when_false(self):
-        line = sr.format_summary(True)
-        parsed = sr.parse_summary_line(line)
-        assert "inconclusive" not in parsed
-
-    def test_non_object_json_raises(self):
-        # Valid JSON but a list/scalar, not the expected object shape.
-        for bad in ("[1, 2, 3]", "42", '"passed"', "null"):
-            with pytest.raises(ValueError, match="Malformed SIM_SUMMARY shape"):
-                sr.parse_summary_line("[SIM_SUMMARY] " + bad)
-
-    def test_object_missing_passed_key_raises(self):
-        # Well-formed object but missing the mandatory `passed` key the
-        # caller indexes directly.
-        with pytest.raises(ValueError, match="Malformed SIM_SUMMARY shape"):
-            sr.parse_summary_line('[SIM_SUMMARY] {"sva_errors": 0}')
-
-    @pytest.mark.parametrize(
-        "payload",
-        [
-            '{"passed": "yes"}',
-            '{"passed": true, "sva_errors": false}',
-            '{"passed": true, "sva_errors": "3"}',
-            '{"passed": true, "sva_errors": 3.0}',
-            '{"passed": true, "vrfc_warnings": ["ok", 7]}',
-            '{"passed": true, "inconclusive": 1}',
-        ],
-    )
-    def test_invalid_field_types_raise(self, payload):
-        with pytest.raises(ValueError, match="Malformed SIM_SUMMARY shape"):
-            sr.parse_summary_line(sr.SIM_SUMMARY_PREFIX + payload)
+        assert "inconclusive" not in _summary_payload(sr.format_summary(True))
 
 
 class TestHarnessInfraLines:
