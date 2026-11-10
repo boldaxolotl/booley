@@ -1,4 +1,4 @@
-"""Synchronize allowlisted user docs into installed package data.
+"""Synchronize allowlisted user docs and the CHANGELOG into installed package data.
 
 The authored docs live in ``docs/user/`` (plus ``docs/internals/FLOW_REPORTS.md``).
 Installed runtimes and the Sandbox cannot rely on a repository checkout, so the
@@ -7,8 +7,11 @@ docs listed in :data:`SHIPPED_DOCS` are copied, flat, to ``src/booley/data/docs/
 
     python -m booley.dev_support.reference_docs          # regenerate the copies
     python -m booley.dev_support.reference_docs --check  # fail on stale copies
+    python .github/scripts/sync_packaged_copies.py [--check]  # same, without installing Booley
 
-after editing any allowlisted doc. The copies are generated; never edit them.
+after editing any allowlisted doc or ``CHANGELOG.md``. The copies are generated;
+never edit them. ``CHANGELOG.md`` is mirrored byte for byte (no link rewriting)
+to ``src/booley/data/refs/CHANGELOG.md``, and ``--check`` covers that mirror too.
 
 Links are rewritten so each copy is self-consistent in the flat directory:
 
@@ -40,6 +43,8 @@ from booley.runtime.docs_links import USER_DOCS
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 PACKAGED_DOCS_RELATIVE_DIR = "src/booley/data/docs"
+CHANGELOG_SOURCE = "CHANGELOG.md"
+PACKAGED_CHANGELOG_RELATIVE_PATH = "src/booley/data/refs/CHANGELOG.md"
 
 # The one allowlist: repo-relative sources copied into the flat packaged directory.
 SHIPPED_DOCS: tuple[str, ...] = (
@@ -404,6 +409,26 @@ def sync_packaged_docs(
     return changed
 
 
+def packaged_changelog_problems(root: Path = _REPOSITORY_ROOT) -> list[str]:
+    """Return one line when the packaged CHANGELOG mirror is missing or differs from the source."""
+    mirror = root / PACKAGED_CHANGELOG_RELATIVE_PATH
+    if not mirror.is_file():
+        return [f"{PACKAGED_CHANGELOG_RELATIVE_PATH}: packaged copy is missing"]
+    if mirror.read_bytes() != (root / CHANGELOG_SOURCE).read_bytes():
+        return [f"{PACKAGED_CHANGELOG_RELATIVE_PATH}: packaged copy is stale"]
+    return []
+
+
+def sync_packaged_changelog(root: Path = _REPOSITORY_ROOT) -> list[str]:
+    """Copy ``CHANGELOG.md`` byte for byte to its packaged mirror; return what changed."""
+    if not packaged_changelog_problems(root):
+        return []
+    mirror = root / PACKAGED_CHANGELOG_RELATIVE_PATH
+    mirror.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(mirror, (root / CHANGELOG_SOURCE).read_bytes())
+    return [PACKAGED_CHANGELOG_RELATIVE_PATH]
+
+
 def _atomic_write(path: Path, content: bytes) -> None:
     """Publish one generated document without exposing a partial file."""
     temporary: Path | None = None
@@ -424,20 +449,32 @@ def _atomic_write(path: Path, content: bytes) -> None:
         raise
 
 
-def main(argv: list[str] | None = None, root: Path = _REPOSITORY_ROOT) -> int:
-    """Synchronize the packaged docs, or check them without writing."""
+def main(
+    argv: list[str] | None = None,
+    root: Path = _REPOSITORY_ROOT,
+    sync_command: str = _SYNC_COMMAND,
+) -> int:
+    """Synchronize the packaged docs and CHANGELOG mirror, or check them without writing.
+
+    ``sync_command`` is the fix command ``--check`` prints; each entry point names itself.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true", help="fail when a packaged copy is stale")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="fail when a packaged doc copy or the CHANGELOG mirror is stale",
+    )
     args = parser.parse_args(argv)
     try:
         if args.check:
-            problems = packaged_doc_problems(root)
+            problems = packaged_doc_problems(root) + packaged_changelog_problems(root)
             for problem in problems:
                 print(problem)
             if problems:
-                print(f"packaged docs are out of date; run {_SYNC_COMMAND}")
+                print(f"packaged docs are out of date; run {sync_command}")
             return 1 if problems else 0
-        changed = sync_packaged_docs(root)
+        # Docs first: a bad link raises before anything is written.
+        changed = sync_packaged_docs(root) + sync_packaged_changelog(root)
     except UnclassifiedLinkError as error:
         print(error)
         return 1

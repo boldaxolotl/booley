@@ -10,6 +10,8 @@ from booley.dev_support import reference_docs
 
 SOURCE = "docs/user/CONFIG.md"
 MARKER = "(host doc, not shipped)"
+CHANGELOG_SOURCE = "CHANGELOG.md"
+CHANGELOG_MIRROR = "src/booley/data/refs/CHANGELOG.md"
 
 
 def _render(text: str, source: str = SOURCE) -> str:
@@ -25,6 +27,11 @@ def _fake_repo(tmp_path: Path, overrides: dict[str, str] | None = None) -> Path:
         path.write_bytes(f"# {path.name}\n".encode())
     for source, text in (overrides or {}).items():
         (root / source).write_bytes(text.encode())
+    # A current checkout: the packaged CHANGELOG mirror already matches its source.
+    mirror = root / CHANGELOG_MIRROR
+    mirror.parent.mkdir(parents=True, exist_ok=True)
+    (root / CHANGELOG_SOURCE).write_bytes(b"# Changelog\n")
+    mirror.write_bytes(b"# Changelog\n")
     return root
 
 
@@ -42,6 +49,49 @@ def test_sync_writes_one_flat_copy_per_allowlisted_doc(tmp_path: Path) -> None:
     assert sorted(path.name for path in _packaged(root).iterdir()) == expected
     assert len(expected) == len(reference_docs.SHIPPED_DOCS) == 13
     assert (_packaged(root) / "CONFIG.md").read_text(encoding="utf-8") == "# CONFIG.md\n"
+
+
+def test_sync_mirrors_changelog_byte_for_byte(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _fake_repo(tmp_path)
+    # A shipped-doc link, non-ASCII text and a CRLF line: copied verbatim, never rewritten.
+    changelog = "# Changelog\n[x](docs/user/SETUP.md) caf\u00e9\r\nlast\n".encode()
+    (root / CHANGELOG_SOURCE).write_bytes(changelog)
+    mirror = root / CHANGELOG_MIRROR
+
+    assert reference_docs.main([], root=root) == 0
+
+    assert mirror.read_bytes() == changelog
+    assert "src/booley/data/refs/CHANGELOG.md" in capsys.readouterr().out
+    assert reference_docs.main([], root=root) == 0
+    assert "packaged docs are current" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("state", ["stale", "missing"])
+def test_check_reports_stale_changelog_mirror(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], state: str
+) -> None:
+    root = _fake_repo(tmp_path)
+    reference_docs.sync_packaged_docs(root)
+    mirror = root / CHANGELOG_MIRROR
+    if state == "stale":
+        mirror.write_bytes(b"hand edit\n")
+    else:
+        mirror.unlink()
+    before = mirror.read_bytes() if mirror.exists() else None
+
+    assert reference_docs.main(["--check"], root=root) == 1
+
+    output = capsys.readouterr().out
+    assert f"src/booley/data/refs/CHANGELOG.md: packaged copy is {state}" in output
+    assert "python -m booley.dev_support.reference_docs" in output
+    assert (mirror.read_bytes() if mirror.exists() else None) == before
+
+    assert reference_docs.main([], root=root) == 0
+    capsys.readouterr()
+    assert reference_docs.main(["--check"], root=root) == 0
+    assert capsys.readouterr().out == ""
 
 
 def test_second_sync_is_a_no_op(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

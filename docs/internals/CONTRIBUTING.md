@@ -47,7 +47,10 @@ authored files stay in `docs/user/` (plus `docs/internals/FLOW_REPORTS.md`); the
 set is `SHIPPED_DOCS` in `src/booley/dev_support/reference_docs.py`. After
 editing any of them, regenerate the packaged copies in `src/booley/data/docs/`
 with `python -m booley.dev_support.reference_docs`; use `--check` to verify them
-without writing. Never edit a copy by hand. The sync turns links to other
+without writing. The same command mirrors `CHANGELOG.md` byte for byte to
+`src/booley/data/refs/CHANGELOG.md`, so run it after editing `CHANGELOG.md` too.
+`python .github/scripts/sync_packaged_copies.py [--check]` runs it without
+installing Booley. Never edit a copy or the mirror by hand. The sync turns links to other
 shipped docs into sibling links and links to unshipped docs
 (`PLAIN_TEXT_TARGETS`) into plain text marked `(host doc, not shipped)`. A new
 link to a doc in neither set fails the sync with the file, the link and the fix.
@@ -91,7 +94,9 @@ installs Booley from any checkout, and runs commands against the active
 worktree's source. At `handoff` it names CI's lint-job checks: `ruff
 check .`, `ruff format --check .`, and `pyright` (the strict boundary check,
 configured by `[tool.pyright]` in `pyproject.toml`, resolving third-party
-imports in the shared environment). Its `coverage.changed-lines` handoff
+imports in the shared environment). Its `packaged-copies.check` command
+(before commit) fails when a packaged doc copy or the packaged `CHANGELOG.md`
+mirror is stale. Its `coverage.changed-lines` handoff
 command repeats CI's 90% changed-line coverage gate against the newest merge
 base with `main`, reading the coverage report that a passing `pytest.broad`
 run wrote for the same tree outside the checkout; it refuses a missing or
