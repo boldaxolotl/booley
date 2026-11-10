@@ -181,7 +181,7 @@ def test_declared_vcd_streams_to_trace_ok(adapter, tmp_path, monkeypatch):
 
 
 def _assert_host_without_streaming_converts_after_the_run(tmp_path, monkeypatch):
-    """Windows or no native B-Wave: the same entry stays a plain file, converted afterwards."""
+    """Windows or no streaming support: the same entry stays a plain file, converted afterwards."""
     steps, entries = "write:fpu.vcd;record:fpu.vcd", ["fpu.vcd"]
     streaming = _run(
         "verilator", tmp_path / "on", monkeypatch, "record:fpu.vcd;write:fpu.vcd", entries
@@ -207,7 +207,7 @@ def _assert_host_without_streaming_converts_after_the_run(tmp_path, monkeypatch)
 )
 def test_ineligible_entries_are_not_piped(entry, written, op, tmp_path, monkeypatch):
     """An entry that cannot stream stays a plain file next to one that does."""
-    if entry is None:  # Windows or no native B-Wave
+    if entry is None:  # Windows or no streaming support
         _assert_host_without_streaming_converts_after_the_run(tmp_path, monkeypatch)
         return
     written = written.format(tmp=tmp_path)

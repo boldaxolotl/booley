@@ -282,21 +282,9 @@ A failing simulation stays failed and a passing one is reported inconclusive
 (no waveform to query); neither becomes a timeout. Dump FST instead, or raise
 `trace_convert_timeout_ms`, when conversion is too slow.
 
-On Linux and macOS with native B-Wave, a literal relative `.vcd` entry inside
-the run directory skips the wait: during the run that path is a named pipe,
-and B-Wave converts what the testbench writes while the test runs. The VCD
-never lands on disk, the pipe is removed afterwards, and the waveform is
-ready when the run ends. Globs, absolute or outside-the-run-directory
-entries, Windows, a host without native B-Wave, and a file already at that
-path (Booley does not turn it into a pipe) fall back to the post-run conversion above,
-including keeping the VCD when that conversion fails. If the testbench
-deletes or replaces the file, the file left there is converted after the run.
-A dump that is never written, is reopened (a second VCD header), or that
-B-Wave rejects gives a trace incident naming B-Wave's error, with no VCD kept;
-the verdict follows the same rule as a failed conversion above. A testbench must not seek in, read, or
-reopen a streamed dump. If Booley is killed hard mid-run a pipe can remain; the
-next `--trace` run removes it, or delete it yourself, because a run without
-`--trace` would block writing to it.
+A literal relative `.vcd` entry inside the run directory is converted while
+the test runs, so the waveform is ready when the run ends and no VCD is left
+on disk. Any other case is converted after the run, as described above.
 
 ### Tracing a Cocotb Target
 

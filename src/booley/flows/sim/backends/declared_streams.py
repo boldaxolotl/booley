@@ -1,6 +1,6 @@
 """Stream declared ``[flows.sim].trace_files`` VCDs through named pipes.
 
-On POSIX with native B-Wave, a literal relative ``.vcd`` entry inside the run
+On POSIX with the bwave binary, a literal relative ``.vcd`` entry inside the run
 directory becomes a named pipe before the simulator starts. A ``bwave build``
 process reads it while the test runs, so the raw VCD never lands on disk. Any
 entry that cannot stream keeps the post-run conversion path untouched.

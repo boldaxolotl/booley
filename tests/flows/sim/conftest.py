@@ -39,7 +39,7 @@ def explicit_surface_for_lightweight_target_handles(
 
 @pytest.fixture(autouse=True)
 def declared_trace_files_convert_after_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep declared-file tests host-independent: no native B-Wave means no pipes."""
+    """Keep declared-file tests host-independent: streaming off means no pipes."""
     monkeypatch.setattr(waveform_store, "can_stream_waveform", lambda: False)
 
 
