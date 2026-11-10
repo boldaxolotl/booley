@@ -1,4 +1,4 @@
-"""Exact pinned single-file publication, without changing unpinned Ticket policy."""
+"""Exact pinned single-file publication, without changing unpinned publication policy."""
 
 from __future__ import annotations
 
