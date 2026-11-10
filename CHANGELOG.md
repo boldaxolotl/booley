@@ -19,10 +19,11 @@ Packaged release history starts at 0.2.7. For older changes, see
   Icarus no longer reports an unconverted raw VCD as a waveform.
 - A Coverage Campaign whose stored rollups or pass/fail metric rows disagree
   with its points now loads with values recomputed from the points instead of
-  failing. A forged pass/fail on a blocked or not-requested evaluation is still
-  refused (`COV_EVALUATION_MISMATCH`), as is a pass/fail evaluation that cannot
-  be re-scored (no thresholds, an unknown threshold metric, a missing rollup or
-  incomplete collection) or whose metric rows are malformed or repeated. The
+  failing. A forged pass/fail on a blocked or not-requested evaluation or one
+  that cannot be re-scored (no thresholds, invalid thresholds or a missing
+  rollup) is still refused (`COV_EVALUATION_MISMATCH`), as is an incomplete
+  collection (`COV_INCOMPLETE_EVALUATED`); an unknown threshold metric or
+  malformed or repeated metric rows are refused with the field codes. The
   load no longer cross-checks collection state, selected tests against runs,
   or native-format and unknown-record consistency; those fields load as stored.
 - `sim --trace` now converts a declared `trace_files` entry that is a literal
