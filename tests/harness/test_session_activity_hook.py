@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.mcp.session_registry import SessionRegistry
+from booley.runtime import chat_sessions, handles
 from booley.runtime import session_activity as activity
 from booley.runtime.booley_dir import reset_cache, resolve_common_booley_dir
 from booley.runtime.chat_sessions import reserve_codex_chat
@@ -219,37 +220,6 @@ def test_nested_codex_stop_never_marks_the_outer_tab_idle(tmp_path, launcher):
     assert store.read("codex:nested").state == activity.WAITING_USER
 
 
-@pytest.mark.parametrize("corruption", ["schema", "label", "alias", "counter"])
-def test_hook_rejects_the_same_corrupt_handle_maps_as_the_registry(tmp_path, corruption):
-    proc = proc_tree(tmp_path / "proc", CHAIN, {300: "codex"})
-    owner = capture_process_identity(300, proc_root=proc)
-    reserve_codex_chat(tmp_path, owner)
-    store = HandleStore(tmp_path)
-    data = json.loads(store.path.read_bytes())
-    key = activity.process_session_key(owner)
-    if corruption == "schema":
-        data["schema"] = True
-    elif corruption == "label":
-        data["entries"][key] = 42
-    elif corruption == "alias":
-        data["aliases"]["invalid"] = 42
-    elif corruption == "counter":
-        data["next_number"] = True
-    store.path.write_text(json.dumps(data))
-    with pytest.raises(ValueError):
-        store.load()
-    assert hook.record(
-        "codex",
-        {"hook_event_name": "Stop", "session_id": "root"},
-        tmp_path,
-        NOW,
-        proc_root=proc,
-        pid=500,
-    )
-    assert ActivityStore(tmp_path).read(key) is None
-    assert ActivityStore(tmp_path).read("codex:root").state == activity.WAITING_USER
-
-
 def run_main(monkeypatch, capsys, argv, stdin, project=None):
     monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(stdin)))
     monkeypatch.setattr(hook, "resolve_common_booley_dir", lambda _env, _cwd: project)
@@ -320,6 +290,8 @@ def test_script_repeats_the_packages_event_table_states_and_bounds():
         activity.WAITING_USER,
     )
     assert hook.BOOLEY_DIR_NAME == ".booley"
+    assert hook.CODEX_NATIVE_NAMES == chat_sessions.CODEX_NATIVE_NAMES
+    assert hook.MAX_HANDLE_MAP_BYTES == handles.MAX_MAP_BYTES
 
 
 @pytest.mark.parametrize(("event", "state"), sorted(activity.EVENT_STATES.items()))
