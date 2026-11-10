@@ -12,6 +12,7 @@ from functools import partial
 from pathlib import Path
 
 from booley.bwave.waveform_store import StreamingConversion
+from booley.flows.sim.backends.declared_streams import DeclaredTraceStreams
 from booley.flows.sim.backends.shared import (
     ChildCpuSnapshot,
     RunLogProgress,
@@ -48,6 +49,7 @@ class SimulatorLaunch:
     sim_time_grace_s: float = 0.0  # > 0 arms the frozen-clock guard (Cocotb prints sim time)
     trace: TraceSession | None = None  # kill incidents; with ``conversion`` also a stall monitor
     conversion: StreamingConversion | None = None
+    streams: DeclaredTraceStreams | None = None  # declared VCD pipes, watched but never fatal
     on_line: Callable[[str], None] | None = None
 
 
@@ -182,7 +184,7 @@ def run_supervised(
     launch: SimulatorLaunch,
 ) -> tuple[deque[str], subprocess.Popen[str], RunTermination]:
     """Spawn *launch*, stream and guard it, and return why it stopped."""
-    from booley.harness.colors import dim
+    from booley.presentation.colors import dim
     from booley.presentation.heartbeat import render_heartbeat
     from booley.runtime.heartbeat import Heartbeat
 
@@ -216,6 +218,8 @@ def _run(launch: SimulatorLaunch) -> tuple[deque[str], subprocess.Popen[str], Ru
     supervise_child(proc)
     if launch.trace is not None and launch.conversion is not None:
         launch.trace.start_monitor(launch.conversion, proc)
+    if launch.streams is not None:
+        launch.streams.watch(proc)
     supervisor = _Supervisor(launch, proc, disk_baseline)
     try:
         supervisor.drain()

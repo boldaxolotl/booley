@@ -168,7 +168,7 @@ def test_auth_status_gateway_complete_config_exits_zero(gateway_env, capsys):
 def test_auth_status_states_the_policy_in_words_with_one_glyph_per_line(
     gateway_env, monkeypatch, capsys
 ):
-    from booley.harness import colors
+    from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
 
@@ -248,7 +248,7 @@ def test_auto_keeps_anthropic_auth_token_for_claude_but_never_forwards_it(
 
 
 def test_auth_status_notes_a_gateway_policy_it_ignores(gateway_env, monkeypatch, capsys):
-    from booley.harness import colors
+    from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
     monkeypatch.setattr(agent_config, "_inside_container", lambda: False)

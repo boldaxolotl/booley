@@ -80,6 +80,25 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
+        "D40",
+        (prefix("booley.presentation"),),
+        (
+            prefix("booley.harness"),
+            prefix("booley.mcp"),
+            prefix("booley.runtime"),
+            prefix("booley.goals"),
+            prefix("booley.flows"),
+        ),
+        "shared presentation primitives stay beneath every composition and execution owner",
+    ),
+    DirectionRule(
+        "D39",
+        (prefix("booley.flows"),),
+        (prefix("booley.harness"),),
+        "Flows run under any composition; the Harness command layer supplies human CLI "
+        "concerns through the invocation, never by Flow import",
+    ),
+    DirectionRule(
         "D36",
         (prefix("booley.runtime"),),
         (prefix("booley.goals"),),
@@ -213,7 +232,7 @@ DIRECTION_RULES = (
             exact("booley.harness.doctor"),
             exact("booley.harness.init_cmd"),
             exact("booley.harness.booley"),
-            exact("booley.harness.colors"),
+            exact("booley.presentation.colors"),
             exact("booley.harness.setup.common"),
         ),
         "diagnostic owners return observations without command orchestration or rendering",

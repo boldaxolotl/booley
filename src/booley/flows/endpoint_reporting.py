@@ -18,7 +18,7 @@ from booley.flows.endpoint_events import (
     _write_display_event,
 )
 from booley.flows.execution_persistence import EvidenceDiscarded, NoAcceptanceRecorder
-from booley.harness.colors import strip_ansi
+from booley.presentation.colors import strip_ansi
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
     EndpointOutcome,

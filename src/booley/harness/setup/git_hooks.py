@@ -272,6 +272,15 @@ def _safe_line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
     )
 
 
+def _line_ending_mode(ctx: InitContext) -> LineEndingMode:
+    """Choose how far this run may go: inspect, settings only, or a full repair."""
+    if ctx.check_only:
+        return LineEndingMode.INSPECT
+    if ctx.preserve_tracked_content:
+        return LineEndingMode.REPAIR_SETTINGS
+    return LineEndingMode.REPAIR
+
+
 def _step_line_endings(
     ctx: InitContext,
     booley_dir: Path | None = None,
@@ -284,7 +293,7 @@ def _step_line_endings(
     wrote any files in the Booley Directory, so Booley's own earlier edits do not block repair.
     """
     ctx.step_banner("line endings")
-    mode = LineEndingMode.INSPECT if ctx.check_only else LineEndingMode.REPAIR
+    mode = _line_ending_mode(ctx)
     report = reconcile_project_line_endings(
         ctx.project_root, booley_dir, mode=mode, clean_baseline=clean_baseline
     )
@@ -301,7 +310,7 @@ def _step_line_endings(
         display = line_ending_repository_display(failure.role, failure.candidate)
         warn(f"could not inspect {display}: {failure.detail}")
         details.append(f"{failure.role}: {failure.detail}")
-    _record_line_ending_summary(ctx, report, details)
+    _record_line_ending_summary(ctx, report, details, mode)
 
 
 def _render_repository_line_endings(report: RepositoryLineEndingReport) -> str | None:
@@ -327,12 +336,13 @@ def _line_ending_summary_detail(report: RepositoryLineEndingReport) -> str:
 
 
 def _record_line_ending_summary(
-    ctx: InitContext, report: LineEndingReport, details: list[str]
+    ctx: InitContext, report: LineEndingReport, details: list[str], mode: LineEndingMode
 ) -> None:
     if report.status is LineEndingStatus.SAFE:
         status = "warn" if details else "ok"
     else:
-        status = "warn" if ctx.check_only else "err"
+        # Only a full repair can fail to fix an unsafe tree; the other modes report it.
+        status = "err" if mode is LineEndingMode.REPAIR else "warn"
     if len(report.repositories) == 1 and not report.discovery_failures:
         detail = _line_ending_summary_detail(report.repositories[0])
     elif status == "ok":

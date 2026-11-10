@@ -111,7 +111,6 @@ from booley.harness import (
     doctor_sim_dump as sim_dump,
 )
 from booley.harness import terminal_status as ts
-from booley.harness.colors import bold, bold_green, bold_red, dim, yellow
 from booley.harness.setup import readiness
 from booley.harness.setup.common import info
 from booley.harness.setup.docker_image import DOCKER_IMAGE, FLAVOR_IMAGES
@@ -128,7 +127,8 @@ from booley.harness.setup.line_endings import (
     unknown_attributes_policy_details,
 )
 from booley.harness.setup.readiness import ProjectAudit
-from booley.harness.terminal_table import render_table
+from booley.presentation.colors import bold, bold_green, bold_red, dim, yellow
+from booley.presentation.terminal_table import render_table
 from booley.runtime import (
     auth_token,
     doctor_stamp,

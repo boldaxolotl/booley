@@ -39,6 +39,7 @@ from booley.fusesoc.fusesoc_registry import (
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.flows.sim.test_verilator_build_reuse_engine import _edit_keeping_mtime
 from tests.flows.test_isolated_build_headers import real_fusesoc  # noqa: F401  (fixture)
 
 pytest.importorskip("fusesoc")
@@ -359,6 +360,25 @@ def test_isolated_icarus_reuse_key_is_stable_and_follows_edits(
     top.write_text("module top; // edited\nendmodule\n", encoding="utf-8")
     edited = _icarus_key(_prepare(root, "sim_icarus", name="g3"), root)
     assert edited not in (None, first)
+
+
+@icarus_reuse_posix_only
+@pytest.mark.usefixtures("real_fusesoc")
+def test_isolated_icarus_listed_header_edit_changes_or_declines_the_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Editing a listed header never leaves an isolated Icarus build with the same reuse key.
+
+    The key may decline (``None``) because recipes that use includes are not
+    keyed today; the invariant holds if a later change keys them safely.
+    """
+    _stub_icarus_identity(monkeypatch)
+    root = _write_project(tmp_path / "proj")
+    first = _icarus_key(_prepare(root, "sim_icarus", name="g1"), root)
+    # Keep the old mtime so only the header bytes can move the key.
+    _edit_keeping_mtime(root / "rtl" / "inc" / "listed.vh", "// listed v2\n")
+    second = _icarus_key(_prepare(root, "sim_icarus", name="g2"), root)
+    assert first is None or first != second
 
 
 @pytest.mark.usefixtures("real_fusesoc")

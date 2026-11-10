@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 
 from booley.flows.builtin_cli import parse_request
-from booley.flows.sim.campaign.planning import compare_manifests
+from booley.flows.sim.campaign.planning import (
+    compare_manifests,
+)
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from tests.flows.sim.test_coverage_invocation import project
@@ -310,3 +312,59 @@ def test_legacy_interrupted_campaign_new_source_mapping_refuses_before_attempt(
         for key, value in _snapshot(manifest.parent).items()
         if not key.startswith("dependency-receipts/")
     } == before
+
+
+_WORK_DIR_NOTICE = "booley: --work-dir is deprecated; use --project instead (removal after one compatibility release)\n"
+
+
+@pytest.mark.parametrize("mode", ["success", "failure", "mismatch"])
+def test_cli_resume_announces_validated_origin_before_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], mode: str
+) -> None:
+    from booley.flows.sim.flow import SimulateFlow
+    from tests.flows.sim.test_coverage_flow import _interrupt_coverage_publication
+    from tests.flows.sim.test_coverage_transaction import NativeExecution
+
+    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    destination = tmp_path / "destination reports"
+    flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
+    executor = flow._resume_campaign_executor
+    witnessed: list[str] = []
+
+    def before_executor(plan):
+        witnessed.append(capsys.readouterr().err)
+        assert witnessed == [_WORK_DIR_NOTICE + f"campaign manifest: {manifest.resolve()}\n"]
+        assert manifest.is_file()
+        if mode == "failure":
+            raise RuntimeError("resume executor unavailable")
+        return executor(plan)
+
+    monkeypatch.setattr(flow, "_resume_campaign_executor", before_executor)
+    if mode == "mismatch":
+        (tmp_path / "rtl/counter.sv").write_text("module counter; wire changed; endmodule\n")
+    capsys.readouterr()
+    result = flow.execute_cli(
+        [
+            "--quiet",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(destination),
+            "--resume-from",
+            str(manifest),
+        ]
+    )
+    output = capsys.readouterr()
+    assert result.exit_code == (0 if mode == "success" else 2)
+    if mode == "mismatch":
+        assert witnessed == []
+        assert "campaign manifest: " not in output.err
+        assert "  manifest: " not in result.outcome.report_text
+        assert "source changed: rtl/counter.sv" in result.outcome.report_text
+        assert result.outcome.detail["mismatches"]
+    else:
+        assert len(witnessed) == 1
+        assert f"  manifest: {manifest.resolve()}" in result.outcome.report_text
+        assert f"  report: {(destination / 'sim.json').resolve()}" in result.outcome.report_text
+        assert result.outcome.report_text.count("  manifest:") == 1

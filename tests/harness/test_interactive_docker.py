@@ -189,9 +189,9 @@ class TestIssuedImageKeepers:
 
 def test_external_selection_compares_exact_image_ids(monkeypatch) -> None:
     metadata = {
-        "issued": image_identity.ImageMetadata("issued", "sha256:old", {}, {}),
-        "same": image_identity.ImageMetadata("same", "sha256:old", {}, {}),
-        "rebuilt": image_identity.ImageMetadata("rebuilt", "sha256:new", {}, {}),
+        "issued": image_identity.ImageMetadata("issued", "sha256:old", {}, {}, ()),
+        "same": image_identity.ImageMetadata("same", "sha256:old", {}, {}, ()),
+        "rebuilt": image_identity.ImageMetadata("rebuilt", "sha256:new", {}, {}, ()),
     }
     monkeypatch.setattr(
         idk,
@@ -377,6 +377,84 @@ def test_compare_issued_image_dispatch(monkeypatch, tmp_path):
         ),
         ("reference", (issued, "external"), {"executable": "custom-docker"}),
     ]
+
+
+def test_inspect_image_metadata_missing_image_is_none(fake_docker) -> None:
+    for message in ("Error: No such image: gone", "Error: no such object: gone"):
+        fake_docker([(lambda args: True, _cp(1, stderr=message))])
+
+        assert idk.inspect_image_metadata("gone") is None
+
+    # Only Docker's own "no such image" answer is absence.
+    fake_docker([(lambda args: True, _cp(1, stderr="Error: No such container: gone"))])
+    with pytest.raises(idk.ImageInspectError, match="No such container"):
+        idk.inspect_image_metadata("gone")
+
+
+def test_inspect_image_metadata_docker_failure_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    failures: list[tuple[Any, str]] = [
+        (_cp(125, stderr="Cannot connect to the Docker daemon"), "Cannot connect"),
+        (_cp(1), "Docker exited 1"),
+        (FileNotFoundError("docker"), "docker"),
+        (subprocess.TimeoutExpired("docker", 15), "timed out"),
+    ]
+    for failure, cause in failures:
+
+        def fake(
+            *_args: Any, _failure: Any = failure, **_kwargs: Any
+        ) -> subprocess.CompletedProcess:
+            if isinstance(_failure, BaseException):
+                raise _failure
+            return _failure
+
+        monkeypatch.setattr(idk, "_run_docker", fake)
+
+        with pytest.raises(idk.ImageInspectError, match=cause) as caught:
+            idk.inspect_image_metadata("keeper:tag")
+
+        assert "'keeper:tag'" in str(caught.value)
+
+
+def test_inspect_image_metadata_rejects_malformed_output(fake_docker) -> None:
+    for stdout in ("not json", json.dumps([{"Id": "sha256:x", "RootFS": None}])):
+        fake_docker([(lambda args: True, _cp(0, stdout=stdout))])
+
+        with pytest.raises(idk.ImageInspectError, match="invalid metadata"):
+            idk.inspect_image_metadata("keeper:tag")
+
+
+def test_inspect_image_metadata_reads_layers_in_one_call(fake_docker) -> None:
+    stdout = json.dumps([{"Id": "sha256:x", "RootFS": {"Layers": ["sha256:l"]}}])
+    docker = fake_docker([(lambda args: True, _cp(0, stdout=stdout))])
+
+    metadata = idk.inspect_image_metadata("keeper:tag")
+
+    assert metadata is not None and metadata.layers == ("sha256:l",)
+    assert docker.calls == [["image", "inspect", "keeper:tag"]]
+
+
+def test_issued_comparisons_report_inspect_failure_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_down = _cp(125, stderr="Cannot connect to the Docker daemon")
+    monkeypatch.setattr(idk, "_run_docker", lambda *_args, **_kwargs: daemon_down)
+    monkeypatch.setattr(
+        image_identity,
+        "current_host_build_identity",
+        lambda: image_identity.BooleyBuildIdentity("1.0", None, None, None),
+    )
+    comparisons = {
+        "build": lambda: idk.compare_issued_build("issued"),
+        "reference": lambda: idk.compare_issued_reference("issued", "configured"),
+        "selection": lambda: idk.compare_issued_selection("issued", "configured"),
+    }
+
+    for name, compare in comparisons.items():
+        result = compare()
+
+        assert result.status is image_identity.Status.UNKNOWN, name
+        assert "Cannot connect to the Docker daemon" in result.detail, name
+        assert "'issued'" in result.detail, name
 
 
 def test_inspect_large_valid_metadata(monkeypatch):

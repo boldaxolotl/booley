@@ -52,7 +52,7 @@ def _targets_view():
 @pytest.fixture(autouse=True)
 def _colors_off(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin plain output so FORCE_COLOR on a developer machine cannot break substrings."""
-    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", False)
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
 
 
 def select_target(project_root, token, *, for_flow=None):

@@ -10,7 +10,8 @@ import pytest
 
 from booley.audit.diagnostic_results import Severity
 from booley.audit.doctor_waivers import DoctorWaiver, DoctorWaivers
-from booley.harness import colors, doctor
+from booley.harness import doctor
+from booley.presentation import colors
 
 
 def _plain_reporter_run(capsys, monkeypatch, *, colored: bool) -> str:

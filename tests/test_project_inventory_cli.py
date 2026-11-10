@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from booley.harness import projects_view
-from booley.harness.terminal_table import render_table
+from booley.presentation.terminal_table import render_table
 from booley.projects import cli as project_inventory_cli
 from booley.projects import inventory as project_inventory
 from booley.runtime import image_keepers as runtime_image_keepers
@@ -922,7 +922,7 @@ def test_real_pending_journal_preserves_keeper_and_inventory(
         _, preview = _prune(capsys)
     if journal_kind == "invalidation":
         issuance_invalidation.prepare(str(project))
-        journal = issuance_invalidation._path(str(project))
+        journal = issuance_invalidation.journal_store().path(str(project))
     else:
         journal = _write_restore_journal(tmp_path / "config", project)
         if journal_kind == "malformed-refresh":
