@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Write mutmut's ``also_copy`` list for the scheduled mutation campaign.
 
-mutmut runs the selected tests inside ``mutants/``, which it seeds with only
-its ``source_paths``, ``tests/``, ``setup.cfg`` and ``pyproject.toml``. The
+mutmut runs the selected tests inside ``mutants/``, which it seeds by default
+with its ``source_paths``, ``tests/``, ``setup.cfg`` and ``pyproject.toml`` (and a
+few other defaults that only duplicate entries here). The
 harness tests also read the rest of the checkout (``VERSION``, docs, workflows,
 Sandbox Image build inputs), so ``mutants/`` must be a faithful checkout. A
 list kept by hand in ``setup.cfg`` broke the campaign whenever the tracked
