@@ -34,7 +34,7 @@ def installed(tmp_path, monkeypatch):
     monkeypatch.setattr(
         codex_chat, "capture_process_identity", lambda _pid: ProcessIdentity(123, "fixture", 7)
     )
-    monkeypatch.setattr(codex_chat, "resolve_common_booley_dir", lambda root: root, raising=False)
+    monkeypatch.setattr(codex_chat, "resolve_common_booley_dir", lambda root: root)
     return executable
 
 
@@ -91,7 +91,7 @@ def test_npm_update_is_discovered_on_each_launch(tmp_path, installed, monkeypatc
 def test_naming_failures_retain_plain_launch(tmp_path, installed, monkeypatch, failure):
     project = tmp_path / "project"
     if failure == "script":
-        renamed = installed.with_name("custom")
+        renamed = installed.with_name("codex-helper")
         installed.rename(renamed)
         monkeypatch.setattr(codex_chat.shutil, "which", lambda _name: str(renamed))
     elif failure == "node-shim":

@@ -329,10 +329,10 @@ cannot identify every session or remain meaningful across Dashboard restarts.
   and establish handle aliases. Historical allocations are never renumbered.
   Migration retains the predecessor's worktree when a call omits `work_dir`.
   No alias records thread ownership. A late peerless completion that began
-  before tab ownership lands on the thread row until the next attributed call
-  folds it into the tab. Until then its own response may carry a false
-  shared-worktree warning and the Dashboard may briefly show two rows with the
-  tab's handle.
+  before tab ownership lands on the thread row until that thread's next
+  attributed call folds it into the tab, or quiet expiry removes it. Until then
+  its own response may carry a false shared-worktree warning and the Dashboard
+  may show two rows with the tab's handle.
   Marked process rows follow process liveness rather than thread quiet expiry.
 - **Activity boundaries.** The lifecycle hook uses the same process identity
   and reads the handle map's aliases advisorily (bounded parse): `HandleStore`

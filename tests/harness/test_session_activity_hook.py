@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.mcp.session_registry import SessionRegistry
-from booley.runtime import chat_sessions
+from booley.runtime import chat_sessions, handles
 from booley.runtime import session_activity as activity
 from booley.runtime.booley_dir import reset_cache, resolve_common_booley_dir
 from booley.runtime.chat_sessions import reserve_codex_chat
@@ -284,6 +284,7 @@ def test_script_repeats_the_packages_event_table_states_and_bounds():
     )
     assert hook.BOOLEY_DIR_NAME == ".booley"
     assert hook.CODEX_NATIVE_NAMES == chat_sessions.CODEX_NATIVE_NAMES
+    assert hook.MAX_HANDLE_MAP_BYTES == handles.MAX_MAP_BYTES
 
 
 @pytest.mark.parametrize(("event", "state"), sorted(activity.EVENT_STATES.items()))

@@ -9,12 +9,14 @@ Use a small Node ES module to set `process.title`, restore the wrapper's
 expected `process.argv`, and import the installed `codex.js`. Codex's wrapper
 continues to discover the native executable, set its package-manager environment,
 forward signals, and mirror exit status. Booley does not copy its vendor paths or
-package-manager detection. Resolve the executable on every launch and classify it by file name only;
-an npm update that retargets the executable symlink is covered by a unit test.
+package-manager detection. Resolve the executable on every launch and classify
+it by file name only; an npm update that retargets the executable symlink is covered by a unit test.
 Native Linux installations can instead retain the launch PID and set `argv[0]`
 directly. Supported executable basenames are `codex` and the published
 x86_64/aarch64 Linux musl/gnu names; launcher, registry and hook agree on these
 boundaries. Unsupported installations and naming failures use the plain launch.
+A shell wrapper named `codex` is classified by name and launched as native: it
+reserves a handle, no NOTE is printed, and its tab title is not `S<n>`.
 This includes Node version-manager shims whose resolved `node` name is not
 `node` or `nodejs`, and runtime directory resolution failures; neither should
 reserve an unusable tab identity. A script shim named `node` is launched: one
@@ -91,12 +93,14 @@ tests exercise predecessor migration after resuming an existing thread and after
 a transient peer-lookup failure, including absence of a false shared-worktree
 warning, retention of omitted worktree facts, and late completions after the
 thread row has migrated. A late peerless completion recreates the thread row,
-with a possible false shared-worktree warning on its own response, until the
-next attributed call folds it into the tab.
+with a possible false shared-worktree warning on its own response, until that
+thread's next attributed call folds it into the tab (or quiet expiry removes it).
 Other regressions cover worktree/runtime directory disagreement and nested CLI
-boundaries for native and npm launches across supported executable basenames.
+boundaries for native and npm launches with one native executable name; a test
+pins agreement of the supported names between the package and the hook.
 Lifecycle-hook tests cover matching activity keys, ignoring a subagent Stop,
-excluding a nested CLI's Stop, and unchanged thread activity when the handle map is broken.
+excluding a nested CLI's Stop, and unchanged thread activity when the handle
+map is broken.
 The pinned upstream [Codex hook dispatcher](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/core/src/hook_runtime.rs)
 dispatches child completion as `SubagentStop`, which Booley ignores. Ordinary
 subagent tool hooks carry `agent_id`; these cannot update a named tab even when

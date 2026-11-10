@@ -37,10 +37,10 @@ def process(
     return ProcessIdentity(pid, SCOPE, start)
 
 
-def publish(registry, facts, tool, now):
+def publish(registry, facts, tool, now, outcome="completed"):
     """Store a call as the observer does: resolve chat ownership, then upsert."""
     resolved = registry.chat_attribution(facts)
-    registry.upsert(resolved, tool, "completed", now=now, predecessor_keys=(facts.key,))
+    registry.upsert(resolved, tool, outcome, now=now, predecessor_keys=(facts.key,))
     return resolved
 
 
@@ -119,7 +119,7 @@ def test_late_peerless_thread_row_folds_into_the_tab_on_the_next_attributed_call
     peer = process(proc, 101, 100)
     registry = SessionRegistry(tmp_path, proc_root=proc)
     earlier = Attribution("codex:main", "thread", "/repo", "git:known", namespace=SCOPE)
-    publish(registry, earlier, "first", 100)
+    publish(registry, earlier, "first", 100, "started")
     chat_sessions.reserve_codex_chat(tmp_path, owner)
     current = Attribution("codex:main", "thread", "", "", process=peer, namespace=SCOPE)
     publish(registry, current, "second", 101)
@@ -147,6 +147,8 @@ def test_unreadable_or_invalid_ancestry_cannot_confer_a_handle(tmp_path, monkeyp
     owner = process(proc, 100, 1, executable="node")
     peer = process(proc, 101, 100)
     chat_sessions.reserve_codex_chat(tmp_path, owner)
+    # Positive control: the intact fixture resolves, so each fault below is what breaks it.
+    assert chat_sessions.codex_chat_owner(tmp_path, peer, proc_root=proc) is not None
     if fault in {"invalid-parent", "self-parent"}:
         fields = (proc / "101/stat").read_text().rsplit(")", 1)[1].split()
         fields[1] = "bad" if fault == "invalid-parent" else "101"
