@@ -162,6 +162,22 @@ _Avoid_: human run, dashboard job, manual job
 The admission category of a Job, determined by which scarce resource it consumes: EDA work inside the Sandbox (`heavy`) or model-API-bound Specialist work (`light`). Each class has a configurable concurrency cap; excess work queues without preempting running work, and a full queue refuses admission. Queue priority comes from the requester role, independently of class: `interactive` sorts ahead of other requester roles; unknown persisted roles retain a fallback priority.
 _Avoid_: tier, weight, pool, semaphore
 
+**Resource History**:
+The per-**Project** record of each Job phase's measured peak memory, CPU time and wall-clock time, from which Booley estimates what the next run of that phase will need.
+_Avoid_: telemetry, metrics, profile
+
+**Memory Budget**:
+The part of a **Sandbox**'s memory that Booley may hand out to running Jobs: the Sandbox's memory limit minus a reserve for the Developer Agent and Booley's own processes.
+_Avoid_: memory limit (the Sandbox's hard limit), capacity, quota
+
+**Memory Reservation**:
+The share of the **Memory Budget** a running Job holds: the estimated peak of its largest remaining phase. It shrinks as phases finish and never grows.
+_Avoid_: slot, allocation, lease
+
+**Seat Cap**:
+The number of Jobs that may use one licensed EDA tool at the same time, declared by the **Project**.
+_Avoid_: licence budget, seat pool, license count
+
 ### Configuration
 
 The design-description primitives Booley references but does not own. **Target** is the load-bearing one: almost every other entry binds to a Target by name.
@@ -270,7 +286,7 @@ An optional LLM-powered capability the **Developer Agent** invokes with fresh co
 _Avoid_: agentic MCP tool, agent, worker
 
 **Specialist Source Isolation**:
-When a **Specialist** reviews one side of the design, the other side's source is hidden from it. This is a non-negotiable Specialist context boundary that preserves independent readings of the functional spec: a Specialist judging one side of the RTL/testbench divide runs with the opposite side's sources hidden. Reviewers see only their own category's sources. Diagnostic and integration Specialists may read both when their task requires cross-checking RTL/TB agreement.
+When a **Specialist** reviews one side of the design, the other side's source is hidden from it. This is a non-negotiable Specialist context boundary that preserves independent readings of the functional spec: a Specialist judging one side of the RTL/testbench divide runs with the opposite side's sources hidden. Reviewers see only their own category's sources. Diagnostic and integration Specialists may read both when their task requires cross-checking RTL/TB agreement. Firmware belongs to neither side: every Reviewer may read it, and none reports findings in it.
 _Avoid_: optional blindness, reviewer independence
 
 **Custom Flow**:
@@ -350,6 +366,18 @@ _Avoid_: cycle budget, synthesis criterion, benchmark score
 **Result Cache**:
 The per-Project store, in the **Main Booley Directory**, of graded `sim`, `synth`, and `fpga` passes, their metrics and text reports, from runs at a **clean commit** that stayed clean until the run ended. Any such run stores; `booley ci` also fills it on purpose by running a named set of Criteria at a chosen commit in throwaway checkouts. A stored result is served in place of a fresh run only when its Result Key matches. The key covers: the tracked bytes of the RTL repository and of the Booley Directory's repository, `booley.toml` minus its verdict-neutral sections, the resolved Target Test Plan, non-Booley ignored files, the Target and its resolved EDAM, the keyed environment, Booley's build, the Sandbox Image, any mounted EDA tool's manifest, and a Booley-generated identity of the same host. A hit is labelled as cached with its producing run. Sampled re-runs check hits, and a mismatch disables the cache for the Project. It stores results, never builds; that is what distinguishes it from a **Simulator Bundle** and from the compiler cache.
 _Avoid_: build cache, global build cache, binary cache, memoization
+
+**Declared Review**:
+A Reviewer focus that a Target declares for one source role (RTL or testbench), optionally narrowed to matching files, with the spec it reviews against and the severity at which findings must be resolved.
+_Avoid_: review kind, review type, Review Goal
+
+**Review Run**:
+One stored run of a commit's Declared Reviews: either the discovery pass over the changes since the baseline, or the verify pass that re-checks that discovery's open findings on a later commit.
+_Avoid_: review session, review receipt
+
+**Reviewed Commit**:
+A commit on which a verify Review Run left no finding open at or above its Declared Reviews' threshold. It records what happened on that commit, is not reproducible, and never gates CI; it is independent of a commit being measured.
+_Avoid_: approved commit, signed-off commit, clean review
 
 **Escalation**:
 A signal that a decision exceeds the current authority level and must move from Specialist to Developer Agent to Human.

@@ -123,7 +123,7 @@ def test_conversion_deadline_bounds_every_build_attempt(tmp_path: Path, monkeypa
     destination = tmp_path / "trace.fst"
     monkeypatch.setattr(stores, "native_bwave_binary", lambda: "bwave")
     clock = {"now": 1000.0}
-    monkeypatch.setattr(stores.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(stores, "monotonic", lambda: clock["now"])
     timeouts: list[float] = []
 
     def run(command, **kwargs):

@@ -32,7 +32,7 @@ identity needs write permission. Mergify then validates the cumulative
 candidate against `main` and its queue predecessors.
 
 ```bash
-printf '%s' '@mergifyio queue default' > /tmp/booley-mergify-queue.txt
+printf '%s' '@mergifyio queue' > /tmp/booley-mergify-queue.txt
 python3 .github/scripts/confidential_content_guard.py --repo . publish-pr comment \
   --pr <number> --body-file /tmp/booley-mergify-queue.txt
 ```

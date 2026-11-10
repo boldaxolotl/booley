@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Any
 
 from booley.evidence.timing import CLOCK_TIMING_FIELDS, make_clock_timing
-from booley.flows.edam import _infer_datatype
 from booley.flows.fpga.profiles import VivadoProfile, validate_vivado_profile
 from booley.flows.target_parameters import ParameterValue
 
@@ -40,15 +39,9 @@ POST_ROUTE_COMPLETION_MARKER = "BOOLEY_POST_ROUTE_PHYS_OPT_COMPLETE"
 # ---------------------------------------------------------------------------
 
 
-def validate_vivado_parameter_types(parameters: dict[str, Any]) -> None:
+def validate_vivado_parameter_types(parameters: dict[str, ParameterValue]) -> None:
     """Vivado cannot override string generics (AMD UG901)."""
-    unsupported = [
-        name
-        for name, value in parameters.items()
-        if (isinstance(value, ParameterValue) and value.is_string)
-        or (isinstance(value, str) and _infer_datatype(value)[0] == "str")
-    ]
-    if unsupported:
+    if unsupported := [name for name, value in parameters.items() if value.is_string]:
         raise ValueError(
             "fpga: Vivado does not support string/file top-level parameter overrides (AMD UG901): "
             + ", ".join(unsupported)
@@ -94,7 +87,6 @@ def build_fpga_edam(
     """
     from booley.flows import edam as edam_layer
 
-    validate_vivado_parameter_types(vlogparams)
     eda_tool_options: dict[str, Any] = {"part": part}
     if extra_eda_tool_options:
         eda_tool_options.update(extra_eda_tool_options)

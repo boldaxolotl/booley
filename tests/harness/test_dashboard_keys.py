@@ -20,8 +20,8 @@ from tests.harness.test_dashboard_windows import JOB_ROW, PROPOSAL_ROW, open_row
 
 # The keys the Dashboard used to bind: session digits, Help, Jobs filters, Sessions, owner.
 RETIRED_KEYS = (*"123456789", "?", "j", "r", "a", "s", "u")
-OVERVIEW_FOOTER = "↑↓ move · ⏎ open · ←→ Sessions / Jobs"
-SCROLL_FOOTER = "↑↓ PgUp/PgDn scroll · ←→ Sessions / Jobs · esc back"
+OVERVIEW_FOOTER = "↑↓ move · ⏎ open · ←→ Sessions / Jobs / Targets"
+SCROLL_FOOTER = "↑↓ PgUp/PgDn scroll · ←→ Sessions / Jobs / Targets · esc back"
 
 
 @pytest.fixture(autouse=True)
@@ -97,7 +97,7 @@ async def test_footer_at_window_top_level():
         box[0] = replace(snapshot(0), jobs=JobSnapshot(()))
         await app.refresh_snapshot()
         await pilot.pause()
-        assert footer(app) == "↑↓ move · ←→ Sessions / Jobs"
+        assert footer(app) == "↑↓ move · ←→ Sessions / Jobs / Targets"
 
 
 @pytest.mark.asyncio
@@ -107,15 +107,15 @@ async def test_footer_in_detail_views_adds_esc_back():
     async with app.run_test(size=(130, 30)) as pilot:
         await open_session(app, pilot, "codex:00")
         assert app.navigation.view == "session"
-        assert footer(app) == "↑↓ move · ⏎ open · ←→ Sessions / Jobs · esc back"
+        assert footer(app) == "↑↓ move · ⏎ open · ←→ Sessions / Jobs / Targets · esc back"
         # A Booley call row is informational: Enter does nothing there.
         assert app.row_keys[-1].startswith("call:")
         app.query_one(DataTable).move_cursor(row=len(app.row_keys) - 1, animate=False)
         await pilot.pause()
-        assert footer(app) == "↑↓ move · ←→ Sessions / Jobs · esc back"
+        assert footer(app) == "↑↓ move · ←→ Sessions / Jobs / Targets · esc back"
         app.query_one(DataTable).move_cursor(row=PROPOSAL_ROW - 1, animate=False)
         await pilot.pause()
-        assert footer(app) == "↑↓ move · ⏎ open · ←→ Sessions / Jobs · esc back"
+        assert footer(app) == "↑↓ move · ⏎ open · ←→ Sessions / Jobs / Targets · esc back"
         await pilot.press("enter")
         assert app.navigation.view == "goal"
         assert footer(app) == SCROLL_FOOTER
@@ -128,11 +128,11 @@ async def test_footer_on_jobs_list_adds_filters_and_omits_open_when_wide():
     async with app.run_test(size=(130, 30)) as pilot:
         await pilot.press("right")
         assert app.navigation.view == "jobs"
-        assert footer(app) == "↑↓ move · ←→ Sessions / Jobs · ↑ filters"
+        assert footer(app) == "↑↓ move · ←→ Sessions / Jobs / Targets · ↑ filters"
         await pilot.resize_terminal(100, 30)
         await pilot.pause()
         await pilot.pause()
-        assert footer(app) == "↑↓ move · ⏎ open · ←→ Sessions / Jobs · ↑ filters"
+        assert footer(app) == "↑↓ move · ⏎ open · ←→ Sessions / Jobs / Targets · ↑ filters"
 
 
 @pytest.mark.asyncio
@@ -176,7 +176,7 @@ async def test_help_describes_arrow_model_and_names_no_removed_key():
             "Enter",
             "Esc",
             "←→",
-            "Sessions and Jobs windows",
+            "Sessions, Jobs and Targets windows",
             "top bar",
             "Running",
             "Finished",
@@ -286,4 +286,4 @@ async def test_tab_into_side_panel_footer_names_scrolling():
         assert footer(app) == OVERVIEW_FOOTER
         await pilot.press("tab")
         assert app.focused is app.query_one("#aside")
-        assert footer(app) == "↑↓ PgUp/PgDn scroll · ←→ Sessions / Jobs"
+        assert footer(app) == "↑↓ PgUp/PgDn scroll · ←→ Sessions / Jobs / Targets"

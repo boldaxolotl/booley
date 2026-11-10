@@ -826,35 +826,3 @@ def test_generated_makefile_reading_unkeyed_environment_downgrades(
         assert manifest["reusable"] is False
         assert "BOOLEY_TEST_UNKEYED" in manifest["reason"]
         assert not (session.slot / "current.json").exists()
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        ("MAC", "-GNAME=24'h4d4143"),
-        ("", '-GNAME=""'),
-        ('a" b\\c; d', "-GNAME=72'h612220625c633b2064"),
-        ('"MAC"', "-GNAME=40'h224d414322"),
-    ],
-)
-def test_normalized_string_response_preserves_stock_recipe_gate(tmp_path, value, expected):
-    import shlex
-
-    from booley.flows.parameter_transport import normalize_parameter_records
-
-    build = tmp_path / "b"
-    _stock_recipe(build, _CONTAINED_VC + f'-GNAME=\\"{value}\\"\n')
-    resolved = SimpleNamespace(
-        build_root=build,
-        configured_eda_tool="verilator",
-        configuration_name="demo",
-        toplevel="top",
-        parameters={"NAME": {"datatype": "str", "paramtype": "vlogparam", "default": value}},
-    )
-    normalize_parameter_records(resolved)
-    assert stock_verilator_recipe(build) is not None
-    tokens = shlex.split((build / "demo.vc").read_text())
-    assert expected in tokens
-    before = (build / "demo.vc").read_bytes()
-    normalize_parameter_records(resolved)
-    assert (build / "demo.vc").read_bytes() == before

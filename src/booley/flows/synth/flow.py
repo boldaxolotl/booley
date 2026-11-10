@@ -132,7 +132,7 @@ from ..run_evidence import (
 )
 from ..source_fingerprint import compute_source_fingerprint
 from ..target_parameters import vlogdefine_args as _vlogdefine_args
-from ..target_parameters import vlogparam_args, vlogparam_specs
+from ..target_parameters import vlogparam_specs
 from .implementation_report import (
     build_synth_implementation_report,
 )
@@ -147,8 +147,6 @@ from .recipe import (
     synthesis_recipe_snapshot,
     synthesis_recipe_snapshot_fingerprint,
 )
-
-_vlogparam_args = vlogparam_args
 
 logger = logging.getLogger(__name__)
 

@@ -8,11 +8,11 @@ import io
 import json
 import logging
 import os
-import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import time as wall_clock
 from typing import Any
 
 import anyio
@@ -1000,7 +1000,7 @@ async def _handle_rate_limit_event(
     info = event.rate_limit_info
     if info.status == "rejected":
         if info.resets_at:
-            now = time.time()
+            now = wall_clock()
             sleep_s = max(0, info.resets_at - now) + RATE_LIMIT_SLEEP_BUFFER_S
         else:
             sleep_s = RATE_LIMIT_FALLBACK_BACKOFF_S

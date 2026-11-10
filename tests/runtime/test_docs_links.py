@@ -7,10 +7,11 @@ import re
 from itertools import pairwise
 from pathlib import Path
 
+import pytest
 from tests.docs.test_links import _markdown_anchors
 
 from booley.dev_support.reference_docs import SHIPPED_DOCS
-from booley.runtime.docs_links import USER_DOCS, docs_url
+from booley.runtime.docs_links import CONTRIBUTOR_DOCS, SITE_DOCS, USER_DOCS, docs_url
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = REPO_ROOT / "src/booley"
@@ -72,9 +73,25 @@ def test_user_docs_table_matches_docs_user() -> None:
     assert len(set(slugs)) == len(slugs)
 
 
+def test_contributor_docs_are_published_once_beside_the_user_docs() -> None:
+    """Contributor docs live outside docs/user/ and clash with no user doc's page."""
+    for doc in CONTRIBUTOR_DOCS:
+        assert (REPO_ROOT / doc.path).is_file(), doc.path
+        assert doc.directory != "docs/user", doc.file
+    assert SITE_DOCS == USER_DOCS + CONTRIBUTOR_DOCS
+    assert len({doc.file for doc in SITE_DOCS}) == len(SITE_DOCS)
+    assert len({doc.slug for doc in SITE_DOCS}) == len(SITE_DOCS)
+
+
+def test_printed_links_cover_user_docs_only() -> None:
+    """Booley prints links to user docs; contributor docs are site-only."""
+    with pytest.raises(KeyError):
+        docs_url(CONTRIBUTOR_DOCS[0].file)
+
+
 def test_each_sidebar_section_is_contiguous() -> None:
     """The sidebar starts a new group whenever the section changes."""
-    sections = [doc.section for doc in USER_DOCS]
+    sections = [doc.section for doc in SITE_DOCS]
     starts = [
         section
         for index, section in enumerate(sections)
@@ -85,7 +102,7 @@ def test_each_sidebar_section_is_contiguous() -> None:
 
 def test_child_docs_follow_their_parent_in_the_same_section() -> None:
     """The sidebar indents a child doc under its parent, so it follows the parent or a sibling."""
-    for previous, doc in pairwise(USER_DOCS):
+    for previous, doc in pairwise(SITE_DOCS):
         if doc.parent is not None:
             assert doc.parent in (previous.file, previous.parent), doc.file
             assert previous.section == doc.section, doc.file

@@ -232,7 +232,7 @@ with `[sandbox].dashboard=false`. It comes back by itself after a window
 reload (this can take up to about half a minute). If you closed it, **Booley:
 Open Dashboard** in the Command Palette reopens it or reveals the open one.
 `booley dashboard` replaces a Dashboard that no terminal shows any more.
-The Dashboard has two windows; press `←` or `→` to switch:
+The Dashboard has three windows; press `←` or `→` to switch:
 
 - **Sessions:** every Developer Agent session and what its agent last
   reported: working, waiting for a tool call, or waiting for your input.
@@ -243,6 +243,10 @@ The Dashboard has two windows; press `←` or `→` to switch:
   A `booley flow` or `booley specialist` run typed in a container terminal
   also appears here as a Standalone Job with no session. Its output is copied
   to `job.log`, shown as a link.
+- **Targets:** the Targets of one worktree, with their core and the Flows that
+  can drive them. Press `Enter` on a Target for its filesets, tests, Test
+  Variants, and constraints. The **Worktree** item in the top bar picks the
+  worktree: those with a connected session come first, the main checkout last.
 
 Click a report, artifact, or log path to open it in the editor. Press `↑` on
 the first row to reach the top bar with the tabs, filters, and Help; the footer

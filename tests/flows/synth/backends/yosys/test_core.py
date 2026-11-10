@@ -1316,12 +1316,14 @@ def test_1095_text_scan_preserves_path_adapter(tmp_path, text):
 
 def test_declared_string_receiver_and_numeric_arguments_stay_distinct(tmp_path):
     from booley.flows.synth.backends.yosys import core as syn_core
-    from booley.flows.target_parameters import ParameterValue
+    from booley.flows.target_parameters import ParameterValue, sv_byte_string_literal
 
-    parameters = {"NAME": ParameterValue("str", 'a" b\\c; d'), "N": "12", "B": "1", "R": "1.25"}
+    raw_name = 'a" b\\c; d'
+    parameters = {"NAME": ParameterValue("str", raw_name), "N": "12", "B": "1", "R": "1.25"}
     slang = syn_core._slang_read_command([tmp_path / "top.sv"], "top", [], [], parameters)
     assert "-G N=12 -G B=1 -G R=1.25" in slang
-    assert 'NAME="' in slang
+    # Pin the escaped form: a readable literal would let "; " split the script.
+    assert f"-G NAME={sv_byte_string_literal(raw_name)}" in slang
     commands = syn_core._rtl_frontend_commands(
         [tmp_path / "top.v"],
         "top",
@@ -1331,6 +1333,6 @@ def test_declared_string_receiver_and_numeric_arguments_stay_distinct(tmp_path):
         params=parameters,
         slang_options=[],
     )
-    assert "-set N 12 -set B 1 -set R 1.25" in commands[1]
+    assert "-set N 12 -set B 1 -set R 1.25" in commands
     # The string travels as its UTF-8 bytes in one sized hex literal.
-    assert "-set NAME 72'h612220625c633b2064" in commands[1]
+    assert "-set NAME 72'h612220625c633b2064" in commands

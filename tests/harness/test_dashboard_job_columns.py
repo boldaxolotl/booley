@@ -84,9 +84,9 @@ def headers(app):
 async def open_all_jobs(app, pilot):
     """Show the Jobs window's All list, then pause twice so the refit pass has run.
 
-    Bar items from the Jobs tab: Running, Finished, All are one, two and three steps right.
+    Bar items from the Jobs tab: Targets, Running, Finished, All are one to four steps right.
     """
-    await pilot.press("right", "up", "right", "right", "right", "enter", "down")
+    await pilot.press("right", "up", "right", "right", "right", "right", "enter", "down")
     await pilot.pause()
     await pilot.pause()
     assert app.navigation.job_filter == "all"

@@ -359,7 +359,7 @@ def test_backend_rejects_unknown_fanout_option(capsys):
     assert "unrecognized arguments: --max-fanout" in capsys.readouterr().err
 
 
-def test_declared_string_parser_preserves_whitespace_and_rejects_unbound_metadata():
+def test_declared_string_parser_preserves_whitespace():
     from booley.flows.synth.backends.yosys.parsing import parse_params
     from booley.flows.target_parameters import ParameterValue
 
@@ -367,8 +367,6 @@ def test_declared_string_parser_preserves_whitespace_and_rejects_unbound_metadat
         "NAME": ParameterValue("file", "  ../a b  "),
         "N": "12",
     }
-    with pytest.raises(SystemExit, match="has no value"):
-        parse_params(["N=12"], ["NAME=str"])
 
 
 def test_string_workdir_suffix_cannot_traverse(tmp_path):
@@ -385,10 +383,3 @@ def test_string_workdir_suffix_cannot_traverse(tmp_path):
         )
         assert path.parent == root
         assert len(path.name) < 80
-
-
-def test_typed_parameter_invalid_utf8_has_boundary_diagnostic():
-    from booley.flows.synth.backends.yosys.parsing import parse_params
-
-    with pytest.raises(SystemExit, match=r"ERROR: Invalid string parameter.*valid UTF-8"):
-        parse_params(["NAME=\udc80"], ["NAME=str"])

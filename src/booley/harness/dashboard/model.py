@@ -7,6 +7,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from time import time as wall_clock
 from typing import Any
 
 from booley.config.goals import quiet_after
@@ -339,7 +340,7 @@ class DashboardReader:
 
     def read(self) -> DashboardSnapshot:
         """Read one snapshot without retaining locks or touching persistent state."""
-        now = time.time()
+        now = wall_clock()
         sessions = SessionRegistry(
             self.booley_dir, quiet_after=quiet_after(self.booley_dir)
         ).visible_snapshot(now=now, scope=namespace())

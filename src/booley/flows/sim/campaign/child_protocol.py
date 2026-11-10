@@ -7,6 +7,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 from typing import cast
 
 from booley.flows.artifact_durability import durable_create
@@ -163,13 +164,13 @@ class ChildExecutionRegistry:
     def cancel(self, execution_id: ExecutionId) -> bool:
         paths = execution_paths(execution_id, booley_dir=self._project_data)
         request_cancellation(paths, reason="campaign_cancelled")
-        deadline = time.monotonic() + 5.0
+        deadline = monotonic() + 5.0
         while True:
             with self._record_lock(execution_id):
                 recovered = recover_execution(execution_id, booley_dir=self._project_data)
             if recovered:
                 return True
-            if time.monotonic() >= deadline:
+            if monotonic() >= deadline:
                 return False
             time.sleep(0.05)
 

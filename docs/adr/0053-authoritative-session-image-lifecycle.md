@@ -18,8 +18,8 @@ byte untouched while its Booley-managed output may be rebuilt.
 Session Runtime recreation remains outside the image-lifecycle module. A refresh
 hands the reconciled immutable image ID to host spec issuance, replaces the
 runtime, and verifies both the container's image ID and its isolated installed
-Booley payload before reporting success. Existing schema-less images follow an
-explicit compatibility policy during migration; acquisition by pull or local
+Booley payload before reporting success. Images without the current provenance
+schema are stale (see the 2026-11-10 amendment); acquisition by pull or local
 build is operational history and never substitutes for provenance.
 
 ## Considered options
@@ -31,3 +31,11 @@ build is operational history and never substitutes for provenance.
 - Making the lifecycle module recreate Session Runtimes was rejected because
   image reconciliation and runtime attachment ownership have different failure
   and rollback semantics.
+
+## Amendment (2026-11-10)
+
+Booley no longer supports migrating images from before 0.3.0. An image whose
+`io.booley.provenance.schema` label is not the current schema, including a
+missing label, is stale and is rebuilt or re-pulled. No compatibility policy
+applies, and the legacy `booley.build-fingerprint` label is not part of
+lifecycle provenance.

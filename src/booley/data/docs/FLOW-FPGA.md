@@ -21,8 +21,8 @@ what all Flows share (choosing Targets, options, logs, exit codes), see
    [Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning).
 2. **Give the agent an FPGA Target.** It needs the FPGA part, the top module,
    and at least one XDC constraints file that defines your clocks
-   (`create_clock`) and, for a full build, pin locations. Name the Target `fpga`
-   or `fpga_<subject>`. The Developer Agent can write it for you if you tell it
+   (`create_clock`) and, for a full build, pin locations. Name the Target
+   `fpga_<subject>`. The Developer Agent can write it for you if you tell it
    the part and the clocks; see [Configuration](#configuration-flowsfpga).
 3. **Ask the agent**, naming the Target:
 
