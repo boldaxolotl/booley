@@ -18,6 +18,13 @@ from booley.specialists.mutation_tester import MutationTesterSpecialist
 from booley.specialists.specialist import Specialist
 
 
+@pytest.fixture(autouse=True)
+def _outside_any_job(monkeypatch):
+    """CLI dispatch tests never record a Standalone Job into a real Project (e.g. inside a Sandbox)."""
+    for name in ("BOOLEY_DIR", "BOOLEY_RUN_ID", "_BOOLEY_CLI_INVOCATION_ORIGIN"):
+        monkeypatch.delenv(name, raising=False)
+
+
 class ProjectSpecialist(Specialist):
     """Migrated Project subclass consuming the shared seconds accessor."""
 

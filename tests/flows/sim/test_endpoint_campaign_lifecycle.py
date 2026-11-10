@@ -68,7 +68,7 @@ def _pre_sim_manifest(access, commands, transform):
 
     from booley.flows.sim.campaign.codec import canonical_json_bytes
     from booley.flows.sim.campaign.planning import finalize_manifest
-    from tests.flows.sim.test_campaign_phase3_integrity import _legacy_disclosures, _manifest_for
+    from tests.flows.sim.campaign_test_support import _legacy_disclosures, _manifest_for
 
     document = json.loads(canonical_json_bytes(_manifest_for(("alpha",), access=access).document))
     document.pop("fingerprints")
@@ -105,7 +105,7 @@ def _hook_project(tmp_path, commands, live_commands):
 
 
 def _hook_executor(build, disclosures, mutate_snapshot, checkpoint):
-    from tests.flows.sim.test_campaign_phase3_integrity import _executor
+    from tests.flows.sim.campaign_test_support import _executor
 
     return _executor(
         build,
@@ -132,9 +132,7 @@ def _successful_pre_sim_campaign(
     from booley.flows.sim.campaign.coordinator import (
         SimulationCampaign,
     )
-    from tests.flows.sim.test_campaign_phase3_integrity import (
-        _handle,
-    )
+    from tests.flows.sim.campaign_test_support import _handle
 
     project = _hook_project(tmp_path, commands, live_commands)
     plan, disclosures = _pre_sim_plan(access, commands, transform)
@@ -159,7 +157,7 @@ def _successful_pre_sim_campaign(
 
 def _observed_campaign_request(plan, project, invocation, observer):
     from booley.flows.sim.campaign.coordinator import CampaignPolicy, NewCampaignRunRequest
-    from tests.flows.sim.test_campaign_phase3_integrity import _admission
+    from tests.flows.sim.campaign_test_support import _admission
 
     return NewCampaignRunRequest(
         plan,
@@ -473,7 +471,7 @@ def test_all_campaigns_survive_terminal_progress_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     flow = SimulateFlow()
-    flow._args = SimpleNamespace(report_dir=tmp_path)
+    flow._args = SimpleNamespace(report_dir=tmp_path, dry_run=False)
     flow._coverage_prepared = SimpleNamespace(
         targets=[
             SimpleNamespace(handle=SimpleNamespace(selector="first")),
@@ -539,8 +537,8 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
     from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
     from tests.flows.sim.test_campaign_characterization import (
         _AdapterAbortExecution,
+        _admission,
         _plan,
-        _unmanaged,
     )
 
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
@@ -560,7 +558,7 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
             invocation.parent,
             CampaignPolicy(),
             invocation,
-            _unmanaged(),
+            _admission(),
         )
     )
     flow = SimulateFlow()
@@ -1027,7 +1025,7 @@ def test_failure_paths_deduplicate_and_start_without_blank_line(tmp_path: Path) 
 def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
     from booley.flows.sim.acceptance import AcceptanceContext, SimulationAcceptanceCoordinator
     from tests.flows.report_headline import final_report_omits_headline
-    from tests.flows.sim.test_campaign_phase2 import _observation, _simulation_outcome
+    from tests.flows.sim.campaign_test_support import _observation, _simulation_outcome
     from tests.mcp_tools.test_base import unbound_specialist
 
     tool = unbound_specialist(tmp_path, "--work-dir", str(tmp_path))
@@ -1064,7 +1062,7 @@ def test_standalone_campaign_has_only_current_conclusive_workload_verdict(tmp_pa
 
     from booley.flows.sim.acceptance import _record_standalone_campaign
     from tests.flows.report_headline import final_report_omits_headline
-    from tests.flows.sim.test_campaign_phase2 import _observation, _simulation_outcome
+    from tests.flows.sim.campaign_test_support import _observation, _simulation_outcome
     from tests.mcp_tools.test_base import unbound_specialist
 
     tool = unbound_specialist(tmp_path, "--work-dir", str(tmp_path))
@@ -1089,7 +1087,7 @@ def _public_cycle_campaign(tmp_path, monkeypatch):
         SimulationCampaign,
     )
     from booley.flows.sim.campaign.model import create_simulation_campaign_plan
-    from tests.flows.sim.test_campaign_phase3 import _admission, _named_manifest, _shared_executor
+    from tests.flows.sim.campaign_test_support import _admission, _named_manifest, _shared_executor
 
     project = tmp_path / "project"
     project.mkdir()
@@ -1375,7 +1373,7 @@ def test_authenticated_nullable_counts_round_trip(tmp_path, monkeypatch, unnamed
     from dataclasses import replace
 
     from booley.flows.sim.request import SimRequest
-    from tests.flows.sim import test_campaign_phase3 as fixtures
+    from tests.flows.sim import campaign_test_support as fixtures
 
     if unnamed:
         campaign = _unnamed_cycle_campaign(tmp_path, monkeypatch)
@@ -1403,7 +1401,7 @@ def _unnamed_cycle_campaign(tmp_path, monkeypatch):
         SimulationCampaign,
     )
     from booley.flows.sim.campaign.model import create_simulation_campaign_plan
-    from tests.flows.sim import test_campaign_phase3 as fixtures
+    from tests.flows.sim import campaign_test_support as fixtures
 
     project = tmp_path / "project"
     project.mkdir()
@@ -1617,7 +1615,7 @@ def test_actual_hook_fires_once_for_two_test_cocotb_batch(tmp_path, monkeypatch)
         SimulationArtifactEvidence,
         SimulationTestOutcome,
     )
-    from tests.flows.sim.test_campaign_phase3_integrity import _Group
+    from tests.flows.sim.campaign_test_support import _Group
 
     original = _Group.launch_snapshot
 
@@ -1853,7 +1851,7 @@ def test_prepared_campaign_active_write_failure_preserves_durable_success(
 
 
 def test_hook_success_survives_build_failure(tmp_path, monkeypatch):
-    from tests.flows.sim.test_campaign_phase3_integrity import _Group
+    from tests.flows.sim.campaign_test_support import _Group
 
     def fail_build(group):
         sidecars = list(
@@ -1864,7 +1862,7 @@ def test_hook_success_survives_build_failure(tmp_path, monkeypatch):
 
     from dataclasses import replace
 
-    from tests.flows.sim.test_campaign_phase3 import _failed_shared_outcome
+    from tests.flows.sim.campaign_test_support import _failed_shared_outcome
 
     failed = _failed_shared_outcome()
     failed = replace(failed, tests=(replace(failed.tests[0], name="alpha"),))

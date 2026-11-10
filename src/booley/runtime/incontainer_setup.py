@@ -1001,14 +1001,15 @@ def apply_stored_credential(app: str, home: Path | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# First-run state — no onboarding, login or folder-trust prompt in the Sandbox
+# First-run state — no onboarding, login, folder-trust or auto-mode nudge prompt in the Sandbox
 # ---------------------------------------------------------------------------
 #
 # A Sandbox without a seeded host config (a Codespace, or any host with no
 # agent config to seed from) would otherwise greet the first ``claude`` /
-# ``codex`` with a theme picker, a login picker and a "trust this folder?"
-# dialog. The Sandbox is already the isolation boundary (permission modes
-# above), so trusting the Project's own directories adds no authority.
+# ``codex`` with a theme picker, a login picker, a "trust this folder?"
+# dialog and, for Claude, the auto-mode default nudge. The Sandbox is already
+# the isolation boundary (permission modes above), so trusting the Project's
+# own directories adds no authority.
 #
 # Every write is set-if-absent: a value the user or a host seed already chose,
 # including ``false`` / ``untrusted``, wins. Writes land in the per-Sandbox
@@ -1071,7 +1072,9 @@ def _preflight_claude(home: Path | None, trust: Sequence[str]) -> None:
 
 
 def _apply_claude_first_run(home: Path | None, trust: Sequence[str], *, onboard: bool) -> str:
-    """Trust *trust* paths, and with a credential skip onboarding and the theme picker.
+    """Trust *trust* paths and mark the auto-mode nudge seen.
+
+    With a credential, also skip onboarding and the theme picker.
 
     Returns ``"written"`` or ``"current"``. Both files are validated before
     either is written, so an invalid file stops registration untouched.
@@ -1085,6 +1088,8 @@ def _apply_claude_first_run(home: Path | None, trust: Sequence[str], *, onboard:
         _trust_claude_projects(config, trust)
     except ValueError as exc:
         raise ValueError(_invalid_json_message("Claude config", config_path, exc)) from exc
+    # Independent of login (unlike onboarding), so not credential-gated.
+    config.setdefault("hasSeenAutoDefaultNudge", True)
     if onboard:
         config.setdefault("hasCompletedOnboarding", True)
     status = "current"

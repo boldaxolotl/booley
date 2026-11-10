@@ -19,6 +19,7 @@ import booley
 from booley.harness import init_cmd
 from booley.harness.setup import docker_image as init_docker_image
 from booley.harness.setup.common import InitContext
+from booley.runtime import host_base_acquisition as owner
 from booley.runtime import interactive_docker
 from booley.runtime.docker_build import DockerBuildResult
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
@@ -220,11 +221,6 @@ def _matching_runtime_base_build(tmp_path, monkeypatch):
         init_docker_image,
         "source_image_build_contracts",
         lambda _root: SimpleNamespace(runtime_base="contract"),
-    )
-    monkeypatch.setattr(
-        init_docker_image,
-        "_runtime_base_build_metadata_args",
-        lambda _root, _contract: [],
     )
 
     def fake_build(*args, **kwargs):
@@ -441,56 +437,53 @@ def test_local_capacity_plan_orders_runtime_base_before_sandbox(tmp_path, monkey
     ]
 
 
-def test_runtime_base_build_receives_precomputed_contract(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(init_docker_image, "_docker_image_exists", lambda _image: False)
-    monkeypatch.setattr(
-        init_docker_image,
-        "_runtime_base_build_metadata_args",
-        lambda root, contract: [
-            "--build-arg",
-            f"ROOT={root}",
-            "--build-arg",
-            f"CONTRACT={contract}",
-        ],
-    )
-    from booley.runtime import image_lifecycle as lifecycle
-
-    monkeypatch.setattr(
-        lifecycle,
-        "_source_graph_base",
-        lambda *_args: (
-            SimpleNamespace(
-                role=lifecycle.ImageRole.RUNTIME_BASE,
-                effective_inputs="current-contract",
-                build=SimpleNamespace(recipe_fingerprint="recipe"),
-                acquisition_policy=lifecycle.ArtifactPolicy.LOCAL_ONLY,
-                wheel_source_fingerprint=None,
-                logical_selection_fingerprint=None,
-                runtime_base_contract="current-contract",
-                standard_substrate_contract=None,
-            ),
-            None,
+@pytest.mark.parametrize(
+    ("outcome", "message", "record"),
+    [
+        (
+            "cli-missing",
+            "docker build failed: no docker",
+            "no docker",
         ),
-    )
-    monkeypatch.setattr(
-        init_docker_image,
-        "source_image_build_contracts",
-        lambda _root: SimpleNamespace(runtime_base="current-contract"),
-    )
-    captured = []
-    monkeypatch.setattr(
-        init_docker_image,
-        "_docker_build_image",
-        lambda _ctx, spec: captured.append(spec) or 0,
-    )
+        (
+            "timed-out",
+            "docker build timed out after 2h 00m (override with BOOLEY_IMAGE_BUILD_TIMEOUT)",
+            "build timed out",
+        ),
+        (
+            "non-zero",
+            "stable runtime-base build failed — re-run with -v for full output",
+            "runtime-base build failed",
+        ),
+    ],
+)
+def test_runtime_base_build_failure_keeps_docker_image_records(
+    tmp_path, monkeypatch, capsys, outcome, message, record
+) -> None:
+    monkeypatch.delenv("BOOLEY_IMAGE_BUILD_TIMEOUT", raising=False)
+    results = {
+        "cli-missing": None,
+        "timed-out": DockerBuildResult(None, timed_out=True, diagnostics=("slow",)),
+        "non-zero": DockerBuildResult(1, diagnostics=("boom",)),
+    }
+    failure = owner.RuntimeBaseBuildError("build failed", results[outcome])
+    failure.__cause__ = OSError("no docker")
 
-    assert init_docker_image._docker_build_runtime_base(
-        InitContext(project_root=tmp_path),
-        tmp_path / "Dockerfile.base",
-        tmp_path,
-        "current-contract",
-    )
-    assert captured[0].build_args[-1] == "CONTRACT=current-contract"
+    def acquire(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(init_docker_image, "acquire", acquire)
+    ctx = InitContext(project_root=tmp_path)
+
+    assert init_docker_image._acquire_runtime_base(ctx, tmp_path, rebuild=False) is None
+
+    assert ctx.results[-1].name == "docker_image"
+    assert ctx.results[-1].status == "err"
+    assert ctx.results[-1].detail == record
+    output = capsys.readouterr().out
+    assert message in output
+    if failure.result is not None:
+        assert failure.result.diagnostics[0] in output
 
 
 # ---------------------------------------------------------------------------
