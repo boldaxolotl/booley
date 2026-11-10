@@ -321,8 +321,8 @@ with only the package and interface files of those Targets. A module shared by
 an Icarus Target and a Verilator Target is compiled by both, within the same
 sweep timeout, so a mixed-simulator project can take up to twice as long. A
 parse error from the Target's own compiler is a design failure (exit `1`) and
-the report names the compiler. `[flows.sim].standalone_frontend` no longer
-exists: delete it, because every Flow refuses to run while it is set.
+the report names the compiler. Delete `[flows.sim].standalone_frontend` if
+your `booley.toml` sets it: every Flow refuses to run while it is set.
 
 Both modes skip Pre-Sim Commands, and refuse options that only make sense when
 tests run, such as `--test`, `--trace` and `--no-kill`. A compile error in the
