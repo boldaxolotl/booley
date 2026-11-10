@@ -9,6 +9,13 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley init` now runs inside a hand-written Sandbox (such as a Codespace)
+  and performs Project Initialization only, so a spec can call it from
+  `onCreateCommand` on every create: guidance links, Dashboard task, Git
+  settings, and line endings, with no Docker or image work. It is idempotent
+  and exits 0 when nothing changes. A Booley-issued Sandbox still refuses it
+  and names the host command. The Dashboard attach refusal and Doctor hints
+  now say where to run `booley init`.
 - `booley bootstrap --egress proxy|unproxied` records `[sandbox] egress` in the
   host config, creating the file if needed and changing nothing else in it, then
   bootstraps under that mode. `--check-only` reports the pending change without

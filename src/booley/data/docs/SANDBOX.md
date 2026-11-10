@@ -419,6 +419,30 @@ registrar module `booley.harness.incontainer_register` with `python -m`.
 `BOOLEY_AGENT_APP` to that app or remove the pin. `auto` works only inside a
 container.
 
+### Project setup in a hand-written spec (`booley init`)
+
+Run `booley init` in the spec's `onCreateCommand` to set up the Project
+(guidance links, Dashboard task, Git settings, line endings). Project setup
+needs no Booley module import; the registrar above is a separate start step.
+A container counts as a Sandbox when `/.dockerenv` or `/run/.containerenv`
+exists or `BOOLEY_CONTAINER=1` is set; set it in `containerEnv` for an image
+that has neither file.
+
+- In a hand-written Sandbox it does Project Initialization only: no Docker,
+  image, Sandbox Issuance, pin, or inventory work.
+- It is idempotent and exits 0 when nothing changes, so it is safe on every
+  create.
+- It never overwrites a default Agent CLI that `booley.toml` sets. Otherwise
+  it fills one from `BOOLEY_AGENT_APP` (`claude` or `codex`); `auto`, `none`,
+  or unset leave it unset, with a note.
+- `worktree.useRelativePaths` is `true` only when the container's Git is 2.48
+  or newer, else `false`. A host Git sharing the bind-mounted checkout must
+  then be 2.48+ too.
+- `--seed`, `--force`, `--repin-booley-dir`, `--scaffold`, `--provider`, and
+  `--auth` are host-only and refused here, as is a pending Booley Directory
+  migration (run `booley init` on the host).
+- A Booley-issued Sandbox refuses `booley init`; run it on the host.
+
 ---
 
 Found a problem with the Sandbox?
