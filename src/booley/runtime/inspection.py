@@ -48,6 +48,7 @@ from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.filesystem_utils import read_file_bytes
+from booley.runtime.platform_paths import same_host_path
 
 
 @dataclass(frozen=True)
@@ -548,10 +549,7 @@ def _accepted_booley_dir(value: str, project_root: Path) -> bool:
         return False  # relative spellings depend on cwd; dangling entries are not directories
     if selected.name != BOOLEY_DIR_NAME:
         return False
-    try:
-        return selected.parent.resolve(strict=True) == project_root.resolve(strict=True)
-    except (OSError, RuntimeError):
-        return False  # unresolvable parent or Project Root cannot prove identity
+    return same_host_path(selected.parent, project_root)
 
 
 def _check_booley_dir_identity(project_root: Path, report: Findings) -> None:
