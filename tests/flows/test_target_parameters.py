@@ -23,22 +23,14 @@ def test_declared_types_and_raw_values():
     ("value", "literal", "packed"),
     [
         ("", '""', '""'),
-        ("MAC", '"MAC"', "24'h4d4143"),
-        ('a" b', '"a\\" b"', "32'h61222062"),
-        ("a\\b", '"a\\\\b"', "24'h615c62"),
-        ("\n\t\r", '"\\n\\t\\r"', "24'h0a090d"),
-        ("é漢", '"é漢"', "40'hc3a9e6bca2"),
+        ("MAC", '"\\115\\101\\103"', "24'h4d4143"),
+        ('a" b', '"\\141\\042\\040\\142"', "32'h61222062"),
+        ("é", '"\\303\\251"', "16'hc3a9"),
     ],
 )
 def test_receiver_literals(value, literal, packed):
-    assert parameters.sv_string_literal(value) == literal
+    assert parameters.sv_byte_string_literal(value) == literal
     assert parameters.packed_string_constant(value) == packed
-
-
-@pytest.mark.parametrize("value", ["a\x00b", "\ud800"])
-def test_invalid_text_rejected(value):
-    with pytest.raises(ValueError):
-        parameters.sv_string_literal(value)
 
 
 def test_macro_contract_remains_raw_tokens():

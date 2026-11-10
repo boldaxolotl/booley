@@ -9,6 +9,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- String parameters now reach Verilator and Icarus through Edalize's own
+  quoting again, narrowing the 0.4.0 note that `str` and `file` vlogparams reach
+  them as strings. Plain values such as `MAC` work; values with quotes,
+  backslashes or whitespace, and `default: ""` string parameters (FuseSoC drops
+  them), are not supported there. Yosys (slang), sv2v and the Vivado refusal are
+  unchanged.
 - `sim --trace` converts a declared `trace_files` VCD of any size; the 2 GiB
   limit is gone. Post-run VCD-to-FST conversion now has its own
   `[flows.sim].trace_convert_timeout_ms` budget (default `1800000`, 30 minutes)

@@ -52,7 +52,6 @@ from booley.flows.synth.flow import (
     _parse_worst_slack,
     _synth_target_warnings,
     _vlogdefine_args,
-    _vlogparam_args,
     _worst_critical_path_ps,
     synth_target_report_slug,
 )
@@ -67,6 +66,7 @@ from booley.flows.synth.recipe import (
 )
 from booley.flows.synth.timing import StaTimingConfig
 from booley.flows.synth.warnings import WarningSummary, parse_synth_diagnostics
+from booley.flows.target_parameters import ParameterValue, vlogparam_specs
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import EndpointOutcome
@@ -4175,14 +4175,17 @@ class TestParamMapping:
 
     def test_vlogparam_emits_assignment(self):
         params = {"WIDTH": {"paramtype": "vlogparam", "default": 8}}
-        assert _vlogparam_args(params) == ["WIDTH=8"]
+        assert vlogparam_specs(params) == {"WIDTH": ParameterValue("", "8")}
 
     def test_vlogparam_normalizes_boolean_literals(self):
         params = {
             "ENABLED": {"datatype": "bool", "paramtype": "vlogparam", "default": True},
             "DISABLED": {"datatype": "bool", "paramtype": "vlogparam", "default": False},
         }
-        assert _vlogparam_args(params) == ["ENABLED=1", "DISABLED=0"]
+        assert vlogparam_specs(params) == {
+            "ENABLED": ParameterValue("bool", "1"),
+            "DISABLED": ParameterValue("bool", "0"),
+        }
 
     def test_paramtype_filtering_is_exclusive(self):
         params = {
@@ -4192,11 +4195,11 @@ class TestParamMapping:
         }
         # vlogdefine helper ignores vlogparam/plusarg and vice versa.
         assert _vlogdefine_args(params) == ["D"]
-        assert _vlogparam_args(params) == ["P=4"]
+        assert vlogparam_specs(params) == {"P": ParameterValue("", "4")}
 
     def test_empty_or_none_params(self):
         assert _vlogdefine_args(None) == []
-        assert _vlogparam_args({}) == []
+        assert vlogparam_specs({}) == {}
 
 
 # ===========================================================================
