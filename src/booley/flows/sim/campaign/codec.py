@@ -280,6 +280,12 @@ def reads_campaign_records(function: Callable[_P, _R]) -> Callable[_P, _R]:
     return guarded
 
 
+def _require_within_ceiling(raw: bytes, limit: int) -> None:
+    """Refuse *raw* larger than its record's size ceiling."""
+    if len(raw) > limit:
+        raise SimulationCampaignIntegrityError(f"document exceeds {limit}-byte size ceiling")
+
+
 def _decode(
     raw: bytes,
     *,
@@ -288,8 +294,7 @@ def _decode(
     limit: int,
     value_type: type[T],
 ) -> T:
-    if len(raw) > limit:
-        raise SimulationCampaignIntegrityError(f"document exceeds {limit}-byte size ceiling")
+    _require_within_ceiling(raw, limit)
     try:
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
@@ -583,9 +588,6 @@ def decode_bundle_build_result(raw: bytes) -> BundleBuildResult:
     return _decode_registered(raw, BundleBuildResult)
 
 
-decode_build_result = decode_bundle_build_result
-
-
 def decode_simulation_result(raw: bytes) -> SimulationResult:
     return _decode_registered(raw, SimulationResult)
 
@@ -604,7 +606,10 @@ def _encode_checked(
 ) -> bytes:
     if type(value) is not expected_type:
         raise SimulationCampaignIntegrityError(f"expected {expected_type.__name__}")
-    return canonical_json_bytes(value.document)
+    raw = canonical_json_bytes(value.document)
+    # Builders never decode what they build, so publication enforces each record's ceiling.
+    _require_within_ceiling(raw, _DOCUMENT_SPECS[expected_type][2])
+    return raw
 
 
 def encode_simulation_campaign_manifest(value: SimulationCampaignManifest) -> bytes:
