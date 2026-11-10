@@ -801,9 +801,6 @@ def test_incremental_adapter_build_inputs_cover_each_image_role(
     (build_root / "dist").mkdir(parents=True)
     wheel = build_root / "dist" / "booley_rtl-0.2.6.whl"
     wheel.write_bytes(b"wheel")
-    monkeypatch.setattr(
-        docker_image, "_runtime_base_build_metadata_args", lambda _root, _contract: ()
-    )
     monkeypatch.setattr(docker_image, "_image_build_metadata_args", lambda _root: ())
     monkeypatch.setattr(docker_image, "_docker_build_wheel", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
@@ -1056,26 +1053,11 @@ def test_runtime_graph_rejects_missing_wheel_and_user_owned_project_recipe(
 def test_runtime_plan_rejects_wrong_scope_and_external_image(tmp_path: Path) -> None:
     docker = FakeDocker({})
     with pytest.raises(TypeError, match="ProjectImageScope"):
-        lifecycle.plan(lifecycle.HostImageScope(), docker=docker)
+        lifecycle.plan(object(), docker=docker)  # type: ignore[arg-type]
     with pytest.raises(lifecycle.ImageLifecycleError, match="externally managed"):
         lifecycle.plan(
             lifecycle.ProjectImageScope(_project(tmp_path, "acme/custom")), docker=docker
         )
-
-
-def test_runtime_reconcile_rejects_project_scope_like_any_unsupported_scope(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Project images converge through plan/prepare/commit, never runtime reconcile()."""
-    docker = FakeDocker({})
-    _wire(monkeypatch, docker)
-    messages: list[str] = []
-    for scope in (lifecycle.ProjectImageScope(_project(tmp_path)), object()):
-        with pytest.raises(TypeError) as raised:
-            lifecycle.reconcile(scope, lifecycle.Intent.CHECK, docker=docker)  # type: ignore[arg-type]
-        messages.append(str(raised.value))
-
-    assert messages[0] == messages[1]
 
 
 class _CandidateBuilder(FakeBuilder):
@@ -1173,7 +1155,7 @@ def test_host_check_inspects_base_image_once(monkeypatch: pytest.MonkeyPatch) ->
     _wire(monkeypatch, docker)
     docker.reads.clear()
 
-    result = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.CHECK)
+    result = lifecycle.reconcile(lifecycle.Intent.CHECK)
 
     assert result.selected_id == "sha256:" + "a" * 64
     reads = [read for read in docker.reads if read[1] == lifecycle.BASE_IMAGE]
@@ -1247,6 +1229,78 @@ def test_runtime_release_parent_validation_and_adapter_guards(
     monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: None)
     with pytest.raises(lifecycle.ImageLifecycleError, match="wheel-source fingerprint"):
         lifecycle._complete_release_node(lifecycle.BASE_IMAGE, contracts)
+
+
+# Selection fingerprints the release path produced when it repeated the image
+# chain by hand, for the fixture in ``_release_recipes`` below. Never recompute.
+_PRE_CHANGE_RELEASE_FINGERPRINTS = {
+    "booley-sandbox": "8e3626aec0404786a141cb691f924a4a9f3cadc74ab80122596f0951ec96f9b6",
+    "booley-sandbox-riscv": "04bc281c2e53e83b0a1f94ce35d22fae0f6d0b9d2e218276342803f28da8f95a",
+}
+
+
+def _release_recipes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> lifecycle.ImageBuildContracts:
+    """Shipped recipe files whose body names the file, with fixed build contracts."""
+    for name in (
+        "Dockerfile.base",
+        "Dockerfile.substrate",
+        "Dockerfile.riscv",
+        "Dockerfile.wheel",
+    ):
+        (tmp_path / name).write_text(f"FROM scratch\n# {name}\n", encoding="utf-8", newline="\n")
+    monkeypatch.setattr(lifecycle, "docker_data_dir", lambda: tmp_path)
+    return lifecycle.ImageBuildContracts("runtime-contract", "standard-contract")
+
+
+def test_release_selection_fingerprint_is_pinned_to_pre_change_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    contracts = _release_recipes(tmp_path, monkeypatch)
+
+    assert {
+        selected: lifecycle._release_selection_fingerprint(selected, contracts)
+        for selected in _PRE_CHANGE_RELEASE_FINGERPRINTS
+    } == _PRE_CHANGE_RELEASE_FINGERPRINTS
+
+
+def test_release_selection_fingerprint_follows_source_graph_nodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    contracts = _release_recipes(tmp_path, monkeypatch)
+    before = lifecycle._release_selection_fingerprint("booley-sandbox", contracts)
+    source_graph_base = lifecycle._source_graph_base
+
+    def changed_runtime(observed: lifecycle.ImageBuildContracts, docker_dir: Path):
+        runtime, standard = source_graph_base(observed, docker_dir)
+        return replace(runtime, effective_inputs="another-runtime-input"), standard
+
+    monkeypatch.setattr(lifecycle, "_source_graph_base", changed_runtime)
+
+    assert lifecycle._release_selection_fingerprint("booley-sandbox", contracts) != before
+
+
+@pytest.mark.parametrize("intent", [lifecycle.Intent.CHECK, lifecycle.Intent.ENSURE])
+def test_host_reconcile_of_distribution_without_contract_metadata_is_refused(
+    monkeypatch: pytest.MonkeyPatch, intent: lifecycle.Intent
+) -> None:
+    from booley.runtime.version_attribution import VersionOrigin
+
+    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: FakeDocker({}))
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        SimpleNamespace(origin=VersionOrigin.DISTRIBUTION, source_root=None),
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "expected_image_build_contracts",
+        lambda _attribution: (_ for _ in ()).throw(lifecycle.ImageBuildContractMetadataError("x")),
+    )
+
+    with pytest.raises(lifecycle.InstalledImageContractError):
+        harness_lifecycle.reconcile(intent)
 
 
 def test_published_release_without_selection_label_still_verifies(
@@ -1601,7 +1655,7 @@ def test_host_scope_never_reads_project_configuration(monkeypatch):
         lambda _root: (_ for _ in ()).throw(AssertionError("Project config read")),
     )
 
-    result = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.CHECK)
+    result = lifecycle.reconcile(lifecycle.Intent.CHECK)
 
     assert result.selected_reference == lifecycle.BASE_IMAGE
     assert result.status is lifecycle.Status.STALE
@@ -1624,7 +1678,6 @@ def test_host_ensure_removes_all_bootstrap_release_tags_when_base_is_current(
     builder = _wire_official_release(monkeypatch, docker)
 
     result = lifecycle.reconcile(
-        lifecycle.HostImageScope(),
         lifecycle.Intent.ENSURE,
         artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
     )
@@ -1654,7 +1707,6 @@ def test_host_check_reports_release_cleanup_without_mutating(
     _wire_official_release(monkeypatch, docker)
 
     result = lifecycle.reconcile(
-        lifecycle.HostImageScope(),
         lifecycle.Intent.CHECK,
         artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
     )
@@ -1674,7 +1726,7 @@ def test_host_ensure_retains_release_image_required_by_container(
     docker.used_image_ids = frozenset({prior_id})
     _wire(monkeypatch, docker)
 
-    result = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+    result = lifecycle.reconcile(lifecycle.Intent.ENSURE)
 
     assert result.cleanup.retained_required == (prior_release,)
     assert docker.image_id(prior_release) == prior_id
@@ -1695,7 +1747,7 @@ def test_host_cleanup_refuses_reference_that_changed_after_inventory(
     _wire(monkeypatch, docker)
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="refused to clean changed"):
-        lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+        lifecycle.reconcile(lifecycle.Intent.ENSURE)
 
     assert not any(mutation == ("remove_tag", release) for mutation in docker.mutations)
 
@@ -1715,7 +1767,7 @@ def test_host_cleanup_failure_does_not_roll_back_reconciled_base(
     builder = _wire(monkeypatch, docker)
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="cleanup denied"):
-        lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+        lifecycle.reconcile(lifecycle.Intent.ENSURE)
 
     assert builder.built == [lifecycle.BASE_IMAGE]
     assert docker.image_id(lifecycle.BASE_IMAGE) is not None
@@ -1879,7 +1931,7 @@ def test_source_policy_replaces_current_registry_base(monkeypatch: pytest.Monkey
     docker = FakeDocker({lifecycle.BASE_IMAGE: _current_registry_base()})
     builder = _wire(monkeypatch, docker)
 
-    lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+    lifecycle.reconcile(lifecycle.Intent.ENSURE)
 
     assert builder.built == [lifecycle.BASE_IMAGE]
     assert docker.images[lifecycle.BASE_IMAGE][1][lifecycle.LABEL_BUILD_ORIGIN] == "local"
@@ -1937,7 +1989,7 @@ def test_check_reports_selected_artifact_source_without_mutation(
     if origin == "distribution":
         _wire_official_release(monkeypatch, docker)
 
-    result = harness_lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.CHECK)
+    result = harness_lifecycle.reconcile(lifecycle.Intent.CHECK)
 
     assert result.status is lifecycle.Status.STALE
     assert expected_action in result.diagnostics[0].message
@@ -1977,7 +2029,6 @@ def test_wrong_verified_pull_falls_back_to_exact_local_build(
     builder = PullThenLocalBuilder(docker)
 
     result = lifecycle.reconcile(
-        lifecycle.HostImageScope(),
         lifecycle.Intent.ENSURE,
         docker=docker,
         builder=builder,
@@ -2020,7 +2071,6 @@ def test_verified_pull_is_validated_before_canonical_adoption(
     _wire(monkeypatch, docker)
 
     result = lifecycle.reconcile(
-        lifecycle.HostImageScope(),
         lifecycle.Intent.ENSURE,
         docker=docker,
         builder=StagedPullBuilder(docker),
@@ -2063,7 +2113,6 @@ def test_pull_and_local_fallback_failure_restore_prior_tag(
 
     with pytest.raises(lifecycle.ImageLifecycleError) as error:
         lifecycle.reconcile(
-            lifecycle.HostImageScope(),
             lifecycle.Intent.ENSURE,
             docker=docker,
             builder=FailedRecoveryBuilder(docker),
@@ -2210,23 +2259,21 @@ def _install_stale_outer_base(docker: FakeDocker) -> None:
 
 
 @pytest.mark.parametrize(
-    ("scope_kind", "intent", "expected"),
+    ("intent", "expected"),
     [
-        ("host", lifecycle.Intent.ENSURE, False),
-        ("host", lifecycle.Intent.REFRESH, True),
-        ("project", lifecycle.Intent.REFRESH, False),
+        (lifecycle.Intent.ENSURE, False),
+        (lifecycle.Intent.REFRESH, True),
     ],
 )
 def test_source_reconcile_separates_outer_replacement_from_runtime_base_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    scope_kind: str,
     intent: lifecycle.Intent,
     expected: bool,
 ) -> None:
     from booley.harness.setup import docker_image as init_docker_image
 
-    root = _project(tmp_path)
+    _project(tmp_path)
     docker_dir = _set_source_installation(tmp_path, monkeypatch)
     docker, _pulls = _wire_source_docker(docker_dir, monkeypatch)
     _install_stale_outer_base(docker)
@@ -2247,21 +2294,9 @@ def test_source_reconcile_separates_outer_replacement_from_runtime_base_refresh(
         context.record("docker_image", "ok", "built")
 
     monkeypatch.setattr(init_docker_image, "_step_docker_image", build_base)
-    scope = (
-        lifecycle.HostImageScope() if scope_kind == "host" else lifecycle.ProjectImageScope(root)
-    )
+    harness_lifecycle.reconcile(intent)
 
-    if scope_kind == "project":
-        monkeypatch.setattr(
-            harness_lifecycle,
-            "prepare",
-            lambda observed, **_kw: lifecycle.prepare(
-                observed, docker=docker, builder=TransactionBuilder(docker)
-            ),
-        )
-    harness_lifecycle.reconcile(scope, intent)
-
-    assert calls == ([(True, expected)] if scope_kind == "host" else [])
+    assert calls == [(True, expected)]
 
 
 def _extracted_build_recorder(docker: FakeDocker, calls: list[tuple]):
@@ -2772,7 +2807,7 @@ def test_host_ensure_retains_in_use_release_tag_whose_only_alias_is_digest_only(
     docker.used_image_ids = frozenset({prior_id})
     _wire(monkeypatch, docker)
 
-    result = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+    result = lifecycle.reconcile(lifecycle.Intent.ENSURE)
 
     assert result.cleanup.retained_required == (prior_release,)
     assert docker.image_id(prior_release) == prior_id
@@ -3700,7 +3735,6 @@ def test_official_host_check_accepts_the_published_release_image(
     _wire_official_release(monkeypatch, docker)
 
     result = lifecycle.reconcile(
-        lifecycle.HostImageScope(),
         lifecycle.Intent.CHECK,
         artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
     )
@@ -3719,7 +3753,6 @@ def test_official_host_check_rejects_a_release_for_other_wheel_sources(
     _wire_official_release(monkeypatch, docker)
 
     result = lifecycle.reconcile(
-        lifecycle.HostImageScope(),
         lifecycle.Intent.CHECK,
         artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
     )
@@ -3736,7 +3769,6 @@ def test_official_host_bootstrap_pulls_and_verifies_the_published_release_image(
     puller = PublishedReleasePuller(docker)
 
     result = lifecycle.reconcile(
-        lifecycle.HostImageScope(),
         lifecycle.Intent.ENSURE,
         docker=docker,
         builder=puller,
@@ -4013,7 +4045,7 @@ def test_runtime_image_stamp_recovery_reaches_consumers(
     else:
         with pytest.raises(lifecycle.ImageLifecycleError) as caught:
             if consumer == "host":
-                harness_lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+                harness_lifecycle.reconcile(lifecycle.Intent.ENSURE)
             elif consumer == "refresh":
                 init_cmd.prepare_runtime_image(tmp_path)
             else:

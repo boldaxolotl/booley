@@ -7,23 +7,25 @@ import os
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
-from booley.runtime.docker_build import run_docker_build
+from booley.runtime.build_stamp import resolve_build_commit
+from booley.runtime.docker_build import DockerBuildResult, run_docker_build
 from booley.runtime.docker_capacity import (
     BuildEstimateClass,
     DockerBuildPlan,
     DockerBuildRequest,
+    DockerCapacityError,
     _plan_from_file,
 )
 from booley.runtime.image_build_contracts import source_image_build_contracts
 from booley.runtime.image_identity import ImageMetadata
-from booley.runtime.image_lifecycle import HostImageScope, _prepared_provenance, _source_graph_base
+from booley.runtime.image_lifecycle import _prepared_provenance, _source_graph_base
 from booley.runtime.image_provenance import LABEL_RUNTIME_BASE_CONTRACT
 from booley.runtime.interactive_docker import inspect_image_metadata
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
+from booley.runtime.timefmt import utc_now_rfc3339
 
 REFERENCE = "booley-runtime-base:local"
 
@@ -35,7 +37,44 @@ def _labels(root: Path) -> dict[str, str]:
     return _prepared_provenance(node, None)
 
 
-def _build(root: Path, recipe: Path, output: str, plan: DockerBuildPlan | None) -> bool:
+class RuntimeBaseBuildError(RuntimeError):
+    """A runtime-base ``docker build`` did not produce the image.
+
+    ``result`` is the failed or timed-out build outcome, or ``None`` when the
+    Docker CLI could not run (the underlying ``OSError`` is the ``__cause__``).
+    """
+
+    def __init__(self, message: str, result: DockerBuildResult | None) -> None:
+        super().__init__(message)
+        self.result = result
+
+
+def build_timeout() -> int:
+    """Seconds a runtime-base build may run (``BOOLEY_IMAGE_BUILD_TIMEOUT``, default 7200)."""
+    return int(os.environ.get("BOOLEY_IMAGE_BUILD_TIMEOUT", "7200"))
+
+
+def _metadata_args(root: Path) -> tuple[str, ...]:
+    """Build args that ``Dockerfile.base`` turns into revision and created labels."""
+    revision = resolve_build_commit(root) if (root / ".git").exists() else "unknown"
+    values = {
+        "BOOLEY_BASE_SOURCE_REVISION": revision or "unknown",
+        "BOOLEY_BASE_BUILT_AT": utc_now_rfc3339(),
+    }
+    return tuple(
+        item for name, value in values.items() for item in ("--build-arg", f"{name}={value}")
+    )
+
+
+def _build(
+    root: Path,
+    recipe: Path,
+    output: str,
+    plan: DockerBuildPlan | None,
+    *,
+    verbose: bool = True,
+    extra_args: tuple[str, ...] = (),
+) -> DockerBuildResult:
     labels = _labels(root)
     command = ["docker", "build"]
     for key, value in labels.items():
@@ -43,21 +82,21 @@ def _build(root: Path, recipe: Path, output: str, plan: DockerBuildPlan | None) 
     command += [
         "--build-arg",
         f"BOOLEY_BASE_CONTRACT={labels[LABEL_RUNTIME_BASE_CONTRACT]}",
+        *extra_args,
         "-t",
         output,
         "-f",
         str(recipe),
         str(root),
     ]
-    result = run_docker_build(
+    return run_docker_build(
         command,
         image=output,
-        verbose=True,
-        timeout=7200,
+        verbose=verbose,
+        timeout=build_timeout(),
         current_request=plan.current if plan else None,
         remaining_plan=plan,
     )
-    return result.returncode == 0 and not result.timed_out
 
 
 def _upgrade(root: Path, installed: ImageMetadata, plan: DockerBuildPlan | None) -> str:
@@ -85,7 +124,8 @@ def _upgrade(root: Path, installed: ImageMetadata, plan: DockerBuildPlan | None)
         with tempfile.TemporaryDirectory(prefix="booley-base-metadata-") as directory:
             recipe = Path(directory) / "Dockerfile"
             recipe.write_text(f"FROM {parent}\n", encoding="utf-8")
-            if not _build(root, recipe, candidate, migration_plan):
+            migration = _build(root, recipe, candidate, migration_plan)
+            if migration.returncode != 0 or migration.timed_out:
                 raise RuntimeError("Bootstrap metadata migration failed")
         changed = _verified_upgrade(installed, candidate, labels)
         current = inspect_image_metadata(REFERENCE)
@@ -148,14 +188,14 @@ def _cleanup_migration(references: tuple[str, ...], primary: BaseException | Non
 def acquire(
     root: Path,
     *,
-    scope: HostImageScope,
     rebuild: bool = False,
     capacity_plan: DockerBuildPlan | None = None,
-    build: Callable[[], bool] | None = None,
-) -> str | None:
-    """Acquire a contract-compatible base exclusively under host ownership."""
-    if not isinstance(scope, HostImageScope):
-        raise TypeError("runtime-base acquisition requires HostImageScope")
+    verbose: bool = True,
+) -> str:
+    """Acquire a contract-compatible base exclusively under host ownership.
+
+    Raise ``RuntimeBaseBuildError`` when a required build fails.
+    """
     installed = inspect_image_metadata(REFERENCE)
     expected = source_image_build_contracts(root).runtime_base
     if (
@@ -164,13 +204,26 @@ def acquire(
         and installed.labels.get(LABEL_RUNTIME_BASE_CONTRACT) == expected
     ):
         return _upgrade(root, installed, capacity_plan)
-    operation = build or (
-        lambda: _build(
-            root, root / "src/booley/data/docker/Dockerfile.base", REFERENCE, capacity_plan
-        )
+    action = "Rebuilding" if installed is not None else "Building"
+    print(
+        f"{action} {REFERENCE} image — reusing layers when runtime-base "
+        "Dockerfile inputs are unchanged."
     )
-    if not operation():
-        return None
+    try:
+        outcome = _build(
+            root,
+            root / "src/booley/data/docker/Dockerfile.base",
+            REFERENCE,
+            capacity_plan,
+            verbose=verbose,
+            extra_args=_metadata_args(root),
+        )
+    except DockerCapacityError:
+        raise
+    except OSError as exc:
+        raise RuntimeBaseBuildError(f"docker build failed: {exc}", None) from exc
+    if outcome.returncode != 0 or outcome.timed_out:
+        raise RuntimeBaseBuildError("runtime-base docker build failed", outcome)
     result = inspect_image_metadata(REFERENCE)
     if result is None or any(
         result.labels.get(key) != value for key, value in _labels(root).items()
@@ -190,18 +243,13 @@ def main() -> int:
     try:
         plan = _plan_from_file(args.plan_file, args.current_index)[1] if args.plan_file else None
         with host_lifecycle_lock("host runtime-base maintenance"):
-            image = acquire(
-                args.repo.resolve(),
-                scope=HostImageScope(),
-                rebuild=args.refresh,
-                capacity_plan=plan,
-            )
+            acquire(args.repo.resolve(), rebuild=args.refresh, capacity_plan=plan)
     except (RuntimeError, OSError, ValueError) as exc:
         print(f"Bootstrap runtime-base acquisition failed: {exc}", file=sys.stderr)
         for note in getattr(exc, "__notes__", ()):
             print(note, file=sys.stderr)
         return 2
-    return 0 if image else 2
+    return 0
 
 
 if __name__ == "__main__":
