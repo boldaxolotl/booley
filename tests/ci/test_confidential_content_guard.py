@@ -1604,19 +1604,27 @@ def test_audit_exempts_commits_merged_from_outside_pull_request(tmp_path: Path) 
     assert SENTINEL not in result.stderr + result.stdout
 
 
-def _case_unlisted_identity(repo: Path) -> tuple[str | None, str]:
+def _case_unlisted_identity(repo: Path) -> tuple[str, str]:
     (repo / "a.txt").write_bytes(b"clean\n")
     _commit(repo, "change", name="Unexpected User", email="unexpected@example.test")
     return REPOSITORY_OWNER, "identity not allowed"
 
 
-def _case_term_in_first_parent_commit(repo: Path) -> tuple[str | None, str]:
+def _case_unlisted_identity_before_outside_merge(repo: Path) -> tuple[str, str]:
+    """An unattributable commit already on the first-parent line stays enforced."""
+    (repo / "a.txt").write_bytes(b"clean\n")
+    _commit(repo, "change", name="Unexpected User", email="unexpected@example.test")
+    _outside_pull_request_history(repo)
+    return REPOSITORY_OWNER, "identity not allowed"
+
+
+def _case_term_in_first_parent_commit(repo: Path) -> tuple[str, str]:
     (repo / "a.txt").write_bytes(TERM_TEXT.encode())
     _commit(repo, "change")
     return REPOSITORY_OWNER, "confidential term"
 
 
-def _case_inexact_merge_message(repo: Path) -> tuple[str | None, str]:
+def _case_inexact_merge_message(repo: Path) -> tuple[str, str]:
     _branch_commits(repo, "outsider-fix", [(OUTSIDER, {"o.txt": "clean\n"})])
     _merge_pull_request(
         repo, "outsider-fix", owner="outsider", number=2, title="fix", suffix=" (edited)"
@@ -1624,7 +1632,7 @@ def _case_inexact_merge_message(repo: Path) -> tuple[str | None, str]:
     return REPOSITORY_OWNER, "identity not allowed"
 
 
-def _case_octopus_merge_only_file(repo: Path) -> tuple[str | None, str]:
+def _case_octopus_merge_only_file(repo: Path) -> tuple[str, str]:
     _branch_commits(repo, "side-a", [(SAFE, {"a.txt": "a\n"})])
     _branch_commits(repo, "side-b", [(SAFE, {"b.txt": "b\n"})])
     _git(repo, "merge", "--no-commit", "side-a", "side-b", env=_identity_env())
@@ -1633,7 +1641,7 @@ def _case_octopus_merge_only_file(repo: Path) -> tuple[str | None, str]:
     return REPOSITORY_OWNER, "octopus-only.txt"
 
 
-def _case_allowlisted_author_in_outside_range(repo: Path) -> tuple[str | None, str]:
+def _case_allowlisted_author_in_outside_range(repo: Path) -> tuple[str, str]:
     _branch_commits(
         repo,
         "outsider-fix",
@@ -1643,7 +1651,7 @@ def _case_allowlisted_author_in_outside_range(repo: Path) -> tuple[str | None, s
     return REPOSITORY_OWNER, "confidential term"
 
 
-def _case_attributing_merge_adds_term(repo: Path) -> tuple[str | None, str]:
+def _case_attributing_merge_adds_term(repo: Path) -> tuple[str, str]:
     _branch_commits(repo, "outsider-fix", [(OUTSIDER, {"o.txt": "clean\n"})])
     _merge_pull_request(
         repo,
@@ -1656,7 +1664,7 @@ def _case_attributing_merge_adds_term(repo: Path) -> tuple[str | None, str]:
     return REPOSITORY_OWNER, "merge-only.txt"
 
 
-def _case_attributing_merge_unlisted_committer(repo: Path) -> tuple[str | None, str]:
+def _case_attributing_merge_unlisted_committer(repo: Path) -> tuple[str, str]:
     _branch_commits(repo, "outsider-fix", [(OUTSIDER, {"o.txt": "clean\n"})])
     _merge_pull_request(
         repo, "outsider-fix", owner="outsider", number=5, title="fix", committer=OUTSIDER
@@ -1664,12 +1672,12 @@ def _case_attributing_merge_unlisted_committer(repo: Path) -> tuple[str | None, 
     return REPOSITORY_OWNER, "committer identity"
 
 
-def _case_owner_with_trailing_space(repo: Path) -> tuple[str | None, str]:
+def _case_owner_with_trailing_space(repo: Path) -> tuple[str, str]:
     _outside_pull_request_history(repo)
     return f"{REPOSITORY_OWNER} ", "could not complete"
 
 
-def _case_forged_merge_on_second_parent_side(repo: Path) -> tuple[str | None, str]:
+def _case_forged_merge_on_second_parent_side(repo: Path) -> tuple[str, str]:
     _branch_commits(repo, "outsider-fix", [(OUTSIDER, {"o.txt": "clean\n"})])
     _git(repo, "checkout", "-b", "feature", "main")
     _merge_pull_request(repo, "outsider-fix", owner="outsider", number=6, title="forged")
@@ -1680,6 +1688,7 @@ def _case_forged_merge_on_second_parent_side(repo: Path) -> tuple[str | None, st
 
 _ENFORCED_CASES = {
     "unlisted-identity": _case_unlisted_identity,
+    "unlisted-identity-before-outside-merge": _case_unlisted_identity_before_outside_merge,
     "term-in-first-parent-commit": _case_term_in_first_parent_commit,
     "inexact-merge-message": _case_inexact_merge_message,
     "octopus-merge-only-file": _case_octopus_merge_only_file,

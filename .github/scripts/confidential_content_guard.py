@@ -62,7 +62,7 @@ _IDENT_RE = re.compile(r"^(?P<name>.*) <(?P<email>[^<>]*)> \d+ [+-]\d{4}$")
 _OID_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
 # GitHub login form: alphanumerics and inner hyphens, never surrounding whitespace.
 _OWNER_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?")
-# First line of the merge commit GitHub writes for a merged pull request.
+# GitHub-shaped merge subject: text only, not verified against GitHub.
 _PR_MERGE_SUBJECT_RE = re.compile(
     r"Merge pull request #[1-9][0-9]* from (?P<owner>[A-Za-z0-9-]+)/\S+"
 )
@@ -1376,6 +1376,32 @@ def self_test_main() -> int:
     return 0
 
 
+def _add_history_parsers(subparsers: argparse._SubParsersAction) -> None:
+    """Register the candidate-vocabulary and full-history subcommands."""
+    verify_parser = subparsers.add_parser(
+        "verify-candidate", help="validate proposed encrypted vocabulary"
+    )
+    verify_parser.add_argument("--rev", required=True)
+    verify_parser.add_argument("--base", required=True)
+    verify_parser.add_argument("--event", required=True, type=Path)
+    verify_parser.add_argument(
+        "--trusted-base", help="commit whose exact path and blob entries are already accepted"
+    )
+    subparsers.add_parser("sync-ci-key", help="publish the decryption key to Actions")
+    subparsers.add_parser(
+        "self-test", help="check the encryption dependency without a key or repository"
+    )
+    audit_parser = subparsers.add_parser("audit", help="inspect full ancestry of revisions")
+    audit_parser.add_argument("--rev", action="append", default=[], help="revision to inspect")
+    audit_parser.add_argument(
+        "--worktree", action="store_true", help="also inspect tracked and untracked checkout files"
+    )
+    audit_parser.add_argument(
+        "--repository-owner",
+        help="exempt commits merged from pull requests of any other owner (one --rev)",
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path.cwd(), help="repository to inspect")
@@ -1407,28 +1433,7 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "restore-draft", help="restore a private edit draft from the encrypted file"
     )
-    verify_parser = subparsers.add_parser(
-        "verify-candidate", help="validate proposed encrypted vocabulary"
-    )
-    verify_parser.add_argument("--rev", required=True)
-    verify_parser.add_argument("--base", required=True)
-    verify_parser.add_argument("--event", required=True, type=Path)
-    verify_parser.add_argument(
-        "--trusted-base", help="commit whose exact path and blob entries are already accepted"
-    )
-    subparsers.add_parser("sync-ci-key", help="publish the decryption key to Actions")
-    subparsers.add_parser(
-        "self-test", help="check the encryption dependency without a key or repository"
-    )
-    audit_parser = subparsers.add_parser("audit", help="inspect full ancestry of revisions")
-    audit_parser.add_argument("--rev", action="append", default=[], help="revision to inspect")
-    audit_parser.add_argument(
-        "--worktree", action="store_true", help="also inspect tracked and untracked checkout files"
-    )
-    audit_parser.add_argument(
-        "--repository-owner",
-        help="exempt commits merged from pull requests of any other owner (one --rev)",
-    )
+    _add_history_parsers(subparsers)
     return parser
 
 

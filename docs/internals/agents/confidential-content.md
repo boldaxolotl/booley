@@ -68,8 +68,9 @@ and term id, never the term); it never skips a check silently.
 
 - **Merges.** A merge commit is scanned for the paths whose merged result
   differs from every parent (git's combined diff); content inherited from one
-  parent is not the merge's. Its message and its author and committer
-  identities are always checked.
+  parent is not the merge's. Its author and committer identities are always
+  checked, and so is its message (advisory only for an attributing merge, see
+  Audit).
 - **Base tip.** CI passes `--trusted-base <base sha>` to `pre-push` and
   `verify-candidate` for pull requests to `main` only. A changed entry whose
   path and blob both equal an entry of that tip is already accepted on `main`
@@ -107,6 +108,10 @@ Consequences for maintainers:
   enforced, so the fork PR scan must be green before the merge.
 - Attribution reads the audited revision's first-parent history, so auditing a
   branch that merged `main` as a second parent enforces outside commits.
+- Attribution trusts the merge subject text, which git does not verify. A merge
+  with that subject pushed directly to `main`, outside Mergify, is treated as
+  an outside PR merge; branch protection and the Mergify queue are the controls
+  that keep `main` from taking such pushes.
 - The repository owner string is part of the trust assumption: renaming the
   owner makes earlier same-repository merges look like outside ones.
 
