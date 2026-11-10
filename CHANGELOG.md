@@ -20,6 +20,11 @@ Packaged release history starts at 0.2.7. For older changes, see
   `enabled = false` to confirm it is off. A `booley.toml` that can't be read
   keeps Stealth on. Unattended setup now keeps `.booley/` in your repository
   instead of hiding it.
+- `booley bootstrap --egress proxy|unproxied` records `[sandbox] egress` in the
+  host config, creating the file if needed and changing nothing else in it, then
+  bootstraps under that mode. `--check-only` reports the pending change without
+  writing it, and running Sandboxes still on the old mode are named with their
+  recreate steps.
 - A fresh Sandbox no longer shows Claude Code's auto-mode default nudge on the
   first chat: registration marks it as seen (`hasSeenAutoDefaultNudge`), with or
   without a credential, and keeps any value already in `~/.claude.json`.
