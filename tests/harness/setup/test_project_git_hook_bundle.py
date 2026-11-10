@@ -152,6 +152,7 @@ def test_bundled_hook_accepts_destination_history_and_blocks_new_identity(
     git("clone", "--bare", str(project), str(destination))
     managed = project / ".booley" / ".managed"
     managed.mkdir(parents=True)
+    (project / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
     bundle = managed / BUNDLE_NAME
     bundle.write_bytes(build_project_git_hook_bundle().content)
 
@@ -244,7 +245,7 @@ def test_bundle_identifier_tiers_refresh_from_current_config(tmp_path):
             "fix: booley_config BooleyRunner myquokkafile axi_agent reagent precursor\n",
         ),
     ):
-        config.write_text("[stealth]\n" + setting + "\n")
+        config.write_text("[stealth]\nenabled = true\n" + setting + "\n")
         message.write_text(
             "fix: booley_config BooleyRunner myquokkafile axi_agent reagent precursor\n"
         )

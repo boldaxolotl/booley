@@ -241,11 +241,19 @@ Read the full briefing before deciding what to merge; open `done` findings
 are listed there. Completion keeps the Goal Branch and worktree; merge,
 publication, and cleanup need separate instructions.
 
-Local Goal Records live under `.booley/goals/<goal-id>/`. Outside
-Stealth, Finish commits the Session Summary under
-`.booley/goals/history/<goal-id>.md` in the Goal worktree when that
-path is Git-trackable and owned by the RTL repository. Stealth, excluded, or
-Paired Checkout summaries stay local.
+Local Goal Records live under `.booley/goals/<goal-id>/`. Finish commits the
+Session Summary under `.booley/goals/history/<goal-id>.md` in the Goal
+worktree when that path is Git-trackable and owned by the RTL repository. If
+you excluded that path from Git, the summary stays local.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+Session Summaries stay local instead of being committed on the Goal Branch, so
+Booley's files stay out of your history. See
+[STEALTH.md](STEALTH.md#what-changes).
+
+</details>
 
 Booley deletes a finished, abandoned, or failed Goal Record, with its Session
 Summary and Review Package, once both its worktree (`booley worktree rm <name>` for a
@@ -286,9 +294,16 @@ other records, the Session Summary and Review Package paths when those files
 exist.
 
 Run from a Goal's worktree, `booley goal status` also names each repository
-whose uncommitted changes would block Finish. When the worktree's `.booley` is a
-Paired Checkout (its own Git repository on its own branch), the agent must
-commit changes there as well; ask it to if the status names that repository.
+whose uncommitted changes would block Finish.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The worktree's `.booley` is a Paired Checkout, its own Git repository on its
+own branch, so the agent must commit changes there as well. Ask it to if the
+status names that repository.
+
+</details>
 
 ## Goalsets
 
