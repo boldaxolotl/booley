@@ -328,7 +328,7 @@ One **Test Variant** simulated with one seed, written `test+variant@seed`: `test
 _Avoid_: run (bare), iteration, seed run, QA Run
 
 **Simulation Record**:
-The durable, resumable record of the exact simulation workload one Simulation Flow invocation runs on one **Target**. An explicit resume continues the same Simulation Record in a later invocation, and the record holds the strict aggregate outcome of all selected work. A coverage-collecting Simulation Record may contain a [**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md) for an attempt. Code, messages, and persisted formats still say "campaign" until the rename in [#2711](https://github.com/boldaxolotl/booley/issues/2711) lands; Goal-side names (the Goal Record's campaign accounting and the `campaign` criterion freshness category) keep it until [#2811](https://github.com/boldaxolotl/booley/issues/2811).
+The durable, resumable record of the exact simulation workload one Simulation Flow invocation runs on one **Target**. An explicit resume continues the same Simulation Record in a later invocation, and the record holds the strict aggregate outcome of all selected work. A coverage-collecting Simulation Record may contain a [**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md) for an attempt. Code, messages, persisted formats, and docs outside the glossaries still say "campaign" until the rename in [#2711](https://github.com/boldaxolotl/booley/issues/2711) lands; Goal-side names (the Goal Record's campaign accounting and the `campaign` criterion freshness category) are left to the redesign in [#3045](https://github.com/boldaxolotl/booley/issues/3045), which replaced #2811 and may remove them.
 _Avoid_: Simulation Campaign, campaign, regression run, test batch
 
 **Simulator Bundle**:
@@ -395,7 +395,7 @@ You will not need these unless you are reading older work records, code, or docs
 - **Ticket Preflight** → **Goal entry refusals** and **Doctor** "Project checks": The old Ticket-intake gate is retired; entry enforces Goal worktree and input requirements, while Doctor diagnoses shared Project machinery. They are separate checks, not a one-for-one reproduction of Ticket Preflight.
 - **Harness** → **none**: Retired name for Ticket lifecycle orchestration. Name the Goal Record, evidence machinery, or Sandbox capability concerned. The `booley.harness` package still contains active CLI, Doctor, and setup code.
 - **Console** → **Booley Dashboard** for the live view; **none** for the old single-Ticket display: The Dashboard shows sessions, Goals, Jobs, and health across the Sandbox.
-- **Simulation Campaign** → **Simulation Record**: Renamed; code, messages, persisted formats, and older ADRs keep "campaign" until #2711 lands.
+- **Simulation Campaign** → **Simulation Record**: Renamed; code, messages, persisted formats, and docs keep "campaign" until #2711 lands, and older ADRs keep it as historical records (see ADR 0090).
 - **Coverage Campaign** → [**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md): Renamed on the same terms.
 
 - **"tool"**: Overloaded across Booley, agent clients, MCP, and EDA. Never use the bare word in Booley prose or identifiers: say **Booley Flow** for deterministic orchestration, **EDA tool** for the external program a Flow drives, and **MCP tool** only for the protocol-level invocation mechanism.

@@ -38,11 +38,15 @@ warn that the two are distinct.
 4. **No aliases.** Old reason codes, output fields, the `{campaign}` `run_cwd`
    placeholder and the `coverage_analyst` `campaign` input are replaced
    outright. The CHANGELOG calls the rename a breaking change.
-5. **Goal-side names wait for the Sign-off redesign.** `booley.goal-campaign`,
+5. **Goal-side names wait for the Goal Mode redesign.** `booley.goal-campaign`,
    `unsettled_campaigns`, `goal-campaign-unaccounted`,
    `logs/acceptance/campaigns/`, and the `campaign` criterion freshness
-   category (to become `test-selection`) are renamed by
-   [#2811](https://github.com/boldaxolotl/booley/issues/2811), not by #2711.
+   category are not renamed by #2711. They were assigned to the Sign-off
+   redesign [#2811](https://github.com/boldaxolotl/booley/issues/2811)
+   (closed as not planned; superseded by
+   [#3045](https://github.com/boldaxolotl/booley/issues/3045)), so
+   that redesign may rename or remove them; the planned `test-selection` name
+   for the freshness category is no longer settled.
 6. **The code and contract rename waits.** It starts after the Simulation Flow
    simplification work
    ([#1689](https://github.com/boldaxolotl/booley/issues/1689),
