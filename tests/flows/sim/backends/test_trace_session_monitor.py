@@ -2,7 +2,8 @@
 
 Uses long-sleeping python subprocesses as stand-ins for sim_proc and
 bwave_proc, so the test runs cross-platform without needing iverilog,
-verilator, or bwave on PATH.
+verilator, or bwave on PATH.  Every test that starts a monitor pairs it with
+``stop_monitor`` so no monitor thread outlives the test.
 """
 
 from __future__ import annotations
@@ -68,6 +69,25 @@ class _StreamStub:
         return ""
 
 
+class _AliveStub:
+    """A process or stream that stays alive and never grows."""
+
+    pid = 4242
+    store_path = None  # read by the stall-window log line
+
+    def poll(self) -> None:
+        return None
+
+    def progress_size(self) -> int:
+        return 0
+
+    def stderr_tail(self, _limit: int = 4000) -> str:
+        return ""
+
+    def kill(self) -> None:
+        pass
+
+
 class TestStallKill:
     """The monitor must kill sim+bwave when .bwave never grows."""
 
@@ -95,6 +115,7 @@ class TestStallKill:
             assert ts.stall_message is not None
             assert "stalled" in ts.stall_message
         finally:
+            ts.stop_monitor()
             for p in (sim_proc, bwave_proc):
                 if p.poll() is None:
                     p.kill()
@@ -134,6 +155,89 @@ class TestStallKill:
         assert session.stall_killed is False
         assert session.stall_message is None
 
+    def test_stop_wakes_an_idle_monitor_at_once(self, tmp_path):
+        """AC2: stopping does not wait out the poll interval."""
+        session = TraceSession(tmp_path)
+        monitors: list[threading.Thread] = []
+        real_monitor = session._monitor_stalls
+
+        def recording_monitor(*args):
+            monitors.append(threading.current_thread())
+            real_monitor(*args)
+
+        session._monitor_stalls = recording_monitor  # type: ignore[method-assign]
+        session.start_monitor(_AliveStub(), _AliveStub(), stall_timeout=30.0, poll_interval=30.0)
+        try:
+            # Wait until the monitor thread is running.
+            deadline = time.monotonic() + 5.0
+            while not monitors and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert len(monitors) == 1
+            started = time.monotonic()
+            session.stop_monitor()
+            elapsed = time.monotonic() - started
+        finally:
+            session.stop_monitor()
+        assert elapsed < 5.0
+        assert not monitors[0].is_alive()
+        session.stop_monitor()  # idempotent
+
+    def test_stop_without_a_started_monitor_does_nothing(self, tmp_path):
+        TraceSession(tmp_path).stop_monitor()
+
+    def test_stop_waits_for_an_in_flight_stall_kill(self, tmp_path, monkeypatch):
+        """A stop that arrives during a stall kill returns only after that kill finished."""
+        session = TraceSession(tmp_path)
+        entered, release = threading.Event(), threading.Event()
+        events: list[str] = []
+        sim, bwave = _AliveStub(), _AliveStub()
+
+        def blocked_incident(*_args, **_kwargs):
+            entered.set()
+            release.wait(timeout=30)
+            return tmp_path / "incident.txt"
+
+        monkeypatch.setattr(session, "write_incident", blocked_incident)
+        monkeypatch.setattr(
+            "booley.runtime.platform_paths.kill_process_tree",
+            lambda _proc: events.append("tree_kill"),
+        )
+        bwave.kill = lambda: events.append("bwave_kill")  # type: ignore[method-assign]
+        snapshot: dict[str, bool] = {}
+        monitors: list[threading.Thread] = []
+        real_monitor = session._monitor_stalls
+
+        def recording_monitor(*args):
+            monitors.append(threading.current_thread())
+            real_monitor(*args)
+
+        session._monitor_stalls = recording_monitor  # type: ignore[method-assign]
+
+        def stop_and_snapshot() -> None:
+            session.stop_monitor()
+            snapshot["killed"] = "bwave_kill" in events
+            snapshot["monitor_alive"] = monitors[0].is_alive()
+
+        helper = threading.Thread(target=stop_and_snapshot)
+        try:
+            session.start_monitor(
+                bwave, sim, stall_timeout=0.0, poll_interval=0.01, kill_after_stalls=1
+            )
+            assert entered.wait(timeout=10), "the stall kill never started"
+            helper.start()
+            # A bounded join would have returned by now.
+            helper.join(timeout=2.0)
+            assert helper.is_alive(), "stop_monitor returned while the stall kill was in flight"
+        finally:
+            release.set()
+            if helper.ident is not None:
+                helper.join(timeout=10)
+            session.stop_monitor()
+        assert not helper.is_alive()
+        assert snapshot == {"killed": True, "monitor_alive": False}
+        assert events == ["tree_kill", "bwave_kill"]
+        assert session.stall_killed is True
+
 
 _posix_only = pytest.mark.skipif(os.name != "posix", reason="named pipes need POSIX")
 
@@ -157,8 +261,9 @@ def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeyp
     monkeypatch.setenv("FAKE_BWAVE_MODE", "never_read")
     conversion = _declared_stream(tmp_path)
     sim_proc = _spawn_sleeper()
+    session = TraceSession(tmp_path / "work")
     try:
-        TraceSession(tmp_path / "work").start_monitor(
+        session.start_monitor(
             conversion,
             sim_proc,
             stall_timeout=0.1,
@@ -172,6 +277,7 @@ def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeyp
     finally:
         sim_proc.kill()
         sim_proc.wait(timeout=5)
+        session.stop_monitor()
         conversion.kill()
         conversion.finish(timeout_s=5)
 
@@ -210,6 +316,7 @@ def test_spare_simulator_monitor_kills_only_stalled_converter(tmp_path, fake_bwa
     finally:
         sim_proc.kill()
         sim_proc.wait(timeout=5)
+        session.stop_monitor()
         conversion.finish(timeout_s=5)
 
 
@@ -506,6 +613,7 @@ class TestTraceStatusManifest:
             assert "cache_dir:" in text
             assert "processes:" in text
         finally:
+            ts.stop_monitor()
             for p in (sim_proc, bwave_proc):
                 if p.poll() is None:
                     p.kill()
@@ -541,6 +649,7 @@ class TestTraceStatusManifest:
             assert ts.stall_killed is False
             assert ts.stall_message is None
         finally:
+            ts.stop_monitor()
             for p in (sim_proc, bwave_proc):
                 if p.poll() is None:
                     p.kill()
