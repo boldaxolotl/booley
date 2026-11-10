@@ -62,6 +62,7 @@ booley dashboard                  # sessions and Jobs; see Usage
 booley worktree new <name>        # a linked worktree for parallel work; see below
 booley worktree list              # each worktree's branch, changes, and use
 booley worktree rm <name>         # remove a worktree, keeping its evidence and branches
+booley worktree gc                # remove worktrees idle for a week or more, where safe
 ```
 
 The Dashboard opens by itself when you attach to the container; see
@@ -239,6 +240,30 @@ a worktree that is still intact again, so work added since is never removed
 without the refusal. It never prunes other worktrees' registrations. To reuse
 the name, delete the kept branch first with
 `git -C <absolute-project-root> branch -D booley/<name>`.
+
+**Cleaning up idle worktrees.** `booley worktree gc` removes every worktree that
+nobody has used for a while, so abandoned ones do not pile up:
+
+```text
+booley worktree gc [--older-than AGE]
+```
+
+A worktree counts as idle when its last use (the `LAST USED` column of
+`booley worktree list`) is older than `AGE`: days, hours, minutes, and seconds
+as `7d`, `36h`, `1d12h`, `90m`, or `30s`. The default is `7d`; set another
+default with `gc_older_than` in the main checkout's `.booley/booley.toml`
+([configuration](CONFIG.md#worktree-cleanup-worktree)). `--older-than` wins over
+the setting. Run it from the main checkout or another worktree.
+
+Each idle worktree goes through `booley worktree rm` without `--force`, so
+everything `rm` refuses is kept: a live Session, an active Goal Mode, and
+unsaved work (see the list above). A removed worktree prints the same lines as
+`rm`, evidence and branches included. Each worktree that stays prints `Kept
+worktree <name>:` and why, such as that it was used too recently, that the
+worktree you are in cannot be removed from inside, that it predates the
+last-use record (`LAST USED` reads `never`), or `rm`'s refusal reasons. The
+command ends with the totals, and exits 1 if the setting is invalid or a
+removal failed.
 
 If `booley worktree new` fails and leaves a checkout behind, it prints the
 manual Git steps with the real Sandbox paths; use those, not host paths.
