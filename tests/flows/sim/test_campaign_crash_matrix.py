@@ -22,6 +22,7 @@ from booley.flows.sim.campaign.coordinator import (
     SimulationCampaign,
 )
 from booley.flows.sim.campaign.coverage_execution import (
+    CoverageAggregateExecutor,
     _CoverageAggregateError,
 )
 from booley.flows.sim.campaign.model import create_simulation_campaign_plan
@@ -42,7 +43,11 @@ from booley.flows.sim.execution.contract import (
 from booley.flows.sim.verilator_coverage import SimulationRunResult
 from tests.criteria import ledger_support as acceptance_ledger
 from tests.criteria.test_evidence_ledger import _campaign_facts, _transaction_state
-from tests.flows.sim.campaign_test_support import _run_coverage_campaign
+from tests.flows.sim.campaign_test_support import (
+    _coverage_campaign_plan,
+    _run_coverage_campaign,
+    _validated_resume,
+)
 from tests.flows.sim.test_campaign_manifest_codec import _manifest
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 
@@ -174,7 +179,8 @@ def _admission() -> AdmissionContext:
     return AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
 
 
-def _crash_manifest():
+def _crash_manifest(*, shared: bool = True):
+    """Crash fixture manifest: Shared Simulator Bundle route or private build."""
     document = _manifest()
     document.pop("fingerprints")
     identity = {"source_artifact_path": "input.bin", "destination": "inputs/input.bin"}
@@ -184,6 +190,7 @@ def _crash_manifest():
     document["workload"]["runtime_inputs"] = [  # type: ignore[index]
         {"declaration_id": declaration_id, **identity}
     ]
+    document["build_variants"][0]["sharing_eligible"] = shared  # type: ignore[index]
     return finalize_manifest(document)
 
 
@@ -237,14 +244,16 @@ def _assert_crash_recovery(outcome, store, crash_point, launches, crash) -> None
     assert crash_point in crash.seen
 
 
+@pytest.mark.parametrize("route", ("shared", "private"))
 @pytest.mark.parametrize("crash_point", _CRASH_POINTS)
 def test_serial_publication_boundary_resume_matrix(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     crash_point: str,
+    route: str,
 ) -> None:
-    """Every durable prefix resumes; only a committed Result suppresses rerun."""
-    manifest = _crash_manifest()
+    """Every durable prefix resumes on both build routes; only a committed Result suppresses rerun."""
+    manifest = _crash_manifest(shared=route == "shared")
     plan = create_simulation_campaign_plan(manifest)
     project, build_root, run_log = _crash_environment(tmp_path)
     launches: list[int] = []
@@ -286,6 +295,64 @@ def test_serial_publication_boundary_resume_matrix(
         result = json.loads(path.read_bytes())
         assert result["$schema"] == RESULT_SCHEMA
         assert all("test_run" in observation for observation in result["observations"])
+
+
+@pytest.mark.parametrize(
+    "crash_point",
+    [
+        f"{side}:{boundary}"
+        for boundary in ("simulation_attempt", "runtime_inputs")
+        for side in ("before", "after")
+    ],
+)
+def test_coverage_aggregate_boundary_resume_matrix(tmp_path: Path, crash_point: str) -> None:
+    """The coverage aggregate's own durable boundaries resume to one terminal Result."""
+    plan, target = _coverage_campaign_plan(tmp_path, runtime_input=True)
+
+    def fresh_execution(_plan, _options, _commands, _access) -> NativeExecution:
+        # Binding the snapshot rewrites the executable path, so each attempt needs its own.
+        native = NativeExecution()
+        runtime = native.build_root / "data/stimulus.bin"
+        runtime.parent.mkdir()
+        runtime.write_bytes(b"authenticated runtime input")
+        return native
+
+    crash = _CrashOnce(crash_point)
+    campaign = SimulationCampaign(
+        CoverageAggregateExecutor(
+            plans={target.handle.identity: target},
+            execution_factory=fresh_execution,
+            publication_checkpoint=crash,
+        )
+    )
+    invocation = tmp_path / "reports" / "1"
+    invocation.mkdir(parents=True)
+    policy = CampaignPolicy()
+
+    with pytest.raises(_InjectedProcessDeath, match=crash_point):
+        campaign.run(
+            NewCampaignRunRequest(
+                plan, tmp_path, invocation.parent, policy, invocation, _admission()
+            )
+        )
+    store = CampaignStore(invocation / "targets/sim_0/campaign")
+    outcome = campaign.run(
+        ResumeCampaignRunRequest(
+            _validated_resume(store, plan, target, tmp_path),
+            plan,
+            tmp_path,
+            invocation.parent,
+            policy,
+            invocation,
+            _admission(),
+        )
+    )
+
+    assert outcome.complete is True
+    assert crash.tripped is True
+    # The crashed attempt stays on disk; the resume adds exactly one.
+    assert store.scan().items[0].attempt_count == 2
+    assert len(list(store.root.glob("work-items/*/result.json"))) == 1
 
 
 @pytest.mark.parametrize(

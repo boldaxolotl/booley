@@ -1648,3 +1648,15 @@ def _own_attempt_run_directory(
         )
     )
     return run.path, document
+
+
+def _validated_resume(store, plan, target, root: Path) -> ValidatedResumeManifest:
+    node = ValidatedManifestNode(
+        store.manifest_path, plan.manifest, manifest_digest(plan.manifest)
+    )
+    return ValidatedResumeManifest(
+        node,
+        (),
+        (target.handle,),
+        (ValidatedTargetBinding(node, root.resolve(), target.handle),),
+    )

@@ -63,6 +63,7 @@ from tests.flows.sim.campaign_test_support import (
     _run_coverage_campaign,
     _unfiltered_cocotb_manifest,
     _unmanaged,
+    _validated_resume,
 )
 from tests.flows.sim.test_campaign_crash_matrix import (
     _CrashOnce,
@@ -273,18 +274,6 @@ def _retain_score_bearing_invalid_campaign(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(
         coverage_transaction, "publish_coverage_campaign", publish_invalid_campaign
-    )
-
-
-def _validated_resume(store, plan, target, root: Path) -> ValidatedResumeManifest:
-    node = ValidatedManifestNode(
-        store.manifest_path, plan.manifest, manifest_digest(plan.manifest)
-    )
-    return ValidatedResumeManifest(
-        node,
-        (),
-        (target.handle,),
-        (ValidatedTargetBinding(node, root.resolve(), target.handle),),
     )
 
 
