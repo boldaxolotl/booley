@@ -240,6 +240,9 @@ The Dashboard has two windows; press `←` or `→` to switch:
   **NEEDS YOU**, and the tab reads `Sessions N◆` while N sessions need you.
 - **Jobs:** Running, Finished (the newest 50), or All Jobs, filterable by
   session.
+  A `booley flow` or `booley specialist` run typed in a container terminal
+  also appears here as a Standalone Job with no session. Its output is copied
+  to `job.log`, shown as a link.
 
 Click a report, artifact, or log path to open it in the editor. Press `↑` on
 the first row to reach the top bar with the tabs, filters, and Help; the footer

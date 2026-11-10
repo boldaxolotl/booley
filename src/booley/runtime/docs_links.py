@@ -2,8 +2,15 @@
 
 ``docs/user/*.md`` is the only authored copy of the user docs; the project
 site publishes each file at ``docs/<slug>/``. Messages Booley prints for
-people link there through :func:`docs_url`. Agent-facing text keeps repo
-paths, because agents read the Markdown files.
+people link there through :func:`docs_url`. The site also publishes a few
+contributor docs from ``docs/internals/`` (:data:`CONTRIBUTOR_DOCS`).
+
+Agent-facing text (skills, the cheatsheet, generated config comments) cannot
+assume a repository checkout. It cites the docs the Sandbox ships at
+``/booley-docs/<FILE>`` (:func:`sandbox_doc_path`; the allowlist and sync live
+in ``booley.dev_support.reference_docs``) and names any other doc only with the
+``(host doc, not shipped)`` marker. ``tests/docs/test_sandbox_doc_citations.py``
+enforces this.
 
 Standard library only: ``website/hooks/user_docs.py`` loads this file by path
 inside the site toolchain, where ``booley`` is not installed, so the site and
@@ -16,13 +23,17 @@ from typing import NamedTuple
 from unicodedata import category
 
 SITE_URL = "https://booley.dev/"
+# Fixed Sandbox path of the packaged user-doc copies (a symlink made by the Dockerfiles).
+SANDBOX_DOCS_DIR = "/booley-docs"
 
 
 class UserDoc(NamedTuple):
-    """One user doc: its file in ``docs/user/``, site slug, nav label, and sidebar group.
+    """One published doc: its file, site slug, nav label, and sidebar group.
 
     ``parent`` names the file of the doc this one belongs to; the sidebar
     indents it under that doc. A child follows its parent or a sibling.
+    ``directory`` is the repository folder holding ``file``; only contributor
+    docs change it.
     """
 
     file: str
@@ -30,6 +41,12 @@ class UserDoc(NamedTuple):
     title: str
     section: str
     parent: str | None = None
+    directory: str = "docs/user"
+
+    @property
+    def path(self) -> str:
+        """Repository path of the doc's source file."""
+        return f"{self.directory}/{self.file}"
 
 
 # Reading order: the site's docs sidebar and prev/next links follow it. The
@@ -58,6 +75,16 @@ USER_DOCS = (
     UserDoc("TROUBLESHOOTING.md", "troubleshooting", "Troubleshooting", "Help"),
     UserDoc("WINDOWS.md", "windows", "Windows", "Help"),
 )
+# Contributor docs the site also publishes, after the user docs. They stay in
+# docs/internals/ for contributors and agents, and Booley never prints links
+# to them, so docs_url() does not cover them.
+CONTRIBUTOR_DOCS = (
+    UserDoc(
+        "ARCHITECTURE.md", "architecture", "Architecture", "Internals", directory="docs/internals"
+    ),
+)
+# Everything the site's docs section publishes, in sidebar and prev/next order.
+SITE_DOCS = USER_DOCS + CONTRIBUTOR_DOCS
 _SLUGS = {doc.file: doc.slug for doc in USER_DOCS}
 
 
@@ -68,6 +95,11 @@ def docs_url(file: str, anchor: str | None = None) -> str:
     """
     url = f"{SITE_URL}docs/{_SLUGS[file]}/"
     return f"{url}#{anchor}" if anchor else url
+
+
+def sandbox_doc_path(file: str) -> str:
+    """Return the Sandbox path of the packaged copy of a shipped doc (``/booley-docs/<file>``)."""
+    return f"{SANDBOX_DOCS_DIR}/{file}"
 
 
 def github_anchor(heading: str) -> str:

@@ -1,6 +1,6 @@
 # Publish the user docs on the project site
 
-Status: accepted (amended 2026-10-26: site domain, see Amendments)
+Status: accepted (amended 2026-10-26: site domain; 2026-11-10: agent-facing text and contributor docs, see Amendments)
 
 ## Context
 
@@ -57,7 +57,9 @@ one more place for the slug table to diverge.
 - A docs fix reaches the site on merge to `main`, before the next release, so
   site readers can see behavior newer than their installed version.
 
-## Amendments (2026-10-26)
+## Amendments
+
+### 2026-10-26
 
 The project site moved from `https://boldaxolotl.github.io/booley/` to its own
 domain, `https://booley.dev/`. The slugs, anchors, and `docs/assets/` paths are
@@ -66,3 +68,25 @@ same path on `booley.dev` while the repository's Pages custom domain is set, so
 links printed by earlier releases keep working. Removing that setting, or letting
 the domain lapse, breaks them. A test fails if a tracked file outside its short
 allowlist (release history, this record, the Pages workflow) names the old host.
+
+### 2026-11-10
+
+The Decision paragraph's rule that text written for agents keeps repository
+paths is superseded. The Sandbox has no repository checkout, so agent-facing
+text (packaged skills, the cheatsheet, generated config comments, agent-facing
+runtime messages) cites the doc copies the Sandbox image ships at the fixed path
+`/booley-docs/<FILE>` and names any other doc only with the marker
+`(host doc, not shipped)`. `python -m booley.dev_support.reference_docs`
+generates the copies from an allowlist into `src/booley/data/docs/`, rewriting
+links between docs so each copy resolves in the flat directory; people still
+get site URLs through `docs_url()`. `tests/docs/test_sandbox_doc_citations.py`
+fails on a citation that is neither.
+
+The site also publishes a short list of contributor docs, starting with
+`docs/internals/ARCHITECTURE.md` at `/docs/architecture/`, in an "Internals"
+sidebar group after the user docs. Like the user docs, they are published, not
+moved: each stays in `docs/internals/`, where contributors and agents read it.
+`booley.runtime.docs_links.CONTRIBUTOR_DOCS` lists them, and `SITE_DOCS` gives
+the sidebar order. `docs_url()` still covers user docs only, because Booley
+prints no links to contributor docs. A contributor doc's relative links to
+published files stay on the site; its other links go to GitHub.

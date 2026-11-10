@@ -77,8 +77,9 @@ Booley stops a build after 7200 seconds (2 hours); set
 
 **Host settings.** Machine-wide Sandbox settings, such as
 `egress = "unproxied"` (no egress proxy), live in
-`~/.config/booley/config.toml`. Booley never creates that file; write it before
-you run Host Bootstrap, or run Host Bootstrap again after you change it. See
+`~/.config/booley/config.toml`. Run `booley bootstrap --egress unproxied` to
+record it (the only edit Booley makes to that file), or write the file yourself
+and run Host Bootstrap again. See
 [Host configuration](SANDBOX.md#host-configuration-configtoml).
 
 ## Next

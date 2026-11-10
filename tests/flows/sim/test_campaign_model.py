@@ -238,7 +238,7 @@ def test_simulation_status_uses_codec_execution_strength(executions, expected) -
 
 def test_store_rejects_manifest_and_result_republication(tmp_path):
     from booley.flows.sim.campaign.codec import decode_simulation_result
-    from tests.flows.sim.test_campaign_phase3_adversarial import _completed
+    from tests.flows.sim.campaign_test_support import _completed
 
     completed = _completed(tmp_path)
     store = completed.store
