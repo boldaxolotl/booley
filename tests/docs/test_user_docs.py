@@ -94,6 +94,12 @@ def _hook():
         (f"{SITE_URL}docs/usage/#a", "USAGE.md#a"),
         (f"{SITE_URL}docs/assets/x.png", "assets/x.png"),
         (f"{SITE_URL}#limitations", None),  # not a user doc
+        # A published contributor doc stays on the site too.
+        ("../internals/ARCHITECTURE.md#overview", "ARCHITECTURE.md#overview"),
+        (
+            "https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ARCHITECTURE.md#overview",
+            "ARCHITECTURE.md#overview",
+        ),
     ],
 )
 def test_hook_points_doc_links_where_they_work_on_the_site(
@@ -103,6 +109,27 @@ def test_hook_points_doc_links_where_they_work_on_the_site(
     expected = (expected or target).format(blob=hook.GITHUB_BLOB)
 
     assert hook.rewrite_links(f"[x]({target})", PurePosixPath("docs/user")) == f"[x]({expected})"
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("../user/USAGE.md#a", "USAGE.md#a"),
+        ("../user/assets/architecture.svg", "assets/architecture.svg"),
+        ("ARCHITECTURE.md#overview", "ARCHITECTURE.md#overview"),
+        ("WHY.md#why-docker", "{blob}docs/internals/WHY.md#why-docker"),
+    ],
+)
+def test_hook_points_contributor_doc_links_where_they_work_on_the_site(
+    target: str, expected: str
+) -> None:
+    """docs/internals/ARCHITECTURE.md links published files on the site, the rest on GitHub."""
+    hook = _hook()
+    expected = expected.format(blob=hook.GITHUB_BLOB)
+
+    rewritten = hook.rewrite_links(f"[x]({target})", PurePosixPath("docs/internals"))
+
+    assert rewritten == f"[x]({expected})"
 
 
 def test_hook_leaves_fenced_code_alone() -> None:
