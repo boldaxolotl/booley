@@ -361,6 +361,24 @@ def test_isolated_icarus_reuse_key_is_stable_and_follows_edits(
     assert edited not in (None, first)
 
 
+@icarus_reuse_posix_only
+@pytest.mark.usefixtures("real_fusesoc")
+def test_isolated_icarus_listed_header_edit_changes_or_declines_the_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Editing a listed header never leaves an isolated Icarus build with the same reuse key.
+
+    The key may decline (``None``) because recipes that use includes are not
+    keyed today; the invariant holds if a later change keys them safely.
+    """
+    _stub_icarus_identity(monkeypatch)
+    root = _write_project(tmp_path / "proj")
+    first = _icarus_key(_prepare(root, "sim_icarus", name="g1"), root)
+    (root / "rtl" / "inc" / "listed.vh").write_text("// listed v2\n", encoding="utf-8")
+    second = _icarus_key(_prepare(root, "sim_icarus", name="g2"), root)
+    assert first is None or first != second
+
+
 @pytest.mark.usefixtures("real_fusesoc")
 def test_isolated_mirrored_names_stay_project_relative(tmp_path: Path) -> None:
     """AC3: workload snapshot rows never show the mirror."""
