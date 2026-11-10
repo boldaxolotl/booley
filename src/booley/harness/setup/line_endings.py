@@ -38,6 +38,8 @@ class LineEndingMode(StrEnum):
     """Whether to inspect only or reconcile safe forward changes."""
 
     INSPECT = "inspect"
+    #: Apply only Git settings and untracked attributes; report tracked-content actions.
+    REPAIR_SETTINGS = "repair-settings"
     REPAIR = "repair"
 
 
@@ -1812,6 +1814,31 @@ def _migrate_attributes(
     return _migration_action(plan, state, error)
 
 
+def _repair_settings_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...]:
+    """Apply the settings-only subset of a repair and leave the rest planned.
+
+    ``core.autocrlf`` and the repository-local attributes file never rewrite a
+    tracked file, but on a tree that already holds CRLF checkouts either one would
+    make Git report phantom modifications without normalizing anything, so both
+    wait for a full repair there. Every other action is reported as planned.
+    """
+    crlf_present = bool(plan.crlf_paths)
+    actions: list[LineEndingActionResult] = []
+    for planned in _planned_actions(plan):
+        if planned.kind is LineEndingActionKind.PIN_AUTOCRLF and not crlf_present:
+            actions.append(_pin_autocrlf(plan))
+        elif (
+            planned.kind is LineEndingActionKind.PUBLISH_ATTRIBUTES
+            and planned.state is LineEndingActionState.PLANNED
+            and plan.target.local
+            and not crlf_present
+        ):
+            actions.append(_publish_planned_attributes(plan, plan.attributes))
+        else:
+            actions.append(planned)
+    return tuple(actions)
+
+
 def _repair_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...]:
     actions: list[LineEndingActionResult] = []
     needs_pin = not plan.local_autocrlf.is_set or plan.local_autocrlf.value
@@ -1838,7 +1865,11 @@ def _repair_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...]
 
 
 def _repair_repository(
-    repository: LineEndingRepository, baseline_clean: bool | None = None, *, stealth: bool = False
+    repository: LineEndingRepository,
+    baseline_clean: bool | None = None,
+    *,
+    stealth: bool = False,
+    settings_only: bool = False,
 ) -> RepositoryLineEndingReport:
     plan, initial_observations = _plan_repository(repository, baseline_clean, stealth=stealth)
     if plan is None:
@@ -1848,7 +1879,7 @@ def _repair_repository(
             initial_observations,
             (),
         )
-    actions = _repair_actions(plan)
+    actions = _repair_settings_actions(plan) if settings_only else _repair_actions(plan)
     final = _inspection_report(repository, stealth=stealth)
     incomplete = any(
         action.state in (LineEndingActionState.REFUSED, LineEndingActionState.FAILED)
@@ -1897,7 +1928,12 @@ def reconcile_project_line_endings(
     reports = tuple(
         _inspection_report(repository, stealth=stealth)
         if mode is LineEndingMode.INSPECT
-        else _repair_repository(repository, baseline.get(repository.root), stealth=stealth)
+        else _repair_repository(
+            repository,
+            baseline.get(repository.root),
+            stealth=stealth,
+            settings_only=mode is LineEndingMode.REPAIR_SETTINGS,
+        )
         for repository in discovery.repositories
     )
     unsafe = bool(discovery.failures) or any(

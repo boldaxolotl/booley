@@ -858,7 +858,8 @@ def _add_session_subparser(sub) -> None:
     add_project_root_alias(prepare_p, "_cli_project_session_prepare")
     session_sub.add_parser(
         "refresh",
-        help="Rebuild the configured image from current Booley sources and recreate the session",
+        help="Rebuild the configured image from current Booley sources, recreate the session "
+        "and re-apply Project Initialization without rewriting tracked files",
     )
 
 
