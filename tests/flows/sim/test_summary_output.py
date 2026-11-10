@@ -10,7 +10,6 @@ import pytest
 
 from booley.flows import endpoint_reporting
 from booley.flows.sim import flow as sim
-from booley.harness import colors
 from booley.mcp.report_encoding import ReportEncoder
 from booley.runtime.endpoint_execution import EndpointOutcome
 
@@ -74,12 +73,16 @@ def _publish(flow, stdout, *, results=None) -> tuple[str, str, str]:
     return stdout.getvalue(), stderr.getvalue(), text
 
 
-@pytest.fixture
-def colored(monkeypatch):
+def _colored(monkeypatch):
+    """Force colours on and return the colour helpers (imported at use, in the test body)."""
+    from booley.presentation import colors
+
     monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+    return colors
 
 
-def test_tty_summary_is_an_aligned_table_with_capped_names(colored):
+def test_tty_summary_is_an_aligned_table_with_capped_names(monkeypatch):
+    colors = _colored(monkeypatch)
     out, _err, _text = _publish(_flow(), _Tty())
     plain = colors.strip_ansi(out)
 
@@ -98,7 +101,8 @@ def test_tty_summary_is_an_aligned_table_with_capped_names(colored):
     assert "\x1b" in out
 
 
-def test_tty_summary_keeps_milliseconds_and_colors_verdicts(colored):
+def test_tty_summary_keeps_milliseconds_and_colors_verdicts(monkeypatch):
+    colors = _colored(monkeypatch)
     out, _err, _text = _publish(_flow(), _Tty())
     plain = colors.strip_ansi(out)
 
@@ -113,7 +117,8 @@ def test_tty_summary_keeps_milliseconds_and_colors_verdicts(colored):
 
 
 @pytest.mark.parametrize("terminal", ["tty", "pipe"])
-def test_summary_spells_out_inconclusive_and_hides_zero_sva_errors(colored, terminal):
+def test_summary_spells_out_inconclusive_and_hides_zero_sva_errors(monkeypatch, terminal):
+    colors = _colored(monkeypatch)
     flow = _flow()
     inconclusive = sim.TargetResult(
         target="odd",
@@ -139,7 +144,8 @@ def test_summary_spells_out_inconclusive_and_hides_zero_sva_errors(colored, term
 
 
 @pytest.mark.parametrize("terminal", ["tty", "pipe"])
-def test_agent_summary_is_plain_and_ends_stdout(colored, terminal):
+def test_agent_summary_is_plain_and_ends_stdout(monkeypatch, terminal):
+    colors = _colored(monkeypatch)
     stdout = _Tty() if terminal == "tty" else io.StringIO()
     out, _err, text = _publish(_flow(), stdout)
 
@@ -155,6 +161,8 @@ def test_agent_summary_is_plain_and_ends_stdout(colored, terminal):
 
 
 def test_mcp_tail_keeps_the_sim_summary_once(monkeypatch):
+    from booley.presentation import colors
+
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
     stdout = io.StringIO()
     witness = endpoint_reporting._StdoutWitness(stdout)
@@ -175,7 +183,8 @@ def test_mcp_tail_keeps_the_sim_summary_once(monkeypatch):
     assert "noise 000" not in encoded
 
 
-def test_deferred_summary_falls_back_when_the_report_changed(colored):
+def test_deferred_summary_falls_back_when_the_report_changed(monkeypatch):
+    _colored(monkeypatch)
     flow = _flow()
     stdout, stderr = _Tty(), io.StringIO()
     witness = endpoint_reporting._StdoutWitness(stdout)

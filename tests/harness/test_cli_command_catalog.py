@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from booley.harness import booley as cli
-from booley.harness import colors
 from booley.harness.terminal_status import section_header
+from booley.presentation import colors
 
 PUBLIC_COMMANDS: list[str] = [
     "chat",

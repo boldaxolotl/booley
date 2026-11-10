@@ -8,7 +8,8 @@ from booley.audit.doctor_waivers import (
     load_doctor_waivers,
     warning,
 )
-from booley.harness import colors, doctor
+from booley.harness import doctor
+from booley.presentation import colors
 
 
 def _write(tmp_path, body: str) -> None:
