@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from booley.core.boundary import as_float
-from booley.flows.target_parameters import ParameterValue, sv_string_literal
+from booley.flows.target_parameters import ParameterValue
 
 # Nangate 45nm NAND2_X1 area in µm² — used as 1 gate equivalent (GE)
 NAND2_AREA_UM2 = 0.798
@@ -27,17 +27,8 @@ def parse_params(
     Parse parameter list from CLI (e.g. ['OP_W=32', 'DEPTH=4']).
     Returns dict of {name: value}.
     """
-    types = {}
-    for assignment in datatypes or []:
-        name, separator, datatype = assignment.partition("=")
-        if (
-            not separator
-            or datatype not in ("str", "file")
-            or name in types
-            or re.fullmatch(r"[A-Za-z_$][\w$]*", name) is None
-        ):
-            sys.exit(f"ERROR: Invalid parameter datatype metadata {assignment!r}")
-        types[name] = datatype
+    # Booley's synth flow emits NAME=DATATYPE only for declared str/file parameters.
+    types = dict(assignment.split("=", 1) for assignment in datatypes or [])
     params = {}
     for p in param_list:
         if "=" not in p:
@@ -48,16 +39,7 @@ def parse_params(
             value = value.strip()
         if not name:
             sys.exit(f"ERROR: Empty parameter name in '{p}'")
-        if name in types:
-            try:
-                sv_string_literal(value)
-            except ValueError as exc:
-                sys.exit(f"ERROR: Invalid string parameter {name!r}: {exc}")
-            params[name] = ParameterValue(types[name], value)
-        else:
-            params[name] = value
-    if missing := types.keys() - params.keys():
-        sys.exit(f"ERROR: Parameter datatype metadata has no value: {sorted(missing)}")
+        params[name] = ParameterValue(types[name], value) if name in types else value
     return params
 
 

@@ -33,7 +33,6 @@ from booley.flows.eda_failures import (
 from booley.flows.job_resources import resource_phase
 from booley.flows.lint.cli import LintArguments
 from booley.flows.lint.request import LintRequest
-from booley.flows.parameter_transport import normalize_resolved_parameters
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -605,7 +604,6 @@ class LintFlow(BuiltinFlow[LintRequest]):
             build_root=build_root,
             library_plan=fusesoc_registry.build_library_plan(target.project_root, build_root),
         )
-        normalize_resolved_parameters(resolved)
         declared_family = _lint_eda_tool_family(target.eda_tool)
         configured_family = _lint_eda_tool_family(resolved.configured_eda_tool)
         if declared_family != configured_family:
