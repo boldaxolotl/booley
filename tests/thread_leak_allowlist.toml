@@ -1,0 +1,37 @@
+# Known thread leaks in the test suite (#3217). tests/thread_leak_guard.py
+# fails any test that leaves a thread running unless an entry here matches.
+#
+# Rules:
+# - This list may only shrink. Remove an entry when its leak is fixed. Never
+#   add one for new code: stop and join the thread in the test instead. A new
+#   entry needs maintainer approval.
+# - Every entry has a `reason` and, when one exists, the `issue` that removes
+#   the leak.
+# - `thread` is an fnmatch pattern on the thread's "module.qualname" target;
+#   `test` is an fnmatch pattern on the test node id without its [parameters],
+#   so it matches every parametrization and pytest-repeat copy. An entry needs
+#   at least one of them and matches only when all it has match.
+
+[[leak]]
+thread = "booley.flows.sim.trace_session.TraceSession._monitor_stalls"
+issue = 3139
+reason = """
+The stall monitor sleeps in 2 s polls and nothing joins it when its trace \
+session ends, so it outlives the test by up to 2 s. No test pattern: any \
+in-process simulation starts it.\
+"""
+
+[[leak]]
+thread = "tests.bwave.test_vaporview_bridge.FakeBridge._serve"
+reason = """
+FakeBridge.close() closes the listening socket but never wakes or joins the \
+accept() loop.\
+"""
+
+[[leak]]
+test = "tests/harness/test_auto_doctor.py::test_pretrust_viewer_bridge_publishes_no_fail"
+thread = "tests.harness.test_auto_doctor.test_pretrust_viewer_bridge_publishes_no_fail.<locals>.serve"
+reason = """
+The stand-in serves up to eight accepts with a 5 s timeout each; the test \
+neither closes its socket nor joins the thread.\
+"""
