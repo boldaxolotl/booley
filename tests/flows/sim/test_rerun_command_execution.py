@@ -141,7 +141,7 @@ def test_executing_the_rerun_command_reproduces_the_test_run(
     assert rerun in again.report_text
 
 
-# The unnamed runs stay on the legacy path. The campaign path prints their rerun
+# The unnamed runs stay on the legacy path (bug #3159). The campaign path prints their rerun
 # command as `--test=lite@9` (legacy prints `--seed 9`), and executing it exits 2:
 # with no selected test the native adapter writes no test results, the engine names
 # the observation after the Target, and row binding treats it as a discovered test.
