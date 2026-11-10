@@ -20,6 +20,13 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.flow_enablement import FlowConfigError, flow_enabled
+from booley.config.gateway import (
+    GATEWAY_AUTH,
+    GATEWAY_FORWARDED_ENV,
+    GATEWAY_TOKEN_COMMAND_ENV,
+    GATEWAY_TOKEN_ENV,
+    GATEWAY_URL_ENV,
+)
 from booley.config.host_config import HostConfigError, load_host_policy
 from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.booley_dir_pin import BooleyDirPinError, require_pinned_entry
@@ -1279,6 +1286,8 @@ def _validate_remote_environment(
     proxy_env = _PROXY_REMOTE_ENV if egress == "proxy" else {}
     required = _REQUIRED_REMOTE_ENV | set(proxy_env)
     allowed_remote = _ALLOWED_REMOTE_ENV - (set(_PROXY_REMOTE_ENV) - set(proxy_env))
+    if record.get("codex") == GATEWAY_AUTH:
+        allowed_remote |= set(GATEWAY_FORWARDED_ENV)
     fixed_remote = {**proxy_env, **_FIXED_REMOTE_ENV}
     if not required.issubset(remote):
         expected_presence = dict.fromkeys(sorted(required), "present")
@@ -1291,6 +1300,7 @@ def _validate_remote_environment(
         not isinstance(key, str) or not isinstance(value, str) for key, value in remote.items()
     ):
         raise RuntimeSpecError("devcontainer.json environment must contain strings only")
+    _validate_gateway_environment(remote, record)
     if set(remote) - allowed_remote:
         raise RuntimeSpecError(
             "devcontainer.json contains unsupported Sandbox environment: "
@@ -1320,6 +1330,29 @@ def _validate_remote_environment(
     for key in auth_token.CREDENTIAL_ENV_KEYS:
         if key in remote and (key not in allowed or remote[key] != f"${{localEnv:{key}}}"):
             raise RuntimeSpecError("devcontainer.json credential environment has drifted")
+
+
+def _validate_gateway_environment(remote: dict[str, Any], record: dict[str, str]) -> None:
+    """Gateway settings are forwarded as host references, and only for Codex on the gateway."""
+    gateway_keys = {key for key in remote if key.startswith("BOOLEY_GATEWAY_")}
+    if record.get("codex") != GATEWAY_AUTH:
+        if gateway_keys:
+            raise RuntimeSpecError(
+                "devcontainer.json forwards gateway environment but Codex is not on the "
+                "gateway policy; refresh the Sandbox"
+            )
+        return
+    token_keys = gateway_keys & {GATEWAY_TOKEN_ENV, GATEWAY_TOKEN_COMMAND_ENV}
+    if (
+        GATEWAY_URL_ENV not in gateway_keys
+        or len(token_keys) != 1
+        or gateway_keys - set(GATEWAY_FORWARDED_ENV)
+        or any(remote[key] != f"${{localEnv:{key}}}" for key in gateway_keys)
+    ):
+        raise RuntimeSpecError(
+            "devcontainer.json gateway environment has drifted: expected the gateway URL and "
+            "exactly one token source, each a host reference; refresh the Sandbox"
+        )
 
 
 def _format_cli_record(record: dict[str, str]) -> str:
@@ -1377,7 +1410,7 @@ def _validate_seed_targets(spec: dict[str, Any], record: dict[str, str]) -> None
         # The config file can hold a primary API key, whether seeded or bound directly.
         forbidden |= {dc._CLAUDE_CONFIG_SEED_TARGET, dc._CLAUDE_CONFIG_TARGET}
     for cli, policy in record.items():
-        if policy == "api_key":
+        if policy in ("api_key", GATEWAY_AUTH):  # neither policy copies a login
             forbidden.add(dc._APP_CREDS_SEED_TARGET[cli])
         if auth_token.CREDENTIALS[cli].env_var not in auth_token.allowed_credential_keys(
             cli, policy

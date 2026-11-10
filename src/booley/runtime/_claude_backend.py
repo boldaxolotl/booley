@@ -439,7 +439,26 @@ def _claude_env_overrides(auth_mode: str) -> dict[str, str]:
     for key, value in plan.values:
         if not os.environ.get(key):
             env_overrides[key] = value
+    env_overrides.update(_hidden_gateway_overrides())
     return env_overrides
+
+
+def _hidden_gateway_overrides() -> dict[str, str]:
+    """Blank every gateway setting in an issued Sandbox that puts Codex on the gateway.
+
+    The gateway routes Codex only; a Claude process must not see it. The SDK merges
+    over ``os.environ``, so an empty value is the only "unset". The marker lets Doctor
+    tell "hidden from this Claude session" from "never configured".
+    """
+    from booley.config.agent import issued_codex_gateway
+    from booley.config.gateway import GATEWAY_ENV_KEYS, HIDDEN_GATEWAY_ENV
+
+    if not issued_codex_gateway():
+        return {}
+    hidden = {key: "" for key in GATEWAY_ENV_KEYS if os.environ.get(key)}
+    if hidden:
+        hidden[HIDDEN_GATEWAY_ENV] = "1"
+    return hidden
 
 
 def _build_sdk_options(
