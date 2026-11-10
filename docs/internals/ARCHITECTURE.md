@@ -22,8 +22,9 @@ The preparation sequence is deliberately one-way:
 
 1. **Host Bootstrap** validates host policy and applications, then reconciles
    shared skills, the PDK cache, the base Sandbox Image, and global sidecars.
-2. **Project Initialization** reconciles Project state, the selected or derived
-   Sandbox Image, Git integration, and an issued Sandbox specification.
+2. **Project Initialization** reconciles Project files and Git integration. Host
+   `booley init` prepares the selected or derived Sandbox Image alongside it,
+   then issues the Sandbox specification.
 3. The issued **Sandbox** hosts Interactive Mode and Goal Mode.
 
 Both host and Project image scopes cross the same authoritative image-lifecycle
@@ -31,21 +32,7 @@ module. A composed forced init refreshes the host-owned base once; Project
 reconciliation verifies that immutable identity and refreshes only its owned
 descendants.
 
-```mermaid
-flowchart TD
-    Host[Host Bootstrap and Project Initialization] --> Sandbox
-    HostEDA[Approved host EDA installation] -->|Read-only files| EDA
-    subgraph Sandbox[One Sandbox per opened Project folder]
-        Session[Interactive agent session] -->|Enter Goal Mode| Goals[Goal Record and Goal Branch]
-        Session -->|MCP or CLI| Capabilities[Booley Flows and Specialists]
-        Capabilities --> EDA[EDA execution inside the Sandbox]
-        Capabilities -->|Bound evidence| Goals
-        Goals -->|Finish| Package[Review Package and Session Summary]
-        Dashboard[Read-only Booley Dashboard] -.-> Session
-        Dashboard -.-> Goals
-        Dashboard -.-> Capabilities
-    end
-```
+![Booley architecture: VS Code opens an agent session (Claude Code or Codex, in Interactive or Goal Mode) inside the Booley devcontainer Sandbox. The agent enters and finishes Goals, edits the Project Git worktree, and calls the MCP Server (Booley Flows), which drives the EDA tools (linter, simulator, synthesis tool) through Edalize, sends evidence to the Goals, and calls Specialist Agents. An Egress Proxy Container lets the Sandbox reach the LLM provider only, and a heavy tool installed on the host (Vivado) is mounted read-only.](../user/assets/architecture.svg)
 
 ## The Sandbox
 

@@ -4,7 +4,7 @@ The MCP ``goal_status`` tool keeps :func:`booley.goals.format.render_status`:
 agent-facing text that release tooling parses. The terminal view lives in the
 harness because ``booley.goals`` must not import ``booley.harness`` (rule D35).
 Both views share the same lines of content (Test Runs, baselines, proposals);
-only the layout differs. Styling goes through :mod:`booley.harness.colors`, so
+only the layout differs. Styling goes through :mod:`booley.presentation.colors`, so
 piped output is plain text equal to the ANSI-stripped colored layout.
 """
 
@@ -23,8 +23,8 @@ from booley.goals.format import (
 )
 from booley.goals.sim_transitions import transition_summary
 from booley.goals.status import GoalStatus, GoalStatusView
-from booley.harness import colors
-from booley.harness.terminal_table import render_table
+from booley.presentation import colors
+from booley.presentation.terminal_table import render_table
 
 #: How each Goal status is painted.
 _STATUS_STYLE: dict[str, Callable[[str], str]] = {

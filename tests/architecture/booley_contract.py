@@ -80,6 +80,25 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
+        "D40",
+        (prefix("booley.presentation"),),
+        (
+            prefix("booley.harness"),
+            prefix("booley.mcp"),
+            prefix("booley.runtime"),
+            prefix("booley.goals"),
+            prefix("booley.flows"),
+        ),
+        "shared presentation primitives stay beneath every composition and execution owner",
+    ),
+    DirectionRule(
+        "D39",
+        (prefix("booley.flows"),),
+        (prefix("booley.harness"),),
+        "Flows run under any composition; the Harness command layer supplies human CLI "
+        "concerns through the invocation, never by Flow import",
+    ),
+    DirectionRule(
         "D36",
         (prefix("booley.runtime"),),
         (prefix("booley.goals"),),
@@ -93,7 +112,7 @@ DIRECTION_RULES = (
         "Job observation owns process and artifact facts without interpreting Target policy",
     ),
     DirectionRule(
-        "D39",
+        "D41",
         (prefix("booley.runtime"),),
         (prefix("booley.flows"),),
         "Runtime owns Sandbox and Job mechanisms; it reads Flow progress shape through "
@@ -220,7 +239,7 @@ DIRECTION_RULES = (
             exact("booley.harness.doctor"),
             exact("booley.harness.init_cmd"),
             exact("booley.harness.booley"),
-            exact("booley.harness.colors"),
+            exact("booley.presentation.colors"),
             exact("booley.harness.setup.common"),
         ),
         "diagnostic owners return observations without command orchestration or rendering",
@@ -416,22 +435,10 @@ COMPOSITION_PERMISSIONS = (
 
 LEGACY_WAIVERS = ()
 
-# Measured after #3061 removed the Runtime edges into Flows and Harness. The
+# Measured after #3061 removed the Runtime edges into Flows and Harness, which
+# dissolved the last large group once Flows no longer imported Harness. The
 # production SCC metadata test requires tightening on every split.
-APPROVED_LEGACY_SCCS = (
-    frozenset(
-        f"booley.{name}"
-        for name in (
-            "agent_workspace",
-            "dev_support",
-            "flows",
-            "goals",
-            "harness",
-            "mcp",
-        )
-    ),
-    frozenset(("booley.fusesoc", "booley.targets")),
-)
+APPROVED_LEGACY_SCCS = (frozenset(("booley.fusesoc", "booley.targets")),)
 
 BOOLEY_SOURCE_DEPENDENCY_CONTRACT = ArchitectureContract(
     rules=DIRECTION_RULES,

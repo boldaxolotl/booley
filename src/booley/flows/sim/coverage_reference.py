@@ -297,7 +297,17 @@ def authenticate_coverage_campaign_owner(
     target = cast(Mapping[str, str], manifest.document["target"])
     result = authenticated.result
     evidence = cast(tuple[Mapping[str, object], ...], result.document["evidence"])
-    nested_evidence = [item for item in evidence if item["kind"] == "coverage_campaign_manifest"]
+    try:
+        # The result decoder checks only the document boundary (#1744).
+        nested_evidence = [
+            (item["bytes"], item["sha256"], Path(cast(str, item["path"])).parts)
+            for item in evidence
+            if item["kind"] == "coverage_campaign_manifest"
+        ]
+    except (KeyError, TypeError) as exc:
+        raise CoverageCampaignReferenceError(
+            "enclosing Simulation result evidence is malformed"
+        ) from exc
     if (
         manifest.document["campaign_id"] != document["simulation_campaign_id"]
         or authenticated.manifest_sha256 != document["simulation_manifest_sha256"]
@@ -306,11 +316,8 @@ def authenticate_coverage_campaign_owner(
         != cast(Mapping[str, str], document["target"])["identity"]
         or result.document["attempt_id"] != document["simulation_attempt_id"]
         or result.document["producer_invocation_id"] != document["producer_invocation_id"]
-        or len(nested_evidence) != 1
-        or nested_evidence[0]["bytes"] != nested["bytes"]
-        or nested_evidence[0]["sha256"] != nested["sha256"]
-        or Path(cast(str, nested_evidence[0]["path"])).parts
-        != Path(cast(str, nested["path"])).parts[5:]
+        or nested_evidence
+        != [(nested["bytes"], nested["sha256"], Path(cast(str, nested["path"])).parts[5:])]
     ):
         raise CoverageCampaignReferenceError(
             "enclosing Simulation Campaign disagrees with reference"

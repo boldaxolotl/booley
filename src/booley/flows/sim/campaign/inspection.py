@@ -15,12 +15,15 @@ from booley.flows.campaign_results import (
     StartedCampaign,
 )
 
-from .codec import SimulationCampaignIntegrityError, reads_campaign_records
+from .codec import (
+    SimulationCampaignIntegrityError,
+    reads_campaign_records,
+    validate_relative_path,
+)
 from .coordinator import collected_result_facts
 from .model import SimulationCampaignManifest, SimulationResult
 from .planning import manifest_digest
-from .pre_sim_evidence import PreSimFiring
-from .store import CampaignRecovery, CampaignStore, collect_pre_sim_firings, reread_pre_sim_firings
+from .store import CampaignRecovery, CampaignStore, collect_pre_sim_firings
 from .test_run_report import observation_test_run_rows
 
 
@@ -61,29 +64,6 @@ class RetainedCampaignStatus:
     coverage_directories: tuple[Path, ...]
 
 
-def read_pre_sim_firings(
-    manifest_path: Path, *, booley_dir: Path | None = None
-) -> tuple[PreSimFiring, ...]:
-    """Read authenticated firing evidence without exposing a mutable store to Flow."""
-    store = _store_for_manifest(manifest_path, booley_dir)
-    return store.inspect_pre_sim_firings()
-
-
-def read_invocation_pre_sim_firings(
-    invocation: Path, resumed_origin: Path | None = None, *, booley_dir: Path | None = None
-) -> tuple[PreSimFiring, ...]:
-    """Inspect Campaigns published in this invocation, including unfinished work.
-
-    A resumed origin Campaign is one more root of the same bounded collection.
-    """
-    paths = sorted((invocation / "targets").glob("*/campaign/manifest.json"))
-    if len(paths) > 4000:
-        raise SimulationCampaignIntegrityError("invocation Campaign count exceeds bound")
-    if resumed_origin is not None:
-        paths.append(resumed_origin)
-    return collect_pre_sim_firings(*paths, booley_dir=booley_dir)
-
-
 def authenticate_work_item(
     manifest_path: Path, work_item_id: str, *, booley_dir: Path | None = None
 ) -> CampaignWorkItemEvidence:
@@ -92,7 +72,7 @@ def authenticate_work_item(
     try:
         manifest = store.load_manifest()
         digest = manifest_digest(manifest)
-        recovery = store.scan_validated(manifest, digest)
+        recovery = store.scan(manifest, digest)
     except SimulationCampaignIntegrityError:
         raise
     except OSError as exc:
@@ -130,7 +110,7 @@ def inspect_retained_campaign(
     try:
         manifest = store.load_manifest()
         digest = manifest_digest(manifest)
-        recovery = store.scan_validated(manifest, digest)
+        recovery = store.scan(manifest, digest)
         if not store.summary_path.exists() and not store.summary_path.is_symlink():
             summary = None
         else:
@@ -200,6 +180,7 @@ def _retention_inventory(
     return tuple(sorted(retention_files)), tuple(sorted(coverage_directories))
 
 
+@reads_campaign_records
 def _result_named_files(root: Path, attempt: Path, result: Mapping[str, object]) -> set[Path]:
     """Files a terminal result names, plus the Booley-written build trees it used, unhashed."""
     references = list(cast(tuple[Mapping[str, object], ...], result["evidence"]))
@@ -208,11 +189,14 @@ def _result_named_files(root: Path, attempt: Path, result: Mapping[str, object])
         references.append(cast(Mapping[str, object], snapshot["manifest"]))
     for binding in cast(tuple[Mapping[str, object], ...], result["runtime_inputs"]):
         references.append(cast(Mapping[str, object], binding["authoritative_copy"]))
-    named = {(attempt / cast(str, reference["path"])).absolute() for reference in references}
+    named = {
+        (attempt / validate_relative_path(reference["path"])).absolute()
+        for reference in references
+    }
     trees = [attempt / "private-build", attempt / "snapshot"]
     build = cast(Mapping[str, object], result["build_result"])
     if build["sharing"] == "shared_variant":
-        trees.append((root / cast(str, build["path"])).parent)
+        trees.append((root / validate_relative_path(build["path"])).parent)
     for tree in trees:
         named.update(path.absolute() for path in tree.rglob("*") if path.is_file())
     return named
@@ -333,7 +317,7 @@ def _durable_results(store: CampaignStore, manifest_sha256: str) -> DurableCampa
         raise SimulationCampaignIntegrityError(
             "Simulation Campaign manifest is not the one that was registered"
         )
-    recovery = store.scan_validated(manifest, digest)
+    recovery = store.scan(manifest, digest)
     items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
     by_id = {item["work_item_id"]: item for item in items}
     consumed, observations = collected_result_facts(store, recovery, by_id)
@@ -370,7 +354,6 @@ __all__ = [
     "inspect_retained_campaign",
     "read_durable_results",
     "recover_retained_campaign_resources",
-    "reread_pre_sim_firings",
     "retained_campaign_lock",
     "started_campaign",
 ]

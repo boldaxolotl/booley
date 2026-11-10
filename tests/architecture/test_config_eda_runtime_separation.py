@@ -14,7 +14,7 @@ from tests.architecture.import_graph import Dependency, analyze_imports, top_lev
     [
         ("config", "eda", "D23"),
         ("eda", "runtime", "D24"),
-        ("runtime", "flows", "D39"),
+        ("runtime", "flows", "D41"),
         ("runtime", "harness", "D6"),
     ],
 )

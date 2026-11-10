@@ -30,6 +30,11 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
 @pytest.mark.parametrize(
     ("rule", "source", "target", "path"),
     (
+        ("D40", "booley.presentation.colors", "booley.harness.booley", "seed.py"),
+        ("D40", "booley.presentation.colors", "booley.mcp.server", "seed.py"),
+        ("D40", "booley.presentation.colors", "booley.runtime.git", "seed.py"),
+        ("D40", "booley.presentation.colors", "booley.flows.base", "seed.py"),
+        ("D40", "booley.presentation.colors", "booley.goals.store", "seed.py"),
         ("D38", "booley.flows.sim.flow", "booley.goals.presentation", "seed.py"),
         (
             "D38",
@@ -150,7 +155,7 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
         ("D13", "booley.fusesoc.registry", "booley.flows.synth.flow", "seed.py"),
         ("D13", "booley.fusesoc.registry", "booley.flows.fpga.flow", "seed.py"),
         ("D13", "booley.fusesoc.registry", "booley.flows.lint.flow", "seed.py"),
-        ("D39", "booley.runtime.agent", "booley.flows.sim.flow", "seed.py"),
+        ("D41", "booley.runtime.agent", "booley.flows.sim.flow", "seed.py"),
     ),
 )
 def test_every_direction_rule_selector_family_finds_a_forbidden_edge(
@@ -324,20 +329,18 @@ def test_approved_target_group_cannot_recombine_with_execution() -> None:
     separate = (
         _dependency("booley.targets.catalog", "booley.fusesoc.fusesoc_registry"),
         _dependency("booley.fusesoc.fusesoc_registry", "booley.targets.domain"),
-        _dependency("booley.flows.edam", "booley.harness.cli"),
-        _dependency("booley.harness.cli", "booley.flows.edam"),
     )
     assert evaluate_contract(separate, contract) == ()
     recombined = (
         *separate,
         _dependency("booley.targets.target_surface", "booley.flows.edam"),
-        _dependency("booley.harness.cli", "booley.fusesoc.core_security"),
+        _dependency("booley.flows.edam", "booley.fusesoc.core_security"),
     )
     problems = evaluate_contract(recombined, contract)
     assert len(problems) == 1
     assert problems[0].kind == "scc"
     assert "booley.targets" in problems[0].message
-    assert "booley.harness" in problems[0].message
+    assert "booley.flows" in problems[0].message
 
 
 def _dependency(source: str, target: str, *, line: int = 1, path: str = "seed.py") -> Dependency:

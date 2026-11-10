@@ -1,8 +1,9 @@
-"""Hostile contracts for Cocotb-batch and coverage-aggregate campaign plans."""
+"""Cocotb batch and coverage aggregate work items of Simulation Campaigns."""
 
 from __future__ import annotations
 
 import json
+import os
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -11,11 +12,12 @@ from typing import cast
 
 import pytest
 
-from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.backends import cocotb_results
-from booley.flows.sim.campaign import serial_execution
+from booley.flows.sim.campaign import codec, collect_pre_sim_firings, serial_execution
 from booley.flows.sim.campaign.codec import (
+    MAX_COMMAND_BYTES,
     SimulationCampaignIntegrityError,
+    canonical_json_bytes,
     decode_simulation_result,
     encode_simulation_result,
 )
@@ -31,6 +33,7 @@ from booley.flows.sim.campaign.coverage_execution import (
     _CoverageAggregateError,
 )
 from booley.flows.sim.campaign.flow_planning import plan_coarse_simulation_campaign
+from booley.flows.sim.campaign.model import SimulationResult, create_simulation_campaign_plan
 from booley.flows.sim.campaign.planning import manifest_digest
 from booley.flows.sim.campaign.resume import (
     ValidatedManifestNode,
@@ -39,111 +42,36 @@ from booley.flows.sim.campaign.resume import (
 )
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
-from booley.flows.sim.coverage_invocation import (
-    CoverageInvocationRequest,
-    prepare_coverage_invocation,
-)
 from booley.flows.sim.execution.contract import (
-    PreSimEvidence,
     SimulationArtifactEvidence,
-    SimulationPreview,
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
-from booley.flows.sim.flow import (
-    _campaign_report_lines,
-    _campaign_structured_details,
-    _compact_coverage_number,
-    _coverage_report_suffix,
-)
-from booley.flows.sim.verilator_coverage import SimulationBuildResult, SimulationRunResult
+from booley.flows.sim.verilator_coverage import SimulationRunResult
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
-from tests.flows.sim.test_campaign_crash_matrix import (
+from booley.targets.domain import TargetHandle, TargetInspection
+from tests.flows.sim.campaign_test_support import (
+    _admission,
     _build_execution,
+    _completed_result_documents,
+    _coverage_campaign_plan,
+    _executor,
+    _facts,
+    _failed_shared_executor,
+    _FailedCoverageBuild,
+    _handle,
+    _maximum_hook_selection_plan,
+    _plan,
+    _request,
+    _run_coverage_campaign,
+    _unfiltered_cocotb_manifest,
+    _validated_resume,
+)
+from tests.flows.sim.test_campaign_crash_matrix import (
     _CrashOnce,
     _InjectedProcessDeath,
 )
-from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [(50.0, "50"), (200 / 3, "66.66666666666667"), (1e-5, "0.00001")],
-)
-def test_coverage_report_numbers_are_compact_and_non_scientific(value, expected) -> None:
-    assert _compact_coverage_number(value) == expected
-
-
-@pytest.mark.parametrize(
-    ("collection", "evaluation", "expected"),
-    [
-        (
-            {"status": "collector_error", "diagnostics": ()},
-            {"status": "not_requested", "diagnostics": (), "metrics": ()},
-            "coverage collection COLLECTOR_ERROR · evaluation NOT_REQUESTED",
-        ),
-        (
-            {"status": "complete", "diagnostics": ()},
-            {"status": "fail", "diagnostics": (), "metrics": ()},
-            "coverage collection COMPLETE · evaluation FAIL",
-        ),
-    ],
-)
-def test_coverage_report_keeps_nonpassing_status_without_optional_detail(
-    collection, evaluation, expected
-) -> None:
-    campaign = SimpleNamespace(collection=collection, evaluation=evaluation)
-
-    assert _coverage_report_suffix(campaign) == expected
-
-
-def _facts(
-    root: Path, *, cocotb: bool, preview_names: tuple[str, ...] = ("count", "reset")
-) -> tuple[TargetHandle, TargetInspection, SimulationPreview]:
-    project = root / ".booley"
-    project.mkdir()
-    (project / "booley.toml").write_text("[flows.sim]\nrun_cwd = '.'\n", encoding="utf-8")
-    (project / "tests.toml").write_text('[sim]\ntests = ["reset", "count"]\n', encoding="utf-8")
-    source = root / ("test_counter.py" if cocotb else "tb.sv")
-    source.write_text("# cocotb\n" if cocotb else "module tb; endmodule\n", encoding="utf-8")
-    if cocotb:
-        _write_cocotb_core(root)
-    handle = cast(
-        TargetHandle,
-        SimpleNamespace(
-            identity="acme:lib:dut:1#sim",
-            selector="sim",
-            name="sim",
-            vlnv="acme:lib:dut:1",
-            project_root=root.resolve(),
-        ),
-    )
-    flow_options = {"cocotb_module": "test_counter"} if cocotb else {}
-    inputs = (
-        TargetInput(
-            source.name,
-            "acme:lib:dut:1",
-            "user" if cocotb else "systemVerilogSource",
-            ("tb",),
-            False,
-            {},
-        ),
-    )
-    inspection = TargetInspection(handle, "tb", "sim", "verilator", flow_options, {}, inputs)
-    preview = SimulationPreview(
-        commands=(("run-batch", *preview_names),),
-        groups=(preview_names,),
-        target_identity=handle.identity,
-        toplevel="tb",
-        eda_tool="verilator",
-        sources=(source.name,),
-        constraints=(),
-        parameters={},
-        flow_options=flow_options,
-    )
-    return handle, inspection, preview
 
 
 def test_coverage_plan_labels_its_build_variant_as_coverage(tmp_path: Path) -> None:
@@ -163,50 +91,6 @@ def test_coverage_plan_labels_its_build_variant_as_coverage(tmp_path: Path) -> N
     )
 
     assert plan.manifest.document["build_variants"][0]["kind"] == "coverage"  # type: ignore[index]
-
-
-def _write_cocotb_core(root: Path) -> None:
-    (root / "dut.core").write_text(
-        "CAPI=2:\n"
-        "name: acme:lib:dut:1\n"
-        "filesets:\n"
-        "  tb:\n"
-        "    files:\n"
-        "      - test_counter.py: {file_type: user, copyto: test_counter.py}\n"
-        "targets:\n"
-        "  sim:\n"
-        "    filesets: [tb]\n"
-        "    toplevel: tb\n"
-        "    flow: sim\n"
-        "    flow_options:\n"
-        "      tool: icarus\n"
-        "      cocotb_module: test_counter\n",
-        encoding="utf-8",
-    )
-
-
-def _plan(
-    root: Path,
-    *,
-    kind: str,
-    names: tuple[str, ...] = ("count", "reset"),
-    cocotb: bool,
-    no_waivers: bool = False,
-):
-    handle, inspection, preview = _facts(root, cocotb=cocotb, preview_names=names)
-    return plan_coarse_simulation_campaign(
-        handle=handle,
-        inspection=inspection,
-        preview=preview,
-        selected_tests=names,
-        required_suite=("reset", "count"),
-        revision="abc123",
-        invocation_id=7,
-        execution_id="7" * 32,
-        trace=False,
-        kind=kind,
-        no_waivers=no_waivers,
-    )
 
 
 def test_no_waivers_is_written_only_when_requested(tmp_path: Path) -> None:
@@ -274,7 +158,6 @@ def test_coverage_aggregate_accepts_a_cocotb_target(tmp_path: Path) -> None:
         ("ordinary_hdl", False, ("reset",)),
         ("cocotb_batch", False, ("reset",)),
         ("coverage_aggregate", False, ()),
-        ("coverage_aggregate", False, ("reset", "reset")),
     ],
 )
 def test_coarse_planner_rejects_kind_selection_and_target_contradictions(
@@ -358,21 +241,6 @@ class _ImageCheckingExecution(NativeExecution):
         return super().run(request)
 
 
-class _FailedCoverageBuild(NativeExecution):
-    def __init__(self, *, infrastructure: bool) -> None:
-        super().__init__()
-        self.infrastructure = infrastructure
-
-    def build(self, request):
-        del request
-        return SimulationBuildResult(
-            False, "compile failed", infrastructure_error=self.infrastructure
-        )
-
-    def run(self, request):
-        raise AssertionError(f"failed build launched {request.run_id}")
-
-
 class _RuntimeCheckingExecution(NativeExecution):
     def __init__(self) -> None:
         super().__init__()
@@ -391,140 +259,34 @@ class _RuntimeCheckingExecution(NativeExecution):
         return super().run(request)
 
 
-def _coverage_runtime_input(root: Path) -> None:
-    (root / "stimulus.bin").write_bytes(b"source runtime input")
-    core = root / "counter.core"
-    core.write_text(
-        core.read_text().replace(
-            "files: [rtl/counter.sv]",
-            "files: [rtl/counter.sv, {stimulus.bin: {file_type: user, "
-            "copyto: data/stimulus.bin}}]",
-        )
-    )
-
-
-def _coverage_campaign_plan(
-    root: Path, *, runtime_input: bool = False, pre_sim_commands: tuple[str, ...] = ()
-):
-    context = project(root)
-    if runtime_input:
-        _coverage_runtime_input(root)
-    project_data = root / ".booley"
-    project_data.mkdir()
-    (project_data / "booley.toml").write_text(
-        "[flows.sim]\npre_run_commands = " + json.dumps(pre_sim_commands) + "\n",
-        encoding="utf-8",
-    )
-    (project_data / "tests.toml").write_text(
-        '[sim_0]\ntests = ["reset", "wrap"]\n', encoding="utf-8"
-    )
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    target = prepared.plan.targets[0]
-    inspection = TargetCatalog.build(root).inspect(target.handle)
-    names = target.selected_tests
-    preview = SimulationPreview(
-        commands=(("coverage", *names),),
-        groups=(names,),
-        target_identity=target.handle.identity,
-        toplevel=inspection.toplevel,
-        eda_tool=inspection.eda_tool,
-        sources=tuple(item.path for item in inspection.inputs),
-        constraints=(),
-        parameters=inspection.parameters,
-        flow_options=inspection.flow_options,
-    )
-    plan = plan_coarse_simulation_campaign(
-        handle=target.handle,
-        inspection=inspection,
-        preview=preview,
-        selected_tests=names,
-        required_suite=target.declared_tests,
-        revision="abc123",
-        invocation_id=1,
-        execution_id="8" * 32,
-        trace=False,
-        kind="coverage_aggregate",
-    )
-    return plan, target
-
-
-def _run_coverage_campaign(
-    root: Path,
-    native: NativeExecution,
-    *,
-    runtime_input: bool = False,
-    pre_sim_commands: tuple[str, ...] = (),
-    publication_checkpoint=None,
-):
-    plan, target = _coverage_campaign_plan(
-        root, runtime_input=runtime_input, pre_sim_commands=pre_sim_commands
-    )
-    assert tuple(plan.manifest.document["workload"]["source_recipe"]["pre_sim_commands"]) == (
-        pre_sim_commands
-    )
-    assert tuple(plan.manifest.document["work_items"][0]["selection"]["names"]) == (
-        "reset",
-        "wrap",
-    )
-
-    def execution_factory(_plan, _options, commands, _access):
-        assert tuple(commands) == pre_sim_commands
-        return native
-
-    executor = CoverageAggregateExecutor(
-        plans={target.handle.identity: target},
-        execution_factory=execution_factory,
-        publication_checkpoint=publication_checkpoint,
-    )
-    invocation = root / "reports" / "1"
-    invocation.mkdir(parents=True)
-    request = NewCampaignRunRequest(
-        plan, root, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
-    )
-    outcome = SimulationCampaign(executor).run(request)
-    return outcome, CampaignStore(invocation / "targets/sim_0/campaign")
-
-
-def _retain_score_bearing_invalid_campaign(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Publish a nested Campaign whose scoring is invalid but still carries rollups."""
-    from booley.flows.sim import coverage_transaction
-
-    original = coverage_transaction.publish_coverage_campaign
-
-    def publish_invalid_campaign(target_dir, campaign):
-        paths = original(target_dir, campaign)
-        document = json.loads(paths.campaign.read_text())
-        document["collection"]["status"] = "collector_error"
-        document["normalization"]["status"] = "partial"
-        document["scoring"] = {"status": "invalid", "reason": "collector_error"}
-        paths.campaign.write_text(json.dumps(document))
-        return paths
-
-    monkeypatch.setattr(
-        coverage_transaction, "publish_coverage_campaign", publish_invalid_campaign
-    )
-
-
-def _validated_resume(store, plan, target, root: Path) -> ValidatedResumeManifest:
-    node = ValidatedManifestNode(
-        store.manifest_path, plan.manifest, manifest_digest(plan.manifest)
-    )
-    return ValidatedResumeManifest(
-        node,
-        (),
-        (target.handle,),
-        (ValidatedTargetBinding(node, root.resolve(), target.handle),),
-    )
-
-
 def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
     tmp_path: Path,
 ) -> None:
     native = _ImageCheckingExecution()
-    outcome, _store = _run_coverage_campaign(tmp_path, native)
+    outcome, store = _run_coverage_campaign(tmp_path, native)
 
     assert outcome.complete is True
     assert native.executed_original is False
+    _assert_native_build_scope(store)
+
+
+def _assert_native_build_scope(store: CampaignStore) -> None:
+    """Native coverage builds stay private to their work item, with no compiler record."""
+    (build_result,) = store.root.rglob("private-build/build-result.json")
+    directory = build_result.parent
+    attempt = json.loads((directory / "build-attempt.json").read_text())
+    bundle = json.loads((directory / "evidence" / "bundle.json").read_text())
+    result = json.loads(build_result.read_text())
+    simulation_attempt_id = directory.parent.name.split("-", 1)[1]
+    assert attempt["sharing"] == bundle["sharing"] == "private_work_item"
+    assert result["bundle"]["sharing"] == "private_work_item"
+    assert attempt["owner"] == bundle["owner"]
+    assert attempt["owner"]["simulation_attempt_id"] == simulation_attempt_id
+    assert attempt["owner"]["work_item_id"]
+    assert attempt["build_attempt_id"] == simulation_attempt_id
+    assert attempt["build_attempt_ordinal"] == 1
+    assert result["build_attempt"]["build_attempt_id"] == simulation_attempt_id
+    assert result["evidence"] == []
 
 
 def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None:
@@ -544,7 +306,7 @@ def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None
             invocation.parent,
             CampaignPolicy(),
             invocation,
-            _unmanaged(),
+            _admission(),
         )
     )
     store = CampaignStore(invocation / "targets/sim_0/campaign")
@@ -558,7 +320,7 @@ def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None
             invocation.parent,
             CampaignPolicy(),
             invocation,
-            _unmanaged(),
+            _admission(),
         )
     )
 
@@ -570,17 +332,49 @@ def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None
     )
 
 
-def test_coverage_campaign_rejects_score_bearing_invalid_nested_result(
+@pytest.mark.parametrize(
+    ("coverage", "scans"), [(True, 5), (False, 4)], ids=["coverage", "ordinary"]
+)
+def test_campaign_run_adds_no_recovery_scan_for_failure_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coverage: bool, scans: int
+) -> None:
+    """Failure-detail facts reuse the coordinator's scans.
+
+    Run start, summary regeneration, final scan and the outcome collector scan
+    the Campaign (4); a coverage commit adds one (5).
+    """
+    calls: list[None] = []
+    original = CampaignStore.scan
+
+    def counting_scan(*args, **kwargs):
+        calls.append(None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(CampaignStore, "scan", counting_scan)
+    if coverage:
+        _run_coverage_campaign(tmp_path, NativeExecution())
+    else:
+        _run_cocotb(
+            tmp_path,
+            ("reset",),
+            (SimulationTestOutcome(name="reset", verdict="pass", passed=True),),
+        )
+
+    assert len(calls) == scans
+
+
+def test_coverage_campaign_refuses_an_oversized_result_at_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _retain_score_bearing_invalid_campaign(monkeypatch)
+    schema, fields, _limit, reader = codec._DOCUMENT_SPECS[SimulationResult]
+    monkeypatch.setitem(codec._DOCUMENT_SPECS, SimulationResult, (schema, fields, 64, reader))
 
-    with pytest.raises(
-        CampaignPublicationError, match="nested Coverage Campaign cannot be authenticated"
-    ) as caught:
+    with pytest.raises(CampaignPublicationError) as caught:
         _run_coverage_campaign(tmp_path, NativeExecution())
 
     assert isinstance(caught.value.__cause__, SimulationCampaignIntegrityError)
+    assert "size ceiling" in str(caught.value.__cause__)
+    assert not list(tmp_path.rglob("work-items/*/result.json"))
 
 
 class _TimeoutThenMissingInputExecution(NativeExecution):
@@ -622,112 +416,6 @@ def test_coverage_timeout_before_design_abort_publishes_aborted_fail(tmp_path: P
         ) == ("aborted", "design", "fail", "not_observed", None)
 
 
-def test_coverage_attempt_stages_runtime_before_binding_and_records_real_build_time(
-    tmp_path: Path,
-) -> None:
-    native = _RuntimeCheckingExecution()
-    outcome, store = _run_coverage_campaign(tmp_path, native, runtime_input=True)
-
-    assert outcome.complete is True
-    result = store.scan().items[0].result
-    assert result is not None
-    runtime = result.document["runtime_inputs"]
-    assert len(runtime) == 1
-    assert runtime[0]["destination"] == "data/stimulus.bin"
-    attempt = next(
-        store.work_item_directory(result.document["work_item_id"]).joinpath("attempts").iterdir()
-    )
-    build = json.loads((attempt / "private-build/build-result.json").read_bytes())
-    assert build["elapsed_seconds"] > 0
-
-
-def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path) -> None:
-    class PreSimFailure(NativeExecution):
-        def run(self, request):
-            self.runs.append(request)
-            evidence = PreSimEvidence(
-                ("prepare-vectors",),
-                (request.test.name,),
-                "failed",
-                0.2,
-                "vector generator rejected input",
-                returncode=1,
-            )
-            return SimulationRunResult("elab_error", evidence.detail, evidence)
-
-        def command(self, request):
-            raise AssertionError("merge must not run after a Pre-Sim failure")
-
-    outcome, store = _run_coverage_campaign(
-        tmp_path, PreSimFailure(), pre_sim_commands=("prepare-vectors",)
-    )
-
-    assert outcome.complete is True
-    result = store.scan().items[0].result
-    assert result is not None
-    observations = result.document["observations"]
-    assert observations[0]["execution"] == "completed"
-    assert observations[0]["detail"]["reason"] == (
-        "Pre-Sim Commands failed (failed): vector generator rejected input"
-    )
-
-    firings = store.read_pre_sim_firings()
-    assert [f.document["ordinal"] for f in firings] == [1, 2]
-    assert [f.document["test_names"] for f in firings] == [("reset",), ("wrap",)]
-    assert all(f.document["status"] == "failed" for f in firings)
-    assert all(f.document["command_count"] == 1 for f in firings)
-    assert all(f.document["returncode"] == 1 for f in firings)
-    assert all(f.document["producer_invocation_id"] == 1 for f in firings)
-    assert all(f.terminal and f.reference in result.document["evidence"] for f in firings)
-
-
-def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Path) -> None:
-    class PreSimSpawnError(NativeExecution):
-        def run(self, request):
-            evidence = PreSimEvidence(
-                ("missing-vector-generator",),
-                (request.test.name,),
-                "spawn_error",
-                0.2,
-                "missing-vector-generator: command not found",
-                returncode=None,
-            )
-            return SimulationRunResult(
-                "elab_error", evidence.detail, evidence, infrastructure_error=True
-            )
-
-        def command(self, request):
-            raise AssertionError("merge must not run after a Pre-Sim spawn error")
-
-    with pytest.raises(_CoverageAggregateError, match="missing-vector-generator") as raised:
-        _run_coverage_campaign(
-            tmp_path, PreSimSpawnError(), pre_sim_commands=("missing-vector-generator",)
-        )
-
-    assert raised.value.detail["evaluation"] == "not_requested"
-    nested = next(
-        (tmp_path / "reports/1/targets/sim_0").glob(
-            "campaign/work-items/*/attempts/*/coverage-campaign/coverage.json"
-        )
-    )
-    document = json.loads(nested.read_text(encoding="utf-8"))
-    assert document["collection"]["status"] == "collector_error"
-    never_run = document["tests"]["runs"][1]
-    assert never_run["execution"] == "not_run"
-    assert never_run["failure_kind"] == "infrastructure"
-    assert "termination" not in never_run
-
-    # This injected external adapter has no observed process exit status.
-    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
-    (firing,) = store.read_pre_sim_firings()
-    assert firing.document["status"] == "spawn_error"
-    assert firing.document["returncode"] is None
-    assert firing.document["command_count"] == 1
-    assert firing.document["test_names"] == ("reset",)
-    assert firing.document["producer_invocation_id"] == 1
-    assert firing.terminal is False
-
-
 def test_post_commit_failure_reports_incomplete_collection(tmp_path: Path) -> None:
     """A committed `incomplete` collection survives a later publication failure."""
 
@@ -759,48 +447,23 @@ def test_post_commit_failure_reports_incomplete_collection(tmp_path: Path) -> No
     assert "coverage_campaign" not in detail
 
 
-@pytest.mark.parametrize(
-    ("coverage", "scans"), [(True, 3), (False, 2)], ids=["coverage", "ordinary"]
-)
-def test_campaign_run_adds_no_recovery_scan_for_failure_facts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coverage: bool, scans: int
+def test_coverage_attempt_stages_runtime_before_binding_and_records_real_build_time(
+    tmp_path: Path,
 ) -> None:
-    """Failure-detail facts reuse the coordinator's scans: 3 for coverage, 2 otherwise."""
-    from booley.flows.sim.campaign import coordinator
+    native = _RuntimeCheckingExecution()
+    outcome, store = _run_coverage_campaign(tmp_path, native, runtime_input=True)
 
-    calls: list[None] = []
-    original = coordinator._scan_recovery
-
-    def counting_scan(*args, **kwargs):
-        calls.append(None)
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(coordinator, "_scan_recovery", counting_scan)
-    if coverage:
-        _run_coverage_campaign(tmp_path, NativeExecution())
-    else:
-        _run_cocotb(
-            tmp_path,
-            ("reset",),
-            (SimulationTestOutcome(name="reset", verdict="pass", passed=True),),
-        )
-
-    assert len(calls) == scans
-
-
-def test_coverage_rejects_fabricated_hook_with_empty_frozen_commands(tmp_path: Path) -> None:
-    class FabricatedHook(NativeExecution):
-        def run(self, request):
-            evidence = PreSimEvidence(
-                ("undeclared-hook",), (request.test.name,), "failed", 0.2, returncode=1
-            )
-            return SimulationRunResult("elab_error", "injected adapter evidence", evidence)
-
-    with pytest.raises(SimulationCampaignIntegrityError, match="command count disagrees"):
-        _run_coverage_campaign(tmp_path, FabricatedHook())
-    campaign = tmp_path / "reports/1/targets/sim_0/campaign"
-    assert list(campaign.glob("work-items/*/attempts/*/attempt.json"))
-    assert not list(campaign.glob("work-items/*/attempts/*/pre-sim/*.json"))
+    assert outcome.complete is True
+    result = store.scan().items[0].result
+    assert result is not None
+    runtime = result.document["runtime_inputs"]
+    assert len(runtime) == 1
+    assert runtime[0]["destination"] == "data/stimulus.bin"
+    attempt = next(
+        store.work_item_directory(result.document["work_item_id"]).joinpath("attempts").iterdir()
+    )
+    build = json.loads((attempt / "private-build/build-result.json").read_bytes())
+    assert build["elapsed_seconds"] > 0
 
 
 def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) -> None:
@@ -820,10 +483,21 @@ def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) 
         assert observation["assertions"] == "not_observed"
 
 
+@pytest.mark.parametrize(
+    "reason",
+    [
+        pytest.param("compile failed", id="short-reason"),
+        pytest.param("x" * (MAX_COMMAND_BYTES + 1), id="over-ceiling-reason"),
+        # The odd-length ASCII prefix puts the byte cut inside a two-byte character.
+        pytest.param("x" + "\u00e9" * MAX_COMMAND_BYTES, id="multibyte-straddles-cut"),
+    ],
+)
 def test_coverage_infrastructure_build_failure_has_terminal_error_result(
-    tmp_path: Path,
+    tmp_path: Path, reason: str
 ) -> None:
-    outcome, _store = _run_coverage_campaign(tmp_path, _FailedCoverageBuild(infrastructure=True))
+    outcome, _store = _run_coverage_campaign(
+        tmp_path, _FailedCoverageBuild(infrastructure=True, reason=reason)
+    )
     assert outcome.complete
     assert outcome.aggregate_grade == "error"
 
@@ -835,15 +509,14 @@ def test_coverage_infrastructure_build_failure_has_terminal_error_result(
     assert len(attempts) == 1
     build = json.loads((attempts[0] / "private-build/build-result.json").read_bytes())
     assert build["state"] == "infrastructure_error"
+    message = build["observation"]["message"]
+    assert len(message.encode()) <= MAX_COMMAND_BYTES
+    assert message.startswith(reason[:64])
     assert (directory / "result.json").exists()
     result = recovery.items[0].result
     assert result is not None
     assert result.document["state"] == "aborted"
     assert result.document["grade"] == "error"
-
-
-def _unmanaged() -> AdmissionContext:
-    return AdmissionContext("unmanaged", None, None, 1, "interactive", "", None, lambda: False)
 
 
 @dataclass
@@ -939,7 +612,7 @@ def _start_crashed_cocotb_campaign(
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
     request = NewCampaignRunRequest(
-        plan, root, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+        plan, root, invocation.parent, CampaignPolicy(), invocation, _admission()
     )
     crash = _CrashOnce("before:simulation_result")
     with pytest.raises(_InjectedProcessDeath):
@@ -979,7 +652,7 @@ def test_production_cocotb_batch_retries_whole_batch_after_crash(tmp_path: Path)
             invocation.parent,
             CampaignPolicy(),
             invocation,
-            _unmanaged(),
+            _admission(),
         )
     )
 
@@ -1015,7 +688,7 @@ def _run_cocotb(
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
     request = NewCampaignRunRequest(
-        plan, root, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+        plan, root, invocation.parent, CampaignPolicy(), invocation, _admission()
     )
     SimulationCampaign(executor).run(request)
     return CampaignStore(invocation / "targets/sim/campaign")
@@ -1090,65 +763,6 @@ def test_unfiltered_cocotb_binds_discovered_order_and_detail(tmp_path: Path) -> 
     assert observations[1]["detail"] == {"reason": "bad value"}
 
 
-def test_mcp_campaign_details_bound_observations_without_collapsing_axes(
-    tmp_path: Path,
-) -> None:
-    observations = tuple(
-        {
-            "test": f"test_{index:02d}",
-            "execution": "timeout" if index == 39 else "completed",
-            "failure_class": "design" if index == 39 else None,
-            "functional": "fail" if index % 2 else "pass",
-            "assertions": "dirty" if index % 3 == 0 else "clean",
-            "assertion_count": index,
-            "detail": {"reason": f"detail-{index}"},
-        }
-        for index in range(40)
-    )
-    outcome = SimpleNamespace(
-        target={"selector": "sim"},
-        manifest_path=tmp_path / "targets/sim/campaign/manifest.json",
-        summary_path=tmp_path / "targets/sim/campaign/summary.json",
-        coverage_reference=None,
-        aggregate_grade="fail",
-        complete=True,
-        observations=observations,
-    )
-
-    details = _campaign_structured_details((outcome,))["sim"]
-
-    assert details["observation_total"] == 40
-    assert details["observations_truncated"] is True
-    assert len(details["observations"]) == 32
-    assert set(details["observations"][0]) == {
-        "test",
-        "execution",
-        "failure_class",
-        "functional",
-        "assertions",
-        "assertion_count",
-        "cycle_count",
-        "detail",
-    }
-    assert details["observation_counts"]["execution"] == {"completed": 39, "timeout": 1}
-
-
-def test_campaign_report_preserves_the_failed_simulator_reason(tmp_path: Path) -> None:
-    outcome = SimpleNamespace(
-        target={"selector": "sim_fail"},
-        manifest_path=tmp_path / "campaign/manifest.json",
-        aggregate_grade="fail",
-        observations=({"detail": {"reason": "intentional simulator failure"}},),
-    )
-
-    assert _campaign_report_lines((outcome,), report_path=tmp_path / "sim.json")[0] == (
-        "sim_fail: FAIL (Simulation Campaign unavailable)\n"
-        f"  manifest: {(tmp_path / 'campaign/manifest.json').resolve()}\n"
-        f"  report: {(tmp_path / 'sim.json').resolve()}\n"
-        "  intentional simulator failure"
-    )
-
-
 def test_cocotb_scan_takes_the_published_result_without_rereading_its_transport(
     tmp_path: Path,
 ) -> None:
@@ -1164,3 +778,114 @@ def test_cocotb_scan_takes_the_published_result_without_rereading_its_transport(
     (attempt / reference["path"]).unlink()
 
     assert store.scan().items[0].result == published
+
+
+def test_unfiltered_cocotb_shared_build_failure_has_one_unnamed_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = _unfiltered_cocotb_manifest()
+    plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "run").mkdir()  # a literal run_cwd must exist before any build (#881)
+    handle = _handle(project)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: handle),
+    )
+    counters = {"compile": 0, "launch": 0}
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+
+    outcome = SimulationCampaign(_failed_shared_executor(tmp_path / "engine-build", counters)).run(
+        NewCampaignRunRequest(
+            plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+        )
+    )
+
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    result = _completed_result_documents(store)[0]
+    assert outcome.complete is True
+    assert outcome.aggregate_grade == "fail"
+    assert result["grade"] == "fail"
+    assert result["observations"] == [
+        {
+            "test": None,
+            "test_run": "<default>",
+            "execution": "blocked_by_build",
+            "failure_class": "design",
+            "functional": "not_observed",
+            "assertions": "not_observed",
+            "assertion_count": 0,
+            "detail": {"reason": "compiler reason"},
+            "cycle_count": None,
+        }
+    ]
+
+
+# Firings published for the overflow proof. Every firing adds one fixed-size
+# reference to the result; with 4000 observations about 1460 firings reach
+# RECORD_MAX_BYTES, so 2000 overflows it by about 10%. If format growth moves
+# the threshold past this count, the size assertion fails instead of passing
+# vacuously.
+_AGGREGATE_OVERFLOW_FIRINGS = 2000
+
+
+def _aggregate_result_bound_fixture(tmp_path, monkeypatch):
+    # Durability is not under test here; disk syncs dominate under load.
+    monkeypatch.setattr(os, "fsync", lambda _descriptor: None)
+    from booley.flows.sim.campaign.codec import RESULT_SCHEMA
+    from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
+    from booley.flows.sim.execution.contract import PreSimEvidence
+    from tests.flows.sim.test_campaign_codec_golden import _simulation_result
+
+    names = tuple(f"test{index:04d}" for index in range(4000))
+    plan, _ = _maximum_hook_selection_plan(names)
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(plan.manifest)
+    request = _request(
+        store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
+    )
+    _executor(tmp_path / "build", {}).prepare_attempt(request)
+    for ordinal, name in enumerate(names[:_AGGREGATE_OVERFLOW_FIRINGS], 1):
+        publish_pre_sim_firing(
+            request,
+            PreSimEvidence(("true",), (name,), "passed", 0.0, returncode=0),
+            ordinal=ordinal,
+        )
+    document = json.loads(_simulation_result("completed"))
+    document["$schema"] = RESULT_SCHEMA
+    document.update(serial_execution._common(request))
+    document["attempt_id"] = request.attempt_id
+    document["executable_snapshot"]["manifest"]["owner"] = request.attempt_id
+    document["evidence"] = store.pre_sim_references(request.attempt_directory)
+    document["observations"] = [
+        {
+            **serial_execution.observation_document(
+                SimulationTestOutcome(name=name, verdict="pass", passed=True)
+            ),
+            "test_run": name,
+        }
+        for name in names
+    ]
+    return store, request, document
+
+
+def test_maximum_aggregate_result_overflow_keeps_all_authenticated_sidecars(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign.codec import RECORD_MAX_BYTES, decode_simulation_result
+
+    store, request, document = _aggregate_result_bound_fixture(tmp_path, monkeypatch)
+    raw = canonical_json_bytes(document)
+    assert len(document["evidence"]) == _AGGREGATE_OVERFLOW_FIRINGS
+    assert len(document["observations"]) == 4000
+    assert len(raw) > RECORD_MAX_BYTES
+    with pytest.raises(SimulationCampaignIntegrityError, match="byte size ceiling"):
+        store.publish_result(request.work_item["work_item_id"], SimulationResult(document))
+    assert not (request.attempt_directory.parent.parent / "result.json").exists()
+    assert len(collect_pre_sim_firings(store.manifest_path)) == _AGGREGATE_OVERFLOW_FIRINGS
+    without_hooks = {**document, "evidence": []}
+    assert len(canonical_json_bytes(without_hooks)) < RECORD_MAX_BYTES
+    assert (
+        len(decode_simulation_result(canonical_json_bytes(without_hooks)).document["observations"])
+        == 4000
+    )

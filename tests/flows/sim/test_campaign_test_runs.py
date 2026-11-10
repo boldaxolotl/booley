@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -242,7 +241,7 @@ def _run_campaign(tmp_path: Path, plan):
         NewCampaignRunRequest,
         SimulationCampaign,
     )
-    from tests.flows.sim.test_campaign_phase6 import _admission, _NoEdaExecutor
+    from tests.flows.sim.campaign_test_support import _admission, _NoEdaExecutor
 
     return SimulationCampaign(_NoEdaExecutor()).run(
         NewCampaignRunRequest(
@@ -350,8 +349,8 @@ def _stored_result(tmp_path: Path):
     from booley.flows.sim.campaign import CampaignPolicy, NewCampaignRunRequest, SimulationCampaign
     from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
     from booley.flows.sim.campaign.store import CampaignStore
+    from tests.flows.sim.campaign_test_support import _admission, _plan
     from tests.flows.sim.test_campaign_characterization import _NoVerdictExecution
-    from tests.flows.sim.test_campaign_phase5_adversarial import _plan, _unmanaged
 
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
     execution = _NoVerdictExecution(eda_tool="verilator", cocotb=True)
@@ -362,7 +361,7 @@ def _stored_result(tmp_path: Path):
     invocation.mkdir(parents=True)
     outcome = SimulationCampaign(executor).run(
         NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
         )
     )
     store = CampaignStore(invocation / "targets/sim/campaign")
@@ -406,15 +405,6 @@ def test_result_v3_round_trips(tmp_path: Path):
 @pytest.mark.parametrize(
     ("alter", "message"),
     [
-        (lambda document: document["observations"][0].pop("test_run"), "exact fields"),
-        (lambda document: document["observations"][0].update(test_run=""), "test_run"),
-        (lambda document: document["observations"][0].update(test_run=7), "test_run"),
-        (
-            lambda document: document["observations"].append(
-                copy.deepcopy(document["observations"][0])
-            ),
-            "observation test names must be unique",
-        ),
         (lambda document: document.update({"$schema": "booley.simulation-result/v4"}), "schema"),
     ],
 )

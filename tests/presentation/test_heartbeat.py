@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from booley.harness.colors import dim
+from booley.presentation.colors import dim
 from booley.presentation.heartbeat import format_heartbeat, render_heartbeat
 
 
@@ -17,9 +17,9 @@ def test_formatter_defines_shared_heartbeat_text() -> None:
 
 
 def test_standalone_renderer_stays_plain_when_colors_are_disabled(monkeypatch, capsys) -> None:
-    # NO_COLOR and TERM=dumb are read once, by booley.harness.colors at import
-    # (pinned in tests/harness/test_colors.py); the renderer only consults the result.
-    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", False)
+    # NO_COLOR and TERM=dumb are read once, by booley.presentation.colors at import
+    # (pinned in tests/presentation/test_colors.py); the renderer only consults the result.
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
     monkeypatch.setattr("booley.presentation.heartbeat.sys.stdout.isatty", lambda: True)
 
     render_heartbeat("simulation", "2.0s", "working", style=dim)
@@ -29,7 +29,7 @@ def test_standalone_renderer_stays_plain_when_colors_are_disabled(monkeypatch, c
 
 def test_standalone_renderer_dims_tty_output(monkeypatch, capsys) -> None:
     monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", True)
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", True)
     monkeypatch.setattr("booley.presentation.heartbeat.sys.stdout.isatty", lambda: True)
 
     render_heartbeat("simulation", "2.0s", style=dim)
@@ -38,7 +38,7 @@ def test_standalone_renderer_dims_tty_output(monkeypatch, capsys) -> None:
 
 
 def test_standalone_renderer_stays_plain_on_a_pipe(monkeypatch, capsys) -> None:
-    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", True)
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", True)
     monkeypatch.setattr("booley.presentation.heartbeat.sys.stdout.isatty", lambda: False)
 
     render_heartbeat("simulation", "2.0s", style=dim)

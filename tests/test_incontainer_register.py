@@ -1445,6 +1445,7 @@ def test_claude_unseeded_with_credential_skips_first_run_prompts(first_run, monk
 
     config = _claude_config(first_run.home)
     assert config["hasCompletedOnboarding"] is True
+    assert config["hasSeenAutoDefaultNudge"] is True
     _assert_claude_trusted(config, first_run)
     assert _claude_settings(first_run.home)["theme"] == "dark"
     assert config["mcpServers"]["booley"]["type"] == "http"
@@ -1493,6 +1494,7 @@ def test_claude_without_credential_keeps_login_and_writes_trust(first_run):
 
     config = _claude_config(first_run.home)
     _assert_claude_trusted(config, first_run)
+    assert config["hasSeenAutoDefaultNudge"] is True
     assert "hasCompletedOnboarding" not in config
     assert "theme" not in _claude_settings(first_run.home)
 
@@ -1511,6 +1513,7 @@ def test_claude_seeded_config_keeps_seed_and_adds_sandbox_trust(first_run, monke
     host_entry = {"hasTrustDialogAccepted": True, "allowedTools": ["Bash(ls:*)"]}
     seed = {
         "hasCompletedOnboarding": True,
+        "hasSeenAutoDefaultNudge": False,
         "autoUpdates": False,
         "cachedGrowthBookFeatures": {"gate": 1},
         "projects": {"/host/checkout": host_entry},
@@ -1520,7 +1523,12 @@ def test_claude_seeded_config_keeps_seed_and_adds_sandbox_trust(first_run, monke
     reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
 
     config = _claude_config(first_run.home)
-    for kept in ("hasCompletedOnboarding", "autoUpdates", "cachedGrowthBookFeatures"):
+    for kept in (
+        "hasCompletedOnboarding",
+        "hasSeenAutoDefaultNudge",
+        "autoUpdates",
+        "cachedGrowthBookFeatures",
+    ):
         assert config[kept] == seed[kept]
     assert config["projects"]["/host/checkout"] == host_entry
     _assert_claude_trusted(config, first_run)
