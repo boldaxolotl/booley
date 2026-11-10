@@ -1201,7 +1201,9 @@ def test_campaign_verdict_sets_exit_code(
     outcome = run.result.outcome
     assert run.result.exit_code == exit_code, outcome.report_text
     assert {name: row["grade"] for name, row in outcome.detail["campaigns"].items()} == grades
-    assert f"report: {tmp_path / 'reports/sim.json'}" in outcome.report_text
+    report = (tmp_path / "reports/sim/1/report.json").resolve()
+    assert f"report: {report}" in outcome.report_text
+    assert report.is_file()
     if grades == {"lite": "inconclusive"}:
         assert "INCONCLUSIVE" in outcome.report_text
 
@@ -1697,7 +1699,8 @@ class TestTruncationResilientReport:
         lines = result.report_text.splitlines()
         # The final verdict and report destination remain in the protected tail.
         assert lines[-1].startswith("RESULT: FAIL")
-        assert lines[-3] == f"  report: {(Path(flow.args.report_dir) / 'sim.json').resolve()}"
+        report = (Path(flow.args.report_dir) / "sim/1/report.json").resolve()
+        assert lines[-3] == f"  report: {report}"
         # The headline block sits after ALL verbose per-test detail.
         assert "--- summary (Sandbox) ---" in lines
         marker = lines.index("--- summary (Sandbox) ---")
@@ -1788,7 +1791,8 @@ class TestTruncationResilientReport:
             ],
         )
 
-        report = flow._format_summary([tr], [], False)
+        with flow.publication_resources:
+            report = flow._format_summary([tr], [], False)
 
         assert f"log: {pointer}" in report
         # The log pointer belongs to the headline block, i.e. before RESULT only.
@@ -1809,7 +1813,8 @@ class TestTruncationResilientReport:
             tests=[TestResult(name="smoke", passed=True, cycles=7, elapsed_s=1.0)],
         )
 
-        report = flow._format_summary([tr], [], True)
+        with flow.publication_resources:
+            report = flow._format_summary([tr], [], True)
 
         assert "log:" not in report
         assert report.splitlines()[-1] == "RESULT: PASS (1/1 targets)"
@@ -1832,7 +1837,8 @@ class TestTruncationResilientReport:
             tests=[TestResult(name="smoke", passed=False, elapsed_s=1.0)],
         )
 
-        report = flow._format_summary([tr], [], False)
+        with flow.publication_resources:
+            report = flow._format_summary([tr], [], False)
 
         assert "log:" not in report
 
@@ -2071,7 +2077,8 @@ class TestBuildContextReporting:
             tests=[SimTestResult(name="smoke", passed=False, elapsed_s=1.0)],
         )
 
-        report = flow._format_summary([failing], [], False)
+        with flow.publication_resources:
+            report = flow._format_summary([failing], [], False)
 
         assert "  build: " in report
         assert "make -C" in report
@@ -2084,7 +2091,8 @@ class TestBuildContextReporting:
             elapsed_s=1.0,
             tests=[SimTestResult(name="smoke", passed=True, elapsed_s=1.0)],
         )
-        report = flow._format_summary([passing], [], True)
+        with flow.publication_resources:
+            report = flow._format_summary([passing], [], True)
         assert "build: " not in report
         assert "fileset:" not in report
 
@@ -2338,7 +2346,8 @@ class TestInconclusiveReason:
                 )
             ],
         )
-        report = flow._format_summary([tr], [], False)
+        with flow.publication_resources:
+            report = flow._format_summary([tr], [], False)
         assert "RESULT: INCONCLUSIVE" in report
         # The whole finding: a run that scored 96 sentinels was told it had none.
         assert "no pass/fail sentinel detected" not in report
@@ -2362,7 +2371,8 @@ class TestInconclusiveReason:
                 )
             ],
         )
-        report = flow._format_summary([tr], [], False)
+        with flow.publication_resources:
+            report = flow._format_summary([tr], [], False)
         assert "no pass/fail sentinel detected" in report
 
 

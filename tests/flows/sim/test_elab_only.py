@@ -488,7 +488,7 @@ def test_campaign_continues_and_applies_error_fail_pass_precedence(
         result = flow._run_elab_only()
 
     assert result.exit_code == EXIT_ERROR
-    assert f"  report: {(tmp_path / 'reports/sim.json').resolve()}" in result.report_text
+    assert f"  report: {(tmp_path / 'reports/sim/1/report.json').resolve()}" in result.report_text
     assert "manifest:" not in result.report_text
     assert calls == targets
     assert flow.state.criteria["elab_pass_clean"].met is True
@@ -541,7 +541,7 @@ def test_missing_executable_is_typed_in_elab_only_result(
     assert result.detail["eda_tool_error"] == "missing_executable"
     assert result.detail["missing_executable"] == "verilator"
     assert "required executable 'verilator'" in result.report_text
-    assert f"  report: {(tmp_path / 'reports/sim.json').resolve()}" in result.report_text
+    assert f"  report: {(tmp_path / 'reports/sim/1/report.json').resolve()}" in result.report_text
     assert "manifest:" not in result.report_text
 
 
@@ -857,7 +857,9 @@ def test_elab_cli_card_has_one_report_pointer(
     )
     output = capsys.readouterr()
     assert result.exit_code == 0
-    assert output.out.count(f"  report: {(tmp_path / 'reports/sim.json').resolve()}") == 1
+    report = (tmp_path / "reports/sim/1/report.json").resolve()
+    assert output.out.count(f"  report: {report}") == 1
+    assert report.is_file()
     assert output.out.count("RESULT: PASS") == 1
     assert "manifest:" not in output.out + output.err
 
@@ -873,12 +875,32 @@ def test_early_elab_error_names_available_report_destination(
         "_elab_only_preflight",
         lambda: McpToolResult(exit_code=EXIT_ERROR, report_text="build preflight failed"),
     )
-    result = flow._run_elab_only()
+    with flow.publication_resources:
+        result = flow._run_elab_only()
     expected = "build preflight failed"
     if not dry_run:
-        expected += f"\n  report: {(tmp_path / 'reports/sim.json').resolve()}"
+        expected += f"\n  report: {(tmp_path / 'reports/sim/1/report.json').resolve()}"
     assert result.report_text == expected
     assert "manifest:" not in result.report_text
+
+
+def test_early_elab_error_keeps_diagnosis_when_report_root_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flow = _flow_with_state(tmp_path, ["sim_dut"])
+    monkeypatch.setattr(
+        flow,
+        "_elab_only_preflight",
+        lambda: McpToolResult(exit_code=EXIT_ERROR, report_text="build preflight failed"),
+    )
+
+    def refuse(*_args: object) -> Path:
+        raise ValueError("report root crosses a symlinked entry")
+
+    monkeypatch.setattr(flow, "_next_invocation_dir", refuse)
+    with flow.publication_resources:
+        result = flow._run_elab_only()
+    assert result.report_text == "build preflight failed"
 
 
 @pytest.mark.parametrize(
