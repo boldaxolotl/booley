@@ -13,13 +13,13 @@ import logging
 import os
 import shlex
 import sys
-import time
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
+from time import monotonic
 from typing import Any, ClassVar, cast
 
 from booley.config.project_config import (
@@ -4553,7 +4553,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
         observe_stage(target, "preparing")
         announce_unit("configure elaboration-only", target=target)
-        started = time.monotonic()
+        started = monotonic()
         handle = self._target_handle(target)
         try:
             compile_surface = resolve_target_compile_surface(handle)
@@ -4579,7 +4579,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         except SimulationBuildSlotError as exc:
             outcome = setup_failure_outcome(
                 f"Simulation build slot failed: {exc}",
-                elapsed_s=time.monotonic() - started,
+                elapsed_s=monotonic() - started,
             )
             return ElabOnlyTargetResult(target=target, outcome=outcome)
 
@@ -4602,7 +4602,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             logger.debug("sim elab-only setup failed for %s", target, exc_info=True)
             outcome = setup_failure_outcome(
                 f"setup failed: {exc}",
-                elapsed_s=time.monotonic() - started,
+                elapsed_s=monotonic() - started,
             )
             result = ElabOnlyTargetResult(target=target, outcome=outcome)
             result.log_path = self._persist_elab_only_log(target, outcome.output)

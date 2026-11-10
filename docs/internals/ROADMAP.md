@@ -111,6 +111,14 @@ fully deterministic, with no LLM involved: the same RTL and configuration
 always produce the same mutations, so kill rates are reproducible, comparable
 across runs, and free of LLM cost.
 
+## Firmware Reviewer
+
+**Planned.** The RTL and testbench Reviewers read firmware as context but
+report no findings in it ([ADR 0087](../adr/0087-review-commits-outside-measurement.md)).
+A firmware Reviewer would review firmware sources in their own right, for
+example driver code against the register map and the spec, and would become a
+`fw` role that Targets can declare reviews for.
+
 ## Continuous Integration (`booley ci`)
 
 **Planned.** `booley ci` runs a named set of Criteria against the current

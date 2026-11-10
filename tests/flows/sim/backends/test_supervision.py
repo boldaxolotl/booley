@@ -6,6 +6,7 @@ import functools
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,8 +17,11 @@ import pytest
 from booley.flows.run_log import RUN_LOG_IN_PROGRESS_PREFIX, begin_run_log
 from booley.flows.sim.backends import shared
 from booley.flows.sim.backends import supervision as sup
+from booley.flows.sim.backends.declared_streams import DeclaredTraceStreams, _Stream
 from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
 from booley.flows.sim.run_guard import SIM_TIME_STALL_MARKER
+from booley.flows.sim.trace_session import TraceSession
+from booley.runtime.platform_paths import kill_process_tree
 
 FATAL_LINE = "%Warning: tb.sv:9: $readmemh: Cannot open memory.hex"
 SLEEP = "import time; time.sleep(60)"
@@ -65,6 +69,9 @@ class _FakeTrace:
         self.incident_path = tmp_path / "trace_incident.txt"
         self.monitored: list[tuple[object, object]] = []
         self.incidents: list[tuple[str, object, object]] = []
+
+    def stop_monitor(self) -> None:
+        pass
 
     def start_monitor(self, conversion: object, proc: object) -> None:
         self.monitored.append((conversion, proc))
@@ -292,3 +299,102 @@ def test_run_log_is_refreshed_while_running(tmp_path: Path, monkeypatch):
     assert "cycle 2" in content and "output line(s)" in content
     # The adapter's verdict has not landed: the log still reads as in progress.
     assert RUN_LOG_IN_PROGRESS_PREFIX in content
+
+
+class _IdleConversion:
+    """A bwave stream that never exits and never grows: only a stop can end the monitor."""
+
+    pid = 0
+    store_path = None  # read by the stall-window log line
+
+    def poll(self) -> None:
+        return None
+
+    def progress_size(self) -> int:
+        return 0
+
+    def backlog(self) -> int:
+        return 0
+
+    def stderr_tail(self, _limit: int = 4000) -> str:
+        return ""
+
+
+class _FirstPollAlive:
+    """Simulator handle whose first ``poll()`` says alive, so the monitor always enters its wait."""
+
+    def __init__(self, proc: subprocess.Popen[str]) -> None:
+        self.proc = proc
+        self._polled = False
+
+    def poll(self) -> int | None:
+        if not self._polled:
+            self._polled = True
+            return None
+        return self.proc.poll()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.proc, name)
+
+
+@pytest.mark.parametrize("ending", ["completed", "timeout", "on_line_raises"])
+def test_no_stall_monitor_outlives_the_run(tmp_path: Path, monkeypatch, request, ending: str):
+    """AC1: however the run ends, its stall-monitor thread is gone when run_supervised returns."""
+    monitors: list[tuple[threading.Thread, subprocess.Popen[str]]] = []
+    real_monitor = TraceSession._monitor_stalls
+
+    def recording_monitor(self, bwave_proc, sim_proc, stall_timeout, _poll_interval, *rest):
+        monitors.append((threading.current_thread(), sim_proc))
+        # A minute-long poll: an unstopped monitor is certainly still asleep when we assert.
+        real_monitor(self, bwave_proc, _FirstPollAlive(sim_proc), stall_timeout, 60.0, *rest)
+
+    monkeypatch.setattr(TraceSession, "_monitor_stalls", recording_monitor)
+    session = TraceSession(tmp_path / "work")
+    launch = {"trace": session, "conversion": _IdleConversion()}
+    on_line_calls: list[str] = []
+
+    def raising_on_line(line: str) -> None:
+        on_line_calls.append(line)
+        raise RuntimeError("on_line boom")
+
+    def assert_monitor_joined() -> None:
+        # Checked before the simulator is reaped below: that delay would let a merely
+        # woken (not joined) monitor finish and hide a missing join.
+        assert len(monitors) == 1
+        assert not monitors[0][0].is_alive()
+
+    try:
+        if ending == "completed":
+            run_supervised(_launch(tmp_path, "print('x')", **launch))
+            assert_monitor_joined()
+        elif ending == "timeout":
+            request.getfixturevalue("instant_timer")
+            _, _, termination = run_supervised(_launch(tmp_path, SLEEP, **launch))
+            assert termination.kind == "timeout"
+            assert_monitor_joined()
+        else:
+            script = "import time; print('x', flush=True); time.sleep(60)"
+            with pytest.raises(RuntimeError, match="on_line boom"):
+                run_supervised(_launch(tmp_path, script, on_line=raising_on_line, **launch))
+            assert on_line_calls
+            assert_monitor_joined()
+    finally:
+        for _, sim_proc in monitors:
+            # Reaping the simulator after an on_line failure belongs to #3183.
+            if sim_proc.poll() is None:
+                kill_process_tree(sim_proc)
+            sim_proc.wait(timeout=KILLED_WITHIN_S)
+
+
+def test_declared_stream_monitor_stops_with_the_run(tmp_path: Path, request):
+    """Declared streams run without a trace session on the launch; their monitor must still end."""
+    request.getfixturevalue("instant_timer")
+    session = TraceSession(tmp_path / "work")
+    streams = DeclaredTraceStreams(session)
+    streams._streams.append(_Stream("fpu.vcd", tmp_path / "fpu.sidecar", _IdleConversion()))  # type: ignore[arg-type]
+
+    _, _, termination = run_supervised(_launch(tmp_path, SLEEP, streams=streams))
+
+    assert termination.kind == "timeout"
+    # The default poll interval is 2 s, so an unstopped monitor is still asleep here.
+    assert [t.name for t in threading.enumerate() if "_monitor_stalls" in t.name] == []

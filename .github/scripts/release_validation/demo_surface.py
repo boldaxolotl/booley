@@ -44,7 +44,7 @@ def validate(
     _require_image_version(python, project=project, state=state, expected=expected_version)
     env = os.environ | {"BOOLEY_DIR": str(state), "BOOLEY_IN_SANDBOX": "1"}
     _run(
-        [str(python), "-I", "-m", "booley.runtime.incontainer_register"], project=project, env=env
+        [str(python), "-I", "-m", "booley.harness.incontainer_register"], project=project, env=env
     )
     result = goal_mode_driver.validate(
         project=project,

@@ -15,7 +15,7 @@ from booley.harness import session_refresh as harness_refresh
 from booley.runtime import session_refresh
 from booley.runtime import session_runtime as sr
 from booley.runtime.image_lifecycle import LifecycleResult, Status
-from booley.runtime.session_issuance import Issuance
+from booley.runtime.session_issuance import STAMP_VERSION, Issuance
 from booley.runtime.session_spec import SessionSpecSnapshot
 from tests.harness import test_session_runtime as resolution_fixtures
 from tests.runtime import test_session_issuance as issuance_fixtures
@@ -61,7 +61,7 @@ def _issuance(root: Path, image_id: str = "sha256:prior") -> Issuance:
     project = root.resolve()
     identity = hashlib.sha256(str(project).encode()).hexdigest()
     return Issuance(
-        4,
+        STAMP_VERSION,
         str(project),
         "a" * 64,
         image_id,
