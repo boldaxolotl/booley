@@ -16,6 +16,8 @@ from textwrap import dedent
 
 import pytest
 
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+
 _TESTS_DIR = Path(__file__).parent
 _SOURCE_DIR = _TESTS_DIR.parent / "src"
 
@@ -67,14 +69,16 @@ def _run_inner(
         env=environment,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=SUBPROCESS_TIMEOUT_S,
         check=False,
     )
 
 
 def _counts(output: str) -> dict[str, int]:
     """Parse the pytest summary line, e.g. ``1 passed, 1 error in 2.0s``."""
-    summary = [line for line in output.splitlines() if re.search(r"\d+ (passed|error)", line)][-1]
+    summary = [
+        line for line in output.splitlines() if re.search(r"\d+ (passed|error|failed)", line)
+    ][-1]
     return {
         name: int(count) for count, name in re.findall(r"(\d+) (passed|error|failed)", summary)
     }
@@ -89,7 +93,7 @@ def test_leaked_thread_fails_the_leaking_test_by_name(tmp_path: Path, workers: i
     # The leaking test passed its call phase, then errored at teardown.
     assert _counts(output) == {"passed": 2, "error": 1}, output
     assert "ERROR at teardown of test_leaks" in output
-    assert "test_case.py::test_leaks" in output
+    assert "test_case.py::test_leaks left 1 thread(s) running" in output
     assert "leaky-worker" in output
     assert "test_case._block" in output
     # The failure belongs to the leaking test, never to the one that runs next.
@@ -145,6 +149,57 @@ def test_thread_finishing_within_grace_passes(tmp_path: Path) -> None:
                 time.sleep(0.3)
 
             threading.Thread(target=linger, name="lingering-worker", daemon=True).start()
+    """
+    result = _run_inner(tmp_path, module)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _counts(result.stdout) == {"passed": 1}
+
+
+def test_thread_leaked_by_a_function_fixture_fails_the_test(tmp_path: Path) -> None:
+    # The snapshot precedes fixture setup, so a fixture's thread is the test's.
+    module = """
+        import threading
+
+        import pytest
+
+        @pytest.fixture
+        def server():
+            threading.Thread(
+                target=threading.Event().wait, name="fixture-server", daemon=True
+            ).start()
+
+        def test_uses_fixture(server):
+            pass
+    """
+    result = _run_inner(tmp_path, module)
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "test_case.py::test_uses_fixture left 1 thread(s) running" in output
+    assert "fixture-server" in output
+
+
+def test_foreign_thread_that_cannot_be_joined_is_ignored(tmp_path: Path) -> None:
+    # A thread made outside threading that calls current_thread() appears as a
+    # _DummyThread, whose join() raises.
+    module = """
+        import _thread
+        import threading
+
+        def test_foreign_thread():
+            ready = threading.Event()
+            stop = _thread.allocate_lock()
+            stop.acquire()
+
+            def foreign():
+                threading.current_thread()
+                ready.set()
+                stop.acquire()
+
+            _thread.start_new_thread(foreign, ())
+            ready.wait()
+            assert any(type(t).__name__ == "_DummyThread" for t in threading.enumerate())
     """
     result = _run_inner(tmp_path, module)
 
@@ -247,7 +302,10 @@ def test_describe_names_the_callable_the_timer_or_the_class() -> None:
     try:
         assert describe(targeted) == "threading.Event.wait"
         assert describe(timer) == "builtins.print"
-        assert describe(Custom()).endswith("Custom")
+        assert describe(Custom()) == (
+            "tests.test_thread_leak_guard."
+            "test_describe_names_the_callable_the_timer_or_the_class.<locals>.Custom"
+        )
     finally:
         stop.set()
         targeted.join()

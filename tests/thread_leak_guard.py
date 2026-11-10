@@ -3,9 +3,11 @@
 A thread that outlives its test keeps running into later tests on the same
 worker, where its failures and side effects are attributed to the wrong test
 or surface only on a slow platform. The guard snapshots the live threads
-before a test's fixtures set up. After every fixture finalizer has run it
-waits a short grace period for new threads to finish on their own, then fails
-the test that started the ones still alive, naming them.
+before a test's fixtures set up. After the test's function-scoped finalizers
+have run it waits a short grace period for new threads to finish on their own,
+then fails the test that started the ones still alive, naming them. A thread
+that a module- or session-scoped fixture starts counts against the first test
+that uses the fixture, so such a fixture must not start one.
 
 Known leaks live in ``tests/thread_leak_allowlist.toml``; that list may only
 shrink.
@@ -167,9 +169,14 @@ def pytest_runtest_teardown(
     if baseline is None:
         return result
     entries = item.config.stash.get(_ALLOWLIST, [])
-    candidates = unexpected_leaks(
-        item.nodeid, [t for t in threading.enumerate() if t not in baseline], entries
-    )
+    # A _DummyThread stands for a foreign (non-Python) thread that called into
+    # threading; it cannot be joined, so the guard leaves it alone.
+    new_threads = [
+        thread
+        for thread in threading.enumerate()
+        if thread not in baseline and not isinstance(thread, threading._DummyThread)
+    ]
+    candidates = unexpected_leaks(item.nodeid, new_threads, entries)
     deadline = time.monotonic() + GRACE_S
     for thread in candidates:
         thread.join(max(0.0, deadline - time.monotonic()))
