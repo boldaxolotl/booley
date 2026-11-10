@@ -116,16 +116,19 @@ def _source_like(path: Path) -> bool:
     ) or path.name.lower().rstrip("~").endswith(tuple(_SOURCE_SUFFIXES))
 
 
-def _configured_outputs(value: object) -> list[Path]:
+def _configured_outputs(value: object, table: tuple[str, ...] = ()) -> list[Path]:
+    """Collect configured output directories; ``table`` is the key path to ``value``."""
     if not isinstance(value, dict):
         return []
     return [
         path
         for key, item in value.items()
+        # ``[flows.sim].output_dir`` is retired: nothing reads it, so it hides nothing.
+        if (*table, key) != ("flows", "sim", "output_dir")
         for path in (
             [Path(item)]
             if key in {"output_dir", "report_dir"} and isinstance(item, str)
-            else _configured_outputs(item)
+            else _configured_outputs(item, (*table, key))
         )
     ]
 
