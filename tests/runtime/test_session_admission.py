@@ -412,10 +412,10 @@ def test_corrupt_claim_fails_closed(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
     assert session_admission.claim_vscode_start(project, run=_Docker({}))
-    claim_path = next(session_admission._store().root.glob("*.json"))
+    claim_path = next(session_admission.claim_store().private.root.glob("*.json"))
     claim_path.write_text("{}", encoding="utf-8")
 
-    with pytest.raises(session_admission.AdmissionError, match="invalid shape"):
+    with pytest.raises(session_admission.AdmissionError, match="does not name a Project Root"):
         session_admission.admit_start(project, target_name="headless", run=_Docker({}))
 
 
@@ -430,7 +430,7 @@ def test_unreadable_claim_json_fails_closed(
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
     assert session_admission.claim_vscode_start(project, run=_Docker({}))
-    claim_path = next(session_admission._store().root.glob("*.json"))
+    claim_path = next(session_admission.claim_store().private.root.glob("*.json"))
     claim_path.write_text("not json", encoding="utf-8")
 
     with pytest.raises(session_admission.AdmissionError, match="cannot read"):
@@ -609,9 +609,7 @@ def test_foreign_mismatch_retains_reservation_and_reports_recovery(
     assert session_admission._command(["docker", "stop", "editor-id"]) in caplog.text
     assert session_admission._command(["docker", "rm", "editor-id"]) in caplog.text
     assert session_admission._command(["booley", "session", "down", "--project"]) in caplog.text
-    assert (
-        session_admission._store().root / session_admission._claim_filename(str(project))
-    ).exists()
+    assert (session_admission.claim_store().path(str(project))).exists()
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -637,9 +635,7 @@ def test_matching_container_cannot_hide_own_mismatch(tmp_path, monkeypatch, reve
     docker.documents = dict(reversed(pairs) if reverse else pairs)
     with pytest.raises(session_admission.AdmissionError, match="identity disagrees"):
         session_admission.admit_start(project, target_name="headless", run=docker)
-    assert (
-        session_admission._store().root / session_admission._claim_filename(str(project))
-    ).exists()
+    assert (session_admission.claim_store().path(str(project))).exists()
 
 
 def test_deleted_root_observed_spelling_is_verified_before_label_acceptance(tmp_path, monkeypatch):
@@ -788,7 +784,7 @@ def _pending_claim(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Pat
     )
     assert session_admission.claim_vscode_start(project, run=lambda *_a, **_kw: _completed())
     root = session_admission._canonical_root(project)
-    return project, session_admission._store().root / session_admission._claim_filename(root)
+    return project, session_admission.claim_store().path(root)
 
 
 def test_claim_clear_survives_transient_unlink_sharing_error(

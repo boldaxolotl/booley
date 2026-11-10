@@ -27,9 +27,21 @@ from booley.targets.domain import TargetHandle
 
 from .capacity import HeavyCapacity, HeavyCapacityError
 from .child_protocol import recover_interrupted_attempts
-from .codec import SimulationCampaignIntegrityError, linked_manifest_path
+from .codec import (
+    SimulationCampaignIntegrityError,
+    linked_manifest_path,
+    reads_campaign_records,
+)
 from .facts import ACCEPTANCE_FACTS_SCHEMA, AcceptanceFacts
-from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
+from .model import (
+    AssertionObservation,
+    ExecutionObservation,
+    FailureClass,
+    FunctionalObservation,
+    SimulationCampaignManifest,
+    SimulationCampaignPlan,
+    SimulationResult,
+)
 from .planning import (
     WorkloadDiagnostic,
     WorkloadMismatch,
@@ -993,9 +1005,53 @@ def collected_result_facts(
                 "finished_at": document["finished_at"],
             }
         )
-        results = cast(tuple[Mapping[str, object], ...], document["observations"])
+        results = result_observations(recovered.result)
         observations.extend(_observation_facts(recovered.work_item_id, item, digest, results))
     return consumed, observations
+
+
+_OBSERVATION_MEMBERS = frozenset(
+    {
+        "test_run",
+        "test",
+        "execution",
+        "failure_class",
+        "functional",
+        "assertions",
+        "assertion_count",
+        "detail",
+        "cycle_count",
+    }
+)
+
+
+@reads_campaign_records
+def result_observations(result: SimulationResult) -> tuple[Mapping[str, object], ...]:
+    """The observations of a stored *result*, each checked for the members facts read.
+
+    The result decoder checks only the document boundary (#1744), so the
+    enum values, test name and cycle count that feed acceptance are checked
+    here. A bad value raises the campaign integrity error.
+    """
+    observations = cast(tuple[Mapping[str, object], ...], result.document["observations"])
+    if not isinstance(observations, tuple):
+        raise TypeError("result observations must be a list")
+    for item in observations:
+        # Facts spread each observation after the identity members, so an extra key would
+        # override them.
+        if set(item) != _OBSERVATION_MEMBERS:
+            raise ValueError("observation must have exactly the recorded members")
+        ExecutionObservation(item["execution"])
+        FunctionalObservation(item["functional"])
+        AssertionObservation(item["assertions"])
+        if item["failure_class"] is not None:
+            FailureClass(item["failure_class"])
+        if not isinstance(item["test"], str | None):
+            raise TypeError("observation test must be a string or null")
+        cycle_count = item["cycle_count"]
+        if cycle_count is not None and (type(cycle_count) is not int or cycle_count < 0):
+            raise ValueError("observation cycle count must be a nonnegative integer or null")
+    return observations
 
 
 def _observation_facts(
@@ -1148,11 +1204,10 @@ def _selected_prerequisite_result(recovery: CampaignRecovery, entry: Mapping[str
 def _healthy_cycle_observation(
     result: SimulationResult, expected_test: str
 ) -> Mapping[str, object] | None:
-    observations = cast(tuple[Mapping[str, object], ...], result.document["observations"])
     return next(
         (
             item
-            for item in observations
+            for item in result_observations(result)
             if item["test"] == expected_test
             and item["cycle_count"] is not None
             and item["execution"] == "completed"

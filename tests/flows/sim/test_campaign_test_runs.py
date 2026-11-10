@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -406,15 +405,6 @@ def test_result_v3_round_trips(tmp_path: Path):
 @pytest.mark.parametrize(
     ("alter", "message"),
     [
-        (lambda document: document["observations"][0].pop("test_run"), "exact fields"),
-        (lambda document: document["observations"][0].update(test_run=""), "test_run"),
-        (lambda document: document["observations"][0].update(test_run=7), "test_run"),
-        (
-            lambda document: document["observations"].append(
-                copy.deepcopy(document["observations"][0])
-            ),
-            "observation test names must be unique",
-        ),
         (lambda document: document.update({"$schema": "booley.simulation-result/v4"}), "schema"),
     ],
 )

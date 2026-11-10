@@ -32,7 +32,7 @@ from booley.core.boundary import (
 )
 from booley.core.differences import format_differences
 from booley.core.egress_modes import declared_egress
-from booley.core.private_store import PrivateStore
+from booley.core.private_store import PrivateStore, ProjectStore
 from booley.core.project_identity import project_label_id
 from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
@@ -59,6 +59,7 @@ from booley.runtime.incontainer_git_identity import (
     load_git_identity,
 )
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
+from booley.runtime.private_store import SESSION_STORE_REPAIR
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 _IS_WINDOWS = os.name == "nt"
@@ -318,23 +319,26 @@ def stamp_path(project_root: Path) -> Path:
 
 def stamp_path_for_identity(project_root: str) -> Path:
     """Private host path for an already-canonical persisted Project identity."""
-    identity = hashlib.sha256(project_root.encode()).hexdigest()
-    return _stamp_store().root / f"{identity}.json"
+    return stamp_store().path(project_root)
 
 
 def invalidate_project(project_root: str) -> None:
     """Remove the host-issued stamp for an already-canonical Project identity."""
-    unlink_file(stamp_path_for_identity(project_root), missing_ok=True)
-    unlink_file(_legacy_stamp_path(project_root), missing_ok=True)
+    # Withdrawal also removes a stamp named by the pre-normalisation Windows
+    # rule: removal is not migration, and it must not outlive a revoked Project.
+    for path in (*stamp_store().paths(project_root), _legacy_stamp_path(project_root)):
+        unlink_file(path, missing_ok=True)
 
 
-def _stamp_store() -> PrivateStore:
-    return PrivateStore(
+def stamp_store() -> ProjectStore:
+    """The per-Project issuance stamps; Doctor scans it read-only."""
+    private = PrivateStore(
         config_dir() / "runtime" / "session-specs",
         config_dir().parent,
         "host-issued Sandbox spec",
         RuntimeSpecError,
     )
+    return ProjectStore(private, SESSION_STORE_REPAIR)
 
 
 def validate_auth_reseed_storage(project_root: Path) -> None:
@@ -344,7 +348,7 @@ def validate_auth_reseed_storage(project_root: Path) -> None:
     from booley.eda.provisioning.configuration import load_eda_config
 
     authorized_project_data_source(project_root)
-    store = _stamp_store()
+    store = stamp_store().private
     # Validate each existing prefix even if the final stamp directory is absent.
     for root in (store.root.parent, store.root):
         PrivateStore(
@@ -370,9 +374,11 @@ def _legacy_stamp_path(project_root: str) -> Path:
 
 
 def _stamp_read_path(project_root: Path) -> Path:
+    # `locate` refuses a stamp named by the old Windows rule rather than ignoring it.
+    located = stamp_store().locate(str(project_root.resolve()))
+    if located is not None:
+        return located
     preferred = stamp_path(project_root)
-    if preferred.exists() or preferred.is_symlink():
-        return preferred
     legacy = _legacy_stamp_path(str(project_root.resolve()))
     return legacy if legacy.exists() or legacy.is_symlink() else preferred
 
@@ -2167,7 +2173,7 @@ def _load_stamp(path: Path) -> Issuance:
 
 
 def _write_stamp(path: Path, issuance: Issuance) -> None:
-    store = _stamp_store()
+    store = stamp_store().private
     if path.parent == store.root:
         store.ensure_directory()
     else:
