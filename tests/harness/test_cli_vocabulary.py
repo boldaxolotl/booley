@@ -150,7 +150,7 @@ def test_recursive_command_inventory():
         "session": {"up", "enter", "down", "status", "validate", "prepare", "refresh"},
         "cleanup": {"prepare", "preview", "apply"},
         "upgrade": {"status", "acknowledge"},
-        "worktree": {"new", "list"},
+        "worktree": {"new", "list", "rm"},
         "feedback": {"add", "friction", "say", "win", "triage", "filed"}
         | {"list", "report", "export", "redact"},
     }

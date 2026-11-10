@@ -47,7 +47,7 @@ def test_worktree_requires_a_subcommand(capsys) -> None:
         tlr._build_parser().parse_args(["worktree"])
 
     assert exc.value.code == 2
-    assert "the following arguments are required: {new,list}" in capsys.readouterr().err
+    assert "the following arguments are required: {new,list,rm}" in capsys.readouterr().err
 
 
 def test_worktree_is_sandbox_only_and_project_bound(monkeypatch, capsys) -> None:
@@ -177,7 +177,8 @@ def test_creates_a_worktree_on_its_own_branch_and_prints_its_path(
     assert output.err == (
         "Filling git submodules from the main checkout...\n"
         "Created worktree 'goal-entry' with a Snapshot. "
-        "To remove it later, see https://booley.dev/docs/cli-reference/#worktrees\n"
+        "Remove it later with: booley worktree rm goal-entry "
+        "(see https://booley.dev/docs/cli-reference/#worktrees)\n"
     )
     # The Snapshot steps still exist for failures; their commands must work.
     steps = worktree_cmd.worktree_removal_instructions(
