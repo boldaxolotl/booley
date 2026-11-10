@@ -591,6 +591,8 @@ def test_flake_stress_repeats_changed_modules_on_linux_and_windows() -> None:
     assert '--count="${STRESS_COUNT}"' in command
     assert "-n 4 --dist=load " in command
     assert "--timeout=60" in command
+    # Only exit 5 (every module skipped itself, e.g. Linux-only on Windows) is tolerated.
+    assert '-ne 0 ] && [ "${status}" -ne 5 ]' in command
     assert stress["env"]["HEADROOM"] in shard["run"]  # same Windows headroom gate
     assert _named_step(job, "Publish pytest evidence")["uses"] == (
         "./.github/actions/publish-pytest-evidence"
@@ -947,14 +949,26 @@ def test_scheduled_mutation_campaign_runs_mutmut_as_a_module() -> None:
     assert re.search(r"(?<!-m )\bmutmut run\b", run_campaign) is None
 
 
-def _tracked_repository_paths() -> list[str]:
-    result = subprocess.run(
-        ["git", "-C", str(REPOSITORY_ROOT), "ls-files", "-z"],
-        capture_output=True,
-        check=True,
-        timeout=30,
+def test_scheduled_mutation_campaign_generates_its_copy_list_first() -> None:
+    """mutmut's sandbox copy list is generated before anything else runs.
+
+    A hand-kept ``also_copy`` list broke the campaign whenever the tracked
+    layout changed (issue #3114). The generator runs before the install, so no
+    install byproduct exists yet, and before ``mutmut run``.
+    """
+    job = _deep_tests_workflow()["jobs"]["mutation"]
+    names = [step.get("name") for step in job["steps"]]
+    generate = names.index("Generate mutation sandbox copy list")
+
+    assert generate < names.index("Install pinned mutation environment")
+    assert generate < names.index("Run bounded mutation campaign")
+    assert job["steps"][generate]["run"] == "python .github/scripts/mutmut_also_copy.py"
+    assert job["steps"][generate]["id"] == "also-copy"
+    # A generator failure is the only red step; results are not read after it.
+    assert _named_step(job, "Record mutation results")["if"] == (
+        "always() && steps.also-copy.outcome == 'success'"
     )
-    return [path for path in result.stdout.decode("utf-8").split("\0") if path]
+    assert (REPOSITORY_ROOT / ".github/scripts/mutmut_also_copy.py").is_file()
 
 
 def _mutmut_config() -> dict[str, list[str]]:
@@ -976,6 +990,8 @@ def test_mutmut_configuration_lives_only_in_setup_cfg() -> None:
     project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert "mutmut" not in project.get("tool", {})
+    # The campaign generates also_copy from the tracked layout (issue #3114).
+    assert "also_copy" not in _mutmut_config()
     assert _mutmut_config()["only_mutate"] == ["src/booley/harness/setup/*.py"]
     assert _mutmut_config()["pytest_add_cli_args_test_selection"] == ["tests/harness/"]
 
@@ -1089,60 +1105,6 @@ def test_mutmut_pytest_options_show_failing_test_traceback() -> None:
     assert "-rfE" in options
     assert "--tb=no" not in options
     assert "-x" not in options
-
-
-def test_mutation_sandbox_mirrors_every_tracked_checkout_entry() -> None:
-    """mutmut's ``mutants/`` copy stays a faithful Booley source checkout.
-
-    The copied pyproject marks ``mutants/`` as a source checkout, so importing
-    Booley there needs ``VERSION``, and harness tests read docs, workflows and
-    Sandbox Image build inputs. A tracked path that mutmut neither mutates nor
-    copies breaks the scheduled campaign before it tests a single mutant.
-    """
-    mutmut = _mutmut_config()
-    # mutmut always copies these alongside the configured source paths.
-    copied = [
-        *mutmut["source_paths"],
-        "tests/",
-        "setup.cfg",
-        "pyproject.toml",
-        *mutmut["also_copy"],
-    ]
-
-    def covered(path: str) -> bool:
-        return any(
-            path.startswith(entry) if entry.endswith("/") else path == entry for entry in copied
-        )
-
-    missing = [path for path in _tracked_repository_paths() if not covered(path)]
-    assert missing == [], (
-        "mutmut would not copy these tracked paths into mutants/; add their "
-        "top-level entry to setup.cfg [mutmut] also_copy"
-    )
-
-
-def test_mutation_sandbox_copy_order_and_build_output_exclusion() -> None:
-    """Every ``also_copy`` entry is copyable in order and skips Cargo outputs."""
-    also_copy = _mutmut_config()["also_copy"]
-    tracked = _tracked_repository_paths()
-
-    for index, entry in enumerate(also_copy):
-        # Each entry names tracked content, never an untracked build tree.
-        if entry.endswith("/"):
-            assert any(path.startswith(entry) for path in tracked), entry
-        else:
-            assert entry in tracked, entry
-        # shutil.copy2 does not create parents; an earlier directory copy must.
-        parent = Path(entry.rstrip("/")).parent.as_posix()
-        if not entry.endswith("/") and parent != ".":
-            assert any(
-                earlier.endswith("/") and earlier.startswith(f"{parent}/")
-                for earlier in also_copy[:index]
-            ), entry
-
-    build_outputs = ("crates/bwave/target/", "crates/bwave/fuzz/target/")
-    for entry in also_copy:
-        assert not any(output.startswith(entry) for output in build_outputs), entry
 
 
 def test_bwave_differential_installs_the_simulators_it_must_not_skip() -> None:

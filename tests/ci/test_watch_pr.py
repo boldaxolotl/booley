@@ -894,12 +894,20 @@ def test_checks_reject_generic_exit_one_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
-def test_checks_accept_documented_no_checks_message(tmp_path: Path) -> None:
+@pytest.mark.parametrize("exit_code", [1, 8])
+@pytest.mark.parametrize(
+    "message",
+    [
+        pytest.param("no checks reported on the 'feature' branch", id="plain"),
+        pytest.param("no required checks reported on the 'feature' branch", id="required"),
+    ],
+)
+def test_checks_accept_documented_no_checks_message(
+    tmp_path: Path, message: str, exit_code: int
+) -> None:
     executable = write_fake_gh(
         tmp_path,
-        "import sys\n"
-        "print(\"no checks reported on the 'feature' branch\", file=sys.stderr)\n"
-        "raise SystemExit(1)\n",
+        f"import sys\nprint({message!r}, file=sys.stderr)\nraise SystemExit({exit_code})\n",
     )
     transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
 
