@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
+import signal
 import sys
 import time
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest.mock import patch
 
 import pytest
 
 from booley.criteria.templates import cycle_count_criterion_key
+from booley.flows import base as flow_base
 from booley.flows.base import BooleyFlow, SubprocessResult
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 
@@ -349,13 +352,21 @@ class TestTimeoutKillsTheWholeTree:
         # "state" is the field right after the (possibly paren-laden) comm.
         return stat.rsplit(")", 1)[1].split()[0] != "Z"
 
-    def _grandchild_flow(self, tmp_path: Path, pid_file: Path):
-        """A Flow whose child spawns a long-lived grandchild, then hangs."""
+    def _grandchild_flow(
+        self, tmp_path: Path, pid_file: Path, *, own_session: bool = False, sleep_s: int = 120
+    ):
+        """A Flow whose child spawns a long-lived grandchild, then hangs.
+
+        ``own_session`` starts the grandchild in a session of its own, out of
+        reach of the group kill: a descendant that survived the kill.
+        """
         import sys
 
+        session_kwarg = ", start_new_session=True" if own_session else ""
         script = (
             "import os, subprocess, sys, time\n"
-            "kid = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            f"kid = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep({sleep_s})']"
+            f"{session_kwarg})\n"
             f"pid_path = {str(pid_file)!r}\n"
             "pid_tmp = pid_path + '.tmp'\n"
             "with open(pid_tmp, 'w') as stream:\n"
@@ -408,16 +419,92 @@ class TestTimeoutKillsTheWholeTree:
             f"grandchild {grandchild} survived the timeout — the orphan leak is back"
         )
 
+    def _reap_escaped_grandchild(self, pid_file: Path) -> None:
+        """SIGKILL a grandchild that escaped the group kill, if it still lives."""
+        if not pid_file.exists():
+            return
+        escaped = int(pid_file.read_text(encoding="utf-8"))
+        # The liveness check avoids signalling a recycled PID.
+        if not self._alive(escaped):
+            return
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(escaped, signal.SIGKILL)
+        deadline = time.monotonic() + 10
+        while self._alive(escaped) and time.monotonic() < deadline:
+            time.sleep(0.05)
+
     @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
     def test_timeout_does_not_hang_on_a_pipe_the_tree_held(self, tmp_path: Path):
-        """The drain must not block behind a grandchild holding stdout open."""
-        pid_file = tmp_path / "grandchild.pid"
-        flow = self._grandchild_flow(tmp_path, pid_file)
+        """The drain must not block behind a grandchild holding stdout open.
 
-        start = time.monotonic()
-        flow._execute(flow._build_command())
-        # 2s budget + kill grace; anything near the child's 120s sleep is a hang.
-        assert time.monotonic() - start < 30
+        Two ways this test used to pass without testing that. (1) The flow's
+        timeout clock covers child start-up, so under load it could expire
+        before the grandchild existed; nothing held the pipe and the drain
+        returned at once. The wrapper below waits for the tree before the real
+        communicate starts the clock's wait, and fails loudly if it never comes
+        up. (2) The grandchild shared the child's session, so the group kill
+        took it down and the pipe closed before the drain ran. The grandchild
+        now runs in its own session, modelling a descendant that survived the
+        kill, so only the drain bound can return in time.
+
+        The drain bound is patched to 1 s to keep the idle runtime short; a
+        change to the constant's value is not covered, only the call-site bound.
+        """
+        pid_file = tmp_path / "grandchild.pid"
+        tree_wait_s = 15
+        flow = self._grandchild_flow(tmp_path, pid_file, own_session=True, sleep_s=40)
+        real_communicate = flow_base._communicate_local_process
+        seen: dict[str, Any] = {}
+
+        def _wait_for_tree_then_communicate(cmd, proc, scope, started, timeout):
+            deadline = time.monotonic() + tree_wait_s
+            while not pid_file.exists() and proc.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            seen["tree_up"] = pid_file.exists()
+            seen["child_returncode"] = proc.poll()
+            if seen["tree_up"]:
+                grandchild = int(pid_file.read_text(encoding="utf-8"))
+                seen["alive"] = self._alive(grandchild)
+                assert proc.stdout is not None
+                seen["holds_stdout"] = (
+                    Path(f"/proc/{grandchild}/fd/1").readlink()
+                    == Path(f"/proc/self/fd/{proc.stdout.fileno()}").readlink()
+                )
+            seen["clock_start"] = time.monotonic()
+            return real_communicate(cmd, proc, scope, started, timeout)
+
+        try:
+            with (
+                patch.object(
+                    flow_base, "_communicate_local_process", _wait_for_tree_then_communicate
+                ),
+                patch.object(flow_base, "_FLOW_KILL_DRAIN_TIMEOUT_S", 1),
+            ):
+                result = flow._execute(flow._build_command())
+            elapsed = time.monotonic() - seen["clock_start"]
+
+            if not seen["tree_up"]:
+                if seen["child_returncode"] is not None:
+                    pytest.fail(
+                        f"child exited (rc={seen['child_returncode']}) before spawning the grandchild"
+                    )
+                pytest.fail(
+                    f"process tree never came up within {tree_wait_s} s — the hang was not exercised"
+                )
+            assert seen["alive"] and seen["holds_stdout"], (
+                "grandchild was not alive and holding the child's stdout when the clock started"
+            )
+            assert result.timed_out is True, result.stderr
+            # 2s budget + kill grace + 1s patched drain; a drain that blocks
+            # behind the grandchild lasts until its 40s sleep ends.
+            assert elapsed < 30, f"drain blocked {elapsed:.1f}s behind a grandchild holding stdout"
+            grandchild = int(pid_file.read_text(encoding="utf-8"))
+            assert self._alive(grandchild), (
+                "grandchild died, so the drain returned because the pipe closed, "
+                "not because its bound expired"
+            )
+        finally:
+            self._reap_escaped_grandchild(pid_file)
 
     @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
     def test_ctrl_c_kills_the_whole_tree(self, tmp_path: Path):
