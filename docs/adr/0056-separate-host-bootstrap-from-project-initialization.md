@@ -4,6 +4,8 @@ status: accepted
 
 # Separate Host Bootstrap from Project Initialization
 
+Amended by [ADR 0085](0085-run-project-initialization-anywhere.md).
+
 `booley init` historically interleaved Project-independent host preparation with
 Project mutation and Session Runtime issuance. Booley exposes an idempotent
 `booley bootstrap` command for Project-independent preparation while preserving
