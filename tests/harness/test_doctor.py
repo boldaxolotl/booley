@@ -10106,3 +10106,85 @@ def test_sandbox_commands_pass_relocated_booley_dir(tmp_path, monkeypatch):
     plain.mkdir()
     default_audit = doctor.ProjectAudit(plain, plain / ".booley", {}, {}, "sim")
     assert "BOOLEY_DIR=/work/.booley" in doctor._mcp_probe_command(default_audit, "docker", "i")
+
+
+# ---------------------------------------------------------------------------
+# Doctor Flow check reports.
+# ---------------------------------------------------------------------------
+
+
+def _flow_phase_output(tmp_path, monkeypatch, capsys, *, verbose: bool) -> tuple[list[str], int]:
+    """Run the Flow dry-run phase with scripted sim/lint dry-runs.
+
+    Returns the ANSI-stripped output lines (project root replaced by ``<root>``)
+    and the exit code the reporter would produce.
+    """
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    base_run = doctor.subprocess.run
+    sim_stderr = "\n".join(
+        ["sim: starting", "sim: elaborating", "sim: linking"]
+        + [f"sim: note {index}" for index in range(4)]
+        + ["%Error: undefined signal foo", "sim: reason follows"]
+        + [f"sim: trailer {index}" for index in range(4)]
+    )
+    lint_stdout = "\n".join(["lint: ok line one", "lint: line two", "lint: line three"])
+
+    def run(cmd, **kwargs):
+        if "booley.flows.sim" in cmd and "--dry-run" in cmd:
+            return subprocess.CompletedProcess(cmd, 3, stdout="", stderr=sim_stderr)
+        if "booley.flows.lint" in cmd and "--dry-run" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=lint_stdout, stderr="")
+        return base_run(cmd, **kwargs)
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    reporter = doctor._Reporter.create(verbose=verbose)
+    docker_exe, project = doctor._run_project_phase(tmp_path, reporter, read_only=True)
+    capsys.readouterr()
+    assert project is not None
+    doctor._run_flow_and_core_phase(
+        project,
+        doctor._DoctorFlowRuntime(tmp_path, docker_exe),
+        verbose,
+        reporter,
+        lambda _message: None,
+    )
+    text = colors.strip_ansi(capsys.readouterr().out).replace(str(tmp_path), "<root>")
+    return text.splitlines(), reporter.finish()
+
+
+_FLOW_FAIL_ROWS = [
+    "  ✗  sim dry-run [sim_fast] failed with exit 3",
+    "     → see <root>/.booley/tmp/doctor/flow-reports",
+    "      %Error: undefined signal foo",
+    "      sim: reason follows",
+    "      … (11 more line(s); see the report dir)",
+]
+_LINT_ROWS = [
+    "  ✓  lint executes in the Sandbox",
+    "  ✓  lint: 'verilator' on the Sandbox PATH",
+    "  ✓  lint dry-run [lint_fast] passed",
+]
+_LINT_VERBOSE_EXCERPT = [
+    "      lint: ok line one",
+    "      … (2 more line(s); see the report dir)",
+]
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+def test_flow_check_doctor_output_is_stable(tmp_path, monkeypatch, capsys, verbose):
+    """Characterization: dry-run rows, hints, and excerpts print as before the report move.
+
+    A failing dry-run always shows its excerpt; a passing one shows a single
+    excerpt line only under ``--verbose``.
+    """
+    lines, exit_code = _flow_phase_output(tmp_path, monkeypatch, capsys, verbose=verbose)
+
+    start = lines.index(_FLOW_FAIL_ROWS[0])
+    end = lines.index("  ✓  synth executes in the Sandbox")
+    assert lines[start:end] == [
+        *_FLOW_FAIL_ROWS,
+        *_LINT_ROWS,
+        *(_LINT_VERBOSE_EXCERPT if verbose else []),
+    ]
+    assert exit_code == 1
