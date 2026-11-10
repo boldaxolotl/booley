@@ -21,7 +21,6 @@ import pytest
 from booley.config.project_config import normalize_tests_toml
 from booley.flows.base import SubprocessResult
 from booley.flows.builtin_cli import parse_request
-from booley.flows.sim.flow import SimulateFlow as ProductionSimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.runtime.endpoint_execution import EXIT_FAILURE
 from tests.flows.sim.campaign_boundary import Launch, run_campaign_sim
@@ -46,7 +45,7 @@ _CORE = (
 
 def _request_fields(argv: list[str]) -> dict[str, Any]:
     """What the production CLI parser makes of *argv*, as ``SimRequest`` keywords."""
-    request = parse_request(ProductionSimulateFlow(), argv)
+    request = parse_request(SimulateFlow(), argv)
     defaults = SimRequest()
     return {
         field.name: getattr(request, field.name)

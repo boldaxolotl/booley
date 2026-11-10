@@ -40,7 +40,7 @@ def _run(
     """Run ``lite`` on the campaign path; a fake simulator fails launches whose document names *failing*."""
 
     def process(launch: Launch) -> SubprocessResult:
-        failed = bool(failing) and failing in repr(launch.work)
+        failed = bool(failing) and any(failing in arg for arg in launch.work.plusargs)
         verdict = "FAILED" if failed else "PASSED"
         return SubprocessResult(
             returncode=int(failed), stdout=f"[SIM_RESULT] {verdict}\n", duration_s=0.1
@@ -57,7 +57,9 @@ def _run(
         test=tests or None,
         **request,
     )
-    report = json.loads((tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text())
+    report = json.loads(
+        (tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text(encoding="utf-8")
+    )
     return run, report
 
 
@@ -205,8 +207,10 @@ def test_campaign_run_at_a_target_default_seed_other_than_one_prints_no_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """Regression: every plain run of such a Target printed its Test Run rows."""
-    run, _report = _run(tmp_path, monkeypatch, "smoke", default_seed=7)
+    run, report = _run(tmp_path, monkeypatch, "smoke", default_seed=7)
     text = run.result.outcome.report_text
+
+    assert [r["name"] for r in report["test_runs"]] == ["smoke@7"]
 
     assert run.result.exit_code == EXIT_SUCCESS, text
     assert "Test Runs:" not in text

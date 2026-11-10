@@ -120,7 +120,7 @@ def run_campaign_sim(
     """Run ``SimulateFlow.execute`` for *targets* with only the process edge faked.
 
     *targets* maps each Target to its tests. *process* is the canned simulator
-    result (or a callable of ``(target, tests)``); *build* answers the build
+    result (or a callable of the ``Launch``); *build* answers the build
     stage (default: success). The adapter result is derived from *process*; a
     timed-out launch writes none (the wrapper killed the adapter). *files* maps
     paths under *tmp_path* to text written after the default project (it adds
@@ -267,10 +267,10 @@ def _cocotb_adapter_result(
     parsed = cocotb_results.parse_results_line(output) or cocotb_results.parse_results_xml(
         Path("absent") / "results.xml"
     )
-    results = cocotb_backend._recover_partial_timeout_results(  # type: ignore[reportPrivateUsage]
+    results = cocotb_backend._recover_partial_timeout_results(  # pyright: ignore[reportPrivateUsage]
         parsed, output, timed_out, names
     )
-    _focused, assessment = cocotb_backend._assess_verdict(  # type: ignore[reportPrivateUsage]
+    _focused, assessment = cocotb_backend._assess_verdict(  # pyright: ignore[reportPrivateUsage]
         results, output, process.returncode, termination, names, ""
     )
     failure_kind = (
@@ -280,7 +280,7 @@ def _cocotb_adapter_result(
         if process.returncode != 0 or count_sva_errors(output)
         else ""
     )
-    return cocotb_backend._cocotb_adapter_result(  # type: ignore[reportPrivateUsage]
+    return cocotb_backend._cocotb_adapter_result(  # pyright: ignore[reportPrivateUsage]
         identity,
         output,
         results,

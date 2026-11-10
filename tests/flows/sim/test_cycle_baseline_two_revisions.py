@@ -151,9 +151,9 @@ def test_both_revisions_run_the_candidates_test_run(tmp_path, tmp_path_factory, 
     result = run.result.outcome
 
     assert run.result.exit_code == EXIT_SUCCESS, result.report_text
-    assert [revision for revision, _launch in launches] == ["baseline", "candidate"]
+    assert [revision for revision, _ in launches] == ["baseline", "candidate"]
     expected = (["test=stress", "iters=900", "verilator+seed+7"], True)
-    assert [_launch(launch) for _revision, launch in launches] == [expected, expected]
+    assert [_launch(launch) for _, launch in launches] == [expected, expected]
     assert criterion.met is True
     assert (criterion.detail["baseline_cycles"], criterion.detail["cycles"]) == (100, 120)
     assert [row["name"] for row in criterion.detail["test_runs"]] == ["stress+soak@7"]

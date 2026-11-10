@@ -52,8 +52,6 @@ targets:
 
 _TESTS = {"ccfg": ["test_reset", "test_count", "test_fail_assert"]}
 
-
-_TESTS = {"ccfg": ["test_reset", "test_count", "test_fail_assert"]}
 _PASSING = [
     ("test_reset", "pass", ""),
     ("test_count", "pass", ""),
@@ -78,9 +76,8 @@ def _cocotb_output(
 ) -> str:
     """Canned run-half stdout: sim noise + [COCOTB_RESULTS] + [SIM_SUMMARY].
 
-    *sva_errors* rides the [SIM_SUMMARY] line — the run-half computes it over
-    the RUN output only, and simulate takes it from the summary (recounting
-    over `combined` would miscount build warnings echoing $error source text).
+    *sva_errors* rides the [SIM_SUMMARY] line; the campaign adapter ignores it
+    and recounts SVA error lines over the run output itself.
     """
     results = cr.CocotbResults(
         state=state,
