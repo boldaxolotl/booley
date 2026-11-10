@@ -1671,14 +1671,14 @@ def test_host_base_without_current_provenance_schema_is_stale_and_rebuilt(
     docker = FakeDocker({lifecycle.BASE_IMAGE: ("sha256:" + "a" * 64, labels)})
     builder = _wire(monkeypatch, docker)
 
-    checked = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.CHECK)
+    checked = lifecycle.reconcile(lifecycle.Intent.CHECK)
 
     assert checked.status is lifecycle.Status.STALE
     assert [item.code for item in checked.diagnostics] == ["stale"]
     assert lifecycle.BASE_IMAGE in checked.diagnostics[0].message
     assert not builder.built
 
-    lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.ENSURE)
+    lifecycle.reconcile(lifecycle.Intent.ENSURE)
 
     assert builder.built == [lifecycle.BASE_IMAGE]
 
