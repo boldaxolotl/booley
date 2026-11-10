@@ -9,8 +9,9 @@ This skill owns Booley setup from **Step 0 (plan)** through **Step 7 (cleanup)**
 plus an **optional post-gate Step 5 (parity)** for projects that want their
 Booley results cross-checked against the repo's native build system.
 The parts outside it are installation and Host Bootstrap in
-[the install guide](https://booley.dev/docs/install/), followed by
-Project Initialization with `booley init` in `docs/user/SETUP.md`. Host
+the install guide at https://booley.dev/docs/install/ (host doc, not shipped),
+followed by Project Initialization with `booley init` in SETUP.md (host doc,
+not shipped). Host
 Bootstrap deploys this skill; Project Initialization records the Project's
 agent provider and authentication policy before this design-aware work begins.
 
@@ -109,7 +110,13 @@ the rest of the line to it verbatim). `booley goal`, `booley dashboard`, and
 `booley doctor` are container commands here. Use `--quiet` for captured Flow
 reproduction output: direct shell calls otherwise add live stderr progress and
 an observation transcript. Human live-output options are documented in
-`docs/user/FLOW_REFERENCE.md` → “Live progress and logs”.
+`/booley-docs/FLOW_REFERENCE.md` → “Live progress and logs”.
+
+The Sandbox ships offline copies of the user docs cited here at `/booley-docs/`;
+that path does not exist on the host, where you read the same pages matching the
+installed version: the GitHub release tag `v<booley --version>`, folder `docs/user/`.
+The docs site (https://booley.dev/docs/, one page per doc name) shows the latest
+release, so use it only when its version equals the installed one.
 
 The CLIs fail fast on the wrong side, each naming the fix: `booley init`
 refuses in-container; the workflow CLI (`booley goal`, `booley dashboard`, `bwave`) refuses
@@ -373,9 +380,10 @@ wants you to break these; it doesn't.
 The steps author the config files; they do **not** re-explain every field.
 When a step needs the meaning of a `booley.toml` section, a `.core`
 fileset/target, `tests.toml`, sentinels, or an advanced setup, it links to
-the Booley user docs: `CONFIG.md` for Project-wide `booley.toml` settings,
-`TARGETS.md` for `.core` files, `TESTS.md` for `tests.toml`, the per-Flow pages
-(`FLOW-SIM.md` for sentinels), and `SANDBOX.md` for the Sandbox image. Bundled templates live at this skill's root:
+the Booley user docs: `/booley-docs/CONFIG.md` for Project-wide `booley.toml`
+settings, `/booley-docs/TARGETS.md` for `.core` files, `/booley-docs/TESTS.md`
+for `tests.toml`, the per-Flow pages (`/booley-docs/FLOW-SIM.md` for sentinels),
+and `/booley-docs/SANDBOX.md` for the Sandbox image. Bundled templates live at this skill's root:
 `../SETUP_PLAN_TEMPLATE.md`, `../BOOLEY_TEMPLATE.toml`,
 `../TESTS_TEMPLATE.toml`, `../CORE_TEMPLATE.yaml`, `../AGENTS_TEMPLATE.md`
 (paths relative to the step files in `steps/`).

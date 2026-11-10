@@ -187,7 +187,7 @@ def test_creates_a_worktree_on_its_own_branch_and_prints_its_path(
     assert command in steps, "Snapshot removal instructions missing"
     assert "Snapshot" in steps and "same Sandbox" in steps and "Sandbox paths" in steps
     assert "WARNING" not in steps
-    assert "preserve" in steps and "docs/user/CLI-REFERENCE.md" in steps
+    assert "preserve" in steps and "CLI-REFERENCE.md (host doc, not shipped)" in steps
     assert steps.count("git -C") == 2 and "booley-worktree/" not in steps
     assert shlex.join(["git", "-C", str(project), "branch", "-D", "booley/goal-entry"]) in steps
     assert "populated submodules" in steps and "--force" in steps

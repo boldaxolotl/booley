@@ -79,7 +79,11 @@ RUN if test -e /booley-project || test -L /booley-project; then \
     else ln -s /work/.booley /booley-project; fi \
     && chown -h root:root /booley-project \
     && test "$(stat -c %u /)" = 0 \
-    && test "$(readlink /booley-project)" = /work/.booley
+    && test "$(readlink /booley-project)" = /work/.booley \
+    && DOCS_DIR="$(python3 -I -c 'from booley.runtime.paths import user_docs_dir; print(user_docs_dir())')" \
+    && ln -sfn "$DOCS_DIR" /booley-docs \
+    && chown -h root:root /booley-docs \
+    && test -f /booley-docs/TROUBLESHOOTING.md
 
 USER agent
 WORKDIR /work

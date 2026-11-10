@@ -15,7 +15,7 @@ inputs and returns a complete typed report:
 | Owner | Public operations | Knowledge hidden from Doctor |
 | --- | --- | --- |
 | `runtime.inspection` | `inspect_runtime(RuntimeInspectionRequest)`; `inspect_retained_resources(project_root, docker_exe)` | Spec parsing and drift order, authority validation, host/runtime distinction, mounted Vivado policy, Docker inventories, exact issuance matching, relay topology, retained-resource classification. |
-| `harness.host_diagnostics` | `inspect_host()` | Python/package/legacy-distribution checks, Bootstrap CHECK interpretation, Docker readiness, host clock and runtime gating. |
+| `harness.host_diagnostics` | `inspect_host()` | Python/package/legacy-distribution checks, Bootstrap CHECK interpretation, Docker readiness, host clock and runtime gating, read-only Session store identity scan. |
 | `harness.setup.readiness` | `load_project(root)`; `check_guidance(project, mode=...)`; `check_stealth_cores(project, mode=...)` | Checkout-local Project resolution, schema composition, parsed EDA inputs, valid continuation data, guidance and core-projection grading and bounded reconciliation. |
 | `audit.host_environment` | `inspect_agent_installation(provider)` | The shared configuration-directory-or-executable installation heuristic. |
 | `runtime.interactive_docker` | `image_exists(name, executable=..., timeout=...)` | The image observation shared by Doctor and Project Initialization. |

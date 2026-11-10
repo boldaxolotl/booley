@@ -476,8 +476,8 @@ def test_init_guidance_does_not_offer_retired_notifications(project, capsys, con
 
 
 def test_summary_rows_use_the_shared_status_glyphs(project, monkeypatch, capsys):
-    from booley.harness import colors
     from booley.harness import terminal_status as ts
+    from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
     ctx = InitContext(project_root=project)

@@ -6,7 +6,7 @@ import inspect
 import re
 from unittest.mock import patch
 
-import booley.harness.colors as colors_mod
+import booley.presentation.colors as colors_mod
 from booley.harness import render_md
 from booley.harness.render_md import (
     _is_separator,
