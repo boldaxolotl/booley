@@ -17,6 +17,11 @@ Packaged release history starts at 0.2.7. For older changes, see
   timed-out conversion reports a trace incident: a failing simulation stays
   failed, a passing one is reported inconclusive, and neither is `timeout`.
   Icarus no longer reports an unconverted raw VCD as a waveform.
+- `sim --trace` now converts a declared `trace_files` entry that is a literal
+  relative `.vcd` path inside the run directory while the test runs, so the
+  waveform is ready at run end and no VCD is left on disk. Other entries still
+  convert after the run. `bwave build` now fails on a VCD holding a second
+  header instead of merging the dumps.
 - Doctor now scans the per-Project Session stores on the host and fails when a
   file is not named for the Project Root it holds, naming the file and its
   repair. On Windows the stores now name a Project Root without regard to
