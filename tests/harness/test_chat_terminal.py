@@ -489,6 +489,7 @@ def test_codex_agent_is_the_forked_child_that_owns_the_marked_allocation(scene: 
     assert "--no-daemon" in agent["cmdline"]
     assert agent["hook"]["key"] == agent["key"]
     identity = capture_process_identity(agent["pid"])
+    assert identity is not None
     owner = codex_chat_owner(scene.booley_dir, identity)
     assert owner is not None
     assert process_session_key(owner) == agent["key"]
@@ -676,7 +677,7 @@ def test_fake_agent_counts_a_signal_caught_before_its_input_wait(scene: _Scene) 
     _read_until(process.stdout.fileno(), b"AGENT-READY")
 
     wait_for(
-        lambda: scene.read("trip.json") or None,
+        lambda: "tripped" in scene.read("trip.json"),
         failure="the fake agent never reported whether it tripped a signal",
         timeout_s=_WAIT_SECONDS,
     )
