@@ -43,6 +43,7 @@ from booley.audit import (
 from booley.audit.diagnostic_results import (
     DiagnosticFinding,
     DiagnosticReport,
+    Findings,
     Severity,
 )
 from booley.audit.doctor_waivers import (
@@ -270,6 +271,7 @@ _CORE_RESOLVE_TIMEOUT_S = 600
 Check = Callable[[str], None]
 Fail = Callable[[str, str], None]
 Warn = Callable[..., None]
+Diagnostics = Callable[[DiagnosticReport], None]
 
 
 @dataclass
@@ -515,10 +517,9 @@ class _Reporter:
                     ),
                     finding.fix,
                 )
-            if self.verbose:
-                for detail in report.details:
-                    if detail.after_finding == index:
-                        info(detail.message)
+            for detail in report.details:
+                if detail.after_finding == index and (self.verbose or not detail.verbose_only):
+                    info(detail.message)
 
     def pass_(self, msg: str) -> None:
         assert self.findings is not None
@@ -869,7 +870,7 @@ def run_doctor_result(
 
     summary = None
     if deep:
-        summary = _run_deep_phase(project, docker_exe, flow_runtime, verbose, reporter)
+        summary = _run_deep_phase(project, docker_exe, flow_runtime, reporter)
 
     result = reporter.result(reporter.finish())
     if project is not None and result.clean and result.health_evidence and record_clean:
@@ -1378,12 +1379,12 @@ def _run_flow_and_core_phase(
         _run_flow_audit(
             project,
             flow_runtime,
-            verbose,
             reporter.pass_,
             reporter.note_,
             reporter.warn_,
             reporter.skip_,
             reporter.fail_,
+            _diagnostics=reporter.diagnostics,
         )
     progress("FuseSoC .core audit")
     _section("FuseSoC .core checks")
@@ -1405,7 +1406,6 @@ def _run_deep_phase(
     project: ProjectAudit | None,
     docker_exe: str | None,
     flow_runtime: _DoctorFlowRuntime | None,
-    verbose: bool,
     reporter: _Reporter,
 ) -> doctor_deep.DeepAttemptSummary:
     _section("Deep checks")
@@ -1421,11 +1421,11 @@ def _run_deep_phase(
     _run_deep_checks(
         project,
         flow_runtime,
-        verbose,
         reporter.pass_,
         reporter.warn_,
         reporter.skip_,
         reporter.fail_,
+        _diagnostics=reporter.diagnostics,
         completeness=tracker,
     )
     _run_core_resolve_checks(
@@ -4444,12 +4444,13 @@ def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> Non
 def _run_flow_audit(
     project: ProjectAudit,
     flow_runtime: _DoctorFlowRuntime,
-    verbose: bool,
     _pass: Check,
     _note: Check,
     _warn: Check,
     _skip: Check,
     _fail: Fail,
+    *,
+    _diagnostics: Diagnostics,
 ) -> None:
     """Validate enabled Flows and run Sandbox dry-run smoke checks."""
     _check_design_size(project, _pass, _note)
@@ -4505,7 +4506,7 @@ def _run_flow_audit(
                     f"{rejected_core.name}; see the .core schema FAIL under FuseSoC .core checks"
                 )
                 continue
-            _run_flow_check(
+            outcome = _run_flow_check(
                 project,
                 flow_name,
                 target=target,
@@ -4513,12 +4514,8 @@ def _run_flow_audit(
                 flow_runtime=flow_runtime,
                 # The fusesoc roots scan alone can exceed 60s on large repos.
                 timeout_s=_configured_timeout_s(project, flow_name, _DRY_RUN_TIMEOUT_S),
-                verbose=verbose,
-                _pass=_pass,
-                _warn=_warn,
-                _skip=_skip,
-                _fail=_fail,
             )
+            _diagnostics(outcome.report)
 
 
 def _rejected_target_core(
@@ -7224,12 +7221,12 @@ def _run_core_resolve_in_docker(
 def _run_deep_checks(
     project: ProjectAudit,
     flow_runtime: _DoctorFlowRuntime,
-    verbose: bool,
     _pass: Check,
     _warn: Check,
     _skip: Check,
     _fail: Fail,
     *,
+    _diagnostics: Diagnostics,
     completeness: doctor_deep.DeepCheckTracker | None = None,
 ) -> None:
     """Run the real EDA smoke matrix selected by ``.core`` metadata."""
@@ -7251,20 +7248,20 @@ def _run_deep_checks(
             )
             identifier = f"{flow_name}.smoke.{hashlib.sha256(target.encode()).hexdigest()[:16]}"
             tracker.require(identifier)
-            completed = _run_flow_check(
+            outcome = _run_flow_check(
                 project,
                 flow_name,
                 target=target,
                 dry_run=False,
                 flow_runtime=flow_runtime,
                 timeout_s=timeout_s,
-                verbose=verbose,
-                _pass=_pass,
-                _warn=_warn,
-                _skip=_skip,
-                _fail=_fail,
             )
-            tracker.completed(identifier, completed)
+            _diagnostics(outcome.report)
+            if flow_name == "synth" and outcome.process is not None:
+                _record_synth_memory_calibration(
+                    project, target, _flow_report_dir(project), _pass, _warn
+                )
+            tracker.completed(identifier, outcome.completed)
     _run_fpga_impl_deep_notice(project, _skip)
     _run_selftest_checks(project, flow_runtime, _pass, _warn, _skip, _fail, completeness=tracker)
 
@@ -7799,9 +7796,9 @@ def _run_flow_check_subprocess(
     timeout_s: int,
     label: str,
     report_dir: Path,
-    _fail: Fail,
-) -> subprocess.CompletedProcess | None:
-    """Run *cmd* for a Flow check; ``None`` means a FAIL was already reported."""
+    findings: Findings,
+) -> subprocess.CompletedProcess[str] | None:
+    """Run *cmd* for a Flow check; ``None`` means a FAIL was already recorded."""
     env = _doctor_subprocess_env(project)
     try:
         return subprocess.run(
@@ -7814,52 +7811,20 @@ def _run_flow_check_subprocess(
             check=False,
         )
     except subprocess.TimeoutExpired:
-        _fail(
+        findings.fail(
             f"{label} timed out after {timeout_s}s",
             f"see {_display_report_dir(project, report_dir)}",
         )
         return None
     except OSError as exc:
-        _fail(
+        findings.fail(
             f"{label} failed to start: {exc}",
             f"see {_display_report_dir(project, report_dir)}",
         )
         return None
 
 
-def _interpret_flow_check_result(
-    project: ProjectAudit,
-    flow_name: str,
-    result: subprocess.CompletedProcess,
-    *,
-    target: str,
-    dry_run: bool,
-    verbose: bool,
-    label: str,
-    report_dir: Path,
-    _pass: Check,
-    _warn: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """Translate a Flow check's subprocess result into a PASS/WARN/SKIP/FAIL."""
-    _report_flow_check_result(
-        project,
-        flow_name,
-        result,
-        target=target,
-        dry_run=dry_run,
-        label=label,
-        report_dir=report_dir,
-        verbose=verbose,
-        _pass=_pass,
-        _warn=_warn,
-        _skip=_skip,
-        _fail=_fail,
-    )
-
-
-def _report_flow_check_result(
+def _grade_flow_check_result(
     project: ProjectAudit,
     flow_name: str,
     result: subprocess.CompletedProcess[str],
@@ -7868,13 +7833,9 @@ def _report_flow_check_result(
     dry_run: bool,
     label: str,
     report_dir: Path,
-    verbose: bool,
-    _pass: Check,
-    _warn: Check,
-    _skip: Check,
-    _fail: Fail,
+    findings: Findings,
 ) -> None:
-    """Turn a finished Flow run into a doctor verdict.
+    """Turn a finished Flow run into a doctor verdict recorded in *findings*.
 
     The one question this smoke check exists to answer is "can this Flow run
     against this project at all" — so a *graded* nonzero exit is not
@@ -7882,27 +7843,23 @@ def _report_flow_check_result(
     """
     synth_error = _synth_deep_report_error(flow_name, target, dry_run, report_dir)
     if result.returncode == 0 and synth_error:
-        _fail(
+        findings.fail(
             f"{label} produced incomplete synthesis evidence: {synth_error}",
             f"see {_display_report_dir(project, report_dir)}",
         )
     elif _is_synth_warning_verdict(flow_name, dry_run, result):
-        _warn(
-            warning(
-                "flow.synth-deep-warning",
-                f"{label} returned a WARN verdict",
-                subject=target,
-            ),
+        findings.warn(
+            f"{label} returned a WARN verdict",
             f"run `booley flow synth --target {target}` and resolve its reported findings",
+            check_id="flow.synth-deep-warning",
+            subject=target,
         )
-        if verbose:
-            _print_output_excerpt(result)
+        _record_output_excerpt(findings, result)
     elif result.returncode == 0:
-        _pass(f"{label} passed")
-        if verbose:
-            _print_output_excerpt(result, max_lines=1)
+        findings.pass_(f"{label} passed")
+        _record_output_excerpt(findings, result, max_lines=1)
     elif _is_simulate_tb_top_skip(project, flow_name, dry_run, result):
-        _skip(
+        findings.skip(
             f"{label} skipped - tb_top is resolved at runtime "
             "(no static tb_top in the first config)"
         )
@@ -7913,18 +7870,30 @@ def _report_flow_check_result(
         # — the FAIL block would literally embed "RESULT: WARN (58 warnings)" —
         # which says nothing about whether lint is wired up correctly, the only
         # question this smoke check exists to answer.
-        _pass(
+        findings.pass_(
             f"{label} ran end-to-end; the design has lint findings "
             f"(exit {_TOOL_EXIT_DESIGN_FAIL} = WARN), which belong to `booley lint`"
         )
-        if verbose:
-            _print_output_excerpt(result)
+        _record_output_excerpt(findings, result)
     else:
-        _fail(
+        findings.fail(
             f"{label} failed with exit {result.returncode}",
             f"see {_display_report_dir(project, report_dir)}",
         )
-        _print_output_excerpt(result)
+        # A failure's excerpt is the evidence the reader needs: shown always.
+        _record_output_excerpt(findings, result, verbose_only=False)
+
+
+def _record_output_excerpt(
+    findings: Findings,
+    result: subprocess.CompletedProcess[str],
+    *,
+    max_lines: int = 8,
+    verbose_only: bool = True,
+) -> None:
+    """Attach the informative slice of *result*'s output to the last finding."""
+    for line in _output_excerpt_lines(result.stderr or result.stdout or "", max_lines):
+        findings.detail(line, verbose_only=verbose_only)
 
 
 def _synth_deep_report_error(flow_name: str, target: str, dry_run: bool, report_dir: Path) -> str:
@@ -7984,11 +7953,16 @@ def _is_lint_findings_exit(
     )
 
 
+def _flow_report_dir(project: ProjectAudit) -> Path:
+    """Directory holding the reports of Doctor's Flow checks."""
+    return project.booley_dir / DOCTOR_TMP_DIR / "flow-reports"
+
+
 def _prepare_flow_report_dir(
     project: ProjectAudit, flow_name: str, target: str, dry_run: bool
 ) -> Path:
     """Create the Doctor report directory and remove stale synth evidence."""
-    report_dir = project.booley_dir / DOCTOR_TMP_DIR / "flow-reports"
+    report_dir = _flow_report_dir(project)
     report_dir.mkdir(parents=True, exist_ok=True)
     if flow_name != "synth" or dry_run:
         return report_dir
@@ -8006,12 +7980,11 @@ def _doctor_flow_command(
     target: str,
     dry_run: bool,
     label: str,
-    _skip: Check,
-    _fail: Fail,
+    findings: Findings,
 ) -> list[str] | None:
-    """Build a Flow command or report why the issued Sandbox cannot run it."""
+    """Build a Flow command or record why the issued Sandbox cannot run it."""
     if not flow_runtime.available:
-        _skip(f"{label} skipped - '{_CONTAINER_CLI}' runtime not available")
+        findings.skip(f"{label} skipped - '{_CONTAINER_CLI}' runtime not available")
         return None
     try:
         return _flow_command(
@@ -8022,7 +7995,7 @@ def _doctor_flow_command(
             flow_runtime=flow_runtime,
         )
     except session_runtime.SessionError as exc:
-        _fail(
+        findings.fail(
             f"{label} could not enter the Sandbox: {exc}",
             _sandbox_failure_remedy(exc),
         )
@@ -8044,6 +8017,17 @@ def _is_synth_warning_verdict(
     )
 
 
+@dataclass(frozen=True)
+class _FlowCheckOutcome:
+    """Findings and run facts from one Doctor Flow check."""
+
+    report: DiagnosticReport
+    # None: the command was not launched, timed out, or failed to start.
+    process: subprocess.CompletedProcess[str] | None
+    # The Flow ran and was not the stateless sim dry-run tb_top skip.
+    completed: bool
+
+
 def _run_flow_check(
     project: ProjectAudit,
     flow_name: str,
@@ -8052,18 +8036,13 @@ def _run_flow_check(
     dry_run: bool,
     flow_runtime: _DoctorFlowRuntime,
     timeout_s: int,
-    verbose: bool,
-    _pass: Check,
-    _warn: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> bool:
+) -> _FlowCheckOutcome:
+    """Run one Flow smoke check and return its graded report."""
+    findings = Findings()
     label = f"{flow_name} {'dry-run' if dry_run else 'deep check'} [{target}]"
-    cmd = _doctor_flow_command(
-        project, flow_runtime, flow_name, target, dry_run, label, _skip, _fail
-    )
+    cmd = _doctor_flow_command(project, flow_runtime, flow_name, target, dry_run, label, findings)
     if cmd is None:
-        return False
+        return _FlowCheckOutcome(findings.report(), None, completed=False)
     report_dir = _prepare_flow_report_dir(project, flow_name, target, dry_run)
     result = _run_flow_check_subprocess(
         project,
@@ -8071,28 +8050,25 @@ def _run_flow_check(
         timeout_s=timeout_s,
         label=label,
         report_dir=report_dir,
-        _fail=_fail,
+        findings=findings,
     )
     if result is None:
-        return False
-    _interpret_flow_check_result(
+        return _FlowCheckOutcome(findings.report(), None, completed=False)
+    _grade_flow_check_result(
         project,
         flow_name,
         result,
         target=target,
         dry_run=dry_run,
-        verbose=verbose,
         label=label,
         report_dir=report_dir,
-        _pass=_pass,
-        _warn=_warn,
-        _skip=_skip,
-        _fail=_fail,
+        findings=findings,
     )
-    if flow_name == "synth" and not dry_run:
-        _record_synth_memory_calibration(project, target, report_dir, _pass, _warn)
-
-    return not _is_simulate_tb_top_skip(project, flow_name, dry_run, result)
+    return _FlowCheckOutcome(
+        findings.report(),
+        result,
+        completed=not _is_simulate_tb_top_skip(project, flow_name, dry_run, result),
+    )
 
 
 def _record_synth_memory_calibration(
@@ -8160,7 +8136,7 @@ def _is_simulate_tb_top_skip(
     needle = "--tb-top is required"
     if needle in f"{result.stderr or ''}\n{result.stdout or ''}":
         return True
-    report = project.booley_dir / DOCTOR_TMP_DIR / "flow-reports" / f"{flow_name}.json"
+    report = _flow_report_dir(project) / f"{flow_name}.json"
     try:
         payload = json.loads(report.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -8456,19 +8432,19 @@ _OUTPUT_ERROR_MARKERS = (
 )
 
 
-def _print_text_excerpt(text: str, max_lines: int = 8) -> None:
-    """Print the informative slice of multi-line command output (indented).
+def _output_excerpt_lines(text: str, max_lines: int = 8) -> list[str]:
+    """Return the informative slice of multi-line command output (indented).
 
     A first-line-only excerpt truncated multi-line diagnostics — notably a
     fusesoc parse error whose reason (``... must be array``) lands on the *next*
-    line. When any line looks like an error, print from the first such line
+    line. When any line looks like an error, take from the first such line
     through the line after the last one (to catch the trailing reason); otherwise
     fall back to the head of the output. Capped at *max_lines* with a "… N more"
     note so the report dir is still the full record.
     """
     lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
     if not lines:
-        return
+        return []
     flagged = [
         i for i, ln in enumerate(lines) if any(m in ln.lower() for m in _OUTPUT_ERROR_MARKERS)
     ]
@@ -8476,11 +8452,17 @@ def _print_text_excerpt(text: str, max_lines: int = 8) -> None:
         selected = lines[flagged[0] : flagged[-1] + 2][:max_lines]
     else:
         selected = lines[:max_lines]
-    for ln in selected:
-        info(f"    {ln}")
+    excerpt = [f"    {ln}" for ln in selected]
     hidden = len(lines) - len(selected)
     if hidden > 0:
-        info(f"    … ({hidden} more line(s); see the report dir)")
+        excerpt.append(f"    … ({hidden} more line(s); see the report dir)")
+    return excerpt
+
+
+def _print_text_excerpt(text: str, max_lines: int = 8) -> None:
+    """Print :func:`_output_excerpt_lines` of *text*."""
+    for line in _output_excerpt_lines(text, max_lines):
+        info(line)
 
 
 def _print_output_excerpt(result: subprocess.CompletedProcess[str], max_lines: int = 8) -> None:
