@@ -92,7 +92,7 @@ Booley can drive four flows: **`sim`**, **`lint`**, **`synth`**,
 and **`fpga`**. Feasibility is per-flow: a project may be a perfect fit
 for simulate and lint while its synthesis flow needs extra wiring. Per flow the
 verdict falls into one of three buckets. The authoritative EDA-tool → bucket mapping
-lives in the supported EDA tools matrix, `docs/user/SUPPORTED-EDA-TOOLS.md` — treat it as the
+lives in the supported EDA tools matrix, `/booley-docs/SUPPORTED-EDA-TOOLS.md` — treat it as the
 source of truth; the EDA-tool names in the buckets below are illustrative and can
 drift as the matrix grows. **Read the copy that matches the Booley you are
 setting up** (`booley --version` names it): a local Booley *checkout* on this
@@ -260,7 +260,7 @@ script lines) as you go.
   or by `pre_run_commands` (per test).
 - **Current EDA tools.** Whatever the repo uses today (visible in its
   Makefiles, `*.f` file lists, `scripts/`/`flow/` directories, TCL, and CI
-  configs) maps onto the supported EDA tools matrix (`docs/user/SUPPORTED-EDA-TOOLS.md`, read
+  configs) maps onto the supported EDA tools matrix (`/booley-docs/SUPPORTED-EDA-TOOLS.md`, read
   per the version rule in Part A's preamble). Verilator, Icarus, Yosys
   (+OpenROAD) and sv2v are built in. AMD Vivado 2025.2 is built in only
   through the Linux-x86-64 administrator-registered, host-provisioned policy.
@@ -376,7 +376,7 @@ script lines) as you go.
      and lift the exact wording of every early-exit path.
   **Then check how often the pass sentinel prints.** A per-case `TEST SUCCEEDED`
   that fires ~96× in one run means the whole verdict rests on the tie-breaking
-  rule: **a fail sentinel wins ties** (FLOW-SIM.md → sentinels). That is what makes
+  rule: **a fail sentinel wins ties** (`/booley-docs/FLOW-SIM.md` → "Pass/fail sentinels"). That is what makes
   a fail-dominant sentinel set safe with a repeating pass string — and what makes
   a *missing* category-4 sentinel fatal. Record in row 5 that the set is
   fail-dominant by design, so nobody later "cleans up" the fail list.
@@ -388,8 +388,8 @@ script lines) as you go.
     cannot serve as a standalone lint/synthesis top, so both flows are dead until you add a thin
     **flat-port wrapper** (one small file, not a blocker; `booley doctor` flags
     it at setup time). `sim` is unaffected: a cocotb testbench brings its
-    own wrapper. Symptom and wrapper recipe: Booley's `docs/user/TROUBLESHOOTING.md` ("interface
-    parameter mismatch").
+    own wrapper. Symptom and wrapper recipe: Booley's `/booley-docs/TROUBLESHOOTING.md` → "interface
+    parameter mismatch".
   - **Packed-struct / user-typedef ports** (`input fp_operation_type op`, a
     `typedef struct packed` or an enum from a package) — **no wrapper needed.**
     A packed struct is just a bit vector with names on it; the frontends flatten
@@ -416,7 +416,7 @@ script lines) as you go.
   appendix), never to vendor a prebuilt blob. And don't stop at "a RISC-V
   toolchain exists in the image" — plan an execution-time check of the
   project's exact compile flags against the sandbox compiler, because vendor
-  `-march` strings are a classic trap (Booley's `docs/user/TROUBLESHOOTING.md`, "RISC-V
+  `-march` strings are a classic trap (Booley's `/booley-docs/TROUBLESHOOTING.md` → "RISC-V
   firmware won't assemble against the sandbox GCC").
 - **Repository shape.** Three topology traps are worth ten minutes of looking
   before any config is planned. *Self-referential symlinks*: some repos ship
@@ -454,7 +454,7 @@ script lines) as you go.
   `git -C .booley submodule status` too. If either has any, add a
   decision row — but a short one: Goal worktrees get their submodules
   reconstructed from local Git objects at the same repository path, never
-  cloned, so private SSH URLs are not consulted (mechanics in TARGETS.md →
+  cloned, so private SSH URLs are not consulted (mechanics in `/booley-docs/TARGETS.md` →
   "Submodules"). What the plan owes is the precondition and, if the outer repo
   has heavy submodules nothing builds against, the explicit list:
   - Every selected submodule must be **present, clean, non-shallow, and contain
@@ -560,7 +560,7 @@ separate columns (see "How a row resolves"). The standard checklist:
    **Enumerate the full
    Target list here**, not just a name per intent: each Target with its intent,
    toplevel, and test list. The counting rule depends on the TB flavor (row 4);
-   `TARGETS.md` is authoritative:
+   `/booley-docs/TARGETS.md` is authoritative:
    - **Classic sentinel SV/UVM TB** — one Target per *intent* (sim / lint /
      asic / fpga). A distinct config (parameter/define set) or a distinct
      toplevel gets its own Target; nothing else does.
@@ -631,9 +631,9 @@ separate columns (see "How a row resolves"). The standard checklist:
    file and its stimulus sources as additional Protected Inputs: tell the human
    that Goal Mode will freeze them, check that no build output lands inside a
    proposed pattern, and record their agreement in this row. Step 2 writes
-   `[project].protected_inputs` only from that agreement; see CONFIG.md →
+   `[project].protected_inputs` only from that agreement; see `/booley-docs/CONFIG.md` →
    "Additional Protected Inputs". Two shape constraints to plan against, both
-   from FLOW-SIM.md: `pre_run_commands` and `run_cwd` live under
+   from `/booley-docs/FLOW-SIM.md`: `pre_run_commands` and `run_cwd` live under
    `[flows.sim]` and are therefore **global to the Flow — one value shared
    by every sim Target**, not per-Target knobs. Per-Target behavior has to come
    from *inside* the commands, branching on the exported `$BOOLEY_TARGET` (also
@@ -1001,7 +1001,7 @@ compile-flag probe.
 
    For the image contents, how to pull or build it, and how to layer extra
   EDA tools on top with `# booley:keep` (needed when a repo like ibex also bakes
-   Python deps), see SANDBOX.md → "RISC-V toolchain image".
+   Python deps), see `/booley-docs/SANDBOX.md` → "RISC-V toolchain image".
 
 2. **Post-setup hook**: build the firmware on demand instead of committing a
    `.hex`. A Project setup script can run inside the container after a Goal
@@ -1015,7 +1015,7 @@ compile-flag probe.
 
    The explicit `_zicsr` is not cosmetic — the sandbox GCC won't assemble an
    older project's default `-march=rv32imc` without it. See Booley's
-   `docs/user/TROUBLESHOOTING.md` ("RISC-V firmware won't assemble against the sandbox GCC")
+   `/booley-docs/TROUBLESHOOTING.md` → "RISC-V firmware won't assemble against the sandbox GCC"
    for that and the vendor-ISA `-march` trap.
 
    Keep the hook thin — have it call a **tracked** script in the repo

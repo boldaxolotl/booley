@@ -42,10 +42,17 @@ or CI fails with that command in its message.
 Booley needs **Python 3.11+**. For venv, PATH, and Windows problems, see
 [TROUBLESHOOTING.md](../user/TROUBLESHOOTING.md).
 
-`docs/user/TROUBLESHOOTING.md` is the single authored troubleshooting source.
-After editing it, refresh the installed-runtime copy with
-`python -m booley.dev_support.reference_docs`; use `--check` to verify it
-without writing.
+The Sandbox agents read a fixed set of user docs from `/booley-docs/`. The
+authored files stay in `docs/user/` (plus `docs/internals/FLOW_REPORTS.md`); the
+set is `SHIPPED_DOCS` in `src/booley/dev_support/reference_docs.py`. After
+editing any of them, regenerate the packaged copies in `src/booley/data/docs/`
+with `python -m booley.dev_support.reference_docs`; use `--check` to verify them
+without writing. Never edit a copy by hand. The sync turns links to other
+shipped docs into sibling links and links to unshipped docs
+(`PLAIN_TEXT_TARGETS`) into plain text marked `(host doc, not shipped)`. A new
+link to a doc in neither set fails the sync with the file, the link and the fix.
+The regenerated copy lives under `src/booley/**`, so such an edit also runs the
+Python CI lane.
 
 ### Building a development wheel
 

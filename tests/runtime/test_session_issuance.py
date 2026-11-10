@@ -2901,6 +2901,35 @@ def test_project_label_preserves_exact_full_digest_for_deleted_root():
     assert labels["booley.spec-digest"] == "a" * 64
 
 
+def test_labels_cover_requires_every_issuance_label_value() -> None:
+    issuance = runtime_spec.Issuance(
+        version=1,
+        project_root="/deleted/Project",
+        spec_sha256="a" * 64,
+        image="image",
+        image_id="sha256:" + "b" * 64,
+        keeper_image="keeper",
+        policy_revision=1,
+        installation=None,
+        license_profile=None,
+        wrapper_sha256=None,
+        relay_image_id=None,
+        validator_sha256="c" * 64,
+    )
+    container_labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
+
+    assert runtime_spec.missing_labels(issuance, container_labels) == ()
+    assert runtime_spec.labels_cover(issuance, {**container_labels, "extra": "kept"})
+    assert not runtime_spec.labels_cover(issuance, {**container_labels, "booley.eda-policy": "2"})
+    assert runtime_spec.missing_labels(
+        issuance, {**container_labels, "booley.eda-policy": "2"}
+    ) == ("booley.eda-policy=1",)
+    del container_labels["booley.spec-digest"]
+    assert runtime_spec.missing_labels(issuance, container_labels) == (
+        f"booley.spec-digest={'a' * 64}",
+    )
+
+
 def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch):
     import sys
 

@@ -268,13 +268,14 @@ def test_heal_has_bounded_doctor_repair_and_verification_loop():
         "zero `FAIL` findings",
         "zero active `WARN` findings",
         "Doctor's `→` fix hint",
-        "from booley.runtime.paths import troubleshooting_path",
+        "/booley-docs/TROUBLESHOOTING.md",
         "booley doctor --deep",
         "after 12 remediation passes",
         "final plain `booley doctor`",
         "host: final plain `booley doctor`",
     ):
         assert required in skill
+    assert "troubleshooting_path" not in skill  # the python one-liner fails on pipx hosts
     normalized = " ".join(skill.split())
     assert (
         "A complete, qualifying run with no active findings other than the expected "

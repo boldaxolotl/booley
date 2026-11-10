@@ -20,6 +20,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   `enabled = false` to confirm it is off. A `booley.toml` that can't be read
   keeps Stealth on. Unattended setup now keeps `.booley/` in your repository
   instead of hiding it.
+- A fresh Sandbox no longer shows Claude Code's auto-mode default nudge on the
+  first chat: registration marks it as seen (`hasSeenAutoDefaultNudge`), with or
+  without a credential, and keeps any value already in `~/.claude.json`.
 - `sim --trace` converts a declared `trace_files` VCD of any size; the 2 GiB
   limit is gone. Post-run VCD-to-FST conversion now has its own
   `[flows.sim].trace_convert_timeout_ms` budget (default `1800000`, 30 minutes)
