@@ -179,6 +179,7 @@
       "customType": "regex",
       "managerFilePatterns": [
         "/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/",
+        "/^src/booley/data/docs/SUPPORTED-EDA-TOOLS\\.md$/",
         "/^src/booley/flows/sim/verilator_identity\\.py$/"
       ],
       "matchStrings": [
@@ -191,7 +192,7 @@
     {
       "description": "Copy of the Yosys pin: the supported-tools row.",
       "customType": "regex",
-      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/", "/^src/booley/data/docs/SUPPORTED-EDA-TOOLS\\.md$/"],
       "matchStrings": ["\\| Yosys \\| (?<currentValue>v\\d+\\.\\d+),"],
       "datasourceTemplate": "github-tags",
       "depNameTemplate": "YosysHQ/yosys"
@@ -199,7 +200,7 @@
     {
       "description": "Copy of the Yosys pin without its v: the slang frontend note.",
       "customType": "regex",
-      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/", "/^src/booley/data/docs/SUPPORTED-EDA-TOOLS\\.md$/"],
       "matchStrings": ["the standard image has (?<currentValue>\\d+\\.\\d+)\\."],
       "datasourceTemplate": "github-tags",
       "depNameTemplate": "YosysHQ/yosys",
@@ -208,7 +209,7 @@
     {
       "description": "Copy of the Icarus Verilog pin: the supported-tools row.",
       "customType": "regex",
-      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/", "/^src/booley/data/docs/SUPPORTED-EDA-TOOLS\\.md$/"],
       "matchStrings": ["\\| Icarus Verilog \\| (?<currentValue>v\\d+_\\d+) \\|"],
       "datasourceTemplate": "github-tags",
       "depNameTemplate": "steveicarus/iverilog",
@@ -217,7 +218,7 @@
     {
       "description": "Copy of the sv2v pin: the supported-tools row.",
       "customType": "regex",
-      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/", "/^src/booley/data/docs/SUPPORTED-EDA-TOOLS\\.md$/"],
       "matchStrings": ["\\| sv2v \\| (?<currentValue>v\\d+\\.\\d+\\.\\d+) \\|"],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "zachjs/sv2v"
@@ -225,7 +226,7 @@
     {
       "description": "Copy of the Verible pin: the supported-tools row.",
       "customType": "regex",
-      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/", "/^src/booley/data/docs/SUPPORTED-EDA-TOOLS\\.md$/"],
       "matchStrings": ["\\| Verible \\| (?<currentValue>v\\d+\\.\\d+-\\d+-g[0-9a-f]+) \\|"],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "chipsalliance/verible",
@@ -234,7 +235,7 @@
     {
       "description": "Copy of the FuseSoC pin: the first version of the supported-tools row (the match ends before the slash, so it never overlaps the Edalize match).",
       "customType": "regex",
-      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/", "/^src/booley/data/docs/SUPPORTED-EDA-TOOLS\\.md$/"],
       "matchStrings": ["\\| FuseSoC / Edalize \\| (?<currentValue>\\d+\\.\\d+\\.\\d+)"],
       "datasourceTemplate": "pypi",
       "depNameTemplate": "fusesoc"
@@ -242,7 +243,7 @@
     {
       "description": "Copy of the Edalize pin: the second version of the supported-tools row.",
       "customType": "regex",
-      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/", "/^src/booley/data/docs/SUPPORTED-EDA-TOOLS\\.md$/"],
       "matchStrings": ["/ (?<currentValue>\\d+\\.\\d+\\.\\d+) \\|"],
       "datasourceTemplate": "pypi",
       "depNameTemplate": "edalize"
@@ -252,6 +253,7 @@
       "customType": "regex",
       "managerFilePatterns": [
         "/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/",
+        "/^src/booley/data/docs/SUPPORTED-EDA-TOOLS\\.md$/",
         "/^\\.github/contracts/session-runtime\\.toml$/"
       ],
       "matchStrings": [
@@ -264,7 +266,7 @@
     {
       "description": "Copies of the cocotb companion pins in the supported-tools row.",
       "customType": "regex",
-      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/", "/^src/booley/data/docs/SUPPORTED-EDA-TOOLS\\.md$/"],
       "matchStrings": [
         "`(?<depName>cocotbext-axi|cocotbext-uart|numpy)` (?<currentValue>\\d+\\.\\d+\\.\\d+)"
       ],
@@ -273,7 +275,7 @@
     {
       "description": "Copy of the xPack GCC pin: the supported-tools prose (the build suffix belongs to the pin).",
       "customType": "regex",
-      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/", "/^src/booley/data/docs/SUPPORTED-EDA-TOOLS\\.md$/"],
       "matchStrings": ["xPack RISC-V GCC\\n`(?<currentValue>\\d+\\.\\d+\\.\\d+-\\d+)`"],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "xpack-dev-tools/riscv-none-elf-gcc-xpack",
@@ -295,7 +297,7 @@
     {
       "description": "Copy of the Spike commit: the supported-tools prose (digest only; the describe string beside it is named in the PR note).",
       "customType": "regex",
-      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/", "/^src/booley/data/docs/SUPPORTED-EDA-TOOLS\\.md$/"],
       "matchStrings": ["Spike at commit\\n`(?<currentDigest>[0-9a-f]{40})`"],
       "datasourceTemplate": "git-refs",
       "depNameTemplate": "riscv-isa-sim",
@@ -308,7 +310,7 @@
       "managerFilePatterns": [
         "/^src/booley/runtime/vaporview\\.py$/",
         "/^docs/user/TROUBLESHOOTING\\.md$/",
-        "/^src/booley/data/refs/TROUBLESHOOTING\\.md$/"
+        "/^src/booley/data/docs/TROUBLESHOOTING\\.md$/"
       ],
       "matchStrings": [
         "VERIFIED_VERSION = \\\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\\"",
@@ -326,7 +328,7 @@
         "/^src/booley/runtime/devcontainer\\.py$/",
         "/^\\.github/contracts/session-runtime\\.toml$/",
         "/^docs/user/TROUBLESHOOTING\\.md$/",
-        "/^src/booley/data/refs/TROUBLESHOOTING\\.md$/"
+        "/^src/booley/data/docs/TROUBLESHOOTING\\.md$/"
       ],
       "matchStrings": [
         "_HDL_VERSION = \\\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\\"",
@@ -342,7 +344,7 @@
         "/^src/booley/runtime/devcontainer\\.py$/",
         "/^\\.github/contracts/session-runtime\\.toml$/",
         "/^docs/user/TROUBLESHOOTING\\.md$/",
-        "/^src/booley/data/refs/TROUBLESHOOTING\\.md$/"
+        "/^src/booley/data/docs/TROUBLESHOOTING\\.md$/"
       ],
       "matchStrings": [
         "_LIVE_PREVIEW_VERSION = \\\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\\"",
@@ -354,7 +356,7 @@
     {
       "description": "Copy of the Ubuntu parent image tag: the supported-tools base image row.",
       "customType": "regex",
-      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/", "/^src/booley/data/docs/SUPPORTED-EDA-TOOLS\\.md$/"],
       "matchStrings": ["\\| Base image \\| Ubuntu (?<currentValue>\\d+\\.\\d+) \\|"],
       "datasourceTemplate": "docker",
       "depNameTemplate": "docker.io/library/ubuntu"
@@ -458,6 +460,7 @@
       "description": "riscv: the copies of the xPack and Spike pins in the supported-tools table and the session runtime contract (same branch as Dockerfile.riscv).",
       "matchFileNames": [
         "docs/user/SUPPORTED-EDA-TOOLS.md",
+        "src/booley/data/docs/SUPPORTED-EDA-TOOLS.md",
         ".github/contracts/session-runtime.toml"
       ],
       "matchDepNames": ["xpack-dev-tools/riscv-none-elf-gcc-xpack", "riscv-isa-sim"],
@@ -484,6 +487,7 @@
       "description": "sandbox-base: copies of the Python pins in the supported-tools table and the session runtime contract (same branch as the base requirements).",
       "matchFileNames": [
         "docs/user/SUPPORTED-EDA-TOOLS.md",
+        "src/booley/data/docs/SUPPORTED-EDA-TOOLS.md",
         ".github/contracts/session-runtime.toml"
       ],
       "matchDepNames": [

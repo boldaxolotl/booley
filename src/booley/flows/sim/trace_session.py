@@ -119,6 +119,16 @@ class TraceSession:
         return self._stall_message
 
     @property
+    def work_dir(self) -> Path:
+        """The attempt's managed simulation directory."""
+        return self._work_dir
+
+    @property
+    def trace_scope(self) -> str | None:
+        """Hierarchy scope the attempt's conversions keep."""
+        return self._trace_scope
+
+    @property
     def cache_dir(self) -> Path:
         """B-Wave-owned collision-resistant cache location."""
         return waveform_cache_dir(self._work_dir)
@@ -338,7 +348,7 @@ class TraceSession:
         if result.conversion is not None:
             self._record_conversion("vcd_convert", result.conversion)
             if result.conversion.success:
-                selected = self._publish_bwave(result.selected) if result.selected else None
+                selected = self.publish_bwave(result.selected) if result.selected else None
         return selected or result.selected
 
     def inspect(self, path: Path | None) -> TraceInspection:
@@ -459,7 +469,7 @@ class TraceSession:
                 print(f"[bwave] stderr: {result.detail}")
         status = "success" if result and result.success else "no_artifact"
         if status == "success":
-            self._publish_bwave(self.bwave_path)
+            self.publish_bwave(self.bwave_path)
         return_code = result.attempts[-1].return_code if result and result.attempts else None
         self.record_attempt("fifo_cleanup", status, return_code=return_code)
 
@@ -470,6 +480,7 @@ class TraceSession:
         stall_timeout: float = 30.0,
         poll_interval: float = 2.0,
         kill_after_stalls: int = 3,
+        spare_simulator: bool = False,
     ) -> None:
         """Start a daemon thread that watches trace-store growth and kills on stall.
 
@@ -481,12 +492,24 @@ class TraceSession:
         can surface a clear "trace pipeline stalled" error instead of riding
         the outer job timeout out.
 
+        With *spare_simulator* (a declared-file stream the testbench owns) a
+        window only counts while the pipe holds unread bytes, a stall kills
+        just the converter, and a converter that exits while the simulator
+        lives has its input drained so the writer never blocks.
+
         The caller must pair this with :meth:`stop_monitor` once the run is over.
         A session supports one monitor: it cannot be restarted after a stop.
         """
         thread = threading.Thread(
             target=self._monitor_stalls,
-            args=(bwave_proc, sim_proc, stall_timeout, poll_interval, kill_after_stalls),
+            args=(
+                bwave_proc,
+                sim_proc,
+                stall_timeout,
+                poll_interval,
+                kill_after_stalls,
+                spare_simulator,
+            ),
             daemon=True,
         )
         self._monitor_thread = thread
@@ -511,6 +534,7 @@ class TraceSession:
         stall_timeout: float,
         poll_interval: float,
         kill_after_stalls: int,
+        spare_simulator: bool = False,
     ) -> None:
         last_size = -1
         stall_start: float | None = None
@@ -519,7 +543,7 @@ class TraceSession:
             if self._monitor_stop.wait(poll_interval):
                 return
             size = bwave_proc.progress_size()
-            if size != last_size:
+            if size != last_size or (spare_simulator and bwave_proc.backlog() == 0):
                 last_size, stall_start, stall_count = size, None, 0
                 continue
             if stall_start is None:
@@ -530,7 +554,7 @@ class TraceSession:
             stall_count += 1
             stalled_for = stall_timeout * stall_count
             self._log_stall_window(
-                self.bwave_path,
+                bwave_proc.store_path,
                 size,
                 stalled_for,
                 stall_count,
@@ -539,9 +563,16 @@ class TraceSession:
                 bwave_proc,
             )
             if stall_count >= kill_after_stalls:
-                self._kill_stalled_pipeline(size, stalled_for, sim_proc, bwave_proc)
-                return
+                if spare_simulator:
+                    self.record_event("declared_stream_stalled", f"no read for {stalled_for:.0f}s")
+                    bwave_proc.kill()
+                else:
+                    self._kill_stalled_pipeline(size, stalled_for, sim_proc, bwave_proc)
+                    return
+                break
             stall_start = None
+        if spare_simulator and sim_proc.poll() is None:
+            bwave_proc.discard_input()
 
     def _log_stall_window(
         self,
@@ -613,6 +644,11 @@ class TraceSession:
         """Fix the one deadline that bounds every post-run conversion of this attempt."""
         self._conversion_deadline = time.monotonic() + timeout_s
 
+    def budget_remaining_s(self) -> float:
+        """Seconds left of the conversion budget (0 once spent or never started)."""
+        deadline = self._conversion_deadline
+        return 0.0 if deadline is None else max(0.0, deadline - time.monotonic())
+
     def postprocess(self, vcd_path: Path) -> None:
         """Windows/fallback: convert VCD file → .fst after sim completes."""
         self._postprocessed = True
@@ -637,7 +673,7 @@ class TraceSession:
                     "raise [flows.sim].trace_convert_timeout_ms"
                 )
             if success:
-                self._publish_bwave(self.bwave_path)
+                self.publish_bwave(self.bwave_path)
             elif result.detail:
                 (vcd_path.parent / "trace.fst.stderr").write_text(
                     result.detail + "\n", encoding="utf-8"
@@ -671,7 +707,7 @@ class TraceSession:
             self.persisted_stderr_path.unlink(missing_ok=True)
             shutil.move(source_stderr, self.persisted_stderr_path)
 
-    def _publish_bwave(self, trace_path: Path) -> Path | None:
+    def publish_bwave(self, trace_path: Path) -> Path | None:
         """Copy a valid cached store beside sim artifacts for later lookup."""
         if (
             trace_path.suffix != ".fst"
