@@ -2918,7 +2918,7 @@ def test_project_recipe_fingerprint_includes_arbitrary_context_files(tmp_path: P
     assert before != after
 
 
-def test_docker_cli_preserves_inspect_and_mutation_failures(
+def test_docker_cli_preserves_label_and_mutation_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cli = lifecycle._DockerCli()
