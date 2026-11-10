@@ -62,7 +62,7 @@ def _write(run_id: str, *, owner: str | None, status: str = jobrec.STATUS_DONE, 
         "endpoint": "sim",
         "started_at": utc_now_rfc3339(),
         "timeout_s": 60,
-        "pid": 4242,
+        "pid": _FAKE_CHILD_PID,
         "exit_code": 0,
     }
     jobrec.write_record(
@@ -190,7 +190,7 @@ def test_nothing_to_wait_for_returns_immediately():
 def test_inline_completion_counts_as_read(monkeypatch):
     async def run(cmd, *, timeout, on_spawn=None, **_kwargs):
         if on_spawn:
-            on_spawn(4242)
+            on_spawn(_FAKE_CHILD_PID)
         return (0, "FAST", "", False)
 
     monkeypatch.setattr(mcp_server, "_run_subprocess", run)
