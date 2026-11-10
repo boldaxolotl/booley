@@ -121,7 +121,6 @@ document: Booley product datasheet
           <rect class="bx" x="296" y="104" width="120" height="46"/>
           <text class="t" x="356" y="132" text-anchor="middle">Egress proxy</text>
           <path class="ln" d="M356 150 V176"/>
-          <text class="pn" x="364" y="168">3</text>
 
           <g class="only-server">
             <path class="chip ghost" d="M218 188 H305 A8 8 0 0 0 321 188 H408 V414 H218 Z"/>
@@ -141,8 +140,6 @@ document: Booley product datasheet
           <text class="t2" x="301" y="345" text-anchor="middle">EDA tools</text>
           <text class="s2" x="301" y="363" text-anchor="middle">Verilator, Icarus, Yosys</text>
           <path class="ln" d="M190 245 H206 M190 350 H206"/>
-          <text class="pn" x="198" y="239" text-anchor="middle">1</text>
-          <text class="pn" x="198" y="344" text-anchor="middle">2</text>
 
           <rect class="bx" x="36" y="384" width="160" height="50"/>
           <text class="t2" x="116" y="404" text-anchor="middle">Licensed EDA tools</text>
