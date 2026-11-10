@@ -213,19 +213,19 @@ def test_check_only_egress_already_recorded_is_current(
 def test_mode_change_names_running_sandboxes_on_old_mode(
     host: _Host, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    host.sandboxes = lambda: (
-        _sandbox("editor", "proxy", vscode=True),
-        _sandbox("headless", "proxy", vscode=False),
-        _sandbox("current", "unproxied", vscode=False),
-    )
+    editor = _sandbox("editor", "proxy", vscode=True)
+    headless = _sandbox("headless", "proxy", vscode=False)
+    host.sandboxes = lambda: (editor, headless, _sandbox("current", "unproxied", vscode=False))
 
     assert host.run(egress="unproxied") == 0
 
     out = capsys.readouterr().out
+    # The remedy quotes commands per host shell, so compare against its own rendering.
+    assert session_admission.recreate_remedy(editor) in out
+    assert session_admission.recreate_remedy(headless) in out
     assert "Sandbox editor (Project /work/editor) still runs with egress 'proxy'" in out
     assert "Dev Containers: Rebuild Container" in out
     assert "Sandbox headless (Project /work/headless) still runs with egress 'proxy'" in out
-    assert "booley session down" in out
     assert "Sandbox current" not in out
 
 

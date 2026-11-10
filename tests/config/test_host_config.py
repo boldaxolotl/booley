@@ -233,7 +233,7 @@ def test_egress_edit_refuses_invalid_merged_policy(tmp_path: Path) -> None:
 
 def test_egress_edit_repairs_invalid_existing_egress(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
-    path.write_text('[sandbox]\negress = "unproxyed"\n', encoding="utf-8")
+    path.write_bytes(b'[sandbox]\negress = "unproxyed"\n')
 
     change = host_config.plan_host_egress("proxy", path)
 
