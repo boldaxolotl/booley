@@ -308,7 +308,7 @@ class SimulationCampaign:
         validated: ValidatedResumeManifest,
     ) -> tuple[CampaignRecovery, CampaignRecoveryStatus]:
         store = CampaignStore(validated.path.parent, booley_dir=validated.booley_dir)
-        recovery = store.scan_validated(validated.manifest, validated.sha256)
+        recovery = store.scan(validated.manifest, validated.sha256)
         return recovery, _recovery_status(validated.path, validated.sha256, recovery)
 
     @staticmethod
@@ -370,7 +370,7 @@ class SimulationCampaign:
         self._preflight_owner(store, manifest, authenticated_sha256, request)
         owner = cast(str, manifest.document["campaign_id"])
         self._run_prerequisites(store, manifest, request, frozenset({owner}), set())
-        recovery = _scan_recovery(store, manifest, authenticated_sha256)
+        recovery = store.scan(manifest, authenticated_sha256)
         self._run_pending(store, manifest, recovery, request)
         self._raise_if_cancelled(request)
         target = cast(Mapping[str, str], manifest.document["target"])
@@ -394,7 +394,7 @@ class SimulationCampaign:
                 )
                 failure = replace(failure, nested_campaign=nested)
             self._publication_checkpoint("before:summary_replace")
-            summary = _regenerate_summary(store, manifest, authenticated_sha256)
+            summary = store.regenerate_summary(manifest, authenticated_sha256)
             self._publication_checkpoint("after:summary_replace")
             if failure is not None:
                 reference = self._publish_coverage_reference(
@@ -407,7 +407,7 @@ class SimulationCampaign:
             raise CampaignPublicationError(
                 str(exc), replace(failure, coverage_reference=reference)
             ) from exc
-        final = _scan_recovery(store, manifest, authenticated_sha256)
+        final = store.scan(manifest, authenticated_sha256)
         return _outcome(store, manifest, summary, final, reference)
 
     @staticmethod
@@ -480,7 +480,7 @@ class SimulationCampaign:
         """Reject a missing run_cwd anywhere in the prerequisite tree before any build."""
         if not manifest.document["prerequisites"]:
             return  # _run_pending performs the same check for the sole campaign.
-        recovery = _scan_recovery(store, manifest, authenticated_sha256)
+        recovery = store.scan(manifest, authenticated_sha256)
         self._preflight_incomplete(manifest, recovery, request)
         self._preflight_prerequisites(
             store, manifest, request, {cast(str, manifest.document["campaign_id"])}
@@ -556,9 +556,7 @@ class SimulationCampaign:
                     )
                     recovery = prerequisite_store.scan(prerequisite)
                     self._run_pending(prerequisite_store, prerequisite, recovery, request)
-                    prerequisite_store.regenerate_summary_validated(
-                        prerequisite, manifest_digest(prerequisite)
-                    )
+                    prerequisite_store.regenerate_summary(prerequisite)
                 finished.add(campaign_id)
             selected = prerequisite_store.scan(prerequisite)
             match = next(
@@ -766,7 +764,7 @@ def _committed_coverage_result(
     manifest: SimulationCampaignManifest,
     authenticated_manifest_sha256: str | None,
 ) -> tuple[str, SimulationResult]:
-    recovery = _scan_recovery(store, manifest, authenticated_manifest_sha256)
+    recovery = store.scan(manifest, authenticated_manifest_sha256)
     completed = [item for item in recovery.items if item.result is not None]
     if len(completed) != 1:
         raise SimulationCampaignIntegrityError(
@@ -887,26 +885,6 @@ def _preflight_run_directory(manifest: SimulationCampaignManifest, project_root:
     require_literal_run_directory(
         literal_run_path(cast(str, run_cwd["configured"]), project_root=project_root)
     )
-
-
-def _scan_recovery(
-    store: CampaignStore,
-    manifest: SimulationCampaignManifest,
-    authenticated_manifest_sha256: str | None,
-) -> CampaignRecovery:
-    if authenticated_manifest_sha256 is None:
-        return store.scan(manifest)
-    return store.scan_validated(manifest, authenticated_manifest_sha256)
-
-
-def _regenerate_summary(
-    store: CampaignStore,
-    manifest: SimulationCampaignManifest,
-    authenticated_manifest_sha256: str | None,
-) -> Mapping[str, object]:
-    if authenticated_manifest_sha256 is None:
-        return store.regenerate_summary_validated(manifest, manifest_digest(manifest))
-    return store.regenerate_summary_validated(manifest, authenticated_manifest_sha256)
 
 
 def _acceptance_ready(

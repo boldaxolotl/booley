@@ -588,6 +588,31 @@ def _write_syn_demo_project(work_dir: Path) -> None:
 _REAL_RESOLVE = fusesoc_registry._resolve_target
 
 
+# The Target-handle entry points the lenient catalog adapter replaces per test
+# (it drops the build's library plan); the AC4 test needs the genuine ones.
+_REAL_RESOLVE_HANDLE = fusesoc_registry.resolve_target_handle
+_REAL_SETUP_HANDLE = fusesoc_registry.setup_command_for_handle
+
+
+def _fusesoc_cmd() -> list[str]:
+    """Return the FuseSoC argv: the console script, else ``python -c`` without one."""
+    import sys
+
+    if shutil.which("fusesoc"):
+        return list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
+    return [sys.executable, "-c", "from fusesoc.main import main; main()"]
+
+
+def _real_resolve(*args, **kwargs):
+    """Run the genuine legacy FuseSoC resolver."""
+    return _REAL_RESOLVE(*args, **{**kwargs, "fusesoc_cmd": _fusesoc_cmd()})
+
+
+def _real_resolve_handle(handle, **kwargs):
+    """Run the genuine Target-handle resolver, honoring the build's library plan."""
+    return _REAL_RESOLVE_HANDLE(handle, **{**kwargs, "fusesoc_cmd": _fusesoc_cmd()})
+
+
 @pytest.fixture(autouse=True)
 def _stub_fusesoc_resolution(tmp_path: Path):
     """Default every test's FuseSoC resolution to a fake synth EDAM.
@@ -1481,9 +1506,6 @@ class TestDryRun:
     def test_dry_run_records_evidence_for_projected_stealth_core(
         self, state_file: Path, tmp_path: Path
     ):
-        import shutil
-        import sys
-
         work_dir = tmp_path / "proj"
         _write_syn_demo_project(work_dir)
         booley_dir = work_dir / ".booley"
@@ -1506,20 +1528,7 @@ class TestDryRun:
             ]
         )
         flow.read_state()
-        fusesoc_cmd = (
-            list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
-            if shutil.which("fusesoc")
-            else [sys.executable, "-c", "from fusesoc.main import main; main()"]
-        )
-
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *args, **kwargs: _REAL_RESOLVE(
-                *args,
-                **{**kwargs, "fusesoc_cmd": fusesoc_cmd},
-            ),
-        ):
+        with patch.object(fusesoc_registry, "_resolve_target", side_effect=_real_resolve):
             result = flow._run()
             dry_plan = flow._flow_plan
             flow.args.dry_run = False
@@ -1530,6 +1539,88 @@ class TestDryRun:
         assert dry_plan.semantic_plan_fingerprint == real_plan.semantic_plan_fingerprint
         run_evidence = flow._recipe_evidence["syn"][2]
         assert run_evidence["source_sha256"]
+
+    @pytest.mark.skipif(
+        shutil.which("git") is None or os.name == "nt",
+        reason="`booley worktree new` runs only in the Sandbox on POSIX with git",
+    )
+    @pytest.mark.parametrize("isolation", ["isolated", "projected"])
+    def test_synth_plan_identity_matches_in_booley_worktree(
+        self,
+        isolation: str,
+        state_file: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """The same Target and inputs plan identically in the main and a worktree checkout.
+
+        Isolated Projects name sources by Project-relative path, hiding the
+        private source mirror; without isolation the FuseSoC export names stay.
+        """
+        import argparse
+
+        pytest.importorskip("fusesoc")
+        pytest.importorskip("edalize")
+        from booley.harness import worktree_cmd
+
+        # `booley worktree new` refuses a foreign ambient BOOLEY_DIR.
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
+        root = tmp_path / "repo"
+        _write_syn_demo_project(root)
+        booley_dir = root / ".booley"
+        (booley_dir / "cores").mkdir(parents=True)
+        (root / "syn_demo.core").replace(booley_dir / "cores" / "syn_demo.core")
+        isolate = "ignore_native_cores = true\n" if isolation == "isolated" else ""
+        (booley_dir / "booley.toml").write_text(
+            f"[stealth]\nenabled = true\n{isolate}", encoding="utf-8"
+        )
+        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        for args in (
+            ("init",),
+            ("config", "user.name", "Test User"),
+            ("config", "user.email", "test@example.com"),
+            ("add", "rtl", "tb", "constraints"),
+            ("commit", "-m", "init"),
+        ):
+            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, timeout=60)
+        # Created before any preparation, so the Snapshot holds no generated state.
+        assert worktree_cmd.run(argparse.Namespace(worktree_command="new", name="wt"), root) == 0
+
+        def plans(checkout: Path):
+            flow = AsicSynthesizeFlow()
+            flow.parse_args(["--target", "syn", "--work-dir", str(checkout), "--dry-run"])
+            flow.read_state()
+            with (
+                patch.object(
+                    fusesoc_registry, "resolve_target_handle", side_effect=_real_resolve_handle
+                ),
+                patch.object(fusesoc_registry, "setup_command_for_handle", _REAL_SETUP_HANDLE),
+            ):
+                assert flow._run().exit_code == EXIT_SUCCESS
+                dry_plan = flow._flow_plan
+                flow.args.dry_run = False
+                real_plan = flow._plan_synth_implementation(["syn"])
+            return dry_plan, real_plan
+
+        main_dry, main_real = plans(root)
+        wt_dry, wt_real = plans(booley_dir / "worktrees" / "wt")
+
+        assert main_dry.semantic_plan_fingerprint == wt_dry.semantic_plan_fingerprint
+        assert main_real.semantic_plan_fingerprint == wt_real.semantic_plan_fingerprint
+        unit = main_real.work_units[0]
+        configure = unit.commands[0].argv
+
+        def operands(flag: str) -> list[str]:
+            return [configure[i + 1] for i, arg in enumerate(configure) if arg == flag]
+
+        prefix = "" if isolation == "isolated" else "src/syn_demo_0/"
+        assert unit.sources == tuple(
+            prefix + name
+            for name in ("rtl/include/defs.svh", "rtl/pkg.sv", "rtl/dut.sv", "tb/tb_dut.sv")
+        )
+        assert unit.constraints == (f"{prefix}constraints/dut.sdc",)
+        assert operands("--extra-rtl") == [f"{prefix}rtl/pkg.sv", f"{prefix}rtl/dut.sv"]
+        assert operands("--inc-dir") == [f"{prefix}rtl/include"]
 
 
 # ===========================================================================
@@ -4219,9 +4310,6 @@ class TestSynthResolution:
         """
         pytest.importorskip("fusesoc")
         pytest.importorskip("edalize")
-        import shutil
-        import sys
-
         work_dir = tmp_path / "proj"
         _write_syn_demo_project(work_dir)
 
@@ -4236,19 +4324,7 @@ class TestSynthResolution:
         )
         flow.read_state()
 
-        if shutil.which("fusesoc"):
-            fusesoc_cmd = list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
-        else:
-            fusesoc_cmd = [sys.executable, "-c", "from fusesoc.main import main; main()"]
-
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _REAL_RESOLVE(
-                *a,
-                **{**k, "fusesoc_cmd": fusesoc_cmd},
-            ),
-        ):
+        with patch.object(fusesoc_registry, "_resolve_target", side_effect=_real_resolve):
             cmd = flow._build_synth_cmd("syn")
 
         joined = " ".join(cmd)

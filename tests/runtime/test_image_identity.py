@@ -6,6 +6,7 @@ import subprocess
 
 import pytest
 
+from booley.core.boundary import BoundaryError
 from booley.runtime import image_identity as identity
 
 
@@ -16,7 +17,7 @@ def _metadata(
     labels: dict[str, str],
     environment: dict[str, str] | None = None,
 ) -> identity.ImageMetadata:
-    return identity.ImageMetadata(reference, image_id, labels, environment or {})
+    return identity.ImageMetadata(reference, image_id, labels, environment or {}, ())
 
 
 def test_unknown_build_values_are_unavailable() -> None:
@@ -122,9 +123,46 @@ def test_decode_docker_document_preserves_labels_and_environment() -> None:
     assert metadata.environment == {"BOOLEY_VERSION": "1.2.3", "EMPTY": ""}
 
 
-def test_decode_malformed_docker_document_is_unknown() -> None:
-    assert identity.decode_image_metadata("issued", []) is None
-    assert identity.decode_image_metadata("issued", [{"Id": 3}]) is None
+def test_decode_docker_document_reads_layers_and_null_sections() -> None:
+    layered = identity.decode_image_metadata(
+        "issued",
+        [{"Id": "sha256:issued", "RootFS": {"Layers": ["sha256:a", "sha256:b"]}}],
+    )
+    assert layered.layers == ("sha256:a", "sha256:b")
+    assert layered.labels == {} and layered.environment == {}
+
+    # ``Config: null``, ``Labels: null`` and an omitted RootFS or Layers list are valid.
+    for record in (
+        {"Id": "sha256:x", "Config": None},
+        {"Id": "sha256:x", "Config": {"Labels": None, "Env": None}},
+        {"Id": "sha256:x", "RootFS": {"Type": "layers"}},
+    ):
+        decoded = identity.decode_image_metadata("issued", [record])
+        assert (decoded.labels, decoded.environment, decoded.layers) == ({}, {}, ())
+
+
+def test_decode_malformed_docker_document_raises() -> None:
+    malformed: list[object] = [
+        {"Id": "sha256:x"},
+        [],
+        [{"Id": "sha256:x"}, {"Id": "sha256:y"}],
+        ["not-a-record"],
+        [{"Id": 3}],
+        [{"Id": "sha256:x", "Config": "text"}],
+        [{"Id": "sha256:x", "RootFS": None}],
+        [{"Id": "sha256:x", "RootFS": {"Layers": [1]}}],
+        [{"Id": "sha256:x", "RootFS": {"Layers": "layer"}}],
+    ]
+    for document in malformed:
+        with pytest.raises(BoundaryError):
+            identity.decode_image_metadata("issued", document)
+
+
+def test_label_reads_blank_as_absent() -> None:
+    metadata = identity.ImageMetadata("r", "sha256:x", {"a": " v ", "b": "  ", "c": ""}, {}, ())
+
+    assert (metadata.label("a"), metadata.label("b"), metadata.label("c")) == ("v", None, None)
+    assert metadata.label("missing") is None
 
 
 _SELECTION_LABELS = {
