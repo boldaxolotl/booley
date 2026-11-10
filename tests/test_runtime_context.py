@@ -254,3 +254,90 @@ def test_venue_refusal_has_no_drifting_command_list(guard, inside, monkeypatch):
         assert named_commands == expected
     else:
         assert "`booley --help`" in instructions
+
+
+# ===========================================================================
+# runtime_location() and booley_init_hint() (issue 2751)
+# ===========================================================================
+
+
+def _mountinfo_line(mount_point: str) -> str:
+    """One /proc/self/mountinfo record whose fifth field is *mount_point*."""
+    return f"36 35 98:0 /src {mount_point} rw,noatime master:1 - ext4 /dev/root rw\n"
+
+
+def _use_mountinfo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *mount_points: str) -> None:
+    """Point the location probe at a mountinfo file listing *mount_points*."""
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_bytes("".join(_mountinfo_line(point) for point in mount_points).encode())
+    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
+
+
+ISSUED_MOUNT_CASES = (
+    (("/", "/work", "/work/.devcontainer"), "ISSUED_SANDBOX"),
+    (("/", "/booley-project"), "ISSUED_SANDBOX"),
+    (("/", "/work/.booley"), "ISSUED_SANDBOX"),
+    (("/", "/booley-project/masked"), "ISSUED_SANDBOX"),
+    (("/", "/work/.devcontainer/sub dir"), "ISSUED_SANDBOX"),
+    (("/", "/work", "/workspaces/repo", "/work/.booleyx"), "HAND_WRITTEN_SANDBOX"),
+    ((), "HAND_WRITTEN_SANDBOX"),
+)
+
+
+def test_runtime_location_reads_issued_mounts(
+    container_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for mount_points, expected in ISSUED_MOUNT_CASES:
+        _use_mountinfo(monkeypatch, tmp_path, *mount_points)
+        location = runtime_context.runtime_location()
+        assert location is runtime_context.RuntimeLocation[expected], mount_points
+
+
+def test_runtime_location_escaped_space_in_mount_point(
+    container_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """mountinfo spells a space as ``\\040``; an issued target stays recognizable."""
+    _use_mountinfo(monkeypatch, tmp_path, "/work/.devcontainer/a\\040b")
+    assert runtime_context.runtime_location() is runtime_context.RuntimeLocation.ISSUED_SANDBOX
+
+
+def test_runtime_location_ignores_short_records(
+    container_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_bytes(b"garbage\n\n" + _mountinfo_line("/mnt").encode())
+    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
+    assert (
+        runtime_context.runtime_location() is runtime_context.RuntimeLocation.HAND_WRITTEN_SANDBOX
+    )
+
+
+def test_runtime_location_unreadable_mountinfo_counts_as_issued(
+    container_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A false 'issued' verdict only causes a refusal, so unreadable means issued."""
+    monkeypatch.setattr(runtime_context, "_MOUNTINFO", tmp_path / "absent")
+    assert runtime_context.runtime_location() is runtime_context.RuntimeLocation.ISSUED_SANDBOX
+
+
+def test_runtime_location_on_host_never_reads_mountinfo(
+    host: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A host whose mountinfo happens to list an issued target is still the host.
+    _use_mountinfo(monkeypatch, tmp_path, "/work/.devcontainer")
+    assert runtime_context.runtime_location() is runtime_context.RuntimeLocation.HOST
+
+
+def test_booley_init_hint_names_the_location(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected = {
+        "HOST": ("booley init", "`booley init`"),
+        "HAND_WRITTEN_SANDBOX": ("booley init in this Sandbox", "`booley init` in this Sandbox"),
+        "ISSUED_SANDBOX": ("booley init on the host", "`booley init` on the host"),
+    }
+    for name, (plain, code) in expected.items():
+        location = runtime_context.RuntimeLocation[name]
+        monkeypatch.setattr(
+            runtime_context, "runtime_location", lambda location=location: location
+        )
+        assert runtime_context.booley_init_hint() == plain
+        assert runtime_context.booley_init_hint(code=True) == code
