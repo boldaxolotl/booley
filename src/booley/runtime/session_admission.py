@@ -35,7 +35,7 @@ from booley.core.project_identity import matches_project_label
 from booley.core.user_paths import config_dir
 from booley.runtime import devcontainer as dc
 from booley.runtime.filesystem_utils import unlink_file
-from booley.runtime.platform_paths import host_path_from_docker_mount
+from booley.runtime.platform_paths import host_path_from_docker_mount, same_host_path
 from booley.runtime.private_store import SESSION_STORE_REPAIR
 from booley.runtime.timefmt import format_age, parse_timestamp, rfc3339_from_datetime
 
@@ -108,7 +108,7 @@ def admit_start(
     if len(live) + len(claims) >= policy.max_sessions:
         raise AdmissionError(_refusal(policy, live, claims, now or datetime.now(UTC), diagnostics))
     # A headless start must not consume its Project's editor reservation.
-    if any(_same_project_root(claim.project_root, root) for claim in claims):
+    if any(same_host_path(claim.project_root, root) for claim in claims):
         raise AdmissionError(_refusal(policy, live, claims, now or datetime.now(UTC), diagnostics))
 
 
@@ -126,7 +126,7 @@ def claim_vscode_start(
     project_sandboxes = _project_vscode_sandboxes(root, candidates)
     if any(item.running for item in project_sandboxes):
         return False
-    if any(_same_project_root(claim.project_root, root) for claim in claims):
+    if any(same_host_path(claim.project_root, root) for claim in claims):
         return False
     policy = _policy()
     instant = now or datetime.now(UTC)
@@ -158,7 +158,7 @@ def clear_vscode_claim(project_root: Path) -> bool:
 def has_pending_claim(project_root: Path, *, run: Run = _run) -> bool:
     """Return whether this Project has a validated pending editor start."""
     root = _canonical_root(project_root)
-    claims = tuple(claim for claim in _claims() if _same_project_root(claim.project_root, root))
+    claims = tuple(claim for claim in _claims() if same_host_path(claim.project_root, root))
     if not claims:
         return False
     candidates = _vscode_inventory({root}, run)
@@ -200,16 +200,12 @@ def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[S
                 continue
             if _foreign_listing(folder, project_id, name, root, local_name):
                 continue
-            if (
-                name != local_name
-                and role == "license-relay"
-                and _noninteractive_relay(container_id, name, run)
-            ):
+            item = _classified_sandbox(container_id, name, role, local_name, run)
+            if item is None:
                 continue
-            item = _inspect(container_id, name, run, exact_id=True)
             if not _valid_identity(item, item.project_root):
                 raise AdmissionError(_identity_recovery(item, root))
-            local_root = _same_project_root(item.project_root, root)
+            local_root = same_host_path(item.project_root, root)
             local_label = matches_project_label(item.project_id, root) or (
                 local_root and _valid_identity(item, root)
             )
@@ -221,6 +217,20 @@ def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[S
         return tuple(items.values())
     except (OSError, subprocess.SubprocessError) as exc:
         raise AdmissionError(f"cannot inspect Project Sandboxes safely: {exc}") from exc
+
+
+def _classified_sandbox(
+    container_id: str, name: str, role: str, local_name: str, run: Run
+) -> Sandbox | None:
+    """Inspect one listed row once: ``None`` for a proven relay, else its Sandbox."""
+    document = _inspect_document(container_id, name, run)
+    if (
+        name != local_name
+        and role == "license-relay"
+        and _noninteractive_relay(document, container_id, name)
+    ):
+        return None
+    return _sandbox(document, container_id, name, exact_id=True)
 
 
 def running_sandboxes(*, run: Run = _run) -> tuple[Sandbox, ...]:
@@ -243,15 +253,9 @@ def recreate_remedy(item: Sandbox) -> str:
     return f"recreate it: run `{down}`, `{seed}`, then start the Sandbox again"
 
 
-def _noninteractive_relay(container_id: str, name: str, run: Run) -> bool:
+def _noninteractive_relay(document: dict[str, Any], container_id: str, name: str) -> bool:
     """Exclude a relay only after proving it has no interactive workspace bind."""
-    result = run(
-        ["docker", "container", "inspect", container_id, "--format", "{{json .}}"], timeout=30
-    )
     try:
-        if result.returncode:
-            raise AdmissionError(f"cannot inspect possible Sandbox {name}: {_detail(result)}")
-        document = require_dict(json.loads(result.stdout), field="possible Sandbox")
         labels = _labels(require_dict(document.get("Config"), field="Config").get("Labels"))
         mounts = require_list(document.get("Mounts"), field="Mounts")
         return (
@@ -294,7 +298,7 @@ def _foreign_listing(folder: str, project_id: str, name: str, root: str, local_n
     except AdmissionError:
         return False
     return (
-        not _same_project_root(foreign_root, root)
+        not same_host_path(foreign_root, root)
         and matches_project_label(project_id, foreign_root)
         and not matches_project_label(project_id, root)
     )
@@ -317,10 +321,10 @@ def _verify_workspace_mount(item: Sandbox, root: str, run: Run) -> None:
             raise AdmissionError("Sandbox identity changed during Project resolution")
         labels = _labels(require_dict(document.get("Config"), field="Config").get("Labels"))
         if (
-            not _same_project_root(_workspace_mount_root(document, item.name), root)
+            not same_host_path(_workspace_mount_root(document, item.name), root)
             or labels.get("booley.role") != "interactive"
             or labels.get(_PROJECT_LABEL) != item.project_id
-            or not _same_project_root(_project_root(document, labels, item.name), root)
+            or not same_host_path(_project_root(document, labels, item.name), root)
             or require_dict(document.get("State"), field="State").get("Running") is not True
         ):
             raise AdmissionError(
@@ -358,8 +362,15 @@ def _inventory(run: Run) -> tuple[Sandbox, ...]:
     return tuple(items)
 
 
-def _vscode_inventory(project_roots: set[str], run: Run) -> tuple[Sandbox, ...]:
-    """Inspect only stopped/running editor Sandboxes relevant to claims or cleanup."""
+def _vscode_inventory(
+    project_roots: set[str], run: Run, known: tuple[Sandbox, ...] = ()
+) -> tuple[Sandbox, ...]:
+    """Inspect only stopped/running editor Sandboxes relevant to claims or cleanup.
+
+    A listed container whose ID and name match a ``known`` Sandbox the caller already
+    inspected is reused, so one admission inspects each candidate once.
+    """
+    inspected = {(item.container_id, item.name): item for item in known}
     if not project_roots:
         return ()
     result = run(
@@ -389,19 +400,39 @@ def _vscode_inventory(project_roots: set[str], run: Run) -> tuple[Sandbox, ...]:
             if raw_root in project_roots:
                 raise
             continue
-        if any(_same_project_root(root, expected) for expected in project_roots):
-            items.append(_inspect(container_id, listed_name, run))
+        if any(same_host_path(root, expected) for expected in project_roots):
+            items.append(
+                inspected.get((container_id, listed_name))
+                or _inspect(container_id, listed_name, run)
+            )
     return tuple(items)
 
 
-def _inspect(container_id: str, listed_name: str, run: Run, *, exact_id: bool = False) -> Sandbox:
+def _inspect_document(container_id: str, listed_name: str, run: Run) -> dict[str, Any]:
+    """Run the one ``docker container inspect`` for a listed container and parse it."""
     result = run(
         ["docker", "container", "inspect", container_id, "--format", "{{json .}}"], timeout=30
     )
     if result.returncode:
         raise AdmissionError(f"cannot inspect Sandbox {listed_name}: {_detail(result)}")
     try:
-        document = require_dict(json.loads(result.stdout), field=f"Sandbox {listed_name}")
+        return require_dict(json.loads(result.stdout), field=f"Sandbox {listed_name}")
+    except (BoundaryError, ValueError) as exc:
+        raise AdmissionError(
+            f"Docker returned incomplete inspection for Sandbox {listed_name}"
+        ) from exc
+
+
+def _inspect(container_id: str, listed_name: str, run: Run, *, exact_id: bool = False) -> Sandbox:
+    document = _inspect_document(container_id, listed_name, run)
+    return _sandbox(document, container_id, listed_name, exact_id=exact_id)
+
+
+def _sandbox(
+    document: dict[str, Any], container_id: str, listed_name: str, *, exact_id: bool = False
+) -> Sandbox:
+    """Build a strictly identified Sandbox from one inspect document."""
+    try:
         config = require_dict(document.get("Config"), field="Config")
         state = require_dict(document.get("State"), field="State")
         labels = _labels(config.get("Labels"))
@@ -412,7 +443,7 @@ def _inspect(container_id: str, listed_name: str, run: Run, *, exact_id: bool = 
         root = _project_root(document, labels, listed_name)
         if exact_id and require_str(document, "Id") != container_id:
             raise AdmissionError(f"Sandbox identity changed while inspecting {listed_name}")
-    except (BoundaryError, ValueError, json.JSONDecodeError) as exc:
+    except (BoundaryError, ValueError) as exc:
         raise AdmissionError(
             f"Docker returned incomplete inspection for Sandbox {listed_name}"
         ) from exc
@@ -500,7 +531,7 @@ def _admission_snapshot(
     claims = _claims()
     roots = {claim.project_root for claim in claims}
     roots.update(candidate_roots or ())
-    candidates = _merge_sandboxes(live, _vscode_inventory(roots, run))
+    candidates = _merge_sandboxes(live, _vscode_inventory(roots, run, live))
     _project_vscode_sandboxes(requesting_root, candidates)
     remaining, diagnostics = _reconcile_claims(claims, candidates, requesting_root)
     return live, remaining, candidates, diagnostics
@@ -523,14 +554,14 @@ def _reconcile_claims(
         applicable = tuple(
             item
             for item in sandboxes
-            if item.vscode and _same_project_root(item.project_root, claim.project_root)
+            if item.vscode and same_host_path(item.project_root, claim.project_root)
         )
         mismatches = tuple(
             item for item in applicable if not _valid_identity(item, claim.project_root)
         )
         for item in mismatches:
             message = _identity_recovery(item, claim.project_root)
-            if _same_project_root(claim.project_root, requesting_root):
+            if same_host_path(claim.project_root, requesting_root):
                 raise AdmissionError(message)
             logger.warning("%s", message)
             diagnostics.append(message)
@@ -545,7 +576,7 @@ def _reconcile_claims(
 
 def _valid_identity(item: Sandbox, root: str) -> bool:
     roots = [root, item.project_root]
-    if item.observed_root and _same_project_root(item.observed_root, root):
+    if item.observed_root and same_host_path(item.observed_root, root):
         roots.append(item.observed_root)
     return any(matches_project_label(item.project_id, candidate) for candidate in roots)
 
@@ -580,7 +611,7 @@ def _project_vscode_sandboxes(
     matched = tuple(
         item
         for item in sandboxes
-        if item.vscode and _same_project_root(item.project_root, project_root)
+        if item.vscode and same_host_path(item.project_root, project_root)
     )
     for item in matched:
         if not _valid_identity(item, project_root):
@@ -648,15 +679,6 @@ def _canonical_text(value: str) -> str:
     return _canonical_root(path)
 
 
-def _same_project_root(left: str, right: str) -> bool:
-    if os.path.normcase(left) == os.path.normcase(right):
-        return True
-    try:
-        return Path(left).samefile(Path(right))
-    except OSError:
-        return False
-
-
 def _report_recovery_capacity(run: Run) -> None:
     """Report a recovery that can temporarily restore the host above its cap."""
     try:
@@ -690,7 +712,7 @@ def _refusal(
         lines.append(f"- pending editor start: Project {claim.project_root}")
     roots = sorted({item.project_root for item in live} | {claim.project_root for claim in claims})
     for root in roots:
-        if any(item.vscode and _same_project_root(item.project_root, root) for item in live):
+        if any(item.vscode and same_host_path(item.project_root, root) for item in live):
             lines.append(
                 f"Free capacity for {root}: close the VS Code window or use Dev Containers to stop its Sandbox."
             )

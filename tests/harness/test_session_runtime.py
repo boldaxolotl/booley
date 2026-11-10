@@ -8,8 +8,10 @@ rather than a hand-written dict.
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import subprocess
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
@@ -21,7 +23,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from booley.runtime import devcontainer as dc
-from booley.runtime import health, issuance_invalidation, session_spec
+from booley.runtime import health, issuance_invalidation, platform_paths, session_spec
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.session_admission import (
@@ -907,8 +909,11 @@ class TestPrepareLegacyContainer:
         ):
             sr.prepare(workspace)
 
-    def test_windows_host_paths_normalize_slashes_and_drive_case(self) -> None:
-        assert sr._same_host_path(
+    def test_windows_host_paths_normalize_slashes_and_drive_case(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
+        assert platform_paths.same_host_path(
             "c:/workplace/picorv32/.devcontainer/devcontainer.json",
             Path(r"C:\workplace\picorv32\.devcontainer\devcontainer.json"),
         )
@@ -1084,6 +1089,7 @@ class TestIssuedRuntimeDriftFix:
         labels["devcontainer.config_file"] = (
             "c:/workplace/picorv32/.devcontainer/devcontainer.json"
         )
+        monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
         monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
         monkeypatch.setattr(sr, "session_container_name", lambda _workspace: "canonical")
 
@@ -3272,6 +3278,33 @@ class TestSessionsOnStaleImage:
             names="goofy_ellis\n",
             container_ids={"goofy_ellis": self.OLD_ID},
             folders={"goofy_ellis": str(workspace)},
+        )
+        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == ["goofy_ellis"]
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="needs a case-sensitive filesystem")
+    def test_vscode_container_for_case_variant_folder_is_ignored(
+        self, workspace: Path, monkeypatch
+    ):
+        # `<tmp>/I2C` differs from the workspace `<tmp>/i2c` only in case: on Linux
+        # that is another directory, so its editor container is not this workspace's.
+        self._patch_docker(
+            monkeypatch,
+            names="goofy_ellis\n",
+            container_ids={"goofy_ellis": self.OLD_ID},
+            folders={"goofy_ellis": str(workspace.parent / "I2C")},
+        )
+        assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+    def test_vscode_container_for_symlinked_folder_is_reported(self, workspace: Path, monkeypatch):
+        # A label naming the workspace through a symlink is the same directory.
+        alias = workspace.parent / "alias"
+        alias.symlink_to(workspace, target_is_directory=True)
+        self._patch_docker(
+            monkeypatch,
+            names="goofy_ellis\n",
+            container_ids={"goofy_ellis": self.OLD_ID},
+            folders={"goofy_ellis": str(alias)},
         )
         assert sr.sessions_on_stale_image(workspace, self.IMAGE) == ["goofy_ellis"]
 

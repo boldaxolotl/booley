@@ -7,9 +7,11 @@ import re
 from itertools import pairwise
 from pathlib import Path
 
+import pytest
 from tests.docs.test_links import _markdown_anchors
 
-from booley.runtime.docs_links import USER_DOCS, docs_url
+from booley.dev_support.reference_docs import SHIPPED_DOCS
+from booley.runtime.docs_links import CONTRIBUTOR_DOCS, SITE_DOCS, USER_DOCS, docs_url
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = REPO_ROOT / "src/booley"
@@ -19,7 +21,7 @@ _USER_DOC_PATH = re.compile(
 )
 # Modules whose string literals may name user docs by repo path or file name.
 _REPO_PATH_ALLOWED = {
-    # Agent-facing: Sandbox Specialists and agents read the Markdown in the repo.
+    # Agent-facing: name an unshipped doc as "<FILE> (host doc, not shipped)".
     "specialists/review_contract.py",
     "runtime/project_worktree_pairing.py",
     # The slug table itself.
@@ -38,19 +40,24 @@ def _python_sources() -> list[Path]:
     return [path for path in SOURCE_ROOT.rglob("*.py") if "data" not in path.parts]
 
 
-def _docs_url_calls(tree: ast.AST) -> list[ast.Call]:
+def _calls_to(tree: ast.AST, function: str) -> list[ast.Call]:
     return [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "docs_url"
+        and node.func.id == function
     ]
 
 
+def _docs_url_calls(tree: ast.AST) -> list[ast.Call]:
+    return _calls_to(tree, "docs_url")
+
+
 def _exempt_ids(tree: ast.AST) -> set[int]:
-    """Return ``id()`` of docstrings and ``docs_url()`` arguments in one module."""
-    ids = {id(arg) for call in _docs_url_calls(tree) for arg in call.args}
+    """Return ``id()`` of docstrings and ``docs_url()``/``sandbox_doc_path()`` arguments."""
+    calls = _docs_url_calls(tree) + _calls_to(tree, "sandbox_doc_path")
+    ids = {id(arg) for call in calls for arg in call.args}
     for node in ast.walk(tree):
         if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             body = node.body
@@ -66,9 +73,25 @@ def test_user_docs_table_matches_docs_user() -> None:
     assert len(set(slugs)) == len(slugs)
 
 
+def test_contributor_docs_are_published_once_beside_the_user_docs() -> None:
+    """Contributor docs live outside docs/user/ and clash with no user doc's page."""
+    for doc in CONTRIBUTOR_DOCS:
+        assert (REPO_ROOT / doc.path).is_file(), doc.path
+        assert doc.directory != "docs/user", doc.file
+    assert SITE_DOCS == USER_DOCS + CONTRIBUTOR_DOCS
+    assert len({doc.file for doc in SITE_DOCS}) == len(SITE_DOCS)
+    assert len({doc.slug for doc in SITE_DOCS}) == len(SITE_DOCS)
+
+
+def test_printed_links_cover_user_docs_only() -> None:
+    """Booley prints links to user docs; contributor docs are site-only."""
+    with pytest.raises(KeyError):
+        docs_url(CONTRIBUTOR_DOCS[0].file)
+
+
 def test_each_sidebar_section_is_contiguous() -> None:
     """The sidebar starts a new group whenever the section changes."""
-    sections = [doc.section for doc in USER_DOCS]
+    sections = [doc.section for doc in SITE_DOCS]
     starts = [
         section
         for index, section in enumerate(sections)
@@ -79,7 +102,7 @@ def test_each_sidebar_section_is_contiguous() -> None:
 
 def test_child_docs_follow_their_parent_in_the_same_section() -> None:
     """The sidebar indents a child doc under its parent, so it follows the parent or a sibling."""
-    for previous, doc in pairwise(USER_DOCS):
+    for previous, doc in pairwise(SITE_DOCS):
         if doc.parent is not None:
             assert doc.parent in (previous.file, previous.parent), doc.file
             assert previous.section == doc.section, doc.file
@@ -122,3 +145,19 @@ def test_printed_messages_link_user_docs_on_the_site() -> None:
             and _USER_DOC_PATH.search(node.value)
         ]
     assert not offenders, "use booley.runtime.docs_links.docs_url():\n" + "\n".join(offenders)
+
+
+def test_sandbox_doc_path_calls_name_shipped_docs() -> None:
+    shipped = {Path(source).name for source in SHIPPED_DOCS}
+    calls = [
+        (path, call)
+        for path in _python_sources()
+        for call in _calls_to(ast.parse(path.read_text(encoding="utf-8")), "sandbox_doc_path")
+    ]
+    assert calls, "no sandbox_doc_path() calls found"
+    unshipped = [
+        f"{path.relative_to(REPO_ROOT)}:{call.lineno}"
+        for path, call in calls
+        if ast.literal_eval(call.args[0]) not in shipped
+    ]
+    assert not unshipped, f"sandbox_doc_path() must name a shipped doc: {unshipped}"

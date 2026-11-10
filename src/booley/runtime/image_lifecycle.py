@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol, TypeAlias
+from typing import Protocol
 from uuid import uuid4
 
 from booley.core.boundary import (
@@ -149,18 +149,10 @@ class InstalledImageContractError(ImageLifecycleError):
 
 
 @dataclass(frozen=True, slots=True)
-class HostImageScope:
-    """Project-independent ownership of the base Sandbox Image."""
-
-
-@dataclass(frozen=True, slots=True)
 class ProjectImageScope:
     """One Project's selected Sandbox Image."""
 
     project_root: Path
-
-
-ImageScope: TypeAlias = HostImageScope | ProjectImageScope
 
 
 @dataclass(frozen=True)
@@ -813,19 +805,32 @@ def _source_graph(project_root: Path, selected: str) -> tuple[ImageNode, ...]:
     wheel_source = _expected_wheel_source_fingerprint()
     if wheel_source is None:
         raise ImageLifecycleError("could not determine the Booley wheel-source fingerprint")
-    overlay = _graph_node(
-        reference=f"{selected}-wheel" if manual else selected,
-        role=ImageRole.WHEEL_OVERLAY,
-        recipe=docker_dir / "Dockerfile.wheel",
-        effective_inputs=wheel_source,
-        parent=substrate,
-        wheel_source_fingerprint=wheel_source,
-        image_build_contracts=contracts,
+    overlay = _wheel_overlay_node(
+        f"{selected}-wheel" if manual else selected, docker_dir, substrate, wheel_source, contracts
     )
     nodes.append(overlay)
     if manual:
         nodes.append(_manual_overlay(project_root, selected, overlay, manual))
     return _stamp_logical_selection(_logical_reference(project_root), tuple(nodes))
+
+
+def _wheel_overlay_node(
+    reference: str,
+    docker_dir: Path,
+    parent: ImageNode,
+    wheel_source: str,
+    contracts: ImageBuildContracts,
+) -> ImageNode:
+    """Wheel overlay on *parent*, shared by the source graph and the release fingerprint."""
+    return _graph_node(
+        reference=reference,
+        role=ImageRole.WHEEL_OVERLAY,
+        recipe=docker_dir / "Dockerfile.wheel",
+        effective_inputs=wheel_source,
+        parent=parent,
+        wheel_source_fingerprint=wheel_source,
+        image_build_contracts=contracts,
+    )
 
 
 def _manual_overlay(project_root, selected, parent, observed):
@@ -964,44 +969,20 @@ def _release_selection_fingerprint(
     selected: str,
     contracts: ImageBuildContracts,
 ) -> str:
+    """Logical-selection fingerprint of the shipped chain, from the source-graph nodes."""
     docker_dir = docker_data_dir()
-    nodes = [
-        (
-            ImageRole.RUNTIME_BASE.value,
-            contracts.runtime_base,
-            resolve_recipe_fingerprint((docker_dir / "Dockerfile.base",)),
-            "",
-            "",
-        ),
-        (
-            ImageRole.STANDARD_SUBSTRATE.value,
-            contracts.standard_substrate,
-            resolve_recipe_fingerprint((docker_dir / "Dockerfile.substrate",)),
-            "",
-            "",
-        ),
-    ]
+    runtime, standard = _source_graph_base(contracts, docker_dir)
+    nodes = [runtime, standard]
     if selected == "booley-sandbox-riscv":
-        riscv_recipe = resolve_recipe_fingerprint((docker_dir / "Dockerfile.riscv",))
-        nodes.append(
-            (
-                ImageRole.RISCV_SUBSTRATE.value,
-                riscv_recipe,
-                riscv_recipe,
-                "",
-                "",
-            )
-        )
-    nodes.append(
-        (
-            ImageRole.WHEEL_OVERLAY.value,
-            "",
-            resolve_recipe_fingerprint((docker_dir / "Dockerfile.wheel",)),
-            contracts.runtime_base,
-            contracts.standard_substrate,
-        )
-    )
-    return logical_selection_fingerprint_for_chain(selected, nodes)
+        nodes.append(_source_graph_riscv(standard, docker_dir))
+    # The wheel overlay's own source fingerprint is blanked in the projection
+    # (the published image is the wheel), so no source value is needed here.
+    nodes.append(_wheel_overlay_node(selected, docker_dir, nodes[-1], "", contracts))
+    stamped = _stamp_logical_selection(selected, tuple(nodes))
+    fingerprint = stamped[-1].logical_selection_fingerprint
+    if fingerprint is None:
+        raise ImageLifecycleError("release selection fingerprint was not computed")
+    return fingerprint
 
 
 def _release_project_overlay(project_root: Path, selected: str, parent: ImageNode) -> ImageNode:
@@ -2019,7 +2000,6 @@ def _with_cleanup(result: LifecycleResult, cleanup: ImageCleanup) -> LifecycleRe
 
 
 def reconcile(
-    scope: ImageScope,
     intent: Intent,
     *,
     verbose: bool = False,
@@ -2029,14 +2009,9 @@ def reconcile(
 ) -> LifecycleResult:
     """Reconcile the host base image under an explicit artifact-selection policy.
 
-    Project scopes are rejected: a Project image converges through ``plan``,
-    ``prepare`` and ``commit`` (or ``planned_result`` for a check).
+    A Project image converges through ``plan``, ``prepare`` and ``commit`` (or
+    ``planned_result`` for a check).
     """
-    if not isinstance(scope, HostImageScope):
-        raise TypeError(
-            "runtime image reconcile() supports only HostImageScope; "
-            "plan, prepare and commit a ProjectImageScope"
-        )
     resolved_docker = docker or _docker_adapter()
     if intent is not Intent.CHECK and builder is None:
         builder = _build_adapter(docker_data_dir().parents[3], resolved_docker, verbose=verbose)
