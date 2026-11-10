@@ -438,9 +438,9 @@ def _init_project_git_repo(target: Path, ctx: InitContext) -> None:
     fresh stealth setup was versioned *nowhere* until the user ran `git init` by
     hand. Do it for them, guarded:
 
-    - only in stealth mode (the default; an open ``--scaffold`` demo writes
-      ``[stealth] enabled = false`` and is throwaway, ``--scaffold --stealth``
-      keeps it on), and
+    - only in stealth mode (explicit ``[stealth] enabled = true``: the setup
+      skill's hidden answer or ``--scaffold --stealth``; a fresh init skeleton
+      has no key, so a rerun after setup records the choice creates the repo), and
     - only when ``target`` is not already its own git work tree (idempotent,
       never touches an existing repo).
 
@@ -1957,19 +1957,29 @@ def _step_advisories(ctx: InitContext) -> None:
 
 def _step_project_trackability(ctx: InitContext) -> None:
     """Advise on effective exclusions after full Project reconciliation."""
-    from booley.runtime.project_trackability import FIX, inspect_project_trackability
+    from booley.runtime.project_trackability import (
+        FIX,
+        STEALTH_UNSET,
+        STEALTH_UNSET_FIX,
+        inspect_project_trackability,
+        unrecorded_stealth_exclusions,
+    )
 
     selected = booley_dir_for_init(ctx.project_root)
     if stealth_enabled(ctx.project_root, booley_dir=selected):
         return
     ctx.step_banner("Project trackability")
+    unrecorded = unrecorded_stealth_exclusions(ctx.project_root, selected)
+    for name in unrecorded:
+        warn(STEALTH_UNSET.format(name=name))
+        hint(STEALTH_UNSET_FIX)
     inspection = inspect_project_trackability(ctx.project_root, selected)
     for group in inspection.ignored:
         warn(group.message)
         hint(FIX)
     for error in inspection.errors:
         warn(error)
-    problems = len(inspection.ignored) + len(inspection.errors)
+    problems = len(unrecorded) + len(inspection.ignored) + len(inspection.errors)
     ctx.record(
         "project_trackability",
         "warn" if problems else "ok",

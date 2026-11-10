@@ -106,7 +106,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
     ```
 
     `booley` (or `booley chat`) just starts the Developer Agent chosen by
-    `[agent] default` in `.booley/booley.toml`:
+    `[agent] default` (or its older name `provider`) in `.booley/booley.toml`:
 
     | Provider | Same as running |
     | --- | --- |
@@ -157,7 +157,7 @@ kind of run that Project Setup configured, so ask the agent which ones you have.
 | `sim` | Builds and runs your tests in Verilator or Icarus, optionally with coverage | *"Debug the backpressure test failure on the `sim_heavy` target."* | [FLOW-SIM.md](FLOW-SIM.md), [TESTS.md](TESTS.md), [COVERAGE.md](COVERAGE.md) |
 | `lint` | Lints with Verilator (structure and semantics) or Verible (style) | *"Run lint and explain every finding."* | [FLOW-LINT.md](FLOW-LINT.md) |
 | `synth` | Quick ASIC area and timing estimate with Yosys and OpenROAD | *"Compare synth area between these two commits: ..."* | [FLOW-SYNTH.md](FLOW-SYNTH.md) |
-| `fpga` | FPGA implementation with AMD Vivado installed on your computer | *"Run FPGA implementation and tell me whether timing is met."* | [FLOW-FPGA.md](FLOW-FPGA.md) |
+| `fpga` | FPGA implementation with AMD Vivado installed on a Linux x86-64 host | *"Run FPGA implementation and tell me whether timing is met."* | [FLOW-FPGA.md](FLOW-FPGA.md) |
 | `reviewer` | AI code review with one focus: bugs, protocol, spec, security, style, optimization, or testbench quality | *"Run a security review on the control unit module."* | [CLI-REFERENCE.md](CLI-REFERENCE.md#reviewer) |
 | `mutation_tester` | Plants small bugs in your RTL and checks that your tests catch them | *"Check whether the FIFO tests catch injected bugs."* | [CLI-REFERENCE.md](CLI-REFERENCE.md#mutation_tester) |
 | `coverage_analyst` | Explains a coverage report and suggests what to test next | *"Explain the coverage gaps from the last run."* | [COVERAGE.md](COVERAGE.md), [CLI-REFERENCE.md](CLI-REFERENCE.md#coverage_analyst) |
@@ -186,7 +186,7 @@ Agent chat:
 
 | Skill | Use it when |
 | --- | --- |
-| `/booley-setup` | Setting up a Project (you ran this already, on the host) |
+| `/booley-setup` | Setting up a Project (you started this on the host during setup) |
 | `/booley-goal` | Work needs conditions that must be met, with evidence |
 | `/booley-heal` | Doctor reports problems, or a Flow stopped working |
 | `/booley-feedback` | Reporting a Booley bug, confusion, praise, or an idea |
@@ -281,10 +281,15 @@ doesn't replace your own review.
 > server, because the container blocks that network access. So: let it commit,
 > review the commits, then push them yourself from a terminal outside the
 > container.
->
-> With [Stealth Mode](STEALTH.md) on, a Git hook removes AI and Booley names
-> from commit messages and rejects `Co-Authored-By` lines. If a commit is
-> rejected, the agent just retries without that line.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+A Git hook removes AI and Booley names from commit messages and rejects
+`Co-Authored-By` lines. If a commit is rejected, the agent just retries without
+that line. See [STEALTH.md](STEALTH.md#commit-messages).
+
+</details>
 
 Per-session logs of Flow and Specialist calls through Booley’s tool server
 are saved in `.booley/.interactive_logs/`. Chat transcripts live in
@@ -300,9 +305,15 @@ it). The `AGENTS.md` and `CLAUDE.md` in your project root are just links to that
 file, so editing any of them changes the same text. Booley creates the links
 and keeps them out of Git.
 
-To save your edits, commit the real file (`git add .booley/AGENTS.md`). If your
-Booley Directory is its own Git repository (as in Stealth mode), commit
-`AGENTS.md` there instead.
+To save your edits, commit the real file (`git add .booley/AGENTS.md`).
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The Booley Directory is its own Git repository, so commit `AGENTS.md` there
+instead: `git -C .booley commit`. See [STEALTH.md](STEALTH.md#turning-it-on).
+
+</details>
 
 ### Viewing waveforms
 
