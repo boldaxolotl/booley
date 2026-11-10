@@ -49,8 +49,9 @@
     <link rel="preload" href="{{ 'assets/fonts/archivo-latin-standard-normal.woff2' | url }}" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="{{ 'assets/fonts/literata-latin-opsz-normal.woff2' | url }}" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="{{ 'pagefind/pagefind-ui.css' | url }}">
+    {#- ?v= is a content hash (hooks/asset_versions.py): new CSS, new URL, no stale cache. -#}
     {% for path in config.extra_css %}
-      <link rel="stylesheet" href="{{ path | url }}">
+      <link rel="stylesheet" href="{{ path | url }}?v={{ asset_versions[path] }}">
     {% endfor %}
     <script src="{{ 'pagefind/pagefind-ui.js' | url }}" defer></script>
     {% block extrahead %}{% endblock %}
