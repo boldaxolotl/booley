@@ -38,7 +38,7 @@ from booley.runtime.image_build_contracts import (
     ImageBuildContracts,
     expected_image_build_contracts,
 )
-from booley.runtime.image_identity import logical_selection_fingerprint_for_chain
+from booley.runtime.image_identity import ImageMetadata, logical_selection_fingerprint_for_chain
 from booley.runtime.image_provenance import (
     LABEL_ARTIFACT_ROLE,
     LABEL_BUILD_ORIGIN,
@@ -348,9 +348,7 @@ class ImageNode:
 class DockerPort(Protocol):
     def image_id(self, image: str) -> str | None: ...
 
-    def label(self, image: str, name: str) -> str | None: ...
-
-    def image_layers(self, image: str) -> tuple[str, ...]: ...
+    def inspect(self, image: str) -> ImageMetadata | None: ...
 
     def repo_digests(self, image: str) -> tuple[str, ...]: ...
 
@@ -1087,46 +1085,45 @@ def _planned_reason(
     *,
     parent_invalid: bool,
 ) -> Diagnostic | None:
-    if docker.image_id(node.reference) is None:
+    metadata = docker.inspect(node.reference)
+    if metadata is None:
         return Diagnostic("missing", "managed artifact is missing")
     if parent_invalid:
         return Diagnostic("parent-changed", "a selected ancestor must be replaced")
-    provenance = _node_provenance_reason(node, docker)
+    provenance = _node_provenance_reason(node, metadata)
     if provenance is not None:
         return provenance
-    return _node_ancestry_reason(node, docker)
+    return _node_ancestry_reason(node, metadata, docker)
 
 
-def _node_provenance_reason(node: ImageNode, docker: DockerPort) -> Diagnostic | None:  # noqa: PLR0911 -- ordered provenance mismatches
-    if docker.label(node.reference, LABEL_SCHEMA) != PROVENANCE_SCHEMA:
+def _node_provenance_reason(  # noqa: PLR0911 -- ordered provenance mismatches
+    node: ImageNode, metadata: ImageMetadata
+) -> Diagnostic | None:
+    if metadata.label(LABEL_SCHEMA) != PROVENANCE_SCHEMA:
         return Diagnostic("legacy-migration", "artifact uses an older image topology")
-    if docker.label(node.reference, LABEL_ARTIFACT_ROLE) != (
-        node.role.value if node.role else None
-    ):
+    if metadata.label(LABEL_ARTIFACT_ROLE) != (node.role.value if node.role else None):
         return Diagnostic("topology-changed", "selected image layer role changed")
-    if docker.label(node.reference, LABEL_EFFECTIVE_INPUTS) != node.effective_inputs or any(
-        docker.label(node.reference, name) != expected
-        for name, expected in _image_contract_labels(node).items()
+    if metadata.label(LABEL_EFFECTIVE_INPUTS) != node.effective_inputs or any(
+        metadata.label(name) != expected for name, expected in _image_contract_labels(node).items()
     ):
         return Diagnostic("inputs-changed", "node-owned compatibility inputs changed")
-    if docker.label(node.reference, LABEL_RECIPE_FINGERPRINT) != node.build.recipe_fingerprint:
+    if metadata.label(LABEL_RECIPE_FINGERPRINT) != node.build.recipe_fingerprint:
         return Diagnostic("recipe-changed", "the node build recipe changed")
-    identity_reason = _node_identity_reason(node, docker)
+    identity_reason = _node_identity_reason(node, metadata)
     if identity_reason is not None:
         return identity_reason
-    if _node_artifact_source(node, node.reference, docker) not in node.acquisition_policy.sources:
+    if _node_artifact_source(node, metadata) not in node.acquisition_policy.sources:
         return Diagnostic("wrong-origin", "artifact source violates acquisition policy")
     return None
 
 
-def _node_identity_reason(node: ImageNode, docker: DockerPort) -> Diagnostic | None:
+def _node_identity_reason(node: ImageNode, metadata: ImageMetadata) -> Diagnostic | None:
     if node.wheel_source_fingerprint is not None and (
-        docker.label(node.reference, LABEL_WHEEL_SOURCE_FINGERPRINT)
-        != node.wheel_source_fingerprint
-        or not docker.label(node.reference, LABEL_WHEEL_SHA256)
+        metadata.label(LABEL_WHEEL_SOURCE_FINGERPRINT) != node.wheel_source_fingerprint
+        or not metadata.label(LABEL_WHEEL_SHA256)
     ):
         return Diagnostic("inputs-changed", "wheel identity differs or is incomplete")
-    recorded_selection = docker.label(node.reference, LABEL_LOGICAL_SELECTION_FINGERPRINT)
+    recorded_selection = metadata.label(LABEL_LOGICAL_SELECTION_FINGERPRINT)
     if (
         node.logical_selection_fingerprint is not None
         and recorded_selection is not None
@@ -1136,31 +1133,31 @@ def _node_identity_reason(node: ImageNode, docker: DockerPort) -> Diagnostic | N
     return None
 
 
-def _node_ancestry_reason(node: ImageNode, docker: DockerPort) -> Diagnostic | None:
-    if node.role is ImageRole.RUNTIME_BASE and docker.label(node.reference, LABEL_PARENT_ARTIFACT):
+def _node_ancestry_reason(
+    node: ImageNode, metadata: ImageMetadata, docker: DockerPort
+) -> Diagnostic | None:
+    if node.role is ImageRole.RUNTIME_BASE and metadata.label(LABEL_PARENT_ARTIFACT):
         return Diagnostic(
             "parent-changed", "runtime base cannot declare a logical runtime-base parent"
         )
     if node.acquisition_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
-        recorded = docker.label(node.reference, LABEL_PARENT_ARTIFACT)
+        recorded = metadata.label(LABEL_PARENT_ARTIFACT)
         if (
-            docker.label(node.reference, LABEL_PARENT_ARTIFACT_KIND)
-            != PARENT_ARTIFACT_REGISTRY_DIGEST
+            metadata.label(LABEL_PARENT_ARTIFACT_KIND) != PARENT_ARTIFACT_REGISTRY_DIGEST
             or recorded is None
             or normalize_registry_digest(recorded) is None
         ):
             return Diagnostic("parent-changed", "release ancestry is not digest-qualified")
     if node.parent is not None:
-        expected_parent = docker.image_id(node.parent)
-        if expected_parent is None:
+        parent = docker.inspect(node.parent)
+        if parent is None:
             return Diagnostic("parent-changed", "reusable parent artifact is missing")
         if (
-            docker.label(node.reference, LABEL_PARENT_ARTIFACT_KIND)
-            != (PARENT_ARTIFACT_LOCAL_IMAGE_ID)
-            or docker.label(node.reference, LABEL_PARENT_ARTIFACT) != expected_parent
+            metadata.label(LABEL_PARENT_ARTIFACT_KIND) != (PARENT_ARTIFACT_LOCAL_IMAGE_ID)
+            or metadata.label(LABEL_PARENT_ARTIFACT) != parent.image_id
         ):
             return Diagnostic("parent-changed", "recorded immutable parent differs")
-        if not descends_from(docker, expected_parent, node.reference):
+        if not descends_from(parent, metadata):
             return Diagnostic(
                 "parent-changed", "filesystem layers do not descend from the verified parent"
             )
@@ -1215,27 +1212,23 @@ def _input_snapshot(nodes: tuple[ImageNode, ...], docker: DockerPort) -> InputSn
 def _planned_nodes(root, selected, resolved_docker, artifact_policy):
     logical = _logical_reference(root)
     if logical not in {BASE_IMAGE, *FLAVOR_RECIPES}:
-        _external_result(selected, resolved_docker)
+        external = resolved_docker.inspect(selected)
+        if external is None:
+            raise ImageLifecycleError(
+                f"externally managed Sandbox Image {selected!r} is missing; "
+                "build or pull it explicitly"
+            )
         node = ImageNode(
             selected,
             Path(),
             PayloadProvenance(PROVENANCE_SCHEMA, "", None),
             BuildProvenance("", None),
             role=ImageRole.EXTERNAL,
-            wheel_source_fingerprint=resolved_docker.label(
-                selected, LABEL_WHEEL_SOURCE_FINGERPRINT
-            )
+            wheel_source_fingerprint=external.label(LABEL_WHEEL_SOURCE_FINGERPRINT) or "",
+            logical_selection_fingerprint=external.label(LABEL_LOGICAL_SELECTION_FINGERPRINT)
             or "",
-            logical_selection_fingerprint=resolved_docker.label(
-                selected, LABEL_LOGICAL_SELECTION_FINGERPRINT
-            )
-            or "",
-            runtime_base_contract=resolved_docker.label(selected, LABEL_RUNTIME_BASE_CONTRACT)
-            or "",
-            standard_substrate_contract=resolved_docker.label(
-                selected, LABEL_STANDARD_SUBSTRATE_CONTRACT
-            )
-            or "",
+            runtime_base_contract=external.label(LABEL_RUNTIME_BASE_CONTRACT) or "",
+            standard_substrate_contract=external.label(LABEL_STANDARD_SUBSTRATE_CONTRACT) or "",
         )
         nodes = (node,)
     else:
@@ -1332,16 +1325,14 @@ def _verify_prepared_image(
     parent_artifact: str | None,
     docker: DockerPort,
 ) -> PreparedImage:
-    image_id = docker.image_id(reference)
-    if image_id is None:
+    metadata = docker.inspect(reference)
+    if metadata is None:
         raise ImageLifecycleError(f"prepared candidate {reference!r} disappeared")
     required = _prepared_provenance(node, parent_artifact)
     if parent_artifact is None and node.acquisition_policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
-        parent_artifact = _verify_release_parent(reference, docker)
+        parent_artifact = _verify_release_parent(reference, metadata)
     mismatched = [
-        name
-        for name, expected in required.items()
-        if (docker.label(reference, name) or "") != expected
+        name for name, expected in required.items() if (metadata.label(name) or "") != expected
     ]
     if mismatched:
         raise ImageLifecycleError(
@@ -1350,19 +1341,21 @@ def _verify_prepared_image(
     if (
         parent_artifact is not None
         and node.parent is not None
-        and not descends_from(docker, parent_artifact, reference)
+        and not descends_from(docker.inspect(parent_artifact), metadata)
     ):
         raise ImageLifecycleError(
             f"prepared candidate {reference!r} does not descend from its verified immutable parent"
         )
-    wheel_sha256 = docker.label(reference, LABEL_WHEEL_SHA256)
+    wheel_sha256 = metadata.label(LABEL_WHEEL_SHA256)
     if (
         node.role
         in {ImageRole.WHEEL_OVERLAY, ImageRole.PROJECT_DATA_LAYOUT, ImageRole.PROJECT_OVERLAY}
         and not wheel_sha256
     ):
         raise ImageLifecycleError(f"prepared wheel overlay {reference!r} has no wheel SHA-256")
-    return PreparedImage(node.reference, reference, image_id, parent_artifact, wheel_sha256)
+    return PreparedImage(
+        node.reference, reference, metadata.image_id, parent_artifact, wheel_sha256
+    )
 
 
 def _prepared_provenance(node: ImageNode, parent_artifact: str | None) -> dict[str, str]:
@@ -1405,10 +1398,10 @@ def _image_contract_labels(node: ImageNode) -> dict[str, str]:
     return labels
 
 
-def _verify_release_parent(reference: str, docker: DockerPort) -> str:
-    recorded = docker.label(reference, LABEL_PARENT_ARTIFACT)
+def _verify_release_parent(reference: str, metadata: ImageMetadata) -> str:
+    recorded = metadata.label(LABEL_PARENT_ARTIFACT)
     if (
-        docker.label(reference, LABEL_PARENT_ARTIFACT_KIND) != PARENT_ARTIFACT_REGISTRY_DIGEST
+        metadata.label(LABEL_PARENT_ARTIFACT_KIND) != PARENT_ARTIFACT_REGISTRY_DIGEST
         or recorded is None
         or normalize_registry_digest(recorded) is None
     ):
@@ -1664,24 +1657,17 @@ def commit(
     )
 
 
-def _node_current(
-    node: ImageNode,
-    docker: DockerPort,
-    reference: str | None = None,
-) -> bool:
-    inspected = reference or node.reference
-    if docker.image_id(inspected) is None:
-        return False
-    schema = docker.label(inspected, LABEL_SCHEMA)
+def _node_current(node: ImageNode, metadata: ImageMetadata, docker: DockerPort) -> bool:
+    schema = metadata.label(LABEL_SCHEMA)
     if schema == LEGACY_PROVENANCE_SCHEMA:
-        return _schema_one_node_current(node, inspected, docker)
+        return _schema_one_node_current(node, metadata, docker)
     if schema is None:
-        return _legacy_node_current(node, inspected, docker)
+        return _legacy_node_current(node, metadata)
     return (
         schema == PROVENANCE_SCHEMA
-        and _schema_two_parent_current(node, inspected, docker)
+        and _schema_two_parent_current(node, metadata, docker)
         and all(
-            name == LABEL_PARENT_ARTIFACT or docker.label(inspected, name) == expected
+            name == LABEL_PARENT_ARTIFACT or metadata.label(name) == expected
             for name, expected in node.expected_labels
         )
     )
@@ -1689,20 +1675,33 @@ def _node_current(
 
 def _node_artifact_source(
     node: ImageNode,
-    inspected: str,
-    docker: DockerPort,
+    metadata: ImageMetadata,
 ) -> ArtifactSource | None:
-    origin = docker.label(inspected, LABEL_BUILD_ORIGIN)
+    origin = metadata.label(LABEL_BUILD_ORIGIN)
     if origin == "local":
         return ArtifactSource.LOCAL_BUILD
     if origin == "registry":
         return ArtifactSource.VERIFIED_RELEASE_PULL
-    legacy = docker.label(inspected, LEGACY_FINGERPRINT_LABEL)
+    legacy = metadata.label(LEGACY_FINGERPRINT_LABEL)
     if legacy and legacy.startswith("pulled:"):
         return ArtifactSource.VERIFIED_RELEASE_PULL
     if legacy and node.payload.fingerprint:
         return ArtifactSource.LOCAL_BUILD
     return None
+
+
+def _metadata_current_from(
+    node: ImageNode,
+    metadata: ImageMetadata | None,
+    docker: DockerPort,
+    sources: tuple[ArtifactSource, ...],
+) -> bool:
+    """Whether already-read *metadata* proves *node* current from an allowed source."""
+    return (
+        metadata is not None
+        and _node_current(node, metadata, docker)
+        and _node_artifact_source(node, metadata) in sources
+    )
 
 
 def _node_current_from(
@@ -1711,9 +1710,9 @@ def _node_current_from(
     sources: tuple[ArtifactSource, ...],
     reference: str | None = None,
 ) -> bool:
-    inspected = reference or node.reference
-    return _node_current(node, docker, inspected) and (
-        _node_artifact_source(node, inspected, docker) in sources
+    """Inspect *reference* (default: the node's tag) once and judge whether it is current."""
+    return _metadata_current_from(
+        node, docker.inspect(reference or node.reference), docker, sources
     )
 
 
@@ -1728,13 +1727,13 @@ def _sources_for_node(
 
 def _schema_two_parent_current(
     node: ImageNode,
-    inspected: str,
+    metadata: ImageMetadata,
     docker: DockerPort,
 ) -> bool:
     """Validate typed schema-two parent provenance."""
-    origin = docker.label(inspected, LABEL_BUILD_ORIGIN)
-    kind = docker.label(inspected, LABEL_PARENT_ARTIFACT_KIND)
-    recorded_parent = docker.label(inspected, LABEL_PARENT_ARTIFACT)
+    origin = metadata.label(LABEL_BUILD_ORIGIN)
+    kind = metadata.label(LABEL_PARENT_ARTIFACT_KIND)
+    recorded_parent = metadata.label(LABEL_PARENT_ARTIFACT)
     expected_kind = {
         "local": PARENT_ARTIFACT_LOCAL_IMAGE_ID,
         "registry": PARENT_ARTIFACT_REGISTRY_DIGEST,
@@ -1765,29 +1764,30 @@ def _base_parent_current(origin: str, recorded_parent: str, docker: DockerPort) 
     if not is_local_image_id(recorded_parent):
         return False
     expected_contract = _expected_image_build_contracts().runtime_base
-    stable_contract = docker.label(STABLE_RUNTIME_BASE_IMAGE, LABEL_RUNTIME_BASE_CONTRACT)
+    stable = docker.inspect(STABLE_RUNTIME_BASE_IMAGE)
     return (
-        stable_contract == expected_contract
-        and docker.image_id(STABLE_RUNTIME_BASE_IMAGE) == recorded_parent
+        stable is not None
+        and stable.label(LABEL_RUNTIME_BASE_CONTRACT) == expected_contract
+        and stable.image_id == recorded_parent
     )
 
 
 def _schema_one_node_current(
     node: ImageNode,
-    inspected: str,
+    metadata: ImageMetadata,
     docker: DockerPort,
 ) -> bool:
     """Migrate schema one without weakening its exact local ancestry checks."""
-    origin = docker.label(inspected, LABEL_BUILD_ORIGIN)
+    origin = metadata.label(LABEL_BUILD_ORIGIN)
     if origin not in {"local", "registry"}:
         return False
     labels_current = all(
-        name in {LABEL_SCHEMA, LABEL_PARENT_ARTIFACT} or docker.label(inspected, name) == expected
+        name in {LABEL_SCHEMA, LABEL_PARENT_ARTIFACT} or metadata.label(name) == expected
         for name, expected in node.expected_labels
     )
     if not labels_current:
         return False
-    recorded_parent = docker.label(inspected, LABEL_PARENT_ARTIFACT)
+    recorded_parent = metadata.label(LABEL_PARENT_ARTIFACT)
     if node.reference == BASE_IMAGE:
         return bool(recorded_parent) and (
             origin == "registry" or _base_parent_current(origin, recorded_parent or "", docker)
@@ -1800,21 +1800,21 @@ def _schema_one_node_current(
     )
 
 
-def _legacy_node_current(node: ImageNode, inspected: str, docker: DockerPort) -> bool:
-    legacy = docker.label(inspected, LEGACY_FINGERPRINT_LABEL)
+def _legacy_node_current(node: ImageNode, metadata: ImageMetadata) -> bool:
+    legacy = metadata.label(LEGACY_FINGERPRINT_LABEL)
     if node.payload.fingerprint:
         return legacy == node.payload.fingerprint and node.parent is None
-    version = docker.label(inspected, LABEL_VERSION)
+    version = metadata.label(LABEL_VERSION)
     if legacy and legacy.startswith("pulled:"):
         version = legacy.removeprefix("pulled:")
     return version == node.payload.version and node.parent is None
 
 
-def _uses_accepted_legacy_provenance(node: ImageNode, docker: DockerPort) -> bool:
+def _uses_accepted_legacy_provenance(node: ImageNode, metadata: ImageMetadata | None) -> bool:
     return (
-        docker.image_id(node.reference) is not None
-        and docker.label(node.reference, LABEL_SCHEMA) is None
-        and _legacy_node_current(node, node.reference, docker)
+        metadata is not None
+        and metadata.label(LABEL_SCHEMA) is None
+        and _legacy_node_current(node, metadata)
     )
 
 
@@ -1880,11 +1880,12 @@ def _mutate(
         backups = _retain_prior_tags(scope_identity, nodes, docker)
         for node in nodes:
             sources = _sources_for_node(node, shipped_sources)
-            current = _node_current_from(node, docker, sources)
+            metadata = docker.inspect(node.reference)
+            current = _metadata_current_from(node, metadata, docker, sources)
             refresh = intent is Intent.REFRESH
             if current and not refresh:
                 continue
-            existed = docker.image_id(node.reference) is not None
+            existed = metadata is not None
             _build_node(node, intent, docker, builder, sources, refresh, existed)
             changed.append(node.reference)
         cleanup_backups = True
@@ -1948,14 +1949,12 @@ def _adopt_current_candidate(
     docker: DockerPort,
 ) -> bool:
     sources = (source,)
-    if not _node_current_from(node, docker, sources, candidate):
+    metadata = docker.inspect(candidate)
+    if metadata is None or not _metadata_current_from(node, metadata, docker, sources):
         return False
     if candidate == node.reference:
         return True
-    candidate_id = docker.image_id(candidate)
-    if candidate_id is None:
-        raise ImageLifecycleError(f"verified candidate {candidate} disappeared before adoption")
-    docker.tag(candidate_id, node.reference)
+    docker.tag(metadata.image_id, node.reference)
     if not _node_current_from(node, docker, sources):
         raise ImageLifecycleError(
             f"verified candidate {candidate} changed during adoption as {node.reference}"
@@ -1967,14 +1966,20 @@ def _inspect_nodes(
     nodes: tuple[ImageNode, ...],
     docker: DockerPort,
     shipped_sources: tuple[ArtifactSource, ...],
-) -> tuple[tuple[str, ...], tuple[Diagnostic, ...]]:
+) -> tuple[tuple[str, ...], tuple[Diagnostic, ...], str | None]:
+    """Stale references, legacy diagnostics, and the last node's ID, from one read per node."""
+    observed = [(node, docker.inspect(node.reference)) for node in nodes]
     stale = tuple(
         node.reference
-        for node in nodes
-        if not _node_current_from(node, docker, _sources_for_node(node, shipped_sources))
+        for node, metadata in observed
+        if not _metadata_current_from(
+            node, metadata, docker, _sources_for_node(node, shipped_sources)
+        )
     )
     legacy = tuple(
-        node.reference for node in nodes if _uses_accepted_legacy_provenance(node, docker)
+        node.reference
+        for node, metadata in observed
+        if _uses_accepted_legacy_provenance(node, metadata)
     )
     diagnostics = tuple(
         Diagnostic(
@@ -1983,13 +1988,14 @@ def _inspect_nodes(
         )
         for reference in legacy
     )
-    return stale, diagnostics
+    last_metadata = observed[-1][1]
+    return stale, diagnostics, last_metadata.image_id if last_metadata else None
 
 
 def _check_result(
     selected: str,
+    selected_id: str | None,
     nodes: tuple[ImageNode, ...],
-    docker: DockerPort,
     stale: tuple[str, ...],
     legacy_diagnostics: tuple[Diagnostic, ...],
     shipped_sources: tuple[ArtifactSource, ...],
@@ -2007,7 +2013,7 @@ def _check_result(
 
     return LifecycleResult(
         selected,
-        docker.image_id(selected),
+        selected_id,
         Status.STALE if stale else Status.CURRENT,
         diagnostics=(
             *(
@@ -2118,18 +2124,16 @@ def planned_result(lifecycle_plan: LifecyclePlan, docker: DockerPort) -> Lifecyc
     """Project an observed plan without builds, pulls, or file writes."""
     stale = tuple(step for step in lifecycle_plan.steps if step.action is not PlanAction.REUSE)
     external = lifecycle_plan.nodes[0].role is ImageRole.EXTERNAL
+    metadata = docker.inspect(
+        lifecycle_plan.steps[-1].source_reference or lifecycle_plan.selected_reference
+    )
     return LifecycleResult(
         lifecycle_plan.selected_reference,
-        docker.image_id(
-            lifecycle_plan.steps[-1].source_reference or lifecycle_plan.selected_reference
-        ),
+        metadata.image_id if metadata else None,
         Status.STALE if stale else Status.EXTERNAL if external else Status.CURRENT,
         diagnostics=tuple(step.reason for step in stale),
         wheel_source_fingerprint=lifecycle_plan.nodes[-1].wheel_source_fingerprint,
-        wheel_sha256=docker.label(
-            lifecycle_plan.steps[-1].source_reference or lifecycle_plan.selected_reference,
-            LABEL_WHEEL_SHA256,
-        ),
+        wheel_sha256=metadata.label(LABEL_WHEEL_SHA256) if metadata else None,
     )
 
 
@@ -2149,12 +2153,12 @@ def _reconcile_host(
         if _release_only(shipped_sources)
         else _with_parent_artifacts((_base_node(payload),), docker)
     )
-    stale, legacy_diagnostics = _inspect_nodes(nodes, docker, shipped_sources)
+    stale, legacy_diagnostics, selected_id = _inspect_nodes(nodes, docker, shipped_sources)
     if intent is Intent.CHECK:
         result = _check_result(
             BASE_IMAGE,
+            selected_id,
             nodes,
-            docker,
             stale,
             legacy_diagnostics,
             shipped_sources,
@@ -2183,19 +2187,6 @@ def _reconcile_host(
     return _with_cleanup(result, cleanup)
 
 
-def _external_result(selected: str, docker: DockerPort) -> LifecycleResult:
-    if docker.image_id(selected) is None:
-        raise ImageLifecycleError(
-            f"externally managed Sandbox Image {selected!r} is missing; build or pull it explicitly"
-        )
-    return LifecycleResult(
-        selected,
-        docker.image_id(selected),
-        Status.EXTERNAL,
-        diagnostics=(Diagnostic("external", "image lifecycle is externally managed"),),
-    )
-
-
 def _verified_result(
     selected: str,
     selected_node: ImageNode,
@@ -2204,13 +2195,14 @@ def _verified_result(
     docker: DockerPort,
     shipped_sources: tuple[ArtifactSource, ...],
 ) -> LifecycleResult:
-    selected_id = docker.image_id(selected)
+    selected_metadata = docker.inspect(selected)
     sources = _sources_for_node(selected_node, shipped_sources)
-    if selected_id is None or not _node_current_from(selected_node, docker, sources):
+    if not _metadata_current_from(selected_node, selected_metadata, docker, sources):
         raise ImageLifecycleError(f"selected Sandbox Image {selected!r} did not verify")
+    assert selected_metadata is not None  # established by _metadata_current_from
     return LifecycleResult(
         selected,
-        selected_id,
+        selected_metadata.image_id,
         Status.CHANGED if changed else Status.CURRENT,
         changed_images=changed,
         diagnostics=() if changed else legacy_diagnostics,
@@ -2227,44 +2219,11 @@ class _DockerCli:
         except interactive_docker.ImageInspectError as exc:
             raise ImageLifecycleError(str(exc)) from exc
 
-    def label(self, image: str, name: str) -> str | None:
+    def inspect(self, image: str) -> ImageMetadata | None:
         try:
-            result = subprocess.run(
-                [
-                    "docker",
-                    "image",
-                    "inspect",
-                    "-f",
-                    f'{{{{ index .Config.Labels "{name}" }}}}',
-                    image,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise ImageLifecycleError(f"could not inspect Docker label {name!r}: {exc}") from exc
-        value = result.stdout.strip()
-        if result.returncode == 0:
-            return value if value and value != "<no value>" else None
-        detail = (result.stderr or result.stdout).strip()
-        if "no such image" in detail.lower():
-            return None
-        raise ImageLifecycleError(
-            f"could not inspect Docker label {name!r} on {image!r}: "
-            f"{detail or f'Docker exited {result.returncode}'}"
-        )
-
-    def image_layers(self, image: str) -> tuple[str, ...]:
-        try:
-            metadata = project_image.inspect_layout_image(image)
-        except RuntimeError as exc:
+            return interactive_docker.inspect_image_metadata(image)
+        except interactive_docker.ImageInspectError as exc:
             raise ImageLifecycleError(str(exc)) from exc
-        layers = metadata.get("RootFS", {}).get("Layers")
-        if not is_str_list(layers):
-            raise ImageLifecycleError(f"Docker returned invalid filesystem layers for {image!r}")
-        return tuple(layers)
 
     def repo_digests(self, image: str) -> tuple[str, ...]:
         """Return normalized registry identities attached to a local image."""
@@ -2457,10 +2416,11 @@ def _layout_alias_capable(image_id: str) -> bool:
         raise ImageLifecycleError(str(exc)) from exc
 
 
-def descends_from(docker: DockerPort, parent: str | None, child: str) -> bool:
+def descends_from(parent: ImageMetadata | None, child: ImageMetadata | None) -> bool:
     """Whether the child's filesystem layers extend the parent's non-empty layers."""
-    layers = docker.image_layers(parent) if parent else []
-    return bool(layers) and docker.image_layers(child)[: len(layers)] == layers
+    if parent is None or child is None:
+        return False
+    return bool(parent.layers) and child.layers[: len(parent.layers)] == parent.layers
 
 
 def _layout_node(
@@ -2531,6 +2491,18 @@ def _prepare_layout_child(
     )
 
 
+def _is_owned_layout_row(row: ImageReference, prefix: str, docker: DockerPort) -> bool:
+    """Whether one inspect of *row* proves it is a current-schema layout derivative tag."""
+    metadata = docker.inspect(row.reference)
+    return (
+        metadata is not None
+        and metadata.label(LABEL_ARTIFACT_ROLE) == ImageRole.PROJECT_DATA_LAYOUT.value
+        and metadata.label(LABEL_SCHEMA) == PROVENANCE_SCHEMA
+        and (metadata.label(LABEL_EFFECTIVE_INPUTS) or "")[:16]
+        == row.reference.removeprefix(prefix).removesuffix(":latest")
+    )
+
+
 def _reconcile_layout_tag_cleanup(
     root: Path, selected: str, intent: Intent, docker: DockerPort
 ) -> ImageCleanup:
@@ -2546,10 +2518,7 @@ def _reconcile_layout_tag_cleanup(
             r"[0-9a-f]{16}", row.reference.removeprefix(prefix).removesuffix(":latest")
         )
         is not None
-        and docker.label(row.reference, LABEL_ARTIFACT_ROLE) == ImageRole.PROJECT_DATA_LAYOUT.value
-        and docker.label(row.reference, LABEL_SCHEMA) == PROVENANCE_SCHEMA
-        and (docker.label(row.reference, LABEL_EFFECTIVE_INPUTS) or "")[:16]
-        == row.reference.removeprefix(prefix).removesuffix(":latest")
+        and _is_owned_layout_row(row, prefix, docker)
     ]
     if not candidates:
         return ImageCleanup()

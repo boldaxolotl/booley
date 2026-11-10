@@ -783,7 +783,7 @@ def test_flag_cannot_silently_replace_existing_provider(tmp_path):
 
 
 def test_seed_heads_its_output_with_a_section_header_on_a_tty(tmp_path, monkeypatch, capsys):
-    from booley.harness import colors
+    from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)

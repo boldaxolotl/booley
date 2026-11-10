@@ -13,8 +13,9 @@ import pytest
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.backends import cocotb_results
-from booley.flows.sim.campaign import serial_execution
+from booley.flows.sim.campaign import codec, collect_pre_sim_firings, serial_execution
 from booley.flows.sim.campaign.codec import (
+    MAX_COMMAND_BYTES,
     SimulationCampaignIntegrityError,
     decode_simulation_result,
     encode_simulation_result,
@@ -31,6 +32,7 @@ from booley.flows.sim.campaign.coverage_execution import (
     _CoverageAggregateError,
 )
 from booley.flows.sim.campaign.flow_planning import plan_coarse_simulation_campaign
+from booley.flows.sim.campaign.model import SimulationResult
 from booley.flows.sim.campaign.planning import manifest_digest
 from booley.flows.sim.campaign.resume import (
     ValidatedManifestNode,
@@ -100,11 +102,17 @@ def test_coverage_report_keeps_nonpassing_status_without_optional_detail(
 
 
 def _facts(
-    root: Path, *, cocotb: bool, preview_names: tuple[str, ...] = ("count", "reset")
+    root: Path,
+    *,
+    cocotb: bool,
+    preview_names: tuple[str, ...] = ("count", "reset"),
+    access: str = "immutable",
 ) -> tuple[TargetHandle, TargetInspection, SimulationPreview]:
     project = root / ".booley"
     project.mkdir()
-    (project / "booley.toml").write_text("[flows.sim]\nrun_cwd = '.'\n", encoding="utf-8")
+    (project / "booley.toml").write_text(
+        f"[flows.sim]\nrun_cwd = '.'\npre_sim_build_access = '{access}'\n", encoding="utf-8"
+    )
     (project / "tests.toml").write_text('[sim]\ntests = ["reset", "count"]\n', encoding="utf-8")
     source = root / ("test_counter.py" if cocotb else "tb.sv")
     source.write_text("# cocotb\n" if cocotb else "module tb; endmodule\n", encoding="utf-8")
@@ -192,8 +200,9 @@ def _plan(
     names: tuple[str, ...] = ("count", "reset"),
     cocotb: bool,
     no_waivers: bool = False,
+    access: str = "immutable",
 ):
-    handle, inspection, preview = _facts(root, cocotb=cocotb, preview_names=names)
+    handle, inspection, preview = _facts(root, cocotb=cocotb, preview_names=names, access=access)
     return plan_coarse_simulation_campaign(
         handle=handle,
         inspection=inspection,
@@ -359,15 +368,14 @@ class _ImageCheckingExecution(NativeExecution):
 
 
 class _FailedCoverageBuild(NativeExecution):
-    def __init__(self, *, infrastructure: bool) -> None:
+    def __init__(self, *, infrastructure: bool, reason: str = "compile failed") -> None:
         super().__init__()
         self.infrastructure = infrastructure
+        self.reason = reason
 
     def build(self, request):
         del request
-        return SimulationBuildResult(
-            False, "compile failed", infrastructure_error=self.infrastructure
-        )
+        return SimulationBuildResult(False, self.reason, infrastructure_error=self.infrastructure)
 
     def run(self, request):
         raise AssertionError(f"failed build launched {request.run_id}")
@@ -521,10 +529,30 @@ def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
     tmp_path: Path,
 ) -> None:
     native = _ImageCheckingExecution()
-    outcome, _store = _run_coverage_campaign(tmp_path, native)
+    outcome, store = _run_coverage_campaign(tmp_path, native)
 
     assert outcome.complete is True
     assert native.executed_original is False
+    _assert_native_build_scope(store)
+
+
+def _assert_native_build_scope(store: CampaignStore) -> None:
+    """Native coverage builds stay private to their work item, with no compiler record."""
+    (build_result,) = store.root.rglob("private-build/build-result.json")
+    directory = build_result.parent
+    attempt = json.loads((directory / "build-attempt.json").read_text())
+    bundle = json.loads((directory / "evidence" / "bundle.json").read_text())
+    result = json.loads(build_result.read_text())
+    simulation_attempt_id = directory.parent.name.split("-", 1)[1]
+    assert attempt["sharing"] == bundle["sharing"] == "private_work_item"
+    assert result["bundle"]["sharing"] == "private_work_item"
+    assert attempt["owner"] == bundle["owner"]
+    assert attempt["owner"]["simulation_attempt_id"] == simulation_attempt_id
+    assert attempt["owner"]["work_item_id"]
+    assert attempt["build_attempt_id"] == simulation_attempt_id
+    assert attempt["build_attempt_ordinal"] == 1
+    assert result["build_attempt"]["build_attempt_id"] == simulation_attempt_id
+    assert result["evidence"] == []
 
 
 def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None:
@@ -581,6 +609,20 @@ def test_coverage_campaign_rejects_score_bearing_invalid_nested_result(
         _run_coverage_campaign(tmp_path, NativeExecution())
 
     assert isinstance(caught.value.__cause__, SimulationCampaignIntegrityError)
+
+
+def test_coverage_campaign_refuses_an_oversized_result_at_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schema, fields, _limit, reader = codec._DOCUMENT_SPECS[SimulationResult]
+    monkeypatch.setitem(codec._DOCUMENT_SPECS, SimulationResult, (schema, fields, 64, reader))
+
+    with pytest.raises(CampaignPublicationError) as caught:
+        _run_coverage_campaign(tmp_path, NativeExecution())
+
+    assert isinstance(caught.value.__cause__, SimulationCampaignIntegrityError)
+    assert "size ceiling" in str(caught.value.__cause__)
+    assert not list(tmp_path.rglob("work-items/*/result.json"))
 
 
 class _TimeoutThenMissingInputExecution(NativeExecution):
@@ -671,7 +713,7 @@ def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path
         "Pre-Sim Commands failed (failed): vector generator rejected input"
     )
 
-    firings = store.read_pre_sim_firings()
+    firings = collect_pre_sim_firings(store.manifest_path)
     assert [f.document["ordinal"] for f in firings] == [1, 2]
     assert [f.document["test_names"] for f in firings] == [("reset",), ("wrap",)]
     assert all(f.document["status"] == "failed" for f in firings)
@@ -719,7 +761,7 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
 
     # This injected external adapter has no observed process exit status.
     store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
-    (firing,) = store.read_pre_sim_firings()
+    (firing,) = collect_pre_sim_firings(store.manifest_path)
     assert firing.document["status"] == "spawn_error"
     assert firing.document["returncode"] is None
     assert firing.document["command_count"] == 1
@@ -760,22 +802,24 @@ def test_post_commit_failure_reports_incomplete_collection(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize(
-    ("coverage", "scans"), [(True, 3), (False, 2)], ids=["coverage", "ordinary"]
+    ("coverage", "scans"), [(True, 5), (False, 4)], ids=["coverage", "ordinary"]
 )
 def test_campaign_run_adds_no_recovery_scan_for_failure_facts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coverage: bool, scans: int
 ) -> None:
-    """Failure-detail facts reuse the coordinator's scans: 3 for coverage, 2 otherwise."""
-    from booley.flows.sim.campaign import coordinator
+    """Failure-detail facts reuse the coordinator's scans.
 
+    Run start, summary regeneration, final scan and the outcome collector scan
+    the Campaign (4); a coverage commit adds one (5).
+    """
     calls: list[None] = []
-    original = coordinator._scan_recovery
+    original = CampaignStore.scan
 
     def counting_scan(*args, **kwargs):
         calls.append(None)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(coordinator, "_scan_recovery", counting_scan)
+    monkeypatch.setattr(CampaignStore, "scan", counting_scan)
     if coverage:
         _run_coverage_campaign(tmp_path, NativeExecution())
     else:
@@ -820,10 +864,21 @@ def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) 
         assert observation["assertions"] == "not_observed"
 
 
+@pytest.mark.parametrize(
+    "reason",
+    [
+        pytest.param("compile failed", id="short-reason"),
+        pytest.param("x" * (MAX_COMMAND_BYTES + 1), id="over-ceiling-reason"),
+        # The odd-length ASCII prefix puts the byte cut inside a two-byte character.
+        pytest.param("x" + "\u00e9" * MAX_COMMAND_BYTES, id="multibyte-straddles-cut"),
+    ],
+)
 def test_coverage_infrastructure_build_failure_has_terminal_error_result(
-    tmp_path: Path,
+    tmp_path: Path, reason: str
 ) -> None:
-    outcome, _store = _run_coverage_campaign(tmp_path, _FailedCoverageBuild(infrastructure=True))
+    outcome, _store = _run_coverage_campaign(
+        tmp_path, _FailedCoverageBuild(infrastructure=True, reason=reason)
+    )
     assert outcome.complete
     assert outcome.aggregate_grade == "error"
 
@@ -835,6 +890,9 @@ def test_coverage_infrastructure_build_failure_has_terminal_error_result(
     assert len(attempts) == 1
     build = json.loads((attempts[0] / "private-build/build-result.json").read_bytes())
     assert build["state"] == "infrastructure_error"
+    message = build["observation"]["message"]
+    assert len(message.encode()) <= MAX_COMMAND_BYTES
+    assert message.startswith(reason[:64])
     assert (directory / "result.json").exists()
     result = recovery.items[0].result
     assert result is not None

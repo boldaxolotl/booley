@@ -215,7 +215,7 @@ def test_one_lane_command_start_keeps_other_lane_tail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("TERM", "xterm")
-    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", False)
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
     now = [0.0]
     screen = Screen(tty=True)
     sink = TerminalProgress(
@@ -285,7 +285,7 @@ def test_tty_lanes_are_summarised_once_after_an_intermediate_drain(
     """A terminal keeps one result line per lane, even when one lane's command ends
     while the other lane is open but has not started a command (#2885)."""
     monkeypatch.setenv("TERM", "xterm")
-    monkeypatch.setattr("booley.harness.colors.COLORS_ENABLED", False)
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
     screen = Screen(tty=True)
     sink = TerminalProgress(
         "sim",

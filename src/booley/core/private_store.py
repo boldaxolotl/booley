@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import shlex
@@ -13,7 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, cast
 
 from booley.core.file_lock import acquire_file_lock, release_file_lock
 from booley.core.sharing_retry import open_with_sharing_retry, replace_file
@@ -216,3 +217,111 @@ class PrivateStore:
         if cause is None:
             raise error
         raise error from cause
+
+
+_PROJECT_SUFFIX = ".json"
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectStoreEntry:
+    """One validated per-Project file found by `ProjectStore.scan`."""
+
+    path: Path
+    project_root: str
+    document: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectStore:
+    """Private store holding one JSON file per Project Root, named by its hash.
+
+    Every file's name is the SHA-256 of the case-normalised Project Root it
+    holds, so lookups and scans agree on one identity rule. `repair` is the
+    caller's sentence for fixing a misnamed file; it may use the `{path}` and
+    `{root}` placeholders, keeping runtime policy out of this module.
+    """
+
+    private: PrivateStore
+    repair: str
+
+    def filename(self, project_root: str) -> str:
+        """Name the file for a Project Root; case folds only where the OS folds paths."""
+        return _hashed_name(os.path.normcase(project_root))
+
+    def path(self, project_root: str) -> Path:
+        """Return the file path for a Project Root."""
+        return self.private.root / self.filename(project_root)
+
+    def paths(self, project_root: str) -> tuple[Path, ...]:
+        """Return the current path plus the pre-normalisation path when it differs."""
+        current = self.path(project_root)
+        old = self.private.root / _hashed_name(project_root)
+        return (current,) if old == current else (current, old)
+
+    def locate(self, project_root: str) -> Path | None:
+        """Return the existing file path, or None; refuse a file named by the old rule."""
+        current = self.path(project_root)
+        if current.exists() or current.is_symlink():
+            return current
+        for old in self.paths(project_root)[1:]:
+            if old.exists() or old.is_symlink():
+                raise self._mismatch(old, project_root)
+        return None
+
+    def read(self, project_root: str) -> dict[str, object] | None:
+        """Read the Project's document, or None when the store or file is absent."""
+        if not self.private.validate_existing_directory():
+            return None
+        path = self.locate(project_root)
+        if path is None:
+            return None
+        return self._identity(path, self._load(path)).document
+
+    def write(self, project_root: str, content: str) -> None:
+        """Atomically write the Project's file, creating the private directory."""
+        self.private.ensure_directory()
+        self.private.atomic_write_text(self.filename(project_root), content)
+
+    def scan(self) -> tuple[ProjectStoreEntry, ...]:
+        """Validate every file without changing host state; raise on the first bad one."""
+        if not self.private.validate_existing_directory():
+            return ()
+        entries = []
+        for path in sorted(self.private.root.iterdir()):
+            if path.name.startswith("."):  # temporary and lock files
+                continue
+            if path.is_symlink() or not path.is_file() or not path.name.endswith(_PROJECT_SUFFIX):
+                raise self.private.error_type(f"unexpected {self.private.subject} entry: {path}")
+            entries.append(self._identity(path, self._load(path)))
+        return tuple(entries)
+
+    def _load(self, path: Path) -> object:
+        try:
+            return self.private.read_json(path.name)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise self.private.error_type(
+                f"cannot read {self.private.subject} {path}: {exc}"
+            ) from exc
+
+    def _identity(self, path: Path, raw: object) -> ProjectStoreEntry:
+        """Require the file to name a Project Root and to be named for it."""
+        document = cast("dict[str, object]", raw) if isinstance(raw, dict) else {}
+        project_root = document.get("project_root")
+        if not isinstance(project_root, str) or not project_root:
+            raise self.private.error_type(
+                f"{self.private.subject} {path} does not name a Project Root"
+            )
+        if path.name != self.filename(project_root):
+            raise self._mismatch(path, project_root)
+        return ProjectStoreEntry(path, project_root, document)
+
+    def _mismatch(self, path: Path, project_root: str) -> RuntimeError:
+        repair = self.repair.format(path=path, root=project_root)
+        return self.private.error_type(
+            f"{self.private.subject} identity mismatch: {path} is not named for the "
+            f"Project Root it holds ({project_root}); {repair}"
+        )
+
+
+def _hashed_name(identity: str) -> str:
+    return hashlib.sha256(identity.encode()).hexdigest() + _PROJECT_SUFFIX

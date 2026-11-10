@@ -2866,6 +2866,7 @@ class TestImageDriftWarning:
                     "io.booley.sandbox.selection-fingerprint": fingerprint,
                 },
                 {},
+                (),
             )
 
         monkeypatch.setattr(sr.idk, "inspect_image_metadata", inspect)
@@ -2957,6 +2958,7 @@ class TestStaleBooleyBakeWarning:
                 "io.booley.wheel.source-fingerprint": "stale",
             },
             {},
+            (),
         )
         monkeypatch.setattr(sr.image_identity, "current_host_build_identity", lambda: expected)
         monkeypatch.setattr(sr.idk, "inspect_image_metadata", lambda *_args, **_kwargs: observed)
@@ -4696,7 +4698,7 @@ def test_project_sandbox_resolution_consumed_claim_status(
     fixture = project_sandbox_resolution
     state = fixture.documents.pop(fixture.state["Id"])
     assert real_claim_vscode_start(workspace, run=fixture.run)
-    claim = session_admission._store().root / session_admission._claim_filename(str(workspace))
+    claim = session_admission.claim_store().path(str(workspace))
     assert claim.exists()
     fixture.documents[state["Id"]] = state
     monkeypatch.setattr(
@@ -4714,7 +4716,7 @@ def test_project_sandbox_resolution_never_touches_claim_store(
     from booley.runtime import session_admission
 
     store = Mock(side_effect=AssertionError("structural selection must be read-only"))
-    monkeypatch.setattr(session_admission, "_store", store)
+    monkeypatch.setattr(session_admission, "claim_store", store)
     assert sr.resolve_running_sandbox(workspace).name == "editor"
     store.assert_not_called()
 

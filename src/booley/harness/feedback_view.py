@@ -12,9 +12,8 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from booley.feedback.findings import Finding, FindingsLog
-
-from . import colors
-from .terminal_table import render_table
+from booley.presentation import colors
+from booley.presentation.terminal_table import render_table
 
 _HEADERS = ("ID", "Kind", "Bucket", "Title", "Status")
 _TITLE_COLUMN = 3

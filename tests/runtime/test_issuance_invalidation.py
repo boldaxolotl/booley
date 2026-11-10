@@ -46,7 +46,7 @@ def test_pending_revoke_invalidates_stamp_then_cleans_resources(
 
     assert issuance_invalidation.recover_project_locked(project_identity)
     assert events == [("stamp", project_identity), ("resources", project_identity)]
-    assert not issuance_invalidation._path(project_identity).exists()
+    assert not issuance_invalidation.journal_store().path(project_identity).exists()
 
 
 def test_legacy_journal_keys_still_recover_with_cleanup(
@@ -55,10 +55,8 @@ def test_legacy_journal_keys_still_recover_with_cleanup(
 ) -> None:
     project_identity = str((tmp_path / "project").resolve())
     events = []
-    store = issuance_invalidation._store()
-    store.ensure_directory()
-    store.atomic_write_text(
-        issuance_invalidation._filename(project_identity),
+    issuance_invalidation.journal_store().write(
+        project_identity,
         json.dumps(
             {
                 "schema_version": 1,
@@ -112,7 +110,7 @@ def test_tampered_invalidation_journal_fails_closed(tmp_path: Path) -> None:
     project_identity = str((tmp_path / "project").resolve())
     different_identity = str((tmp_path / "different-project").resolve())
     issuance_invalidation.prepare(project_identity)
-    journal = issuance_invalidation._path(project_identity)
+    journal = issuance_invalidation.journal_store().path(project_identity)
     journal.write_text(json.dumps({"project_root": different_identity}), encoding="utf-8")
 
     with pytest.raises(issuance_invalidation.InvalidationError, match="identity mismatch"):
@@ -323,7 +321,7 @@ def test_cancel_survives_transient_unlink_sharing_error(tmp_path: Path, monkeypa
 
     identity = str((tmp_path / "project").resolve())
     issuance_invalidation.prepare(identity)
-    journal = issuance_invalidation._path(identity)
+    journal = issuance_invalidation.journal_store().path(identity)
     attempts = hold_unlinks(monkeypatch, {journal: 1})
     issuance_invalidation.cancel(identity)
     assert attempts[journal] == 2
@@ -335,7 +333,7 @@ def test_cancel_retries_before_raising_lasting_sharing_error(tmp_path: Path, mon
 
     identity = str((tmp_path / "project").resolve())
     issuance_invalidation.prepare(identity)
-    journal = issuance_invalidation._path(identity)
+    journal = issuance_invalidation.journal_store().path(identity)
     attempts = hold_unlinks(monkeypatch, {journal: 99})
     with pytest.raises(PermissionError):
         issuance_invalidation.cancel(identity)

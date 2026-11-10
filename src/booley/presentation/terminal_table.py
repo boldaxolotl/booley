@@ -1,9 +1,9 @@
-"""Shared terminal table renderer for harness output.
+"""Shared terminal table renderer for Booley terminal output.
 
 One layout for every CLI table (``booley cheat``, ``booley targets``, ...):
 a bold-accent header row, a chrome rule, then one line per row. Columns are
 sized by *visible* width, so ANSI-styled cells align; padding goes outside the
-style codes. All styling goes through :mod:`booley.harness.colors`, which
+style codes. All styling goes through :mod:`booley.presentation.colors`, which
 returns plain text when color is off (pipes, ``NO_COLOR``, ``TERM=dumb``), so
 the plain layout equals the ANSI-stripped colored layout.
 """
@@ -15,7 +15,7 @@ import shutil
 import sys
 from collections.abc import Mapping, Sequence
 
-from .colors import bold_accent, char_width, chrome, len_visible, strip_ansi
+from booley.presentation.colors import bold_accent, char_width, chrome, len_visible, strip_ansi
 
 _INDENT = "  "
 _GAP = "   "

@@ -17,7 +17,7 @@ each entry's _Avoid_ terms as rejected synonyms rather than loose alternatives.
 ### Lifecycle
 
 How a host and codebase become ready for Booley work. **Host Bootstrap** prepares
-reusable host capabilities, **Project Initialization** creates one **Project**,
+reusable host capabilities, **Project Initialization** reconciles one **Project**'s files,
 and **Project Setup** adapts that Project to its design.
 
 **Host Bootstrap**:
@@ -25,7 +25,7 @@ Idempotent, Project-independent preparation of the host environment and the curr
 _Avoid_: Project bootstrap, machine setup, installation
 
 **Project Initialization**:
-Idempotent mechanical creation and reconciliation of Booley state and Sandbox infrastructure for one codebase, making it a **Project** without interpreting its design.
+Idempotent, location-neutral reconciliation of one codebase's Project files (the Booley Directory, Git integration, guidance links, core projections and the Dashboard task), making it a **Project** without interpreting its design. It needs no Docker, host credentials or **Sandbox Issuance**. Host `booley init` runs it with Sandbox Image preparation alongside, then adds Sandbox Issuance, which owns the Dashboard task on that path.
 _Avoid_: Project bootstrap, Project enrollment, Project Setup
 
 **Project Setup**:
@@ -163,7 +163,7 @@ _Avoid_: tier, weight, pool, semaphore
 The design-description primitives Booley references but does not own. **Target** is the load-bearing one: almost every other entry binds to a Target by name.
 
 **Project**:
-A codebase initialized with `booley init`, with a **Booley Directory** for its configuration and state.
+A codebase on which Project Initialization has run, with a **Booley Directory** for its configuration and state.
 _Avoid_: repo, workspace
 
 **Booley Directory**:
