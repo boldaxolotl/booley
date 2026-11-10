@@ -742,10 +742,6 @@ def persistence_fault(boundary):
 
 def gated_plan(tmp_path):
     """A coverage-gated Target plan whose Campaign publishes under ``reports/sim/1``."""
-    from fractions import Fraction
-
-    from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
-
     context = project(tmp_path)
     criterion = CoverageCriterion(
         DurableTargetIdentity("acme:demo:counter:1#sim_0"),

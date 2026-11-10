@@ -2,8 +2,8 @@
 
 ``EndpointState.read_state`` asks the endpoint's acceptance recorder for a
 ``StatePersistence`` and hands it to the loaded state. These tests drive real
-writers (Criterion acceptance, run-state persistence)
-and check each save arrives at the injected strategy.
+writers (Criterion acceptance, run-state persistence) and check each save
+arrives at the injected strategy.
 """
 
 from __future__ import annotations

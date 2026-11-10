@@ -149,7 +149,7 @@ def run_coverage_target(
     embedded_root: Path | None = None,
     publication_checkpoint: Callable[[str], None] | None = None,
 ) -> CoverageTargetOutcome:
-    """Publish Campaign and Simulation, then checkpoint progress."""
+    """Publish the Campaign and Simulation projection, then checkpoint progress."""
     assert plan.invocation_dir is not None and plan.collection_request is not None
     root = embedded_root or target_report_directory(plan.invocation_dir, plan.handle.selector)
     outcome = _execute_coverage_transaction(
@@ -173,6 +173,8 @@ def _execute_coverage_transaction(
     result = None
     campaign = None
     campaign_published = False
+    request = plan.collection_request
+    assert request is not None
 
     def record_campaign_publication() -> None:
         nonlocal campaign_published
@@ -181,7 +183,7 @@ def _execute_coverage_transaction(
     try:
         validate_coverage_sources(plan)
         _start_target(root)
-        result = collect(replace(plan.collection_request, artifact_root=root), execution)
+        result = collect(replace(request, artifact_root=root), execution)
         validate_coverage_sources(plan)
         campaign = _evaluate(plan, _campaign(plan, result))
         outcome = _publish(

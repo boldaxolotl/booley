@@ -311,9 +311,10 @@ def test_an_ordinary_run_never_changes_a_measured_coverage_verdict(layout, monke
 
 def test_a_registration_that_is_not_a_simulation_campaign_manifest_cannot_be_read(tmp_path):
     """Only a Simulation Campaign manifest is a readable registration."""
+    from booley.flows.sim.campaign.inspection import SimulationCampaignIntegrityError
     from booley.flows.sim.unpublished_results import read_unpublished_results
 
-    with pytest.raises(ValueError, match=r"campaign/manifest\.json"):
+    with pytest.raises(SimulationCampaignIntegrityError, match=r"campaign/manifest\.json"):
         read_unpublished_results(tmp_path / "targets/top/coverage.json", "sha256:" + "0" * 64)
 
 
