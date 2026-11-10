@@ -23,9 +23,9 @@ from booley.flows.sim.campaign.codec import canonical_json_bytes
 from booley.flows.sim.campaign.model import SimulationResult
 from booley.flows.sim.campaign.planning import finalize_manifest
 from booley.flows.sim.campaign.store import CampaignStore
-from tests.flows.sim.test_campaign_phase3 import _failed_shared_outcome
-from tests.flows.sim.test_campaign_phase3_integrity import (
+from tests.flows.sim.campaign_test_support import (
     _executor,
+    _failed_shared_outcome,
     _Group,
     _legacy_disclosures,
     _manifest_for,
