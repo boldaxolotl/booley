@@ -2866,6 +2866,7 @@ class TestImageDriftWarning:
                     "io.booley.sandbox.selection-fingerprint": fingerprint,
                 },
                 {},
+                (),
             )
 
         monkeypatch.setattr(sr.idk, "inspect_image_metadata", inspect)
@@ -2957,6 +2958,7 @@ class TestStaleBooleyBakeWarning:
                 "io.booley.wheel.source-fingerprint": "stale",
             },
             {},
+            (),
         )
         monkeypatch.setattr(sr.image_identity, "current_host_build_identity", lambda: expected)
         monkeypatch.setattr(sr.idk, "inspect_image_metadata", lambda *_args, **_kwargs: observed)
