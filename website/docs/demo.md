@@ -16,7 +16,7 @@ document: Free browser demo
   <h2 class="sec" id="s1"><span class="n">1</span>How the free demo works</h2>
   <ul>
     <li>The Codespace runs on your GitHub account's free monthly Codespaces allowance. The first launch takes 3-4 minutes while the container image builds.</li>
-    <li>VS Code opens the Codespace in Restricted Mode and asks whether you trust the authors of the files in this folder. Choose <strong>Trust Folder &amp; Continue</strong>; Booley's terminals start only after you do.</li>
+    <li>VS Code opens the Codespace in Restricted Mode and asks whether you trust the authors of the files in this folder. Choose <strong>Trust Folder &amp; Continue</strong>; no terminal opens until you do.</li>
     <li>The agent runs OpenAI's GPT-6 Luna through the Booley demo gateway, on the Booley maintainer's account. You run <code>booley-demo-claim</code> in a terminal: it shows a short notice, you agree and sign in with GitHub to get a demo token. The gateway logs usage numbers, never your prompts or code.</li>
     <li>Each GitHub account gets $1 of demo usage per month.</li>
     <li><a href="https://github.com/boldaxolotl/booley-prj-picorv32/blob/main/START-HERE.md">START-HERE.md</a> opens in the Codespace and walks you through the rest.</li>
