@@ -409,6 +409,19 @@ testbench to the image's cocotb 2.x (`cocotb.fork` becomes
 matching Verilator. Image versions are in
 [Supported EDA tools](SUPPORTED-EDA-TOOLS.md#versions-in-the-sandbox-image).
 
+### A streamed `--trace` dump produces a trace incident
+
+A `sim --trace` run converts a declared `.vcd` while the test runs, so the
+testbench must not seek in, read back, or reopen that dump. If it does, the
+trace incident names B-Wave's error. Write the dump once, front to back, or
+dump FST instead.
+
+### A run without `--trace` hangs after Booley was killed during a traced run
+
+If Booley was killed hard during a `--trace` run, a leftover file at the
+declared trace path can make the next run without `--trace` hang while it
+writes there. The next `--trace` run removes the file, or delete it yourself.
+
 ### Verilator reports timing or enum errors
 
 - **`%Error-NEEDTIMINGOPT`**: the testbench uses delays or event controls

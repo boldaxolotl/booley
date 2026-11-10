@@ -70,6 +70,10 @@ pub enum VcdParseError {
     Worker {
         message: String,
     },
+    /// A `$enddefinitions` line in the VCD body: the dump was reopened.
+    SecondHeader {
+        offset: u64,
+    },
 }
 
 impl fmt::Display for VcdParseError {
@@ -95,6 +99,10 @@ impl fmt::Display for VcdParseError {
                 write!(f, "VCD chunk {sequence} failed: {source}")
             }
             VcdParseError::Worker { message } => write!(f, "VCD worker failed: {message}"),
+            VcdParseError::SecondHeader { offset } => write!(
+                f,
+                "input holds a second VCD header; was the dump reopened? (byte {offset})"
+            ),
         }
     }
 }
@@ -106,7 +114,8 @@ impl std::error::Error for VcdParseError {
             VcdParseError::Chunk { source, .. } => Some(source.as_ref()),
             VcdParseError::InvalidTimestamp { .. }
             | VcdParseError::Cancelled { .. }
-            | VcdParseError::Worker { .. } => None,
+            | VcdParseError::Worker { .. }
+            | VcdParseError::SecondHeader { .. } => None,
         }
     }
 }

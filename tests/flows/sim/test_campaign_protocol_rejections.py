@@ -8,10 +8,16 @@ from types import SimpleNamespace
 import pytest
 
 from booley.flows.sim.campaign import child_protocol
-from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
+from booley.flows.sim.campaign.codec import (
+    SimulationCampaignIntegrityError,
+    canonical_json_bytes,
+)
 from booley.flows.sim.campaign.store import CampaignStore
-from booley.runtime.execution_records import ExecutionId, execution_paths
-from tests.flows.sim.test_campaign_phase3 import _two_item_manifest
+from booley.runtime.execution_records import (
+    ExecutionId,
+    execution_paths,
+)
+from tests.flows.sim.campaign_test_support import _two_item_manifest
 from tests.fusesoc_test_support import symlinked_booley_dir
 
 
@@ -191,3 +197,20 @@ def test_recover_lane_treats_an_unreadable_record_as_indeterminate(
 
     with pytest.raises(SimulationCampaignIntegrityError, match="recovery is incomplete"):
         registry.recover_lane(lane.execution_id)
+
+
+@pytest.mark.parametrize("defect", ["symlink", "hardlink"])
+def test_child_protocol_conflict_read_rejects_links(tmp_path: Path, defect: str) -> None:
+    raw = canonical_json_bytes({"value": "expected"})
+    source = tmp_path / "source.json"
+    source.write_bytes(raw)
+    record = tmp_path / "record.json"
+    if defect == "symlink":
+        record.symlink_to(source.name)
+    else:
+        record.hardlink_to(source)
+
+    with pytest.raises(SimulationCampaignIntegrityError, match="link"):
+        child_protocol._publish_or_verify(record, raw)
+
+    assert source.read_bytes() == raw
