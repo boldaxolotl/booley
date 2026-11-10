@@ -180,10 +180,6 @@ class TestRunInvocation:
 
     #: Resolved Test Runs by ``(checkout, Target)``; resolved once, never redrawn.
     resolved: dict[tuple[str, str], tuple[TestRun, ...]] = field(default_factory=dict)
-    #: The Test Runs of each planned simulator process, by ``(role, Target)``.
-    planned_groups: dict[tuple[str, str], tuple[tuple[TestRun, ...], ...]] = field(
-        default_factory=dict
-    )
     #: Each candidate Target's effective Default Seed, recorded when its Test
     #: Runs are resolved. Reports use it to tell a plain run from a seeded one.
     default_seeds: dict[str, int | None] = field(default_factory=dict)

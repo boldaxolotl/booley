@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.conftest import reset_git_command_config
 
 from booley.runtime.project_repositories import inspect_symbolic_branch
 
@@ -15,7 +16,7 @@ from booley.runtime.project_repositories import inspect_symbolic_branch
 def _isolated_git_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    monkeypatch.setenv("GIT_CONFIG_COUNT", "0")
+    reset_git_command_config(monkeypatch)
     monkeypatch.delenv("GIT_TEMPLATE_DIR", raising=False)
     for variable in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
         monkeypatch.delenv(variable, raising=False)

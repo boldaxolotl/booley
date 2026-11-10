@@ -122,7 +122,7 @@ def test_first_finished_owned_job_returned_with_other_listed(monkeypatch):
     assert "OUT-a" in second
 
 
-def test_several_unread_returns_earliest_and_lists_rest():
+def test_several_unread_returns_earliest_without_listing_rest():
     me = _caller()
     _write("late", owner=me.owner, ended_at="2026-01-01T00:05:00Z")
     _write("early", owner=me.owner, ended_at="2026-01-01T00:01:00Z")
@@ -130,8 +130,9 @@ def test_several_unread_returns_earliest_and_lists_rest():
     text = _all_text(asyncio.run(_poll(_JobManager(_FakeLifetime()), me)))
 
     assert "Result of job early" in text
-    assert "Also finished, not yet read" in text
-    assert "late" in text.split("Also finished, not yet read", 1)[1]
+    # The unread notice that ends every tool response lists the rest (#2539).
+    assert "Also finished, not yet read" not in text
+    assert "late" not in text
 
 
 def test_owned_poll_times_out_with_running_list(monkeypatch):

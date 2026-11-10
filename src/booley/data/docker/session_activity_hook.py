@@ -104,6 +104,7 @@ MAX_THREAD_ID = 1024
 # json escapes a character to at most 6 bytes: bound for a cwd, a thread id and the fixed fields.
 MAX_RECORD_BYTES = 6 * (MAX_CWD + MAX_THREAD_ID) + 1024
 MAX_PARENT_DIRS = 128
+MAX_HANDLE_MAP_BYTES = 16 * 1024 * 1024
 BOOLEY_DIR_NAME = ".booley"
 CODEX_NATIVE_NAMES = frozenset(
     {
@@ -195,18 +196,17 @@ def _valid_id(value: object) -> str | None:
 def _handle_map(project: Path) -> tuple[dict[str, str], dict[str, str]]:
     """Validate the session-map contract of runtime.handles.HandleStore, but stricter.
 
-    Only the Booley Directory entry itself (*project*) may be a link, as in the host
-    store: the Sandbox ``BOOLEY_DIR=/booley-project`` is an image symlink to
-    ``/work/.booley``, and a host ``.booley`` may be a link. Links above or below
-    that entry stay refused. This file runs as ``python3 -I -S`` without Booley
-    imports, so the rule of ``booley.core.booley_dir_links`` is inlined.
+    A ``chat:codex:`` marker exists only where the host store accepted the map when
+    the tab was launched, so this read needs only a bounded parse. Oversized or
+    misshapen documents yield no aliases (thread attribution); unreadable or
+    non-JSON files raise to the caller, which does the same.
     """
     path = project / "runtime/sessions/handles/map.json"
     if any(part.is_symlink() for part in (path, *path.parents) if part != project):
         raise ValueError("handle map is redirected")
     with path.open("rb") as stream:
-        raw = stream.read(16 * 1024 * 1024 + 1)
-    if len(raw) > 16 * 1024 * 1024:
+        raw = stream.read(MAX_HANDLE_MAP_BYTES + 1)
+    if len(raw) > MAX_HANDLE_MAP_BYTES:
         raise ValueError("handle map exceeds size bound")
     data = json.loads(raw)
     if not isinstance(data, dict) or type(data.get("schema")) is not int or data["schema"] != 1:

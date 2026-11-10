@@ -168,22 +168,6 @@ def _read_run_log_head(path: Path) -> tuple[bytes, bytes]:
         return b"", b""
 
 
-def read_run_log_header(work_dir: str | Path) -> dict[str, str] | None:
-    """Parse a run log's ownership header into its ``key=value`` fields."""
-    first, _ = _read_run_log_head(Path(work_dir, RUN_LOG_NAME))
-    return parse_run_log_header(first.decode("utf-8", errors="replace"))
-
-
-def run_log_is_current(work_dir: str | Path, run: str | None = None) -> bool:
-    """Return whether the log holds finished output from the requested run."""
-    header = read_run_log_header(work_dir)
-    if header is None or header.get("run") != (run or current_run_token()):
-        return False
-    _, second = _read_run_log_head(Path(work_dir, RUN_LOG_NAME))
-    body = second.decode("utf-8", errors="replace").rstrip("\n")
-    return not body.startswith(RUN_LOG_IN_PROGRESS_PREFIX)
-
-
 def cap_log_bytes(data: bytes, max_bytes: int) -> bytes:
     """Clamp bytes to a maximum size while retaining the actionable tail."""
     if len(data) <= max_bytes:
@@ -267,8 +251,6 @@ __all__ = [
     "current_run_token",
     "format_run_log_header",
     "parse_run_log_header",
-    "read_run_log_header",
-    "run_log_is_current",
     "write_run_log",
     "write_run_log_progress",
 ]

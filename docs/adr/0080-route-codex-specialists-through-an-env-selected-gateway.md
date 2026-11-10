@@ -1,6 +1,6 @@
 # Route Codex Specialists through an env-selected gateway
 
-Status: accepted (amended 2026-10-29: token command; amended for interactive Codex, #2270; text-only Specialists, #2269; and text-only runs without a tool allowlist or a cached model, #2437; `[agent.auth] codex = "gateway"`, #2753; see Amendments)
+Status: accepted (amended 2026-10-29: token command; amended for interactive Codex, #2270; text-only Specialists, #2269; and text-only runs without a tool allowlist or a cached model, #2437; `[agent.auth] codex = "gateway"`, #2753; per-CLI gateway in issued Sandboxes, #2897; see Amendments)
 
 ## Context
 
@@ -22,10 +22,11 @@ verbatim) and `BOOLEY_GATEWAY_TOKEN`.
 - **Environment only.** `[agent] auth` keeps rejecting `gateway`: URL and token
   have no Project home.
 - **Honored only inside a container.** Booley-issued Sandboxes take their
-  policy from `booley.toml` and never receive `BOOLEY_GATEWAY_*`, so a host
-  export is ignored; Doctor WARNs `agent.credential-policy` and `booley auth
+  policy from `booley.toml` and never receive `BOOLEY_GATEWAY_*` from a host
+  export, which is ignored (amended, #2897: an issued Sandbox with
+  `codex = "gateway"` forwards them); Doctor WARNs `agent.credential-policy` and `booley auth
   --status` says so. `env_auth_handoff()` is the one normalizing reader.
-- **Codex only.** A Claude provider fails in Doctor and `require_credential()`.
+- **Codex only.** A Claude provider fails in Doctor and `require_credential()`, unless Codex is listed on the gateway per CLI (#2897).
 - **Token delivery.** The private Codex home's `config.toml` selects a
   `booley_gateway` provider (`wire_api = "responses"`) whose
   `[model_providers.booley_gateway.auth]` runs
@@ -144,3 +145,36 @@ amend the #2269 bullets above; the originals stay as history.
 ## Amendments (#2753)
 
 - [ADR 0084](0084-run-each-specialist-on-the-agent-cli-its-model-implies.md) supersedes the "Environment only" bullet: `[agent.auth] codex = "gateway"` is valid and honored inside a Sandbox; URL and token still come only from the environment.
+
+## Amendments (#2897)
+
+[#2897](https://github.com/boldaxolotl/booley/issues/2897) lets Booley issue a
+Sandbox with Codex on the gateway. It supersedes the "never receive
+`BOOLEY_GATEWAY_*`" half of the "Honored only inside a container" bullet.
+
+- **Delivery.** The spec's `remoteEnv` carries `${localEnv:BOOLEY_GATEWAY_URL}`
+  and the one token source (`BOOLEY_GATEWAY_TOKEN` or
+  `BOOLEY_GATEWAY_TOKEN_COMMAND`) as `${localEnv:...}` references, never a
+  value. No model or effort pin is forwarded. Validation refuses any other
+  `BOOLEY_GATEWAY_*` key, a forwarded key when Codex is not on `gateway`, and a
+  Codex login seed under `gateway`.
+- **Per-CLI policy.** Only Codex may be on `gateway`; `claude = "gateway"` stays
+  malformed. The `BOOLEY_AGENT_CLIS` record is authoritative, so interactive
+  Codex uses the gateway whichever CLI is the default.
+- **Claude never sees the gateway, at the environment level.** In an issued
+  Sandbox whose record has `codex = "gateway"`, Booley blanks the gateway
+  variables for every Claude process it starts or configures (Claude's
+  `settings.json`, SDK runs, `booley chat --cli claude`) and sets
+  `BOOLEY_HIDDEN_GATEWAY=1`. This is not an isolation boundary: VS Code
+  terminals, lifecycle hooks and the HTTP MCP server carry the variables, and a
+  same-user process can read `/proc/<pid>/environ`. On the first start with new Claude
+  state (a new Sandbox, a changed Claude policy, a rebuild when Claude is not
+  listed) there is no `waitFor`, so a Claude panel opened before the start hook
+  writes the blanks runs with the values once; other starts are covered because
+  `settings.json` persists. Hand-written Sandboxes keep today's environment. Consequence: a
+  `booley` command run from Claude's shell cannot reach the gateway, while
+  Codex Specialists run by the MCP server still do. A short-lived
+  `BOOLEY_GATEWAY_TOKEN_COMMAND` token limits the exposure.
+- **`localEnv` limit.** VS Code resolves `localEnv` from its own process
+  environment, so it must start from a shell that exports the variables; its
+  `initializeCommand` refuses to open the Sandbox without them.

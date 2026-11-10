@@ -10,6 +10,7 @@ import pytest
 
 from booley.flows.base import SubprocessResult
 from booley.flows.fpga.backends.vivado import cache as fpga_cache
+from booley.flows.fpga.backends.vivado import edam as fpga_edam
 from booley.flows.fpga.flow import FpgaImplFlow, _PreparedFpgaCommand
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 
@@ -342,15 +343,19 @@ def test_cached_reports_cannot_replace_missing_route_witness(tmp_path):
         )
 
 
-def test_string_guard_precedes_cache_lookup(tmp_path, monkeypatch):
+@pytest.mark.parametrize("datatype", ["str", "file"])
+def test_string_guard_precedes_cache_lookup(tmp_path, monkeypatch, datatype):
     resolved = replace(
         _resolved(tmp_path),
-        parameters={"NAME": {"datatype": "str", "paramtype": "vlogparam", "default": "MAC"}},
+        parameters={"NAME": {"datatype": datatype, "paramtype": "vlogparam", "default": "MAC"}},
     )
     flow = _flow(tmp_path)
     monkeypatch.setattr(flow, "_resolve_fpga_target", lambda *_args, **_kwargs: resolved)
     monkeypatch.setattr(
         fpga_cache, "load", lambda *_args, **_kwargs: pytest.fail("string reached cache")
+    )
+    monkeypatch.setattr(
+        fpga_edam, "build_fpga_edam", lambda **_kwargs: pytest.fail("string reached EDAM")
     )
     with pytest.raises(ValueError, match="Vivado does not support string/file"):
         flow._prepare_fpga_command("fpga_demo")

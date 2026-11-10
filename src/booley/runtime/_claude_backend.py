@@ -8,11 +8,11 @@ import io
 import json
 import logging
 import os
-import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import time as wall_clock
 from typing import Any
 
 import anyio
@@ -439,7 +439,26 @@ def _claude_env_overrides(auth_mode: str) -> dict[str, str]:
     for key, value in plan.values:
         if not os.environ.get(key):
             env_overrides[key] = value
+    env_overrides.update(_hidden_gateway_overrides())
     return env_overrides
+
+
+def _hidden_gateway_overrides() -> dict[str, str]:
+    """Blank every gateway setting in an issued Sandbox that puts Codex on the gateway.
+
+    The gateway routes Codex only; a Claude process must not see it. The SDK merges
+    over ``os.environ``, so an empty value is the only "unset". The marker lets Doctor
+    tell "hidden from this Claude session" from "never configured".
+    """
+    from booley.config.agent import issued_codex_gateway
+    from booley.config.gateway import GATEWAY_ENV_KEYS, HIDDEN_GATEWAY_ENV
+
+    if not issued_codex_gateway():
+        return {}
+    hidden = {key: "" for key in GATEWAY_ENV_KEYS if os.environ.get(key)}
+    if hidden:
+        hidden[HIDDEN_GATEWAY_ENV] = "1"
+    return hidden
 
 
 def _build_sdk_options(
@@ -1000,7 +1019,7 @@ async def _handle_rate_limit_event(
     info = event.rate_limit_info
     if info.status == "rejected":
         if info.resets_at:
-            now = time.time()
+            now = wall_clock()
             sleep_s = max(0, info.resets_at - now) + RATE_LIMIT_SLEEP_BUFFER_S
         else:
             sleep_s = RATE_LIMIT_FALLBACK_BACKOFF_S

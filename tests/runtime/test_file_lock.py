@@ -129,7 +129,7 @@ def test_wait_timeout_reports_contention(monkeypatch: pytest.MonkeyPatch) -> Non
     monotonic = iter((0.0, 0.0, 0.0))
     reports: list[bool] = []
     monkeypatch.setattr(file_lock, "acquire_file_lock", contend)
-    monkeypatch.setattr(file_lock.time, "monotonic", lambda: next(monotonic))
+    monkeypatch.setattr(file_lock, "monotonic", lambda: next(monotonic))
 
     with pytest.raises(file_lock.LockTimeoutError, match="remained busy"):
         file_lock.wait_for_file_lock(

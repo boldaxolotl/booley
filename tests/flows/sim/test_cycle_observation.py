@@ -8,33 +8,19 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import CriteriaTemplate
-from booley.flows.plan import FlowPlan, WorkUnitPlan, WorkUnitRole
+from booley.flows.plan import WorkUnitPlan, WorkUnitRole
 from booley.flows.sim.execution import SelectedTestRuns
-from booley.flows.sim.flow import SimulateFlow, TargetResult
-from booley.flows.sim.flow import TestResult as SimTestResult
+from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.mode import SimulationMode
 from booley.flows.target_test_plan import build_target_test_plan
 from booley.flows.test_runs import build_test_run
-from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import AmbiguousTargetError
 
 _TARGET_IDENTITY = "vendor:library:core#sim_core"
 _TARGET_SELECTOR = "sim_core"
 
 
 _COREMARK_RUN = build_test_run("coremark", seed=1)
-
-
-def _install_baseline_plan(
-    flow: SimulateFlow,
-    *,
-    selector: str = _TARGET_SELECTOR,
-    identity: str = _TARGET_IDENTITY,
-    revision: str = "b" * 40,
-) -> None:
-    unit = _plan_unit("baseline", selector, identity, revision)
-    flow._flow_plan = FlowPlan("sim", "simulate", (unit,))
 
 
 def _plan_unit(
@@ -109,21 +95,6 @@ def test_baseline_planning_uses_ephemeral_tree_and_reports_identity_drift(
         revision=baseline_ref,
         # The baseline runs the candidate's Test Run of the compared Test.
         selections={_TARGET_SELECTOR: SelectedTestRuns((_COREMARK_RUN,))},
-    )
-
-
-def _patch_catalog_select(monkeypatch, resolver) -> None:
-    class Catalog:
-        def __init__(self, root):
-            self.root = root
-
-        def select(self, token, **kwargs):
-            return resolver(self.root, token, **kwargs)
-
-    monkeypatch.setattr(
-        TargetCatalog,
-        "build",
-        classmethod(lambda _cls, root: Catalog(root)),
     )
 
 
@@ -242,46 +213,6 @@ def test_relative_cycle_criterion_uses_declared_baseline_target(monkeypatch) -> 
         "sim_core": ["coremark"],
         "sim_old": ["coremark"],
     }
-    observed = SimTestResult(name="coremark", passed=True, cycles=100, cycle_status="observed")
-    baseline = TargetResult(target="sim_old", passed=True, tests=[observed])
-    flow._baseline_results = {"sim_old": baseline}
-    candidate = TargetResult(target="sim_core", passed=True, tests=[])
-    params = flow.state.criteria[key].params
-    current = SimTestResult(name="coremark", passed=True, cycles=120, cycle_status="observed")
-    assert flow._baseline_cycle_test(candidate, params, current) is observed
-    # No candidate observation, nothing to compare.
-    assert flow._baseline_cycle_test(candidate, params, None) is None
-
-
-def test_relative_cycle_baseline_must_be_the_candidates_test_run(monkeypatch) -> None:
-    """A baseline result of the same Test with another seed is not comparable."""
-    from booley.flows.test_runs import build_test_run
-
-    flow, key = _criterion_flow(relative=True)
-    params = flow.state.criteria[key].params
-    seven = build_test_run("coremark", seed=7)
-    other = SimTestResult(
-        name="coremark",
-        passed=True,
-        cycles=90,
-        cycle_status="observed",
-        test_run=build_test_run("coremark", seed=1),
-    )
-    same = SimTestResult(
-        name="coremark", passed=True, cycles=100, cycle_status="observed", test_run=seven
-    )
-    current = SimTestResult(
-        name="coremark", passed=True, cycles=120, cycle_status="observed", test_run=seven
-    )
-    candidate = TargetResult(target="sim_core", passed=True, tests=[current])
-    flow._baseline_results = {
-        "sim_core": TargetResult(target="sim_core", passed=True, tests=[other, same])
-    }
-    assert flow._baseline_cycle_test(candidate, params, current) is same
-    flow._baseline_results = {
-        "sim_core": TargetResult(target="sim_core", passed=True, tests=[other])
-    }
-    assert flow._baseline_cycle_test(candidate, params, current) is None
 
 
 def test_schema_four_relative_cycle_criterion_selects_callable_target(monkeypatch) -> None:
@@ -306,290 +237,6 @@ def test_invalid_cycle_baseline_ref_is_actionable(monkeypatch) -> None:
     assert ref == "missing"
     assert targets == ["sim_core"]
     assert "cannot be resolved" in error
-
-
-def test_baseline_execution_uses_ephemeral_tree_and_restores_current_tree(monkeypatch) -> None:
-    flow, _key = _criterion_flow(relative=True)
-    _pin_baseline(flow)
-    current = Path("/current").resolve()
-    baseline = Path("/baseline").resolve()
-    flow._args.work_dir = current
-    flow._target_handles["sim_core"].project_root = current
-    flow._tb_top_for_target = MagicMock(return_value="tb_top")
-    flow._run_target = MagicMock(
-        return_value=TargetResult(target="sim_core", passed=True, tests=[])
-    )
-    flow._attach_workload_snapshots = MagicMock()
-    _install_baseline_plan(flow, identity="sim_core")
-    monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
-    _patch_catalog_select(
-        monkeypatch,
-        lambda root, *_args, **_kwargs: MagicMock(
-            identity="sim_core",
-            selector="sim_core",
-            project_root=Path(root).resolve(),
-        ),
-    )
-
-    @contextmanager
-    def fake_worktree(_root, _ref, *, paired_project):
-        assert paired_project is flow._paired_project_baseline
-        yield baseline
-
-    monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)
-
-    with flow.publication_resources:
-        result = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
-
-    assert result["sim_core"].passed is True
-    assert flow.args.work_dir == current
-    flow._run_target.assert_called_once_with(
-        "sim_core",
-        "tb_top",
-        {"sim_core": ["coremark"]},
-        [],
-        plan_role="baseline",
-    )
-
-
-def test_schema_four_baseline_results_are_keyed_by_identity(monkeypatch) -> None:
-    identity = _TARGET_IDENTITY
-    flow, _key = _sealed_criterion_flow(relative=True)
-    _pin_baseline(flow)
-    current = Path("/current").resolve()
-    baseline = Path("/baseline").resolve()
-    flow._args.work_dir = current
-    flow._target_handles["sim_core"].project_root = current
-    flow._tb_top_for_target = MagicMock(return_value="tb_top")
-    flow._run_target = MagicMock(
-        return_value=TargetResult(
-            target="sim_core",
-            passed=True,
-            tests=[],
-        )
-    )
-    flow._attach_workload_snapshots = MagicMock()
-    _install_baseline_plan(flow)
-    monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
-    _patch_catalog_select(
-        monkeypatch,
-        lambda *_args, **_kwargs: MagicMock(
-            identity=identity,
-            selector="sim_core",
-            project_root=baseline,
-        ),
-    )
-
-    @contextmanager
-    def fake_worktree(_root, _ref, *, paired_project):
-        assert paired_project is flow._paired_project_baseline
-        yield baseline
-
-    monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)
-
-    with flow.publication_resources:
-        result = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
-
-    assert set(result) == {identity}
-    assert result[identity].target_identity == identity
-
-
-def test_schema_four_baseline_rejects_selector_identity_drift(monkeypatch) -> None:
-    flow, _key = _sealed_criterion_flow(relative=True)
-    _pin_baseline(flow)
-    current = Path("/current").resolve()
-    baseline = Path("/baseline").resolve()
-    flow._args.work_dir = current
-    flow._target_handles["sim_core"].project_root = current
-    flow._tb_top_for_target = MagicMock(return_value="tb_top")
-    flow._run_target = MagicMock()
-    _install_baseline_plan(flow)
-    monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
-    _patch_catalog_select(
-        monkeypatch,
-        lambda *_args, **_kwargs: MagicMock(
-            identity="other:library:core#sim_core",
-            selector="sim_core",
-            project_root=baseline,
-        ),
-    )
-
-    @contextmanager
-    def fake_worktree(_root, _ref, *, paired_project):
-        assert paired_project is flow._paired_project_baseline
-        yield baseline
-
-    monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)
-
-    with flow.publication_resources:
-        result = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
-
-    assert isinstance(result, EndpointOutcome)
-    assert result.exit_code == EXIT_ERROR
-    assert "resolves to 'other:library:core#sim_core'" in result.report_text
-    flow._run_target.assert_not_called()
-
-
-def test_schema_four_baseline_reports_ambiguous_selector(monkeypatch) -> None:
-    flow, _key = _sealed_criterion_flow(relative=True)
-    _pin_baseline(flow)
-    current = Path("/current").resolve()
-    baseline = Path("/baseline").resolve()
-    flow._args.work_dir = current
-    flow._target_handles[_TARGET_SELECTOR].project_root = current
-    flow._run_target = MagicMock()
-    _install_baseline_plan(flow)
-    monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "b" * 40)
-
-    def ambiguous_target(*_args, **_kwargs):
-        raise AmbiguousTargetError("sim_core is ambiguous")
-
-    _patch_catalog_select(monkeypatch, ambiguous_target)
-
-    @contextmanager
-    def fake_worktree(_root, _ref, *, paired_project):
-        assert paired_project is flow._paired_project_baseline
-        yield baseline
-
-    monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", fake_worktree)
-
-    with flow.publication_resources:
-        result = flow._run_cycle_count_baselines(
-            [_TARGET_SELECTOR], {_TARGET_SELECTOR: ["coremark"]}
-        )
-
-    assert isinstance(result, EndpointOutcome)
-    assert result.exit_code == EXIT_ERROR
-    assert "sim_core is ambiguous" in result.report_text
-    flow._run_target.assert_not_called()
-
-
-def test_cycle_criterion_grades_named_test_independently_from_target() -> None:
-    flow, key = _criterion_flow()
-    result = TargetResult(
-        target="sim_core",
-        passed=False,
-        tests=[
-            SimTestResult(name="coremark", passed=True, cycles=95, cycle_status="observed"),
-            SimTestResult(name="other", passed=False),
-        ],
-    )
-
-    flow._record_cycle_count_criteria(result)
-
-    flow.set_criterion.assert_called_once()
-    assert flow.set_criterion.call_args.args == (key, True)
-    assert flow.set_criterion.call_args.kwargs["detail"]["cycles"] == 95
-    assert flow.set_criterion.call_args.kwargs["detail"]["mode"] == "simulate"
-
-
-def test_schema_four_cycle_criterion_grades_selector_evidence() -> None:
-    flow, key = _sealed_criterion_flow()
-    result = TargetResult(
-        target=_TARGET_SELECTOR,
-        target_identity=_TARGET_IDENTITY,
-        passed=True,
-        tests=[SimTestResult(name="coremark", passed=True, cycles=95, cycle_status="observed")],
-    )
-
-    flow._record_cycle_count_criteria(result)
-
-    assert flow.set_criterion.call_args.args == (key, True)
-    assert flow.set_criterion.call_args.kwargs["detail"]["target"] == _TARGET_SELECTOR
-    assert flow.set_criterion.call_args.kwargs["detail"]["target_identity"] == _TARGET_IDENTITY
-
-
-@pytest.mark.parametrize(
-    ("identity", "selector"),
-    [
-        ("other:library:core#sim_core", "other#sim_core"),
-        (_TARGET_IDENTITY, "other#sim_core"),
-        ("other:library:core#sim_core", "sim_core"),
-    ],
-)
-def test_schema_four_cycle_criterion_rejects_mismatched_target_binding(
-    identity: str,
-    selector: str,
-) -> None:
-    flow, _key = _sealed_criterion_flow()
-    result = TargetResult(
-        target=selector,
-        target_identity=identity,
-        passed=True,
-        tests=[SimTestResult(name="coremark", passed=True, cycles=95, cycle_status="observed")],
-    )
-
-    flow._record_cycle_count_criteria(result)
-
-    flow.set_criterion.assert_not_called()
-
-
-@pytest.mark.parametrize("status", ["missing", "duplicate", "malformed", "legacy"])
-def test_cycle_criterion_fails_closed_on_inadmissible_record(status: str) -> None:
-    flow, key = _criterion_flow()
-    result = TargetResult(
-        target="sim_core",
-        passed=True,
-        tests=[SimTestResult(name="coremark", passed=True, cycle_status=status)],
-    )
-
-    flow._record_cycle_count_criteria(result)
-
-    assert flow.set_criterion.call_args.args == (key, False)
-    assert status in flow.set_criterion.call_args.kwargs["detail"]["reason"]
-
-
-def test_relative_cycle_criterion_requires_passing_baseline_test() -> None:
-    flow, key = _criterion_flow(relative=True)
-    flow._baseline_results = {
-        "sim_core": TargetResult(
-            target="sim_core",
-            passed=False,
-            tests=[
-                SimTestResult(name="coremark", passed=False, cycles=100, cycle_status="observed")
-            ],
-        )
-    }
-    result = TargetResult(
-        target="sim_core",
-        passed=True,
-        tests=[SimTestResult(name="coremark", passed=True, cycles=90, cycle_status="observed")],
-    )
-
-    flow._record_cycle_count_criteria(result)
-
-    assert flow.set_criterion.call_args.args == (key, False)
-    assert "baseline test did not pass" in flow.set_criterion.call_args.kwargs["detail"]["reason"]
-
-
-def test_schema_four_relative_cycle_criterion_joins_baseline_by_identity() -> None:
-    identity = _TARGET_IDENTITY
-    flow, key = _sealed_criterion_flow(relative=True)
-    flow._baseline_results = {
-        identity: TargetResult(
-            target="sim_core",
-            target_identity=identity,
-            passed=True,
-            tests=[
-                SimTestResult(
-                    name="coremark",
-                    passed=True,
-                    cycles=100,
-                    cycle_status="observed",
-                )
-            ],
-        )
-    }
-    result = TargetResult(
-        target="sim_core",
-        target_identity=identity,
-        passed=True,
-        tests=[SimTestResult(name="coremark", passed=True, cycles=90, cycle_status="observed")],
-    )
-
-    flow._record_cycle_count_criteria(result)
-
-    assert flow.set_criterion.call_args.args == (key, True)
 
 
 @pytest.mark.parametrize("topology", ["standalone", "linked"])
@@ -628,42 +275,7 @@ def test_cycle_baseline_planning_materializes_project_topologies(tmp_path, monke
     assert roots and all(not path.exists() for path in roots)
 
 
-@pytest.mark.parametrize("topology", ["standalone", "linked"])
-def test_cycle_baseline_execution_materializes_project_topologies(tmp_path, monkeypatch, topology):
-    from tests.flows.test_baseline_worktree import (
-        _assert_topology_baseline,
-        _project_topology_checkout,
-    )
-
-    root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
-    flow, _key = _criterion_flow(relative=True)
-    flow._args.work_dir = root
-    handle = TargetCatalog.build(root).select("sim_core", for_flow="sim")
-    flow._target_handles = {"sim_core": handle}
-    _pin_baseline(flow, revision)
-    _install_baseline_plan(flow, identity=handle.identity, revision=revision)
-    roots = []
-
-    def run(target, top, tests, _unused, *, plan_role):
-        baseline = Path(flow.args.work_dir)
-        _assert_topology_baseline(baseline, root, target)
-        roots.append(baseline)
-        assert top == "top"
-        assert tests == {"sim_core": ["coremark"]}
-        assert plan_role == "baseline"
-        return TargetResult(target=target, passed=True, tests=[])
-
-    monkeypatch.setattr(flow, "_run_target", run)
-    with flow.publication_resources:
-        results = flow._run_cycle_count_baselines(["sim_core"], {"sim_core": ["coremark"]})
-        assert list(results) == [handle.identity]
-        assert results[handle.identity].target_identity == handle.identity
-        assert flow.args.work_dir == root
-    assert roots and all(not path.exists() for path in roots)
-
-
-@pytest.mark.parametrize("execution", ["legacy", "campaign"])
-def test_one_run_shares_one_baseline_checkout_across_consumers(tmp_path, monkeypatch, execution):
+def test_one_run_shares_one_baseline_checkout_across_consumers(tmp_path, monkeypatch):
     """Every baseline consumer of one ``sim`` run reuses one checkout (#1959).
 
     Campaign authorization keeps its checkout open until publication ends, so
@@ -685,29 +297,18 @@ def test_one_run_shares_one_baseline_checkout_across_consumers(tmp_path, monkeyp
         roots.append(Path(flow.args.work_dir))
         return [_plan_unit(role, identity=handle.identity, revision=revision)], []
 
-    def run(target, _top, _tests, _unused, *, plan_role):
-        roots.append(Path(flow.args.work_dir))
-        return TargetResult(target=target, passed=True, tests=[])
-
     def request(_target, _identity, _ref, _runs, _tests, worktree, _invocation, _admission):
         roots.append(worktree)
         return object(), {"coremark@1": {"revision": revision}}
 
     monkeypatch.setattr(flow, "_plan_simulation_targets", plan)
-    monkeypatch.setattr(flow, "_run_target", run)
     monkeypatch.setattr(flow, "_planned_baseline_request", request)
     with flow.publication_resources:
         authorized = flow._campaign_authorization_baselines(revision, ["sim_core"])
-        units, errors = flow._plan_cycle_count_baseline_units(["sim_core"], tests)
+        _, errors = flow._plan_cycle_count_baseline_units(["sim_core"], tests)
         assert errors == []
-        flow._flow_plan = FlowPlan("sim", "simulate", tuple(units))
-        if execution == "legacy":
-            assert list(flow._run_cycle_count_baselines(["sim_core"], tests)) == [handle.identity]
-        else:
-            requests, _ = flow._plan_campaign_baselines(
-                tmp_path / "inv", None, ["sim_core"], tests
-            )
-            assert len(requests) == 1
+        requests, _ = flow._plan_campaign_baselines(tmp_path / "inv", None, ["sim_core"], tests)
+        assert len(requests) == 1
         assert [item.identity for item in authorized] == [handle.identity]
         assert [item.project_root for item in authorized] == roots[:1]
         assert len(roots) == 2

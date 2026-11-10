@@ -756,96 +756,7 @@ def test_tb_tag_restoration_preserves_input_metadata(
     assert item["tags"] == tags
 
 
-@pytest.mark.parametrize(
-    "default,reference,expected",
-    [
-        ("", "NAME", ""),
-        ("fallback", "NAME=", ""),
-        ("", "NAME=other", "other"),
-        (None, "NAME", None),
-        ("fallback", "NAME", "fallback"),
-    ],
-)
-def test_inspection_preserves_selected_explicit_empty_string(
-    tmp_path, default, reference, expected
-):
-    import yaml
-
-    parameter = {"datatype": "str", "paramtype": "vlogparam"}
-    if default is not None:
-        parameter["default"] = default
-    (tmp_path / "proof.core").write_text(
-        "CAPI=2:\n"
-        + yaml.safe_dump(
-            {
-                "name": "proof:string:empty:1",
-                "parameters": {"NAME": parameter},
-                "targets": {
-                    "sim": {
-                        "flow": "sim",
-                        "flow_options": {"tool": "verilator"},
-                        "parameters": [reference],
-                        "toplevel": "top",
-                    }
-                },
-            }
-        )
-    )
-    catalog = TargetCatalog.build(tmp_path)
-    handle = catalog.select("sim", for_flow="sim")
-    parameters = catalog.inspect(handle).parameters
-    assert parameters["NAME"].get("default") == expected
-    if expected is None:
-        assert "default" not in parameters["NAME"]
-
-
-@pytest.mark.parametrize(
-    "dependency,local,reference,expected",
-    [
-        ("", None, "NAME", ""),
-        ("", {}, "NAME", None),
-        ("dependency", {}, "NAME", "dependency"),
-        ("", {"default": "local"}, "NAME", "local"),
-        ("", None, "NAME=assigned", "assigned"),
-        ("dependency", None, "NAME=", ""),
-    ],
-)
-def test_empty_dependency_intent_preserves_upstream_nonempty_precedence(
-    tmp_path, dependency, local, reference, expected
-):
-    import yaml
-
-    metadata = {"datatype": "str", "paramtype": "vlogparam"}
-    dependency_core = {
-        "name": "proof:string:dependency:1",
-        "parameters": {"NAME": {**metadata, "default": dependency}},
-        "targets": {"default": {"parameters": ["NAME"]}},
-    }
-    top = {
-        "name": "proof:string:top:1",
-        "filesets": {"rtl": {"depend": ["proof:string:dependency:1"]}},
-        "targets": {
-            "sim": {
-                "flow": "sim",
-                "flow_options": {"tool": "verilator"},
-                "filesets": ["rtl"],
-                "parameters": [reference],
-                "toplevel": "top",
-            }
-        },
-    }
-    if local is not None:
-        top["parameters"] = {"NAME": {**metadata, **local}}
-    for filename, data in (("dep.core", dependency_core), ("top.core", top)):
-        (tmp_path / filename).write_text("CAPI=2:\n" + yaml.safe_dump(data))
-    catalog = TargetCatalog.build(tmp_path)
-    actual = catalog.inspect(catalog.select("sim", for_flow="sim")).parameters["NAME"]
-    assert actual.get("default") == expected
-    if expected is None:
-        assert "default" not in actual
-
-
-def test_authored_flag_selects_empty_parameter_and_dependency(tmp_path):
+def test_authored_flag_selects_parameter_and_dependency(tmp_path):
     import yaml
 
     from booley.fusesoc import fusesoc_registry
@@ -858,12 +769,10 @@ def test_authored_flag_selects_empty_parameter_and_dependency(tmp_path):
         "CAPI=2:\n"
         + yaml.safe_dump(
             {
-                "name": "proof:string:dependency:1",
-                "parameters": {
-                    "NAME": {"datatype": "str", "paramtype": "vlogparam", "default": ""}
-                },
+                "name": "proof:param:dependency:1",
+                "parameters": {"W": {"datatype": "int", "paramtype": "vlogparam", "default": 4}},
                 "filesets": {"rtl": {"files": ["dependency.sv"]}},
-                "targets": {"default": {"parameters": ["NAME"], "filesets": ["rtl"]}},
+                "targets": {"default": {"parameters": ["W"], "filesets": ["rtl"]}},
             }
         )
     )
@@ -871,11 +780,11 @@ def test_authored_flag_selects_empty_parameter_and_dependency(tmp_path):
         "CAPI=2:\n"
         + yaml.safe_dump(
             {
-                "name": "proof:string:conditional:1",
+                "name": "proof:param:conditional:1",
                 "filesets": {
                     "rtl": {
                         "files": ["top.sv", {"owned ? (conditional_tb.sv)": {"tags": ["tb"]}}],
-                        "depend": ["owned ? (proof:string:dependency:1)"],
+                        "depend": ["owned ? (proof:param:dependency:1)"],
                     },
                 },
                 "targets": {
@@ -884,7 +793,7 @@ def test_authored_flag_selects_empty_parameter_and_dependency(tmp_path):
                         "flow_options": {"tool": "verilator"},
                         "flags": {"owned": True},
                         "filesets": ["rtl"],
-                        "parameters": ["owned ? (NAME)"],
+                        "parameters": ["owned ? (W)"],
                         "toplevel": "top",
                     }
                 },
@@ -894,7 +803,7 @@ def test_authored_flag_selects_empty_parameter_and_dependency(tmp_path):
     catalog = TargetCatalog.build(tmp_path)
     handle = catalog.select("sim", for_flow="sim")
     inspection = catalog.inspect(handle)
-    assert inspection.parameters["NAME"]["default"] == ""
+    assert inspection.parameters["W"]["default"] == 4
     assert {item.path for item in inspection.inputs} == {"top.sv", "dependency.sv"}
     ref = fusesoc_registry._resolve_ref(tmp_path, "sim")
     sources = fusesoc_registry.target_source_files_for_ref(tmp_path, ref)

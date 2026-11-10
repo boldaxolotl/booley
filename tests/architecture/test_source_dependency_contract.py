@@ -464,7 +464,9 @@ def test_criteria_flow_rule_catches_all_static_import_locations(tmp_path, statem
     assert "booley.flows.execution" in report
 
 
-@pytest.mark.parametrize("owner", ["host_diagnostics", "setup.readiness"])
+@pytest.mark.parametrize(
+    "owner", ["harness.host_diagnostics", "harness.setup.readiness", "runtime.inspection"]
+)
 @pytest.mark.parametrize(
     "target",
     [
@@ -480,7 +482,13 @@ def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
     tmp_path, owner, target, location
 ):
     root = tmp_path / "booley"
-    for package in (root, root / "harness", root / "harness" / "setup", root / "presentation"):
+    for package in (
+        root,
+        root / "harness",
+        root / "harness" / "setup",
+        root / "presentation",
+        root / "runtime",
+    ):
         package.mkdir(exist_ok=True)
         (package / "__init__.py").touch()
     statement = f"import booley.{target}\n"
@@ -489,11 +497,11 @@ def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
     elif location == "type-only":
         statement = "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    " + statement
     (root / (target.replace(".", "/") + ".py")).write_text("value = 1\n")
-    (root / "harness" / (owner.replace(".", "/") + ".py")).write_text(statement)
+    (root / (owner.replace(".", "/") + ".py")).write_text(statement)
     problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
     report = format_problems(problems)
     assert "D26" in report
-    assert f"booley.harness.{owner}" in report
+    assert f"booley.{owner}" in report
     assert f"booley.{target}" in report
 
 

@@ -125,17 +125,6 @@ def vlogdefine_names(parameters: Mapping[str, object]) -> set[str]:
     }
 
 
-def vlogparam_values(parameters: Mapping[str, object]) -> dict[str, object]:
-    """Concrete resolved ``vlogparam`` defaults, ready for an EDAM builder."""
-    return {
-        str(name): item["default"]
-        for name, spec in parameters.items()
-        if (item := _string_mapping(spec)) is not None
-        and item.get("paramtype") == "vlogparam"
-        and item.get("default") is not None
-    }
-
-
 def _without_comments(text: str) -> str:
     """Remove Verilog comments while preserving strings and line boundaries."""
     pattern = re.compile(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*.*?\*/', re.DOTALL)

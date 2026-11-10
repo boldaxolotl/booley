@@ -21,12 +21,12 @@ import shutil
 import socket
 import subprocess
 import sys
-import time
 import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from time import time as wall_clock
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -57,6 +57,7 @@ from booley.config.gateway import (
     GATEWAY_AUTH,
     GATEWAY_EFFORT_ENV,
     GATEWAY_MODEL_ENV,
+    HIDDEN_GATEWAY_ENV,
     GatewayConfigError,
     gateway_model_pin_from_env,
     gateway_settings_from_env,
@@ -114,18 +115,6 @@ from booley.harness import terminal_status as ts
 from booley.harness.setup import readiness
 from booley.harness.setup.common import info
 from booley.harness.setup.docker_image import DOCKER_IMAGE, FLAVOR_IMAGES
-from booley.harness.setup.line_endings import (
-    LineEndingActionKind,
-    LineEndingActionState,
-    LineEndingMode,
-    LineEndingObservation,
-    LineEndingObservationCode,
-    LineEndingStatus,
-    RepositoryLineEndingReport,
-    line_ending_repository_display,
-    reconcile_project_line_endings,
-    unknown_attributes_policy_details,
-)
 from booley.harness.setup.readiness import ProjectAudit
 from booley.presentation.colors import bold, bold_green, bold_red, dim, yellow
 from booley.presentation.terminal_table import render_table
@@ -159,12 +148,12 @@ from booley.runtime.booley_dir import (
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.docs_links import docs_url
 from booley.runtime.gateway_token import GatewayTokenCommandError, run_token_command
-from booley.runtime.git import _git_common_dir, stealth_exclude_names
 from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
+from booley.runtime.worktree_evidence import untracked_common_paths
 from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
@@ -1017,13 +1006,10 @@ def _run_project_phase(
     _check_worktree_booley_pairing(project_root, reporter)
     _check_common_state_in_worktrees(project_root, reporter)
     _check_worktree_prune_guard(project_root, reporter.pass_, reporter.skip_, reporter.fail_)
-    _check_line_endings(
-        project_root,
-        reporter.pass_,
-        reporter.warn_,
-        reporter.skip_,
-        reporter.fail_,
-        booley_dir=booley_dir,
+    reporter.diagnostics(
+        readiness.inspect_line_endings(
+            readiness.LineEndingInspectionRequest(project_root, booley_dir)
+        )
     )
     if project is not None:
         _check_worktree_core_shadow_guard(
@@ -1180,7 +1166,7 @@ def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) ->
         ):
             continue
         try:
-            untracked = _untracked_common_paths(entry.path, booley_dir)
+            untracked = untracked_common_paths(entry.path, booley_dir)
         except FileNotFoundError:
             continue  # A baseline worktree removed while scanning.
         except subprocess.CalledProcessError as exc:
@@ -1196,49 +1182,6 @@ def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) ->
             _warn_common_state_in_worktree(booley_dir, untracked, reporter)
     if not warned:
         reporter.pass_(f"no Common Booley State in {scanned} worktree Booley Directories")
-
-
-def _untracked_common_paths(worktree: Path, booley_dir: Path) -> list[str]:
-    """Return the Common Booley State paths in *booley_dir* that Git does not track.
-
-    Raises:
-        OSError: the directory cannot be walked.
-        subprocess.CalledProcessError: ``git ls-files`` failed, so tracked paths cannot be told apart.
-        ValueError: Git printed a path name that is not valid UTF-8.
-    """
-    from booley.core.booley_dir_parts import BooleyDirClass, iter_booley_dir
-
-    common = [
-        path
-        for path, booley_class in iter_booley_dir(booley_dir)
-        if booley_class is BooleyDirClass.COMMON
-    ]
-    if not common:
-        return []
-    tracked = _tracked_booley_paths(worktree, booley_dir)
-    return [path for path in common if not _is_tracked(path, tracked)]
-
-
-def _tracked_booley_paths(worktree: Path, booley_dir: Path) -> set[str]:
-    """Return Git-tracked paths under *booley_dir*, relative to it and ``/``-separated.
-
-    Raises:
-        subprocess.CalledProcessError: ``git ls-files`` failed, so tracked paths cannot be told apart.
-    """
-    own_repository = (booley_dir / ".git").exists()
-    cwd = booley_dir if own_repository else worktree
-    relative = booley_dir.relative_to(worktree).as_posix()
-    args = ["ls-files", "-z"] if own_repository else ["ls-files", "-z", "--", relative]
-    result = project_repositories.run_git(cwd, *args)
-    if result.returncode != 0:
-        raise subprocess.CalledProcessError(result.returncode, args, stderr=result.stderr)
-    prefix = "" if own_repository else f"{relative}/"
-    return {name.removeprefix(prefix) for name in result.stdout.split("\0") if name}
-
-
-def _is_tracked(path: str, tracked: set[str]) -> bool:
-    """Return whether *path*, or any file below it, is in *tracked*."""
-    return path in tracked or any(name.startswith(f"{path}/") for name in tracked)
 
 
 def _warn_common_state_in_worktree(
@@ -1652,164 +1595,6 @@ def _check_worktree_prune_guard(
     )
 
 
-def _line_ending_observation(
-    report: RepositoryLineEndingReport,
-    *codes: LineEndingObservationCode,
-) -> LineEndingObservation | None:
-    return next(
-        (observation for observation in report.observations if observation.code in codes),
-        None,
-    )
-
-
-def _report_unreadable_line_endings(
-    report: RepositoryLineEndingReport,
-    identity: str,
-    _warn: Check,
-) -> bool:
-    observation = _line_ending_observation(
-        report,
-        LineEndingObservationCode.AUTOCRLF_UNREADABLE,
-        LineEndingObservationCode.LOCAL_AUTOCRLF_UNREADABLE,
-        LineEndingObservationCode.EOL_SCAN_UNREADABLE,
-        LineEndingObservationCode.STATUS_UNREADABLE,
-        LineEndingObservationCode.CANDIDATE_UNSAFE,
-    )
-    if observation is None:
-        return False
-    messages = {
-        LineEndingObservationCode.AUTOCRLF_UNREADABLE: "could not read core.autocrlf as a Git Boolean",
-        LineEndingObservationCode.LOCAL_AUTOCRLF_UNREADABLE: "could not read repo-local core.autocrlf",
-        LineEndingObservationCode.EOL_SCAN_UNREADABLE: "could not read `git ls-files --eol`",
-    }
-    detail = messages.get(observation.code, observation.detail or "inspection was incomplete")
-    emit = _warning_sink(_warn, "git.line-endings-unreadable", subject=report.repository.role)
-    emit(f"line endings: {identity}: {detail}")
-    return True
-
-
-def _report_attributes_policy_risk(report, identity: str, _warn: Check) -> bool:
-    policy_risk = _line_ending_observation(
-        report,
-        LineEndingObservationCode.LOCAL_POLICY_MISSING,
-        LineEndingObservationCode.LEAKED_ROOT_POLICY,
-        LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
-    )
-    if policy_risk is not None:
-        emit = _warning_sink(_warn, "git.line-endings-unreadable", subject=report.repository.role)
-        emit(
-            f"{identity}: {policy_risk.detail}",
-            "inspect attributes policy, then re-run booley init",
-        )
-        return True
-    return _report_unreadable_line_endings(report, identity, _warn)
-
-
-def _report_attributes_migration(report, identity: str, _warn: Check) -> bool:
-    if any(
-        action.kind is LineEndingActionKind.MIGRATE_ATTRIBUTES
-        and action.state is LineEndingActionState.PLANNED
-        for action in report.actions
-    ):
-        emit = _warning_sink(_warn, "git.line-ending-migration", subject=report.repository.role)
-        emit(
-            f"{identity}: repository-local line-ending default awaits Stealth opt-out migration",
-            "booley init   (migrates the local default to the root attributes policy)",
-        )
-        return True
-    return False
-
-
-def _report_repository_line_endings(
-    report: RepositoryLineEndingReport,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-) -> None:
-    repository = report.repository
-    identity = line_ending_repository_display(repository.role, repository.root)
-    unknown = _report_unknown_attributes_policy(report, identity, _warn)
-    crlf = _line_ending_observation(report, LineEndingObservationCode.CRLF_MISMATCH)
-    if crlf is not None:
-        _fail(
-            f"{identity}: {crlf.count} tracked file(s) are checked out with CRLF — the "
-            "Sandbox sees every one as modified, which breaks the dirty-tree check, "
-            "protected inputs, and worktrees",
-            "booley init   (automatically repairs a clean tree; commit or stash first)",
-        )
-        return
-    risk = _line_ending_observation(
-        report,
-        LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE,
-        LineEndingObservationCode.AUTOCRLF_NOT_PINNED,
-    )
-    if risk is not None:
-        if risk.code is LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE:
-            message = "core.autocrlf=true — the tree is LF today, but the next clone or checkout will re-create it with CRLF and break Goal Mode"
-        else:
-            message = "core.autocrlf is not set locally — the effective value is false today, but a global config change can re-create CRLF checkouts"
-        emit = _warning_sink(_warn, "git.autocrlf-risk", subject=repository.role)
-        emit(
-            f"{identity}: {message}",
-            f"git -C {repository.root} config --local core.autocrlf false   (or re-run `booley init`)",
-        )
-        return
-    if _report_attributes_policy_risk(report, identity, _warn):
-        return
-    stale = _line_ending_observation(report, LineEndingObservationCode.STALE_INDEX)
-    if stale is not None:
-        _fail(
-            f"{identity}: tracked files have stale Git index metadata after line-ending repair — status reports modifications although staged and unstaged diffs are empty",
-            "booley init   (refreshes the affected tracked index entries)",
-        )
-        return
-    if _report_attributes_migration(report, identity, _warn):
-        return
-    if unknown:
-        return
-    _pass(f"{identity}: working tree is container-safe (no CRLF checkouts, autocrlf off)")
-
-
-def _report_unknown_attributes_policy(
-    report: RepositoryLineEndingReport, identity: str, _warn: Check
-) -> bool:
-    details = unknown_attributes_policy_details(report)
-    if not details:
-        return False
-    emit = _warning_sink(_warn, "git.attributes-policy-unknown", subject=report.repository.role)
-    emit(
-        f"{identity}: attributes policy inspection incomplete: {'; '.join(details)}",
-        "preserve existing attributes and worktree registrations; inspect the policy at its source",
-    )
-    return True
-
-
-def _check_line_endings(
-    project_root: Path,
-    _pass: Check,
-    _warn: Check,
-    _skip: Check,
-    _fail: Fail,
-    *,
-    booley_dir: Path | None = None,
-) -> None:
-    """Map the shared read-only line-ending report into Doctor findings."""
-    report = reconcile_project_line_endings(
-        project_root,
-        booley_dir,
-        mode=LineEndingMode.INSPECT,
-    )
-    if report.status is LineEndingStatus.NOT_APPLICABLE:
-        _skip("line endings: Project Root is not a git repo")
-        return
-    for repository in report.repositories:
-        _report_repository_line_endings(repository, _pass, _warn, _fail)
-    for failure in report.discovery_failures:
-        display = line_ending_repository_display(failure.role, failure.candidate)
-        emit = _warning_sink(_warn, "git.line-endings-unreadable", subject=failure.role)
-        emit(f"line endings: could not inspect {display}: {failure.detail}")
-
-
 def _check_worktree_core_shadow_guard(
     booley_dir: Path,
     _pass: Check,
@@ -2122,6 +1907,36 @@ def _check_image_bakes_runtime_marker(
         _warn(f"{sandbox_image} does not bake BOOLEY_CONTAINER=1 — {_RUNTIME_MARKER_FIX}")
 
 
+# Shown wherever a Claude session cannot grade the gateway it was deliberately kept from.
+_HIDDEN_GATEWAY_NOTE = (
+    "Codex gateway settings are hidden from Claude sessions; "
+    "run `booley doctor` from a VS Code terminal to check them"
+)
+
+
+def _gateway_hidden_here() -> bool:
+    """Whether this process is a Claude session with the gateway settings scrubbed."""
+    return os.environ.get(HIDDEN_GATEWAY_ENV) == "1"
+
+
+def _probe_runs_on_hidden_gateway(project: ProjectAudit) -> bool:
+    """Whether the internal model's Agent CLI is Codex on the gateway, hidden from this session."""
+    from booley.config.agent import BackendConfigError, load_agent_settings
+
+    if not _gateway_hidden_here():
+        return False
+    try:
+        settings = load_agent_settings(project.project_root, booley_dir=project.booley_dir)
+        cli = settings.cli_for_model_id(settings.internal_model())
+    except (
+        ValueError,
+        OSError,
+        BackendConfigError,
+    ):  # an unreadable config is graded by its own check
+        return False
+    return cli == auth_token.APP_CODEX and settings.auth_for(cli) == GATEWAY_AUTH
+
+
 def _run_developer_probe(
     project: ProjectAudit,
     _pass: Check,
@@ -2169,12 +1984,15 @@ def _run_developer_probe(
             _fail(str(record.error), _MODEL_REFUSAL_FIX)
             return record
         if getattr(exc, "agent_failure", False):
-            _fail(
-                f"Specialist provider probe could not complete a trivial call — every "
-                f"Specialist using this provider will fail the same way at launch: {exc}",
-                "check agent auth at THIS Sandbox location (booley auth, or claude login + "
-                "container recreate); see the harness log for the provider's error",
-            )
+            if _probe_runs_on_hidden_gateway(project):
+                _skip(_HIDDEN_GATEWAY_NOTE)  # this session cannot reach the gateway by design
+            else:
+                _fail(
+                    f"Specialist provider probe could not complete a trivial call — every "
+                    f"Specialist using this provider will fail the same way at launch: {exc}",
+                    "check agent auth at THIS Sandbox location (booley auth, or claude login + "
+                    "container recreate); see the harness log for the provider's error",
+                )
             return record
         _skip(
             f"Specialist provider memory probe skipped - {exc} (memory invariant keeps the 1g fallback)"
@@ -3005,8 +2823,11 @@ def _run_mcp_checks(
         expected_spec=_expected_interactive_spec(project.project_root),
     )
     reporter.diagnostics(inspection.inspect_runtime(request).report)
-    _check_devcontainer_excludes(project.project_root, reporter.pass_, reporter.warn_)
-    _check_interactive_logs_tracked(project.booley_dir, reporter.pass_, reporter.fail_)
+    reporter.diagnostics(
+        inspection.inspect_interactive_git(
+            inspection.InteractiveGitRequest(project.project_root, project.booley_dir)
+        )
+    )
     _run_agent_credential_checks(project, reporter)
     _check_viewer_bridge(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
     reporter.diagnostics(inspection.inspect_retained_resources(project.project_root, docker_exe))
@@ -3081,6 +2902,10 @@ def _check_cli_credentials(
     """
     required = is_default or runs_specialist
     auth_policy = _configured_auth_policy(project, cli)
+    if auth_policy == GATEWAY_AUTH and _gateway_hidden_here():
+        # A Claude session has no gateway values by design; only a shell that kept them can grade it.
+        reporter.note_(_HIDDEN_GATEWAY_NOTE)
+        return
     if auth_policy == GATEWAY_AUTH:
         # Under BOOLEY_AGENT_APP=auto the policy comes from the start's choice record.
         _check_gateway_auth(cli, reporter, chosen_by_auto=auto_choice is not None or not required)
@@ -3187,7 +3012,8 @@ def _warn_ignored_gateway_handoff(reporter: _Reporter) -> None:
             warning(
                 "agent.credential-policy",
                 "BOOLEY_PRIMARY_AUTH=gateway is honored only inside a Sandbox that sets it "
-                "(for example a Codespace); Booley-issued Sandboxes use booley.toml",
+                "(for example a Codespace); a Booley-issued Sandbox forwards the gateway "
+                'for [agent.auth] codex = "gateway" instead',
             )
         )
 
@@ -3254,69 +3080,6 @@ def _check_gateway_auth(provider: str, reporter: _Reporter, *, chosen_by_auto: b
                 reporter.fail_(str(exc), check_id="agent.credential-missing", subject=provider)
             return
     reporter.pass_(f"Codex auth: the gateway at {settings.url} ({settings.token_source})")
-
-
-def _check_interactive_logs_tracked(
-    booley_dir: Path,
-    _pass: Check,
-    _fail: Fail,
-) -> None:
-    """Fail when ephemeral .interactive_logs/ scratch is committed to git.
-
-    Tracked scratch is laid down read-protected on fresh clones and makes the
-    in-container MCP server fail with an opaque PermissionError. The gitignore
-    check alone does not catch an already-poisoned repository.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "--", ".interactive_logs"],
-            cwd=booley_dir,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return
-    if result.returncode != 0:
-        return
-    tracked = [line for line in result.stdout.splitlines() if line.strip()]
-    if tracked:
-        _fail(
-            f".interactive_logs/ has {len(tracked)} tracked file(s); committed "
-            "scratch breaks fresh clones in the sandbox",
-            "git rm -r --cached .interactive_logs && commit the removal",
-        )
-    else:
-        _pass(".interactive_logs/ is not tracked in git")
-
-
-def _check_devcontainer_excludes(
-    project_root: Path,
-    _pass: Check,
-    _warn: Check,
-) -> None:
-    """ADR 0018: Booley files hidden via the honored info/exclude (not .gitignore)."""
-    common = _git_common_dir(project_root)
-    exclude = (common / "info" / "exclude") if common else None
-    body = exclude.read_text(encoding="utf-8") if exclude and exclude.is_file() else ""
-    from booley.commit_policy import stealth_enabled
-
-    required = (
-        (".devcontainer", *stealth_exclude_names(project_root))
-        if stealth_enabled(project_root)
-        else (".devcontainer",)
-    )
-    missing = [name for name in required if f"/{name}" not in body]
-    if missing:
-        for entry in missing:
-            _warning_sink(
-                _warn,
-                "project.git-excludes-missing",
-                subject=entry,
-            )(f"git info/exclude missing Booley entry: {entry}")
-    else:
-        _pass("Booley files excluded from git (info/exclude)")
 
 
 def _declared_agent(project: ProjectAudit | None) -> DeclaredAgent | None:
@@ -3693,7 +3456,7 @@ def _check_subscription_creds_health(
     if policy == "api_key":
         return
 
-    now = time.time()
+    now = wall_clock()
     creds_path = auth_token.subscription_creds_path(app)
     expiry = _claude_creds_expiry(creds_path)
     if expiry is not None and expiry <= now:

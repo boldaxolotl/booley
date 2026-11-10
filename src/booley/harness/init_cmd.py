@@ -58,6 +58,7 @@ import tomlkit
 
 from booley import __version__
 from booley.commit_policy import stealth_enabled
+from booley.config.gateway import GATEWAY_AUTH, GatewayConfigError, gateway_forwarded_keys
 from booley.config.host_config import retired_project_policy_message
 from booley.core.booley_dir_pin import BooleyDirPinError, EntryPin
 from booley.core.boundary import as_dict, as_str, require_dict
@@ -141,7 +142,7 @@ from booley.harness.setup.project_git_hook_reconcile import (
     step_project_git_hooks as _step_project_git_hooks,
 )
 from booley.harness.setup.project_origin import read_project_origin
-from booley.harness.setup.scaffold import step_scaffold
+from booley.harness.setup.scaffold import existing_design_files, step_scaffold
 from booley.harness.setup.skills import _deploy_skills
 from booley.harness.terminal_status import LineStatus, section_header, status_line
 from booley.presentation.colors import bold_amber, green, red, yellow
@@ -1256,7 +1257,20 @@ def _cli_seeds(plan: auth_token.CredentialPlan) -> dc.CliSeeds:
         login_source=source(plan.subscription_seed),
         token_source=source(plan.token_seed),
         config_source=source(plan.config_seed),
+        gateway_env=_gateway_env_keys(plan),
     )
+
+
+def _gateway_env_keys(plan: auth_token.CredentialPlan) -> tuple[str, ...]:
+    """The host gateway variables a Codex-on-the-gateway plan forwards; none otherwise."""
+    if plan.app != "codex" or plan.policy != GATEWAY_AUTH:
+        return ()
+    try:
+        return gateway_forwarded_keys(os.environ)
+    except GatewayConfigError as exc:
+        raise RuntimeSpecError(
+            f"Codex uses the gateway: {exc}; export the gateway settings before issuing the Sandbox"
+        ) from exc
 
 
 def _credential_plans(
@@ -1880,9 +1894,10 @@ def _print_success_advisory(ctx: InitContext, *, published: bool, scaffolded: bo
     outstanding = _outstanding_setup_steps(ctx.project_root)
     if scaffolded or (origin == "scaffold" and outstanding):
         if scaffolded:
-            info("Scaffolded starter project; continue greenfield setup in the container.")
-        info('Next: open this Project in VS Code and choose "Reopen in Container".')
-        info("In the container run `/booley-setup new`, then `booley doctor --deep`.")
+            info("Scaffolded starter project; finish greenfield setup with `/booley-setup new`.")
+        info("Next: run `/booley-setup new` in your agent chat here on the host (or continue")
+        info("it, if it ran this scaffold); it tells you when to Reopen in Container and")
+        info("runs the Doctor gate there.")
         info("AGENTS.md is optional; commit the scaffolded files before verification.")
         if outstanding:
             info("Check the current enabled Flow wiring and Project configuration.")
@@ -1890,6 +1905,12 @@ def _print_success_advisory(ctx: InitContext, *, published: bool, scaffolded: bo
     if not outstanding:
         _print_configured_advisory(ctx)
         return "configured"
+    new_ip = not existing_design_files(ctx.project_root, limit=1)
+    if new_ip:
+        info("No RTL or `.core` files found. For a new IP, run `/booley-setup new` in your")
+        info("agent chat here on the host; it asks the design choices and writes a starter")
+        info("project.")
+        print()
     info("Before running the harness, finish project setup with the booley-setup skill")
     info("(it starts with Step 0, the plan phase, here on the host):")
     print()
@@ -1897,13 +1918,13 @@ def _print_success_advisory(ctx: InitContext, *, published: bool, scaffolded: bo
         info(f"  * {line}")
     info("  * Step 4 (doctor)          - final doctor + deep doctor audit")
     info("  * Ensure git working tree is clean (no in-progress rebase/merge/cherry-pick)")
-    return ""
+    return "new-ip" if new_ip else ""
 
 
 def _print_planned_scaffold_advisory() -> None:
     info("After applying the scaffold, the greenfield route would be:")
-    info('  * Open this Project in VS Code and choose "Reopen in Container"')
-    info("  * In the container run `/booley-setup new`, then `booley doctor --deep`")
+    info("  * Run `/booley-setup new` in your agent chat here on the host; it tells you when")
+    info("    to Reopen in Container and runs the Doctor gate there")
     info("No scaffold files were written by this check.")
 
 
@@ -2044,11 +2065,11 @@ def _print_summary(ctx: InitContext) -> int:
         )
         print(green('"Dev Containers: Reopen in Container".'))
     elif advisory.detail == "scaffold":
-        print(
-            green(
-                'Booley base setup complete. Next: "Reopen in Container", then `/booley-setup new`.'
-            )
-        )
+        print(green("Booley base setup complete. Next: `/booley-setup new` in your agent chat"))
+        print(green("here on the host."))
+    elif advisory.detail == "new-ip":
+        print(green("Booley base setup complete. New IP: run `/booley-setup new` from your agent"))
+        print(green("chat here on the host (or `/booley-setup` to port an existing design)."))
     elif advisory.detail == "configured":
         print(green("Booley setup complete — this project is ready."))
         print(green('Next: open this repo in VS Code and choose "Reopen in Container".'))

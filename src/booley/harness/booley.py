@@ -4,7 +4,7 @@
 Subcommands:
     goal      Work with Goal Records and evidence
     chat      Open the Project's default (or --cli chosen) Agent CLI
-    worktree  Create a linked worktree with paired or snapshot Project inputs
+    worktree  Create, list, or remove linked worktrees (paired or snapshot Project inputs)
     cheat     Print quick-reference cheatsheet
     doctor    Run environment health checks
     bootstrap Prepare Project-independent host resources
@@ -655,8 +655,9 @@ def _add_init_scaffold_arguments(init_p) -> None:
         "--scaffold",
         metavar="IP_NAME",
         help="Scaffold a new IP from scratch in a fresh repo: starter RTL, testbench, "
-        ".core, and populated config, then run the regular init steps. Interactive "
-        "wizard on a TTY; the flags below preset/replace its answers",
+        ".core, and populated config, then run the regular init steps. Asks nothing: "
+        "a missing flag below takes the default init reports, and `/booley-setup new` "
+        "runs this with your answers. May follow a plain `booley init`",
     )
     init_p.add_argument(
         "--sim-eda-tool",
