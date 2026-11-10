@@ -144,9 +144,11 @@ class _Supervisor:
         self.timer.cancel()
         self.guard.stop()
         self.stall.stop()
+        # Joins the stall monitors; resolve() then sees a settled stall_killed.
         if self.launch.trace is not None:
-            # Joins the stall monitor; resolve() then sees a settled stall_killed.
             self.launch.trace.stop_monitor()
+        if self.launch.streams is not None:
+            self.launch.streams.stop_watch()
         self.progress.final_flush(self.lines)
         append_child_cpu_marker(self.lines, cpu_started)
 

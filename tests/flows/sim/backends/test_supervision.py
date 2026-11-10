@@ -17,6 +17,7 @@ import pytest
 from booley.flows.run_log import begin_run_log, run_log_is_current
 from booley.flows.sim.backends import shared
 from booley.flows.sim.backends import supervision as sup
+from booley.flows.sim.backends.declared_streams import DeclaredTraceStreams, _Stream
 from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
 from booley.flows.sim.run_guard import SIM_TIME_STALL_MARKER
 from booley.flows.sim.trace_session import TraceSession
@@ -303,11 +304,15 @@ class _IdleConversion:
     """A bwave stream that never exits and never grows: only a stop can end the monitor."""
 
     pid = 0
+    store_path = None  # read by the stall-window log line
 
     def poll(self) -> None:
         return None
 
     def progress_size(self) -> int:
+        return 0
+
+    def backlog(self) -> int:
         return 0
 
     def stderr_tail(self, _limit: int = 4000) -> str:
@@ -378,3 +383,17 @@ def test_no_stall_monitor_outlives_the_run(tmp_path: Path, monkeypatch, request,
             if sim_proc.poll() is None:
                 kill_process_tree(sim_proc)
             sim_proc.wait(timeout=KILLED_WITHIN_S)
+
+
+def test_declared_stream_monitor_stops_with_the_run(tmp_path: Path, request):
+    """Declared streams run without a trace session on the launch; their monitor must still end."""
+    request.getfixturevalue("instant_timer")
+    session = TraceSession(tmp_path / "work")
+    streams = DeclaredTraceStreams(session)
+    streams._streams.append(_Stream("fpu.vcd", tmp_path / "fpu.sidecar", _IdleConversion()))  # type: ignore[arg-type]
+
+    _, _, termination = run_supervised(_launch(tmp_path, SLEEP, streams=streams))
+
+    assert termination.kind == "timeout"
+    assert len(session._monitor_threads) == 1
+    assert not session._monitor_threads[0].is_alive()
