@@ -228,6 +228,22 @@ def test_run_captured_bounded_kills_the_tree_when_interrupted():
                 pipe.close()
 
 
+def test_run_captured_bounded_runs_in_cwd_with_env(tmp_path: Path):
+    marker = "bounded-marker-value"
+    script = "import os; print(os.getcwd()); print(os.environ['BOOLEY_BOUNDED_MARKER'])"
+
+    result = platform_paths.run_captured_bounded(
+        [sys.executable, "-c", script],
+        timeout=30,
+        cwd=tmp_path,
+        env={**os.environ, "BOOLEY_BOUNDED_MARKER": marker},
+    )
+
+    cwd_line, marker_line = result.stdout.splitlines()
+    assert Path(cwd_line).samefile(tmp_path)
+    assert marker_line == marker
+
+
 # ---------------------------------------------------------------------------
 # same_host_path
 # ---------------------------------------------------------------------------
