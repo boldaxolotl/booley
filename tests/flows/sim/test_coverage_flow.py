@@ -3378,3 +3378,27 @@ def test_coverage_preflight_refusal_is_unchanged_under_dry_run(
     else:
         assert expected in dry.outcome.report_text
     assert _tree_snapshot(tmp_path) == before
+
+
+def test_coverage_dry_run_reports_plan_failure_as_error(tmp_path, monkeypatch):
+    """A plan that cannot be built after preflight fails the preview with an error."""
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path, ("verilator", "verilator"))
+    data = tmp_path / ".booley"
+    data.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
+    (data / "tests.toml").write_text('[sim_0]\ntests=["reset"]\n')
+
+    def fail_plan(*_args, **_kwargs):
+        raise ValueError("plan went stale")
+
+    monkeypatch.setattr(SimulateFlow, "_coverage_campaign_plan", fail_plan)
+
+    result = SimulateFlow().execute(
+        SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, dry_run=True)
+    )
+
+    assert result.exit_code == 2
+    assert result.outcome.report_text == (
+        "Simulation Campaign coverage preview failed: plan went stale"
+    )

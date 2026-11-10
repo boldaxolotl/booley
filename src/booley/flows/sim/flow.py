@@ -4147,6 +4147,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 _campaign_preview_entry(
                     campaign.preview(
                         NewCampaignPreviewRequest(
+                            # Placeholder ids: a preview reserves no invocation and
+                            # starts no execution, so neither is ever read.
                             self._coverage_campaign_plan(plan, invocation_id=1, execution_id=""),
                             Path(self.args.work_dir),
                             self.args.report_dir,
