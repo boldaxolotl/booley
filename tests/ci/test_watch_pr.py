@@ -644,7 +644,9 @@ def test_stale_dequeued_label_is_reported_once_the_grace_expires() -> None:
 
 
 @pytest.mark.parametrize(
-    "command", ["@mergifyio queue default", "@mergifyio dequeue"], ids=["requeued", "dequeue"]
+    "command",
+    ["@mergifyio queue", "@mergifyio queue default", "@mergifyio dequeue"],
+    ids=["requeued", "requeued-named-queue", "dequeue"],
 )
 def test_dequeued_label_newer_than_last_control_ends_watch(command: str) -> None:
     state = snapshot(
