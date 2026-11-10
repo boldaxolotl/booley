@@ -907,6 +907,19 @@ def test_checks_accept_documented_no_checks_message(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
+def test_checks_accept_no_required_checks_message(tmp_path: Path) -> None:
+    executable = write_fake_gh(
+        tmp_path,
+        "import sys\n"
+        "print(\"no required checks reported on the 'feature' branch\", file=sys.stderr)\n"
+        "raise SystemExit(1)\n",
+    )
+    transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
+
+    assert transport._checks("example/repo", 7, 10) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
 def test_checks_reject_malformed_nonempty_stdout(tmp_path: Path) -> None:
     executable = write_fake_gh(tmp_path, "print('{')\nraise SystemExit(1)\n")
     transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
