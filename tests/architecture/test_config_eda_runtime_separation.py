@@ -10,7 +10,13 @@ from tests.architecture.import_graph import Dependency, analyze_imports, top_lev
 
 
 @pytest.mark.parametrize(
-    "source,target,rule", [("config", "eda", "D23"), ("eda", "runtime", "D24")]
+    "source,target,rule",
+    [
+        ("config", "eda", "D23"),
+        ("eda", "runtime", "D24"),
+        ("runtime", "flows", "D39"),
+        ("runtime", "harness", "D6"),
+    ],
 )
 @pytest.mark.parametrize(
     "location", ["module", "relative", "function", "conditional", "type", "initializer"]
@@ -88,15 +94,19 @@ def test_approved_cyclic_groups_are_tightened_to_actual_groups():
 # so the criterion names a single collectable node.
 SEPARATED_PACKAGES = (
     "audit",
+    "bwave",
     "commit_policy",
     "config",
     "core",
+    "criteria",
     "docker",
     "eda",
     "evidence",
+    "feedback",
     "presentation",
     "projects",
     "review",
+    "runtime",
     "specialists",
 )
 
@@ -105,8 +115,8 @@ def test_separated_packages_cannot_join_the_remaining_group():
     contract = ArchitectureContract(approved_sccs=BOOLEY_SOURCE_DEPENDENCY_CONTRACT.approved_sccs)
     for separated in SEPARATED_PACKAGES:
         dependencies = (
-            Dependency("booley.runtime.seed", f"booley.{separated}.seed", Path("seed.py"), 1, 0),
-            Dependency(f"booley.{separated}.seed", "booley.runtime.seed", Path("seed.py"), 2, 0),
+            Dependency("booley.flows.seed", f"booley.{separated}.seed", Path("seed.py"), 1, 0),
+            Dependency(f"booley.{separated}.seed", "booley.flows.seed", Path("seed.py"), 2, 0),
         )
         problems = evaluate_contract(dependencies, contract)
         assert len(problems) == 1, separated

@@ -16,7 +16,6 @@ from booley.flows.progress_lifecycle import (
     read_progress_for_run,
     repair_progress_after_reap,
     supersede_progress,
-    validate_progress_shape,
 )
 from tests.conftest import symlink_or_skip
 
@@ -106,46 +105,6 @@ def test_lifecycle_rejects_second_terminal_publication() -> None:
 
     with pytest.raises(RuntimeError, match="already terminalized"):
         lifecycle.complete()
-
-
-def test_contradictory_terminal_shape_is_rejected() -> None:
-    document = progress_document(
-        flow="sim",
-        run_id="run-1",
-        phase="running",
-        targets=("sim_a",),
-        completed_targets=(),
-        detail={},
-    )
-    document["complete"] = True
-    with pytest.raises(ValueError, match="complete and phase disagree"):
-        validate_progress_shape(document)
-
-
-@pytest.mark.parametrize(
-    ("updates", "message"),
-    [
-        ({"complete": "yes"}, "boolean complete"),
-        ({"phase": "unknown"}, "unsupported progress phase"),
-        ({"targets": ["sim_a", "sim_a"]}, "repeats Target identities"),
-        ({"completed_targets": ["sim_a", "sim_a"]}, "repeats completed"),
-        ({"pending_targets": []}, "do not partition"),
-        ({"targets": [1]}, "list of strings"),
-    ],
-)
-def test_invalid_progress_shapes_are_rejected(updates: dict[str, object], message: str) -> None:
-    document = progress_document(
-        flow="sim",
-        run_id="run-1",
-        phase="running",
-        targets=("sim_a",),
-        completed_targets=(),
-        detail={},
-    )
-    document.update(updates)
-
-    with pytest.raises(ValueError, match=message):
-        validate_progress_shape(document)
 
 
 def _write_progress(path: Path, *, run_id: str = "run-1") -> dict[str, object]:

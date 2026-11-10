@@ -9,6 +9,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- A Sandbox spec issued by Booley 0.2.14 or earlier that still starts
+  `python -m booley.runtime.incontainer_register` is now refused ("differs from
+  fixed Booley policy"); reissue it as Booley's printed remedy says.
 - `sim --trace` converts a declared `trace_files` VCD of any size; the 2 GiB
   limit is gone. Post-run VCD-to-FST conversion now has its own
   `[flows.sim].trace_convert_timeout_ms` budget (default `1800000`, 30 minutes)

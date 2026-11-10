@@ -5,7 +5,7 @@ stable rules leave other edges unclassified; the current package graph is not a
 universal allowlist. The test-only analyzer records source knowledge without adding
 a production abstraction layer.
 
-Current measurements are dated 2026-10-11. Historical snapshots retain their original revisions and dates. Goal Mode is the public development workflow. Package names such as `booley.harness` below identify
+Current measurements are dated 10 NOV 2026 (the last `Current snapshot` below). Historical snapshots retain their original revisions and dates. Goal Mode is the public development workflow. Package names such as `booley.harness` below identify
 source owners, not an active execution mode. Direction rules
 are normative; dated graph snapshots are diagnostic evidence.
 
@@ -145,11 +145,10 @@ observation package independent of Targets; D5/D6 already protect Runtime from
 MCP, Specialists and Harness. No composition exemption or cycle expansion is
 needed. Runtime still consumes `targets.flow_names` through `shared_infra`.
 
-The observer reuses progress shape validation from `flows.progress_lifecycle`.
-That owner also contains publication, repair, supersession, locking and
-coverage-origin validation. Moving it wholesale would relocate unrelated
-behavior; choosing a shared lower-level progress owner needs its own
-investigation. Runtime's Flow dependency remains explicit. Exact progress past
+The observer validates progress shape through `booley.core.progress_shape`,
+and D39 forbids Runtime from importing Flows. Publication, repair,
+supersession, locking and coverage-origin validation stay in
+`flows.progress_lifecycle`. Exact progress past
 the parsed artifact-history limit uses the artifact cache's generation reuse,
 with overflow candidates visited newest first on a progress miss.
 
@@ -298,7 +297,7 @@ and type-only imports and have no waiver or composition exception.
   its existing owner; this extraction introduces no new execution authority.
 
 The measured Target/FuseSoC pair is approved separately from the remaining
-11-package cyclic group. A regression using the checked-in SCC metadata rejects
+cyclic group (see the current snapshot). A regression using the checked-in SCC metadata rejects
 recombination even independently of the direction rules. See
 [the #530 evidence](../research/target-fusesoc-530-evidence.md) for exact revisions,
 full reports, migration fan-out, and verification.
@@ -372,7 +371,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D3 | Prefix `booley.specialists` | Prefix `booley.harness` and exact module `booley.mcp.server` | Forbid | A Specialist returns evidence without depending on its Harness or MCP composition mechanism. |
 | D4 | Prefix `booley.mcp` | Prefixes `booley.harness`, `booley.specialists` | Forbid, subject only to C1-C2 | MCP infrastructure is independent of the capabilities composed by its server. |
 | D5 | Prefix `booley.runtime` | Prefixes `booley.mcp`, `booley.specialists` | Forbid | Sandbox mechanisms must remain usable without agent-facing mechanisms. |
-| D6 | Prefix `booley.runtime` | Prefix `booley.harness` | Forbid, subject only to C8 | Shared Sandbox mechanisms must not acquire Harness knowledge; exact entry-point composition remains explicit. |
+| D6 | Prefix `booley.runtime` | Prefix `booley.harness` | Forbid | Shared Sandbox mechanisms must not acquire Harness knowledge. |
 | D7 | Exact modules `booley.flows.target_campaign`, `booley.flows.target_criteria`, `booley.flows.target_test_suite` | Prefixes `booley.harness`, `booley.mcp` | Forbid | shared Target/Criteria policy is independent of presentation and agent exposure |
 | D8 | Each prefix in `booley.flows.{sim,synth,fpga,lint}` | The other three prefixes in that set | Forbid | Each built-in Booley Flow owns its tool-specific implementation and cannot couple to a sibling Flow. |
 | D9 | Root module and direct file-module children of `booley.flows` (not child package initializers) | Prefixes `booley.flows.{sim,synth,fpga,lint}` | Forbid | Flow-neutral policy and evidence modules cannot select a concrete Flow implementation. |
@@ -401,6 +400,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D35 | Prefix `booley.goals` | Prefixes `booley.harness`, `booley.mcp`, `booley.specialists`, `booley.flows.{sim,synth,fpga,lint}` | Forbid | Goal Mode policy and records are composed by MCP and command entry points; they do not depend on those entry points, Specialists, or concrete Flows |
 | D36 | Prefix `booley.runtime` | Prefix `booley.goals` | Forbid | Runtime consumes explicit execution inputs; Goal history and binding interpretation belong to higher-level composition. |
 | D37 | Prefix `booley.runtime.job_observation` | Prefix `booley.targets` | Forbid | Job observation owns process and artifact facts without interpreting Target policy. |
+| D39 | Prefix `booley.runtime` | Prefix `booley.flows` | Forbid | Runtime owns Sandbox and Job mechanisms; it reads Flow progress shape through `booley.core` and never imports a Flow. |
 
 ## Simulation Campaign storage boundary
 
@@ -487,7 +487,6 @@ named rule and gives no source module a blanket exemption.
 | Permission | Rule | Exact source -> exact target | Reason |
 | --- | --- | --- | --- |
 | C2 | D4 | `booley.mcp.server -> booley.specialists.specialist` | The MCP server classifies and composes Specialist endpoints. |
-| C8 | D6 | `booley.runtime.incontainer_register -> booley.harness.incontainer_register` | The former module path remains an exact compatibility entry point. |
 | C10 | D31 | `booley.flows.sim.campaign.coordinator -> booley.flows.sim.campaign.store` | Campaign execution composes durable transaction, recovery, and publication. |
 | C12 | D31 | `booley.flows.sim.campaign.inspection -> booley.flows.sim.campaign.store` | Public read capabilities inspect storage through the private Campaign store. |
 | C13 | D31 | `booley.flows.sim.campaign -> booley.flows.sim.campaign.inspection` | The Campaign package facade publishes the storage-backed read capabilities. |
@@ -806,7 +805,7 @@ legacy SCC. All top-30 and named composition-hotspot fan-out values are unchange
 D29 makes the new direction executable: Flows may consume B-Wave waveform-store
 mechanics, while B-Wave cannot regain Flow execution or evidence policy.
 
-## Current snapshot: 23 SEP 2026 — Ticket Criteria projection
+## Historical snapshot: 23 SEP 2026 — Ticket Criteria projection
 
 Issue [#659](https://github.com/boldaxolotl/booley/issues/659) moved the resolved
 Ticket-to-Criteria projection from `booley.criteria` to `booley.ticket_board` and
@@ -825,7 +824,7 @@ The two redirected callers retain their fan-out:
 inventory, and reproduction commands are in
 [the #659 evidence](../research/ticket-criteria-projection-659-evidence.md).
 
-## Current snapshot: 24 SEP 2026 — Campaign storage seam
+## Historical snapshot: 24 SEP 2026 — Campaign storage seam
 
 Issue [#661](https://github.com/boldaxolotl/booley/issues/661) added the
 informational comparison above and D31. The implementation base is exact commit
@@ -847,7 +846,7 @@ at 6 after redirecting to the public facade. No named-hotspot fan-out changes.
 The exact edge diff, identities, reproduction command, caller behavior, and
 verification are in [the #661 evidence](../research/simulation-campaign-storage-661-evidence.md).
 
-## Current snapshot: 25 SEP 2026 — commit policy and Feedback observations
+## Historical snapshot: 25 SEP 2026 — commit policy and Feedback observations
 
 Issue [#660](https://github.com/boldaxolotl/booley/issues/660) gives commit policy a
 shared dependency-light owner and moves Doctor-stamp resolution to Harness
@@ -862,7 +861,7 @@ the corrected ownership. The exact edge inventory, bundle and fallback evidence,
 fan-out change, and verification commands are recorded in
 [the #660 implementation evidence](../research/runtime-feedback-dependencies-660-evidence.md).
 
-## Current snapshot: 06 OCT 2026 — Goal Mode package
+## Historical snapshot: 06 OCT 2026 — Goal Mode package
 
 ADR 0067 Phase 1 adds `booley.goals` (Goal model, translation, record store,
 paths, Change Log), D35, and `booley.goals` as a D25 forbidden target.
@@ -879,7 +878,7 @@ deferred `ticket_board.paths` import inside the Ticket report gate. Direct
 mutual pairs are unchanged. Reproduce with `compare_report.py` (below) between
 `8a96392c1` and `2d4cc572d`.
 
-## Current snapshot: 06 OCT 2026 — Goal Mode entry
+## Historical snapshot: 06 OCT 2026 — Goal Mode entry
 
 ADR 0067 Phase 2 composes `booley.goals` from its entry points:
 `mcp.goal_tools` (the Goal MCP tools, which also inject the synthesis and FPGA
@@ -900,7 +899,7 @@ Target/FuseSoC pair. D35 still forbids every direct `goals` edge into
 Reproduce with `compare_report.py` (below) in root mode between a
 `git archive d2a5b9806` tree and the Phase 2 tree.
 
-## Current snapshot: 07 OCT 2026 — Goal Mode evidence binding
+## Historical snapshot: 07 OCT 2026 — Goal Mode evidence binding
 
 ADR 0067 Phase 3b adds the Goal run binding, publication gate, merging state
 persistence, evidence recorder, freshness, `target_surface` digest, and
@@ -980,7 +979,7 @@ no persistence or re-binding. The Phase 2 audit key is now a Worktree Identity k
 the Phase 6 Session Registry now supplies session discovery and shared-worktree
 warnings. It is presentational and never selects a Goal Record.
 
-## Current snapshot: 11 OCT 2026 — shared execution owners
+## Historical snapshot: 11 OCT 2026 — shared execution owners
 
 Phase 9a removes the retired execution package and its sole-consumer modules.
 The surviving recorder, project Flow loader, verification freshness, agent
@@ -1000,7 +999,7 @@ Cyclic top-level package groups:
 
 ```
 
-## Current snapshot: 08 NOV 2026 — Flow/Specialist edge removed
+## Historical snapshot: 08 NOV 2026 — Flow/Specialist edge removed
 
 `booley.flows` no longer imports `booley.specialists`: the human parser builder
 reads `endpoint_kind` to decide whether a `--timeout` duration is offered instead
@@ -1019,4 +1018,31 @@ Cyclic top-level package groups:
 - booley.agent_workspace, booley.bwave, booley.criteria, booley.dev_support, booley.feedback, booley.flows, booley.goals, booley.harness, booley.mcp, booley.runtime
 - booley.fusesoc, booley.targets
 
+```
+
+## Current snapshot: 10 NOV 2026 — Runtime leaves Flows and Harness
+
+`booley.runtime` no longer imports `booley.flows` or `booley.harness`. The
+progress shape policy moved to `booley.core.progress_shape`, shared by Flow
+publication, Job observation and Campaign retention, and the retired
+`booley.runtime.incontainer_register` compatibility module is deleted, so C8 is
+removed and D6 has no exception. D39 forbids Runtime to Flows. Runtime,
+Criteria, B-Wave and Feedback leave the approved legacy group, and the
+`flows <-> runtime` and `harness <-> runtime` mutual pairs are gone. No
+direction permission or SCC member is added.
+
+Measured with `python3 tests/architecture/report.py --top 10`:
+
+```text
+Parsed Python modules: 710
+Normalized dependency facts: 4141
+Unique normalized edges: 3693
+
+Cyclic top-level package groups:
+- booley.agent_workspace, booley.dev_support, booley.flows, booley.goals, booley.harness, booley.mcp
+- booley.fusesoc, booley.targets
+
+Mutual top-level package pairs:
+- booley.flows <-> booley.harness
+- booley.fusesoc <-> booley.targets
 ```

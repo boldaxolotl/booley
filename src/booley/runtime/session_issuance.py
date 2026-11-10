@@ -86,12 +86,9 @@ _ALLOWED_TOP_LEVEL_KEYS = frozenset(
 )
 _ESCAPE_KEYS = frozenset({"dockerComposeFile", "service", "runServices", "workspaceFolder"})
 _FIXED_REGISTRAR = "python -m booley.harness.incontainer_register"
-_LEGACY_FIXED_REGISTRAR = "python -m booley.runtime.incontainer_register"
-_ACCEPTED_FIXED_REGISTRARS = frozenset({_FIXED_REGISTRAR, _LEGACY_FIXED_REGISTRAR})
 _FIXED_GIT_IDENTITY = "python -m booley.runtime.incontainer_git_identity_cleanup"
 _ACCEPTED_FIXED_START_TAILS = frozenset(
-    {_FIXED_GIT_IDENTITY}
-    | {f"{_FIXED_GIT_IDENTITY} && {registrar}" for registrar in _ACCEPTED_FIXED_REGISTRARS}
+    {_FIXED_GIT_IDENTITY, f"{_FIXED_GIT_IDENTITY} && {_FIXED_REGISTRAR}"}
 )
 _FIXED_ATTACH = "python -m booley.runtime.incontainer_live_preview && python -m booley.runtime.incontainer_vaporview"
 _FIXED_SEED_FRAGMENTS = frozenset(
