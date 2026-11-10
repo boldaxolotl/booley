@@ -319,7 +319,7 @@ def state_volume_names(project_id: str) -> frozenset[str]:
     return frozenset(
         name
         for app in _APP_STATE_DIR
-        for policy in ("auto", "subscription", "api_key")
+        for policy in ("auto", "subscription", "api_key", "gateway")
         if (name := state_volume_name(app, project_id, policy)) is not None
     )
 
@@ -562,6 +562,10 @@ class CliSeeds:
     login_source: str | None = None
     token_source: str | None = None
     config_source: str | None = None
+    # Host variables a Codex-on-the-gateway plan forwards (URL and one token source);
+    # empty for every other plan. Only the issuance builder sets it and the validator
+    # refuses gateway keys unless the record puts Codex on the gateway.
+    gateway_env: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -588,7 +592,7 @@ def _planned_seeds(app: str, cli_seeds: Sequence[CliSeeds]) -> list[_Seed]:
             seeds.login_source if seeds.plan.subscription_seed else None,
             seeds.token_source if seeds.plan.token_seed else None,
             seeds.config_source,
-            tuple(key for key, _ in seeds.plan.values),
+            (*(key for key, _ in seeds.plan.values), *seeds.gateway_env),
         )
         for seeds in cli_seeds
     ]

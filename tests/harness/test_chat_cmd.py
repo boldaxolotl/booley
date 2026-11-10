@@ -6,19 +6,35 @@ import argparse
 import shutil
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from booley.config.agent import AgentSettings
 from booley.config.settings import BackendConfigError
 from booley.harness import booley as booley_cli
-from booley.harness import chat_cmd
+from booley.harness import chat_cmd, codex_chat
 from booley.runtime.pid import ProcessIdentity
 from booley.runtime.session_activity import process_session_key
 
 
 class _ExecCalledError(Exception):
     """Stop a mocked process replacement while preserving its arguments."""
+
+
+_REAL_CODEX_COMMAND = codex_chat.command
+
+
+def _use_real_codex_command(monkeypatch, tmp_path):
+    """Run the real ``codex_chat.command`` against a Linux host with a native Codex on PATH."""
+    launcher = tmp_path / "codex"
+    launcher.write_text("native\n")
+    monkeypatch.setattr(codex_chat, "sys", SimpleNamespace(platform="linux", stderr=sys.stderr))
+    monkeypatch.setattr(codex_chat.shutil, "which", lambda _name, **_kwargs: str(launcher))
+    monkeypatch.setattr(
+        codex_chat, "capture_process_identity", lambda _pid: ProcessIdentity(123, "fixture", 7)
+    )
+    monkeypatch.setattr(chat_cmd.codex_chat, "command", _REAL_CODEX_COMMAND)
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +46,7 @@ def inline_launch(monkeypatch):
 @pytest.fixture(autouse=True)
 def plain_codex_launch(monkeypatch):
     monkeypatch.setattr(chat_cmd, "resolve_common_booley_dir", lambda root: root)
-    monkeypatch.setattr(chat_cmd.codex_chat, "command", lambda _directory: ("codex", ["codex"]))
+    monkeypatch.setattr(chat_cmd.codex_chat, "command", lambda _root: ("codex", ["codex"]))
 
 
 @pytest.fixture(autouse=True)
@@ -79,10 +95,11 @@ def test_missing_cli_prints_only_the_error(tmp_path, monkeypatch, capsys, provid
 def test_notice_is_the_last_line_before_exec(tmp_path, monkeypatch, capsys, provider):
     _configure_provider(monkeypatch, provider)
     if provider == "codex":
+        _use_real_codex_command(monkeypatch, tmp_path)
         monkeypatch.setattr(
-            chat_cmd.codex_chat,
-            "command",
-            lambda _directory: (_ for _ in ()).throw(RuntimeError("no handle")),
+            codex_chat,
+            "resolve_common_booley_dir",
+            lambda _root: (_ for _ in ()).throw(RuntimeError("no handle")),
         )
     seen = []
 
@@ -105,7 +122,7 @@ def test_run_uses_named_codex_command(tmp_path, monkeypatch):
     monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
     monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: config)
     monkeypatch.setattr(
-        chat_cmd.codex_chat, "command", lambda _directory: ("/bin/codex", ["S17", "--no-daemon"])
+        chat_cmd.codex_chat, "command", lambda _root: ("/bin/codex", ["S17", "--no-daemon"])
     )
     executed = []
 
@@ -117,30 +134,6 @@ def test_run_uses_named_codex_command(tmp_path, monkeypatch):
     with pytest.raises(_ExecCalledError):
         chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path)
     assert executed == [("/bin/codex", ["S17", "--no-daemon"])]
-
-
-@pytest.mark.parametrize("error", [FileNotFoundError, ValueError, RuntimeError])
-def test_runtime_directory_failure_keeps_plain_codex_launch(tmp_path, monkeypatch, capsys, error):
-    config = type("Config", (), {"default_cli": "codex"})()
-    monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
-    monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
-    monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: config)
-    monkeypatch.setattr(
-        chat_cmd,
-        "resolve_common_booley_dir",
-        lambda _root: (_ for _ in ()).throw(error("bad runtime")),
-    )
-    executed = []
-
-    def execvp(executable, argv):
-        executed.append((executable, argv))
-        raise _ExecCalledError
-
-    monkeypatch.setattr(chat_cmd.os, "execvp", execvp)
-    with pytest.raises(_ExecCalledError):
-        chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path)
-    assert executed == [("codex", ["codex"])]
-    assert "Codex tab handle is unavailable: bad runtime" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("provider", ["claude", "codex"])
@@ -247,11 +240,12 @@ def test_worktree_provider_config_uses_the_shared_runtime_handle_map(tmp_path, m
     (shared / "booley.toml").write_text('[agent]\nprovider="claude"\n')
     monkeypatch.setenv("BOOLEY_DIR", str(shared))
     monkeypatch.setattr(chat_cmd, "resolve_common_booley_dir", resolve_common_booley_dir)
+    _use_real_codex_command(monkeypatch, tmp_path)
     directories = []
     monkeypatch.setattr(
-        chat_cmd.codex_chat,
-        "command",
-        lambda directory: (directories.append(directory) or "codex", ["S17", "--no-daemon"]),
+        codex_chat,
+        "reserve_codex_chat",
+        lambda directory, _identity: directories.append(directory) or "S17",
     )
     monkeypatch.setattr(
         chat_cmd.os, "execvp", lambda *_args: (_ for _ in ()).throw(_ExecCalledError)
@@ -302,7 +296,7 @@ def test_claude_named_exec_preserves_codex_command(tmp_path, monkeypatch):
     monkeypatch.setattr(
         chat_cmd.codex_chat,
         "command",
-        lambda _directory: ("/native/codex", ["S23", "--no-daemon", "--fixture"]),
+        lambda _root: ("/native/codex", ["S23", "--no-daemon", "--fixture"]),
     )
     with pytest.raises(_ExecCalledError):
         chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path)
@@ -440,16 +434,10 @@ def test_codex_launch_paths_append_agent_args(tmp_path, monkeypatch):
         ["/usr/bin/node", "/shim.mjs", "S23", "/lib/codex.js", "--no-daemon"],
     )
     for launch in (native, npm):
-        monkeypatch.setattr(
-            chat_cmd.codex_chat, "command", lambda _directory, launch=launch: launch
-        )
+        monkeypatch.setattr(chat_cmd.codex_chat, "command", lambda _root, launch=launch: launch)
         _launch(tmp_path, forwarded)
         assert executed[-1] == (launch[0], [*launch[1], *forwarded])
-    monkeypatch.setattr(
-        chat_cmd,
-        "resolve_common_booley_dir",
-        lambda _root: (_ for _ in ()).throw(ValueError("no dir")),
-    )
+    monkeypatch.setattr(chat_cmd.codex_chat, "command", lambda _root: ("codex", ["codex"]))
     _launch(tmp_path, forwarded)
     assert executed[-1] == ("codex", ["codex", *forwarded])
 
@@ -538,3 +526,70 @@ def test_no_cli_flag_launches_default_cli(tmp_path, monkeypatch):
 
     assert executed == [("codex", ["codex", "--last"])] * 2
     assert booley_cli._parse_cli().cli is None
+
+
+_GATEWAY_VALUES = {
+    "BOOLEY_GATEWAY_URL": "https://gw.example/v1",
+    "BOOLEY_GATEWAY_TOKEN": "SYNTHETIC_GATEWAY_TOKEN",
+    "BOOLEY_GATEWAY_TOKEN_COMMAND": "print-token",
+    "BOOLEY_GATEWAY_MODEL": "gpt-5.1",
+    "BOOLEY_GATEWAY_EFFORT": "high",
+}
+
+
+def _gateway_sandbox(monkeypatch, *, record):
+    """A container process with the gateway settings set; *record* is ``BOOLEY_AGENT_CLIS``."""
+    from booley.config import agent as agent_config
+
+    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
+    for name, value in _GATEWAY_VALUES.items():
+        monkeypatch.setenv(name, value)
+    # Register the marker for restoration: the launch writes it straight into os.environ.
+    monkeypatch.setenv("BOOLEY_HIDDEN_GATEWAY", "unset-me")
+    monkeypatch.delenv("BOOLEY_HIDDEN_GATEWAY")
+    if record is None:
+        monkeypatch.delenv("BOOLEY_AGENT_CLIS", raising=False)
+        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
+    else:
+        monkeypatch.setenv("BOOLEY_AGENT_CLIS", record)
+        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
+
+
+def _exec_environment(tmp_path, monkeypatch) -> dict[str, str]:
+    """``booley chat --cli claude`` and the environment it would exec with."""
+    import os
+
+    _configure_settings(monkeypatch, default_cli="claude", clis=("claude", "codex"))
+    seen: dict[str, str] = {}
+
+    def execute(_executable, _argv):
+        seen.update(os.environ)
+        raise _ExecCalledError
+
+    monkeypatch.setattr(chat_cmd.os, "execvp", execute)
+    with pytest.raises(_ExecCalledError):
+        chat_cmd.run(argparse.Namespace(agent_args=[], cli="claude"), tmp_path)
+    return seen
+
+
+def test_claude_chat_launch_drops_gateway_settings(tmp_path, monkeypatch):
+    _gateway_sandbox(monkeypatch, record="claude=subscription,codex=gateway")
+
+    seen = _exec_environment(tmp_path, monkeypatch)
+
+    assert not [name for name in _GATEWAY_VALUES if name in seen]
+    assert seen["BOOLEY_HIDDEN_GATEWAY"] == "1"
+
+
+def test_handwritten_gateway_claude_chat_keeps_gateway_settings(tmp_path, monkeypatch):
+    """Guard: a hand-written spec (no record) keeps today's Claude environment."""
+    from booley.runtime import _claude_backend
+
+    _gateway_sandbox(monkeypatch, record=None)
+
+    seen = _exec_environment(tmp_path, monkeypatch)
+
+    assert {name: seen[name] for name in _GATEWAY_VALUES} == _GATEWAY_VALUES
+    assert "BOOLEY_HIDDEN_GATEWAY" not in seen
+    overrides = _claude_backend._claude_env_overrides("subscription")
+    assert not [name for name in _GATEWAY_VALUES if name in overrides]
