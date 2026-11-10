@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,6 +84,10 @@ class TraceSession:
         # Stall-kill state — set by start_monitor when it escalates to a kill.
         self._stall_killed = False
         self._stall_message: str | None = None
+        # Stall-monitor lifetime: start_monitor keeps each thread (the main trace plus one
+        # per declared stream), stop_monitor ends them all.
+        self._monitor_stop = threading.Event()
+        self._monitor_threads: list[threading.Thread] = []
         # One monotonic deadline bounds every post-run conversion of the attempt.
         self._conversion_deadline: float | None = None
         # Once postprocess ran, find() must not convert the same VCD a second time.
@@ -492,10 +497,11 @@ class TraceSession:
         window only counts while the pipe holds unread bytes, a stall kills
         just the converter, and a converter that exits while the simulator
         lives has its input drained so the writer never blocks.
-        """
-        import threading
 
-        t = threading.Thread(
+        The caller must pair this with :meth:`stop_monitor` once the run is over;
+        a monitor started after a stop ends at once.
+        """
+        thread = threading.Thread(
             target=self._monitor_stalls,
             args=(
                 bwave_proc,
@@ -507,7 +513,20 @@ class TraceSession:
             ),
             daemon=True,
         )
-        t.start()
+        self._monitor_threads.append(thread)
+        thread.start()
+
+    def stop_monitor(self) -> None:
+        """Wake every stall monitor, then wait until their threads have ended.
+
+        Idempotent, and does nothing when no monitor was started. A stall kill
+        already in flight finishes first, so no kill outlives the run. The wait
+        is deliberately unbounded: the kill path is bounded (about 10 s on
+        POSIX, about 30 s on Windows, where each ``taskkill`` may take 10 s).
+        """
+        self._monitor_stop.set()
+        for thread in self._monitor_threads:
+            thread.join()
 
     def _monitor_stalls(
         self,
@@ -518,13 +537,12 @@ class TraceSession:
         kill_after_stalls: int,
         spare_simulator: bool = False,
     ) -> None:
-        import time
-
         last_size = -1
         stall_start: float | None = None
         stall_count = 0
         while sim_proc.poll() is None and bwave_proc.poll() is None:
-            time.sleep(poll_interval)
+            if self._monitor_stop.wait(poll_interval):
+                return
             size = bwave_proc.progress_size()
             if size != last_size or (spare_simulator and bwave_proc.backlog() == 0):
                 last_size, stall_start, stall_count = size, None, 0
