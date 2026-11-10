@@ -48,7 +48,7 @@ _AGENT_EXIT_CODE = 7
 # The fake agent. Runs as the `claude` script and, in a copy of the interpreter
 # named `codex`, via `-c`. Everything it records is written before AGENT-READY.
 _AGENT_SOURCE = r"""
-import importlib.util, json, os, signal, subprocess, sys, time
+import _thread, importlib.util, json, os, signal, subprocess, sys, threading, time
 from pathlib import Path
 
 OUT = Path(os.environ["AGENT_OUT"])
@@ -115,7 +115,35 @@ write_json("agent.json", {
 })
 os.write(1, b"AGENT-READY\n")
 
-if VARIANT == "read":
+
+def trip_when_blocked(main_tid):
+    # Self-test only: deliver a SIGINT the way the C handler does (flag the
+    # signal, defer the Python handler to the main thread's next eval-breaker
+    # check) once the main thread sleeps in the kernel waiting for input. A real
+    # kernel signal would interrupt read(2); this one lands "just before" it.
+    task = Path("/proc/self/task") / str(main_tid)
+    stop = time.monotonic() + 10
+    state_name, wchan = "?", "?"
+    while time.monotonic() < stop:
+        try:
+            state_name = (task / "stat").read_text().rsplit(")", 1)[1].split()[0]
+            wchan = (task / "wchan").read_text().strip()
+        except OSError:
+            wchan = "unreadable"
+        if state_name == "S" and wchan not in ("0", "", "unreadable") and "futex" not in wchan:
+            write_json("trip.json", {"tripped": True, "state": state_name, "wchan": wchan})
+            _thread.interrupt_main(signal.SIGINT)
+            return
+        time.sleep(0.005)
+    write_json("trip.json", {"tripped": False, "state": state_name, "wchan": wchan})
+
+
+if VARIANT == "read-tripped":
+    threading.Thread(
+        target=trip_when_blocked, args=(threading.get_native_id(),), daemon=True
+    ).start()
+
+if VARIANT in ("read", "read-tripped"):
     sys.stdin.readline()
 elif VARIANT == "bg":
     wait_until(lambda: state["resumed"])
@@ -614,11 +642,48 @@ def test_exit_status_propagates_without_a_terminal(scene: _Scene) -> None:
     assert agent["pgrp"] == driver["pgrp"] == process.pid
     assert agent["pid"] != driver["pid"]
 
+    # AGENT-READY is written after the agent installed its handlers, and the
+    # shared group was asserted above: the INT cannot beat either.
     os.killpg(process.pid, signal.SIGINT)  # what the kernel does for a tty Ctrl-C
     scene.wait_for_count("INT", 1)
     _settle()
     assert scene.counts()["INT"] == 1
     assert process.poll() is None, "Booley died of a SIGINT meant for the agent"
+
+    process.stdin.write(b"done\n")
+    process.stdin.flush()
+    assert process.wait(timeout=_WAIT_SECONDS) == _AGENT_EXIT_CODE
+
+
+def test_fake_agent_counts_a_signal_caught_before_its_input_wait(scene: _Scene) -> None:
+    """A handled signal flagged just before the agent blocks must not wait for input."""
+    process = subprocess.Popen(
+        [sys.executable, scene.agent_file],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=scene.env("read-tripped", "claude"),
+        process_group=0,
+    )
+    scene.processes.append(process)
+    assert process.stdout is not None
+    assert process.stdin is not None
+    _read_until(process.stdout.fileno(), b"AGENT-READY")
+
+    wait_for(
+        lambda: scene.read("trip.json") or None,
+        failure="the fake agent never reported whether it tripped a signal",
+        timeout_s=_WAIT_SECONDS,
+    )
+    trip = scene.read("trip.json")
+    assert trip["tripped"], (
+        f"never saw the agent blocked in a kernel wait (needs /proc wchan): {trip}"
+    )
+
+    scene.wait_for_count("INT", 1)
+    _settle()
+    assert scene.counts()["INT"] == 1
+    assert process.poll() is None, "the handler must not end the agent's input wait"
 
     process.stdin.write(b"done\n")
     process.stdin.flush()
