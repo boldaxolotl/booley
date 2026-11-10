@@ -401,12 +401,27 @@ remove it.
 
 ### Simulation stalls at time zero without results
 
-An older cocotb release pinned by your project can be incompatible with the
-image's Verilator 5, even though cocotb itself installs fine. It builds and starts, but simulation time stays at `0.00 ns` until
-the run times out, with no `results.xml`. No Python pin fixes it. Port the
-testbench to the image's cocotb 2.x (`cocotb.fork` becomes
-`cocotb.start_soon`, plus a few import moves), or build a project image with a
-matching Verilator. Image versions are in
+A cocotb run builds, loads and logs, but simulation time stays at `0.00 ns`
+and no `results.xml` appears. After `sim_time_grace_s` seconds at exactly
+`0.00 ns` (180 by default), Booley stops the run with an `ERROR` verdict and
+this message:
+
+```text
+ERROR: simulation killed: simulator time never advanced past 0.00 ns in 180s of wall clock.
+```
+
+followed by the likely cause. The watchdog starts counting at cocotb's first
+log line, and a run whose clock moved past zero is never stopped by it. If
+your testbench spends minutes in Python setup before the first clock edge,
+raise `[flows.sim].sim_time_grace_s`; `0` turns the watchdog off, and the
+run then waits for `timeout_ms`.
+
+The usual cause is a cocotb release your project pins that doesn't work with
+the image's Verilator 5, even though cocotb itself installs fine. No Python
+pin fixes it. Compare `cocotb-config --version` with the simulator's
+version, then port the testbench to the image's cocotb 2.x (`cocotb.fork`
+becomes `cocotb.start_soon`, plus a few import moves), or build a project
+image with a matching Verilator. Image versions are in
 [Supported EDA tools](SUPPORTED-EDA-TOOLS.md#versions-in-the-sandbox-image).
 
 ### A streamed `--trace` dump produces a trace incident
@@ -434,6 +449,36 @@ writes there. The next `--trace` run removes the file, or delete it yourself.
 A waiver must name the code Verilator prints in `%Error-<CODE>` or
 `%Warning-<CODE>`. Verilator 5 reports width problems as `WIDTHTRUNC` and
 `WIDTHEXPAND`, so `-Wno-WIDTH` may not silence them.
+
+### ccache settings are ignored or rebuilds miss the cache
+
+Booley compiles Verilator builds through the Project's compiler cache (see
+[Verilator builds](FLOW-SIM.md#verilator-builds)).
+While the cache is in use, Booley sets `OBJCACHE`, `CCACHE_DIR`,
+`CCACHE_MAXSIZE`, `CCACHE_COMPILERCHECK` and `CCACHE_BASEDIR` for each
+build. These replace the same variables from your shell and from the
+Target's [`env`](TESTS.md#per-target-environment-env);
+for a Target `env` value that differs, Booley logs
+`Target compiler-cache setting <NAME> yields to Booley's value`. When the
+cache is disabled or unavailable, Booley sets only `OBJCACHE`, to empty.
+
+Only an assignment in the Target's `make_options` beats Booley, because
+Make command-line variables override the environment. Two of them cost you:
+
+- **`USER_CPPFLAGS=...`** replaces the debug-prefix map Booley appends to
+  `USER_CPPFLAGS`, so a build with debug info (`-g`) misses the cache each
+  time its build directory changes.
+  Set extra flags in the Target `env`'s `USER_CPPFLAGS`, which Booley keeps,
+  or pass them with Verilator's `-CFLAGS`.
+- **Any `OBJCACHE` assignment**, including `OBJCACHE=` to skip ccache, also
+  turns off [build reuse](FLOW-SIM.md#build-reuse), so
+  every run rebuilds. To stop using the cache, set `enabled = false` under
+  `[flows.sim.compiler_cache]` instead.
+
+If the build warns `Verilator compiler cache unavailable: <reason>;
+compiling uncached`, fix the named reason: ccache missing from the build
+`PATH`, cache storage Booley can't create, or an unset cache root (run
+`booley session refresh` on the host).
 
 ### Pre-Sim Commands fail with `Syntax error: Bad fd number`
 

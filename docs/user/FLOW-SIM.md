@@ -471,6 +471,8 @@ CCACHE_DIR=/booley-project/.runtime/compiler-cache/ccache ccache --clear
 ```
 
 If ccache isn't available, the build prints a warning and compiles without it.
+Booley's ccache settings override your shell and the Target's `env`; see
+[ccache settings are ignored or rebuilds miss the cache](TROUBLESHOOTING.md#ccache-settings-are-ignored-or-rebuilds-miss-the-cache).
 
 ## Configuration (`[flows.sim]`)
 
@@ -521,4 +523,5 @@ run whose simulation time is still zero that many seconds after cocotb starts,
 which usually means the cocotb version doesn't match the simulator; see
 [Baking the cocotb stack into the image](SANDBOX.md#baking-the-cocotb-stack-into-the-image).
 Raise it if your testbench spends minutes in Python setup before the first
-clock edge.
+clock edge. To recognise the stop and fix it, see
+[Simulation stalls at time zero](TROUBLESHOOTING.md#simulation-stalls-at-time-zero-without-results).
