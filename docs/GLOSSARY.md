@@ -278,7 +278,7 @@ A project-authored Booley Flow that does not ship with Booley. Its MCP tool impl
 _Avoid_: Custom Tool, plugin, user tool, project tool
 
 **Mutation Flow**:
-The Booley Flow that measures how well a Target's tests catch injected RTL bugs. It seeds **Mutants** into the Target's own RTL with the fixed **Mutation Operators**, runs the Target's tests against each, and reports how many are detected. The same sources and settings always produce the same Mutants, so scores are reproducible and comparable across runs; no LLM is involved.
+The Booley Flow that measures how well a Target's tests catch injected RTL bugs. It injects **Mutants** into the Target's own RTL with the fixed **Mutation Operators**, runs the Target's tests against each, and reports how many are detected. The same sources and settings always produce the same Mutants, so scores are reproducible and comparable across runs; no LLM is involved.
 _Avoid_: Mutation Tester, mutation Specialist, fault injection
 
 **Mutant**:

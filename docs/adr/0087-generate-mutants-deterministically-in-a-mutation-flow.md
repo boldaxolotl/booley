@@ -3,9 +3,9 @@
 Status: accepted (2026-11-07 triage of
 [#2856](https://github.com/boldaxolotl/booley/issues/2856))
 
-For mutation testing only, supersedes the `mutation_tester` key of ADR 0084's
-`[models]` table ([ADR 0084](0084-run-each-specialist-on-the-agent-cli-its-model-implies.md))
-and the `mutation_tester` Specialist form with its **Start fresh** option in
+For mutation testing only, supersedes the `mutation_tester` key of the
+`[models]` table in
+[ADR 0084](0084-run-each-specialist-on-the-agent-cli-its-model-implies.md) and the `mutation_tester` Specialist form with its **Start fresh** option in
 [ADR 0086](0086-launch-flows-and-specialists-from-the-dashboard.md).
 
 ## Context
@@ -14,7 +14,7 @@ Today the Mutation Tester is an LLM Specialist. A model proposes each mutation
 as an exact text replacement; Booley applies it, builds, simulates, classifies
 the result, and stores it in a mutation lock keyed on the scope files' hashes.
 Booley gives the model only a prose guide to mutation categories
-(`refs/rtl-mutation-testing.md`); it ships no executable mutation operators.
+(`src/booley/data/refs/rtl-mutation-testing.md`); it ships no executable mutation operators.
 Two runs on the same RTL can pick different mutations, so scores are not
 reproducible or comparable across runs, and every run costs model tokens. The
 roadmap called this design temporary. #2856 surveyed existing tools and
@@ -35,7 +35,10 @@ proposed a deterministic generator; its triage settled the decisions below.
   5. bit-select or slice off by one;
   6. deletion of an assignment or a `case` item.
 - **Stable Mutant IDs.** A Mutant's ID is a content hash of its operator, file,
-  source span, and original text, so IDs survive unrelated edits.
+  source span, and original text, so IDs do not depend on other Mutants or on
+  edits to other files. How the span is expressed, so that edits elsewhere in
+  the same file move it as little as possible, is left to
+  [#2933](https://github.com/boldaxolotl/booley/issues/2933).
 - **Selection.** Candidates are ranked by a hash of (seed, Mutant ID) and taken
   round-robin across operators until the count is reached. `--count N|auto`
   keeps today's default (10) and auto formula,
@@ -59,8 +62,8 @@ proposed a deterministic generator; its triage settled the decisions below.
   identity plus the tests' fingerprint; that needs its own triage
   ([#2937](https://github.com/boldaxolotl/booley/issues/2937)). The scope of
   [ADR 0076](0076-reuse-results-at-committed-states-through-a-project-result-cache.md)
-  (graded `sim`, `synth`, and `fpga` passes) is unchanged until #2937 amends
-  it.
+  (proposed; graded `sim`, `synth`, and `fpga` passes) does not cover Mutation
+  Flow results until #2937 amends it.
 - **Removed with no deprecation release.** The LLM creator with its prompt and
   category guide, its steering (`--steer`), the `detectability_argument`, the
   `mutation_tester` model setting, and the mutation lock with `--regen-lock`
@@ -87,8 +90,8 @@ proposed a deterministic generator; its triage settled the decisions below.
   stable ID rests on. The surveyed ones were hobby projects.
 - **Other tools surveyed in #2856** (rtl-buddy-xeno, GateTruth, Verismith, IBM
   Chiffre) were judged there immature, research-only, or fault injection
-  rather than mutation scoring. Synopsys Certitude is the only commercial
-  testbench mutation tool; it serves only as a feature benchmark.
+  rather than mutation scoring. #2856 found Synopsys Certitude to be the only
+  commercial testbench mutation tool; it serves only as a feature benchmark.
 - **Blocking/nonblocking assignment swap operator.** Its Mutants are mostly
   equivalent or racy.
 - **Project-configurable operators.** A fixed table keeps scores comparable
@@ -113,7 +116,11 @@ proposed a deterministic generator; its triage settled the decisions below.
   the sources.
 - A Project that still sets `[models] mutation_tester` must remove that key;
   #2935 decides how loading reports it.
-- The default pass threshold loosens from all Mutants to 80 %.
+- The default pass threshold loosens from all Mutants to 80 %. Goal Mode's
+  `mutation` Goal family (`scope`, `min_detected`, `total`, `auto`) is
+  affected too: a Goal without `min_detected` moves from all to 80 %, and how
+  its fields map onto the Flow's count and seed, and whether Flow evidence
+  satisfies it, is decided with the switch-over (#2935).
 - QA mission areas that check the mutation lock are rewritten
   ([#2938](https://github.com/boldaxolotl/booley/issues/2938)).
 - Delivery order:
