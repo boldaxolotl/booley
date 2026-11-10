@@ -8105,7 +8105,7 @@ class TestSubscriptionCredsHealth:
 
         now = datetime(2026, 10, 8, 10, 30, tzinfo=UTC).timestamp()
         monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
-        monkeypatch.setattr(doctor.time, "time", lambda: now)
+        monkeypatch.setattr(doctor, "wall_clock", lambda: now)
         monkeypatch.setattr(doctor, "_configured_provider", lambda _: auth_token.APP_CLAUDE)
         monkeypatch.setattr(doctor, "_configured_auth_policy", lambda *_: "auto")
         monkeypatch.setattr(doctor, "_check_agent_auth_token", lambda *_a, **_k: None)

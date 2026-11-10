@@ -16,6 +16,7 @@ import sys
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from time import monotonic
 from typing import IO, Any
 
 _CHILD_LEASE_FD: contextvars.ContextVar[int | None] = contextvars.ContextVar(
@@ -110,10 +111,10 @@ def wait_for_file_lock(
     """Acquire a lock within *timeout_s*, reporting contention periodically."""
     if not math.isfinite(timeout_s) or timeout_s < 0:
         raise ValueError("file-lock timeout must be finite and non-negative")
-    deadline = time.monotonic() + timeout_s
+    deadline = monotonic() + timeout_s
     next_report = 0.0
     first_attempt = True
-    while first_attempt or time.monotonic() <= deadline:
+    while first_attempt or monotonic() <= deadline:
         first_attempt = False
         try:
             if preserve_contents:
@@ -122,7 +123,7 @@ def wait_for_file_lock(
                 acquire_file_lock(handle)
             return
         except LockContentionError:
-            now = time.monotonic()
+            now = monotonic()
             if on_wait is not None and now >= next_report:
                 on_wait()
                 next_report = now + 30.0

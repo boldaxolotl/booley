@@ -348,7 +348,7 @@ def test_full_dashboard_reader_keeps_maps_and_registry_bytes_unchanged(
         elif map_state == "broken":
             store.path.write_text("broken")
         monkeypatch.setattr("booley.harness.dashboard.model.namespace", lambda: "fixture")
-        monkeypatch.setattr("booley.harness.dashboard.model.time.time", lambda: 101)
+        monkeypatch.setattr("booley.harness.dashboard.model.wall_clock", lambda: 101)
         load, reads = handles.HandleStore.load, []
 
         def counted_load(self, reads=reads, load=load):
@@ -566,7 +566,7 @@ def test_dashboard_names_expired_unallocated_job_by_run_id(tmp_path, monkeypatch
         )
         job_records.write_record(record, root)
     monkeypatch.setattr("booley.harness.dashboard.model.namespace", lambda: "fixture")
-    monkeypatch.setattr("booley.harness.dashboard.model.time.time", lambda: now)
+    monkeypatch.setattr("booley.harness.dashboard.model.wall_clock", lambda: now)
     views = {j.record.run_id: j for j in DashboardReader(tmp_path, tmp_path).read().jobs.jobs}
     expired, recent = views["sim-expired"], views["sim-recent"]
     assert app._job_label(expired) == "sim-expired"
