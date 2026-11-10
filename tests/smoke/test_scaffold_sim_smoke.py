@@ -76,7 +76,7 @@ def _write_project(root: Path, *, stealth: bool = False) -> None:
 
 
 def _assert_coverage(reports: Path, detail: dict) -> None:
-    ref = detail["targets"]["sim"]["coverage_campaign"]
+    ref = detail["targets"]["sim_wave_counter"]["coverage_campaign"]
     assert ref["path_base"] == "report_invocation"
     path = reports / "sim/1" / ref["path"]
     resolved = resolve_coverage_campaign_reference(path)
@@ -110,7 +110,7 @@ def test_real_scaffold_simulation_modes(
     reports = tmp_path / "reports"
     result = SimulateFlow().execute(
         SimRequest(
-            target="sim",
+            target="sim_wave_counter",
             work_dir=tmp_path,
             coverage=coverage,
             trace=trace,
@@ -158,7 +158,7 @@ def test_real_stealth_scaffold_simulation(tmp_path, monkeypatch, scaffold_native
     reports = tmp_path / "reports"
     result = SimulateFlow().execute(
         SimRequest(
-            target="sim",
+            target="sim_wave_counter",
             work_dir=tmp_path,
             trace=True,
             timeout_ms=60_000,
