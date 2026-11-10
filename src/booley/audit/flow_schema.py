@@ -287,9 +287,7 @@ def _flow_shape_findings(
         findings.append(
             fail_finding(
                 f"booley.toml [flows.{flow_name}].standalone_frontend is retired",
-                "delete it; the standalone module probe now follows each Target's "
-                "simulator (Icarus or Verilator), and falls back to Verilator, else "
-                "Icarus, for other simulators",
+                "delete it; the standalone module probe now follows each Target's simulator",
             )
         )
     return findings

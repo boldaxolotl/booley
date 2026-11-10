@@ -285,7 +285,7 @@ class StandaloneMixin:
         for module, rel in modules:
             for frontend, is_fallback in self._file_probes(coverage[rel], fallback):
                 contributors: set[str | None] = {None} if is_fallback else {frontend}
-                if not is_fallback and frontend == fallback:
+                if not is_fallback and frontend == fallback and None in coverage[rel]:
                     contributors.add(None)
                 prereqs = tuple(s for s in shared if s != rel and coverage[s] & contributors)
                 probes.append(_StandaloneProbe(module, rel, frontend, is_fallback, prereqs))
@@ -532,6 +532,8 @@ class StandaloneMixin:
         """Compose and record one completed standalone sweep verdict."""
         passed = not failures
         module_count = len(recipe.modules)
+        # A module shared by two frontends can fail under both: count it once.
+        failed_modules = len({(f["module"], f["file"]) for f in failures})
         header = (
             f"[sim:elab-only] standalone ({module_count} modules, "
             f"{len(recipe.shared)} shared, {recipe.frontend_label}) "
@@ -554,7 +556,7 @@ class StandaloneMixin:
         display = (
             f"standalone: {module_count} modules OK"
             if passed
-            else f"standalone: {len(failures)}/{module_count} modules FAIL{ungraded}"
+            else f"standalone: {failed_modules}/{module_count} modules FAIL{ungraded}"
         )
         return _StandaloneOutcome(
             lines=lines,
@@ -652,7 +654,7 @@ class StandaloneMixin:
         frontends = "+".join(sorted({u["frontend"] for u in unparsed}))
         lines = [
             f"[sim:elab-only]   {len(unparsed)} module(s) ungraded — {frontends} is only a "
-            f"fallback for a simulator the probe cannot drive, and the per-Target "
+            f"fallback for a Target simulator it cannot drive, and the per-Target "
             f"build accepted the sources{where}:"
         ]
         for u in unparsed[:_MAX_ECHOED_STANDALONE_FAILURES]:
@@ -680,7 +682,7 @@ class StandaloneMixin:
         return (
             f"{frontends} cannot parse {len(unparsed)}/{total} module(s) in the RTL "
             f"scope, but the per-Target elaborate accepted the same sources — "
-            f"{frontends} is only a fallback probe for a simulator it cannot drive, "
+            f"{frontends} is only a fallback probe for a Target simulator it cannot drive, "
             f"so this is a frontend capability gap, not a design defect, and the "
             f"sweep reached no verdict. First: {first['module']} ({first['file']}): "
             f"{gist}. Use --mode elab-only for the Target elaboration check."

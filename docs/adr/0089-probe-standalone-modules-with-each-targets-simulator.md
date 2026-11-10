@@ -47,6 +47,8 @@ findings.
 - A project mixing Icarus and Verilator Targets compiles shared modules twice,
   so the sweep costs up to 2x. The sweep keeps one shared timeout; a sweep that
   fit before may now time out (exit 2).
-- Single-simulator projects see no change in verdict, exit codes, or cost,
-  except that parse errors are now findings.
+- Single-simulator projects keep the verdict, exit codes, and cost. An
+  Icarus-only project that used to be probed with Verilator is now probed with
+  Icarus, so a parse error is a finding and any other compiler-specific
+  result follows Icarus.
 - Users with `standalone_frontend` set must delete it before any Flow runs.

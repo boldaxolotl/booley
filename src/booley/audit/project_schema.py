@@ -352,9 +352,9 @@ def audit_eda_config(data: Mapping[str, Any]) -> ConfigTableAudit:
 
     migration = retired_config_error(data)
     if migration:
-        # The migration message already starts with "booley.toml" and names its
-        # own fix, so pass it through instead of wrapping it.
-        return failure(migration, "apply the migration this message names")
+        # Invariant: the migration text is already a complete finding ("booley.toml
+        # ..." plus the fix), so it is reported as-is, never re-wrapped.
+        return failure(migration, "delete the retired key or table the message names")
     try:
         eda_configs = parse_eda_config(data.get("eda"))
         validate_host_provisioning_platform(eda_configs)

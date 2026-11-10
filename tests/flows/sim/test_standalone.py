@@ -587,6 +587,18 @@ class TestProbeFrontendSelection:
         assert [f["frontend"] for f in outcome.detail["failures"]] == [failing]
         assert f"via {failing}" in "\n".join(outcome.lines)
 
+    def test_module_failing_under_both_frontends_is_counted_once(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        flow = self._two_simulator_project(tmp_path, monkeypatch)
+        _stub_probes(monkeypatch, flow, {"alu": _UNKNOWN})
+
+        outcome = _run_sweep(flow, ["ice", "ver"])
+
+        assert not outcome.passed
+        assert len(outcome.detail["failures"]) == 2
+        assert "standalone: 1/1 modules FAIL" in outcome.display
+
     def test_probe_only_includes_shared_files_of_targets_using_its_frontend(
         self, tmp_path, monkeypatch
     ) -> None:
@@ -722,7 +734,8 @@ def test_optional_standalone_exit_codes_for_single_simulator_project(
     _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
     _stub_sources(monkeypatch, ["rtl/alu.sv"])
     _stub_which(monkeypatch, True)
-    flow = _make_flow(tmp_path)
+    # Start met so the tool-error case proves prior state is kept, not reset.
+    flow = _make_flow(tmp_path, criterion_met=True)
     results = {
         "pass": SubprocessResult(returncode=0),
         "design": _SYNTAX,
@@ -736,7 +749,7 @@ def test_optional_standalone_exit_codes_for_single_simulator_project(
     assert exit_code == expected_exit
     assert outcome is not None
     if kind == "tool":
-        assert flow.state.criteria["elaborate_standalone"].met is False
+        assert flow.state.criteria["elaborate_standalone"].met is True
     else:
         assert flow.state.criteria["elaborate_standalone"].met is (kind == "pass")
 
