@@ -24,11 +24,13 @@ combination before merge.
 
 A push to `main` runs a narrow tier: `changes`, `release-semantic`,
 `package-artifacts`, `bwave-smoke`, then `ci-required` and `ci-metrics`
-(`MAIN_PUSH_JOBS` in `.github/scripts/ci_changes.py`). Mergify merges the exact
-tree its queue candidate already passed, so the suite would only repeat that
-result. `bwave-smoke` stays because only a `main` push may write the shared
-`sandbox-substrate` build cache, and it installs the wheel `package-artifacts`
-builds.
+(`MAIN_PUSH_JOBS` in `.github/scripts/ci_changes.py`). Mergify merges a batch's
+PRs one by one; the merge of the batch's last PR reproduces the tree its queue
+candidate already passed, so the suite would only repeat that result. The
+commits before it are untested intermediate trees that no later run tests on
+their own (the nightly run below covers `main`'s tip). `bwave-smoke` stays because
+only a `main` push may write the shared `sandbox-substrate` build cache, and it
+installs the wheel `package-artifacts` builds.
 
 A scheduled run on `main` every night at 01:47 UTC selects every job except
 `riscv-image`, which stays path-gated on every event (see RISC-V on-demand

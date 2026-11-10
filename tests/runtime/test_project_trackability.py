@@ -10,6 +10,7 @@ import pytest
 from tests.conftest import reset_git_command_config
 
 from booley.runtime import project_trackability as pt
+from booley.runtime import runtime_context
 from booley.runtime.booley_dir import reset_cache
 
 
@@ -378,6 +379,27 @@ def test_doctor_inspects_symlinked_booley_dir_in_target_owner(project, tmp_path,
         assert "no owning Git checkout" in findings[0].message
 
 
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [("# init skeleton\n", ["stealth.enabled-unset"]), ("[stealth]\nenabled = false\n", [])],
+)
+def test_doctor_names_unrecorded_stealth_choice_for_hidden_booley_dir(project, config, expected):
+    """A once-default Stealth Project (hidden `.booley`, no `enabled` key) learns it is off."""
+    from booley.harness import doctor
+
+    root, selected = project
+    (selected / "booley.toml").write_text(config, encoding="utf-8")
+    exclude = root / ".git/info/exclude"
+    exclude.write_text(exclude.read_text(encoding="utf-8") + "/.booley\n", encoding="utf-8")
+
+    reporter = doctor._Reporter.create()
+    doctor._check_project_trackability(root, selected, reporter.warn_)
+
+    unset = [f for f in reporter.findings or [] if f.check_id == "stealth.enabled-unset"]
+    assert [f.check_id for f in unset] == expected
+    assert all("/.booley" in f.message for f in unset)
+
+
 def test_embedded_ticket_history_is_not_deduplicated_with_goal_probe(project):
     from booley.harness import doctor
 
@@ -460,3 +482,21 @@ def test_relocated_history_probe_uses_configured_directory(project):
     history = [group for group in inspection.ignored if group.history]
     assert [group.paths for group in history] == [("tools/booley/goals/history/doctor-probe.md",)]
     reset_cache()
+
+
+@pytest.mark.parametrize(
+    ("location", "rerun"),
+    [
+        ("HOST", "then rerun booley init or booley doctor"),
+        ("HAND_WRITTEN_SANDBOX", "then rerun booley doctor"),
+        ("ISSUED_SANDBOX", "then rerun booley init on the host or booley doctor"),
+    ],
+)
+def test_fix_names_where_to_rerun(
+    monkeypatch: pytest.MonkeyPatch, location: str, rerun: str
+) -> None:
+    """Sandbox `booley init` skips this check, so only Doctor is offered there."""
+    kind = runtime_context.RuntimeLocation[location]
+    monkeypatch.setattr(runtime_context, "runtime_location", lambda: kind)
+
+    assert pt.fix().endswith(rerun)

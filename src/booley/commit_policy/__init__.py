@@ -13,6 +13,7 @@ from booley.commit_policy.policy import (
     max_body_lines,
     redact_banned,
     source_checkout_policy_owner,
+    stealth_choice_unset,
     stealth_enabled,
     stealth_policy,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "max_body_lines",
     "redact_banned",
     "source_checkout_policy_owner",
+    "stealth_choice_unset",
     "stealth_enabled",
     "stealth_policy",
     "validate_message",

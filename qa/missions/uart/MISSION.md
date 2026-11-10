@@ -89,7 +89,7 @@ Try:
 - Init flags: check-only on stale disposable state reports work and changes nothing;
   `--force` restores owned generated state and keeps a user sentinel file; a seed shows up in
   config; skip-credentials touches no credentials; the provider choice matches the issued auth
-  and client policy. Host-only `init` inside the Sandbox gets an actionable refusal.
+  and client policy. `init` inside a Booley-issued Sandbox gets an actionable refusal.
 - Break a run-owned managed resource and force-repair it: caches and sentinel survive, then
   check-only reports ready. Windows CRLF fixture: auto LF reconciliation, the compatibility
   flag, dirty/hardlinked/protected files refused with bytes unchanged, then fix and retry.

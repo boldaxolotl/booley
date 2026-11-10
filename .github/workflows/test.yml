@@ -533,11 +533,18 @@ jobs:
         run: |
           # NUL-delimited: Windows Python would turn "\n" into "\r\n".
           mapfile -d '' -t modules < <(python -c 'import json, os, sys; sys.stdout.write("\0".join(json.loads(os.environ["STRESS_MODULES"])))')
+          status=0
           # shellcheck disable=SC2086 # HEADROOM holds zero or two options.
           pytest "${modules[@]}" -q --tb=short -n 4 --dist=load \
             --count="${STRESS_COUNT}" --basetemp "${RUNNER_TEMP}/pytest" \
             -m "not native_bwave" --timeout=60 ${HEADROOM} \
-            --durations=30 --junitxml="${RUNNER_TEMP}/junit.xml"
+            --durations=30 --junitxml="${RUNNER_TEMP}/junit.xml" || status=$?
+          # Exit 5 (nothing ran) is fine when every changed module skipped itself at
+          # import on this runner, such as a Linux-only module on Windows. The JUnit
+          # assertion below still fails the job when no test or skip was recorded.
+          if [ "${status}" -ne 0 ] && [ "${status}" -ne 5 ]; then
+            exit "${status}"
+          fi
 
       - name: Publish pytest evidence
         if: always()

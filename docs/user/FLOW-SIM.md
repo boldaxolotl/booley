@@ -118,7 +118,7 @@ failed Test Run comes with a command that reruns exactly it:
 ```text
 sim_soc: FAIL (Simulation Campaign 3f2a9c1e-…)
   manifest: /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json
-  report: /work/.booley/flow-reports/sim.json
+  report: /work/.booley/flow-reports/sim/12/report.json
   <end of the failed test's simulator output>
   Test Runs: 3 (2 passed, 1 failed)
     PASS         stress+soak@1804289383
@@ -133,8 +133,8 @@ The two paths:
 - **`manifest`** is the run's plan, written before anything runs: the Target,
   the Test Runs with their seeds, the builds and the source files. You need
   it only to [resume an interrupted run](#resuming-an-interrupted-run).
-- **`report`** is a copy of the newest run's `report.json`, and the next run
-  overwrites it. The run's own copy is `sim/12/report.json`.
+- **`report`** is the run's own `report.json`. Booley also keeps a copy of the
+  newest run's report at `flow-reports/sim.json`; the next run overwrites it.
 
 Each Test Run gets one verdict:
 
@@ -471,6 +471,8 @@ CCACHE_DIR=/booley-project/.runtime/compiler-cache/ccache ccache --clear
 ```
 
 If ccache isn't available, the build prints a warning and compiles without it.
+Booley's ccache settings override your shell and the Target's `env`; see
+[ccache settings are ignored or rebuilds miss the cache](TROUBLESHOOTING.md#ccache-settings-are-ignored-or-rebuilds-miss-the-cache).
 
 ## Configuration (`[flows.sim]`)
 
@@ -521,4 +523,5 @@ run whose simulation time is still zero that many seconds after cocotb starts,
 which usually means the cocotb version doesn't match the simulator; see
 [Baking the cocotb stack into the image](SANDBOX.md#baking-the-cocotb-stack-into-the-image).
 Raise it if your testbench spends minutes in Python setup before the first
-clock edge.
+clock edge. For the stop's message and fix, see
+[Simulation stalls at time zero](TROUBLESHOOTING.md#simulation-stalls-at-time-zero-without-results).

@@ -53,12 +53,14 @@ Target in one run. The easiest way to read it is to ask the agent, for example
 "What coverage did sim_soc reach?". The agent gets every metric's percentage,
 any threshold and whether it was met, and the Campaign's location.
 
-A run you start yourself prints one line per Target:
+A run you start yourself prints a block per Target:
 
 ```text
-sim_soc: simulation PASS · coverage collection COMPLETE · evaluation NOT_REQUESTED (Simulation Campaign …)
+sim_soc: simulation PASS · coverage collection COMPLETE · evaluation PASS (Simulation Campaign …)
   manifest: /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json
-  report: /work/.booley/flow-reports/sim.json
+  report: /work/.booley/flow-reports/sim/12/report.json
+  coverage: line 92.3% · branch 81.0% (min 80%, met) · toggle 64.2%
+  coverage campaign: /work/.booley/flow-reports/sim/12/targets/sim_soc/coverage.json
 ```
 
 The first line has three verdicts:
@@ -75,14 +77,27 @@ The first line has three verdicts:
   displayed 50%; minimum 80%)`. `BLOCKED` gives a code, such as an invalid
   [waiver](#coverage-waivers).
 
-The `manifest` and `report` paths are the same as in any `sim` run; see
-[Simulation results](FLOW-SIM.md#reading-results).
+The other lines:
+
+- **`manifest`** and **`report`** are the same as in any `sim` run; see
+  [Simulation results](FLOW-SIM.md#reading-results). `report` is this run's
+  own `sim/<N>/report.json`.
+- **`coverage`** is printed only when collection is `COMPLETE`. It lists each
+  metric that has points, in the order line, branch, expression, toggle,
+  `cover_property`. A metric with points but none eligible (all waived) shows
+  `n/a`. A threshold adds its minimum and whether it was `met` or `missed`.
+  Percentages are cut off, not rounded, to one decimal (or to the
+  decimals of the minimum, if it has more), so `100.0%` always means every
+  point is covered and a `met` metric never prints below its minimum.
+- **`coverage campaign`** is the Target's Coverage Campaign file, described
+  below. It is printed whatever the collection status, and also for the
+  Targets that finished before a run failed or was cancelled.
 
 ### Where the numbers are
 
-The terminal doesn't print the percentages. Each run gets a numbered
-directory under `flow-reports/` in the Booley Directory (or `--report-dir`),
-`sim/12/` above. Coverage results are in two of its files.
+Each run gets a numbered directory under `flow-reports/` in the Booley
+Directory (or `--report-dir`), `sim/12/` above. Coverage results are in two
+of its files.
 
 **`sim/<N>/report.json`** has each Target's percentages, under
 `detail.targets.<target>`:
@@ -101,8 +116,9 @@ directory under `flow-reports/` in the Booley Directory (or `--report-dir`),
 }
 ```
 
-`threshold` and `met` are filled in when a Coverage Goal sets a threshold
-for that metric. A metric the design has no points for, such as
+`percent` is rounded to two decimals here, so `77.19` is printed as `77.1%` on
+the terminal for a metric without a finer minimum. `threshold` and `met` are filled in when a Coverage Goal sets a
+threshold for that metric. A metric the design has no points for, such as
 `cover_property` in a design without `cover property` statements, is left out.
 
 **`sim/<N>/targets/<target>/coverage.json`** is the Coverage Campaign. Pass
