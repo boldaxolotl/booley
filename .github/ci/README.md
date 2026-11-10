@@ -83,7 +83,12 @@ or names in a string such as a `mock.patch` target. Tests under
 `tests/architecture` do not count. The few imports declared in
 `SANDBOX_ONLY_LAZY_IMPORTS` run only on the Sandbox MCP call path and are left
 out of the graph; each records the functions that hold it and the modules that
-reference them, so a new caller fails the test until someone re-reads it.
+reference them, plus the functions inside the source module that call them, so a
+new direct caller fails the test until someone re-reads it. The guard counts a
+test as Windows coverage even if a `skipif` or the `native_bwave` marker keeps
+it off Windows, and it works per module, not per function: a host-reachable
+function tested only by Sandbox-only tests passes if another test covers its
+module. Keep tests of help text, argument parsing, and config loaders on Windows.
 
 Shard balance skips the skipped. `ci_pytest_shard.py` passes nodes with an
 unconditional `skip` marker to `assign_shards`, which weighs them at zero and

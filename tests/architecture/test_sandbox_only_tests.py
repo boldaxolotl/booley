@@ -11,27 +11,33 @@ import ast
 from dataclasses import replace
 from functools import cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from tests.architecture.sandbox_reach import HostReach
 
 _TESTS_ROOT = Path(__file__).parents[1]
 
 
 @cache
-def _reach():
+def _reach() -> HostReach:
     from tests.architecture.sandbox_reach import host_reach
 
     return host_reach()
 
 
 @cache
-def _coverage():
+def _coverage() -> dict[str, frozenset[str]]:
     from tests.architecture.sandbox_reach import load_source_graph, module_test_coverage
 
     return module_test_coverage(load_source_graph().modules)
 
 
-def _format_uncovered(problems: dict) -> str:
+def _format_uncovered(
+    problems: dict[str, tuple[tuple[str, ...], tuple[str, ...]]],
+) -> str:
     return "\n".join(
         f"{module}\n  covered only by: {', '.join(tests)}\n  host path: {' -> '.join(path)}"
         for module, (tests, path) in problems.items()
@@ -94,6 +100,7 @@ def test_declared_sandbox_only_lazy_imports_are_current() -> None:
     from tests.architecture.sandbox_reach import (
         SANDBOX_ONLY_LAZY_IMPORTS,
         host_reach,
+        internal_callers,
         load_source_graph,
         referencing_modules,
     )
@@ -114,6 +121,9 @@ def test_declared_sandbox_only_lazy_imports_are_current() -> None:
         )
         assert referencing_modules(full.paths, cut.source, cut.functions) == cut.callers, (
             f"{cut.source}: host-reachable modules now reference the cut functions"
+        )
+        assert internal_callers(cut.source, cut.functions) == cut.internal_callers, (
+            f"{cut.source}: the cut functions have a new caller inside the module"
         )
         for target in cut.targets:
             trimmed = replace(cut, targets=tuple(t for t in cut.targets if t != target))

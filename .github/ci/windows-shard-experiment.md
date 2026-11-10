@@ -84,5 +84,7 @@ four workers, plus 20 seconds of worker overhead and the run's longest collectio
 | [42889969548](https://github.com/boldaxolotl/booley/actions/runs/42889969548) | 543 s | 4,386 s | 1,097 s | 376 s |
 
 All three projections are well under today's slowest step, so four shards stay
-within the headroom. The timing model is unchanged; shard balance weighs skipped
+within the headroom. Review later kept six more modules on Windows (8 s of
+summed test time, about 2 s per shard step), which moves no projection by more
+than rounding. The timing model is unchanged; shard balance weighs skipped
 tests at zero. Manual runs can still select six, eight, or ten shards.

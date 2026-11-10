@@ -48,8 +48,11 @@ class LazyImportCut:
 
     ``callers`` is the exact set of host-reachable modules (other than ``source``) that
     reference any function in ``functions`` by name. A new caller changes the set and fails
-    the guard until the cut is re-justified or dropped. Direct references only: an indirect
-    host caller through one of these modules is a reviewed residual risk.
+    the guard until the cut is re-justified or dropped. ``internal_callers`` is the exact set
+    of top-level names inside ``source`` (``"<module>"`` for module-level statements) that
+    reference those functions from outside them; each was read to confirm it runs only on the
+    Sandbox MCP call path. Direct references only: an indirect host caller through one of
+    these modules is a reviewed residual risk.
     """
 
     source: str
@@ -57,6 +60,7 @@ class LazyImportCut:
     functions: tuple[str, ...]
     callers: frozenset[str]
     reason: str
+    internal_callers: frozenset[str] = frozenset()
 
 
 # Each cut was confirmed by reading every caller of its enclosing functions.
@@ -72,6 +76,7 @@ SANDBOX_ONLY_LAZY_IMPORTS: tuple[LazyImportCut, ...] = (
             "work_dir_guidance",
         ),
         callers=frozenset({"booley.mcp.call_context"}),
+        internal_callers=frozenset({"discover_builtin_definitions"}),
         reason=(
             "MCP server catalog build (mcp/server.py, mcp/catalog_worker.py) and the Goal "
             "work-dir refusal raised inside an MCP call (mcp/call_context.py)"
@@ -83,17 +88,21 @@ SANDBOX_ONLY_LAZY_IMPORTS: tuple[LazyImportCut, ...] = (
             "booley.flows.sim.unpublished_results",
             "booley.goals.flow_execution",
             "booley.mcp.goal_freshness",
-            "booley.mcp.unbound_recorder",
         ),
-        functions=("_goal_acceptance_recorder", "_unbound_acceptance_recorder"),
+        functions=("_goal_acceptance_recorder",),
         callers=frozenset(),
-        reason="recorder builders run only for an MCP Flow call; importing MCP tools never loads Goal Mode",
+        internal_callers=frozenset({"select_flow_execution"}),
+        reason=(
+            "the Goal recorder builder runs only for a Goal-bound MCP call; the unbound "
+            "recorder is not cut because every McpTool constructor builds it on the host"
+        ),
     ),
     LazyImportCut(
         source="booley.mcp.call_context",
         targets=("booley.mcp.sim_baseline_jobs",),
         functions=("_goal_call_context",),
         callers=frozenset(),
+        internal_callers=frozenset({"resolve_call_context"}),
         reason="builds the call context of an MCP tool call bound to a Goal",
     ),
     LazyImportCut(
@@ -101,7 +110,11 @@ SANDBOX_ONLY_LAZY_IMPORTS: tuple[LazyImportCut, ...] = (
         targets=("booley.criteria.actions",),
         functions=("_pending_criterion_invocations",),
         callers=frozenset(),
-        reason="endpoint acceptance during execution, which Doctor runs only through a Sandbox subprocess",
+        internal_callers=frozenset({"_criterion_binding_gate"}),
+        reason=(
+            "endpoint acceptance during execution, which Doctor runs only through a Sandbox "
+            "subprocess"
+        ),
     ),
 )
 
@@ -488,3 +501,18 @@ def referencing_modules(
         for module in reachable
         if module != source and wanted & names.get(module, frozenset())
     )
+
+
+def internal_callers(source: str, functions: Iterable[str]) -> frozenset[str]:
+    """Top-level names of ``source`` outside ``functions`` that reference any of them."""
+    wanted = set(functions)
+    path = SOURCE_ROOT.joinpath(*source.split(".")[1:])
+    file = path / "__init__.py" if path.is_dir() else path.with_suffix(".py")
+    callers: set[str] = set()
+    for node in ast.parse(file.read_text(encoding="utf-8")).body:
+        if isinstance(node, _FUNCTIONS):
+            if node.name not in wanted and wanted & _referenced_names(node):
+                callers.add(node.name)
+        elif wanted & _referenced_names(node):
+            callers.add("<module>")
+    return frozenset(callers)

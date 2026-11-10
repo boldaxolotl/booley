@@ -28,8 +28,9 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     # Goal Mode (`booley goal` is a Sandbox command). WINDOWS_HOST_TESTS lists the exceptions.
     "tests/goals/",
     # Simulation Flow runtime (campaigns, builds, coverage, backends): `booley flow sim` is a
-    # Sandbox command. The host imports flows.sim.flow only to print endpoint help, so tests of
-    # modules outside that import closure never run on a host.
+    # Sandbox command. The host imports flows.sim.flow and its modules only to print endpoint
+    # help and never executes the runtime, so tests of that runtime stay Sandbox-only. Tests of
+    # what the host does run (help text, argument parsing, config loaders) stay on Windows.
     "tests/flows/sim/backends/test_cocotb_run.py",
     "tests/flows/sim/backends/test_declared_trace_streams.py",
     "tests/flows/sim/backends/test_iverilog_run.py",
@@ -37,7 +38,6 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/flows/sim/backends/test_trace_finalization.py",
     "tests/flows/sim/backends/test_trace_freshness.py",
     "tests/flows/sim/backends/test_verilator_run.py",
-    "tests/flows/sim/test_argument_ownership.py",
     "tests/flows/sim/test_build_failure_reporting.py",
     "tests/flows/sim/test_campaign_acceptance.py",
     "tests/flows/sim/test_campaign_build_execution_validation.py",
@@ -70,7 +70,6 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/flows/sim/test_direct_test_run_rows.py",
     "tests/flows/sim/test_elab_only.py",
     "tests/flows/sim/test_endpoint_campaign_lifecycle.py",
-    "tests/flows/sim/test_exact_selection.py",
     "tests/flows/sim/test_isolated_sim_headers.py",
     "tests/flows/sim/test_one_test_run_rule.py",
     "tests/flows/sim/test_rerun_command_execution.py",
@@ -85,7 +84,6 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/flows/lint/test_adapters.py",
     "tests/flows/test_baseline_pins.py",
     "tests/flows/test_string_parameter_eda.py",
-    "tests/flows/test_target_omission.py",
     "tests/flows/test_transport_contract.py",
     # MCP server tools and Specialist internals: the MCP server runs only in the Sandbox.
     "tests/mcp_tools/test_application.py",
@@ -98,7 +96,6 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/mcp_tools/test_mutation_variant_interruptions.py",
     "tests/mcp_tools/test_nested_session_presence.py",
     "tests/mcp_tools/test_owned_job_poll.py",
-    "tests/mcp_tools/test_paired_boolean_options.py",
     "tests/mcp_tools/test_peer_checkout.py",
     "tests/mcp_tools/test_project_flow_loader.py",
     "tests/mcp_tools/test_report_encoding.py",
@@ -106,7 +103,6 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/mcp_tools/test_session_attribution.py",
     "tests/mcp_tools/test_session_requests.py",
     "tests/mcp_tools/test_sim_seed_dispatch.py",
-    "tests/mcp_tools/test_unbound_recording.py",
     "tests/mcp_tools/test_unread_job_notice.py",
     # Dashboard, chat, Goal status, and MCP probe commands: Sandbox commands.
     "tests/harness/test_chat_terminal.py",
@@ -132,7 +128,6 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/test_incontainer_live_preview.py",
     "tests/test_incontainer_register.py",
     "tests/test_incontainer_vaporview.py",
-    "tests/test_interactive_smoke.py",
     "tests/test_mcp_server.py",
     "tests/test_mcp_v2_adapter.py",
 )
@@ -142,7 +137,7 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
 WINDOWS_HOST_TESTS: tuple[str, ...] = (
     "tests/goals/test_binding.py",  # goals.binding (host: harness.booley)
     "tests/goals/test_changes.py",  # goals.changes (host: harness.booley)
-    "tests/goals/test_declared_inputs.py",  # goals.declared_inputs (host: harness.booley)
+    "tests/goals/test_declared_inputs.py",  # goals.protected_inputs, goals.entry (host)
     "tests/goals/test_freshness.py",  # criteria.freshness (host: specialists.reviewer)
     "tests/goals/test_model.py",  # goals.model (host: harness.booley)
     "tests/goals/test_naming.py",  # goals.naming (host: harness.booley)
@@ -177,7 +172,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     """
     skip = pytest.mark.skip(reason=SKIP_REASON)
     for item in items:
-        if is_sandbox_only(item.path.relative_to(config.rootpath).as_posix()):
+        if is_sandbox_only(item.path.resolve().relative_to(config.rootpath.resolve()).as_posix()):
             item.add_marker(pytest.mark.sandbox_only)
             if sys.platform == "win32":
                 item.add_marker(skip)

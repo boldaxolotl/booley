@@ -621,7 +621,7 @@ def test_pr_compatibility_matrix_is_pairwise() -> None:
 
 def test_ci_mark_expressions_never_deselect_sandbox_only_tests() -> None:
     """Sandbox-only tests skip on Windows only; no `-m` expression may drop them anywhere."""
-    from tests.sandbox_only import SANDBOX_ONLY_PATHS
+    from tests.sandbox_only import SANDBOX_ONLY_PATHS, is_sandbox_only
 
     workflows = (REPOSITORY_ROOT / ".github" / "workflows").glob("*.yml")
     mentions = [path.name for path in workflows if "sandbox_only" in path.read_text("utf-8")]
@@ -632,11 +632,19 @@ def test_ci_mark_expressions_never_deselect_sandbox_only_tests() -> None:
     paths = [word for word in shlex.split(compatibility["run"]) if word.startswith("tests/")]
     assert paths
     # A compatibility leg whose paths are all skipped on Windows would pass while testing nothing.
+    # A test file is judged by the registry (its Windows exceptions included); a directory
+    # overlaps when any registry entry sits inside it or contains it.
     skipped = [
         path
         for path in paths
-        for entry in SANDBOX_ONLY_PATHS
-        if path.startswith(entry) or entry.startswith(path.rstrip("/") + "/")
+        if (
+            is_sandbox_only(path)
+            if path.endswith(".py")
+            else any(
+                path.startswith(entry) or entry.startswith(path.rstrip("/") + "/")
+                for entry in SANDBOX_ONLY_PATHS
+            )
+        )
     ]
     assert not skipped, f"Windows compatibility paths overlap the Sandbox-only registry: {skipped}"
 
