@@ -192,28 +192,9 @@ unavailable` instead; the verdict and Criteria are unaffected.
 | `campaign_id`, `campaign_manifest` | The Simulation Campaign and a reference to its `manifest.json`, shaped `path_base`, `path`, `bytes`, `sha256`, `kind`, and `owner` (the Campaign ID). Per-Test-Run logs and waveforms live in the Campaign's work items, not in this file. |
 | `coverage_campaign`, `collection`, `evaluation` | Coverage runs only: a reference (same shape as `campaign_manifest`) to the Target's `coverage.json` and the collection and evaluation statuses. |
 
-Reports from the older single-pass writer (`SimulateFlow._write_target_report`;
-normal CLI and MCP runs go through the Simulation Campaign instead) carry these
-fields in place of the Campaign ones:
-
-| Field | Contents |
-|---|---|
-| `tb_top`, `eda_tool`, `elapsed_s` | The testbench top, the simulator, and duration. |
-| `phase_timings_s` | Seconds spent in `setup`, `pre_sim`, `build`, `run`, `result_processing`, `publication`, and `unattributed`, with `execution_total` and `total`. |
-| `compile_command`, `fileset` | The build command and the resolved `rtl` and `tb` source lists. |
-| `artifacts` | The report, per-test run logs, result files, and waveforms from this run. |
-
-Simulation Campaign entries have `name` (`default` for an unnamed test),
-`passed`, nullable `cycles`, `sva_errors`, `timed_out`, `execution`,
-`failure_kind`, and `error_tail`. Each legacy/unprepared `tests[]` entry has `name`, `passed`, `verdict`, `termination`,
-`failure_kind`, `timed_out`,
-`elapsed_s`, `build_s`, `cycles`, `cycle_observation`, `sva_errors`,
-`error_tail`, `test_validated`, `phase_timings_s`, and `resources`
-(`command_peak_rss_mb`, `command_oom_kill_delta`, and on supported platforms
-`simulation_user_cpu_s` and `simulation_system_cpu_s`). Traced tests add
-`trace_path`, `trace_bytes`, `trace_top_scope`, `trace_signal_count`, and
-`trace_total_ticks`. Optional fields: `artifacts.run_log`,
-`workload_fingerprint`, and `validation_note`.
+Each `tests[]` entry has `name` (`default` for an unnamed test), `passed`,
+nullable `cycles`, `sva_errors`, `timed_out`, `execution`, `failure_kind`,
+and `error_tail`.
 Every `tests[]` entry that observed a Test Run also names it: `test_run` (the
 Test Run name, `test[+variant][@seed]`), `variant`, `seed`, and `fingerprint`.
 
